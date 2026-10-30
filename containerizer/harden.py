@@ -121,6 +121,8 @@ def harden_pod(meta: dict, pod: dict, uid: int, component: str, exceptions: list
         csc = c.setdefault("securityContext", {})
         _merge(csc, base["container"]["securityContext"])
         csc["capabilities"]["drop"] = ["ALL"]
+        if hc.get("apparmor") and hc["apparmor"] != "none":
+            csc["appArmorProfile"] = {"type": hc["apparmor"]}
         if patch.get("capabilities_add"):
             csc["capabilities"]["add"] = sorted(set(csc["capabilities"].get("add", [])) | set(patch["capabilities_add"]))
         res = c.setdefault("resources", {})
@@ -173,13 +175,180 @@ def harden_pod(meta: dict, pod: dict, uid: int, component: str, exceptions: list
 
 
 def harden_manifests(docs: list[dict], repo, c, plan: dict, component: str) -> list[dict]:
-    """Harden every workload in `docs` in place; returns the applied exceptions."""
+    """Harden every workload in `docs` in place, add the component's ServiceAccount, its
+    least-privilege NetworkPolicy and external secrets; returns the applied exceptions."""
     exceptions = exceptions_for(repo, c, plan)
     uid = run_as_uid(c, plan)
+    labels = next((d["metadata"].get("labels") for d in docs if d.get("kind") in WORKLOAD_KINDS), None) or \
+        {"app.kubernetes.io/name": component}
+    hc = security()["hardening"]
     for d in docs:
         for meta, pod in _pod_specs(d):
             harden_pod(meta, pod, uid, component, exceptions)
+            if hc.get("service_account"):
+                pod["serviceAccountName"] = component
+    if hc.get("service_account"):
+        docs.insert(0, service_account(component, labels, any(ex.get("patch", {}).get("automount_token") for ex in exceptions)))
+        if any(ex.get("patch", {}).get("automount_token") for ex in exceptions):
+            docs[1:1] = api_role(component, labels)
+    if security().get("network", {}).get("default_deny"):
+        egress = egress_for(repo, c)
+        plan["egress"] = egress
+        docs[:] = [d for d in docs if d.get("kind") != "NetworkPolicy"]
+        docs.append(network_policy(component, labels, plan.get("port"), egress))
+    externalize_secrets(docs, component, labels, plan)
     return [{"id": ex["id"], "why": ex.get("why", "")} for ex in exceptions]
+
+
+def service_account(component: str, labels: dict, token: bool) -> dict:
+    return {"apiVersion": "v1", "kind": "ServiceAccount", "metadata": {"name": component, "labels": labels},
+            "automountServiceAccountToken": bool(token)}
+
+
+def api_role(component: str, labels: dict) -> list[dict]:
+    """An empty Role bound to the component: Kubernetes API clients get only the verbs added here."""
+    return [{"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": {"name": component, "labels": labels},
+             "rules": [], "_comment": "add only the API groups, resources and verbs this component uses"},
+            {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding",
+             "metadata": {"name": component, "labels": labels},
+             "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": component},
+             "subjects": [{"kind": "ServiceAccount", "name": component}]}]
+
+
+# --------------------------------------------------------------------------- network
+
+def _projects(repo, c) -> list:
+    return [c.project] + _closure(repo, c.project)
+
+
+def egress_for(repo, c) -> list[dict]:
+    """External dependencies a component needs to reach: [{id, ports: [{port, protocol}]}]."""
+    from .rules import _candidate_files
+    net = security()["network"]
+    if c.role in (net.get("no_egress_roles") or []):
+        return []
+    out = []
+    for dep in net.get("egress") or []:
+        ports: list = []
+        if dep.get("captures_port"):
+            rxs = [x["config"] for x in (dep["when"].get("any") or [dep["when"]]) if "config" in x]
+            found = set()
+            for p in _projects(repo, c):
+                ctx = Context(repo, p, c.role)
+                for f in _candidate_files(ctx, "config", None):
+                    rel = repo.rel(f).replace("\\", "/")
+                    if re.search(r"\.Development\.|launchSettings|(^|/)\.vscode/|(^|/)\.idea/", rel, re.I):
+                        continue        # development settings are not shipped in the image
+                    txt = ctx.text(f, True)
+                    for rx in rxs:
+                        for m in re.finditer(rx, txt):
+                            host = re.search(r"(?:://|=\s*)(?:[^@/\s]*@)?([\w.\-\[\]:*+]+?)(?::\d+|,\d+)", m.group(0))
+                            if host and re.match(net.get("local_hosts", "$^"), host.group(1), re.I):
+                                continue
+                            found.add(int(m.group("port")))
+            ports = sorted(x for x in found if 0 < x < 65536)
+        else:
+            r = Rule.from_dict({"id": dep["id"], "when": dep["when"], "phase": "network"})
+            if any(run_rule(r, Context(repo, p, c.role)) is not None for p in _projects(repo, c)):
+                ports = dep["ports"]
+        if ports:
+            norm = []
+            for x in ports:
+                e = x if isinstance(x, dict) else {"port": int(x), "protocol": "TCP"}
+                e.setdefault("protocol", "TCP")
+                if e not in norm:
+                    norm.append(e)
+            out.append({"id": dep["id"], "ports": norm})
+    return out
+
+
+def network_policy(component: str, labels: dict, port, egress: list[dict]) -> dict:
+    """Least-privilege NetworkPolicy: the service port in, siblings + DNS + inferred dependencies out."""
+    net = security()["network"]
+    app = labels.get("app.kubernetes.io/part-of")
+    siblings = [{"podSelector": {"matchLabels": {"app.kubernetes.io/part-of": app}}}] if app else []
+    ingress = []
+    if port:
+        ingress.append({"from": copy.deepcopy(net.get("ingress_from") or [{"namespaceSelector": {}}]),
+                        "ports": [{"port": port, "protocol": "TCP"}]})
+    dns = net["dns"]
+    rules = [{"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": dns["namespace"]}},
+                      "podSelector": {"matchLabels": dns["pod_labels"]}}],
+              "ports": copy.deepcopy(dns["ports"])}]
+    if siblings:
+        rules.append({"to": siblings})
+    ports = []
+    for dep in egress:
+        ports += [p for p in dep["ports"] if p not in ports]
+    if ports:
+        rules.append({"to": [{"ipBlock": {"cidr": "0.0.0.0/0", "except": [x for x in net["blocked_cidrs"] if ":" not in x]}},
+                             {"ipBlock": {"cidr": "::/0", "except": [x for x in net["blocked_cidrs"] if ":" in x]}},
+                             {"namespaceSelector": {}}],
+                      "ports": ports})
+    doc = {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
+           "metadata": {"name": component, "labels": labels,
+                        "annotations": {f"{ANNOTATION}/egress": ",".join(d["id"] for d in egress) or "none"}},
+           "spec": {"podSelector": {"matchLabels": labels}, "policyTypes": ["Ingress", "Egress"],
+                    "ingress": ingress, "egress": rules}}
+    if siblings:
+        doc["spec"]["ingress"].append({"from": siblings})
+    return doc
+
+
+def default_deny_policy() -> dict:
+    return {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": {"name": "default-deny-all"},
+            "spec": {"podSelector": {}, "policyTypes": ["Ingress", "Egress"]}}
+
+
+# --------------------------------------------------------------------------- secrets
+
+def externalize_secrets(docs: list[dict], component: str, labels: dict, plan: dict) -> None:
+    """Replace Secret skeletons, and Secrets that volumes reference, by ExternalSecrets
+    (or Sealed Secrets templates, see rules/60-security.yaml `secrets.mode`)."""
+    cfg = security()["secrets"]
+    mode = cfg.get("mode", "plain")
+    if mode == "plain":
+        return
+    wanted: dict[str, list[str]] = {}
+    keep = []
+    for d in docs:
+        if d.get("kind") == "Secret":
+            wanted[d["metadata"]["name"]] = list((d.get("stringData") or {}).keys())
+        else:
+            keep.append(d)
+    for d in keep:
+        for _, pod in _pod_specs(d):
+            for v in pod.get("volumes") or []:
+                sec = v.get("secret")
+                if sec and sec["secretName"] not in wanted:
+                    keys = [i["key"] for i in sec.get("items") or []]
+                    if not keys and sec["secretName"].endswith("-files"):
+                        keys = list(plan.get("secret_files") or [])
+                    if not keys and sec["secretName"].endswith("-keytab"):
+                        keys = [_basename(plan.get("env", {}).get("KRB5_KTNAME") or "service.keytab")]
+                    wanted[sec["secretName"]] = keys
+    docs[:] = keep
+    app = labels.get("app.kubernetes.io/part-of", component)
+    for name, keys in sorted(wanted.items()):
+        if mode == "external-secrets":
+            prefix = cfg.get("key_prefix", "{app}/{component}").format(app=app, component=component)
+            docs.append({"apiVersion": "external-secrets.io/v1", "kind": "ExternalSecret",
+                         "metadata": {"name": name, "labels": labels},
+                         "spec": {"refreshInterval": cfg.get("refresh_interval", "1h"),
+                                  "secretStoreRef": dict(cfg["store"]),
+                                  "target": {"name": name, "creationPolicy": "Owner", "deletionPolicy": "Retain"},
+                                  "data": [{"secretKey": k, "remoteRef": {"key": prefix, "property": k}} for k in keys]
+                                  if keys else [],
+                                  **({} if keys else {"dataFrom": [{"extract": {"key": f"{prefix}/{name}"}}]})},
+                         "_comment": f"values come from the vault ({cfg['store']['kind']} {cfg['store']['name']}); never from Git"})
+        else:   # sealed-secrets: a template to encrypt with kubeseal, not applied as is
+            plan.setdefault("sealed_secret_templates", []).append(
+                {"apiVersion": "v1", "kind": "Secret", "metadata": {"name": name, "labels": labels}, "type": "Opaque",
+                 "stringData": {k: "" for k in keys}})
+
+
+def _basename(p: str) -> str:
+    return p.replace("\\", "/").rsplit("/", 1)[-1]
 
 
 def namespace_manifest(name: str) -> dict:
@@ -190,6 +359,238 @@ def namespace_manifest(name: str) -> dict:
                 "pod-security.kubernetes.io/enforce-version": "latest",
                 "pod-security.kubernetes.io/warn": "restricted",
                 "pod-security.kubernetes.io/audit": "restricted"}}}
+
+
+# --------------------------------------------------------------------------- application level
+
+_UNITS = {"Ki": 2**10, "Mi": 2**20, "Gi": 2**30, "Ti": 2**40, "k": 1e3, "M": 1e6, "G": 1e9, "m": 1e-3}
+
+
+def _qty(v) -> float:
+    m = re.fullmatch(r"([\d.]+)([A-Za-z]*)", str(v))
+    return float(m.group(1)) * _UNITS.get(m.group(2), 1) if m else 0.0
+
+
+def _fmt_qty(v: float, kind: str) -> str:
+    if kind == "cpu":
+        return f"{int(round(v * 1000))}m"
+    return f"{int(-(-v // 2**20))}Mi"
+
+
+def namespace_policies(app_docs: list[dict]) -> list[dict]:
+    """Default-deny NetworkPolicy, LimitRange and a ResourceQuota sized from the generated workloads."""
+    np = security()["namespace_policy"]
+    totals = {"requests.cpu": 0.0, "requests.memory": 0.0, "limits.memory": 0.0,
+              "requests.ephemeral-storage": 0.0, "limits.ephemeral-storage": 0.0}
+    pods = 0
+    for d in app_docs:
+        n = int((d.get("spec") or {}).get("replicas", 1)) if d.get("kind") != "CronJob" else 1
+        for _, pod in _pod_specs(d):
+            pods += n
+            for c in pod.get("containers") or []:
+                res = c.get("resources") or {}
+                for k in totals:
+                    sect, r = k.split(".", 1)
+                    totals[k] += n * _qty((res.get(sect) or {}).get(r, 0))
+    head = float(np.get("quota_headroom", 1.5))
+    hard = {}
+    for k, v in totals.items():
+        kind = "cpu" if k.endswith("cpu") else "mem"
+        val = v * head
+        floor = np.get("quota_floor", {}).get(k)
+        if floor is not None:
+            val = max(val, _qty(floor))
+        if val:
+            hard[k] = _fmt_qty(val, kind)
+    extra = dict(np.get("quota_extra") or {})
+    extra["pods"] = max(int(extra.get("pods", 0)), int(pods * head) + 1)
+    hard.update({k: str(v) for k, v in extra.items()})
+    lr = np["limit_range"]
+    out = [{"apiVersion": "v1", "kind": "LimitRange", "metadata": {"name": "defaults"},
+            "spec": {"limits": [{"type": "Container", "default": dict(lr["default"]),
+                                 "defaultRequest": dict(lr["defaultRequest"]), "max": dict(lr["max"])}]}},
+           {"apiVersion": "v1", "kind": "ResourceQuota", "metadata": {"name": "quota"}, "spec": {"hard": hard}}]
+    if security().get("network", {}).get("default_deny"):
+        out.insert(0, default_deny_policy())
+    return out
+
+
+def cluster_kit(app: str, registry: str) -> dict[str, list[dict]]:
+    """Cluster-level starting points (not part of the app's kustomization): audit policy and
+    image signature verification."""
+    audit = {"apiVersion": "audit.k8s.io/v1", "kind": "Policy",
+             "_comment": "NSA/CISA 'Kubernetes native audit logging configuration'; pass with --audit-policy-file",
+             "omitStages": ["RequestReceived"],
+             "rules": [
+                 {"level": "Metadata", "resources": [{"group": "", "resources": ["secrets", "configmaps"]},
+                                                     {"group": "authentication.k8s.io", "resources": ["tokenreviews"]}]},
+                 {"level": "RequestResponse", "resources": [{"group": "rbac.authorization.k8s.io"}]},
+                 {"level": "Request", "verbs": ["create", "update", "patch", "delete", "deletecollection"],
+                  "resources": [{"group": ""}, {"group": "apps"}, {"group": "batch"}, {"group": "networking.k8s.io"},
+                                {"group": "policy"}]},
+                 {"level": "Metadata", "verbs": ["get", "list", "watch"], "resources": [{"group": "", "resources": ["pods/exec", "pods/attach", "pods/portforward"]}]},
+                 {"level": "None", "users": ["system:kube-proxy"], "verbs": ["watch"]},
+                 {"level": "None", "nonResourceURLs": ["/healthz*", "/readyz*", "/livez*", "/version"]},
+                 {"level": "Metadata"}]}
+    verify = {"apiVersion": "kyverno.io/v1", "kind": "ClusterPolicy",
+              "metadata": {"name": f"verify-images-{app}"},
+              "_comment": "Kyverno: only cosign-signed images from the application registry run in the namespace; "
+                          "replace the key with your signing identity (or use keyless attestors)",
+              "spec": {"validationFailureAction": "Enforce", "webhookTimeoutSeconds": 30, "background": False,
+                       "rules": [{"name": "signed-images",
+                                  "match": {"any": [{"resources": {"kinds": ["Pod"], "namespaces": [app]}}]},
+                                  "verifyImages": [{"imageReferences": [f"{registry}/{app}/*"],
+                                                    "mutateDigest": True, "verifyDigest": True, "required": True,
+                                                    "attestors": [{"entries": [{"keys": {"publicKeys":
+                                                        "-----BEGIN PUBLIC KEY-----\n<cosign.pub>\n-----END PUBLIC KEY-----"}}]}]}]}]}}
+    return {"cluster/audit-policy.yaml": [audit], "cluster/verify-images.yaml": [verify]}
+
+
+def write_app_security(out, app: str, comp_docs: dict[str, list[dict]], registry: str, dump) -> list[str]:
+    """Write security.yaml (kustomization resource), the cluster/ kit and HARDENING.md.
+    Returns (resources to add to the app's kustomization, the namespace policy docs)."""
+    from pathlib import Path
+    out = Path(out)
+    all_docs = [d for docs in comp_docs.values() for d in docs]
+    ns_docs = namespace_policies(all_docs)
+    _NS_POLICIES[app] = ns_docs
+    (out / "security.yaml").write_text(dump(ns_docs))
+    for rel, docs in cluster_kit(app, registry).items():
+        (out / rel).parent.mkdir(parents=True, exist_ok=True)
+        (out / rel).write_text(dump(docs))
+    (out / "HARDENING.md").write_text(hardening_markdown(app, comp_docs))
+    return ["security.yaml"], ns_docs
+
+
+# namespace policies of the app being generated, for harden_gitops (called by gitops.py right after)
+_NS_POLICIES: dict[str, list[dict]] = {}
+
+
+PLATFORM_KINDS = ("ResourceQuota", "LimitRange")
+
+
+def _delete_patch(kind: str, name: str, api: str = "v1") -> dict:
+    return {"patch": f"$patch: delete\napiVersion: {api}\nkind: {kind}\nmetadata:\n  name: {name}\n",
+            "target": {"kind": kind, "name": name}}
+
+
+def harden_gitops(docs: dict[str, list[dict]], a=None) -> dict[str, list[dict]]:
+    """Security post-processing of the Argo CD / Flux manifests from gitops.py.
+
+    - Flux: the tenant ServiceAccount is bound to `admin`, which cannot manage quotas, and the
+      default-deny policy should not be removable from the app repository; so the namespace
+      policies (default deny, LimitRange, ResourceQuota) move into the platform-owned tenant file
+      and are dropped from the synced set.
+    - Argo CD: the controller applies them; the AppProject keeps cluster-scoped kinds to the
+      Namespace that CreateNamespace needs, and denies RBAC objects unless a component needs an API Role.
+    - Both: secrets come from the external store, so the secret CRD is the only Secret source allowed.
+    """
+    from .generate import k8s_name
+    ns = k8s_name(a.name) if a is not None else None
+    policies = copy.deepcopy(_NS_POLICIES.get(ns) or namespace_policies([]))
+    for p in policies:
+        p.setdefault("metadata", {})["namespace"] = ns
+    platform = [(p["kind"], p["metadata"]["name"], p["apiVersion"]) for p in policies
+                if p["kind"] in PLATFORM_KINDS or p["metadata"]["name"] == "default-deny-all"]
+    mode = security()["secrets"].get("mode")
+    for path, items in docs.items():
+        for d in items:
+            kind, spec = d.get("kind"), d.setdefault("spec", {})
+            if kind == "AppProject":
+                spec["clusterResourceWhitelist"] = [w for w in spec.get("clusterResourceWhitelist") or []
+                                                    if (w.get("group"), w.get("kind")) == ("", "Namespace")]
+                wl = spec.setdefault("namespaceResourceWhitelist", [])
+                # a plain Secret from Git would overwrite the values the external store manages
+                if mode != "plain":
+                    wl[:] = [w for w in wl if (w.get("group"), w.get("kind")) != ("", "Secret")]
+                spec["sourceNamespaces"] = []
+                spec["orphanedResources"] = {"warn": True}
+                spec.setdefault("signatureKeys", [])
+            elif kind == "Application":
+                opts = spec.setdefault("syncPolicy", {}).setdefault("syncOptions", [])
+                for o in ("ServerSideApply=true", "PruneLast=true", "FailOnSharedResource=true"):
+                    if o not in opts:
+                        opts.append(o)
+            elif kind == "Kustomization" and str(d.get("apiVersion", "")).startswith("kustomize.toolkit.fluxcd.io"):
+                patches = spec.setdefault("patches", [])
+                for k, n, api in platform:
+                    dp = _delete_patch(k, n, api)
+                    if dp not in patches:
+                        patches.append(dp)
+                spec["force"] = False
+        if path == "flux/tenant.yaml":
+            names = {(x.get("kind"), (x.get("metadata") or {}).get("name")) for x in items}
+            items += [p for p in policies if (p["kind"], p["metadata"]["name"]) not in names]
+    return docs
+
+
+# --------------------------------------------------------------------------- report
+
+def hardening_markdown(app: str, comp_docs: dict[str, list[dict]]) -> str:
+    """Each NSA/CISA and CIS control: applied, applied with exception, not applied, not applicable,
+    or an action for the cluster operator / pipeline, with the guide section."""
+    viol: dict[str, list[Violation]] = {}
+    exceptions: dict[str, set] = {}
+    egress: dict[str, str] = {}
+    for comp, docs in comp_docs.items():
+        for v in lint_manifests(docs, f"{comp}: "):
+            viol.setdefault(v.check, []).append(v)
+        for d in docs:
+            for meta, _ in _pod_specs(d):
+                for e in ((meta.get("annotations") or {}).get(f"{ANNOTATION}/exceptions") or "").split(","):
+                    if e:
+                        exceptions.setdefault(e, set()).add(comp)
+            if d.get("kind") == "NetworkPolicy":
+                egress[comp] = (d["metadata"].get("annotations") or {}).get(f"{ANNOTATION}/egress", "")
+    rows = []
+    counts: dict[str, int] = {}
+    for ctl in security().get("controls") or []:
+        scope = ctl.get("scope")
+        checks = ctl.get("checks") or []
+        bad = [v for c in checks for v in viol.get(c, [])]
+        exc = sorted({f"{e} ({', '.join(sorted(exceptions[e]))})" for e in ctl.get("exception") or [] if e in exceptions})
+        if scope == "cluster":
+            status, note = "cluster action", ctl.get("action", "")
+        elif scope == "deviation":
+            status, note = "not applied", ctl.get("action", "")
+        elif scope == "gitops":
+            status, note = "applied in gitops/", ctl.get("action", "")
+        elif bad:
+            status = "not applied"
+            note = "; ".join(sorted({f"{v.check}: {v.message} ({v.target.strip(': ')})" for v in bad})[:4])
+            if ctl.get("action"):
+                note = f"{ctl['action']} Now: {note}"
+        elif exc:
+            status, note = "applied with exception", "exception: " + ", ".join(exc)
+        else:
+            status = "applied"
+            note = ctl.get("action", "") if scope == "pipeline" else ""
+            if ctl["id"] in ("sa-tokens", "rbac-apps") and "kubernetes-api-client" not in exceptions:
+                note = "no component calls the Kubernetes API"
+            if ctl["id"] == "network-policies":
+                note = ctl.get("action", "")
+        counts[status] = counts.get(status, 0) + 1
+        rows.append(f"| {ctl['title']} | {status} | {ctl.get('nsa', '')} | {ctl.get('cis', '')} | {note} |")
+    lines = [f"# Hardening report: {app}", "",
+             "Controls from the NSA/CISA Kubernetes Hardening Guide (v1.2) and the CIS Kubernetes Benchmark, "
+             "checked against the generated manifests. " + ", ".join(f"{v} {k}" for k, v in counts.items()) + ".", "",
+             "| Control | Status | NSA/CISA guide section | CIS | Notes |", "| --- | --- | --- | --- | --- |", *rows, ""]
+    if egress:
+        lines += ["## Network egress per component", "",
+                  "Inferred from packages and configuration; everything else is denied. Review before production.", "",
+                  "| Component | Allowed external dependencies |", "| --- | --- |"]
+        lines += [f"| {c} | {e or 'none (DNS and sibling components only)'} |" for c, e in sorted(egress.items())]
+        lines.append("")
+    if exceptions:
+        lines += ["## Hardening exceptions", "", "| Exception | Components |", "| --- | --- |"]
+        lines += [f"| {e} | {', '.join(sorted(c))} |" for e, c in sorted(exceptions.items())]
+        lines.append("")
+    lines += ["## Files", "",
+              "- `security.yaml`: default-deny NetworkPolicy, LimitRange and ResourceQuota for the namespace",
+              "- `namespace.yaml`: Pod Security Admission `restricted` (enforce, warn, audit)",
+              "- `<component>/k8s.yaml`: hardened workloads, own ServiceAccount, least-privilege NetworkPolicy, ExternalSecrets",
+              "- `cluster/audit-policy.yaml`, `cluster/verify-images.yaml`: for the cluster operator, not applied with the app", ""]
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------- lint
@@ -233,6 +634,7 @@ def lint_manifests(docs: list[dict], where: str = "") -> list[Violation]:
             for k, v in {**(d.get("stringData") or {}), **(d.get("data") or {})}.items():
                 if v not in ("", None):
                     L.add("secret-literals", tgt, f"Secret key {k} carries a value; keep values out of manifests")
+            L.add("plain-secret", tgt, "Secret object in the manifests; use an ExternalSecret or SealedSecret")
             continue
         for meta, pod in _pod_specs(d):
             waived = {w.strip() for w in ((meta.get("annotations") or {}).get(f"{ANNOTATION}/waives") or "").split(",") if w.strip()}
@@ -252,10 +654,13 @@ def lint_manifests(docs: list[dict], where: str = "") -> list[Violation]:
             if pod.get("automountServiceAccountToken") is not False:
                 L.add("sa-token", tgt, "automountServiceAccountToken is not false", waived)
             labels = (meta.get("labels") or {})
-            if labels and not any(_selects((p.get("spec") or {}).get("podSelector") or {}, labels) for p in policies):
+            selecting = [p for p in policies if _selects((p.get("spec") or {}).get("podSelector") or {}, labels)]
+            if not selecting:
                 L.add("network-policy", tgt, "no NetworkPolicy selects this workload", waived)
-            elif not labels and policies == []:
-                L.add("network-policy", tgt, "no NetworkPolicy selects this workload", waived)
+            if not any("Egress" in ((p.get("spec") or {}).get("policyTypes") or []) for p in selecting):
+                L.add("egress-policy", tgt, "egress is not restricted by any NetworkPolicy", waived)
+            if pod.get("serviceAccountName") in (None, "", "default") and pod.get("serviceAccount") in (None, "", "default"):
+                L.add("service-account", tgt, "runs as the namespace's default ServiceAccount", waived)
             pod_nonroot = psc.get("runAsNonRoot") is True
             pod_seccomp = (psc.get("seccompProfile") or {}).get("type")
             for c in (pod.get("initContainers") or []) + (pod.get("containers") or []):
@@ -276,6 +681,10 @@ def lint_manifests(docs: list[dict], where: str = "") -> list[Violation]:
                     L.add("run-as-non-root", ct, "not guaranteed to run as non-root", waived)
                 if (sc.get("seccompProfile") or {}).get("type", pod_seccomp) not in ("RuntimeDefault", "Localhost"):
                     L.add("seccomp", ct, "no RuntimeDefault/Localhost seccomp profile", waived)
+                if not (sc.get("appArmorProfile") or psc.get("appArmorProfile")
+                        or any(k.startswith("container.apparmor.security.beta.kubernetes.io/")
+                               for k in (meta.get("annotations") or {}))):
+                    L.add("apparmor", ct, "no AppArmor profile", waived)
                 if sc.get("readOnlyRootFilesystem") is not True:
                     L.add("readonly-rootfs", ct, "readOnlyRootFilesystem is not true", waived)
                 for p in c.get("ports") or []:
@@ -292,6 +701,8 @@ def lint_manifests(docs: list[dict], where: str = "") -> list[Violation]:
                 img = c.get("image") or ""
                 if "@sha256:" not in img and (":" not in img.rsplit("/", 1)[-1] or img.endswith(":latest")):
                     L.add("image-tag", ct, f"image {img} uses latest or no tag", waived)
+                if "@sha256:" not in img:
+                    L.add("image-digest", ct, f"image {img} is not pinned to a digest", waived)
     return L.out
 
 
