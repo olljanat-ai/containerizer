@@ -197,3 +197,31 @@ def test_spa_is_built_before_publish():
             "publish_args": [], "remove_files": [], "entry": "X.dll", "args": [], "applied": [], "spa_root": "ClientApp"}
     df = dockerfile_dotnet(plan)
     assert df.index('"src/X/ClientApp/package.json"') < df.index("dotnet publish")
+
+
+def test_gitops_examples_for_argo_and_flux(tmp_path):
+    import yaml
+    from containerizer.generate import generate_app
+    from containerizer.gitops import GitOpsOptions
+
+    web_app(tmp_path / "src-app")
+    a = assess(tmp_path / "src-app")
+    out = tmp_path / "out"
+    generate_app(a, out, gitops=GitOpsOptions(git_url="https://git.example.com/deploy.git", verify_commits=True))
+    g = out / "gitops"
+    load = lambda p: list(yaml.safe_load_all((g / p).read_text()))
+    proj, = load("argocd/project.yaml")
+    assert proj["spec"]["destinations"] == [{"server": "https://kubernetes.default.svc", "namespace": a.name}]
+    assert {"group": "apps", "kind": "Deployment"} in proj["spec"]["namespaceResourceWhitelist"]
+    assert proj["spec"]["clusterResourceWhitelist"] == [{"group": "", "kind": "Namespace"}]
+    app, = load("argocd/application.yaml")
+    assert "CreateNamespace=true" in app["spec"]["syncPolicy"]["syncOptions"]
+    assert app["spec"]["syncPolicy"]["managedNamespaceMetadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "restricted"
+    src, ks = load("flux/git/sync.yaml")
+    assert src["spec"]["verify"]["mode"] == "HEAD"
+    assert ks["spec"]["serviceAccountName"] == f"{a.name}-reconciler" and ks["spec"]["prune"]
+    oci, _ = load("flux/oci/sync.yaml")
+    assert oci["spec"]["verify"]["provider"] == "cosign"
+    kinds = [d["kind"] for d in load("flux/git/image-automation.yaml")]
+    assert kinds == ["ImageRepository", "ImagePolicy", "ImageUpdateAutomation"]
+    assert '{"$imagepolicy": "' in (out / "kustomization.yaml").read_text()
