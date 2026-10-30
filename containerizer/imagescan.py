@@ -79,7 +79,7 @@ def _run(cmd: list[str], timeout: int = 900) -> tuple[int, str, str]:
 
 def _ca_bundle() -> str | None:
     return os.environ.get("CONTAINERIZER_CA_BUNDLE") or next(
-        (p for p in ("/root/.ccr/ca-bundle.crt",) if Path(p).exists()), None)
+        (p for p in ("/root/.ccr/ca-bundle.crt",) if os.path.isfile(p)), None)
 
 
 def _docker_tool_args() -> list[str]:
