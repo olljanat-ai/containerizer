@@ -253,6 +253,21 @@ def _framework_version_to_tfm(v: str) -> str:
     return "net" + v.replace(".", "")
 
 
+XAMARIN_ANDROID_GUID = "efba0ad7-5a72-4c68-af49-83d382785dcf"
+
+
+def _legacy_tfm(props: dict[str, str], type_guids: list[str]) -> str:
+    """TFM of an old-style project from TargetFrameworkVersion. Xamarin.Android projects use it for
+    the Android API level (v9.0 = MonoAndroid9.0), which is not a .NET Framework version: v4.4
+    must not read as net44."""
+    v = props["TargetFrameworkVersion"].strip().lstrip("vV")
+    ident = props.get("TargetFrameworkIdentifier", "")
+    if ident.lower() == "monoandroid" or XAMARIN_ANDROID_GUID in type_guids or \
+            props.get("AndroidApplication", "").lower() == "true":
+        return "monoandroid" + v
+    return _framework_version_to_tfm(v)
+
+
 # --------------------------------------------------------------------------- target-framework evaluation
 
 def tfm_info(t: str) -> tuple[str, tuple, str]:
@@ -876,6 +891,17 @@ def _define_symbols(v: str) -> set[str]:
     return {x for x in re.split(r"[;,\s]+", v or "") if re.fullmatch(r"[A-Za-z_]\w*", x)}
 
 
+def reference_name(include: str) -> str:
+    """The assembly name of a <Reference Include="...">: the simple name of an assembly identity
+    ("System.Web, Version=4.0.0.0, ..."), or the file name without .dll/.exe when the reference is
+    a path ("..\\References\\$(SharePointVersion)\\Microsoft.SharePoint.dll", "../tools/xunit/xunit.dll")."""
+    name = include.split(",")[0].strip()
+    if re.search(r"[\\/]", name) or re.search(r"\.(dll|exe)$", name, re.I):
+        name = re.split(r"[\\/]", name)[-1]
+        name = re.sub(r"\.(dll|exe)$", "", name, flags=re.I)
+    return name
+
+
 def _packages_config(proj_path: Path) -> dict[str, str]:
     """NuGet packages.config of an old-style project (id -> version)."""
     out: dict[str, str] = {}
@@ -924,7 +950,7 @@ def parse_dotnet_project(path: Path, root: Path) -> Project:
         elif tag == "Reference":
             inc = el.attrib.get("Include", "")
             if inc:
-                pr.references.append(inc.split(",")[0].strip())
+                pr.references.append(reference_name(inc))
                 items.append(("reference", pr.references[-1], chain))
         elif tag == "COMReference":
             pr.references.append("COM:" + el.attrib.get("Include", ""))
@@ -955,7 +981,7 @@ def parse_dotnet_project(path: Path, root: Path) -> Project:
         pr.tfms = list(dict.fromkeys(t.strip() for t in _expand(tfm, props).split(";")
                                      if t.strip() and "$(" not in t))
     elif props.get("TargetFrameworkVersion"):
-        pr.tfms = [_framework_version_to_tfm(props["TargetFrameworkVersion"])]
+        pr.tfms = [_legacy_tfm(props, pr.type_guids)]
     pr.tfm_props = tfm_valued_props(props, fixed)
     _apply_item_conditions(pr, items)
     default_ot = "Exe" if re.search(r"Sdk\.(Web|Worker)$", pr.sdk or "") else ("Library" if pr.sdk_style else "")

@@ -23,7 +23,7 @@ rules:
     applies_to: [dotnet]
     when:
       any:
-        - code: '\[ComImport\]|Type\.GetTypeFromProgID\(|Type\.GetTypeFromCLSID\(|Marshal\.GetActiveObject\(|Activator\.CreateInstance\(Type\.GetTypeFrom'
+        - code: '\[ComImport\]|<\s*ComImport(\(\s*\))?\s*[>,]|Type\.GetTypeFromProgID\(|Type\.GetTypeFromCLSID\(|Marshal\.GetActiveObject\(|Activator\.CreateInstance\(Type\.GetTypeFrom'
         - reference: 'COM:.*|Interop\..*'
     severity: blocker
     category: com
@@ -54,7 +54,7 @@ rules:
   - id: pinvoke-gui
     applies_to: [dotnet]
     when:
-      code: 'DllImport\(\s*"(user32|gdi32|gdiplus|comctl32|comdlg32|uxtheme|dwmapi|shell32|winspool\.drv|wtsapi32)(\.dll)?"'
+      code: '(DllImport|LibraryImport)\(\s*"(user32|gdi32|gdiplus|comctl32|comdlg32|uxtheme|dwmapi|shell32|winspool\.drv|wtsapi32)(\.dll)?"|\bDeclare\s+(Ansi\s+|Unicode\s+|Auto\s+)?(Function|Sub)\s+\w+\s+Lib\s+"(user32|gdi32|gdiplus|comctl32|comdlg32|uxtheme|dwmapi|shell32|winspool\.drv|wtsapi32)(\.dll)?"'
       unguarded: true
     severity: blocker
     category: native
@@ -67,7 +67,7 @@ rules:
   - id: pinvoke-security
     applies_to: [dotnet]
     when:
-      code: 'DllImport\(\s*"(advapi32|authz|secur32|netapi32|crypt32|ncrypt|tbs|mpr|activeds|wldap32|userenv|credui)(\.dll)?"'
+      code: '(DllImport|LibraryImport)\(\s*"(advapi32|authz|secur32|netapi32|crypt32|ncrypt|tbs|mpr|activeds|wldap32|userenv|credui)(\.dll)?"|\bDeclare\s+(Ansi\s+|Unicode\s+|Auto\s+)?(Function|Sub)\s+\w+\s+Lib\s+"(advapi32|authz|secur32|netapi32|crypt32|ncrypt|tbs|mpr|activeds|wldap32|userenv|credui)(\.dll)?"'
       unguarded: true
     severity: rewrite
     category: native
@@ -83,7 +83,7 @@ rules:
   - id: pinvoke-kernel32
     applies_to: [dotnet]
     when:
-      code: 'DllImport\(\s*"(kernel32|kernelbase|ntdll|ole32|oleaut32|combase|psapi|iphlpapi|ws2_32|version|dbghelp|dbgeng|winmm|setupapi|wininet|winhttp|shlwapi|rpcrt4|dnsapi|wintrust|msvcrt|(api|ext)-ms-win-[\w\-]+)(\.dll)?"|DllImport\(\s*Kernel32\b'
+      code: '(DllImport|LibraryImport)\(\s*"(kernel32|kernelbase|ntdll|ole32|oleaut32|combase|psapi|iphlpapi|ws2_32|version|dbghelp|dbgeng|winmm|setupapi|wininet|winhttp|shlwapi|rpcrt4|dnsapi|wintrust|msvcrt|(api|ext)-ms-win-[\w\-]+)(\.dll)?"|(DllImport|LibraryImport)\(\s*Kernel32\b|\bDeclare\s+(Ansi\s+|Unicode\s+|Auto\s+)?(Function|Sub)\s+\w+\s+Lib\s+"(kernel32|kernelbase|ntdll|ole32|oleaut32|combase|psapi|iphlpapi|ws2_32|version|dbghelp|dbgeng|winmm|setupapi|wininet|winhttp|shlwapi|rpcrt4|dnsapi|wintrust|msvcrt|(api|ext)-ms-win-[\w\-]+)(\.dll)?"'
       unguarded: true
     severity: refactor
     category: native
@@ -101,7 +101,7 @@ rules:
     confidence: 0.8
     when:
       all:
-        - code: 'DllImport\(\s*(?!"?(kernel32|kernelbase|user32|gdi32|gdiplus|advapi32|ole32|oleaut32|combase|ntdll|crypt32|authz|netapi32|wtsapi32|secur32|shell32|comctl32|comdlg32|uxtheme|dwmapi|winspool|psapi|iphlpapi|ws2_32|mpr|version|userenv|ncrypt|tbs|activeds|wldap32|credui|dbghelp|dbgeng|winmm|setupapi|wininet|winhttp|shlwapi|rpcrt4|dnsapi|wintrust|msvcrt|(api|ext)-ms-win-[\w\-]+|libc|libdl|libm|librt|libpthread|libSystem(\.B)?|libobjc|IOKit|CoreFoundation|Security|__Internal|e_sqlite3|sqlite3)(\.dll|\.so[.\d]*|\.dylib)?"?\s*[,)])(?!"/(usr|lib|System|Library)/)("[^"]+"|[A-Za-z_][\w.]*)'
+        - code: '(DllImport|LibraryImport)\(\s*(?!"?(kernel32|kernelbase|user32|gdi32|gdiplus|advapi32|ole32|oleaut32|combase|ntdll|crypt32|authz|netapi32|wtsapi32|secur32|shell32|comctl32|comdlg32|uxtheme|dwmapi|winspool|psapi|iphlpapi|ws2_32|mpr|version|userenv|ncrypt|tbs|activeds|wldap32|credui|dbghelp|dbgeng|winmm|setupapi|wininet|winhttp|shlwapi|rpcrt4|dnsapi|wintrust|msvcrt|(api|ext)-ms-win-[\w\-]+|libc|libdl|libm|librt|libpthread|libSystem(\.B)?|libobjc|IOKit|CoreFoundation|Security|__Internal|e_sqlite3|sqlite3)(\.dll|\.so[.\d]*|\.dylib)?"?\s*[,)])(?!"/(usr|lib|System|Library)/)("[^"]+"|[A-Za-z_][\w.]*)|\bDeclare\s+(Ansi\s+|Unicode\s+|Auto\s+)?(Function|Sub)\s+\w+\s+Lib\s+(?!"(kernel32|kernelbase|user32|gdi32|gdiplus|advapi32|ole32|oleaut32|combase|ntdll|crypt32|authz|netapi32|wtsapi32|secur32|shell32|comctl32|comdlg32|uxtheme|dwmapi|winspool|psapi|iphlpapi|ws2_32|mpr|version|userenv|ncrypt|tbs|activeds|wldap32|credui|dbghelp|dbgeng|winmm|setupapi|wininet|winhttp|shlwapi|rpcrt4|dnsapi|wintrust|msvcrt|(api|ext)-ms-win-[\w\-]+|libc|libdl|libm|librt|libpthread|libSystem(\.B)?|libobjc|IOKit|CoreFoundation|Security|__Internal|e_sqlite3|sqlite3)(\.dll|\.so[.\d]*|\.dylib)?")"[^"]+"'
           unguarded: true
     severity: blocker
     category: native
@@ -240,6 +240,33 @@ rules:
     why: Starting/stopping Windows services from code has no container equivalent.
     fix: Replace with Kubernetes API calls or remove.
     refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/porting/windows-compat-pack
+
+  # Listing every service or driver of the machine is what a host-management tool does (a service
+  # manager, a monitoring agent for that server); an app that restarts one sibling service opens it
+  # by name (windows-service-control above).
+  - id: windows-host-services
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop|tool'}
+        - code: '\bServiceController\.Get(Services|Devices)\s*\(|"\s*(SELECT\s+[^"]*\bFROM\s+)?Win32_(Service|SystemDriver|DependentService|BaseService)\b'
+          unguarded: true
+    severity: blocker
+    category: os
+    effort: 0
+    windows_container: false
+    title: Manages the Windows services of its host
+    why: >-
+      The code enumerates the services or drivers of the machine it runs on (ServiceController.GetServices,
+      WMI Win32_Service / Win32_SystemDriver) to show or control them. A Linux container has no Windows
+      Service Control Manager and no WMI, and a Windows container only sees its own isolated services,
+      so this feature cannot work in a container at all.
+    fix: >-
+      Keep this component on the Windows servers it manages (as a service or agent there) and expose
+      what the cluster needs through an API; in Kubernetes, manage workloads through the Kubernetes API instead.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/api/system.serviceprocess.servicecontroller
       - https://learn.microsoft.com/en-us/dotnet/core/porting/windows-compat-pack
 
   - id: process-start-exe
@@ -436,7 +463,8 @@ rules:
     when:
       # a type every caller of which (in this project and the projects that reference it) creates or
       # uses only behind an OS check is the Windows branch of code that has another one: not counted
-      code: &supported_os_type '\[\s*assembly:\s*SupportedOSPlatform\(\s*"windows|\[\s*SupportedOSPlatform\(\s*"windows[^"]*"\s*\)\s*\]\s*(\[[^\]]*\]\s*)*((public|internal|private|protected|sealed|static|partial|abstract|unsafe|readonly)\s+)*(class|struct|interface|record|enum)\b'
+      # (C# and VB attribute syntax; the attribute may be written fully qualified)
+      code: &supported_os_type '\[\s*assembly:\s*(System\.Runtime\.Versioning\.)?SupportedOSPlatform(Attribute)?\(\s*"windows|\[\s*(global::)?(System\.Runtime\.Versioning\.)?SupportedOSPlatform(Attribute)?\(\s*"windows[^"]*"\s*\)\s*\]\s*(\[[^\]]*\]\s*)*((public|internal|private|protected|sealed|static|partial|abstract|unsafe|readonly)\s+)*(class|struct|interface|record|enum)\b|<\s*Assembly:\s*(System\.Runtime\.Versioning\.)?SupportedOSPlatform(Attribute)?\(\s*"windows|<\s*(Global\.)?(System\.Runtime\.Versioning\.)?SupportedOSPlatform(Attribute)?\(\s*"windows[^"]*"\s*\)\s*>\s*_?\s*((Public|Friend|Private|Protected|NotInheritable|MustInherit|Partial)\s+)*(Class|Structure|Interface|Module|Enum)\b'
       unguarded: callers
     severity: refactor
     category: os
@@ -456,7 +484,7 @@ rules:
     applies_to: [dotnet]
     when:
       all:
-        - code: '\[\s*SupportedOSPlatform\(\s*"windows'
+        - code: '[\[<]\s*(global::|Global\.)?(System\.Runtime\.Versioning\.)?SupportedOSPlatform(Attribute)?\(\s*"windows'
         - not: {code: *supported_os_type, unguarded: callers}
     severity: info
     category: os

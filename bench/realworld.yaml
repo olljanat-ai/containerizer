@@ -622,3 +622,156 @@ repos:
       Negotiate, which needs a keytab; LogonUserIdentity behind OperatingSystem.IsWindows); the Framework halves are
       System.Web and need the port the samples demonstrate -> C.
       tool (2026-10-30): D. (1) The scanner ignores Condition on <Reference>/<ProjectReference> (containerizer/scan.py:357-368 drop the `cond` that _msbuild_elements yields), so in multi-targeted projects TFM-specific references are flattened: Aspire.Microsoft.AspNetCore.SystemWebAdapters.csproj:19 (CoreServices, net8+ only) and :23-24 (FrameworkServices + System.Web, net472 only) make every Core sample inherit aspnet-mvc5/netfx-library and every Framework sample inherit CoreServices findings (via Samples.ServiceDefaults). (2) pinvoke-vendor blocker on CoreServices/NativeMethods.cs:19 `[DllImport("aspnetcorev2_inprocess.dll")]` is only called after IsAspNetCoreModuleLoaded() (NativeMethods.cs:24 `OperatingSystem.IsWindows() && ...`, caller HostingRuntimeExtensions.cs:73) -- an indirect guard the unguarded check does not follow. Without these the Core samples are A/B and the Framework samples rewrite -> C. Roles match.
+
+  # --- rw5: under-represented shapes (VB.NET, F#, BizTalk/SharePoint/SQL CLR, EOL .NET Core, service + web admin, Xamarin/MAUI, Docker already present) ---
+  - name: rw5-webjea
+    url: https://github.com/MarkDomansky/WebJEA
+    commit: 8f7415271eb3d7f958ea92c8a72a4084d5b5e413
+    expected_rating: C
+    expected_roles: {web: [WebJEA], test: [WebJEA-UnitTests-VBNET]}
+    notes: >-
+      VB.NET ASP.NET WebForms site (WebJEA.vbproj, net48, web-application GUID, Global.asax, default.aspx/command.aspx)
+      that renders forms for PowerShell scripts and runs them in-process (System.Management.Automation from the GAC,
+      PowerShell 5.1) as the IIS app-pool identity; IIS Windows authentication, AD groups through
+      System.DirectoryServices.AccountManagement (GroupFinder.vb, UserInfo.vb). Test project is an SDK-style net10.0 xUnit
+      vbproj. WebForms + Windows auth + AccountManagement need a port (ASP.NET Core, Negotiate/keytab, LDAP groups,
+      PowerShell 7 SDK) -> C. The scripts it runs are admin scripts for Windows hosts, which is the operator's concern.
+      tool (2026-10-30): C, matches first run. WebJEA web (role-web-systemweb): webforms, aspnet-mvc5, netfx-target rewrites; registry, eventlog, WMI, AccountManagement, PowerShell 5.1 refactors -- VB code patterns fire. Test project not in components (non-deployable).
+  - name: rw5-giraffesample
+    url: https://github.com/cartermp/GiraffeSample
+    commit: f53d2edb92a69445ef8699a7945be0a655f105d8
+    expected_rating: A
+    expected_roles: {web: [GiraffeSample]}
+    notes: >-
+      F# Giraffe web API (LunchAPI/LunchApi.fsproj, AssemblyName GiraffeSample) on netcoreapp2.0 with package-based
+      ASP.NET Core 2.0.* and Giraffe 0.1.0-beta-100, Kestrel + UseIISIntegration, SQLite file Sample.db in the
+      current directory (writable volume). Written to run cross-platform; all packages are on nuget.org, so it
+      builds and rolls forward (or runs on its own runtime) without code changes -> A. Moving to a supported TFM
+      later means a Giraffe API upgrade, which is not needed to containerize.
+      tool (2026-10-30): A, matches first run. .fsproj scanned, role web (role-web-aspnetcore), netcoreapp2.0 core-eol config only.
+  - name: rw5-saturn-example
+    url: https://github.com/MarneeDear/saturn-example
+    commit: 416e3a147204936c10f39887d8d2984ec46e29fd
+    expected_rating: A
+    review: "2026-10-30 changed B->A after review: Saturn's `url` is UseUrls, and Kestrel endpoints from configuration (Kestrel__Endpoints__Http__Url=http://0.0.0.0:8080) replace UseUrls addresses (learn.microsoft.com Kestrel endpoints docs), so the hard-coded https://localhost/ is overridden by environment configuration without a code change."
+    expected_roles: {web: [Template.Saturn.WebHost], test: [Template.Saturn.Tests], library: [Template.Saturn.Core, Template.Saturn.Infrastructure]}
+    notes: >-
+      F# Saturn MVC app on netcoreapp3.1 with Paket (paket.references, no PackageReference items), CAS single
+      sign-on, SQLite database.sqlite in the content root, Serilog console, Expecto tests. Program.fs hard-codes
+      the listen address in the application CE (`url "https://localhost/"`): loopback on 443 with HTTPS, which a
+      container cannot serve and ASPNETCORE_URLS does not override (UseUrls in code wins) -> one-line code change -> B.
+      tool (2026-10-30): A on first run (expected B, see review). Template.Saturn.WebHost web, config only; Paket packages are not read (no paket.references support), which does not change the verdict here.
+  - name: rw5-biztalk-learning-path
+    url: https://github.com/sandroasp/BizTalk-Server-Learning-Path
+    commit: 80e9d76165c81cf59daa257c74c8c4c6164059c6
+    expected_rating: E
+    expected_roles: {biztalk: [AnnoyingTord, HowMapsWorks, UnitTestingFeatureWithMaps], library: [PipelineComponents, BizTalk.Logical.Functoids, POC.BizTalk.PropertyDemotion.PipelineComponent], test: [UnitTestProject1, TestProjectBizTalk]}
+    notes: >-
+      62 BizTalk Server projects (.btproj: schemas, maps, orchestrations, pipelines) plus pipeline-component and
+      functoid class libraries (Microsoft.BizTalk.Pipeline / BaseFunctoids references) and two old-style MSTest
+      projects (test-project GUID 3AC096D0-..., Microsoft.VisualStudio.QualityTools.UnitTestFramework reference,
+      BizTalk TestTools). Everything runs inside BizTalk Server on Windows; nothing is a container workload -> E.
+      tool (2026-10-30): E. First run: rating matched but UnitTestProject1/TestProjectBizTalk came out library (old-style MSTest: test GUID + QualityTools reference were not recognised). Fixed in role-test / _looks_like_test; now test.
+  - name: rw5-slk
+    url: https://github.com/rpwillis/SharePoint-Learning-Kit
+    commit: 5b07af4c9848c14d577ea030d0e7c167190a2992
+    expected_rating: E
+    expected_roles: {sharepoint: [SlkDll], test: [unitTest, CompressionUnitTest], tool: [PackageAnalyser, Localize]}
+    notes: >-
+      SharePoint Learning Kit: a full-trust SharePoint farm solution (Slk/Solution builds SharePointLearningKit.wsp
+      with Features/elements.xml; Slk/Dll is the Microsoft.SharePointLearningKit assembly with web parts, application
+      pages and SPSite/SPWeb code) on .NET 3.5/4.0 plus Learning Components libraries, SDK sample console tools
+      that use the server object model, and old WCF service samples. References are file paths
+      (..\References\$(SharePointVersion)\Microsoft.SharePoint.dll, ..\tools\xunit\xunit.dll). ReadMe: works only on
+      on-premises SharePoint, never on Office 365, because it is full-trust code -> E.
+      tool (2026-10-30): E. First run: SlkDll came out library and unitTest/CompressionUnitTest library, because <Reference Include> with a relative path (..\References\...\Microsoft.SharePoint.dll, ..\tools\xunit\xunit.dll) was kept as the raw path, so reference: patterns never matched. scan.py now normalises path references to the assembly name; SlkDll is sharepoint, the tests are test.
+  - name: rw5-smarthotel-backend
+    url: https://github.com/microsoft/SmartHotel360-Backend
+    commit: 533e8c3a76aec61a8e86fe8609b55de287f14516
+    expected_rating: C
+    expected_roles: {web: [SmartHotel.Services.Bookings, SmartHotel.Services.Hotels, SmartHotel.Services.Configuration, SmartHotel.Services.Discount, SmartHotel.Services.Notifications, SmartHotel.Services.Profiles, SmartHotel.Services.ReviewsNet], worker: [SmartHotel.Services.BookingProcesor], library: [SmartHotel.Services.Seedwork]}
+    notes: >-
+      Archived AKS backend: seven ASP.NET Core 2.0 APIs (netcoreapp2.0, Microsoft.AspNetCore.All 2.0.0, EF Core 2.0,
+      Swashbuckle 1.0) with Linux Dockerfiles (microsoft/aspnetcore:2.0.3), docker-compose and Helm charts, plus Java
+      and Node services. The .NET APIs are A (EOL runtime, already Linux containers). SmartHotel.Services.BookingProcesor
+      is an Azure Functions v1 HTTP function on net461 (Microsoft.NET.Sdk.Functions 1.0.0, TraceWriter); the 1.x host
+      runs only on Windows/.NET Framework, so it needs a port to the isolated worker on .NET 10 -> C (a small one).
+      tool (2026-10-30): C, matches first run. BookingProcesor worker (host-role-functions) with netfx-target rewrite; the seven APIs web, config only; Java/Node services also listed.
+  - name: rw5-smarthotel-mobile
+    url: https://github.com/microsoft/SmartHotel360-Mobile
+    commit: 12a8e8fc4f87ba85cc63c38beeebc5580dfa5aed
+    expected_rating: E
+    expected_roles: {desktop: [SmartHotel.Clients.Android, SmartHotel.Clients.iOS, SmartHotel.Clients.UWP, SmartHotel.Clients.Maintenance.iOS, SmartHotel.Clients.NFC.Android], library: [SmartHotel.Clients, SmartHotel.Clients.Maintenance, SmartHotel.Clients.NFC, SmartHotel.Clients.Maintenance.Forms], test: [SmartHotel.Clients.UITests]}
+    notes: >-
+      Xamarin.Forms clients only (the backend lives in SmartHotel360-Backend): Xamarin.Android heads (OutputType
+      Library + AndroidApplication true, project GUID EFBA0AD7-...), Xamarin.iOS heads (OutputType Exe, GUID
+      FEACFBD2-...), a UWP head (AppContainerExe), netstandard2.0 shared Forms libraries and a Xamarin.UITest NUnit
+      project. Phone/tablet apps are clients, not server components; nothing to containerize -> E.
+      tool (2026-10-30): E. First run: A -- iOS heads came out console and Android/UWP heads library (MonoAndroid TFM was mis-mapped to net framework, Xamarin GUIDs/AndroidApplication/AppContainerExe unknown). New role-mobile-app rule + monoandroid TFM in scan.py; all five heads are desktop now.
+  - name: rw5-smarthotel-registration
+    url: https://github.com/microsoft/SmartHotel360-Registration
+    commit: 061502718ca25767d30307ca9504e3cf4f6f71fe
+    expected_rating: C
+    expected_roles: {web: [SmartHotel360.Registration.Web, SmartHotel360.Registration.WCF]}
+    notes: >-
+      .NET Framework 4.7 WebForms site (Default/Register/Checkin.aspx, Site.Master) calling a WCF service
+      (Service.svc, basicHttpsBinding) hosted in IIS; both ship Windows-container Dockerfiles
+      (dotnet/framework/aspnet and /wcf images) for AKS Windows node pools. Linux needs WebForms -> ASP.NET Core/Blazor
+      and WCF -> CoreWCF/REST -> C.
+      tool (2026-10-30): C, matches first run. Both projects web (role-web-systemweb): webforms, wcf-server, netfx-target rewrites.
+  - name: rw5-papercut
+    url: https://github.com/ChangemakerStudios/Papercut-SMTP
+    commit: 9924d1fba886be915df2db8a9de49e51ff03a02b
+    expected_rating: A
+    expected_roles: {web: [Papercut.Service], desktop: [Papercut, Papercut.Service.TrayNotification], test: ["Papercut.*.Tests"]}
+    notes: >-
+      Papercut SMTP: net10.0 Papercut.Service (WebApplication web UI + SMTP listener + MCP endpoint, UseWindowsService
+      for the Windows install) with an official Linux Dockerfile/Docker Hub image, a WPF desktop app
+      (net10.0-windows, UseWPF) and a WinForms tray notifier for the service, shared net10.0 libraries, examples.
+      Service + admin-UI pair whose server half already runs in Linux containers; desktop parts stay on PCs -> A.
+      tool (2026-10-30): A. First run: B -- Papercut.Service (Microsoft.NET.Sdk + WebApplication.CreateBuilder) came out worker, and registry refactor via Papercut.Message from MessageHelper.cs:52 inside a [System.Runtime.Versioning.SupportedOSPlatform("windows")] method (qualified attribute was not seen as a guard). Both fixed; WPF/WinForms clients are desktop.
+  - name: rw5-vahti
+    url: https://github.com/ilpork/Vahti
+    commit: 3f6c4b64b8300b680b85bca42de32a1ab5f488af
+    expected_rating: A
+    expected_roles: {worker: [Vahti.Server], desktop: [Vahti.Mobile], spa: [Vahti], test: ["Vahti.*.Test"], library: [Vahti.Collector, Vahti.DataBroker, Vahti.Mqtt, Vahti.Shared]}
+    notes: >-
+      Home monitoring: Vahti.Server (netcoreapp3.1 generic host, Linux/Raspberry Pi) hosts an MQTT broker (MQTTnet),
+      a data broker (Firebase, SQLite history, e-mail/Notification Hubs alerts) and a collector reading RuuviTag BLE
+      sensors through BlueZ D-Bus (DotNetBlueZ) and GPIO; .NET MAUI mobile app (net7.0-android/ios, UseMaui) and a
+      React web app. The server is a Linux program already: config.json and SQLite go to volumes, the collector
+      needs the node's Bluetooth (D-Bus socket) -- deployment configuration, no code change -> A.
+      tool (2026-10-30): A, matches first run. Vahti.Server worker, config only; Vahti.Mobile desktop (role-maui); React app spa.
+  - name: rw5-sqlclr-mail
+    url: https://github.com/Darko-Martinovic/SQLCLR
+    commit: 471252236ec1e82e8885ca565d28d5f08ddee66a
+    expected_rating: E
+    expected_roles: {sqlclr: [SqlClrSendMail, SqlClrHtml], test: [SqlClr.Tests], tool: [SetupScript]}
+    notes: >-
+      SQL Server CLR assemblies (SDK-style net48 via Microsoft.NETFramework.ReferenceAssemblies): a CLR send-mail
+      procedure and HTML table functions, deployed into SQL Server with generated setup scripts (tools/SetupScript),
+      tested with Testcontainers.MsSql. Database-tier code only, no server component to containerize -> E.
+      tool (2026-10-30): E, matches first run. Both assemblies sqlclr (role-sqlclr); no server component.
+  - name: rw5-restmsc
+    url: https://github.com/fakoua/Rest.msc
+    commit: e119a167b69aa197db6e9c5cb06aa731c4dcb766
+    expected_rating: E
+    expected_roles: {worker: [Rest.msc], desktop: [TestRestApi]}
+    notes: >-
+      VB.NET (.NET 4.7) Topshelf Windows service self-hosting an OWIN Web API (port 9000, Swagger) whose whole job
+      is to list, start and stop the Windows services of the machine it runs on (ServiceController, WMI
+      Win32_Service/Win32_DependentService, must run elevated); WPF test client. The README Dockerfile is a
+      Windows container (dotnet-framework:4.7). A Linux container has no Windows services to manage -> E.
+      tool (2026-10-30): E. First run: C -- netfx-target/aspnet-mvc5/windows-identity-impersonation rewrites only; nothing said the service manages host Windows services. New windows-host-services blocker (ServiceController.GetServices / WMI Win32_Service, unguarded, VB too) -> E.
+  - name: rw5-powerwallservice
+    url: https://github.com/BJReplay/PowerwallService
+    commit: 1310337c6948ffd483a74d9e8d3be949500c7ae1
+    expected_rating: C
+    expected_roles: {worker: [PowerwallService]}
+    notes: >-
+      VB.NET Windows service (ServiceBase, WinExe, ProjectInstaller, .NET 4.8.1) polling a Tesla Powerwall gateway
+      and the Tesla API on timers, writing history through a typed DataSet to SQL Server/Azure SQL, uploading to
+      PVOutput, logging to the Windows event log, settings in My.Settings/app.config. Logic is portable; it needs a
+      port to a .NET 10 worker (Microsoft.Extensions.Hosting, console/ILogger instead of EventLog) -> C.
+
+      tool (2026-10-30): C, matches first run. Worker (role-windows-service) via VB `Inherits System.ServiceProcess.ServiceBase`; netfx-target rewrite. Noise: aspnet-mvc5 from a bare System.Web reference and native-dll-shipped on the managed TeslaAuth.dll (also a PackageReference); neither changes the rating.

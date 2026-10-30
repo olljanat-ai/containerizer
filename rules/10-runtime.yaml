@@ -180,7 +180,7 @@ rules:
         - file: "*.svc"
         - all:
             - reference: System\.ServiceModel(\.Activation|\.Web)?
-            - code: '\b(Web)?ServiceHost(Factory)?\b|\[ServiceContract\b|\[(WebGet|WebInvoke)\b|<system\.serviceModel>'
+            - code: '\b(Web)?ServiceHost(Factory)?\b|[\[<]\s*ServiceContract\b|[\[<]\s*(WebGet|WebInvoke)\b|<system\.serviceModel>'
             - not: {role: 'library|test'}
         - all:
             - code: '\bnew\s+WebServiceHost\(|\bWebServiceHostFactory\b'
@@ -537,7 +537,7 @@ rules:
     applies_to: [dotnet]
     when:
       any:
-        - code: ':\s*ServiceBase\b|ServiceBase\.Run\('
+        - code: '(\bInherits|:)\s*(System\.ServiceProcess\.)?ServiceBase\b|ServiceBase\.Run\('
         - package: Topshelf.*
     severity: refactor
     category: hosting
@@ -557,7 +557,7 @@ rules:
     when:
       any:
         - reference: System\.Configuration\.Install
-        - code: '\[RunInstaller\(true\)\]'
+        - code: '[\[<]\s*RunInstaller\(\s*true\s*\)\s*[\]>]'
     severity: info
     category: hosting
     effort: 0.25
@@ -575,14 +575,14 @@ rules:
             # clear GDI+ use; `using System.Drawing;` alone is often only System.Drawing.Primitives (Color, Point, Rectangle)
             - code: '\bGraphics\.From(Image|Hwnd|Hdc)\(|\b(System\.Drawing\.)?Image\.From(File|Stream|Hbitmap)\(|\bSystem\.Drawing\.(Imaging|Drawing2D|Printing|Text)\b|\bnew\s+System\.Drawing\.(Bitmap|Font|Icon|Pen|SolidBrush)\('
             - all:
-                - code: '^\s*using\s+System\.Drawing\s*;'
+                - code: '^\s*(using\s+System\.Drawing\s*;|Imports\s+System\.Drawing\s*$)'
                 - code: '\bnew\s+(Bitmap|Metafile|Pen|SolidBrush)\(|\bnew\s+Font\(\s*("|FontFamily\.)|\.DrawImage\(|\bBitmap\.FromHicon\('
               same_file: true
             # with the package referenced, GDI+-only types used in a file that imports System.Drawing
             - all:
                 - package: System\.Drawing\.Common
                 - all:
-                    - code: '^\s*using\s+System\.Drawing(\.Imaging|\.Drawing2D)?\s*;'
+                    - code: '^\s*(using\s+System\.Drawing(\.Imaging|\.Drawing2D)?\s*;|Imports\s+System\.Drawing(\.Imaging|\.Drawing2D)?\s*$)'
                     - code: '\b(Bitmap|Graphics|Metafile|ImageFormat|PixelFormat|InterpolationMode|SmoothingMode|CompositingQuality)\b'
                   same_file: true
         - not: {tfm: 'net[1-4]\d{1,2}'}
