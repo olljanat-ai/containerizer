@@ -16,6 +16,8 @@ rules:
       Drives Word/Excel through COM. Office is a desktop product that is not supported for
       server-side automation, cannot be installed in a container and does not exist on Linux.
     fix: Replace with a document library (OpenXML SDK, ClosedXML, NPOI, QuestPDF, a template engine) or keep this component on a Windows VM.
+    refs:
+      - https://learn.microsoft.com/en-us/office/client-developer/integration/considerations-unattended-automation-office-microsoft-365-for-unattended-rpa
 
   - id: com-interop
     applies_to: [dotnet]
@@ -32,6 +34,8 @@ rules:
       Activates COM classes by ProgID/CLSID. COM registration and the vendor COM servers
       exist only on Windows; Linux has no COM runtime.
     fix: Replace the COM component with a Linux-capable SDK/API, or isolate it on a Windows host behind a network API.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/standard/native-interop/cominterop
 
   - id: dcom-opc
     applies_to: [dotnet]
@@ -44,6 +48,8 @@ rules:
     title: OPC DA over DCOM
     why: Classic OPC DA uses DCOM, which only works between Windows hosts.
     fix: Use OPC UA (cross-platform) through a gateway, or keep the collector on Windows.
+    refs:
+      - https://github.com/OPCFoundation/UA-.NETStandard
 
   - id: pinvoke-gui
     applies_to: [dotnet]
@@ -70,6 +76,9 @@ rules:
     title: Windows security / directory native APIs
     why: Calls Win32 security APIs (LogonUser, token privileges, AuthZ, DFS/NetApi, DPAPI/CryptoAPI). These have no Linux equivalent.
     fix: Replace with platform-neutral mechanisms (OIDC tokens, LDAP via Novell/System.DirectoryServices.Protocols, managed crypto, Kubernetes secrets).
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.protecteddata
+      - https://learn.microsoft.com/en-us/aspnet/core/security/authentication/windowsauth
 
   - id: pinvoke-kernel32
     applies_to: [dotnet]
@@ -83,6 +92,9 @@ rules:
     title: Win32 kernel/OLE/system DLL native calls
     why: P/Invoke into kernel32/ole32 and other Windows system DLLs (dbghelp, winmm, wininet, shlwapi, ...) does not resolve on Linux.
     fix: Replace with the managed .NET API (most kernel32 calls have one) or guard with OperatingSystem.IsWindows().
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/standard/native-interop/cross-platform
+      - https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/ca1416
 
   - id: pinvoke-vendor
     applies_to: [dotnet]
@@ -101,6 +113,8 @@ rules:
       almost always Windows-only binaries; without a Linux build of the library the
       component cannot run in a Linux container.
     fix: Ask the vendor for a Linux SDK or a network API; otherwise keep this component on Windows and call it remotely.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/standard/native-interop/cross-platform
 
   - id: native-dll-shipped
     applies_to: [dotnet]
@@ -115,6 +129,8 @@ rules:
     title: Binary DLLs checked into the source tree
     why: Pre-built DLLs in the repo are often Windows-only native or old managed libraries without NuGet packages.
     fix: Check each DLL; replace with NuGet packages or Linux builds.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/standard/native-interop/cross-platform
 
   - id: libwkhtmltox
     applies_to: [dotnet]
@@ -128,6 +144,8 @@ rules:
     title: wkhtmltopdf native library
     why: wkhtmltopdf is available for Linux but must be added to the image (and the Windows .dll path changed to the .so).
     fix: Install wkhtmltopdf/libwkhtmltox in the image (Debian package) or move to a maintained renderer such as Playwright/QuestPDF.
+    refs:
+      - https://wkhtmltopdf.org/downloads.html
 
   - id: registry
     applies_to: [dotnet]
@@ -141,6 +159,8 @@ rules:
     title: Windows Registry
     why: The registry does not exist on Linux (Microsoft.Win32.Registry throws PlatformNotSupportedException).
     fix: Move the values to configuration (environment variables / ConfigMap).
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/porting/windows-compat-pack
 
   - id: eventlog-write
     applies_to: [dotnet]
@@ -157,6 +177,9 @@ rules:
     title: Writes to the Windows Event Log
     why: There is no Event Log on Linux; EventLog APIs throw PlatformNotSupportedException.
     fix: Log to stdout (console sink/provider) and let the cluster collect logs; guard EventLog calls with OperatingSystem.IsWindows().
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/porting/windows-compat-pack
+      - https://learn.microsoft.com/en-us/dotnet/core/extensions/logging-providers
 
   - id: perf-counters
     applies_to: [dotnet]
@@ -167,8 +190,12 @@ rules:
     effort: 0.5
     windows_container: true
     title: Windows performance counters
-    why: PerformanceCounter is Windows-only.
+    why: >-
+      PerformanceCounter reads and publishes Windows performance counters, which are registered in
+      the Windows registry and shown in Performance Monitor. They do not exist on Linux.
     fix: Use System.Diagnostics.Metrics / OpenTelemetry metrics.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/porting/windows-compat-pack
 
   - id: wmi
     applies_to: [dotnet]
@@ -179,8 +206,12 @@ rules:
     effort: 1
     windows_container: true
     title: WMI
-    why: WMI exists only on Windows.
+    why: >-
+      WMI (System.Management) queries the Windows Management Instrumentation service for system,
+      hardware and process information. That service only exists on Windows.
     fix: Replace with Kubernetes/OS-neutral sources (environment, /proc, cluster APIs).
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/porting/windows-compat-pack
 
   - id: wmi-reference
     applies_to: [dotnet]
@@ -208,6 +239,8 @@ rules:
     title: Controls Windows services
     why: Starting/stopping Windows services from code has no container equivalent.
     fix: Replace with Kubernetes API calls or remove.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/porting/windows-compat-pack
 
   - id: process-start-exe
     applies_to: [dotnet]
@@ -233,8 +266,12 @@ rules:
     category: hosting
     effort: 0.5
     title: Windows Task Scheduler jobs
-    why: Jobs started by Task Scheduler become Kubernetes CronJobs.
+    why: >-
+      Jobs started by the Windows Task Scheduler have no scheduler in a container; each one becomes
+      a Kubernetes CronJob that starts the same image on a schedule.
     fix: Create a CronJob per scheduled task using the same image and arguments.
+    refs:
+      - https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/
 
   - id: printing
     applies_to: [dotnet]
@@ -247,6 +284,8 @@ rules:
     title: Windows printing
     why: Prints through the Windows print spooler/drivers to locally installed printers.
     fix: Generate PDFs and send them to a print service (IPP/CUPS, cloud print) instead of printing from the app.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/compatibility/core-libraries/6.0/system-drawing-common-windows-only
 
   - id: serial-port
     applies_to: [dotnet]
@@ -289,6 +328,9 @@ rules:
     title: NTFS ACLs / EFS encryption
     why: NTFS permissions and EFS encryption do not exist on Linux volumes.
     fix: Use storage-level encryption and Kubernetes RBAC/volume permissions; drop per-file ACLs in code.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/api/system.io.file.encrypt
+      - https://learn.microsoft.com/en-us/dotnet/core/porting/windows-compat-pack
 
   - id: desktop-ui
     applies_to: [dotnet]
@@ -301,6 +343,8 @@ rules:
     title: Windows desktop application (WinForms/WPF)
     why: A desktop GUI used interactively by people at their PCs is not a server workload.
     fix: Keep as a desktop client (it can call containerized APIs) or rebuild the UI as a web app.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/desktop/winforms/overview/
 
   - id: clickonce-offline
     applies_to: [dotnet]
@@ -331,6 +375,8 @@ rules:
       Creates STA threads, which exist to host COM/ActiveX/desktop components. SetApartmentState
       throws PlatformNotSupportedException on Linux, and the component it hosts is Windows-only.
     fix: Replace the STA-bound component (usually a COM/vendor SDK) or keep this part on Windows.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/api/system.threading.thread.setapartmentstate
 
   - id: winrt-apis
     applies_to: [dotnet]
@@ -344,6 +390,8 @@ rules:
     title: Windows Runtime (WinRT) APIs
     why: Uses Windows Runtime APIs (e.g. Windows.Media.Ocr) that only exist on Windows client/desktop editions.
     fix: Replace with a cross-platform library or service (e.g. Tesseract or a cloud OCR API for Windows.Media.Ocr).
+    refs:
+      - https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/desktop-to-uwp-enhance
 
   - id: winrt-tfm
     applies_to: [dotnet]
@@ -360,6 +408,9 @@ rules:
       The project targets net*-windows10.*, which only builds/runs on Windows, but no WinRT
       namespaces are used in its code, so retargeting to the plain TFM is usually enough.
     fix: Retarget to net10.0 (or multi-target) and replace the few Windows-only calls, if any.
+    refs:
+      - https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/desktop-to-uwp-enhance
+      - https://learn.microsoft.com/en-us/dotnet/standard/frameworks
 
   - id: vendor-sdk-install-dir
     applies_to: [dotnet]
@@ -391,6 +442,8 @@ rules:
     title: Code marked Windows-only by its authors
     why: Types or assemblies are annotated [SupportedOSPlatform("windows")]; the authors know this code does not run elsewhere.
     fix: Review each annotated type; replace or isolate it.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/ca1416
 
   - id: supported-os-windows-member
     applies_to: [dotnet]
@@ -407,6 +460,8 @@ rules:
       (CA1416) makes callers guard them with OperatingSystem.IsWindows(), so the app already has
       a non-Windows code path; Windows-only calls inside these members are not counted.
     fix: None; check that the non-Windows path does what you need in the container.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/ca1416
 
   - id: winforms-in-library
     applies_to: [dotnet]
@@ -431,6 +486,9 @@ rules:
     title: Uses WinForms/WPF APIs in server code
     why: Server-side code that renders with WPF/WinForms (XPS, visuals, printing) needs the Windows Desktop runtime, which does not exist on Linux.
     fix: Replace the rendering with a server-side library (QuestPDF, PdfSharpCore, SkiaSharp).
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/desktop/winforms/overview/
+      - https://learn.microsoft.com/en-us/dotnet/core/compatibility/core-libraries/6.0/system-drawing-common-windows-only
 
   - id: winforms-reference-library
     applies_to: [dotnet]
@@ -450,6 +508,9 @@ rules:
     title: References Windows Desktop assemblies
     why: The project references WinForms/WPF assemblies (often only for a report viewer or a helper type); they are not available on Linux.
     fix: Remove the reference and replace the few types used from it.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/standard/frameworks
+      - https://learn.microsoft.com/en-us/dotnet/desktop/winforms/overview/
 
   - id: winforms-reference-unused
     applies_to: [dotnet]

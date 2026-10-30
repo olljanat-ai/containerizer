@@ -354,6 +354,33 @@ rules:
     refs:
       - https://learn.microsoft.com/en-us/aspnet/core/migration/fx-to-core/areas/membership?view=aspnetcore-10.0
 
+  - id: mig-apiauthorization-identityserver
+    applies_to: [dotnet]
+    when:
+      any:
+        - package: Microsoft\.AspNetCore\.ApiAuthorization\.IdentityServer
+        # generic server-side overload only: the Blazor WebAssembly client's AddApiAuthorization() is still supported
+        - code: '\.AddApiAuthorization\s*<|\.AddIdentityServerJwt\s*\('
+    severity: refactor
+    category: identity
+    effort: 2
+    windows_container: true
+    title: ASP.NET Core ApiAuthorization with IdentityServer (SPA template auth)
+    why: >-
+      The app authenticates through Microsoft.AspNetCore.ApiAuthorization.IdentityServer, the
+      IdentityServer integration of the old SPA templates. Microsoft stopped shipping it with .NET 8
+      (the last stable release targets .NET 7) after IdentityServer moved to Duende's commercial
+      licence, so moving the app to a supported runtime means replacing the authentication setup.
+    fix: >-
+      Use ASP.NET Core Identity with cookie or bearer-token endpoints (MapIdentityApi), an external
+      OIDC provider (Entra ID, Keycloak, ...), or Duende IdentityServer directly under its licence.
+      If a token signing key is loaded from the Windows certificate store, load it from a mounted
+      Secret file instead.
+    refs:
+      - https://github.com/dotnet/aspnetcore/pull/45145
+      - https://devblogs.microsoft.com/dotnet/improvements-auth-identity-aspnetcore-8/
+      - https://www.nuget.org/packages/Microsoft.AspNetCore.ApiAuthorization.IdentityServer
+
   - id: mig-wif
     applies_to: [dotnet]
     when:

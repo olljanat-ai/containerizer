@@ -239,3 +239,20 @@ def test_msajax_script_and_wcf_connected_service_ignored(tmp_path):
     write(tmp_path, "src/Web/Connected Services/Svc/CatalogService.disco", "<discovery/>")
     found = ids(tmp_path)
     assert "mig-javascriptserializer" not in found and "mig-asmx-client" not in found
+
+
+def test_apiauthorization_identityserver_flagged(tmp_path):
+    web_app(tmp_path, """
+        class S { void C(IServiceCollection services) {
+            services.AddIdentityServer().AddApiAuthorization<ApplicationUser, ApplicationDbContext>();
+            services.AddAuthentication().AddIdentityServerJwt();
+        } }""", packages='<PackageReference Include="Microsoft.AspNetCore.ApiAuthorization.IdentityServer" Version="3.0.0" />',
+        tfm="netcoreapp3.0")
+    assert "mig-apiauthorization-identityserver" in ids(tmp_path)
+
+
+def test_blazor_wasm_client_addapiauthorization_ignored(tmp_path):
+    # the WebAssembly client's non-generic AddApiAuthorization() is a different, supported API
+    web_app(tmp_path, "class P { void M(WebAssemblyHostBuilder b) { b.Services.AddApiAuthorization(); } }",
+            packages='<PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.Authentication" Version="8.0.0" />')
+    assert "mig-apiauthorization-identityserver" not in ids(tmp_path)

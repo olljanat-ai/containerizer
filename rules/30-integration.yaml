@@ -18,6 +18,8 @@ rules:
       containers are not domain joined; Negotiate can work with a keytab but is fragile behind
       ingress/load balancers.
     fix: Prefer OIDC (Entra ID/AD FS/Keycloak) at the app or ingress; otherwise use the Negotiate handler with a keytab Secret and an LDAP connection for roles.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/security/authentication/windowsauth
 
   - id: negotiate-auth
     applies_to: [dotnet]
@@ -34,6 +36,8 @@ rules:
       Secret, krb5.conf and the gss-ntlmssp/krb5 libraries in the image. Role (group) lookup
       on Linux needs LDAP settings.
     fix: Add krb5 libs to the image, mount KRB5_KTNAME keytab, configure EnableLdap; or switch to OIDC.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/security/authentication/windowsauth
 
   - id: windows-identity-impersonation
     applies_to: [dotnet]
@@ -49,6 +53,8 @@ rules:
       Acts as the calling Windows user (impersonation, Kerberos delegation) to reach SQL,
       file shares or other services. Linux containers cannot obtain Windows tokens.
     fix: Use service identities with explicit authorization (OIDC on-behalf-of, scoped SQL logins) instead of impersonation.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/security/authentication/windowsauth
 
   - id: windows-identity-current
     applies_to: [dotnet]
@@ -89,6 +95,9 @@ rules:
     title: Active Directory via System.DirectoryServices
     why: System.DirectoryServices / AccountManagement are Windows-only (ADSI). Only System.DirectoryServices.Protocols (LDAP) works on Linux.
     fix: Port lookups to LDAP (System.DirectoryServices.Protocols or Novell.Directory.Ldap) or to Microsoft Graph.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/porting/windows-compat-pack
+      - https://learn.microsoft.com/en-us/aspnet/core/security/authentication/windowsauth
 
   - id: gmsa
     applies_to: [dotnet]
@@ -100,8 +109,13 @@ rules:
     category: identity
     effort: 1
     title: Group managed service accounts
-    why: gMSA identities only work for Windows containers on domain-joined nodes.
+    why: >-
+      Group managed service accounts (gMSA) are an Active Directory identity that only Windows
+      containers can use, on domain-joined hosts or hosts with a ccg.exe plug-in. Linux containers
+      cannot run as a gMSA.
     fix: Replace with workload identity / SQL logins / Kubernetes secrets.
+    refs:
+      - https://learn.microsoft.com/en-us/virtualization/windowscontainers/manage-containers/manage-serviceaccounts
 
   - id: adfs-wsfed-saml
     applies_to: [dotnet]
@@ -117,6 +131,9 @@ rules:
       correct public URLs behind the ingress (forwarded headers). (WIF - System.IdentityModel.Services
       - is .NET Framework only and covered by mig-wif.)
     fix: Enable ForwardedHeaders and register the ingress host name with the IdP.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/security/authentication/ws-federation
+      - https://learn.microsoft.com/en-us/aspnet/core/host-and-deploy/proxy-load-balancer
 
   - id: machinekey
     applies_to: [dotnet]
@@ -128,6 +145,8 @@ rules:
     title: machineKey in web.config
     why: Shared machineKey for cookies/ViewState across a web farm; must not be baked into an image.
     fix: Inject as a Secret; on ASP.NET Core persist Data Protection keys to shared storage.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/security/data-protection/compatibility/replacing-machinekey
 
   # repo scope: keys are often persisted in a shared library (e.g. nopCommerce's Nop.Web.Framework),
   # so the "not persisted" check has to look at the whole repository, not only the web project.
@@ -149,6 +168,8 @@ rules:
       keys live in the pod's home folder and are lost on restart or differ between replicas, so
       users are logged out and forms fail.
     fix: Mount a volume at the key folder (set by the generator) or persist keys to Redis/SQL/blob in code.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/security/data-protection/configuration/default-settings
 
   - id: dpapi
     applies_to: [dotnet]
@@ -163,6 +184,8 @@ rules:
     title: DPAPI (Windows data protection)
     why: DPAPI ties encrypted data to a Windows user/machine; it is unavailable on Linux.
     fix: Store secrets in Kubernetes Secrets/Key Vault; re-encrypt existing data with a managed key.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.protecteddata
 
   - id: cert-store
     applies_to: [dotnet]
@@ -180,6 +203,8 @@ rules:
       Certificates are looked up in the Windows certificate store (LocalMachine\My). On Linux
       the .NET X509Store is a per-user directory, empty in a fresh container.
     fix: Mount the certificate (PFX/PEM) from a Secret and load it from a file path; use cert-manager for TLS at the ingress.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/standard/security/cross-platform-cryptography
 
   - id: secrets-in-config
     when:
@@ -190,6 +215,9 @@ rules:
     title: Secrets in configuration files
     why: Passwords or keys are committed in config files and would be baked into the image.
     fix: Remove them from the image (.dockerignore) and inject via Kubernetes Secrets as environment variables.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/security/app-secrets
+      - https://kubernetes.io/docs/concepts/configuration/secret/
 
   # ---------------------------------------------------------------- data
   - id: sqlserver
@@ -203,6 +231,8 @@ rules:
     title: SQL Server database
     why: Stays external (managed SQL / existing server); reachable from the cluster over TCP 1433.
     fix: Pass the connection string as a Secret (ConnectionStrings__Name env var).
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/
 
   - id: conn-string-compiled-in
     applies_to: [dotnet]
@@ -216,12 +246,18 @@ rules:
     windows_container: true
     title: Database connection string compiled into the code
     why: >-
-      The database connection string comes from a constant in a Constants class, so it is fixed
-      at build time: it cannot be supplied per environment through configuration, an environment
-      variable or a Kubernetes Secret.
+      The code passes a constant (e.g. Constants.ConnectionString) to UseSqlServer or new
+      SqlConnection, so the server, database and any password are fixed when the code is compiled.
+      Every environment gets the same database, the value cannot be supplied through configuration,
+      an environment variable or a Kubernetes Secret, and a password in it ends up in source control
+      and in the image.
     fix: >-
       Read it with Configuration.GetConnectionString("Name") (or options) and supply
       ConnectionStrings__Name from a Secret.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/
+      - https://learn.microsoft.com/en-us/aspnet/core/security/app-secrets
+      - https://kubernetes.io/docs/concepts/configuration/secret/
 
   - id: sql-integrated-security
     when:
@@ -253,9 +289,13 @@ rules:
     windows_container: false
     title: Distributed transactions (MSDTC)
     why: >-
-      Transactions that span connections/queues escalate to MSDTC. modern .NET supports distributed
-      transactions only on Windows, and MSDTC is not available to Linux containers.
+      Transactions that span several connections or queues escalate to a distributed transaction
+      coordinated by MSDTC. Modern .NET (7+) supports distributed transactions only on Windows, and
+      MSDTC is not available to Linux containers, so such a transaction throws at run time.
     fix: Restructure into single-resource transactions plus an outbox/saga pattern.
+    refs:
+      - https://github.com/dotnet/runtime/issues/715
+      - https://learn.microsoft.com/en-us/dotnet/api/system.transactions.transactionmanager.implicitdistributedtransactions
 
   - id: transaction-scope
     when:
@@ -273,6 +313,8 @@ rules:
       Only if the scope opens a second connection/resource does it escalate to MSDTC, which
       Linux containers do not have - worth a check in testing.
     fix: None if each scope uses one connection; otherwise see msdtc.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/api/system.transactions.transactionmanager.implicitdistributedtransactions
 
   - id: sql-filestream
     when:
@@ -287,6 +329,9 @@ rules:
     title: SQL Server FILESTREAM / FileTable
     why: SqlFileStream uses Win32 file handles over SMB to the SQL Server host; it does not work from Linux.
     fix: Read/write the varbinary(max) column through T-SQL, or move blobs to object storage.
+    refs:
+      - https://github.com/dotnet/corefx/issues/15652
+      - https://learn.microsoft.com/en-us/sql/linux/sql-server-linux-editions-and-components-2022
 
   - id: sql-clr
     when:
@@ -297,6 +342,8 @@ rules:
     title: SQL CLR assembly (runs inside SQL Server)
     why: This code runs inside the database engine, not as a container. It stays with SQL Server (Windows; SQL on Linux supports only SAFE CLR assemblies).
     fix: Keep with the database, or move logic to the application tier.
+    refs:
+      - https://learn.microsoft.com/en-us/sql/linux/sql-server-linux-editions-and-components-2022
 
   - id: sql-agent-ssis
     when:
@@ -311,6 +358,8 @@ rules:
     title: SQL Server Agent jobs / SSIS packages
     why: Jobs and packages execute in SQL Server Agent/SSIS (Windows); they are database-tier, not containers.
     fix: Keep with SQL Server or re-implement as Kubernetes CronJobs.
+    refs:
+      - https://learn.microsoft.com/en-us/sql/linux/sql-server-linux-editions-and-components-2022
 
   - id: ssrs
     when:
@@ -328,19 +377,27 @@ rules:
     title: SSRS / ReportViewer reports
     why: The ReportViewer controls (WebForms/WinForms) are .NET Framework only; local RDLC rendering is Windows-only.
     fix: Call the SSRS REST API from the app, or re-implement reports (QuestPDF, a BI tool).
+    refs:
+      - https://learn.microsoft.com/en-us/sql/reporting-services/application-integration/integrating-reporting-services-using-reportviewer-controls-get-started
 
   - id: ssrs-reportviewercore
     when:
       package: 'ReportViewerCore\.NETCore'
-    severity: config
+    severity: refactor
     category: reporting
-    effort: 0.5
+    effort: 2
     title: Local RDLC reports with ReportViewerCore.NETCore
     why: >-
       ReportViewerCore.NETCore is a .NET (Core) port of the ReportViewer local-report engine that
-      renders .rdlc to PDF/Excel/Word on Linux. Rendering needs the report fonts (and libgdiplus-free
-      text measurement), so the image must contain the fonts the reports use.
-    fix: Install the fonts the reports use (e.g. fonts-liberation, msttcorefonts or the corporate fonts) in the image; keep a full (non-chiseled) base image if fontconfig is needed.
+      renders .rdlc reports on Linux, so the image must contain the fonts the reports use. Its README
+      warns that PDF rendering measures fonts with a Windows library (Uniscribe) and that reports with
+      images need System.Drawing, which is Windows-only; test those reports in the Linux image.
+    fix: >-
+      Install the fonts the reports use (e.g. fonts-liberation or the corporate fonts) in a full
+      (non-chiseled) image, then test every report and export format in the Linux image; move PDF
+      export or image-heavy reports to a Linux-capable engine (e.g. QuestPDF or a report server) if they fail.
+    refs:
+      - https://github.com/lkosson/reportviewercore
 
   - id: oledb-odbc-access
     when:
@@ -353,7 +410,9 @@ rules:
     effort: 0
     windows_container: false
     title: OLE DB / Access database engine
-    why: OLE DB (and the Access/Jet/ACE engine) is Windows-only.
+    why: >-
+      OLE DB is a COM-based Windows data access technology, and the Access/Jet/ACE database engine
+      behind .mdb/.accdb files is a Windows-only Office component; neither exists on Linux.
     fix: Use a managed provider (e.g. ODBC with a Linux driver, or export the data); keep on Windows otherwise.
 
   - id: ibm-i-access
@@ -371,6 +430,8 @@ rules:
       Linux alternatives exist (IBM i Access ODBC driver for Linux, Net.IBM.Data.Db2 with DB2
       Connect, or REST services on the IBM i).
     fix: Replace calls with the Linux ODBC driver/Net.IBM.Data.Db2 or IBM i web services.
+    refs:
+      - https://www.ibm.com/support/pages/odbc-driver-ibm-i-access-client-solutions
 
   - id: ax-business-connector
     when:
@@ -384,6 +445,8 @@ rules:
     title: Dynamics AX 2012 .NET Business Connector
     why: The Business Connector is a 32/64-bit Windows client component of AX 2012; it cannot run on Linux.
     fix: Call AX through AIF/web services exposed by AX instead, or keep this component on a Windows host.
+    refs:
+      - https://learn.microsoft.com/en-us/previous-versions/dynamicsax-2012/developer/net-business-connector-overview
 
   - id: sharepoint-server
     when:
@@ -397,6 +460,8 @@ rules:
     title: SharePoint Server farm code
     why: Full-trust farm solutions (.wsp) run inside SharePoint Server on Windows.
     fix: Stays in SharePoint; only provider-hosted add-ins/remote sync components can move.
+    refs:
+      - https://learn.microsoft.com/en-us/sharepoint/dev/scenario-guidance/development-models
 
   - id: sharepoint-csom
     when:
@@ -409,6 +474,8 @@ rules:
     title: SharePoint client (CSOM)
     why: CSOM for SharePoint 2016 targets .NET Framework; on modern .NET use the SharePoint Online CSOM or REST. Server-to-server trust needs the certificate as a Secret.
     fix: Mount the S2S certificate from a Secret; use REST/CSOM for .NET Standard.
+    refs:
+      - https://learn.microsoft.com/en-us/sharepoint/dev/sp-add-ins/using-csom-for-dotnet-standard
 
   - id: biztalk
     when:
@@ -423,6 +490,8 @@ rules:
     title: BizTalk Server artifacts
     why: Orchestrations, maps, pipelines and pipeline components run inside BizTalk Server on Windows.
     fix: Keep on BizTalk or migrate integrations to Logic Apps / an integration platform; custom .NET helpers can move.
+    refs:
+      - https://learn.microsoft.com/en-us/biztalk/install-and-config-guides/hardware-and-software-requirements-for-biztalk-server-2020
 
   # ---------------------------------------------------------------- messaging
   - id: msmq
@@ -439,6 +508,8 @@ rules:
     title: MSMQ
     why: MSMQ is a Windows-only queueing service; it is not available to Linux containers.
     fix: Replace with RabbitMQ, Azure Service Bus or Kafka (MassTransit/NServiceBus abstractions help).
+    refs:
+      - https://github.com/dotnet/corefx/issues/6204
 
   - id: rabbitmq
     when:
@@ -447,7 +518,10 @@ rules:
     category: messaging
     effort: 0
     title: RabbitMQ
-    why: Cross-platform client; run the broker as a cluster service or managed offering.
+    why: >-
+      The RabbitMQ .NET client is cross-platform and works from a Linux container; only the broker
+      address and credentials must come from the environment. Run the broker as a cluster service or
+      use a managed offering.
     fix: Provide the broker connection via Secret.
 
   - id: mqtt
@@ -457,8 +531,10 @@ rules:
     category: messaging
     effort: 0
     title: MQTT
-    why: Cross-platform; broker (Mosquitto) can run in the cluster.
-    fix: None.
+    why: >-
+      MQTTnet is a cross-platform MQTT client and works from a Linux container; the broker (for
+      example Mosquitto) can run in the cluster or stay external.
+    fix: None; supply the broker address and credentials through configuration/Secrets.
 
   - id: named-pipes
     when:
@@ -469,6 +545,8 @@ rules:
     title: Named pipes IPC
     why: Windows named pipes are local IPC between processes on the same machine; containers in different pods cannot use them.
     fix: Use HTTP/gRPC between containers, or run both processes in one pod over a Unix domain socket.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/grpc/interprocess
 
   # ---------------------------------------------------------------- storage
   - id: unc-shares
@@ -482,6 +560,8 @@ rules:
     title: Windows file shares (UNC paths)
     why: UNC paths (\\server\share) only work on Windows with SMB credentials of the process identity.
     fix: Mount the share as a Kubernetes volume (SMB CSI driver with a credentials Secret) and point the setting to the mount path.
+    refs:
+      - https://github.com/kubernetes-csi/csi-driver-smb
 
   - id: windows-drive-paths
     when:
@@ -490,7 +570,9 @@ rules:
     category: storage
     effort: 0.5
     title: Windows drive paths in configuration
-    why: Paths like D:\Data do not exist in a Linux container.
+    why: >-
+      Settings point at Windows drive paths such as D:\Data. Linux has no drive letters, so the app
+      cannot find or write these folders in a container.
     fix: Override the settings with Linux paths (env vars) that point at mounted volumes.
 
   - id: local-state-files
@@ -508,6 +590,8 @@ rules:
       Files written in the container are lost on restart and not shared between replicas, and
       the image's app folder is read-only for the non-root user.
     fix: Mount volumes (emptyDir for scratch/logs, PVC or object storage for data) at the paths the app writes to; log to stdout.
+    refs:
+      - https://kubernetes.io/docs/concepts/storage/volumes/
 
   - id: sqlite-local
     when:
@@ -518,6 +602,8 @@ rules:
     title: Embedded file database (SQLite/LiteDB)
     why: The database file must be on a persistent volume and the app limited to one replica.
     fix: Mount a PVC at the database folder and run a single replica (or move to a server database).
+    refs:
+      - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
 
   - id: lucene-local-index
     when:
@@ -526,8 +612,12 @@ rules:
     category: storage
     effort: 0.5
     title: Local Lucene index
-    why: The index directory must be persistent and is single-writer.
+    why: >-
+      Lucene.NET keeps its index in a local directory. In a container that folder is lost on restart
+      unless it is on a persistent volume, and only one process may write to an index at a time.
     fix: PVC for the index and one replica for the indexer (or Elasticsearch/OpenSearch).
+    refs:
+      - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
 
   - id: ftp-server-iis
     when:
@@ -552,6 +642,8 @@ rules:
     title: In-process session state
     why: Sessions are kept in memory; with several replicas users lose sessions unless sticky sessions are used.
     fix: Use Redis/SQL distributed cache or enable session affinity on the ingress.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/fundamentals/app-state
 
   - id: signalr-scaleout
     when:
@@ -564,6 +656,8 @@ rules:
     title: SignalR without backplane
     why: With more than one replica, clients connected to other pods miss messages.
     fix: Add a Redis backplane or enable session affinity and run one replica.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/signalr/scale
 
   - id: hangfire-quartz
     when:
@@ -574,6 +668,8 @@ rules:
     title: In-process job scheduler
     why: Scheduled jobs run inside the app; multiple replicas run them more than once unless the scheduler uses a shared store/locks.
     fix: Use a persistent job store (Hangfire SQL, Quartz clustering) or run the job host with one replica / as a CronJob.
+    refs:
+      - https://www.quartz-scheduler.net/documentation/quartz-3.x/tutorial/advanced-enterprise-features.html
 
   # ---------------------------------------------------------------- third-party binaries
   - id: vendor-install-required

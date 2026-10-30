@@ -109,12 +109,16 @@ every non-default build decision (a plan rule, a config override, a fix learned 
 listed with its reason and links at the top of the generated `Dockerfile` and in `plan.json`.
 
 Condition primitives: `sdk`, `tfm`, `package`, `reference`, `framework_ref`, `property`,
-`output_type`, `kind`, `role`, `name`, `file` (glob), `code` / `config` / `text` (regex with optional
-`in:` glob and `unguarded: true`), `readme`, combined with `any` / `all` / `not`.
+`output_type`, `kind`, `role`, `name`, `path` (regex on the project file's path relative to the
+repository root), `file` (glob), `code` / `config` / `text` (regex with optional `in:` glob and
+`unguarded: true`), `readme`, combined with `any` / `all` / `not`.
 `unguarded: true` skips hits right after an `OperatingSystem.IsWindows()` check or inside a method/type
 marked `[SupportedOSPlatform("windows")]`. `same_file: true` next to an `all` requires its
 `code`/`config`/`text` conditions to match in the same file (e.g. an assembly loader *and* an install
-path probe, not two unrelated files).
+path probe, not two unrelated files). Next to `title` / `why` / `fix`, a finding rule takes `refs:`, a
+list of verified https links (docs page, upstream issue, vendor statement) shown with each finding;
+`tests/test_rule_docs.py` enforces that every refactor/rewrite/blocker rule has one or is on its
+commented allowlist.
 Later files override earlier rules with the same id; `rules/learned/` is loaded last.
 
 ### Self-learning loop (`verify --learn`)

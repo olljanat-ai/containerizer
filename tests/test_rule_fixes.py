@@ -327,7 +327,7 @@ def test_rdlc_with_reportviewercore_is_config(tmp_path):
     web_app(tmp_path, packages=pkg("ReportViewerCore.NETCore"))
     write(tmp_path, "src/Web/Reports/Invoice.rdlc", "<Report/>")
     c = assess(tmp_path).components[0]
-    assert sev(c, "ssrs") is None and sev(c, "ssrs-reportviewercore") == "config"
+    assert sev(c, "ssrs") is None and sev(c, "ssrs-reportviewercore") == "refactor"
     web_app(tmp_path)
     assert sev(assess(tmp_path).components[0], "ssrs") == "rewrite"
 
