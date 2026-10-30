@@ -504,7 +504,7 @@ def build_image(app_root: Path, cdir: Path, tag: str, timeout: int = 1800) -> tu
 
 
 HARDENING_ERRORS = re.compile(r"Read-only file system|Permission denied|UnauthorizedAccessException|"
-                              r"Access to the path .{0,200} is denied|EACCES|EROFS|Operation not permitted", re.I)
+                              r"Access to the path .{0,200} is denied|\bEACCES\b|\bEROFS\b|Operation not permitted", re.I)
 
 
 def run_as_manifest(tag: str, k8s_docs: list[dict], wait: int = 40) -> dict:
@@ -592,6 +592,51 @@ def run_as_manifest(tag: str, k8s_docs: list[dict], wait: int = 40) -> dict:
     return {"status": status, "http": http, "errors": hits[:5], "log": log[-1500:]}
 
 
+def _apply_os_patch(dockerfile: str, comp: dict) -> str:
+    if not comp.get("_os_patch_df"):
+        return dockerfile
+    bres, blocking = comp["_os_patch_df"]
+    patched = os_patch(dockerfile, comp["base"], bres, blocking)
+    return patched[0] if patched else dockerfile
+
+
+def _build_with_retries(a, cdir: Path, tag: str, comp: dict, pin: bool, post) -> tuple[bool, str]:
+    """Build; when the build fails in a way the verification failure rules know how to fix
+    (rules/50-failures.yaml, outcome retry), patch the build plan, regenerate and build again."""
+    from .generate import dockerfile_dotnet, dockerfile_spa, k8s_manifests, k8s_name, merge_plan, pin_digests, _yaml_docs
+    from .verify import MAX_ATTEMPTS, _fmt, diagnose, load_failures
+    comps = {k8s_name(c.name): c for c in a.components}
+    c = comps.get(cdir.name)
+    applied = []
+    for _ in range(MAX_ATTEMPTS):
+        ok, tail = build_image(a.repo.root, cdir, tag)
+        if ok or c is None or not (cdir / "plan.json").exists():
+            break
+        d = diagnose((cdir / "build.log").read_text(), "build", load_failures())
+        if not d or d[0].get("outcome") != "retry":
+            break
+        fr, caps = d
+        plan = json.loads((cdir / "plan.json").read_text())
+        caps.setdefault("tfm", plan.get("tfm") or "")
+        before = json.dumps(plan, sort_keys=True)
+        merge_plan(plan, _fmt(fr.get("fix", {}), caps))
+        if json.dumps(plan, sort_keys=True) == before:
+            break
+        applied.append(fr["id"])
+        df = dockerfile_spa(plan, c.facts) if c.role == "spa" else dockerfile_dotnet(plan)
+        df = post(pin_digests(df) if pin else df)
+        (cdir / "Dockerfile").write_text(df)
+        from .harden import _pod_specs
+        image = next((ct["image"] for doc in load_yaml_docs((cdir / "k8s.yaml").read_text())
+                      for _, pod in _pod_specs(doc) for ct in pod.get("containers", [])), None)
+        if image:
+            (cdir / "k8s.yaml").write_text(_yaml_docs(k8s_manifests(a, c, plan, image)))
+        (cdir / "plan.json").write_text(json.dumps(plan, indent=2))
+    if applied:
+        comp["build_fixes"] = applied
+    return ok, tail
+
+
 def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str = "auto",
              fail_on: str | None = None, registry: str = "registry.local", pin: bool = False,
              base_cache: dict | None = None, run: bool = False, refresh: bool = True) -> dict:
@@ -622,6 +667,7 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
             patched = os_patch(df, base, bres, bev["blocking"]) if bev["blocking"] and not bres.error else None
             if patched:
                 df, comp["os_patch"] = patched
+                comp["_os_patch_df"] = (bres, bev["blocking"])
                 (cdir / "Dockerfile").write_text(df)
                 fixed = set(comp["os_patch"]["packages"])
                 bev["patched"] = [asdict(v) for v in bev["blocking"] if v.package in fixed]
@@ -630,7 +676,7 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
             comp["scans"].append(_scan_entry(bres, bev, "base"))
             if build:
                 tag = f"containerizer/{k8s_name(a.name)}-{cdir.name}:gate"
-                ok, log = build_image(a.repo.root, cdir, tag)
+                ok, log = _build_with_retries(a, cdir, tag, comp, pin, lambda d: _apply_os_patch(d, comp))
                 if not ok:
                     comp["build_error"] = log[-800:]
                 else:
@@ -641,6 +687,7 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
                     comp["scans"].append(_scan_entry(res, evaluate(res, pol), "image"))
                     if run and (cdir / "k8s.yaml").exists():
                         comp["run"] = run_as_manifest(tag, load_yaml_docs((cdir / "k8s.yaml").read_text()))
+        comp.pop("_os_patch_df", None)
         comps.append(comp)
     lint_errors = [v for v in lint_all if v.severity == "error"]
     scan_fail = [s for c in comps for s in c["scans"] if not s["passed"]]
@@ -697,7 +744,8 @@ def security_markdown(r: dict) -> str:
         app_fix = sorted({x for s in c["scans"] for x in s["app_fixable"]})
         hard = (c.get("run") or {}).get("status") == "hardening-failure"
         notes = any(s.get("scanner_notes") for s in c["scans"])
-        if not (block or errs or app_fix or c.get("os_patch") or c.get("build_error") or hard or notes):
+        if not (block or errs or app_fix or c.get("os_patch") or c.get("build_error") or hard or notes
+                or c.get("build_fixes")):
             continue
         lines += ["", f"## {c['component']}", ""]
         if hard:
@@ -706,6 +754,8 @@ def security_markdown(r: dict) -> str:
         if c.get("build_error"):
             tail = [ln for ln in c["build_error"].splitlines() if ln.strip()][-3:]
             lines.append("- build failed: `" + " / ".join(x.strip()[:200] for x in tail).replace("`", "'") + "`")
+        if c.get("build_fixes"):
+            lines.append(f"- build plan adjusted by failure rules: {', '.join(c['build_fixes'])}")
         if c.get("os_patch"):
             op = c["os_patch"]
             lines.append(f"- patched in the Dockerfile: `{op['command']}` fixes {', '.join(op['fixes'])}"
