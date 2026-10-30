@@ -64,6 +64,10 @@ def score_confidence(repo, comp) -> None:
     u = [x for x in u if x not in explained]
     comp.uncertain = u
     conf = 1.0 - 0.1 * len(u)
+    # a decisive finding from a rule that is itself unsure caps the confidence
+    for f in comp.findings:
+        if f.severity in ("blocker", "rewrite"):
+            conf = min(conf, f.rule.confidence)
     if comp.role == "library" and not comp.project.files:
         conf -= 0.2
     comp.confidence = max(0.2, round(conf, 2))

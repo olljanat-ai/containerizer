@@ -12,6 +12,15 @@ rules:
         - property: {IsTestProject: "true"}
         - name: '[.\-](Tests?|UnitTests|IntegrationTests|Specs)$'
 
+  - id: role-tool
+    phase: role
+    role: tool
+    priority: 99
+    when:
+      any:
+        - name: '[.\-](LabStubs|LabTools|Lab|Simulators?|TestTools|Seed(er)?|DevTools)$'
+        - file: 'tools/*'
+
   - id: role-biztalk
     phase: role
     role: biztalk
@@ -60,10 +69,13 @@ rules:
     priority: 80
     when:
       any:
-        - property: {UseWPF: "true"}
-        - property: {UseWindowsForms: "true"}
         - output_type: WinExe
-        - reference: System\.Windows\.Forms|PresentationFramework|PresentationCore|WindowsBase
+        - all:
+            - output_type: Exe
+            - any:
+                - property: {UseWPF: "true"}
+                - property: {UseWindowsForms: "true"}
+                - reference: System\.Windows\.Forms|PresentationFramework
         - all:
             - tfm: 'net\d+\.\d+-windows.*'
             - code: '\bApplication\.Run\(|System\.Windows\.Forms|new\s+\w+Window\(\)'

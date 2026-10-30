@@ -263,7 +263,19 @@ def parse_dotnet_project(path: Path, root: Path) -> Project:
                 pr.sdk = e.attrib.get("Name", "")
     inherited = _load_props(root, path.parent)
     props: dict[str, str] = {k: v for k, v in inherited.items()}
+    elements = list(proj.iter())
+    # Follow local <Import Project="..."> files (shared .props/.targets with references)
     for el in proj.iter():
+        if _strip_ns(el.tag) == "Import":
+            inc = el.attrib.get("Project", "").replace("\\", "/")
+            if inc and "$(" not in inc:
+                ip = (path.parent / inc).resolve()
+                if ip.is_file() and root in ip.parents:
+                    try:
+                        elements += list(ET.parse(ip).getroot().iter())
+                    except ET.ParseError:
+                        pass
+    for el in elements:
         tag = _strip_ns(el.tag)
         if tag == "PackageReference" or tag == "PackageVersion":
             name = el.attrib.get("Include") or el.attrib.get("Update")

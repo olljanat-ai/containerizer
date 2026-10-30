@@ -5,13 +5,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .rules import SEV_RANK, SEVERITIES, Context, Match, Rule, load_rules, run_rule
+from .reach import CODE_EXT, reachable_files
 from .scan import Project, Repo, scan
 
 SERVER_ROLES = {"web", "worker", "console", "spa"}
 PLATFORM_ROLES = {"biztalk", "sharepoint"}          # deployables that need a Windows product
 DB_TIER_ROLES = {"sqlclr", "ssis", "sqldb"}         # live with the database, not containers
 CLIENT_ROLES = {"desktop"}
-NON_DEPLOYABLE = {"library", "test", "spa-assets"}
+NON_DEPLOYABLE = {"library", "test", "spa-assets", "tool"}
 
 VERDICT_TEXT = {
     "info": "Ready: containerize as is",
@@ -34,16 +35,17 @@ class Finding:
     rule: Rule
     evidence: list
     via: str = ""             # library project the finding was inherited from
+    dormant: bool = False     # library code that this component never references
 
     @property
     def severity(self) -> str:
-        return self.rule.severity
+        return "info" if self.dormant else self.rule.severity
 
     def to_dict(self) -> dict:
         r = self.rule
         return {"id": r.id, "severity": r.severity, "category": r.category, "title": r.title,
                 "why": " ".join(r.why.split()), "fix": " ".join(r.fix.split()), "effort_days": r.effort,
-                "via": self.via, "evidence": [str(e) for e in self.evidence[:3]], "source": r.source,
+                "via": self.via, "dormant": self.dormant, "evidence": [str(e) for e in self.evidence[:3]], "source": r.source,
                 "windows_container": r.windows_container}
 
 
@@ -132,7 +134,7 @@ class AppAssessment:
             return "E"
         blocked = [c for c in server if c.verdict == "blocker"]
         if blocked:
-            return "E" if len(blocked) * 2 > len(server) else "D"
+            return "E" if len(blocked) * 4 >= len(server) * 3 else "D"
         worst = max((c.verdict for c in server), key=lambda s: SEV_RANK[s])
         return {"info": "A", "config": "A", "refactor": "B", "rewrite": "C"}[worst]
 
@@ -248,20 +250,28 @@ def assess(path: str | Path, rules: list[Rule] | None = None, repo: Repo | None 
                 c.findings.append(Finding(r, m.evidence))
         comps[p.path.resolve()] = c
 
-    # Propagate library findings to the deployables that reference them.
+    # Propagate library findings to the deployables that reference them, but
+    # only when the library code that triggered them is reachable.
     for c in comps.values():
         if c.role in NON_DEPLOYABLE:
             continue
         own = {f.rule.id for f in c.findings}
-        for lib in _closure(repo, c.project):
-            lc = comps.get(lib.path.resolve())
-            if lc is None or lc.role not in ("library",):
-                continue
+        libs = [lib for lib in _closure(repo, c.project)
+                if (lc := comps.get(lib.path.resolve())) is not None and lc.role == "library"]
+        reached = {repo.rel(f) for f in reachable_files(c.project, libs)}
+        for lib in libs:
+            lc = comps[lib.path.resolve()]
             for f in lc.findings:
                 if f.rule.id in own or f.rule.id == "netfx-library" and c.project.is_netfx:
                     continue
-                own.add(f.rule.id)
-                c.findings.append(Finding(f.rule, f.evidence, via=lc.name))
+                code_ev = [e for e in f.evidence if e.line and Path(e.file).suffix.lower() in CODE_EXT]
+                dormant = bool(code_ev) and len(code_ev) == len(f.evidence) and not any(e.file in reached for e in code_ev)
+                if not dormant:
+                    own.add(f.rule.id)
+                c.findings.append(Finding(f.rule, f.evidence, via=lc.name, dormant=dormant))
+        # if the same rule was found both dormant and active, keep the active one
+        active = {f.rule.id for f in c.findings if not f.dormant}
+        c.findings = [f for f in c.findings if not (f.dormant and f.rule.id in active)]
 
     for c in comps.values():
         if c.role not in NON_DEPLOYABLE:
@@ -284,6 +294,6 @@ def assess(path: str | Path, rules: list[Rule] | None = None, repo: Repo | None 
         repo=repo,
         components=[c for c in all_c if c.role not in NON_DEPLOYABLE],
         libraries=[c for c in all_c if c.role == "library"],
-        tests=[c for c in all_c if c.role == "test"],
+        tests=[c for c in all_c if c.role in ("test", "tool")],
         repo_findings=repo_findings,
     )

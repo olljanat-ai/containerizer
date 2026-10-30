@@ -171,9 +171,9 @@ rules:
   - id: sql-integrated-security
     when:
       config: '(Integrated Security\s*=\s*(true|SSPI|yes))|(Trusted_Connection\s*=\s*(true|yes))'
-    severity: refactor
+    severity: config
     category: data
-    effort: 1
+    effort: 0.5
     windows_container: true
     title: SQL Server Windows authentication
     why: Integrated Security uses the Windows service account. From Linux it needs Kerberos (keytab) or a switch to SQL/Entra authentication.
@@ -198,8 +198,8 @@ rules:
   - id: sql-filestream
     when:
       any:
-        - code: 'SqlFileStream|FILESTREAM|PathName\(\)'
-        - text: 'FILESTREAM|FileTable'
+        - code: '(?-i:SqlFileStream|FILESTREAM|\.PathName\(\)|GET_FILESTREAM_TRANSACTION_CONTEXT)'
+        - text: '(?-i:FILESTREAM|FileTable)'
           in: ["*.sql", "README.md"]
     severity: refactor
     category: data

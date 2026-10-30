@@ -15,6 +15,7 @@ unless noted):
   config: regex           configuration files; optional `in: glob`
   text: regex             any text file; optional `in: glob`
   readme: regex           repository README (repo scope)
+  unguarded: true         (with code) ignore hits right after an OperatingSystem.IsWindows() check
   any: [...], all: [...], not: {...}
 
 `code`, `config` and `text` may use named groups; with `set` on a facts rule the
@@ -152,7 +153,23 @@ def _snip(txt: str, m: re.Match) -> str:
     return line[:160]
 
 
-def _search_files(ctx: Context, pattern: str, files: list[Path], strip: bool, max_hits: int = 3):
+GUARD_RE = re.compile(r"OperatingSystem\.IsWindows\(\)|IsOSPlatform\(\s*OSPlatform\.Windows\s*\)|"
+                      r"Environment\.OSVersion\.Platform\s*==\s*PlatformID\.Win32NT")
+
+
+def _guarded(txt: str, pos: int) -> bool:
+    """True when the match sits within a few lines after an OS check for Windows."""
+    start = pos
+    for _ in range(6):
+        start = txt.rfind("\n", 0, start - 1)
+        if start <= 0:
+            start = 0
+            break
+    return bool(GUARD_RE.search(txt, start, txt.find("\n", pos) if txt.find("\n", pos) > 0 else len(txt)))
+
+
+def _search_files(ctx: Context, pattern: str, files: list[Path], strip: bool, max_hits: int = 3,
+                  skip_guarded: bool = False):
     rx = _rx(pattern)
     hits: list[Evidence] = []
     caps: dict = {}
@@ -160,7 +177,12 @@ def _search_files(ctx: Context, pattern: str, files: list[Path], strip: bool, ma
         txt = ctx.text(f, strip)
         if not txt:
             continue
-        m = rx.search(txt)
+        m = None
+        for cand in rx.finditer(txt):
+            if skip_guarded and _guarded(txt, cand.start()):
+                continue
+            m = cand
+            break
         if m:
             hits.append(Evidence(ctx.repo.rel(f), _line_of(txt, m.start()), _snip(txt, m)))
             if not caps:
@@ -183,7 +205,7 @@ def evaluate(cond, ctx: Context) -> tuple[bool, list[Evidence], dict]:
         cond = {"all": cond}
     ev: list[Evidence] = []
     caps: dict = {}
-    keys = [k for k in cond.keys() if k not in ("in", "max")]
+    keys = [k for k in cond.keys() if k not in ("in", "max", "unguarded")]
     if not keys:
         return True, [], {}
     for key in keys:
@@ -232,7 +254,7 @@ def _eval_one(key: str, val, cond: dict, ctx: Context):
         if glob:
             globs = glob if isinstance(glob, list) else [glob]
             files = [f for f in files if any(_glob_match(ctx.repo.rel(f), f.name, g) for g in globs)]
-        hits, caps = _search_files(ctx, val, files, strip=(key == "code"))
+        hits, caps = _search_files(ctx, val, files, strip=(key == "code"), skip_guarded=bool(cond.get("unguarded")))
         return bool(hits), hits, caps
     if key == "file":
         globs = val if isinstance(val, list) else [val]

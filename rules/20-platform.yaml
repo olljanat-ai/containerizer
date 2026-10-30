@@ -83,9 +83,10 @@ rules:
 
   - id: pinvoke-vendor
     applies_to: [dotnet]
+    confidence: 0.8
     when:
       all:
-        - code: 'DllImport\(\s*(?!"(kernel32|user32|gdi32|advapi32|ole32|oleaut32|ntdll|crypt32|authz|netapi32|wtsapi32|secur32|shell32|comctl32|winspool|psapi|iphlpapi|ws2_32|mpr|version|userenv|ncrypt|tbs|libc|libSystem|__Internal|e_sqlite3|sqlite3)(\.dll|\.so.*)?")("[^"]+"|[A-Za-z_][\w.]*)'
+        - code: 'DllImport\(\s*(?!"?(kernel32|user32|gdi32|advapi32|ole32|oleaut32|ntdll|crypt32|authz|netapi32|wtsapi32|secur32|shell32|comctl32|winspool|psapi|iphlpapi|ws2_32|mpr|version|userenv|ncrypt|tbs|libc|libSystem|__Internal|e_sqlite3|sqlite3)(\.dll|\.so[.\d]*)?"?\s*[,)])("[^"]+"|[A-Za-z_][\w.]*)'
     severity: blocker
     category: native
     effort: 0
@@ -128,6 +129,7 @@ rules:
     applies_to: [dotnet]
     when:
       code: '\bRegistry\.(LocalMachine|CurrentUser|ClassesRoot|Users|GetValue|SetValue)|\bRegistryKey\b|RegistryHive\.'
+      unguarded: true
     severity: refactor
     category: os
     effort: 1
@@ -141,6 +143,7 @@ rules:
     when:
       any:
         - code: '\bEventLog\.(WriteEntry|CreateEventSource|SourceExists)|new\s+EventLog\(|\.AddEventLog\(|EventLogTraceListener'
+          unguarded: true
         - package: Serilog\.Sinks\.EventLog|NLog\.WindowsEventLog
         - config: 'EventLogAppender|type="eventlog"|xsi:type="EventLog"|"Name"\s*:\s*"EventLog"'
     severity: refactor
@@ -219,7 +222,7 @@ rules:
   - id: printing
     applies_to: [dotnet]
     when:
-      code: '\bPrintDocument\b|PrinterSettings|PrintQueue\b|LocalPrintServer|\bPrintDialog\b|\\\\\\\\[\w.\-]+\\\\[\w\-]*(PRINT|print|LETTERHEAD)'
+      code: 'new\s+PrintDocument\b|new\s+PrinterSettings\b|\bPrintQueue\b|LocalPrintServer|new\s+PrintDialog\b|\bRawPrinterHelper\b|OpenPrinter\(|\.PrintOut\('
     severity: blocker
     category: hardware
     effort: 0
@@ -232,7 +235,7 @@ rules:
     applies_to: [dotnet]
     when:
       any:
-        - code: '\bSerialPort\b|"COM\d+"'
+        - code: '\bSerialPort\b'
         - package: System\.IO\.Ports
     severity: blocker
     category: hardware
@@ -247,7 +250,7 @@ rules:
     when:
       any:
         - code: '\bTpm\w*\b|Tbsi_|NCryptOpenStorageProvider|MS_PLATFORM_CRYPTO_PROVIDER|"Microsoft Platform Crypto Provider"'
-        - code: 'Thermocouple|DAQ\b|\bBoard(Handle|Interop|Driver)|ReadChannel\(|\bGpio\b|\bUsbDevice\b|HidDevice'
+        - code: '\bGpioController\b|\bUsbDevice\b|\bHidDevice\b|\bLibUsb\w*'
     severity: blocker
     category: hardware
     effort: 0
@@ -293,3 +296,93 @@ rules:
     title: ClickOnce deployed client
     why: The client is installed on workstations with ClickOnce; only its server side can move to containers.
     fix: The ClickOnce publish folder can be served as static files from a container.
+
+  - id: sta-apartment
+    applies_to: [dotnet]
+    when:
+      code: '\.(Try)?SetApartmentState\(\s*ApartmentState\.STA\s*\)'
+    severity: blocker
+    category: com
+    effort: 0
+    windows_container: true
+    title: Single-threaded apartment (STA) threads
+    why: >-
+      Creates STA threads, which exist to host COM/ActiveX/desktop components. SetApartmentState
+      throws PlatformNotSupportedException on Linux, and the component it hosts is Windows-only.
+    fix: Replace the STA-bound component (usually a COM/vendor SDK) or keep this part on Windows.
+
+  - id: winrt-apis
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: '^\s*using\s+Windows\.(Media|Graphics|Storage|Devices|Security\.Credentials|ApplicationModel|UI|Data|Globalization|Foundation|System|Networking)(\.\w+)*\s*;'
+        - tfm: 'net\d+\.\d+-windows10\..*'
+    severity: blocker
+    category: os
+    effort: 0
+    windows_container: false
+    title: Windows Runtime (WinRT) APIs
+    why: Uses Windows Runtime APIs (e.g. Windows.Media.Ocr) that only exist on Windows client/desktop editions.
+    fix: Replace with a cross-platform library or service (e.g. Tesseract or a cloud OCR API for Windows.Media.Ocr).
+
+  - id: vendor-sdk-install-dir
+    applies_to: [dotnet]
+    confidence: 0.7
+    when:
+      all:
+        - code: 'Assembly\.Load(From|File)\(|LoadFromAssemblyPath\(|AssemblyLoadContext\.Default\.Resolving|AppDomain\.CurrentDomain\.AssemblyResolve'
+        - code: 'Install(Dir|Path|Folder|Location)\b|Program Files|ProgramFiles'
+    severity: blocker
+    category: thirdparty
+    effort: 0
+    windows_container: null
+    title: Vendor SDK loaded from its Windows installation
+    why: >-
+      Loads assemblies of an installed third-party product from its installation folder at
+      runtime. The product (and usually its native engine and licensing) is installed with a
+      Windows installer; unless the vendor ships a Linux build it cannot be put in a Linux image.
+    fix: Check the vendor's Linux/container support; otherwise isolate the product on a Windows host behind an API.
+
+  - id: supported-os-windows
+    applies_to: [dotnet]
+    when:
+      code: '\[(assembly:\s*)?SupportedOSPlatform\(\s*"windows'
+    severity: refactor
+    category: os
+    effort: 1
+    windows_container: true
+    title: Code marked Windows-only by its authors
+    why: Types or assemblies are annotated [SupportedOSPlatform("windows")]; the authors know this code does not run elsewhere.
+    fix: Review each annotated type; replace or isolate it.
+
+  - id: winforms-in-library
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: desktop}
+        - code: '^\s*using\s+System\.Windows\.(Forms|Controls|Media|Documents|Xps|Markup)(\.\w+)*\s*;|new\s+(FixedDocument|XpsDocument|RenderTargetBitmap|PrintDialog|Form)\b'
+    severity: blocker
+    category: ui
+    effort: 0
+    windows_container: false
+    title: Uses WinForms/WPF APIs in server code
+    why: Server-side code that renders with WPF/WinForms (XPS, visuals, printing) needs the Windows Desktop runtime, which does not exist on Linux.
+    fix: Replace the rendering with a server-side library (QuestPDF, PdfSharpCore, SkiaSharp).
+
+  - id: winforms-reference-library
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: desktop}
+        - any:
+            - reference: System\.Windows\.Forms|PresentationFramework|PresentationCore|ReachFramework|System\.Printing
+            - property: {UseWPF: "true"}
+            - property: {UseWindowsForms: "true"}
+        - not: {code: '^\s*using\s+System\.Windows\.(Forms|Controls|Media|Documents|Xps|Markup)(\.\w+)*\s*;'}
+    severity: refactor
+    category: ui
+    effort: 1
+    windows_container: true
+    title: References Windows Desktop assemblies
+    why: The project references WinForms/WPF assemblies (often only for a report viewer or a helper type); they are not available on Linux.
+    fix: Remove the reference and replace the few types used from it.
