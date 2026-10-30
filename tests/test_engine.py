@@ -149,4 +149,4 @@ def test_blazor_wasm_is_served_as_static_files():
     df = dockerfile_blazor_wasm(plan)
     assert 'dotnet publish "src/W/W.csproj" -c Release -o /out' in df
     assert "COPY --from=build /out/wwwroot /usr/share/nginx/html" in df
-    assert "ENTRYPOINT" not in df and "listen 8080" in df
+    assert "ENTRYPOINT" not in df and "listen 8080" in df and "location /_framework/" in df

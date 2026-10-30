@@ -338,13 +338,14 @@ def dockerfile_spa(plan: dict, facts: dict) -> str:
     ] + _static_site_stage("/site")) + "\n"
 
 
-def _static_site_stage(site: str) -> list[str]:
+def _static_site_stage(site: str, extra: str = "") -> list[str]:
     n = images()["node"]
     return [
         f"FROM {n['static']} AS final",
         "# nginx-unprivileged runs as uid 101 and listens on 8080",
         f"COPY --from=build {site} /usr/share/nginx/html",
-        "RUN printf 'server {\\n listen 8080;\\n root /usr/share/nginx/html;\\n location / { try_files $uri $uri/ /index.html; }\\n location = /healthz { return 200 \"ok\"; }\\n}\\n' > /etc/nginx/conf.d/default.conf",
+        "RUN printf 'server {\\n listen 8080;\\n root /usr/share/nginx/html;\\n" + extra
+        + " location / { try_files $uri $uri/ /index.html; }\\n location = /healthz { return 200 \"ok\"; }\\n}\\n' > /etc/nginx/conf.d/default.conf",
         "EXPOSE 8080",
     ]
 
@@ -361,7 +362,9 @@ def dockerfile_blazor_wasm(plan: dict) -> str:
     lines += ["RUN --mount=type=cache,target=/root/.nuget/packages --mount=type=secret,id=ca,required=false \\",
               "    if [ -f /run/secrets/ca ]; then export SSL_CERT_FILE=/run/secrets/ca; fi; \\",
               f'    dotnet publish "{proj}" -c Release -o /out {" ".join(plan["publish_args"])}'.rstrip(), ""]
-    return "\n".join(lines + _static_site_stage("/out/wwwroot")) + "\n"
+    # framework files: precompressed variants, and a real 404 instead of the SPA fallback
+    extra = " gzip_static on;\\n location /_framework/ { try_files $uri =404; }\\n"
+    return "\n".join(lines + _static_site_stage("/out/wwwroot", extra)) + "\n"
 
 
 def dockerfile_for(plan: dict, c: Component) -> str:
