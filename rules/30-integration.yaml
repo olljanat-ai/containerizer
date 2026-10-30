@@ -501,7 +501,8 @@ rules:
         - code: '\bnew\s+(System\.Messaging\.)?MessageQueue\(|\bMessageQueue\.(Create|Exists|Delete|GetPrivateQueues\w*|GetPublicQueues\w*)\(|^\s*(using|Imports)\s+System\.Messaging\b|FormatName:|private\$\\\\|\bMsmqTransport\b'
         - config: 'netMsmqBinding|msmqIntegrationBinding|FormatName:|msmq\.formatname:'
         - package: Experimental\.System\.Messaging|MSMQ\.Messaging|NServiceBus\.(Transports?\.)?Msmq.*|MassTransit\.Msmq
-    severity: rewrite
+    # replacing the queue transport is targeted work, not a port of the component
+    severity: refactor
     category: messaging
     effort: 3
     windows_container: false

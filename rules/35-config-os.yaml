@@ -673,3 +673,26 @@ rules:
       environment variables; rotate the exposed values.
     refs:
       - https://kubernetes.io/docs/concepts/configuration/secret/
+
+  - id: cfg-localhost-endpoint-in-code
+    applies_to: [dotnet]
+    confidence: 0.8
+    when:
+      all:
+        - not: {role: 'test|desktop|tool'}
+        # a client endpoint on localhost compiled into the code (not a listen address)
+        - code: '^(?![^\n]*\b(UseUrls|Listen\w*|Urls|ListenAnyIP|ListenLocalhost|Prefixes)\b)[^\n]*(\b(HostName|Authority|BaseAddress|ServiceUrl)\s*=\s*(new\s+Uri\(\s*)?@?"(https?://|amqp://|redis://|mongodb://|tcp://)?(localhost|127\.0\.0\.1)\b|new\s+Uri\(\s*@?"https?://(localhost|127\.0\.0\.1)\b|ConnectionMultiplexer\.Connect\(\s*"(localhost|127\.0\.0\.1)\b)'
+          unguarded: true
+    severity: refactor
+    category: config
+    effort: 0.25
+    windows_container: true
+    title: Service endpoint on localhost hard-coded in code
+    why: >-
+      The code connects to a broker, cache, identity server or API at "localhost". In a container
+      localhost is the container itself, so the connection fails unless that service runs in the same
+      pod; because the address is compiled in, it cannot be re-pointed with configuration.
+    fix: Read the address from configuration (IConfiguration / options bound to an environment variable) and point it at the Kubernetes service name.
+    refs:
+      - https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/
+

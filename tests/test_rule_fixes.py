@@ -134,9 +134,9 @@ def test_msmq_needs_real_queue_use(tmp_path):
     write(tmp_path, "src/Web/Views/QueuedEmail/List.cshtml", '<a href="@Docs.MessageQueue">docs</a>')
     assert sev(assess(tmp_path).components[0], "msmq") is None
     c = comp(tmp_path, 'class Q { void M() { var q = new MessageQueue(@".\\\\private$\\\\orders"); } }')
-    assert sev(c, "msmq") == "rewrite"
+    assert sev(c, "msmq") == "refactor"
     c = comp(tmp_path, packages=pkg("NServiceBus.Transport.Msmq"))
-    assert sev(c, "msmq") == "rewrite"
+    assert sev(c, "msmq") == "refactor"
 
 
 # ------------------------------------------------------------------ 6 unused template references
