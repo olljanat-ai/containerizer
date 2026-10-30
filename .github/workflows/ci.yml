@@ -34,6 +34,22 @@ jobs:
           max-rating: B
       - run: echo "rating=${{ steps.check.outputs.rating }} new=${{ steps.check.outputs.new-findings }}"
 
+  # Same gate with the PR head checked out instead of the merge commit: the action compares with the merge base.
+  containerizer-head:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - id: check
+        uses: ./
+        with:
+          path: examples/ci-demo
+          comment: "false"
+          sarif-file: head.sarif
+      - run: echo "rating=${{ steps.check.outputs.rating }} new=${{ steps.check.outputs.new-findings }}"
+
   # End-to-end self-test on a challenge app: a commit that adds a Windows-only dependency must fail the gate,
   # and the unchanged app must pass.
   action-selftest:

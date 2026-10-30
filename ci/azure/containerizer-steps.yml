@@ -64,6 +64,9 @@ steps:
       if [ -z "$ref" ] && [ -n "$TARGET_BRANCH" ]; then
         branch="${TARGET_BRANCH#refs/heads/}"
         git fetch --no-tags --quiet origin "$branch" && ref="origin/$branch"
+        # compare with the merge base, so changes made on the target branch after the PR branched off
+        # are not attributed to the PR (needs fetchDepth: 0)
+        mb="$(git merge-base HEAD "origin/$branch" 2>/dev/null)" && ref="$mb"
       fi
       [ "$ref" = "none" ] && ref=""
       args=(--fail-on "$FAIL_ON" --markdown "$out/comment.md" --sarif "$out/containerizer.sarif"
