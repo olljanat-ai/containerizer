@@ -84,35 +84,20 @@ def cmd_check(args) -> int:
 
 
 def cmd_analyze(args) -> int:
-    """Everything, once per repository: assess, (Claude for uncertain parts), build and run every
-    feasible component, learn, re-assess with what was learned, then write the deliverables."""
-    from .generate import generate_app
+    from .analyze import analyze_app
     from .report import write_reports
-    from .verify import verify_app
 
     out = Path(args.out)
     results = []
     for app in _apps(args.paths):
-        a = assess(app, load_rules())
-        if args.ai:
-            from .assess import apply_ai
-            apply_ai(a, args.model)
-        ver = [] if args.no_verify else verify_app(a, out / a.name / "verify", learn=True, ai=args.ai,
-                                                   model=args.model, timeout=args.timeout)
-        # runtime findings and learned plan rules feed back into the final assessment
-        from .confidence import reset_cache
-        reset_cache()
-        rules = load_rules()
-        a = assess(app, rules)
-        if args.ai:
-            apply_ai(a, args.model)
-        a.verification = ver
-        generate_app(a, out / a.name, rules, registry=args.registry, pin=args.pin_digests)
+        a = analyze_app(app, out, ai=args.ai, model=args.model, verify=not args.no_verify,
+                        registry=args.registry, pin=args.pin_digests, timeout=args.timeout)
+        ver = a.verification
         results.append(a)
-        bad = sum(r["status"] in ("build-failed", "run-failed") for r in ver)
         print(f"{a.name:24s} {a.rating} score={a.score:3d}  verified: "
               f"{sum(r['status'] in ('ok', 'ok-external') for r in ver)} run, "
-              f"{sum(r['status'] == 'finding' for r in ver)} runtime findings, {bad} failed")
+              f"{sum(r['status'] == 'finding' for r in ver)} runtime findings, "
+              f"{sum(r['status'] in ('build-failed', 'run-failed') for r in ver)} failed")
     write_reports(results, out)
     print(f"reports written to {out}")
     return 0
