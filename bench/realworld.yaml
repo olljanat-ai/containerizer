@@ -1,0 +1,106 @@
+# Real-world validation corpus: public .NET repositories with hand-judged expectations.
+# Clone each with `git clone --depth 1 <url> /home/claude/validation/<name>` then
+# `git fetch --depth 1 origin <commit> && git checkout <commit>` to pin (Umbraco: tag release-8.18.9).
+# Never build or run their code. Expectations come from reading each repo, not from tool output.
+#
+# expected_rating: A lift&shift, B minor refactor, C framework port, D partial, E not feasible.
+# expected_roles: components that should be deployable (others: library/test/tool/desktop).
+repos:
+  - name: rw-eshop
+    url: https://github.com/dotnet/eShop
+    commit: 913acea66708a59595351174cee9b29f37179d29
+    expected_rating: A
+    expected_roles: {web: [Basket.API, Catalog.API, Identity.API, Ordering.API, WebApp, WebhookClient, Webhooks.API, PaymentProcessor], worker: [OrderProcessor], desktop: [ClientApp, HybridApp], tool: [eShop.AppHost], test: ["*.FunctionalTests"]}
+    notes: .NET 10 Aspire microservices, Linux containers by design. ClientApp/HybridApp are MAUI clients (UseMaui), not server components; their Windows TFM is only added under Condition IsOSPlatform('windows').
+
+  - name: rw-cleanarchitecture
+    url: https://github.com/jasontaylordev/CleanArchitecture
+    commit: 345e7fe7612fdaf0cb5da58826a7c57d42e1fdd8
+    expected_rating: A
+    expected_roles: {web: [CleanArchitecture.Web], tool: [CleanArchitecture.AppHost, CleanArchitecture.TestAppHost]}
+    notes: Template; .NET 10 web + Aspire AppHost (Aspire.AppHost.Sdk). Postgres/SQLite/SQL Server variants via appsettings.*.json.
+
+  - name: rw-nopcommerce
+    url: https://github.com/nopSolutions/nopCommerce
+    commit: 51f116ac16a1c039d0bf4574cf88bbdae5ac5e36
+    expected_rating: A
+    expected_roles: {web: [Nop.Web], tool: [ClearPluginAssemblies]}
+    notes: Ships an official Linux Dockerfile + docker-compose (MySQL/Postgres/MSSQL). Windows-only ACL/identity code is behind OperatingSystem.IsWindows() and [SupportedOSPlatform("windows")]; Data Protection keys persisted in Nop.Web.Framework.
+
+  - name: rw-orchardcore
+    url: https://github.com/OrchardCMS/OrchardCore
+    commit: 0c8e1bc1537cdd1e76e1d20c277fec7b3c38d5b2
+    expected_rating: A
+    expected_roles: {web: [OrchardCore.Cms.Web, OrchardCore.Mvc.Web], tool: [OrchardCore.AspireHost]}
+    notes: Very large (400MB clone, ~900 projects). Official Linux docker images exist. TFMs come from $(CommonTargetFrameworks) in src/OrchardCore.Build/TargetFrameworks.props.
+
+  - name: rw-jellyfin
+    url: https://github.com/jellyfin/jellyfin
+    commit: f62045f56e07ac3f4617bdba88d3597563c45121
+    expected_rating: A
+    expected_roles: {web: [jellyfin], tool: [Emby.Server.Implementations.Fuzz, Jellyfin.Api.Fuzz]}
+    notes: Official Linux docker image; needs persistent data/config volumes (SQLite) and ffmpeg in the image. `using System.Drawing;` is only System.Drawing.Primitives (Size/Point).
+
+  - name: rw-blazor-workshop
+    url: https://github.com/dotnet-presentations/blazor-workshop
+    commit: e0f5968e7c4699209dc7b5b0b2edc86162287792
+    expected_rating: A
+    expected_roles: {web: [BlazingPizza]}
+    notes: Blazor (server + WASM client) with SQLite. save-points/ contains 7 copies of the same app (workshop steps); only src/ is the real app.
+
+  - name: rw-functions-quickstart-dotnet-azd-cosmosdb
+    url: https://github.com/Azure-Samples/functions-quickstart-dotnet-azd-cosmosdb
+    commit: ba187eb2508163a7849e8938ca13f476b83cdc56
+    expected_rating: B
+    expected_roles: {functions: [functions-quickstart-dotnet-azd-cosmosdb]}
+    notes: .NET 10 isolated-worker Azure Function (new Sdk="Azure.Functions.Sdk", package Microsoft.Azure.Functions.Worker), CosmosDB trigger. Runs in the azure-functions dotnet-isolated Linux image; trigger scaling needs KEDA. Must not be reported as "no server-side component".
+
+  - name: rw-eshopmodernizing
+    url: https://github.com/dotnet-architecture/eShopModernizing
+    commit: 63bc9ec4414d7e281dc9f9d7bdcf70030950457d
+    expected_rating: C
+    expected_roles: {web: [eShopLegacyMVC, eShopModernizedMVC, eShopLegacyWebForms, eShopModernizedWebForms, WcfService1, eShopPorted], desktop: [eShopWinForms]}
+    notes: .NET Framework 4.7.2 MVC5 / WebForms / WCF (.svc) and WinForms clients; built for Windows containers. Linux needs a port. System.EnterpriseServices/System.Management/System.Windows.Forms are unused template references. Web.Release.config connection strings are inside XML comments. eShopPorted is ASP.NET Core 2.2 on net461 (retarget only).
+
+  - name: rw-smartstorenet
+    url: https://github.com/smartstore/SmartStoreNET
+    commit: b6520754a3793da1bd4157589459b6cac7f2ef8c
+    expected_rating: C
+    expected_roles: {web: [SmartStore.Web], library: [SmartStore.Admin, "src/Plugins/*"]}
+    notes: .NET Framework 4.7.2 MVC5 e-commerce; port required (successor Smartstore is .NET Core). Plugins and Admin are MVC area/plugin libraries loaded into SmartStore.Web (web project type GUID but no Global.asax). Nothing is a hard blocker; .mdb only appears in a JS file-type map.
+
+  - name: rw-umbraco8
+    url: https://github.com/umbraco/Umbraco-CMS
+    commit: dac9986ed28b798400ced60d1b055771f6b973e1
+    ref: release-8.18.9
+    expected_rating: C
+    expected_roles: {web: [Umbraco.Web.UI], library: [Umbraco.Web, Umbraco.ModelsBuilder.Embedded], tool: [Umbraco.TestData, Umbraco.Tests.Benchmarks]}
+    notes: Umbraco v8 on .NET Framework 4.7.2 MVC5/WebApi/OWIN; Linux needs the v9+ port. dbghelp MiniDump P/Invoke is an optional crash dump; LocalDb.cs ProgramFiles probe is dev-only.
+
+  - name: rw-footloosefinancialservices
+    url: https://github.com/pcarrasco23/FootlooseFinancialServices
+    commit: 2edc7016684159358aaf7e0db86887f5da6a8e2d
+    expected_rating: C
+    expected_roles: {web: [FootlooseFS.EnterpriseService, FootlooseFS.Web.AdminUI, FootlooseFS.Web.Service], console: [FootlooseFSDocumentDBETL]}
+    notes: .NET 4.5 WCF (.svc) + MVC + Web API + ETL console, EF6, SQL LocalDB (AttachDbFilename) and MongoDB. Port to .NET 8 / CoreWCF; LocalDB must become a real SQL Server.
+
+  - name: rw-owin-webapi-service
+    url: https://github.com/danesparza/OWIN-WebAPI-Service
+    commit: 7135b8ca6ee93dbdb1b7b3a9b2eafdabb9100791
+    expected_rating: C
+    expected_roles: {worker: [OWINTest.Service]}
+    notes: Windows service (ServiceBase, OutputType WinExe) self-hosting OWIN Web API 2 on .NET 4.5. Port to a .NET 8 Kestrel app; it is not a desktop app.
+
+  - name: rw-sampleuiandservice
+    url: https://github.com/r-aghaei/SampleUIandService
+    commit: 8cb4683446fa97876480deb89117d9ade7799a34
+    expected_rating: D
+    expected_roles: {worker: [ServiceLayer], desktop: [UILayer]}
+    notes: WCF service hosted in a Windows service (ServiceBase, WinExe, net48) + WinForms client + installer. Service is portable via CoreWCF; the WinForms UI stays on PCs.
+
+  - name: rw-sharex
+    url: https://github.com/ShareX/ShareX
+    commit: 5668552d390bcb62e7ae02851453ae0e8622a7f6
+    expected_rating: E
+    expected_roles: {desktop: [ShareX, ShareX.ImageEditor.App, ShareX_Launcher, ShareX_NativeMessagingHost], tool: [ShareX.Setup], library: [ShareX.HelpersLib]}
+    notes: WinForms screen-capture desktop app; no server-side component at all. ShareX.Setup is an installer build tool, ShareX.HelpersLib is a library.
