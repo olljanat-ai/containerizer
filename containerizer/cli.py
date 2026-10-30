@@ -77,6 +77,42 @@ def cmd_verify(args) -> int:
     return rc
 
 
+def cmd_gate(args) -> int:
+    from .imagescan import gate_app
+
+    rules = load_rules()
+    rc = 0
+    base_cache: dict = {}
+    for app in _apps(args.paths):
+        a = assess(app, rules)
+        out = Path(args.out) / a.name if args.out else Path(app) / "containerize"
+        r = gate_app(a, out, build=args.build, scan=not args.no_scan, scanner=args.scanner, fail_on=args.fail_on,
+                     registry=args.registry, pin=args.pin_digests, base_cache=base_cache)
+        blocking = sum(len(s["blocking"]) for c in r["components"] for s in c["scans"])
+        print(f"{a.name:24s} {'PASS' if r['passed'] else 'FAIL'}  lint errors={r['lint'].get('error', 0)} "
+              f"warnings={r['lint'].get('warning', 0)}  blocking vulns={blocking}  -> {out / 'SECURITY.md'}")
+        if not r["passed"]:
+            rc = 1
+    return rc
+
+
+def cmd_images(args) -> int:
+    from .harden import lifecycle
+    from .imagescan import image_refs, update_images
+
+    if args.update:
+        update_images(scan=not args.no_scan, scanner=args.scanner)
+        return 0
+    from .generate import images_lock
+    lock = images_lock()
+    for slot, ref in image_refs():
+        cur = lock.get(ref, {}).get("tag", ref)
+        lc = lifecycle(cur)
+        eol = "" if not lc else (f"  EOL {lc['eol']}" + (" (passed)" if lc["days_left"] < 0 else f" ({lc['days_left']} days)"))
+        print(f"{slot:22s} {cur}{eol}")
+    return 0
+
+
 def cmd_bench(args) -> int:
     from .bench import run_bench
 
@@ -132,6 +168,23 @@ def main(argv=None) -> int:
     s.add_argument("--learn", action="store_true")
     s.add_argument("--force", action="store_true", help="review even when confidence is high")
     s.set_defaults(fn=cmd_ai)
+
+    s = sub.add_parser("gate", help="security gate: lint generated manifests and scan images for vulnerabilities")
+    s.add_argument("paths", nargs="+")
+    s.add_argument("--out")
+    s.add_argument("--build", action="store_true", help="also build each image and scan it (not only its base)")
+    s.add_argument("--no-scan", action="store_true", help="lint only")
+    s.add_argument("--scanner", default="auto", choices=["auto", "trivy", "grype"])
+    s.add_argument("--fail-on", default=None, help="lowest failing severity (default from rules/60-security.yaml)")
+    s.add_argument("--registry", default="registry.local")
+    s.add_argument("--pin-digests", action="store_true")
+    s.set_defaults(fn=cmd_gate)
+
+    s = sub.add_parser("images", help="show base images, or pick patched tags with --update")
+    s.add_argument("--update", action="store_true", help="choose the newest patched tags and write rules/images.lock.yaml")
+    s.add_argument("--no-scan", action="store_true", help="choose the newest tags without scanning them")
+    s.add_argument("--scanner", default="auto", choices=["auto", "trivy", "grype"])
+    s.set_defaults(fn=cmd_images)
 
     s = sub.add_parser("bench", help="score assessments against labelled expectations")
     s.add_argument("--challenge", default="../containerization-challenge")
