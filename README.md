@@ -238,7 +238,61 @@ default, newer stable lines for nginx, and the successor line for toolchains pas
 golang). .NET majors are never moved automatically. `images` alone shows each line and its end of
 support. `CONTAINERIZER_IMAGES_LOCK=0` ignores the lock; the gate warns when it is older than 14 days.
 
+## Running it from a pipeline
+
+The tool is meant to be run once or a few times per repository, so the main pipeline use is a
+**one-shot assessment**: the pipeline runs `analyze` (assess, build and run every feasible component on the
+build agent, learn from failures, re-assess, write reports and generated files), so the verdicts are
+confirmed, not just predicted. Speed is not a goal: verification is on by default and each build or run may take up to 30 minutes.
+
+### One-shot assessment on GitHub Actions
+
+```yaml
+on: workflow_dispatch
+permissions:
+  contents: write               # only for open-pr
+  pull-requests: write          # only for open-pr
+jobs:
+  assess:
+    runs-on: ubuntu-latest      # has Docker, needed for verification
+    steps:
+      - uses: actions/checkout@v4
+      - uses: olljanat-ai/containerizer@main
+        with:
+          mode: assess
+          path: src
+          # ai: true                                       # ask Claude about uncertain components
+          # anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # open-pr: true                                  # PR adding <app>/containerize/ folders
+```
+
+The job summary has the portfolio table, a build-and-run table that flags every component predicted
+ready that did not build or run ("static verdict not confirmed"), and each app's full report. The
+`containerizer-report` artifact holds the Markdown/HTML/JSON reports, generated files, verification
+results and logs. Outputs: `rating`, `unconfirmed`, `report-dir`, `pr-url`. With the default
+`mode: auto` the action runs the assessment on any event except pull requests, where it runs the gate.
+
+### One-shot assessment on Azure DevOps
+
+```yaml
+trigger: none
+pool:
+  vmImage: ubuntu-latest
+steps:
+  - checkout: self
+  - template: ci/azure/containerizer-assess.yml
+    parameters:
+      path: src
+```
+
+[`ci/azure/containerizer-assess.yml`](ci/azure/containerizer-assess.yml) publishes the same report as
+the `containerizer-report` artifact and the summary on the build's Extensions tab.
+
 ## CI/CD gate
+
+If a team keeps working on an application after the assessment, the gate stops new Windows-only
+dependencies from creeping in.
+
 
 `check` compares the current tree with a base branch (or a saved baseline) and fails when a change makes
 an application harder to containerize: a new finding of severity `rewrite` or worse (Windows-only APIs,
@@ -255,7 +309,7 @@ python -m containerizer check src/ --max-rating B --fail-on blocker      # absol
 Exit code 0 = pass, 1 = gate failed, anything else = error. Options: `--fail-on none|config|refactor|rewrite|blocker`,
 `--allow-rating-drop`, `--max-rating A-E`, `--annotations github|azure`, `--json`, `--link <blob URL prefix>`.
 
-### GitHub Actions
+### Gate on GitHub Actions
 
 ```yaml
 on: pull_request
@@ -281,7 +335,7 @@ job when the gate fails. Outputs: `rating`, `failed`, `new-findings`, `markdown-
 This repository dogfoods it in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) on
 [`examples/ci-demo`](examples/ci-demo) and self-tests it on a challenge app with a Windows-only change.
 
-### Azure DevOps
+### Gate on Azure DevOps
 
 [`ci/azure/containerizer-steps.yml`](ci/azure/containerizer-steps.yml) is a steps template. Copy it into
 your repository (or reference it through a repository resource):

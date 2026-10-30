@@ -174,6 +174,34 @@ def test_azure_comment_create_then_update(tmp_path):
     assert _AdoMock.calls[3][1].startswith("/org/proj/_apis/git/repositories/repo/pullRequests/7/threads/1/comments/1")
 
 
+def test_assessment_summary_flags_unconfirmed_verdicts(tmp_path):
+    from containerizer.ci import assessment_summary
+
+    web_app(tmp_path / "app")
+    out = tmp_path / "rep"
+    assert main(["assess", str(tmp_path / "app"), "--out", str(out), "-q"]) == 0
+    (out / "app.verify.json").write_text(json.dumps([
+        {"app": "app", "component": "Web", "status": "build-failed", "predicted": "config", "detail": "unexplained"},
+        {"app": "app", "component": "Jobs", "status": "ok", "predicted": "info", "detail": "ok"},
+        {"app": "app", "component": "Legacy", "status": "skipped", "predicted": "blocker", "detail": ""}]))
+    s = assessment_summary(out)
+    assert s.startswith("# Containerization portfolio")
+    assert "static verdict not confirmed" in s and "1 component(s) predicted ready did not run" in s
+    assert "<details><summary>app</summary>" in s
+
+
+def test_verification_results_from_analyze_output(tmp_path):
+    from containerizer.ci import unconfirmed, verification_results
+
+    (tmp_path / "assessment.json").write_text(json.dumps([
+        {"name": "a", "verification": [{"component": "Web", "status": "run-failed", "predicted": "config"},
+                                       {"component": "Api", "status": "ok-external", "predicted": "info"}]},
+        {"name": "b", "verification": [{"component": "Old", "status": "skipped", "predicted": "blocker"}]}]))
+    res = verification_results(tmp_path)
+    assert [r["app"] for r in res] == ["a", "a", "b"]
+    assert unconfirmed(res) == 1
+
+
 def test_explanations_and_references_reach_every_output(tmp_path, monkeypatch):
     from containerizer import rules as rules_mod
     from containerizer.ci import markdown
