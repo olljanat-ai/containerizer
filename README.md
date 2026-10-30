@@ -25,6 +25,10 @@ Design principles:
 ```bash
 pip install -r requirements.txt            # PyYAML; `anthropic` optional for the API backend
 
+# the recommended one-shot run per repository: assess, build and run every feasible component,
+# learn from failures, re-assess with what was learned, write reports + Dockerfiles + manifests
+python -m containerizer analyze <repo> --out out/            # add --ai --model claude-sonnet-5-5 for Claude review
+
 # assess: one app, or a folder with scenarios/
 python -m containerizer assess ../containerization-challenge -v
 python -m containerizer assess ../containerization-challenge --out reports/   # md + html + json

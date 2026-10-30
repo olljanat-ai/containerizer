@@ -47,6 +47,24 @@ def migration_markdown(a: AppAssessment) -> str:
         if c.uncertain:
             L.append(f"- ? Unknown to the rule set: {', '.join(c.uncertain[:8])}")
         L.append("")
+    ver = getattr(a, "verification", None)
+    if ver:
+        L += ["## Build-and-run verification", "",
+              "Each feasible component was built from the generated Dockerfile and run hardened "
+              "(read-only root filesystem, non-root, no capabilities).", "",
+              "| Component | Result | Attempts |", "| --- | --- | --- |"]
+        text = {"ok": "runs", "ok-external": "runs; stops only at missing external services",
+                "finding": "runtime finding", "build-failed": "build failed", "run-failed": "run failed"}
+        for r in ver:
+            if r["status"] == "skipped":
+                continue
+            res = text.get(r["status"], r["status"])
+            if r.get("mode") == "smoke" or r.get("smoke") == "ok":
+                res += " (proven in Development mode without production services)"
+            if r.get("finding"):
+                res += f": {r['finding'].get('title', '')}"
+            L.append(f"| {r['component']} | {res} | {r.get('detail', '')} |")
+        L.append("")
     other = [c for c in a.libraries if any(f.severity in ("blocker", "rewrite") for f in c.findings)]
     if other:
         L += ["## Libraries with notable findings", ""]
@@ -107,4 +125,6 @@ def write_reports(results: list[AppAssessment], out: Path, fmt: str = "md,html,j
     if "html" in fmts:
         (out / "portfolio.html").write_text(portfolio_html(results))
     if "json" in fmts:
-        (out / "assessment.json").write_text(json.dumps([a.to_dict() for a in results], indent=2, default=str))
+        docs = [{**a.to_dict(), **({"verification": a.verification} if getattr(a, "verification", None) else {})}
+                for a in results]
+        (out / "assessment.json").write_text(json.dumps(docs, indent=2, default=str))
