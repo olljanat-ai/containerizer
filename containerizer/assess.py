@@ -1,6 +1,7 @@
 """Turns scanned facts + rules into an assessment per component and per application."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -231,6 +232,50 @@ def classify_role(repo: Repo, p: Project, rules: list[Rule]) -> tuple[str, str]:
     return best[1], best[2]
 
 
+WEB_HOST_RE = re.compile(r"WebApplication\.Create(Builder|SlimBuilder)?\s*\(|WebHost\.CreateDefaultBuilder|"
+                         r"ConfigureWebHostDefaults|\.UseKestrel\s*\(")
+DELEGATED_MAIN_RE = re.compile(r"\b((?:[A-Za-z_]\w*\.)+)Program\.Main(?:Async)?\s*\(")
+TYPE_DECL_RE = re.compile(r"\b(?:class|record|struct)\s+([A-Z]\w*)")
+
+
+def _is_aspnetcore(p: Project) -> bool:
+    return bool(re.search(r"Microsoft\.NET\.Sdk\.Web$", p.sdk or "")) or "Microsoft.AspNetCore.App" in p.framework_refs
+
+
+def hosts_web_via_library(repo: Repo, p: Project) -> bool:
+    """A console Exe that starts a Kestrel web host built in a referenced ASP.NET Core library.
+
+    Common shape: a thin launcher (`Executables/X/Program.cs` -> `X.Program.Main(args)` in a
+    library) whose library starts `WebApplication.CreateBuilder(...)` in a web-host class from an
+    Sdk.Web library. Only the launcher's own code and the library Program it delegates to are
+    followed, so a CLI that merely uses DTOs of the web library stays a console app."""
+    if p.kind_hint != "dotnet" or (p.output_type or "").lower() != "exe":
+        return False
+    libs = _closure(repo, p)
+    hosts: set[str] = set()
+    for lib in libs:
+        if not _is_aspnetcore(lib):
+            continue
+        for f in lib.files:
+            if f.suffix.lower() == ".cs":
+                t = lib.text(f, True)
+                if WEB_HOST_RE.search(t):
+                    hosts |= set(TYPE_DECL_RE.findall(t))
+    if not hosts:
+        return False
+    seeds = [p.text(f, True) for f in p.files if f.suffix.lower() == ".cs"]
+    for ns in {m.group(1).rstrip(".") for t in list(seeds) for m in DELEGATED_MAIN_RE.finditer(t)}:
+        ns_rx = re.compile(rf"\bnamespace\s+{re.escape(ns)}\s*[;{{]")
+        for lib in libs:
+            for f in lib.files:
+                if f.suffix.lower() == ".cs":
+                    t = lib.text(f, True)
+                    if ns_rx.search(t) and re.search(r"\bclass\s+Program\b", t):
+                        seeds.append(t)
+    rx = re.compile(r"\b(" + "|".join(sorted(map(re.escape, hosts))) + r")\b")
+    return any(rx.search(t) for t in seeds)
+
+
 def _closure(repo: Repo, p: Project) -> list[Project]:
     out, stack, seen = [], list(p.project_refs), set()
     while stack:
@@ -254,6 +299,8 @@ def assess(path: str | Path, rules: list[Rule] | None = None, repo: Repo | None 
     comps: dict[Path, Component] = {}
     for p in repo.projects:
         role, rid = classify_role(repo, p, rules)
+        if role == "console" and hosts_web_via_library(repo, p):
+            role, rid = "web", "role-web-hosted-library"
         c = Component(project=p, role=role, role_rule=rid)
         ctx = Context(repo, p, role)
         for r in finding_rules:

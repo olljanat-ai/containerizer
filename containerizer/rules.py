@@ -9,14 +9,16 @@ Condition primitives (all values are case-insensitive regular expressions
 unless noted):
 
   sdk, tfm, package, reference, framework_ref, output_type, kind, role, name
+  path: regex             the project file's path relative to the repository root ('/' separators)
   property: {Name: regex}
   file: glob              file name (or relative path when the glob has '/')
   code: regex             source files, comments stripped; optional `in: glob`
   config: regex           configuration files; optional `in: glob`
   text: regex             any text file; optional `in: glob`
   readme: regex           repository README (repo scope)
-  unguarded: true         (with code) ignore hits right after an OperatingSystem.IsWindows() check
-                          or inside a method/type marked [SupportedOSPlatform("windows")]
+  unguarded: true         (with code) ignore hits right after an OS check (OperatingSystem.IsWindows(),
+                          IsLinux(), IsMacOS(), IsOSPlatform(...)) or inside a method/type marked
+                          [SupportedOSPlatform("windows"|"macos"|"linux"...)]
   any: [...], all: [...], not: {...}
   same_file: true         (next to `all`) the code/config/text conditions directly under the
                           `all` must all match in one and the same file
@@ -158,11 +160,17 @@ def _snip(txt: str, m: re.Match) -> str:
     return line[:160]
 
 
-GUARD_RE = re.compile(r"OperatingSystem\.IsWindows\(\)|IsOSPlatform\(\s*OSPlatform\.Windows\s*\)|"
+# An explicit platform check means the authors branch per OS: code right after it is
+# platform-specific (the Windows branch, or a macOS/Linux branch that is not Windows code
+# either), and a Linux container takes the branch written for it.
+GUARD_RE = re.compile(r"OperatingSystem\.Is(Windows|MacOS|Linux|FreeBSD|MacCatalyst|IOS|Android)\(\)|"
+                      r"IsOSPlatform\(\s*OSPlatform\.(Windows|OSX|Linux|FreeBSD)\s*\)|"
                       r"Environment\.OSVersion\.Platform\s*==\s*PlatformID\.Win32NT")
 
 
-SUPPORTED_WIN_RE = re.compile(r'\[\s*SupportedOSPlatform\(\s*"windows[^"]*"\s*\)\s*\]')
+# members/types the authors marked as running on one specific OS (CA1416 makes callers guard them)
+SUPPORTED_WIN_RE = re.compile(r'\[\s*SupportedOSPlatform\(\s*"(windows|macos|osx|linux|freebsd|maccatalyst|ios|android)'
+                              r'[^"]*"\s*\)\s*\]', re.I)
 
 
 def _in_windows_only_member(txt: str, pos: int) -> bool:
@@ -172,6 +180,11 @@ def _in_windows_only_member(txt: str, pos: int) -> bool:
     only ever makes a hit count as unguarded."""
     if "SupportedOSPlatform" not in txt:
         return False
+    # the attribute may follow the hit in the same attribute list:
+    # [DllImport("kernel32.dll")] [SupportedOSPlatform("windows")] static extern ...;
+    decl_end = min((i for i in (txt.find(";", pos), txt.find("{", pos)) if i >= 0), default=len(txt))
+    if SUPPORTED_WIN_RE.search(txt, pos, decl_end):
+        return True
     for m in SUPPORTED_WIN_RE.finditer(txt, 0, pos):
         end = m.end()
         brace = txt.find("{", end, pos + 1)
@@ -194,9 +207,68 @@ def _in_windows_only_member(txt: str, pos: int) -> bool:
     return False
 
 
-def _guarded(txt: str, pos: int) -> bool:
-    """True when the match sits within a few lines after an OS check for Windows, or inside a
-    member the authors marked [SupportedOSPlatform("windows")] (callers must guard it)."""
+def _block_end(txt: str, brace: int) -> int:
+    """Index just after the brace that closes the block opened at txt[brace] (len(txt) if unclosed)."""
+    depth = 0
+    for i in range(brace, len(txt)):
+        ch = txt[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return len(txt)
+
+
+PRIVATE_TYPE_RE = re.compile(r"\bprivate\s+(?:(?:static|sealed|partial|unsafe|abstract)\s+)*(?:class|struct)\s+(\w+)[^{;]*\{")
+
+
+def _in_guarded_private_type(txt: str, pos: int) -> bool:
+    """True when pos is inside a private nested type (usable only from its own file) and every
+    use of that type outside its body is itself OS-guarded, e.g. a `private class PrivilegeChecker`
+    holding advapi32 P/Invokes that is only called after `if (OperatingSystem.IsWindows())`."""
+    if "private" not in txt:
+        return False
+    for m in PRIVATE_TYPE_RE.finditer(txt, 0, pos):
+        body_start, body_end = m.end() - 1, _block_end(txt, m.end() - 1)
+        if not body_start < pos < body_end:
+            continue
+        uses = [u.start() for u in re.finditer(rf"\b{re.escape(m.group(1))}\b", txt)
+                if not (m.start() <= u.start() < body_end)]
+        if uses and all(_guarded(txt, u, nested=False) for u in uses):
+            return True
+    return False
+
+
+# `if (!OperatingSystem.IsWindows()) return ...;` (or throw): the rest of the block is Windows-only,
+# the pattern the CA1416 platform analyzer recognises
+EARLY_EXIT_RE = re.compile(r"if\s*\(\s*!\s*(OperatingSystem\.IsWindows\(\)|RuntimeInformation\.IsOSPlatform\(\s*OSPlatform\.Windows\s*\))"
+                           r"\s*\)\s*(\{\s*(return|throw)\b[^;{}]*;\s*\}|(return|throw)\b[^;{}]*;)")
+
+
+def _after_early_exit(txt: str, pos: int, window: int = 4000) -> bool:
+    if "IsWindows" not in txt and "OSPlatform.Windows" not in txt:
+        return False
+    lo = max(0, pos - window)
+    for m in EARLY_EXIT_RE.finditer(txt, lo, pos):
+        depth = 0
+        for ch in txt[m.end():pos]:
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth < 0:        # left the block that held the check
+                    break
+        else:
+            return True
+    return False
+
+
+def _guarded(txt: str, pos: int, nested: bool = True) -> bool:
+    """True when the match sits within a few lines after an OS check, inside a member the
+    authors marked [SupportedOSPlatform(...)] (callers must guard it), or inside a private
+    helper type that is only used from guarded code."""
     start = pos
     for _ in range(6):
         start = txt.rfind("\n", 0, start - 1)
@@ -205,7 +277,9 @@ def _guarded(txt: str, pos: int) -> bool:
             break
     if GUARD_RE.search(txt, start, txt.find("\n", pos) if txt.find("\n", pos) > 0 else len(txt)):
         return True
-    return _in_windows_only_member(txt, pos)
+    if _in_windows_only_member(txt, pos) or _after_early_exit(txt, pos):
+        return True
+    return nested and _in_guarded_private_type(txt, pos)
 
 
 def _search_files(ctx: Context, pattern: str, files: list[Path], strip: bool, max_hits: int | None = 3,
@@ -356,6 +430,9 @@ def _eval_one(key: str, val, cond: dict, ctx: Context):
         return bool(_rx(f"^(?:{val})$").search(p.kind_hint)), [], {}
     if key == "name":
         return bool(_rx(val).search(p.name)), [], {}
+    if key == "path":
+        rel = p.rel.replace("\\", "/")
+        return bool(_rx(val).search(rel)), [Evidence(rel)], {}
     if key == "property":
         ev = []
         for name, rx in val.items():

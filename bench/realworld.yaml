@@ -69,7 +69,7 @@ repos:
     url: https://github.com/smartstore/SmartStoreNET
     commit: b6520754a3793da1bd4157589459b6cac7f2ef8c
     expected_rating: C
-    expected_roles: {web: [SmartStore.Web], library: [SmartStore.Admin, "src/Plugins/*"]}
+    expected_roles: {web: [SmartStore.Web], library: [SmartStore.Admin, "src/Plugins/SmartStore.[A-CE-Z]*"], tool: [SmartStore.DevTools]}
     notes: .NET Framework 4.7.2 MVC5 e-commerce; port required (successor Smartstore is .NET Core). Plugins and Admin are MVC area/plugin libraries loaded into SmartStore.Web (web project type GUID but no Global.asax). Nothing is a hard blocker; .mdb only appears in a JS file-type map.
 
   - name: rw-umbraco8
@@ -77,8 +77,9 @@ repos:
     commit: dac9986ed28b798400ced60d1b055771f6b973e1
     ref: release-8.18.9
     expected_rating: C
-    expected_roles: {web: [Umbraco.Web.UI], library: [Umbraco.Web, Umbraco.ModelsBuilder.Embedded], tool: [Umbraco.TestData, Umbraco.Tests.Benchmarks]}
+    expected_roles: {web: [Umbraco.Web.UI], library: [Umbraco.Web, Umbraco.ModelsBuilder.Embedded, Umbraco.TestData], tool: [Umbraco.Tests.Benchmarks]}
     notes: Umbraco v8 on .NET Framework 4.7.2 MVC5/WebApi/OWIN; Linux needs the v9+ port. dbghelp MiniDump P/Invoke is an optional crash dump; LocalDb.cs ProgramFiles probe is dev-only.
+    review: "2026-10-30 Umbraco.TestData expected library (it is a class library, not a deployable tool)."
 
   - name: rw-footloosefinancialservices
     url: https://github.com/pcarrasco23/FootlooseFinancialServices
@@ -182,13 +183,14 @@ repos:
   - name: rw2-exceptionless
     url: https://github.com/exceptionless/Exceptionless
     commit: 4890dc438e5fc90d3b9b17eda52778712dd8f752
-    expected_rating: A
+    expected_rating: B
     expected_roles: {web: [Exceptionless.Web], worker: [Exceptionless.Job], tool: [Exceptionless.AppHost], test: [Exceptionless.Tests]}
     notes: >-
       net10.0, multi-stage Linux Dockerfile with separate job/api/app targets. Exceptionless.Job uses Sdk.Web but is a
       Foundatio job runner (Host.CreateDefaultBuilder + JobRunnerOptions); its web host only serves /health and /ready,
       so it is a worker. Needs Elasticsearch + Redis.
       tool (2026-10-30): B. active-directory-ds refactor via Exceptionless.Core is real (Authentication/ActiveDirectoryLoginProvider.cs:25 new DirectoryEntry, optional LDAP login) -- I missed it when reading; I keep A because it is an opt-in provider, but B is defensible. process-start-exe is a false positive on EventIndex.cs:305 `CommandLine = "cmd"` string constant. Exceptionless.Job is web via role-web-aspnetcore (Sdk.Web + Exe) though it only serves health endpoints.
+    review: "2026-10-30 changed A->B after review: ActiveDirectoryLoginProvider uses System.DirectoryServices, which throws on Linux when LDAP login is enabled; a real (optional) refactor."
 
   - name: rw2-duplicati
     url: https://github.com/duplicati/duplicati
@@ -276,7 +278,7 @@ repos:
   - name: rw2-rapidscada
     url: https://github.com/RapidScada/scada
     commit: f5a9f96beb83b21f6c4076fb29e46990b98056a1
-    expected_rating: C
+    expected_rating: D
     expected_roles: {worker: [ScadaServerSvc, ScadaCommSvc, ScadaAgentSvc], web: [ScadaWebShell], desktop: [ScadaAdmin, ScadaServerCtrl, ScadaCommCtrl, ScadaSchemeEditor, ScadaTableEditor]}
     notes: >-
       Rapid SCADA v5, .NET Framework 4.6.1, 66 projects in many solutions. Mixed: three Windows services (ServiceBase,
@@ -286,6 +288,7 @@ repos:
       passthrough but are not Windows-only; Excel/Word reports are SpreadsheetML/XML, not Office interop. Port (v6 did
       exactly that on .NET 6) = C.
       tool (2026-10-30): D. serial-port blocker (ScadaCommCommon/SerialPortUtils.cs:50 etc.) and winforms-in-library blocker (ScadaCommCommon/Channels/UI/FrmComm*Props.cs `using System.Windows.Forms`, config dialogs shipped in the shared library) on ScadaCommSvc/ScadaCommMono, plus PlgScheme. Serial is edge-hardware-bound rather than Windows-bound, so D is arguable; I keep C. Expected roles all match.
+    review: "2026-10-30 changed C->D after review: serial-port channels tie the comm services to device hosts and WinForms dialogs live in ScadaCommCommon used by the services; consistent with the challenge's serial-reader label (blocked)."
 
   - name: rw2-winsw
     url: https://github.com/winsw/winsw
