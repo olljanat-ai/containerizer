@@ -308,7 +308,8 @@ def parse_dotnet_project(path: Path, root: Path) -> Project:
         pr.tfms = [t.strip() for t in tfm.split(";") if t.strip() and "$(" not in t]
     elif props.get("TargetFrameworkVersion"):
         pr.tfms = [_framework_version_to_tfm(props["TargetFrameworkVersion"])]
-    pr.output_type = props.get("OutputType", "Library" if pr.sdk_style else "")
+    default_ot = "Exe" if re.search(r"Sdk\.(Web|Worker)$", pr.sdk or "") else ("Library" if pr.sdk_style else "")
+    pr.output_type = props.get("OutputType", default_ot)
     pr.assembly_name = props.get("AssemblyName", path.stem)
     return pr
 

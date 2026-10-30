@@ -58,6 +58,8 @@ class Component:
     role_rule: str = ""
     confidence: float = 1.0
     uncertain: list[str] = field(default_factory=list)
+    override: str = ""          # verdict decided by AI review (hybrid mode)
+    ai: dict = field(default_factory=dict)
 
     @property
     def name(self) -> str:
@@ -65,6 +67,12 @@ class Component:
 
     @property
     def verdict(self) -> str:
+        if self.override:
+            return self.override
+        return self.rule_verdict
+
+    @property
+    def rule_verdict(self) -> str:
         if not self.findings:
             return "info"
         return max((f.severity for f in self.findings), key=lambda s: SEV_RANK[s])
@@ -108,6 +116,7 @@ class Component:
                 "tfm": self.project.tfms, "verdict": self.verdict, "verdict_text": VERDICT_TEXT[self.verdict],
                 "score": self.score, "effort_days": self.effort, "windows_container_ok": self.windows_container_ok,
                 "confidence": round(self.confidence, 2), "uncertain": self.uncertain,
+                "rule_verdict": self.rule_verdict, "ai": self.ai,
                 "facts": self.facts, "findings": [f.to_dict() for f in sorted(
                     self.findings, key=lambda f: -SEV_RANK[f.severity])]}
 
@@ -297,3 +306,25 @@ def assess(path: str | Path, rules: list[Rule] | None = None, repo: Repo | None 
         tests=[c for c in all_c if c.role in ("test", "tool")],
         repo_findings=repo_findings,
     )
+
+
+def apply_ai(a: AppAssessment, model: str | None = None, threshold: float = 0.85, learn: bool = False) -> list[dict]:
+    """Hybrid mode: ask Claude about the components the rules are unsure of."""
+    from .ai import ai_review_component, learn_from_review
+
+    usage = []
+    for c in a.components:
+        if c.tier not in ("server", "platform") or c.confidence >= threshold:
+            continue
+        try:
+            r = ai_review_component(a, c, model)
+        except Exception as e:  # noqa: BLE001
+            c.ai = {"error": str(e)}
+            continue
+        c.ai = {k: r[k] for k in ("verdict", "confidence", "reasoning", "model")}
+        if r.get("confidence", 0) >= 0.6 and r["verdict"] != c.rule_verdict:
+            c.override = r["verdict"]
+        if learn:
+            learn_from_review(a, c, r)
+        usage.append(r)
+    return usage

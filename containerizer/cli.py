@@ -28,6 +28,9 @@ def cmd_assess(args) -> int:
     results = []
     for app in _apps(args.paths):
         a = assess(app, rules)
+        if args.ai:
+            from .assess import apply_ai
+            apply_ai(a, args.model)
         results.append(a)
         if not args.quiet:
             print(f"{a.name:24s} {a.rating} score={a.score:3d} effort={a.effort:5.1f}d conf={a.confidence:.2f}  {a.summary()}")
@@ -102,6 +105,8 @@ def main(argv=None) -> int:
     s.add_argument("--json", action="store_true")
     s.add_argument("--out", help="write reports to this folder")
     s.add_argument("--format", default="md,html,json")
+    s.add_argument("--ai", action="store_true", help="ask Claude about low-confidence components")
+    s.add_argument("--model", default=None)
     s.set_defaults(fn=cmd_assess)
 
     s = sub.add_parser("generate", help="generate Dockerfiles and Kubernetes manifests")
@@ -131,6 +136,8 @@ def main(argv=None) -> int:
     s.add_argument("--labels", default=str(Path(__file__).resolve().parent.parent / "bench" / "labels.yaml"))
     s.add_argument("-v", "--verbose", action="store_true")
     s.add_argument("--json")
+    s.add_argument("--technique", default="rules", choices=["rules", "hybrid", "ai-only", "ai+rules"])
+    s.add_argument("--model", default=None)
     s.set_defaults(fn=cmd_bench)
 
     args = ap.parse_args(argv)

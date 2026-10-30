@@ -167,12 +167,16 @@ rules:
     priority: 60
     when:
       any:
-        - sdk: Microsoft\.NET\.Sdk\.(Web|BlazorWebAssembly|Razor)
+        - all:
+            - sdk: Microsoft\.NET\.Sdk\.(Web|BlazorWebAssembly)
+            - output_type: Exe
         - all:
             - framework_ref: Microsoft\.AspNetCore\.App
+            - output_type: Exe
             - code: 'WebApplication\.Create(Builder|SlimBuilder)?|UseStartup<|ConfigureWebHost|WebHost\.CreateDefaultBuilder'
         - all:
             - package: Microsoft\.AspNetCore(\.App|\.All)?
+            - output_type: Exe
             - code: 'UseStartup<|WebHost\.CreateDefaultBuilder|ConfigureWebHostDefaults'
 
   - id: role-web-systemweb
