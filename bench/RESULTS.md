@@ -62,3 +62,32 @@ Failures from that pass became generator features and failure rules: Docker Hub 
 folders, Windows paths and listen URLs in `appsettings.json` (env overrides), file-only Serilog
 (stdout), and certificate-store lookups (finding + Development-mode smoke test). A second pass with
 these fixes is next.
+
+### On .NET 10, after the fixes (2026-10-30)
+
+Full pass with the .NET 10 images (sdk 10.0.403, runtime 10.0.14), then the five components it
+left failing re-verified after the fixes they led to:
+
+| Outcome | Full pass | After fixes |
+| --- | --- | --- |
+| runs and answers HTTP / stays up (23 of them proven in Development mode, without production services) | 52 | 55 |
+| runs, stops only at a missing external service | 2 | 3 |
+| runtime finding (Windows-only API, named mutex, ServiceController, ...) | 12 | 13 |
+| build or run failed | 5 | 0 |
+| not built (blocker, .NET Framework, library, test) | 82 | 82 |
+
+The five failures and what they became:
+
+- `ControlTower.Events`: EasyNetQ timed out connecting to RabbitMQ. The diagnosis now keeps the
+  frame that threw, so a broker client's timeout counts as an external service (rule
+  `run-broker-connect-timeout`).
+- `FabrikamDocumentService`: an empty SQLite file without its tables in the smoke test
+  (`run-sqlite-no-schema`, external: migrations run at deployment).
+- `VanArsdel.Orders.Api`: Production connection strings with the key left blank for the release
+  pipeline (`run-connection-string-blank`, external).
+- `VanArsdel.Inventory.Api`: the Development config gives the endpoint a certificate after it was
+  switched to HTTP (`run-kestrel-http-with-certificate`, config finding).
+- `VanArsdel.PosFeed` (netcoreapp2.1): retargeting with a global `-p:TargetFramework` also
+  retargeted its netstandard2.0 library. Only the entry project's `.csproj` is now retargeted, in
+  the build stage. It builds, and running it shows that it uses `ServiceController` (a runtime
+  finding).
