@@ -1,0 +1,656 @@
+# Hosting models and cloud/platform coupling (Azure Functions, WebJobs, Cloud
+# Services, Service Fabric, App Service, AWS Lambda, Blazor, gRPC, Orleans,
+# Akka, reverse-proxy behaviour, publish settings, existing container assets).
+# severity: info < config < refactor < rewrite < blocker (see 10-runtime.yaml).
+# Info rules here are deliberately informational: they never raise a verdict.
+# Repo-scope rules (scope: repo) are reported per repository and do not feed
+# component verdicts or the application rating.
+rules:
+  # ================================================================ roles
+  # Without these, projects whose output is a class library (in-process Azure
+  # Functions, Cloud Services worker roles, Lambda handlers) would be treated as
+  # shared libraries and the application would look like it has no server part;
+  # executable Service Fabric/Functions hosts would become run-once CronJobs.
+  - id: host-role-functions
+    phase: role
+    role: worker
+    priority: 52
+    when:
+      any:
+        - package: 'Microsoft\.NET\.Sdk\.Functions|Microsoft\.Azure\.Functions\.Worker\.Sdk'
+        - sdk: '^Azure\.Functions\.Sdk'
+        - all:
+            - package: 'Microsoft\.Azure\.Functions\.Worker'
+            - file: host.json
+
+  - id: host-role-cloudservice-worker
+    phase: role
+    role: worker
+    priority: 52
+    when:
+      all:
+        - code: ':\s*(Microsoft\.WindowsAzure\.ServiceRuntime\.)?(?-i:RoleEntryPoint)\b'
+        - not: {output_type: Exe}
+
+  - id: host-role-lambda
+    phase: role
+    role: worker
+    priority: 52
+    when:
+      all:
+        - package: 'Amazon\.Lambda\.Core|Amazon\.Lambda\.RuntimeSupport'
+        - code: '\[\s*assembly\s*:\s*LambdaSerializer|(?-i:ILambdaContext)\s+\w+\s*\)'
+        - not: {package: 'Amazon\.Lambda\.AspNetCoreServer(\.Hosting)?'}
+
+  - id: host-role-service-fabric
+    phase: role
+    role: worker
+    priority: 52
+    when:
+      all:
+        - output_type: Exe
+        - code: '\b(?-i:ServiceRuntime)\.Register\w*ServiceAsync\b|\b(?-i:ActorRuntime)\.RegisterActorAsync\b'
+
+  # ================================================================ Azure Functions / WebJobs
+  - id: host-azure-functions-inprocess
+    applies_to: [dotnet]
+    when:
+      package: 'Microsoft\.NET\.Sdk\.Functions'
+    severity: refactor
+    category: hosting
+    effort: 3
+    windows_container: null
+    title: Azure Functions in-process model
+    why: >-
+      The in-process model (Microsoft.NET.Sdk.Functions) runs the code inside the Functions host
+      process; Microsoft ends its support on 10 November 2026 and it is not offered for .NET 9+.
+      The code cannot be started with `dotnet App.dll`; it only runs inside the Functions host.
+    fix: >-
+      Migrate to the isolated worker model (Microsoft.Azure.Functions.Worker; bindings, ILogger and
+      HttpRequest/ASP.NET Core integration change), then containerize on
+      mcr.microsoft.com/azure-functions/dotnet-isolated:4-dotnet-isolated8.0 with KEDA, or move the
+      HTTP functions to a plain ASP.NET Core app and the queue/timer functions to workers/CronJobs.
+
+  - id: host-azure-functions-isolated
+    applies_to: [dotnet]
+    when:
+      all:
+        - any:
+            - package: 'Microsoft\.Azure\.Functions\.Worker(\.Sdk)?'
+            - sdk: '^Azure\.Functions\.Sdk'
+        - not: {package: 'Microsoft\.NET\.Sdk\.Functions'}
+        - not: {role: library}
+    severity: config
+    category: hosting
+    effort: 1
+    windows_container: null
+    title: Azure Functions isolated worker
+    why: >-
+      Isolated-worker Functions run in Linux containers, but only together with the Functions host:
+      the image must be based on mcr.microsoft.com/azure-functions/dotnet-isolated (not the plain
+      ASP.NET runtime image), it needs an AzureWebJobsStorage connection, and non-HTTP triggers
+      (queues, Service Bus, timers) scale on Kubernetes only with KEDA.
+    fix: >-
+      Build FROM mcr.microsoft.com/azure-functions/dotnet-isolated:4-dotnet-isolated8.0 (copy the
+      publish output to /home/site/wwwroot; `func kubernetes deploy` can generate the KEDA
+      ScaledObject), inject AzureWebJobsStorage and binding connection strings from Secrets, and set
+      host keys/auth explicitly. Alternatively move HTTP functions to ASP.NET Core.
+
+  - id: host-durable-functions
+    applies_to: [dotnet]
+    when:
+      all:
+        - package: 'Microsoft\.Azure\.(WebJobs|Functions\.Worker)\.Extensions\.DurableTask(\..*)?'
+        - not: {role: library}
+    severity: config
+    category: hosting
+    effort: 0.5
+    title: Durable Functions state provider
+    why: >-
+      Durable Functions keep orchestration history in a storage backend (Azure Storage by default,
+      or MSSQL/Netherite/Durable Task Scheduler); every replica must reach the same task hub, and
+      orchestrations survive pod restarts only because of it.
+    fix: Point the task hub at a storage account or MSSQL database reachable from the cluster; scale with the KEDA durable/MSSQL scaler.
+
+  - id: host-webjobs-sdk
+    applies_to: [dotnet]
+    when:
+      all:
+        - any:
+            - package: 'Microsoft\.Azure\.WebJobs(\.Core)?'
+            - file: settings.job
+        - not: {package: 'Microsoft\.NET\.Sdk\.Functions|Microsoft\.Azure\.Functions\.Worker(\.Sdk)?'}
+        - not: {role: library}
+    severity: config
+    category: hosting
+    effort: 0.5
+    title: Azure WebJobs (App Service background job)
+    why: >-
+      WebJobs are console processes App Service starts next to the web app (continuous) or on a
+      CRON in settings.job (triggered). The WebJobs SDK uses AzureWebJobsStorage for singleton
+      locks and queue triggers; App Service supplied WEBJOBS_* variables and the shutdown file.
+    fix: >-
+      Run a continuous WebJob as a Deployment (one replica if it uses [Singleton]) and a triggered
+      one as a CronJob with the settings.job schedule; inject AzureWebJobsStorage from a Secret.
+
+  # ================================================================ Azure Cloud Services (classic)
+  - id: host-cloud-services-classic
+    applies_to: [dotnet]
+    when:
+      any:
+        - reference: 'Microsoft\.WindowsAzure\.ServiceRuntime'
+        - package: 'Microsoft\.WindowsAzure\.ServiceRuntime|Unofficial\.Microsoft\.WindowsAzure\.ServiceRuntime.*'
+        - code: ':\s*(Microsoft\.WindowsAzure\.ServiceRuntime\.)?(?-i:RoleEntryPoint)\b|\b(?-i:RoleEnvironment)\.(GetConfigurationSettingValue|CurrentRoleInstance|IsAvailable|Roles|Changing|Changed)\b'
+    severity: rewrite
+    category: hosting
+    effort: 3
+    windows_container: true
+    title: Azure Cloud Services (classic) role
+    why: >-
+      The component is a Cloud Services web/worker role: RoleEntryPoint drives its lifecycle and
+      RoleEnvironment supplies settings, endpoints and instance ids from the Azure fabric, which does
+      not exist anywhere else. Cloud Services (classic) was retired in August 2024.
+    fix: >-
+      Replace RoleEntryPoint.Run/OnStart with a Generic Host BackgroundService, RoleEnvironment
+      settings with IConfiguration (env vars/ConfigMap), role endpoints with Kubernetes Services,
+      and startup tasks with Dockerfile steps; port to .NET 8 at the same time.
+
+  - id: host-cloud-service-definition
+    scope: repo
+    when:
+      file: ["*.csdef", "*.cscfg"]
+    severity: info
+    category: hosting
+    effort: 0.5
+    title: Cloud Service definition (.csdef/.cscfg)
+    why: >-
+      ServiceDefinition.csdef/ServiceConfiguration.cscfg declare roles, endpoints, instance counts,
+      VM sizes, certificates, local storage and elevated startup tasks that the fabric set up.
+    fix: >-
+      Map roles to Deployments, endpoints to Services/Ingress, instance counts to replicas,
+      settings to ConfigMaps/Secrets, certificates to Secrets and startup tasks to Dockerfile steps.
+
+  # ================================================================ Service Fabric
+  - id: host-service-fabric-stateless
+    applies_to: [dotnet]
+    when:
+      all:
+        - package: 'Microsoft\.ServiceFabric(\..*)?'
+        - not: {code: ':\s*(?-i:StatefulService)\b|\b(?-i:IReliable(Dictionary|Queue|ConcurrentQueue|StateManager))\b|:\s*(?-i:Actor)\s*,\s*I\w+|\[\s*(?-i:StatePersistence)\s*\('}
+    severity: refactor
+    category: hosting
+    effort: 2
+    windows_container: false
+    title: Service Fabric Reliable Services (stateless)
+    why: >-
+      The service is hosted by or talks through the Service Fabric runtime
+      (ServiceRuntime.RegisterServiceAsync, StatelessService, communication listeners, SF remoting
+      and ActorProxy, Settings.xml config packages); none of it exists on Kubernetes.
+    fix: >-
+      Replace StatelessService.RunAsync with a BackgroundService, the Kestrel/HTTP.sys communication
+      listener with plain Kestrel, SF remoting/ActorProxy calls with HTTP/gRPC, config packages
+      with IConfiguration, and naming-service lookups with Kubernetes Service DNS.
+
+  - id: host-service-fabric-stateful
+    applies_to: [dotnet]
+    when:
+      all:
+        - package: 'Microsoft\.ServiceFabric(\..*)?'
+        - code: ':\s*(?-i:StatefulService)\b|\b(?-i:IReliable(Dictionary|Queue|ConcurrentQueue|StateManager))\b|:\s*(?-i:Actor)\s*,\s*I\w+|\[\s*(?-i:StatePersistence)\s*\('
+    severity: rewrite
+    category: hosting
+    effort: 10
+    windows_container: false
+    title: Service Fabric stateful services / Reliable Actors
+    why: >-
+      State lives in Service Fabric's replicated Reliable Collections or actor state, partitioned
+      and replicated by the SF runtime. Kubernetes has no equivalent; the state model must be redesigned.
+    fix: >-
+      Move state to an external store (SQL, Cosmos DB, Redis) and rewrite services as stateless
+      ASP.NET Core/workers; for actors consider Orleans or Dapr actors with a persistent state store.
+
+  # ================================================================ App Service coupling
+  - id: host-app-service-coupling
+    when:
+      any:
+        - code: '\b(?-i:WEBSITE_(SITE_NAME|INSTANCE_ID|HOSTNAME|RESOURCE_GROUP|OWNER_NAME|SKU|LOAD_CERTIFICATES|CONTENTSHARE|CONTENTAZUREFILECONNECTIONSTRING|RUN_FROM_PACKAGE|LOCAL_CACHE_OPTION|ROLE_INSTANCE_ID|DEPLOYMENT_ID|TIME_ZONE))\b|@"[Dd]:\\home\\|"[Dd]:\\\\home\\\\|site[\\/]+wwwroot|\.scm\.azurewebsites\.net'
+        - config: '\b(?-i:WEBSITE_(LOAD_CERTIFICATES|LOCAL_CACHE_OPTION|TIME_ZONE))\b|[Dd]:\\{1,2}home\\|%HOME%[\\/]+site|\.scm\.azurewebsites\.net'
+        - file: applicationHost.xdt
+    severity: config
+    category: hosting
+    effort: 0.5
+    title: Azure App Service specific settings or paths
+    why: >-
+      The app relies on App Service: WEBSITE_* variables (instance id, site name, certificates,
+      local cache, time zone), the D:\home / $HOME/site/wwwroot file layout, Kudu (.scm) endpoints
+      or applicationHost.xdt transforms. None of these exist in a Kubernetes pod.
+    fix: >-
+      Replace WEBSITE_* lookups with your own settings (pod name via the downward API, TZ env var,
+      certificates mounted from Secrets), point home/wwwroot paths at mounted volumes, and drop
+      Kudu/XDT dependencies.
+
+  - id: host-app-service-easyauth
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: '(?-i:X-MS-CLIENT-PRINCIPAL)|(?-i:X-MS-TOKEN-(AAD|GOOGLE|FACEBOOK|MICROSOFTACCOUNT|TWITTER)-)|"/\.auth/(me|login|logout|refresh)|\bAddAppServicesAuthentication\('
+    severity: refactor
+    category: identity
+    effort: 1
+    windows_container: false
+    title: Relies on App Service Authentication (Easy Auth)
+    why: >-
+      Users are authenticated by App Service in front of the app, which passes identities in
+      X-MS-CLIENT-PRINCIPAL/X-MS-TOKEN-* headers and serves /.auth/*. In Kubernetes nothing sets or
+      strips these headers, so login breaks and anyone could forge the headers.
+    fix: >-
+      Authenticate in the app (Microsoft.Identity.Web / OpenID Connect) or in an auth proxy at the
+      ingress (oauth2-proxy) that strips client-supplied identity headers.
+
+  - id: host-arr-affinity
+    scope: repo
+    when:
+      any:
+        - text: '"clientAffinityEnabled"\s*:\s*true|clientAffinityEnabled\s*:\s*true'
+          in: ["*.json", "*.bicep", "*.tf"]
+        - text: 'client_affinity_enabled\s*=\s*true'
+          in: ["*.tf"]
+    severity: config
+    category: scaling
+    effort: 0.25
+    title: App Service ARR affinity (sticky sessions) enabled
+    why: The App Service deployment turns on ARR affinity, so the app probably depends on users sticking to one instance (in-memory session/cache, Blazor Server, SignalR).
+    fix: Remove the dependency (distributed cache/session) or enable cookie-based session affinity on the ingress.
+
+  # ================================================================ AWS Lambda
+  - id: host-aws-lambda-handler
+    applies_to: [dotnet]
+    when:
+      all:
+        - package: 'Amazon\.Lambda\.(Core|RuntimeSupport|Serialization\..*|\w+Events|Annotations)'
+        - not: {package: 'Amazon\.Lambda\.AspNetCoreServer(\.Hosting)?'}
+        - not: {role: 'test|library'}
+    severity: refactor
+    category: hosting
+    effort: 3
+    windows_container: false
+    title: AWS Lambda function handlers
+    why: >-
+      Lambda invokes handler methods with events (API Gateway, SQS, S3, schedules) and
+      ILambdaContext; a Lambda container image still needs the Lambda runtime API. On Kubernetes
+      nothing calls the handlers.
+    fix: >-
+      Host the handlers in a Generic Host: HTTP events behind ASP.NET Core endpoints, SQS/SNS/S3
+      events in a BackgroundService polling the queue (KEDA aws-sqs scaler), schedules as CronJobs.
+      Keep the handler logic, replace the entry points.
+
+  - id: host-aws-lambda-aspnetcore
+    applies_to: [dotnet]
+    when:
+      package: 'Amazon\.Lambda\.AspNetCoreServer(\.Hosting)?'
+    severity: config
+    category: hosting
+    effort: 0.25
+    title: ASP.NET Core app hosted on AWS Lambda
+    why: >-
+      The app is a normal ASP.NET Core app with a Lambda adapter (AddAWSLambdaHosting is a no-op
+      outside Lambda; LambdaEntryPoint is unused). API Gateway features it relied on (authorizers,
+      throttling, stage paths, request context) are not there in Kubernetes.
+    fix: Run it on Kestrel as is; recreate API Gateway authorizers/throttling/base paths at the ingress or in middleware.
+
+  # ================================================================ Blazor / gRPC
+  - id: host-blazor-server
+    applies_to: [dotnet]
+    when:
+      code: '\b(AddServerSideBlazor|AddInteractiveServerComponents|AddInteractiveServerRenderMode|MapBlazorHub)\('
+    severity: config
+    category: scaling
+    effort: 0.5
+    title: Blazor Server (interactive server rendering)
+    why: >-
+      Each user has a stateful circuit over a WebSocket held by one pod. With several replicas the
+      ingress must keep users on their pod, and circuits are lost when a pod restarts or is rescheduled.
+    fix: >-
+      Enable cookie-based session affinity and WebSockets (long proxy timeouts) on the ingress,
+      persist Data Protection keys, and use graceful shutdown/reconnect UI; or Azure SignalR Service.
+
+  - id: host-blazor-wasm-standalone
+    applies_to: [dotnet]
+    when:
+      all:
+        - sdk: 'Microsoft\.NET\.Sdk\.BlazorWebAssembly'
+        - not: {role: library}
+    severity: config
+    category: hosting
+    effort: 0.5
+    title: Blazor WebAssembly app (static files)
+    why: >-
+      A Blazor WebAssembly client publishes to static files (wwwroot with _framework/*.wasm); it is
+      not a server process. Standalone it needs a static web server; hosted, the server project serves it.
+    fix: >-
+      Standalone: serve the published wwwroot from nginx-unprivileged with index.html fallback and
+      .wasm/.dat MIME types, mounting appsettings.json as a ConfigMap. Hosted: no container of its own.
+
+  - id: host-grpc-server
+    applies_to: [dotnet]
+    when:
+      code: '\bMapGrpcService<|\.AddGrpc\(|\.AddCodeFirstGrpc\('
+    severity: config
+    category: networking
+    effort: 0.5
+    title: gRPC server (HTTP/2)
+    why: >-
+      gRPC needs HTTP/2. Behind an ingress without TLS to the pod, Kestrel must accept cleartext
+      HTTP/2 (h2c), which an Http1AndHttp2 endpoint does not do without TLS; the ingress also needs
+      the gRPC backend protocol, and HTTP probes do not work on an HTTP/2-only port.
+    fix: >-
+      Expose an Http2 endpoint (Kestrel__Endpoints__Grpc__Protocols=Http2) next to an HTTP/1 port
+      for probes, set the ingress backend protocol to GRPC/h2c, use gRPC health checks
+      (Grpc.AspNetCore.HealthChecks + grpc probes), or gRPC-Web for browsers.
+
+  # ================================================================ reverse proxy / TLS / IIS leftovers
+  - id: host-forwarded-headers-missing
+    applies_to: [dotnet]
+    when:
+      all:
+        - role: web
+        - not: {tfm: 'net[1-4]\d{1,2}'}
+        - code: '\b(AddOpenIdConnect|AddMicrosoftIdentityWebApp|AddMicrosoftAccount|AddGoogle|AddFacebook|AddOAuth|AddWsFederation|AddSaml2|AddCertificateForwarding)\(|\bRequest\.Scheme\b|\bRequest\.IsHttps\b'
+        - not: {code: 'UseForwardedHeaders|ForwardedHeadersOptions|(?-i:ASPNETCORE_FORWARDEDHEADERS_ENABLED)'}
+        - not: {config: '(?-i:ASPNETCORE_FORWARDEDHEADERS_ENABLED)'}
+    severity: config
+    category: networking
+    effort: 0.25
+    title: Behind the ingress without forwarded headers
+    why: >-
+      TLS ends at the ingress, so the app sees plain HTTP from the proxy. Without forwarded headers
+      it builds http:// redirect URIs for the identity provider (login fails), generates wrong
+      absolute links, and with an HTTPS port configured UseHttpsRedirection can loop.
+    fix: >-
+      Set ASPNETCORE_FORWARDEDHEADERS_ENABLED=true (or app.UseForwardedHeaders with the ingress
+      network in KnownNetworks) and keep HTTPS redirection/HSTS at the ingress.
+
+  - id: host-kestrel-https-code
+    applies_to: [dotnet]
+    when:
+      code: '\.UseHttps\(|ConfigureHttpsDefaults\(|\bServerCertificate(Selector)?\s*='
+    severity: config
+    category: networking
+    effort: 0.5
+    title: Kestrel HTTPS configured in code
+    why: >-
+      Kestrel loads a server certificate in code (file path, store or selector). In a container the
+      file/store is empty unless mounted, and the generator's environment overrides cannot replace
+      code-configured endpoints.
+    fix: Terminate TLS at the ingress (cert-manager) and listen on HTTP, or mount the certificate from a Secret and make its path/password configurable.
+
+  - id: host-ancm-webconfig
+    applies_to: [dotnet]
+    when:
+      all:
+        - config: '<aspNetCore\s[^>]*processPath='
+          in: ["web.config", "Web.config"]
+        - not: {config: '<environmentVariable\s+name="(?!(ASPNETCORE_ENVIRONMENT|DOTNET_ENVIRONMENT|ASPNETCORE_HOSTINGSTARTUPASSEMBLIES|COMPLUS_ForceENC|ASPNETCORE_DETAILEDERRORS)")', in: ["web.config", "Web.config"]}
+    severity: info
+    category: hosting
+    effort: 0
+    title: web.config for the ASP.NET Core Module (IIS)
+    why: The web.config only tells IIS how to start the app (ANCM, in- or out-of-process); Kestrel in a container ignores it.
+    fix: Nothing to change; move request limits or timeouts set there to Kestrel options or the ingress.
+
+  - id: host-ancm-env-vars
+    applies_to: [dotnet]
+    when:
+      all:
+        - config: '<aspNetCore\s[^>]*processPath='
+          in: ["web.config", "Web.config"]
+        - config: '<environmentVariable\s+name="(?!(ASPNETCORE_ENVIRONMENT|DOTNET_ENVIRONMENT|ASPNETCORE_HOSTINGSTARTUPASSEMBLIES|COMPLUS_ForceENC|ASPNETCORE_DETAILEDERRORS)")'
+          in: ["web.config", "Web.config"]
+    severity: config
+    category: hosting
+    effort: 0.25
+    title: Environment variables set in web.config (ANCM)
+    why: Environment variables (connection strings, URLs, feature flags) are set by IIS from web.config and are missing when the app runs on Kestrel in a container.
+    fix: Move each <environmentVariable> to the Deployment's env (ConfigMap, or Secret for credentials).
+
+  - id: host-long-request-timeout
+    applies_to: [dotnet]
+    when:
+      config: '<httpRuntime\s[^>]*executionTimeout="(\d{4,}|[3-9]\d\d)"|<aspNetCore\s[^>]*requestTimeout="(?!00:0[0-2]:)[\d.]+:\d\d:\d\d"'
+      in: ["web.config", "Web.config"]
+    severity: config
+    category: networking
+    effort: 0.25
+    title: Long-running requests (raised IIS timeouts)
+    why: >-
+      IIS was configured to let requests run for minutes. Ingress controllers and load balancers
+      cut idle upstream connections much sooner (ingress-nginx: 60 s), and pods can be stopped mid-request.
+    fix: >-
+      Raise the ingress proxy read/send timeouts for these routes and the pod's
+      terminationGracePeriodSeconds, or move long work to a background job with status polling.
+
+  # ================================================================ clustering / service discovery
+  - id: host-orleans-cluster
+    applies_to: [dotnet]
+    when:
+      all:
+        - any:
+            - package: 'Microsoft\.Orleans\.(Server|Runtime|OrleansRuntime)'
+            - code: '\.UseOrleans\(|new\s+(?-i:SiloHostBuilder)\('
+        - not: {code: '\.UseKubernetesHosting\('}
+    severity: config
+    category: scaling
+    effort: 1
+    title: Orleans silo cluster
+    why: >-
+      Orleans silos form a cluster through a membership table and talk to each other on silo (11111)
+      and gateway (30000) ports. Pods need a shared membership provider, their pod IP as the silo
+      address, and network policies that allow silo-to-silo traffic.
+    fix: >-
+      Add Microsoft.Orleans.Hosting.Kubernetes (UseKubernetesHosting) with a membership provider
+      (Azure Table, ADO.NET, Redis), open the silo/gateway ports between pods, persist grain state.
+
+  - id: host-orleans-localhost-clustering
+    applies_to: [dotnet]
+    when:
+      all:
+        - code: '\.(UseLocalhostClustering|UseDevelopmentClustering)\('
+        - not: {code: '\.Use(AzureStorage|AdoNet|Redis|Consul|ZooKeeper|DynamoDB|Cosmos|Kubernetes)Clustering\(|\.UseKubernetesHosting\('}
+    severity: refactor
+    category: scaling
+    effort: 1
+    title: Orleans localhost/development clustering only
+    why: The silo is configured with localhost or development clustering, which supports one silo only; a second replica cannot join and grain state is in memory.
+    fix: Configure a real clustering provider (AdoNet/AzureStorage/Redis) for non-development environments and persistent grain storage.
+
+  - id: host-akka-cluster
+    applies_to: [dotnet]
+    when:
+      all:
+        - any:
+            - package: 'Akka\.Cluster(\.Hosting|\.Sharding|\.Tools)?'
+            - text: 'seed-nodes\s*[=:]\s*\['
+              in: ["*.hocon", "*.conf", "*.cs", "*.json"]
+        - not: {package: 'Akka\.Discovery\.KubernetesApi|Akka\.Discovery\.Azure|Akka\.Management(\..*)?'}
+    severity: config
+    category: scaling
+    effort: 1
+    title: Akka.NET cluster with static seed nodes
+    why: >-
+      Akka.NET cluster members join through seed nodes, usually static host names/IPs in HOCON. Pod
+      IPs change on every restart, and members must reach each other on the remoting port.
+    fix: >-
+      Use Akka.Management with Akka.Discovery.KubernetesApi (or a StatefulSet with stable DNS seed
+      names), a split-brain resolver, CoordinatedShutdown on SIGTERM, and allow the remoting port between pods.
+
+  - id: host-dapr
+    applies_to: [dotnet]
+    when:
+      package: 'Dapr\.(AspNetCore|Client|Actors(\..*)?|Workflow|Extensions\..*)'
+    severity: info
+    category: hosting
+    effort: 0.25
+    title: Uses Dapr sidecar
+    why: The app talks to a Dapr sidecar (localhost:3500/50001); Dapr runs natively on Kubernetes.
+    fix: Install the Dapr control plane and add dapr.io/enabled, dapr.io/app-id and dapr.io/app-port annotations to the generated Deployment; allow sidecar traffic in the NetworkPolicy.
+
+  - id: host-service-discovery
+    applies_to: [dotnet]
+    when:
+      package: 'Steeltoe\.Discovery\..*|Steeltoe\.Discovery\.(Client)?Core|Consul|NConsul|Consul\.AspNetCore|Winton\.Extensions\.Configuration\.Consul|Ocelot\.Provider\.(Consul|Eureka)'
+    severity: config
+    category: networking
+    effort: 0.5
+    title: Client-side service discovery (Eureka/Consul)
+    why: >-
+      Instances register themselves in Eureka/Consul and look others up there. In Kubernetes pods
+      register their pod IPs, need the registry's address, and duplicate what Service DNS already does.
+    fix: Point the client at the registry from the cluster (or turn off registration) and prefer Kubernetes Service names; Steeltoe offers a Kubernetes discovery client.
+
+  # ================================================================ publish settings
+  - id: host-publish-aot
+    applies_to: [dotnet]
+    when:
+      text: '<PublishAot>\s*true\s*</PublishAot>'
+      in: ["*.csproj", "*.fsproj", "*.vbproj"]
+    severity: config
+    category: build
+    effort: 0.5
+    title: Native AOT publish
+    why: >-
+      Native AOT works well in containers but the build needs clang and zlib in the SDK stage, the
+      result is a native executable (not `dotnet App.dll`), and it targets the runtime-deps image.
+    fix: >-
+      Install clang/zlib1g-dev in the build stage (or use the -aot SDK image), base on
+      mcr.microsoft.com/dotnet/runtime-deps:8.0-noble-chiseled and start ./App.
+
+  - id: host-publish-singlefile
+    applies_to: [dotnet]
+    when:
+      any:
+        - property: {PublishSingleFile: 'true'}
+        - property: {SelfContained: 'true'}
+        - property: {PublishTrimmed: 'true'}
+    severity: info
+    category: build
+    effort: 0
+    title: Single-file / self-contained / trimmed publish settings
+    why: Publish settings for a standalone executable; harmless in containers but they enlarge the image or (trimmed) can drop reflection-only types.
+    fix: Publish framework-dependent for linux-x64 on the shared runtime image, or keep self-contained on runtime-deps; test trimmed builds.
+
+  # ================================================================ existing deployment assets (repo, informational)
+  - id: host-installer-project
+    scope: repo
+    when:
+      file: ["*.wixproj", "*.wxs", "*.vdproj", "*.iss", "*.nsi", "*.ism", "*.aip"]
+    severity: info
+    category: hosting
+    effort: 0
+    title: Windows installer project (MSI/WiX/Inno/NSIS)
+    why: The application is deployed with a Windows installer; the container image replaces it, but the installer may also create registry keys, services, IIS sites, folders, ACLs or certificates the app expects.
+    fix: Review the installer's custom actions and components and recreate what is still needed as Dockerfile steps, configuration or volumes.
+
+  # Dockerfile globs skip names like dockerfile.4db8cf4d.js (editor syntax bundles).
+  - id: host-windows-container-present
+    scope: repo
+    when:
+      any:
+        - text: '^\s*FROM\s+\S*(windowsservercore|nanoserver|dotnet/framework/|windows/servercore|windows/nanoserver|mcr\.microsoft\.com/windows)'
+          in: ["Dockerfile", "Dockerfile.[a-z]*", "Dockerfile-*", "*.dockerfile"]
+        - property: {DockerDefaultTargetOS: 'Windows'}
+    severity: info
+    category: hosting
+    effort: 0
+    title: Windows container definition already present
+    why: The repository already builds a Windows container image; it shows how the app is run but targets Windows nodes.
+    fix: Use it as a reference (installed features, env vars, ports) for the Linux image; keep it as the stop-gap for components that must stay on Windows.
+
+  - id: host-linux-container-present
+    scope: repo
+    when:
+      any:
+        - text: '^\s*FROM\s+(--platform=\S+\s+)?(?!\S*(windowsservercore|nanoserver|dotnet/framework/|windows/servercore|windows/nanoserver|mcr\.microsoft\.com/windows))\S*[:/@]\S*'
+          in: ["Dockerfile", "Dockerfile.[a-z]*", "Dockerfile-*", "*.dockerfile"]
+        - property: {DockerDefaultTargetOS: 'Linux'}
+        - property: {EnableSdkContainerSupport: 'true'}
+        - property: {ContainerRepository: '.+'}
+    severity: info
+    category: hosting
+    effort: 0
+    title: Linux container build already present
+    why: >-
+      The repository already has a Linux Dockerfile or .NET SDK container publish settings. This is
+      a good sign but not proof: it may be a development-only image or not cover every component.
+    fix: Compare it with the generated hardened Dockerfile (non-root, chiseled base, read-only root) and keep whichever fits; the findings above still apply.
+
+  - id: host-kubernetes-manifests-present
+    scope: repo
+    when:
+      any:
+        - file: ["Chart.yaml", "kustomization.yaml", "kustomization.yml", "skaffold.yaml"]
+        - all:
+            - text: '^kind:\s*(Deployment|StatefulSet|CronJob)\s*$'
+              in: ["*.yaml", "*.yml"]
+            - text: '^apiVersion:\s*(apps|batch)/v1\s*$'
+              in: ["*.yaml", "*.yml"]
+    severity: info
+    category: hosting
+    effort: 0
+    title: Kubernetes manifests or Helm chart already present
+    why: The repository already contains Kubernetes deployment assets (Helm chart, Kustomize or plain manifests).
+    fix: Reconcile them with the generated manifests (security context, probes, NetworkPolicy, Secrets) instead of maintaining two sets.
+
+  - id: host-docker-compose-present
+    scope: repo
+    when:
+      file: ["docker-compose*.yml", "docker-compose*.yaml", "compose.yml", "compose.yaml"]
+    severity: info
+    category: hosting
+    effort: 0
+    title: docker-compose file present
+    why: A compose file documents the services and dependencies (databases, brokers, caches) the app runs with.
+    fix: Use it to inventory dependencies and environment variables; translate services to Deployments/StatefulSets (e.g. with Kompose) rather than running compose in production.
+
+  # ================================================================ observability / health (informational)
+  - id: host-no-health-endpoint
+    applies_to: [dotnet]
+    when:
+      all:
+        - role: web
+        - not: {tfm: 'net[1-4]\d{1,2}'}
+        - not: {code: 'AddHealthChecks|MapHealthChecks|UseHealthChecks|MapDefaultEndpoints\(|"/?(api/)?(health|healthz|healthcheck|ping|status|alive|ready|readyz|livez)\b'}
+    severity: info
+    category: hosting
+    effort: 0.25
+    title: No health endpoint
+    why: Without a health endpoint Kubernetes can only probe the TCP port, so a hung or misconfigured app still receives traffic.
+    fix: Add Microsoft.Extensions.Diagnostics.HealthChecks (AddHealthChecks/MapHealthChecks("/healthz")) with liveness and readiness checks.
+
+  - id: host-application-insights
+    applies_to: [dotnet]
+    when:
+      any:
+        - package: 'Microsoft\.ApplicationInsights(\..*)?'
+        - file: ApplicationInsights.config
+    severity: info
+    category: hosting
+    effort: 0
+    title: Application Insights telemetry
+    why: Application Insights works from Linux containers; on App Service/IIS it was often enabled by an agent rather than code, and the instrumentation key may sit in ApplicationInsights.config.
+    fix: Pass APPLICATIONINSIGHTS_CONNECTION_STRING from a Secret; add Microsoft.ApplicationInsights.Kubernetes or move to the Azure Monitor OpenTelemetry distro for pod metadata.
+
+  - id: host-filesystemwatcher
+    applies_to: [dotnet]
+    when:
+      all:
+        - code: 'new\s+(System\.IO\.)?(?-i:FileSystemWatcher)\s*[({]'
+        - not: {role: 'test|desktop'}
+    severity: info
+    category: storage
+    effort: 1
+    title: FileSystemWatcher on a folder
+    why: >-
+      Watched folders are usually drop folders written by other systems. In Kubernetes they become
+      network volumes (SMB/NFS/Azure Files), where Linux inotify does not see changes made by other
+      clients, and each replica would pick up the same file.
+    fix: Poll the folder (timer or PhysicalFileProvider with polling) in a single-replica worker, or switch to event-driven input (blob events/queue).

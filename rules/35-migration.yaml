@@ -1,0 +1,531 @@
+# .NET Framework -> modern .NET (8/9/10) migration signals.
+#
+# Two kinds of findings live here:
+#   * APIs that are removed, obsolete-as-error or throw PlatformNotSupportedException on
+#     .NET Core/.NET 5+ (or only on Linux). In netstandard/net8 code they compile but fail at
+#     runtime in the container; in .NET Framework code they add work to the port.
+#   * .NET Framework / System.Web features whose port is more than "retarget and recompile",
+#     used to size the port of a component that is already rated `rewrite` by netfx-target.
+# Rules that only add effort to an already-netfx component stay at config/refactor so that they
+# do not change challenge ratings on their own.
+# severity: info < config < refactor < rewrite < blocker (see rules/10-runtime.yaml)
+rules:
+  # ------------------------------------------------------------ serialization
+  - id: mig-binaryformatter
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: '(?-i:\b(BinaryFormatter|SoapFormatter|NetDataContractSerializer|LosFormatter|ObjectStateFormatter)\b)'
+        - reference: System\.Runtime\.Serialization\.Formatters\.Soap
+        - property: {EnableUnsafeBinaryFormatterSerialization: 'true'}
+    severity: refactor
+    category: libraries
+    effort: 2
+    windows_container: true
+    title: BinaryFormatter-family serializers
+    why: >-
+      BinaryFormatter is disabled by default in ASP.NET Core and most project types on .NET 8
+      and its implementation is removed in .NET 9 (always throws). SoapFormatter,
+      NetDataContractSerializer, LosFormatter and ObjectStateFormatter do not exist on .NET
+      Core at all. Data already persisted in this format (files, cache, queues, DB blobs) also
+      needs a migration path.
+    fix: >-
+      Switch to System.Text.Json, DataContractSerializer, protobuf-net or MessagePack; for
+      persisted payloads add a one-off converter (System.Runtime.Serialization.Formatters
+      NuGet package as an unsupported bridge only).
+
+  - id: mig-javascriptserializer
+    applies_to: [dotnet]
+    when:
+      code: 'System\.Web\.Script\.Serialization|(?-i:\bJavaScriptSerializer\b)'
+      in: ["*.cs", "*.vb", "*.cshtml", "*.vbhtml", "*.aspx", "*.ascx", "*.asmx", "*.ashx", "*.asax", "*.master", "*.svc"]
+    severity: refactor
+    category: libraries
+    effort: 0.5
+    windows_container: true
+    title: JavaScriptSerializer (System.Web.Extensions)
+    why: >-
+      System.Web.Script.Serialization lives in System.Web.Extensions, which does not exist on
+      .NET Core; date, dictionary and casing behaviour differs from the replacements.
+    fix: Replace with System.Text.Json or Newtonsoft.Json and check date/enum formats against existing clients.
+
+  # ------------------------------------------------------------ threading / runtime
+  - id: mig-thread-abort
+    applies_to: [dotnet]
+    when:
+      code: '(?-i:\b\w*[Tt]hread\w*\.(Abort|Suspend|Resume)\s*\(\s*\)|\bThread\.ResetAbort\s*\()'
+    severity: refactor
+    category: runtime
+    effort: 1
+    windows_container: true
+    title: Thread.Abort / Suspend / Resume
+    why: >-
+      Thread.Abort, Thread.ResetAbort, Thread.Suspend and Thread.Resume throw
+      PlatformNotSupportedException on .NET Core/.NET 5+ (obsolete SYSLIB0006). Code that
+      stops workers this way hangs or crashes after the port.
+    fix: Use cooperative cancellation (CancellationToken) and run untrusted/long work in a separate process if it must be killable.
+
+  - id: mig-delegate-begininvoke
+    applies_to: [dotnet]
+    when:
+      all:
+        - code: '(?-i:\.EndInvoke\s*\(|\.BeginInvoke\s*\([^;]*\bnull\s*,\s*null\s*\)\s*;|\.BeginInvoke\s*\([^;]*new\s+AsyncCallback\s*\()'
+        - not: {role: 'desktop|test'}
+    severity: refactor
+    category: runtime
+    effort: 0.5
+    windows_container: true
+    title: Asynchronous delegate invocation (BeginInvoke/EndInvoke)
+    why: >-
+      Delegate.BeginInvoke/EndInvoke (the APM pattern on delegates) compiles on .NET Core but
+      throws PlatformNotSupportedException at runtime, because it relied on Remoting.
+    fix: Replace with Task.Run(() => d(...)) and await the task.
+
+  - id: mig-reflection-only-load
+    applies_to: [dotnet]
+    when:
+      code: 'Assembly\.ReflectionOnlyLoad(From)?\s*\(|ReflectionOnlyAssemblyResolve'
+    severity: refactor
+    category: runtime
+    effort: 0.5
+    windows_container: true
+    title: Reflection-only assembly loading
+    why: Assembly.ReflectionOnlyLoad/ReflectionOnlyLoadFrom throw PlatformNotSupportedException on .NET Core.
+    fix: Inspect assemblies with System.Reflection.MetadataLoadContext; load plugins with AssemblyLoadContext.
+
+  - id: mig-codedom-compile
+    applies_to: [dotnet]
+    when:
+      code: '\.CompileAssemblyFrom(Source|File|Dom)\s*\('
+    severity: refactor
+    category: runtime
+    effort: 2
+    windows_container: true
+    title: Runtime compilation with CodeDom
+    why: >-
+      CodeDomProvider.CompileAssemblyFromSource/File/Dom throws PlatformNotSupportedException
+      on .NET Core; it shelled out to csc.exe/vbc.exe from the .NET Framework directory.
+    fix: Compile with Roslyn (Microsoft.CodeAnalysis.CSharp) into an AssemblyLoadContext, or replace generated code with expression trees / a scripting library.
+
+  - id: mig-xslt-script
+    applies_to: [dotnet]
+    when:
+      any:
+        - text: '<msxsl:script\b'
+          in: ["*.xsl", "*.xslt", "*.config", "*.xml", "*.cs", "*.vb"]
+        - code: 'XsltSettings\.TrustedXslt|EnableScript\s*=\s*true|new\s+XsltSettings\s*\(\s*\w+\s*,\s*true\s*\)'
+    severity: refactor
+    category: libraries
+    effort: 1
+    windows_container: true
+    title: XSLT with embedded script blocks
+    why: >-
+      XslCompiledTransform on .NET Core does not support msxsl:script (inline C#/VB/JScript in
+      the stylesheet); enabling scripts throws PlatformNotSupportedException.
+    fix: Move the script functions into an extension object (XsltArgumentList.AddExtensionObject) and call them from the stylesheet.
+
+  - id: mig-cas
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: '\[\s*(assembly\s*:\s*)?(SecurityPermission|FileIOPermission|ReflectionPermission|RegistryPermission|EnvironmentPermission|UIPermission|PermissionSet|PrincipalPermission|AllowPartiallyTrustedCallers)(Attribute)?\b|new\s+(PermissionSet|NamedPermissionSet|SecurityPermission|FileIOPermission|ReflectionPermission)\s*\(|(?-i:\bCodeAccessPermission\b)|SecurityManager\.(IsGranted|PolicyHierarchy)'
+        - config: '<trust\s+level="(?!Full")'
+          in: ["web.config", "*.config"]
+    severity: info
+    category: runtime
+    effort: 0.25
+    title: Code Access Security / partial trust
+    why: >-
+      .NET Core has no Code Access Security: permission attributes and Demand/Assert are
+      no-ops or obsolete (SYSLIB0003), and partial-trust sandboxes do not exist.
+      PrincipalPermission throws on .NET Core.
+    fix: Remove CAS attributes; enforce isolation with the container (non-root, read-only FS) and replace PrincipalPermission with policy-based authorization.
+
+  - id: mig-crypto-pnse
+    applies_to: [dotnet]
+    when:
+      code: '(?-i:\bCspParameters\b|\.CryptDeriveKey\s*\(|\bRijndaelManaged\b[\s\S]{0,400}?\bBlockSize\s*=\s*(192|256)\b|\bUseMachineKeyStore\s*=\s*true|\bCspProviderFlags\.)'
+      unguarded: true
+    severity: refactor
+    category: security
+    effort: 1
+    windows_container: true
+    title: Windows CSP-only cryptography
+    why: >-
+      CSP key containers (CspParameters, machine key store), PasswordDeriveBytes.CryptDeriveKey
+      and Rijndael with a 192/256-bit block size throw PlatformNotSupportedException on Linux
+      (and partly on all of .NET Core). Data encrypted with a 256-bit block cannot be read
+      with Aes.
+    fix: Use RSA.Create()/Aes.Create() with keys from a Kubernetes Secret or a KMS; re-encrypt Rijndael-256 data with a portable library (BouncyCastle) during migration.
+
+  - id: mig-oracleclient
+    applies_to: [dotnet]
+    when:
+      any:
+        - reference: System\.Data\.OracleClient
+        - code: 'using\s+System\.Data\.OracleClient\s*;|System\.Data\.OracleClient\.Oracle'
+    severity: refactor
+    category: data
+    effort: 1
+    windows_container: true
+    title: System.Data.OracleClient
+    why: The deprecated Microsoft Oracle provider is not available on .NET Core (it also needed the native Oracle client).
+    fix: Move to Oracle.ManagedDataAccess.Core (fully managed, works in Linux containers); check parameter binding and type mapping.
+
+  # ------------------------------------------------------------ configuration
+  - id: mig-custom-config-section
+    applies_to: [dotnet]
+    when:
+      code: '(?-i::\s*(System\.Configuration\.)?(ConfigurationSection|ConfigurationElementCollection|IConfigurationSectionHandler)\b)'
+    severity: config
+    category: configuration
+    effort: 1
+    title: Custom app.config/web.config sections
+    why: >-
+      Custom ConfigurationSection classes still work on .NET 8 through the
+      System.Configuration.ConfigurationManager package, but the values come from a baked-in
+      .config file and cannot be overridden per environment with environment variables.
+    fix: Map the sections to IOptions<T> bound from IConfiguration, or mount the .config file from a ConfigMap.
+
+  - id: mig-smtp-mailsettings
+    applies_to: [dotnet]
+    when:
+      all:
+        - config: '<mailSettings>'
+          in: ["*.config"]
+        - code: 'new\s+SmtpClient\s*(\(\s*\)|\{)'
+    severity: config
+    category: configuration
+    effort: 0.5
+    title: SMTP settings from system.net/mailSettings
+    why: >-
+      On .NET Core SmtpClient ignores <system.net><mailSettings> in app/web.config, so a
+      parameterless SmtpClient has no host (or pickup folder) after the port and sending fails.
+    fix: Pass host/port/credentials from IConfiguration (environment/Secret) to SmtpClient or MailKit and point it at an SMTP relay.
+
+  - id: mig-servicepointmanager-tls
+    applies_to: [dotnet]
+    when:
+      all:
+        - code: 'ServicePointManager\.ServerCertificateValidationCallback'
+        - not: {tfm: 'net[1-4]\d{1,2}'}
+    severity: config
+    category: security
+    effort: 0.5
+    title: ServicePointManager certificate callback on .NET Core
+    why: >-
+      On .NET Core ServicePointManager.ServerCertificateValidationCallback is ignored by
+      HttpClient, so a bypass for internal/self-signed certificates silently stops working and
+      calls fail with TLS errors in the container.
+    fix: Add the internal CA to the image trust store (or HttpClientHandler.ServerCertificateCustomValidationCallback scoped to that host).
+
+  # ------------------------------------------------------------ System.Web port sizing
+  - id: mig-http-modules-handlers
+    applies_to: [dotnet]
+    when:
+      any:
+        - config: '<(httpModules|httpHandlers|modules|handlers)\b[^>]*>(?:(?!</(httpModules|httpHandlers|modules|handlers)>)[\s\S])*?<add\s[^>]*\btype\s*=\s*"(?!System\.|Microsoft\.)'
+          in: ["web.config"]
+        - file: "*.ashx"
+        - code: '(?-i::\s*(IHttpModule|IHttpHandler|IHttpAsyncHandler)\b)'
+    severity: refactor
+    category: framework
+    effort: 1.5
+    windows_container: true
+    title: Custom IIS/ASP.NET modules and handlers
+    why: >-
+      Custom IHttpModule/IHttpHandler classes and .ashx handlers hook into the IIS/System.Web
+      pipeline; ASP.NET Core has no equivalent extension point, each one becomes middleware or
+      an endpoint and event ordering (BeginRequest, AuthenticateRequest...) must be re-created.
+    fix: Rewrite modules as middleware and handlers as minimal-API endpoints/controllers; replace third-party modules (ELMAH, ImageResizer) with their ASP.NET Core packages.
+
+  - id: mig-session-out-of-proc
+    applies_to: [dotnet]
+    when:
+      config: '<sessionState\s[^>]*mode\s*=\s*"(StateServer|SQLServer|Custom)"'
+    severity: refactor
+    category: framework
+    effort: 1
+    windows_container: true
+    title: Out-of-process ASP.NET session state (StateServer/SQLServer)
+    why: >-
+      The ASP.NET State Service and ASPState database are System.Web features. ASP.NET Core
+      session only stores byte[]/strings in IDistributedCache, so objects kept in Session
+      (BinaryFormatter-serialized) need code changes and existing sessions are not readable.
+    fix: Use ASP.NET Core session over Redis or SQL Server distributed cache and store JSON-serialized values.
+
+  - id: mig-system-web-cache
+    applies_to: [dotnet]
+    when:
+      code: 'HttpRuntime\.Cache\b|HttpContext(\.Current)?\.Cache\b|System\.Web\.Caching|(?-i:\b(SqlCacheDependency|CacheDependency|AggregateCacheDependency)\b)'
+    severity: refactor
+    category: framework
+    effort: 1
+    windows_container: true
+    title: System.Web cache (HttpRuntime.Cache / CacheDependency)
+    why: >-
+      System.Web.Caching does not exist on .NET Core; file and SQL cache dependencies
+      (SqlCacheDependency, polling or notification based) have no direct replacement, and an
+      in-process cache is per pod after scale-out.
+    fix: Use IMemoryCache (change tokens for invalidation) or IDistributedCache/Redis; replace SqlCacheDependency with explicit invalidation or SqlDependency.
+
+  - id: mig-output-cache
+    applies_to: [dotnet]
+    when:
+      all:
+        - any:
+            - code: '<%@\s*OutputCache\b|\[\s*OutputCache\s*\('
+            - config: '<outputCacheSettings\b|<outputCacheProfiles\b'
+        - tfm: 'net[1-4]\d{1,2}'
+    severity: config
+    category: framework
+    effort: 0.5
+    title: ASP.NET output caching
+    why: System.Web output caching (page directives, MVC [OutputCache], cache profiles) is configured differently on ASP.NET Core and is per pod unless backed by a shared store.
+    fix: Use ASP.NET Core output caching (AddOutputCache, Redis store for several replicas) or response caching at the ingress/CDN.
+
+  - id: mig-membership-providers
+    applies_to: [dotnet]
+    when:
+      any:
+        - config: 'type\s*=\s*"System\.Web\.(Security\.(SqlMembershipProvider|SqlRoleProvider|ActiveDirectoryMembershipProvider|WindowsTokenRoleProvider|AuthorizationStoreRoleProvider)|Profile\.SqlProfileProvider|Providers\.Default(Membership|Role|Profile)Provider)|type\s*=\s*"System\.Web\.Providers\.Default'
+        - code: '(?-i:\bMembership\.(ValidateUser|CreateUser|GetUser|FindUsersBy\w+|DeleteUser|Provider)\b|:\s*(MembershipProvider|RoleProvider|ProfileProvider|ExtendedMembershipProvider)\b|\bRoles\.(IsUserInRole|GetRolesForUser|AddUserToRole)\s*\(|\bWebSecurity\.(InitializeDatabaseConnection|Login|CreateUserAndAccount)\s*\(|\bProfileBase\b)'
+        - text: '\baspnet_(Membership|Users|Roles|UsersInRoles|Profile)\b|aspnet_regsql'
+          in: ["*.sql", "*.ps1", "*.cmd", "*.bat", "README.md"]
+    severity: refactor
+    category: identity
+    effort: 4
+    windows_container: true
+    title: ASP.NET Membership / Role / Profile providers
+    why: >-
+      Membership, Role and Profile providers (SqlMembershipProvider, aspnet_* tables,
+      SimpleMembership, custom MembershipProvider) do not exist in ASP.NET Core. Users,
+      roles and password hashes must be migrated to ASP.NET Core Identity or an external
+      IdP, with a compatible password hasher for existing hashes.
+    fix: >-
+      Move to ASP.NET Core Identity (custom IPasswordHasher that verifies legacy SHA1/HMAC
+      hashes and rehashes on login) or to the corporate IdP (OIDC); migrate aspnet_* tables;
+      ActiveDirectoryMembershipProvider becomes LDAP/Negotiate or OIDC.
+
+  - id: mig-wif
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: '(?-i:\b(FederatedAuthentication|SessionAuthenticationModule|WSFederationAuthenticationModule|ClaimsAuthenticationManager|ClaimsAuthorizationManager|ClaimsPrincipalPermission)\b)'
+        - config: '<system\.identityModel(\.services)?\b'
+    severity: refactor
+    category: identity
+    effort: 2
+    windows_container: true
+    title: Windows Identity Foundation (WIF) on System.Web
+    why: >-
+      WIF (System.IdentityModel.Services, Microsoft.IdentityModel 3.5, FAM/SAM modules,
+      <system.identityModel> configuration) is .NET Framework only; WS-Fed/SAML sign-in has to
+      be re-wired on ASP.NET Core.
+    fix: Use Microsoft.AspNetCore.Authentication.WsFederation or Sustainsys.Saml2 (or move to OIDC); port claims transformation to IClaimsTransformation and authorization managers to policies.
+
+  - id: mig-aspnet-signalr
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: 'using\s+Microsoft\.AspNet\.SignalR(\.Hubs)?\s*;|GlobalHost\.ConnectionManager|\.MapSignalR\s*\('
+        - reference: Microsoft\.AspNet\.SignalR\.(Core|SystemWeb|Owin|SelfHost)
+        - package: Microsoft\.AspNet\.SignalR(\.Core|\.Owin|\.SelfHost)?
+    severity: refactor
+    category: framework
+    effort: 3
+    windows_container: true
+    title: ASP.NET SignalR 2 (classic) server
+    why: >-
+      Classic SignalR is not available on ASP.NET Core and its protocol is incompatible with
+      ASP.NET Core SignalR: hubs, the jQuery client (jquery.signalR, /signalr/hubs proxies),
+      .NET clients and the scale-out backplane all have to move together.
+    fix: Port hubs to ASP.NET Core SignalR, switch browser clients to @microsoft/signalr and .NET clients to Microsoft.AspNetCore.SignalR.Client; use the Redis backplane for several replicas.
+
+  - id: mig-aspnet-signalr-client
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: 'using\s+Microsoft\.AspNet\.SignalR\.Client\s*;'
+        - reference: Microsoft\.AspNet\.SignalR\.Client
+        - package: Microsoft\.AspNet\.SignalR\.Client
+    severity: info
+    category: framework
+    effort: 0.5
+    title: ASP.NET SignalR 2 (classic) client
+    why: >-
+      Microsoft.AspNet.SignalR.Client runs on .NET 8, but only talks to classic SignalR
+      servers; when the server is ported to ASP.NET Core SignalR this client must change too.
+    fix: Switch to Microsoft.AspNetCore.SignalR.Client together with the server port.
+
+  - id: mig-asmx-client
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: '(?-i::\s*(System\.Web\.Services\.Protocols\.)?SoapHttpClientProtocol\b)'
+        - file: ["Reference.map"]
+    severity: refactor
+    category: framework
+    effort: 1
+    windows_container: true
+    title: ASMX web reference client (SoapHttpClientProtocol)
+    why: Web References generated from WSDL derive from SoapHttpClientProtocol (System.Web.Services), which does not exist on .NET Core.
+    fix: Regenerate the proxy with dotnet-svcutil (WCF client, BasicHttpBinding) or call the service with HttpClient.
+
+  - id: mig-wcf-message-security
+    applies_to: [dotnet]
+    when:
+      any:
+        - config: '<security\s+mode\s*=\s*"Message"|<(ws2007FederationHttpBinding|ws2007HttpBinding)\b|<reliableSession\s[^>]*enabled\s*=\s*"true"|<security\s[^>]*authenticationMode\s*=\s*"(SecureConversation|MutualCertificate|UserNameForCertificate|Kerberos|SspiNegotiated|IssuedToken)\w*"'
+          in: ["*.config"]
+        - code: '(?-i:\bSecurityMode\.Message\b|\bWSHttpSecurity\b[\s\S]{0,80}Message|\bWS2007(Federation)?HttpBinding\b)'
+    severity: refactor
+    category: framework
+    effort: 3
+    windows_container: true
+    title: WCF WS-* message security / reliable sessions
+    why: >-
+      The .NET 8 WCF client (System.ServiceModel.*) and CoreWCF support transport security
+      only for WSHttp; message-level security, secure conversation, WS-2007 bindings and
+      reliable sessions are not implemented, so the binding must change on both ends.
+    fix: Move to transport security (HTTPS, TransportWithMessageCredential) or a REST/gRPC API; coordinate the binding change with the service owner.
+
+  # ------------------------------------------------------------ libraries / tooling
+  - id: mig-enterprise-library
+    applies_to: [dotnet]
+    when:
+      any:
+        - reference: Microsoft\.Practices\.EnterpriseLibrary\..*
+        - package: EnterpriseLibrary\..*
+        - code: 'using\s+Microsoft\.Practices\.EnterpriseLibrary\.'
+        - config: 'type\s*=\s*"Microsoft\.Practices\.EnterpriseLibrary\.'
+    severity: refactor
+    category: libraries
+    effort: 3
+    windows_container: true
+    title: Microsoft Enterprise Library (Data/Logging/Exception Handling blocks)
+    why: >-
+      Enterprise Library 5/6 is retired and .NET Framework only; its application blocks are
+      configured through app.config sections and (Logging) default to Windows event log /
+      flat-file sinks.
+    fix: Data block -> ADO.NET/Dapper with DbProviderFactories; Logging -> ILogger (Serilog/NLog to stdout); Exception Handling/Validation/Caching -> middleware, FluentValidation, IMemoryCache.
+
+  - id: mig-unity-practices
+    applies_to: [dotnet]
+    when:
+      any:
+        - reference: Microsoft\.Practices\.(Unity|ServiceLocation|ObjectBuilder\d?)(\..*)?
+        - code: 'using\s+Microsoft\.Practices\.(Unity|ServiceLocation)\b'
+    severity: info
+    category: libraries
+    effort: 0.5
+    title: Unity / Common Service Locator (Microsoft.Practices namespace)
+    why: >-
+      The Microsoft.Practices.Unity 2-4 assemblies are .NET Framework only (Unity 5+ moved to
+      the Unity.* namespaces and netstandard). Unity.Mvc/Unity.WebApi integrations are tied to
+      System.Web.
+    fix: Register services in Microsoft.Extensions.DependencyInjection (or Unity 5 / Autofac) during the port.
+
+  - id: mig-vb-compatibility
+    applies_to: [dotnet]
+    when:
+      any:
+        - reference: Microsoft\.VisualBasic\.(Compatibility(\..*)?|PowerPacks.*)
+        - code: 'Microsoft\.VisualBasic\.Compatibility\b'
+    severity: refactor
+    category: libraries
+    effort: 2
+    windows_container: true
+    title: VB6 compatibility libraries
+    why: >-
+      Microsoft.VisualBasic.Compatibility(.Data) and the Power Packs were left behind by the
+      VB6 upgrade wizard; they are not available on .NET Core.
+    fix: Replace VB6 helper types (FixedLengthString, control arrays, ADODC) with plain .NET equivalents.
+
+  - id: mig-vb-my-namespace
+    applies_to: [dotnet]
+    when:
+      code: '(?-i:\bMy\.(Computer\.(Audio|Clipboard|Keyboard|Mouse|Network|Ports|Registry|Screen)|User\.|Application\.Log|Log\.|WebServices\.|Forms\.|Request\b|Response\b))'
+      in: ["*.vb"]
+    severity: refactor
+    category: libraries
+    effort: 0.5
+    windows_container: true
+    title: VB.NET My namespace features unsupported on .NET Core
+    why: >-
+      Parts of the VB My namespace (My.User, My.Application.Log, My.Computer.Registry/Network/
+      Audio/Clipboard, My.WebServices, My.Request/Response) are missing or throw
+      PlatformNotSupportedException on .NET Core/Linux.
+    fix: Use ILogger, IHttpContextAccessor/ClaimsPrincipal, HttpClient and IConfiguration instead.
+
+  - id: mig-httpcontext-in-library
+    applies_to: [dotnet]
+    when:
+      all:
+        - role: library
+        - tfm: 'net[1-4]\d{1,2}'
+        - code: '(?-i:\bHttpContext\.Current\b)'
+    severity: refactor
+    category: framework
+    effort: 1
+    windows_container: true
+    title: HttpContext.Current in a shared library
+    why: >-
+      Shared .NET Framework libraries that read HttpContext.Current (session, user, items)
+      cannot simply be retargeted to netstandard/net8; the ambient context has to be passed in
+      or injected, which touches every caller.
+    fix: Introduce an abstraction (e.g. ICurrentUser) implemented with IHttpContextAccessor in the ASP.NET Core host.
+
+  - id: mig-ef6-edmx
+    applies_to: [dotnet]
+    when:
+      file: ["*.edmx"]
+    severity: refactor
+    category: data
+    effort: 2
+    windows_container: true
+    title: Entity Framework EDMX designer model
+    why: >-
+      EF 6.4 runs on .NET 8, but the EDMX designer and its EntityDeploy build step do not work
+      in SDK-style projects or the dotnet CLI; ObjectContext/EntityObject models need EF6 on
+      .NET Framework tooling.
+    fix: Convert to code-first (reverse-engineer with EF Core Power Tools / Scaffold-DbContext) or embed the generated CSDL/SSDL/MSL resources and keep EF 6.4.
+
+  - id: mig-t4-templates
+    applies_to: [dotnet]
+    when:
+      file: ["*.tt"]
+    severity: info
+    category: build
+    effort: 0.25
+    title: T4 text templates
+    why: >-
+      T4 (.tt) templates are transformed by Visual Studio; the dotnet CLI build in a Linux
+      container does not run them, so generated files must be committed or produced another way.
+    fix: Commit the generated .cs files, or switch to source generators / dotnet-t4 (Mono.TextTemplating) in the build.
+
+  - id: mig-packages-config
+    applies_to: [dotnet]
+    when:
+      file: ["packages.config"]
+    severity: info
+    category: build
+    effort: 0.25
+    title: packages.config NuGet references
+    why: >-
+      Old-style projects with packages.config and HintPath references must be converted to
+      SDK-style PackageReference before they can be built with the dotnet CLI for .NET 8.
+    fix: Run the .NET Upgrade Assistant (or VS "Migrate packages.config to PackageReference") as the first port step.
+
+  - id: mig-webdeploy-params
+    applies_to: [dotnet]
+    when:
+      file: ["parameters.xml", "*.SetParameters.xml", "web.*.config"]
+    severity: info
+    category: configuration
+    effort: 0.25
+    title: Web Deploy parameters / web.config transforms
+    why: >-
+      Environment-specific settings are applied at deploy time by Web Deploy parameters or
+      web.config transforms; a container image is built once and promoted unchanged.
+    fix: Move per-environment values to environment variables / ConfigMaps (IConfiguration) instead of build-time transforms.

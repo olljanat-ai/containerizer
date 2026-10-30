@@ -1,0 +1,60 @@
+# Popular third-party packages that are cross-platform managed code (or ship
+# Linux native assets) and run in a Linux container without changes.
+# Windows-only or Linux-special vendor packages are findings in
+# rules/35-vendor-packages.yaml, not entries here.
+linux_ok:
+  # observability
+  - 'OpenTelemetry(\..*)?'
+  - 'Sentry(\..*)?'
+  - 'App\.Metrics(\..*)?'
+  - 'prometheus-net(\..*)?'
+  - 'Datadog\.Trace(\..*)?|NewRelic\.Agent\.Api'
+  - 'Serilog\.(Exceptions|Expressions)(\..*)?|Serilog\.Sinks\.(ApplicationInsights|Grafana\.Loki|MSSqlServer|PostgreSQL|Graylog|Splunk|OpenTelemetry|RollingFile|Map|Email|Datadog\.Logs|AwsCloudWatch|AzureAnalytics|Network|Kafka|Trace|Observable|InMemory|TestCorrelator|XUnit|PeriodicBatching)(\..*)?'
+  - 'NLog\.(Schema|Config|Database|Targets\.(Seq|ElasticSearch|Http|Syslog|Splunk|Loki|Gelf|GraylogHttp))'
+  # cloud / SaaS SDKs
+  - 'Microsoft\.Graph(\..*)?|Microsoft\.Kiota\..*'
+  - 'Google\.Apis(\..*)?|Google\.Cloud\..*|Google\.Api\.(Gax|CommonProtos)(\..*)?|Google\.LongRunning'
+  - 'Stripe\.net|Twilio(\.AspNet\.\w+)?|Braintree|Mailjet\.Api|Postmark|SparkPost'
+  - 'Minio|VaultSharp|WindowsAzure\.Storage'
+  - 'Algolia\.Search|Meilisearch|OpenSearch\.(Client|Net)|SolrNet(\..*)?'
+  - 'LaunchDarkly\.ServerSdk|Unleash\.Client|Microsoft\.FeatureManagement(\..*)?'
+  # web frameworks and APIs
+  - 'Carter|FastEndpoints(\..*)?|Ardalis\..*|Asp\.Versioning\..*|Hellang\.Middleware\.ProblemDetails|NetEscapades\..*|NWebsec\.AspNetCore\..*'
+  - 'GraphQL(\..*)?|HotChocolate(\..*)?|Microsoft\.OData\..*|Microsoft\.Spatial'
+  - 'AspNet\.Security\.(OAuth|OpenId)\..*|Fido2(\..*)?|LigerShark\.WebOptimizer\..*|BuildBundlerMinifier|Microsoft\.Web\.LibraryManager\.Build'
+  # messaging, actors, event stores, application frameworks
+  - 'WolverineFx(\..*)?|Marten(\..*)?|Weasel\..*|EventStore\.Client(\..*)?|KurrentDB\.Client(\..*)?'
+  - 'NATS\.(Client|Net)(\..*)?|NetMQ|Apache\.NMS(\..*)?|Rebus(?!\.Msmq)(\..*)?|DotNetCore\.CAP(\..*)?|Confluent\.SchemaRegistry(\..*)?|librdkafka\.redist'
+  # data access
+  - 'FirebirdSql\.(Data\.FirebirdClient|EntityFrameworkCore\.Firebird)'
+  - 'Pomelo\.EntityFrameworkCore\.MySql(\..*)?|Oracle\.EntityFrameworkCore|EFCore\.(BulkExtensions|NamingConventions)(\..*)?|Z\.EntityFramework\.(Plus|Extensions)\.EFCore'
+  - 'linq2db(\..*)?|SqlKata(\..*)?|RepoDb(\..*)?|FluentMigrator(?!\.Runner\.Jet)(\..*)?|Evolve'
+  - 'CassandraCSharpDriver|Neo4j\.Driver(\..*)?|CouchbaseNetClient|RavenDB\.Client|Snowflake\.Data|AdoNetCore\.AseClient'
+  - 'Microsoft\.SqlServer\.(SqlManagementObjects|DacFx)'
+  # security / crypto
+  - 'BCrypt\.Net-(Next|Core)|Konscious\.Security\.Cryptography\..*|Portable\.BouncyCastle|BouncyCastle\.Cryptography|NSec\.Cryptography|Otp\.NET|jose-jwt|JWT'
+  # mapping, functional and general utilities
+  - 'Mapster(\..*)?|Riok\.Mapperly|ErrorOr|OneOf(\..*)?|CSharpFunctionalExtensions|FluentResults|LanguageExt\.Core'
+  - 'Coravel(\..*)?|ZiggyCreatures\.FusionCache(\..*)?|LazyCache(\..*)?|CliWrap|Medallion\.Shell'
+  - 'System\.Reactive(\..*)?|DynamicData|System\.Linq\.(Async|Dynamic\.Core)|System\.Interactive(\..*)?|morelinq|Ben\.Demystifier'
+  - 'Microsoft\.Bcl(\..*)?|NETStandard\.Library|Microsoft\.NETCore\.(Platforms|Targets)|System\.ValueTuple|System\.Numerics\.Vectors|System\.Runtime\.CompilerServices\.Unsafe|System\.ComponentModel\.Annotations|System\.Diagnostics\.DiagnosticSource|System\.Net\.Http\.Json|System\.IO\.Pipelines|System\.Text\.Encodings\.Web|System\.Formats\.Asn1|Microsoft\.IO\.RecyclableMemoryStream'
+  - 'CommunityToolkit\.(Mvvm|HighPerformance|Diagnostics|Common)|Microsoft\.Toolkit\.(Mvvm|HighPerformance|Diagnostics)'
+  - 'UAParser|MaxMind\.(GeoIP2|Db)|DnsClient|UnitsNet|CronExpressionDescriptor|Hashids\.net|Sqids|Ulid'
+  - 'Newtonsoft\.Json\.Bson|JsonSubTypes|NJsonSchema(\..*)?|JsonSchema\.Net'
+  # parsing, templating, documents, compression
+  - 'Markdig(\..*)?|HtmlAgilityPack|AngleSharp(\..*)?|HtmlSanitizer|UglyToad\.PdfPig(\..*)?|Fluid\.Core|Stubble\.Core'
+  - 'ExcelDataReader(\.DataSet)?|MiniExcel|Sylvan\.Data(\..*)?|FileHelpers|LumenWorksCsvReader'
+  - 'SharpCompress|K4os\.Compression\.LZ4(\..*)?|ZstdSharp\.Port|Snappier'
+  - 'PDFtoImage|Docnet\.Core|Magick\.NET-Q(8|16)(-HDRI)?-AnyCPU|Magick\.NET\.Core|NAudio\.Core'
+  - 'OxyPlot\.(Core|SkiaSharp|ImageSharp)|LiveChartsCore(\.SkiaSharpView)?'
+  - 'Rebex\..*'
+  # resilience, mail, misc integration
+  - 'FluentEmail\.(Core|Smtp|MailKit|Razor|Liquid|SendGrid|Mailgun)'
+  # build-time tools and analyzers
+  - 'Microsoft\.Build(\..*)?|Fody|\w+\.Fody|GitVersion\.MsBuild|Meziantou\.Analyzer|AsyncFixer|SecurityCodeScan(\..*)?|IDisposableAnalyzers'
+  # tests
+  - 'Testcontainers(\..*)?|WireMock\.Net(\..*)?|Respawn|Verify(\..*)?|AwesomeAssertions|FakeItEasy(\..*)?|NetArchTest\.Rules|TngTech\.ArchUnitNET(\..*)?|BenchmarkDotNet(\..*)?|ReportGenerator|Selenium\.(WebDriver|Support)(?!\.IEDriver)(\..*)?|Microsoft\.Playwright(\..*)?|PuppeteerSharp|AutoBogus'
+
+# Framework/facade assembly references (<Reference Include=...>) that are neutral.
+neutral_references:
+  - 'netstandard|System\.Runtime|System\.ComponentModel\.Composition(\.Registration)?|System\.Reflection\.Context|System\.Net\.Http\.(WebRequest|Formatting)'
