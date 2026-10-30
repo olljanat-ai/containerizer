@@ -3,11 +3,34 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from pathlib import Path
 
 from .assess import APP_RATINGS, VERDICT_TEXT, AppAssessment
 
 SEV_ICON = {"info": "·", "config": "⚙", "refactor": "✎", "rewrite": "⟲", "blocker": "⛔"}
+
+
+def ref_label(url: str) -> str:
+    """Short link text: "dotnet/runtime#123", "learn.microsoft.com: Kestrel endpoints"."""
+    m = re.match(r"https?://github\.com/([^/]+/[^/]+)/(?:issues|pull|discussions)/(\d+)", url)
+    if m:
+        return f"{m[1]}#{m[2]}"
+    m = re.match(r"https?://(?:www\.)?([^/]+)(/[^?#]*)?", url)
+    if not m:
+        return url
+    tail = [p for p in (m[2] or "").split("/") if p and not re.fullmatch(r"[a-z]{2}-[a-z]{2}|\d[\d.]*", p)]
+    return m[1] + (": " + tail[-1].replace("-", " ").removesuffix(".md").removesuffix(".html") if tail else "")
+
+
+def refs_of(f) -> list[str]:
+    """References of a finding (rule object) or of a finding dict."""
+    r = f.get("refs") if isinstance(f, dict) else getattr(getattr(f, "rule", f), "refs", None)
+    return [u for u in (r or []) if isinstance(u, str) and u.startswith(("http://", "https://"))]
+
+
+def refs_md(refs: list[str]) -> str:
+    return ", ".join(f"[{ref_label(u)}]({u})" for u in refs)
 
 
 def migration_markdown(a: AppAssessment) -> str:
@@ -42,11 +65,44 @@ def migration_markdown(a: AppAssessment) -> str:
             L.append(f"- {SEV_ICON[f.severity]} **{f.rule.title}** [{f.severity}]{via}")
             L.append(f"  - Why: {' '.join(f.rule.why.split())}")
             L.append(f"  - Fix: {' '.join(f.rule.fix.split())}")
+            if refs_of(f):
+                L.append(f"  - Learn more: {refs_md(refs_of(f))}")
             if f.evidence:
                 L.append(f"  - Evidence: `{f.evidence[0]}`")
         if c.uncertain:
             L.append(f"- ? Unknown to the rule set: {', '.join(c.uncertain[:8])}")
         L.append("")
+    ver = getattr(a, "verification", None)
+    if ver:
+        L += ["## Build-and-run verification", "",
+              "Each feasible component was built from the generated Dockerfile and run hardened "
+              "(read-only root filesystem, non-root, no capabilities).", "",
+              "| Component | Result | Attempts |", "| --- | --- | --- |"]
+        text = {"ok": "runs", "ok-external": "runs; stops only at missing external services",
+                "finding": "runtime finding", "build-failed": "build failed", "run-failed": "run failed"}
+        for r in ver:
+            if r["status"] == "skipped":
+                continue
+            res = text.get(r["status"], r["status"])
+            if r.get("mode") == "smoke" or r.get("smoke") == "ok":
+                res += " (proven in Development mode without production services)"
+            if r.get("finding"):
+                res += f": {r['finding'].get('title', '')}"
+            L.append(f"| {r['component']} | {res} | {r.get('detail', '')} |")
+        L.append("")
+        for r in ver:
+            f = r.get("finding")
+            if not f:
+                continue
+            L.append(f"- **{r['component']}: {f.get('title', '')}** [{f.get('severity', '')}]")
+            if f.get("why"):
+                L.append(f"  - Why: {' '.join(f['why'].split())}")
+            if f.get("fix"):
+                L.append(f"  - Fix: {' '.join(f['fix'].split())}")
+            if refs_of(f):
+                L.append(f"  - Learn more: {refs_md(refs_of(f))}")
+        if any(r.get("finding") for r in ver):
+            L.append("")
     other = [c for c in a.libraries if any(f.severity in ("blocker", "rewrite") for f in c.findings)]
     if other:
         L += ["## Libraries with notable findings", ""]
@@ -74,7 +130,9 @@ def portfolio_html(results: list[AppAssessment]) -> str:
             items = "".join(
                 f"<li class='{f.severity}'><b>{e(f.rule.title)}</b> <span class='sev'>{f.severity}</span>"
                 f"{' <i>via ' + e(f.via) + '</i>' if f.via else ''}<br><small>{e(' '.join(f.rule.why.split()))}</small>"
-                f"<br><small class='fix'>Fix: {e(' '.join(f.rule.fix.split()))}</small></li>"
+                f"<br><small class='fix'>Fix: {e(' '.join(f.rule.fix.split()))}</small>"
+                + ("<br><small>Learn more: " + ", ".join(f"<a href='{e(u)}'>{e(ref_label(u))}</a>" for u in refs_of(f))
+                   + "</small>" if refs_of(f) else "") + "</li>"
                 for f in c.findings if f.severity != "info")
             comps.append(f"<tr><td>{e(c.name)}</td><td>{c.role}</td><td>{e(';'.join(c.project.tfms))}</td>"
                          f"<td class='v-{c.verdict}'>{e(VERDICT_TEXT[c.verdict])}</td><td>{c.score}</td>"
@@ -107,4 +165,6 @@ def write_reports(results: list[AppAssessment], out: Path, fmt: str = "md,html,j
     if "html" in fmts:
         (out / "portfolio.html").write_text(portfolio_html(results))
     if "json" in fmts:
-        (out / "assessment.json").write_text(json.dumps([a.to_dict() for a in results], indent=2, default=str))
+        docs = [{**a.to_dict(), **({"verification": a.verification} if getattr(a, "verification", None) else {})}
+                for a in results]
+        (out / "assessment.json").write_text(json.dumps(docs, indent=2, default=str))

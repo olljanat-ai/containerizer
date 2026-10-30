@@ -7,10 +7,19 @@
 #   code      - needs a code change -> finding
 # `learn` makes the fix permanent as a plan rule when the retry succeeds.
 failures:
+  - id: build-no-space
+    stage: build
+    match: 'no space left on device'
+    outcome: retry
+    refs: [https://docs.docker.com/build/cache/garbage-collection/]
+    diagnosis: The Docker disk is full on the verification host (not a problem of the application).
+    fix: {prune_cache: true}
+
   - id: build-global-json
     stage: build
     match: 'A compatible \.NET SDK was not found|global\.json file.*(requested|specifies)|Requested SDK version: (?P<ver>[\d.]+)'
     outcome: retry
+    refs: [https://learn.microsoft.com/en-us/dotnet/core/tools/global-json]
     diagnosis: global.json pins an SDK version that is not in the build image.
     fix: {remove_files: [global.json]}
     learn: {scope: repo, when: {file: global.json}}
@@ -19,6 +28,7 @@ failures:
     stage: build
     match: 'NETSDK1045|NETSDK1209|NETSDK1061|does not support targeting \.NET (Core )?(?P<ver>[\d.]+)|error NU1102: Unable to find package Microsoft\.(NETCore|AspNetCore)\.App\.(Ref|Runtime)'
     outcome: retry
+    refs: [https://learn.microsoft.com/en-us/dotnet/core/versions/selection, https://learn.microsoft.com/en-us/dotnet/standard/frameworks]
     diagnosis: The project targets an old .NET version the build image cannot target.
     fix: {strategy: retarget}
     learn: {when: {tfm: '{tfm}'}}
@@ -27,6 +37,7 @@ failures:
     stage: build
     match: 'NETSDK1100|EnableWindowsTargeting'
     outcome: retry
+    refs: [https://learn.microsoft.com/en-us/dotnet/core/project-sdk/msbuild-props]
     diagnosis: The project (or a dependency) targets a -windows TFM; building it on Linux needs EnableWindowsTargeting.
     fix: {publish_args: ["-p:EnableWindowsTargeting=true"]}
     learn: {when: {tfm: 'net\d+\.\d+-windows.*'}}
@@ -35,6 +46,7 @@ failures:
     stage: build
     match: 'error NU1605:'
     outcome: retry
+    refs: [https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605, https://learn.microsoft.com/en-us/dotnet/core/rid-catalog]
     diagnosis: >-
       Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that
       conflict (package downgrade). A portable publish restores the same graph as the Windows build.
@@ -53,21 +65,26 @@ failures:
     stage: build
     match: 'NETSDK1136|reference assemblies for \.NETFramework|The type or namespace name .System\.Web|MSB3644'
     outcome: code
+    refs: [https://learn.microsoft.com/en-us/dotnet/core/porting/]
     diagnosis: The component (or a project it references) needs .NET Framework.
-    finding: {severity: rewrite, title: Depends on .NET Framework assemblies at build time}
+    finding: {severity: rewrite, title: Depends on .NET Framework assemblies at build time,
+      fix: 'Port the component and the projects it references to modern .NET (SDK-style project, ASP.NET Core instead of System.Web), or keep it on a Windows container.'}
 
   - id: build-missing-windows-only-package
     stage: build
     match: "error CS0234: The type or namespace name '(?P<ns>\\w+)' does not exist in the namespace '(?P<parent>Windows|System\\.Windows)"
     outcome: platform
+    refs: [https://learn.microsoft.com/en-us/dotnet/standard/frameworks]
     diagnosis: Code uses a Windows-only namespace that the Linux build cannot resolve.
-    finding: {severity: blocker, title: 'Windows-only namespace {parent}.{ns}'}
+    finding: {severity: blocker, title: 'Windows-only namespace {parent}.{ns}',
+      fix: 'Move the code that needs {parent}.{ns} behind an interface with a Linux implementation, or split it into a separate Windows component.'}
 
   # ------------------------------------------------------------------ run
   - id: run-aspnet-framework-missing
     stage: run
     match: "framework=Microsoft\\.AspNetCore\\.App|Microsoft\\.AspNetCore\\.App', version"
     outcome: retry
+    refs: [https://learn.microsoft.com/en-us/dotnet/core/docker/container-images]
     diagnosis: The worker uses the ASP.NET Core shared framework; it needs the aspnet base image.
     fix: {aspnet_runtime: true}
     learn: {}
@@ -76,6 +93,7 @@ failures:
     stage: run
     match: "(Access to the path '(?P<path>/[^']+)' is denied|Read-only file system : '(?P<path2>/[^']+)'|UnauthorizedAccessException: Access to the path '(?P<path3>/[^']+)')"
     outcome: retry
+    refs: [https://kubernetes.io/docs/tasks/configure-pod-container/security-context/]
     diagnosis: The app writes to a folder that is read-only in the hardened container.
     fix: {add_writable: ['{dir}']}
     learn: {when: {}}
@@ -84,6 +102,7 @@ failures:
     stage: run
     match: "DirectoryNotFoundException: Could not find a part of the path '(?P<path>/[^']+)'"
     outcome: retry
+    refs: [https://kubernetes.io/docs/concepts/storage/persistent-volumes/]
     diagnosis: The app expects a folder that does not exist in the image.
     fix: {add_writable: ['{dir}']}
     learn: {when: {}}
@@ -92,6 +111,7 @@ failures:
     stage: run
     match: "libgssapi_krb5\\.so|GSSAPI|gss_\\w+ failed|Cannot load library libgssapi"
     outcome: retry
+    refs: [https://learn.microsoft.com/en-us/aspnet/core/security/authentication/windowsauth]
     diagnosis: Kerberos (Negotiate) needs the GSSAPI libraries in the image.
     fix: {add_packages: [libkrb5-3, libgssapi-krb5-2, gss-ntlmssp]}
     learn: {when: {code: 'Negotiate'}}
@@ -100,29 +120,36 @@ failures:
     stage: run
     match: "(DllNotFoundException|Unable to load shared library|Unable to load DLL) '?(?P<lib>(httpapi|advapi32|kernel32|user32|netapi32|secur32|crypt32|ole32|activeds|wtsapi32)(\\.dll)?)'?"
     outcome: platform
+    refs: [https://learn.microsoft.com/en-us/aspnet/core/fundamentals/servers/httpsys, https://learn.microsoft.com/en-us/dotnet/standard/native-interop/native-library-loading]
     diagnosis: >-
       The app calls a Windows system library ({lib}) that has a cross-platform .NET replacement
       (HTTP.sys -> Kestrel, Win32 security/registry -> managed APIs).
-    finding: {severity: refactor, title: 'Windows system library {lib} called at runtime'}
+    finding: {severity: refactor, title: 'Windows system library {lib} called at runtime',
+      fix: 'Replace the Windows-specific call with its cross-platform .NET API (HTTP.sys hosting -> Kestrel, P/Invoke to {lib} -> managed equivalent), or guard it with OperatingSystem.IsWindows().'}
 
   - id: run-native-missing
     stage: run
     match: "(DllNotFoundException|Unable to load shared library|Unable to load DLL) '?(?P<lib>[\\w.\\-]+)'?"
     outcome: platform
+    refs: [https://learn.microsoft.com/en-us/dotnet/standard/native-interop/native-library-loading]
     diagnosis: The app loads a native library ({lib}) that is not available in the Linux image.
-    finding: {severity: blocker, title: 'Native library {lib} not available on Linux'}
+    finding: {severity: blocker, title: 'Native library {lib} not available on Linux',
+      fix: 'Install a Linux build of {lib} in the image (a NuGet runtime package or apt package), or replace the library with a managed or cross-platform one.'}
 
   - id: run-platform-not-supported
     stage: run
     match: "PlatformNotSupportedException: (?P<msg>[^\\n]{0,200})"
     outcome: platform
+    refs: [https://learn.microsoft.com/en-us/dotnet/standard/analyzers/platform-compat-analyzer]
     diagnosis: 'A Windows-only API was called at runtime: {msg}'
-    finding: {severity: refactor, title: 'Windows-only API at runtime: {msg}'}
+    finding: {severity: refactor, title: 'Windows-only API at runtime: {msg}',
+      fix: 'Find the call in the log''s stack trace; replace it with a cross-platform API or guard it with OperatingSystem.IsWindows(). The platform compatibility analyzer (CA1416) lists such calls at build time.'}
 
   - id: run-https-no-cert
     stage: run
     match: "Unable to configure HTTPS endpoint|No server certificate was specified|The default developer certificate"
     outcome: retry
+    refs: [https://learn.microsoft.com/en-us/aspnet/core/security/docker-https, https://learn.microsoft.com/en-us/aspnet/core/fundamentals/servers/kestrel/endpoints]
     diagnosis: An HTTPS endpoint is configured without a certificate; TLS terminates at the ingress instead.
     fix: {env: {ASPNETCORE_URLS: "http://+:8080", Kestrel__Endpoints__Https__Url: "http://+:8081"}}
     learn: {when: {config: '"Https"\s*:|https://'}}
@@ -131,24 +158,30 @@ failures:
     stage: run
     match: "certificate .*(not found|could not be found) in (the )?(store|LocalMachine)|X509Store.*(PlatformNotSupported|not supported)|LocalMachine X509Store is limited"
     outcome: code
+    refs: [https://learn.microsoft.com/en-us/dotnet/standard/security/cross-platform-cryptography, https://kubernetes.io/docs/concepts/configuration/secret/]
     diagnosis: The app loads a certificate from the Windows certificate store.
-    finding: {severity: config, title: Certificate must be mounted as a file}
+    finding: {severity: config, title: Certificate must be mounted as a file,
+      fix: 'Mount the certificate from a Kubernetes Secret and load it with X509Certificate2.CreateFromPemFile / new X509Certificate2(path, password) instead of the LocalMachine store.'}
 
   - id: run-global-mutex
     stage: run
     match: "IOException: .*: 'Global\\\\[^']+'|WaitHandleCannotBeOpenedException"
     outcome: platform
+    refs: [https://learn.microsoft.com/en-us/dotnet/api/system.threading.mutex, https://kubernetes.io/docs/concepts/architecture/leases/]
     diagnosis: >-
       A machine-wide named mutex (Global\\...) guards against a second instance. Containers do not
       share it; run a single replica or use a Kubernetes Lease / database lock.
-    finding: {severity: refactor, title: Machine-wide named mutex for single-instance}
+    finding: {severity: refactor, title: Machine-wide named mutex for single-instance,
+      fix: 'Run a single replica (Deployment replicas 1, strategy Recreate), or replace the mutex with a distributed lock such as a Kubernetes Lease or a database lock.'}
 
   - id: run-eventlog
     stage: run
     match: "System\\.Diagnostics\\.EventLog|EventLog access is not supported on this platform"
     outcome: platform
+    refs: [https://learn.microsoft.com/en-us/dotnet/core/extensions/logging/providers]
     diagnosis: Windows Event Log is not available on Linux.
-    finding: {severity: refactor, title: Event Log used at runtime}
+    finding: {severity: refactor, title: Event Log used at runtime,
+      fix: 'Log through ILogger to the console and let the cluster collect stdout; remove the EventLog provider or guard it with OperatingSystem.IsWindows().'}
 
   - id: run-sql-unreachable
     stage: run
@@ -162,16 +195,33 @@ failures:
     outcome: external
     diagnosis: An external service (broker, cache, API, directory) is not reachable from the test container.
 
+  - id: run-broker-connect-timeout
+    stage: run
+    match: '(TaskCanceledException|OperationCanceledException|TimeoutException)[^\n]*\n\s*thrown at (EasyNetQ|RabbitMQ|MassTransit|Confluent\.Kafka|StackExchange\.Redis|Azure\.Messaging|NATS|NServiceBus|Rebus)'
+    outcome: external
+    diagnosis: A message broker or cache client timed out connecting (the service is not reachable from the test container).
+
+  - id: run-sqlite-no-schema
+    stage: run
+    match: "SQLite Error 1: 'no such table"
+    outcome: external
+    refs: [https://learn.microsoft.com/en-us/ef/core/managing-schemas/migrations/applying]
+    diagnosis: >-
+      The app is up; its SQLite database has no schema yet (created by migrations or a deployment
+      step in the real environment, not by the app at start-up).
+
   - id: run-oidc-authority-unreachable
     stage: run
     match: "IDX20803|IDX20804|Unable to obtain configuration from|IDX10500"
     outcome: external
+    refs: [https://learn.microsoft.com/en-us/aspnet/core/security/authentication/configure-oidc-web-authentication]
     diagnosis: The OpenID Connect authority (identity provider) is not reachable from the test container.
 
   - id: run-health-dependency-down
     stage: run
     match: "Health check \\S+ with status Unhealthy"
     outcome: external
+    refs: [https://learn.microsoft.com/en-us/aspnet/core/host-and-deploy/health-checks]
     diagnosis: The app is up; its health check reports a dependency (database, broker) that is not reachable.
 
   - id: run-kerberos-config
@@ -184,11 +234,14 @@ failures:
     stage: run
     match: "(OptionsValidationException|ArgumentNullException: Value cannot be null.*(Parameter '(connectionString|path|uriString)')|InvalidOperationException: .*(not configured|is missing|must be configured|is required|not found in))"
     outcome: external
+    refs: [https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/]
     diagnosis: A required setting has no value in the test container (environment-specific configuration).
 
   - id: run-sqlite-open
     stage: run
     match: "SQLite Error 14: 'unable to open database file'|SQLite Error 8: 'attempt to write a readonly database'"
     outcome: code
+    refs: [https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/connection-strings, https://kubernetes.io/docs/concepts/storage/persistent-volumes/]
     diagnosis: The embedded SQLite database file is not in a writable, persistent folder.
-    finding: {severity: config, title: SQLite database needs a persistent volume (single replica)}
+    finding: {severity: config, title: SQLite database needs a persistent volume (single replica),
+      fix: 'Put the database file on a PersistentVolume mounted writable (the generated manifests do this for the configured path) and run one replica, or move the data to a database server.'}

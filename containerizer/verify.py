@@ -29,7 +29,7 @@ from pathlib import Path
 import yaml
 
 from .assess import AppAssessment, Component
-from .generate import (CONTAINER_PORT, DOCKERIGNORE, _writable_abs, buildable, dockerfile_dotnet, dockerfile_spa,
+from .generate import (CONTAINER_PORT, DOCKERIGNORE, add_reason, _writable_abs, buildable, dockerfile_dotnet, dockerfile_for, dockerfile_spa,
                        images, k8s_name, make_plan, merge_plan)
 from .rules import RULES_DIR, load_rules
 
@@ -45,6 +45,20 @@ def load_failures() -> list[dict]:
             out += (yaml.safe_load(f.read_text()) or {}).get("failures", []) or []
     # learned failure rules first: they are more specific
     return sorted(out, key=lambda r: 0 if r.get("source") in ("learned", "ai") else 1)
+
+
+def _messages(log: str) -> str:
+    """Run logs: exception messages say what went wrong, not the stack frames under them. Only the
+    frame that threw is kept, as "thrown at ...", because it names the library that failed."""
+    out, prev_frame = [], True
+    for line in log.splitlines():
+        frame = line.lstrip().startswith("at ")
+        if not frame:
+            out.append(line)
+        elif not prev_frame:
+            out.append("   thrown " + line.lstrip())
+        prev_frame = frame
+    return "\n".join(out)
 
 
 def diagnose(log: str, stage: str, failures: list[dict]) -> tuple[dict, dict] | None:
@@ -139,9 +153,20 @@ def _ensure_images(dockerfile: str) -> None:
             _run(["docker", "tag", src, ref], 30)
 
 
+def _free_disk(min_gb: float = 15.0) -> None:
+    """Drop old BuildKit cache when the Docker disk runs low (keeps the recent, reusable layers)."""
+    import shutil
+    try:
+        root = _run(["docker", "info", "-f", "{{.DockerRootDir}}"], 30)[1].strip() or "/var/lib/docker"
+        if shutil.disk_usage(root).free / 1e9 < min_gb:
+            _run(["docker", "builder", "prune", "-af", "--filter", "until=1h"], 600)
+    except OSError:
+        pass
+
+
 def build(a: AppAssessment, c: Component, plan: dict, workdir: Path, timeout: int) -> tuple[bool, str, str]:
     workdir.mkdir(parents=True, exist_ok=True)
-    df = dockerfile_spa(plan, c.facts) if c.role == "spa" else dockerfile_dotnet(plan)
+    df = dockerfile_for(plan, c)
     _ensure_images(df)
     (workdir / "Dockerfile").write_text(df)
     (workdir / "Dockerfile.dockerignore").write_text(DOCKERIGNORE)
@@ -153,7 +178,7 @@ def build(a: AppAssessment, c: Component, plan: dict, workdir: Path, timeout: in
 
 
 def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | None = None,
-        wait: int = 45) -> tuple[str, str, dict]:
+        wait: int = 90) -> tuple[str, str, dict]:
     """Returns (status, log, details). status: ok | exited | unhealthy"""
     name = f"cz-verify-{os.getpid()}-{int(time.time())}"
     uid = images()["dotnet"]["app_uid"] if c.role != "spa" else 101
@@ -264,6 +289,7 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
               "predicted": c.verdict, "time": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     env_override: dict = {}
     learned_patches: list[tuple[dict, dict, dict]] = []
+    pruned = False
     t0 = time.time()
     for attempt in range(1, MAX_ATTEMPTS + 1):
         ok, log, tag = build(a, c, plan, workdir, timeout)
@@ -281,8 +307,7 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
                     result["mode"] = "smoke"     # proven without the production services
                 break
         tail = "\n".join(log.splitlines()[-200:])
-        # run logs: exception messages, not the stack frames under them, say what went wrong
-        msgs = "\n".join(l for l in log.splitlines() if not l.lstrip().startswith("at ")) if stage == "run" else log
+        msgs = _messages(log) if stage == "run" else log
         d = diagnose(msgs[-60000:], stage, failures)
         if d is None and ai:
             from .ai import diagnose_failure
@@ -306,8 +331,18 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
         history.append(entry)
         if fr["outcome"] == "retry":
             patch = _fmt(fr.get("fix", {}), caps)
+            if patch.pop("prune_cache", None):
+                if pruned:
+                    result["status"] = f"{stage}-failed"
+                    entry["note"] = "disk still full after pruning; free space on the Docker host"
+                    break
+                _free_disk(min_gb=float("inf"))
+                pruned = True
+                continue
             before = json.dumps(plan, sort_keys=True)
             merge_plan(plan, patch)
+            if json.dumps(plan, sort_keys=True) != before:
+                add_reason(plan, fr["id"], _fmt(fr.get("diagnosis", ""), caps), fr.get("refs"))
             if json.dumps(plan, sort_keys=True) == before:
                 entry["note"] = "fix already applied; giving up"
                 result["status"] = f"{stage}-failed"
@@ -324,6 +359,9 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
             break
         # platform / code findings
         finding = _fmt(fr.get("finding", {}), caps)
+        finding.setdefault("why", _fmt(fr.get("diagnosis", ""), caps))
+        if fr.get("refs"):
+            finding.setdefault("refs", list(fr["refs"]))
         if env_override and not result.get("finding") and finding.get("severity") == "config":
             # the production run only lacked external services; a config gap of the smoke setup
             # (e.g. a local database file) says nothing about the production container
@@ -341,6 +379,9 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
         result["smoke"] = result["status"]
         result["status"] = "finding"
     result["plan"] = plan
+    if not os.environ.get("CONTAINERIZER_KEEP_IMAGES"):
+        # verification images are throw-away; large portfolios would otherwise fill the disk
+        _run(["docker", "rmi", "-f", f"containerizer/{k8s_name(a.name)}-{k8s_name(c.name)}:verify"], 120)
     result["seconds"] = round(time.time() - t0)
     if learn and result["status"] in ("ok", "ok-external"):
         persist_learning(a, c, plan, learned_patches)
@@ -360,9 +401,14 @@ def _load(path: Path, key: str) -> dict:
     return d
 
 
+class _NoAliases(yaml.SafeDumper):
+    def ignore_aliases(self, data):      # learned files are read by people: no &id001 anchors
+        return True
+
+
 def _save(path: Path, d: dict, header: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(header + yaml.safe_dump(d, sort_keys=False, allow_unicode=True, width=120))
+    path.write_text(header + yaml.dump(d, Dumper=_NoAliases, sort_keys=False, allow_unicode=True, width=120))
 
 
 def persist_learning(a: AppAssessment, c: Component, plan: dict, patches) -> None:
@@ -383,6 +429,8 @@ def persist_learning(a: AppAssessment, c: Component, plan: dict, patches) -> Non
         if rid in ids:
             continue
         rule = {"id": rid, "phase": "plan", "source": fr.get("source", "learned"), "when": when, "plan": patch,
+                "why": " ".join(str(_fmt(fr.get("diagnosis", ""), caps)).split()),
+                **({"refs": list(fr["refs"])} if fr.get("refs") else {}),
                 "learned_from": f"{a.name}/{c.name}", "learned_at": datetime.now(timezone.utc).date().isoformat()}
         if learn.get("scope"):
             rule["scope"] = learn["scope"]
@@ -424,8 +472,9 @@ def persist_finding(a: AppAssessment, c: Component, result: dict) -> None:
         return
     d["rules"].append({"id": rid, "source": "learned", "severity": f.get("severity", "refactor"),
                        "category": "runtime-observed", "title": title,
-                       "why": result["attempts"][-1].get("diagnosis", ""),
-                       "fix": "See the verification log; fix and re-run `containerizer verify`.",
+                       "why": " ".join(str(f.get("why") or result["attempts"][-1].get("diagnosis", "")).split()),
+                       "fix": f.get("fix") or "See the verification log; fix and re-run `containerizer verify`.",
+                       **({"refs": f["refs"]} if f.get("refs") else {}),
                        "when": {"name": f"^{re.escape(c.project.name)}$"},
                        "learned_from": f"{a.name}/{c.name}",
                        "learned_at": datetime.now(timezone.utc).date().isoformat()})
@@ -446,6 +495,7 @@ def verify_app(a: AppAssessment, out: Path | None = None, learn: bool = False, o
         r = verify_component(a, c, rules, learn=learn, ai=ai, model=model, timeout=timeout)
         r["detail"] = "; ".join(f"{h.get('rule', h.get('status'))}" for h in r["attempts"])
         results.append(r)
+    _free_disk()
     if out:
         out.mkdir(parents=True, exist_ok=True)
         (out / f"{a.name}.verify.json").write_text(json.dumps(results, indent=2, default=str))

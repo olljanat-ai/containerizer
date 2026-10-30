@@ -101,6 +101,7 @@ class Repo:
     readme: str
     solution_files: list[Path]
     _by_path: dict = field(default_factory=dict, repr=False)
+    _rel_cache: dict = field(default_factory=dict, repr=False)
 
     def project_by_path(self, p: Path) -> Project | None:
         if not self._by_path:
@@ -108,7 +109,10 @@ class Repo:
         return self._by_path.get(p.resolve())
 
     def rel(self, p: Path) -> str:
-        return str(p.relative_to(self.root))
+        r = self._rel_cache.get(p)
+        if r is None:
+            r = self._rel_cache[p] = str(p.relative_to(self.root))
+        return r
 
 
 # ---------------------------------------------------------------------------
@@ -138,8 +142,11 @@ def read_text(p: Path, strip_comments: bool = False) -> str:
             txt = _XML_COMMENT_RE.sub("", txt)
         elif ext == ".vb":
             txt = re.sub(r"(?m)^\s*'[^\n]*", "", txt)
-        elif ext in (".py", ".ps1", ".psm1"):
+        elif ext in (".py", ".ps1", ".psm1", ".ini", ".yaml", ".yml", ".properties"):
             txt = re.sub(r"(?m)^\s*#[^\n]*", "", txt)
+        elif ext == ".json":
+            # JSON with comments (appsettings): only whole-line comments, so URLs stay intact
+            txt = re.sub(r"(?m)^\s*//[^\n]*", "", txt)
     return txt
 
 
@@ -224,9 +231,70 @@ def walk(root: Path) -> list[Path]:
     return out
 
 
-def _load_props(root: Path, proj_dir: Path) -> dict[str, str]:
+_PROP_REF_RE = re.compile(r"\$\((\w+)\)")
+_DEFAULT_IF_EMPTY_RE = re.compile(r"^\s*'\$\((\w+)\)'\s*==\s*''\s*$")
+
+
+def _expand(v: str, props: dict[str, str]) -> str:
+    """Expand simple $(Name) references; unknown names and property functions stay as they are."""
+    return _PROP_REF_RE.sub(lambda m: props.get(m.group(1), m.group(0)), v)
+
+
+def _msbuild_elements(path: Path, root: Path, seen: set | None = None):
+    """Yield (element, condition) for an MSBuild file in document order, with local
+    <Import>s inlined where they appear. `condition` is the nearest Condition on the
+    element or an enclosing group ("" when unconditional)."""
+    seen = seen if seen is not None else set()
+    rp = path.resolve()
+    if rp in seen:
+        return
+    seen.add(rp)
+    try:
+        top = ET.parse(path).getroot()
+    except (ET.ParseError, OSError):
+        return
+    this_dir = str(path.parent).replace("\\", "/") + "/"
+
+    def rec(el, cond):
+        for c in el:
+            if not isinstance(c.tag, str):
+                continue
+            tag = _strip_ns(c.tag)
+            ccond = c.attrib.get("Condition", "").strip() or cond
+            if tag == "Import":
+                inc = c.attrib.get("Project", "").replace("\\", "/")
+                inc = inc.replace("$(MSBuildThisFileDirectory)", this_dir)
+                if inc and "$(" not in inc:
+                    ip = (path.parent / inc).resolve()
+                    if ip.is_file() and root in ip.parents:
+                        yield from _msbuild_elements(ip, root, seen)
+                continue
+            yield c, ccond
+            yield from rec(c, ccond)
+
+    yield from rec(top, "")
+
+
+def _set_prop(props: dict[str, str], fixed: set, tag: str, value: str, cond: str) -> None:
+    """MSBuild-ish property assignment. A conditional value never overrides an
+    unconditional one (the build runs on Linux, where e.g. IsOSPlatform('windows') is
+    false), and a default-if-empty condition only applies while the property is unset
+    (and then counts as unconditional)."""
+    default = False
+    if cond:
+        m = _DEFAULT_IF_EMPTY_RE.match(cond)
+        default = bool(m and m.group(1) == tag)
+        if tag in fixed or (default and props.get(tag)):
+            return
+    props[tag] = _expand(value, props)
+    if not cond or default:
+        fixed.add(tag)
+
+
+def _load_props(root: Path, proj_dir: Path, fixed: set | None = None) -> dict[str, str]:
     """Read Directory.Build.props up the tree (common place for TFMs/packages)."""
     props: dict[str, str] = {}
+    fixed = fixed if fixed is not None else set()
     d = proj_dir
     chain = []
     while True:
@@ -237,15 +305,26 @@ def _load_props(root: Path, proj_dir: Path) -> dict[str, str]:
             break
         d = d.parent
     for p in reversed(chain):
-        try:
-            tree = ET.parse(p)
-        except ET.ParseError:
-            continue
-        for el in tree.iter():
+        for el, cond in _msbuild_elements(p, root):
             tag = _strip_ns(el.tag)
             if el.text and el.text.strip() and len(list(el)) == 0 and tag not in ("PackageReference",):
-                props[tag] = el.text.strip()
+                _set_prop(props, fixed, tag, el.text.strip(), cond)
     return props
+
+
+def _packages_config(proj_path: Path) -> dict[str, str]:
+    """NuGet packages.config of an old-style project (id -> version)."""
+    out: dict[str, str] = {}
+    for cand in (proj_path.parent / "packages.config", proj_path.parent / f"packages.{proj_path.stem}.config"):
+        if not cand.is_file():
+            continue
+        try:
+            for el in ET.parse(cand).getroot().iter():
+                if _strip_ns(el.tag) == "package" and el.attrib.get("id"):
+                    out.setdefault(el.attrib["id"], el.attrib.get("version", ""))
+        except (ET.ParseError, OSError):
+            continue
+    return out
 
 
 def parse_dotnet_project(path: Path, root: Path) -> Project:
@@ -261,21 +340,10 @@ def parse_dotnet_project(path: Path, root: Path) -> Project:
         for e in proj:
             if _strip_ns(e.tag) == "Sdk":
                 pr.sdk = e.attrib.get("Name", "")
-    inherited = _load_props(root, path.parent)
-    props: dict[str, str] = {k: v for k, v in inherited.items()}
-    elements = list(proj.iter())
-    # Follow local <Import Project="..."> files (shared .props/.targets with references)
-    for el in proj.iter():
-        if _strip_ns(el.tag) == "Import":
-            inc = el.attrib.get("Project", "").replace("\\", "/")
-            if inc and "$(" not in inc:
-                ip = (path.parent / inc).resolve()
-                if ip.is_file() and root in ip.parents:
-                    try:
-                        elements += list(ET.parse(ip).getroot().iter())
-                    except ET.ParseError:
-                        pass
-    for el in elements:
+    fixed: set = set()
+    props = _load_props(root, path.parent, fixed)
+    # project file in document order, local <Import Project="..."> files inlined
+    for el, cond in _msbuild_elements(path, root):
         tag = _strip_ns(el.tag)
         if tag == "PackageReference" or tag == "PackageVersion":
             name = el.attrib.get("Include") or el.attrib.get("Update")
@@ -301,11 +369,14 @@ def parse_dotnet_project(path: Path, root: Path) -> Project:
         elif tag == "ProjectTypeGuids" and el.text:
             pr.type_guids = [g.strip("{} ").lower() for g in el.text.split(";") if g.strip()]
         elif len(list(el)) == 0 and el.text and el.text.strip():
-            props[tag] = el.text.strip()
+            _set_prop(props, fixed, tag, el.text.strip(), cond)
+    for name, ver in _packages_config(path).items():
+        pr.packages.setdefault(name, ver)
     pr.properties = props
     tfm = props.get("TargetFramework") or props.get("TargetFrameworks") or ""
     if tfm:
-        pr.tfms = [t.strip() for t in tfm.split(";") if t.strip() and "$(" not in t]
+        pr.tfms = list(dict.fromkeys(t.strip() for t in _expand(tfm, props).split(";")
+                                     if t.strip() and "$(" not in t))
     elif props.get("TargetFrameworkVersion"):
         pr.tfms = [_framework_version_to_tfm(props["TargetFrameworkVersion"])]
     default_ot = "Exe" if re.search(r"Sdk\.(Web|Worker)$", pr.sdk or "") else ("Library" if pr.sdk_style else "")
@@ -399,6 +470,14 @@ def scan(root: str | Path) -> Repo:
             if parent is not None:
                 p.properties["HostedBy"] = parent.rel
                 parent.properties.setdefault("SpaRoot", str(p.dir.relative_to(parent.dir)))
+    # A Blazor WebAssembly client referenced by a server project is served by that
+    # project (static web assets), not deployed on its own.
+    for p in projects:
+        if p.kind_hint == "dotnet" and "BlazorWebAssembly" in (p.sdk or ""):
+            host = next((q for q in projects if q.kind_hint == "dotnet" and q is not p
+                         and p.path.resolve() in q.project_refs), None)
+            if host is not None:
+                p.properties["HostedBy"] = host.rel
 
     readme = ""
     for cand in ("README.md", "readme.md", "README.txt", "README"):

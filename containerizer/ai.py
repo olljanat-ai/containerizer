@@ -308,7 +308,7 @@ DIAG_SCHEMA = {
 
 PLAN_HELP = """Build-plan patch keys you may use (JSON): base ("chiseled"|"full"), add_packages [apt packages for Ubuntu 24.04,
 forces base full], env {NAME: value}, add_writable [absolute folders that must be writable], publish_args [extra
-`dotnet publish` args], remove_files [file names deleted in the build stage], strategy ("rollforward"|"retarget" to net8.0).
+`dotnet publish` args], remove_files [file names deleted in the build stage], strategy ("rollforward"|"retarget" to the supported runtime line).
 Never change application source code. Never run as root or disable security settings."""
 
 

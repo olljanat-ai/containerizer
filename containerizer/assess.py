@@ -49,7 +49,7 @@ class Finding:
     def to_dict(self) -> dict:
         r = self.rule
         return {"id": r.id, "severity": r.severity, "category": r.category, "title": r.title,
-                "why": " ".join(r.why.split()), "fix": " ".join(r.fix.split()), "effort_days": r.effort,
+                "why": " ".join(r.why.split()), "fix": " ".join(r.fix.split()), "effort_days": r.effort, "refs": list(r.refs),
                 "via": self.via, "dormant": self.dormant, "only_commands": self.modes, "evidence": [str(e) for e in self.evidence[:3]], "source": r.source,
                 "windows_container": r.windows_container}
 

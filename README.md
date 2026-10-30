@@ -25,6 +25,10 @@ Design principles:
 ```bash
 pip install -r requirements.txt            # PyYAML; `anthropic` optional for the API backend
 
+# the recommended one-shot run per repository: assess, build and run every feasible component,
+# learn from failures, re-assess with what was learned, write reports + Dockerfiles + manifests
+python -m containerizer analyze <repo> --out out/            # add --ai --model claude-sonnet-5-5 for Claude review
+
 # assess: one app, or a folder with scenarios/
 python -m containerizer assess ../containerization-challenge -v
 python -m containerizer assess ../containerization-challenge --out reports/   # md + html + json
@@ -93,11 +97,24 @@ python -m containerizer bench --technique hybrid --model claude-haiku-5-5
   title: Microsoft Office automation (COM)
   why: Drives Word/Excel through COM ...
   fix: Replace with a document library (OpenXML SDK, ClosedXML, ...)
+  refs:
+    - https://learn.microsoft.com/en-us/dotnet/core/porting/
 ```
+
+Every finding is explained without AI: `why` says what breaks in a Linux container, `fix` what to
+do, and `refs` link to the documentation or upstream issue behind it. All three are shown in the
+migration report, the HTML portfolio, the PR comment and SARIF (`help`, `helpUri`). Findings
+observed at run time carry the explanation and links of the failure rule that recognised them, and
+every non-default build decision (a plan rule, a config override, a fix learned while verifying) is
+listed with its reason and links at the top of the generated `Dockerfile` and in `plan.json`.
 
 Condition primitives: `sdk`, `tfm`, `package`, `reference`, `framework_ref`, `property`,
 `output_type`, `kind`, `role`, `name`, `file` (glob), `code` / `config` / `text` (regex with optional
 `in:` glob and `unguarded: true`), `readme`, combined with `any` / `all` / `not`.
+`unguarded: true` skips hits right after an `OperatingSystem.IsWindows()` check or inside a method/type
+marked `[SupportedOSPlatform("windows")]`. `same_file: true` next to an `all` requires its
+`code`/`config`/`text` conditions to match in the same file (e.g. an assembly loader *and* an install
+path probe, not two unrelated files).
 Later files override earlier rules with the same id; `rules/learned/` is loaded last.
 
 ### Self-learning loop (`verify --learn`)
@@ -110,7 +127,7 @@ For each component that can be containerized the tool:
    directories during the test, so apps that log only to files can still be diagnosed;
 3. matches the log against `rules/50-failures.yaml`:
    - `retry`: patch the build plan (e.g. remove a pinned `global.json`, retarget an out-of-support
-     TFM to net8.0, add Kerberos libraries, make a folder writable) and try again;
+     TFM to net10.0, add Kerberos libraries, make a folder writable) and try again;
    - `external`: the container works, it only lacks a database/broker/directory/identity provider —
      then the tool retries in a dependency-free smoke mode (`Development` environment, which many apps
      map to SQLite and simulators) to prove the app actually serves requests. For the smoke run only,
@@ -149,9 +166,9 @@ containers, a `Dockerfile.windows` stop-gap. Per app: `kustomization.yaml` and `
 
 Techniques used to avoid application changes:
 
-- out-of-support .NET (Core 3.1, 5, 6, 7): build with the .NET 8 SDK and run on the supported .NET 8
+- out-of-support .NET (Core 3.1, 5, 6, 7): build with the .NET 10 SDK and run on the supported .NET 10
   runtime with `DOTNET_ROLL_FORWARD=Major`; if the old target can't be built, retarget with
-  `-p:TargetFramework=net8.0`;
+  `net10.0` in the build stage's copy of the entry project (its netstandard libraries keep their targets);
 - `global.json` SDK pins are removed inside the build stage only;
 - Kestrel endpoints from `appsettings.json` are re-pointed with `Kestrel__Endpoints__X__Url`;
 - connection strings and secret settings become `ConnectionStrings__X` env vars from a Secret;
