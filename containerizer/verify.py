@@ -88,10 +88,20 @@ def _fmt(obj, caps: dict):
     return obj
 
 
+class DockerUnavailable(RuntimeError):
+    """The Docker daemon is not reachable: no verification result would mean anything."""
+
+
+DOCKER_DOWN = "Cannot connect to the Docker daemon"
+
+
 def _run(cmd: list[str], timeout: int, cwd: Path | None = None) -> tuple[int, str]:
     try:
         p = subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                            timeout=timeout, errors="replace")
+        if cmd[0] == "docker" and p.returncode and DOCKER_DOWN in p.stdout:
+            # never record an infrastructure outage as a build failure of the app
+            raise DockerUnavailable(f"{DOCKER_DOWN}; start it and run verify again")
         return p.returncode, p.stdout
     except subprocess.TimeoutExpired as e:
         return 124, (e.stdout or "") + "\n[timeout]"
@@ -486,6 +496,7 @@ def verify_app(a: AppAssessment, out: Path | None = None, learn: bool = False, o
                ai: bool = False, model: str | None = None, timeout: int = 900) -> list[dict]:
     rules = load_rules()
     results = []
+    _run(["docker", "info"], 60)              # fails fast with DockerUnavailable
     for c in a.components:
         if only and only not in (c.name, c.project.name):
             continue

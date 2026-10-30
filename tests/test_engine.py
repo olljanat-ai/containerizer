@@ -225,3 +225,15 @@ def test_gitops_examples_for_argo_and_flux(tmp_path):
     kinds = [d["kind"] for d in load("flux/git/image-automation.yaml")]
     assert kinds == ["ImageRepository", "ImagePolicy", "ImageUpdateAutomation"]
     assert '{"$imagepolicy": "' in (out / "kustomization.yaml").read_text()
+
+
+def test_docker_outage_is_not_a_build_failure(monkeypatch):
+    import subprocess
+    import pytest
+    from containerizer import verify
+
+    class P:
+        returncode, stdout = 1, "ERROR: Cannot connect to the Docker daemon at unix:///var/run/docker.sock."
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: P())
+    with pytest.raises(verify.DockerUnavailable):
+        verify._run(["docker", "build", "."], 10)
