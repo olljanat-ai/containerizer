@@ -169,6 +169,20 @@ failures:
     outcome: external
     diagnosis: An external service (broker, cache, API, directory) is not reachable from the test container.
 
+  - id: run-broker-connect-timeout
+    stage: run
+    match: '(TaskCanceledException|OperationCanceledException|TimeoutException)[^\n]*\n\s*thrown at (EasyNetQ|RabbitMQ|MassTransit|Confluent\.Kafka|StackExchange\.Redis|Azure\.Messaging|NATS|NServiceBus|Rebus)'
+    outcome: external
+    diagnosis: A message broker or cache client timed out connecting (the service is not reachable from the test container).
+
+  - id: run-sqlite-no-schema
+    stage: run
+    match: "SQLite Error 1: 'no such table"
+    outcome: external
+    diagnosis: >-
+      The app is up; its SQLite database has no schema yet (created by migrations or a deployment
+      step in the real environment, not by the app at start-up).
+
   - id: run-oidc-authority-unreachable
     stage: run
     match: "IDX20803|IDX20804|Unable to obtain configuration from|IDX10500"

@@ -47,6 +47,20 @@ def load_failures() -> list[dict]:
     return sorted(out, key=lambda r: 0 if r.get("source") in ("learned", "ai") else 1)
 
 
+def _messages(log: str) -> str:
+    """Run logs: exception messages say what went wrong, not the stack frames under them. Only the
+    frame that threw is kept, as "thrown at ...", because it names the library that failed."""
+    out, prev_frame = [], True
+    for line in log.splitlines():
+        frame = line.lstrip().startswith("at ")
+        if not frame:
+            out.append(line)
+        elif not prev_frame:
+            out.append("   thrown " + line.lstrip())
+        prev_frame = frame
+    return "\n".join(out)
+
+
 def diagnose(log: str, stage: str, failures: list[dict]) -> tuple[dict, dict] | None:
     for fr in failures:
         if fr.get("stage", stage) != stage:
@@ -293,8 +307,7 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
                     result["mode"] = "smoke"     # proven without the production services
                 break
         tail = "\n".join(log.splitlines()[-200:])
-        # run logs: exception messages, not the stack frames under them, say what went wrong
-        msgs = "\n".join(l for l in log.splitlines() if not l.lstrip().startswith("at ")) if stage == "run" else log
+        msgs = _messages(log) if stage == "run" else log
         d = diagnose(msgs[-60000:], stage, failures)
         if d is None and ai:
             from .ai import diagnose_failure
