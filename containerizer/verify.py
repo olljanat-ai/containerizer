@@ -170,7 +170,9 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
         host.chmod(0o777)
         cmd += ["-v", f"{host.resolve()}:{w}:rw"]
     if c.role == "spa":
-        cmd += ["--tmpfs", "/tmp:rw,mode=1777", "--tmpfs", "/var/cache/nginx:rw,mode=1777", "--tmpfs", "/var/run:rw,mode=1777"]
+        for d in ("/tmp", "/var/cache/nginx", "/var/run"):
+            if not any(x.endswith(f":{d}:rw") for x in cmd):
+                cmd += ["--tmpfs", f"{d}:rw,mode=1777"]
     hp = None
     if plan.get("port"):
         hp = _free_port()
@@ -207,6 +209,7 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
     cmd.append(tag)
     rc, out = _run(cmd, 60)
     if rc != 0:
+        (workdir / "run.log").write_text(out)
         return "exited", out, {}
     details: dict = {}
     status = "unhealthy"

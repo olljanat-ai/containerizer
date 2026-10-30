@@ -28,3 +28,13 @@ rules:
     rid: portable
   learned_from: control-tower/ControlTower.Scanning.Api
   learned_at: '2026-10-30'
+- id: learned-run-readonly-path-fieldservice-web
+  phase: plan
+  source: learned
+  when:
+    name: ^FieldService\.Web$
+  plan:
+    add_writable:
+    - /App_Data
+  learned_from: field-service/FieldService.Web
+  learned_at: '2026-10-30'

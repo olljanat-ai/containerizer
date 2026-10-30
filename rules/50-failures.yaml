@@ -126,6 +126,15 @@ failures:
     diagnosis: The app loads a certificate from the Windows certificate store.
     finding: {severity: config, title: Certificate must be mounted as a file}
 
+  - id: run-global-mutex
+    stage: run
+    match: "IOException: .*: 'Global\\\\[^']+'|WaitHandleCannotBeOpenedException"
+    outcome: platform
+    diagnosis: >-
+      A machine-wide named mutex (Global\\...) guards against a second instance. Containers do not
+      share it; run a single replica or use a Kubernetes Lease / database lock.
+    finding: {severity: refactor, title: Machine-wide named mutex for single-instance}
+
   - id: run-eventlog
     stage: run
     match: "System\\.Diagnostics\\.EventLog|EventLog access is not supported on this platform"
