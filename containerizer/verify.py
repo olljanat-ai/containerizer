@@ -29,7 +29,7 @@ from pathlib import Path
 import yaml
 
 from .assess import AppAssessment, Component
-from .generate import (CONTAINER_PORT, DOCKERIGNORE, _writable_abs, buildable, dockerfile_dotnet, dockerfile_for, dockerfile_spa,
+from .generate import (CONTAINER_PORT, DOCKERIGNORE, add_reason, _writable_abs, buildable, dockerfile_dotnet, dockerfile_for, dockerfile_spa,
                        images, k8s_name, make_plan, merge_plan)
 from .rules import RULES_DIR, load_rules
 
@@ -341,6 +341,8 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
                 continue
             before = json.dumps(plan, sort_keys=True)
             merge_plan(plan, patch)
+            if json.dumps(plan, sort_keys=True) != before:
+                add_reason(plan, fr["id"], _fmt(fr.get("diagnosis", ""), caps), fr.get("refs"))
             if json.dumps(plan, sort_keys=True) == before:
                 entry["note"] = "fix already applied; giving up"
                 result["status"] = f"{stage}-failed"
@@ -357,6 +359,9 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
             break
         # platform / code findings
         finding = _fmt(fr.get("finding", {}), caps)
+        finding.setdefault("why", _fmt(fr.get("diagnosis", ""), caps))
+        if fr.get("refs"):
+            finding.setdefault("refs", list(fr["refs"]))
         if env_override and not result.get("finding") and finding.get("severity") == "config":
             # the production run only lacked external services; a config gap of the smoke setup
             # (e.g. a local database file) says nothing about the production container
@@ -419,6 +424,8 @@ def persist_learning(a: AppAssessment, c: Component, plan: dict, patches) -> Non
         if rid in ids:
             continue
         rule = {"id": rid, "phase": "plan", "source": fr.get("source", "learned"), "when": when, "plan": patch,
+                "why": " ".join(str(_fmt(fr.get("diagnosis", ""), caps)).split()),
+                **({"refs": list(fr["refs"])} if fr.get("refs") else {}),
                 "learned_from": f"{a.name}/{c.name}", "learned_at": datetime.now(timezone.utc).date().isoformat()}
         if learn.get("scope"):
             rule["scope"] = learn["scope"]
@@ -460,8 +467,9 @@ def persist_finding(a: AppAssessment, c: Component, result: dict) -> None:
         return
     d["rules"].append({"id": rid, "source": "learned", "severity": f.get("severity", "refactor"),
                        "category": "runtime-observed", "title": title,
-                       "why": result["attempts"][-1].get("diagnosis", ""),
-                       "fix": "See the verification log; fix and re-run `containerizer verify`.",
+                       "why": " ".join(str(f.get("why") or result["attempts"][-1].get("diagnosis", "")).split()),
+                       "fix": f.get("fix") or "See the verification log; fix and re-run `containerizer verify`.",
+                       **({"refs": f["refs"]} if f.get("refs") else {}),
                        "when": {"name": f"^{re.escape(c.project.name)}$"},
                        "learned_from": f"{a.name}/{c.name}",
                        "learned_at": datetime.now(timezone.utc).date().isoformat()})

@@ -192,3 +192,21 @@ rules:
     rid: portable
   learned_from: retail-backoffice/VanArsdel.BackOffice
   learned_at: '2026-10-30'
+- id: learned-build-rid-downgrade-vanarsdel-scheduler
+  phase: plan
+  source: learned
+  when:
+    name: ^VanArsdel\.Scheduler$
+  plan:
+    rid: portable
+  learned_from: retail-backoffice/VanArsdel.Scheduler
+  learned_at: '2026-10-30'
+- id: learned-run-aspnet-framework-missing-vanarsdel-scheduler
+  phase: plan
+  source: learned
+  when:
+    name: ^VanArsdel\.Scheduler$
+  plan:
+    aspnet_runtime: true
+  learned_from: retail-backoffice/VanArsdel.Scheduler
+  learned_at: '2026-10-30'
