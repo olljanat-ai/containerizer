@@ -131,3 +131,13 @@ def test_nlog_and_tool_paths(tmp_path):
     assert plan["env"]["APP_LOG_DIR"] == "/app/logs" and "logs" in plan["add_writable"]
     assert plan["env"]["Pdf__Tool"] == "wkhtmltopdf"
     assert plan["env"]["Routing__Db"] == "/data/data/map.routerdb"
+
+
+def test_old_tfm_rolls_forward_to_supported_line(tmp_path):
+    web_app(tmp_path, tfm="net6.0")
+    a = assess(tmp_path)
+    plan = make_plan(a, a.components[0])
+    assert plan["env"]["DOTNET_ROLL_FORWARD"] == "Major"
+    plan["strategy"] = "retarget"
+    df = dockerfile_dotnet(plan)
+    assert "-p:TargetFramework=net10.0" in df and "aspnet:10.0" in df

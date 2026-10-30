@@ -183,3 +183,12 @@ rules:
     rid: portable
   learned_from: retail-backoffice/VanArsdel.StoreOps.Api
   learned_at: '2026-10-30'
+- id: learned-build-rid-downgrade-vanarsdel-backoffice
+  phase: plan
+  source: learned
+  when:
+    name: ^VanArsdel\.BackOffice$
+  plan:
+    rid: portable
+  learned_from: retail-backoffice/VanArsdel.BackOffice
+  learned_at: '2026-10-30'

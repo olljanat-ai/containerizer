@@ -105,7 +105,7 @@ For each component that can be containerized the tool:
    directories during the test, so apps that log only to files can still be diagnosed;
 3. matches the log against `rules/50-failures.yaml`:
    - `retry`: patch the build plan (e.g. remove a pinned `global.json`, retarget an out-of-support
-     TFM to net8.0, add Kerberos libraries, make a folder writable) and try again;
+     TFM to net10.0, add Kerberos libraries, make a folder writable) and try again;
    - `external`: the container works, it only lacks a database/broker/directory/identity provider —
      then the tool retries in a dependency-free smoke mode (`Development` environment, which many apps
      map to SQLite and simulators) to prove the app actually serves requests. For the smoke run only,
@@ -144,9 +144,9 @@ containers, a `Dockerfile.windows` stop-gap. Per app: `kustomization.yaml` and `
 
 Techniques used to avoid application changes:
 
-- out-of-support .NET (Core 3.1, 5, 6, 7): build with the .NET 8 SDK and run on the supported .NET 8
+- out-of-support .NET (Core 3.1, 5, 6, 7): build with the .NET 10 SDK and run on the supported .NET 10
   runtime with `DOTNET_ROLL_FORWARD=Major`; if the old target can't be built, retarget with
-  `-p:TargetFramework=net8.0`;
+  `-p:TargetFramework=net10.0`;
 - `global.json` SDK pins are removed inside the build stage only;
 - Kestrel endpoints from `appsettings.json` are re-pointed with `Kestrel__Endpoints__X__Url`;
 - connection strings and secret settings become `ConnectionStrings__X` env vars from a Secret;

@@ -55,6 +55,17 @@ def pin_digests(dockerfile: str) -> str:
                   dockerfile, flags=re.M)
 
 
+def target_tfm() -> str:
+    """TFM of the runtime line the images run (images.yaml dotnet.version)."""
+    return "net" + str(images()["dotnet"].get("version", "10.0"))
+
+
+def _tfm_major(tfm: str) -> int:
+    """net10.0 -> 10, netcoreapp3.1 -> 3, net6.0-windows -> 6; .NET Framework (net48) -> 0."""
+    m = re.match(r"net(?:coreapp)?(\d+)\.\d", tfm or "")
+    return int(m.group(1)) if m else 0
+
+
 def k8s_name(s: str) -> str:
     s = SAFE_NAME.sub("-", s.lower().replace(".", "-")).strip("-")
     return s[:63].rstrip("-") or "app"
@@ -110,8 +121,8 @@ def default_plan(c: Component) -> dict:
         plan["env"]["DOTNET_ENVIRONMENT"] = "Production"
         if c.role == "web":
             plan["env"]["ASPNETCORE_ENVIRONMENT"] = "Production"
-        if tfm and tfm != "net8.0" and not tfm.startswith("net8.0") and not tfm.startswith("net9"):
-            plan["env"]["DOTNET_ROLL_FORWARD"] = "Major"
+        if tfm and _tfm_major(tfm) < _tfm_major(target_tfm()):
+            plan["env"]["DOTNET_ROLL_FORWARD"] = "Major"     # run on the supported runtime line
     return plan
 
 
@@ -232,9 +243,10 @@ def dockerfile_dotnet(plan: dict) -> str:
     rid = plan.get("rid") or "linux-x64"
     rid_arg = "" if rid == "portable" else f" -p:RuntimeIdentifier={rid}"
     pub = ["-c Release", "-o /out", "-p:UseAppHost=false"] + ([rid_arg.strip(), "--self-contained false"] if rid_arg else [])
-    if plan["strategy"] == "retarget" and tfm and not tfm.startswith("net8"):
-        pub.append("-p:TargetFramework=net8.0")
-        pub.append("-p:TargetFrameworks=net8.0")
+    target = target_tfm()
+    if plan["strategy"] == "retarget" and tfm and _tfm_major(tfm) != _tfm_major(target):
+        pub.append(f"-p:TargetFramework={target}")
+        pub.append(f"-p:TargetFrameworks={target}")
     elif plan["multi_target"] or (tfm and "-" in tfm):
         pub.append(f"-f {tfm}")
     pub += plan["publish_args"]
@@ -251,8 +263,8 @@ def dockerfile_dotnet(plan: dict) -> str:
     for f in plan["remove_files"]:
         lines.append(f"RUN find . -name '{f}' -not -path '*/node_modules/*' -delete")
     restore_tfm = ""
-    if plan["strategy"] == "retarget" and tfm and not tfm.startswith("net8"):
-        restore_tfm = " -p:TargetFramework=net8.0 -p:TargetFrameworks=net8.0"
+    if plan["strategy"] == "retarget" and tfm and _tfm_major(tfm) != _tfm_major(target):
+        restore_tfm = f" -p:TargetFramework={target} -p:TargetFrameworks={target}"
     lines += ["# optional build secret 'ca': CA bundle for TLS-inspecting corporate proxies",
               'RUN --mount=type=cache,target=/root/.nuget/packages --mount=type=secret,id=ca,required=false \\',
               '    if [ -f /run/secrets/ca ]; then export SSL_CERT_FILE=/run/secrets/ca NODE_EXTRA_CA_CERTS=/run/secrets/ca; fi; \\',
