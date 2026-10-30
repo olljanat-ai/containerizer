@@ -154,6 +154,21 @@ failures:
     fix: {env: {ASPNETCORE_URLS: "http://+:8080", Kestrel__Endpoints__Https__Url: "http://+:8081"}}
     learn: {when: {config: '"Https"\s*:|https://'}}
 
+  - id: run-kestrel-http-with-certificate
+    stage: run
+    match: 'The non-HTTPS endpoint (?P<ep>\w+) includes HTTPS-only configuration'
+    outcome: code
+    diagnosis: >-
+      The Kestrel endpoint {ep} was switched to plain HTTP (TLS ends at the ingress), but the
+      configuration still gives it a certificate, which Kestrel rejects.
+    refs: [https://learn.microsoft.com/en-us/aspnet/core/fundamentals/servers/kestrel/endpoints]
+    finding:
+      severity: config
+      title: 'Kestrel endpoint {ep} has a certificate but runs as HTTP in the container'
+      fix: >-
+        Remove the Certificate settings of the {ep} endpoint from the configuration used in the container
+        (TLS ends at the ingress), or keep HTTPS and mount the certificate from a Kubernetes Secret.
+
   - id: run-cert-store
     stage: run
     match: "certificate .*(not found|could not be found) in (the )?(store|LocalMachine)|X509Store.*(PlatformNotSupported|not supported)|LocalMachine X509Store is limited"
@@ -209,6 +224,15 @@ failures:
     diagnosis: >-
       The app is up; its SQLite database has no schema yet (created by migrations or a deployment
       step in the real environment, not by the app at start-up).
+
+  - id: run-connection-string-blank
+    stage: run
+    match: 'The connection string could not be parsed|Format of the initialization string does not conform|ConnectionString.*(is empty|cannot be empty)|SharedAccessKey.*(empty|null)'
+    outcome: external
+    diagnosis: >-
+      A connection string is incomplete in the repository (its password or key is left blank for the
+      deployment to fill in), so the client library rejects it in the test container.
+    refs: [https://kubernetes.io/docs/concepts/configuration/secret/, https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/]
 
   - id: run-oidc-authority-unreachable
     stage: run

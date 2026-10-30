@@ -306,8 +306,9 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
                 if env_override:
                     result["mode"] = "smoke"     # proven without the production services
                 break
-        tail = "\n".join(log.splitlines()[-200:])
         msgs = _messages(log) if stage == "run" else log
+        # deep stack traces would push the exception message itself out of a raw tail
+        tail = "\n".join(msgs.splitlines()[-200:])
         d = diagnose(msgs[-60000:], stage, failures)
         if d is None and ai:
             from .ai import diagnose_failure
