@@ -294,3 +294,12 @@ def test_credentials_from_config_are_not_hardcoded(tmp_path):
                   string Hint = "Server=localhost;Database=Orchard;User Id=username;Password=password;";
                   string Hint2 = "server=.\\SQLExpress;database=YOURDB;user id=YOURUSER;password=YOURPASS"; }''')
     assert "cfg-hardcoded-credentials" not in ids(tmp_path)
+
+
+def test_exe_location_that_expects_dotnet_host_is_fine(tmp_path):
+    from containerizer.assess import assess
+    from tests.test_engine import web_app
+    web_app(tmp_path, '''class R { void M() {
+        var dotnet = Process.GetCurrentProcess().MainModule?.FileName;
+        if (string.Equals(Path.GetFileNameWithoutExtension(dotnet), "dotnet")) { } } }''')
+    assert "os-exe-location" not in {f.rule.id for f in assess(tmp_path).components[0].findings}

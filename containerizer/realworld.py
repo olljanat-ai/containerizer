@@ -41,7 +41,7 @@ def _role_misses(a, repo, rules, expected: dict) -> list[str]:
             by_name.setdefault(n, c.role)
     for p in repo.projects:
         role = classify_role(repo, p, rules)[0]
-        for n in (p.name, p.path.stem, p.assembly_name):
+        for n in (p.name, p.path.stem, p.assembly_name, p.rel_dir):
             if n:
                 by_name.setdefault(n, role)
     misses = []

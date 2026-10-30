@@ -180,7 +180,8 @@ rules:
     when:
       all:
         - not: {role: 'test|desktop'}
-        - code: 'GetCurrentProcess\(\)\.MainModule\b|GetDirectoryName\(\s*Environment\.ProcessPath\b|\.CodeBase\b[^;\n]*Replace\(\s*"file:///"'
+        # code that checks for the "dotnet" host itself already knows what it is getting
+        - code: 'GetCurrentProcess\(\)\.MainModule\b(?![\s\S]{0,300}"dotnet")|GetDirectoryName\(\s*Environment\.ProcessPath\b|\.CodeBase\b[^;\n]*Replace\(\s*"file:///"'
     severity: refactor
     category: runtime
     effort: 0.25
