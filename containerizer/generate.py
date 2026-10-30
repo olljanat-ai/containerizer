@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath
 import yaml
 
 from .assess import AppAssessment, Component
-from .harden import harden_manifests, namespace_manifest
+from .harden import harden_manifests, namespace_manifest, write_app_security
 from .rules import RULES_DIR, Context, Rule, load_rules, run_rule
 
 CONTAINER_PORT = 8080
@@ -556,6 +556,7 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
     written: list[Path] = []
     all_k8s = []
     images: list[tuple[str, str]] = []
+    comp_docs: dict[str, list[dict]] = {}
     for c in a.components:
         cdir = out / k8s_name(c.name)
         if buildable(c):
@@ -574,6 +575,7 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
             docs = k8s_manifests(a, c, plan, image)
             images.append((c.name, image))
             all_k8s += docs
+            comp_docs[k8s_name(c.name)] = docs
             (cdir / "k8s.yaml").write_text(_yaml_docs(docs))
             (cdir / "plan.json").write_text(json.dumps(plan, indent=2))
             written += [cdir / "Dockerfile", cdir / "Dockerfile.dockerignore", cdir / "k8s.yaml", cdir / "plan.json"]
@@ -585,13 +587,15 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
     if all_k8s:
         ns_doc = namespace_manifest(k8s_name(a.name))
         (out / "namespace.yaml").write_text(_yaml_docs([ns_doc]))
+        # namespace-level security (default deny, quota, limits), HARDENING.md and the cluster/ kit
+        sec, sec_docs = write_app_security(out, k8s_name(a.name), comp_docs, registry, _yaml_docs)
         (out / "kustomization.yaml").write_text(yaml.safe_dump(
             {"apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization",
              "namespace": k8s_name(a.name),
-             "resources": ["namespace.yaml"] + sorted(f"{d.name}/k8s.yaml" for d in out.iterdir() if (d / "k8s.yaml").exists())},
+             "resources": ["namespace.yaml"] + sec + sorted(f"{d.name}/k8s.yaml" for d in out.iterdir() if (d / "k8s.yaml").exists())},
             sort_keys=False) + image_setters(k8s_name(a.name), images))
-        written += [out / "namespace.yaml", out / "kustomization.yaml"]
-        kinds = sorted({(d["apiVersion"], d["kind"]) for d in all_k8s if isinstance(d, dict) and d.get("kind")})
+        written += [out / "namespace.yaml", out / "kustomization.yaml", out / "HARDENING.md"] + [out / r for r in sec]
+        kinds = sorted({(d["apiVersion"], d["kind"]) for d in all_k8s + sec_docs if isinstance(d, dict) and d.get("kind")})
         for rel, docs in gitops_manifests(a, kinds, images, ns_doc, gitops, registry).items():
             f = out / "gitops" / rel
             f.parent.mkdir(parents=True, exist_ok=True)
