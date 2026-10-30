@@ -256,3 +256,11 @@ def test_blazor_wasm_client_addapiauthorization_ignored(tmp_path):
     web_app(tmp_path, "class P { void M(WebAssemblyHostBuilder b) { b.Services.AddApiAuthorization(); } }",
             packages='<PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.Authentication" Version="8.0.0" />')
     assert "mig-apiauthorization-identityserver" not in ids(tmp_path)
+
+
+def test_apiauthorization_on_modern_dotnet_is_info(tmp_path):
+    # the 7.0 package still loads on .NET 8+, so the app runs; only an unsupported-package note
+    web_app(tmp_path, "", packages='<PackageReference Include="Microsoft.AspNetCore.ApiAuthorization.IdentityServer" Version="7.0.16" />',
+            tfm="net8.0")
+    found = ids(tmp_path)
+    assert "mig-apiauthorization-identityserver" not in found and "mig-apiauthorization-unsupported" in found

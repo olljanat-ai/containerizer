@@ -357,10 +357,13 @@ rules:
   - id: mig-apiauthorization-identityserver
     applies_to: [dotnet]
     when:
-      any:
-        - package: Microsoft\.AspNetCore\.ApiAuthorization\.IdentityServer
-        # generic server-side overload only: the Blazor WebAssembly client's AddApiAuthorization() is still supported
-        - code: '\.AddApiAuthorization\s*<|\.AddIdentityServerJwt\s*\('
+      all:
+        - any:
+            - package: Microsoft\.AspNetCore\.ApiAuthorization\.IdentityServer
+            # generic server-side overload only: the Blazor WebAssembly client's AddApiAuthorization() is still supported
+            - code: '\.AddApiAuthorization\s*<|\.AddIdentityServerJwt\s*\('
+        # on .NET 8+ the last (7.0) package still loads; the app runs as is, see mig-apiauthorization-unsupported
+        - not: {tfm: 'net([8-9]|\d\d)\.\d+.*'}
     severity: refactor
     category: identity
     effort: 2
@@ -379,6 +382,26 @@ rules:
     refs:
       - https://github.com/dotnet/aspnetcore/pull/45145
       - https://devblogs.microsoft.com/dotnet/improvements-auth-identity-aspnetcore-8/
+      - https://www.nuget.org/packages/Microsoft.AspNetCore.ApiAuthorization.IdentityServer
+
+  - id: mig-apiauthorization-unsupported
+    applies_to: [dotnet]
+    when:
+      all:
+        - package: Microsoft\.AspNetCore\.ApiAuthorization\.IdentityServer
+        - tfm: 'net([8-9]|\d\d)\.\d+.*'
+    severity: info
+    category: identity
+    effort: 0
+    title: Out-of-support ApiAuthorization.IdentityServer package on modern .NET
+    why: >-
+      The app already targets .NET 8 or later and keeps the last (7.0) release of
+      Microsoft.AspNetCore.ApiAuthorization.IdentityServer, which still loads, so the container runs.
+      The package gets no further updates and depends on Duende IdentityServer, whose licence applies
+      in production.
+    fix: Plan a move to ASP.NET Core Identity endpoints (MapIdentityApi), an external OIDC provider or licensed Duende IdentityServer.
+    refs:
+      - https://github.com/dotnet/aspnetcore/pull/45145
       - https://www.nuget.org/packages/Microsoft.AspNetCore.ApiAuthorization.IdentityServer
 
   - id: mig-wif
