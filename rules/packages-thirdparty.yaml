@@ -56,5 +56,7 @@ linux_ok:
   - 'Testcontainers(\..*)?|WireMock\.Net(\..*)?|Respawn|Verify(\..*)?|AwesomeAssertions|FakeItEasy(\..*)?|NetArchTest\.Rules|TngTech\.ArchUnitNET(\..*)?|BenchmarkDotNet(\..*)?|ReportGenerator|Selenium\.(WebDriver|Support)(?!\.IEDriver)(\..*)?|Microsoft\.Playwright(\..*)?|PuppeteerSharp|AutoBogus'
 
 # Framework/facade assembly references (<Reference Include=...>) that are neutral.
+  - '(Winnovative|EvoPdf)[\w.]*\.Linux'
+
 neutral_references:
   - 'netstandard|System\.Runtime|System\.ComponentModel\.Composition(\.Registration)?|System\.Reflection\.Context|System\.Net\.Http\.(WebRequest|Formatting)'

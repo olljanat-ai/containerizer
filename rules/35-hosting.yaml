@@ -70,6 +70,9 @@ rules:
       HttpRequest/ASP.NET Core integration change), then containerize on
       mcr.microsoft.com/azure-functions/dotnet-isolated:4-dotnet-isolated8.0 with KEDA, or move the
       HTTP functions to a plain ASP.NET Core app and the queue/timer functions to workers/CronJobs.
+    refs:
+      - https://learn.microsoft.com/en-us/azure/azure-functions/migrate-dotnet-to-isolated-model
+      - https://learn.microsoft.com/en-us/azure/azure-functions/dotnet-isolated-in-process-differences
 
   - id: host-azure-functions-isolated
     applies_to: [dotnet]
@@ -95,6 +98,8 @@ rules:
       publish output to /home/site/wwwroot; `func kubernetes deploy` can generate the KEDA
       ScaledObject), inject AzureWebJobsStorage and binding connection strings from Secrets, and set
       host keys/auth explicitly. Alternatively move HTTP functions to ASP.NET Core.
+    refs:
+      - https://learn.microsoft.com/en-us/azure/azure-functions/functions-kubernetes-keda
 
   - id: host-durable-functions
     applies_to: [dotnet]
@@ -111,6 +116,8 @@ rules:
       or MSSQL/Netherite/Durable Task Scheduler); every replica must reach the same task hub, and
       orchestrations survive pod restarts only because of it.
     fix: Point the task hub at a storage account or MSSQL database reachable from the cluster; scale with the KEDA durable/MSSQL scaler.
+    refs:
+      - https://learn.microsoft.com/en-us/azure/azure-functions/durable/durable-functions-storage-providers
 
   - id: host-webjobs-sdk
     applies_to: [dotnet]
@@ -132,6 +139,8 @@ rules:
     fix: >-
       Run a continuous WebJob as a Deployment (one replica if it uses [Singleton]) and a triggered
       one as a CronJob with the settings.job schedule; inject AzureWebJobsStorage from a Secret.
+    refs:
+      - https://learn.microsoft.com/en-us/azure/app-service/webjobs-create
 
   # ================================================================ Azure Cloud Services (classic)
   - id: host-cloud-services-classic
@@ -149,11 +158,14 @@ rules:
     why: >-
       The component is a Cloud Services web/worker role: RoleEntryPoint drives its lifecycle and
       RoleEnvironment supplies settings, endpoints and instance ids from the Azure fabric, which does
-      not exist anywhere else. Cloud Services (classic) was retired in August 2024.
+      not exist anywhere else. Cloud Services (classic) is retired: Microsoft deprecated it on 1 September
+      2024 and shuts down the remaining deployments.
     fix: >-
       Replace RoleEntryPoint.Run/OnStart with a Generic Host BackgroundService, RoleEnvironment
       settings with IConfiguration (env vars/ConfigMap), role endpoints with Kubernetes Services,
       and startup tasks with Dockerfile steps; port to .NET 8 at the same time.
+    refs:
+      - https://learn.microsoft.com/en-us/azure/cloud-services/cloud-services-dotnet-get-started
 
   - id: host-cloud-service-definition
     scope: repo
@@ -169,6 +181,8 @@ rules:
     fix: >-
       Map roles to Deployments, endpoints to Services/Ingress, instance counts to replicas,
       settings to ConfigMaps/Secrets, certificates to Secrets and startup tasks to Dockerfile steps.
+    refs:
+      - https://learn.microsoft.com/en-us/azure/cloud-services/schema-csdef-file
 
   # ================================================================ Service Fabric
   - id: host-service-fabric-stateless
@@ -190,6 +204,8 @@ rules:
       Replace StatelessService.RunAsync with a BackgroundService, the Kestrel/HTTP.sys communication
       listener with plain Kestrel, SF remoting/ActorProxy calls with HTTP/gRPC, config packages
       with IConfiguration, and naming-service lookups with Kubernetes Service DNS.
+    refs:
+      - https://learn.microsoft.com/en-us/azure/service-fabric/service-fabric-reliable-services-introduction
 
   - id: host-service-fabric-stateful
     applies_to: [dotnet]
@@ -208,6 +224,8 @@ rules:
     fix: >-
       Move state to an external store (SQL, Cosmos DB, Redis) and rewrite services as stateless
       ASP.NET Core/workers; for actors consider Orleans or Dapr actors with a persistent state store.
+    refs:
+      - https://learn.microsoft.com/en-us/azure/service-fabric/service-fabric-reliable-services-reliable-collections
 
   # ================================================================ App Service coupling
   - id: host-app-service-coupling
@@ -228,6 +246,8 @@ rules:
       Replace WEBSITE_* lookups with your own settings (pod name via the downward API, TZ env var,
       certificates mounted from Secrets), point home/wwwroot paths at mounted volumes, and drop
       Kudu/XDT dependencies.
+    refs:
+      - https://learn.microsoft.com/en-us/azure/app-service/reference-app-settings
 
   - id: host-app-service-easyauth
     applies_to: [dotnet]
@@ -246,6 +266,8 @@ rules:
     fix: >-
       Authenticate in the app (Microsoft.Identity.Web / OpenID Connect) or in an auth proxy at the
       ingress (oauth2-proxy) that strips client-supplied identity headers.
+    refs:
+      - https://learn.microsoft.com/en-us/azure/app-service/configure-authentication-user-identities
 
   - id: host-arr-affinity
     scope: repo
@@ -261,6 +283,9 @@ rules:
     title: App Service ARR affinity (sticky sessions) enabled
     why: The App Service deployment turns on ARR affinity, so the app probably depends on users sticking to one instance (in-memory session/cache, Blazor Server, SignalR).
     fix: Remove the dependency (distributed cache/session) or enable cookie-based session affinity on the ingress.
+    refs:
+      - https://learn.microsoft.com/en-us/azure/app-service/configure-common
+      - https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/
 
   # ================================================================ AWS Lambda
   - id: host-aws-lambda-handler
@@ -283,6 +308,8 @@ rules:
       Host the handlers in a Generic Host: HTTP events behind ASP.NET Core endpoints, SQS/SNS/S3
       events in a BackgroundService polling the queue (KEDA aws-sqs scaler), schedules as CronJobs.
       Keep the handler logic, replace the entry points.
+    refs:
+      - https://docs.aws.amazon.com/lambda/latest/dg/csharp-handler.html
 
   - id: host-aws-lambda-aspnetcore
     applies_to: [dotnet]
@@ -297,6 +324,9 @@ rules:
       outside Lambda; LambdaEntryPoint is unused). API Gateway features it relied on (authorizers,
       throttling, stage paths, request context) are not there in Kubernetes.
     fix: Run it on Kestrel as is; recreate API Gateway authorizers/throttling/base paths at the ingress or in middleware.
+    refs:
+      - https://github.com/aws/aws-lambda-dotnet/blob/master/Libraries/src/Amazon.Lambda.AspNetCoreServer.Hosting/README.md
+      - https://docs.aws.amazon.com/lambda/latest/dg/csharp-package-asp.html
 
   # ================================================================ Blazor / gRPC
   - id: host-blazor-server
@@ -313,6 +343,8 @@ rules:
     fix: >-
       Enable cookie-based session affinity and WebSockets (long proxy timeouts) on the ingress,
       persist Data Protection keys, and use graceful shutdown/reconnect UI; or Azure SignalR Service.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/blazor/host-and-deploy/server
 
   - id: host-blazor-wasm-standalone
     applies_to: [dotnet]
@@ -330,6 +362,9 @@ rules:
     fix: >-
       Standalone: serve the published wwwroot from nginx-unprivileged with index.html fallback and
       .wasm/.dat MIME types, mounting appsettings.json as a ConfigMap. Hosted: no container of its own.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/blazor/host-and-deploy/webassembly
+      - https://learn.microsoft.com/en-us/aspnet/core/blazor/host-and-deploy/webassembly/nginx
 
   - id: host-grpc-server
     applies_to: [dotnet]
@@ -347,6 +382,9 @@ rules:
       Expose an Http2 endpoint (Kestrel__Endpoints__Grpc__Protocols=Http2) next to an HTTP/1 port
       for probes, set the ingress backend protocol to GRPC/h2c, use gRPC health checks
       (Grpc.AspNetCore.HealthChecks + grpc probes), or gRPC-Web for browsers.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/grpc/aspnetcore
+      - https://learn.microsoft.com/en-us/aspnet/core/grpc/health-checks
 
   # ================================================================ reverse proxy / TLS / IIS leftovers
   - id: host-forwarded-headers-missing
@@ -369,6 +407,8 @@ rules:
     fix: >-
       Set ASPNETCORE_FORWARDEDHEADERS_ENABLED=true (or app.UseForwardedHeaders with the ingress
       network in KnownNetworks) and keep HTTPS redirection/HSTS at the ingress.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/host-and-deploy/proxy-load-balancer
 
   - id: host-kestrel-https-code
     applies_to: [dotnet]
@@ -383,6 +423,8 @@ rules:
       file/store is empty unless mounted, and the generator's environment overrides cannot replace
       code-configured endpoints.
     fix: Terminate TLS at the ingress (cert-manager) and listen on HTTP, or mount the certificate from a Secret and make its path/password configurable.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/fundamentals/servers/kestrel/endpoints
 
   - id: host-ancm-webconfig
     applies_to: [dotnet]
@@ -397,6 +439,8 @@ rules:
     title: web.config for the ASP.NET Core Module (IIS)
     why: The web.config only tells IIS how to start the app (ANCM, in- or out-of-process); Kestrel in a container ignores it.
     fix: Nothing to change; move request limits or timeouts set there to Kestrel options or the ingress.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/host-and-deploy/iis/web-config
 
   - id: host-ancm-env-vars
     applies_to: [dotnet]
@@ -412,6 +456,8 @@ rules:
     title: Environment variables set in web.config (ANCM)
     why: Environment variables (connection strings, URLs, feature flags) are set by IIS from web.config and are missing when the app runs on Kestrel in a container.
     fix: Move each <environmentVariable> to the Deployment's env (ConfigMap, or Secret for credentials).
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/host-and-deploy/iis/web-config
 
   - id: host-long-request-timeout
     applies_to: [dotnet]
@@ -428,6 +474,8 @@ rules:
     fix: >-
       Raise the ingress proxy read/send timeouts for these routes and the pod's
       terminationGracePeriodSeconds, or move long work to a background job with status polling.
+    refs:
+      - https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/configmap/
 
   # ================================================================ clustering / service discovery
   - id: host-orleans-cluster
@@ -449,6 +497,8 @@ rules:
     fix: >-
       Add Microsoft.Orleans.Hosting.Kubernetes (UseKubernetesHosting) with a membership provider
       (Azure Table, ADO.NET, Redis), open the silo/gateway ports between pods, persist grain state.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/orleans/deployment/kubernetes
 
   - id: host-orleans-localhost-clustering
     applies_to: [dotnet]
@@ -462,6 +512,8 @@ rules:
     title: Orleans localhost/development clustering only
     why: The silo is configured with localhost or development clustering, which supports one silo only; a second replica cannot join and grain state is in memory.
     fix: Configure a real clustering provider (AdoNet/AzureStorage/Redis) for non-development environments and persistent grain storage.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/orleans/host/configuration-guide/server-configuration
 
   - id: host-akka-cluster
     applies_to: [dotnet]
@@ -482,6 +534,8 @@ rules:
     fix: >-
       Use Akka.Management with Akka.Discovery.KubernetesApi (or a StatefulSet with stable DNS seed
       names), a split-brain resolver, CoordinatedShutdown on SIGTERM, and allow the remoting port between pods.
+    refs:
+      - https://github.com/akkadotnet/Akka.Management/blob/dev/src/discovery/kubernetes/Akka.Discovery.KubernetesApi/README.md
 
   - id: host-dapr
     applies_to: [dotnet]
@@ -493,6 +547,8 @@ rules:
     title: Uses Dapr sidecar
     why: The app talks to a Dapr sidecar (localhost:3500/50001); Dapr runs natively on Kubernetes.
     fix: Install the Dapr control plane and add dapr.io/enabled, dapr.io/app-id and dapr.io/app-port annotations to the generated Deployment; allow sidecar traffic in the NetworkPolicy.
+    refs:
+      - https://docs.dapr.io/reference/arguments-annotations-overview/
 
   - id: host-service-discovery
     applies_to: [dotnet]
@@ -506,6 +562,8 @@ rules:
       Instances register themselves in Eureka/Consul and look others up there. In Kubernetes pods
       register their pod IPs, need the registry's address, and duplicate what Service DNS already does.
     fix: Point the client at the registry from the cluster (or turn off registration) and prefer Kubernetes Service names; Steeltoe offers a Kubernetes discovery client.
+    refs:
+      - https://steeltoe.io/docs/v3/discovery/kubernetes.html
 
   # ================================================================ publish settings
   - id: host-publish-aot
@@ -523,6 +581,8 @@ rules:
     fix: >-
       Install clang/zlib1g-dev in the build stage (or use the -aot SDK image), base on
       mcr.microsoft.com/dotnet/runtime-deps:8.0-noble-chiseled and start ./App.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/
 
   - id: host-publish-singlefile
     applies_to: [dotnet]
@@ -537,6 +597,9 @@ rules:
     title: Single-file / self-contained / trimmed publish settings
     why: Publish settings for a standalone executable; harmless in containers but they enlarge the image or (trimmed) can drop reflection-only types.
     fix: Publish framework-dependent for linux-x64 on the shared runtime image, or keep self-contained on runtime-deps; test trimmed builds.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/deploying/single-file/overview
+      - https://learn.microsoft.com/en-us/dotnet/core/deploying/trimming/trim-self-contained
 
   # ================================================================ existing deployment assets (repo, informational)
   - id: host-installer-project
@@ -582,6 +645,8 @@ rules:
       The repository already has a Linux Dockerfile or .NET SDK container publish settings. This is
       a good sign but not proof: it may be a development-only image or not cover every component.
     fix: Compare it with the generated hardened Dockerfile (non-root, chiseled base, read-only root) and keep whichever fits; the findings above still apply.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/containers/sdk-publish
 
   - id: host-kubernetes-manifests-present
     scope: repo
@@ -610,6 +675,8 @@ rules:
     title: docker-compose file present
     why: A compose file documents the services and dependencies (databases, brokers, caches) the app runs with.
     fix: Use it to inventory dependencies and environment variables; translate services to Deployments/StatefulSets (e.g. with Kompose) rather than running compose in production.
+    refs:
+      - https://kompose.io/
 
   # ================================================================ observability / health (informational)
   - id: host-no-health-endpoint
@@ -625,6 +692,8 @@ rules:
     title: No health endpoint
     why: Without a health endpoint Kubernetes can only probe the TCP port, so a hung or misconfigured app still receives traffic.
     fix: Add Microsoft.Extensions.Diagnostics.HealthChecks (AddHealthChecks/MapHealthChecks("/healthz")) with liveness and readiness checks.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/host-and-deploy/health-checks
 
   - id: host-application-insights
     applies_to: [dotnet]
@@ -638,6 +707,9 @@ rules:
     title: Application Insights telemetry
     why: Application Insights works from Linux containers; on App Service/IIS it was often enabled by an agent rather than code, and the instrumentation key may sit in ApplicationInsights.config.
     fix: Pass APPLICATIONINSIGHTS_CONNECTION_STRING from a Secret; add Microsoft.ApplicationInsights.Kubernetes or move to the Azure Monitor OpenTelemetry distro for pod metadata.
+    refs:
+      - https://github.com/microsoft/ApplicationInsights-Kubernetes
+      - https://learn.microsoft.com/en-us/azure/azure-monitor/app/opentelemetry-enable
 
   - id: host-filesystemwatcher
     applies_to: [dotnet]
@@ -654,3 +726,5 @@ rules:
       network volumes (SMB/NFS/Azure Files), where Linux inotify does not see changes made by other
       clients, and each replica would pick up the same file.
     fix: Poll the folder (timer or PhysicalFileProvider with polling) in a single-replica worker, or switch to event-driven input (blob events/queue).
+    refs:
+      - https://man7.org/linux/man-pages/man7/inotify.7.html

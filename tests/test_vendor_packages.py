@@ -280,3 +280,13 @@ def test_desktop_browser_packages_are_explained(tmp_path):
     assert {"pkg-desktop-ui-package", "pkg-desktop-windows-runtime-package"} <= ids
     assert "pkg-windows-browser-engine" not in ids
     assert not [u for u in c.uncertain if u.startswith("package:")]
+
+
+def test_linux_html_to_pdf_packages_are_not_windows_browser(tmp_path):
+    import re
+    import yaml
+    from pathlib import Path
+    pat = yaml.safe_load(Path("rules/35-vendor-packages.yaml").read_text())["patterns"]["windows_browser"]
+    rx = re.compile(f"^(?:{pat})$", re.I)
+    assert rx.match("Winnovative.Pdf.Chromium") and rx.match("EvoPdf.Chromium")
+    assert not rx.match("Winnovative.Pdf.Chromium.Linux") and not rx.match("EvoPdf.Next.Linux")
