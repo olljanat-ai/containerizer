@@ -307,7 +307,14 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
             result["status"] = "ok-external"
             break
         # platform / code findings
-        result["finding"] = _fmt(fr.get("finding", {}), caps)
+        finding = _fmt(fr.get("finding", {}), caps)
+        if env_override and not result.get("finding") and finding.get("severity") == "config":
+            # the production run only lacked external services; a config gap of the smoke setup
+            # (e.g. a local database file) says nothing about the production container
+            entry["note"] = "smoke-mode configuration gap; production run was blocked only by external services"
+            result["status"] = "ok-external"
+            break
+        result["finding"] = finding
         if stage == "run" and not env_override and c.project.kind_hint == "dotnet":
             # still find out whether the rest of the app works (Development often swaps in simulators)
             env_override = {"ASPNETCORE_ENVIRONMENT": "Development", "DOTNET_ENVIRONMENT": "Development"}
