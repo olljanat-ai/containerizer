@@ -69,7 +69,7 @@ python -m containerizer bench --technique hybrid --model claude-haiku-5-5
 5. **Reachability**: findings in shared libraries only count for components whose code actually
    reaches the offending types (a type/extension-method mention graph), and Windows-only calls
    guarded by `OperatingSystem.IsWindows()` are ignored.
-6. **Confidence**: packages and references unknown to `rules/packages.yaml`, and uncertain rules,
+6. **Confidence**: packages and references unknown to `rules/packages*.yaml`, and uncertain rules,
    lower a component's confidence. Low confidence triggers verification and, optionally, Claude.
 7. **Rating** per application: **A** lift and shift, **B** minor refactoring, **C** framework port,
    **D** partial (some components must stay on Windows), **E** not feasible.
