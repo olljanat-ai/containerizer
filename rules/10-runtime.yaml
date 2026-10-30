@@ -2,7 +2,7 @@
 # severity: info < config < refactor < rewrite < blocker
 #   config   - runs in a Linux container with configuration/infra changes only
 #   refactor - needs targeted code changes
-#   rewrite  - needs a port of the component (e.g. .NET Framework -> .NET 8)
+#   rewrite  - needs a port of the component (e.g. .NET Framework -> modern .NET)
 #   blocker  - cannot run in a Linux container; keep on Windows/VM or replace
 # windows_container: whether a Windows Server container would be a workable
 # stop-gap (null = unknown / not applicable).
@@ -27,12 +27,12 @@ rules:
     title: Targets .NET Framework
     why: >-
       .NET Framework only runs on Windows, so this component cannot run in a Linux container
-      as it is. It must be ported to .NET 8 (or kept in a Windows Server Core container on
+      as it is. It must be ported to modern .NET (or kept in a Windows Server Core container on
       Windows nodes as a stop-gap).
     fix: >-
-      Port to net8.0 (GitHub Copilot app modernization, which replaces the deprecated .NET
+      Port to net10.0 (GitHub Copilot app modernization, which replaces the deprecated .NET
       Upgrade Assistant, can drive it; retarget shared libraries to netstandard2.0 or
-      multi-target them with net8.0 first). Windows container stop-gap:
+      multi-target them with net10.0 first). Windows container stop-gap:
       mcr.microsoft.com/dotnet/framework/aspnet:4.8.1-windowsservercore-ltsc2022.
     refs:
       - https://learn.microsoft.com/en-us/dotnet/core/porting/
@@ -55,8 +55,8 @@ rules:
     why: >-
       The app is already ASP.NET Core (Sdk.Web, Microsoft.AspNetCore.* packages) but targets .NET
       Framework, which ASP.NET Core 2.x allowed. It is not a framework port: retarget the TFM to
-      net8.0 and replace the few .NET Framework-only packages/APIs it still uses.
-    fix: Change TargetFramework to net8.0, drop Microsoft.AspNetCore 2.x packages for the shared framework, update EF Core and fix the compile errors.
+      net10.0 and replace the few .NET Framework-only packages/APIs it still uses.
+    fix: Change TargetFramework to net10.0, drop Microsoft.AspNetCore 2.x packages for the shared framework, update EF Core and fix the compile errors.
     refs:
       - https://learn.microsoft.com/en-us/dotnet/core/porting/
 
@@ -74,9 +74,9 @@ rules:
     title: Shared library targets .NET Framework
     why: >-
       The library is compiled for .NET Framework only, so the components that use it cannot move
-      to .NET 8 until it is retargeted. netstandard2.0 (or multi-targeting) lets the same library
+      to .NET 10 until it is retargeted. netstandard2.0 (or multi-targeting) lets the same library
       serve both the old and the ported apps during the migration.
-    fix: Retarget to netstandard2.0 or multi-target net48;net8.0, then fix API gaps reported by the analyzers.
+    fix: Retarget to netstandard2.0 or multi-target net48;net10.0, then fix API gaps reported by the analyzers.
     refs:
       - https://learn.microsoft.com/en-us/dotnet/standard/net-standard
 
@@ -93,9 +93,9 @@ rules:
     title: Very old .NET Framework (2.0-4.5.2)
     why: >-
       .NET Framework 2.0 and 4.0-4.5.2 are out of support (3.5 SP1 is still supported on
-      Windows, but is just as far from .NET 8). Libraries and APIs of that era (LINQ to SQL, WF3,
-      Remoting, ASMX) often have no .NET 8 equivalent, so the port is larger than usual.
-    fix: Upgrade in steps (4.8 first) before porting to .NET 8.
+      Windows, but is just as far from .NET 10). Libraries and APIs of that era (LINQ to SQL, WF3,
+      Remoting, ASMX) often have no .NET 10 equivalent, so the port is larger than usual.
+    fix: Upgrade in steps (4.8 first) before porting to .NET 10.
     refs:
       - https://learn.microsoft.com/en-us/lifecycle/products/microsoft-net-framework
 
@@ -111,9 +111,9 @@ rules:
     title: Out-of-support .NET runtime
     why: >-
       Targets an out-of-support .NET version. It can still be containerized without code
-      changes by rolling forward onto the supported .NET 8 runtime (DOTNET_ROLL_FORWARD=Major)
-      or by publishing with -p:TargetFramework=net8.0.
-    fix: The generated Dockerfile builds with the .NET 8 SDK and runs on the .NET 8 runtime with roll-forward; retarget to net8.0 when convenient.
+      changes by rolling forward onto the supported .NET 10 runtime (DOTNET_ROLL_FORWARD=Major)
+      or by publishing with -p:TargetFramework=net10.0.
+    fix: The generated Dockerfile builds with the .NET 10 SDK and runs on the .NET 10 runtime with roll-forward; retarget to net10.0 when convenient.
     refs:
       - https://dotnet.microsoft.com/en-us/platform/support/policy/dotnet-core
       - https://learn.microsoft.com/en-us/dotnet/core/versions/selection
@@ -129,10 +129,10 @@ rules:
     effort: 2
     title: Windows-specific target framework (-windows)
     why: >-
-      The project targets a Windows-only framework (net8.0-windows), which makes Windows APIs
+      The project targets a Windows-only framework (net10.0-windows), which makes Windows APIs
       such as Windows Forms, WPF or the registry available. Those APIs do not exist on Linux, so
       the build or the app fails there.
-    fix: Retarget to plain net8.0 and replace the Windows-only APIs it uses.
+    fix: Retarget to plain net10.0 and replace the Windows-only APIs it uses.
     refs:
       - https://learn.microsoft.com/en-us/dotnet/standard/frameworks
 
@@ -192,7 +192,7 @@ rules:
     windows_container: true
     title: WCF service host
     why: >-
-      The server side of WCF (ServiceHost, .svc endpoints) only exists in .NET Framework; .NET 8
+      The server side of WCF (ServiceHost, .svc endpoints) only exists in .NET Framework; .NET 10
       ships only the WCF client. The service has to move to CoreWCF, the community port of WCF
       services, or to another API style.
     fix: Port to CoreWCF (keeps contracts, BasicHttp/NetTcp bindings) or expose the operations as REST/gRPC.
@@ -231,7 +231,7 @@ rules:
     effort: 0.5
     title: WCF client
     why: >-
-      Calling WCF services works on .NET 8 through the System.ServiceModel.* NuGet packages
+      Calling WCF services works on .NET 10 through the System.ServiceModel.* NuGet packages
       (HTTP and NetTcp bindings), but not every .NET Framework binding or WS-* security option is
       available, so check the bindings in the client configuration.
     fix: Use the System.ServiceModel.* NuGet packages; avoid WS-* security bindings.
@@ -266,7 +266,7 @@ rules:
     title: ASMX web services
     why: >-
       ASMX SOAP services (System.Web.Services, .asmx files) run only on ASP.NET for .NET
-      Framework under IIS; .NET 8 has no ASMX hosting.
+      Framework under IIS; .NET 10 has no ASMX hosting.
     fix: Port to CoreWCF BasicHttpBinding (keeps SOAP contract for existing clients) or REST.
     refs:
       - https://devblogs.microsoft.com/dotnet/corewcf-v1-released/
@@ -322,7 +322,7 @@ rules:
     windows_container: true
     title: Windows Workflow Foundation
     why: >-
-      Windows Workflow Foundation (WF3/WF4) and workflow services are not in .NET 8 (CoreWF is a
+      Windows Workflow Foundation (WF3/WF4) and workflow services are not in .NET 10 (CoreWF is a
       partial community port of WF4; WF3 has none), so workflows must be re-hosted or rewritten.
     fix: Re-implement workflows (state machine in code, Elsa, Temporal, durable functions) or CoreWF for WF4.
     refs:
@@ -357,7 +357,7 @@ rules:
     windows_container: true
     title: Multiple AppDomains
     why: >-
-      .NET 8 supports only one AppDomain per process: AppDomain.CreateDomain throws
+      .NET 10 supports only one AppDomain per process: AppDomain.CreateDomain throws
       PlatformNotSupportedException, so plugin loading or isolation built on extra AppDomains
       must be redesigned.
     fix: Use AssemblyLoadContext for plugins or run isolated work as separate processes/containers.
@@ -410,7 +410,7 @@ rules:
     title: LINQ to SQL
     why: >-
       LINQ to SQL (System.Data.Linq, .dbml designer files) ships only with .NET Framework;
-      Microsoft provides no supported LINQ to SQL package for .NET 8, so the data access layer
+      Microsoft provides no supported LINQ to SQL package for .NET 10, so the data access layer
       has to change.
     fix: Move data access to EF Core or Dapper.
 
@@ -425,7 +425,7 @@ rules:
     effort: 1
     title: Entity Framework 6
     why: >-
-      Entity Framework 6.3+ is cross-platform and runs on .NET 8 (including Linux), but the EF
+      Entity Framework 6.3+ is cross-platform and runs on .NET 10 (including Linux), but the EF
       designer (EDMX) does not work in .NET or SDK-style projects and some third-party providers
       are .NET Framework only.
     fix: Keep EF 6.4/6.5 for the port or move to EF Core.
@@ -602,7 +602,7 @@ rules:
     effort: 0.25
     title: Legacy code pages
     why: >-
-      .NET 8 includes only Unicode, ASCII and Latin-1 encodings by default; Encoding.GetEncoding
+      .NET 10 includes only Unicode, ASCII and Latin-1 encodings by default; Encoding.GetEncoding
       for Windows code pages such as 1252 or 850 throws unless the CodePages provider is
       registered.
     fix: Call Encoding.RegisterProvider(CodePagesEncodingProvider.Instance) once at startup (check whether it is already there).

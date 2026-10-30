@@ -359,7 +359,7 @@ rules:
     why: >-
       The project targets net*-windows10.*, which only builds/runs on Windows, but no WinRT
       namespaces are used in its code, so retargeting to the plain TFM is usually enough.
-    fix: Retarget to net8.0 (or multi-target) and replace the few Windows-only calls, if any.
+    fix: Retarget to net10.0 (or multi-target) and replace the few Windows-only calls, if any.
 
   - id: vendor-sdk-install-dir
     applies_to: [dotnet]

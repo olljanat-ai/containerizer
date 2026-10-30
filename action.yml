@@ -1,13 +1,20 @@
-name: containerizer check
+name: containerizer
 description: >-
-  Rate how containerizable your applications are, comment the rating and blockers on the pull request,
-  and fail when a change adds a Windows-only dependency or blocker compared with the base branch.
+  Assess how containerizable your applications are: a one-shot assessment with generated Dockerfiles and
+  Kubernetes manifests verified by building and running them, or a pull request gate that fails when a
+  change adds a Windows-only dependency or blocker.
 author: olljanat-ai
 branding:
   icon: package
   color: blue
 
 inputs:
+  mode:
+    description: >-
+      assess = one-shot assessment (report, generated files, build-and-run verification);
+      gate = compare with the base branch and comment on the pull request;
+      auto = gate on pull_request events, assess otherwise.
+    default: auto
   path:
     description: App folder(s) to assess, space separated, relative to the workspace. A folder with a scenarios/ subfolder means every app in it.
     default: "."
@@ -34,6 +41,26 @@ inputs:
   sarif-file:
     description: Where to write the SARIF file.
     default: containerizer.sarif
+  verify:
+    description: assess mode - build and run every generated container (needs Docker) to confirm the verdicts.
+    default: "true"
+  verify-timeout:
+    description: assess mode - seconds allowed per build or run.
+    default: "1800"
+  ai:
+    description: assess mode - ask Claude about components the rules are unsure of, and about failures no rule explains.
+    default: "false"
+  anthropic-api-key:
+    description: assess mode - API key for the ai option.
+    default: ""
+  model:
+    description: assess mode - Claude model for the ai option (default is the tool's default).
+    default: ""
+  open-pr:
+    description: >-
+      assess mode - open a pull request that adds the generated containerize/ folders (needs contents and
+      pull-requests write, and "Allow GitHub Actions to create pull requests" in the repository settings).
+    default: "false"
   python-version:
     description: Python used to run the tool. Set to "" to use the runner's python3.
     default: "3.12"
@@ -57,6 +84,15 @@ outputs:
   sarif-file:
     description: The SARIF file.
     value: ${{ inputs.sarif-file }}
+  report-dir:
+    description: assess mode - folder with the reports, generated files and verification results.
+    value: ${{ steps.assess.outputs.report-dir }}
+  unconfirmed:
+    description: assess mode - number of components predicted ready that did not build or run.
+    value: ${{ steps.assess.outputs.unconfirmed }}
+  pr-url:
+    description: assess mode with open-pr - the pull request with the generated files.
+    value: ${{ steps.pr.outputs.url }}
 
 runs:
   using: composite
@@ -67,20 +103,42 @@ runs:
         python-version: ${{ inputs.python-version }}
 
     - name: Install containerizer
+      id: setup
       shell: bash
-      run: python3 -m pip install --quiet --disable-pip-version-check -r "$GITHUB_ACTION_PATH/requirements.txt"
+      env:
+        MODE: ${{ inputs.mode }}
+        AI: ${{ inputs.ai }}
+        EVENT: ${{ github.event_name }}
+      run: |
+        python3 -m pip install --quiet --disable-pip-version-check -r "$GITHUB_ACTION_PATH/requirements.txt"
+        [ "$AI" = "true" ] && python3 -m pip install --quiet --disable-pip-version-check anthropic
+        if [ "$MODE" = "auto" ]; then
+          case "$EVENT" in pull_request|pull_request_target) MODE=gate ;; *) MODE=assess ;; esac
+        fi
+        case "$MODE" in gate|assess) ;; *) echo "::error::mode must be assess, gate or auto"; exit 2 ;; esac
+        echo "mode=$MODE" >> "$GITHUB_OUTPUT"
 
     - name: Resolve base
       id: base
+      if: steps.setup.outputs.mode == 'gate'
       shell: bash
       env:
         INPUT_BASE: ${{ inputs.base-ref }}
         PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: |
         ref="$INPUT_BASE"
         if [ -z "$ref" ] && [ -n "$PR_BASE_SHA" ]; then
           ref="$PR_BASE_SHA"
           git cat-file -e "$ref^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$ref"
+          # The default checkout is the PR merge commit, whose first parent is the base tip: compare with it.
+          # If the PR head itself is checked out, compare with the merge base instead, so changes made on
+          # the base branch after the PR branched off are not attributed to the PR.
+          if [ "$(git rev-parse HEAD)" = "$PR_HEAD_SHA" ]; then
+            [ "$(git rev-parse --is-shallow-repository)" = "true" ] && git fetch --no-tags --quiet --unshallow origin
+            git fetch --no-tags --quiet origin "$PR_BASE_SHA"
+            ref="$(git merge-base HEAD "$PR_BASE_SHA")"
+          fi
         fi
         [ "$ref" = "none" ] && ref=""
         echo "ref=$ref" >> "$GITHUB_OUTPUT"
@@ -92,6 +150,7 @@ runs:
         PYTHONPATH: ${{ github.action_path }}
         CHECK_PATHS: ${{ inputs.path }}
         BASE_REF: ${{ steps.base.outputs.ref }}
+        MODE: ${{ steps.setup.outputs.mode }}
         FAIL_ON: ${{ inputs.fail-on }}
         ALLOW_DROP: ${{ inputs.allow-rating-drop }}
         MAX_RATING: ${{ inputs.max-rating }}
@@ -102,6 +161,7 @@ runs:
         args=(--fail-on "$FAIL_ON" --markdown "$md" --sarif "$SARIF" --json "$RUNNER_TEMP/containerizer.json"
               --annotations github --link "$LINK")
         [ -n "$BASE_REF" ] && args+=(--base-ref "$BASE_REF")
+        [ "$MODE" = "assess" ] && args+=(--annotations none)   # the job summary is written by the assessment
         [ "$ALLOW_DROP" = "true" ] && args+=(--allow-rating-drop)
         [ -n "$MAX_RATING" ] && args+=(--max-rating "$MAX_RATING")
         read -ra paths <<< "$CHECK_PATHS"
@@ -113,7 +173,7 @@ runs:
         [ "$rc" -le 1 ]
 
     - name: Comment on the pull request
-      if: inputs.comment == 'true' && github.event.pull_request.number
+      if: steps.setup.outputs.mode == 'gate' && inputs.comment == 'true' && github.event.pull_request.number
       uses: actions/github-script@v7
       env:
         MD_FILE: ${{ steps.check.outputs.markdown-file }}
@@ -133,6 +193,80 @@ runs:
           } catch (e) {
             core.warning(`could not comment on the pull request (fork PRs get a read-only token): ${e.message}`);
           }
+
+    - name: Assess, generate and verify
+      id: assess
+      if: steps.setup.outputs.mode == 'assess'
+      shell: bash
+      env:
+        PYTHONPATH: ${{ github.action_path }}
+        CHECK_PATHS: ${{ inputs.path }}
+        VERIFY: ${{ inputs.verify }}
+        VERIFY_TIMEOUT: ${{ inputs.verify-timeout }}
+        AI: ${{ inputs.ai }}
+        MODEL: ${{ inputs.model }}
+        OPEN_PR: ${{ inputs.open-pr }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        CONTAINERIZER_AI_BACKEND: api
+      run: |
+        out="$RUNNER_TEMP/containerizer-report"
+        mkdir -p "$out"
+        read -ra paths <<< "$CHECK_PATHS"
+        ai=()
+        if [ "$AI" = "true" ]; then
+          if [ -z "$ANTHROPIC_API_KEY" ]; then echo "::error::ai is on but anthropic-api-key is empty"; exit 2; fi
+          ai=(--ai); [ -n "$MODEL" ] && ai+=(--model "$MODEL")
+        fi
+        args=(--out "$out" --timeout "$VERIFY_TIMEOUT")
+        if [ "$VERIFY" = "true" ]; then
+          if ! { command -v docker >/dev/null && docker info >/dev/null 2>&1; }; then
+            echo "::warning title=containerizer::Docker is not available; verdicts are not verified by building and running"
+            args+=(--no-verify)
+          fi
+        else
+          args+=(--no-verify)
+        fi
+        # assess, build and run every feasible component, learn, re-assess, write reports and generated files
+        python3 -m containerizer analyze "${paths[@]}" "${args[@]}" "${ai[@]}" | tee "$out/analyze.log"
+        # open-pr puts the files next to each app (<app>/containerize), where the pull request adds them;
+        # generate uses the rules analyze just learned, so the files match the verified ones
+        [ "$OPEN_PR" = "true" ] && python3 -m containerizer generate "${paths[@]}"
+        python3 -m containerizer.ci summary "$out" > "$out/summary.md"
+        cat "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
+        unconfirmed=$(python3 -m containerizer.ci unconfirmed "$out")
+        [ "$unconfirmed" != "0" ] && echo "::warning title=containerizer::$unconfirmed component(s) predicted ready did not build or run; see the job summary"
+        echo "report-dir=$out" >> "$GITHUB_OUTPUT"
+        echo "unconfirmed=$unconfirmed" >> "$GITHUB_OUTPUT"
+
+    - name: Upload the report
+      if: steps.setup.outputs.mode == 'assess' && always() && steps.assess.outputs.report-dir != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: containerizer-report
+        path: ${{ steps.assess.outputs.report-dir }}
+
+    - name: Open a pull request with the generated files
+      id: pr
+      if: steps.setup.outputs.mode == 'assess' && inputs.open-pr == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        SUMMARY: ${{ steps.assess.outputs.report-dir }}/summary.md
+        BASE: ${{ github.ref_name }}
+        RUN_ID: ${{ github.run_id }}
+      run: |
+        branch="containerizer/assessment-$RUN_ID"
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git checkout -b "$branch"
+        git add -A -- ':(glob)**/containerize/**'
+        if git diff --cached --quiet; then echo "nothing generated"; exit 0; fi
+        git commit -qm "Add containerization assessment and generated container files"
+        git push -q origin "$branch"
+        body=$(head -c 60000 "$SUMMARY")
+        url=$(gh pr create --base "$BASE" --head "$branch" --title "Containerization: generated Dockerfiles and Kubernetes manifests" --body "$body")
+        echo "url=$url" >> "$GITHUB_OUTPUT"
+        echo "Opened $url"
 
     - name: Upload SARIF
       if: inputs.upload-sarif == 'true'

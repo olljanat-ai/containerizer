@@ -532,6 +532,24 @@ rules:
     refs:
       - https://learn.microsoft.com/en-us/dotnet/api/system.net.mail.smtpdeliverymethod
 
+  - id: cfg-logging-backslash-path
+    applies_to: [dotnet]
+    when:
+      config: '\b(fileName|archiveFileName|file\s+value)\s*=\s*"[^"\n]*\}\\[^"\n]*"'
+      in: ['*.config', 'nlog*.xml', 'log4net*.xml']
+    severity: config
+    category: storage
+    effort: 0.1
+    windows_container: true
+    title: Log file path joined with a backslash in the logging config
+    why: >-
+      NLog / log4net do not translate '\' on Linux: ${logFolder}\app.log becomes a file literally
+      named "\app.log" next to the folder (seen at run time), so log shipping and retention that
+      watch the folder miss it.
+    fix: >-
+      Use '/' in the logging config (it works on Windows too), or log to the console in the
+      container and let the platform collect stdout.
+
   - id: cfg-external-config-files
     applies_to: [dotnet]
     when:

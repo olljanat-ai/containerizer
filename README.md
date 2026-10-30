@@ -25,6 +25,10 @@ Design principles:
 ```bash
 pip install -r requirements.txt            # PyYAML; `anthropic` optional for the API backend
 
+# the recommended one-shot run per repository: assess, build and run every feasible component,
+# learn from failures, re-assess with what was learned, write reports + Dockerfiles + manifests
+python -m containerizer analyze <repo> --out out/            # add --ai --model claude-sonnet-5-5 for Claude review
+
 # assess: one app, or a folder with scenarios/
 python -m containerizer assess ../containerization-challenge -v
 python -m containerizer assess ../containerization-challenge --out reports/   # md + html + json
@@ -38,6 +42,11 @@ python -m containerizer verify ../containerization-challenge/scenarios/parts-cat
 
 # ask Claude about the components the rules are unsure of
 python -m containerizer assess ../containerization-challenge/scenarios/document-control --ai --model claude-sonnet-5-5
+
+# security gate: lint the manifests, build + scan the images (Trivy and Grype), run them hardened,
+# fail on fixable CRITICAL CVEs (--no-build: scan only the base images)
+python -m containerizer gate ../containerization-challenge/scenarios/parts-catalog --out out/
+python -m containerizer images --update        # pick patched base image tags -> rules/images.lock.yaml
 
 # measure against the hand-made labels
 python -m containerizer bench
@@ -88,7 +97,16 @@ python -m containerizer bench --technique hybrid --model claude-haiku-5-5
   title: Microsoft Office automation (COM)
   why: Drives Word/Excel through COM ...
   fix: Replace with a document library (OpenXML SDK, ClosedXML, ...)
+  refs:
+    - https://learn.microsoft.com/en-us/dotnet/core/porting/
 ```
+
+Every finding is explained without AI: `why` says what breaks in a Linux container, `fix` what to
+do, and `refs` link to the documentation or upstream issue behind it. All three are shown in the
+migration report, the HTML portfolio, the PR comment and SARIF (`help`, `helpUri`). Findings
+observed at run time carry the explanation and links of the failure rule that recognised them, and
+every non-default build decision (a plan rule, a config override, a fix learned while verifying) is
+listed with its reason and links at the top of the generated `Dockerfile` and in `plan.json`.
 
 Condition primitives: `sdk`, `tfm`, `package`, `reference`, `framework_ref`, `property`,
 `output_type`, `kind`, `role`, `name`, `file` (glob), `code` / `config` / `text` (regex with optional
@@ -109,7 +127,7 @@ For each component that can be containerized the tool:
    directories during the test, so apps that log only to files can still be diagnosed;
 3. matches the log against `rules/50-failures.yaml`:
    - `retry`: patch the build plan (e.g. remove a pinned `global.json`, retarget an out-of-support
-     TFM to net8.0, add Kerberos libraries, make a folder writable) and try again;
+     TFM to net10.0, add Kerberos libraries, make a folder writable) and try again;
    - `external`: the container works, it only lacks a database/broker/directory/identity provider —
      then the tool retries in a dependency-free smoke mode (`Development` environment, which many apps
      map to SQLite and simulators) to prove the app actually serves requests. For the smoke run only,
@@ -148,9 +166,9 @@ containers, a `Dockerfile.windows` stop-gap. Per app: `kustomization.yaml` and `
 
 Techniques used to avoid application changes:
 
-- out-of-support .NET (Core 3.1, 5, 6, 7): build with the .NET 8 SDK and run on the supported .NET 8
+- out-of-support .NET (Core 3.1, 5, 6, 7): build with the .NET 10 SDK and run on the supported .NET 10
   runtime with `DOTNET_ROLL_FORWARD=Major`; if the old target can't be built, retarget with
-  `-p:TargetFramework=net8.0`;
+  `net10.0` in the build stage's copy of the entry project (its netstandard libraries keep their targets);
 - `global.json` SDK pins are removed inside the build stage only;
 - Kestrel endpoints from `appsettings.json` are re-pointed with `Kestrel__Endpoints__X__Url`;
 - connection strings and secret settings become `ConnectionStrings__X` env vars from a Secret;
@@ -167,7 +185,114 @@ Techniques used to avoid application changes:
 - old netstandard1.x packages that break a linux-x64 restore (NU1605) get a portable publish;
 - corporate TLS-inspecting proxies: an optional `ca` build secret is honoured.
 
+## Security gate
+
+Everything here is data in [`rules/60-security.yaml`](rules/60-security.yaml).
+
+**Hardened manifests.** Every generated pod gets the baseline: runs as the image's own non-root UID
+(`runAsUser`/`runAsGroup`/`fsGroup`: 1654 for .NET, 101 for nginx), read-only root filesystem, all
+capabilities dropped, no privilege escalation, seccomp `RuntimeDefault`, no service account token, no
+service links, CPU/memory/ephemeral-storage requests and limits, and a `sizeLimit` on every `emptyDir`.
+`namespace.yaml` enforces Pod Security `restricted` for the whole app.
+
+**Exceptions only when the app needs them**, decided by rule conditions and recorded on the pod as
+`containerizer.io/exception.<id>` annotations with the reason:
+
+| Exception | When | What changes |
+| --- | --- | --- |
+| `nginx-writable-dirs` | single-page app | `/tmp` and `/var/cache/nginx` writable |
+| `kerberos-keytab` | Negotiate (Windows) authentication | keytab from a Secret at `/etc/krb5/keytab`, credential cache in `/tmp` |
+| `native-rendering-memory` | PDF/image libraries (DinkToPdf, QuestPDF, ImageSharp, ...) in the component or a library it references | 1 GiB memory limit, writable font cache |
+| `file-uploads` | `IFormFile` / `MultipartReader` | 1 GiB `/tmp`, 2 GiB ephemeral storage |
+| `icmp-ping` | `System.Net.NetworkInformation.Ping` | `net.ipv4.ping_group_range` sysctl (no `NET_RAW`) |
+| `kubernetes-api-client` | KubernetesClient and similar | service account token mounted, `sa-token` check waived |
+| `privileged-port` | plan port below 1024 | `NET_BIND_SERVICE` |
+
+**Lint.** `gate` checks the manifests against Pod Security `restricted` (host namespaces, privileged,
+capabilities, volume types, host ports, privilege escalation, non-root, seccomp, sysctls) plus read-only
+root FS, resources, secret literals (in env, `ENV` and Secrets), the service account token, `emptyDir`
+limits, image tags and NetworkPolicies, and the Dockerfiles for a non-root final stage, tagged base
+images, `ADD <url>`/`curl | sh` and base image end of support. Errors fail the gate. A pod annotation
+`containerizer.io/waives: "check,check"` relaxes named checks for hand-made exceptions.
+
+The tool is meant to be run once or a few times per repository, so `gate` favours accuracy over
+speed: by default it builds every image, scans it with every available scanner and merges the
+results, and starts it with the docker equivalent of its pod spec (user, read-only root, dropped
+capabilities, sysctls, `emptyDir` mounts) to prove the exceptions are enough; read-only or permission
+errors in the log fail the gate. A lock older than 14 days is refreshed first.
+
+**Vulnerability scan.** `gate` scans the final base image of every component and the built image; findings missing from the base are attributed to the application's
+own packages (upgrade them) rather than the base (bump it). It fails on vulnerabilities at or above
+`scan.fail_on` (default `CRITICAL`, `--fail-on HIGH` to tighten) that have a fix; accepted risks go in
+`scan.allowlist` with a reason and an expiry date. Trivy is used if installed, then Grype, then either
+one as a container (`aquasec/trivy`, `anchore/grype`); `scan.default_scanner: all` uses all of them. When even the newest base tag still ships a
+vulnerable OS package with a fix, the gate upgrades just that package in the final stage (`apk upgrade`
+/ `apt-get --only-upgrade`; chiseled images have no package manager and need a newer tag). Results go
+to `SECURITY.md` and `security.json` next to the generated files.
+
+**Patched base images.** `images --update` lists the registry tags of every line in `images.yaml`,
+scans the newest patch tags and writes the first one that passes the policy to
+`rules/images.lock.yaml` with its digest; the generator then uses the exact tag (and
+`--pin-digests` the locked digest). The bump policy is per image: patch releases of the same line by
+default, newer stable lines for nginx, and the successor line for toolchains past end of support (node,
+golang). .NET majors are never moved automatically. `images` alone shows each line and its end of
+support. `CONTAINERIZER_IMAGES_LOCK=0` ignores the lock; the gate warns when it is older than 14 days.
+
+## Running it from a pipeline
+
+The tool is meant to be run once or a few times per repository, so the main pipeline use is a
+**one-shot assessment**: the pipeline runs `analyze` (assess, build and run every feasible component on the
+build agent, learn from failures, re-assess, write reports and generated files), so the verdicts are
+confirmed, not just predicted. Speed is not a goal: verification is on by default and each build or run may take up to 30 minutes.
+
+### One-shot assessment on GitHub Actions
+
+```yaml
+on: workflow_dispatch
+permissions:
+  contents: write               # only for open-pr
+  pull-requests: write          # only for open-pr
+jobs:
+  assess:
+    runs-on: ubuntu-latest      # has Docker, needed for verification
+    steps:
+      - uses: actions/checkout@v4
+      - uses: olljanat-ai/containerizer@main
+        with:
+          mode: assess
+          path: src
+          # ai: true                                       # ask Claude about uncertain components
+          # anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # open-pr: true                                  # PR adding <app>/containerize/ folders
+```
+
+The job summary has the portfolio table, a build-and-run table that flags every component predicted
+ready that did not build or run ("static verdict not confirmed"), and each app's full report. The
+`containerizer-report` artifact holds the Markdown/HTML/JSON reports, generated files, verification
+results and logs. Outputs: `rating`, `unconfirmed`, `report-dir`, `pr-url`. With the default
+`mode: auto` the action runs the assessment on any event except pull requests, where it runs the gate.
+
+### One-shot assessment on Azure DevOps
+
+```yaml
+trigger: none
+pool:
+  vmImage: ubuntu-latest
+steps:
+  - checkout: self
+  - template: ci/azure/containerizer-assess.yml
+    parameters:
+      path: src
+```
+
+[`ci/azure/containerizer-assess.yml`](ci/azure/containerizer-assess.yml) publishes the same report as
+the `containerizer-report` artifact and the summary on the build's Extensions tab.
+
 ## CI/CD gate
+
+If a team keeps working on an application after the assessment, the gate stops new Windows-only
+dependencies from creeping in.
+
 
 `check` compares the current tree with a base branch (or a saved baseline) and fails when a change makes
 an application harder to containerize: a new finding of severity `rewrite` or worse (Windows-only APIs,
@@ -184,7 +309,7 @@ python -m containerizer check src/ --max-rating B --fail-on blocker      # absol
 Exit code 0 = pass, 1 = gate failed, anything else = error. Options: `--fail-on none|config|refactor|rewrite|blocker`,
 `--allow-rating-drop`, `--max-rating A-E`, `--annotations github|azure`, `--json`, `--link <blob URL prefix>`.
 
-### GitHub Actions
+### Gate on GitHub Actions
 
 ```yaml
 on: pull_request
@@ -210,7 +335,7 @@ job when the gate fails. Outputs: `rating`, `failed`, `new-findings`, `markdown-
 This repository dogfoods it in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) on
 [`examples/ci-demo`](examples/ci-demo) and self-tests it on a challenge app with a Windows-only change.
 
-### Azure DevOps
+### Gate on Azure DevOps
 
 [`ci/azure/containerizer-steps.yml`](ci/azure/containerizer-steps.yml) is a steps template. Copy it into
 your repository (or reference it through a repository resource):
@@ -243,8 +368,8 @@ results and the model comparison). The labels used for scoring are in
 ## Layout
 
 ```
-containerizer/   scan, rules engine, assess, reach, confidence, facts, generate, verify, ai, report, bench
-rules/           curated rules (roles, facts, findings, plan, failures, images, packages)
+containerizer/   scan, rules engine, assess, reach, confidence, facts, generate, harden, imagescan, verify, ai, report, bench
+rules/           curated rules (roles, facts, findings, plan, failures, security, images + images.lock, packages)
 rules/learned/   rules written by the learning loop (reviewable, safe to delete)
 bench/           labels and results
 action.yml       GitHub Action; ci/azure/ has the Azure DevOps template

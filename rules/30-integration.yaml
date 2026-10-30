@@ -253,7 +253,7 @@ rules:
     windows_container: false
     title: Distributed transactions (MSDTC)
     why: >-
-      Transactions that span connections/queues escalate to MSDTC. .NET 8 supports distributed
+      Transactions that span connections/queues escalate to MSDTC. modern .NET supports distributed
       transactions only on Windows, and MSDTC is not available to Linux containers.
     fix: Restructure into single-resource transactions plus an outbox/saga pattern.
 
@@ -407,7 +407,7 @@ rules:
     category: thirdparty
     effort: 0.5
     title: SharePoint client (CSOM)
-    why: CSOM for SharePoint 2016 targets .NET Framework; on .NET 8 use the SharePoint Online CSOM or REST. Server-to-server trust needs the certificate as a Secret.
+    why: CSOM for SharePoint 2016 targets .NET Framework; on modern .NET use the SharePoint Online CSOM or REST. Server-to-server trust needs the certificate as a Secret.
     fix: Mount the S2S certificate from a Secret; use REST/CSOM for .NET Standard.
 
   - id: biztalk
