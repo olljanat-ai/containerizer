@@ -187,10 +187,13 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
             for key, val in _flatten(_load_json(dev)):
                 if isinstance(val, str) and key.startswith("ConnectionStrings:"):
                     # SQLite resolves relative paths differently from .NET; make them absolute
-                    m = re.search(r"(Data Source|Filename)\s*=\s*((?:\.\.?[\\/])[^;]+)", val, re.I)
+                    m = re.search(r"(Data Source|Filename)\s*=\s*([^;/:|][^;]*\.(db|sqlite3?|litedb))", val, re.I)
                     if m:
                         absp = os.path.normpath(os.path.join("/app", m.group(2).replace("\\", "/")))
                         cmd += ["-e", key.replace(":", "__") + "=" + val.replace(m.group(2), absp)]
+                        folder = os.path.dirname(absp)
+                        if not any(f":{folder}:" in x or x.startswith(folder + ":") for x in cmd):
+                            cmd += ["--tmpfs", f"{folder}:rw,exec,uid={uid},gid={uid},mode=1777"]
                 if isinstance(val, str):
                     for m in re.finditer(r"((?:\.\./)+\.?[\w\-]+)(/[\w\-./]+\.\w{1,5})?", val.replace("\\", "/")):
                         target = os.path.normpath(os.path.join("/app", m.group(1)))
