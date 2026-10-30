@@ -327,11 +327,14 @@ def dockerfile_dotnet(plan: dict) -> str:
         spa = str(PurePosixPath(proj).parent / plan["spa_root"])
         # build the front end once before dotnet publish: publish snapshots wwwroot (static web
         # assets) before the project's own npm target runs, and a bundler that renames hashed files
-        # would otherwise leave publish copying files that no longer exist
+        # would otherwise leave publish copying files that no longer exist. During publish, npm is
+        # then a no-op shim so the project's npm target cannot rebuild under new file names.
         lines += ["RUN --mount=type=secret,id=ca,required=false \\",
                   "    if [ -f /run/secrets/ca ]; then export SSL_CERT_FILE=/run/secrets/ca NODE_EXTRA_CA_CERTS=/run/secrets/ca; fi; \\",
                   f'    if grep -qs \'"build"\' "{spa}/package.json"; then cd "{spa}" && \\',
-                  "      if [ -f package-lock.json ]; then npm ci; else npm install; fi && npm run build; fi"]
+                  "      if [ -f package-lock.json ]; then npm ci; else npm install; fi && npm run build && \\",
+                  "      mkdir -p /opt/npm-prebuilt && printf '#!/bin/sh\\necho \"npm $*: skipped, the front end was built before dotnet publish\" >&2\\n' \\",
+                  "        > /opt/npm-prebuilt/npm && chmod +x /opt/npm-prebuilt/npm; fi"]
     restore_tfm = " $TFP" if retarget else ""
     lines += ["# optional build secret 'ca': CA bundle for TLS-inspecting corporate proxies",
               'RUN --mount=type=cache,target=/root/.nuget/packages --mount=type=secret,id=ca,required=false \\',
@@ -339,6 +342,7 @@ def dockerfile_dotnet(plan: dict) -> str:
               *([f"    TFP=''; if grep -qE '<TargetFrameworks?[ >]' \"{proj}\"; then \\",
                  f"      sed -i -E 's#<TargetFrameworks?([^>]*)>[^<]*</TargetFrameworks?>#<TargetFramework\\1>{target}</TargetFramework>#' \"{proj}\"; \\",
                  f"    else TFP='-p:TargetFramework={target} -p:TargetFrameworks={target}'; fi; \\"] if retarget else []),
+              *(["    export PATH=/opt/npm-prebuilt:$PATH; \\"] if plan.get("spa_root") else []),
               f'    dotnet restore "{proj}"{rid_arg}{restore_tfm} \\',
               f' && dotnet publish "{proj}" --no-restore {" ".join(pub)}']
     writable = sorted({_writable_abs(w) for w in plan["add_writable"]})
