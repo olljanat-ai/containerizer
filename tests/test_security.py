@@ -229,6 +229,6 @@ def test_lock_overlays_images(tmp_path, monkeypatch):
         assert generate.resolve_digest("mcr.microsoft.com/dotnet/aspnet:10.0.14-noble-chiseled-extra") == "sha256:" + "a" * 64
         monkeypatch.setenv("CONTAINERIZER_IMAGES_LOCK", "0")
         generate.images.cache_clear()
-        assert generate.images()["dotnet"]["aspnet"].endswith(":8.0-noble-chiseled-extra")
+        assert generate.images()["dotnet"]["aspnet"].endswith(":10.0-noble-chiseled-extra")
     finally:
         generate.images.cache_clear()
