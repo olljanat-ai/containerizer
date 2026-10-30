@@ -189,3 +189,11 @@ def test_build_decisions_are_explained_in_the_dockerfile(tmp_path):
     assert "config-windows-paths" in why
     df = dockerfile_dotnet(plan)
     assert "# Why this differs from a default build:" in df and "# - plan-sqlite-data: SQLite" in df
+
+
+def test_spa_is_built_before_publish():
+    plan = {"component": "X", "role": "web", "project": "src/X/X.csproj", "tfm": "net8.0", "multi_target": False,
+            "strategy": "rollforward", "base": "chiseled", "add_packages": [], "env": {}, "add_writable": [],
+            "publish_args": [], "remove_files": [], "entry": "X.dll", "args": [], "applied": [], "spa_root": "ClientApp"}
+    df = dockerfile_dotnet(plan)
+    assert df.index('"src/X/ClientApp/package.json"') < df.index("dotnet publish")

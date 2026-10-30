@@ -250,3 +250,19 @@ rules:
   refs:
   - https://learn.microsoft.com/en-us/aspnet/core/fundamentals/servers/httpsys
   - https://learn.microsoft.com/en-us/dotnet/standard/native-interop/native-library-loading
+- id: learned-runtime-vanarsdel-posfeed-18
+  source: learned
+  severity: refactor
+  category: runtime-observed
+  title: 'Windows-only API at runtime: ServiceController enables manipulating and accessing Windows services and it is not
+    applicable for other operating systems.'
+  why: 'A Windows-only API was called at runtime: ServiceController enables manipulating and accessing Windows services and
+    it is not applicable for other operating systems.'
+  fix: Find the call in the log's stack trace; replace it with a cross-platform API or guard it with OperatingSystem.IsWindows().
+    The platform compatibility analyzer (CA1416) lists such calls at build time.
+  refs:
+  - https://learn.microsoft.com/en-us/dotnet/standard/analyzers/platform-compat-analyzer
+  when:
+    name: ^VanArsdel\.PosFeed$
+  learned_from: retail-backoffice/VanArsdel.PosFeed
+  learned_at: '2026-10-30'

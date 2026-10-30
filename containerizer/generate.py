@@ -11,7 +11,7 @@ import json
 import os
 import re
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 
@@ -323,6 +323,15 @@ def dockerfile_dotnet(plan: dict) -> str:
     lines += ["WORKDIR /src", "COPY . ."]
     for f in plan["remove_files"]:
         lines.append(f"RUN find . -name '{f}' -not -path '*/node_modules/*' -delete")
+    if plan.get("spa_root"):
+        spa = str(PurePosixPath(proj).parent / plan["spa_root"])
+        # build the front end once before dotnet publish: publish snapshots wwwroot (static web
+        # assets) before the project's own npm target runs, and a bundler that renames hashed files
+        # would otherwise leave publish copying files that no longer exist
+        lines += ["RUN --mount=type=secret,id=ca,required=false \\",
+                  "    if [ -f /run/secrets/ca ]; then export SSL_CERT_FILE=/run/secrets/ca NODE_EXTRA_CA_CERTS=/run/secrets/ca; fi; \\",
+                  f'    if grep -qs \'"build"\' "{spa}/package.json"; then cd "{spa}" && \\',
+                  "      if [ -f package-lock.json ]; then npm ci; else npm install; fi && npm run build; fi"]
     restore_tfm = " $TFP" if retarget else ""
     lines += ["# optional build secret 'ca': CA bundle for TLS-inspecting corporate proxies",
               'RUN --mount=type=cache,target=/root/.nuget/packages --mount=type=secret,id=ca,required=false \\',
