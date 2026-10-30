@@ -1,0 +1,114 @@
+# Fact extraction rules. Named regex groups become facts of the component.
+# For each fact the first matching rule (highest priority) wins.
+rules:
+  # ---- listening port the app uses today (informational; containers listen on 8080)
+  - id: port-code-useurls
+    phase: facts
+    priority: 90
+    when: {code: 'UseUrls\(\s*\$?@?"https?://[^:"/]+:(?P<port>\d{2,5})'}
+    set: {port_source: code, hardcoded_url: "true"}
+
+  - id: port-code-listen
+    phase: facts
+    priority: 89
+    when: {code: '\.Listen(Any|Localhost)?IP\w*\([^)]*?(?P<port>\d{4,5})\)|options\.Listen\w*\(\s*(IPAddress\.\w+,\s*)?(?P<port2>\d{4,5})'}
+    set: {port_source: code-kestrel, hardcoded_url: "true"}
+
+  - id: port-appsettings-kestrel
+    phase: facts
+    priority: 80
+    when: {config: '"Url"\s*:\s*"https?://[^:"/]+:(?P<port>\d{2,5})', in: ["appsettings.json", "appsettings.Production.json"]}
+    set: {port_source: appsettings-kestrel, kestrel_endpoints: "true"}
+
+  - id: port-appsettings-urls
+    phase: facts
+    priority: 79
+    when: {config: '"(Urls|urls|server\.urls)"\s*:\s*"https?://[^:"/]+:(?P<port>\d{2,5})', in: ["appsettings.json", "hosting.json"]}
+    set: {port_source: appsettings-urls}
+
+  - id: port-launchsettings
+    phase: facts
+    priority: 50
+    when: {config: '"applicationUrl"\s*:\s*"(https://[^;"]+;)?http://[^:"/]+:(?P<port>\d{2,5})', in: ["launchSettings.json"]}
+    set: {port_source: launchSettings}
+
+  - id: port-launchsettings-https
+    phase: facts
+    priority: 49
+    when: {config: '"applicationUrl"\s*:\s*"https?://[^:"/]+:(?P<port>\d{2,5})', in: ["launchSettings.json"]}
+    set: {port_source: launchSettings}
+
+  - id: port-iisexpress
+    phase: facts
+    priority: 40
+    when: {config: '<IISUrl>https?://[^:<]+:(?P<port>\d{2,5})|"applicationUrl"\s*:\s*"http://localhost:(?P<port2>\d{2,5})"', in: ["*.csproj", "launchSettings.json"]}
+    set: {port_source: iisexpress}
+
+  - id: port-node
+    phase: facts
+    priority: 40
+    when: {code: '\.listen\(\s*(process\.env\.PORT\s*\|\|\s*)?(?P<port>\d{2,5})|PORT\s*\|\|\s*(?P<port2>\d{2,5})', in: ["*.js", "*.ts", "*.mjs"]}
+    set: {port_source: code}
+
+  - id: port-python
+    phase: facts
+    priority: 40
+    when: {code: 'port\s*=\s*(int\(os\.environ\.get\("PORT",\s*)?"?(?P<port>\d{2,5})', in: ["*.py"]}
+    set: {port_source: code}
+
+  - id: port-spring
+    phase: facts
+    priority: 40
+    when: {config: 'server\.port\s*[=:]\s*(?P<port>\d{2,5})|server:\s*\n\s+port:\s*(?P<port2>\d{2,5})'}
+    set: {port_source: config}
+
+  # ---- health endpoints (used for probes and the verify loop)
+  - id: health-mapchecks
+    phase: facts
+    priority: 90
+    when: {code: 'MapHealthChecks\(\s*"(?P<health>/[^"]*)"'}
+
+  - id: health-mapget
+    phase: facts
+    priority: 80
+    when: {code: 'Map(Get|Methods)\(\s*"(?P<health>/(ping|health|healthz|healthcheck|status|alive|ready|livez|readyz)[^"]*)"'}
+
+  - id: health-controller
+    phase: facts
+    priority: 70
+    when: {code: '\[(Http)?Get\(\s*"(?P<health>/?(api/)?(ping|health|healthz|status))"\s*\)\]|Route\("(?P<health2>/?(api/)?(ping|health|healthz|status))"\)'}
+
+  - id: health-node
+    phase: facts
+    priority: 60
+    when: {code: '\.get\(\s*[''"](?P<health>/(health|healthz|ping|status)[^''"]*)', in: ["*.js", "*.ts", "*.mjs", "*.py"]}
+
+  # ---- misc facts
+  - id: fact-spa-proxy
+    phase: facts
+    when: {config: '"(SpaRoot|spa)"|<SpaRoot>(?P<spa_root>[^<]+)<', in: ["*.csproj", "appsettings.json"]}
+    set: {spa: "true"}
+
+  - id: fact-uses-negotiate
+    phase: facts
+    when: {code: 'AddNegotiate\(|NegotiateDefaults'}
+    set: {needs_kerberos: "true"}
+
+  - id: fact-uses-wkhtml
+    phase: facts
+    when: {any: [{package: 'DinkToPdf|Rotativa.*|TuesPechkin.*'}, {code: 'libwkhtmltox'}]}
+    set: {needs_wkhtmltox: "true"}
+
+  - id: fact-uses-icu
+    phase: facts
+    when: {code: 'CultureInfo|TimeZoneInfo|ToString\("[CNcn]\d?"\)|string\.Format\(\s*new\s+CultureInfo'}
+    set: {needs_icu: "true"}
+
+  - id: fact-uses-sqlclient
+    phase: facts
+    when: {package: 'Microsoft\.Data\.SqlClient|System\.Data\.SqlClient|Microsoft\.EntityFrameworkCore\.SqlServer'}
+    set: {needs_icu: "true"}
+
+  - id: fact-run-once-arg
+    phase: facts
+    when: {code: '"(?P<oneshot_arg>--(run|once|run-once|run-nightly|nightly|import|export)[\w\-]*)"'}

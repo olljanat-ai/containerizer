@@ -1,0 +1,59 @@
+# Build-plan rules: adjust how a component is built and run. Each `plan`
+# patch is merged into the component's build plan:
+#   base: chiseled | full          runtime image flavour
+#   add_packages: [..]             apt packages (forces base: full)
+#   env: {K: V}                    environment variables
+#   add_writable: [..]             folders (relative to /app or absolute) that must be writable
+#   publish_args: [..]             extra `dotnet publish` arguments
+#   remove_files: [..]             files removed in the build stage (never in the app repo)
+#   strategy: rollforward|retarget how out-of-support TFMs are handled
+rules:
+  - id: plan-negotiate-krb5
+    phase: plan
+    when: {package: Microsoft\.AspNetCore\.Authentication\.Negotiate}
+    plan:
+      add_packages: [libkrb5-3, libgssapi-krb5-2, gss-ntlmssp]
+      env: {KRB5_KTNAME: /etc/krb5/keytab/service.keytab}
+
+  - id: plan-wkhtmltox
+    phase: plan
+    when:
+      any:
+        - package: DinkToPdf|Rotativa.*|TuesPechkin.*|WkHtmlToPdf.*
+        - code: 'libwkhtmltox'
+    plan:
+      add_packages: [libwkhtmltox0]
+
+  - id: plan-global-json
+    phase: plan
+    scope: repo
+    when: {file: global.json}
+    plan:
+      remove_files: [global.json]
+
+  - id: plan-sqlite-data
+    phase: plan
+    when: {package: 'Microsoft\.EntityFrameworkCore\.Sqlite|Microsoft\.Data\.Sqlite'}
+    plan:
+      single_replica: true
+
+  - id: plan-hangfire-memory
+    phase: plan
+    when: {package: 'Hangfire\.MemoryStorage|Hangfire\.InMemory'}
+    plan:
+      single_replica: true
+
+  - id: plan-dataprotection-keys
+    phase: plan
+    when:
+      all:
+        - role: web
+        - not: {code: 'PersistKeysTo'}
+    plan:
+      add_writable: [/home/app/.aspnet/DataProtection-Keys]
+
+  - id: plan-file-logs
+    phase: plan
+    when: {package: 'Serilog\.Sinks\.File|NLog(\..*)?|log4net'}
+    plan:
+      add_writable: [logs]
