@@ -217,31 +217,23 @@ runs:
           if [ -z "$ANTHROPIC_API_KEY" ]; then echo "::error::ai is on but anthropic-api-key is empty"; exit 2; fi
           ai=(--ai); [ -n "$MODEL" ] && ai+=(--model "$MODEL")
         fi
-        python3 -m containerizer assess "${paths[@]}" --out "$out" -v "${ai[@]}" | tee "$out/assess.log"
-        python3 -m containerizer generate "${paths[@]}" --out "$out/generated"
-        # open-pr puts the files next to each app (<app>/containerize), where the pull request adds them
-        [ "$OPEN_PR" = "true" ] && python3 -m containerizer generate "${paths[@]}"
+        args=(--out "$out" --timeout "$VERIFY_TIMEOUT")
         if [ "$VERIFY" = "true" ]; then
-          if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
-            # a failed build or run is a result to report, not a crash of this step
-            python3 -m containerizer verify "${paths[@]}" --out "$out" --timeout "$VERIFY_TIMEOUT" "${ai[@]}" \
-              | tee "$out/verify.log" || true
-          else
+          if ! { command -v docker >/dev/null && docker info >/dev/null 2>&1; }; then
             echo "::warning title=containerizer::Docker is not available; verdicts are not verified by building and running"
+            args+=(--no-verify)
           fi
+        else
+          args+=(--no-verify)
         fi
+        # assess, build and run every feasible component, learn, re-assess, write reports and generated files
+        python3 -m containerizer analyze "${paths[@]}" "${args[@]}" "${ai[@]}" | tee "$out/analyze.log"
+        # open-pr puts the files next to each app (<app>/containerize), where the pull request adds them;
+        # generate uses the rules analyze just learned, so the files match the verified ones
+        [ "$OPEN_PR" = "true" ] && python3 -m containerizer generate "${paths[@]}"
         python3 -m containerizer.ci summary "$out" > "$out/summary.md"
         cat "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
-        unconfirmed=$(python3 - "$out" <<'PY'
-        import json, sys, pathlib
-        n = 0
-        for f in pathlib.Path(sys.argv[1]).glob("*.verify.json"):
-            for r in json.loads(f.read_text()):
-                if r["status"] != "skipped" and r.get("predicted") in ("info", "config") and not r["status"].startswith("ok"):
-                    n += 1
-        print(n)
-        PY
-        )
+        unconfirmed=$(python3 -m containerizer.ci unconfirmed "$out")
         [ "$unconfirmed" != "0" ] && echo "::warning title=containerizer::$unconfirmed component(s) predicted ready did not build or run; see the job summary"
         echo "report-dir=$out" >> "$GITHUB_OUTPUT"
         echo "unconfirmed=$unconfirmed" >> "$GITHUB_OUTPUT"

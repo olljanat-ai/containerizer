@@ -188,3 +188,15 @@ def test_assessment_summary_flags_unconfirmed_verdicts(tmp_path):
     assert s.startswith("# Containerization portfolio")
     assert "static verdict not confirmed" in s and "1 component(s) predicted ready did not run" in s
     assert "<details><summary>app</summary>" in s
+
+
+def test_verification_results_from_analyze_output(tmp_path):
+    from containerizer.ci import unconfirmed, verification_results
+
+    (tmp_path / "assessment.json").write_text(json.dumps([
+        {"name": "a", "verification": [{"component": "Web", "status": "run-failed", "predicted": "config"},
+                                       {"component": "Api", "status": "ok-external", "predicted": "info"}]},
+        {"name": "b", "verification": [{"component": "Old", "status": "skipped", "predicted": "blocker"}]}]))
+    res = verification_results(tmp_path)
+    assert [r["app"] for r in res] == ["a", "a", "b"]
+    assert unconfirmed(res) == 1

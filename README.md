@@ -166,8 +166,9 @@ Techniques used to avoid application changes:
 ## Running it from a pipeline
 
 The tool is meant to be run once or a few times per repository, so the main pipeline use is a
-**one-shot assessment**: assess, generate Dockerfiles and Kubernetes manifests, then build and run every
-generated container on the build agent so the verdicts are confirmed, not just predicted. Speed is not
+**one-shot assessment**: the pipeline runs `analyze` (assess, build and run every feasible component on the
+build agent, learn from failures, re-assess, write reports and generated files), so the verdicts are
+confirmed, not just predicted. Speed is not
 a goal: verification is on by default and each build or run may take up to 30 minutes.
 
 ### One-shot assessment on GitHub Actions

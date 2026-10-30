@@ -67,17 +67,19 @@ steps:
         if [ -z "${ANTHROPIC_API_KEY:-}" ]; then echo "##vso[task.logissue type=error]ai is on but ANTHROPIC_API_KEY is not set"; exit 2; fi
         ai=(--ai); [ -n "$MODEL" ] && ai+=(--model "$MODEL")
       fi
-      python -m containerizer assess "${paths[@]}" --out "$out" -v "${ai[@]}" | tee "$out/assess.log" || exit 2
-      python -m containerizer generate "${paths[@]}" --out "$out/generated" || exit 2
-      if [ "$VERIFY" = "True" ]; then
-        if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
-          python -m containerizer verify "${paths[@]}" --out "$out" --timeout "$VERIFY_TIMEOUT" "${ai[@]}" | tee "$out/verify.log"
-        else
-          echo "##vso[task.logissue type=warning]Docker is not available; verdicts are not verified by building and running"
-        fi
+      args=(--out "$out" --timeout "$VERIFY_TIMEOUT")
+      if [ "$VERIFY" != "True" ]; then
+        args+=(--no-verify)
+      elif ! { command -v docker >/dev/null && docker info >/dev/null 2>&1; }; then
+        echo "##vso[task.logissue type=warning]Docker is not available; verdicts are not verified by building and running"
+        args+=(--no-verify)
       fi
+      # assess, build and run every feasible component, learn, re-assess, write reports and generated files
+      python -m containerizer analyze "${paths[@]}" "${args[@]}" "${ai[@]}" | tee "$out/analyze.log" || exit 2
       python -m containerizer.ci summary "$out" > "$out/summary.md"
       echo "##vso[task.uploadsummary]$out/summary.md"
+      n=$(python -m containerizer.ci unconfirmed "$out")
+      [ "$n" != "0" ] && echo "##vso[task.logissue type=warning]$n component(s) predicted ready did not build or run; see the summary"
       if [ -n "$MAX_RATING" ]; then
         python -m containerizer check "${paths[@]}" --fail-on none --max-rating "$MAX_RATING" --sarif "$out/containerizer.sarif" || exit $?
       else

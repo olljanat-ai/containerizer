@@ -342,15 +342,32 @@ def verify_markdown(results: list[dict]) -> str:
     return "\n".join(L)
 
 
+def verification_results(report_dir: Path) -> list[dict]:
+    """Build-and-run results of an `analyze` run (in assessment.json), or of `verify --out` files."""
+    aj = report_dir / "assessment.json"
+    if aj.exists():
+        results = [{"app": a["name"], **r} for a in json.loads(aj.read_text()) for r in a.get("verification") or []]
+        if results:
+            return results
+    results = []
+    for f in sorted(report_dir.rglob("*.verify.json")):
+        results += json.loads(f.read_text())
+    return results
+
+
+def unconfirmed(results: list[dict]) -> int:
+    """Components rated ready whose generated container did not build or run."""
+    return sum(1 for r in results if r.get("status") != "skipped" and r.get("predicted") in READY
+               and not str(r.get("status", "")).startswith("ok"))
+
+
 def assessment_summary(report_dir: Path) -> str:
     """Job summary for a one-shot run: portfolio, per-app details folded, and verification results."""
     L = []
     pf = report_dir / "portfolio.md"
     if pf.exists():
         L.append(pf.read_text())
-    results = []
-    for f in sorted(report_dir.glob("*.verify.json")):
-        results += json.loads(f.read_text())
+    results = verification_results(report_dir)
     if results:
         L.append(verify_markdown(results))
     for f in sorted(report_dir.glob("*.md")):
@@ -369,5 +386,7 @@ if __name__ == "__main__":
 
     if len(sys.argv) == 3 and sys.argv[1] == "summary":
         print(assessment_summary(Path(sys.argv[2])))
+    elif len(sys.argv) == 3 and sys.argv[1] == "unconfirmed":
+        print(unconfirmed(verification_results(Path(sys.argv[2]))))
     else:
-        sys.exit("usage: python -m containerizer.ci summary <report-dir>")
+        sys.exit("usage: python -m containerizer.ci summary|unconfirmed <report-dir>")
