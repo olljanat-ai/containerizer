@@ -43,7 +43,7 @@ class Rule:
     id: str
     when: dict
     scope: str = "project"
-    phase: str = "finding"          # role | facts | finding
+    phase: str = "finding"          # role | facts | finding | plan
     applies_to: list[str] = field(default_factory=list)
     severity: str = "info"
     category: str = "general"
@@ -54,6 +54,7 @@ class Rule:
     role: str = ""
     priority: int = 0
     set: dict = field(default_factory=dict)
+    plan: dict = field(default_factory=dict)
     windows_container: bool | None = None
     tags: list[str] = field(default_factory=list)
     source: str = "curated"

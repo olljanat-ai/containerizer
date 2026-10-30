@@ -1,0 +1,139 @@
+# Failure rules for the build-and-run verification loop. `match` is a regex
+# applied to the build or run log; named groups are available to `fix` as
+# {name}. `outcome` decides what the failure means:
+#   retry     - apply `fix` (a build-plan patch) and try again
+#   external  - the container works; it only misses an external service (DB, broker, AD...)
+#   platform  - the app hit a Windows-only API at runtime -> finding
+#   code      - needs a code change -> finding
+# `learn` makes the fix permanent as a plan rule when the retry succeeds.
+failures:
+  - id: build-global-json
+    stage: build
+    match: 'A compatible \.NET SDK was not found|global\.json file.*(requested|specifies)|Requested SDK version: (?P<ver>[\d.]+)'
+    outcome: retry
+    diagnosis: global.json pins an SDK version that is not in the build image.
+    fix: {remove_files: [global.json]}
+    learn: {scope: repo, when: {file: global.json}}
+
+  - id: build-eol-targeting
+    stage: build
+    match: 'NETSDK1045|NETSDK1209|does not support targeting \.NET (Core )?(?P<ver>[\d.]+)|error NU1102: Unable to find package Microsoft\.(NETCore|AspNetCore)\.App\.(Ref|Runtime)'
+    outcome: retry
+    diagnosis: The project targets an old .NET version the build image cannot target.
+    fix: {strategy: retarget}
+    learn: {when: {tfm: '{tfm}'}}
+
+  - id: build-windows-targeting
+    stage: build
+    match: 'NETSDK1100|EnableWindowsTargeting'
+    outcome: retry
+    diagnosis: The project (or a dependency) targets a -windows TFM; building it on Linux needs EnableWindowsTargeting.
+    fix: {publish_args: ["-p:EnableWindowsTargeting=true"]}
+    learn: {when: {tfm: 'net\d+\.\d+-windows.*'}}
+
+  - id: build-npm-missing
+    stage: build
+    match: '(npm|node): (command )?not found|Node\.js is required to build and run this project'
+    outcome: retry
+    diagnosis: The project builds a front end with npm during publish.
+    fix: {spa_root: ClientApp}
+    learn: {when: {file: 'ClientApp/package.json'}}
+
+  - id: build-netfx-reference
+    stage: build
+    match: 'NETSDK1136|reference assemblies for \.NETFramework|The type or namespace name .System\.Web|MSB3644'
+    outcome: code
+    diagnosis: The component (or a project it references) needs .NET Framework.
+    finding: {severity: rewrite, title: Depends on .NET Framework assemblies at build time}
+
+  - id: build-missing-windows-only-package
+    stage: build
+    match: "error CS0234: The type or namespace name '(?P<ns>\\w+)' does not exist in the namespace '(?P<parent>Windows|System\\.Windows)"
+    outcome: platform
+    diagnosis: Code uses a Windows-only namespace that the Linux build cannot resolve.
+    finding: {severity: blocker, title: 'Windows-only namespace {parent}.{ns}'}
+
+  # ------------------------------------------------------------------ run
+  - id: run-readonly-path
+    stage: run
+    match: "(Access to the path '(?P<path>/[^']+)' is denied|Read-only file system : '(?P<path2>/[^']+)'|UnauthorizedAccessException: Access to the path '(?P<path3>/[^']+)')"
+    outcome: retry
+    diagnosis: The app writes to a folder that is read-only in the hardened container.
+    fix: {add_writable: ['{dir}']}
+    learn: {when: {}}
+
+  - id: run-missing-dir
+    stage: run
+    match: "DirectoryNotFoundException: Could not find a part of the path '(?P<path>/[^']+)'"
+    outcome: retry
+    diagnosis: The app expects a folder that does not exist in the image.
+    fix: {add_writable: ['{dir}']}
+    learn: {when: {}}
+
+  - id: run-native-krb5
+    stage: run
+    match: "libgssapi_krb5\\.so|GSSAPI|gss_\\w+ failed|Cannot load library libgssapi"
+    outcome: retry
+    diagnosis: Kerberos (Negotiate) needs the GSSAPI libraries in the image.
+    fix: {add_packages: [libkrb5-3, libgssapi-krb5-2, gss-ntlmssp]}
+    learn: {when: {code: 'Negotiate'}}
+
+  - id: run-native-missing
+    stage: run
+    match: "(DllNotFoundException|Unable to load shared library|Unable to load DLL) '?(?P<lib>[\\w.\\-]+)'?"
+    outcome: platform
+    diagnosis: The app loads a native library ({lib}) that is not available in the Linux image.
+    finding: {severity: blocker, title: 'Native library {lib} not available on Linux'}
+
+  - id: run-platform-not-supported
+    stage: run
+    match: "PlatformNotSupportedException: (?P<msg>[^\\n]{0,200})"
+    outcome: platform
+    diagnosis: 'A Windows-only API was called at runtime: {msg}'
+    finding: {severity: refactor, title: 'Windows-only API at runtime: {msg}'}
+
+  - id: run-https-no-cert
+    stage: run
+    match: "Unable to configure HTTPS endpoint|No server certificate was specified|The default developer certificate"
+    outcome: retry
+    diagnosis: An HTTPS endpoint is configured without a certificate; TLS terminates at the ingress instead.
+    fix: {env: {ASPNETCORE_URLS: "http://+:8080", Kestrel__Endpoints__Https__Url: "http://+:8081"}}
+    learn: {when: {config: '"Https"\s*:|https://'}}
+
+  - id: run-cert-store
+    stage: run
+    match: "certificate .*(not found|could not be found) in (the )?(store|LocalMachine)|X509Store.*(PlatformNotSupported|not supported)"
+    outcome: code
+    diagnosis: The app loads a certificate from the Windows certificate store.
+    finding: {severity: config, title: Certificate must be mounted as a file}
+
+  - id: run-eventlog
+    stage: run
+    match: "System\\.Diagnostics\\.EventLog|EventLog access is not supported on this platform"
+    outcome: platform
+    diagnosis: Windows Event Log is not available on Linux.
+    finding: {severity: refactor, title: Event Log used at runtime}
+
+  - id: run-sql-unreachable
+    stage: run
+    match: "SqlException|A network-related or instance-specific error|Login failed for user|Npgsql.*(Exception)|MySqlException"
+    outcome: external
+    diagnosis: Database server is not reachable from the test container (expected without the real environment).
+
+  - id: run-dns-unreachable
+    stage: run
+    match: "Name or service not known|No such host is known|nodename nor servname|Resource temporarily unavailable \\(\\w+\\.(corp|local)|Connection refused|BrokerUnreachableException|RedisConnectionException|ElasticsearchClientException|MongoDB\\.Driver.*Timeout|SocketException"
+    outcome: external
+    diagnosis: An external service (broker, cache, API, directory) is not reachable from the test container.
+
+  - id: run-kerberos-config
+    stage: run
+    match: "Negotiate authentication requires|KRB5|krb5\\.conf"
+    outcome: external
+    diagnosis: Kerberos needs a keytab and krb5.conf from the real domain.
+
+  - id: run-missing-config-value
+    stage: run
+    match: "(OptionsValidationException|ArgumentNullException: Value cannot be null.*(Parameter '(connectionString|path|uriString)')|InvalidOperationException: .*(not configured|is missing|must be configured))"
+    outcome: external
+    diagnosis: A required setting has no value in the test container (environment-specific configuration).
