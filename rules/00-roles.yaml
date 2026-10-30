@@ -131,7 +131,10 @@ rules:
             - any:
                 - property: {UseWPF: "true"}
                 - property: {UseWindowsForms: "true"}
-                - reference: System\.Windows\.Forms|PresentationFramework
+                # a leftover reference alone (common in old console/remoting hosts) is not a UI
+                - all:
+                    - reference: System\.Windows\.Forms|PresentationFramework
+                    - code: '^\s*using\s+System\.Windows\.(Forms|Controls|Markup)\b|\bApplication\.Run\(|:\s*(Form|Window)\b|System\.Windows\.Forms\.\w+'
         - all:
             - output_type: Exe
             - tfm: 'net\d+\.\d+-windows.*'

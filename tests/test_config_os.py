@@ -303,3 +303,19 @@ def test_exe_location_that_expects_dotnet_host_is_fine(tmp_path):
         var dotnet = Process.GetCurrentProcess().MainModule?.FileName;
         if (string.Equals(Path.GetFileNameWithoutExtension(dotnet), "dotnet")) { } } }''')
     assert "os-exe-location" not in {f.rule.id for f in assess(tmp_path).components[0].findings}
+
+
+def test_localhost_endpoint_in_code(tmp_path):
+    from containerizer.assess import assess
+    from tests.test_engine import web_app
+    web_app(tmp_path, '''class W { void M() {
+        var f = new ConnectionFactory { HostName = "localhost" };
+        o.Authority = "https://localhost:5005"; } }''')
+    assert "cfg-localhost-endpoint-in-code" in {f.rule.id for f in assess(tmp_path).components[0].findings}
+
+
+def test_localhost_listen_address_is_not_a_client_endpoint(tmp_path):
+    from containerizer.assess import assess
+    from tests.test_engine import web_app
+    web_app(tmp_path, 'class W { void M(IWebHostBuilder b) { b.UseUrls("http://localhost:5000"); } }')
+    assert "cfg-localhost-endpoint-in-code" not in {f.rule.id for f in assess(tmp_path).components[0].findings}

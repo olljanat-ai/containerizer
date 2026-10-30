@@ -300,3 +300,164 @@ repos:
       advapi32 P/Invoke, ServiceController, WrapperService : ServiceBase). Nothing to containerize; on Kubernetes the
       kubelet replaces it. E.
       tool (2026-10-30): E, WinSW is worker -- matches. Library/tool/test expectations are classified correctly but the checker reports them as not found (it only indexes deployable components).
+
+  # --- rw3: third batch (real Windows-only server dependencies + modern gRPC/worker contrasts) ---
+  - name: rw3-crystal-reports-mvc
+    url: https://github.com/raihanM95/Crystal-Reports
+    commit: 70604044bd65206164ea0af95cf7da7bb5130b80
+    expected_rating: C
+    expected_roles: {web: [DotNetAppSqlDb]}
+    notes: >-
+      ASP.NET MVC 5 on net472 (web GUID) with EF6; TodosController.cs:145-176 renders .rpt files with
+      CrystalDecisions ReportDocument.ExportToStream(PortableDocFormat). Crystal runtime is .NET Framework + Windows
+      MSI only, so the reports must be re-implemented (or rendered by a Windows sidecar) on top of the MVC5 port ->
+      C (rewrite of one feature, not a dead end). Web.config: Integrated Security to a named desktop SQL host.
+      tool (2026-10-30): C, roles match. pkg-crystal-reports (rewrite) from the CrystalDecisions references, plus aspnet-mvc5/netfx-target and sql-integrated-security. OK.
+
+  - name: rw3-bookstore-msmq
+    url: https://github.com/Hemantdhurve/BookStoreApp
+    commit: f3831efdfecbad676b82bf452364a325ad736b97
+    expected_rating: B
+    expected_roles: {web: [BookStoreApp]}
+    notes: >-
+      ASP.NET Core 3.1 Web API (EOL, retarget) in layers. CommonLayer/Model/MSMQ.cs uses Experimental.System.Messaging
+      (MSMQ port for .NET Core, Windows-only) with a local .\private$\token queue, only on the forgot-password path
+      (RepositoryLayer/Service/UserRL.cs:182) to send a reset mail via SMTP. Replace with a direct send or
+      RabbitMQ/Service Bus: small change -> B. appsettings.json carries Cloudinary/JWT secrets in plain text.
+      tool (2026-10-30): C. msmq rewrite (rules/30-integration.yaml:497, fixed severity rewrite) on CommonLayer/Model/MSMQ.cs:12, reached from BookStoreApp. Severity ignores that the queue is a local fire-and-forget hop on one code path; I keep B. Tool also found cfg-hardcoded-credentials on MSMQ.cs:40 (SMTP NetworkCredential), which I had not noted (still B).
+
+  - name: rw3-wcf-nettcp-winsvc
+    url: https://github.com/kathleenwest/MyWindowsServiceDemo
+    commit: df6089d76efc3d8ee9075b2e091f29777cf2fe51
+    expected_rating: C
+    expected_roles: {worker: [PositiveAffirmationsHost], desktop: [TestClientGUI]}
+    notes: >-
+      net461 WCF service (MyAffirmationServiceLib) self-hosted with ServiceHost inside a Windows service
+      (PositiveAffirmationService : ServiceBase, WinExe) on netTcpBinding net.tcp://localhost:999 with default
+      (Windows transport) security + mexTcpBinding; writes EventLog.WriteEntry on start/stop. WinForms test client.
+      Port to CoreWCF NetTcp (Windows credential on Linux needs Kerberos or switch to certificate/none), EventLog ->
+      ILogger -> C. bin/Debug and bin/Release with .exe.config copies are committed.
+      tool (2026-10-30): C, roles match. wcf-server + wcf-nettcp-msmq (App.config:9), windows-service-netfx and eventlog-write (PositiveAffirmationService.cs:34) on the host. OK.
+
+  - name: rw3-wf3-aspnet
+    url: https://github.com/geersch/WindowsWorkFlowAspNet
+    commit: dd583b91b7564562c90dd242e8383bd9d169029a
+    expected_rating: C
+    expected_roles: {web: [WebApplication]}
+    notes: >-
+      .NET 3.5 ASP.NET WebForms (web GUID) hosting a WF3 WorkflowRuntime in Global.asax.cs:13 with
+      SqlWorkflowPersistenceService (Web.config:26); state-machine workflow in the Workflows library
+      (System.Workflow.*). WF3 has no .NET (Core) port (CoreWF is WF4 only) -> workflow must be rewritten plus a
+      WebForms rewrite: C (large, but not Windows-bound at run time once rewritten).
+      tool (2026-10-30): C, roles match. wf3-wf4 + webforms + windows-auth-iis (Web.config:47 authentication mode=Windows, which I missed) + linq-to-sql. aspnet-mvc5 fires on a bare System.Web reference in a WebForms app and in the Workflows/Managers libraries (title is misleading, severity harmless). OK.
+
+  - name: rw3-remoting-smarthome
+    url: https://github.com/Safa31Ben/My-Smart-Home
+    commit: 3d1949602b0f99522afa10bebca8eb730a72f4cb
+    expected_rating: C
+    expected_roles: {worker: [Server, "Systeme de surveillance", "Système de sécurité"], desktop: [AdminGUI, Personne, Porte]}
+    notes: >-
+      Student .NET 4.5 smart-home: three console exes host .NET Remoting TcpChannel servers
+      (Server/Program.cs:13-17 ChannelServices.RegisterChannel + RegisterWellKnownServiceType; Systeme de
+      surveillance also calls Activator.GetObject on another server) and three WinForms clients. Remoting is gone in
+      .NET Core -> rewrite the contracts to gRPC/CoreRemoting -> C. Clients stay on PCs. Long-running listeners, so I
+      call them worker even though they are plain Exe with Console.ReadLine. Project names contain accents/spaces.
+      tool (2026-10-30): C (rating matches). remoting rewrite on all servers, mig-binaryformatter (Formatters.Soap), cfg-hardcoded-credentials (Server/ServerImp.cs:14 MySQL root password). Roles: Server and Systeme de surveillance are console (role-worker code regex in rules/00-roles.yaml:327 does not know RegisterWellKnownServiceType listeners; console is still server tier, so only a role-name disagreement). Système de sécurité is desktop via role-desktop rules/00-roles.yaml:134 (Exe + unused <Reference Include="System.Windows.Forms" />, csproj:43; no code uses it) -> a remoting server is dropped from the server tier.
+
+  - name: rw3-ssrs-reportviewer-mvc
+    url: https://github.com/dhana29/ReportViewer-control-to-replace-iFrame-on-MVC-Project
+    commit: b1979c2f8ab2863e55d9d230f7cc9511a2ecf2af
+    expected_rating: C
+    expected_roles: {web: [SSRSReportViewByiFrame]}
+    notes: >-
+      .NET 4.5 MVC 5 app embedding a WebForms page Report/ReportViewer.aspx with Microsoft.ReportViewer.WebForms in
+      ProcessingMode.Remote against an SSRS server (ReportServerUrl/User/Password/Domain in appSettings,
+      Models/ReportServerCredentials.cs NetworkCredential). SSRS itself stays outside; the WebForms ReportViewer
+      control has no ASP.NET Core version -> replace with SSRS URL access/REST rendering on the MVC port: C.
+      tool (2026-10-30): C, roles match. ssrs (Microsoft.ReportViewer.WebForms reference), webforms (Report/ReportViewer.aspx), aspnet-mvc5, owin-systemweb, cfg-local-sql-server (LocalDb). OK.
+
+  - name: rw3-activity-monitor
+    url: https://github.com/colinbut/activity-monitor
+    commit: a77b7cd3152def59be152f744424e84782491cc2
+    expected_rating: E
+    expected_roles: {console: [ttamm]}
+    notes: >-
+      .NET 3.5 background exe that watches the user's interactive Windows desktop: SHDocVw.ShellWindows COM
+      (FolderWatcher.cs:27, WebPageWatcher.cs:25) to track Explorer/IE windows, Office file watchers, events queued
+      through a local MSMQ (COMReceiver.cs:17) and pushed to clients over TCP. Its purpose is the Windows desktop
+      session itself; nothing to run in a container -> E.
+      tool (2026-10-30): E, role matches. com-interop blocker from Interop.SHDocVw reference, msmq rewrite, native-dll-shipped (Polling/build/*.dll). OK.
+
+  - name: rw3-zkattendance
+    url: https://github.com/Faisal-Sahli/ZKAttendanceService
+    commit: 5098a1b980d8f130c54f643c2b5f5f605c97df7c
+    expected_rating: E
+    expected_roles: {worker: [ZKAttendanceService]}
+    notes: >-
+      Modern shape (net8.0 Microsoft.NET.Sdk.Worker, UseWindowsService, EF Core SQL Server, Polly) but the core job
+      pulls attendance from ZKTeco devices via the zkemkeeper COM SDK (COMReference in the csproj,
+      Services/ZKDeviceService.cs:52 Type.GetTypeFromProgID("zkemkeeper.ZKEM"); x86 platform, registered vendor DLLs
+      in ZKTecoSDK/). No Linux SDK in use -> the only server component cannot run on Linux: E (Windows container with
+      regsvr32'd SDK is the stop-gap). Clone is 180 MB (committed bin/obj).
+      tool (2026-10-30): E, role matches. com-interop blocker ZKDeviceService.cs:52 GetTypeFromProgID("zkemkeeper.ZKEM"), native-dll-shipped (ZKTecoSDK/*.dll), supported-os-windows, sql-integrated-security (Trusted_Connection to a desktop host). OK.
+
+  - name: rw3-openiddict-windowsauth
+    url: https://github.com/auroris/OpenIddict-WindowsAuth
+    commit: 05e31ca5d70b2cde3613eec230fff8ad0a3e15fd
+    expected_rating: B
+    expected_roles: {web: [IdentityServer]}
+    notes: >-
+      net10.0 OpenIddict OIDC server whose identity source is Windows Integrated Auth on IIS: AddNegotiate
+      (Startup.cs:35), AuthenticateAsync(IISDefaults.AuthenticationScheme) and a cast to WindowsIdentity with group
+      SIDs (IdentityServer.cs:232-246), AD attributes via System.DirectoryServices DirectoryEntry (ActiveDirectory/
+      ADUser.cs:33). On Linux Negotiate works with a keytab, but the IIS scheme, WindowsIdentity cast and
+      DirectoryServices must be replaced (LDAP via System.DirectoryServices.Protocols): a contained code change -> B
+      (heavy B; C would be defensible).
+      tool (2026-10-30): E. printing blocker from ActiveDirectory/ADObject.cs:184 `"printQueue" => ObjectClass.Printer` and DirectorySearch.cs:88 `objectClass=printQueue` -- AD objectClass strings matched by `\bPrintQueue\b` (rules/20-platform.yaml:279) because code regexes are compiled with re.I (containerizer/rules.py:120). False positive; without it the worst finding is refactor (active-directory-ds ADObject.cs:148, windows-auth-iis launchSettings.json:20, dpapi IdentityServer.cs:102 ProtectedData.Unprotect for persisted keys -- real, I missed it) -> B. The WindowsIdentity cast (IdentityServer.cs:243) is not reported by windows-identity-*.
+
+  - name: rw3-office-to-pdf
+    url: https://github.com/algovoid/OfficeToPdf
+    commit: 217946ca0c0398630ba288175ab2fc19d7c9982f
+    expected_rating: E
+    expected_roles: {console: [OfficeToPdf]}
+    notes: >-
+      net8.0 batch converter CLI (Program.cs Main(input, output, workers)): each worker starts Word/Excel/PowerPoint
+      through Microsoft.Office.Interop.* on an STA thread. Its whole purpose is Office COM automation, which needs
+      Office installed and is unsupported unattended; on Linux it must be replaced by LibreOffice/Gotenberg or a
+      document library -> E as-is.
+      tool (2026-10-30): E, role matches. com-office-automation and sta-apartment blockers (Services/ThreadFactory.cs:12). OK.
+
+  - name: rw3-windows-worker-service
+    url: https://github.com/MehdiMst00/WindowsWorkerService
+    commit: 791c035d27954947c8f82bdd49c78eb671dbb814
+    expected_rating: A
+    expected_roles: {worker: [WorkerService]}
+    notes: >-
+      Contrast case. net6.0 Worker SDK BackgroundService that logs every minute. UseWindowsService (no-op off
+      Windows) and LoggerProviderOptions.RegisterProviderOptions<EventLogSettings, EventLogLoggerProvider> plus an
+      EventLog section in appsettings.json: only options registration, the EventLog provider itself is added by
+      CreateDefaultBuilder on Windows only. Nothing Windows-bound at run time -> A (net6 EOL is a retarget note).
+      tool (2026-10-30): A, role matches. Only config findings: core-eol net6.0 and windows-rid (csproj RuntimeIdentifier=win-x64, which I missed; config only). EventLog options registration correctly not flagged. OK.
+
+  - name: rw3-emailqueue-rabbitmq
+    url: https://github.com/sandeeppaldotnet/EmailQueueWithRabbitMQ
+    commit: 963f043a03eac37eed7429053506e63b13019265
+    expected_rating: B
+    expected_roles: {web: ["Worker Service with RabbitMq and Asp.net core api"], worker: [EmailWorker]}
+    notes: >-
+      net7.0 Web API publishing to RabbitMQ (host/user/password from config, IRabbitMqPublisher.cs:28) + Worker SDK
+      consumer with UseWindowsService (no-op on Linux). EmailWorker.cs:31 hard-codes ConnectionFactory HostName =
+      "localhost" -> must read configuration to reach a RabbitMQ service: small code change -> B.
+      tool (2026-10-30): A, roles match. Only core-eol + secrets-in-config (guest password). The hard-coded ConnectionFactory HostName = "localhost" in EmailWorker.cs:31 is not detected: no rule for hard-coded localhost service endpoints in code (cfg-local-sql-server rules/35-config-os.yaml:456 only covers DB connection strings in config). Same gap as rw2-customers-orders.
+
+  - name: rw3-ecart-grpc
+    url: https://github.com/divyeshBhartiya/eCartMicroservices.gRPC
+    commit: 5c7b6aab744ec232cfbd6303d85431c598cbe39d
+    expected_rating: B
+    expected_roles: {web: [Product.gRPC, Discount.gRPC, Cart.gRPC, IdentityServer], worker: [CartWorkerService, ProductWorkerService]}
+    notes: >-
+      net5.0 gRPC microservices (Grpc.AspNetCore, in-memory EF) + two Worker SDK gRPC clients + IdentityServer4 4.1.2
+      with AddDeveloperSigningCredential (key file must be a volume/secret). Cart.gRPC/Startup.cs:43 hard-codes
+      Authority "https://localhost:5005" -> code change; worker URLs are in appsettings (env override). gRPC over
+      HTTP/2 needs TLS certs or h2c endpoints in containers. EOL net5 + IdentityServer4 retarget -> B.
+      tool (2026-10-30): A, roles match (host-grpc-server config on the three gRPC services). Misses Cart.gRPC/Startup.cs:43 hard-coded Authority "https://localhost:5005" (no localhost-endpoint-in-code rule) and IdentityServer4 AddDeveloperSigningCredential (IdentityServer/Startup.cs:22, writes tempkey.jwk to the content root; IdentityServer4 only appears as a known package in rules/packages.yaml:19). Disagreement is partly judgement (net5 + IdentityServer4 retarget).

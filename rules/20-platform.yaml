@@ -276,7 +276,7 @@ rules:
   - id: printing
     applies_to: [dotnet]
     when:
-      code: 'new\s+PrintDocument\b|new\s+PrinterSettings\b|\bPrintQueue\b|LocalPrintServer|new\s+PrintDialog\b|\bRawPrinterHelper\b|OpenPrinter\(|\.PrintOut\('
+      code: 'new\s+PrintDocument\b|new\s+PrinterSettings\b|(?-i:\bPrintQueue\b)|LocalPrintServer|new\s+PrintDialog\b|\bRawPrinterHelper\b|OpenPrinter\(|\.PrintOut\('
     severity: blocker
     category: hardware
     effort: 0
