@@ -120,6 +120,10 @@ def _repoint_config(plan: dict, facts: dict) -> None:
     file-only Serilog sinks log to stdout, Windows paths move under /data (a volume)."""
     for key in facts.get("listen_url_settings") or []:
         plan["env"][key.replace(":", "__")] = f"http://+:{CONTAINER_PORT}"
+    for var in facts.get("nlog_env_folders") or []:
+        plan["env"][var] = "/app/logs"
+        if "logs" not in plan["add_writable"]:
+            plan["add_writable"].append("logs")
     sinks = set(facts.get("serilog_file_sinks") or [])
     for i in sorted(sinks):
         plan["env"][f"Serilog__WriteTo__{i}__Name"] = "Console"
@@ -129,7 +133,15 @@ def _repoint_config(plan: dict, facts: dict) -> None:
             continue
         segs = [s for s in re.split(r"[\\/]+", val) if s]
         segs = segs[1:] if re.fullmatch(r"[A-Za-z]:", segs[0]) else segs[2:]   # drop drive or \\server\share
-        is_file = bool(re.search(r"\.\w{1,5}$", segs[-1])) if segs else False
+        is_file = bool(re.search(r"\.[A-Za-z]\w{0,7}$", segs[-1])) if segs else False
+        if any(x.lower() in ("program files", "program files (x86)") for x in segs[:1]) or val.lower().endswith(".exe"):
+            # an installed tool: use the Linux binary of the same name from PATH (see native packages)
+            if is_file:
+                name = segs[-1]
+                if name.lower().endswith(".dll"):     # native library: Linux naming
+                    name = "lib" + name[:-4] + ".so"
+                plan["env"]["__".join(parts)] = re.sub(r"\.exe$", "", name, flags=re.I)
+            continue
         if is_file and re.search(r"\.(pem|pfx|p12|key|crt|cer|snk|jks|keytab)$", segs[-1], re.I):
             # keys and certificates come from a Kubernetes Secret volume, never from the image
             plan["env"]["__".join(parts)] = f"/secrets/{segs[-1]}"

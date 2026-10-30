@@ -1,2 +1,30 @@
 # Plan rules learned by `containerizer verify --learn`. Safe to edit or delete.
-rules: []
+rules:
+- id: learned-build-rid-downgrade-controltower-booking-web
+  phase: plan
+  source: learned
+  when:
+    name: ^ControlTower\.Booking\.Web$
+  plan:
+    rid: portable
+  learned_from: control-tower/ControlTower.Booking.Web
+  learned_at: '2026-10-30'
+- id: learned-run-readonly-path-controltower-identity
+  phase: plan
+  source: learned
+  when:
+    name: ^ControlTower\.Identity$
+  plan:
+    add_writable:
+    - /.devdata
+  learned_from: control-tower/ControlTower.Identity
+  learned_at: '2026-10-30'
+- id: learned-build-rid-downgrade-controltower-scanning-api
+  phase: plan
+  source: learned
+  when:
+    name: ^ControlTower\.Scanning\.Api$
+  plan:
+    rid: portable
+  learned_from: control-tower/ControlTower.Scanning.Api
+  learned_at: '2026-10-30'

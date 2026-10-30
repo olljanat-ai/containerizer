@@ -145,6 +145,18 @@ failures:
     outcome: external
     diagnosis: An external service (broker, cache, API, directory) is not reachable from the test container.
 
+  - id: run-oidc-authority-unreachable
+    stage: run
+    match: "IDX20803|IDX20804|Unable to obtain configuration from|IDX10500"
+    outcome: external
+    diagnosis: The OpenID Connect authority (identity provider) is not reachable from the test container.
+
+  - id: run-health-dependency-down
+    stage: run
+    match: "Health check \\S+ with status Unhealthy"
+    outcome: external
+    diagnosis: The app is up; its health check reports a dependency (database, broker) that is not reachable.
+
   - id: run-kerberos-config
     stage: run
     match: "Negotiate authentication requires|KRB5|krb5\\.conf"

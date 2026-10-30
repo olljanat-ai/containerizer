@@ -104,6 +104,11 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
         items = [m.group(1) for m in re.finditer(r"\$\{configsetting:item=([\w.]+):default=([A-Za-z]\\?:|\\\\)", txt)]
         if items:
             facts["nlog_folder_settings"] = sorted(set(items))
+        # ${environment:LOG_DIR:whenEmpty=D\:/App/Logs} -> the variable can re-point it
+        envs = [m.group(1) for m in re.finditer(
+            r"\$\{environment:(?:variable=)?(\w+):(?:whenEmpty|default)=([A-Za-z]\\?:|\\\\)", txt)]
+        if envs:
+            facts["nlog_env_folders"] = sorted(set(envs))
         if re.search(r'xsi:type="(File|Database|EventLog)"', txt) and not re.search(r'xsi:type="(Console|ColoredConsole)"', txt):
             facts["nlog_no_console"] = True
     # Folders written relative to the content root
@@ -126,7 +131,7 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
                 if m:
                     writable.add(m.group(1))
     # not folders: file names (XML docs, databases) and enum-like values (StoreLocation: LocalMachine)
-    writable = {w for w in writable if w and len(w) < 80 and not re.search(r"\.[A-Za-z]\w{0,4}$", w)
+    writable = {w for w in writable if w and len(w) < 80 and not re.search(r"\.[A-Za-z]\w{0,7}$", w)
                 and w not in ("LocalMachine", "CurrentUser", "My", "Root", "None", "Default")}
     if writable:
         facts["writable_dirs"] = sorted(writable)

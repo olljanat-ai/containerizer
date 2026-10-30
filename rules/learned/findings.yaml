@@ -44,3 +44,25 @@ rules:
     name: ^Humongous\.Identity$
   learned_from: broker-quotes/Humongous.Identity
   learned_at: '2026-10-30'
+- id: learned-runtime-citypermits-citizen-5
+  source: learned
+  severity: refactor
+  category: runtime-observed
+  title: 'Windows-only API at runtime: Unix LocalMachine X509Store is limited to the Root and CertificateAuthority stores.'
+  why: ''
+  fix: See the verification log; fix and re-run `containerizer verify`.
+  when:
+    name: ^CityPermits\.Citizen$
+  learned_from: city-permits/CityPermits.Citizen
+  learned_at: '2026-10-30'
+- id: learned-runtime-lucerne-lending-loantape-6
+  source: learned
+  severity: config
+  category: runtime-observed
+  title: SQLite database needs a persistent volume (single replica)
+  why: The embedded SQLite database file is not in a writable, persistent folder.
+  fix: See the verification log; fix and re-run `containerizer verify`.
+  when:
+    name: ^Lucerne\.Lending\.LoanTape$
+  learned_from: consumer-loans/Lucerne.Lending.LoanTape
+  learned_at: '2026-10-30'
