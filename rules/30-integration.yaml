@@ -7,6 +7,7 @@ rules:
       any:
         - config: '<authentication\s+mode="Windows"|windowsAuthentication\s+enabled="true"|"windowsAuthentication"\s*:\s*true'
         - code: 'WindowsPrincipal\b|User\.IsInRole\("[A-Z]+\\\\'
+          unguarded: true
     severity: refactor
     category: identity
     effort: 2
@@ -71,7 +72,14 @@ rules:
     applies_to: [dotnet]
     when:
       any:
-        - code: '\bPrincipalContext\(|\bDirectoryEntry\(|\bDirectorySearcher\(|UserPrincipal\.|GroupPrincipal\.'
+        # type names are case-sensitive and must be the ADSI types: `new DirectoryEntry(...)` with an
+        # ADSI path, or AD types in a file that imports System.DirectoryServices (a ClaimsPrincipal
+        # variable `userPrincipal.` or an own method `DirectoryEntry(string path)` is not AD)
+        - code: '(?-i:\bnew\s+DirectoryEntry\(\s*@?"(LDAP|WinNT|IIS|GC)://)'
+        - all:
+            - code: '(?-i:\bnew\s+(PrincipalContext|DirectoryEntry|DirectorySearcher)\(|(?<![\w.])(UserPrincipal|GroupPrincipal|ComputerPrincipal)\.\w|\bSystem\.DirectoryServices\.(AccountManagement\.)?(PrincipalContext|DirectoryEntry|DirectorySearcher|UserPrincipal)\b)'
+            - code: '(?-i:\bSystem\.DirectoryServices\b(?!\.Protocols))'
+          same_file: true
         - package: System\.DirectoryServices(\.AccountManagement)?
         - reference: System\.DirectoryServices(\.AccountManagement)?
     severity: refactor
@@ -159,7 +167,11 @@ rules:
   - id: cert-store
     applies_to: [dotnet]
     when:
-      code: 'new\s+X509Store\(|StoreLocation\.LocalMachine|StoreName\.My|FindBySubjectName|FindByThumbprint'
+      any:
+        - code: 'new\s+X509Store\(|StoreLocation\.LocalMachine|StoreName\.My|FindBySubjectName|FindByThumbprint'
+        # configuration that points the app at the store (IdentityServer "Key": {"Type": "Store", ...},
+        # Kestrel certificate {"Store": "My", "Location": "LocalMachine"}, WCF storeLocation=...)
+        - config: '"StoreLocation"\s*:\s*"(LocalMachine|CurrentUser)"|"Location"\s*:\s*"(LocalMachine|CurrentUser)"|\bstoreLocation\s*=\s*"(LocalMachine|CurrentUser)"'
     severity: config
     category: secrets
     effort: 0.5
@@ -191,6 +203,25 @@ rules:
     title: SQL Server database
     why: Stays external (managed SQL / existing server); reachable from the cluster over TCP 1433.
     fix: Pass the connection string as a Secret (ConnectionStrings__Name env var).
+
+  - id: conn-string-compiled-in
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test'}
+        - code: '\.Use(SqlServer|AzureSql|Npgsql|MySql|MySQL|Oracle|Sqlite|Cosmos)\s*\(\s*(\w+\.)*(Constants?|Consts)\.\w+\s*[,)]|new\s+(Sql|Npgsql|MySql|Oracle|SqlCe)Connection\(\s*(\w+\.)*(Constants?|Consts)\.\w+\s*\)'
+    severity: refactor
+    category: data
+    effort: 0.25
+    windows_container: true
+    title: Database connection string compiled into the code
+    why: >-
+      The database connection string comes from a constant in a Constants class, so it is fixed
+      at build time: it cannot be supplied per environment through configuration, an environment
+      variable or a Kubernetes Secret.
+    fix: >-
+      Read it with Configuration.GetConnectionString("Name") (or options) and supply
+      ConnectionStrings__Name from a Secret.
 
   - id: sql-integrated-security
     when:

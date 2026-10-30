@@ -11,7 +11,7 @@ rules:
         - package: 'Microsoft\.NET\.Test\.Sdk|xunit|xunit\.v3(\.[\w.\-]+)?|nunit|MSTest\.TestFramework|MSTest|NUnit3TestAdapter|TUnit(\.\w+)?'
         - sdk: '^MSTest\.Sdk'
         - property: {IsTestProject: "true"}
-        - name: '[.\-](Tests?|UnitTests|IntegrationTests|FunctionalTests|Specs)$'
+        - name: '[.\-](Tests?|UnitTests|IntegrationTests|FunctionalTests|E2ETests|EndToEndTests|AcceptanceTests|Specs)$'
 
   - id: role-tool
     phase: role
@@ -20,7 +20,9 @@ rules:
     when:
       any:
         - name: '[.\-](LabStubs|LabTools|Lab|Simulators?|TestTools|Seed(er)?|DevTools|Benchmarks?|Fuzz(ing)?)$'
-        - file: 'tools/*'
+        # a project that lives in a repository tools/ folder (tools/X/X.csproj, src/Tools/X/X.csproj);
+        # a Tools/ subfolder *inside* a project (Areas/Mcp/Tools, admin/settings/tools) says nothing
+        - path: '(^|/)tools/[^/]+/'
         - package: 'BenchmarkDotNet|SharpFuzz'
         - kind: installer
         # .NET Aspire AppHost: a local orchestrator for the services, not a service itself
@@ -32,6 +34,23 @@ rules:
         - all:
             - name: '[.\-](Setup|Installer)$'
             - output_type: 'Exe|WinExe'
+            - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
+        # packaged as a `dotnet tool` (installed on developer/CI machines with `dotnet tool install`)
+        - property: {PackAsTool: "true"}
+        # MSBuild task libraries run inside the build, never in production
+        - all:
+            - package: 'Microsoft\.Build\.Utilities\.Core|Microsoft\.Build\.Framework|Microsoft\.Build\.Tasks\.Core'
+            - not: {output_type: 'Exe|WinExe'}
+            - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
+        # source/client code generators (NSwag/NJsonSchema code generation) run at development time
+        - all:
+            - package: '(NSwag|NJsonSchema)\.CodeGeneration(\.\w+)*'
+            - output_type: 'Exe'
+            - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
+        # version-control hook executables (svn/hg/git hooks) are invoked by the VCS server per commit
+        - all:
+            - name: '[.\-]\w*(?<!web)Hooks?$'
+            - output_type: 'Exe'
             - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
 
   - id: role-biztalk
@@ -124,10 +143,17 @@ rules:
     role: desktop
     priority: 81
     when:
-      any:
-        - property: {IsWebBootstrapper: ".*"}
-        - property: {PublishUrl: ".*"}
-        - file: "*.application"
+      # <PublishUrl>publish\</PublishUrl>, <IsWebBootstrapper>, <Install> are Visual Studio
+      # boilerplate in every old-style project (libraries and console apps too); only an
+      # application with real ClickOnce manifests/deployment code is a ClickOnce client.
+      all:
+        - output_type: 'WinExe|Exe'
+        - any:
+            - file: "*.application"
+            - property: {GenerateManifests: "true"}
+            - property: {SignManifests: "true"}
+            - property: {IsWebBootstrapper: "true"}
+            - code: '\bApplicationDeployment\b'
 
   - id: role-spa-standalone
     phase: role
@@ -236,6 +262,23 @@ rules:
             - package: Microsoft\.AspNetCore(\.App|\.All)?
             - output_type: Exe
             - code: 'UseStartup<|WebHost\.CreateDefaultBuilder|ConfigureWebHostDefaults'
+
+  # ASP.NET Core host that only serves health probes while hosted services/jobs do the work
+  # (Sdk.Web is used for the Kestrel health endpoint): a background worker, not a web app.
+  - id: role-worker-health-only-web
+    phase: role
+    role: worker
+    priority: 61
+    when:
+      all:
+        - output_type: Exe
+        - any:
+            - sdk: Microsoft\.NET\.Sdk\.Web$
+            - framework_ref: Microsoft\.AspNetCore\.App
+        - code: '\b(UseHealthChecks|MapHealthChecks)\s*\('
+        - code: '\bAddHostedService\s*<|\bAdd(Cron)?Jobs?\s*<|:\s*BackgroundService\b|\bIHostedService\b|\bAddQuartz\b|\bAddHangfireServer\b'
+        - not:
+            code: '\b(MapControllers|MapControllerRoute|MapDefaultControllerRoute|MapGet|MapPost|MapPut|MapPatch|MapDelete|MapMethods|MapGroup|MapRazorPages|MapRazorComponents|MapBlazorHub|MapHub|MapGrpcService|MapFallback\w*|MapReverseProxy|MapGraphQL|MapOpenApi|UseMvc\w*|UseStaticFiles|UseSwagger\w*|UseOcelot|AddControllers\w*|AddMvc|AddRazorPages|AddRazorComponents|AddServerSideBlazor|AddGrpc|AddSignalR)\b|:\s*(Controller|ControllerBase)\b|\[ApiController\]'
 
   - id: role-web-systemweb
     phase: role

@@ -48,7 +48,8 @@ rules:
   - id: pinvoke-gui
     applies_to: [dotnet]
     when:
-      code: 'DllImport\(\s*"(user32|gdi32|comctl32|uxtheme|dwmapi|shell32|winspool\.drv|wtsapi32)(\.dll)?"'
+      code: 'DllImport\(\s*"(user32|gdi32|gdiplus|comctl32|comdlg32|uxtheme|dwmapi|shell32|winspool\.drv|wtsapi32)(\.dll)?"'
+      unguarded: true
     severity: blocker
     category: native
     effort: 0
@@ -61,6 +62,7 @@ rules:
     applies_to: [dotnet]
     when:
       code: 'DllImport\(\s*"(advapi32|authz|secur32|netapi32|crypt32|ncrypt|tbs|mpr|activeds|wldap32|userenv|credui)(\.dll)?"'
+      unguarded: true
     severity: rewrite
     category: native
     effort: 3
@@ -72,7 +74,8 @@ rules:
   - id: pinvoke-kernel32
     applies_to: [dotnet]
     when:
-      code: 'DllImport\(\s*"(kernel32|kernelbase|ntdll|ole32|oleaut32|psapi|iphlpapi|ws2_32|version|dbghelp|dbgeng|winmm|setupapi|wininet|winhttp|shlwapi|rpcrt4|dnsapi)(\.dll)?"|DllImport\(\s*Kernel32\b'
+      code: 'DllImport\(\s*"(kernel32|kernelbase|ntdll|ole32|oleaut32|combase|psapi|iphlpapi|ws2_32|version|dbghelp|dbgeng|winmm|setupapi|wininet|winhttp|shlwapi|rpcrt4|dnsapi|wintrust|msvcrt|(api|ext)-ms-win-[\w\-]+)(\.dll)?"|DllImport\(\s*Kernel32\b'
+      unguarded: true
     severity: refactor
     category: native
     effort: 1
@@ -86,7 +89,8 @@ rules:
     confidence: 0.8
     when:
       all:
-        - code: 'DllImport\(\s*(?!"?(kernel32|kernelbase|user32|gdi32|advapi32|ole32|oleaut32|ntdll|crypt32|authz|netapi32|wtsapi32|secur32|shell32|comctl32|uxtheme|dwmapi|winspool|psapi|iphlpapi|ws2_32|mpr|version|userenv|ncrypt|tbs|activeds|wldap32|credui|dbghelp|dbgeng|winmm|setupapi|wininet|winhttp|shlwapi|rpcrt4|dnsapi|libc|libSystem|__Internal|e_sqlite3|sqlite3)(\.dll|\.so[.\d]*)?"?\s*[,)])("[^"]+"|[A-Za-z_][\w.]*)'
+        - code: 'DllImport\(\s*(?!"?(kernel32|kernelbase|user32|gdi32|gdiplus|advapi32|ole32|oleaut32|combase|ntdll|crypt32|authz|netapi32|wtsapi32|secur32|shell32|comctl32|comdlg32|uxtheme|dwmapi|winspool|psapi|iphlpapi|ws2_32|mpr|version|userenv|ncrypt|tbs|activeds|wldap32|credui|dbghelp|dbgeng|winmm|setupapi|wininet|winhttp|shlwapi|rpcrt4|dnsapi|wintrust|msvcrt|(api|ext)-ms-win-[\w\-]+|libc|libdl|libm|librt|libpthread|libSystem(\.B)?|libobjc|IOKit|CoreFoundation|Security|__Internal|e_sqlite3|sqlite3)(\.dll|\.so[.\d]*|\.dylib)?"?\s*[,)])(?!"/(usr|lib|System|Library)/)("[^"]+"|[A-Za-z_][\w.]*)'
+          unguarded: true
     severity: blocker
     category: native
     effort: 0
@@ -208,7 +212,8 @@ rules:
   - id: process-start-exe
     applies_to: [dotnet]
     when:
-      code: 'Process\.Start\([^)]*\.(exe|cmd|bat)|FileName\s*=\s*[^;]*\.(exe|cmd|bat)"|"(cmd|powershell|pwsh)(\.exe)?"'
+      code: 'Process\.Start\([^)]*\.(exe|cmd|bat)|FileName\s*=\s*[^;]*\.(exe|cmd|bat)"|"(cmd|powershell|pwsh)\.exe"|(?-i:(FileName\s*=\s*|ProcessStartInfo\(\s*|Process\.Start\(\s*)"(cmd|powershell|pwsh)"|"(cmd|powershell|pwsh)"\s*,\s*[$@]*"\s*[/-](c|k|C|K|Command|NoProfile|ExecutionPolicy)\b)'
+      unguarded: true
     severity: refactor
     category: os
     effort: 1
@@ -300,10 +305,12 @@ rules:
   - id: clickonce-offline
     applies_to: [dotnet]
     when:
-      any:
-        - property: {PublishUrl: ".*"}
-        - file: "*.application"
-        - code: '\bApplicationDeployment\b'
+      all:
+        - output_type: 'WinExe|Exe'
+        - any:
+            - property: {PublishUrl: ".*"}
+            - file: "*.application"
+            - code: '\bApplicationDeployment\b'
     severity: info
     category: ui
     effort: 0
@@ -406,7 +413,17 @@ rules:
     when:
       all:
         - not: {role: desktop}
-        - code: '^\s*using\s+System\.Windows\.(Forms|Controls|Media|Documents|Xps|Markup)(\.\w+)*\s*;|new\s+(FixedDocument|XpsDocument|RenderTargetBitmap|PrintDialog|Form)\b'
+        - any:
+            - code: '^\s*(global\s+)?using\s+System\.Windows\.(Forms|Controls|Media|Documents|Xps|Markup)(\.\w+)*\s*;'
+            # bare type names are ambiguous (a web app's own Form model, Avalonia's RenderTargetBitmap):
+            # they count only in a project that references the Windows Desktop assemblies
+            - all:
+                - code: 'new\s+(FixedDocument|XpsDocument|RenderTargetBitmap|PrintDialog|Form)\b'
+                - any:
+                    - reference: System\.Windows\.Forms|PresentationFramework|PresentationCore|ReachFramework
+                    - property: {UseWPF: "true"}
+                    - property: {UseWindowsForms: "true"}
+                    - framework_ref: Microsoft\.WindowsDesktop\.App(\.\w+)?
     severity: blocker
     category: ui
     effort: 0
