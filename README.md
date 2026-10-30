@@ -43,6 +43,11 @@ python -m containerizer verify ../containerization-challenge/scenarios/parts-cat
 # ask Claude about the components the rules are unsure of
 python -m containerizer assess ../containerization-challenge/scenarios/document-control --ai --model claude-sonnet-5-5
 
+# security gate: lint the manifests, build + scan the images (Trivy and Grype), run them hardened,
+# fail on fixable CRITICAL CVEs (--no-build: scan only the base images)
+python -m containerizer gate ../containerization-challenge/scenarios/parts-catalog --out out/
+python -m containerizer images --update        # pick patched base image tags -> rules/images.lock.yaml
+
 # measure against the hand-made labels
 python -m containerizer bench
 python -m containerizer bench --technique hybrid --model claude-haiku-5-5
@@ -167,6 +172,59 @@ Techniques used to avoid application changes:
 - old netstandard1.x packages that break a linux-x64 restore (NU1605) get a portable publish;
 - corporate TLS-inspecting proxies: an optional `ca` build secret is honoured.
 
+## Security gate
+
+Everything here is data in [`rules/60-security.yaml`](rules/60-security.yaml).
+
+**Hardened manifests.** Every generated pod gets the baseline: runs as the image's own non-root UID
+(`runAsUser`/`runAsGroup`/`fsGroup`: 1654 for .NET, 101 for nginx), read-only root filesystem, all
+capabilities dropped, no privilege escalation, seccomp `RuntimeDefault`, no service account token, no
+service links, CPU/memory/ephemeral-storage requests and limits, and a `sizeLimit` on every `emptyDir`.
+`namespace.yaml` enforces Pod Security `restricted` for the whole app.
+
+**Exceptions only when the app needs them**, decided by rule conditions and recorded on the pod as
+`containerizer.io/exception.<id>` annotations with the reason:
+
+| Exception | When | What changes |
+| --- | --- | --- |
+| `nginx-writable-dirs` | single-page app | `/tmp` and `/var/cache/nginx` writable |
+| `kerberos-keytab` | Negotiate (Windows) authentication | keytab from a Secret at `/etc/krb5/keytab`, credential cache in `/tmp` |
+| `native-rendering-memory` | PDF/image libraries (DinkToPdf, QuestPDF, ImageSharp, ...) in the component or a library it references | 1 GiB memory limit, writable font cache |
+| `file-uploads` | `IFormFile` / `MultipartReader` | 1 GiB `/tmp`, 2 GiB ephemeral storage |
+| `icmp-ping` | `System.Net.NetworkInformation.Ping` | `net.ipv4.ping_group_range` sysctl (no `NET_RAW`) |
+| `kubernetes-api-client` | KubernetesClient and similar | service account token mounted, `sa-token` check waived |
+| `privileged-port` | plan port below 1024 | `NET_BIND_SERVICE` |
+
+**Lint.** `gate` checks the manifests against Pod Security `restricted` (host namespaces, privileged,
+capabilities, volume types, host ports, privilege escalation, non-root, seccomp, sysctls) plus read-only
+root FS, resources, secret literals (in env, `ENV` and Secrets), the service account token, `emptyDir`
+limits, image tags and NetworkPolicies, and the Dockerfiles for a non-root final stage, tagged base
+images, `ADD <url>`/`curl | sh` and base image end of support. Errors fail the gate. A pod annotation
+`containerizer.io/waives: "check,check"` relaxes named checks for hand-made exceptions.
+
+The tool is meant to be run once or a few times per repository, so `gate` favours accuracy over
+speed: by default it builds every image, scans it with every available scanner and merges the
+results, and starts it with the docker equivalent of its pod spec (user, read-only root, dropped
+capabilities, sysctls, `emptyDir` mounts) to prove the exceptions are enough; read-only or permission
+errors in the log fail the gate. A lock older than 14 days is refreshed first.
+
+**Vulnerability scan.** `gate` scans the final base image of every component and the built image; findings missing from the base are attributed to the application's
+own packages (upgrade them) rather than the base (bump it). It fails on vulnerabilities at or above
+`scan.fail_on` (default `CRITICAL`, `--fail-on HIGH` to tighten) that have a fix; accepted risks go in
+`scan.allowlist` with a reason and an expiry date. Trivy is used if installed, then Grype, then either
+one as a container (`aquasec/trivy`, `anchore/grype`); `scan.default_scanner: all` uses all of them. When even the newest base tag still ships a
+vulnerable OS package with a fix, the gate upgrades just that package in the final stage (`apk upgrade`
+/ `apt-get --only-upgrade`; chiseled images have no package manager and need a newer tag). Results go
+to `SECURITY.md` and `security.json` next to the generated files.
+
+**Patched base images.** `images --update` lists the registry tags of every line in `images.yaml`,
+scans the newest patch tags and writes the first one that passes the policy to
+`rules/images.lock.yaml` with its digest; the generator then uses the exact tag (and
+`--pin-digests` the locked digest). The bump policy is per image: patch releases of the same line by
+default, newer stable lines for nginx, and the successor line for toolchains past end of support (node,
+golang). .NET majors are never moved automatically. `images` alone shows each line and its end of
+support. `CONTAINERIZER_IMAGES_LOCK=0` ignores the lock; the gate warns when it is older than 14 days.
+
 ## CI/CD gate
 
 `check` compares the current tree with a base branch (or a saved baseline) and fails when a change makes
@@ -243,8 +301,8 @@ results and the model comparison). The labels used for scoring are in
 ## Layout
 
 ```
-containerizer/   scan, rules engine, assess, reach, confidence, facts, generate, verify, ai, report, bench
-rules/           curated rules (roles, facts, findings, plan, failures, images, packages)
+containerizer/   scan, rules engine, assess, reach, confidence, facts, generate, harden, imagescan, verify, ai, report, bench
+rules/           curated rules (roles, facts, findings, plan, failures, security, images + images.lock, packages)
 rules/learned/   rules written by the learning loop (reviewable, safe to delete)
 bench/           labels and results
 action.yml       GitHub Action; ci/azure/ has the Azure DevOps template

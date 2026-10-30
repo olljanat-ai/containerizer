@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -15,15 +16,34 @@ from pathlib import Path
 import yaml
 
 from .assess import AppAssessment, Component
+from .harden import harden_manifests, namespace_manifest
 from .rules import RULES_DIR, Context, Rule, load_rules, run_rule
 
 CONTAINER_PORT = 8080
 SAFE_NAME = re.compile(r"[^a-z0-9-]+")
 
 
+IMAGES_LOCK = RULES_DIR / "images.lock.yaml"
+
+
+def images_lock() -> dict:
+    """Patched base image tags chosen by `containerizer images --update` (CONTAINERIZER_IMAGES_LOCK=0 ignores it)."""
+    if os.environ.get("CONTAINERIZER_IMAGES_LOCK", "1") == "0" or not IMAGES_LOCK.exists():
+        return {}
+    return (yaml.safe_load(IMAGES_LOCK.read_text()) or {}).get("images") or {}
+
+
 @lru_cache(maxsize=1)
 def images() -> dict:
-    return yaml.safe_load((RULES_DIR / "images.yaml").read_text())
+    lock = images_lock()
+
+    def sub(v):
+        if isinstance(v, dict):
+            return {k: sub(x) for k, x in v.items()}
+        if isinstance(v, str) and v in lock:
+            return lock[v]["tag"]
+        return v
+    return sub(yaml.safe_load((RULES_DIR / "images.yaml").read_text()))
 
 
 _DIGESTS: dict[str, str | None] = {}
@@ -32,6 +52,9 @@ _DIGESTS: dict[str, str | None] = {}
 def resolve_digest(ref: str) -> str | None:
     """Registry digest of an image tag (multi-arch index digest), via docker buildx."""
     import subprocess
+    locked = {e["tag"]: e.get("digest") for e in images_lock().values()}
+    if ref not in _DIGESTS and locked.get(ref):
+        _DIGESTS[ref] = locked[ref]
     if ref not in _DIGESTS:
         try:
             p = subprocess.run(["docker", "buildx", "imagetools", "inspect", ref, "--format", "{{json .Manifest.Digest}}"],
@@ -423,6 +446,8 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
                  "metadata": {"name": f"{name}-ingress", "labels": labels},
                  "spec": {"podSelector": {"matchLabels": labels}, "policyTypes": ["Ingress"],
                           "ingress": [{"ports": [{"port": plan["port"]}]}] if plan.get("port") else []}})
+    # security baseline + the exceptions this component needs (rules/60-security.yaml)
+    plan["hardening_exceptions"] = harden_manifests(docs, a.repo, c, plan, name)
     return docs
 
 
@@ -467,11 +492,11 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
                 df = pin_digests(df)
             (cdir / "Dockerfile").write_text(df)
             (cdir / "Dockerfile.dockerignore").write_text(DOCKERIGNORE)
-            (cdir / "plan.json").write_text(json.dumps(plan, indent=2))
             image = f"{registry}/{k8s_name(a.name)}/{k8s_name(c.name)}:latest"
             docs = k8s_manifests(a, c, plan, image)
             all_k8s += docs
             (cdir / "k8s.yaml").write_text(_yaml_docs(docs))
+            (cdir / "plan.json").write_text(json.dumps(plan, indent=2))
             written += [cdir / "Dockerfile", cdir / "Dockerfile.dockerignore", cdir / "k8s.yaml", cdir / "plan.json"]
         elif c.tier == "server" and c.project.is_netfx and c.windows_container_ok and c.verdict != "blocker":
             cdir.mkdir(parents=True, exist_ok=True)
@@ -479,12 +504,13 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
             (cdir / "Dockerfile.windows.dockerignore").write_text(DOCKERIGNORE)
             written += [cdir / "Dockerfile.windows"]
     if all_k8s:
+        (out / "namespace.yaml").write_text(_yaml_docs([namespace_manifest(k8s_name(a.name))]))
         (out / "kustomization.yaml").write_text(yaml.safe_dump(
             {"apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization",
              "namespace": k8s_name(a.name),
-             "resources": sorted(f"{d.name}/k8s.yaml" for d in out.iterdir() if (d / "k8s.yaml").exists())},
+             "resources": ["namespace.yaml"] + sorted(f"{d.name}/k8s.yaml" for d in out.iterdir() if (d / "k8s.yaml").exists())},
             sort_keys=False))
-        written.append(out / "kustomization.yaml")
+        written += [out / "namespace.yaml", out / "kustomization.yaml"]
     (out / "MIGRATION.md").write_text(migration_markdown(a))
     written.append(out / "MIGRATION.md")
     return written
