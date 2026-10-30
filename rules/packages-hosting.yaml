@@ -1,0 +1,10 @@
+# Hosting / cloud SDK packages that run fine on Linux. Their hosting coupling
+# (if any) is reported by rules/35-hosting.yaml findings, not by confidence.
+linux_ok:
+  - 'Microsoft\.ApplicationInsights(\..*)?'
+  - 'Microsoft\.Orleans(\..*)?'
+  - 'Akka(\..*)?'
+  - 'Dapr\..*'
+  - 'Steeltoe\..*'
+  - 'Consul(\..*)?|Winton\.Extensions\.Configuration\.Consul'
+  - 'Amazon\.Lambda\..*'
