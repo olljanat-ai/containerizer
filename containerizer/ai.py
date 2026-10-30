@@ -131,6 +131,8 @@ def _ask_cli(prompt: str, schema: dict, model: str, _retry: bool = False):
         raise RuntimeError(f"claude CLI failed: {p.stderr[-500:] or p.stdout[-500:]}")
     text = env.get("result", "")
     data = _first_json(text)
+    if data is not None and any(k not in data for k in schema.get("required", [])):
+        data = None                      # the CLI cannot enforce the schema; check required keys
     if data is None:
         if not _retry:
             return _ask_cli(prompt + "\n\nYour previous answer was not valid JSON. Answer with the JSON object only.",
