@@ -174,6 +174,15 @@ def cmd_ai(args) -> int:
     return 0
 
 
+def _run_cmd(args) -> int:
+    from .verify import DockerUnavailable
+    try:
+        return args.fn(args)
+    except DockerUnavailable as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="containerizer", description="Rule-based containerization assessment and generator")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -274,7 +283,7 @@ def main(argv=None) -> int:
     s.set_defaults(fn=cmd_bench)
 
     args = ap.parse_args(argv)
-    return args.fn(args)
+    return _run_cmd(args)
 
 
 if __name__ == "__main__":
