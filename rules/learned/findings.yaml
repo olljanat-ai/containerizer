@@ -24,12 +24,23 @@ rules:
   learned_at: '2026-10-30'
 - id: learned-runtime-staffonboarding-provisioning-3
   source: learned
-  severity: blocker
+  severity: refactor
   category: runtime-observed
-  title: Native library httpapi.dll not available on Linux
-  why: The app loads a native library (httpapi.dll) that is not available in the Linux image.
-  fix: See the verification log; fix and re-run `containerizer verify`.
+  title: Windows system library httpapi.dll called at runtime
+  why: The app hosts on HTTP.sys (httpapi.dll), the Windows kernel HTTP driver; it does not exist on Linux.
+  fix: Host on Kestrel and use the Negotiate handler for Windows authentication; re-run `containerizer verify`.
   when:
     name: ^StaffOnboarding\.Provisioning$
   learned_from: staff-onboarding/StaffOnboarding.Provisioning
+  learned_at: '2026-10-30'
+- id: learned-runtime-humongous-identity-4
+  source: learned
+  severity: config
+  category: runtime-observed
+  title: SQLite database needs a persistent volume (single replica)
+  why: The embedded SQLite database file is not in a writable, persistent folder.
+  fix: See the verification log; fix and re-run `containerizer verify`.
+  when:
+    name: ^Humongous\.Identity$
+  learned_from: broker-quotes/Humongous.Identity
   learned_at: '2026-10-30'

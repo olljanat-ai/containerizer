@@ -88,6 +88,15 @@ failures:
     fix: {add_packages: [libkrb5-3, libgssapi-krb5-2, gss-ntlmssp]}
     learn: {when: {code: 'Negotiate'}}
 
+  - id: run-windows-system-dll
+    stage: run
+    match: "(DllNotFoundException|Unable to load shared library|Unable to load DLL) '?(?P<lib>(httpapi|advapi32|kernel32|user32|netapi32|secur32|crypt32|ole32|activeds|wtsapi32)(\\.dll)?)'?"
+    outcome: platform
+    diagnosis: >-
+      The app calls a Windows system library ({lib}) that has a cross-platform .NET replacement
+      (HTTP.sys -> Kestrel, Win32 security/registry -> managed APIs).
+    finding: {severity: refactor, title: 'Windows system library {lib} called at runtime'}
+
   - id: run-native-missing
     stage: run
     match: "(DllNotFoundException|Unable to load shared library|Unable to load DLL) '?(?P<lib>[\\w.\\-]+)'?"
