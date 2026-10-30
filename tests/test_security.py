@@ -238,3 +238,114 @@ def test_hardening_error_patterns_need_whole_words():
     assert not imagescan.HARDENING_ERRORS.search("at ServiceProvider.CreateServiceAccessor(ServiceIdentifier id)")
     assert imagescan.HARDENING_ERRORS.search("Error: EACCES: permission denied, open '/app/x'")
     assert imagescan.HARDENING_ERRORS.search("System.IO.IOException: Read-only file system : '/app/logs'")
+
+
+# --------------------------------------------------------------------------- NSA/CISA hardening
+
+def _kind(docs, kind):
+    return [d for d in docs if d.get("kind") == kind]
+
+
+def test_network_policy_default_deny_with_inferred_egress(tmp_path):
+    web_app(tmp_path, packages='<PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.0" />')
+    write(tmp_path, "src/Web/appsettings.json", '{"Nav": {"Url": "http://nav01.corp.local:7048/odata"},'
+                                                ' "Self": "http://localhost:5241"}')
+    docs, plan = _manifests(tmp_path)
+    [np] = _kind(docs, "NetworkPolicy")
+    spec = np["spec"]
+    assert spec["policyTypes"] == ["Ingress", "Egress"]
+    dns, siblings, external = spec["egress"]
+    assert {"port": 53, "protocol": "UDP"} in dns["ports"]
+    ports = {p["port"] for p in external["ports"]}
+    assert {1433, 7048} <= ports and 5241 not in ports            # localhost is not a dependency
+    assert "169.254.169.254/32" in external["to"][0]["ipBlock"]["except"]
+    assert spec["ingress"][0]["ports"] == [{"port": 8080, "protocol": "TCP"}]
+    assert {e["id"] for e in plan["egress"]} == {"sql-server", "configured-ports"}
+    assert [v for v in lint_manifests(docs) if v.check in ("network-policy", "egress-policy")] == []
+
+
+def test_spa_gets_no_external_egress(tmp_path):
+    web_app(tmp_path, packages='<PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.0" />')
+    docs, _ = _manifests(tmp_path, role="spa")
+    [np] = _kind(docs, "NetworkPolicy")
+    assert len(np["spec"]["egress"]) == 2                      # DNS and sibling components only
+
+
+def test_own_service_account_apparmor_and_external_secrets(tmp_path):
+    web_app(tmp_path)
+    write(tmp_path, "src/Web/appsettings.json", '{"ConnectionStrings": {"Main": "Server=db;Database=x"}}')
+    docs, _ = _manifests(tmp_path)
+    [sa] = _kind(docs, "ServiceAccount")
+    assert sa["automountServiceAccountToken"] is False
+    pod = _pods(docs)[0]["spec"]
+    assert pod["serviceAccountName"] == sa["metadata"]["name"]
+    assert pod["containers"][0]["securityContext"]["appArmorProfile"] == {"type": "RuntimeDefault"}
+    assert not _kind(docs, "Secret") and not _kind(docs, "Role")
+    [es] = _kind(docs, "ExternalSecret")
+    assert es["spec"]["secretStoreRef"]["kind"] == "ClusterSecretStore"
+    assert es["spec"]["data"][0]["secretKey"] == "ConnectionStrings__Main"
+    checks = {v.check for v in lint_manifests(docs)}
+    assert not checks & {"service-account", "apparmor", "plain-secret", "secret-literals"}
+
+
+def test_kubernetes_api_client_gets_token_and_empty_role(tmp_path):
+    web_app(tmp_path, packages='<PackageReference Include="KubernetesClient" Version="13.0.0" />')
+    docs, _ = _manifests(tmp_path)
+    [sa] = _kind(docs, "ServiceAccount")
+    [role] = _kind(docs, "Role")
+    [rb] = _kind(docs, "RoleBinding")
+    assert sa["automountServiceAccountToken"] is True and role["rules"] == []
+    assert rb["subjects"][0]["name"] == sa["metadata"]["name"]
+
+
+def test_keytab_secret_becomes_external_secret(tmp_path):
+    web_app(tmp_path, packages='<PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="8.0.0" />')
+    docs, _ = _manifests(tmp_path)
+    es = {d["metadata"]["name"]: d for d in _kind(docs, "ExternalSecret")}
+    keytab = next(v for k, v in es.items() if k.endswith("-keytab"))
+    assert keytab["spec"]["data"][0]["secretKey"] == "service.keytab"
+    [np] = _kind(docs, "NetworkPolicy")
+    assert any(p["port"] == 88 and p["protocol"] == "UDP" for r in np["spec"]["egress"] for p in r.get("ports", []))
+
+
+def test_namespace_policies_and_report(tmp_path):
+    from containerizer.harden import hardening_markdown, namespace_policies
+    web_app(tmp_path)
+    docs, _ = _manifests(tmp_path)
+    ns = namespace_policies(docs)
+    deny, lr, quota = ns
+    assert deny["spec"] == {"podSelector": {}, "policyTypes": ["Ingress", "Egress"]}
+    assert "cpu" not in lr["spec"]["limits"][0]["default"]          # no CPU throttling by default
+    hard = quota["spec"]["hard"]
+    assert hard["limits.memory"] == "2048Mi"                        # floor (2 replicas x 512Mi x 1.5 = 1536Mi)
+    md = hardening_markdown("app", {"web": docs})
+    assert "| Containers run as a non-root user | applied |" in md
+    assert "| API server audit logging | cluster action |" in md
+    assert "Images are deployed by digest | not applied" in md      # :latest in the test manifests
+
+
+def test_generate_writes_security_files(tmp_path):
+    web_app(tmp_path / "app")
+    out = tmp_path / "out"
+    generate.generate_app(assess(tmp_path / "app"), out)
+    import yaml as _y
+    kz = _y.safe_load((out / "kustomization.yaml").read_text())
+    assert "security.yaml" in kz["resources"]
+    assert (out / "HARDENING.md").exists() and (out / "cluster" / "audit-policy.yaml").exists()
+
+
+def test_gitops_hardening_keeps_platform_policies_out_of_sync(tmp_path):
+    web_app(tmp_path / "app")
+    out = tmp_path / "out"
+    generate.generate_app(assess(tmp_path / "app"), out)
+    import yaml as _y
+    tenant = [d for d in _y.safe_load_all((out / "gitops/flux/tenant.yaml").read_text()) if d]
+    assert {"ResourceQuota", "LimitRange", "NetworkPolicy"} <= {d["kind"] for d in tenant}
+    sync = [d for d in _y.safe_load_all((out / "gitops/flux/git/sync.yaml").read_text()) if d]
+    ks = next(d for d in sync if d["kind"] == "Kustomization")
+    deleted = {p["target"]["kind"] for p in ks["spec"]["patches"] if "$patch: delete" in p["patch"]}
+    assert {"ResourceQuota", "LimitRange", "NetworkPolicy"} <= deleted and ks["spec"]["force"] is False
+    proj = _y.safe_load((out / "gitops/argocd/project.yaml").read_text())
+    assert proj["spec"]["clusterResourceWhitelist"] == [{"group": "", "kind": "Namespace"}]
+    assert {"group": "", "kind": "Secret"} not in proj["spec"]["namespaceResourceWhitelist"]
+    assert proj["spec"]["sourceNamespaces"] == []

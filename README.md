@@ -244,6 +244,38 @@ vulnerable OS package with a fix, the gate upgrades just that package in the fin
 / `apt-get --only-upgrade`; chiseled images have no package manager and need a newer tag). Results go
 to `SECURITY.md` and `security.json` next to the generated files.
 
+### NSA/CISA hardening
+
+The manifests follow the [NSA/CISA Kubernetes Hardening Guide](https://media.defense.gov/2022/Aug/29/2003066362/-1/-1/0/CTR_KUBERNETES_HARDENING_GUIDANCE_1.2_20220829.PDF)
+and CIS Kubernetes Benchmark section 5 as far as an application repository can. Every generated app
+gets a `HARDENING.md` that lists each control as applied, applied with an exception, not applicable,
+or an action for the cluster operator, with the guide section and CIS number.
+
+- **Pods**: on top of the baseline above, AppArmor `RuntimeDefault` and a ServiceAccount per component
+  (token not mounted). A component that needs the API gets an empty `Role` + `RoleBinding` to fill in
+  with least privilege.
+- **Network**: `security.yaml` holds a default-deny policy for the namespace. Each component has its own
+  policy: ingress only on its port, egress to DNS, sibling components, and the external ports the
+  code needs. Those ports are inferred from packages, code and configuration, for example SQL Server
+  1433, SMTP, LDAP/Kerberos, message brokers, or a port in a connection string. Cloud metadata
+  endpoints are always blocked, and single-page apps get no external egress. The inferred list is
+  recorded in a `containerizer.io/egress` annotation and in the report.
+- **Namespace**: a `LimitRange` (defaults without a CPU limit, so pods are not throttled) and a
+  `ResourceQuota` sized from the workloads with 50 % headroom.
+- **Secrets**: Secrets become [External Secrets](https://external-secrets.io) `ExternalSecret`s
+  from a `ClusterSecretStore` named `app-secrets` (keys `<app>/<component>`), so no secret value is in
+  Git. Set `secrets.mode` to `sealed-secrets` or `plain` to change this.
+- **Cluster kit** (`cluster/`): an API server audit policy (metadata only for Secrets, full requests and
+  responses for RBAC, every write and every exec) and a Kyverno `verifyImages` policy that only admits images signed with your cosign
+  key. These are for the cluster operator to apply. The report also lists the cluster controls the
+  generator can't set, such as etcd encryption, kubelet authentication and control plane TLS.
+- **GitOps**: Argo CD's `AppProject` allows only the `Namespace` cluster kind, no plain Secrets and no
+  other source namespaces, and warns on orphaned resources. Applications sync with
+  `ServerSideApply`, `PruneLast` and `FailOnSharedResource`. On Flux, the quota, LimitRange and
+  default-deny policy move into the platform-owned `flux/tenant.yaml`. The synced Kustomization
+  deletes them from its set with `$patch: delete` and doesn't `force`, so the app repository can't
+  loosen them under the tenant's impersonated ServiceAccount.
+
 **Patched base images.** `images --update` lists the registry tags of every line in `images.yaml`,
 scans the newest patch tags and writes the first one that passes the policy to
 `rules/images.lock.yaml` with its digest; the generator then uses the exact tag (and

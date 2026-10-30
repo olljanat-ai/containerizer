@@ -99,6 +99,121 @@ hardening:
         capabilities_add: [NET_BIND_SERVICE]
       why: The container listens on a port below 1024.
 
+  # Container AppArmor profile (NSA/CISA: "Hardening container environments").
+  # Needs AppArmor-enabled nodes (Ubuntu/Debian/COS). On SELinux nodes
+  # (RHEL, OpenShift) set this to none; SELinux confines pods there.
+  apparmor: RuntimeDefault
+  # Every component gets its own ServiceAccount with no token automount and
+  # no RBAC bindings (NSA/CISA "Authentication and authorization", CIS 5.1.5/5.1.6).
+  service_account: true
+
+# Network separation (NSA/CISA "Network policies", CIS 5.3.2): the namespace
+# denies all ingress and egress by default; each component may only
+#   - receive traffic on its own service port,
+#   - talk to the other components of the same application,
+#   - resolve names through cluster DNS,
+#   - reach the external dependencies below, found from its packages and
+#     configuration, never the cloud metadata endpoints.
+# Review the inferred egress before production: unknown dependencies are not
+# opened, so a missing entry shows up as a connection timeout.
+network:
+  default_deny: true
+  dns:
+    namespace: kube-system
+    pod_labels: {k8s-app: kube-dns}
+    ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+  # external destinations (ipBlock) never reachable from application pods
+  blocked_cidrs: [169.254.169.254/32, 169.254.170.2/32, fd00:ec2::254/128, 100.100.100.200/32]
+  # roles that serve static files only (their configured URLs are called by the browser, not the pod)
+  no_egress_roles: [spa]
+  # configured URLs pointing here are not dependencies
+  local_hosts: '^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*|\+)$'
+  # who may call a component's service port: any namespace (ingress controllers live elsewhere)
+  ingress_from: [{namespaceSelector: {}}]
+  egress:
+    - id: sql-server
+      when: {package: 'Microsoft\.Data\.SqlClient|System\.Data\.SqlClient|Microsoft\.EntityFrameworkCore\.SqlServer.*|Hangfire\.SqlServer|dbup-sqlserver|Microsoft\.SqlServer\..*'}
+      ports: [1433]
+    - id: postgres
+      when: {package: 'Npgsql.*|dbup-postgresql'}
+      ports: [5432]
+    - id: mysql
+      when: {package: 'MySql\..*|MySqlConnector|Pomelo\.EntityFrameworkCore\.MySql'}
+      ports: [3306]
+    - id: oracle
+      when: {package: 'Oracle\.(ManagedDataAccess|EntityFrameworkCore).*'}
+      ports: [1521]
+    - id: mongodb
+      when: {package: 'MongoDB\.Driver.*'}
+      ports: [27017]
+    - id: redis
+      when: {package: 'StackExchange\.Redis|Microsoft\.Extensions\.Caching\.StackExchangeRedis|.*SignalR\.StackExchangeRedis'}
+      ports: [6379, 6380]
+    - id: rabbitmq
+      when: {package: 'RabbitMQ\.Client|MassTransit\.RabbitMQ|EasyNetQ.*'}
+      ports: [5671, 5672]
+    - id: azure-service-bus
+      when: {package: 'Microsoft\.Azure\.ServiceBus|Azure\.Messaging\.ServiceBus|MassTransit\.Azure\.ServiceBus.*'}
+      ports: [5671, 443]
+    - id: kafka
+      when: {package: 'Confluent\.Kafka|MassTransit\.Kafka'}
+      ports: [9092, 9093]
+    - id: smtp
+      when:
+        any:
+          - package: 'MailKit|MimeKit|FluentEmail\.Smtp'
+          - code: '\bSmtpClient\b'
+      ports: [25, 465, 587]
+    - id: active-directory
+      when:
+        any:
+          - package: 'Microsoft\.AspNetCore\.Authentication\.Negotiate|System\.DirectoryServices.*|Novell\.Directory\.Ldap.*'
+      ports: [{port: 88, protocol: TCP}, {port: 88, protocol: UDP}, 389, 636, 464, 3268, 3269]
+    - id: sftp
+      when: {package: 'SSH\.NET|Renci\.SshNet.*|WinSCP'}
+      ports: [22]
+    - id: seq
+      when: {package: 'Serilog\.Sinks\.Seq'}
+      ports: [5341, 443]
+    - id: http-apis
+      when:
+        any:
+          - package: 'Microsoft\.Extensions\.Http.*|RestSharp|Refit.*|Flurl.*|Grpc\.Net\.Client.*|Grpc\.Net\.ClientFactory|System\.ServiceModel\.Http|Polly.*|Microsoft\.AspNetCore\.SignalR\.Client|Ocelot.*|Yarp\..*'
+          - code: '\bnew\s+HttpClient\s*\(|\bIHttpClientFactory\b|\bWebClient\b|\bHttpWebRequest\b'
+      ports: [443, 80]
+    # explicit ports in configuration: "Server=db,14330", "Port=5433", "http://api:8081"
+    - id: configured-ports
+      captures_port: true
+      when:
+        any:
+          - config: '(?i)(?:Server|Data Source|Address|Host)\s*=\s*[\w.\-]+,(?P<port>\d{2,5})'
+          - config: '(?i)\bPort\s*=\s*(?P<port>\d{2,5})'
+          - config: '(?i)\b(?:https?|amqps?|redis|mongodb|ldaps?|smtp)://[\w.\-@]+:(?P<port>\d{2,5})'
+
+# Namespace resource policies (NSA/CISA "Resource policies"): a LimitRange
+# gives defaults to anything added by hand, a ResourceQuota caps the namespace
+# at the sum of the generated limits times `headroom`.
+namespace_policy:
+  limit_range:
+    # no default CPU limit: limits throttle .NET thread pools; requests are enough for scheduling
+    default: {memory: 512Mi, ephemeral-storage: 1Gi}
+    defaultRequest: {cpu: 100m, memory: 256Mi, ephemeral-storage: 64Mi}
+    max: {memory: 4Gi, ephemeral-storage: 4Gi}
+  quota_headroom: 1.5          # room for a rolling update
+  quota_extra: {pods: 10, services: 10, persistentvolumeclaims: 10, secrets: 20, configmaps: 20}
+  quota_floor: {requests.cpu: '1', requests.memory: 1Gi, limits.memory: 2Gi}
+
+# Secrets (NSA/CISA "Secrets", CIS 5.4.2): values never live in Git.
+#   external-secrets  ExternalSecret objects (External Secrets Operator) pull the values
+#                     from a vault through the ClusterSecretStore `store`
+#   sealed-secrets    a Secret template per component under secrets/ to encrypt with kubeseal
+#   plain             an empty Secret skeleton (applying it from Git overwrites real values)
+secrets:
+  mode: external-secrets
+  store: {kind: ClusterSecretStore, name: app-secrets}
+  refresh_interval: 1h
+  key_prefix: '{app}/{component}'     # remote key in the vault
+
 # Lint checks over the generated (or hand-edited) manifests and Dockerfiles.
 # severity: error fails the gate, warning and info are reported only.
 # A pod template annotation `containerizer.io/waives: "id,id"` relaxes checks;
@@ -120,7 +235,12 @@ lint:
     sa-token:            {severity: warning, title: Service account token not mounted}
     empty-dir-limit:     {severity: warning, title: emptyDir volumes have a sizeLimit}
     image-tag:           {severity: warning, title: Workload image has an explicit, non-latest tag or digest}
+    image-digest:        {severity: info,    title: Workload image is pinned to a digest}
     network-policy:      {severity: warning, title: Every workload is selected by a NetworkPolicy}
+    egress-policy:       {severity: warning, title: Egress is restricted by a NetworkPolicy}
+    service-account:     {severity: warning, title: Workload uses its own ServiceAccount, not default}
+    apparmor:            {severity: info,    title: AppArmor profile set}
+    plain-secret:        {severity: warning, title: Secrets come from an external store, not Git}
     df-user:             {severity: error,   title: Final image stage runs as a non-root user}
     df-base-tag:         {severity: error,   title: Base images have an explicit, non-latest tag}
     df-base-digest:      {severity: info,    title: Base images are pinned to a digest}
@@ -219,3 +339,78 @@ images:
     - {match: '(^|/)golang:1\.25\b', eol: 2026-08-12, next: '1.26'}
     - {match: 'eclipse-temurin:21\b', eol: 2029-12-31}
   warn_days_before_eol: 60
+
+# Controls reported in HARDENING.md. Sources:
+#   NSA/CISA Kubernetes Hardening Guide v1.2 (August 2022), by section name
+#   CIS Kubernetes Benchmark, section 5 (policies) and the operator sections it cites
+# scope: workload (proved by lint checks on the generated manifests),
+#        namespace (generated namespace-level objects), gitops, pipeline,
+#        cluster (needs action by the cluster operator; cluster/ has a starter kit)
+# checks: lint checks that must pass. exception: when one of these hardening
+# exceptions is in use, the control is "applied with exception".
+controls:
+  - {id: non-root, nsa: 'Pod security > Non-root containers and "rootless" container engines', cis: '5.2.7', scope: workload,
+     checks: [run-as-non-root, df-user], title: Containers run as a non-root user}
+  - {id: immutable-fs, nsa: 'Pod security > Immutable container file systems', cis: '5.7.3', scope: workload,
+     checks: [readonly-rootfs, empty-dir-limit], title: 'Read-only root file system; writable paths are size-limited emptyDirs'}
+  - {id: secure-images, nsa: 'Pod security > Building secure container images', scope: pipeline,
+     checks: [df-base-tag, df-remote-add, df-base-eol], gate: true,
+     title: 'Minimal, patched base images; images scanned for vulnerabilities (containerizer gate)'}
+  - {id: image-signing, nsa: 'Pod security > Building secure container images', cis: '5.5.1', scope: cluster,
+     title: Only signed images run,
+     action: 'Sign each pushed image (cosign sign --yes <registry>/<image>@<digest>) and enforce it with cluster/verify-images.yaml (Kyverno) or your admission controller.'}
+  - {id: digest-pinning, nsa: 'Pod security > Building secure container images', scope: pipeline, checks: [image-digest],
+     title: Images are deployed by digest,
+     action: 'In the deploy pipeline: kustomize edit set image <image>=<registry>/<image>@sha256:<digest>; base images: generate --pin-digests.'}
+  - {id: pod-security, nsa: 'Pod security > Pod security enforcement', cis: '5.2.1-5.2.13', scope: namespace,
+     checks: [host-namespaces, privileged, capabilities, volume-types, host-ports, privilege-escalation, sysctls, seccomp],
+     title: 'Pod Security Admission "restricted" enforced on the namespace; workloads comply'}
+  - {id: sa-tokens, nsa: 'Pod security > Protecting Pod service account tokens', cis: '5.1.5, 5.1.6', scope: workload,
+     checks: [sa-token, service-account], exception: [kubernetes-api-client],
+     title: 'Own ServiceAccount per component; no token mounted'}
+  - {id: container-env, nsa: 'Pod security > Hardening container environments', cis: '5.7.2', scope: workload,
+     checks: [seccomp, apparmor], title: 'Seccomp and AppArmor RuntimeDefault; all capabilities dropped',
+     action: 'AppArmor needs AppArmor-enabled nodes; on SELinux nodes set hardening.apparmor: none. Consider a sandboxed runtime class (gVisor, Kata) for untrusted workloads.'}
+  - {id: namespaces, nsa: 'Network separation and hardening > Namespaces', cis: '5.7.1, 5.7.4', scope: namespace,
+     title: 'One namespace per application; nothing in default'}
+  - {id: network-policies, nsa: 'Network separation and hardening > Network policies', cis: '5.3.2', scope: namespace,
+     checks: [network-policy, egress-policy],
+     title: 'Default-deny ingress and egress; only DNS, sibling components and inferred dependencies allowed',
+     action: 'Needs a CNI that enforces NetworkPolicy (CIS 5.3.1): Calico, Cilium, Antrea, ... Review the inferred egress ports below.'}
+  - {id: resource-policies, nsa: 'Network separation and hardening > Resource policies', scope: namespace, checks: [resources],
+     title: 'Requests and limits on every container; LimitRange and ResourceQuota on the namespace'}
+  - {id: control-plane, nsa: 'Network separation and hardening > Control plane hardening, Etcd, Kubeconfig files', cis: '1.x, 2.x, 4.x', scope: cluster,
+     title: 'Control plane, etcd, kubelet and kubeconfig hardening',
+     action: 'Cluster operator: API server not public, TLS everywhere, anonymous auth off, etcd encrypted and reachable only from the API server, kubeconfigs protected. Check CIS 1-4 with kube-bench.'}
+  - {id: node-segmentation, nsa: 'Network separation and hardening > Worker node segmentation', scope: cluster,
+     title: Worker nodes segmented from the rest of the network,
+     action: 'Cluster operator: nodes in their own subnet; firewall the kubelet (10250) and the NodePort range.'}
+  - {id: encryption, nsa: 'Network separation and hardening > Encryption', scope: cluster,
+     title: Traffic encrypted in transit,
+     action: 'Terminate TLS at the ingress; use a service mesh (mTLS) or TLS to databases (Encrypt=True in SQL Server connection strings).'}
+  - {id: secrets, nsa: 'Network separation and hardening > Secrets', cis: '5.4.2', scope: namespace, checks: [plain-secret, secret-literals],
+     title: 'Secret values come from an external store (External Secrets / Sealed Secrets), never from Git or images',
+     action: 'Enable encryption at rest for Secrets (EncryptionConfiguration with a KMS provider).'}
+  - {id: secrets-as-files, nsa: 'Network separation and hardening > Secrets', cis: '5.4.1', scope: deviation,
+     title: Secrets mounted as files rather than environment variables,
+     action: 'Not applied: the applications read their settings from configuration/environment variables, and reading them from files needs a code change (e.g. AddKeyPerFile). Keys and certificates are already mounted as files under /secrets.'}
+  - {id: cloud-metadata, nsa: 'Network separation and hardening > Protecting sensitive cloud infrastructure', scope: namespace, checks: [egress-policy],
+     title: Cloud instance metadata endpoints are not reachable from application pods}
+  - {id: authn, nsa: 'Authentication and authorization', cis: '3.1, 5.1.1-5.1.4', scope: cluster,
+     title: Strong user authentication and least-privilege RBAC for people,
+     action: 'Cluster operator: OIDC for users, no static tokens or client certificates for people, cluster-admin only for break-glass.'}
+  - {id: rbac-apps, nsa: 'Authentication and authorization', cis: '5.1.3, 5.1.5', scope: workload, checks: [service-account],
+     exception: [kubernetes-api-client], title: Applications get no RBAC permissions}
+  - {id: audit-logging, nsa: 'Audit logging and threat detection > Kubernetes native audit logging configuration', cis: '3.2.1, 3.2.2', scope: cluster,
+     title: API server audit logging,
+     action: 'Cluster operator: enable audit logging with cluster/audit-policy.yaml (metadata for everything, request bodies for RBAC changes, never Secret payloads) and ship it to a SIEM.'}
+  - {id: container-logging, nsa: 'Audit logging and threat detection > Worker node and container logging', scope: workload,
+     title: 'Applications log to stdout for central collection (file-only log sinks are re-pointed to the console)'}
+  - {id: threat-detection, nsa: 'Audit logging and threat detection > Threat detection, Alerting', scope: cluster,
+     title: Runtime threat detection and alerting,
+     action: 'Cluster operator: run a runtime detector (Falco, Tetragon) and alert on shells in containers, writes to read-only paths and denied egress.'}
+  - {id: upgrades, nsa: 'Upgrading and application security practices', scope: pipeline, gate: true,
+     title: 'Base images kept patched and supported (images --update, weekly bump workflow, end-of-support warnings)',
+     action: 'Keep Kubernetes itself on a supported version; re-run containerizer gate for every release.'}
+  - {id: gitops, nsa: 'Authentication and authorization; Upgrading and application security practices', scope: gitops,
+     title: 'GitOps delivery is least privilege: Argo CD AppProject limited to the app namespace and generated kinds; Flux reconciles as a namespace-scoped ServiceAccount, decrypts with SOPS and verifies OCI artifacts with cosign'}
