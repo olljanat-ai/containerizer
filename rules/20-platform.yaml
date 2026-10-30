@@ -60,7 +60,7 @@ rules:
   - id: pinvoke-security
     applies_to: [dotnet]
     when:
-      code: 'DllImport\(\s*"(advapi32|authz|secur32|netapi32|crypt32|ncrypt|tbs|mpr|activeds|wldap32|userenv)(\.dll)?"'
+      code: 'DllImport\(\s*"(advapi32|authz|secur32|netapi32|crypt32|ncrypt|tbs|mpr|activeds|wldap32|userenv|credui)(\.dll)?"'
     severity: rewrite
     category: native
     effort: 3
@@ -72,13 +72,13 @@ rules:
   - id: pinvoke-kernel32
     applies_to: [dotnet]
     when:
-      code: 'DllImport\(\s*"(kernel32|ntdll|ole32|oleaut32|psapi|iphlpapi|ws2_32|version)(\.dll)?"|DllImport\(\s*Kernel32\b'
+      code: 'DllImport\(\s*"(kernel32|kernelbase|ntdll|ole32|oleaut32|psapi|iphlpapi|ws2_32|version|dbghelp|dbgeng|winmm|setupapi|wininet|winhttp|shlwapi|rpcrt4|dnsapi)(\.dll)?"|DllImport\(\s*Kernel32\b'
     severity: refactor
     category: native
     effort: 1
     windows_container: true
-    title: Win32 kernel/OLE native calls
-    why: P/Invoke into kernel32/ole32 does not resolve on Linux.
+    title: Win32 kernel/OLE/system DLL native calls
+    why: P/Invoke into kernel32/ole32 and other Windows system DLLs (dbghelp, winmm, wininet, shlwapi, ...) does not resolve on Linux.
     fix: Replace with the managed .NET API (most kernel32 calls have one) or guard with OperatingSystem.IsWindows().
 
   - id: pinvoke-vendor
@@ -86,7 +86,7 @@ rules:
     confidence: 0.8
     when:
       all:
-        - code: 'DllImport\(\s*(?!"?(kernel32|user32|gdi32|advapi32|ole32|oleaut32|ntdll|crypt32|authz|netapi32|wtsapi32|secur32|shell32|comctl32|winspool|psapi|iphlpapi|ws2_32|mpr|version|userenv|ncrypt|tbs|libc|libSystem|__Internal|e_sqlite3|sqlite3)(\.dll|\.so[.\d]*)?"?\s*[,)])("[^"]+"|[A-Za-z_][\w.]*)'
+        - code: 'DllImport\(\s*(?!"?(kernel32|kernelbase|user32|gdi32|advapi32|ole32|oleaut32|ntdll|crypt32|authz|netapi32|wtsapi32|secur32|shell32|comctl32|uxtheme|dwmapi|winspool|psapi|iphlpapi|ws2_32|mpr|version|userenv|ncrypt|tbs|activeds|wldap32|credui|dbghelp|dbgeng|winmm|setupapi|wininet|winhttp|shlwapi|rpcrt4|dnsapi|libc|libSystem|__Internal|e_sqlite3|sqlite3)(\.dll|\.so[.\d]*)?"?\s*[,)])("[^"]+"|[A-Za-z_][\w.]*)'
     severity: blocker
     category: native
     effort: 0
@@ -169,10 +169,7 @@ rules:
   - id: wmi
     applies_to: [dotnet]
     when:
-      any:
-        - code: 'ManagementObjectSearcher|ManagementClass\(|System\.Management\b'
-        - reference: System\.Management
-        - package: System\.Management
+      code: '\b(ManagementObject(Searcher|Collection)?|ManagementClass|ManagementScope|ManagementEventWatcher|ManagementPath)\b'
     severity: refactor
     category: os
     effort: 1
@@ -180,6 +177,21 @@ rules:
     title: WMI
     why: WMI exists only on Windows.
     fix: Replace with Kubernetes/OS-neutral sources (environment, /proc, cluster APIs).
+
+  - id: wmi-reference
+    applies_to: [dotnet]
+    when:
+      all:
+        - any:
+            - reference: System\.Management
+            - package: System\.Management
+        - not: {code: '\b(ManagementObject(Searcher|Collection)?|ManagementClass|ManagementScope|ManagementEventWatcher|ManagementPath)\b'}
+    severity: info
+    category: os
+    effort: 0
+    title: References System.Management (WMI) without using it
+    why: The project references the WMI assembly (often a template leftover) but no WMI types are used in its code.
+    fix: Remove the reference.
 
   - id: windows-service-control
     applies_to: [dotnet]
@@ -262,7 +274,9 @@ rules:
   - id: efs-ntfs
     applies_to: [dotnet]
     when:
-      code: 'File\.Encrypt\(|FileSystemAclExtensions|SetAccessControl\(|GetAccessControl\(|FileSecurity\b|DirectorySecurity\b|\bEFS\b'
+      # calls, not declarations (an interface member returning DirectorySecurity is not ACL use)
+      code: 'File\.Encrypt\(|FileSystemAclExtensions|\.(Set|Get)AccessControl\(|\bnew\s+(File|Directory)Security\(|\bFileSystemAccessRule\b|\bEFS\b'
+      unguarded: true
     severity: refactor
     category: storage
     effort: 1.5
@@ -315,8 +329,7 @@ rules:
     applies_to: [dotnet]
     when:
       any:
-        - code: '^\s*using\s+Windows\.(Media|Graphics|Storage|Devices|Security\.Credentials|ApplicationModel|UI|Data|Globalization|Foundation|System|Networking)(\.\w+)*\s*;'
-        - tfm: 'net\d+\.\d+-windows10\..*'
+        - code: &winrt_using '^\s*using\s+Windows\.(Media|Graphics|Storage|Devices|Security\.Credentials|ApplicationModel|UI|Data|Globalization|Foundation|System|Networking)(\.\w+)*\s*;'
     severity: blocker
     category: os
     effort: 0
@@ -325,10 +338,27 @@ rules:
     why: Uses Windows Runtime APIs (e.g. Windows.Media.Ocr) that only exist on Windows client/desktop editions.
     fix: Replace with a cross-platform library or service (e.g. Tesseract or a cloud OCR API for Windows.Media.Ocr).
 
+  - id: winrt-tfm
+    applies_to: [dotnet]
+    when:
+      all:
+        - tfm: 'net\d+\.\d+-windows10\..*'
+        - not: {code: *winrt_using}
+    severity: refactor
+    category: os
+    effort: 1
+    windows_container: true
+    title: Targets the Windows 10 SDK TFM (WinRT projections)
+    why: >-
+      The project targets net*-windows10.*, which only builds/runs on Windows, but no WinRT
+      namespaces are used in its code, so retargeting to the plain TFM is usually enough.
+    fix: Retarget to net8.0 (or multi-target) and replace the few Windows-only calls, if any.
+
   - id: vendor-sdk-install-dir
     applies_to: [dotnet]
     confidence: 0.7
     when:
+      same_file: true
       all:
         - code: 'Assembly\.Load(From|File)\(|LoadFromAssemblyPath\(|AssemblyLoadContext\.Default\.Resolving|AppDomain\.CurrentDomain\.AssemblyResolve'
         - code: 'Install(Dir|Path|Folder|Location)\b|Program Files|ProgramFiles'
@@ -346,7 +376,7 @@ rules:
   - id: supported-os-windows
     applies_to: [dotnet]
     when:
-      code: '\[(assembly:\s*)?SupportedOSPlatform\(\s*"windows'
+      code: &supported_os_type '\[\s*assembly:\s*SupportedOSPlatform\(\s*"windows|\[\s*SupportedOSPlatform\(\s*"windows[^"]*"\s*\)\s*\]\s*(\[[^\]]*\]\s*)*((public|internal|private|protected|sealed|static|partial|abstract|unsafe|readonly)\s+)*(class|struct|interface|record|enum)\b'
     severity: refactor
     category: os
     effort: 1
@@ -354,6 +384,22 @@ rules:
     title: Code marked Windows-only by its authors
     why: Types or assemblies are annotated [SupportedOSPlatform("windows")]; the authors know this code does not run elsewhere.
     fix: Review each annotated type; replace or isolate it.
+
+  - id: supported-os-windows-member
+    applies_to: [dotnet]
+    when:
+      all:
+        - code: '\[\s*SupportedOSPlatform\(\s*"windows'
+        - not: {code: *supported_os_type}
+    severity: info
+    category: os
+    effort: 0
+    title: Windows-only members behind platform checks
+    why: >-
+      Individual methods are annotated [SupportedOSPlatform("windows")]. The platform analyzer
+      (CA1416) makes callers guard them with OperatingSystem.IsWindows(), so the app already has
+      a non-Windows code path; Windows-only calls inside these members are not counted.
+    fix: None; check that the non-Windows path does what you need in the container.
 
   - id: winforms-in-library
     applies_to: [dotnet]
@@ -379,6 +425,7 @@ rules:
             - property: {UseWPF: "true"}
             - property: {UseWindowsForms: "true"}
         - not: {code: '^\s*using\s+System\.Windows\.(Forms|Controls|Media|Documents|Xps|Markup)(\.\w+)*\s*;'}
+        - code: &wf_qualified '\bSystem\.Windows\.(Forms|Controls|Media|Documents|Xps|Markup)\.[A-Z]\w*|\bMessageBox\.Show\('
     severity: refactor
     category: ui
     effort: 1
@@ -386,3 +433,21 @@ rules:
     title: References Windows Desktop assemblies
     why: The project references WinForms/WPF assemblies (often only for a report viewer or a helper type); they are not available on Linux.
     fix: Remove the reference and replace the few types used from it.
+
+  - id: winforms-reference-unused
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: desktop}
+        - any:
+            - reference: System\.Windows\.Forms|PresentationFramework|PresentationCore|ReachFramework|System\.Printing
+            - property: {UseWPF: "true"}
+            - property: {UseWindowsForms: "true"}
+        - not: {code: '^\s*using\s+System\.Windows\.(Forms|Controls|Media|Documents|Xps|Markup)(\.\w+)*\s*;'}
+        - not: {code: *wf_qualified}
+    severity: info
+    category: ui
+    effort: 0
+    title: References Windows Desktop assemblies without using them
+    why: The project references WinForms/WPF assemblies (often a template leftover) but its code uses none of their types.
+    fix: Remove the reference.

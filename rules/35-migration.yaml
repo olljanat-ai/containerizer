@@ -313,6 +313,7 @@ rules:
       any:
         - code: '(?-i:\b(FederatedAuthentication|SessionAuthenticationModule|WSFederationAuthenticationModule|ClaimsAuthenticationManager|ClaimsAuthorizationManager|ClaimsPrincipalPermission)\b)'
         - config: '<system\.identityModel(\.services)?\b'
+        - reference: System\.IdentityModel\.Services|Microsoft\.IdentityModel
     severity: refactor
     category: identity
     effort: 2
