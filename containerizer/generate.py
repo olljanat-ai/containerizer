@@ -141,6 +141,12 @@ def _repoint_config(plan: dict, facts: dict) -> None:
         plan["env"]["__".join(parts)] = f"{folder}/{segs[-1]}" if is_file else folder
         if folder not in plan["add_writable"]:
             plan["add_writable"].append(folder)
+    for item in facts.get("nlog_folder_settings") or []:
+        # trailing slash: NLog targets append "\\file.log", which on Linux then stays inside the folder
+        key = item.replace(".", "__")
+        plan["env"][key] = plan["env"].get(key, "/app/logs").rstrip("/") + "/"
+        if plan["env"][key] == "/app/logs/" and "logs" not in plan["add_writable"]:
+            plan["add_writable"].append("logs")
 
 
 def apply_plan_rules(plan: dict, repo, c: Component, rules: list[Rule]) -> dict:

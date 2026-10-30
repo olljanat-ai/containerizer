@@ -159,8 +159,16 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
     uid = images()["dotnet"]["app_uid"] if c.role != "spa" else 101
     cmd = ["docker", "run", "-d", "--name", name, "--read-only", "--cap-drop", "ALL",
            "--security-opt", "no-new-privileges", "--memory", "768m", "--add-host", "sql01.corp.local:203.0.113.1"]
+    # writable folders are host directories during verification, so log files the app writes
+    # (apps that log only to files print nothing to stdout) can be read for the diagnosis
+    import shutil
+    fsroot = workdir / "fs"
+    shutil.rmtree(fsroot, ignore_errors=True)
     for w in sorted({_writable_abs(w) for w in plan["add_writable"]}):
-        cmd += ["--tmpfs", f"{w}:rw,exec,uid={uid},gid={uid},mode=1777"]
+        host = fsroot / k8s_name(w)
+        host.mkdir(parents=True, exist_ok=True)
+        host.chmod(0o777)
+        cmd += ["-v", f"{host.resolve()}:{w}:rw"]
     if c.role == "spa":
         cmd += ["--tmpfs", "/tmp:rw,mode=1777", "--tmpfs", "/var/cache/nginx:rw,mode=1777", "--tmpfs", "/var/run:rw,mode=1777"]
     hp = None
@@ -176,9 +184,15 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
             cmd += ["-v", f"{dev.resolve()}:/app/appsettings.Development.json:ro"]
             # dev settings often point at ../../App_Data etc.; give those folders a scratch tmpfs
             from .facts import _flatten, _load_json
-            for _, val in _flatten(_load_json(dev)):
+            for key, val in _flatten(_load_json(dev)):
+                if isinstance(val, str) and key.startswith("ConnectionStrings:"):
+                    # SQLite resolves relative paths differently from .NET; make them absolute
+                    m = re.search(r"(Data Source|Filename)\s*=\s*((?:\.\.?[\\/])[^;]+)", val, re.I)
+                    if m:
+                        absp = os.path.normpath(os.path.join("/app", m.group(2).replace("\\", "/")))
+                        cmd += ["-e", key.replace(":", "__") + "=" + val.replace(m.group(2), absp)]
                 if isinstance(val, str):
-                    for m in re.finditer(r"((?:\.\./)+[\w\-]+)(/[\w\-./]+\.\w{1,5})?", val.replace("\\", "/")):
+                    for m in re.finditer(r"((?:\.\./)+\.?[\w\-]+)(/[\w\-./]+\.\w{1,5})?", val.replace("\\", "/")):
                         target = os.path.normpath(os.path.join("/app", m.group(1)))
                         if any(target in x for x in cmd):
                             continue
@@ -222,6 +236,10 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
     finally:
         _, log = _run(["docker", "logs", name], 30)
         _run(["docker", "rm", "-f", name], 30)
+        for f in sorted(fsroot.rglob("*")) if fsroot.exists() else []:
+            if f.is_file() and re.search(r"(log|txt)$", f.name, re.I) and f.stat().st_size:
+                details.setdefault("log_files", []).append(f.name)
+                log += f"\n--- {f.name} ---\n" + f.read_text(errors="replace")[-20000:]
     (workdir / "run.log").write_text(log)
     return status, log, details
 
@@ -248,7 +266,9 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
                 result["status"] = "ok"
                 break
         tail = "\n".join(log.splitlines()[-200:])
-        d = diagnose(tail if stage == "run" else log, stage, failures)
+        # run logs: exception messages, not the stack frames under them, say what went wrong
+        msgs = "\n".join(l for l in log.splitlines() if not l.lstrip().startswith("at ")) if stage == "run" else log
+        d = diagnose(msgs[-60000:], stage, failures)
         if d is None and ai:
             from .ai import diagnose_failure
             d = diagnose_failure(a, c, plan, stage, tail, model=model)

@@ -96,6 +96,16 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
             facts["listen_url_settings"] = listen
         if secrets:
             facts["secret_settings"] = sorted(secrets)
+    # NLog folders taken from configuration with a Windows default:
+    #   ${configsetting:item=Logging.Folder:default=D\:\\Logs\\App}
+    nlog = next((f for f in p.files if f.name.lower() == "nlog.config" and f.parent == p.dir), None)
+    if nlog:
+        txt = p.text(nlog)
+        items = [m.group(1) for m in re.finditer(r"\$\{configsetting:item=([\w.]+):default=([A-Za-z]\\?:|\\\\)", txt)]
+        if items:
+            facts["nlog_folder_settings"] = sorted(set(items))
+        if re.search(r'xsi:type="(File|Database|EventLog)"', txt) and not re.search(r'xsi:type="(Console|ColoredConsole)"', txt):
+            facts["nlog_no_console"] = True
     # Folders written relative to the content root
     writable = set()
     for f in p.source_files():

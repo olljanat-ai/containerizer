@@ -11,3 +11,25 @@ rules:
     name: ^DocControl\.Packager$
   learned_from: document-control/Litware.DocControl.Packager
   learned_at: '2026-10-30'
+- id: learned-runtime-productreturns-portal-2
+  source: learned
+  severity: refactor
+  category: runtime-observed
+  title: 'Windows-only API at runtime: This operation requires Windows 7 / Windows Server 2008 R2 or later.'
+  why: 'A Windows-only API was called at runtime: This operation requires Windows 7 / Windows Server 2008 R2 or later.'
+  fix: See the verification log; fix and re-run `containerizer verify`.
+  when:
+    name: ^ProductReturns\.Portal$
+  learned_from: product-returns/ProductReturns.Portal
+  learned_at: '2026-10-30'
+- id: learned-runtime-staffonboarding-provisioning-3
+  source: learned
+  severity: blocker
+  category: runtime-observed
+  title: Native library httpapi.dll not available on Linux
+  why: The app loads a native library (httpapi.dll) that is not available in the Linux image.
+  fix: See the verification log; fix and re-run `containerizer verify`.
+  when:
+    name: ^StaffOnboarding\.Provisioning$
+  learned_from: staff-onboarding/StaffOnboarding.Provisioning
+  learned_at: '2026-10-30'

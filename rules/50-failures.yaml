@@ -147,3 +147,10 @@ failures:
     match: "(OptionsValidationException|ArgumentNullException: Value cannot be null.*(Parameter '(connectionString|path|uriString)')|InvalidOperationException: .*(not configured|is missing|must be configured|is required|not found in))"
     outcome: external
     diagnosis: A required setting has no value in the test container (environment-specific configuration).
+
+  - id: run-sqlite-open
+    stage: run
+    match: "SQLite Error 14: 'unable to open database file'|SQLite Error 8: 'attempt to write a readonly database'"
+    outcome: code
+    diagnosis: The embedded SQLite database file is not in a writable, persistent folder.
+    finding: {severity: config, title: SQLite database needs a persistent volume (single replica)}
