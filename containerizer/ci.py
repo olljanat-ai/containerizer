@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .assess import APP_RATINGS, VERDICT_TEXT, AppAssessment, assess
 from .rules import SEV_RANK, load_rules
+from .report import refs_md, refs_of
 
 MARKER = "<!-- containerizer-check -->"
 SNAPSHOT_VERSION = 1
@@ -56,6 +57,7 @@ def _item(component: str, f, prefix: str, verdict: str = "") -> dict:
     loc = [{"file": _join(prefix, e.file), "line": e.line, "snippet": (e.snippet or "")[:200]} for e in f.evidence[:3]]
     return {"key": f"{component}::{r.id}", "component": component, "rule": r.id, "severity": f.severity,
             "category": r.category, "title": r.title, "why": " ".join(r.why.split()), "fix": " ".join(r.fix.split()),
+            "refs": list(getattr(r, "refs", None) or []),
             "via": f.via, "only_commands": list(f.modes), "windows_container": r.windows_container,
             "effort_days": r.effort, "evidence": loc}
 
@@ -155,7 +157,9 @@ def _loc(f: dict, link: str | None = None) -> str:
 def _row(f: dict, link: str | None) -> str:
     sev = f["severity"] if "was" not in f else f"{f['was']} → {f['severity']}"
     note = f" (via {f['via']})" if f["via"] else ""
-    return f"| {sev} | {f['component']} | **{f['title']}**{note}<br>{f['fix']} | {_loc(f, link)} |"
+    why = f"<br>{f['why']}" if f.get("why") else ""
+    refs = f"<br>Learn more: {refs_md(refs_of(f))}" if refs_of(f) else ""
+    return f"| {sev} | {f['component']} | **{f['title']}**{note}{why}<br>**Fix:** {f['fix']}{refs} | {_loc(f, link)} |"
 
 
 def markdown(d: dict, link: str | None = None) -> str:
@@ -220,7 +224,11 @@ def sarif(d: dict) -> dict:
         for f in a["app"]["findings"]:
             rules.setdefault(f["rule"], {
                 "id": f["rule"], "name": f["rule"], "shortDescription": {"text": f["title"]},
-                "fullDescription": {"text": f["why"] or f["title"]}, "help": {"text": f["fix"] or f["title"]},
+                "fullDescription": {"text": f["why"] or f["title"]},
+                "help": {"text": f"{f['why']}\nFix: {f['fix']}".strip() + "".join(f"\n{u}" for u in refs_of(f)),
+                         "markdown": f"{f['why']}\n\n**Fix:** {f['fix']}"
+                         + (f"\n\nLearn more: {refs_md(refs_of(f))}" if refs_of(f) else "")},
+                **({"helpUri": refs_of(f)[0]} if refs_of(f) else {}),
                 "defaultConfiguration": {"level": SARIF_LEVEL[f["severity"]]},
                 "properties": {"tags": ["containerization", f["category"] or "general"]}})
             locs = [{"physicalLocation": {"artifactLocation": {"uri": e["file"]},
@@ -289,7 +297,7 @@ def run_check(args) -> int:
     if summary:
         with open(summary, "a") as fh:
             fh.write(md.replace(MARKER + "\n", ""))
-    out = os.environ.get("GITHUB_OUTPUT") if args.annotations == "github" else None
+    out = os.environ.get("GITHUB_OUTPUT")
     if out:
         with open(out, "a") as fh:
             worst = max((a["app"]["rating"] for a in d["apps"]), default="")
@@ -304,3 +312,89 @@ def run_check(args) -> int:
         for r in a["reasons"]:
             print(f"     - {r}")
     return 1 if d["failed"] else 0
+
+
+# ---------------------------------------------------------------------------
+# one-shot assessment summary (assess + generate + verify in a pipeline)
+
+VERIFY_TEXT = {"ok": "✅ builds and serves requests", "ok-external": "✅ builds and starts; needs its external services",
+               "finding": "⚠️ runs only in smoke mode; runtime finding", "build-failed": "❌ build failed",
+               "run-failed": "❌ container failed at run time", "skipped": "· not built"}
+READY = ("info", "config")
+
+
+def verify_markdown(results: list[dict]) -> str:
+    """Table of build-and-run results, flagging every place where the run contradicts the static verdict."""
+    if not results:
+        return ""
+    L = ["## Build and run verification", "",
+         "| App | Component | Predicted | Result | Notes |", "| --- | --- | --- | --- | --- |"]
+    mismatches = 0
+    for r in results:
+        st = r.get("status", "")
+        pred = r.get("predicted", "")
+        note = ""
+        if st != "skipped" and pred in READY and not st.startswith("ok"):
+            note, mismatches = "**static verdict not confirmed**", mismatches + 1
+        elif st.startswith("ok") and pred not in READY:
+            note = "runs, but the static findings still apply"
+        detail = (r.get("detail") or "").replace("|", "\\|")
+        if detail and st != "skipped":
+            note = (note + "; " if note else "") + f"attempts: {detail}"
+        L.append(f"| {r.get('app', '')} | {r.get('component', '')} | {VERDICT_TEXT.get(pred, pred)} | "
+                 f"{VERIFY_TEXT.get(st, st)} | {note} |")
+    L.append("")
+    if mismatches:
+        L += [f"⚠️ {mismatches} component(s) predicted ready did not run. Treat their rating as unconfirmed "
+              "and check the build log in the report artifact.", ""]
+    return "\n".join(L)
+
+
+def verification_results(report_dir: Path) -> list[dict]:
+    """Build-and-run results of an `analyze` run (in assessment.json), or of `verify --out` files."""
+    aj = report_dir / "assessment.json"
+    if aj.exists():
+        results = [{"app": a["name"], **r} for a in json.loads(aj.read_text()) for r in a.get("verification") or []]
+        if results:
+            return results
+    results = []
+    for f in sorted(report_dir.rglob("*.verify.json")):
+        results += json.loads(f.read_text())
+    return results
+
+
+def unconfirmed(results: list[dict]) -> int:
+    """Components rated ready whose generated container did not build or run."""
+    return sum(1 for r in results if r.get("status") != "skipped" and r.get("predicted") in READY
+               and not str(r.get("status", "")).startswith("ok"))
+
+
+def assessment_summary(report_dir: Path) -> str:
+    """Job summary for a one-shot run: portfolio, per-app details folded, and verification results."""
+    L = []
+    pf = report_dir / "portfolio.md"
+    if pf.exists():
+        L.append(pf.read_text())
+    results = verification_results(report_dir)
+    if results:
+        L.append(verify_markdown(results))
+    for f in sorted(report_dir.glob("*.md")):
+        if f.name == "portfolio.md":
+            continue
+        L += [f"<details><summary>{f.stem}</summary>", "", f.read_text(), "", "</details>", ""]
+    text = "\n".join(L)
+    limit = 900_000           # GitHub job summaries are capped at 1 MiB
+    if len(text.encode()) > limit:
+        text = text.encode()[:limit].decode(errors="ignore") + "\n\n_Truncated: see the report artifact._\n"
+    return text
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) == 3 and sys.argv[1] == "summary":
+        print(assessment_summary(Path(sys.argv[2])))
+    elif len(sys.argv) == 3 and sys.argv[1] == "unconfirmed":
+        print(unconfirmed(verification_results(Path(sys.argv[2]))))
+    else:
+        sys.exit("usage: python -m containerizer.ci summary|unconfirmed <report-dir>")

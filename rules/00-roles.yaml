@@ -8,9 +8,10 @@ rules:
     priority: 100
     when:
       any:
-        - package: Microsoft\.NET\.Test\.Sdk|xunit|nunit|MSTest\.TestFramework|NUnit3TestAdapter
+        - package: 'Microsoft\.NET\.Test\.Sdk|xunit|xunit\.v3(\.[\w.\-]+)?|nunit|MSTest\.TestFramework|MSTest|NUnit3TestAdapter|TUnit(\.\w+)?'
+        - sdk: '^MSTest\.Sdk'
         - property: {IsTestProject: "true"}
-        - name: '[.\-](Tests?|UnitTests|IntegrationTests|Specs)$'
+        - name: '[.\-](Tests?|UnitTests|IntegrationTests|FunctionalTests|Specs)$'
 
   - id: role-tool
     phase: role
@@ -18,8 +19,20 @@ rules:
     priority: 99
     when:
       any:
-        - name: '[.\-](LabStubs|LabTools|Lab|Simulators?|TestTools|Seed(er)?|DevTools)$'
+        - name: '[.\-](LabStubs|LabTools|Lab|Simulators?|TestTools|Seed(er)?|DevTools|Benchmarks?|Fuzz(ing)?)$'
         - file: 'tools/*'
+        - package: 'BenchmarkDotNet|SharpFuzz'
+        - kind: installer
+        # .NET Aspire AppHost: a local orchestrator for the services, not a service itself
+        # (the ServiceDefaults library is a plain library and stays one)
+        - sdk: '^Aspire\.AppHost\.Sdk'
+        - property: {IsAspireHost: "true"}
+        - package: 'Aspire\.Hosting\.AppHost'
+        # setup/installer builder executables (a web app or a library named *.Setup is not one)
+        - all:
+            - name: '[.\-](Setup|Installer)$'
+            - output_type: 'Exe|WinExe'
+            - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
 
   - id: role-biztalk
     phase: role
@@ -63,6 +76,30 @@ rules:
             - file: ["*.wsp", "*.spdata", "Package.package", "*.feature", "Elements.xml"]
             - code: '\bSPFarm\b|\bSPSite\b|\bSPWeb\b|\bSPFeatureReceiver\b|\bSPJobDefinition\b'
 
+  # Windows services: the Visual Studio service template uses OutputType WinExe,
+  # which would otherwise make them desktop apps.
+  - id: role-windows-service
+    phase: role
+    role: worker
+    priority: 85
+    when:
+      all:
+        - output_type: 'WinExe|Exe'
+        - code: '\bServiceBase\.Run\s*\(|:\s*(System\.ServiceProcess\.)?ServiceBase\b|\bHostFactory\.Run\s*\('
+        - not: {property: {UseWPF: "true"}}
+        - not: {property: {UseWindowsForms: "true"}}
+        - not: {code: '\bApplication\.Run\s*\(|:\s*(System\.Windows\.Forms\.)?Form\b|:\s*(System\.Windows\.)?(Window|Application)\b|<Application\b|<Window\b'}
+
+  # .NET MAUI apps are phone/desktop clients, never server components.
+  - id: role-maui
+    phase: role
+    role: desktop
+    priority: 86
+    when:
+      all:
+        - property: {UseMaui: "true"}
+        - output_type: 'Exe|WinExe'
+
   - id: role-desktop
     phase: role
     role: desktop
@@ -77,6 +114,7 @@ rules:
                 - property: {UseWindowsForms: "true"}
                 - reference: System\.Windows\.Forms|PresentationFramework
         - all:
+            - output_type: Exe
             - tfm: 'net\d+\.\d+-windows.*'
             - code: '\bApplication\.Run\(|System\.Windows\.Forms|new\s+\w+Window\(\)'
             - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
@@ -101,6 +139,26 @@ rules:
         - package: '@angular/core|react|react-dom|vue|svelte|@sveltejs/kit|preact|ember-source'
         - not: {property: {HostedBy: ".*"}}
         - not: {package: 'next|nuxt|express|fastify|koa|@nestjs/core|@remix-run/node'}
+
+  # Standalone Blazor WebAssembly: static files (wwwroot after publish) for a web server.
+  - id: role-spa-blazor-wasm
+    phase: role
+    role: spa
+    priority: 70
+    when:
+      all:
+        - sdk: 'Microsoft\.NET\.Sdk\.BlazorWebAssembly'
+        - not: {property: {HostedBy: ".*"}}
+
+  # ... and one referenced by an ASP.NET Core host is served by that host.
+  - id: role-spa-blazor-wasm-hosted
+    phase: role
+    role: spa-assets
+    priority: 71
+    when:
+      all:
+        - sdk: 'Microsoft\.NET\.Sdk\.BlazorWebAssembly'
+        - property: {HostedBy: ".*"}
 
   - id: role-spa-hosted
     phase: role
@@ -168,7 +226,7 @@ rules:
     when:
       any:
         - all:
-            - sdk: Microsoft\.NET\.Sdk\.(Web|BlazorWebAssembly)
+            - sdk: Microsoft\.NET\.Sdk\.Web$
             - output_type: Exe
         - all:
             - framework_ref: Microsoft\.AspNetCore\.App
@@ -184,13 +242,23 @@ rules:
     role: web
     priority: 60
     when:
+      # The web-application type GUID and MVC packages alone are not enough: MVC
+      # areas/plugins (loaded into a host app) and System.Web libraries carry them too.
+      # A deployable System.Web app has an application entry point of its own.
       any:
         - sdk: MSBuild\.SDK\.SystemWeb
-        - type_guid: 349c5851-65df-11da-9384-00065b846f21
+        - file: Global.asax
         - all:
-            - file: ["Global.asax", "*.aspx", "*.asmx", "*.svc", "*.ashx"]
-            - file: ["Web.config"]
-        - package: Microsoft\.AspNet\.(Mvc|WebApi\.WebHost|WebPages)
+            - file: ["*.aspx", "*.asmx", "*.svc", "*.ashx"]
+            - any:
+                - file: ["Web.config"]
+                - type_guid: 349c5851-65df-11da-9384-00065b846f21
+        - all:
+            - type_guid: 349c5851-65df-11da-9384-00065b846f21
+            - package: Microsoft\.Owin\.Host\.SystemWeb
+            - any:
+                - code: '\[\s*assembly\s*:\s*OwinStartup'
+                - config: '<add\s+key="owin:appStartup"'
 
   - id: role-web-selfhost
     phase: role

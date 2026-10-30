@@ -16,7 +16,10 @@ unless noted):
   text: regex             any text file; optional `in: glob`
   readme: regex           repository README (repo scope)
   unguarded: true         (with code) ignore hits right after an OperatingSystem.IsWindows() check
+                          or inside a method/type marked [SupportedOSPlatform("windows")]
   any: [...], all: [...], not: {...}
+  same_file: true         (next to `all`) the code/config/text conditions directly under the
+                          `all` must all match in one and the same file
 
 `code`, `config` and `text` may use named groups; with `set` on a facts rule the
 captured groups become facts (e.g. `(?P<port>\\d+)`).
@@ -51,6 +54,7 @@ class Rule:
     title: str = ""
     why: str = ""
     fix: str = ""
+    refs: list[str] = field(default_factory=list)   # documentation / issue links backing why and fix
     role: str = ""
     priority: int = 0
     set: dict = field(default_factory=dict)
@@ -158,18 +162,53 @@ GUARD_RE = re.compile(r"OperatingSystem\.IsWindows\(\)|IsOSPlatform\(\s*OSPlatfo
                       r"Environment\.OSVersion\.Platform\s*==\s*PlatformID\.Win32NT")
 
 
+SUPPORTED_WIN_RE = re.compile(r'\[\s*SupportedOSPlatform\(\s*"windows[^"]*"\s*\)\s*\]')
+
+
+def _in_windows_only_member(txt: str, pos: int) -> bool:
+    """True when pos is inside (or in the signature of) a method/type marked [SupportedOSPlatform("windows")].
+
+    Cheap brace counting from the attribute; braces inside strings may confuse it, which
+    only ever makes a hit count as unguarded."""
+    if "SupportedOSPlatform" not in txt:
+        return False
+    for m in SUPPORTED_WIN_RE.finditer(txt, 0, pos):
+        end = m.end()
+        brace = txt.find("{", end, pos + 1)
+        semi = txt.find(";", end, brace if brace >= 0 else pos)
+        if semi >= 0:              # expression-bodied member / declaration ends before pos
+            continue
+        if brace < 0:              # still in the signature
+            return True
+        depth = 0
+        for ch in txt[brace:pos]:
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+        else:
+            if depth > 0:
+                return True
+    return False
+
+
 def _guarded(txt: str, pos: int) -> bool:
-    """True when the match sits within a few lines after an OS check for Windows."""
+    """True when the match sits within a few lines after an OS check for Windows, or inside a
+    member the authors marked [SupportedOSPlatform("windows")] (callers must guard it)."""
     start = pos
     for _ in range(6):
         start = txt.rfind("\n", 0, start - 1)
         if start <= 0:
             start = 0
             break
-    return bool(GUARD_RE.search(txt, start, txt.find("\n", pos) if txt.find("\n", pos) > 0 else len(txt)))
+    if GUARD_RE.search(txt, start, txt.find("\n", pos) if txt.find("\n", pos) > 0 else len(txt)):
+        return True
+    return _in_windows_only_member(txt, pos)
 
 
-def _search_files(ctx: Context, pattern: str, files: list[Path], strip: bool, max_hits: int = 3,
+def _search_files(ctx: Context, pattern: str, files: list[Path], strip: bool, max_hits: int | None = 3,
                   skip_guarded: bool = False):
     rx = _rx(pattern)
     hits: list[Evidence] = []
@@ -188,7 +227,7 @@ def _search_files(ctx: Context, pattern: str, files: list[Path], strip: bool, ma
             hits.append(Evidence(ctx.repo.rel(f), _line_of(txt, m.start()), _snip(txt, m)))
             if not caps:
                 caps = {k: v for k, v in m.groupdict().items() if v is not None}
-            if len(hits) >= max_hits:
+            if max_hits is not None and len(hits) >= max_hits:
                 break
     return hits, caps
 
@@ -196,6 +235,38 @@ def _search_files(ctx: Context, pattern: str, files: list[Path], strip: bool, ma
 SOURCE_EXT = {".cs", ".vb", ".fs", ".cshtml", ".vbhtml", ".razor", ".aspx", ".ascx", ".asmx", ".svc",
               ".asax", ".master", ".ashx", ".ts", ".js", ".py", ".java", ".go", ".xaml", ".tsx", ".jsx", ".mjs"}
 CONFIG_EXT = {".config", ".json", ".xml", ".yaml", ".yml", ".ini", ".properties", ".settings", ".env", ".toml"}
+
+
+DOTNET_SOURCE_EXT = {".cs", ".vb", ".fs", ".cshtml", ".vbhtml", ".razor", ".aspx", ".ascx", ".asmx", ".svc",
+                     ".asax", ".master", ".ashx", ".xaml"}
+# third-party bundles (minified JS, editor grammars, vendored client libraries) are not application code
+VENDORED_RE = re.compile(r"\.min\.(js|css)$|(^|/)(wwwroot/lib|monaco[^/]*|node_modules|bower_components)/", re.I)
+_FILES_CACHE: dict = {}
+
+
+def _candidate_files(ctx: Context, key: str, glob) -> list[Path]:
+    """Files a code/config/text condition searches; cached per project, key and glob."""
+    globs = tuple(glob if isinstance(glob, list) else [glob]) if glob else ()
+    owner = ctx.project if ctx.project is not None else ctx.repo
+    ck = (id(owner), key, globs)
+    hit = _FILES_CACHE.get(ck)
+    if hit is not None and hit[0] is owner:
+        return hit[1]
+    files = [f for f in ctx.files() if not VENDORED_RE.search(ctx.repo.rel(f).replace("\\", "/"))]
+    if key == "code":
+        # .NET projects: only .NET source, unless the rule names the files itself
+        ext = DOTNET_SOURCE_EXT if (ctx.project is not None and ctx.project.kind_hint == "dotnet" and not globs) \
+            else SOURCE_EXT
+        files = [f for f in files if f.suffix.lower() in ext]
+    elif key == "config":
+        files = [f for f in files if f.suffix.lower() in CONFIG_EXT and not f.name.lower().endswith(("proj", ".sln"))
+                 and f.name.lower() not in ("package-lock.json", "packages.lock.json")]
+    if globs:
+        files = [f for f in files if any(_glob_match(ctx.repo.rel(f), f.name, g) for g in globs)]
+    if len(_FILES_CACHE) > 20000:
+        _FILES_CACHE.clear()
+    _FILES_CACHE[ck] = (owner, files)
+    return files
 
 
 def evaluate(cond, ctx: Context) -> tuple[bool, list[Evidence], dict]:
@@ -206,7 +277,7 @@ def evaluate(cond, ctx: Context) -> tuple[bool, list[Evidence], dict]:
         cond = {"all": cond}
     ev: list[Evidence] = []
     caps: dict = {}
-    keys = [k for k in cond.keys() if k not in ("in", "max", "unguarded")]
+    keys = [k for k in cond.keys() if k not in ("in", "max", "unguarded", "same_file")]
     if not keys:
         return True, [], {}
     for key in keys:
@@ -230,6 +301,8 @@ def _eval_one(key: str, val, cond: dict, ctx: Context):
                 return True, e, c
         return False, [], {}
     if key == "all":
+        if cond.get("same_file"):
+            return _eval_all_same_file(val, ctx)
         ev, caps = [], {}
         for sub in val:
             ok, e, c = evaluate(sub, ctx)
@@ -245,17 +318,9 @@ def _eval_one(key: str, val, cond: dict, ctx: Context):
         m = _rx(val).search(ctx.repo.readme)
         return (bool(m), [Evidence("README.md", _line_of(ctx.repo.readme, m.start()), _snip(ctx.repo.readme, m))] if m else [], {})
     if key in ("code", "config", "text"):
-        glob = cond.get("in")
-        files = ctx.files()
-        if key == "code":
-            files = [f for f in files if f.suffix.lower() in SOURCE_EXT]
-        elif key == "config":
-            files = [f for f in files if f.suffix.lower() in CONFIG_EXT and not f.name.lower().endswith(("proj", ".sln"))
-                     and f.name.lower() not in ("package-lock.json", "packages.lock.json")]
-        if glob:
-            globs = glob if isinstance(glob, list) else [glob]
-            files = [f for f in files if any(_glob_match(ctx.repo.rel(f), f.name, g) for g in globs)]
-        hits, caps = _search_files(ctx, val, files, strip=(key == "code"), skip_guarded=bool(cond.get("unguarded")))
+        files = _candidate_files(ctx, key, cond.get("in"))
+        hits, caps = _search_files(ctx, val, files, strip=(key in ("code", "config")),
+                                   skip_guarded=bool(cond.get("unguarded")))
         return bool(hits), hits, caps
     if key == "file":
         globs = val if isinstance(val, list) else [val]
@@ -302,6 +367,43 @@ def _eval_one(key: str, val, cond: dict, ctx: Context):
     if key == "type_guid":
         return any(_rx(val).search(g) for g in p.type_guids), [Evidence(proj_file, 0, "ProjectTypeGuids")], {}
     raise ValueError(f"unknown condition key: {key}")
+
+
+TEXT_KEYS = ("code", "config", "text")
+
+
+def _eval_all_same_file(subs: list, ctx: Context):
+    """`all` with same_file: every code/config/text leaf must hit one common file."""
+    ev, caps = [], {}
+    per_leaf: list[dict[str, Evidence]] = []
+    for sub in subs:
+        leaf = isinstance(sub, dict) and [k for k in sub if k in TEXT_KEYS]
+        if leaf and len([k for k in sub if k not in ("in", "max", "unguarded")]) == 1:
+            key = leaf[0]
+            files = _candidate_files(ctx, key, sub.get("in"))
+            hits, _ = _search_files(ctx, sub[key], files, strip=(key in ("code", "config")), max_hits=None,
+                                    skip_guarded=bool(sub.get("unguarded")))
+            if not hits:
+                return False, [], {}
+            by_file: dict[str, Evidence] = {}
+            for h in hits:
+                by_file.setdefault(h.file, h)
+            per_leaf.append(by_file)
+            continue
+        ok, e, c = evaluate(sub, ctx)
+        if not ok:
+            return False, [], {}
+        ev.extend(e)
+        caps.update({k: v for k, v in c.items() if k not in caps})
+    if per_leaf:
+        common = set(per_leaf[0])
+        for d in per_leaf[1:]:
+            common &= set(d)
+        if not common:
+            return False, [], {}
+        for f in sorted(common)[:3]:
+            ev.extend(d[f] for d in per_leaf)
+    return True, ev, caps
 
 
 def applies(rule: Rule, ctx: Context) -> bool:

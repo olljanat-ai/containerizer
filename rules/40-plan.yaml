@@ -10,6 +10,10 @@
 rules:
   - id: plan-negotiate-krb5
     phase: plan
+    why: >-
+      Windows (Negotiate/Kerberos) authentication on Linux needs the GSSAPI libraries and a keytab; the image gets the packages and KRB5_KTNAME points at a keytab mounted from a Secret.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/security/authentication/windowsauth
     when: {package: Microsoft\.AspNetCore\.Authentication\.Negotiate}
     plan:
       add_packages: [libkrb5-3, libgssapi-krb5-2, gss-ntlmssp]
@@ -17,6 +21,8 @@ rules:
 
   - id: plan-wkhtmltox
     phase: plan
+    why: >-
+      The PDF library wraps wkhtmltopdf, a native library; the Linux build is installed from the distribution packages.
     when:
       any:
         - package: DinkToPdf|Rotativa.*|TuesPechkin.*|WkHtmlToPdf.*
@@ -26,6 +32,10 @@ rules:
 
   - id: plan-global-json
     phase: plan
+    why: >-
+      global.json pins an SDK version that the build image may not have; it is removed in the build stage only (never in the repository) so the image's SDK builds the project.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/tools/global-json
     scope: repo
     when: {file: global.json}
     plan:
@@ -33,18 +43,29 @@ rules:
 
   - id: plan-sqlite-data
     phase: plan
+    why: >-
+      SQLite keeps data in a local file that only one process can safely write; the component runs as a single replica with the file on a volume.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/connection-strings
+      - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
     when: {package: 'Microsoft\.EntityFrameworkCore\.Sqlite|Microsoft\.Data\.Sqlite'}
     plan:
       single_replica: true
 
   - id: plan-hangfire-memory
     phase: plan
+    why: >-
+      Hangfire in-memory storage keeps jobs inside one process; more replicas would each run their own copy of every job, so one replica is used.
     when: {package: 'Hangfire\.MemoryStorage|Hangfire\.InMemory'}
     plan:
       single_replica: true
 
   - id: plan-dataprotection-keys
     phase: plan
+    why: >-
+      ASP.NET Core Data Protection writes its key ring under the user's home folder; with a read-only root file system that folder must be writable (persist it, or share it via PersistKeysTo*, when running more than one replica).
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/security/data-protection/configuration/overview
     when:
       all:
         - role: web
@@ -54,12 +75,20 @@ rules:
 
   - id: plan-file-logs
     phase: plan
+    why: >-
+      The app logs to files under its own folder; the folder is made writable so start-up does not fail on the read-only root file system (console logging is preferred).
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/extensions/logging/providers
     when: {package: 'Serilog\.Sinks\.File|NLog(\..*)?|log4net'}
     plan:
       add_writable: [logs]
 
   - id: plan-aspnet-framework-worker
     phase: plan
+    why: >-
+      The worker references the ASP.NET Core shared framework, which is only in the aspnet runtime image.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/docker/container-images
     when:
       all:
         - not: {role: web}

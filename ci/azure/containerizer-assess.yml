@@ -1,0 +1,103 @@
+# Azure Pipelines steps template for a one-shot assessment: assess the repository, generate Dockerfiles
+# and Kubernetes manifests, build and run every generated container to confirm the verdicts, and publish
+# everything as the "containerizer-report" artifact with the summary on the build's Extensions tab.
+#
+#   trigger: none                     # run it by hand, once or a few times per repository
+#   pool:
+#     vmImage: ubuntu-latest          # Docker is preinstalled
+#   steps:
+#     - checkout: self
+#     - template: ci/azure/containerizer-assess.yml
+#       parameters:
+#         path: src
+parameters:
+  - name: path                  # app folder(s), space separated, relative to the checkout
+    type: string
+    default: .
+  - name: verify                # build and run the generated containers (needs Docker)
+    type: boolean
+    default: true
+  - name: verifyTimeout         # seconds per build or run
+    type: number
+    default: 1800
+  - name: ai                    # ask Claude about uncertain components; needs the ANTHROPIC_API_KEY secret variable
+    type: boolean
+    default: false
+  - name: model
+    type: string
+    default: ""
+  - name: maxRating             # A-E: fail the build when an app is rated worse; empty = never fail
+    type: string
+    default: ""
+  - name: toolRepo
+    type: string
+    default: https://github.com/olljanat-ai/containerizer.git
+  - name: toolVersion
+    type: string
+    default: main
+  - name: pythonVersion
+    type: string
+    default: "3.12"
+
+steps:
+  - task: UsePythonVersion@0
+    displayName: Use Python ${{ parameters.pythonVersion }}
+    inputs:
+      versionSpec: ${{ parameters.pythonVersion }}
+
+  - bash: |
+      set -euo pipefail
+      git clone --quiet --depth 1 --branch "$TOOL_VERSION" "$TOOL_REPO" "$(Agent.TempDirectory)/containerizer"
+      python -m pip install --quiet --disable-pip-version-check -r "$(Agent.TempDirectory)/containerizer/requirements.txt"
+      [ "$AI" = "True" ] && python -m pip install --quiet --disable-pip-version-check anthropic || true
+    displayName: Install containerizer
+    env:
+      TOOL_REPO: ${{ parameters.toolRepo }}
+      TOOL_VERSION: ${{ parameters.toolVersion }}
+      AI: ${{ parameters.ai }}
+
+  - bash: |
+      set -uo pipefail
+      export PYTHONPATH="$(Agent.TempDirectory)/containerizer"
+      out="$(Build.ArtifactStagingDirectory)/containerizer-report"
+      mkdir -p "$out"
+      read -ra paths <<< "$CHECK_PATHS"
+      ai=()
+      if [ "$AI" = "True" ]; then
+        if [ -z "${ANTHROPIC_API_KEY:-}" ]; then echo "##vso[task.logissue type=error]ai is on but ANTHROPIC_API_KEY is not set"; exit 2; fi
+        ai=(--ai); [ -n "$MODEL" ] && ai+=(--model "$MODEL")
+      fi
+      args=(--out "$out" --timeout "$VERIFY_TIMEOUT")
+      if [ "$VERIFY" != "True" ]; then
+        args+=(--no-verify)
+      elif ! { command -v docker >/dev/null && docker info >/dev/null 2>&1; }; then
+        echo "##vso[task.logissue type=warning]Docker is not available; verdicts are not verified by building and running"
+        args+=(--no-verify)
+      fi
+      # assess, build and run every feasible component, learn, re-assess, write reports and generated files
+      python -m containerizer analyze "${paths[@]}" "${args[@]}" "${ai[@]}" | tee "$out/analyze.log" || exit 2
+      python -m containerizer.ci summary "$out" > "$out/summary.md"
+      echo "##vso[task.uploadsummary]$out/summary.md"
+      n=$(python -m containerizer.ci unconfirmed "$out")
+      [ "$n" != "0" ] && echo "##vso[task.logissue type=warning]$n component(s) predicted ready did not build or run; see the summary"
+      if [ -n "$MAX_RATING" ]; then
+        python -m containerizer check "${paths[@]}" --fail-on none --max-rating "$MAX_RATING" --sarif "$out/containerizer.sarif" || exit $?
+      else
+        python -m containerizer check "${paths[@]}" --fail-on none --sarif "$out/containerizer.sarif"
+      fi
+    displayName: Assess, generate and verify
+    workingDirectory: $(Build.SourcesDirectory)
+    env:
+      CHECK_PATHS: ${{ parameters.path }}
+      VERIFY: ${{ parameters.verify }}
+      VERIFY_TIMEOUT: ${{ parameters.verifyTimeout }}
+      AI: ${{ parameters.ai }}
+      MODEL: ${{ parameters.model }}
+      MAX_RATING: ${{ parameters.maxRating }}
+      ANTHROPIC_API_KEY: $(ANTHROPIC_API_KEY)
+      CONTAINERIZER_AI_BACKEND: api
+
+  - publish: $(Build.ArtifactStagingDirectory)/containerizer-report
+    artifact: containerizer-report
+    displayName: Publish the report
+    condition: succeededOrFailed()

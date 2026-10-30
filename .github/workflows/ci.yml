@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -97,3 +98,33 @@ jobs:
           test "${{ steps.bad.outcome }}" = failure && test "${{ steps.bad.outputs.failed }}" = true
           test "${{ steps.good.outputs.failed }}" = false && test "${{ steps.good.outputs.rating }}" = A
           python3 -c "import json; r=json.load(open('bad.sarif'))['runs'][0]['results']; assert any(x.get('baselineState')=='new' for x in r), r"
+
+  # One-shot assessment, the main way the tool is used: assess, generate, then build and run every
+  # generated container on the runner. Apps rated ready must actually build and serve.
+  assess-oneshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: tool
+      - uses: actions/checkout@v4
+        with:
+          repository: onek8s/containerization-challenge
+          path: challenge
+      - id: assess
+        uses: ./tool
+        with:
+          mode: assess
+          path: challenge/scenarios/parts-catalog challenge/scenarios/expense-claims challenge/scenarios/batch-release
+          sarif-file: assess.sarif
+      - name: Assert
+        env:
+          REPORT: ${{ steps.assess.outputs.report-dir }}
+        run: |
+          echo "rating=${{ steps.assess.outputs.rating }} unconfirmed=${{ steps.assess.outputs.unconfirmed }}"
+          ls -R "$REPORT" | head -100
+          test -f "$REPORT/portfolio.md" && test -d "$REPORT/parts-catalog"
+          python3 -c "import json,sys; a={x['name']: x for x in json.load(open(sys.argv[1]))}; v=a['parts-catalog'].get('verification') or []; print(v); assert any(r['status'].startswith('ok') for r in v)" "$REPORT/assessment.json"
+          test "${{ steps.assess.outputs.rating }}" = D        # worst of A, A and D
+          test "${{ steps.assess.outputs.unconfirmed }}" = 0
