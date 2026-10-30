@@ -232,3 +232,9 @@ def test_lock_overlays_images(tmp_path, monkeypatch):
         assert generate.images()["dotnet"]["aspnet"].endswith(":8.0-noble-chiseled-extra")
     finally:
         generate.images.cache_clear()
+
+
+def test_hardening_error_patterns_need_whole_words():
+    assert not imagescan.HARDENING_ERRORS.search("at ServiceProvider.CreateServiceAccessor(ServiceIdentifier id)")
+    assert imagescan.HARDENING_ERRORS.search("Error: EACCES: permission denied, open '/app/x'")
+    assert imagescan.HARDENING_ERRORS.search("System.IO.IOException: Read-only file system : '/app/logs'")
