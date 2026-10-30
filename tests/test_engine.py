@@ -196,8 +196,8 @@ def test_spa_is_built_before_publish():
             "strategy": "rollforward", "base": "chiseled", "add_packages": [], "env": {}, "add_writable": [],
             "publish_args": [], "remove_files": [], "entry": "X.dll", "args": [], "applied": [], "spa_root": "ClientApp"}
     df = dockerfile_dotnet(plan)
-    assert df.index('"src/X/ClientApp/package.json"') < df.index("dotnet publish")
-    assert df.index("export PATH=/opt/npm-prebuilt:$PATH") < df.index("dotnet publish")
+    assert df.index('"src/X/ClientApp/package.json"') < df.index(" && dotnet publish")
+    assert df.index("export PATH=/opt/npm-prebuilt:$PATH") < df.index(" && dotnet publish")
 
 
 def test_gitops_examples_for_argo_and_flux(tmp_path):
