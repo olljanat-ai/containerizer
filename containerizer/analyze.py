@@ -10,7 +10,7 @@ from .rules import load_rules
 
 
 def analyze_app(path: Path, out: Path, ai: bool = False, model: str | None = None, verify: bool = True,
-                registry: str = "registry.local", pin: bool = False, timeout: int = 1800) -> AppAssessment:
+                registry: str = "registry.local", pin: bool = False, timeout: int = 1800, gitops=None) -> AppAssessment:
     from .confidence import reset_cache
     from .generate import generate_app
     from .verify import verify_app
@@ -26,5 +26,5 @@ def analyze_app(path: Path, out: Path, ai: bool = False, model: str | None = Non
     if ai:
         apply_ai(a, model)
     a.verification = ver
-    generate_app(a, out / a.name, rules, registry=registry, pin=pin)
+    generate_app(a, out / a.name, rules, registry=registry, pin=pin, gitops=gitops)
     return a

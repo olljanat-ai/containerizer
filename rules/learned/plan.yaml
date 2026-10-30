@@ -313,3 +313,31 @@ rules:
   why: The worker uses the ASP.NET Core shared framework; it needs the aspnet base image.
   refs:
   - https://learn.microsoft.com/en-us/dotnet/core/docker/container-images
+- id: learned-build-rid-downgrade-controltower-events
+  phase: plan
+  source: learned
+  when:
+    name: ^ControlTower\.Events$
+  plan:
+    rid: portable
+  why: Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that conflict (package downgrade).
+    A portable publish restores the same graph as the Windows build.
+  refs:
+  - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+  - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
+  learned_from: control-tower/ControlTower.Events
+  learned_at: '2026-10-30'
+- id: learned-build-rid-downgrade-vanarsdel-orders-api
+  phase: plan
+  source: learned
+  when:
+    name: ^VanArsdel\.Orders\.Api$
+  plan:
+    rid: portable
+  why: Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that conflict (package downgrade).
+    A portable publish restores the same graph as the Windows build.
+  refs:
+  - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+  - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
+  learned_from: retail-backoffice/VanArsdel.Orders.Api
+  learned_at: '2026-10-30'
