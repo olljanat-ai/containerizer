@@ -77,3 +77,17 @@ def test_netfx_webforms_needs_port(tmp_path):
     assert a.components[0].role == "web"
     assert a.components[0].verdict == "rewrite"
     assert a.rating == "C"
+
+
+def test_windows_paths_and_file_logs_are_repointed(tmp_path):
+    web_app(tmp_path)
+    write(tmp_path, "src/Web/appsettings.json", r"""
+        {"Archive": {"Folder": "D:\\Archive\\Docs"}, "Import": {"File": "\\\\fs01\\drop\\in.csv"},
+         "Serilog": {"WriteTo": [{"Name": "File", "Args": {"path": "D:\\Logs\\web-.log"}}]}}""")
+    a = assess(tmp_path)
+    plan = make_plan(a, a.components[0])
+    assert plan["env"]["Archive__Folder"] == "/data/archive/docs"
+    assert plan["env"]["Import__File"] == "/data/in.csv"
+    assert plan["env"]["Serilog__WriteTo__0__Name"] == "Console"
+    assert "Serilog__WriteTo__0__Args__path" not in plan["env"]
+    assert "/data/archive/docs" in plan["add_writable"]

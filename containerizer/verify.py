@@ -116,9 +116,33 @@ def _build_env_args() -> list[str]:
     return args
 
 
+MIRROR = os.environ.get("CONTAINERIZER_REGISTRY_MIRROR", "mirror.gcr.io")
+
+
+def _ensure_images(dockerfile: str) -> None:
+    """Pre-pull Docker Hub base images; when Docker Hub rate-limits (429), pull them through a
+    mirror and tag them with the canonical name, so the generated Dockerfile stays unchanged."""
+    if not MIRROR:
+        return
+    refs = set(re.findall(r"^FROM\s+(?:--platform=\S+\s+)?(\S+)", dockerfile, re.M))
+    refs |= set(re.findall(r"COPY\s+--from=([\w./:-]+:[\w.-]+)", dockerfile))
+    for ref in refs:
+        first = ref.split("/")[0]
+        if "/" in ref and ("." in first or ":" in first or first == "localhost"):   # not Docker Hub
+            continue
+        if _run(["docker", "image", "inspect", ref], 30)[0] == 0:
+            continue
+        if _run(["docker", "pull", "-q", ref], 300)[0] == 0:
+            continue
+        src = f"{MIRROR}/{ref if '/' in ref else 'library/' + ref}"
+        if _run(["docker", "pull", "-q", src], 300)[0] == 0:
+            _run(["docker", "tag", src, ref], 30)
+
+
 def build(a: AppAssessment, c: Component, plan: dict, workdir: Path, timeout: int) -> tuple[bool, str, str]:
     workdir.mkdir(parents=True, exist_ok=True)
     df = dockerfile_spa(plan, c.facts) if c.role == "spa" else dockerfile_dotnet(plan)
+    _ensure_images(df)
     (workdir / "Dockerfile").write_text(df)
     (workdir / "Dockerfile.dockerignore").write_text(DOCKERIGNORE)
     tag = f"containerizer/{k8s_name(a.name)}-{k8s_name(c.name)}:verify"
@@ -145,6 +169,24 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
         cmd += ["-p", f"127.0.0.1:{hp}:{plan['port']}"]
     for k, v in (env_override or {}).items():
         cmd += ["-e", f"{k}={v}"]
+    if (env_override or {}).get("ASPNETCORE_ENVIRONMENT") == "Development" and c.role != "spa":
+        # smoke mode only: the image excludes development settings, mount them read-only for the test run
+        dev = c.project.dir / "appsettings.Development.json"
+        if dev.exists():
+            cmd += ["-v", f"{dev.resolve()}:/app/appsettings.Development.json:ro"]
+            # dev settings often point at ../../App_Data etc.; give those folders a scratch tmpfs
+            from .facts import _flatten, _load_json
+            for _, val in _flatten(_load_json(dev)):
+                if isinstance(val, str):
+                    for m in re.finditer(r"((?:\.\./)+[\w\-]+)(/[\w\-./]+\.\w{1,5})?", val.replace("\\", "/")):
+                        target = os.path.normpath(os.path.join("/app", m.group(1)))
+                        if any(target in x for x in cmd):
+                            continue
+                        src = (c.project.dir / m.group(1)).resolve()
+                        if m.group(2) and (c.project.dir / (m.group(1) + m.group(2))).exists():
+                            cmd += ["-v", f"{src}:{target}:ro"]       # sample input files from the repo
+                        else:
+                            cmd += ["--tmpfs", f"{target}:rw,exec,uid={uid},gid={uid},mode=1777"]
     cmd.append(tag)
     rc, out = _run(cmd, 60)
     if rc != 0:
@@ -197,7 +239,7 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
     t0 = time.time()
     for attempt in range(1, MAX_ATTEMPTS + 1):
         ok, log, tag = build(a, c, plan, workdir, timeout)
-        stage = "build"
+        stage, details = "build", {}
         if ok:
             stage = "run"
             status, log, details = run(c, plan, tag, workdir, env_override)
@@ -211,7 +253,8 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
             from .ai import diagnose_failure
             d = diagnose_failure(a, c, plan, stage, tail, model=model)
         if d is None:
-            history.append({"attempt": attempt, "stage": stage, "status": "unexplained", "log_tail": tail[-1500:]})
+            history.append({"attempt": attempt, "stage": stage, "status": "unexplained", **details,
+                            "log_tail": tail[-1500:]})
             result["status"] = f"{stage}-failed"
             break
         fr, caps = d
@@ -238,9 +281,16 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
             result["status"] = "ok-external"
             break
         # platform / code findings
-        result["status"] = "finding"
         result["finding"] = _fmt(fr.get("finding", {}), caps)
+        if stage == "run" and not env_override and c.project.kind_hint == "dotnet":
+            # still find out whether the rest of the app works (Development often swaps in simulators)
+            env_override = {"ASPNETCORE_ENVIRONMENT": "Development", "DOTNET_ENVIRONMENT": "Development"}
+            entry["note"] = "finding recorded; smoke-testing the rest in Development mode"
+            continue
         break
+    if result.get("finding"):
+        result["smoke"] = result["status"]
+        result["status"] = "finding"
     result["plan"] = plan
     result["seconds"] = round(time.time() - t0)
     if learn and result["status"] in ("ok", "ok-external"):

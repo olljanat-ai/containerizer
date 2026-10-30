@@ -77,12 +77,41 @@ def default_plan(c: Component) -> dict:
             # Kestrel endpoints from appsettings win over ASPNETCORE_HTTP_PORTS; re-point them
             plan["env"][f"Kestrel__Endpoints__{ep}__Url"] = f"http://+:{CONTAINER_PORT + i}"
     if p.kind_hint == "dotnet":
+        _repoint_config(plan, c.facts)
         plan["env"]["DOTNET_ENVIRONMENT"] = "Production"
         if c.role == "web":
             plan["env"]["ASPNETCORE_ENVIRONMENT"] = "Production"
         if tfm and tfm != "net8.0" and not tfm.startswith("net8.0") and not tfm.startswith("net9"):
             plan["env"]["DOTNET_ROLL_FORWARD"] = "Major"
     return plan
+
+
+def _repoint_config(plan: dict, facts: dict) -> None:
+    """Override configuration through environment variables instead of editing the app:
+    file-only Serilog sinks log to stdout, Windows paths move under /data (a volume)."""
+    for key in facts.get("listen_url_settings") or []:
+        plan["env"][key.replace(":", "__")] = f"http://+:{CONTAINER_PORT}"
+    sinks = set(facts.get("serilog_file_sinks") or [])
+    for i in sorted(sinks):
+        plan["env"][f"Serilog__WriteTo__{i}__Name"] = "Console"
+    for key, val in sorted((facts.get("windows_paths") or {}).items()):
+        parts = key.split(":")
+        if parts[:2] == ["Serilog", "WriteTo"] and len(parts) > 2 and parts[2].isdigit() and int(parts[2]) in sinks:
+            continue
+        segs = [s for s in re.split(r"[\\/]+", val) if s]
+        segs = segs[1:] if re.fullmatch(r"[A-Za-z]:", segs[0]) else segs[2:]   # drop drive or \\server\share
+        is_file = bool(re.search(r"\.\w{1,5}$", segs[-1])) if segs else False
+        if is_file and re.search(r"\.(pem|pfx|p12|key|crt|cer|snk|jks|keytab)$", segs[-1], re.I):
+            # keys and certificates come from a Kubernetes Secret volume, never from the image
+            plan["env"]["__".join(parts)] = f"/secrets/{segs[-1]}"
+            if segs[-1] not in plan.setdefault("secret_files", []):
+                plan["secret_files"].append(segs[-1])
+            continue
+        folder = "/data/" + "/".join(k8s_name(s) for s in (segs[:-1] if is_file else segs)) if segs else "/data"
+        folder = folder.rstrip("/") or "/data"
+        plan["env"]["__".join(parts)] = f"{folder}/{segs[-1]}" if is_file else folder
+        if folder not in plan["add_writable"]:
+            plan["add_writable"].append(folder)
 
 
 def apply_plan_rules(plan: dict, repo, c: Component, rules: list[Rule]) -> dict:
@@ -151,8 +180,11 @@ def dockerfile_dotnet(plan: dict) -> str:
     base = im[("runtime" if worker else "aspnet") + ("_full" if full else "")]
     proj = plan["project"]
     tfm = plan["tfm"]
-    pub = ["-c Release", "-o /out", "-p:UseAppHost=false", "-p:RuntimeIdentifier=linux-x64",
-           "--self-contained false"]
+    # RID-specific publish keeps the image lean; "portable" avoids RID restore graphs that old
+    # netstandard1.x packages break (NU1605) and works for any CPU architecture
+    rid = plan.get("rid") or "linux-x64"
+    rid_arg = "" if rid == "portable" else f" -p:RuntimeIdentifier={rid}"
+    pub = ["-c Release", "-o /out", "-p:UseAppHost=false"] + ([rid_arg.strip(), "--self-contained false"] if rid_arg else [])
     if plan["strategy"] == "retarget" and tfm and not tfm.startswith("net8"):
         pub.append("-p:TargetFramework=net8.0")
         pub.append("-p:TargetFrameworks=net8.0")
@@ -177,7 +209,7 @@ def dockerfile_dotnet(plan: dict) -> str:
     lines += ["# optional build secret 'ca': CA bundle for TLS-inspecting corporate proxies",
               'RUN --mount=type=cache,target=/root/.nuget/packages --mount=type=secret,id=ca,required=false \\',
               '    if [ -f /run/secrets/ca ]; then export SSL_CERT_FILE=/run/secrets/ca NODE_EXTRA_CA_CERTS=/run/secrets/ca; fi; \\',
-              f'    dotnet restore "{proj}" -p:RuntimeIdentifier=linux-x64{restore_tfm} \\',
+              f'    dotnet restore "{proj}"{rid_arg}{restore_tfm} \\',
               f' && dotnet publish "{proj}" --no-restore {" ".join(pub)}']
     writable = sorted({_writable_abs(w) for w in plan["add_writable"]})
     if writable:
@@ -275,6 +307,10 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
         else:
             volumes.append({"name": vname, "emptyDir": {}})
         mounts.append({"name": vname, "mountPath": w})
+    if plan.get("secret_files"):
+        volumes.append({"name": "secret-files", "secret": {"secretName": f"{name}-files", "optional": True,
+                                                           "defaultMode": 0o440}})
+        mounts.append({"name": "secret-files", "mountPath": "/secrets", "readOnly": True})
     container = {
         "name": name, "image": image, "imagePullPolicy": "IfNotPresent", "env": env,
         "securityContext": {"runAsNonRoot": True, "allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True,

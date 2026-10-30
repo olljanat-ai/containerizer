@@ -31,6 +31,16 @@ failures:
     fix: {publish_args: ["-p:EnableWindowsTargeting=true"]}
     learn: {when: {tfm: 'net\d+\.\d+-windows.*'}}
 
+  - id: build-rid-downgrade
+    stage: build
+    match: 'error NU1605:'
+    outcome: retry
+    diagnosis: >-
+      Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that
+      conflict (package downgrade). A portable publish restores the same graph as the Windows build.
+    fix: {rid: portable}
+    learn: {}
+
   - id: build-npm-missing
     stage: build
     match: '(npm|node): (command )?not found|Node\.js is required to build and run this project'
@@ -102,7 +112,7 @@ failures:
 
   - id: run-cert-store
     stage: run
-    match: "certificate .*(not found|could not be found) in (the )?(store|LocalMachine)|X509Store.*(PlatformNotSupported|not supported)"
+    match: "certificate .*(not found|could not be found) in (the )?(store|LocalMachine)|X509Store.*(PlatformNotSupported|not supported)|LocalMachine X509Store is limited"
     outcome: code
     diagnosis: The app loads a certificate from the Windows certificate store.
     finding: {severity: config, title: Certificate must be mounted as a file}
@@ -134,6 +144,6 @@ failures:
 
   - id: run-missing-config-value
     stage: run
-    match: "(OptionsValidationException|ArgumentNullException: Value cannot be null.*(Parameter '(connectionString|path|uriString)')|InvalidOperationException: .*(not configured|is missing|must be configured))"
+    match: "(OptionsValidationException|ArgumentNullException: Value cannot be null.*(Parameter '(connectionString|path|uriString)')|InvalidOperationException: .*(not configured|is missing|must be configured|is required|not found in))"
     outcome: external
     diagnosis: A required setting has no value in the test container (environment-specific configuration).

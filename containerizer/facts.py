@@ -56,8 +56,14 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
         if isinstance(cs, dict) and cs:
             facts["connection_strings"] = sorted(cs.keys())
         ep = ((cfg.get("Kestrel") or {}).get("Endpoints") or {}) if isinstance(cfg.get("Kestrel"), dict) else {}
-        if ep:
-            facts["kestrel_endpoints"] = sorted(ep.keys())
+        names = set(ep.keys()) if isinstance(ep, dict) else set()
+        for f in p.files:   # appsettings.<Environment>.json may add endpoints, override those too
+            if f.parent == p.dir and re.fullmatch(r"appsettings\.[\w-]+\.json", f.name, re.I):
+                k = _load_json(f).get("Kestrel")
+                if isinstance(k, dict) and isinstance(k.get("Endpoints"), dict):
+                    names |= set(k["Endpoints"].keys())
+        if names:
+            facts["kestrel_endpoints"] = sorted(names)
         folders, secrets = {}, []
         for key, val in _flatten(cfg):
             leaf = key.split(":")[-1]
@@ -70,6 +76,24 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
                 secrets.append(key)
         if folders:
             facts["folder_settings"] = folders
+        # Serilog sinks that write only to files: containers should log to stdout
+        wt = (cfg.get("Serilog") or {}).get("WriteTo") if isinstance(cfg.get("Serilog"), dict) else None
+        if isinstance(wt, list):
+            idx = [i for i, x in enumerate(wt) if isinstance(x, dict) and x.get("Name") in ("File", "RollingFile")]
+            if idx and not any(isinstance(x, dict) and x.get("Name") == "Console" for x in wt):
+                facts["serilog_file_sinks"] = idx
+        # Windows absolute paths (D:\..., \\server\share) must be re-pointed to Linux mounts
+        win = {}
+        for key, val in _flatten(cfg):
+            if isinstance(val, str) and re.match(r"^([A-Za-z]:\\|\\\\[\w.-]+\\)", val) and len(val) < 260:
+                win[key] = val
+        if win:
+            facts["windows_paths"] = win
+        # custom listen-address settings ("WebhookUrls": "http://*:8085" read by UseUrls)
+        listen = [k for k, v in _flatten(cfg) if isinstance(v, str) and not k.startswith("Kestrel:")
+                  and re.fullmatch(r"(https?://(\*|\+|0\.0\.0\.0|\[::\]):\d+;?)+", v.strip())]
+        if listen:
+            facts["listen_url_settings"] = listen
         if secrets:
             facts["secret_settings"] = sorted(secrets)
     # Folders written relative to the content root
@@ -91,8 +115,11 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
                 m = re.search(r"Data Source=([\w\-./]+)/[\w\-.]+\.(db|sqlite)", val, re.I)
                 if m:
                     writable.add(m.group(1))
+    # not folders: file names (XML docs, databases) and enum-like values (StoreLocation: LocalMachine)
+    writable = {w for w in writable if w and len(w) < 80 and not re.search(r"\.[A-Za-z]\w{0,4}$", w)
+                and w not in ("LocalMachine", "CurrentUser", "My", "Root", "None", "Default")}
     if writable:
-        facts["writable_dirs"] = sorted(w for w in writable if w and len(w) < 80)
+        facts["writable_dirs"] = sorted(writable)
     spa = p.properties.get("SpaRoot")
     if spa:
         facts["spa_root"] = spa.replace("\\", "/").strip("/")

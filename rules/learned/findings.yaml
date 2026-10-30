@@ -1,0 +1,13 @@
+# Findings observed at runtime by `containerizer verify --learn`.
+rules:
+- id: learned-runtime-doccontrol-packager-1
+  source: learned
+  severity: refactor
+  category: runtime-observed
+  title: 'Windows-only API at runtime: System.Management currently is only supported for Windows desktop applications.'
+  why: 'A Windows-only API was called at runtime: System.Management currently is only supported for Windows desktop applications.'
+  fix: See the verification log; fix and re-run `containerizer verify`.
+  when:
+    name: ^DocControl\.Packager$
+  learned_from: document-control/Litware.DocControl.Packager
+  learned_at: '2026-10-30'
