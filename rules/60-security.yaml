@@ -1,0 +1,221 @@
+# Security gate: Kubernetes hardening, the exceptions an application may need,
+# Dockerfile/manifest lint checks, image scan policy and base image lifecycle.
+# Used by `containerizer generate` (hardening), `containerizer gate` and
+# `containerizer images`.
+
+hardening:
+  # Applied to every generated pod and container.
+  baseline:
+    pod:
+      securityContext:
+        runAsNonRoot: true
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile: {type: RuntimeDefault}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+    container:
+      securityContext:
+        runAsNonRoot: true
+        privileged: false
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: [ALL]}
+        seccompProfile: {type: RuntimeDefault}
+      resources:
+        requests: {cpu: 100m, memory: 256Mi, ephemeral-storage: 64Mi}
+        limits: {memory: 512Mi, ephemeral-storage: 1Gi}
+    # every emptyDir gets a size limit so a runaway writer can't fill the node
+    empty_dir_size_limit: 256Mi
+
+  # UID/GID the final image runs as (runAsUser/runAsGroup/fsGroup).
+  run_as:
+    dotnet: 1654          # 'app' user of the Microsoft .NET 8+ images
+    spa: 101              # nginx-unprivileged
+    default: 10001
+
+  # Exceptions: added only when `when` (rule conditions, see rules.py) and
+  # `if_plan` (regex per build-plan key) match. Patch keys:
+  #   writable: [paths]            extra emptyDir mounts (read-only root FS stays on)
+  #   size_limits: {path: size}    emptyDir size limit for a mounted path
+  #   sysctls: [{name, value}]     pod sysctls (only the Kubernetes "safe" set passes the lint)
+  #   capabilities_add: [..]       container capabilities (only NET_BIND_SERVICE passes the lint)
+  #   automount_token: true        mount the service account token
+  #   resources: {...}             merged over the baseline resources
+  #   env: {K: V}                  extra environment variables
+  #   secret_mounts: [{name, path, items?}]  Secret `<component>-<name>` mounted read-only at path
+  #   waives: [check ids]          lint checks this exception is allowed to relax
+  # Each applied exception is recorded on the pod template as an annotation
+  # (containerizer.io/exception.<id>) with its reason, so reviewers see why.
+  exceptions:
+    - id: nginx-writable-dirs
+      when: {role: spa}
+      patch:
+        writable: [/tmp, /var/cache/nginx]
+      why: nginx keeps its pid file and request buffers in /tmp and its proxy cache in /var/cache/nginx.
+
+    - id: kerberos-keytab
+      when: {package: 'Microsoft\.AspNetCore\.Authentication\.Negotiate'}
+      patch:
+        writable: [/tmp]
+        env: {KRB5CCNAME: 'FILE:/tmp/krb5cc_app'}
+        secret_mounts: [{name: keytab, path: /etc/krb5/keytab}]
+      why: Windows authentication on Linux needs the service keytab (from a Secret, never the image) and a writable credential cache.
+
+    - id: native-rendering-memory
+      when:
+        any:
+          - package: 'DinkToPdf|Rotativa.*|TuesPechkin.*|WkHtmlToPdf.*|PdfSharp.*|QuestPDF|SkiaSharp.*|SixLabors\.ImageSharp.*|Magick\.NET.*|System\.Drawing\.Common|PuppeteerSharp|Microsoft\.Playwright'
+      patch:
+        writable: [/home/app/.cache]
+        resources:
+          requests: {memory: 512Mi}
+          limits: {memory: 1Gi}
+      why: PDF and image rendering allocates large native buffers outside the .NET heap, and fontconfig writes a font cache under $HOME/.cache.
+
+    - id: file-uploads
+      when: {code: '\bIFormFile\b|\bMultipartReader\b|\bIFormFileCollection\b'}
+      patch:
+        size_limits: {/tmp: 1Gi}
+        resources:
+          limits: {ephemeral-storage: 2Gi}
+      why: ASP.NET Core buffers uploads larger than 64 KB to temporary files.
+
+    - id: icmp-ping
+      when: {code: '\bnew\s+Ping\s*\(|\.SendPingAsync\s*\(|\bPing\(\)\.Send\('}
+      patch:
+        sysctls: [{name: net.ipv4.ping_group_range, value: '0 2147483647'}]
+      why: System.Net.NetworkInformation.Ping uses unprivileged ICMP sockets on Linux; the pod must allow them (no NET_RAW needed).
+
+    - id: kubernetes-api-client
+      when: {package: '^KubernetesClient$|^k8s\.|^Steeltoe\.Discovery\.Kubernetes|^Microsoft\.Extensions\.Configuration\.Kubernetes'}
+      patch:
+        automount_token: true
+      why: The application talks to the Kubernetes API and needs its service account token. Bind it to a Role with only the verbs it uses.
+      waives: [sa-token]
+
+    - id: privileged-port
+      if_plan: {port: '^([1-9]\d{0,2}|10[01]\d|102[0-3])$'}
+      patch:
+        capabilities_add: [NET_BIND_SERVICE]
+      why: The container listens on a port below 1024.
+
+# Lint checks over the generated (or hand-edited) manifests and Dockerfiles.
+# severity: error fails the gate, warning and info are reported only.
+# A pod template annotation `containerizer.io/waives: "id,id"` relaxes checks;
+# the generator only writes it for exceptions that declare `waives`.
+lint:
+  checks:
+    host-namespaces:     {severity: error,   title: No hostNetwork, hostPID or hostIPC}
+    privileged:          {severity: error,   title: No privileged containers}
+    capabilities:        {severity: error,   title: Drop ALL capabilities; add at most NET_BIND_SERVICE}
+    volume-types:        {severity: error,   title: No hostPath or other non-restricted volume types}
+    host-ports:          {severity: error,   title: No hostPort}
+    privilege-escalation: {severity: error,  title: allowPrivilegeEscalation is false}
+    run-as-non-root:     {severity: error,   title: Runs as a non-root user}
+    seccomp:             {severity: error,   title: Seccomp profile RuntimeDefault or Localhost}
+    sysctls:             {severity: error,   title: Only safe sysctls}
+    readonly-rootfs:     {severity: error,   title: Read-only root filesystem}
+    resources:           {severity: error,   title: CPU/memory requests and a memory limit}
+    secret-literals:     {severity: error,   title: No secret values in manifests or images}
+    sa-token:            {severity: warning, title: Service account token not mounted}
+    empty-dir-limit:     {severity: warning, title: emptyDir volumes have a sizeLimit}
+    image-tag:           {severity: warning, title: Workload image has an explicit, non-latest tag or digest}
+    network-policy:      {severity: warning, title: Every workload is selected by a NetworkPolicy}
+    df-user:             {severity: error,   title: Final image stage runs as a non-root user}
+    df-base-tag:         {severity: error,   title: Base images have an explicit, non-latest tag}
+    df-base-digest:      {severity: info,    title: Base images are pinned to a digest}
+    df-remote-add:       {severity: error,   title: No ADD from URLs or curl|sh in the build}
+    df-base-eol:         {severity: warning, title: Base image line is supported by its vendor}
+  allowed_capabilities: [NET_BIND_SERVICE]
+  safe_sysctls:
+    - kernel.shm_rmid_forced
+    - net.ipv4.ip_local_port_range
+    - net.ipv4.ip_unprivileged_port_start
+    - net.ipv4.tcp_syncookies
+    - net.ipv4.ping_group_range
+    - net.ipv4.ip_local_reserved_ports
+    - net.ipv4.tcp_keepalive_time
+    - net.ipv4.tcp_fin_timeout
+    - net.ipv4.tcp_keepalive_intvl
+    - net.ipv4.tcp_keepalive_probes
+  allowed_volume_types: [configMap, csi, downwardAPI, emptyDir, ephemeral, persistentVolumeClaim, projected, secret]
+  # names that must never carry a literal value (env, ENV, Secret stringData)
+  secret_names: '(?i)(password|passwd|pwd|secret|token|api[_-]?key|private[_-]?key|connectionstrings?__)'
+  # final-stage base images that already run as non-root without a USER line
+  nonroot_bases: ['nginx-unprivileged', 'distroless/.*:nonroot', 'chiseled']
+
+# Image vulnerability gate.
+scan:
+  fail_on: CRITICAL           # lowest severity that fails the gate (UNKNOWN LOW MEDIUM HIGH CRITICAL)
+  ignore_unfixed: true        # only vulnerabilities with a fixed version count against the gate
+  # `all` scans with every available scanner and merges the findings (their
+  # databases differ, so the union misses less); `auto` uses the first one.
+  default_scanner: all
+  scanners:                   # in order of preference
+    - name: trivy
+      binary: trivy
+      image: aquasec/trivy:0.67.2
+    - name: grype
+      binary: grype
+      image: anchore/grype:v0.86.1
+  # When even the newest base tag still ships an OS package with a blocking,
+  # fixable vulnerability, `gate` upgrades just those packages in the final
+  # stage (images with a package manager only; chiseled/distroless images
+  # have none and need a newer tag). `gate --build` re-scans to confirm.
+  os_patch:
+    enabled: true
+    commands:
+      alpine: 'apk upgrade --no-cache {packages}'
+      ubuntu: 'apt-get update && apt-get install -y --no-install-recommends --only-upgrade {packages} && rm -rf /var/lib/apt/lists/*'
+      debian: 'apt-get update && apt-get install -y --no-install-recommends --only-upgrade {packages} && rm -rf /var/lib/apt/lists/*'
+    no_package_manager: 'chiseled|distroless|scratch'
+  # Accepted risks. An entry stops counting at `expires` (YYYY-MM-DD) and is
+  # then reported as expired. `images` (regex) limits it to some images.
+  allowlist: []
+  #  - id: CVE-2024-12345
+  #    reason: not reachable, the vulnerable parser is never used
+  #    expires: 2026-12-31
+  #    images: 'dotnet/aspnet'
+
+# Base image lifecycle and bump policy for `containerizer images`.
+images:
+  lock_max_age_days: 14       # the gate warns when images.lock.yaml is older
+  # How far `images --update` may move a line on its own:
+  #   patch: newest patch tag of the same line (8.0 -> 8.0.33)
+  #   minor: newest line with the same major (1.27 -> 1.30), optionally filtered
+  #   on_eol: next  once a line is past end of support, move to the `next`
+  #                 line from `lifecycle` (build toolchains, where it is safe)
+  # .NET lines are not moved automatically: a new .NET major changes the
+  # runtime the application runs on and is a planned migration.
+  bump:
+    - match: 'nginx-unprivileged'
+      policy: minor
+      line_filter: '^1\.\d*[02468]$'      # stable (even) nginx lines only
+    - match: '(^|/)(node|golang):'
+      policy: patch
+      on_eol: next
+    - match: '.*'
+      policy: patch
+  # End of vendor support per image line (vendor lifecycle pages; review
+  # these when new versions ship). `next` is the line to move to.
+  lifecycle:
+    - {match: 'dotnet/(sdk|aspnet|runtime):6\.0',  eol: 2024-11-12, next: '10.0'}
+    - {match: 'dotnet/(sdk|aspnet|runtime):7\.0',  eol: 2024-05-14, next: '10.0'}
+    - {match: 'dotnet/(sdk|aspnet|runtime):8\.0',  eol: 2026-11-10, next: '10.0'}
+    - {match: 'dotnet/(sdk|aspnet|runtime):9\.0',  eol: 2026-11-10, next: '10.0'}
+    - {match: 'dotnet/(sdk|aspnet|runtime):10\.0', eol: 2028-11-14}
+    - {match: '(^|/)node:18\b', eol: 2025-04-30, next: '22'}
+    - {match: '(^|/)node:20\b', eol: 2026-04-30, next: '22'}
+    - {match: '(^|/)node:22\b', eol: 2027-04-30, next: '24'}
+    - {match: '(^|/)node:24\b', eol: 2028-04-30}
+    - {match: 'nginx(-unprivileged)?:1\.2[0-7]\b', eol: 2025-04-23, next: '1.30'}
+    - {match: 'nginx(-unprivileged)?:1\.(28|29)\b', eol: 2026-04-14, next: '1.30'}
+    - {match: '(^|/)python:3\.9\b',  eol: 2025-10-31, next: '3.12'}
+    - {match: '(^|/)python:3\.10\b', eol: 2026-10-31, next: '3.12'}
+    - {match: '(^|/)python:3\.11\b', eol: 2027-10-31}
+    - {match: '(^|/)python:3\.12\b', eol: 2028-10-31}
+    - {match: '(^|/)golang:1\.2[0-3]\b', eol: 2025-08-12, next: '1.26'}
+    - {match: '(^|/)golang:1\.24\b', eol: 2026-02-11, next: '1.26'}
+    - {match: '(^|/)golang:1\.25\b', eol: 2026-08-12, next: '1.26'}
+    - {match: 'eclipse-temurin:21\b', eol: 2029-12-31}
+  warn_days_before_eol: 60

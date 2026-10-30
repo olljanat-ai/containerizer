@@ -110,7 +110,7 @@ def _build_env_args() -> list[str]:
         if "127.0.0.1" in proxy or "localhost" in proxy:
             args += ["--network", "host"]
     ca = os.environ.get("CONTAINERIZER_CA_BUNDLE") or next(
-        (p for p in ("/root/.ccr/ca-bundle.crt",) if Path(p).exists()), None)
+        (p for p in ("/root/.ccr/ca-bundle.crt",) if os.path.isfile(p)), None)
     if ca:
         args += ["--secret", f"id=ca,src={ca}"]
     return args
