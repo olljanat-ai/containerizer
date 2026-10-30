@@ -28,6 +28,14 @@ def run_bench(args) -> int:
     start_usage = len(ai_mod.USAGE_LOG)
 
     def one(app):
+        try:
+            return _one(app)
+        except Exception as e:      # one failed AI call must not sink the whole benchmark
+            a = assess(root / app, rules)
+            print(f"ERR {app}: {type(e).__name__}: {str(e)[:200]}")
+            return a, "?", set()
+
+    def _one(app):
         a = assess(root / app, rules)
         rating, blocked = a.rating, {n for c in a.components if c.verdict == "blocker" for n in _names(c)}
         if technique == "hybrid":

@@ -106,7 +106,20 @@ def _ask_api(prompt: str, schema: dict, model: str, effort: str):
     return json.loads(text), {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}
 
 
-def _ask_cli(prompt: str, schema: dict, model: str):
+def _first_json(text: str):
+    """The first JSON object in a model answer (tolerates prose or code fences around it)."""
+    dec = json.JSONDecoder()
+    for m in re.finditer(r"\{", text):
+        try:
+            obj, _ = dec.raw_decode(text, m.start())
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _ask_cli(prompt: str, schema: dict, model: str, _retry: bool = False):
     full = (f"{SYSTEM}\n\n{prompt}\n\nRespond with ONLY a JSON object (no prose, no code fences) that validates "
             f"against this JSON schema:\n{json.dumps(schema)}")
     p = subprocess.run(["claude", "-p", "--model", model, "--output-format", "json", "--max-turns", "1",
@@ -117,10 +130,12 @@ def _ask_cli(prompt: str, schema: dict, model: str):
     except json.JSONDecodeError:
         raise RuntimeError(f"claude CLI failed: {p.stderr[-500:] or p.stdout[-500:]}")
     text = env.get("result", "")
-    m = re.search(r"\{.*\}", text, re.S)
-    if not m:
-        raise RuntimeError(f"no JSON in answer: {text[:300]}")
-    data = json.loads(m.group(0))
+    data = _first_json(text)
+    if data is None:
+        if not _retry:
+            return _ask_cli(prompt + "\n\nYour previous answer was not valid JSON. Answer with the JSON object only.",
+                            schema, model, _retry=True)
+        raise RuntimeError(f"no valid JSON in answer: {text[:300]}")
     u = env.get("usage") or {}
     return data, {"input_tokens": (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
                   + (u.get("cache_creation_input_tokens") or 0),
