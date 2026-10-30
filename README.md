@@ -31,6 +31,7 @@ python -m containerizer assess ../containerization-challenge --out reports/   # 
 
 # generate Dockerfiles, Kubernetes manifests and MIGRATION.md
 python -m containerizer generate ../containerization-challenge/scenarios/parts-catalog --out out/
+python -m containerizer generate <app> --out out/ --pin-digests --registry myregistry.example.com   # immutable base images
 
 # build + run the generated containers, learn from failures
 python -m containerizer verify ../containerization-challenge/scenarios/parts-catalog --learn
@@ -146,6 +147,11 @@ Techniques used to avoid application changes:
 - Kestrel endpoints from `appsettings.json` are re-pointed with `Kestrel__Endpoints__X__Url`;
 - connection strings and secret settings become `ConnectionStrings__X` env vars from a Secret;
 - folders the app writes to (logs, App_Data, Data Protection keys) become volumes;
+- Windows paths in configuration (`D:\\Archive`, `\\\\fs01\\share`) are re-pointed to `/data/...` volumes
+  with `Section__Key` env vars; key and certificate files go to `/secrets` from a Kubernetes Secret;
+- Serilog file-only sinks are switched to the console (logs to stdout) with `Serilog__WriteTo__N__Name`;
+- custom listen-address settings (`"WebhookUrls": "http://*:8085"`) are re-pointed to port 8080;
+- old netstandard1.x packages that break a linux-x64 restore (NU1605) get a portable publish;
 - corporate TLS-inspecting proxies: an optional `ca` build secret is honoured.
 
 ## Results on the challenge

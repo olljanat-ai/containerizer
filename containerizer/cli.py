@@ -56,7 +56,7 @@ def cmd_generate(args) -> int:
     for app in _apps(args.paths):
         a = assess(app, rules)
         out = Path(args.out) / a.name if args.out else Path(app) / "containerize"
-        files = generate_app(a, out)
+        files = generate_app(a, out, registry=args.registry, pin=args.pin_digests)
         print(f"{a.name}: {len(files)} files -> {out}")
     return 0
 
@@ -112,6 +112,8 @@ def main(argv=None) -> int:
     s = sub.add_parser("generate", help="generate Dockerfiles and Kubernetes manifests")
     s.add_argument("paths", nargs="+")
     s.add_argument("--out")
+    s.add_argument("--registry", default="registry.local", help="image registry used in the manifests")
+    s.add_argument("--pin-digests", action="store_true", help="pin base images to their current digests")
     s.set_defaults(fn=cmd_generate)
 
     s = sub.add_parser("verify", help="build and run generated containers; learn from failures")

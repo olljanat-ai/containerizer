@@ -26,6 +26,35 @@ def images() -> dict:
     return yaml.safe_load((RULES_DIR / "images.yaml").read_text())
 
 
+_DIGESTS: dict[str, str | None] = {}
+
+
+def resolve_digest(ref: str) -> str | None:
+    """Registry digest of an image tag (multi-arch index digest), via docker buildx."""
+    import subprocess
+    if ref not in _DIGESTS:
+        try:
+            p = subprocess.run(["docker", "buildx", "imagetools", "inspect", ref, "--format", "{{json .Manifest.Digest}}"],
+                               capture_output=True, text=True, timeout=120)
+            d = p.stdout.strip().strip('"')
+            _DIGESTS[ref] = d if p.returncode == 0 and d.startswith("sha256:") else None
+        except (OSError, subprocess.TimeoutExpired):
+            _DIGESTS[ref] = None
+    return _DIGESTS[ref]
+
+
+def pin_digests(dockerfile: str) -> str:
+    """Pin every base image to an immutable digest, keeping the tag for readability."""
+    def sub(m):
+        ref = m.group(2)
+        if "@" in ref or ref.lower() in ("scratch",) or re.fullmatch(r"[a-z][\w-]*", ref):   # stage names
+            return m.group(0)
+        d = resolve_digest(ref)
+        return f"{m.group(1)}{ref}@{d}" if d else m.group(0)
+    return re.sub(r"^((?:FROM\s+(?:--platform=\S+\s+)?)|(?:COPY\s+(?:--\w+=\S+\s+)*?--from=))(\S+)", sub,
+                  dockerfile, flags=re.M)
+
+
 def k8s_name(s: str) -> str:
     s = SAFE_NAME.sub("-", s.lower().replace(".", "-")).strip("-")
     return s[:63].rstrip("-") or "app"
@@ -381,7 +410,7 @@ def _yaml_docs(docs: list[dict]) -> str:
 # --------------------------------------------------------------------------- app
 
 def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, registry: str = "registry.local",
-                 plans: dict | None = None) -> list[Path]:
+                 plans: dict | None = None, pin: bool = False) -> list[Path]:
     from .report import migration_markdown
 
     rules = rules if rules is not None else load_rules()
@@ -400,6 +429,8 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
                 plan["port"], plan["health"] = 8080, "/healthz"
             else:
                 continue
+            if pin:
+                df = pin_digests(df)
             (cdir / "Dockerfile").write_text(df)
             (cdir / "Dockerfile.dockerignore").write_text(DOCKERIGNORE)
             (cdir / "plan.json").write_text(json.dumps(plan, indent=2))
