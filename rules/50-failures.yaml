@@ -7,6 +7,13 @@
 #   code      - needs a code change -> finding
 # `learn` makes the fix permanent as a plan rule when the retry succeeds.
 failures:
+  - id: build-no-space
+    stage: build
+    match: 'no space left on device'
+    outcome: retry
+    diagnosis: The Docker disk is full on the verification host (not a problem of the application).
+    fix: {prune_cache: true}
+
   - id: build-global-json
     stage: build
     match: 'A compatible \.NET SDK was not found|global\.json file.*(requested|specifies)|Requested SDK version: (?P<ver>[\d.]+)'

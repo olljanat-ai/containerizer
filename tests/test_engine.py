@@ -141,3 +141,12 @@ def test_old_tfm_rolls_forward_to_supported_line(tmp_path):
     plan["strategy"] = "retarget"
     df = dockerfile_dotnet(plan)
     assert "-p:TargetFramework=net10.0" in df and "aspnet:10.0" in df
+
+
+def test_blazor_wasm_is_served_as_static_files():
+    from containerizer.generate import dockerfile_blazor_wasm
+    plan = {"component": "W", "project": "src/W/W.csproj", "remove_files": ["global.json"], "publish_args": []}
+    df = dockerfile_blazor_wasm(plan)
+    assert 'dotnet publish "src/W/W.csproj" -c Release -o /out' in df
+    assert "COPY --from=build /out/wwwroot /usr/share/nginx/html" in df
+    assert "ENTRYPOINT" not in df and "listen 8080" in df

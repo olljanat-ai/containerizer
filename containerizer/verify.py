@@ -29,7 +29,7 @@ from pathlib import Path
 import yaml
 
 from .assess import AppAssessment, Component
-from .generate import (CONTAINER_PORT, DOCKERIGNORE, _writable_abs, buildable, dockerfile_dotnet, dockerfile_spa,
+from .generate import (CONTAINER_PORT, DOCKERIGNORE, _writable_abs, buildable, dockerfile_dotnet, dockerfile_for, dockerfile_spa,
                        images, k8s_name, make_plan, merge_plan)
 from .rules import RULES_DIR, load_rules
 
@@ -139,9 +139,20 @@ def _ensure_images(dockerfile: str) -> None:
             _run(["docker", "tag", src, ref], 30)
 
 
+def _free_disk(min_gb: float = 15.0) -> None:
+    """Drop old BuildKit cache when the Docker disk runs low (keeps the recent, reusable layers)."""
+    import shutil
+    try:
+        root = _run(["docker", "info", "-f", "{{.DockerRootDir}}"], 30)[1].strip() or "/var/lib/docker"
+        if shutil.disk_usage(root).free / 1e9 < min_gb:
+            _run(["docker", "builder", "prune", "-af", "--filter", "until=1h"], 600)
+    except OSError:
+        pass
+
+
 def build(a: AppAssessment, c: Component, plan: dict, workdir: Path, timeout: int) -> tuple[bool, str, str]:
     workdir.mkdir(parents=True, exist_ok=True)
-    df = dockerfile_spa(plan, c.facts) if c.role == "spa" else dockerfile_dotnet(plan)
+    df = dockerfile_for(plan, c)
     _ensure_images(df)
     (workdir / "Dockerfile").write_text(df)
     (workdir / "Dockerfile.dockerignore").write_text(DOCKERIGNORE)
@@ -264,6 +275,7 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
               "predicted": c.verdict, "time": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     env_override: dict = {}
     learned_patches: list[tuple[dict, dict, dict]] = []
+    pruned = False
     t0 = time.time()
     for attempt in range(1, MAX_ATTEMPTS + 1):
         ok, log, tag = build(a, c, plan, workdir, timeout)
@@ -306,6 +318,14 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
         history.append(entry)
         if fr["outcome"] == "retry":
             patch = _fmt(fr.get("fix", {}), caps)
+            if patch.pop("prune_cache", None):
+                if pruned:
+                    result["status"] = f"{stage}-failed"
+                    entry["note"] = "disk still full after pruning; free space on the Docker host"
+                    break
+                _free_disk(min_gb=float("inf"))
+                pruned = True
+                continue
             before = json.dumps(plan, sort_keys=True)
             merge_plan(plan, patch)
             if json.dumps(plan, sort_keys=True) == before:
@@ -341,6 +361,9 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
         result["smoke"] = result["status"]
         result["status"] = "finding"
     result["plan"] = plan
+    if not os.environ.get("CONTAINERIZER_KEEP_IMAGES"):
+        # verification images are throw-away; large portfolios would otherwise fill the disk
+        _run(["docker", "rmi", "-f", f"containerizer/{k8s_name(a.name)}-{k8s_name(c.name)}:verify"], 120)
     result["seconds"] = round(time.time() - t0)
     if learn and result["status"] in ("ok", "ok-external"):
         persist_learning(a, c, plan, learned_patches)
@@ -446,6 +469,7 @@ def verify_app(a: AppAssessment, out: Path | None = None, learn: bool = False, o
         r = verify_component(a, c, rules, learn=learn, ai=ai, model=model, timeout=timeout)
         r["detail"] = "; ".join(f"{h.get('rule', h.get('status'))}" for h in r["attempts"])
         results.append(r)
+    _free_disk()
     if out:
         out.mkdir(parents=True, exist_ok=True)
         (out / f"{a.name}.verify.json").write_text(json.dumps(results, indent=2, default=str))
