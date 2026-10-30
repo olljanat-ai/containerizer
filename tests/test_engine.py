@@ -238,3 +238,13 @@ def test_docker_outage_is_not_a_build_failure(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: P())
     with pytest.raises(verify.DockerUnavailable):
         verify._run(["docker", "build", "."], 10)
+
+
+def test_windows_stopgap_for_aspnet_web_site():
+    from types import SimpleNamespace
+    from containerizer.generate import dockerfile_windows
+    p = SimpleNamespace(rel="RockWeb/RockWeb.website", properties={"WebSiteProject": "Rock.sln"},
+                        assembly_name="RockWeb")
+    df = dockerfile_windows(SimpleNamespace(project=p, role="web", name="RockWeb"))
+    assert 'msbuild "Rock.sln"' in df and '-p "C:\\src\\RockWeb" -u -fixednames C:\\out' in df
+    assert ".website" not in df.split("FROM", 2)[1].split("RUN", 1)[1]
