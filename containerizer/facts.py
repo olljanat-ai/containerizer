@@ -109,6 +109,8 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
             r"\$\{environment:(?:variable=)?(\w+):(?:whenEmpty|default)=([A-Za-z]\\?:|\\\\)", txt)]
         if envs:
             facts["nlog_env_folders"] = sorted(set(envs))
+        for m in re.finditer(r"\$\{basedir\}[\\/]+([\w\-]+)[\\/]", txt):
+            facts.setdefault("nlog_basedir_dirs", []).append(m.group(1))
         if re.search(r'xsi:type="(File|Database|EventLog)"', txt) and not re.search(r'xsi:type="(Console|ColoredConsole)"', txt):
             facts["nlog_no_console"] = True
     # Folders written relative to the content root
@@ -121,6 +123,7 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
             writable.add(m.group(2))
         for m in re.finditer(r'\?\?\s*"(App_Data|logs?|Logs|data|Data|temp|tmp|uploads|Uploads)"', txt):
             writable.add(m.group(1))
+    writable |= set(facts.get("nlog_basedir_dirs") or [])
     for key, val in (facts.get("folder_settings") or {}).items():
         if re.fullmatch(r"[\w\-./]+", val) and not val.startswith("/"):
             writable.add(val.strip("./"))
