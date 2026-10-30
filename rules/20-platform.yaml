@@ -1,0 +1,295 @@
+# Windows platform dependencies (OS APIs, native code, COM, hardware, desktop).
+rules:
+  - id: com-office-automation
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: 'GetTypeFromProgID\("(Word|Excel|Outlook|PowerPoint|Access|Visio)\.Application'
+        - code: 'Microsoft\.Office\.Interop\.|new\s+(Word|Excel)\.Application\b'
+        - reference: 'Microsoft\.Office\.Interop\..*|COM:.*(Word|Excel|Office).*'
+    severity: blocker
+    category: com
+    effort: 0
+    windows_container: false
+    title: Microsoft Office automation (COM)
+    why: >-
+      Drives Word/Excel through COM. Office is a desktop product that is not supported for
+      server-side automation, cannot be installed in a container and does not exist on Linux.
+    fix: Replace with a document library (OpenXML SDK, ClosedXML, NPOI, QuestPDF, a template engine) or keep this component on a Windows VM.
+
+  - id: com-interop
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: '\[ComImport\]|Type\.GetTypeFromProgID\(|Type\.GetTypeFromCLSID\(|Marshal\.GetActiveObject\(|Activator\.CreateInstance\(Type\.GetTypeFrom'
+        - reference: 'COM:.*|Interop\..*'
+    severity: blocker
+    category: com
+    effort: 0
+    windows_container: false
+    title: COM interop with a registered component
+    why: >-
+      Activates COM classes by ProgID/CLSID. COM registration and the vendor COM servers
+      exist only on Windows; Linux has no COM runtime.
+    fix: Replace the COM component with a Linux-capable SDK/API, or isolate it on a Windows host behind a network API.
+
+  - id: dcom-opc
+    applies_to: [dotnet]
+    when:
+      code: 'OPC(DA|Server)|IOPCServer|GetTypeFromProgID\([^)]*,\s*\w*[Hh]ost'
+    severity: blocker
+    category: com
+    effort: 0
+    windows_container: false
+    title: OPC DA over DCOM
+    why: Classic OPC DA uses DCOM, which only works between Windows hosts.
+    fix: Use OPC UA (cross-platform) through a gateway, or keep the collector on Windows.
+
+  - id: pinvoke-gui
+    applies_to: [dotnet]
+    when:
+      code: 'DllImport\(\s*"(user32|gdi32|comctl32|uxtheme|dwmapi|shell32|winspool\.drv|wtsapi32)(\.dll)?"'
+    severity: blocker
+    category: native
+    effort: 0
+    windows_container: false
+    title: Windows GUI / session APIs (user32/gdi32/wtsapi32)
+    why: Calls Windows desktop APIs (windows, messages, GDI, terminal sessions). Containers have no desktop session.
+    fix: Replace the screen automation with an API integration; otherwise this stays on a Windows desktop/VM.
+
+  - id: pinvoke-security
+    applies_to: [dotnet]
+    when:
+      code: 'DllImport\(\s*"(advapi32|authz|secur32|netapi32|crypt32|ncrypt|tbs|mpr|activeds|wldap32|userenv)(\.dll)?"'
+    severity: rewrite
+    category: native
+    effort: 3
+    windows_container: true
+    title: Windows security / directory native APIs
+    why: Calls Win32 security APIs (LogonUser, token privileges, AuthZ, DFS/NetApi, DPAPI/CryptoAPI). These have no Linux equivalent.
+    fix: Replace with platform-neutral mechanisms (OIDC tokens, LDAP via Novell/System.DirectoryServices.Protocols, managed crypto, Kubernetes secrets).
+
+  - id: pinvoke-kernel32
+    applies_to: [dotnet]
+    when:
+      code: 'DllImport\(\s*"(kernel32|ntdll|ole32|oleaut32|psapi|iphlpapi|ws2_32|version)(\.dll)?"|DllImport\(\s*Kernel32\b'
+    severity: refactor
+    category: native
+    effort: 1
+    windows_container: true
+    title: Win32 kernel/OLE native calls
+    why: P/Invoke into kernel32/ole32 does not resolve on Linux.
+    fix: Replace with the managed .NET API (most kernel32 calls have one) or guard with OperatingSystem.IsWindows().
+
+  - id: pinvoke-vendor
+    applies_to: [dotnet]
+    when:
+      all:
+        - code: 'DllImport\(\s*(?!"(kernel32|user32|gdi32|advapi32|ole32|oleaut32|ntdll|crypt32|authz|netapi32|wtsapi32|secur32|shell32|comctl32|winspool|psapi|iphlpapi|ws2_32|mpr|version|userenv|ncrypt|tbs|libc|libSystem|__Internal|e_sqlite3|sqlite3)(\.dll|\.so.*)?")("[^"]+"|[A-Za-z_][\w.]*)'
+    severity: blocker
+    category: native
+    effort: 0
+    windows_container: false
+    title: Native vendor library (P/Invoke)
+    why: >-
+      Calls a native DLL that is not part of .NET or Windows. Vendor SDKs like this are
+      almost always Windows-only binaries; without a Linux build of the library the
+      component cannot run in a Linux container.
+    fix: Ask the vendor for a Linux SDK or a network API; otherwise keep this component on Windows and call it remotely.
+
+  - id: native-dll-shipped
+    applies_to: [dotnet]
+    when:
+      all:
+        - file: ["*.dll", "*.ocx"]
+        - not: {file: ["*.so", "*.so.*"]}
+        - not: {role: test}
+    severity: refactor
+    category: native
+    effort: 1
+    title: Binary DLLs checked into the source tree
+    why: Pre-built DLLs in the repo are often Windows-only native or old managed libraries without NuGet packages.
+    fix: Check each DLL; replace with NuGet packages or Linux builds.
+
+  - id: libwkhtmltox
+    applies_to: [dotnet]
+    when:
+      any:
+        - package: DinkToPdf|Rotativa.*|NReco\.PdfGenerator|TuesPechkin.*|WkHtmlToPdf.*
+        - code: 'wkhtmltopdf|libwkhtmltox'
+    severity: config
+    category: native
+    effort: 1
+    title: wkhtmltopdf native library
+    why: wkhtmltopdf is available for Linux but must be added to the image (and the Windows .dll path changed to the .so).
+    fix: Install wkhtmltopdf/libwkhtmltox in the image (Debian package) or move to a maintained renderer such as Playwright/QuestPDF.
+
+  - id: registry
+    applies_to: [dotnet]
+    when:
+      code: '\bRegistry\.(LocalMachine|CurrentUser|ClassesRoot|Users|GetValue|SetValue)|\bRegistryKey\b|RegistryHive\.'
+    severity: refactor
+    category: os
+    effort: 1
+    windows_container: true
+    title: Windows Registry
+    why: The registry does not exist on Linux (Microsoft.Win32.Registry throws PlatformNotSupportedException).
+    fix: Move the values to configuration (environment variables / ConfigMap).
+
+  - id: eventlog-write
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: '\bEventLog\.(WriteEntry|CreateEventSource|SourceExists)|new\s+EventLog\(|\.AddEventLog\(|EventLogTraceListener'
+        - package: Serilog\.Sinks\.EventLog|NLog\.WindowsEventLog
+        - config: 'EventLogAppender|type="eventlog"|xsi:type="EventLog"|"Name"\s*:\s*"EventLog"'
+    severity: refactor
+    category: observability
+    effort: 0.5
+    windows_container: true
+    title: Writes to the Windows Event Log
+    why: There is no Event Log on Linux; EventLog APIs throw PlatformNotSupportedException.
+    fix: Log to stdout (console sink/provider) and let the cluster collect logs; guard EventLog calls with OperatingSystem.IsWindows().
+
+  - id: perf-counters
+    applies_to: [dotnet]
+    when:
+      code: '\bPerformanceCounter(Category)?\b'
+    severity: refactor
+    category: observability
+    effort: 0.5
+    windows_container: true
+    title: Windows performance counters
+    why: PerformanceCounter is Windows-only.
+    fix: Use System.Diagnostics.Metrics / OpenTelemetry metrics.
+
+  - id: wmi
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: 'ManagementObjectSearcher|ManagementClass\(|System\.Management\b'
+        - reference: System\.Management
+        - package: System\.Management
+    severity: refactor
+    category: os
+    effort: 1
+    windows_container: true
+    title: WMI
+    why: WMI exists only on Windows.
+    fix: Replace with Kubernetes/OS-neutral sources (environment, /proc, cluster APIs).
+
+  - id: windows-service-control
+    applies_to: [dotnet]
+    when:
+      code: '\bServiceController\b'
+    severity: refactor
+    category: os
+    effort: 0.5
+    windows_container: true
+    title: Controls Windows services
+    why: Starting/stopping Windows services from code has no container equivalent.
+    fix: Replace with Kubernetes API calls or remove.
+
+  - id: process-start-exe
+    applies_to: [dotnet]
+    when:
+      code: 'Process\.Start\([^)]*\.(exe|cmd|bat)|FileName\s*=\s*[^;]*\.(exe|cmd|bat)"|"(cmd|powershell|pwsh)(\.exe)?"'
+    severity: refactor
+    category: os
+    effort: 1
+    windows_container: true
+    title: Starts Windows executables
+    why: Launches .exe/.cmd/PowerShell processes that are not present in a Linux image.
+    fix: Install a Linux equivalent in the image or replace the external tool with a library.
+
+  - id: scheduled-tasks
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: 'TaskScheduler\.TaskService|schtasks(\.exe)?'
+        - text: 'Register-ScheduledTask|New-ScheduledTaskTrigger|schtasks\s*/create'
+          in: ["*.ps1", "*.psm1", "*.cmd", "*.bat", "*.md"]
+    severity: config
+    category: hosting
+    effort: 0.5
+    title: Windows Task Scheduler jobs
+    why: Jobs started by Task Scheduler become Kubernetes CronJobs.
+    fix: Create a CronJob per scheduled task using the same image and arguments.
+
+  - id: printing
+    applies_to: [dotnet]
+    when:
+      code: '\bPrintDocument\b|PrinterSettings|PrintQueue\b|LocalPrintServer|\bPrintDialog\b|\\\\\\\\[\w.\-]+\\\\[\w\-]*(PRINT|print|LETTERHEAD)'
+    severity: blocker
+    category: hardware
+    effort: 0
+    windows_container: false
+    title: Windows printing
+    why: Prints through the Windows print spooler/drivers to locally installed printers.
+    fix: Generate PDFs and send them to a print service (IPP/CUPS, cloud print) instead of printing from the app.
+
+  - id: serial-port
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: '\bSerialPort\b|"COM\d+"'
+        - package: System\.IO\.Ports
+    severity: blocker
+    category: hardware
+    effort: 0
+    windows_container: false
+    title: Serial port hardware
+    why: Reads a device on a local serial/COM port. A pod in a cluster has no access to a badge reader on a desk.
+    fix: Keep the device-facing part on the edge device; send events to the cluster over the network.
+
+  - id: hardware-sdk
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: '\bTpm\w*\b|Tbsi_|NCryptOpenStorageProvider|MS_PLATFORM_CRYPTO_PROVIDER|"Microsoft Platform Crypto Provider"'
+        - code: 'Thermocouple|DAQ\b|\bBoard(Handle|Interop|Driver)|ReadChannel\(|\bGpio\b|\bUsbDevice\b|HidDevice'
+    severity: blocker
+    category: hardware
+    effort: 0
+    windows_container: false
+    title: Local hardware (TPM, data acquisition boards, USB/HID)
+    why: Depends on hardware attached to a specific server, with Windows drivers.
+    fix: Keep the hardware-facing service on its host (edge) and integrate over the network; use a KMS/HSM service instead of the TPM.
+
+  - id: efs-ntfs
+    applies_to: [dotnet]
+    when:
+      code: 'File\.Encrypt\(|FileSystemAclExtensions|SetAccessControl\(|GetAccessControl\(|FileSecurity\b|DirectorySecurity\b|\bEFS\b'
+    severity: refactor
+    category: storage
+    effort: 1.5
+    windows_container: true
+    title: NTFS ACLs / EFS encryption
+    why: NTFS permissions and EFS encryption do not exist on Linux volumes.
+    fix: Use storage-level encryption and Kubernetes RBAC/volume permissions; drop per-file ACLs in code.
+
+  - id: desktop-ui
+    applies_to: [dotnet]
+    when:
+      role: desktop
+    severity: blocker
+    category: ui
+    effort: 0
+    windows_container: false
+    title: Windows desktop application (WinForms/WPF)
+    why: A desktop GUI used interactively by people at their PCs is not a server workload.
+    fix: Keep as a desktop client (it can call containerized APIs) or rebuild the UI as a web app.
+
+  - id: clickonce-offline
+    applies_to: [dotnet]
+    when:
+      any:
+        - property: {PublishUrl: ".*"}
+        - file: "*.application"
+        - code: '\bApplicationDeployment\b'
+    severity: info
+    category: ui
+    effort: 0
+    title: ClickOnce deployed client
+    why: The client is installed on workstations with ClickOnce; only its server side can move to containers.
+    fix: The ClickOnce publish folder can be served as static files from a container.

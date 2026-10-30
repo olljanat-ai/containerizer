@@ -1,0 +1,491 @@
+# Identity, storage, data, messaging and third-party product dependencies.
+rules:
+  # ---------------------------------------------------------------- identity
+  - id: windows-auth-iis
+    applies_to: [dotnet]
+    when:
+      any:
+        - config: '<authentication\s+mode="Windows"|windowsAuthentication\s+enabled="true"|"windowsAuthentication"\s*:\s*true'
+        - code: 'WindowsPrincipal\b|User\.IsInRole\("[A-Z]+\\\\'
+    severity: refactor
+    category: identity
+    effort: 2
+    windows_container: true
+    title: Windows (Kerberos/NTLM) authentication
+    why: >-
+      Users are authenticated by IIS Windows authentication against Active Directory. Linux
+      containers are not domain joined; Negotiate can work with a keytab but is fragile behind
+      ingress/load balancers.
+    fix: Prefer OIDC (Entra ID/AD FS/Keycloak) at the app or ingress; otherwise use the Negotiate handler with a keytab Secret and an LDAP connection for roles.
+
+  - id: negotiate-auth
+    applies_to: [dotnet]
+    when:
+      any:
+        - package: Microsoft\.AspNetCore\.Authentication\.Negotiate
+        - code: 'NegotiateDefaults|AddNegotiate\('
+    severity: config
+    category: identity
+    effort: 1
+    title: Negotiate (Kerberos) authentication on ASP.NET Core
+    why: >-
+      Negotiate works on Linux only with Kerberos: a keytab for the service SPN mounted as a
+      Secret, krb5.conf and the gss-ntlmssp/krb5 libraries in the image. Role (group) lookup
+      on Linux needs LDAP settings.
+    fix: Add krb5 libs to the image, mount KRB5_KTNAME keytab, configure EnableLdap; or switch to OIDC.
+
+  - id: windows-identity-impersonation
+    applies_to: [dotnet]
+    when:
+      code: 'WindowsIdentity\.(RunImpersonated|Impersonate|GetCurrent)|WindowsImpersonationContext|LogonUser\(|\.Impersonate\('
+    severity: rewrite
+    category: identity
+    effort: 3
+    windows_container: false
+    title: Windows identity / impersonation / delegation
+    why: >-
+      Acts as the calling Windows user (impersonation, Kerberos delegation) to reach SQL,
+      file shares or other services. Linux containers cannot obtain Windows tokens.
+    fix: Use service identities with explicit authorization (OIDC on-behalf-of, scoped SQL logins) instead of impersonation.
+
+  - id: active-directory-ds
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: 'PrincipalContext\(|DirectoryEntry\(|DirectorySearcher\(|UserPrincipal\.|GroupPrincipal\.'
+        - package: System\.DirectoryServices(\.AccountManagement)?
+        - reference: System\.DirectoryServices(\.AccountManagement)?
+    severity: refactor
+    category: identity
+    effort: 2
+    windows_container: true
+    title: Active Directory via System.DirectoryServices
+    why: System.DirectoryServices / AccountManagement are Windows-only (ADSI). Only System.DirectoryServices.Protocols (LDAP) works on Linux.
+    fix: Port lookups to LDAP (System.DirectoryServices.Protocols or Novell.Directory.Ldap) or to Microsoft Graph.
+
+  - id: gmsa
+    applies_to: [dotnet]
+    when:
+      any:
+        - text: 'gMSA|Group Managed Service Account|New-ADServiceAccount|svc-[\w\-]+\$'
+          in: ["*.ps1", "*.psm1", "README.md", "*.md"]
+    severity: config
+    category: identity
+    effort: 1
+    title: Group managed service accounts
+    why: gMSA identities only work for Windows containers on domain-joined nodes.
+    fix: Replace with workload identity / SQL logins / Kubernetes secrets.
+
+  - id: adfs-wsfed-saml
+    applies_to: [dotnet]
+    when:
+      any:
+        - package: Microsoft\.AspNetCore\.Authentication\.WsFederation|Sustainsys\.Saml2.*|Microsoft\.Owin\.Security\.WsFederation
+        - reference: System\.IdentityModel\.Services|Microsoft\.IdentityModel
+    severity: info
+    category: identity
+    effort: 0.5
+    title: WS-Federation / SAML (AD FS)
+    why: Works from Linux containers; needs correct public URLs behind the ingress (forwarded headers).
+    fix: Enable ForwardedHeaders and register the ingress host name with the IdP.
+
+  - id: machinekey
+    applies_to: [dotnet]
+    when:
+      config: '<machineKey\s'
+    severity: config
+    category: identity
+    effort: 0.5
+    title: machineKey in web.config
+    why: Shared machineKey for cookies/ViewState across a web farm; must not be baked into an image.
+    fix: Inject as a Secret; on ASP.NET Core persist Data Protection keys to shared storage.
+
+  - id: dataprotection-default
+    applies_to: [dotnet]
+    when:
+      all:
+        - role: web
+        - not: {tfm: 'net[1-4]\d{1,2}'}
+        - code: 'AddAuthentication|AddIdentity|AddCookie|AddSession|AddAntiforgery|AddRazorPages|AddControllersWithViews|AddDefaultIdentity'
+        - not: {code: 'PersistKeysTo|AddDataProtection\(\)\s*\.\s*Persist'}
+    severity: config
+    category: identity
+    effort: 0.5
+    title: Data Protection keys not persisted
+    why: >-
+      Cookies and antiforgery tokens are encrypted with Data Protection keys. In a container the
+      keys live in the pod's home folder and are lost on restart or differ between replicas, so
+      users are logged out and forms fail.
+    fix: Mount a volume at the key folder (set by the generator) or persist keys to Redis/SQL/blob in code.
+
+  - id: dpapi
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: 'ProtectedData\.(Protect|Unprotect)|DataProtectionScope\.|ProtectKeysWithDpapi'
+        - package: System\.Security\.Cryptography\.ProtectedData
+    severity: refactor
+    category: secrets
+    effort: 1
+    windows_container: true
+    title: DPAPI (Windows data protection)
+    why: DPAPI ties encrypted data to a Windows user/machine; it is unavailable on Linux.
+    fix: Store secrets in Kubernetes Secrets/Key Vault; re-encrypt existing data with a managed key.
+
+  - id: cert-store
+    applies_to: [dotnet]
+    when:
+      code: 'new\s+X509Store\(|StoreLocation\.LocalMachine|StoreName\.My|FindBySubjectName|FindByThumbprint'
+    severity: config
+    category: secrets
+    effort: 0.5
+    title: Windows certificate store
+    why: >-
+      Certificates are looked up in the Windows certificate store (LocalMachine\My). On Linux
+      the .NET X509Store is a per-user directory, empty in a fresh container.
+    fix: Mount the certificate (PFX/PEM) from a Secret and load it from a file path; use cert-manager for TLS at the ingress.
+
+  - id: secrets-in-config
+    when:
+      config: '("?(password|pwd|secret|apikey|api_key|clientsecret|accesskey)"?\s*[:=]\s*"(?!\s*"|\$\{|#\{|__|%|<|\*{3}|changeme|CHANGE_ME|{{)[^"]{4,}")|(Password\s*=\s*(?!\s*;|\$\{|#\{|__)[^;"]{3,};)'
+    severity: config
+    category: secrets
+    effort: 0.5
+    title: Secrets in configuration files
+    why: Passwords or keys are committed in config files and would be baked into the image.
+    fix: Remove them from the image (.dockerignore) and inject via Kubernetes Secrets as environment variables.
+
+  # ---------------------------------------------------------------- data
+  - id: sqlserver
+    when:
+      any:
+        - package: Microsoft\.Data\.SqlClient|System\.Data\.SqlClient|Microsoft\.EntityFrameworkCore\.SqlServer|Dapper|EntityFramework|dbup-sqlserver|Hangfire\.SqlServer
+        - config: 'Server=|Data Source=[^;"]*(\\\\|,\d+|tcp:)|Initial Catalog='
+    severity: info
+    category: data
+    effort: 0
+    title: SQL Server database
+    why: Stays external (managed SQL / existing server); reachable from the cluster over TCP 1433.
+    fix: Pass the connection string as a Secret (ConnectionStrings__Name env var).
+
+  - id: sql-integrated-security
+    when:
+      config: '(Integrated Security\s*=\s*(true|SSPI|yes))|(Trusted_Connection\s*=\s*(true|yes))'
+    severity: refactor
+    category: data
+    effort: 1
+    windows_container: true
+    title: SQL Server Windows authentication
+    why: Integrated Security uses the Windows service account. From Linux it needs Kerberos (keytab) or a switch to SQL/Entra authentication.
+    fix: Switch to SQL authentication or Entra managed identity with the password from a Secret.
+
+  - id: msdtc
+    when:
+      any:
+        - code: '\bTransactionScope\b[^;]*\n?[^;]*\b(Required|RequiresNew)|EnterpriseServicesInteropOption|TransactionInterop|DependentTransaction'
+        - text: 'MSDTC|Distributed Transaction Coordinator'
+          in: ["README.md", "*.ps1", "*.md"]
+    severity: refactor
+    category: data
+    effort: 2
+    windows_container: false
+    title: Distributed transactions (MSDTC)
+    why: >-
+      Transactions that span connections/queues escalate to MSDTC. .NET 8 supports distributed
+      transactions only on Windows, and MSDTC is not available to Linux containers.
+    fix: Restructure into single-resource transactions plus an outbox/saga pattern.
+
+  - id: sql-filestream
+    when:
+      any:
+        - code: 'SqlFileStream|FILESTREAM|PathName\(\)'
+        - text: 'FILESTREAM|FileTable'
+          in: ["*.sql", "README.md"]
+    severity: refactor
+    category: data
+    effort: 2
+    windows_container: false
+    title: SQL Server FILESTREAM / FileTable
+    why: SqlFileStream uses Win32 file handles over SMB to the SQL Server host; it does not work from Linux.
+    fix: Read/write the varbinary(max) column through T-SQL, or move blobs to object storage.
+
+  - id: sql-clr
+    when:
+      role: sqlclr
+    severity: info
+    category: data
+    effort: 0
+    title: SQL CLR assembly (runs inside SQL Server)
+    why: This code runs inside the database engine, not as a container. It stays with SQL Server (Windows; SQL on Linux supports only SAFE CLR assemblies).
+    fix: Keep with the database, or move logic to the application tier.
+
+  - id: sql-agent-ssis
+    when:
+      any:
+        - role: ssis
+        - file: "*.dtsx"
+        - text: 'sp_add_job|SQL Server Agent|msdb\.dbo\.sp_add_jobstep'
+          in: ["*.sql", "README.md"]
+    severity: info
+    category: data
+    effort: 0
+    title: SQL Server Agent jobs / SSIS packages
+    why: Jobs and packages execute in SQL Server Agent/SSIS (Windows); they are database-tier, not containers.
+    fix: Keep with SQL Server or re-implement as Kubernetes CronJobs.
+
+  - id: ssrs
+    when:
+      any:
+        - package: Microsoft\.ReportingServices\..*|Microsoft\.ReportViewer\..*
+        - file: ["*.rdl", "*.rdlc"]
+    severity: rewrite
+    category: reporting
+    effort: 3
+    windows_container: true
+    title: SSRS / ReportViewer reports
+    why: The ReportViewer controls (WebForms/WinForms) are .NET Framework only; local RDLC rendering is Windows-only.
+    fix: Call the SSRS REST API from the app, or re-implement reports (QuestPDF, a BI tool).
+
+  - id: oledb-odbc-access
+    when:
+      any:
+        - package: System\.Data\.OleDb
+        - code: 'Microsoft\.(ACE|Jet)\.OLEDB|OleDbConnection|\.mdb\b|\.accdb\b'
+    severity: blocker
+    category: data
+    effort: 0
+    windows_container: false
+    title: OLE DB / Access database engine
+    why: OLE DB (and the Access/Jet/ACE engine) is Windows-only.
+    fix: Use a managed provider (e.g. ODBC with a Linux driver, or export the data); keep on Windows otherwise.
+
+  - id: ibm-i-access
+    when:
+      any:
+        - code: 'cwbx|IBM\.Data\.DB2\.iSeries|AS400System|iDB2Connection|cwbapi|IBMDA400'
+        - package: IBM\.Data\.DB2\.iSeries|Net\.IBM\.Data\.Db2.*
+    severity: refactor
+    category: data
+    effort: 3
+    windows_container: false
+    title: IBM i Access Client (cwbx/iSeries provider)
+    why: >-
+      The IBM i Access Windows package (COM cwbx, iSeries .NET provider) is Windows-only.
+      Linux alternatives exist (IBM i Access ODBC driver for Linux, Net.IBM.Data.Db2 with DB2
+      Connect, or REST services on the IBM i).
+    fix: Replace calls with the Linux ODBC driver/Net.IBM.Data.Db2 or IBM i web services.
+
+  - id: ax-business-connector
+    when:
+      any:
+        - reference: Microsoft\.Dynamics\.BusinessConnectorNet|Microsoft\.Dynamics\.AX\..*
+        - code: 'Microsoft\.Dynamics\.BusinessConnectorNet|\bAxapta\b|BusinessConnector'
+    severity: blocker
+    category: thirdparty
+    effort: 0
+    windows_container: false
+    title: Dynamics AX 2012 .NET Business Connector
+    why: The Business Connector is a 32/64-bit Windows client component of AX 2012; it cannot run on Linux.
+    fix: Call AX through AIF/web services exposed by AX instead, or keep this component on a Windows host.
+
+  - id: sharepoint-server
+    when:
+      any:
+        - role: sharepoint
+        - code: 'Microsoft\.SharePoint\.(Administration|SPFarm)|\bSPFarm\b|\bSPSecurity\b'
+    severity: blocker
+    category: thirdparty
+    effort: 0
+    windows_container: false
+    title: SharePoint Server farm code
+    why: Full-trust farm solutions (.wsp) run inside SharePoint Server on Windows.
+    fix: Stays in SharePoint; only provider-hosted add-ins/remote sync components can move.
+
+  - id: sharepoint-csom
+    when:
+      all:
+        - package: Microsoft\.SharePoint(2013|2016|2019)?\.CSOM|Microsoft\.SharePointOnline\.CSOM|PnP\..*
+        - not: {role: sharepoint}
+    severity: config
+    category: thirdparty
+    effort: 0.5
+    title: SharePoint client (CSOM)
+    why: CSOM for SharePoint 2016 targets .NET Framework; on .NET 8 use the SharePoint Online CSOM or REST. Server-to-server trust needs the certificate as a Secret.
+    fix: Mount the S2S certificate from a Secret; use REST/CSOM for .NET Standard.
+
+  - id: biztalk
+    when:
+      any:
+        - role: biztalk
+        - reference: Microsoft\.BizTalk\..*|Microsoft\.XLANGs\..*
+        - file: ["*.btm", "*.odx", "*.btp", "*.btproj"]
+    severity: blocker
+    category: thirdparty
+    effort: 0
+    windows_container: false
+    title: BizTalk Server artifacts
+    why: Orchestrations, maps, pipelines and pipeline components run inside BizTalk Server on Windows.
+    fix: Keep on BizTalk or migrate integrations to Logic Apps / an integration platform; custom .NET helpers can move.
+
+  # ---------------------------------------------------------------- messaging
+  - id: msmq
+    when:
+      any:
+        - reference: System\.Messaging
+        - code: '\bMessageQueue\b|\bMSMQ\b|FormatName:DIRECT|private\$\\\\'
+        - package: Experimental\.System\.Messaging|MSMQ\.Messaging
+    severity: rewrite
+    category: messaging
+    effort: 3
+    windows_container: false
+    title: MSMQ
+    why: MSMQ is a Windows-only queueing service; it is not available to Linux containers.
+    fix: Replace with RabbitMQ, Azure Service Bus or Kafka (MassTransit/NServiceBus abstractions help).
+
+  - id: rabbitmq
+    when:
+      package: RabbitMQ\.Client|MassTransit\.RabbitMQ|EasyNetQ.*|NServiceBus\.RabbitMQ
+    severity: info
+    category: messaging
+    effort: 0
+    title: RabbitMQ
+    why: Cross-platform client; run the broker as a cluster service or managed offering.
+    fix: Provide the broker connection via Secret.
+
+  - id: mqtt
+    when:
+      package: MQTTnet.*
+    severity: info
+    category: messaging
+    effort: 0
+    title: MQTT
+    why: Cross-platform; broker (Mosquitto) can run in the cluster.
+    fix: None.
+
+  - id: named-pipes
+    when:
+      code: 'NamedPipe(Server|Client)Stream|net\.pipe://'
+    severity: refactor
+    category: messaging
+    effort: 1
+    title: Named pipes IPC
+    why: Windows named pipes are local IPC between processes on the same machine; containers in different pods cannot use them.
+    fix: Use HTTP/gRPC between containers, or run both processes in one pod over a Unix domain socket.
+
+  # ---------------------------------------------------------------- storage
+  - id: unc-shares
+    when:
+      any:
+        - config: '\\\\\\\\[A-Za-z0-9][\w.\-]+\\\\[\w$.\-]+'
+        - code: '@"\\\\\\\\[A-Za-z0-9][\w.\-]+\\\\|"\\\\\\\\\\\\\\\\[A-Za-z0-9][\w.\-]+\\\\\\\\'
+    severity: config
+    category: storage
+    effort: 1
+    title: Windows file shares (UNC paths)
+    why: UNC paths (\\server\share) only work on Windows with SMB credentials of the process identity.
+    fix: Mount the share as a Kubernetes volume (SMB CSI driver with a credentials Secret) and point the setting to the mount path.
+
+  - id: windows-drive-paths
+    when:
+      config: '"[A-Za-z]:\\\\\\\\|=\s*"?[C-Zc-z]:\\\\[^\\]|"[C-Z]:/'
+    severity: config
+    category: storage
+    effort: 0.5
+    title: Windows drive paths in configuration
+    why: Paths like D:\Data do not exist in a Linux container.
+    fix: Override the settings with Linux paths (env vars) that point at mounted volumes.
+
+  - id: local-state-files
+    when:
+      all:
+        - not: {role: 'test|library'}
+        - any:
+            - code: 'File\.(WriteAllText|WriteAllBytes|AppendAllText|Create|Move|Copy)\(|new\s+FileStream\(|Directory\.CreateDirectory\('
+            - package: Serilog\.Sinks\.File|log4net|NLog
+    severity: config
+    category: storage
+    effort: 0.25
+    title: Writes to the local file system
+    why: >-
+      Files written in the container are lost on restart and not shared between replicas, and
+      the image's app folder is read-only for the non-root user.
+    fix: Mount volumes (emptyDir for scratch/logs, PVC or object storage for data) at the paths the app writes to; log to stdout.
+
+  - id: sqlite-local
+    when:
+      package: Microsoft\.EntityFrameworkCore\.Sqlite|Microsoft\.Data\.Sqlite|System\.Data\.SQLite.*|LiteDB|dbup-sqlite
+    severity: config
+    category: storage
+    effort: 0.25
+    title: Embedded file database (SQLite/LiteDB)
+    why: The database file must be on a persistent volume and the app limited to one replica.
+    fix: Mount a PVC at the database folder and run a single replica (or move to a server database).
+
+  - id: lucene-local-index
+    when:
+      package: Lucene\.Net.*
+    severity: config
+    category: storage
+    effort: 0.5
+    title: Local Lucene index
+    why: The index directory must be persistent and is single-writer.
+    fix: PVC for the index and one replica for the indexer (or Elasticsearch/OpenSearch).
+
+  - id: ftp-server-iis
+    when:
+      text: 'IIS FTP|Web-Ftp-Server|New-WebFtpSite|FTP Server'
+      in: ["README.md", "*.ps1", "*.psm1"]
+    severity: config
+    category: networking
+    effort: 1
+    title: IIS FTP site for inbound files
+    why: Partners upload files to an IIS FTP site; that becomes a separate SFTP/FTP service in the cluster.
+    fix: Run an SFTP server container (e.g. atmoz/sftp) or managed SFTP, sharing a volume with the processor.
+
+  - id: in-memory-session-scaleout
+    applies_to: [dotnet]
+    when:
+      any:
+        - config: '<sessionState\s+mode="InProc"|<sessionState(?![^>]*mode=)'
+        - code: 'AddDistributedMemoryCache\(\)'
+    severity: config
+    category: scaling
+    effort: 0.5
+    title: In-process session state
+    why: Sessions are kept in memory; with several replicas users lose sessions unless sticky sessions are used.
+    fix: Use Redis/SQL distributed cache or enable session affinity on the ingress.
+
+  - id: signalr-scaleout
+    when:
+      all:
+        - code: 'AddSignalR\(|MapHub<'
+        - not: {code: 'AddStackExchangeRedis|AddAzureSignalR'}
+    severity: config
+    category: scaling
+    effort: 0.5
+    title: SignalR without backplane
+    why: With more than one replica, clients connected to other pods miss messages.
+    fix: Add a Redis backplane or enable session affinity and run one replica.
+
+  - id: hangfire-quartz
+    when:
+      package: Hangfire.*|Quartz.*|FluentScheduler|Cronos
+    severity: info
+    category: scaling
+    effort: 0
+    title: In-process job scheduler
+    why: Scheduled jobs run inside the app; multiple replicas run them more than once unless the scheduler uses a shared store/locks.
+    fix: Use a persistent job store (Hangfire SQL, Quartz clustering) or run the job host with one replica / as a CronJob.
+
+  # ---------------------------------------------------------------- third-party binaries
+  - id: vendor-install-required
+    when:
+      text: '\.msi\b|Install-[A-Za-z]+\.ps1|licen[cs]e (file|key)|\.mrl\b|dongle'
+      in: ["README.md"]
+    scope: repo
+    severity: info
+    category: thirdparty
+    effort: 0
+    title: Vendor software installed on servers
+    why: The README lists vendor installers/licences; check whether each one has a Linux version.
+    fix: Inventory each vendor component's Linux support before planning.

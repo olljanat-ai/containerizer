@@ -1,0 +1,209 @@
+# Role rules decide what a project *is*. The matching rule with the highest
+# priority wins. Roles that are deployable on their own: web, worker, console,
+# spa, desktop, biztalk, sharepoint, sqlclr, ssis, sqldb.
+rules:
+  - id: role-test
+    phase: role
+    role: test
+    priority: 100
+    when:
+      any:
+        - package: Microsoft\.NET\.Test\.Sdk|xunit|nunit|MSTest\.TestFramework|NUnit3TestAdapter
+        - property: {IsTestProject: "true"}
+        - name: '[.\-](Tests?|UnitTests|IntegrationTests|Specs)$'
+
+  - id: role-biztalk
+    phase: role
+    role: biztalk
+    priority: 95
+    when: {kind: biztalk}
+
+  - id: role-sqldb
+    phase: role
+    role: sqldb
+    priority: 95
+    when: {kind: sqldb}
+
+  - id: role-ssis
+    phase: role
+    role: ssis
+    priority: 95
+    when:
+      any:
+        - kind: ssis
+        - file: "*.dtsx"
+
+  - id: role-sqlclr
+    phase: role
+    role: sqlclr
+    priority: 92
+    when:
+      code: '\[\s*(Microsoft\.SqlServer\.Server\.)?Sql(Function|Procedure|Trigger|UserDefinedType|UserDefinedAggregate)\b'
+
+  - id: role-sharepoint
+    phase: role
+    role: sharepoint
+    priority: 91
+    when:
+      all:
+        - any:
+            - reference: Microsoft\.SharePoint(\..*)?
+            - package: Microsoft\.SharePoint(2013|2016|2019)?(\.Server)?(\..*)?
+            - file: ["*.wsp", "*.spdata", "Package.package", "*.feature"]
+        - any:
+            - file: ["*.wsp", "*.spdata", "Package.package", "*.feature", "Elements.xml"]
+            - code: '\bSPFarm\b|\bSPSite\b|\bSPWeb\b|\bSPFeatureReceiver\b|\bSPJobDefinition\b'
+
+  - id: role-desktop
+    phase: role
+    role: desktop
+    priority: 80
+    when:
+      any:
+        - property: {UseWPF: "true"}
+        - property: {UseWindowsForms: "true"}
+        - output_type: WinExe
+        - reference: System\.Windows\.Forms|PresentationFramework|PresentationCore|WindowsBase
+        - all:
+            - tfm: 'net\d+\.\d+-windows.*'
+            - code: '\bApplication\.Run\(|System\.Windows\.Forms|new\s+\w+Window\(\)'
+            - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
+
+  - id: role-clickonce
+    phase: role
+    role: desktop
+    priority: 81
+    when:
+      any:
+        - property: {IsWebBootstrapper: ".*"}
+        - property: {PublishUrl: ".*"}
+        - file: "*.application"
+
+  - id: role-spa-standalone
+    phase: role
+    role: spa
+    priority: 70
+    when:
+      all:
+        - kind: node
+        - package: '@angular/core|react|react-dom|vue|svelte|@sveltejs/kit|preact|ember-source'
+        - not: {property: {HostedBy: ".*"}}
+        - not: {package: 'next|nuxt|express|fastify|koa|@nestjs/core|@remix-run/node'}
+
+  - id: role-spa-hosted
+    phase: role
+    role: spa-assets
+    priority: 71
+    when:
+      all:
+        - kind: node
+        - property: {HostedBy: ".*"}
+
+  - id: role-node-server
+    phase: role
+    role: web
+    priority: 69
+    when:
+      all:
+        - kind: node
+        - package: 'next|nuxt|express|fastify|koa|@nestjs/core|@remix-run/node|hapi|@hapi/hapi|restify'
+
+  - id: role-python-web
+    phase: role
+    role: web
+    priority: 60
+    when:
+      all:
+        - kind: python
+        - package: 'flask|django|fastapi|starlette|aiohttp|tornado|gunicorn|uvicorn|sanic|falcon|pyramid'
+
+  - id: role-java-web
+    phase: role
+    role: web
+    priority: 60
+    when:
+      all:
+        - kind: java
+        - package: 'spring-boot-starter-web|spring-boot-starter-webflux|quarkus-.*|micronaut-.*|javax\.servlet-api|jakarta\.servlet-api'
+
+  - id: role-go-web
+    phase: role
+    role: web
+    priority: 60
+    when:
+      all:
+        - kind: go
+        - any:
+            - package: 'github\.com/(gin-gonic/gin|labstack/echo.*|gofiber/fiber.*|gorilla/mux|go-chi/chi.*)'
+            - code: 'http\.ListenAndServe|net/http'
+
+  - id: role-go-cli
+    phase: role
+    role: console
+    priority: 10
+    when: {kind: go}
+
+  - id: role-python-app
+    phase: role
+    role: console
+    priority: 10
+    when: {kind: python}
+
+  - id: role-web-aspnetcore
+    phase: role
+    role: web
+    priority: 60
+    when:
+      any:
+        - sdk: Microsoft\.NET\.Sdk\.(Web|BlazorWebAssembly|Razor)
+        - all:
+            - framework_ref: Microsoft\.AspNetCore\.App
+            - code: 'WebApplication\.Create(Builder|SlimBuilder)?|UseStartup<|ConfigureWebHost|WebHost\.CreateDefaultBuilder'
+        - all:
+            - package: Microsoft\.AspNetCore(\.App|\.All)?
+            - code: 'UseStartup<|WebHost\.CreateDefaultBuilder|ConfigureWebHostDefaults'
+
+  - id: role-web-systemweb
+    phase: role
+    role: web
+    priority: 60
+    when:
+      any:
+        - sdk: MSBuild\.SDK\.SystemWeb
+        - type_guid: 349c5851-65df-11da-9384-00065b846f21
+        - all:
+            - file: ["Global.asax", "*.aspx", "*.asmx", "*.svc", "*.ashx"]
+            - file: ["Web.config"]
+        - package: Microsoft\.AspNet\.(Mvc|WebApi\.WebHost|WebPages)
+
+  - id: role-web-selfhost
+    phase: role
+    role: web
+    priority: 55
+    when:
+      all:
+        - output_type: Exe
+        - any:
+            - package: Microsoft\.Owin\.(Host\.HttpListener|Hosting|SelfHost)|Microsoft\.AspNet\.WebApi\.OwinSelfHost|Nancy\.Hosting\.Self
+            - code: '\bWebApp\.Start\b|\bHttpSelfHostServer\b'
+        - not: {code: '\bServiceBase\b|HostFactory\.Run'}
+
+  - id: role-worker
+    phase: role
+    role: worker
+    priority: 50
+    when:
+      any:
+        - sdk: Microsoft\.NET\.Sdk\.Worker
+        - all:
+            - output_type: Exe
+            - code: '\bServiceBase\b|HostFactory\.Run|UseWindowsService|AddHostedService|:\s*BackgroundService\b|IHostedService|UseSystemd|ServiceHost\b|RunAsService'
+
+  - id: role-console
+    phase: role
+    role: console
+    priority: 40
+    when:
+      any:
+        - output_type: Exe
+        - code: '^\s*static\s+(async\s+)?(void|int|Task|Task<int>)\s+Main\s*\('
