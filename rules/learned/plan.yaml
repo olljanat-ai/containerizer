@@ -1,2 +1,68 @@
 # Plan rules learned by `containerizer verify --learn`. Safe to edit or delete.
-rules: []
+rules:
+- id: learned-build-rid-downgrade-controltower-booking-web
+  phase: plan
+  source: learned
+  when:
+    name: ^ControlTower\.Booking\.Web$
+  plan:
+    rid: portable
+  learned_from: control-tower/ControlTower.Booking.Web
+  learned_at: '2026-10-30'
+- id: learned-run-readonly-path-controltower-identity
+  phase: plan
+  source: learned
+  when:
+    name: ^ControlTower\.Identity$
+  plan:
+    add_writable:
+    - /.devdata
+  learned_from: control-tower/ControlTower.Identity
+  learned_at: '2026-10-30'
+- id: learned-build-rid-downgrade-controltower-scanning-api
+  phase: plan
+  source: learned
+  when:
+    name: ^ControlTower\.Scanning\.Api$
+  plan:
+    rid: portable
+  learned_from: control-tower/ControlTower.Scanning.Api
+  learned_at: '2026-10-30'
+- id: learned-run-readonly-path-fieldservice-web
+  phase: plan
+  source: learned
+  when:
+    name: ^FieldService\.Web$
+  plan:
+    add_writable:
+    - /App_Data
+  learned_from: field-service/FieldService.Web
+  learned_at: '2026-10-30'
+- id: learned-run-readonly-path-productreturns-api
+  phase: plan
+  source: learned
+  when:
+    name: ^ProductReturns\.Api$
+  plan:
+    add_writable:
+    - /app/App_Data
+  learned_from: product-returns/ProductReturns.Api
+  learned_at: '2026-10-30'
+- id: learned-build-rid-downgrade-vanarsdel-gateway
+  phase: plan
+  source: learned
+  when:
+    name: ^VanArsdel\.Gateway$
+  plan:
+    rid: portable
+  learned_from: retail-backoffice/VanArsdel.Gateway
+  learned_at: '2026-10-30'
+- id: learned-build-rid-downgrade-vanarsdel-storemanager
+  phase: plan
+  source: learned
+  when:
+    name: ^VanArsdel\.StoreManager$
+  plan:
+    rid: portable
+  learned_from: retail-backoffice/VanArsdel.StoreManager
+  learned_at: '2026-10-30'

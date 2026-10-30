@@ -116,3 +116,18 @@ def test_blocker_only_in_optional_command_is_refactor(tmp_path):
     f = next(f for f in c.findings if f.rule.severity == "blocker")
     assert f.modes == ["--import-legacy"] and f.severity == "refactor"
     assert c.verdict != "blocker"
+
+
+def test_nlog_and_tool_paths(tmp_path):
+    web_app(tmp_path)
+    write(tmp_path, "src/Web/nlog.config", r"""
+        <nlog><variable name="d" value="${environment:APP_LOG_DIR:whenEmpty=D\:/App/Logs}" />
+        <targets><target xsi:type="File" fileName="${var:d}/x.log" /></targets></nlog>""")
+    write(tmp_path, "src/Web/appsettings.json", r"""
+        {"Pdf": {"Tool": "C:\\Program Files\\wkhtmltopdf\\bin\\wkhtmltopdf.exe"},
+         "Routing": {"Db": "D:\\Data\\map.routerdb"}}""")
+    a = assess(tmp_path)
+    plan = make_plan(a, a.components[0])
+    assert plan["env"]["APP_LOG_DIR"] == "/app/logs" and "logs" in plan["add_writable"]
+    assert plan["env"]["Pdf__Tool"] == "wkhtmltopdf"
+    assert plan["env"]["Routing__Db"] == "/data/data/map.routerdb"

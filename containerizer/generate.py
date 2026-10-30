@@ -120,6 +120,10 @@ def _repoint_config(plan: dict, facts: dict) -> None:
     file-only Serilog sinks log to stdout, Windows paths move under /data (a volume)."""
     for key in facts.get("listen_url_settings") or []:
         plan["env"][key.replace(":", "__")] = f"http://+:{CONTAINER_PORT}"
+    for var in facts.get("nlog_env_folders") or []:
+        plan["env"][var] = "/app/logs"
+        if "logs" not in plan["add_writable"]:
+            plan["add_writable"].append("logs")
     sinks = set(facts.get("serilog_file_sinks") or [])
     for i in sorted(sinks):
         plan["env"][f"Serilog__WriteTo__{i}__Name"] = "Console"
@@ -129,7 +133,15 @@ def _repoint_config(plan: dict, facts: dict) -> None:
             continue
         segs = [s for s in re.split(r"[\\/]+", val) if s]
         segs = segs[1:] if re.fullmatch(r"[A-Za-z]:", segs[0]) else segs[2:]   # drop drive or \\server\share
-        is_file = bool(re.search(r"\.\w{1,5}$", segs[-1])) if segs else False
+        is_file = bool(re.search(r"\.[A-Za-z]\w{0,7}$", segs[-1])) if segs else False
+        if any(x.lower() in ("program files", "program files (x86)") for x in segs[:1]) or val.lower().endswith(".exe"):
+            # an installed tool: use the Linux binary of the same name from PATH (see native packages)
+            if is_file:
+                name = segs[-1]
+                if name.lower().endswith(".dll"):     # native library: Linux naming
+                    name = "lib" + name[:-4] + ".so"
+                plan["env"]["__".join(parts)] = re.sub(r"\.exe$", "", name, flags=re.I)
+            continue
         if is_file and re.search(r"\.(pem|pfx|p12|key|crt|cer|snk|jks|keytab)$", segs[-1], re.I):
             # keys and certificates come from a Kubernetes Secret volume, never from the image
             plan["env"]["__".join(parts)] = f"/secrets/{segs[-1]}"
@@ -141,6 +153,12 @@ def _repoint_config(plan: dict, facts: dict) -> None:
         plan["env"]["__".join(parts)] = f"{folder}/{segs[-1]}" if is_file else folder
         if folder not in plan["add_writable"]:
             plan["add_writable"].append(folder)
+    for item in facts.get("nlog_folder_settings") or []:
+        # trailing slash: NLog targets append "\\file.log", which on Linux then stays inside the folder
+        key = item.replace(".", "__")
+        plan["env"][key] = plan["env"].get(key, "/app/logs").rstrip("/") + "/"
+        if plan["env"][key] == "/app/logs/" and "logs" not in plan["add_writable"]:
+            plan["add_writable"].append("logs")
 
 
 def apply_plan_rules(plan: dict, repo, c: Component, rules: list[Rule]) -> dict:
@@ -204,7 +222,7 @@ def _writable_abs(w: str) -> str:
 def dockerfile_dotnet(plan: dict) -> str:
     im = images()["dotnet"]
     uid = im["app_uid"]
-    worker = plan["role"] != "web"
+    worker = plan["role"] != "web" and not plan.get("aspnet_runtime")
     full = plan["base"] == "full"
     base = im[("runtime" if worker else "aspnet") + ("_full" if full else "")]
     proj = plan["project"]
@@ -362,11 +380,15 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
         oneshot = ""
     if c.role == "console":
         pod["restartPolicy"] = "OnFailure"
-        if oneshot:
-            container["args"] = [oneshot]
-        docs.append({"apiVersion": "batch/v1", "kind": "CronJob", "metadata": {"name": name, "labels": labels},
-                     "spec": {"schedule": "0 2 * * *", "concurrencyPolicy": "Forbid",
-                              "jobTemplate": {"spec": {"template": {"metadata": {"labels": labels}, "spec": pod}}}}})
+        # one CronJob per sub-command (schedules are placeholders: take them from the old Task Scheduler)
+        for cmd in (c.facts.get("commands") or [oneshot]):
+            jpod = copy.deepcopy(pod)
+            if cmd:
+                jpod["containers"][0]["args"] = [cmd]
+            jname = name if cmd == oneshot else k8s_name(f"{name}-{cmd}")
+            docs.append({"apiVersion": "batch/v1", "kind": "CronJob", "metadata": {"name": jname, "labels": labels},
+                         "spec": {"schedule": "0 2 * * *", "concurrencyPolicy": "Forbid",
+                                  "jobTemplate": {"spec": {"template": {"metadata": {"labels": labels}, "spec": jpod}}}}})
     else:
         docs.append({"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": name, "labels": labels},
                      "spec": {"replicas": 1 if plan.get("single_replica") or c.role != "web" else 2,

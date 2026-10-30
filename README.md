@@ -100,14 +100,18 @@ Later files override earlier rules with the same id; `rules/learned/` is loaded 
 For each component that can be containerized the tool:
 
 1. builds the generated Dockerfile (`docker build`, application folder as context);
-2. runs it hardened (`--read-only --cap-drop ALL --security-opt no-new-privileges`, non-root, tmpfs
-   only for writable folders) and probes the health endpoint;
+2. runs it hardened (`--read-only --cap-drop ALL --security-opt no-new-privileges`, non-root, only
+   the writable folders mounted) and probes the health endpoint. Writable folders are host
+   directories during the test, so apps that log only to files can still be diagnosed;
 3. matches the log against `rules/50-failures.yaml`:
    - `retry`: patch the build plan (e.g. remove a pinned `global.json`, retarget an out-of-support
      TFM to net8.0, add Kerberos libraries, make a folder writable) and try again;
-   - `external`: the container works, it only lacks a database/broker/directory — then the tool
-     retries in a dependency-free smoke mode (`Development` environment, which many apps map to
-     SQLite and simulators) to prove the app actually serves requests;
+   - `external`: the container works, it only lacks a database/broker/directory/identity provider —
+     then the tool retries in a dependency-free smoke mode (`Development` environment, which many apps
+     map to SQLite and simulators) to prove the app actually serves requests. For the smoke run only,
+     `appsettings.Development.json` is mounted read-only (the image never contains it), relative
+     SQLite paths are made absolute and writable, and sample input files are mounted from the repo.
+     An app that never answers HTTP gets the same smoke retry;
    - `platform` / `code`: a runtime finding the static rules missed;
 4. if nothing matches and `--ai` is on, Claude proposes a diagnosis, a regex and a plan patch; it is
    applied only if the regex matches the log and the patch uses whitelisted plan keys;
@@ -151,6 +155,11 @@ Techniques used to avoid application changes:
   with `Section__Key` env vars; key and certificate files go to `/secrets` from a Kubernetes Secret;
 - Serilog file-only sinks are switched to the console (logs to stdout) with `Serilog__WriteTo__N__Name`;
 - custom listen-address settings (`"WebhookUrls": "http://*:8085"`) are re-pointed to port 8080;
+- NLog folders from `${configsetting:...}` / `${environment:...}` with Windows defaults are re-pointed
+  by env var, and `${basedir}/logs` becomes a writable folder;
+- installed Windows tools (`C:\\Program Files\\wkhtmltopdf\\bin\\wkhtmltopdf.exe`) map to the Linux binary on PATH;
+- console tools with sub-commands (usage text, verb arrays, `case "x":`) get one CronJob per command;
+- workers that use the ASP.NET Core shared framework get the aspnet base image;
 - old netstandard1.x packages that break a linux-x64 restore (NU1605) get a portable publish;
 - corporate TLS-inspecting proxies: an optional `ca` build secret is honoured.
 

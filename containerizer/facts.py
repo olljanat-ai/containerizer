@@ -96,6 +96,42 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
             facts["listen_url_settings"] = listen
         if secrets:
             facts["secret_settings"] = sorted(secrets)
+    # sub-commands of a console tool: "Usage: Jobs <refunds|reminders|purge>" or case "refunds": in Program.cs
+    if comp.role == "console" and "oneshot_arg" not in facts:
+        cmds: list[str] = []
+        for f in p.source_files():
+            if f.suffix.lower() != ".cs":
+                continue
+            txt = p.text(f)
+            m = re.search(r"Usage:[^\"\n]*?[<\[]((?:[\w-]+\|)+[\w-]+)[>\]]", txt)
+            if m:
+                cmds = m.group(1).split("|")
+                break
+            m = re.search(r"\b(?:Verbs|Commands|Jobs|Tasks|Modes)\s*=\s*(?:new\s*(?:string)?\s*\[\]\s*)?[\{\[]\s*((?:\"[\w-]+\"\s*,\s*)+\"[\w-]+\")", txt)
+            if m:
+                cmds = re.findall(r'"([\w-]+)"', m.group(1))
+                break
+            if f.name == "Program.cs":
+                cmds = [x for x in re.findall(r'^\s*case\s+"([a-z][\w-]*)"\s*:', txt, re.M)]
+        if len(cmds) >= 2:
+            facts["commands"] = cmds
+    # NLog folders taken from configuration with a Windows default:
+    #   ${configsetting:item=Logging.Folder:default=D\:\\Logs\\App}
+    nlog = next((f for f in p.files if f.name.lower() == "nlog.config" and f.parent == p.dir), None)
+    if nlog:
+        txt = p.text(nlog)
+        items = [m.group(1) for m in re.finditer(r"\$\{configsetting:item=([\w.]+):default=([A-Za-z]\\?:|\\\\)", txt)]
+        if items:
+            facts["nlog_folder_settings"] = sorted(set(items))
+        # ${environment:LOG_DIR:whenEmpty=D\:/App/Logs} -> the variable can re-point it
+        envs = [m.group(1) for m in re.finditer(
+            r"\$\{environment:(?:variable=)?(\w+):(?:whenEmpty|default)=([A-Za-z]\\?:|\\\\)", txt)]
+        if envs:
+            facts["nlog_env_folders"] = sorted(set(envs))
+        for m in re.finditer(r"\$\{basedir\}[\\/]+([\w\-]+)[\\/]", txt):
+            facts.setdefault("nlog_basedir_dirs", []).append(m.group(1))
+        if re.search(r'xsi:type="(File|Database|EventLog)"', txt) and not re.search(r'xsi:type="(Console|ColoredConsole)"', txt):
+            facts["nlog_no_console"] = True
     # Folders written relative to the content root
     writable = set()
     for f in p.source_files():
@@ -106,6 +142,7 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
             writable.add(m.group(2))
         for m in re.finditer(r'\?\?\s*"(App_Data|logs?|Logs|data|Data|temp|tmp|uploads|Uploads)"', txt):
             writable.add(m.group(1))
+    writable |= set(facts.get("nlog_basedir_dirs") or [])
     for key, val in (facts.get("folder_settings") or {}).items():
         if re.fullmatch(r"[\w\-./]+", val) and not val.startswith("/"):
             writable.add(val.strip("./"))
@@ -116,7 +153,7 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
                 if m:
                     writable.add(m.group(1))
     # not folders: file names (XML docs, databases) and enum-like values (StoreLocation: LocalMachine)
-    writable = {w for w in writable if w and len(w) < 80 and not re.search(r"\.[A-Za-z]\w{0,4}$", w)
+    writable = {w for w in writable if w and len(w) < 80 and not re.search(r"\.[A-Za-z]\w{0,7}$", w)
                 and w not in ("LocalMachine", "CurrentUser", "My", "Root", "None", "Default")}
     if writable:
         facts["writable_dirs"] = sorted(writable)

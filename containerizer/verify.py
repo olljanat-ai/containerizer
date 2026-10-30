@@ -158,11 +158,21 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
     name = f"cz-verify-{os.getpid()}-{int(time.time())}"
     uid = images()["dotnet"]["app_uid"] if c.role != "spa" else 101
     cmd = ["docker", "run", "-d", "--name", name, "--read-only", "--cap-drop", "ALL",
-           "--security-opt", "no-new-privileges", "--memory", "768m", "--add-host", "sql01.corp.local:203.0.113.1"]
+           "--security-opt", "no-new-privileges", "--memory", "768m", "--add-host", "sql01.corp.local:127.0.0.1"]
+    # writable folders are host directories during verification, so log files the app writes
+    # (apps that log only to files print nothing to stdout) can be read for the diagnosis
+    import shutil
+    fsroot = workdir / "fs"
+    shutil.rmtree(fsroot, ignore_errors=True)
     for w in sorted({_writable_abs(w) for w in plan["add_writable"]}):
-        cmd += ["--tmpfs", f"{w}:rw,exec,uid={uid},gid={uid},mode=1777"]
+        host = fsroot / k8s_name(w)
+        host.mkdir(parents=True, exist_ok=True)
+        host.chmod(0o777)
+        cmd += ["-v", f"{host.resolve()}:{w}:rw"]
     if c.role == "spa":
-        cmd += ["--tmpfs", "/tmp:rw,mode=1777", "--tmpfs", "/var/cache/nginx:rw,mode=1777", "--tmpfs", "/var/run:rw,mode=1777"]
+        for d in ("/tmp", "/var/cache/nginx", "/var/run"):
+            if not any(x.endswith(f":{d}:rw") for x in cmd):
+                cmd += ["--tmpfs", f"{d}:rw,mode=1777"]
     hp = None
     if plan.get("port"):
         hp = _free_port()
@@ -176,9 +186,18 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
             cmd += ["-v", f"{dev.resolve()}:/app/appsettings.Development.json:ro"]
             # dev settings often point at ../../App_Data etc.; give those folders a scratch tmpfs
             from .facts import _flatten, _load_json
-            for _, val in _flatten(_load_json(dev)):
+            for key, val in _flatten(_load_json(dev)):
+                if isinstance(val, str) and key.startswith("ConnectionStrings:"):
+                    # SQLite resolves relative paths differently from .NET; make them absolute
+                    m = re.search(r"(Data Source|Filename)\s*=\s*([^;/:|][^;]*\.(db|sqlite3?|litedb))", val, re.I)
+                    if m:
+                        absp = os.path.normpath(os.path.join("/app", m.group(2).replace("\\", "/")))
+                        cmd += ["-e", key.replace(":", "__") + "=" + val.replace(m.group(2), absp)]
+                        folder = os.path.dirname(absp)
+                        if not any(f":{folder}:" in x or x.startswith(folder + ":") for x in cmd):
+                            cmd += ["--tmpfs", f"{folder}:rw,exec,uid={uid},gid={uid},mode=1777"]
                 if isinstance(val, str):
-                    for m in re.finditer(r"((?:\.\./)+[\w\-]+)(/[\w\-./]+\.\w{1,5})?", val.replace("\\", "/")):
+                    for m in re.finditer(r"((?:\.\./)+\.?[\w\-]+)(/[\w\-./]+\.\w{1,5})?", val.replace("\\", "/")):
                         target = os.path.normpath(os.path.join("/app", m.group(1)))
                         if any(target in x for x in cmd):
                             continue
@@ -188,8 +207,13 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
                         else:
                             cmd += ["--tmpfs", f"{target}:rw,exec,uid={uid},gid={uid},mode=1777"]
     cmd.append(tag)
+    if c.role == "console":
+        first = c.facts.get("oneshot_arg") or (c.facts.get("commands") or [None])[0]
+        if first:
+            cmd.append(first)
     rc, out = _run(cmd, 60)
     if rc != 0:
+        (workdir / "run.log").write_text(out)
         return "exited", out, {}
     details: dict = {}
     status = "unhealthy"
@@ -222,6 +246,10 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
     finally:
         _, log = _run(["docker", "logs", name], 30)
         _run(["docker", "rm", "-f", name], 30)
+        for f in sorted(fsroot.rglob("*")) if fsroot.exists() else []:
+            if f.is_file() and re.search(r"(log|txt)$", f.name, re.I) and f.stat().st_size:
+                details.setdefault("log_files", []).append(f.name)
+                log += f"\n--- {f.name} ---\n" + f.read_text(errors="replace")[-20000:]
     (workdir / "run.log").write_text(log)
     return status, log, details
 
@@ -243,15 +271,29 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
         if ok:
             stage = "run"
             status, log, details = run(c, plan, tag, workdir, env_override)
+            if status == "exited" and c.role == "console" and details.get("exit_code") == "0":
+                status = "ok"                    # a batch job that ran to completion
+                details["note"] = "job completed"
             if status == "ok":
                 history.append({"attempt": attempt, "stage": "run", "status": "ok", **details})
                 result["status"] = "ok"
+                if env_override:
+                    result["mode"] = "smoke"     # proven without the production services
                 break
         tail = "\n".join(log.splitlines()[-200:])
-        d = diagnose(tail if stage == "run" else log, stage, failures)
+        # run logs: exception messages, not the stack frames under them, say what went wrong
+        msgs = "\n".join(l for l in log.splitlines() if not l.lstrip().startswith("at ")) if stage == "run" else log
+        d = diagnose(msgs[-60000:], stage, failures)
         if d is None and ai:
             from .ai import diagnose_failure
             d = diagnose_failure(a, c, plan, stage, tail, model=model)
+        if d is None and stage == "run" and status == "unhealthy" and not details.get("http") \
+                and not env_override and c.project.kind_hint == "dotnet":
+            # never answered HTTP and logged nothing useful: most likely still waiting on its database
+            history.append({"attempt": attempt, "stage": stage, "status": "no-response", **details,
+                            "note": "no HTTP answer; retrying in Development mode without external services"})
+            env_override = {"ASPNETCORE_ENVIRONMENT": "Development", "DOTNET_ENVIRONMENT": "Development"}
+            continue
         if d is None:
             history.append({"attempt": attempt, "stage": stage, "status": "unexplained", **details,
                             "log_tail": tail[-1500:]})
@@ -281,7 +323,14 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
             result["status"] = "ok-external"
             break
         # platform / code findings
-        result["finding"] = _fmt(fr.get("finding", {}), caps)
+        finding = _fmt(fr.get("finding", {}), caps)
+        if env_override and not result.get("finding") and finding.get("severity") == "config":
+            # the production run only lacked external services; a config gap of the smoke setup
+            # (e.g. a local database file) says nothing about the production container
+            entry["note"] = "smoke-mode configuration gap; production run was blocked only by external services"
+            result["status"] = "ok-external"
+            break
+        result["finding"] = finding
         if stage == "run" and not env_override and c.project.kind_hint == "dotnet":
             # still find out whether the rest of the app works (Development often swaps in simulators)
             env_override = {"ASPNETCORE_ENVIRONMENT": "Development", "DOTNET_ENVIRONMENT": "Development"}

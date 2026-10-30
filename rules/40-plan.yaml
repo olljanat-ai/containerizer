@@ -57,3 +57,14 @@ rules:
     when: {package: 'Serilog\.Sinks\.File|NLog(\..*)?|log4net'}
     plan:
       add_writable: [logs]
+
+  - id: plan-aspnet-framework-worker
+    phase: plan
+    when:
+      all:
+        - not: {role: web}
+        - any:
+            - sdk: 'Microsoft\.NET\.Sdk\.Web'
+            - framework_ref: 'Microsoft\.AspNetCore\.App'
+    plan:
+      aspnet_runtime: true
