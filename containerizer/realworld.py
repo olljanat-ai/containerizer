@@ -17,8 +17,9 @@ from pathlib import Path
 
 import yaml
 
-from .assess import assess
+from .assess import assess, classify_role
 from .rules import load_rules
+from .scan import scan
 
 MANIFEST = Path(__file__).resolve().parent.parent / "bench" / "realworld.yaml"
 
@@ -32,11 +33,17 @@ def _clone(entry: dict, dest: Path) -> None:
     run("checkout", "-q", "FETCH_HEAD")
 
 
-def _role_misses(a, expected: dict) -> list[str]:
+def _role_misses(a, repo, rules, expected: dict) -> list[str]:
+    # assess() drops tests, tools and libraries from components, so classify every project
     by_name = {}
     for c in a.components:
         for n in (c.name, c.project.name):
             by_name.setdefault(n, c.role)
+    for p in repo.projects:
+        role = classify_role(repo, p, rules)[0]
+        for n in (p.name, p.path.stem, p.assembly_name):
+            if n:
+                by_name.setdefault(n, role)
     misses = []
     for role, names in (expected or {}).items():
         for pat in names:
@@ -67,8 +74,9 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             _clone(r, path)
         t0 = time.time()
-        a = assess(path, rules)
-        misses = _role_misses(a, r.get("expected_roles"))
+        repo = scan(path)
+        a = assess(path, rules, repo=repo)
+        misses = _role_misses(a, repo, rules, r.get("expected_roles"))
         good = a.rating == r["expected_rating"] and not misses
         total += 1
         ok += good

@@ -54,6 +54,7 @@ class Rule:
     title: str = ""
     why: str = ""
     fix: str = ""
+    refs: list[str] = field(default_factory=list)   # documentation / issue links backing why and fix
     role: str = ""
     priority: int = 0
     set: dict = field(default_factory=dict)

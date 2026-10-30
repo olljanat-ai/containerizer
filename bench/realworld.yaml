@@ -4,7 +4,10 @@
 # Never build or run their code. Expectations come from reading each repo, not from tool output.
 #
 # expected_rating: A lift&shift, B minor refactor, C framework port, D partial, E not feasible.
-# expected_roles: components that should be deployable (others: library/test/tool/desktop).
+# expected_roles: role per project (web/worker/console/library/test/tool/desktop/spa...).
+# Convention: desktop/mobile clients are reported but do not lower the rating, which is
+# about the server side (a server + WinForms client whose server needs a port is C, not D).
+# Azure Functions apps have role worker.
 repos:
   - name: rw-eshop
     url: https://github.com/dotnet/eShop
@@ -52,7 +55,7 @@ repos:
     url: https://github.com/Azure-Samples/functions-quickstart-dotnet-azd-cosmosdb
     commit: ba187eb2508163a7849e8938ca13f476b83cdc56
     expected_rating: B
-    expected_roles: {functions: [functions-quickstart-dotnet-azd-cosmosdb]}
+    expected_roles: {worker: [functions-quickstart-dotnet-azd-cosmosdb]}
     notes: .NET 10 isolated-worker Azure Function (new Sdk="Azure.Functions.Sdk", package Microsoft.Azure.Functions.Worker), CosmosDB trigger. Runs in the azure-functions dotnet-isolated Linux image; trigger scaling needs KEDA. Must not be reported as "no server-side component".
 
   - name: rw-eshopmodernizing
@@ -94,7 +97,7 @@ repos:
   - name: rw-sampleuiandservice
     url: https://github.com/r-aghaei/SampleUIandService
     commit: 8cb4683446fa97876480deb89117d9ade7799a34
-    expected_rating: D
+    expected_rating: C
     expected_roles: {worker: [ServiceLayer], desktop: [UILayer]}
     notes: WCF service hosted in a Windows service (ServiceBase, WinExe, net48) + WinForms client + installer. Service is portable via CoreWCF; the WinForms UI stays on PCs.
 
@@ -104,3 +107,193 @@ repos:
     expected_rating: E
     expected_roles: {desktop: [ShareX, ShareX.ImageEditor.App, ShareX_Launcher, ShareX_NativeMessagingHost], tool: [ShareX.Setup], library: [ShareX.HelpersLib]}
     notes: WinForms screen-capture desktop app; no server-side component at all. ShareX.Setup is an installer build tool, ShareX.HelpersLib is a library.
+
+  # --- rw2: second batch (legacy, Windows-only deps, mixed solutions, old TFMs, functions, mid-size modern) ---
+  - name: rw2-musicstore
+    url: https://github.com/aspnet/MusicStore
+    commit: 0abdfec1e87aeab68bc5e8502ec73968a4b8c7ef
+    expected_rating: B
+    expected_roles: {web: [MusicStore], test: [MusicStore.Test, MusicStore.E2ETests]}
+    notes: >-
+      Pinned to the commit before the archive commit (HEAD only has a README). ASP.NET Core on netcoreapp3.0 with
+      3.0.0-alpha1 packages from dead dotnet.myget.org feeds (build/sources.props, build/dependencies.props), so it
+      needs retargeting to released packages / FrameworkReference, not just roll-forward. Kestrel is the default
+      server; HttpSys + NTLM only when server=HttpSys (Program.cs). config.json points at (localdb) -> env override.
+      Platform.cs P/Invokes api-ms-win-core-sysinfo only for Nano Server detection, guarded by IsRunningOnWindows.
+      tool (2026-10-30): E. pinvoke-vendor blocker on Platform.cs:13 DllImport("api-ms-win-core-sysinfo-l1-2-1.dll") -- a Windows API-set DLL, not a vendor SDK, only reached when IsRunningOnWindows (Platform.cs:76) and inside try/catch. Without it the tool gives B (http-sys refactor). Test projects classified correctly but invisible to the checker (not in components).
+
+  - name: rw2-northwindtraders
+    url: https://github.com/jasontaylordev/NorthwindTraders
+    commit: 647fafc87c4c34bcb9fc67a08db422a3018a0cab
+    expected_rating: B
+    expected_roles: {web: [WebUI], test: ["*.IntegrationTests", "*.UnitTests"]}
+    notes: >-
+      Archived Clean Architecture sample, netcoreapp3.0 (Infrastructure says "netcoreapp3") + netstandard2.1, Angular
+      SPA built by PublishRunWebpack (npm) inside WebUI. global.json pins SDK 3.0.100. appsettings.json uses
+      (localdb) with Trusted_Connection; appsettings.Production.json loads the IdentityServer signing key from the
+      Windows cert store (Type Store, CurrentUser/My) -> must become a File/secret key. IdentityServer4 ApiAuthorization
+      3.0 on an out-of-support runtime: retarget, not a pure lift.
+      tool (2026-10-30): A, no findings on WebUI. Disagreement is judgement (old TFM + IdentityServer4 retarget), but the tool also misses the cert-store key in appsettings.Production.json (cert-store rule only has a code: condition).
+
+  - name: rw2-serverless-microservices
+    url: https://github.com/Azure-Samples/Serverless-microservices-reference-architecture
+    commit: 5a8f85559d33a02b49f354f996de61486b190681
+    expected_rating: B
+    expected_roles: {worker: ["ServerlessMicroservices.FunctionApp.*"], tool: [ServerlessMicroservices.Seeder]}
+    notes: >-
+      RideShare reference: four Azure Functions v4 IN-PROCESS apps on net6.0 (Microsoft.NET.Sdk.Functions, [FunctionName],
+      Http/Queue triggers, Durable orchestrators), a Node.js function (nodejs/), a Vue SPA (web/) and a seed/load-test
+      CLI (Seeder). Repo already has dotnet/dockerfiles/* and an AKS manifest. Runs in the azure-functions dotnet:4
+      Linux image, but in-process model + net6 are end-of-support -> migrate to isolated worker. Durable needs Azure Storage.
+      tool (2026-10-30): B (host-azure-functions-inprocess refactor) -- rating matches. Function apps get role worker because host-role-functions (rules/35-hosting.yaml) assigns role worker, not functions; Seeder correctly tool (role-tool name Seed(er)) but the checker only looks at deployable components.
+
+  - name: rw2-blazorhero
+    url: https://github.com/BlazorHero/CleanArchitecture
+    commit: 11f810d97cb66a251dfbee335b581fa9f1d1beab
+    expected_rating: A
+    expected_roles: {web: [Server]}
+    notes: >-
+      Blazor WebAssembly hosted (Client is Microsoft.NET.Sdk.BlazorWebAssembly, served by Server), net6.0, MediatR,
+      Hangfire, SignalR. Ships a Linux Dockerfile + docker-compose with mssql. appsettings uses (localdb) -> env.
+      UploadService writes to ./Files under the content root -> needs a writable volume.
+      tool (2026-10-30): B. Only finding is active-directory-ds refactor via Infrastructure, evidence IdentityService.cs:81 `userPrincipal.FindFirstValue(...)` -- a ClaimsPrincipal local variable matched by the UserPrincipal\. alternative (no word boundary / case). False positive.
+
+  - name: rw2-btcpayserver
+    url: https://github.com/btcpayserver/btcpayserver
+    commit: 381ad1f0ac32fb011163239fcacdde1e6f7538b9
+    expected_rating: A
+    expected_roles: {web: [BTCPayServer], tool: [BTCPayServer.PluginPacker], test: [BTCPayServer.Tests]}
+    notes: >-
+      Mid-size modern ASP.NET Core (net10.0 via Build/Common.csproj import), official Linux Dockerfile; external deps
+      are Postgres + NBXplorer + bitcoind. BTCPayServer.Tests uses Sdk.Web but is a test project.
+      tool (2026-10-30): D. winforms-in-library blocker on BTCPayServer from Plugins/Forms/UIFormsController.cs:50 `new Form()` -- BTCPayServer's own Form model (BTCPayServer.Abstractions.Form), not System.Windows.Forms. PluginPacker classified console (I expected tool).
+
+  - name: rw2-squidex
+    url: https://github.com/Squidex/squidex
+    commit: b2c3cea27312bfa729e446a95ba513aca958bc44
+    expected_rating: A
+    expected_roles: {web: [Squidex], tool: [Generator, GenerateLanguages, Squidex.Translator], test: ["Squidex.*.Tests", "TestSuite.*Tests"]}
+    notes: >-
+      Headless CMS, net10.0, official Linux image (root Dockerfile builds Angular frontend + backend). Needs MongoDB
+      (or EF provider). Test projects are xunit v3 with OutputType Exe; Generator/GenerateLanguages/Translator are
+      dev tools.
+      tool (2026-10-30): A but for the wrong reason: the main Squidex web project is role tool via role-tool `file: 'tools/*'` matching backend/src/Squidex/Areas/Mcp/Tools/*.cs, so the server is dropped and only SPAs/console CLIs remain. Generator/Squidex.Translator classified console, not tool.
+
+  - name: rw2-exceptionless
+    url: https://github.com/exceptionless/Exceptionless
+    commit: 4890dc438e5fc90d3b9b17eda52778712dd8f752
+    expected_rating: A
+    expected_roles: {web: [Exceptionless.Web], worker: [Exceptionless.Job], tool: [Exceptionless.AppHost], test: [Exceptionless.Tests]}
+    notes: >-
+      net10.0, multi-stage Linux Dockerfile with separate job/api/app targets. Exceptionless.Job uses Sdk.Web but is a
+      Foundatio job runner (Host.CreateDefaultBuilder + JobRunnerOptions); its web host only serves /health and /ready,
+      so it is a worker. Needs Elasticsearch + Redis.
+      tool (2026-10-30): B. active-directory-ds refactor via Exceptionless.Core is real (Authentication/ActiveDirectoryLoginProvider.cs:25 new DirectoryEntry, optional LDAP login) -- I missed it when reading; I keep A because it is an opt-in provider, but B is defensible. process-start-exe is a false positive on EventIndex.cs:305 `CommandLine = "cmd"` string constant. Exceptionless.Job is web via role-web-aspnetcore (Sdk.Web + Exe) though it only serves health endpoints.
+
+  - name: rw2-duplicati
+    url: https://github.com/duplicati/duplicati
+    commit: 240c2bc7fe6e63d456bdb5196cbb3c7b1b80904c
+    expected_rating: A
+    expected_roles: {web: [Duplicati.Server], desktop: [Duplicati.GUI.TrayIcon]}
+    notes: >-
+      Backup server, net10.0, official Linux docker image exists. Mixed solution: Duplicati.Server (hosts
+      WebserverCore, Sdk.Web library) is the deployable; ~15 CommandLine.* CLIs are tools; GUI.TrayIcon is desktop;
+      Duplicati.WindowsService (SCM wrapper) and WindowsModulesLoader (net10.0-windows, VSS snapshots) are optional
+      Windows host integrations that a container does not need -- they must not drag the rating to D.
+      tool (2026-10-30): E. Duplicati.Server is console (Exe, hosts Kestrel through the WebserverCore library, so no Sdk.Web on the exe); every CLI is a server-tier console component and inherits blockers from Duplicati.Library.Utility: pinvoke-vendor on Power/MacOSSleepAssertion.cs:86 [DllImport(IOKIT)] (macOS framework), pinvoke-gui on SHGetFolder.cs:82 Shell32 (Windows-only path), active-directory-ds on ISystemIO.cs:34 `DirectoryEntry(string path)` (own method name). com-interop on WindowsModulesLoader is real but optional.
+
+  - name: rw2-customers-orders
+    url: https://github.com/microsoft/Windows-appsample-customers-orders-database
+    commit: 247226c93728c5a2a0601575ed732206ca6949e7
+    expected_rating: B
+    expected_roles: {web: [Contoso.Service], desktop: [Contoso.App]}
+    notes: >-
+      Mixed modern: WinUI 3 desktop client (net6.0-windows10.0.22000.0, WinExe) + ASP.NET Core Web API (net6.0,
+      Microsoft.Identity.Web JWT). The API's SQL connection string is a hard-coded const
+      (ContosoRepository/Constants.cs SqlAzureConnectionString) -> small code change to read configuration. Desktop
+      client stays on PCs and is not a server component.
+      tool (2026-10-30): A. Contoso.Service has no findings; the hard-coded connection string constant (Constants.cs:55) is not detectable by a rule (placeholder value). Roles match.
+
+  - name: rw2-aad-native-desktop
+    url: https://github.com/Azure-Samples/active-directory-dotnet-native-desktop
+    commit: 7a4fbf7f8374a60778e20c4908be66a3ac6d9b31
+    expected_rating: C
+    expected_roles: {web: [TodoListService], desktop: [TodoListClient]}
+    notes: >-
+      Pinned before the archive commit. .NET Framework 4.5 Web API 2 + MVC HelpPage on OWIN/System.Web (web project
+      GUID, Global.asax, Owin.Security.ActiveDirectory JWT) + WPF client (WinExe, PresentationFramework, ADAL). Server
+      needs a port to ASP.NET Core; WPF client is not a server component, so C (not D). Contrast rw-sampleuiandservice
+      which is labelled D for a similar shape.
+      tool (2026-10-30): C, roles match. OK.
+
+  - name: rw2-hangfire-highlighter
+    url: https://github.com/HangfireIO/Hangfire.Highlighter
+    commit: ecd4d2462b467a9f5775a2d2660a5890c223f9ff
+    expected_rating: C
+    expected_roles: {web: [Hangfire.Highlighter]}
+    notes: >-
+      ASP.NET MVC 5 on net48 (web project GUID) + SignalR 2 + EF6 migrations + Hangfire server running in-process
+      under IIS (UseHangfireAspNet). Web.config connection string Server=.\ Trusted_Connection=True (Windows
+      integrated SQL auth) -> SQL login or Kerberos. Port to ASP.NET Core needed.
+      tool (2026-10-30): C, roles match. OK.
+
+  - name: rw2-bugnet
+    url: https://github.com/dubeaud/bugnet
+    commit: cfab4aeacc7224425db86f0e1f94cf24e22acf2a
+    expected_rating: C
+    expected_roles: {web: [BugNET_WAP], tool: [BugNET.MercurialChangeGroupHook, BugNET.SubversionHooks], test: [BugNET.Tests, BugNET.MailboxReader.Tests]}
+    notes: >-
+      Legacy ASP.NET WebForms issue tracker on .NET 4.5: ~100 .aspx/.ascx, ASMX (Webservices/BugNetServices.asmx),
+      custom Membership provider, HttpModules (Authentication module uses System.DirectoryServices for optional
+      Windows-auth user lookup, MailBoxReader polls POP3 inside the web app). System.Drawing Image.FromStream for
+      attachments. Web.config (localdb)\ProjectsV12 Integrated Security. Rewrite of the UI on ASP.NET Core = C.
+      Mercurial/SVN hook exes run on the VCS server, they are tools.
+      tool (2026-10-30): C (rating matches). Hook exes and the HttpModule/Provider/LumiSoft.Net/UnitTests class libraries are role desktop via role-clickonce, triggered by VS boilerplate <PublishUrl>publish\</PublishUrl>/<IsWebBootstrapper>false</IsWebBootstrapper> in old-style csproj files (e.g. LumiSoft.Net.csproj:32,44). Tests correctly test but invisible to the checker.
+
+  - name: rw2-blogengine
+    url: https://github.com/BlogEngine/BlogEngine.NET
+    commit: 95c84261ed94402f45094c1fda85afbbf6f4d833
+    expected_rating: C
+    expected_roles: {web: [BlogEngine.NET], library: [BlogEngine.Core], test: [BlogEngine.Tests]}
+    notes: >-
+      .NET 4.5 WebForms blog (+ Web API 2 controllers in AppCode/Api, setup/upgrade/Updater.asmx). Default XML
+      provider stores posts/settings under App_Data -> persistent volume. Config file is spelled Web.Config (capital C)
+      -- case-sensitive scanners must still find it. System.Drawing in Core/Services/FileSystem/Image.cs. Port = C.
+      tool (2026-10-30): E. BlogEngine.NET (the web app) is role tool via role-tool `file: 'tools/*'` matching admin/app/settings/tools/*; BlogEngine.Core (Library) is role desktop via role-clickonce on boilerplate <IsWebBootstrapper>true</IsWebBootstrapper>/<PublishUrl> (BlogEngine.Core.csproj:28-29) -> desktop-ui blocker. The only server component left is gone, so E.
+
+  - name: rw2-nugetgallery
+    url: https://github.com/NuGet/NuGetGallery
+    commit: c25bab040e19d24593fc0c298a0cedb51bf57dcb
+    expected_rating: C
+    expected_roles: {web: [NuGetGallery, NuGetCDNRedirect], tool: [NuGetGallery.AppHost]}
+    notes: >-
+      Large enterprise-style portfolio: NuGetGallery is ASP.NET MVC 5 on net472 (web GUID) with ~40 net472 job exes
+      (NuGet.Jobs.*, Stats.*, Validation.*: Azure WebJob/cloud-service style batch workers), net472;netstandard2.x
+      shared libraries, a net8 search service core and a net10 Aspire AppHost. Everything that runs is .NET Framework
+      -> port. No hard Windows-only blocker found by reading (Azure Storage/SQL/Service Bus/KeyVault).
+      tool (2026-10-30): C, web roles match; NuGetGallery.AppHost correctly tool but invisible to the checker.
+
+  - name: rw2-rapidscada
+    url: https://github.com/RapidScada/scada
+    commit: f5a9f96beb83b21f6c4076fb29e46990b98056a1
+    expected_rating: C
+    expected_roles: {worker: [ScadaServerSvc, ScadaCommSvc, ScadaAgentSvc], web: [ScadaWebShell], desktop: [ScadaAdmin, ScadaServerCtrl, ScadaCommCtrl, ScadaSchemeEditor, ScadaTableEditor]}
+    notes: >-
+      Rapid SCADA v5, .NET Framework 4.6.1, 66 projects in many solutions. Mixed: three Windows services (ServiceBase,
+      WinExe *Svc) with Mono console twins (*Mono, Exe), WebForms + WCF (.svc) web UI (ScadaWebShell, no web GUID),
+      and WinForms admin/editors. HintPath references to sibling bin\Release and the separate RapidScada/dll repo.
+      Registry read for culture is in try/catch and #if'd out for netstandard. Serial-port Modbus channels need device
+      passthrough but are not Windows-only; Excel/Word reports are SpreadsheetML/XML, not Office interop. Port (v6 did
+      exactly that on .NET 6) = C.
+      tool (2026-10-30): D. serial-port blocker (ScadaCommCommon/SerialPortUtils.cs:50 etc.) and winforms-in-library blocker (ScadaCommCommon/Channels/UI/FrmComm*Props.cs `using System.Windows.Forms`, config dialogs shipped in the shared library) on ScadaCommSvc/ScadaCommMono, plus PlgScheme. Serial is edge-hardware-bound rather than Windows-bound, so D is arguable; I keep C. Expected roles all match.
+
+  - name: rw2-winsw
+    url: https://github.com/winsw/winsw
+    commit: 1d0ee4a91bad596d5e7e9c360f2b39ef54674674
+    expected_rating: E
+    expected_roles: {worker: [WinSW], library: [WinSW.Core, WinSW.Plugins], tool: [WinSW.Tasks], test: [WinSW.Tests]}
+    notes: >-
+      Windows Service Wrapper (net461;net7.0-windows): its whole purpose is the Windows SCM (Native/ServiceApis.cs
+      advapi32 P/Invoke, ServiceController, WrapperService : ServiceBase). Nothing to containerize; on Kubernetes the
+      kubelet replaces it. E.
+      tool (2026-10-30): E, WinSW is worker -- matches. Library/tool/test expectations are classified correctly but the checker reports them as not found (it only indexes deployable components).
