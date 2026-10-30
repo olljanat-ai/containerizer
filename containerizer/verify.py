@@ -207,6 +207,10 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
                         else:
                             cmd += ["--tmpfs", f"{target}:rw,exec,uid={uid},gid={uid},mode=1777"]
     cmd.append(tag)
+    if c.role == "console":
+        first = c.facts.get("oneshot_arg") or (c.facts.get("commands") or [None])[0]
+        if first:
+            cmd.append(first)
     rc, out = _run(cmd, 60)
     if rc != 0:
         (workdir / "run.log").write_text(out)
@@ -267,6 +271,9 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
         if ok:
             stage = "run"
             status, log, details = run(c, plan, tag, workdir, env_override)
+            if status == "exited" and c.role == "console" and details.get("exit_code") == "0":
+                status = "ok"                    # a batch job that ran to completion
+                details["note"] = "job completed"
             if status == "ok":
                 history.append({"attempt": attempt, "stage": "run", "status": "ok", **details})
                 result["status"] = "ok"

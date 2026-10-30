@@ -96,6 +96,25 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
             facts["listen_url_settings"] = listen
         if secrets:
             facts["secret_settings"] = sorted(secrets)
+    # sub-commands of a console tool: "Usage: Jobs <refunds|reminders|purge>" or case "refunds": in Program.cs
+    if comp.role == "console" and "oneshot_arg" not in facts:
+        cmds: list[str] = []
+        for f in p.source_files():
+            if f.suffix.lower() != ".cs":
+                continue
+            txt = p.text(f)
+            m = re.search(r"Usage:[^\"\n]*?[<\[]((?:[\w-]+\|)+[\w-]+)[>\]]", txt)
+            if m:
+                cmds = m.group(1).split("|")
+                break
+            m = re.search(r"\b(?:Verbs|Commands|Jobs|Tasks|Modes)\s*=\s*(?:new\s*(?:string)?\s*\[\]\s*)?[\{\[]\s*((?:\"[\w-]+\"\s*,\s*)+\"[\w-]+\")", txt)
+            if m:
+                cmds = re.findall(r'"([\w-]+)"', m.group(1))
+                break
+            if f.name == "Program.cs":
+                cmds = [x for x in re.findall(r'^\s*case\s+"([a-z][\w-]*)"\s*:', txt, re.M)]
+        if len(cmds) >= 2:
+            facts["commands"] = cmds
     # NLog folders taken from configuration with a Windows default:
     #   ${configsetting:item=Logging.Folder:default=D\:\\Logs\\App}
     nlog = next((f for f in p.files if f.name.lower() == "nlog.config" and f.parent == p.dir), None)

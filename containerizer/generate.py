@@ -380,11 +380,15 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
         oneshot = ""
     if c.role == "console":
         pod["restartPolicy"] = "OnFailure"
-        if oneshot:
-            container["args"] = [oneshot]
-        docs.append({"apiVersion": "batch/v1", "kind": "CronJob", "metadata": {"name": name, "labels": labels},
-                     "spec": {"schedule": "0 2 * * *", "concurrencyPolicy": "Forbid",
-                              "jobTemplate": {"spec": {"template": {"metadata": {"labels": labels}, "spec": pod}}}}})
+        # one CronJob per sub-command (schedules are placeholders: take them from the old Task Scheduler)
+        for cmd in (c.facts.get("commands") or [oneshot]):
+            jpod = copy.deepcopy(pod)
+            if cmd:
+                jpod["containers"][0]["args"] = [cmd]
+            jname = name if cmd == oneshot else k8s_name(f"{name}-{cmd}")
+            docs.append({"apiVersion": "batch/v1", "kind": "CronJob", "metadata": {"name": jname, "labels": labels},
+                         "spec": {"schedule": "0 2 * * *", "concurrencyPolicy": "Forbid",
+                                  "jobTemplate": {"spec": {"template": {"metadata": {"labels": labels}, "spec": jpod}}}}})
     else:
         docs.append({"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": name, "labels": labels},
                      "spec": {"replicas": 1 if plan.get("single_replica") or c.role != "web" else 2,
