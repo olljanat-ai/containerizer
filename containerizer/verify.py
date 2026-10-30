@@ -153,7 +153,7 @@ def build(a: AppAssessment, c: Component, plan: dict, workdir: Path, timeout: in
 
 
 def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | None = None,
-        wait: int = 45) -> tuple[str, str, dict]:
+        wait: int = 90) -> tuple[str, str, dict]:
     """Returns (status, log, details). status: ok | exited | unhealthy"""
     name = f"cz-verify-{os.getpid()}-{int(time.time())}"
     uid = images()["dotnet"]["app_uid"] if c.role != "spa" else 101

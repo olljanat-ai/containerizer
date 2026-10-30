@@ -33,6 +33,18 @@ def _flatten(d, prefix=""):
         yield prefix.rstrip(":"), d
 
 
+def _merge(base, over):
+    """.NET configuration semantics: objects merge by key, arrays merge by index."""
+    if isinstance(base, dict) and isinstance(over, dict):
+        out = dict(base)
+        for k, v in over.items():
+            out[k] = _merge(base[k], v) if k in base else v
+        return out
+    if isinstance(base, list) and isinstance(over, list):
+        return [_merge(base[i], v) if i < len(base) else v for i, v in enumerate(over)] + base[len(over):]
+    return over
+
+
 def extract_facts(repo, comp, rules: list[Rule]) -> dict:
     p = comp.project
     facts: dict = {}
@@ -51,7 +63,11 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
     # appsettings.json: connection strings, Kestrel endpoints, folders, secrets
     appsettings = next((f for f in p.files if f.name.lower() == "appsettings.json" and f.parent == p.dir), None)
     if appsettings:
+        # the container runs as Production: appsettings.Production.json overrides appsettings.json
         cfg = _load_json(appsettings)
+        prod = appsettings.with_name("appsettings.Production.json")
+        if prod.exists():
+            cfg = _merge(cfg, _load_json(prod))
         cs = cfg.get("ConnectionStrings") or {}
         if isinstance(cs, dict) and cs:
             facts["connection_strings"] = sorted(cs.keys())

@@ -144,3 +144,37 @@ rules:
     name: ^VanArsdel\.Customers\.Api$
   learned_from: retail-backoffice/VanArsdel.Customers.Api
   learned_at: '2026-10-30'
+- id: learned-runtime-doccontrol-indexer-14
+  source: learned
+  severity: refactor
+  category: runtime-observed
+  title: Machine-wide named mutex for single-instance
+  why: A machine-wide named mutex (Global\\...) guards against a second instance. Containers do not share it; run a single
+    replica or use a Kubernetes Lease / database lock.
+  fix: See the verification log; fix and re-run `containerizer verify`.
+  when:
+    name: ^DocControl\.Indexer$
+  learned_from: document-control/Litware.DocControl.Indexer
+  learned_at: '2026-10-30'
+- id: learned-runtime-fabrikam-housing-identity-15
+  source: learned
+  severity: refactor
+  category: runtime-observed
+  title: 'Windows-only API at runtime: Unix LocalMachine X509Store is limited to the Root and CertificateAuthority stores.'
+  why: ''
+  fix: See the verification log; fix and re-run `containerizer verify`.
+  when:
+    name: ^Fabrikam\.Housing\.Identity$
+  learned_from: housing-management/Fabrikam.Housing.Identity
+  learned_at: '2026-10-30'
+- id: learned-runtime-productreturns-jobs-16
+  source: learned
+  severity: refactor
+  category: runtime-observed
+  title: 'Windows-only API at runtime: EventLog access is not supported on this platform.'
+  why: 'A Windows-only API was called at runtime: EventLog access is not supported on this platform.'
+  fix: See the verification log; fix and re-run `containerizer verify`.
+  when:
+    name: ^ProductReturns\.Jobs$
+  learned_from: product-returns/ProductReturns.Jobs
+  learned_at: '2026-10-30'

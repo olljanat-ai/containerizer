@@ -66,3 +66,120 @@ rules:
     rid: portable
   learned_from: retail-backoffice/VanArsdel.StoreManager
   learned_at: '2026-10-30'
+- id: learned-build-rid-downgrade-controltower-jobs
+  phase: plan
+  source: learned
+  when:
+    name: ^ControlTower\.Jobs$
+  plan:
+    rid: portable
+  learned_from: control-tower/ControlTower.Jobs
+  learned_at: '2026-10-30'
+- id: learned-build-rid-downgrade-controltower-portal
+  phase: plan
+  source: learned
+  when:
+    name: ^ControlTower\.Portal$
+  plan:
+    rid: portable
+  learned_from: control-tower/ControlTower.Portal
+  learned_at: '2026-10-30'
+- id: learned-build-rid-downgrade-vanarsdel-allocation-api
+  phase: plan
+  source: learned
+  when:
+    name: ^VanArsdel\.Allocation\.Api$
+  plan:
+    rid: portable
+  learned_from: retail-backoffice/VanArsdel.Allocation.Api
+  learned_at: '2026-10-30'
+- id: learned-build-rid-downgrade-vanarsdel-catalog-api
+  phase: plan
+  source: learned
+  when:
+    name: ^VanArsdel\.Catalog\.Api$
+  plan:
+    rid: portable
+  learned_from: retail-backoffice/VanArsdel.Catalog.Api
+  learned_at: '2026-10-30'
+- id: learned-build-rid-downgrade-vanarsdel-erpconnector
+  phase: plan
+  source: learned
+  when:
+    name: ^VanArsdel\.ErpConnector$
+  plan:
+    rid: portable
+  learned_from: retail-backoffice/VanArsdel.ErpConnector
+  learned_at: '2026-10-30'
+- id: learned-run-aspnet-framework-missing-vanarsdel-erpconnector
+  phase: plan
+  source: learned
+  when:
+    name: ^VanArsdel\.ErpConnector$
+  plan:
+    aspnet_runtime: true
+  learned_from: retail-backoffice/VanArsdel.ErpConnector
+  learned_at: '2026-10-30'
+- id: learned-build-rid-downgrade-vanarsdel-inventory-api
+  phase: plan
+  source: learned
+  when:
+    name: ^VanArsdel\.Inventory\.Api$
+  plan:
+    rid: portable
+  learned_from: retail-backoffice/VanArsdel.Inventory.Api
+  learned_at: '2026-10-30'
+- id: learned-build-rid-downgrade-vanarsdel-notifications
+  phase: plan
+  source: learned
+  when:
+    name: ^VanArsdel\.Notifications$
+  plan:
+    rid: portable
+  learned_from: retail-backoffice/VanArsdel.Notifications
+  learned_at: '2026-10-30'
+- id: learned-run-aspnet-framework-missing-vanarsdel-notifications
+  phase: plan
+  source: learned
+  when:
+    name: ^VanArsdel\.Notifications$
+  plan:
+    aspnet_runtime: true
+  learned_from: retail-backoffice/VanArsdel.Notifications
+  learned_at: '2026-10-30'
+- id: learned-build-rid-downgrade-vanarsdel-pricing-api
+  phase: plan
+  source: learned
+  when:
+    name: ^VanArsdel\.Pricing\.Api$
+  plan:
+    rid: portable
+  learned_from: retail-backoffice/VanArsdel.Pricing.Api
+  learned_at: '2026-10-30'
+- id: learned-build-rid-downgrade-vanarsdel-reporting-api
+  phase: plan
+  source: learned
+  when:
+    name: ^VanArsdel\.Reporting\.Api$
+  plan:
+    rid: portable
+  learned_from: retail-backoffice/VanArsdel.Reporting.Api
+  learned_at: '2026-10-30'
+- id: learned-build-rid-downgrade-vanarsdel-returns-api
+  phase: plan
+  source: learned
+  when:
+    name: ^VanArsdel\.Returns\.Api$
+  plan:
+    rid: portable
+  learned_from: retail-backoffice/VanArsdel.Returns.Api
+  learned_at: '2026-10-30'
+- id: learned-build-rid-downgrade-vanarsdel-storeops-api
+  phase: plan
+  source: learned
+  when:
+    name: ^VanArsdel\.StoreOps\.Api$
+  plan:
+    rid: portable
+  learned_from: retail-backoffice/VanArsdel.StoreOps.Api
+  learned_at: '2026-10-30'
