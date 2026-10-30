@@ -91,3 +91,28 @@ def test_windows_paths_and_file_logs_are_repointed(tmp_path):
     assert plan["env"]["Serilog__WriteTo__0__Name"] == "Console"
     assert "Serilog__WriteTo__0__Args__path" not in plan["env"]
     assert "/data/archive/docs" in plan["add_writable"]
+
+
+def test_blocker_only_in_optional_command_is_refactor(tmp_path):
+    write(tmp_path, "src/Tool/Tool.csproj", """
+        <Project Sdk="Microsoft.NET.Sdk.Worker"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>""")
+    write(tmp_path, "src/Tool/Program.cs", """
+        var builder = Host.CreateApplicationBuilder(args);
+        builder.Services.AddHostedService<Scanner>();
+        switch (args.FirstOrDefault())
+        {
+            case "--scan":
+                builder.Build().Run();
+                return 0;
+            case "--import-legacy":
+                return LegacyImport.Run(args[1]);
+            default:
+                return 1;
+        }""")
+    write(tmp_path, "src/Tool/Scanner.cs", "public class Scanner : BackgroundService { }")
+    write(tmp_path, "src/Tool/LegacyImport.cs", """
+        public static class LegacyImport { public static int Run(string p) { var t = Type.GetTypeFromProgID("Excel.Application"); return 0; } }""")
+    c = assess(tmp_path).components[0]
+    f = next(f for f in c.findings if f.rule.severity == "blocker")
+    assert f.modes == ["--import-legacy"] and f.severity == "refactor"
+    assert c.verdict != "blocker"

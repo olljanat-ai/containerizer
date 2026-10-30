@@ -37,6 +37,8 @@ def migration_markdown(a: AppAssessment) -> str:
             if f.severity == "info" and not f.dormant:
                 continue
             via = f" (in library {f.via}{', not referenced by this component' if f.dormant else ''})" if f.via else ""
+            if f.modes:
+                via += f" (only the {', '.join('`' + m + '`' for m in f.modes)} command; other commands run on Linux)"
             L.append(f"- {SEV_ICON[f.severity]} **{f.rule.title}** [{f.severity}]{via}")
             L.append(f"  - Why: {' '.join(f.rule.why.split())}")
             L.append(f"  - Fix: {' '.join(f.rule.fix.split())}")

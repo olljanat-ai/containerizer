@@ -39,7 +39,7 @@ def cmd_assess(args) -> int:
                     print(f"    {c.verdict:8s} {c.role:8s} {c.name:45s} {','.join(c.project.tfms)}")
                     for f in c.findings:
                         if f.severity != "info" or args.verbose > 1:
-                            via = f" (via {f.via})" if f.via else ""
+                            via = (f" (via {f.via})" if f.via else "") + (f" (only {', '.join(f.modes)})" if f.modes else "")
                             print(f"        - [{f.severity}] {f.rule.title}{via}")
     if args.out:
         write_reports(results, Path(args.out), fmt=args.format)

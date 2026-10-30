@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .rules import SEV_RANK, SEVERITIES, Context, Match, Rule, load_rules, run_rule
-from .reach import CODE_EXT, reachable_files
+from .reach import CODE_EXT, mode_reachability, reachable_files
 from .scan import Project, Repo, scan
 
 SERVER_ROLES = {"web", "worker", "console", "spa"}
@@ -36,16 +36,21 @@ class Finding:
     evidence: list
     via: str = ""             # library project the finding was inherited from
     dormant: bool = False     # library code that this component never references
+    modes: list = field(default_factory=list)   # only reached by these optional commands
 
     @property
     def severity(self) -> str:
-        return "info" if self.dormant else self.rule.severity
+        if self.dormant:
+            return "info"
+        if self.modes and self.rule.severity in ("blocker", "rewrite"):
+            return "refactor"     # the other commands run; split this one off or keep it on Windows
+        return self.rule.severity
 
     def to_dict(self) -> dict:
         r = self.rule
         return {"id": r.id, "severity": r.severity, "category": r.category, "title": r.title,
                 "why": " ".join(r.why.split()), "fix": " ".join(r.fix.split()), "effort_days": r.effort,
-                "via": self.via, "dormant": self.dormant, "evidence": [str(e) for e in self.evidence[:3]], "source": r.source,
+                "via": self.via, "dormant": self.dormant, "only_commands": self.modes, "evidence": [str(e) for e in self.evidence[:3]], "source": r.source,
                 "windows_container": r.windows_container}
 
 
@@ -278,6 +283,21 @@ def assess(path: str | Path, rules: list[Rule] | None = None, repo: Repo | None 
                 if not dormant:
                     own.add(f.rule.id)
                 c.findings.append(Finding(f.rule, f.evidence, via=lc.name, dormant=dormant))
+        # Windows-only code reached only by an optional command of a multi-command tool
+        if c.role in ("console", "worker") and any(f.rule.severity in ("blocker", "rewrite") for f in c.findings):
+            mr = mode_reachability(c.project, libs)
+            if mr:
+                shared, per_mode = mr
+                for f in c.findings:
+                    code_ev = [e for e in f.evidence if e.line and Path(e.file).suffix.lower() in CODE_EXT]
+                    if f.dormant or not code_ev or len(code_ev) != len(f.evidence):
+                        continue
+                    files = {(repo.root / e.file).resolve() for e in code_ev}
+                    if files & {x.resolve() for x in shared}:
+                        continue
+                    modes = [m for m, fs in per_mode.items() if files & {x.resolve() for x in fs}]
+                    if modes and len(modes) < len(per_mode):
+                        f.modes = modes
         # if the same rule was found both dormant and active, keep the active one
         active = {f.rule.id for f in c.findings if not f.dormant}
         c.findings = [f for f in c.findings if not (f.dormant and f.rule.id in active)]
