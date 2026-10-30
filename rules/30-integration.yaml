@@ -37,7 +37,8 @@ rules:
   - id: windows-identity-impersonation
     applies_to: [dotnet]
     when:
-      code: 'WindowsIdentity\.(RunImpersonated|Impersonate|GetCurrent)|WindowsImpersonationContext|LogonUser\(|\.Impersonate\('
+      code: 'WindowsIdentity\.(RunImpersonated(Async)?|Impersonate)\b|WindowsImpersonationContext|LogonUser\(|\.Impersonate\('
+      unguarded: true
     severity: rewrite
     category: identity
     effort: 3
@@ -48,11 +49,29 @@ rules:
       file shares or other services. Linux containers cannot obtain Windows tokens.
     fix: Use service identities with explicit authorization (OIDC on-behalf-of, scoped SQL logins) instead of impersonation.
 
+  - id: windows-identity-current
+    applies_to: [dotnet]
+    when:
+      all:
+        - code: 'WindowsIdentity\.GetCurrent\('
+          unguarded: true
+        - not: {code: 'WindowsIdentity\.(RunImpersonated(Async)?|Impersonate)\b|WindowsImpersonationContext|LogonUser\(|\.Impersonate\('}
+    severity: config
+    category: identity
+    effort: 0.25
+    windows_container: true
+    title: Reads the current Windows identity
+    why: >-
+      WindowsIdentity.GetCurrent() (usually to show or log the service account, or list its
+      groups) throws PlatformNotSupportedException on Linux. It is not impersonation; the call
+      just needs an OperatingSystem.IsWindows() guard or Environment.UserName instead.
+    fix: Guard the call with OperatingSystem.IsWindows() or use Environment.UserName.
+
   - id: active-directory-ds
     applies_to: [dotnet]
     when:
       any:
-        - code: 'PrincipalContext\(|DirectoryEntry\(|DirectorySearcher\(|UserPrincipal\.|GroupPrincipal\.'
+        - code: '\bPrincipalContext\(|\bDirectoryEntry\(|\bDirectorySearcher\(|UserPrincipal\.|GroupPrincipal\.'
         - package: System\.DirectoryServices(\.AccountManagement)?
         - reference: System\.DirectoryServices(\.AccountManagement)?
     severity: refactor
@@ -80,13 +99,15 @@ rules:
     applies_to: [dotnet]
     when:
       any:
-        - package: Microsoft\.AspNetCore\.Authentication\.WsFederation|Sustainsys\.Saml2.*|Microsoft\.Owin\.Security\.WsFederation
-        - reference: System\.IdentityModel\.Services|Microsoft\.IdentityModel
+        - package: Microsoft\.AspNetCore\.Authentication\.WsFederation|Sustainsys\.Saml2.*|ITfoxtec\.Identity\.Saml2.*|Microsoft\.Owin\.Security\.WsFederation
     severity: info
     category: identity
     effort: 0.5
     title: WS-Federation / SAML (AD FS)
-    why: Works from Linux containers; needs correct public URLs behind the ingress (forwarded headers).
+    why: >-
+      The ASP.NET Core / OWIN WS-Federation and SAML handlers work from Linux containers; they need
+      correct public URLs behind the ingress (forwarded headers). (WIF - System.IdentityModel.Services
+      - is .NET Framework only and covered by mig-wif.)
     fix: Enable ForwardedHeaders and register the ingress host name with the IdP.
 
   - id: machinekey
@@ -100,14 +121,17 @@ rules:
     why: Shared machineKey for cookies/ViewState across a web farm; must not be baked into an image.
     fix: Inject as a Secret; on ASP.NET Core persist Data Protection keys to shared storage.
 
+  # repo scope: keys are often persisted in a shared library (e.g. nopCommerce's Nop.Web.Framework),
+  # so the "not persisted" check has to look at the whole repository, not only the web project.
   - id: dataprotection-default
     applies_to: [dotnet]
+    scope: repo
     when:
       all:
-        - role: web
-        - not: {tfm: 'net[1-4]\d{1,2}'}
-        - code: 'AddAuthentication|AddIdentity|AddCookie|AddSession|AddAntiforgery|AddRazorPages|AddControllersWithViews|AddDefaultIdentity'
-        - not: {code: 'PersistKeysTo|AddDataProtection\(\)\s*\.\s*Persist'}
+        - sdk: 'Microsoft\.NET\.Sdk\.Web'
+        - code: '(?-i:\b(AddAuthentication|AddIdentity|AddCookie|AddSession|AddAntiforgery|AddRazorPages|AddControllersWithViews|AddDefaultIdentity)\b)'
+          in: ["*.cs", "*.vb", "*.fs"]
+        - not: {code: 'PersistKeysTo|AddDataProtection\(\)\s*\.\s*Persist', in: ["*.cs", "*.vb", "*.fs"]}
     severity: config
     category: identity
     effort: 0.5
@@ -147,7 +171,7 @@ rules:
 
   - id: secrets-in-config
     when:
-      config: '("?(password|pwd|secret|apikey|api_key|clientsecret|accesskey)"?\s*[:=]\s*"(?!\s*"|\$\{|#\{|__|%|<|\*{3}|changeme|CHANGE_ME|{{)[^"]{4,}")|(Password\s*=\s*(?!\s*;|\$\{|#\{|__)[^;"]{3,};)'
+      config: '("?(password|pwd|secret|apikey|api_key|clientsecret|accesskey)"?\s*[:=]\s*"(?!\s*"|\$\{|#\{|__|%|<|\*{3}|changeme|change_me|{{|\[[^"\]]*\]"|\{[^"}]*\}"|[x*\-]{3,}"|(your|enter[-_ ])[^"]*"|placeholder|todo)[^"]{4,}")|(Password\s*=\s*(?!\s*;|\$\{|#\{|__|<|\[|\{|[x*]{3,}\s*;|changeme|(your|my)[-_ ]?\w*\s*;)[^;"]{3,};)'
     severity: config
     category: secrets
     effort: 0.5
@@ -160,7 +184,7 @@ rules:
     when:
       any:
         - package: Microsoft\.Data\.SqlClient|System\.Data\.SqlClient|Microsoft\.EntityFrameworkCore\.SqlServer|Dapper|EntityFramework|dbup-sqlserver|Hangfire\.SqlServer
-        - config: 'Server=|Data Source=[^;"]*(\\\\|,\d+|tcp:)|Initial Catalog='
+        - config: '\bServer=(?![^"\n<]*;\s*(Port|Host)\s*=)|Data Source=[^;"]*(\\\\|,\d+|tcp:)|Initial Catalog='
     severity: info
     category: data
     effort: 0
@@ -182,9 +206,16 @@ rules:
   - id: msdtc
     when:
       any:
-        - code: '\bTransactionScope\b[^;]*\n?[^;]*\b(Required|RequiresNew)|EnterpriseServicesInteropOption|TransactionInterop|DependentTransaction'
-        - text: 'MSDTC|Distributed Transaction Coordinator'
+        - code: &dtc_code 'EnterpriseServicesInteropOption|TransactionInterop|DependentTransaction|EnlistDistributedTransaction|\.EnlistDurable\(|\bIPromotableSinglePhaseNotification\b'
+        - config: &dtc_config '<system\.transactions>|\bMSDTC\b'
+        - text: &dtc_text 'MSDTC|Distributed Transaction Coordinator'
           in: ["README.md", "*.ps1", "*.md"]
+        # one transaction scope spanning two connections (or a connection and a queue) escalates to MSDTC
+        - &dtc_multi
+          all:
+            - code: '\bTransactionScope\b'
+            - code: '(new\s+\w*(Sql|Db|Oracle|OleDb|Odbc)Connection\(|\bnew\s+MessageQueue\()[\s\S]{1,3000}?(new\s+\w*(Sql|Db|Oracle|OleDb|Odbc)Connection\(|\bnew\s+MessageQueue\()'
+          same_file: true
     severity: refactor
     category: data
     effort: 2
@@ -194,6 +225,23 @@ rules:
       Transactions that span connections/queues escalate to MSDTC. modern .NET supports distributed
       transactions only on Windows, and MSDTC is not available to Linux containers.
     fix: Restructure into single-resource transactions plus an outbox/saga pattern.
+
+  - id: transaction-scope
+    when:
+      all:
+        - code: '\bTransactionScope\b'
+        - not: {code: *dtc_code}
+        - not: {config: *dtc_config}
+        - not: *dtc_multi
+    severity: info
+    category: data
+    effort: 0
+    title: TransactionScope (local transactions)
+    why: >-
+      TransactionScope over a single connection stays a local transaction and works on Linux.
+      Only if the scope opens a second connection/resource does it escalate to MSDTC, which
+      Linux containers do not have - worth a check in testing.
+    fix: None if each scope uses one connection; otherwise see msdtc.
 
   - id: sql-filestream
     when:
@@ -236,8 +284,12 @@ rules:
   - id: ssrs
     when:
       any:
-        - package: Microsoft\.ReportingServices\..*|Microsoft\.ReportViewer\..*
-        - file: ["*.rdl", "*.rdlc"]
+        - package: Microsoft\.ReportingServices\..*|Microsoft\.ReportViewer\..*|ReportViewerCore\.WinForms
+        - reference: Microsoft\.ReportViewer\..*|Microsoft\.ReportingServices\..*
+        - file: "*.rdl"
+        - all:
+            - file: "*.rdlc"
+            - not: {package: 'ReportViewerCore\.NETCore'}
     severity: rewrite
     category: reporting
     effort: 3
@@ -246,11 +298,25 @@ rules:
     why: The ReportViewer controls (WebForms/WinForms) are .NET Framework only; local RDLC rendering is Windows-only.
     fix: Call the SSRS REST API from the app, or re-implement reports (QuestPDF, a BI tool).
 
+  - id: ssrs-reportviewercore
+    when:
+      package: 'ReportViewerCore\.NETCore'
+    severity: config
+    category: reporting
+    effort: 0.5
+    title: Local RDLC reports with ReportViewerCore.NETCore
+    why: >-
+      ReportViewerCore.NETCore is a .NET (Core) port of the ReportViewer local-report engine that
+      renders .rdlc to PDF/Excel/Word on Linux. Rendering needs the report fonts (and libgdiplus-free
+      text measurement), so the image must contain the fonts the reports use.
+    fix: Install the fonts the reports use (e.g. fonts-liberation, msttcorefonts or the corporate fonts) in the image; keep a full (non-chiseled) base image if fontconfig is needed.
+
   - id: oledb-odbc-access
     when:
       any:
         - package: System\.Data\.OleDb
-        - code: 'Microsoft\.(ACE|Jet)\.OLEDB|OleDbConnection|\.mdb\b|\.accdb\b'
+        # a database file name (orders.mdb), not a bare ".accdb" extension in a MIME/file-type map
+        - code: 'Microsoft\.(ACE|Jet)\.OLEDB|OleDbConnection|\w\.(mdb|accdb)\b'
     severity: blocker
     category: data
     effort: 0
@@ -263,7 +329,7 @@ rules:
     when:
       any:
         - code: 'cwbx|IBM\.Data\.DB2\.iSeries|AS400System|iDB2Connection|cwbapi|IBMDA400'
-        - package: IBM\.Data\.DB2\.iSeries|Net\.IBM\.Data\.Db2.*
+        - package: IBM\.Data\.DB2\.iSeries
     severity: refactor
     category: data
     effort: 3
@@ -332,8 +398,9 @@ rules:
     when:
       any:
         - reference: System\.Messaging
-        - code: '\bMessageQueue\b|\bMSMQ\b|FormatName:DIRECT|private\$\\\\'
-        - package: Experimental\.System\.Messaging|MSMQ\.Messaging
+        - code: '\bnew\s+(System\.Messaging\.)?MessageQueue\(|\bMessageQueue\.(Create|Exists|Delete|GetPrivateQueues\w*|GetPublicQueues\w*)\(|^\s*(using|Imports)\s+System\.Messaging\b|FormatName:|private\$\\\\|\bMsmqTransport\b'
+        - config: 'netMsmqBinding|msmqIntegrationBinding|FormatName:|msmq\.formatname:'
+        - package: Experimental\.System\.Messaging|MSMQ\.Messaging|NServiceBus\.(Transports?\.)?Msmq.*|MassTransit\.Msmq
     severity: rewrite
     category: messaging
     effort: 3

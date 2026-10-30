@@ -178,3 +178,15 @@ rules:
     name: ^ProductReturns\.Jobs$
   learned_from: product-returns/ProductReturns.Jobs
   learned_at: '2026-10-30'
+- id: learned-runtime-staffonboarding-provisioning-17
+  source: learned
+  severity: refactor
+  category: runtime-observed
+  title: Windows system library HTTPAPI.dll called at runtime
+  why: The app calls a Windows system library (HTTPAPI.dll) that has a cross-platform .NET replacement (HTTP.sys -> Kestrel,
+    Win32 security/registry -> managed APIs).
+  fix: See the verification log; fix and re-run `containerizer verify`.
+  when:
+    name: ^StaffOnboarding\.Provisioning$
+  learned_from: staff-onboarding/StaffOnboarding.Provisioning
+  learned_at: '2026-10-30'

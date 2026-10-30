@@ -43,7 +43,8 @@ def unknowns(comp) -> list[str]:
     for ref in p.references:
         if ref.startswith("COM:"):
             continue  # always covered by com-interop rule
-        if neutral is None or not neutral.match(ref):
+        # old-style projects reference NuGet assemblies by name (HintPath), so the package catalog applies too
+        if (neutral is None or not neutral.match(ref)) and (ok is None or not ok.match(ref)):
             out.append(f"reference:{ref}")
     for f in p.files:
         if f.suffix.lower() in (".dll", ".ocx", ".exe") and "packages" not in f.parts:

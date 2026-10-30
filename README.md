@@ -102,6 +102,10 @@ python -m containerizer bench --technique hybrid --model claude-haiku-5-5
 Condition primitives: `sdk`, `tfm`, `package`, `reference`, `framework_ref`, `property`,
 `output_type`, `kind`, `role`, `name`, `file` (glob), `code` / `config` / `text` (regex with optional
 `in:` glob and `unguarded: true`), `readme`, combined with `any` / `all` / `not`.
+`unguarded: true` skips hits right after an `OperatingSystem.IsWindows()` check or inside a method/type
+marked `[SupportedOSPlatform("windows")]`. `same_file: true` next to an `all` requires its
+`code`/`config`/`text` conditions to match in the same file (e.g. an assembly loader *and* an install
+path probe, not two unrelated files).
 Later files override earlier rules with the same id; `rules/learned/` is loaded last.
 
 ### Self-learning loop (`verify --learn`)

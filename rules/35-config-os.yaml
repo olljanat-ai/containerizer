@@ -334,7 +334,8 @@ rules:
     when:
       all:
         - role: 'web|worker|console'
-        - code: '\bDateTime(Offset)?\.(Now|Today)\b|TimeZoneInfo\.Local\b'
+        # local-time business logic (dates, schedules, day boundaries), not DateTime.Now in log lines or timers
+        - code: '\bDateTime(Offset)?\.Today\b|\bTimeZoneInfo\.Local\b|\bDateTime(Offset)?\.Now\.(Date|Hour|DayOfWeek|Day|Month|TimeOfDay)\b|\bDateTime(Offset)?\.Now\.ToString\(\s*"[^"]*(d|y|M)[^"]*"'
         - not: {text: '\bTZ\s*[:=]', in: ['Dockerfile*', '*.yaml', '*.yml', '*.env']}
     severity: info
     category: runtime

@@ -150,3 +150,30 @@ def test_blazor_wasm_is_served_as_static_files():
     assert 'dotnet publish "src/W/W.csproj" -c Release -o /out' in df
     assert "COPY --from=build /out/wwwroot /usr/share/nginx/html" in df
     assert "ENTRYPOINT" not in df and "listen 8080" in df and "location /_framework/" in df
+
+
+def test_vendored_js_and_config_comments_are_ignored(tmp_path):
+    web_app(tmp_path)
+    write(tmp_path, "src/Web/wwwroot/lib/editor/sql.js", 'var k = ["FILESTREAM", "xp_cmdshell", "cmd.exe"];')
+    write(tmp_path, "src/Web/Scripts/media.min.js", 'var t = {".mdb": db, "Process.Start(\\"a.exe\\")": 1};')
+    write(tmp_path, "src/Web/Web.Release.config", """
+        <configuration>
+          <!-- <add name="Db" connectionString="Data Source=.;Integrated Security=True" /> -->
+        </configuration>""")
+    write(tmp_path, "src/Web/appsettings.json", '{\n  // "Password": "admin"\n  "Logging": {}\n}')
+    c = assess(tmp_path).components[0]
+    sev = {f.rule.id: f.severity for f in c.findings}
+    assert c.verdict in ("info", "config"), sev
+    assert "sql-integrated-security" not in sev and "secrets-in-config" not in sev
+
+
+def test_old_style_reference_to_known_package_is_not_unknown(tmp_path):
+    from containerizer.confidence import unknowns
+    write(tmp_path, "src/Svc/Svc.csproj", """
+        <Project ToolsVersion="15.0"><PropertyGroup><TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+          <OutputType>Exe</OutputType></PropertyGroup>
+          <ItemGroup><Reference Include="Newtonsoft.Json, Version=13.0.0.0"><HintPath>..\\packages\\x.dll</HintPath></Reference>
+          </ItemGroup></Project>""")
+    write(tmp_path, "src/Svc/Program.cs", "class P { static void Main() {} }")
+    c = assess(tmp_path).components[0]
+    assert "reference:Newtonsoft.Json" not in unknowns(c)
