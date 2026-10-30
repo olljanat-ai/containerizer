@@ -29,7 +29,7 @@ rules:
     priority: 52
     when:
       all:
-        - code: ':\s*(Microsoft\.WindowsAzure\.ServiceRuntime\.)?(?-i:RoleEntryPoint)\b'
+        - code: '(\bInherits|:)\s*(Microsoft\.WindowsAzure\.ServiceRuntime\.)?(?-i:RoleEntryPoint)\b'
         - not: {output_type: Exe}
 
   - id: host-role-lambda
@@ -149,7 +149,7 @@ rules:
       any:
         - reference: 'Microsoft\.WindowsAzure\.ServiceRuntime'
         - package: 'Microsoft\.WindowsAzure\.ServiceRuntime|Unofficial\.Microsoft\.WindowsAzure\.ServiceRuntime.*'
-        - code: ':\s*(Microsoft\.WindowsAzure\.ServiceRuntime\.)?(?-i:RoleEntryPoint)\b|\b(?-i:RoleEnvironment)\.(GetConfigurationSettingValue|CurrentRoleInstance|IsAvailable|Roles|Changing|Changed)\b'
+        - code: '(\bInherits|:)\s*(Microsoft\.WindowsAzure\.ServiceRuntime\.)?(?-i:RoleEntryPoint)\b|\b(?-i:RoleEnvironment)\.(GetConfigurationSettingValue|CurrentRoleInstance|IsAvailable|Roles|Changing|Changed)\b'
     severity: rewrite
     category: hosting
     effort: 3

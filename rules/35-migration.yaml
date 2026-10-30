@@ -186,7 +186,7 @@ rules:
     when:
       any:
         - reference: System\.Data\.OracleClient
-        - code: 'using\s+System\.Data\.OracleClient\s*;|System\.Data\.OracleClient\.Oracle'
+        - code: 'using\s+System\.Data\.OracleClient\s*;|^\s*Imports\s+System\.Data\.OracleClient\s*$|System\.Data\.OracleClient\.Oracle'
     severity: refactor
     category: data
     effort: 1
@@ -202,7 +202,7 @@ rules:
   - id: mig-custom-config-section
     applies_to: [dotnet]
     when:
-      code: '(?-i::\s*(System\.Configuration\.)?(ConfigurationSection|ConfigurationElementCollection|IConfigurationSectionHandler)\b)'
+      code: '(?-i:(\bInherits|\bImplements|:)\s*(System\.Configuration\.)?(ConfigurationSection|ConfigurationElementCollection|IConfigurationSectionHandler)\b)'
     severity: config
     category: configuration
     effort: 1
@@ -261,7 +261,7 @@ rules:
         - config: '<(httpModules|httpHandlers|modules|handlers)\b[^>]*>(?:(?!</(httpModules|httpHandlers|modules|handlers)>)[\s\S])*?<add\s[^>]*\btype\s*=\s*"(?!System\.|Microsoft\.)'
           in: ["web.config"]
         - file: "*.ashx"
-        - code: '(?-i::\s*(IHttpModule|IHttpHandler|IHttpAsyncHandler)\b)'
+        - code: '(?-i:(\bImplements|:)\s*(System\.Web\.)?(IHttpModule|IHttpHandler|IHttpAsyncHandler)\b)'
     severity: refactor
     category: framework
     effort: 1.5
@@ -316,7 +316,7 @@ rules:
     when:
       all:
         - any:
-            - code: '<%@\s*OutputCache\b|\[\s*OutputCache\s*\('
+            - code: '<%@\s*OutputCache\b|[\[<]\s*OutputCache\s*\('
             - config: '<outputCacheSettings\b|<outputCacheProfiles\b'
         - tfm: 'net[1-4]\d{1,2}'
     severity: config
@@ -428,7 +428,7 @@ rules:
     applies_to: [dotnet]
     when:
       any:
-        - code: 'using\s+Microsoft\.AspNet\.SignalR(\.Hubs)?\s*;|GlobalHost\.ConnectionManager|\.MapSignalR\s*\('
+        - code: 'using\s+Microsoft\.AspNet\.SignalR(\.Hubs)?\s*;|^\s*Imports\s+Microsoft\.AspNet\.SignalR(\.Hubs)?\s*$|GlobalHost\.ConnectionManager|\.MapSignalR\s*\('
         - reference: Microsoft\.AspNet\.SignalR\.(Core|SystemWeb|Owin|SelfHost)
         - package: Microsoft\.AspNet\.SignalR(\.Core|\.Owin|\.SelfHost)?
     severity: refactor
@@ -448,7 +448,7 @@ rules:
     applies_to: [dotnet]
     when:
       any:
-        - code: 'using\s+Microsoft\.AspNet\.SignalR\.Client\s*;'
+        - code: 'using\s+Microsoft\.AspNet\.SignalR\.Client\s*;|^\s*Imports\s+Microsoft\.AspNet\.SignalR\.Client\s*$'
         - reference: Microsoft\.AspNet\.SignalR\.Client
         - package: Microsoft\.AspNet\.SignalR\.Client
     severity: info
@@ -466,7 +466,7 @@ rules:
     applies_to: [dotnet]
     when:
       any:
-        - code: '(?-i::\s*(System\.Web\.Services\.Protocols\.)?SoapHttpClientProtocol\b)'
+        - code: '(?-i:(\bInherits|:)\s*(System\.Web\.Services\.Protocols\.)?SoapHttpClientProtocol\b)'
         - file: ["Reference.map"]
     severity: refactor
     category: framework
@@ -505,7 +505,7 @@ rules:
       any:
         - reference: Microsoft\.Practices\.EnterpriseLibrary\..*
         - package: EnterpriseLibrary\..*
-        - code: 'using\s+Microsoft\.Practices\.EnterpriseLibrary\.'
+        - code: '(using|Imports)\s+Microsoft\.Practices\.EnterpriseLibrary\.'
         - config: 'type\s*=\s*"Microsoft\.Practices\.EnterpriseLibrary\.'
     severity: refactor
     category: libraries
@@ -523,7 +523,7 @@ rules:
     when:
       any:
         - reference: Microsoft\.Practices\.(Unity|ServiceLocation|ObjectBuilder\d?)(\..*)?
-        - code: 'using\s+Microsoft\.Practices\.(Unity|ServiceLocation)\b'
+        - code: '(using|Imports)\s+Microsoft\.Practices\.(Unity|ServiceLocation)\b'
     severity: info
     category: libraries
     effort: 0.5

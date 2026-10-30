@@ -12,6 +12,10 @@ rules:
         - sdk: '^MSTest\.Sdk'
         - property: {IsTestProject: "true"}
         - name: '[.\-](Tests?|UnitTests|IntegrationTests|FunctionalTests|E2ETests|EndToEndTests|AcceptanceTests|Specs)$'
+        # old-style projects reference the test framework as an assembly (GAC or a checked-in dll)
+        # instead of a package, and Visual Studio test projects carry the test-project type GUID
+        - reference: 'Microsoft\.VisualStudio\.QualityTools\.UnitTestFramework|Microsoft\.VisualStudio\.TestPlatform\.TestFramework|xunit(\.core|\.assert)?|nunit\.framework'
+        - type_guid: '3ac096d0-a1c2-e12c-1390-a8335801fdab'
 
   - id: role-tool
     phase: role
@@ -69,7 +73,7 @@ rules:
             - output_type: 'Exe'
             - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
             - not: {framework_ref: 'Microsoft\.AspNetCore\.App'}
-            - not: {code: '\bAddHostedService\b|:\s*BackgroundService\b|\bIHostedService\b|\bServiceBase\b|\bHostFactory\.Run\b|\bUseWindowsService\b|\bUseSystemd\b'}
+            - not: {code: '\bAddHostedService\b|(\bInherits|:)\s*BackgroundService\b|\bIHostedService\b|\bServiceBase\b|\bHostFactory\.Run\b|\bUseWindowsService\b|\bUseSystemd\b'}
         # source-code generators run by developers against the checkout (Rock.CodeGeneration, a WPF app
         # that writes C# and TypeScript into the source tree)
         - all:
@@ -114,7 +118,7 @@ rules:
     role: sqlclr
     priority: 92
     when:
-      code: '\[\s*(Microsoft\.SqlServer\.Server\.)?Sql(Function|Procedure|Trigger|UserDefinedType|UserDefinedAggregate)\b'
+      code: '[\[<]\s*(Microsoft\.SqlServer\.Server\.)?Sql(Function|Procedure|Trigger|UserDefinedType|UserDefinedAggregate)\b'
 
   - id: role-sharepoint
     phase: role
@@ -139,10 +143,10 @@ rules:
     when:
       all:
         - output_type: 'WinExe|Exe'
-        - code: '\bServiceBase\.Run\s*\(|:\s*(System\.ServiceProcess\.)?ServiceBase\b|\bHostFactory\.Run\s*\('
+        - code: '\bServiceBase\.Run\s*\(|(\bInherits|:)\s*(System\.ServiceProcess\.)?ServiceBase\b|\bHostFactory\.Run\s*\('
         - not: {property: {UseWPF: "true"}}
         - not: {property: {UseWindowsForms: "true"}}
-        - not: {code: '\bApplication\.Run\s*\(|:\s*(System\.Windows\.Forms\.)?Form\b|:\s*(System\.Windows\.)?(Window|Application)\b|<Application\b|<Window\b'}
+        - not: {code: '\bApplication\.Run\s*\(|(\bInherits|:)\s*(System\.Windows\.Forms\.)?Form\b|(\bInherits|:)\s*(System\.Windows\.)?(Window|Application)\b|<Application\b|<Window\b'}
 
   # .NET MAUI apps are phone/desktop clients, never server components.
   - id: role-maui
@@ -153,6 +157,26 @@ rules:
       all:
         - property: {UseMaui: "true"}
         - output_type: 'Exe|WinExe'
+
+  # Xamarin and UWP app heads (phones, tablets, Windows Store): clients, never server components.
+  # A Xamarin.Android app is OutputType Library with AndroidApplication=true; a Xamarin.iOS app is
+  # an Exe with the Xamarin.iOS project type; a UWP app is an AppContainerExe. Class libraries for
+  # these platforms (bindings, shared code) have none of these and stay libraries.
+  - id: role-mobile-app
+    phase: role
+    role: desktop
+    priority: 86
+    when:
+      any:
+        - property: {AndroidApplication: "true"}
+        - output_type: AppContainerExe
+        - all:
+            - output_type: 'Exe|WinExe'
+            - any:
+                # Xamarin.Android, Xamarin.iOS (unified and classic MonoTouch), Xamarin.Mac, UWP
+                - type_guid: 'efba0ad7-5a72-4c68-af49-83d382785dcf|feacfbd2-3405-455c-9665-78fe426c6842|6bc8ed88-2882-458c-8e55-dfd12b67127b|a3f8f2ab-b479-4a4a-a458-a89e7dc349f1|a5a43c5b-de2a-4c0c-9213-0a381af9435a'
+                - tfm: 'net\d+\.\d+-(android|ios|maccatalyst|tvos|macos|tizen)[\d.]*|monoandroid.*|xamarin\.?(ios|mac|tvos|watchos).*|uap.*'
+                - reference: 'Xamarin\.iOS|Xamarin\.Mac|Mono\.Android'
 
   - id: role-desktop
     phase: role
@@ -169,7 +193,7 @@ rules:
                 # a leftover reference alone (common in old console/remoting hosts) is not a UI
                 - all:
                     - reference: System\.Windows\.Forms|PresentationFramework
-                    - code: '^\s*using\s+System\.Windows\.(Forms|Controls|Markup)\b|\bApplication\.Run\(|:\s*(Form|Window)\b|System\.Windows\.Forms\.\w+'
+                    - code: '^\s*(using|Imports)\s+System\.Windows\.(Forms|Controls|Markup)\b|\bApplication\.Run\(|(\bInherits|:)\s*(Form|Window)\b|System\.Windows\.Forms\.\w+'
         - all:
             - output_type: Exe
             - tfm: 'net\d+\.\d+-windows.*'
@@ -300,6 +324,15 @@ rules:
             - package: Microsoft\.AspNetCore(\.App|\.All)?
             - output_type: Exe
             - code: 'UseStartup<|WebHost\.CreateDefaultBuilder|ConfigureWebHostDefaults'
+        # the shared framework can also come in through a package's own FrameworkReference
+        # (Serilog.AspNetCore, ModelContextProtocol.AspNetCore, ...): an Exe whose code builds a
+        # WebApplication compiles against ASP.NET Core whatever its Sdk says. Sdk.Worker declares a
+        # background service that uses WebApplication only to host health/default endpoints
+        # (eShop OrderProcessor), so it stays a worker.
+        - all:
+            - output_type: Exe
+            - code: '\bWebApplication\.Create(Builder|SlimBuilder)?\s*\('
+            - not: {sdk: 'Microsoft\.NET\.Sdk\.Worker$'}
 
   # ASP.NET Core host that only serves health probes while hosted services/jobs do the work
   # (Sdk.Web is used for the Kestrel health endpoint): a background worker, not a web app.
@@ -313,8 +346,9 @@ rules:
         - any:
             - sdk: Microsoft\.NET\.Sdk\.Web$
             - framework_ref: Microsoft\.AspNetCore\.App
+            - code: '\bWebApplication\.Create(Builder|SlimBuilder)?\s*\('
         - code: '\b(UseHealthChecks|MapHealthChecks)\s*\('
-        - code: '\bAddHostedService\s*<|\bAdd(Cron)?Jobs?\s*<|:\s*BackgroundService\b|\bIHostedService\b|\bAddQuartz\b|\bAddHangfireServer\b'
+        - code: '\bAddHostedService\s*(<|\(\s*Of\b)|\bAdd(Cron)?Jobs?\s*<|(\bInherits|:)\s*BackgroundService\b|\bIHostedService\b|\bAddQuartz\b|\bAddHangfireServer\b'
         - not:
             code: '\b(MapControllers|MapControllerRoute|MapDefaultControllerRoute|MapGet|MapPost|MapPut|MapPatch|MapDelete|MapMethods|MapGroup|MapRazorPages|MapRazorComponents|MapBlazorHub|MapHub|MapGrpcService|MapFallback\w*|MapReverseProxy|MapGraphQL|MapOpenApi|UseMvc\w*|UseStaticFiles|UseSwagger\w*|UseOcelot|AddControllers\w*|AddMvc|AddRazorPages|AddRazorComponents|AddServerSideBlazor|AddGrpc|AddSignalR)\b|:\s*(Controller|ControllerBase)\b|\[ApiController\]'
 
@@ -343,7 +377,7 @@ rules:
             - type_guid: 349c5851-65df-11da-9384-00065b846f21
             - package: Microsoft\.Owin\.Host\.SystemWeb
             - any:
-                - code: '\[\s*assembly\s*:\s*OwinStartup'
+                - code: '[\[<]\s*assembly\s*:\s*OwinStartup'
                 - config: '<add\s+key="owin:appStartup"'
 
   - id: role-web-selfhost
@@ -418,7 +452,7 @@ rules:
         - sdk: Microsoft\.NET\.Sdk\.Worker
         - all:
             - output_type: Exe
-            - code: '\bServiceBase\b|HostFactory\.Run|UseWindowsService|AddHostedService|:\s*BackgroundService\b|IHostedService|UseSystemd|ServiceHost\b|RunAsService'
+            - code: '\bServiceBase\b|HostFactory\.Run|UseWindowsService|AddHostedService|(\bInherits|:)\s*BackgroundService\b|IHostedService|UseSystemd|ServiceHost\b|RunAsService'
 
   - id: role-console
     phase: role

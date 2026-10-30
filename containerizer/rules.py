@@ -176,8 +176,38 @@ GUARD_RE = re.compile(r"OperatingSystem\.Is(Windows|MacOS|Linux|FreeBSD|MacCatal
 
 
 # members/types the authors marked as running on one specific OS (CA1416 makes callers guard them)
-SUPPORTED_WIN_RE = re.compile(r'\[\s*SupportedOSPlatform\(\s*"(windows|macos|osx|linux|freebsd|maccatalyst|ios|android)'
-                              r'[^"]*"\s*\)\s*\]', re.I)
+# (also written fully qualified, [System.Runtime.Versioning.SupportedOSPlatform("windows")], or as
+# SupportedOSPlatformAttribute)
+_OS_NAMES = r'(windows|macos|osx|linux|freebsd|maccatalyst|ios|android)'
+SUPPORTED_WIN_RE = re.compile(r'\[\s*(?:global::)?(?:System\.Runtime\.Versioning\.)?SupportedOSPlatform(?:Attribute)?\(\s*"'
+                              + _OS_NAMES + r'[^"]*"\s*\)\s*\]', re.I)
+# the same attribute in Visual Basic: <SupportedOSPlatform("windows")> on the line(s) before the member
+VB_SUPPORTED_WIN_RE = re.compile(r'<\s*(?:Global\.)?(?:System\.Runtime\.Versioning\.)?SupportedOSPlatform(?:Attribute)?\(\s*"'
+                                 + _OS_NAMES + r'[^"]*"\s*\)\s*>\s*_?\s*', re.I)
+_VB_DECL_RE = re.compile(r'(?:<[^<>\n]*>\s*_?\s*)*(?:(?:Public|Private|Friend|Protected|Shared|Overrides|Overridable|NotOverridable|MustOverride|'
+                         r'Overloads|Shadows|Async|Iterator|Partial|NotInheritable|MustInherit|ReadOnly|WriteOnly|Default)\s+)*'
+                         r'(Sub|Function|Property|Class|Module|Structure|Interface|Declare)\b', re.I)
+
+
+def _in_vb_windows_only_member(txt: str, pos: int) -> bool:
+    """VB form of _in_windows_only_member: the member or type right after <SupportedOSPlatform(...)>
+    runs up to its first `End Sub` / `End Function` / `End Class` ... (a Declare statement is one
+    line). Nested blocks of the same kind (a multi-line lambda) end it early, which only ever makes
+    a hit count as unguarded."""
+    for m in VB_SUPPORTED_WIN_RE.finditer(txt, 0, pos + 1):
+        d = _VB_DECL_RE.match(txt, m.end())
+        if not d:
+            continue
+        kind = d.group(1).lower()
+        if kind == "declare":
+            end = txt.find("\n", d.end())
+            end = len(txt) if end < 0 else end
+        else:
+            e = re.compile(rf"^\s*End\s+{kind}\b", re.I | re.M).search(txt, d.end())
+            end = e.end() if e else len(txt)
+        if m.start() <= pos < end:
+            return True
+    return False
 
 
 def _in_windows_only_member(txt: str, pos: int) -> bool:
@@ -187,6 +217,8 @@ def _in_windows_only_member(txt: str, pos: int) -> bool:
     only ever makes a hit count as unguarded."""
     if "SupportedOSPlatform" not in txt:
         return False
+    if VB_SUPPORTED_WIN_RE.search(txt) and _in_vb_windows_only_member(txt, pos):
+        return True
     # the attribute may follow the hit in the same attribute list:
     # [DllImport("kernel32.dll")] [SupportedOSPlatform("windows")] static extern ...;
     decl_end = min((i for i in (txt.find(";", pos), txt.find("{", pos)) if i >= 0), default=len(txt))
@@ -718,9 +750,16 @@ _TEST_PKG_RE = re.compile(r"^(Microsoft\.NET\.Test\.Sdk|xunit(\.v3)?|nunit|MSTes
 _TEST_NAME_RE = re.compile(r"[.\-](Tests?|UnitTests|IntegrationTests|FunctionalTests|E2ETests|EndToEndTests|AcceptanceTests|Specs)$|^(Unit)?Tests?$", re.I)
 
 
+_TEST_REF_RE = re.compile(r"^(Microsoft\.VisualStudio\.QualityTools\.UnitTestFramework|Microsoft\.VisualStudio\.TestPlatform\.TestFramework"
+                          r"|xunit(\.core|\.assert)?|nunit\.framework)$", re.I)
+_TEST_GUID = "3ac096d0-a1c2-e12c-1390-a8335801fdab"
+
+
 def _looks_like_test(p: Project) -> bool:
-    """The role-test signals (packages, IsTestProject, name), without running the role rules."""
-    return bool(any(_TEST_PKG_RE.match(n) for n in p.packages) or p.properties.get("IsTestProject", "").lower() == "true"
+    """The role-test signals (packages, assembly references, test-project GUID, IsTestProject, name),
+    without running the role rules."""
+    return bool(any(_TEST_PKG_RE.match(n) for n in p.packages) or any(_TEST_REF_RE.match(r) for r in p.references)
+                or _TEST_GUID in p.type_guids or p.properties.get("IsTestProject", "").lower() == "true"
                 or _TEST_NAME_RE.search(p.name))
 
 
