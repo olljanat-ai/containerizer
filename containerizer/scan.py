@@ -101,6 +101,7 @@ class Repo:
     readme: str
     solution_files: list[Path]
     _by_path: dict = field(default_factory=dict, repr=False)
+    _rel_cache: dict = field(default_factory=dict, repr=False)
 
     def project_by_path(self, p: Path) -> Project | None:
         if not self._by_path:
@@ -108,7 +109,10 @@ class Repo:
         return self._by_path.get(p.resolve())
 
     def rel(self, p: Path) -> str:
-        return str(p.relative_to(self.root))
+        r = self._rel_cache.get(p)
+        if r is None:
+            r = self._rel_cache[p] = str(p.relative_to(self.root))
+        return r
 
 
 # ---------------------------------------------------------------------------
@@ -138,8 +142,11 @@ def read_text(p: Path, strip_comments: bool = False) -> str:
             txt = _XML_COMMENT_RE.sub("", txt)
         elif ext == ".vb":
             txt = re.sub(r"(?m)^\s*'[^\n]*", "", txt)
-        elif ext in (".py", ".ps1", ".psm1"):
+        elif ext in (".py", ".ps1", ".psm1", ".ini", ".yaml", ".yml", ".properties"):
             txt = re.sub(r"(?m)^\s*#[^\n]*", "", txt)
+        elif ext == ".json":
+            # JSON with comments (appsettings): only whole-line comments, so URLs stay intact
+            txt = re.sub(r"(?m)^\s*//[^\n]*", "", txt)
     return txt
 
 

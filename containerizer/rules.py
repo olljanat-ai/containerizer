@@ -198,6 +198,38 @@ SOURCE_EXT = {".cs", ".vb", ".fs", ".cshtml", ".vbhtml", ".razor", ".aspx", ".as
 CONFIG_EXT = {".config", ".json", ".xml", ".yaml", ".yml", ".ini", ".properties", ".settings", ".env", ".toml"}
 
 
+DOTNET_SOURCE_EXT = {".cs", ".vb", ".fs", ".cshtml", ".vbhtml", ".razor", ".aspx", ".ascx", ".asmx", ".svc",
+                     ".asax", ".master", ".ashx", ".xaml"}
+# third-party bundles (minified JS, editor grammars, vendored client libraries) are not application code
+VENDORED_RE = re.compile(r"\.min\.(js|css)$|(^|/)(wwwroot/lib|monaco[^/]*|node_modules|bower_components)/", re.I)
+_FILES_CACHE: dict = {}
+
+
+def _candidate_files(ctx: Context, key: str, glob) -> list[Path]:
+    """Files a code/config/text condition searches; cached per project, key and glob."""
+    globs = tuple(glob if isinstance(glob, list) else [glob]) if glob else ()
+    owner = ctx.project if ctx.project is not None else ctx.repo
+    ck = (id(owner), key, globs)
+    hit = _FILES_CACHE.get(ck)
+    if hit is not None and hit[0] is owner:
+        return hit[1]
+    files = [f for f in ctx.files() if not VENDORED_RE.search(ctx.repo.rel(f).replace("\\", "/"))]
+    if key == "code":
+        # .NET projects: only .NET source, unless the rule names the files itself
+        ext = DOTNET_SOURCE_EXT if (ctx.project is not None and ctx.project.kind_hint == "dotnet" and not globs) \
+            else SOURCE_EXT
+        files = [f for f in files if f.suffix.lower() in ext]
+    elif key == "config":
+        files = [f for f in files if f.suffix.lower() in CONFIG_EXT and not f.name.lower().endswith(("proj", ".sln"))
+                 and f.name.lower() not in ("package-lock.json", "packages.lock.json")]
+    if globs:
+        files = [f for f in files if any(_glob_match(ctx.repo.rel(f), f.name, g) for g in globs)]
+    if len(_FILES_CACHE) > 20000:
+        _FILES_CACHE.clear()
+    _FILES_CACHE[ck] = (owner, files)
+    return files
+
+
 def evaluate(cond, ctx: Context) -> tuple[bool, list[Evidence], dict]:
     """Return (matched, evidence, captures) for a condition tree."""
     if cond is None:
@@ -245,17 +277,9 @@ def _eval_one(key: str, val, cond: dict, ctx: Context):
         m = _rx(val).search(ctx.repo.readme)
         return (bool(m), [Evidence("README.md", _line_of(ctx.repo.readme, m.start()), _snip(ctx.repo.readme, m))] if m else [], {})
     if key in ("code", "config", "text"):
-        glob = cond.get("in")
-        files = ctx.files()
-        if key == "code":
-            files = [f for f in files if f.suffix.lower() in SOURCE_EXT]
-        elif key == "config":
-            files = [f for f in files if f.suffix.lower() in CONFIG_EXT and not f.name.lower().endswith(("proj", ".sln"))
-                     and f.name.lower() not in ("package-lock.json", "packages.lock.json")]
-        if glob:
-            globs = glob if isinstance(glob, list) else [glob]
-            files = [f for f in files if any(_glob_match(ctx.repo.rel(f), f.name, g) for g in globs)]
-        hits, caps = _search_files(ctx, val, files, strip=(key == "code"), skip_guarded=bool(cond.get("unguarded")))
+        files = _candidate_files(ctx, key, cond.get("in"))
+        hits, caps = _search_files(ctx, val, files, strip=(key in ("code", "config")),
+                                   skip_guarded=bool(cond.get("unguarded")))
         return bool(hits), hits, caps
     if key == "file":
         globs = val if isinstance(val, list) else [val]
