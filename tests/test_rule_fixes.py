@@ -221,8 +221,9 @@ def test_system_drawing_gdi_use_is_flagged(tmp_path):
     assert sev(c, "system-drawing-core") == "refactor"
     c = comp(tmp_path, 'class S { void M() { using var g = Graphics.FromImage(img); } }')
     assert sev(c, "system-drawing-core") == "refactor"
+    # the package alone is not GDI+ use (round 6: rw4-virtocommerce version pin)
     c = comp(tmp_path, packages=pkg("System.Drawing.Common"))
-    assert sev(c, "system-drawing-core") == "refactor"
+    assert sev(c, "system-drawing-core") is None and sev(c, "system-drawing-package") == "info"
 
 
 # ------------------------------------------------------------------ 10 dataprotection-default

@@ -434,13 +434,20 @@ rules:
   - id: supported-os-windows
     applies_to: [dotnet]
     when:
+      # a type every caller of which (in this project and the projects that reference it) creates or
+      # uses only behind an OS check is the Windows branch of code that has another one: not counted
       code: &supported_os_type '\[\s*assembly:\s*SupportedOSPlatform\(\s*"windows|\[\s*SupportedOSPlatform\(\s*"windows[^"]*"\s*\)\s*\]\s*(\[[^\]]*\]\s*)*((public|internal|private|protected|sealed|static|partial|abstract|unsafe|readonly)\s+)*(class|struct|interface|record|enum)\b'
+      unguarded: callers
     severity: refactor
     category: os
     effort: 1
     windows_container: true
     title: Code marked Windows-only by its authors
-    why: Types or assemblies are annotated [SupportedOSPlatform("windows")]; the authors know this code does not run elsewhere.
+    why: >-
+      Types or assemblies are annotated [SupportedOSPlatform("windows")]; the authors know this code
+      does not run elsewhere, and some caller uses it without an OperatingSystem.IsWindows() check.
+      Types that are only created or called behind such checks are not counted (the app already has
+      a non-Windows path).
     fix: Review each annotated type; replace or isolate it.
     refs:
       - https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/ca1416
@@ -450,13 +457,13 @@ rules:
     when:
       all:
         - code: '\[\s*SupportedOSPlatform\(\s*"windows'
-        - not: {code: *supported_os_type}
+        - not: {code: *supported_os_type, unguarded: callers}
     severity: info
     category: os
     effort: 0
     title: Windows-only members behind platform checks
     why: >-
-      Individual methods are annotated [SupportedOSPlatform("windows")]. The platform analyzer
+      Methods (or types only used behind OS checks) are annotated [SupportedOSPlatform("windows")]. The platform analyzer
       (CA1416) makes callers guard them with OperatingSystem.IsWindows(), so the app already has
       a non-Windows code path; Windows-only calls inside these members are not counted.
     fix: None; check that the non-Windows path does what you need in the container.

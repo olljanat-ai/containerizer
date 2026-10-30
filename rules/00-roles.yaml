@@ -22,7 +22,8 @@ rules:
         - name: '[.\-](LabStubs|LabTools|Lab|Simulators?|TestTools|Seed(er)?|DevTools|Benchmarks?|Fuzz(ing)?)$'
         # a project that lives in a repository tools/ folder (tools/X/X.csproj, src/Tools/X/X.csproj);
         # a Tools/ subfolder *inside* a project (Areas/Mcp/Tools, admin/settings/tools) says nothing
-        - path: '(^|/)tools/[^/]+/'
+        # (also 'Dev Tools/', 'DevTools/', 'BuildTools/', 'build-tools/': folders of developer utilities)
+        - path: '(^|/)((dev|build)[ ._\-]?)?tools/[^/]+/'
         - package: 'BenchmarkDotNet|SharpFuzz'
         - kind: installer
         # .NET Aspire AppHost: a local orchestrator for the services, not a service itself
@@ -37,14 +38,48 @@ rules:
             - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
         # packaged as a `dotnet tool` (installed on developer/CI machines with `dotnet tool install`)
         - property: {PackAsTool: "true"}
-        # MSBuild task libraries run inside the build, never in production
+        # MSBuild task libraries run inside the build, never in production. The package alone is not
+        # enough: runtime libraries reference the MSBuild API too (Umbraco's ModelsBuilder compiles
+        # models in memory with Microsoft.Build.Tasks.Core). A task library declares a task class, or
+        # at least no other project compiles it in (ReferencedBy is set by the scanner).
         - all:
             - package: 'Microsoft\.Build\.Utilities\.Core|Microsoft\.Build\.Framework|Microsoft\.Build\.Tasks\.Core'
             - not: {output_type: 'Exe|WinExe'}
             - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
+            - any:
+                - not: {property: {ReferencedBy: '.+'}}
+                - code: '\bclass\s+\w+\s*(<[^>]*>)?\s*:\s*(Microsoft\.Build\.Utilities\.)?(Task|ToolTask|ToolTaskExtension|AppDomainIsolatedTask)\b|:\s*([\w.]+\s*,\s*)*(Microsoft\.Build\.Framework\.)?ITask\b'
         # source/client code generators (NSwag/NJsonSchema code generation) run at development time
         - all:
             - package: '(NSwag|NJsonSchema)\.CodeGeneration(\.\w+)*'
+            - output_type: 'Exe'
+            - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
+        # an executable the repository's own build runs from an MSBuild <Exec> (a post-build
+        # cleaner, module packer, schema generator) is a build-time helper; RunByBuild names that
+        # build file (set by the scanner)
+        - all:
+            - property: {RunByBuild: '.+'}
+            - output_type: 'Exe'
+            - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
+        # an executable that the repository's scripts start with `dotnet run` (compiled from the
+        # checkout with the SDK) is a developer utility; deployed programs are published and
+        # started from binaries. RunFromSourceBy names the script. Hosted services stay workers.
+        - all:
+            - property: {RunFromSourceBy: '.+'}
+            - output_type: 'Exe'
+            - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
+            - not: {framework_ref: 'Microsoft\.AspNetCore\.App'}
+            - not: {code: '\bAddHostedService\b|:\s*BackgroundService\b|\bIHostedService\b|\bServiceBase\b|\bHostFactory\.Run\b|\bUseWindowsService\b|\bUseSystemd\b'}
+        # source-code generators run by developers against the checkout (Rock.CodeGeneration, a WPF app
+        # that writes C# and TypeScript into the source tree)
+        - all:
+            - name: '[.\-]CodeGen(eration|erator)?$'
+            - output_type: 'Exe|WinExe'
+        # build scripts written as .NET programs (NUKE, Cake Frosting, Bullseye) run on CI and developer machines
+        - all:
+            - any:
+                - package: 'Nuke\.Common|Cake\.Frosting|Bullseye'
+                - code: ':\s*NukeBuild\b|\bclass\s+\w+\s*:\s*FrostingTask(<[^>]*>)?|\bnew\s+CakeHost\s*\(\s*\)'
             - output_type: 'Exe'
             - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
         # version-control hook executables (svn/hg/git hooks) are invoked by the VCS server per commit
@@ -299,6 +334,11 @@ rules:
             - any:
                 - file: ["Web.config"]
                 - type_guid: 349c5851-65df-11da-9384-00065b846f21
+            # pages without a Global.asax of their own, built against a web application that has one:
+            # a module/plugin whose pages and dll are copied into that host (mojoPortal Features.UI,
+            # SuperFlexiUI), not a site of its own
+            - not:
+                references: {file: Global.asax}
         - all:
             - type_guid: 349c5851-65df-11da-9384-00065b846f21
             - package: Microsoft\.Owin\.Host\.SystemWeb
@@ -317,6 +357,57 @@ rules:
             - package: Microsoft\.Owin\.(Host\.HttpListener|Hosting|SelfHost)|Microsoft\.AspNet\.WebApi\.OwinSelfHost|Nancy\.Hosting\.Self
             - code: '\bWebApp\.Start\b|\bHttpSelfHostServer\b'
         - not: {code: '\bServiceBase\b|HostFactory\.Run'}
+
+  # A plain console Exe that opens a listening endpoint and then blocks forever is a long-running
+  # server (a Deployment), not a run-once job (a CronJob). The listener and the wait must be in the
+  # same file (the Main that starts it), so a client that connects somewhere and waits for a key
+  # press stays a console app: a Remoting client registers a channel too, but no service type and
+  # no port. HTTP self-hosts (WebApp.Start, HttpSelfHostServer) are web via role-web-selfhost.
+  - id: role-network-listener
+    phase: role
+    role: worker
+    priority: 52
+    when:
+      all:
+        - output_type: Exe
+        - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
+        - any:
+            - all:
+                # .NET Remoting server: publishes objects for remote callers
+                - code: '\bRemotingConfiguration\.Register(WellKnownServiceType|ActivatedServiceType)\s*\(|\bRemotingServices\.Marshal\s*\('
+                - code: &listener_wait '\bConsole\.Read(Line|Key)?\s*\(|\.WaitOne\s*\(\s*\)|\bThread\.Sleep\s*\(\s*(Timeout\.Infinite|-1)\s*\)|\bTask\.Delay\s*\(\s*(Timeout\.Infinite|-1)\s*\)|\bwhile\s*\(\s*true\s*\)|\bfor\s*\(\s*;\s*;\s*\)'
+              same_file: true
+            - all:
+                # raw socket / HttpListener server; a single GetContext() without a loop or wait
+                # (a CLI catching an OAuth redirect on localhost) does not count
+                - code: '\bnew\s+TcpListener\s*\(|\bTcpListener\.Create\s*\(|\bnew\s+HttpListener\s*\(|\bnew\s+UdpClient\s*\(\s*\d+\s*\)|\.Listen\s*\(\s*(\d+|\w*[Bb]acklog\w*|int\.MaxValue|SocketOptionName\.MaxConnections)\s*\)'
+                - code: *listener_wait
+              same_file: true
+            # Remoting server configured from the .config file (<service><wellknown .../>)
+            - all:
+                - code: '\bRemotingConfiguration\.Configure\s*\('
+                - config: '<service>\s*<(wellknown|activated)\b'
+                - code: *listener_wait
+
+  # A generic-host program whose hosted service stops the application when its work is done
+  # (IHostApplicationLifetime.StopApplication() as the last statement of StartAsync/ExecuteAsync):
+  # a run-to-completion job such as a database migrator/seeder (Kubernetes Job), not a long-running
+  # worker. Not when the stop is an error path (inside catch) or the service loops until cancelled.
+  - id: role-run-once-hosted
+    phase: role
+    role: console
+    priority: 51
+    when:
+      all:
+        - output_type: Exe
+        - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
+        - all:
+            - code: ':\s*(BackgroundService|IHostedService)\b'
+            - code: '\.StopApplication\s*\(\s*\)\s*;(\s*\})+\s*(public|private|protected|internal|override|\[|\}|\Z)'
+          same_file: true
+        - not: {code: 'catch\s*(\([^)]*\))?\s*\{[^{}]*\.StopApplication\s*\(\s*\)'}
+        - not: {code: '\bwhile\s*\(\s*!\s*[\w.]*IsCancellationRequested|\bPeriodicTimer\b|\bwhile\s*\(\s*true\s*\)|\bfor\s*\(\s*;\s*;\s*\)'}
+        - not: {code: '\bServiceBase\b|HostFactory\.Run|UseWindowsService|UseSystemd|RunAsService'}
 
   - id: role-worker
     phase: role

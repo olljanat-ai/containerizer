@@ -17,11 +17,18 @@ unless noted):
   text: regex             any text file; optional `in: glob`
   readme: regex           repository README (repo scope)
   unguarded: true         (with code) ignore hits right after an OS check (OperatingSystem.IsWindows(),
-                          IsLinux(), IsMacOS(), IsOSPlatform(...)) or inside a method/type marked
-                          [SupportedOSPlatform("windows"|"macos"|"linux"...)]
+                          IsLinux(), IsMacOS(), IsOSPlatform(...)) or a project helper whose body is
+                          one, inside `if (<OS check>) {...}` / the `else` of a negated check, after
+                          `if (!<OS check>) return/throw`, inside a method/type marked
+                          [SupportedOSPlatform("windows"|"macos"|"linux"...)], or in a member/type
+                          whose every caller (in the project and the projects referencing it) is
+                          guarded
+  unguarded: callers      only the last check (for annotations on the member/type itself)
   any: [...], all: [...], not: {...}
   same_file: true         (next to `all`) the code/config/text conditions directly under the
                           `all` must all match in one and the same file
+  closure: {...}          the condition holds for the project or a project it references
+  references: {...}       the condition holds for a project this one references directly
 
 `code`, `config` and `text` may use named groups; with `set` on a facts rule the
 captured groups become facts (e.g. `(?P<port>\\d+)`).
@@ -247,53 +254,552 @@ EARLY_EXIT_RE = re.compile(r"if\s*\(\s*!\s*(OperatingSystem\.IsWindows\(\)|Runti
                            r"\s*\)\s*(\{\s*(return|throw)\b[^;{}]*;\s*\}|(return|throw)\b[^;{}]*;)")
 
 
-def _after_early_exit(txt: str, pos: int, window: int = 4000) -> bool:
-    if "IsWindows" not in txt and "OSPlatform.Windows" not in txt:
+def _after_early_exit(txt: str, pos: int, window: int = 4000, helpers: re.Pattern | None = None) -> bool:
+    if "IsWindows" not in txt and "OSPlatform.Windows" not in txt and helpers is None:
         return False
     lo = max(0, pos - window)
-    for m in EARLY_EXIT_RE.finditer(txt, lo, pos):
-        depth = 0
-        for ch in txt[m.end():pos]:
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth < 0:        # left the block that held the check
-                    break
-        else:
-            return True
+    rxs = [EARLY_EXIT_RE]
+    if helpers is not None:
+        rxs.append(re.compile(r"if\s*\(\s*!\s*(?:[\w.]+\.)?(?:" + helpers.pattern + r")(?:\s*\(\s*\))?\s*\)\s*"
+                              r"(\{\s*(return|throw)\b[^;{}]*;\s*\}|(return|throw)\b[^;{}]*;)"))
+    for rx in rxs:
+        for m in rx.finditer(txt, lo, pos):
+            depth = 0
+            for ch in txt[m.end():pos]:
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth < 0:        # left the block that held the check
+                        break
+            else:
+                return True
     return False
 
 
-def _guarded(txt: str, pos: int, nested: bool = True) -> bool:
-    """True when the match sits within a few lines after an OS check, inside a member the
-    authors marked [SupportedOSPlatform(...)] (callers must guard it), or inside a private
-    helper type that is only used from guarded code."""
+def _guarded(txt: str, pos: int, nested: bool = True, scope: "GuardScope | None" = None, file: Path | None = None) -> bool:
+    """True when the match sits within a few lines after an OS check (or a call of a project
+    helper whose body is one), inside the block of an `if` on an OS check (or the `else` of a
+    negated one), after an early exit on a negated check, inside a member the authors marked
+    [SupportedOSPlatform(...)] (callers must guard it), inside a private helper type that is only
+    used from guarded code, or in a member/type whose every caller in the project and its
+    dependents is guarded (see GuardScope)."""
+    helpers = scope.helpers if scope is not None else None
     start = pos
     for _ in range(6):
         start = txt.rfind("\n", 0, start - 1)
         if start <= 0:
             start = 0
             break
-    if GUARD_RE.search(txt, start, txt.find("\n", pos) if txt.find("\n", pos) > 0 else len(txt)):
+    end = txt.find("\n", pos) if txt.find("\n", pos) > 0 else len(txt)
+    if GUARD_RE.search(txt, start, end) or (helpers is not None and helpers.search(txt, start, end)):
         return True
-    if _in_windows_only_member(txt, pos) or _after_early_exit(txt, pos):
+    if _in_windows_only_member(txt, pos) or _after_early_exit(txt, pos, helpers=helpers):
         return True
-    return nested and _in_guarded_private_type(txt, pos)
+    if nested and _in_guarded_private_type(txt, pos):
+        return True
+    if scope is None:
+        return False
+    if _in_guarded_block(txt, pos, helpers):
+        return True
+    return file is not None and scope.callers_guarded(file, txt, pos)
+
+
+# --------------------------------------------------------------------------- indirect guards
+#
+# A Windows-only call is also guarded when
+# * the check goes through a helper: `if (NativeMethods.IsAspNetCoreModuleLoaded())` where the helper
+#   is a bool member of the project (or a project it references) whose body is an OS check
+#   (`=> OperatingSystem.IsWindows() && ...`, `bool IsWindows { get; } = RuntimeInformation.IsOSPlatform(...)`);
+# * it sits in the block of `if (<OS check> && ...) { ... }` or in the `else` of `if (!<OS check>)`;
+# * every caller of the member (or every construction of the type) that holds it is guarded, e.g. a
+#   DllImport whose only caller runs after `if (IsAspNetCoreModuleLoaded())`, or a class with a named
+#   Semaphore that is only constructed after `if (!IsOSPlatform(Windows)) throw`. Callers are
+#   searched in the project and the projects that reference it, two levels deep; a member that is
+#   virtual/override, used as a method group, or a type created through DI/reflection
+#   (typeof, generic arguments, a subclass) has callers we cannot see and stays unguarded.
+
+_HELPER_DEF_RES = [
+    # bool IsX => expr;  bool IsX() => expr;
+    re.compile(r"\bbool\s+(\w+)\s*(?:\(\s*\))?\s*=>\s*([^;{}]{1,300});"),
+    # bool IsX { get; } = expr;   static readonly bool IsX = expr;
+    re.compile(r"\bbool\s+(\w+)\s*(?:\{\s*get;\s*(?:(?:private\s+|protected\s+)?(?:set|init);\s*)?\}\s*)?=\s*([^;{}=][^;{}]{0,300});"),
+    # bool IsX() { return expr; }   bool IsX { get { return expr; } }   bool IsX { get => expr; }
+    re.compile(r"\bbool\s+(\w+)\s*(?:\(\s*\))?\s*\{\s*(?:get\s*\{\s*)?return\s+([^;{}]{1,300});\s*\}"),
+    re.compile(r"\bbool\s+(\w+)\s*\{\s*get\s*=>\s*([^;{}]{1,300});\s*\}"),
+]
+
+
+def _split_top(expr: str, op: str) -> list[str]:
+    """Split a C# boolean expression at top-level `op` (&& or ||)."""
+    parts, depth, cur, i = [], 0, "", 0
+    while i < len(expr):
+        ch = expr[i]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        if depth == 0 and expr.startswith(op, i):
+            parts.append(cur)
+            cur, i = "", i + 2
+            continue
+        cur += ch
+        i += 1
+    parts.append(cur)
+    return [p.strip() for p in parts]
+
+
+def _strip_parens(e: str) -> str:
+    e = e.strip()
+    while e.startswith("(") and e.endswith(")") and _block_end_paren(e) == len(e):
+        e = e[1:-1].strip()
+    return e
+
+
+def _block_end_paren(e: str) -> int:
+    depth = 0
+    for i, ch in enumerate(e):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return -1
+
+
+OS_CHECK_RE = re.compile(
+    r"(?:global::)?(?:System\.)?(?:OperatingSystem\.Is(?:Windows|MacOS|Linux|FreeBSD|MacCatalyst|IOS|Android)(?:VersionAtLeast)?\([^()]*\)"
+    r"|(?:(?:System\.)?(?:Runtime\.InteropServices\.)?RuntimeInformation\.)?IsOSPlatform\(\s*(?:System\.Runtime\.InteropServices\.)?OSPlatform\.(?:Windows|OSX|Linux|FreeBSD)\s*\)"
+    r"|Environment\.OSVersion\.Platform\s*==\s*PlatformID\.Win32NT)")
+
+
+def _is_os_check(e: str, helpers: re.Pattern | None) -> bool:
+    """`e` (one conjunct) is a positive OS check: OperatingSystem.IsWindows(), a known helper."""
+    e = _strip_parens(e)
+    if e.startswith("!"):
+        return False
+    if OS_CHECK_RE.fullmatch(e):
+        return True
+    return bool(helpers is not None and re.fullmatch(r"(?:[\w.]+\.)?(?:" + helpers.pattern + r")(?:\s*\(\s*\))?", e))
+
+
+def _cond_implies_os(cond: str, helpers: re.Pattern | None) -> bool:
+    """Every way `cond` can be true includes a positive OS check (each || part has one && part that is)."""
+    return all(any(_is_os_check(c, helpers) for c in _split_top(_strip_parens(d), "&&"))
+               for d in _split_top(_strip_parens(cond), "||"))
+
+
+def _cond_false_implies_os(cond: str, helpers: re.Pattern | None) -> bool:
+    """When `cond` is false an OS check holds: some || part is exactly `!<OS check>`."""
+    for d in _split_top(_strip_parens(cond), "||"):
+        d = _strip_parens(d)
+        if d.startswith("!") and len(_split_top(d, "&&")) == 1 and _is_os_check(d[1:], helpers):
+            return True
+    return False
+
+
+def _os_helper_defs(txt: str) -> dict[str, str]:
+    if "bool" not in txt:
+        return {}
+    out = {}
+    for rx in _HELPER_DEF_RES:
+        for m in rx.finditer(txt):
+            out.setdefault(m.group(1), m.group(2))
+    return out
+
+
+def _resolve_helpers(defs: dict[str, str]) -> set[str]:
+    """Names whose body is an OS check, also through other helpers (`IsWin10 => IsWindows && ...`)."""
+    names: set[str] = set()
+    for _ in range(3):
+        rx = re.compile("|".join(map(re.escape, sorted(names)))) if names else None
+        new = {n for n, body in defs.items() if n not in names and
+               (OS_CHECK_RE.search(body) or (rx is not None and rx.search(body))) and _cond_implies_os(body, rx)}
+        if not new:
+            break
+        names |= new
+    return names
+
+
+_OPEN_HEADER_STOP = re.compile(r"[;{}]")
+_CONTROL_RE = re.compile(r"^(?:else\s+)?(?:if|for|foreach|while|switch|using|lock|fixed|catch)\s*\(|^(?:else|try|finally|do|unsafe|checked|unchecked|get|set|init|add|remove)$")
+_MODS = r"(?:public|private|protected|internal|static|virtual|override|abstract|sealed|async|extern|unsafe|new|partial|readonly|required|file)"
+_MEMBER_HEADER_RE = re.compile(
+    rf"(?:\[[^\]]*\]\s*)*(?P<mods>(?:{_MODS}\s+)*)(?:(?P<type>[\w<>\[\],.?() ]+?)\s+)?(?P<name>\w+)\s*(?:<[^<>(){{}};]*>)?\s*"
+    r"(?:\((?P<params>[^;{}]*)\))?\s*(?:where\b[^{;]*)?(?::\s*(?:base|this)\s*\([^;{}]*\))?\s*(?:=>)?\s*$", re.S)
+_TYPE_HEADER_RE = re.compile(rf"(?P<mods>(?:{_MODS}\s+)*)(?:class|struct|record(?:\s+(?:class|struct))?|interface)\s+(?P<name>\w+)")
+_KEYWORDS = {"if", "for", "foreach", "while", "switch", "using", "lock", "fixed", "catch", "return", "new", "typeof",
+             "nameof", "sizeof", "default", "when", "else", "await", "throw", "yield", "case", "in", "is", "as",
+             "and", "or", "not", "out", "ref", "var", "get", "set", "init", "add", "remove", "base", "this"}
+
+
+def _openers(txt: str, pos: int, limit: int = 60000) -> list[int]:
+    """Positions of the unclosed '{' that enclose pos, innermost first."""
+    out, depth = [], 0
+    lo = max(0, pos - limit)
+    i = pos - 1
+    while i >= lo:
+        ch = txt[i]
+        if ch == "}":
+            depth += 1
+        elif ch == "{":
+            if depth == 0:
+                out.append(i)
+            else:
+                depth -= 1
+        i -= 1
+    return out
+
+
+def _header(txt: str, brace: int) -> tuple[str, int]:
+    """The text between the previous ; { } and the '{' at `brace` (attributes and all)."""
+    j = brace - 1
+    depth = 0
+    while j >= 0:
+        ch = txt[j]
+        if ch in ")]":
+            depth += 1
+        elif ch in "([":
+            depth -= 1
+        elif depth <= 0 and ch in ";{}":
+            break
+        j -= 1
+    return txt[j + 1:brace].strip(), j + 1
+
+
+@dataclass
+class _Member:
+    name: str
+    kind: str            # method | ctor | property | type | extern
+    static: bool
+    type_name: str       # enclosing (or declared) type
+    overridable: bool
+    start: int           # declaration span in its file
+    end: int
+
+
+def _enclosing_type(txt: str, pos: int) -> tuple[str, int, int] | None:
+    for b in _openers(txt, pos):
+        h, hs = _header(txt, b)
+        m = _TYPE_HEADER_RE.search(h)
+        if m and not re.search(r"\bnew\b", h[:m.start()]):
+            return m.group("name"), hs, _block_end(txt, b)
+    return None
+
+
+def _enclosing_member(txt: str, pos: int) -> _Member | None:
+    """The method/constructor/property (or the type, for an attribute on a type) that holds pos."""
+    # an attribute on a declaration: [DllImport(...)] static extern ..., [SupportedOSPlatform] class X
+    stmt_end = min((i for i in (txt.find(";", pos), txt.find("{", pos)) if i >= 0), default=len(txt))
+    line_start = txt.rfind("\n", 0, pos) + 1
+    prefix = txt[line_start:pos].strip()
+    if (prefix.startswith("[") or (not prefix and txt.startswith("[", pos))) and \
+            not re.match(r"\[\s*(?:assembly|module)\s*:", (prefix or txt[pos:pos + 20]).lstrip()):
+        decl = txt[pos:stmt_end]
+        decl = re.sub(r"^[^\]]*\]", "", decl, count=1)
+        decl = re.sub(r"^\s*(?:\[[^\]]*\]\s*)*", "", decl)
+        tm = _TYPE_HEADER_RE.match(decl)
+        if tm:
+            body = txt.find("{", pos)
+            return _Member(tm.group("name"), "type", "static" in tm.group("mods"), tm.group("name"), False,
+                           pos, _block_end(txt, body) if body >= 0 else len(txt))
+        mm = re.match(rf"(?P<mods>(?:{_MODS}\s+)*)[\w<>\[\],.?() ]+?\s+(?P<name>\w+)\s*\(", decl)
+        if mm:
+            enc = _enclosing_type(txt, pos)
+            mods = mm.group("mods")
+            return _Member(mm.group("name"), "extern" if "extern" in mods else "method", "static" in mods or "extern" in mods,
+                           enc[0] if enc else "", bool(re.search(r"\b(virtual|override|abstract)\b", mods)), pos, stmt_end)
+    # expression-bodied member: ... Name(...) => <pos>
+    prev = max(txt.rfind(";", 0, pos), txt.rfind("}", 0, pos), txt.rfind("{", 0, pos))
+    seg = txt[prev + 1:pos]
+    em = re.search(rf"(?P<mods>(?:{_MODS}\s+)*)[\w<>\[\],.?]+\s+(?P<name>\w+)\s*(?:\((?P<params>[^;{{}}]*)\))?\s*=>", seg)
+    if em and em.group("name") not in _KEYWORDS:
+        enc = _enclosing_type(txt, pos)
+        mods = em.group("mods")
+        return _Member(em.group("name"), "method" if em.group("params") is not None else "property", "static" in mods,
+                       enc[0] if enc else "", bool(re.search(r"\b(virtual|override|abstract)\b", mods)),
+                       prev + 1, txt.find(";", pos) if txt.find(";", pos) >= 0 else len(txt))
+    found = None
+    for b in _openers(txt, pos):
+        h, hs = _header(txt, b)
+        flat = re.sub(r"\s+", " ", h)
+        bare = flat
+        for _ in range(4):
+            bare = re.sub(r"\([^()]*\)", "()", bare)
+        if _TYPE_HEADER_RE.search(flat) and "=" not in bare.replace("=>", ""):
+            break                                    # reached the type: the outermost member found wins
+        if not flat or _CONTROL_RE.search(flat) or "=" in bare.replace("=>", "") or re.search(r"\bnew\b|=>\s*$|^\(", flat):
+            continue
+        m = _MEMBER_HEADER_RE.fullmatch(flat)
+        if not m or m.group("name") in _KEYWORDS:
+            continue
+        enc = _enclosing_type(txt, b)
+        tname = enc[0] if enc else ""
+        mods = m.group("mods") or ""
+        kind = "ctor" if m.group("name") == tname and m.group("params") is not None else \
+            ("method" if m.group("params") is not None else "property")
+        # a local function or accessor inside a member: keep looking for the member that holds it
+        found = _Member(m.group("name"), kind, "static" in mods, tname,
+                        bool(re.search(r"\b(virtual|override|abstract)\b", mods)), hs, _block_end(txt, b))
+    return found
+
+
+_DECL_BEFORE_RE = re.compile(rf"(?:\b{_MODS}|[\w>\]?])\s+$")
+
+
+class GuardScope:
+    """What an `unguarded` check may look at beyond the file: the OS-check helpers of the project
+    and the projects it references, and the source of the project and of the projects that
+    reference it (where callers live)."""
+
+    @classmethod
+    def of(cls, ctx: "Context") -> "GuardScope":
+        owner = ctx.project if ctx.project is not None else ctx.repo
+        key = ("scope", id(owner))
+        hit = _SCOPE_CACHE.get(key)
+        if hit is None or hit[0] is not owner:
+            if len(_SCOPE_CACHE) > 5000:
+                _SCOPE_CACHE.clear()
+            hit = _SCOPE_CACHE[key] = (owner, cls(ctx))
+        return hit[1]
+
+    def __init__(self, ctx: "Context"):
+        self.ctx = ctx
+        self.repo = ctx.repo
+        self.project = ctx.project
+        self._helpers: re.Pattern | None | bool = False
+        self._sites: dict[str, list] = {}
+        self._memo: dict = {}
+        self.depth = 0
+
+    # ---- helpers
+    @property
+    def helpers(self) -> re.Pattern | None:
+        if self._helpers is False:
+            names: set[str] = set()
+            if self.project is not None:
+                defs: dict[str, str] = {}
+                for p in [self.project] + _ref_closure(self.repo, self.project):
+                    defs.update(_project_helper_defs(p))
+                names = _resolve_helpers(defs)
+            self._helpers = re.compile(r"\b(?:" + "|".join(map(re.escape, sorted(names))) + r")\b") if names else None
+        return self._helpers
+
+    # ---- callers
+    def _files(self) -> list[tuple[Project, Path]]:
+        if self.project is None:
+            return []
+        key = ("files", id(self.project))
+        hit = _SCOPE_CACHE.get(key)
+        if hit is None or hit[0] is not self.project:
+            # test projects exercise Windows-only types on Windows CI; they are not a production caller
+            projs = [self.project] + [q for q in _dependents(self.repo, self.project) if not _looks_like_test(q)]
+            files = [(p, f) for p in projs for f in p.files if f.suffix.lower() == ".cs"]
+            hit = _SCOPE_CACHE[key] = (self.project, files)
+        return hit[1]
+
+    def sites(self, member: _Member, decl_file: Path) -> list[tuple[Project, Path, str, int]] | None:
+        """Where `member` runs from: calls of a static member, constructions of the type of an
+        instance member. None when some use cannot be followed."""
+        construct = member.kind in ("ctor", "type") and not member.static or \
+            member.kind in ("method", "property") and not member.static
+        name = member.type_name if construct or member.kind == "type" else member.name
+        if not name:
+            return None
+        if member.overridable and not construct:
+            return None
+        out = []
+        word = re.compile(rf"\b{re.escape(name)}\b")
+        consts: set[str] = set()
+        if construct or member.kind == "type":
+            for p, f in self._files():
+                if f == decl_file:
+                    consts = set(re.findall(r"\bconst\s+[\w.<>\[\]?]+\s+(\w+)\s*=", p.text(f, True)))
+                    break
+        for p, f in self._files():
+            txt = p.text(f, True)
+            if name not in txt:
+                continue
+            own = (member.start, member.end) if f == decl_file else None
+            for m in word.finditer(txt):
+                s = m.start()
+                if own and own[0] <= s < own[1]:
+                    continue
+                before = txt[max(0, s - 80):s]
+                after = txt[m.end():m.end() + 200]
+                if re.search(r"\b(?:class|struct|record|interface|enum|namespace)\s+$|~\s*$", before) or \
+                        re.search(r"nameof\s*\(\s*$|<see\s+cref=\"$|cref=\"[\w.]*$", before):
+                    continue
+                if construct or member.kind == "type":
+                    if re.search(r"\bnew\s+(?:[\w.]+\.)?$", before) and re.match(r"\s*[({]", after):
+                        out.append((p, f, txt, s))            # new T(...)
+                    elif (mm := re.match(r"\s*\.\s*(\w+)", after)):
+                        if mm.group(1) in consts:
+                            continue                          # a constant is compiled into the caller
+                        out.append((p, f, txt, s))            # static member access T.Member
+                    elif re.search(r"\b\w*Log\w*\s*\(\s*typeof\s*\(\s*(?:[\w.]+\.)?$", before):
+                        continue                              # a logger category/tag: names the type only
+                    elif re.search(r"typeof\s*\(\s*(?:[\w.]+\.)?$", before) or \
+                            re.search(r"\b(?:class|struct|record)\s+\w+[^{;]*:\s*(?:[^{;]*,\s*)?(?:[\w.]+\.)?$", before):
+                        return None                           # used through reflection, or subclassed
+                    elif re.search(r"[<,]\s*(?:[\w.]+\.)?$", before) and re.match(r"[^<>;(){}]*>\s*\(", after) and \
+                            not re.search(r"\bnew\s+[\w.]+\s*<[^<>;]*$", before):
+                        return None                           # a generic method's type argument: AddSingleton<I, T>()
+                    # other mentions (field/parameter/local types) do not run anything
+                    continue
+                if _DECL_BEFORE_RE.search(before) and not re.search(r"\b(?:return|await|throw|yield|else|case|in|is|as|new)\s+$", before) \
+                        and re.match(r"\s*(?:<[^<>()]*>)?\s*\(", after):
+                    continue                                  # another declaration (overload)
+                if member.kind in ("method", "extern") and not re.match(r"\s*(?:<[^<>()]*>)?\s*\(", after):
+                    if re.match(r"\s*[),;]", after) and re.search(r"(?:[(,=]|\+=)\s*(?:[\w.]+\.)?$", before):
+                        return None                           # method group: the delegate's callers are unknown
+                    continue                                  # a type or namespace of the same name
+                out.append((p, f, txt, s))
+        return out
+
+    def callers_guarded(self, f: Path, txt: str, pos: int) -> bool:
+        if self.project is None or self.depth >= 2:
+            return False
+        member = _enclosing_member(txt, pos)
+        if member is None:
+            return False
+        key = (f, member.name, member.kind, member.start)
+        if key in self._memo:
+            return self._memo[key]
+        self._memo[key] = False                       # recursion guard
+        sites = self.sites(member, f)
+        ok = False
+        if sites:
+            self.depth += 1
+            try:
+                ok = all(_guarded(t, s, scope=self, file=sf) for _, sf, t, s in sites)
+            finally:
+                self.depth -= 1
+        self._memo[key] = ok
+        return ok
+
+
+_SCOPE_CACHE: dict = {}
+_HELPER_CACHE: dict = {}
+
+
+def _project_helper_defs(p: Project) -> dict[str, str]:
+    hit = _HELPER_CACHE.get(id(p))
+    if hit is not None and hit[0] is p:
+        return hit[1]
+    defs: dict[str, str] = {}
+    for f in p.files:
+        if f.suffix.lower() == ".cs":
+            t = p.text(f, True)
+            if GUARD_RE.search(t):
+                defs.update(_os_helper_defs(t))
+    if len(_HELPER_CACHE) > 5000:
+        _HELPER_CACHE.clear()
+    _HELPER_CACHE[id(p)] = (p, defs)
+    return defs
+
+
+def _ref_closure(repo: Repo, p: Project) -> list[Project]:
+    out, stack, seen = [], list(p.project_refs), set()
+    while stack:
+        r = stack.pop()
+        if r in seen:
+            continue
+        seen.add(r)
+        q = repo.project_by_path(r)
+        if q is not None:
+            out.append(q)
+            stack.extend(q.project_refs)
+    return out
+
+
+_TEST_PKG_RE = re.compile(r"^(Microsoft\.NET\.Test\.Sdk|xunit(\.v3)?|nunit|MSTest(\.TestFramework)?|NUnit3TestAdapter|TUnit)$", re.I)
+_TEST_NAME_RE = re.compile(r"[.\-](Tests?|UnitTests|IntegrationTests|FunctionalTests|E2ETests|EndToEndTests|AcceptanceTests|Specs)$|^(Unit)?Tests?$", re.I)
+
+
+def _looks_like_test(p: Project) -> bool:
+    """The role-test signals (packages, IsTestProject, name), without running the role rules."""
+    return bool(any(_TEST_PKG_RE.match(n) for n in p.packages) or p.properties.get("IsTestProject", "").lower() == "true"
+                or _TEST_NAME_RE.search(p.name))
+
+
+def _dependents(repo: Repo, p: Project) -> list[Project]:
+    """Projects that reference p, directly or indirectly."""
+    key = ("dependents", id(repo))
+    hit = _SCOPE_CACHE.get(key)
+    if hit is None or hit[0] is not repo:
+        rev: dict[Path, list[Project]] = {}
+        for q in repo.projects:
+            for r in q.project_refs:
+                rev.setdefault(r.resolve(), []).append(q)
+        hit = _SCOPE_CACHE[key] = (repo, rev)
+    rev = hit[1]
+    out, stack, seen = [], [p.path.resolve()], set()
+    while stack:
+        k = stack.pop()
+        for q in rev.get(k, []):
+            if q.path.resolve() not in seen:
+                seen.add(q.path.resolve())
+                out.append(q)
+                stack.append(q.path.resolve())
+    return out
+
+
+def _in_guarded_block(txt: str, pos: int, helpers: re.Pattern | None) -> bool:
+    """pos is inside `if (<OS check> ...) { }` or inside the `else { }` of `if (!<OS check>) { }`."""
+    for b in _openers(txt, pos, 20000):
+        h, _ = _header(txt, b)
+        flat = re.sub(r"\s+", " ", h)
+        m = re.fullmatch(r"(?:else )?if ?\((.*)\)", flat)
+        if m and _cond_implies_os(m.group(1), helpers):
+            return True
+        if flat == "else":
+            # the if-block that this else belongs to ends right before it
+            k = txt.rfind("}", 0, b)
+            if k >= 0 and txt[k + 1:b].strip() == "else":
+                ob = _matching_open(txt, k)
+                if ob is not None:
+                    h2 = re.sub(r"\s+", " ", _header(txt, ob)[0])
+                    m2 = re.fullmatch(r"(?:else )?if ?\((.*)\)", h2)
+                    if m2 and _cond_false_implies_os(m2.group(1), helpers):
+                        return True
+        if _TYPE_HEADER_RE.search(flat):
+            break
+    return False
+
+
+def _matching_open(txt: str, close: int) -> int | None:
+    depth = 0
+    for i in range(close, -1, -1):
+        if txt[i] == "}":
+            depth += 1
+        elif txt[i] == "{":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
 
 
 def _search_files(ctx: Context, pattern: str, files: list[Path], strip: bool, max_hits: int | None = 3,
-                  skip_guarded: bool = False):
+                  skip_guarded: bool | str = False):
+    """skip_guarded: True skips hits that _guarded() accepts; "callers" skips only hits whose
+    member/type is used exclusively from guarded code (for an annotation such as
+    [SupportedOSPlatform("windows")] on a type, which is trivially "inside" itself)."""
     rx = _rx(pattern)
     hits: list[Evidence] = []
     caps: dict = {}
+    scope = GuardScope.of(ctx) if skip_guarded else None
     for f in files:
         txt = ctx.text(f, strip)
         if not txt:
             continue
         m = None
         for cand in rx.finditer(txt):
-            if skip_guarded and _guarded(txt, cand.start()):
+            if skip_guarded == "callers":
+                if f.suffix.lower() == ".cs" and scope.callers_guarded(f, txt, cand.start()):
+                    continue
+            elif skip_guarded and _guarded(txt, cand.start(), scope=scope, file=f if f.suffix.lower() == ".cs" else None):
                 continue
             m = cand
             break
@@ -394,7 +900,7 @@ def _eval_one(key: str, val, cond: dict, ctx: Context):
     if key in ("code", "config", "text"):
         files = _candidate_files(ctx, key, cond.get("in"))
         hits, caps = _search_files(ctx, val, files, strip=(key in ("code", "config")),
-                                   skip_guarded=bool(cond.get("unguarded")))
+                                   skip_guarded=_unguarded_mode(cond))
         return bool(hits), hits, caps
     if key == "file":
         globs = val if isinstance(val, list) else [val]
@@ -403,6 +909,26 @@ def _eval_one(key: str, val, cond: dict, ctx: Context):
         return bool(hits), hits[:3], {}
     if key == "role":
         return bool(_rx(f"^(?:{val})$").search(ctx.role or "")), [], {}
+    if key == "references":
+        # the condition holds for a project this one references directly (ProjectReference)
+        if p is None:
+            return False, [], {}
+        for r in p.project_refs:
+            q = ctx.repo.project_by_path(r)
+            if q is not None and q is not p:
+                ok, e, c = evaluate(val, Context(ctx.repo, q, ""))
+                if ok:
+                    return True, e, c
+        return False, [], {}
+    if key == "closure":
+        # the condition holds for the project or for a project it references (directly or not)
+        if p is None:
+            return False, [], {}
+        for q in [p] + _ref_closure(ctx.repo, p):
+            ok, e, c = evaluate(val, ctx if q is p else Context(ctx.repo, q, "library"))
+            if ok:
+                return True, e, c
+        return False, [], {}
     if p is None:
         # project primitives on repo scope: true if any project matches
         for proj in ctx.repo.projects:
@@ -449,6 +975,11 @@ def _eval_one(key: str, val, cond: dict, ctx: Context):
 TEXT_KEYS = ("code", "config", "text")
 
 
+def _unguarded_mode(cond: dict) -> bool | str:
+    v = cond.get("unguarded")
+    return "callers" if v == "callers" else bool(v)
+
+
 def _eval_all_same_file(subs: list, ctx: Context):
     """`all` with same_file: every code/config/text leaf must hit one common file."""
     ev, caps = [], {}
@@ -459,7 +990,7 @@ def _eval_all_same_file(subs: list, ctx: Context):
             key = leaf[0]
             files = _candidate_files(ctx, key, sub.get("in"))
             hits, _ = _search_files(ctx, sub[key], files, strip=(key in ("code", "config")), max_hits=None,
-                                    skip_guarded=bool(sub.get("unguarded")))
+                                    skip_guarded=_unguarded_mode(sub))
             if not hits:
                 return False, [], {}
             by_file: dict[str, Evidence] = {}

@@ -537,17 +537,54 @@ rules:
       example Mosquitto) can run in the cluster or stay external.
     fix: None; supply the broker address and credentials through configuration/Secrets.
 
+  # System.IO.Pipes on .NET Core / .NET 5+ is implemented with Unix domain sockets on Linux, so
+  # same-machine pipes between processes in one container (or pod, with a shared /tmp) keep working.
+  # What breaks: WCF net.pipe endpoints, a pipe to another machine, and .NET Framework code.
   - id: named-pipes
     when:
-      code: 'NamedPipe(Server|Client)Stream|net\.pipe://'
+      any:
+        - code: 'net\.pipe://'
+        - code: 'new\s+NamedPipeClientStream\s*\(\s*"(?!\.")[^"]+"\s*,'
+        - all:
+            - code: 'NamedPipe(Server|Client)Stream'
+            - not: {tfm: 'netcoreapp.*|netstandard2\.1|net([5-9]|\d\d)\.\d+.*'}
     severity: refactor
     category: messaging
     effort: 1
     title: Named pipes IPC
-    why: Windows named pipes are local IPC between processes on the same machine; containers in different pods cannot use them.
-    fix: Use HTTP/gRPC between containers, or run both processes in one pod over a Unix domain socket.
+    why: >-
+      Named pipes are local inter-process communication. On Linux, .NET implements
+      NamedPipeServerStream/NamedPipeClientStream with Unix domain sockets, so they only connect
+      processes on the same machine (the same container or pod). A pipe to another server, a WCF
+      net.pipe:// endpoint or .NET Framework code does not carry over to separate Linux containers.
+    fix: >-
+      Use HTTP/gRPC between containers, or keep both processes in one pod and talk over a Unix domain
+      socket on a shared volume.
     refs:
+      - https://learn.microsoft.com/en-us/dotnet/standard/io/how-to-use-named-pipes-for-network-interprocess-communication
       - https://learn.microsoft.com/en-us/aspnet/core/grpc/interprocess
+
+  - id: named-pipes-local
+    when:
+      all:
+        - code: 'NamedPipe(Server|Client)Stream'
+        - tfm: 'netcoreapp.*|netstandard2\.1|net([5-9]|\d\d)\.\d+.*'
+        - not: {code: 'net\.pipe://'}
+        - not: {code: 'new\s+NamedPipeClientStream\s*\(\s*"(?!\.")[^"]+"\s*,'}
+    severity: info
+    category: messaging
+    effort: 0
+    title: Local named pipes (Unix domain sockets on Linux)
+    why: >-
+      The code uses System.IO.Pipes between processes on the same machine. On Linux, .NET implements
+      named pipes with Unix domain sockets (a socket file under /tmp), so this keeps working as long as
+      both processes run in the same container, or in one pod sharing that folder; access is
+      controlled by the socket file's permissions (PipeOptions.CurrentUserOnly), not Windows ACLs.
+    fix: >-
+      None if both ends run in the same container; keep /tmp writable (an emptyDir) with a read-only
+      root filesystem. Split the processes into separate pods only with HTTP/gRPC between them.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/standard/io/how-to-use-named-pipes-for-network-interprocess-communication
 
   # ---------------------------------------------------------------- storage
   - id: unc-shares
