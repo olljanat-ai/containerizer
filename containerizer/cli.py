@@ -113,6 +113,12 @@ def cmd_images(args) -> int:
     return 0
 
 
+def cmd_check(args) -> int:
+    from .ci import run_check
+
+    return run_check(args)
+
+
 def cmd_bench(args) -> int:
     from .bench import run_bench
 
@@ -185,6 +191,23 @@ def main(argv=None) -> int:
     s.add_argument("--no-scan", action="store_true", help="choose the newest tags without scanning them")
     s.add_argument("--scanner", default="auto", choices=["auto", "trivy", "grype"])
     s.set_defaults(fn=cmd_images)
+
+    s = sub.add_parser("check", help="CI gate: compare with a base ref or baseline, write PR comment and SARIF")
+    s.add_argument("paths", nargs="+")
+    s.add_argument("--base-ref", help="git ref to compare with, e.g. origin/main (the working tree is not touched)")
+    s.add_argument("--baseline", help="snapshot JSON written earlier with --save-baseline (instead of --base-ref)")
+    s.add_argument("--fail-on", default="rewrite", choices=["none", "config", "refactor", "rewrite", "blocker"],
+                   help="fail on new findings of this severity or worse (default: rewrite)")
+    s.add_argument("--allow-rating-drop", action="store_true", help="do not fail when the rating gets worse")
+    s.add_argument("--max-rating", choices=list("ABCDE"), help="fail when an app is rated worse than this")
+    s.add_argument("--markdown", help="write the PR comment / summary here")
+    s.add_argument("--sarif", help="write SARIF 2.1.0 here")
+    s.add_argument("--json", help="write snapshot and diff here")
+    s.add_argument("--save-baseline", help="write the current snapshot here, for a later --baseline")
+    s.add_argument("--annotations", default="none", choices=["none", "github", "azure"],
+                   help="print inline annotations; github also writes the job summary and step outputs")
+    s.add_argument("--link", help="URL prefix for file links in the markdown, e.g. https://github.com/o/r/blob/SHA")
+    s.set_defaults(fn=cmd_check)
 
     s = sub.add_parser("bench", help="score assessments against labelled expectations")
     s.add_argument("--challenge", default="../containerization-challenge")

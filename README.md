@@ -69,7 +69,7 @@ python -m containerizer bench --technique hybrid --model claude-haiku-5-5
 5. **Reachability**: findings in shared libraries only count for components whose code actually
    reaches the offending types (a type/extension-method mention graph), and Windows-only calls
    guarded by `OperatingSystem.IsWindows()` are ignored.
-6. **Confidence**: packages and references unknown to `rules/packages.yaml`, and uncertain rules,
+6. **Confidence**: packages and references unknown to `rules/packages*.yaml`, and uncertain rules,
    lower a component's confidence. Low confidence triggers verification and, optionally, Claude.
 7. **Rating** per application: **A** lift and shift, **B** minor refactoring, **C** framework port,
    **D** partial (some components must stay on Windows), **E** not feasible.
@@ -163,6 +163,73 @@ Techniques used to avoid application changes:
 - old netstandard1.x packages that break a linux-x64 restore (NU1605) get a portable publish;
 - corporate TLS-inspecting proxies: an optional `ca` build secret is honoured.
 
+## CI/CD gate
+
+`check` compares the current tree with a base branch (or a saved baseline) and fails when a change makes
+an application harder to containerize: a new finding of severity `rewrite` or worse (Windows-only APIs,
+COM, Office automation, WCF server, ...), or a worse rating. It also writes the PR comment, SARIF 2.1.0
+and inline annotations. The base is read with `git archive`, so the working tree is never touched, and
+findings in library code the app never reaches don't count.
+
+```bash
+python -m containerizer check src/ --base-ref origin/main --markdown comment.md --sarif out.sarif
+python -m containerizer check src/ --save-baseline baseline.json          # later: --baseline baseline.json
+python -m containerizer check src/ --max-rating B --fail-on blocker      # absolute limit, no base needed
+```
+
+Exit code 0 = pass, 1 = gate failed, anything else = error. Options: `--fail-on none|config|refactor|rewrite|blocker`,
+`--allow-rating-drop`, `--max-rating A-E`, `--annotations github|azure`, `--json`, `--link <blob URL prefix>`.
+
+### GitHub Actions
+
+```yaml
+on: pull_request
+permissions:
+  contents: read
+  pull-requests: write          # for the PR comment
+jobs:
+  containerizer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: olljanat-ai/containerizer@main
+        with:
+          path: src              # app folder(s), space separated
+          fail-on: rewrite       # default
+          # max-rating: C        # optional absolute limit
+          # upload-sarif: true   # code scanning (needs security-events: write)
+```
+
+On pull requests the action compares with the PR's base commit (fetched if the checkout is shallow), posts
+one comment that it keeps updating, writes the job summary, annotates the offending lines, and fails the
+job when the gate fails. Outputs: `rating`, `failed`, `new-findings`, `markdown-file`, `sarif-file`.
+This repository dogfoods it in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) on
+[`examples/ci-demo`](examples/ci-demo) and self-tests it on a challenge app with a Windows-only change.
+
+### Azure DevOps
+
+[`ci/azure/containerizer-steps.yml`](ci/azure/containerizer-steps.yml) is a steps template. Copy it into
+your repository (or reference it through a repository resource):
+
+```yaml
+trigger: none
+pr: [main]
+pool:
+  vmImage: ubuntu-latest
+steps:
+  - checkout: self
+    fetchDepth: 0
+  - template: ci/azure/containerizer-steps.yml
+    parameters:
+      path: src
+      failOn: rewrite
+```
+
+It compares with the PR target branch, adds the report to the build summary, annotates the offending
+files, publishes SARIF as the `CodeAnalysisLogs` artifact (shown by the SARIF SAST Scans Tab
+extension), comments on Azure Repos pull requests with `System.AccessToken` (give the build service
+"Contribute to pull requests"), and fails the build when the gate fails.
+
 ## Results on the challenge
 
 See [`bench/RESULTS.md`](bench/RESULTS.md) for the current numbers (rule accuracy, verification
@@ -176,4 +243,5 @@ containerizer/   scan, rules engine, assess, reach, confidence, facts, generate,
 rules/           curated rules (roles, facts, findings, plan, failures, images, packages)
 rules/learned/   rules written by the learning loop (reviewable, safe to delete)
 bench/           labels and results
+action.yml       GitHub Action; ci/azure/ has the Azure DevOps template
 ```

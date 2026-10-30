@@ -1,0 +1,83 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q
+
+  # Dogfood: gate this repository's own example app with the action, as a user's repo would.
+  containerizer:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        uses: ./
+        with:
+          path: examples/ci-demo
+          max-rating: B
+      - run: echo "rating=${{ steps.check.outputs.rating }} new=${{ steps.check.outputs.new-findings }}"
+
+  # End-to-end self-test on a challenge app: a commit that adds a Windows-only dependency must fail the gate,
+  # and the unchanged app must pass.
+  action-selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: tool
+      - uses: actions/checkout@v4
+        with:
+          repository: onek8s/containerization-challenge
+          path: challenge
+          fetch-depth: 1
+      - name: Add a Windows-only dependency in a commit
+        working-directory: challenge
+        run: |
+          git config user.email ci@example.com && git config user.name ci
+          app=scenarios/parts-catalog/src/PartsCatalog
+          sed -i 's#<PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.11" />#&\n    <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" />#' $app/PartsCatalog.csproj
+          printf '\nstatic class Settings { public static object? Get() => Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\\\\Parts"); }\n' >> $app/Program.cs
+          printf '\nstatic class Printing { public static void Print() { var d = new System.Drawing.Printing.PrintDocument(); var o = Type.GetTypeFromProgID("Excel.Application"); } }\n' >> $app/Program.cs
+          git commit -qam "use the registry and Excel"
+      - name: Gate must fail on the new dependency
+        id: bad
+        continue-on-error: true
+        uses: ./tool
+        with:
+          path: challenge/scenarios/parts-catalog
+          base-ref: HEAD~1
+          comment: "false"
+          sarif-file: bad.sarif
+      - name: Gate must pass on the unchanged app
+        id: good
+        uses: ./tool
+        with:
+          path: challenge/scenarios/expense-claims
+          base-ref: HEAD~1
+          max-rating: A
+          comment: "false"
+          sarif-file: good.sarif
+      - name: Assert
+        run: |
+          echo "bad: outcome=${{ steps.bad.outcome }} failed=${{ steps.bad.outputs.failed }} rating=${{ steps.bad.outputs.rating }}"
+          echo "good: outcome=${{ steps.good.outcome }} failed=${{ steps.good.outputs.failed }} rating=${{ steps.good.outputs.rating }}"
+          test "${{ steps.bad.outcome }}" = failure && test "${{ steps.bad.outputs.failed }}" = true
+          test "${{ steps.good.outputs.failed }}" = false && test "${{ steps.good.outputs.rating }}" = A
+          python3 -c "import json; r=json.load(open('bad.sarif'))['runs'][0]['results']; assert any(x.get('baselineState')=='new' for x in r), r"

@@ -1,0 +1,766 @@
+# Third-party and Microsoft NuGet packages / SDKs / native libraries that are
+# Windows-only, or that need special handling on Linux, in real-world .NET apps.
+#
+# Most conditions match both a NuGet <PackageReference> id (`package:`) and an
+# assembly <Reference Include=...> name (`reference:`), because old-style
+# .NET Framework projects reference NuGet and vendor-installed assemblies by
+# assembly name. Linux-safe packages are listed in rules/packages-thirdparty.yaml.
+
+# Shared regexes (YAML anchors). Anchored by the engine as ^(?:...)$.
+patterns:
+  # WinForms/WPF component suites and UI libraries (package ids and assembly names).
+  desktop_ui: &desktop_ui >-
+    DevExpress\.(Win|Wpf)(\.[\w.]+)?|DevExpress\.(Xtra(Editors|Grid|Bars|Layout|TreeList|VerticalGrid|NavBar|PivotGrid|Scheduler|RichEdit|Spreadsheet|Wizard|Gauges|TabbedMdi|Diagram|PdfViewer|Dialogs|Map)|Xpf\.\w+)(?![\w.]*\.Core$)[\w.]*|DevExpress\.Xtra(Charts|Reports)\.v[\d.]+\.(UI|Wizard|Extensions)|Telerik\.(WinControls|Windows\.Controls|Windows\.Data|Windows\.Themes|Windows\.Diagrams|ReportViewer\.(WinForms|Wpf))(\.[\w.]+)?|(Telerik\.)?UI\.for\.(WinForms|Wpf)(\.[\w.]+)?|TelerikCommon|Infragistics\d*\.Win(\.[\w.]+)?|InfragisticsWPF\d*(\.[\w.]+)?|Infragistics\.(WinForms|WPF)(\.[\w.]+)?|Syncfusion\.(?!HtmlToPdfConverter)[\w.]*\.(Windows|WinForms|Wpf|UWP|WinUI)|C1\.(Win|WPF|WinForms)(\.[\w.]+)?|FarPoint\.Win(\.[\w.]+)?|(GrapeCity|MESCIUS)\.ActiveReports\.(Viewer|Design)\.(Win|Wpf)[\w.]*|MahApps\.Metro(\.[\w.]+)?|ControlzEx|MaterialDesignThemes(\.[\w.]+)?|MaterialDesignColors|Hardcodet\.NotifyIcon\.Wpf(\.[\w.]+)?|Hardcodet\.Wpf\.TaskbarNotification|H\.NotifyIcon\.Wpf|Extended\.Wpf\.Toolkit|DotNetProjects\.Extended\.Wpf\.Toolkit|Xceed\.Wpf\.[\w.]+|AvalonEdit|Dirkster\.[\w.]+|Fluent\.Ribbon|ModernWpfUI|HandyControl|WPF-UI|Prism\.Wpf|Microsoft\.Xaml\.Behaviors\.Wpf|ObjectListView(\.Official)?|DockPanelSuite(\.[\w.]+)?|Krypton\.(Toolkit|Ribbon|Navigator|Docking|Workspace)(\.[\w.]+)?|Ookii\.Dialogs\.(Wpf|WinForms)|LiveCharts\.(Wpf|WinForms)|LiveChartsCore\.SkiaSharpView\.(WPF|WinForms)|OxyPlot\.(Wpf|WindowsForms)|ScottPlot\.(WPF|WinForms)|Microsoft\.Toolkit\.(Wpf|Forms)\.[\w.]+|FontAwesome\.(Sharp|WPF)|ToastNotifications(\.[\w.]+)?|Notifications\.Wpf|Microsoft-WindowsAPICodePack-[\w.]+|WindowsAPICodePack[\w.-]*|Microsoft\.WindowsAPICodePack(\.[\w.]+)?
+  # `using` lines of the desktop suites' UI namespaces (not their cross-platform engines:
+  # DevExpress.XtraReports/XtraPrinting/XtraCharts/XtraRichEdit.API also exist on .NET/Linux).
+  desktop_ui_code: &desktop_ui_code >-
+    ^\s*using\s+(DevExpress\.(XtraEditors|XtraGrid|XtraBars|XtraLayout|XtraTreeList|XtraTab|XtraNavBar|XtraVerticalGrid|XtraWizard|Xpf)|Telerik\.(WinControls|Windows\.Controls)|Infragistics\.(Win|Windows)|Syncfusion\.(Windows|UI\.Xaml)|C1\.(Win|WPF)|MahApps\.Metro|MaterialDesignThemes\.Wpf|Hardcodet\.Wpf)(\.\w+)*\s*;
+  # Windows-only browser engines and HTML-to-PDF converters.
+  windows_browser: &windows_browser >-
+    CefSharp(\.[\w.]+)?|Microsoft\.Web\.WebView2(\.[\w.]+)?|EO\.(Pdf|WebBrowser|WebEngine)(\.[\w.]+)?|Winnovative(?![\w.]*Client)[\w.]*|EvoPdf(?![\w.]*Client)[\w.]*
+  # WinRT / Windows App SDK / UWP packages.
+  winrt_packages: &winrt_packages >-
+    Microsoft\.Windows\.SDK\.Contracts|Microsoft\.WindowsAppSDK[\w.]*|Microsoft\.Windows\.CsWinRT|Microsoft\.Windows\.CppWinRT|Microsoft\.Windows\.SDK\.NET\.Ref|Microsoft\.Windows\.SDK\.BuildTools|Microsoft\.Toolkit\.Uwp[\w.]*|CommunityToolkit\.(WinUI|Uwp|WinAppSdk)[\w.]*|Microsoft\.UI\.Xaml|Microsoft\.Graphics\.Win2D|Win2D\.uwp|Microsoft\.NETCore\.UniversalWindowsPlatform
+
+rules:
+  # ---------------------------------------------------------------- reporting
+  - id: pkg-crystal-reports
+    applies_to: [dotnet]
+    when:
+      any:
+        - reference: 'CrystalDecisions\.[\w.]+'
+        - package: 'CrystalDecisions\.[\w.]+|CrystalReports[\w.]*'
+        - code: '^\s*(using|Imports)\s+CrystalDecisions\.|<CR:CrystalReportViewer\b'
+        - config: 'CrystalImageHandler|crystalreportviewers\d*'
+    severity: rewrite
+    category: reporting
+    effort: 5
+    windows_container: true
+    title: SAP Crystal Reports
+    why: >-
+      The Crystal Reports runtime for .NET (CrystalDecisions.*) is .NET Framework only, installed with
+      a Windows MSI (32/64-bit native engine). There is no .NET (Core) or Linux version, so the .rpt
+      reports cannot be rendered in a Linux container.
+    fix: >-
+      Re-implement the reports with a cross-platform engine (QuestPDF, FastReport/Telerik/DevExpress
+      reporting for .NET, SSRS via its REST API), or keep report rendering on a Windows host (a Windows
+      container with the Crystal runtime MSI works as a stop-gap) and call it over HTTP.
+
+  - id: pkg-activereports-legacy
+    applies_to: [dotnet]
+    confidence: 0.8
+    when:
+      any:
+        - reference: 'DataDynamics\.ActiveReports[\w.]*|GrapeCity\.ActiveReports[\w.]*\.v\d+'
+        - code: '^\s*(using|Imports)\s+DataDynamics\.ActiveReports'
+    severity: refactor
+    category: reporting
+    effort: 3
+    windows_container: true
+    title: Old ActiveReports version (.NET Framework)
+    why: >-
+      Data Dynamics / GrapeCity ActiveReports versions installed from the SDK (assemblies with a
+      version suffix such as GrapeCity.ActiveReports.v8) are .NET Framework only and use GDI+.
+    fix: >-
+      Upgrade to a current MESCIUS ActiveReports NuGet release, which supports .NET 8 and Linux
+      (check that the report types used are supported on Linux; install the fonts), converting the
+      old reports with the vendor's tools.
+
+  - id: pkg-stimulsoft-netfx
+    applies_to: [dotnet]
+    confidence: 0.85
+    when:
+      package: 'Stimulsoft\.(Reports|Dashboards)\.(?![\w.]*(NetCore|Blazor))[\w.]+'
+    severity: refactor
+    category: reporting
+    effort: 2
+    windows_container: true
+    title: Stimulsoft Reports .NET Framework edition
+    why: >-
+      Stimulsoft.Reports.Net/.Web/.Wpf/.Engine are the .NET Framework (WinForms/WebForms/WPF/GDI+)
+      editions. Linux needs the .NET Core editions.
+    fix: >-
+      Switch to Stimulsoft.Reports.Engine.NetCore / Stimulsoft.Reports.Web.NetCore (the .mrt report
+      templates are reused) and install the report fonts in the image.
+
+  - id: pkg-fastreport-gdi
+    applies_to: [dotnet]
+    confidence: 0.8
+    when:
+      all:
+        - package: 'FastReport\.(OpenSource|Core|OpenSource\.Web|Core\.Web|Web)'
+        - not: {package: 'FastReport\.[\w.]*Skia[\w.]*'}
+        - not: {tfm: 'net[1-4]\d{1,2}'}
+    severity: refactor
+    category: reporting
+    effort: 0.5
+    title: FastReport on System.Drawing
+    why: >-
+      The default FastReport .NET Core packages draw with System.Drawing (GDI+), which is not
+      supported on Linux from .NET 7 (and needs libgdiplus before that).
+    fix: Use the SkiaSharp-based variants (FastReport.Core.Skia / FastReport.OpenSource.Skia) and install the report fonts.
+
+  - id: pkg-document-engine-fonts
+    applies_to: [dotnet]
+    confidence: 0.9
+    when:
+      all:
+        - not: {role: test}
+        - package: >-
+            Aspose\.[\w.]+|(Free)?Spire\.[\w.]*for\.NETStandard|Stimulsoft\.[\w.]*(NetCore|Blazor)|FastReport\.[\w.]*Skia[\w.]*|Telerik\.Reporting(\.[\w.]+)?|Telerik\.Documents\.[\w.]+|DevExpress\.(Reporting\.Core|AspNetCore\.Reporting|Document\.Processor|Drawing\.Skia)|(GrapeCity|MESCIUS)\.ActiveReports(?!\.(Viewer|Design)\.(Win|Wpf))[\w.]*|Syncfusion\.[\w.]*(Renderer|Pdf|DocIO|XlsIO|Presentation)[\w.]*\.Net\.Core
+    severity: config
+    category: reporting
+    effort: 0.5
+    title: Document/report engine needs fonts (and graphics libraries) on Linux
+    why: >-
+      These engines run on Linux, but lay out text with the fonts installed on the machine. A Linux
+      image has almost none, so output changes (substituted fonts, different pagination) or fails.
+      Depending on the product version they also need native graphics libraries (SkiaSharp native
+      assets, libgdiplus) or a cross-platform variant package (e.g. Aspose.Slides.NET6.CrossPlatform,
+      Aspose.PDF.Drawing, DevExpress.Drawing.Skia, FastReport *.Skia). Older Aspose versions on .NET 6+
+      depend on System.Drawing.Common, which fails on Linux.
+    fix: >-
+      Copy the fonts the documents use into the image (fonts folder + fontconfig, or the vendor's font
+      folder setting), use a full (non-chiseled) base image if the engine needs libfontconfig/ICU, and
+      check the vendor's Linux notes for the version in use.
+
+  - id: pkg-spire-netfx
+    applies_to: [dotnet]
+    confidence: 0.8
+    when:
+      all:
+        - package: '(Free)?Spire\.(?![\w.]*for\.NETStandard)[\w.]+'
+        - not: {tfm: 'net[1-4]\d{1,2}'}
+    severity: refactor
+    category: libraries
+    effort: 1
+    title: Spire.* (e-iceblue) on System.Drawing
+    why: >-
+      The main Spire.Doc/PDF/XLS/Presentation packages draw with System.Drawing, which is not
+      supported on Linux from .NET 7. e-iceblue publishes separate SkiaSharp-based packages for
+      cross-platform use.
+    fix: Switch to the "for .NETStandard" packages (e.g. Spire.PDFfor.NETStandard), adapt the few drawing types that differ, and install the fonts.
+
+  - id: pkg-imaging-sdk
+    applies_to: [dotnet]
+    confidence: 0.75
+    when:
+      any:
+        - reference: 'GdPicture[\w.]*|Leadtools[\w.]*'
+        - package: 'GdPicture[\w.]*|Leadtools[\w.]*'
+    severity: refactor
+    category: thirdparty
+    effort: 2
+    windows_container: true
+    title: Commercial imaging/OCR SDK with native engine (GdPicture, LEADTOOLS)
+    why: >-
+      These SDKs wrap native engines. Older versions (.NET Framework, referenced from the SDK install
+      folder) are Windows-only; recent versions on .NET 6+ support Linux with the vendor's Linux
+      native binaries, extra OS libraries and a licence that covers it.
+    fix: Upgrade to a Linux-capable release on .NET 8, add the Linux native packages/libraries and fonts to the image, and mount the licence from a Secret.
+
+  # ------------------------------------------------------ UI component suites
+  - id: pkg-desktop-ui-library-code
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: desktop|test}
+        - any:
+            - package: *desktop_ui
+            - reference: *desktop_ui
+        - code: *desktop_ui_code
+    severity: blocker
+    category: ui
+    effort: 0
+    windows_container: false
+    title: WinForms/WPF component suite used in server code
+    why: >-
+      Server or library code uses WinForms/WPF controls from a component suite (DevExpress, Telerik,
+      Infragistics, Syncfusion, ComponentOne, MahApps ...). They need the Windows Desktop runtime,
+      which does not exist on Linux.
+    fix: >-
+      Move UI code out of the server component. For rendering/export use the vendor's cross-platform
+      engine (DevExpress Reporting/Office File API, Telerik Document Processing for .NET Standard,
+      Syncfusion *.Net.Core packages) or QuestPDF/ClosedXML.
+
+  - id: pkg-desktop-ui-library-ref
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: desktop|test}
+        - any:
+            - package: *desktop_ui
+            - reference: *desktop_ui
+        - not: {code: *desktop_ui_code}
+    severity: refactor
+    category: ui
+    effort: 1
+    windows_container: true
+    title: References WinForms/WPF component suite packages
+    why: >-
+      A non-desktop project references WinForms/WPF packages of a component suite (often a leftover,
+      or only for an export/helper type). They target the Windows Desktop runtime.
+    fix: Remove the reference or replace it with the vendor's cross-platform package (e.g. Syncfusion *.Net.Core instead of *.WinForms/*.Wpf).
+
+  - id: pkg-desktop-ui-package
+    applies_to: [dotnet]
+    when:
+      all:
+        - role: desktop
+        - any:
+            - package: *desktop_ui
+            - reference: *desktop_ui
+    severity: info
+    category: ui
+    effort: 0
+    windows_container: false
+    title: Windows desktop UI libraries
+    why: Desktop UI packages of the desktop client (see the desktop application finding); they only run on Windows.
+    fix: None beyond the desktop client decision.
+
+  - id: pkg-desktop-windows-runtime-package
+    applies_to: [dotnet]
+    when:
+      all:
+        - role: desktop
+        - any:
+            - package: *windows_browser
+            - package: *winrt_packages
+    severity: info
+    category: ui
+    effort: 0
+    windows_container: false
+    title: Windows-only browser/WinRT packages of a desktop client
+    why: Embedded browser (CefSharp, WebView2) or WinRT/Windows App SDK packages of the desktop client; they only run on Windows.
+    fix: None beyond the desktop client decision.
+
+  - id: pkg-web-ui-suite-systemweb
+    applies_to: [dotnet]
+    when:
+      any:
+        - package: &web_ui >-
+            DevExpress\.Web(\.Mvc5?|\.Bootstrap|\.ASPx\w+)?(\.v[\d.]+)?|Telerik\.Web\.UI(\.[\w.]+)?|Telerik\.UI\.for\.AspNet\.(Ajax|Mvc\d?)[\w.]*|Telerik\.ReportViewer\.WebForms|Infragistics\d*\.Web(?![\w.]*AspNetCore)(\.[\w.]+)?|Syncfusion\.[\w.]*\.(AspNet(\.Mvc\d)?|WebForms|Mvc\d)|Syncfusion\.EJ\.(Web|Mvc)|C1\.Web\.(Wijmo|UI|Mvc)(\.[\w.]+)?
+        - reference: *web_ui
+    severity: refactor
+    category: ui
+    effort: 3
+    windows_container: true
+    title: Vendor controls for ASP.NET WebForms/MVC 5 (System.Web)
+    why: >-
+      DevExpress ASPx, Telerik RadControls for ASP.NET AJAX, Infragistics/Syncfusion/ComponentOne
+      WebForms and MVC 5 wrappers run only on System.Web (.NET Framework/IIS). Their ASP.NET Core and
+      Blazor products are different packages with different APIs (and licences).
+    fix: Port the pages to the vendor's ASP.NET Core/Blazor product (or plain JS components) as part of the ASP.NET Core migration.
+
+  - id: pkg-windows-browser-engine
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: desktop|test}
+        - any:
+            - package: *windows_browser
+            - reference: *windows_browser
+    severity: refactor
+    category: native
+    effort: 1.5
+    title: Windows-only browser engine / HTML-to-PDF converter
+    why: >-
+      CefSharp and WebView2 ship Windows-only Chromium binaries (WebView2 needs the Windows WebView2
+      runtime); EO.Pdf, Winnovative and EvoPdf HTML-to-PDF converters run on Windows only. Server code
+      uses them for HTML-to-PDF, screenshots or scraping.
+    fix: Use headless Chromium on Linux through Microsoft.Playwright or PuppeteerSharp (page.PdfAsync / ScreenshotAsync), or a Linux-capable converter.
+
+  - id: pkg-headless-browser
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: test}
+        - package: 'Microsoft\.Playwright[\w.]*|PuppeteerSharp[\w.]*|Selenium\.WebDriver[\w.]*'
+    severity: config
+    category: native
+    effort: 0.5
+    title: Headless browser needs Chromium in the image
+    why: >-
+      Playwright, PuppeteerSharp and Selenium run on Linux, but need a browser and its OS libraries
+      (libnss3, libgbm, fonts ...) in the image; PuppeteerSharp downloads Chromium at runtime into a
+      writable folder, which a read-only container does not allow.
+    fix: >-
+      Install the browser at build time (playwright.ps1 install --with-deps chromium, or apt chromium)
+      on a full (non-chiseled) base image, or use the mcr.microsoft.com/playwright/dotnet image; point
+      PuppeteerSharp at the installed executable.
+
+  - id: pkg-syncfusion-htmltopdf-windows
+    applies_to: [dotnet]
+    confidence: 0.85
+    when:
+      package: 'Syncfusion\.HtmlToPdfConverter\.(Net\.Windows|WinForms|Wpf|AspNet|AspNet\.Mvc\d)'
+    severity: config
+    category: native
+    effort: 1
+    title: Syncfusion HTML-to-PDF Windows package
+    why: The Windows HtmlToPdfConverter packages bundle the Windows Blink binaries only.
+    fix: Use Syncfusion.HtmlToPdfConverter.Net.Linux on a full base image with the Chromium dependencies it documents.
+
+  - id: pkg-telerik-documents-netfx
+    applies_to: [dotnet]
+    confidence: 0.8
+    when:
+      any:
+        - package: 'Telerik\.Windows\.Documents(\.[\w.]+)?'
+        - reference: 'Telerik\.Windows\.Documents(\.[\w.]+)?'
+    severity: refactor
+    category: libraries
+    effort: 1
+    title: Telerik Document Processing for .NET Framework
+    why: The Telerik.Windows.Documents.* assemblies are the .NET Framework build of Document Processing, which depends on WPF assemblies.
+    fix: Switch to the .NET Standard packages (Telerik.Documents.*), which run on Linux; adapt image/font handling.
+
+  - id: pkg-mschart
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: desktop|test}
+        - any:
+            - reference: 'System\.Windows\.Forms\.DataVisualization(\.Design)?|System\.Web\.DataVisualization(\.Design)?'
+            - package: 'System\.Windows\.Forms\.DataVisualization|WinForms\.DataVisualization|Microsoft\.Chart\.Controls'
+            - code: '^\s*(using|Imports)\s+System\.Web\.UI\.DataVisualization|<asp:Chart\b'
+    severity: refactor
+    category: libraries
+    effort: 2
+    windows_container: true
+    title: Microsoft Chart Controls (MSChart / DataVisualization)
+    why: >-
+      The Chart controls (System.Windows.Forms.DataVisualization, System.Web.DataVisualization)
+      render with GDI+ and WinForms/System.Web; they do not exist on .NET on Linux.
+    fix: Render charts client-side (JS charting), or server-side with a SkiaSharp-based library (ScottPlot 5, LiveCharts2 SkiaSharp, OxyPlot.SkiaSharp).
+
+  # ------------------------------------------------------ Office / add-ins
+  - id: pkg-office-interop-package
+    applies_to: [dotnet]
+    when:
+      all:
+        - any:
+            - package: 'Microsoft\.Office\.Interop\.[\w.]+|MicrosoftOfficeCore|Microsoft\.Office\.Core|Microsoft\.Vbe\.Interop'
+            - reference: 'office|Microsoft\.Vbe\.Interop'
+        # com-office-automation already reports code/reference usage
+        - not:
+            any:
+              - code: 'Microsoft\.Office\.Interop\.|GetTypeFromProgID\("(Word|Excel|Outlook|PowerPoint|Access|Visio)\.Application'
+              - reference: 'Microsoft\.Office\.Interop\..*|COM:.*(Word|Excel|Office).*'
+    severity: blocker
+    category: com
+    effort: 0
+    windows_container: false
+    title: Microsoft Office interop assemblies
+    why: >-
+      References the Office primary interop assemblies, which drive an installed Office through COM.
+      Office cannot be installed in a container and does not exist on Linux.
+    fix: Replace Office automation with a document library (OpenXML SDK, ClosedXML, NPOI, QuestPDF), or remove the unused reference.
+
+  - id: pkg-netoffice
+    applies_to: [dotnet]
+    when:
+      any:
+        - package: 'NetOffice(Fw)?(\.[\w.]+)?'
+        - reference: 'NetOffice|(Excel|Word|Outlook|PowerPoint|Access|Office|VBIDE)Api'
+        - code: '^\s*(using|Imports)\s+NetOffice\.'
+    severity: blocker
+    category: com
+    effort: 0
+    windows_container: false
+    title: NetOffice (Office automation wrapper)
+    why: NetOffice is a wrapper over Office COM automation; it needs an installed Office, which cannot run in a container or on Linux.
+    fix: Replace with a document library (OpenXML SDK, ClosedXML, NPOI, QuestPDF) or keep this component on a Windows VM.
+
+  - id: pkg-office-addin
+    applies_to: [dotnet]
+    when:
+      any:
+        - package: 'ExcelDna(\.[\w.]+)?|AddinExpress[\w.]*'
+        - reference: 'ExcelDna\.Integration|Microsoft\.Office\.Tools(\.[\w.]+)?|Microsoft\.VisualStudio\.Tools\.Applications\.Runtime|AddinExpress[\w.]*'
+        - code: '^\s*(using|Imports)\s+(ExcelDna\.Integration|Microsoft\.Office\.Tools)\b'
+    severity: blocker
+    category: ui
+    effort: 0
+    windows_container: false
+    title: Office add-in (Excel-DNA / VSTO / Add-in Express)
+    why: The project is an add-in that runs inside desktop Office on users' PCs; it is not a server workload.
+    fix: Keep it as a desktop add-in (it can call containerized APIs), or rebuild it as an Office web add-in served from a container.
+
+  # ------------------------------------------------------ Windows-only APIs
+  - id: pkg-windows-compatibility-pack
+    applies_to: [dotnet]
+    when:
+      package: 'Microsoft\.Windows\.Compatibility(\.Shims)?'
+    severity: info
+    category: libraries
+    effort: 0
+    title: Windows Compatibility Pack
+    why: >-
+      The meta-package brings Registry, EventLog, DirectoryServices, WMI, System.Drawing, ACLs and
+      other Windows-only APIs into a .NET project. Code that uses them is reported by other findings;
+      the rest of the pack is cross-platform.
+    fix: Replace the meta-package with only the packages actually used, so Windows-only dependencies stay visible.
+
+  - id: pkg-winrt-packages
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: desktop|test}
+        - any:
+            - package: *winrt_packages
+            - reference: 'Windows|Windows\.Foundation\.(Universal|Foundation)Contract|Microsoft\.Windows\.SDK\.NET'
+        # winrt-apis reports projects that actually import Windows.* namespaces
+        - not: {code: '^\s*using\s+Windows\.(Media|Graphics|Storage|Devices|Security\.Credentials|ApplicationModel|UI|Data|Globalization|Foundation|System|Networking)(\.\w+)*\s*;'}
+    severity: refactor
+    category: os
+    effort: 1
+    windows_container: false
+    title: WinRT / Windows App SDK packages
+    why: >-
+      References the Windows SDK projections (Microsoft.Windows.SDK.Contracts, CsWinRT), Windows App
+      SDK/WinUI or the UWP toolkit. These APIs exist only on Windows client editions.
+    fix: Remove the reference, or replace the WinRT API used (OCR, notifications, credentials) with a cross-platform library or service.
+
+  - id: pkg-system-speech
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: desktop}
+        - any:
+            - package: 'System\.Speech'
+            - reference: 'System\.Speech|Microsoft\.Speech'
+            - code: '^\s*(using|Imports)\s+(System|Microsoft)\.Speech\.(Synthesis|Recognition|AudioFormat)'
+              unguarded: true
+    severity: refactor
+    category: os
+    effort: 2
+    title: System.Speech / Microsoft Speech Platform
+    why: System.Speech (SAPI) and the Microsoft Speech Platform are Windows-only; the System.Speech package throws PlatformNotSupportedException on Linux.
+    fix: Use a cloud speech service (Azure AI Speech SDK runs on Linux) or a Linux TTS/STT engine (Piper, eSpeak NG, Whisper) behind a small API.
+
+  - id: pkg-web-administration
+    applies_to: [dotnet]
+    when:
+      any:
+        - package: 'Microsoft\.Web\.Administration'
+        - reference: 'Microsoft\.Web\.Administration'
+        - code: '^\s*(using|Imports)\s+Microsoft\.Web\.Administration\s*;?'
+    severity: refactor
+    category: hosting
+    effort: 1
+    windows_container: true
+    title: Manages IIS (Microsoft.Web.Administration)
+    why: The code reads or changes IIS configuration (sites, bindings, application pools) through ServerManager; there is no IIS on Linux.
+    fix: >-
+      Remove the IIS configuration code: in Kubernetes, sites/bindings/app pools become Kestrel
+      configuration, Services and Ingress. A tool whose purpose is administering IIS servers stays on Windows.
+
+  - id: pkg-taskscheduler-api
+    applies_to: [dotnet]
+    when:
+      any:
+        - package: 'TaskScheduler'
+        - reference: 'Microsoft\.Win32\.TaskScheduler'
+        - code: '^\s*(using|Imports)\s+Microsoft\.Win32\.TaskScheduler\s*;?'
+    severity: refactor
+    category: hosting
+    effort: 1
+    windows_container: true
+    title: Creates Windows scheduled tasks (TaskScheduler library)
+    why: The app registers or manages Windows Task Scheduler jobs at runtime through the Microsoft.Win32.TaskScheduler COM wrapper, which is Windows-only.
+    fix: Define the schedules as Kubernetes CronJobs, or schedule in-process with Quartz.NET/Hangfire.
+
+  - id: pkg-mmi-cim
+    applies_to: [dotnet]
+    when:
+      any:
+        - package: 'Microsoft\.Management\.Infrastructure(\.[\w.]+)?'
+        - reference: 'Microsoft\.Management\.Infrastructure(\.[\w.]+)?'
+        - code: '^\s*(using|Imports)\s+Microsoft\.Management\.Infrastructure'
+    severity: refactor
+    category: os
+    effort: 1
+    windows_container: true
+    title: CIM/WMI through Microsoft.Management.Infrastructure
+    why: The MI .NET API (CimSession) talks to WMI on the local or remote Windows machines; it does not work on Linux.
+    fix: Replace local WMI queries with configuration/Kubernetes facilities; keep remote Windows management on a Windows host or use WinRM/PowerShell remoting from a supported host.
+
+  - id: pkg-powershell-windows
+    applies_to: [dotnet]
+    when:
+      any:
+        - all:
+            - reference: 'System\.Management\.Automation'
+            - tfm: 'net[1-4]\d{1,2}'
+        - package: 'Microsoft\.PowerShell\.5(\.1)?\.ReferenceAssemblies'
+    severity: refactor
+    category: os
+    effort: 1
+    windows_container: true
+    title: Hosts Windows PowerShell 5.1
+    why: The app runs PowerShell in-process through the Windows PowerShell 5.1 System.Management.Automation, which exists only on Windows.
+    fix: Move to the PowerShell 7 SDK (Microsoft.PowerShell.SDK, runs on Linux) and check that the scripts' modules exist on Linux.
+
+  - id: pkg-powershell-sdk
+    applies_to: [dotnet]
+    confidence: 0.9
+    when:
+      package: 'Microsoft\.PowerShell\.SDK|System\.Management\.Automation|Microsoft\.PowerShell\.(ConsoleHost|Commands\.\w+)'
+    severity: config
+    category: os
+    effort: 0.5
+    title: Hosts PowerShell 7
+    why: >-
+      PowerShell 7 runs on Linux, but scripts that use Windows-only modules or providers
+      (ActiveDirectory, CIM/WMI cmdlets, registry, certificate store, Windows paths) fail there.
+    fix: Review the scripts the app runs; bundle the needed modules in the image and replace Windows-only cmdlets.
+
+  - id: pkg-naudio-windows
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: desktop|test}
+        - any:
+            - package: 'NAudio\.(WinMM|Wasapi|Asio|WinForms|Lame)'
+            - reference: 'NAudio\.(WinMM|Wasapi|Asio|WinForms|Lame)'
+            - all:
+                - any:
+                    - package: 'NAudio(\.[\w.]+)?'
+                    - reference: 'NAudio(\.[\w.]+)?'
+                - code: '(?-i:\b(WaveOutEvent|WaveOut|WaveInEvent|WaveIn|WasapiOut|WasapiCapture|WasapiLoopbackCapture|AsioOut|DirectSoundOut|MediaFoundationReader|MediaFoundationEncoder|MediaFoundationResampler|Mp3FileReader|AcmMp3FrameDecompressor|MMDeviceEnumerator)\b)'
+                  unguarded: true
+    severity: refactor
+    category: libraries
+    effort: 1.5
+    title: NAudio Windows audio APIs
+    why: >-
+      Only NAudio.Core (WAV handling, sample providers) is cross-platform. Playback/recording (WinMM,
+      WASAPI, ASIO, DirectSound), Media Foundation and ACM codecs (Mp3FileReader), and NAudio.Lame's
+      native encoder are Windows-only.
+    fix: Keep only NAudio.Core; decode/encode with FFmpeg (CLI or FFMpegCore) or managed codecs (NLayer, NVorbis); servers do not need audio devices.
+
+  # ------------------------------------------------------ hosting / tools
+  - id: pkg-windows-service-hosts
+    applies_to: [dotnet]
+    when:
+      any:
+        - package: 'DasMulli\.Win32\.ServiceUtils|PeterKottas\.DotNetCore\.WindowsService|NServiceBus\.Host(\.[\w.]+)?'
+        - code: '(?-i:\bWin32ServiceHost\b)'
+    severity: refactor
+    category: hosting
+    effort: 1
+    windows_container: true
+    title: Windows Service host library
+    why: The process is hosted by a Windows Service library (DasMulli Win32 service, PeterKottas WindowsService, NServiceBus.Host) that needs the Windows Service Control Manager.
+    fix: Host with the .NET Generic Host (BackgroundService / NServiceBus endpoint hosting) - runs as the container's main process.
+
+  - id: pkg-winscp
+    applies_to: [dotnet]
+    when:
+      any:
+        - package: 'WinSCP'
+        - reference: 'WinSCPnet'
+        - code: '^\s*(using|Imports)\s+WinSCP\s*;?\s*$'
+    severity: refactor
+    category: thirdparty
+    effort: 1
+    windows_container: true
+    title: WinSCP .NET assembly
+    why: The WinSCP .NET assembly drives winscp.exe, a Windows program; it does not run on Linux.
+    fix: Use SSH.NET (SFTP/SCP) or FluentFTP (FTP/FTPS); move host keys and credentials to Secrets.
+
+  - id: pkg-chilkat-windows
+    applies_to: [dotnet]
+    confidence: 0.8
+    when:
+      any:
+        - package: 'chilkat-(x64|win32)|ChilkatDotNet\d*'
+        - reference: 'ChilkatDotNet\d+'
+    severity: config
+    category: native
+    effort: 0.5
+    title: Chilkat Windows (.NET Framework) package
+    why: The chilkat-x64/chilkat-win32 packages and ChilkatDotNet assemblies are mixed-mode Windows builds.
+    fix: Switch to the cross-platform .NET Core package (ChilkatDnCore), which includes Linux native libraries.
+
+  # ------------------------------------------------------ messaging / ERP
+  - id: pkg-ews-managed-api
+    applies_to: [dotnet]
+    when:
+      any:
+        - package: 'Microsoft\.Exchange\.WebServices(\.[\w.]+)?'
+        - reference: 'Microsoft\.Exchange\.WebServices(\.Auth)?'
+        - code: '^\s*(using|Imports)\s+Microsoft\.Exchange\.WebServices|new\s+ExchangeService\s*\('
+    severity: refactor
+    category: thirdparty
+    effort: 3
+    windows_container: true
+    title: Exchange Web Services (EWS) Managed API
+    why: >-
+      The EWS Managed API is an unmaintained .NET Framework library (only unofficial .NET Standard
+      ports exist). Microsoft has retired EWS for Exchange Online (from October 2026); it remains only
+      for Exchange Server on-premises.
+    fix: Use Microsoft Graph (Microsoft.Graph SDK, app-only auth) for Exchange Online; for on-premises Exchange use a maintained EWS port or IMAP/SMTP with MailKit.
+
+  - id: pkg-sap-nco
+    applies_to: [dotnet]
+    when:
+      any:
+        - reference: 'sapnco(_utils)?'
+        - package: 'sapnco[\w.]*|SAP\.Middleware\.Connector[\w.]*|SapNco[\w.]*'
+        - code: '^\s*(using|Imports)\s+SAP\.Middleware\.Connector|(?-i:\bRfcDestinationManager\b)'
+    severity: refactor
+    category: thirdparty
+    effort: 3
+    windows_container: true
+    title: SAP .NET Connector (NCo)
+    why: >-
+      SAP NCo 3.0 is a .NET Framework, Windows-only mixed-mode library (needs the VC++ runtime); NCo
+      3.1 for .NET is supported by SAP on Windows only. It cannot be loaded in a Linux container.
+    fix: >-
+      Call SAP through OData/SOAP services (SAP Gateway / Integration Suite), or use a wrapper around
+      the SAP NetWeaver RFC SDK, which has a Linux build (e.g. SapNwRfc); keep NCo on a Windows host otherwise.
+
+  - id: pkg-legacy-azure-servicebus
+    applies_to: [dotnet]
+    when:
+      package: 'WindowsAzure\.ServiceBus'
+    severity: refactor
+    category: messaging
+    effort: 2
+    windows_container: true
+    title: Legacy Azure Service Bus SDK (WindowsAzure.ServiceBus)
+    why: WindowsAzure.ServiceBus (Microsoft.ServiceBus.Messaging) is a deprecated .NET Framework-only SDK.
+    fix: Port to Azure.Messaging.ServiceBus (runs on Linux).
+
+  # ------------------------------------------------------ database providers
+  - id: pkg-oracle-unmanaged
+    applies_to: [dotnet]
+    when:
+      any:
+        - reference: 'Oracle\.DataAccess'
+        - package: 'Oracle\.DataAccess(\.x86|\.x64)?|odp\.net\.x(86|64)'
+        - code: '^\s*(using|Imports)\s+Oracle\.DataAccess\.(Client|Types)'
+    severity: refactor
+    category: data
+    effort: 1
+    windows_container: true
+    title: Unmanaged ODP.NET (Oracle.DataAccess)
+    why: Oracle.DataAccess is the unmanaged ODP.NET provider; it needs an installed Oracle Client on Windows and has no Linux version.
+    fix: Switch to Oracle.ManagedDataAccess.Core (namespace Oracle.ManagedDataAccess.Client, mostly the same API); move tnsnames.ora/wallet to a ConfigMap/Secret.
+
+  - id: pkg-db2-windows-package
+    applies_to: [dotnet]
+    when:
+      all:
+        - package: 'IBM\.Data\.DB2\.Core|Net\.IBM\.Data\.Db2'
+        - not: {package: '(IBM\.Data\.DB2\.Core|Net\.IBM\.Data\.Db2)-lnx'}
+    severity: config
+    category: data
+    effort: 0.5
+    title: IBM Db2 .NET provider (Windows package)
+    why: >-
+      IBM.Data.DB2.Core and Net.IBM.Data.Db2 contain the Windows clidriver; IBM ships the Linux driver
+      in separate packages (-lnx), with the same API.
+    fix: >-
+      Reference Net.IBM.Data.Db2-lnx (or IBM.Data.DB2.Core-lnx) for the Linux build, on a full base
+      image with the libraries the clidriver needs (e.g. libxml2), and mount the Db2 licence if required.
+
+  - id: pkg-db2-netfx-provider
+    applies_to: [dotnet]
+    when:
+      any:
+        - reference: 'IBM\.Data\.DB2'
+        # the .NET 8 provider (Net.IBM.Data.Db2) uses namespace IBM.Data.Db2; the netfx one IBM.Data.DB2
+        - code: '^\s*(using|Imports)\s+(?-i:IBM\.Data\.DB2)\s*;?\s*$'
+    severity: refactor
+    category: data
+    effort: 1
+    windows_container: true
+    title: IBM Db2 provider from the Db2 client install
+    why: The .NET Framework IBM.Data.DB2 provider is installed with the Windows Db2 client.
+    fix: Use Net.IBM.Data.Db2-lnx (.NET 8, Linux), namespace IBM.Data.Db2; mostly the same API.
+
+  - id: pkg-sybase-ase
+    applies_to: [dotnet]
+    when:
+      any:
+        - reference: 'Sybase\.(AdoNet\d\.AseClient|Data\.AseClient)'
+        - package: 'Sybase\.(AdoNet\d\.AseClient|Data\.AseClient)[\w.]*'
+        - code: '^\s*(using|Imports)\s+Sybase\.Data\.AseClient'
+    severity: refactor
+    category: data
+    effort: 1
+    windows_container: true
+    title: SAP/Sybase ASE ADO.NET provider
+    why: The SAP ASE ADO.NET provider (Sybase.AdoNet2/4.AseClient) is a .NET Framework wrapper over a Windows native driver (sybdrvado*.dll).
+    fix: Switch to AdoNetCore.AseClient (managed, runs on Linux, same AseConnection/AseCommand types) or the SAP ASE ODBC driver for Linux.
+
+  - id: pkg-informix
+    applies_to: [dotnet]
+    when:
+      any:
+        - reference: 'IBM\.Data\.Informix'
+        - package: 'IBM\.Data\.Informix[\w.]*'
+        - code: '^\s*(using|Imports)\s+IBM\.Data\.Informix'
+    severity: refactor
+    category: data
+    effort: 2
+    windows_container: true
+    title: IBM Informix .NET provider
+    why: IBM.Data.Informix is the .NET Framework provider from the Windows Informix Client SDK.
+    fix: Connect over DRDA with Net.IBM.Data.Db2-lnx, or use the Informix Client SDK ODBC driver for Linux through System.Data.Odbc.
+
+  # ------------------------------------------------------ PDF / OCR / imaging
+  - id: pkg-pdfiumviewer
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: desktop}
+        - any:
+            - package: 'PdfiumViewer[\w.]*'
+            - reference: 'PdfiumViewer'
+            - code: '^\s*(using|Imports)\s+PdfiumViewer\s*;?\s*$'
+    severity: refactor
+    category: libraries
+    effort: 1
+    windows_container: true
+    title: PdfiumViewer
+    why: PdfiumViewer is a WinForms library with Windows-only PDFium binaries that renders pages to System.Drawing images.
+    fix: Use PDFtoImage or Docnet.Core (PDFium with Linux binaries, SkiaSharp/raw output) for PDF-to-image.
+
+  - id: pkg-ghostscript-net
+    applies_to: [dotnet]
+    confidence: 0.7
+    when:
+      any:
+        - package: 'Ghostscript\.NET'
+        - reference: 'Ghostscript\.NET'
+        - code: '^\s*(using|Imports)\s+Ghostscript\.NET|gsdll(32|64)\.dll'
+    severity: refactor
+    category: native
+    effort: 1
+    windows_container: true
+    title: Ghostscript.NET (native Ghostscript)
+    why: >-
+      Ghostscript.NET loads the native Ghostscript library installed by the Windows installer
+      (gsdll64.dll, found through the registry or a configured path). On Linux the library is libgs.so
+      from the ghostscript package and must be loadable by the wrapper version in use. Ghostscript is AGPL/commercial.
+    fix: Install ghostscript in the image and point the wrapper at libgs (or run the gs CLI), or replace with PDFtoImage/Docnet.Core for rasterizing.
+
+  - id: pkg-tesseract-native
+    applies_to: [dotnet]
+    confidence: 0.8
+    when:
+      any:
+        - package: 'Tesseract(\.Drawing)?'
+        - reference: 'Tesseract'
+    severity: refactor
+    category: native
+    effort: 1
+    title: Tesseract OCR wrapper with Windows native DLLs
+    why: >-
+      The Tesseract NuGet package ships only Windows x86/x64 builds of tesseract and leptonica. On
+      Linux the native libraries of the matching versions must be installed and loadable, plus tessdata.
+    fix: Install tesseract-ocr/leptonica and tessdata in the image and make the wrapper load them, or call the tesseract CLI / a Linux-capable wrapper.

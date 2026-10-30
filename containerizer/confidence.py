@@ -18,7 +18,7 @@ from .rules import RULES_DIR
 @lru_cache(maxsize=1)
 def _catalog():
     ok, neutral = [], []
-    for f in [RULES_DIR / "packages.yaml", RULES_DIR / "learned" / "packages.yaml"]:
+    for f in sorted(RULES_DIR.glob("packages*.yaml")) + [RULES_DIR / "learned" / "packages.yaml"]:
         if f.exists():
             d = yaml.safe_load(f.read_text()) or {}
             ok += d.get("linux_ok", []) or []
