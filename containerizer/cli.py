@@ -49,6 +49,21 @@ def cmd_assess(args) -> int:
     return 0
 
 
+def _gitops(args):
+    from .gitops import GitOpsOptions
+    return GitOpsOptions(git_url=args.git_url, branch=args.git_branch, path=args.git_path or "",
+                         verify_commits=args.verify_commits)
+
+
+def _gitops_args(s) -> None:
+    g = s.add_argument_group("GitOps (Argo CD and Flux examples under <app>/gitops)")
+    g.add_argument("--git-url", default="https://git.example.com/platform/deployments.git",
+                   help="repository the generated app folder is committed to")
+    g.add_argument("--git-branch", default="main")
+    g.add_argument("--git-path", help="folder of the app in that repository (default deploy/<app>)")
+    g.add_argument("--verify-commits", action="store_true", help="Flux: only apply signed commits")
+
+
 def cmd_generate(args) -> int:
     from .generate import generate_app
 
@@ -56,7 +71,7 @@ def cmd_generate(args) -> int:
     for app in _apps(args.paths):
         a = assess(app, rules)
         out = Path(args.out) / a.name if args.out else Path(app) / "containerize"
-        files = generate_app(a, out, registry=args.registry, pin=args.pin_digests)
+        files = generate_app(a, out, registry=args.registry, pin=args.pin_digests, gitops=_gitops(args))
         print(f"{a.name}: {len(files)} files -> {out}")
     return 0
 
@@ -130,7 +145,7 @@ def cmd_analyze(args) -> int:
     results = []
     for app in _apps(args.paths):
         a = analyze_app(app, out, ai=args.ai, model=args.model, verify=not args.no_verify,
-                        registry=args.registry, pin=args.pin_digests, timeout=args.timeout)
+                        registry=args.registry, pin=args.pin_digests, timeout=args.timeout, gitops=_gitops(args))
         ver = a.verification
         results.append(a)
         print(f"{a.name:24s} {a.rating} score={a.score:3d}  verified: "
@@ -179,6 +194,7 @@ def main(argv=None) -> int:
     s.add_argument("--out")
     s.add_argument("--registry", default="registry.local", help="image registry used in the manifests")
     s.add_argument("--pin-digests", action="store_true", help="pin base images to their current digests")
+    _gitops_args(s)
     s.set_defaults(fn=cmd_generate)
 
     s = sub.add_parser("verify", help="build and run generated containers; learn from failures")
@@ -200,6 +216,7 @@ def main(argv=None) -> int:
     s.add_argument("--registry", default="registry.local")
     s.add_argument("--pin-digests", action="store_true")
     s.add_argument("--timeout", type=int, default=1800)
+    _gitops_args(s)
     s.set_defaults(fn=cmd_analyze)
 
     s = sub.add_parser("ai", help="ask Claude to review uncertain parts of an assessment")

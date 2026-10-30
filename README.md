@@ -164,6 +164,16 @@ Service, NetworkPolicy, Secret skeleton, PVCs where state must persist), `plan.j
 plan, editable and re-usable). For .NET Framework components that could work in Windows Server
 containers, a `Dockerfile.windows` stop-gap. Per app: `kustomization.yaml` and `MIGRATION.md`.
 
+GitOps: every app also gets `gitops/` with Argo CD and Flux examples built from the same data
+(`--git-url`, `--git-branch`, `--git-path`, `--verify-commits` on `generate` and `analyze`):
+
+| | Argo CD | Flux |
+| --- | --- | --- |
+| Scope | `AppProject` pinned to the repo, the app namespace and the generated kinds | `tenant.yaml`: namespace, ServiceAccount, `admin` RoleBinding in that namespace only; `Kustomization` applies as that ServiceAccount |
+| Namespace | `CreateNamespace` with the Pod Security "restricted" labels | created by `tenant.yaml` with the same labels |
+| Sync | automated, prune, self-heal, server-side apply, retries | `GitRepository` (read-only key, optional signed-commit check) or cosign-verified `OCIRepository`; prune, wait |
+| Image updates | Argo CD Image Updater annotations (semver, Git write-back) | `ImageRepository`, `ImagePolicy`, `ImageUpdateAutomation` with `$imagepolicy` markers in `kustomization.yaml` |
+
 Techniques used to avoid application changes:
 
 - out-of-support .NET (Core 3.1, 5, 6, 7): build with the .NET 10 SDK and run on the supported .NET 10

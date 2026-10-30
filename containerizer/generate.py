@@ -547,13 +547,15 @@ def _yaml_docs(docs: list[dict]) -> str:
 # --------------------------------------------------------------------------- app
 
 def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, registry: str = "registry.local",
-                 plans: dict | None = None, pin: bool = False) -> list[Path]:
+                 plans: dict | None = None, pin: bool = False, gitops=None) -> list[Path]:
+    from .gitops import gitops_manifests, image_setters, readme
     from .report import migration_markdown
 
     rules = rules if rules is not None else load_rules()
     out.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     all_k8s = []
+    images: list[tuple[str, str]] = []
     for c in a.components:
         cdir = out / k8s_name(c.name)
         if buildable(c):
@@ -570,6 +572,7 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
             (cdir / "Dockerfile.dockerignore").write_text(DOCKERIGNORE)
             image = f"{registry}/{k8s_name(a.name)}/{k8s_name(c.name)}:latest"
             docs = k8s_manifests(a, c, plan, image)
+            images.append((c.name, image))
             all_k8s += docs
             (cdir / "k8s.yaml").write_text(_yaml_docs(docs))
             (cdir / "plan.json").write_text(json.dumps(plan, indent=2))
@@ -580,13 +583,22 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
             (cdir / "Dockerfile.windows.dockerignore").write_text(DOCKERIGNORE)
             written += [cdir / "Dockerfile.windows"]
     if all_k8s:
-        (out / "namespace.yaml").write_text(_yaml_docs([namespace_manifest(k8s_name(a.name))]))
+        ns_doc = namespace_manifest(k8s_name(a.name))
+        (out / "namespace.yaml").write_text(_yaml_docs([ns_doc]))
         (out / "kustomization.yaml").write_text(yaml.safe_dump(
             {"apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization",
              "namespace": k8s_name(a.name),
              "resources": ["namespace.yaml"] + sorted(f"{d.name}/k8s.yaml" for d in out.iterdir() if (d / "k8s.yaml").exists())},
-            sort_keys=False))
+            sort_keys=False) + image_setters(k8s_name(a.name), images))
         written += [out / "namespace.yaml", out / "kustomization.yaml"]
+        kinds = sorted({(d["apiVersion"], d["kind"]) for d in all_k8s if isinstance(d, dict) and d.get("kind")})
+        for rel, docs in gitops_manifests(a, kinds, images, ns_doc, gitops, registry).items():
+            f = out / "gitops" / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(_yaml_docs(docs))
+            written.append(f)
+        (out / "gitops" / "README.md").write_text(readme(a, gitops))
+        written.append(out / "gitops" / "README.md")
     (out / "MIGRATION.md").write_text(migration_markdown(a))
     written.append(out / "MIGRATION.md")
     return written
