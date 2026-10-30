@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -15,15 +16,34 @@ from pathlib import Path
 import yaml
 
 from .assess import AppAssessment, Component
+from .harden import harden_manifests, namespace_manifest
 from .rules import RULES_DIR, Context, Rule, load_rules, run_rule
 
 CONTAINER_PORT = 8080
 SAFE_NAME = re.compile(r"[^a-z0-9-]+")
 
 
+IMAGES_LOCK = RULES_DIR / "images.lock.yaml"
+
+
+def images_lock() -> dict:
+    """Patched base image tags chosen by `containerizer images --update` (CONTAINERIZER_IMAGES_LOCK=0 ignores it)."""
+    if os.environ.get("CONTAINERIZER_IMAGES_LOCK", "1") == "0" or not IMAGES_LOCK.exists():
+        return {}
+    return (yaml.safe_load(IMAGES_LOCK.read_text()) or {}).get("images") or {}
+
+
 @lru_cache(maxsize=1)
 def images() -> dict:
-    return yaml.safe_load((RULES_DIR / "images.yaml").read_text())
+    lock = images_lock()
+
+    def sub(v):
+        if isinstance(v, dict):
+            return {k: sub(x) for k, x in v.items()}
+        if isinstance(v, str) and v in lock:
+            return lock[v]["tag"]
+        return v
+    return sub(yaml.safe_load((RULES_DIR / "images.yaml").read_text()))
 
 
 _DIGESTS: dict[str, str | None] = {}
@@ -32,6 +52,9 @@ _DIGESTS: dict[str, str | None] = {}
 def resolve_digest(ref: str) -> str | None:
     """Registry digest of an image tag (multi-arch index digest), via docker buildx."""
     import subprocess
+    locked = {e["tag"]: e.get("digest") for e in images_lock().values()}
+    if ref not in _DIGESTS and locked.get(ref):
+        _DIGESTS[ref] = locked[ref]
     if ref not in _DIGESTS:
         try:
             p = subprocess.run(["docker", "buildx", "imagetools", "inspect", ref, "--format", "{{json .Manifest.Digest}}"],
@@ -53,6 +76,17 @@ def pin_digests(dockerfile: str) -> str:
         return f"{m.group(1)}{ref}@{d}" if d else m.group(0)
     return re.sub(r"^((?:FROM\s+(?:--platform=\S+\s+)?)|(?:COPY\s+(?:--\w+=\S+\s+)*?--from=))(\S+)", sub,
                   dockerfile, flags=re.M)
+
+
+def target_tfm() -> str:
+    """TFM of the runtime line the images run (images.yaml dotnet.version)."""
+    return "net" + str(images()["dotnet"].get("version", "10.0"))
+
+
+def _tfm_major(tfm: str) -> int:
+    """net10.0 -> 10, netcoreapp3.1 -> 3, net6.0-windows -> 6; .NET Framework (net48) -> 0."""
+    m = re.match(r"net(?:coreapp)?(\d+)\.\d", tfm or "")
+    return int(m.group(1)) if m else 0
 
 
 def k8s_name(s: str) -> str:
@@ -110,9 +144,30 @@ def default_plan(c: Component) -> dict:
         plan["env"]["DOTNET_ENVIRONMENT"] = "Production"
         if c.role == "web":
             plan["env"]["ASPNETCORE_ENVIRONMENT"] = "Production"
-        if tfm and tfm != "net8.0" and not tfm.startswith("net8.0") and not tfm.startswith("net9"):
-            plan["env"]["DOTNET_ROLL_FORWARD"] = "Major"
+        if tfm and _tfm_major(tfm) < _tfm_major(target_tfm()):
+            plan["env"]["DOTNET_ROLL_FORWARD"] = "Major"     # run on the supported runtime line
     return plan
+
+
+def reason_comments(plan: dict) -> list[str]:
+    """Dockerfile header lines that explain each non-default build or run decision."""
+    import textwrap
+    out = []
+    for r in plan.get("reasons") or []:
+        out += textwrap.wrap(f"{r['rule']}: {r['why']}", 100, initial_indent="# - ", subsequent_indent="#   ")
+        out += [f"#   see {u}" for u in r.get("refs") or []]
+    return (["#", "# Why this differs from a default build:"] + out) if out else []
+
+
+def add_reason(plan: dict, rule: str, why: str, refs: list[str] | None = None) -> None:
+    """Record why the build or run setup differs from the default, for the Dockerfile and plan.json."""
+    why = " ".join((why or "").split())
+    rs = plan.setdefault("reasons", [])
+    if why and not any(r["rule"] == rule for r in rs):
+        rs.append({"rule": rule, "why": why, **({"refs": list(refs)} if refs else {})})
+
+
+CONFIG_DOCS = "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/"
 
 
 def _repoint_config(plan: dict, facts: dict) -> None:
@@ -120,6 +175,9 @@ def _repoint_config(plan: dict, facts: dict) -> None:
     file-only Serilog sinks log to stdout, Windows paths move under /data (a volume)."""
     for key in facts.get("listen_url_settings") or []:
         plan["env"][key.replace(":", "__")] = f"http://+:{CONTAINER_PORT}"
+        add_reason(plan, "config-listen-url", f"Listen addresses from configuration are overridden to port "
+                   f"{CONTAINER_PORT} with environment variables (they take precedence over appsettings.json).",
+                   ["https://learn.microsoft.com/en-us/aspnet/core/fundamentals/servers/kestrel/endpoints"])
     for var in facts.get("nlog_env_folders") or []:
         plan["env"][var] = "/app/logs"
         if "logs" not in plan["add_writable"]:
@@ -127,6 +185,9 @@ def _repoint_config(plan: dict, facts: dict) -> None:
     sinks = set(facts.get("serilog_file_sinks") or [])
     for i in sorted(sinks):
         plan["env"][f"Serilog__WriteTo__{i}__Name"] = "Console"
+        add_reason(plan, "config-serilog-console", "Serilog file sinks are switched to the console with an "
+                   "environment variable, so the cluster collects the logs from stdout.",
+                   ["https://github.com/serilog/serilog-sinks-console", CONFIG_DOCS])
     for key, val in sorted((facts.get("windows_paths") or {}).items()):
         parts = key.split(":")
         if parts[:2] == ["Serilog", "WriteTo"] and len(parts) > 2 and parts[2].isdigit() and int(parts[2]) in sinks:
@@ -151,12 +212,18 @@ def _repoint_config(plan: dict, facts: dict) -> None:
         folder = "/data/" + "/".join(k8s_name(s) for s in (segs[:-1] if is_file else segs)) if segs else "/data"
         folder = folder.rstrip("/") or "/data"
         plan["env"]["__".join(parts)] = f"{folder}/{segs[-1]}" if is_file else folder
+        add_reason(plan, "config-windows-paths", "Windows paths in configuration (drive letters, UNC shares) are "
+                   "overridden with environment variables to folders under /data, which the manifests mount as "
+                   "volumes; the application code is not changed.", [CONFIG_DOCS])
         if folder not in plan["add_writable"]:
             plan["add_writable"].append(folder)
     for item in facts.get("nlog_folder_settings") or []:
         # trailing slash: NLog targets append "\\file.log", which on Linux then stays inside the folder
         key = item.replace(".", "__")
         plan["env"][key] = plan["env"].get(key, "/app/logs").rstrip("/") + "/"
+        add_reason(plan, "config-nlog-folder", "NLog log folders get a trailing '/' so that file names the config "
+                   "joins with a backslash still land inside the folder on Linux.",
+                   ["https://github.com/NLog/NLog/wiki/File-target"])
         if plan["env"][key] == "/app/logs/" and "logs" not in plan["add_writable"]:
             plan["add_writable"].append("logs")
 
@@ -169,6 +236,7 @@ def apply_plan_rules(plan: dict, repo, c: Component, rules: list[Rule]) -> dict:
         if run_rule(r, ctx):
             merge_plan(plan, r.plan)
             plan["applied"].append(r.id)
+            add_reason(plan, r.id, r.why, getattr(r, "refs", None))
     return plan
 
 
@@ -232,14 +300,19 @@ def dockerfile_dotnet(plan: dict) -> str:
     rid = plan.get("rid") or "linux-x64"
     rid_arg = "" if rid == "portable" else f" -p:RuntimeIdentifier={rid}"
     pub = ["-c Release", "-o /out", "-p:UseAppHost=false"] + ([rid_arg.strip(), "--self-contained false"] if rid_arg else [])
-    if plan["strategy"] == "retarget" and tfm and not tfm.startswith("net8"):
-        pub.append("-p:TargetFramework=net8.0")
-        pub.append("-p:TargetFrameworks=net8.0")
+    target = target_tfm()
+    retarget = plan["strategy"] == "retarget" and tfm and _tfm_major(tfm) != _tfm_major(target)
+    if retarget:
+        # the entry project is retargeted in the build stage's copy of its .csproj; a global
+        # -p:TargetFramework would also retarget its netstandard libraries and break their restore.
+        # Only when the TFM is not in the .csproj (Directory.Build.props) is the global property used.
+        pub.append("$TFP")
     elif plan["multi_target"] or (tfm and "-" in tfm):
         pub.append(f"-f {tfm}")
     pub += plan["publish_args"]
     lines = ["# syntax=docker/dockerfile:1.7",
              f"# Generated by containerizer for {plan['component']} ({plan['role']}, {tfm})",
+             *reason_comments(plan),
              f"FROM {im['sdk']} AS build"]
     if plan.get("spa_root"):
         node = images()["node"]["build"]
@@ -250,12 +323,13 @@ def dockerfile_dotnet(plan: dict) -> str:
     lines += ["WORKDIR /src", "COPY . ."]
     for f in plan["remove_files"]:
         lines.append(f"RUN find . -name '{f}' -not -path '*/node_modules/*' -delete")
-    restore_tfm = ""
-    if plan["strategy"] == "retarget" and tfm and not tfm.startswith("net8"):
-        restore_tfm = " -p:TargetFramework=net8.0 -p:TargetFrameworks=net8.0"
+    restore_tfm = " $TFP" if retarget else ""
     lines += ["# optional build secret 'ca': CA bundle for TLS-inspecting corporate proxies",
               'RUN --mount=type=cache,target=/root/.nuget/packages --mount=type=secret,id=ca,required=false \\',
               '    if [ -f /run/secrets/ca ]; then export SSL_CERT_FILE=/run/secrets/ca NODE_EXTRA_CA_CERTS=/run/secrets/ca; fi; \\',
+              *([f"    TFP=''; if grep -qE '<TargetFrameworks?[ >]' \"{proj}\"; then \\",
+                 f"      sed -i -E 's#<TargetFrameworks?([^>]*)>[^<]*</TargetFrameworks?>#<TargetFramework\\1>{target}</TargetFramework>#' \"{proj}\"; \\",
+                 f"    else TFP='-p:TargetFramework={target} -p:TargetFrameworks={target}'; fi; \\"] if retarget else []),
               f'    dotnet restore "{proj}"{rid_arg}{restore_tfm} \\',
               f' && dotnet publish "{proj}" --no-restore {" ".join(pub)}']
     writable = sorted({_writable_abs(w) for w in plan["add_writable"]})
@@ -300,12 +374,42 @@ def dockerfile_spa(plan: dict, facts: dict) -> str:
         "RUN npm run build",
         f"RUN if [ -d '{dist}/browser' ]; then cp -r '{dist}/browser' /site; else cp -r '{dist}' /site; fi",
         "",
+    ] + _static_site_stage("/site")) + "\n"
+
+
+def _static_site_stage(site: str, extra: str = "") -> list[str]:
+    n = images()["node"]
+    return [
         f"FROM {n['static']} AS final",
         "# nginx-unprivileged runs as uid 101 and listens on 8080",
-        "COPY --from=build /site /usr/share/nginx/html",
-        "RUN printf 'server {\\n listen 8080;\\n root /usr/share/nginx/html;\\n location / { try_files $uri $uri/ /index.html; }\\n location = /healthz { return 200 \"ok\"; }\\n}\\n' > /etc/nginx/conf.d/default.conf",
+        f"COPY --from=build {site} /usr/share/nginx/html",
+        "RUN printf 'server {\\n listen 8080;\\n root /usr/share/nginx/html;\\n" + extra
+        + " location / { try_files $uri $uri/ /index.html; }\\n location = /healthz { return 200 \"ok\"; }\\n}\\n' > /etc/nginx/conf.d/default.conf",
         "EXPOSE 8080",
-    ]) + "\n"
+    ]
+
+
+def dockerfile_blazor_wasm(plan: dict) -> str:
+    """Standalone Blazor WebAssembly: static files after `dotnet publish`, served by nginx."""
+    im = images()["dotnet"]
+    proj = plan["project"]
+    lines = ["# syntax=docker/dockerfile:1.7",
+             f"# Generated by containerizer for {plan['component']} (Blazor WebAssembly, static files)",
+             f"FROM {im['sdk']} AS build", "WORKDIR /src", "COPY . ."]
+    for f in plan["remove_files"]:
+        lines.append(f"RUN find . -name '{f}' -not -path '*/node_modules/*' -delete")
+    lines += ["RUN --mount=type=cache,target=/root/.nuget/packages --mount=type=secret,id=ca,required=false \\",
+              "    if [ -f /run/secrets/ca ]; then export SSL_CERT_FILE=/run/secrets/ca; fi; \\",
+              f'    dotnet publish "{proj}" -c Release -o /out {" ".join(plan["publish_args"])}'.rstrip(), ""]
+    # framework files: precompressed variants, and a real 404 instead of the SPA fallback
+    extra = " gzip_static on;\\n location /_framework/ { try_files $uri =404; }\\n"
+    return "\n".join(lines + _static_site_stage("/out/wwwroot", extra)) + "\n"
+
+
+def dockerfile_for(plan: dict, c: Component) -> str:
+    if c.role == "spa":
+        return dockerfile_blazor_wasm(plan) if c.project.kind_hint == "dotnet" else dockerfile_spa(plan, c.facts)
+    return dockerfile_dotnet(plan)
 
 
 def dockerfile_windows(c: Component) -> str:
@@ -315,7 +419,7 @@ def dockerfile_windows(c: Component) -> str:
     proj = p.rel.replace("/", "\\")
     lines = ["# escape=`",
              f"# Generated by containerizer: Windows Server Core stop-gap for {c.name} (.NET Framework)",
-             "# Runs on Windows nodes only. Prefer porting to .NET 8 for Linux.",
+             "# Runs on Windows nodes only. Prefer porting to modern .NET for Linux.",
              f"FROM {w['framework_sdk']} AS build",
              "WORKDIR C:\\src", "COPY . .",
              f'RUN nuget restore "{proj}" ; msbuild "{proj}" /p:Configuration=Release /p:DeployOnBuild={str(web).lower()} '
@@ -411,6 +515,8 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
                  "metadata": {"name": f"{name}-ingress", "labels": labels},
                  "spec": {"podSelector": {"matchLabels": labels}, "policyTypes": ["Ingress"],
                           "ingress": [{"ports": [{"port": plan["port"]}]}] if plan.get("port") else []}})
+    # security baseline + the exceptions this component needs (rules/60-security.yaml)
+    plan["hardening_exceptions"] = harden_manifests(docs, a.repo, c, plan, name)
     return docs
 
 
@@ -444,22 +550,20 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
         if buildable(c):
             plan = (plans or {}).get(c.name) or make_plan(a, c, rules)
             cdir.mkdir(parents=True, exist_ok=True)
-            if c.project.kind_hint == "dotnet":
-                df = dockerfile_dotnet(plan)
-            elif c.role == "spa":
-                df = dockerfile_spa(plan, c.facts)
+            if c.role == "spa":
                 plan["port"], plan["health"] = 8080, "/healthz"
-            else:
+            elif c.project.kind_hint != "dotnet":
                 continue
+            df = dockerfile_for(plan, c)
             if pin:
                 df = pin_digests(df)
             (cdir / "Dockerfile").write_text(df)
             (cdir / "Dockerfile.dockerignore").write_text(DOCKERIGNORE)
-            (cdir / "plan.json").write_text(json.dumps(plan, indent=2))
             image = f"{registry}/{k8s_name(a.name)}/{k8s_name(c.name)}:latest"
             docs = k8s_manifests(a, c, plan, image)
             all_k8s += docs
             (cdir / "k8s.yaml").write_text(_yaml_docs(docs))
+            (cdir / "plan.json").write_text(json.dumps(plan, indent=2))
             written += [cdir / "Dockerfile", cdir / "Dockerfile.dockerignore", cdir / "k8s.yaml", cdir / "plan.json"]
         elif c.tier == "server" and c.project.is_netfx and c.windows_container_ok and c.verdict != "blocker":
             cdir.mkdir(parents=True, exist_ok=True)
@@ -467,12 +571,13 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
             (cdir / "Dockerfile.windows.dockerignore").write_text(DOCKERIGNORE)
             written += [cdir / "Dockerfile.windows"]
     if all_k8s:
+        (out / "namespace.yaml").write_text(_yaml_docs([namespace_manifest(k8s_name(a.name))]))
         (out / "kustomization.yaml").write_text(yaml.safe_dump(
             {"apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization",
              "namespace": k8s_name(a.name),
-             "resources": sorted(f"{d.name}/k8s.yaml" for d in out.iterdir() if (d / "k8s.yaml").exists())},
+             "resources": ["namespace.yaml"] + sorted(f"{d.name}/k8s.yaml" for d in out.iterdir() if (d / "k8s.yaml").exists())},
             sort_keys=False))
-        written.append(out / "kustomization.yaml")
+        written += [out / "namespace.yaml", out / "kustomization.yaml"]
     (out / "MIGRATION.md").write_text(migration_markdown(a))
     written.append(out / "MIGRATION.md")
     return written

@@ -2,7 +2,7 @@
 # severity: info < config < refactor < rewrite < blocker
 #   config   - runs in a Linux container with configuration/infra changes only
 #   refactor - needs targeted code changes
-#   rewrite  - needs a port of the component (e.g. .NET Framework -> .NET 8)
+#   rewrite  - needs a port of the component (e.g. .NET Framework -> modern .NET)
 #   blocker  - cannot run in a Linux container; keep on Windows/VM or replace
 # windows_container: whether a Windows Server container would be a workable
 # stop-gap (null = unknown / not applicable).
@@ -14,6 +14,12 @@ rules:
         - tfm: 'net[1-4]\d{1,2}|v[1-4].*'
         - not: {tfm: 'net([5-9]|\d\d)\.\d+.*|netcoreapp.*|netstandard.*'}
         - not: {role: 'test|library|sqlclr|sharepoint|biztalk'}
+        - not: &aspnetcore_netfx
+            all:
+              - sdk: 'Microsoft\.NET\.Sdk\.Web'
+              - package: 'Microsoft\.AspNetCore(\.(App|All|Mvc|Hosting|Server\.Kestrel))?'
+              - not: {reference: 'System\.Web(\.Mvc|\.Http)?'}
+              - not: {file: ["Global.asax", "*.aspx"]}
     severity: rewrite
     category: runtime
     effort: 8
@@ -21,12 +27,31 @@ rules:
     title: Targets .NET Framework
     why: >-
       .NET Framework only runs on Windows, so this component cannot run in a Linux container
-      as it is. It must be ported to .NET 8 (or kept in a Windows Server Core container on
+      as it is. It must be ported to modern .NET (or kept in a Windows Server Core container on
       Windows nodes as a stop-gap).
     fix: >-
-      Port to net8.0 (use the .NET Upgrade Assistant; multi-target shared libraries with
-      netstandard2.0/net8.0 first). Windows container stop-gap:
+      Port to net10.0 (use the .NET Upgrade Assistant; multi-target shared libraries with
+      netstandard2.0/net10.0 first). Windows container stop-gap:
       mcr.microsoft.com/dotnet/framework/aspnet:4.8.1-windowsservercore-ltsc2022.
+
+  - id: aspnetcore-on-netfx
+    applies_to: [dotnet]
+    when:
+      all:
+        - tfm: 'net[1-4]\d{1,2}'
+        - not: {tfm: 'net([5-9]|\d\d)\.\d+.*|netcoreapp.*|netstandard.*'}
+        - not: {role: 'test|library|sqlclr|sharepoint|biztalk'}
+        - *aspnetcore_netfx
+    severity: refactor
+    category: runtime
+    effort: 3
+    windows_container: true
+    title: ASP.NET Core 2.x app on .NET Framework
+    why: >-
+      The app is already ASP.NET Core (Sdk.Web, Microsoft.AspNetCore.* packages) but targets .NET
+      Framework, which ASP.NET Core 2.x allowed. It is not a framework port: retarget the TFM to
+      net8.0 and replace the few .NET Framework-only packages/APIs it still uses.
+    fix: Change TargetFramework to net8.0, drop Microsoft.AspNetCore 2.x packages for the shared framework, update EF Core and fix the compile errors.
 
   - id: netfx-library
     applies_to: [dotnet]
@@ -40,8 +65,8 @@ rules:
     effort: 2
     windows_container: true
     title: Shared library targets .NET Framework
-    why: Library targets .NET Framework; consumers on .NET 8 need it retargeted (netstandard2.0 or net8.0).
-    fix: Retarget to netstandard2.0 or multi-target net48;net8.0, then fix API gaps reported by the analyzers.
+    why: Library targets .NET Framework; consumers on modern .NET need it retargeted (netstandard2.0 or net10.0).
+    fix: Retarget to netstandard2.0 or multi-target net48;net10.0, then fix API gaps reported by the analyzers.
 
   - id: netfx-old
     applies_to: [dotnet]
@@ -56,8 +81,8 @@ rules:
     title: Very old .NET Framework (2.0-4.5.2)
     why: >-
       Out of support framework version; libraries and APIs of that era (LINQ to SQL, WF3,
-      Remoting, ASMX) often have no .NET 8 equivalent, so the port is larger than usual.
-    fix: Upgrade in steps (4.8 first) before porting to .NET 8.
+      Remoting, ASMX) often have no modern .NET equivalent, so the port is larger than usual.
+    fix: Upgrade in steps (4.8 first) before porting to modern .NET.
 
   - id: core-eol
     applies_to: [dotnet]
@@ -71,9 +96,9 @@ rules:
     title: Out-of-support .NET runtime
     why: >-
       Targets an out-of-support .NET version. It can still be containerized without code
-      changes by rolling forward onto the supported .NET 8 runtime (DOTNET_ROLL_FORWARD=Major)
-      or by publishing with -p:TargetFramework=net8.0.
-    fix: The generated Dockerfile builds with the .NET 8 SDK and runs on the .NET 8 runtime with roll-forward; retarget to net8.0 when convenient.
+      changes by rolling forward onto the supported .NET 10 runtime (DOTNET_ROLL_FORWARD=Major)
+      or by publishing with -p:TargetFramework=net10.0.
+    fix: The generated Dockerfile builds with the .NET 10 SDK and runs on the .NET 10 runtime with roll-forward; retarget to net10.0 when convenient.
 
   - id: core-windows-tfm
     applies_to: [dotnet]
@@ -86,7 +111,7 @@ rules:
     effort: 2
     title: Windows-specific target framework (-windows)
     why: The project targets a Windows-only TFM, which pulls in Windows Desktop APIs that do not exist on Linux.
-    fix: Retarget to plain net8.0 and replace the Windows-only APIs it uses.
+    fix: Retarget to plain net10.0 and replace the Windows-only APIs it uses.
 
   - id: windows-rid
     applies_to: [dotnet]
@@ -126,15 +151,18 @@ rules:
         - file: "*.svc"
         - all:
             - reference: System\.ServiceModel(\.Activation|\.Web)?
-            - code: '\bServiceHost\b|\[ServiceContract\b|<system\.serviceModel>'
+            - code: '\b(Web)?ServiceHost(Factory)?\b|\[ServiceContract\b|\[(WebGet|WebInvoke)\b|<system\.serviceModel>'
             - not: {role: 'library|test'}
-        - config: '<services>\s*<service\s'
+        - all:
+            - code: '\bnew\s+WebServiceHost\(|\bWebServiceHostFactory\b'
+            - not: {role: 'library|test'}
+        - config: '<system\.serviceModel\b(?:(?!</system\.serviceModel>)[\s\S])*?<services>\s*<service\s'
     severity: rewrite
     category: framework
     effort: 5
     windows_container: true
     title: WCF service host
-    why: WCF server is not part of .NET 8.
+    why: WCF server is not part of modern .NET.
     fix: Port to CoreWCF (keeps contracts, BasicHttp/NetTcp bindings) or expose the operations as REST/gRPC.
 
   - id: wcf-nettcp-msmq
@@ -162,7 +190,7 @@ rules:
     category: framework
     effort: 0.5
     title: WCF client
-    why: WCF client libraries exist for .NET 8 (System.ServiceModel.*), BasicHttp/NetTcp only.
+    why: WCF client libraries exist for modern .NET (System.ServiceModel.*), BasicHttp/NetTcp only.
     fix: Use the System.ServiceModel.* NuGet packages; avoid WS-* security bindings.
 
   - id: webforms
@@ -174,7 +202,7 @@ rules:
     effort: 15
     windows_container: true
     title: ASP.NET Web Forms
-    why: Web Forms has no .NET 8 equivalent; pages must be rewritten (Razor Pages/Blazor).
+    why: Web Forms has no modern .NET equivalent; pages must be rewritten (Razor Pages/Blazor).
     fix: Rewrite UI in Razor Pages or Blazor; consider a Windows container stop-gap.
 
   - id: asmx
@@ -186,7 +214,7 @@ rules:
     effort: 3
     windows_container: true
     title: ASMX web services
-    why: ASMX (System.Web.Services) is not available in .NET 8.
+    why: ASMX (System.Web.Services) is not available in modern .NET.
     fix: Port to CoreWCF BasicHttpBinding (keeps SOAP contract for existing clients) or REST.
 
   - id: aspnet-mvc5
@@ -227,7 +255,7 @@ rules:
     effort: 8
     windows_container: true
     title: Windows Workflow Foundation
-    why: WF3/WF4 and workflow services are not in .NET 8 (CoreWF is a partial community port; WF3 has none).
+    why: WF3/WF4 and workflow services are not in modern .NET (CoreWF is a partial community port; WF3 has none).
     fix: Re-implement workflows (state machine in code, Elsa, Temporal, durable functions) or CoreWF for WF4.
 
   - id: remoting
@@ -241,7 +269,7 @@ rules:
     effort: 4
     windows_container: true
     title: .NET Remoting
-    why: .NET Remoting does not exist in .NET Core/.NET 8.
+    why: .NET Remoting does not exist in .NET Core/.NET 5+.
     fix: Replace with gRPC or HTTP APIs.
 
   - id: appdomain
@@ -253,15 +281,13 @@ rules:
     effort: 2
     windows_container: true
     title: Multiple AppDomains
-    why: .NET 8 has a single AppDomain; plugin isolation must use AssemblyLoadContext or processes.
+    why: modern .NET has a single AppDomain; plugin isolation must use AssemblyLoadContext or processes.
     fix: Use AssemblyLoadContext for plugins or run isolated work as separate processes/containers.
 
   - id: enterprise-services
     applies_to: [dotnet]
     when:
-      any:
-        - reference: System\.EnterpriseServices
-        - code: '\bServicedComponent\b'
+      code: '\b(ServicedComponent|ContextUtil|SharedPropertyGroupManager|ObjectPoolingAttribute)\b|\[(assembly:\s*)?(ApplicationName|ApplicationActivation|Transaction)\(\s*(ActivationOption|TransactionOption)'
     severity: rewrite
     category: framework
     effort: 4
@@ -269,6 +295,19 @@ rules:
     title: COM+ / Enterprise Services
     why: COM+ (ServicedComponent) is a Windows COM runtime feature.
     fix: Replace with plain services and explicit transactions.
+
+  - id: enterprise-services-reference
+    applies_to: [dotnet]
+    when:
+      all:
+        - reference: System\.EnterpriseServices
+        - not: {code: '\b(ServicedComponent|ContextUtil|SharedPropertyGroupManager|ObjectPoolingAttribute)\b|\[(assembly:\s*)?(ApplicationName|ApplicationActivation|Transaction)\(\s*(ActivationOption|TransactionOption)'}
+    severity: info
+    category: framework
+    effort: 0
+    title: References System.EnterpriseServices without using COM+
+    why: The project references the COM+ assembly (a common template leftover) but its code uses no COM+ types.
+    fix: Remove the reference.
 
   - id: linq-to-sql
     applies_to: [dotnet]
@@ -281,7 +320,7 @@ rules:
     effort: 3
     windows_container: true
     title: LINQ to SQL
-    why: LINQ to SQL is not available on .NET 8.
+    why: LINQ to SQL is not available on modern .NET.
     fix: Move data access to EF Core or Dapper.
 
   - id: ef6
@@ -294,7 +333,7 @@ rules:
     category: data
     effort: 1
     title: Entity Framework 6
-    why: EF 6.4+ runs on .NET 8, but EDMX designer models and some providers do not.
+    why: EF 6.4+ runs on modern .NET, but EDMX designer models and some providers do not.
     fix: Keep EF 6.4 for the port or move to EF Core.
 
   - id: system-web-apis-in-core
@@ -406,7 +445,12 @@ rules:
       all:
         - any:
             - package: System\.Drawing\.Common
-            - code: 'using\s+System\.Drawing(\.Imaging|\.Drawing2D|\.Printing)?\s*;|new\s+(Bitmap|Font)\('
+            # clear GDI+ use; `using System.Drawing;` alone is often only System.Drawing.Primitives (Color, Point, Rectangle)
+            - code: '\bGraphics\.From(Image|Hwnd|Hdc)\(|\b(System\.Drawing\.)?Image\.From(File|Stream|Hbitmap)\(|\bSystem\.Drawing\.(Imaging|Drawing2D|Printing|Text)\b|\bnew\s+System\.Drawing\.(Bitmap|Font|Icon|Pen|SolidBrush)\('
+            - all:
+                - code: '^\s*using\s+System\.Drawing\s*;'
+                - code: '\bnew\s+(Bitmap|Metafile|Pen|SolidBrush)\(|\bnew\s+Font\(\s*("|FontFamily\.)|\.DrawImage\(|\bBitmap\.FromHicon\('
+              same_file: true
         - not: {tfm: 'net[1-4]\d{1,2}'}
         - not: {role: 'desktop|test'}
     severity: refactor
@@ -424,7 +468,7 @@ rules:
     category: libraries
     effort: 0.25
     title: Legacy code pages
-    why: Code page encodings need the CodePages provider on .NET 8.
+    why: Code page encodings need the CodePages provider on modern .NET.
     fix: Encoding.RegisterProvider(CodePagesEncodingProvider.Instance) - usually already present.
 
   - id: globalization-invariant-risk

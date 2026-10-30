@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .assess import APP_RATINGS, VERDICT_TEXT, AppAssessment, assess
 from .rules import SEV_RANK, load_rules
+from .report import refs_md, refs_of
 
 MARKER = "<!-- containerizer-check -->"
 SNAPSHOT_VERSION = 1
@@ -56,6 +57,7 @@ def _item(component: str, f, prefix: str, verdict: str = "") -> dict:
     loc = [{"file": _join(prefix, e.file), "line": e.line, "snippet": (e.snippet or "")[:200]} for e in f.evidence[:3]]
     return {"key": f"{component}::{r.id}", "component": component, "rule": r.id, "severity": f.severity,
             "category": r.category, "title": r.title, "why": " ".join(r.why.split()), "fix": " ".join(r.fix.split()),
+            "refs": list(getattr(r, "refs", None) or []),
             "via": f.via, "only_commands": list(f.modes), "windows_container": r.windows_container,
             "effort_days": r.effort, "evidence": loc}
 
@@ -155,7 +157,9 @@ def _loc(f: dict, link: str | None = None) -> str:
 def _row(f: dict, link: str | None) -> str:
     sev = f["severity"] if "was" not in f else f"{f['was']} → {f['severity']}"
     note = f" (via {f['via']})" if f["via"] else ""
-    return f"| {sev} | {f['component']} | **{f['title']}**{note}<br>{f['fix']} | {_loc(f, link)} |"
+    why = f"<br>{f['why']}" if f.get("why") else ""
+    refs = f"<br>Learn more: {refs_md(refs_of(f))}" if refs_of(f) else ""
+    return f"| {sev} | {f['component']} | **{f['title']}**{note}{why}<br>**Fix:** {f['fix']}{refs} | {_loc(f, link)} |"
 
 
 def markdown(d: dict, link: str | None = None) -> str:
@@ -220,7 +224,11 @@ def sarif(d: dict) -> dict:
         for f in a["app"]["findings"]:
             rules.setdefault(f["rule"], {
                 "id": f["rule"], "name": f["rule"], "shortDescription": {"text": f["title"]},
-                "fullDescription": {"text": f["why"] or f["title"]}, "help": {"text": f["fix"] or f["title"]},
+                "fullDescription": {"text": f["why"] or f["title"]},
+                "help": {"text": f"{f['why']}\nFix: {f['fix']}".strip() + "".join(f"\n{u}" for u in refs_of(f)),
+                         "markdown": f"{f['why']}\n\n**Fix:** {f['fix']}"
+                         + (f"\n\nLearn more: {refs_md(refs_of(f))}" if refs_of(f) else "")},
+                **({"helpUri": refs_of(f)[0]} if refs_of(f) else {}),
                 "defaultConfiguration": {"level": SARIF_LEVEL[f["severity"]]},
                 "properties": {"tags": ["containerization", f["category"] or "general"]}})
             locs = [{"physicalLocation": {"artifactLocation": {"uri": e["file"]},

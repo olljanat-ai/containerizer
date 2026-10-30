@@ -239,7 +239,7 @@ rules:
     when:
       any:
         - package: &web_ui >-
-            DevExpress\.Web(\.Mvc5?|\.Bootstrap|\.ASPx\w+)?(\.v[\d.]+)?|Telerik\.Web\.UI(\.[\w.]+)?|Telerik\.UI\.for\.AspNet\.(Ajax|Mvc\d?)[\w.]*|Telerik\.ReportViewer\.WebForms|Infragistics\d*\.Web(?![\w.]*AspNetCore)(\.[\w.]+)?|Syncfusion\.[\w.]*\.(AspNet(\.Mvc\d)?|WebForms|Mvc\d)|Syncfusion\.EJ\.(Web|Mvc)|C1\.Web\.(Wijmo|UI|Mvc)(\.[\w.]+)?
+            DevExpress\.Web(\.Mvc5?|\.Bootstrap|\.ASPx\w+)?(\.v[\d.]+)?|Telerik\.Web\.UI(\.[\w.]+)?|Telerik\.UI\.for\.AspNet\.(Ajax|Mvc\d?)[\w.]*|Telerik\.ReportViewer\.WebForms|Infragistics\d*\.Web(?![\w.]*AspNetCore)(\.[\w.]+)?|Syncfusion\.[\w.]*\.(AspNet(\.Mvc\d)?|WebForms|Mvc\d)|Syncfusion\.EJ\.(Web|Mvc)|C1\.Web\.(Wijmo|UI|Mvc)(\.[\w.]+)?|AjaxControlToolkit
         - reference: *web_ui
     severity: refactor
     category: ui

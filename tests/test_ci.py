@@ -200,3 +200,33 @@ def test_verification_results_from_analyze_output(tmp_path):
     res = verification_results(tmp_path)
     assert [r["app"] for r in res] == ["a", "a", "b"]
     assert unconfirmed(res) == 1
+
+
+def test_explanations_and_references_reach_every_output(tmp_path, monkeypatch):
+    from containerizer import rules as rules_mod
+    from containerizer.ci import markdown
+    from containerizer.report import migration_markdown, portfolio_html, ref_label
+    from containerizer.assess import assess
+
+    url = "https://github.com/dotnet/runtime/issues/12345"
+    assert ref_label(url) == "dotnet/runtime#12345"
+    real = rules_mod.load_rules
+
+    def with_refs(*a, **k):
+        out = real(*a, **k)
+        for r in out:
+            r.refs = [url]
+        return out
+    monkeypatch.setattr(rules_mod, "load_rules", with_refs)
+    import containerizer.ci as ci_mod
+    monkeypatch.setattr(ci_mod, "load_rules", with_refs)
+    web_app(tmp_path, code='var t = Type.GetTypeFromProgID("Excel.Application");')
+    head = snapshot([tmp_path])
+    d = diff(head, {"version": 1, "apps": [{**head["apps"][0], "rating": "A", "findings": []}]})
+    md = markdown(d)
+    assert "[dotnet/runtime#12345](" + url + ")" in md and "**Fix:**" in md
+    rule = next(r for r in sarif(d)["runs"][0]["tool"]["driver"]["rules"])
+    assert rule["helpUri"] == url and "Learn more" in rule["help"]["markdown"]
+    a = assess(tmp_path, with_refs())
+    assert "Learn more: [dotnet/runtime#12345]" in migration_markdown(a)
+    assert f"<a href='{url}'>" in portfolio_html([a])

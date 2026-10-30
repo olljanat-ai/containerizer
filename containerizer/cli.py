@@ -77,10 +77,69 @@ def cmd_verify(args) -> int:
     return rc
 
 
+def cmd_gate(args) -> int:
+    from .imagescan import gate_app
+
+    rules = load_rules()
+    from .harden import security
+    scanner = args.scanner or security()["scan"].get("default_scanner", "auto")
+    rc = 0
+    base_cache: dict = {}
+    for app in _apps(args.paths):
+        a = assess(app, rules)
+        out = Path(args.out) / a.name if args.out else Path(app) / "containerize"
+        r = gate_app(a, out, build=not args.no_build, scan=not args.no_scan, scanner=scanner, fail_on=args.fail_on,
+                     registry=args.registry, pin=args.pin_digests, base_cache=base_cache,
+                     run=not args.no_build and not args.no_run, refresh=not args.no_refresh)
+        blocking = sum(len(s["blocking"]) for c in r["components"] for s in c["scans"])
+        print(f"{a.name:24s} {'PASS' if r['passed'] else 'FAIL'}  lint errors={r['lint'].get('error', 0)} "
+              f"warnings={r['lint'].get('warning', 0)}  blocking vulns={blocking}  -> {out / 'SECURITY.md'}")
+        if not r["passed"]:
+            rc = 1
+    return rc
+
+
+def cmd_images(args) -> int:
+    from .harden import lifecycle
+    from .imagescan import image_refs, update_images
+
+    if args.update:
+        update_images(scan=not args.no_scan, scanner=args.scanner)
+        return 0
+    from .generate import images_lock
+    lock = images_lock()
+    for slot, ref in image_refs():
+        cur = lock.get(ref, {}).get("tag", ref)
+        lc = lifecycle(cur)
+        eol = "" if not lc else (f"  EOL {lc['eol']}" + (" (passed)" if lc["days_left"] < 0 else f" ({lc['days_left']} days)"))
+        print(f"{slot:22s} {cur}{eol}")
+    return 0
+
+
 def cmd_check(args) -> int:
     from .ci import run_check
 
     return run_check(args)
+
+
+def cmd_analyze(args) -> int:
+    from .analyze import analyze_app
+    from .report import write_reports
+
+    out = Path(args.out)
+    results = []
+    for app in _apps(args.paths):
+        a = analyze_app(app, out, ai=args.ai, model=args.model, verify=not args.no_verify,
+                        registry=args.registry, pin=args.pin_digests, timeout=args.timeout)
+        ver = a.verification
+        results.append(a)
+        print(f"{a.name:24s} {a.rating} score={a.score:3d}  verified: "
+              f"{sum(r['status'] in ('ok', 'ok-external') for r in ver)} run, "
+              f"{sum(r['status'] == 'finding' for r in ver)} runtime findings, "
+              f"{sum(r['status'] in ('build-failed', 'run-failed') for r in ver)} failed")
+    write_reports(results, out)
+    print(f"reports written to {out}")
+    return 0
 
 
 def cmd_bench(args) -> int:
@@ -132,12 +191,44 @@ def main(argv=None) -> int:
     s.add_argument("--timeout", type=int, default=900)
     s.set_defaults(fn=cmd_verify)
 
+    s = sub.add_parser("analyze", help="one-shot: assess, build+run every feasible component, learn, report, generate")
+    s.add_argument("paths", nargs="+")
+    s.add_argument("--out", default="containerizer-out")
+    s.add_argument("--ai", action="store_true", help="ask Claude about uncertain components and unexplained failures")
+    s.add_argument("--model", default=None)
+    s.add_argument("--no-verify", action="store_true", help="skip building and running (static analysis only)")
+    s.add_argument("--registry", default="registry.local")
+    s.add_argument("--pin-digests", action="store_true")
+    s.add_argument("--timeout", type=int, default=1800)
+    s.set_defaults(fn=cmd_analyze)
+
     s = sub.add_parser("ai", help="ask Claude to review uncertain parts of an assessment")
     s.add_argument("paths", nargs="+")
     s.add_argument("--model", default=None)
     s.add_argument("--learn", action="store_true")
     s.add_argument("--force", action="store_true", help="review even when confidence is high")
     s.set_defaults(fn=cmd_ai)
+
+    s = sub.add_parser("gate", help="security gate: lint generated manifests and scan images for vulnerabilities")
+    s.add_argument("paths", nargs="+")
+    s.add_argument("--out")
+    s.add_argument("--no-build", action="store_true", help="scan only the base images, do not build the app images")
+    s.add_argument("--no-run", action="store_true", help="do not start the built images with their manifests' "
+                   "security context")
+    s.add_argument("--no-scan", action="store_true", help="lint only")
+    s.add_argument("--no-refresh", action="store_true", help="use rules/images.lock.yaml even when it is stale")
+    s.add_argument("--scanner", default=None, choices=["all", "auto", "trivy", "grype"],
+                   help="default from rules/60-security.yaml (all: every available scanner, merged)")
+    s.add_argument("--fail-on", default=None, help="lowest failing severity (default from rules/60-security.yaml)")
+    s.add_argument("--registry", default="registry.local")
+    s.add_argument("--pin-digests", action="store_true")
+    s.set_defaults(fn=cmd_gate)
+
+    s = sub.add_parser("images", help="show base images, or pick patched tags with --update")
+    s.add_argument("--update", action="store_true", help="choose the newest patched tags and write rules/images.lock.yaml")
+    s.add_argument("--no-scan", action="store_true", help="choose the newest tags without scanning them")
+    s.add_argument("--scanner", default="all", choices=["all", "auto", "trivy", "grype"])
+    s.set_defaults(fn=cmd_images)
 
     s = sub.add_parser("check", help="CI gate: compare with a base ref or baseline, write PR comment and SARIF")
     s.add_argument("paths", nargs="+")

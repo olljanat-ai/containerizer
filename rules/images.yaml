@@ -1,14 +1,16 @@
 # Base images used by the generator. Tags are pinned to a major.minor line;
 # `containerizer generate --pin-digests` resolves them to immutable digests.
 dotnet:
-  sdk: mcr.microsoft.com/dotnet/sdk:8.0-noble
+  # runtime line the containers run on (LTS). Older apps roll forward to it or are retargeted to it.
+  version: "10.0"
+  sdk: mcr.microsoft.com/dotnet/sdk:10.0-noble
   # chiseled = distroless Ubuntu: no shell or package manager, non-root user 'app' (1654)
   # "extra" variants add ICU and tzdata (cultures, time zones, SqlClient).
-  aspnet: mcr.microsoft.com/dotnet/aspnet:8.0-noble-chiseled-extra
-  runtime: mcr.microsoft.com/dotnet/runtime:8.0-noble-chiseled-extra
+  aspnet: mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled-extra
+  runtime: mcr.microsoft.com/dotnet/runtime:10.0-noble-chiseled-extra
   # full images, used only when native packages must be installed (krb5, wkhtmltopdf)
-  aspnet_full: mcr.microsoft.com/dotnet/aspnet:8.0-noble
-  runtime_full: mcr.microsoft.com/dotnet/runtime:8.0-noble
+  aspnet_full: mcr.microsoft.com/dotnet/aspnet:10.0-noble
+  runtime_full: mcr.microsoft.com/dotnet/runtime:10.0-noble
   app_uid: 1654
 node:
   build: node:20-bookworm-slim
