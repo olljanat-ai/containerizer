@@ -222,7 +222,7 @@ def _writable_abs(w: str) -> str:
 def dockerfile_dotnet(plan: dict) -> str:
     im = images()["dotnet"]
     uid = im["app_uid"]
-    worker = plan["role"] != "web"
+    worker = plan["role"] != "web" and not plan.get("aspnet_runtime")
     full = plan["base"] == "full"
     base = im[("runtime" if worker else "aspnet") + ("_full" if full else "")]
     proj = plan["project"]

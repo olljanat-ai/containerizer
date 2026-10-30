@@ -17,7 +17,7 @@ failures:
 
   - id: build-eol-targeting
     stage: build
-    match: 'NETSDK1045|NETSDK1209|does not support targeting \.NET (Core )?(?P<ver>[\d.]+)|error NU1102: Unable to find package Microsoft\.(NETCore|AspNetCore)\.App\.(Ref|Runtime)'
+    match: 'NETSDK1045|NETSDK1209|NETSDK1061|does not support targeting \.NET (Core )?(?P<ver>[\d.]+)|error NU1102: Unable to find package Microsoft\.(NETCore|AspNetCore)\.App\.(Ref|Runtime)'
     outcome: retry
     diagnosis: The project targets an old .NET version the build image cannot target.
     fix: {strategy: retarget}
@@ -64,6 +64,14 @@ failures:
     finding: {severity: blocker, title: 'Windows-only namespace {parent}.{ns}'}
 
   # ------------------------------------------------------------------ run
+  - id: run-aspnet-framework-missing
+    stage: run
+    match: "framework=Microsoft\\.AspNetCore\\.App|Microsoft\\.AspNetCore\\.App', version"
+    outcome: retry
+    diagnosis: The worker uses the ASP.NET Core shared framework; it needs the aspnet base image.
+    fix: {aspnet_runtime: true}
+    learn: {}
+
   - id: run-readonly-path
     stage: run
     match: "(Access to the path '(?P<path>/[^']+)' is denied|Read-only file system : '(?P<path2>/[^']+)'|UnauthorizedAccessException: Access to the path '(?P<path3>/[^']+)')"

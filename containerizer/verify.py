@@ -158,7 +158,7 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
     name = f"cz-verify-{os.getpid()}-{int(time.time())}"
     uid = images()["dotnet"]["app_uid"] if c.role != "spa" else 101
     cmd = ["docker", "run", "-d", "--name", name, "--read-only", "--cap-drop", "ALL",
-           "--security-opt", "no-new-privileges", "--memory", "768m", "--add-host", "sql01.corp.local:203.0.113.1"]
+           "--security-opt", "no-new-privileges", "--memory", "768m", "--add-host", "sql01.corp.local:127.0.0.1"]
     # writable folders are host directories during verification, so log files the app writes
     # (apps that log only to files print nothing to stdout) can be read for the diagnosis
     import shutil
@@ -277,6 +277,8 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
             if status == "ok":
                 history.append({"attempt": attempt, "stage": "run", "status": "ok", **details})
                 result["status"] = "ok"
+                if env_override:
+                    result["mode"] = "smoke"     # proven without the production services
                 break
         tail = "\n".join(log.splitlines()[-200:])
         # run logs: exception messages, not the stack frames under them, say what went wrong
@@ -285,6 +287,13 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
         if d is None and ai:
             from .ai import diagnose_failure
             d = diagnose_failure(a, c, plan, stage, tail, model=model)
+        if d is None and stage == "run" and status == "unhealthy" and not details.get("http") \
+                and not env_override and c.project.kind_hint == "dotnet":
+            # never answered HTTP and logged nothing useful: most likely still waiting on its database
+            history.append({"attempt": attempt, "stage": stage, "status": "no-response", **details,
+                            "note": "no HTTP answer; retrying in Development mode without external services"})
+            env_override = {"ASPNETCORE_ENVIRONMENT": "Development", "DOTNET_ENVIRONMENT": "Development"}
+            continue
         if d is None:
             history.append({"attempt": attempt, "stage": stage, "status": "unexplained", **details,
                             "log_tail": tail[-1500:]})

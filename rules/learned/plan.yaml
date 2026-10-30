@@ -38,3 +38,31 @@ rules:
     - /App_Data
   learned_from: field-service/FieldService.Web
   learned_at: '2026-10-30'
+- id: learned-run-readonly-path-productreturns-api
+  phase: plan
+  source: learned
+  when:
+    name: ^ProductReturns\.Api$
+  plan:
+    add_writable:
+    - /app/App_Data
+  learned_from: product-returns/ProductReturns.Api
+  learned_at: '2026-10-30'
+- id: learned-build-rid-downgrade-vanarsdel-gateway
+  phase: plan
+  source: learned
+  when:
+    name: ^VanArsdel\.Gateway$
+  plan:
+    rid: portable
+  learned_from: retail-backoffice/VanArsdel.Gateway
+  learned_at: '2026-10-30'
+- id: learned-build-rid-downgrade-vanarsdel-storemanager
+  phase: plan
+  source: learned
+  when:
+    name: ^VanArsdel\.StoreManager$
+  plan:
+    rid: portable
+  learned_from: retail-backoffice/VanArsdel.StoreManager
+  learned_at: '2026-10-30'
