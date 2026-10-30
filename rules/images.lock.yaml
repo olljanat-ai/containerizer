@@ -1,0 +1,161 @@
+# Base image tags chosen by `containerizer images --update` (newest patched tag
+# per line, scanned against rules/60-security.yaml). The generator uses `tag`;
+# `generate --pin-digests` uses `digest`. Delete this file to float on the lines
+# in images.yaml again.
+generated_at: '2026-10-30T15:51:11+00:00'
+policy:
+  fail_on: CRITICAL
+  ignore_unfixed: true
+images:
+  mcr.microsoft.com/dotnet/sdk:8.0-noble:
+    tag: mcr.microsoft.com/dotnet/sdk:8.0.427-noble
+    slot: dotnet.sdk
+    digest: sha256:42eb9e70b190d0cca893d93724e67fb89e7570e4309c4b1c20b7f6016a90202d
+    eol: '2026-11-10'
+    scan:
+      scanner: trivy
+      fixable:
+        CRITICAL: 0
+        HIGH: 17
+        MEDIUM: 1
+        LOW: 10
+      blocking: 0
+  mcr.microsoft.com/dotnet/aspnet:8.0-noble-chiseled-extra:
+    tag: mcr.microsoft.com/dotnet/aspnet:8.0.33-noble-chiseled-extra
+    slot: dotnet.aspnet
+    digest: sha256:59b9ca55ad10177ebc51680ebae0872d03f92ef7c8fa731991bfe1e26f688a02
+    eol: '2026-11-10'
+    scan:
+      scanner: trivy
+      fixable:
+        CRITICAL: 0
+        HIGH: 0
+        MEDIUM: 0
+        LOW: 0
+      blocking: 0
+  mcr.microsoft.com/dotnet/runtime:8.0-noble-chiseled-extra:
+    tag: mcr.microsoft.com/dotnet/runtime:8.0.33-noble-chiseled-extra
+    slot: dotnet.runtime
+    digest: sha256:143760d8db1f3bcdf0c9b756e1c5b77feae5e3136ca985321e2d16e5cd884c51
+    eol: '2026-11-10'
+    scan:
+      scanner: trivy
+      fixable:
+        CRITICAL: 0
+        HIGH: 0
+        MEDIUM: 0
+        LOW: 0
+      blocking: 0
+  mcr.microsoft.com/dotnet/aspnet:8.0-noble:
+    tag: mcr.microsoft.com/dotnet/aspnet:8.0.33-noble
+    slot: dotnet.aspnet_full
+    digest: sha256:d0a0fa004862a9cca83208800f706dcc2523c4db29f09d501395f80969e03070
+    eol: '2026-11-10'
+    scan:
+      scanner: trivy
+      fixable:
+        CRITICAL: 0
+        HIGH: 0
+        MEDIUM: 0
+        LOW: 0
+      blocking: 0
+  mcr.microsoft.com/dotnet/runtime:8.0-noble:
+    tag: mcr.microsoft.com/dotnet/runtime:8.0.33-noble
+    slot: dotnet.runtime_full
+    digest: sha256:2ba6f26ec6dc479aa7f8016e1b0bd80797c52104872ba97766d0b160bb97d8f6
+    eol: '2026-11-10'
+    scan:
+      scanner: trivy
+      fixable:
+        CRITICAL: 0
+        HIGH: 0
+        MEDIUM: 0
+        LOW: 0
+      blocking: 0
+  node:20-bookworm-slim:
+    tag: node:22.23.4-bookworm-slim
+    slot: node.build
+    digest: sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
+    eol: '2027-04-30'
+    scan:
+      scanner: trivy
+      fixable:
+        CRITICAL: 0
+        HIGH: 10
+        MEDIUM: 10
+        LOW: 1
+      blocking: 0
+  nginxinc/nginx-unprivileged:1.27-alpine:
+    tag: nginxinc/nginx-unprivileged:1.30.6-alpine
+    slot: node.static
+    digest: sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03
+    scan:
+      scanner: trivy
+      fixable:
+        CRITICAL: 1
+        HIGH: 2
+        MEDIUM: 3
+        LOW: 44
+      blocking: 1
+  python:3.12-slim-bookworm:
+    tag: python:3.12.16-slim-bookworm
+    slot: python.runtime
+    digest: sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337
+    eol: '2028-10-31'
+    scan:
+      scanner: trivy
+      fixable:
+        CRITICAL: 0
+        HIGH: 0
+        MEDIUM: 5
+        LOW: 1
+      blocking: 0
+  golang:1.22-bookworm:
+    tag: golang:1.26.10-bookworm
+    slot: go.build
+    digest: sha256:23ce71337b726608afb1bc00986e630a05034a87a87ea1fc2cd1ae5cf33387eb
+    scan:
+      scanner: trivy
+      fixable:
+        CRITICAL: 0
+        HIGH: 0
+        MEDIUM: 0
+        LOW: 0
+      blocking: 0
+  gcr.io/distroless/static-debian12:nonroot:
+    tag: gcr.io/distroless/static-debian12:nonroot
+    slot: go.runtime
+    digest: sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+    scan:
+      scanner: trivy
+      fixable:
+        CRITICAL: 0
+        HIGH: 0
+        MEDIUM: 0
+        LOW: 0
+      blocking: 0
+  maven:3.9-eclipse-temurin-21:
+    tag: maven:3.9.16-eclipse-temurin-21
+    slot: java.build
+    digest: sha256:99e61abcff91a9b1333463bd8451fb18495d6eba9250ac66a338b518f8278320
+    scan:
+      scanner: trivy
+      fixable:
+        CRITICAL: 0
+        HIGH: 4
+        MEDIUM: 12
+        LOW: 37
+      blocking: 0
+  eclipse-temurin:21-jre-jammy:
+    tag: eclipse-temurin:21.0.13_9-jre-jammy
+    slot: java.runtime
+    digest: sha256:1eac8b8fee11ca7d6725a48bc5d41992ed1561504ebae25490d2d062847e8269
+    eol: '2029-12-31'
+    scan:
+      scanner: trivy
+      fixable:
+        CRITICAL: 0
+        HIGH: 0
+        MEDIUM: 0
+        LOW: 0
+      blocking: 0

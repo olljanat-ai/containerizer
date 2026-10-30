@@ -155,6 +155,17 @@ scan:
     - name: grype
       binary: grype
       image: anchore/grype:v0.86.1
+  # When even the newest base tag still ships an OS package with a blocking,
+  # fixable vulnerability, `gate` upgrades just those packages in the final
+  # stage (images with a package manager only; chiseled/distroless images
+  # have none and need a newer tag). `gate --build` re-scans to confirm.
+  os_patch:
+    enabled: true
+    commands:
+      alpine: 'apk upgrade --no-cache {packages}'
+      ubuntu: 'apt-get update && apt-get install -y --no-install-recommends --only-upgrade {packages} && rm -rf /var/lib/apt/lists/*'
+      debian: 'apt-get update && apt-get install -y --no-install-recommends --only-upgrade {packages} && rm -rf /var/lib/apt/lists/*'
+    no_package_manager: 'chiseled|distroless|scratch'
   # Accepted risks. An entry stops counting at `expires` (YYYY-MM-DD) and is
   # then reported as expired. `images` (regex) limits it to some images.
   allowlist: []
@@ -169,10 +180,17 @@ images:
   # How far `images --update` may move a line on its own:
   #   patch: newest patch tag of the same line (8.0 -> 8.0.33)
   #   minor: newest line with the same major (1.27 -> 1.30), optionally filtered
+  #   on_eol: next  once a line is past end of support, move to the `next`
+  #                 line from `lifecycle` (build toolchains, where it is safe)
+  # .NET lines are not moved automatically: a new .NET major changes the
+  # runtime the application runs on and is a planned migration.
   bump:
     - match: 'nginx-unprivileged'
       policy: minor
       line_filter: '^1\.\d*[02468]$'      # stable (even) nginx lines only
+    - match: '(^|/)(node|golang):'
+      policy: patch
+      on_eol: next
     - match: '.*'
       policy: patch
   # End of vendor support per image line (vendor lifecycle pages; review

@@ -87,7 +87,7 @@ def cmd_gate(args) -> int:
         a = assess(app, rules)
         out = Path(args.out) / a.name if args.out else Path(app) / "containerize"
         r = gate_app(a, out, build=args.build, scan=not args.no_scan, scanner=args.scanner, fail_on=args.fail_on,
-                     registry=args.registry, pin=args.pin_digests, base_cache=base_cache)
+                     registry=args.registry, pin=args.pin_digests, base_cache=base_cache, run=args.run)
         blocking = sum(len(s["blocking"]) for c in r["components"] for s in c["scans"])
         print(f"{a.name:24s} {'PASS' if r['passed'] else 'FAIL'}  lint errors={r['lint'].get('error', 0)} "
               f"warnings={r['lint'].get('warning', 0)}  blocking vulns={blocking}  -> {out / 'SECURITY.md'}")
@@ -179,6 +179,8 @@ def main(argv=None) -> int:
     s.add_argument("paths", nargs="+")
     s.add_argument("--out")
     s.add_argument("--build", action="store_true", help="also build each image and scan it (not only its base)")
+    s.add_argument("--run", action="store_true", help="with --build: start each image with its manifest's security "
+                   "context and fail on permission/read-only errors")
     s.add_argument("--no-scan", action="store_true", help="lint only")
     s.add_argument("--scanner", default="auto", choices=["auto", "trivy", "grype"])
     s.add_argument("--fail-on", default=None, help="lowest failing severity (default from rules/60-security.yaml)")

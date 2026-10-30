@@ -144,6 +144,19 @@ def parse_grype(data: dict) -> list[Vuln]:
 
 
 def scan_image(ref: str, scanner: str = "auto", local: bool = False) -> ScanResult:
+    """Scan one image. Scans share the scanner's database cache, so they are serialized with a file lock."""
+    import fcntl
+    lockf = WORK / "scanner-cache" / ".lock"
+    lockf.parent.mkdir(parents=True, exist_ok=True)
+    with open(lockf, "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        res = _scan_image(ref, scanner, local)
+        if res.error and "in use by another process" in res.error:
+            res = _scan_image(ref, scanner, local)
+    return res
+
+
+def _scan_image(ref: str, scanner: str, local: bool) -> ScanResult:
     sc = scanner_command(scanner)
     if not sc:
         return ScanResult(ref, error="no scanner: install trivy or grype, or make docker available")
@@ -249,9 +262,18 @@ def manifest_digest(ref: str) -> str | None:
                         "application/vnd.docker.distribution.manifest.v2+json"])
     try:
         headers, _ = _registry_get(f"https://{reg}/v2/{repo}/manifests/{tag}", {"Accept": accept}, method="HEAD")
-        return headers.get("Docker-Content-Digest")
+        if headers.get("Docker-Content-Digest"):
+            return headers.get("Docker-Content-Digest")
     except (urllib.error.URLError, RuntimeError, KeyError):
-        return None
+        pass
+    if reg == "registry-1.docker.io":
+        # Docker Hub rate-limits manifest requests; its web API reports the same index digest
+        try:
+            with urllib.request.urlopen(f"https://hub.docker.com/v2/repositories/{repo}/tags/{tag}", timeout=60) as r:
+                return json.loads(r.read()).get("digest")
+        except (urllib.error.URLError, ValueError):
+            return None
+    return None
 
 
 def _ver(s: str) -> tuple:
@@ -278,6 +300,10 @@ def candidates(ref: str, tags: list[str]) -> list[str]:
         newer = {t[:-len(suffix)] if suffix else t for t in tags if rx.fullmatch(t)}
         newer = {x for x in newer if _ver(x) >= _ver(line) and re.search(bp.get("line_filter", ".*"), x)}
         lines = sorted(newer | {line}, key=_ver, reverse=True)
+    lc = lifecycle(ref)
+    if bp.get("on_eol") == "next" and lc and lc["days_left"] < 0 and lc.get("next"):
+        # the line is out of support: move to the successor line the lifecycle data names
+        lines = [lc["next"]] + [x for x in lines if x != lc["next"]]
     out = []
     for ln in lines:
         rx = re.compile(re.escape(ln) + r"(?:\.\d+)+(?:_\d+)?" + re.escape(suffix))
@@ -327,7 +353,7 @@ def update_images(scan: bool = True, scanner: str = "auto", write: bool = True, 
             res = scan_image(c, scanner)
             ev = evaluate(res, pol)
             results.append({"tag": c, "counts": res.counts(fixed_only=True), "blocking": len(ev["blocking"]),
-                            "error": res.error})
+                            "error": res.error, "scanner": res.scanner})
             if res.error:
                 continue
             if best is None or len(ev["blocking"]) < best[1]:
@@ -342,7 +368,7 @@ def update_images(scan: bool = True, scanner: str = "auto", write: bool = True, 
             entry["eol"] = lc["eol"]
         r = next((x for x in results if x["tag"] == chosen), None)
         if r:
-            entry["scan"] = {"scanner": scanner, "fixable": r["counts"], "blocking": r["blocking"]}
+            entry["scan"] = {"scanner": r["scanner"], "fixable": r["counts"], "blocking": r["blocking"]}
         lock[ref] = entry
         why = f"{r['blocking']} blocking" if r else "not scanned"
         log(f"{slot:22s} {ref} -> {chosen.rsplit(':', 1)[-1]} ({why})")
@@ -375,6 +401,69 @@ def final_base(dockerfile: str) -> str | None:
     return froms[-1] if froms else None
 
 
+OS_TYPES = {"alpine", "ubuntu", "debian", "apk", "deb", "redhat", "rpm"}
+
+
+def _image_user(ref: str) -> str | None:
+    from .verify import _ensure_images
+    _ensure_images(f"FROM {ref}\n")
+    rc, out, _ = _run(["docker", "image", "inspect", "-f", "{{.Config.User}}", ref], 60)
+    if rc == 0:
+        return out.strip()
+    return _registry_user(ref)
+
+
+def _registry_user(ref: str, reg: str | None = None) -> str | None:
+    """Config.User of an image read from its registry (linux/amd64), when Docker can't pull it.
+    Docker Hub images are read through the registry mirror when Docker Hub rate-limits."""
+    from .verify import MIRROR
+    r0, repo, tag = split_ref(ref)
+    reg = reg or r0
+    if reg == "registry-1.docker.io" and MIRROR:
+        user = _registry_user(ref, MIRROR)
+        if user is not None:
+            return user
+    accept = {"Accept": ", ".join(["application/vnd.oci.image.index.v1+json",
+                                   "application/vnd.docker.distribution.manifest.list.v2+json",
+                                   "application/vnd.oci.image.manifest.v1+json",
+                                   "application/vnd.docker.distribution.manifest.v2+json"])}
+    try:
+        _, body = _registry_get(f"https://{reg}/v2/{repo}/manifests/{tag}", accept)
+        m = json.loads(body)
+        if "manifests" in m:
+            d = next(x["digest"] for x in m["manifests"]
+                     if (x.get("platform") or {}).get("os") == "linux" and (x.get("platform") or {}).get("architecture") == "amd64")
+            _, body = _registry_get(f"https://{reg}/v2/{repo}/manifests/{d}", accept)
+            m = json.loads(body)
+        _, body = _registry_get(f"https://{reg}/v2/{repo}/blobs/{m['config']['digest']}")
+        return (json.loads(body).get("config") or {}).get("User") or ""
+    except (urllib.error.URLError, RuntimeError, KeyError, StopIteration, ValueError):
+        return None
+
+
+def os_patch(dockerfile: str, base: str, res: ScanResult, blocking: list[Vuln]) -> tuple[str, dict] | None:
+    """Upgrade the OS packages behind blocking vulnerabilities in the final stage.
+    Returns (new Dockerfile, details) or None when the base has no package manager."""
+    cfg = security()["scan"].get("os_patch") or {}
+    pkgs = sorted({v.package for v in blocking if v.type in OS_TYPES and v.fixed})
+    if not cfg.get("enabled") or not pkgs or re.search(cfg.get("no_package_manager", "$^"), base):
+        return None
+    family = (res.os.split() or [""])[0].lower()
+    cmd = (cfg.get("commands") or {}).get(family)
+    user = _image_user(base) if cmd else None
+    if not cmd or user is None:
+        return None
+    lines = dockerfile.splitlines()
+    idx = max(i for i, ln in enumerate(lines) if re.match(r"FROM\s", ln))
+    run = cmd.format(packages=" ".join(pkgs))
+    add = ["# containerizer gate: the newest base tag still ships these packages with fixable blocking vulnerabilities",
+           *(["USER root"] if user not in ("", "0", "root") else []), f"RUN {run}",
+           *([f"USER {user}"] if user not in ("", "0", "root") else [])]
+    lines[idx + 1:idx + 1] = add
+    return "\n".join(lines) + "\n", {"packages": pkgs, "command": run,
+                                      "fixes": sorted({v.id for v in blocking if v.package in pkgs})}
+
+
 def build_image(app_root: Path, cdir: Path, tag: str, timeout: int = 1800) -> tuple[bool, str]:
     from .verify import _build_env_args, _ensure_images
     _ensure_images((cdir / "Dockerfile").read_text())
@@ -384,9 +473,98 @@ def build_image(app_root: Path, cdir: Path, tag: str, timeout: int = 1800) -> tu
     return rc == 0, (out + err)[-2000:]
 
 
+HARDENING_ERRORS = re.compile(r"Read-only file system|Permission denied|UnauthorizedAccessException|"
+                              r"Access to the path .{0,200} is denied|EACCES|EROFS|Operation not permitted", re.I)
+
+
+def run_as_manifest(tag: str, k8s_docs: list[dict], wait: int = 40) -> dict:
+    """Start an image with the docker equivalent of its generated pod spec (user, read-only root,
+    capabilities, sysctls, emptyDir mounts, env, memory limit) and look for hardening failures.
+    status: ok | hardening-failure | inconclusive (the app stopped for another reason, e.g. no database)."""
+    import socket
+    import time
+    from .harden import _pod_specs
+    pod = next((p for d in k8s_docs for _, p in _pod_specs(d)), None)
+    if not pod:
+        return {"status": "skipped"}
+    c = pod["containers"][0]
+    psc, csc = pod.get("securityContext") or {}, c.get("securityContext") or {}
+    uid, gid = csc.get("runAsUser", psc.get("runAsUser")), csc.get("runAsGroup", psc.get("runAsGroup"))
+    name = f"cz-gate-{os.getpid()}-{int(time.time())}"
+    cmd = ["docker", "run", "-d", "--name", name, "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+           "--add-host", "sql01.corp.local:203.0.113.1"]
+    if csc.get("readOnlyRootFilesystem"):
+        cmd.append("--read-only")
+    if uid is not None:
+        cmd += ["--user", f"{uid}:{gid if gid is not None else uid}"]
+    if psc.get("fsGroup") is not None:
+        cmd += ["--group-add", str(psc["fsGroup"])]
+    for cap in (csc.get("capabilities") or {}).get("add") or []:
+        cmd += ["--cap-add", cap]
+    for sc in psc.get("sysctls") or []:
+        cmd += ["--sysctl", f"{sc['name']}={sc['value']}"]
+    mem = ((c.get("resources") or {}).get("limits") or {}).get("memory")
+    if mem:
+        cmd += ["--memory", mem.replace("Mi", "m").replace("Gi", "g")]
+    vols = {v["name"]: v for v in pod.get("volumes") or []}
+    fs = psc.get("fsGroup", gid)
+    for m in c.get("volumeMounts") or []:
+        v = vols.get(m["name"], {})
+        if "secret" in v:
+            cmd += ["--tmpfs", f"{m['mountPath']}:ro,mode=0550"]      # empty: the Secret is optional
+        else:   # emptyDir / PVC: writable for the pod's fsGroup, like Kubernetes does
+            cmd += ["--tmpfs", f"{m['mountPath']}:rw,exec,uid={uid or 0},gid={fs or 0},mode=1777"]
+    for e in c.get("env") or []:
+        if "value" in e:
+            cmd += ["-e", f"{e['name']}={e['value']}"]
+    port = next((p["containerPort"] for p in c.get("ports") or []), None)
+    hp = None
+    if port:
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        hp = s.getsockname()[1]
+        s.close()
+        cmd += ["-p", f"127.0.0.1:{hp}:{port}"]
+    if c.get("args"):
+        cmd += [tag, *c["args"]]
+    else:
+        cmd.append(tag)
+    rc, out, err = _run(cmd, 60)
+    if rc != 0:
+        return {"status": "hardening-failure" if HARDENING_ERRORS.search(err) else "inconclusive", "log": (out + err)[-800:]}
+    from .verify import _http
+    status, http = "inconclusive", None
+    probe = (c.get("readinessProbe") or {}).get("httpGet", {}).get("path") or "/"
+    deadline = time.time() + wait
+    try:
+        while time.time() < deadline:
+            time.sleep(3)
+            _, st, _ = _run(["docker", "inspect", "-f", "{{.State.Running}}", name], 20)
+            if not st.strip().startswith("true"):
+                break
+            if hp:
+                http = _http(f"http://127.0.0.1:{hp}{probe}")
+                if http is not None and http < 500:
+                    status = "ok"
+                    break
+            elif time.time() > deadline - wait + 20:
+                status = "ok"
+                break
+        if hp and status != "ok" and http is not None:
+            status = "inconclusive"
+    finally:
+        _, log, lerr = _run(["docker", "logs", name], 30)
+        _run(["docker", "rm", "-f", name], 30)
+    log = log + lerr
+    hits = sorted({m.group(0)[:160] for m in HARDENING_ERRORS.finditer(log)})
+    if hits:
+        status = "hardening-failure"
+    return {"status": status, "http": http, "errors": hits[:5], "log": log[-1500:]}
+
+
 def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str = "auto",
              fail_on: str | None = None, registry: str = "registry.local", pin: bool = False,
-             base_cache: dict | None = None) -> dict:
+             base_cache: dict | None = None, run: bool = False) -> dict:
     from .generate import generate_app, k8s_name
 
     generate_app(a, out, registry=registry, pin=pin)
@@ -406,7 +584,16 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
             if base not in base_cache:
                 base_cache[base] = scan_image(base, scanner)
             bres = base_cache[base]
-            comp["scans"].append(_scan_entry(bres, evaluate(bres, pol), "base"))
+            bev = evaluate(bres, pol)
+            patched = os_patch(df, base, bres, bev["blocking"]) if bev["blocking"] and not bres.error else None
+            if patched:
+                df, comp["os_patch"] = patched
+                (cdir / "Dockerfile").write_text(df)
+                fixed = set(comp["os_patch"]["packages"])
+                bev["patched"] = [asdict(v) for v in bev["blocking"] if v.package in fixed]
+                bev["blocking"] = [v for v in bev["blocking"] if v.package not in fixed]
+                bev["passed"] = not bev["blocking"] and not bres.error
+            comp["scans"].append(_scan_entry(bres, bev, "base"))
             if build:
                 tag = f"containerizer/{k8s_name(a.name)}-{cdir.name}:gate"
                 ok, log = build_image(a.repo.root, cdir, tag)
@@ -418,6 +605,8 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
                     for v in res.vulns:
                         v.origin = "base" if v.key in base_keys else "app"
                     comp["scans"].append(_scan_entry(res, evaluate(res, pol), "image"))
+                    if run and (cdir / "k8s.yaml").exists():
+                        comp["run"] = run_as_manifest(tag, load_yaml_docs((cdir / "k8s.yaml").read_text()))
         comps.append(comp)
     lint_errors = [v for v in lint_all if v.severity == "error"]
     scan_fail = [s for c in comps for s in c["scans"] if not s["passed"]]
@@ -426,7 +615,8 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
     if age is not None and age > security()["images"].get("lock_max_age_days", 14):
         notes.append(f"rules/images.lock.yaml is {age} days old; run `containerizer images --update`")
     result = {"app": a.name, "policy": {"fail_on": pol["fail_on"], "ignore_unfixed": pol.get("ignore_unfixed", True)},
-              "passed": not lint_errors and not scan_fail and not any(c.get("build_error") for c in comps),
+              "passed": not lint_errors and not scan_fail and not any(c.get("build_error") for c in comps)
+              and not any((c.get("run") or {}).get("status") == "hardening-failure" for c in comps),
               "lint": summarize(lint_all), "components": comps, "notes": notes}
     (out / "security.json").write_text(json.dumps(result, indent=2, default=str))
     (out / "SECURITY.md").write_text(security_markdown(result))
@@ -437,7 +627,7 @@ def _scan_entry(res: ScanResult, ev: dict, kind: str) -> dict:
     return {"kind": kind, "image": res.image, "scanner": res.scanner, "os": res.os, "error": res.error,
             "passed": ev["passed"], "counts": res.counts(), "fixable": res.counts(fixed_only=True),
             "blocking": [asdict(v) for v in ev["blocking"]], "accepted": ev["accepted"],
-            "expired_allowlist": ev["expired_allowlist"],
+            "expired_allowlist": ev["expired_allowlist"], "patched": ev.get("patched", []),
             "app_fixable": sorted({f"{v.package} {v.installed} -> {v.fixed}" for v in res.vulns
                                    if v.origin == "app" and v.fixed and RANK.get(v.severity, 0) >= RANK["HIGH"]})}
 
@@ -462,13 +652,28 @@ def security_markdown(r: dict) -> str:
                          f"{k['LOW']} | {gate} |")
         if c.get("build_error"):
             lines.append(f"| {c['component']} | build failed | | | | | | error |")
+        if c.get("run"):
+            lines.append(f"| {c['component']} | run with the manifest's security context | | | | | | "
+                         f"{c['run']['status']} |")
     for c in r["components"]:
-        block = [b for s in c["scans"] for b in s["blocking"]]
+        scans = [s for s in c["scans"] if s["kind"] == "image"] or c["scans"]
+        block = [b for s in scans for b in s["blocking"]]
         errs = [v for v in c["lint"] if v["severity"] != "info"]
         app_fix = sorted({x for s in c["scans"] for x in s["app_fixable"]})
-        if not (block or errs or app_fix):
+        hard = (c.get("run") or {}).get("status") == "hardening-failure"
+        if not (block or errs or app_fix or c.get("os_patch") or c.get("build_error") or hard):
             continue
         lines += ["", f"## {c['component']}", ""]
+        if hard:
+            lines.append("- fails under the hardened security context: " + "; ".join(c["run"]["errors"])
+                         + " (add a hardening exception in rules/60-security.yaml if the app really needs it)")
+        if c.get("build_error"):
+            tail = [ln for ln in c["build_error"].splitlines() if ln.strip()][-3:]
+            lines.append("- build failed: `" + " / ".join(x.strip()[:200] for x in tail).replace("`", "'") + "`")
+        if c.get("os_patch"):
+            op = c["os_patch"]
+            lines.append(f"- patched in the Dockerfile: `{op['command']}` fixes {', '.join(op['fixes'])}"
+                         + ("" if any(s["kind"] == "image" for s in c["scans"]) else " (confirm with `gate --build`)"))
         for b in block:
             where = {"base": "base image: rebuild or `containerizer images --update`",
                      "app": "application package: upgrade it"}.get(b["origin"], "")

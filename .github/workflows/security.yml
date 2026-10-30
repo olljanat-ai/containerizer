@@ -1,0 +1,58 @@
+name: security
+
+# Security gate for what the tool generates, and a weekly refresh of the patched base image tags.
+on:
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1"      # Mondays: pick up newly patched base image tags
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Generate, build and scan the example app: hardened manifests must lint clean and the image must
+  # have no fixable CRITICAL vulnerabilities.
+  gate:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Security gate
+        run: python -m containerizer gate examples/ci-demo --out out --build
+      - name: Job summary
+        if: always()
+        run: cat out/*/SECURITY.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-gate
+          path: out/*/security.json
+
+  # Re-pick the newest patched base image tags and open a pull request when the lock changes.
+  bump-images:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -m containerizer images --update
+      - uses: peter-evans/create-pull-request@v7
+        with:
+          branch: containerizer/bump-base-images
+          commit-message: Bump base images to the newest patched tags
+          title: Bump base images to the newest patched tags
+          body: >-
+            `containerizer images --update` picked newer patched base image tags
+            (scanned against rules/60-security.yaml). Review `rules/images.lock.yaml`.
+          add-paths: rules/images.lock.yaml
