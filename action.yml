@@ -1,0 +1,149 @@
+name: containerizer check
+description: >-
+  Rate how containerizable your applications are, comment the rating and blockers on the pull request,
+  and fail when a change adds a Windows-only dependency or blocker compared with the base branch.
+author: olljanat-ai
+branding:
+  icon: package
+  color: blue
+
+inputs:
+  path:
+    description: App folder(s) to assess, space separated, relative to the workspace. A folder with a scenarios/ subfolder means every app in it.
+    default: "."
+  base-ref:
+    description: >-
+      Git ref to compare with. Default: the pull request's base commit (fetched if missing); on other events
+      no comparison is made. Set to "none" to disable the comparison.
+    default: ""
+  fail-on:
+    description: "Fail on new findings of this severity or worse (none, config, refactor, rewrite, blocker)."
+    default: rewrite
+  allow-rating-drop:
+    description: Do not fail when the app's rating (A-E) gets worse.
+    default: "false"
+  max-rating:
+    description: Fail when any app is rated worse than this (A-E), whatever the base branch says.
+    default: ""
+  comment:
+    description: Post (and keep updating) one comment on the pull request.
+    default: "true"
+  upload-sarif:
+    description: Upload the SARIF file to GitHub code scanning (needs security-events write permission).
+    default: "false"
+  sarif-file:
+    description: Where to write the SARIF file.
+    default: containerizer.sarif
+  python-version:
+    description: Python used to run the tool. Set to "" to use the runner's python3.
+    default: "3.12"
+  github-token:
+    description: Token used to comment on the pull request.
+    default: ${{ github.token }}
+
+outputs:
+  rating:
+    description: Worst rating (A-E) of the assessed apps.
+    value: ${{ steps.check.outputs.rating }}
+  failed:
+    description: '"true" when the gate failed.'
+    value: ${{ steps.check.outputs.failed }}
+  new-findings:
+    description: Number of findings new or worse in this change.
+    value: ${{ steps.check.outputs.new-findings }}
+  markdown-file:
+    description: The report as markdown (the PR comment).
+    value: ${{ steps.check.outputs.markdown-file }}
+  sarif-file:
+    description: The SARIF file.
+    value: ${{ inputs.sarif-file }}
+
+runs:
+  using: composite
+  steps:
+    - if: inputs.python-version != ''
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install containerizer
+      shell: bash
+      run: python3 -m pip install --quiet --disable-pip-version-check -r "$GITHUB_ACTION_PATH/requirements.txt"
+
+    - name: Resolve base
+      id: base
+      shell: bash
+      env:
+        INPUT_BASE: ${{ inputs.base-ref }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      run: |
+        ref="$INPUT_BASE"
+        if [ -z "$ref" ] && [ -n "$PR_BASE_SHA" ]; then
+          ref="$PR_BASE_SHA"
+          git cat-file -e "$ref^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$ref"
+        fi
+        [ "$ref" = "none" ] && ref=""
+        echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+    - name: Check
+      id: check
+      shell: bash
+      env:
+        PYTHONPATH: ${{ github.action_path }}
+        CHECK_PATHS: ${{ inputs.path }}
+        BASE_REF: ${{ steps.base.outputs.ref }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        ALLOW_DROP: ${{ inputs.allow-rating-drop }}
+        MAX_RATING: ${{ inputs.max-rating }}
+        SARIF: ${{ inputs.sarif-file }}
+        LINK: ${{ github.server_url }}/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha || github.sha }}
+      run: |
+        md="$RUNNER_TEMP/containerizer-comment.md"
+        args=(--fail-on "$FAIL_ON" --markdown "$md" --sarif "$SARIF" --json "$RUNNER_TEMP/containerizer.json"
+              --annotations github --link "$LINK")
+        [ -n "$BASE_REF" ] && args+=(--base-ref "$BASE_REF")
+        [ "$ALLOW_DROP" = "true" ] && args+=(--allow-rating-drop)
+        [ -n "$MAX_RATING" ] && args+=(--max-rating "$MAX_RATING")
+        read -ra paths <<< "$CHECK_PATHS"
+        rc=0
+        python3 -m containerizer check "${paths[@]}" "${args[@]}" || rc=$?
+        echo "markdown-file=$md" >> "$GITHUB_OUTPUT"
+        echo "exit-code=$rc" >> "$GITHUB_OUTPUT"
+        # 1 = gate failed (handled in the last step); anything else is a crash
+        [ "$rc" -le 1 ]
+
+    - name: Comment on the pull request
+      if: inputs.comment == 'true' && github.event.pull_request.number
+      uses: actions/github-script@v7
+      env:
+        MD_FILE: ${{ steps.check.outputs.markdown-file }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const fs = require('fs');
+          const body = fs.readFileSync(process.env.MD_FILE, 'utf8');
+          const marker = '<!-- containerizer-check -->';
+          const { owner, repo } = context.repo;
+          const issue_number = context.payload.pull_request.number;
+          try {
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
+            const mine = comments.find(c => c.body && c.body.startsWith(marker));
+            if (mine) await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
+            else await github.rest.issues.createComment({ owner, repo, issue_number, body });
+          } catch (e) {
+            core.warning(`could not comment on the pull request (fork PRs get a read-only token): ${e.message}`);
+          }
+
+    - name: Upload SARIF
+      if: inputs.upload-sarif == 'true'
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.sarif-file }}
+        category: containerizer
+
+    - name: Gate
+      if: steps.check.outputs.exit-code != '0'
+      shell: bash
+      run: |
+        echo "::error title=containerizer::this change makes the application harder to containerize (see the job summary)"
+        exit 1

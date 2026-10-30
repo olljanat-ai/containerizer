@@ -1,0 +1,107 @@
+# Azure Pipelines steps template: assess the repository, comment the rating and blockers on the pull
+# request, publish SARIF and fail when a change adds a Windows-only dependency or blocker.
+#
+# Usage (copy this file into your repo, or reference it from a repository resource):
+#
+#   steps:
+#     - checkout: self
+#       fetchDepth: 0                 # the base branch must be available
+#     - template: ci/azure/containerizer-steps.yml
+#       parameters:
+#         path: src
+#
+# For PR comments, give the build service "Contribute to pull requests" on the repository.
+parameters:
+  - name: path                  # app folder(s), space separated, relative to the checkout
+    type: string
+    default: .
+  - name: baseRef               # default: the PR target branch; "none" disables the comparison
+    type: string
+    default: ""
+  - name: failOn                # none, config, refactor, rewrite, blocker
+    type: string
+    default: rewrite
+  - name: allowRatingDrop
+    type: boolean
+    default: false
+  - name: maxRating             # A-E, empty = no absolute limit
+    type: string
+    default: ""
+  - name: comment
+    type: boolean
+    default: true
+  - name: toolRepo
+    type: string
+    default: https://github.com/olljanat-ai/containerizer.git
+  - name: toolVersion           # branch or tag of the tool
+    type: string
+    default: main
+  - name: pythonVersion
+    type: string
+    default: "3.12"
+
+steps:
+  - task: UsePythonVersion@0
+    displayName: Use Python ${{ parameters.pythonVersion }}
+    inputs:
+      versionSpec: ${{ parameters.pythonVersion }}
+
+  - bash: |
+      set -euo pipefail
+      git clone --quiet --depth 1 --branch "$TOOL_VERSION" "$TOOL_REPO" "$(Agent.TempDirectory)/containerizer"
+      python -m pip install --quiet --disable-pip-version-check -r "$(Agent.TempDirectory)/containerizer/requirements.txt"
+    displayName: Install containerizer
+    env:
+      TOOL_REPO: ${{ parameters.toolRepo }}
+      TOOL_VERSION: ${{ parameters.toolVersion }}
+
+  - bash: |
+      set -uo pipefail
+      out="$(Build.ArtifactStagingDirectory)/containerizer"
+      mkdir -p "$out"
+      ref="$BASE_REF"
+      case "${TARGET_BRANCH:-}" in '$('*) TARGET_BRANCH="" ;; esac   # not a PR build
+      if [ -z "$ref" ] && [ -n "$TARGET_BRANCH" ]; then
+        branch="${TARGET_BRANCH#refs/heads/}"
+        git fetch --no-tags --quiet origin "$branch" && ref="origin/$branch"
+      fi
+      [ "$ref" = "none" ] && ref=""
+      args=(--fail-on "$FAIL_ON" --markdown "$out/comment.md" --sarif "$out/containerizer.sarif"
+            --json "$out/containerizer.json" --annotations azure)
+      [ -n "$ref" ] && args+=(--base-ref "$ref")
+      [ "$ALLOW_DROP" = "True" ] && args+=(--allow-rating-drop)
+      [ -n "$MAX_RATING" ] && args+=(--max-rating "$MAX_RATING")
+      read -ra paths <<< "$CHECK_PATHS"
+      PYTHONPATH="$(Agent.TempDirectory)/containerizer" python -m containerizer check "${paths[@]}" "${args[@]}"
+      rc=$?
+      echo "##vso[task.uploadsummary]$out/comment.md"
+      echo "##vso[task.setvariable variable=containerizerExitCode]$rc"
+      [ "$rc" -le 1 ]
+    displayName: Containerization check
+    workingDirectory: $(Build.SourcesDirectory)
+    env:
+      CHECK_PATHS: ${{ parameters.path }}
+      BASE_REF: ${{ parameters.baseRef }}
+      TARGET_BRANCH: $(System.PullRequest.TargetBranch)
+      FAIL_ON: ${{ parameters.failOn }}
+      ALLOW_DROP: ${{ parameters.allowRatingDrop }}
+      MAX_RATING: ${{ parameters.maxRating }}
+
+  - ${{ if eq(parameters.comment, true) }}:
+    - bash: python "$(Agent.TempDirectory)/containerizer/ci/azure/post_comment.py" "$(Build.ArtifactStagingDirectory)/containerizer/comment.md"
+      displayName: Comment on the pull request
+      condition: and(succeededOrFailed(), eq(variables['Build.Reason'], 'PullRequest'))
+      env:
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+  # The "CodeAnalysisLogs" artifact name is what the SARIF SAST Scans Tab extension picks up.
+  - publish: $(Build.ArtifactStagingDirectory)/containerizer
+    artifact: CodeAnalysisLogs
+    displayName: Publish SARIF
+    condition: succeededOrFailed()
+
+  - bash: |
+      echo "##vso[task.logissue type=error]this change makes the application harder to containerize (see the Extensions tab)"
+      exit 1
+    displayName: Gate
+    condition: and(succeeded(), ne(variables['containerizerExitCode'], '0'))
