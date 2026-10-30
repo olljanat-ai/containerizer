@@ -172,3 +172,19 @@ def test_azure_comment_create_then_update(tmp_path):
     assert _AdoMock.calls[0][1].startswith("/org/proj/_apis/git/repositories/repo/pullRequests/7/threads")
     assert _AdoMock.calls[0][2] == "Bearer tok"
     assert _AdoMock.calls[3][1].startswith("/org/proj/_apis/git/repositories/repo/pullRequests/7/threads/1/comments/1")
+
+
+def test_assessment_summary_flags_unconfirmed_verdicts(tmp_path):
+    from containerizer.ci import assessment_summary
+
+    web_app(tmp_path / "app")
+    out = tmp_path / "rep"
+    assert main(["assess", str(tmp_path / "app"), "--out", str(out), "-q"]) == 0
+    (out / "app.verify.json").write_text(json.dumps([
+        {"app": "app", "component": "Web", "status": "build-failed", "predicted": "config", "detail": "unexplained"},
+        {"app": "app", "component": "Jobs", "status": "ok", "predicted": "info", "detail": "ok"},
+        {"app": "app", "component": "Legacy", "status": "skipped", "predicted": "blocker", "detail": ""}]))
+    s = assessment_summary(out)
+    assert s.startswith("# Containerization portfolio")
+    assert "static verdict not confirmed" in s and "1 component(s) predicted ready did not run" in s
+    assert "<details><summary>app</summary>" in s
