@@ -1,0 +1,597 @@
+# Configuration, secrets, identity and Windows-vs-Linux OS behaviour.
+# These catch code that compiles and starts in a Linux container but then misbehaves:
+# Windows paths and separators, Windows-only folders and environment variables, process
+# identity, named kernel objects, console input, privileged ports, local-machine services
+# and credentials that only exist on a domain-joined Windows server.
+# severity: info < config < refactor < rewrite < blocker (see rules/10-runtime.yaml)
+rules:
+  # ------------------------------------------------------------------ paths
+  - id: os-drive-path-default
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop'}
+        - any:
+            # C#: @"D:\Data", $@"C:\x", @$"C:\x" (verbatim) and "D:\\Data" (escaped)
+            - code: '@\$?"[A-Za-z]:\\[A-Za-z0-9_$ ]|(?<![@\w])\$?"[A-Za-z]:\\\\[A-Za-z0-9_$ ]'
+              in: ['*.cs', '*.cshtml', '*.razor']
+            - code: '"[A-Za-z]:\\[A-Za-z0-9_$]'
+              in: ['*.vb', '*.vbhtml']
+        - not: {code: '\bconst\s+string\s+(?!\w*Default)\w+\s*=\s*@"[A-Za-z]:\\|\bconst\s+string\s+(?!\w*Default)\w+\s*=\s*"[A-Za-z]:\\\\|\b(File|Directory)\.\w+\(\s*@"[A-Za-z]:\\|\b(File|Directory)\.\w+\(\s*"[A-Za-z]:\\\\|new\s+(FileStream|StreamReader|StreamWriter|FileInfo|DirectoryInfo|FileSystemWatcher)\(\s*@?"[A-Za-z]:\\', in: ['*.cs']}
+    severity: config
+    category: storage
+    effort: 0.25
+    windows_container: true
+    title: Windows drive paths as defaults in code
+    why: >-
+      Paths like @"D:\Data\Import" are not paths on Linux: the whole string becomes one oddly
+      named relative file in the (read-only) working directory, so reads fail with FileNotFound
+      and writes fail. As option defaults or fallbacks (?? @"D:\...") they apply whenever the
+      setting is not configured.
+    fix: >-
+      Set the corresponding settings to Linux paths on mounted volumes with environment variables
+      (Section__Key=/data/...); better, change the defaults to relative or Linux-friendly paths.
+
+  - id: os-drive-path-hardcoded
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop'}
+        - code: '\bconst\s+string\s+(?!\w*Default)\w+\s*=\s*@"[A-Za-z]:\\|\bconst\s+string\s+(?!\w*Default)\w+\s*=\s*"[A-Za-z]:\\\\|\b(File|Directory)\.\w+\(\s*@"[A-Za-z]:\\|\b(File|Directory)\.\w+\(\s*"[A-Za-z]:\\\\|new\s+(FileStream|StreamReader|StreamWriter|FileInfo|DirectoryInfo|FileSystemWatcher)\(\s*@?"[A-Za-z]:\\'
+          in: ['*.cs']
+    severity: refactor
+    category: storage
+    effort: 0.5
+    windows_container: true
+    title: Windows drive paths hard-coded in code
+    why: >-
+      Constants and literal drive paths passed straight to file APIs cannot be re-pointed with
+      configuration; on Linux they resolve to a relative file name in the working directory.
+    fix: >-
+      Move the path to configuration (IOptions / appsettings) with a Linux default under a
+      mounted volume (e.g. /data/import), and build sub-paths with Path.Combine.
+
+  - id: os-backslash-path-join
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop'}
+        - any:
+            - code: >-
+                ^(?=[^\n]*(?:path|file|folder|dir|root|relative|upload|attachment|archive|export|import|inbox|outbox|\.(?:txt|csv|xml|json|log|pdf|dat|xlsx?)\b))(?![^\n]*(?:domain|samaccount|netbios|username|account|role|group|ManagementScope|subkey|registry|\\\\\\\\|@\"\\\\))[^\n]*?(?:\+\s*"\\\\"\s*\+|\+\s*@"\\"\s*\+|\+\s*'\\\\'\s*\+|\+\s*"\\\\[\w\- ]+(\.\w{2,4}|\\\\[\w.\- ]+)"|\+\s*@"\\[\w\- ]+(\.\w{2,4}|\\[\w.\- ]+)"|Path\.Combine\([^;)]*(@"[\w.\-]+\\[\w.\-]|(?<!@)"[\w.\-]+\\\\[\w.\-])|\$"[^"\n]*\}\\\\(\{|[\w\- ]+(\.\w{2,4}"|\\\\))|(\$@|@\$)"[^"\n]*\}\\(\{|[\w\- ]+(\.\w{2,4}"|\\))|\.Replace\(\s*("/"\s*,\s*"\\\\"|'/'\s*,\s*'\\\\'|"/"\s*,\s*@"\\")\s*\))
+              in: ['*.cs', '*.cshtml', '*.razor']
+            - code: '^(?=[^\n]*(?:path|file|folder|dir|root))(?![^\n]*(?:domain|username|account))[^\n]*?(?:&\s*"\\"\s*&|&\s*"\\[\w\- ]+\.\w{2,4}")'
+              in: ['*.vb']
+    severity: refactor
+    category: storage
+    effort: 1
+    windows_container: true
+    title: File paths built with backslashes
+    why: >-
+      '\' is a valid file-name character on Linux, not a separator. folder + "\\" + name or
+      Path.Combine(root, "Logs\\app.log") produce names like "/data/Logs\app.log": the file is
+      created next to the intended folder, or not found at all.
+    fix: >-
+      Use Path.Combine with separate segments, Path.DirectorySeparatorChar, or '/' (which works
+      on Windows too). Normalise stored relative paths with path.Replace('\\', '/').
+
+  - id: os-special-folder-windows
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop'}
+        - code: 'SpecialFolder\.(ProgramFiles|ProgramFilesX86|CommonProgramFiles|CommonProgramFilesX86|Windows|System|SystemX86|AdminTools|CommonAdminTools|StartMenu|CommonStartMenu|Programs|CommonPrograms|Startup|CommonStartup|SendTo|Recent|Cookies|History|InternetCache|Resources|LocalizedResources|CDBurning|PrinterShortcuts|NetworkShortcuts)\b'
+          unguarded: true
+    severity: refactor
+    category: storage
+    effort: 0.5
+    windows_container: true
+    title: Uses Windows-only special folders (Program Files, Windows, System32)
+    why: >-
+      Environment.GetFolderPath returns an empty string for ProgramFiles, Windows, System and
+      similar folders on Linux, so Path.Combine silently turns them into relative paths and
+      vendor tools, data files or configuration are not found.
+    fix: >-
+      Read the location from configuration, or ship the files with the application and use
+      AppContext.BaseDirectory.
+
+  - id: os-special-folder-profile
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop'}
+        - any:
+            - code: 'SpecialFolder\.(CommonApplicationData|ApplicationData|LocalApplicationData|MyDocuments|Personal|CommonDocuments|Desktop|DesktopDirectory|CommonDesktopDirectory|MyPictures|MyMusic|MyVideos|Templates|CommonTemplates)\b'
+            - config: '\$\{specialfolder:(folder=)?(CommonApplicationData|ApplicationData|LocalApplicationData|MyDocuments|Personal)'
+    severity: config
+    category: storage
+    effort: 0.25
+    windows_container: true
+    title: Writes under user-profile or ProgramData folders
+    why: >-
+      On Linux these map into the user's home (ApplicationData = ~/.config, LocalApplicationData
+      = ~/.local/share, MyDocuments/Desktop = ~) and CommonApplicationData = /usr/share. In the
+      hardened container the root file system is read-only and /usr/share is owned by root, so
+      writes fail; anything written to an emptyDir is lost on restart and not shared by replicas.
+    fix: >-
+      Mount a volume at the resolved folder (e.g. /home/app/.local/share/<App>), or set
+      XDG_DATA_HOME / XDG_CONFIG_HOME to a mounted path; better, make the folder configurable.
+      CommonApplicationData (/usr/share) cannot be redirected by environment and needs a volume.
+
+  - id: os-windows-env-vars
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop'}
+        - any:
+            - code: '(ExpandEnvironmentVariables\(\s*\$?@?"[^"\n]*|GetEnvironmentVariable\(\s*")%?(APPDATA|LOCALAPPDATA|PROGRAMDATA|ALLUSERSPROFILE|USERPROFILE|WINDIR|SYSTEMROOT|SYSTEMDRIVE|PROGRAMFILES|ProgramFiles\(x86\)|COMMONPROGRAMFILES|COMPUTERNAME|USERDOMAIN|HOMEDRIVE|HOMEPATH|PUBLIC)%?"?'
+            - config: '(:\s*|\bvalue\s*=\s*|\b\w*(file|path|dir|directory|folder|root|location)\w*\s*=\s*)"[^"\n]*%(APPDATA|LOCALAPPDATA|PROGRAMDATA|ALLUSERSPROFILE|USERPROFILE|WINDIR|SYSTEMROOT|SYSTEMDRIVE|PROGRAMFILES|COMPUTERNAME|USERDOMAIN|HOMEDRIVE|HOMEPATH|PUBLIC|TEMP|TMP)%'
+            - config: '\$\{(APPDATA|LOCALAPPDATA|PROGRAMDATA|ALLUSERSPROFILE|USERPROFILE|WINDIR|SYSTEMROOT|TEMP|TMP)\}'
+              in: ['*.config', '*.xml']
+    severity: config
+    category: storage
+    effort: 0.25
+    windows_container: true
+    title: Relies on Windows environment variables (%ProgramData%, %APPDATA%, %COMPUTERNAME%)
+    why: >-
+      These variables are not set in a Linux container: Environment.ExpandEnvironmentVariables
+      leaves "%ProgramData%\App" unexpanded (a relative path), GetEnvironmentVariable returns null,
+      and log4net/NLog paths like ${APPDATA}\App\log.txt resolve to nothing.
+    fix: >-
+      Set the variables in the Deployment (e.g. PROGRAMDATA=/data, pointing at a mounted volume;
+      ExpandEnvironmentVariables also expands %VAR% on Linux), or override the settings that use
+      them with Linux paths.
+
+  - id: os-drive-letters
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop'}
+        - code: 'new\s+DriveInfo\(\s*@?"[A-Za-z](:|")|(Environment|Directory)\.GetLogicalDrives\(\)'
+          unguarded: true
+    severity: refactor
+    category: storage
+    effort: 0.25
+    windows_container: true
+    title: Uses drive letters (DriveInfo("C"), GetLogicalDrives)
+    why: >-
+      Linux has no drive letters: new DriveInfo("D:") throws or reports the wrong file system, and
+      GetLogicalDrives returns mount points such as "/", "/proc" and "/data", which breaks
+      free-space checks and drive enumeration.
+    fix: >-
+      Use new DriveInfo(Path.GetPathRoot(Path.GetFullPath(folder))) on the configured folder
+      (works on both), or measure the mounted volume directly.
+
+  - id: os-exe-location
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop'}
+        - code: 'GetCurrentProcess\(\)\.MainModule\b|GetDirectoryName\(\s*Environment\.ProcessPath\b|\.CodeBase\b[^;\n]*Replace\(\s*"file:///"'
+    severity: refactor
+    category: runtime
+    effort: 0.25
+    windows_container: true
+    title: Locates application files from the process executable
+    why: >-
+      In the container the process is "dotnet app.dll", so Process.MainModule.FileName and
+      Environment.ProcessPath point at /usr/share/dotnet/dotnet, not the application; files
+      resolved next to it are not found. CodeBase with "file:///" stripped becomes a relative path.
+    fix: Use AppContext.BaseDirectory (or IHostEnvironment.ContentRootPath) for application files.
+
+  - id: os-newline-split
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test'}
+        - code: '\.Split\(\s*(new\s*(string|char)?\s*\[\]\s*\{\s*)?(Environment\.NewLine\s*[,})]|"\\r\\n"\s*(\}|\)|,\s*StringSplitOptions))'
+    severity: info
+    category: runtime
+    effort: 0.25
+    windows_container: true
+    title: Splits text on a platform-specific line ending
+    why: >-
+      Environment.NewLine is "\n" on Linux: splitting files written on Windows leaves a trailing
+      "\r" on every line (failed comparisons, broken CSV/fixed-width parsing); splitting on a
+      hard-coded "\r\n" misses files produced on Linux.
+    fix: Read lines with File.ReadLines / StreamReader.ReadLine, or split on "\n" and trim "\r".
+
+  # ------------------------------------------------------------------ process identity and host
+  - id: os-process-account-name
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop'}
+        - code: 'Environment\.UserDomainName\b'
+    severity: info
+    category: identity
+    effort: 0.25
+    windows_container: null
+    title: Uses the process account (DOMAIN\user) as an identity
+    why: >-
+      In a Linux container Environment.UserDomainName is the pod name and UserName is "app", so
+      audit columns, "created by" stamps and ACL checks that used the service account
+      (CONTOSO\svc-app) record meaningless values.
+    fix: >-
+      Use the authenticated caller (claims) for auditing, and a configured service name for
+      technical stamps.
+
+  - id: os-machine-name-identity
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop'}
+        - code: '\b_?(ServerName|InstanceId|InstanceName|Worker(Id|Name)?|Node(Id|Name)|Station(Id|Name)?|Terminal(Id)?|ClientId|(Lock)?Owner|Consumer(Id|Name)|Replica(Id|Name)|HostName)\s*(\{\s*get;\s*(private\s+|init;\s*)?(set;)?\s*\}\s*)?=\s*[^;\n]*Environment\.MachineName|\.With(ClientId|InstanceId|NodeId)\([^;\n]*Environment\.MachineName'
+    severity: info
+    category: scaleout
+    effort: 0.25
+    windows_container: null
+    title: Machine name used as a node, server or client id
+    why: >-
+      Pod names change on every rollout and restart: scheduler servers (Hangfire, Quartz), MQTT
+      client ids, lock owners and station ids derived from Environment.MachineName leave stale
+      entries behind and lose per-node state or affinity.
+    fix: >-
+      Accept the generated ids (and let stale servers expire), or set a stable id from
+      configuration (StatefulSet pod name, or a configured value) where it matters.
+
+  - id: os-machine-name-switch
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop'}
+        - code: 'Environment\.MachineName(\.To(Upper|Lower)(Invariant)?\(\))?\s*(==|!=)\s*"|"\s*(==|!=)\s*Environment\.MachineName\b|switch\s*\(\s*Environment\.MachineName|Environment\.MachineName(\.To(Upper|Lower)(Invariant)?\(\))?\.(Equals|StartsWith|EndsWith|Contains)\(\s*"|Equals\(\s*Environment\.MachineName\s*,\s*"'
+    severity: refactor
+    category: config
+    effort: 0.5
+    windows_container: false
+    title: Behaviour switched on the server's machine name
+    why: >-
+      Code that picks settings or enables features when the host is called "PRODWEB01" never
+      matches in a pod (the host name is the pod name), so production silently runs with the
+      default (often development) behaviour.
+    fix: Select behaviour with configuration (ASPNETCORE_ENVIRONMENT, a setting or a feature flag).
+
+  - id: os-userinteractive
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop'}
+        - code: 'Environment\.UserInteractive\b'
+        - code: 'ServiceBase\.Run\(|Console\.(ReadLine|ReadKey)\(|RunAsService|WaitForExit\(\)'
+    severity: config
+    category: hosting
+    effort: 0.25
+    windows_container: null
+    title: Branches on Environment.UserInteractive
+    why: >-
+      Environment.UserInteractive is always true on Linux. Hosts that run as a Windows service
+      when it is false and as a "press Enter to stop" console when it is true take the console
+      branch in the container, where Console.ReadLine returns at once and the process exits.
+    fix: >-
+      Use the generic host lifetime (await host.RunAsync(), which stops on SIGTERM) for the
+      non-Windows path, or pass an explicit command-line switch for console mode.
+
+  - id: os-console-input
+    applies_to: [dotnet]
+    when:
+      all:
+        - role: 'web|worker|console'
+        - code: 'Console\.(ReadLine|ReadKey)\(|Console\.Read\(\)|Console\.In\.ReadLine\('
+    severity: config
+    category: hosting
+    effort: 0.25
+    windows_container: null
+    title: Waits for console input
+    why: >-
+      A container has no interactive console: Console.ReadLine returns null immediately (a host
+      that "waits for Enter" exits and the pod restarts in a loop), Console.ReadKey throws
+      InvalidOperationException, and prompts for passwords or confirmations never get an answer.
+    fix: >-
+      Keep the process alive with the host lifetime (RunAsync / WaitForShutdown, SIGTERM-aware),
+      take inputs from arguments, environment or Secrets. Stop-gap: stdin: true in the pod spec.
+
+  - id: os-named-sync-objects
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop'}
+        - code: 'new\s+Semaphore\(\s*[^,;()]+,\s*[^,;()]+,\s*[^\s)]|new\s+EventWaitHandle\(\s*[^,;()]+,\s*EventResetMode\.\w+\s*,|\b(Semaphore|EventWaitHandle)\.(Try)?OpenExisting\('
+          unguarded: true
+    severity: refactor
+    category: runtime
+    effort: 0.5
+    windows_container: true
+    title: Named semaphores or wait handles
+    why: >-
+      Only Mutex supports names on Linux; a named Semaphore or EventWaitHandle throws
+      PlatformNotSupportedException, so cross-process signalling with another program fails.
+    fix: >-
+      Use in-process primitives (SemaphoreSlim) within one process, and a distributed lock or
+      message queue (Redis, SQL sp_getapplock, a broker) to coordinate processes or pods.
+
+  - id: os-named-mutex
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop'}
+        - code: 'new\s+Mutex\(\s*(true|false|\w+)\s*,\s*[^,)\s]|\bMutex\.(Try)?OpenExisting\('
+    severity: info
+    category: scaleout
+    effort: 0.25
+    windows_container: null
+    title: Named mutex used as a single-instance or job guard
+    why: >-
+      A named (Global\...) mutex only spans processes in the same container. With several
+      replicas, or overlapping CronJob runs in separate pods, every pod gets the mutex and the
+      "only one at a time" guarantee no longer holds.
+    fix: >-
+      Run one replica / concurrencyPolicy: Forbid for jobs, or use a distributed lock (database
+      or Redis) when the work must not overlap.
+
+  - id: os-local-timezone
+    applies_to: [dotnet]
+    when:
+      all:
+        - role: 'web|worker|console'
+        - code: '\bDateTime(Offset)?\.(Now|Today)\b|TimeZoneInfo\.Local\b'
+        - not: {text: '\bTZ\s*[:=]', in: ['Dockerfile*', '*.yaml', '*.yml', '*.env']}
+    severity: info
+    category: runtime
+    effort: 0
+    windows_container: true
+    title: Uses local time (container time zone is UTC)
+    why: >-
+      Containers run in UTC unless told otherwise, while Windows servers usually run in the
+      business's local zone. DateTime.Now / Today, local schedules ("run at 02:00") and dates
+      printed on documents shift by the UTC offset.
+    fix: >-
+      Set TZ (e.g. TZ=Europe/Helsinki) in the Deployment - the chiseled-extra images include
+      tzdata - or convert explicitly with TimeZoneInfo.FindSystemTimeZoneById.
+
+  - id: os-isolated-storage
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop'}
+        - code: 'IsolatedStorageFile\.Get(UserStoreFor\w+|MachineStoreFor\w+|Store)\('
+    severity: config
+    category: storage
+    effort: 0.25
+    windows_container: true
+    title: Uses isolated storage
+    why: >-
+      Isolated storage lives under the user's home (~/.local/share/IsolatedStorage) or
+      /usr/share/IsolatedStorage for machine stores: read-only in the hardened container and lost
+      on restart.
+    fix: Mount a volume at that folder, or store the data in a configured folder or a database.
+
+  - id: cfg-user-scoped-settings
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop'}
+        - code: 'Settings\.Default\.(Save|Upgrade|Reset)\(\)'
+    severity: config
+    category: storage
+    effort: 0.25
+    windows_container: true
+    title: Saves user-scoped application settings (Settings.Default.Save)
+    why: >-
+      User-scoped settings are written to a user.config under the profile folder
+      (~/.local/share on Linux), which is read-only in the container and not persisted or shared.
+    fix: Move the values to configuration plus a database or mounted volume; mount the folder as a stop-gap.
+
+  # ------------------------------------------------------------------ ports
+  - id: cfg-privileged-port
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop|tool'}
+        - any:
+            - code: '(UseUrls|WebApp\.Start(<\w+>)?)\(\s*\$?@?"[^"]*:(80|443)(?=["/;\s])|\.Listen(Any|Localhost)?IP\w*\(\s*(IPAddress\.\w+\s*,\s*)?(80|443)\s*[,)]|\.Listen\(\s*IPAddress\.\w+\s*,\s*(80|443)\s*[,)]|Prefixes\.Add\(\s*\$?"https?://[^":/]+(:(80|443))?/|new\s+TcpListener\(\s*(IPAddress\.\w+\s*,\s*)?(2[1-5]|80|110|143|389|443|636)\s*\)'
+            - config: '"(urls|server\.urls)"\s*:\s*"[^"]*:(80|443)(?=["/;])'
+              in: ['appsettings*.json', 'hosting.json']
+    severity: config
+    category: network
+    effort: 0.25
+    windows_container: true
+    title: Listens on a privileged port (below 1024) fixed in code
+    why: >-
+      The container runs as a non-root user without capabilities, which cannot bind ports below
+      1024: the app fails at start with "Permission denied". Ports set in code (UseUrls,
+      Kestrel Listen, HttpListener prefixes) or in a "urls" setting also override
+      ASPNETCORE_HTTP_PORTS, so the generated port 8080 is ignored.
+    fix: >-
+      Make the port configurable (drop the hard-coded UseUrls / Listen, or read it from
+      configuration) and listen on 8080 behind the Service; or allow it with the pod sysctl
+      net.ipv4.ip_unprivileged_port_start=0.
+
+  # ------------------------------------------------------------------ local-machine services and credentials
+  - id: cfg-local-sql-server
+    applies_to: [dotnet]
+    when:
+      in: ['appsettings.json', 'appsettings.Production.json', 'appsettings.Staging.json', 'web.config', 'app.config',
+           '*.exe.config', 'Web.Release.config', 'connectionStrings.config', '*.dll.config']
+      config: '\b(Server|Data Source|Address|Addr)\s*=\s*(tcp:)?(\(localdb\)|\(local\)|\.|localhost|127\.0\.0\.1)\s*([;,\\"<]|$)|AttachDbFilename\s*=|User Instance\s*=\s*true'
+    severity: config
+    category: data
+    effort: 0.25
+    windows_container: false
+    title: Connection string points at a database on the same machine (LocalDB, .\SQLEXPRESS, localhost)
+    why: >-
+      Inside a pod localhost is the pod itself, and LocalDB / AttachDbFilename user instances are
+      Windows-only ("LocalDB is not supported on this platform" from SqlClient on Linux).
+    fix: >-
+      Point the connection string at a reachable SQL Server (managed instance or a server in the
+      network) through the ConnectionStrings__Name environment variable from a Secret; attach the
+      .mdf to that server once.
+
+  - id: os-default-credentials
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop'}
+        - any:
+            - code: 'CredentialCache\.Default(Network)?Credentials\b|\bUseDefaultCredentials\s*=\s*true\b'
+            - config: 'useDefaultCredentials\s*=\s*"true"|defaultCredentials\s*=\s*"true"'
+    severity: config
+    category: identity
+    effort: 0.5
+    windows_container: false
+    title: Calls other services with the process's Windows credentials
+    why: >-
+      HttpClient/WebClient/SmtpClient/proxy calls with UseDefaultCredentials or
+      CredentialCache.DefaultCredentials authenticate as the Windows service account. A Linux
+      container has no Windows logon: without a Kerberos ticket the calls go out anonymous and get
+      401/407, or mail relays reject them.
+    fix: >-
+      Use explicit credentials from a Secret (basic/OAuth/API key), or provide a Kerberos keytab
+      plus krb5.conf and keep a ticket fresh (kinit sidecar) so Negotiate works.
+
+  - id: cfg-smtp-pickup-iis
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: 'SmtpDeliveryMethod\.PickupDirectoryFromIis'
+          unguarded: true
+        - config: 'deliveryMethod\s*=\s*"PickupDirectoryFromIis"'
+    severity: refactor
+    category: integration
+    effort: 0.25
+    windows_container: false
+    title: Sends mail through the IIS SMTP pickup directory
+    why: >-
+      PickupDirectoryFromIis looks the folder up in the IIS metabase, which does not exist on
+      Linux; sending throws.
+    fix: Send over SMTP (DeliveryMethod.Network, or MailKit) to a relay configured from settings and a Secret.
+
+  - id: cfg-smtp-pickup-folder
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: 'SmtpDeliveryMethod\.SpecifiedPickupDirectory'
+        - config: 'deliveryMethod\s*=\s*"SpecifiedPickupDirectory"|<specifiedPickupDirectory\b'
+    severity: config
+    category: integration
+    effort: 0.25
+    windows_container: null
+    title: Mail is dropped into a pickup folder
+    why: >-
+      On the Windows server an SMTP service (IIS SMTP / Exchange pickup) drained the folder. In the
+      container nothing reads it: mail is silently never sent, and the folder must be writable.
+    fix: >-
+      Configure network delivery to an SMTP relay (host, port and credentials from a Secret);
+      keep the pickup folder only for test environments, on a mounted volume.
+
+  - id: cfg-external-config-files
+    applies_to: [dotnet]
+    when:
+      config: '<appSettings\s[^>]*\bfile\s*=\s*"([A-Za-z]:|\\\\|\.\.)[^"]*"|\b(configSource|file)\s*=\s*"[^"]*\\[^"]*\.config"'
+      in: ['*.config']
+    severity: config
+    category: config
+    effort: 0.25
+    windows_container: true
+    title: Configuration split into external files with Windows or out-of-folder paths
+    why: >-
+      appSettings file= / configSource= files outside the application folder (..\shared.config,
+      D:\Config\...) are not in the image, and backslash-separated relative paths are not found
+      on Linux.
+    fix: >-
+      Ship the files with the app using '/'-free relative names, or replace them with a ConfigMap
+      mounted at the expected path and environment overrides.
+
+  # ------------------------------------------------------------------ secrets and cloud identity
+  - id: cfg-user-secrets
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|library'}
+        - any:
+            - property: {UserSecretsId: '.+'}
+            - code: '\.AddUserSecrets(<\w+>)?\('
+    severity: info
+    category: secrets
+    effort: 0
+    windows_container: true
+    title: Development user secrets
+    why: >-
+      User secrets are read only in the Development environment from the developer's profile;
+      in the container (Production) every value kept there is missing.
+    fix: >-
+      List the keys kept in secrets.json and provide them as Kubernetes Secret environment
+      variables (Section__Key) in the generated manifest.
+
+  - id: cfg-azure-key-vault
+    applies_to: [dotnet]
+    when:
+      any:
+        - package: 'Azure\.Extensions\.AspNetCore\.Configuration\.Secrets|Microsoft\.Extensions\.Configuration\.AzureKeyVault|Microsoft\.Azure\.KeyVault|Azure\.Security\.KeyVault\.(Secrets|Keys|Certificates)'
+        - code: '\.AddAzureKeyVault\(|new\s+SecretClient\('
+    severity: config
+    category: secrets
+    effort: 0.5
+    windows_container: true
+    title: Reads secrets from Azure Key Vault
+    why: >-
+      Works from Linux, but the container needs an identity to reach the vault: the developer's
+      Visual Studio / Azure CLI login or the VM's managed identity are not there.
+    fix: >-
+      Use AKS workload identity (service account + federated credential) or the Key Vault CSI
+      secrets-store driver; outside Azure, a client certificate/secret from a Kubernetes Secret.
+
+  - id: cfg-azure-managed-identity
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: 'new\s+(DefaultAzureCredential|ManagedIdentityCredential|ChainedTokenCredential|VisualStudioCredential|AzureCliCredential)\(|\bAzureServiceTokenProvider\b'
+        - config: 'Authentication\s*=\s*"?Active Directory (Managed Identity|MSI|Default|Integrated)'
+    severity: config
+    category: identity
+    effort: 0.5
+    windows_container: true
+    title: Uses Azure managed identity / developer credentials
+    why: >-
+      DefaultAzureCredential falls back to VM managed identity or developer logins; in a pod none
+      of these exist unless workload identity is configured, so token requests fail at runtime.
+      "Active Directory Integrated" SQL auth needs a domain (Kerberos) logon.
+    fix: >-
+      Enable AKS workload identity (annotated service account, azure.workload.identity/use
+      label) or use WorkloadIdentityCredential; outside Azure, a service principal from a Secret.
+
+  - id: cfg-aws-profile-credentials
+    applies_to: [dotnet]
+    when:
+      any:
+        - code: '\b(CredentialProfileStoreChain|SharedCredentialsFile|NetSDKCredentialsFile|StoredProfileAWSCredentials)\b'
+        - config: '"AWS"\s*:\s*\{[^}]*"Profile(sLocation)?"\s*:|key\s*=\s*"AWSProfile(Name|sLocation)"'
+    severity: config
+    category: identity
+    effort: 0.5
+    windows_container: true
+    title: AWS credentials from a local profile
+    why: >-
+      Named profiles live in the user's ~/.aws/credentials or the Windows-only SDK store
+      (encrypted with DPAPI); neither exists in the container.
+    fix: >-
+      Use IAM Roles for Service Accounts or EKS Pod Identity (the default credential chain picks
+      them up), or access keys from a Kubernetes Secret as AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY.
+
+  - id: cfg-hardcoded-credentials
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test'}
+        - code: '"[^"\n;]*(Server|Data Source|Host|Address)\s*=[^"\n]*;\s*(Password|Pwd)\s*=\s*(?!(your\w*|my\w*|password|passwd|pwd|pass|x{3,}|\*+|<[^>]*>|\[[^\]]*\]|changeme|secret|test|sample|example|dummy)\s*[;"])[^;"\n{\s][^;"\n{]{2,}|new\s+NetworkCredential\(\s*"[^"\n]+"\s*,\s*"(?!(your\w*|my\w*|password|passwd|pwd|pass|x{3,}|\*+|<[^>]*>|\[[^\]]*\]|changeme|secret|test|sample|example|dummy)\s*[;"])[^"\n]{3,}"|"(?-i:AKIA[0-9A-Z]{16})"'
+    severity: refactor
+    category: secrets
+    effort: 0.5
+    windows_container: true
+    title: Credentials hard-coded in source
+    why: >-
+      Passwords and keys in code end up in the image and its layers, cannot be rotated or
+      supplied per environment, and cannot be replaced by Kubernetes Secrets without a rebuild.
+    fix: >-
+      Read them from configuration (ConnectionStrings / options) and supply them as Secret
+      environment variables; rotate the exposed values.
