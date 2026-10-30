@@ -66,7 +66,7 @@ python -m containerizer bench --technique hybrid --model claude-haiku-5-5
 
 1. **Scan** (`containerizer/scan.py`) reads project files (.csproj/.vbproj incl. old-style and imported
    `.props`, package.json, requirements.txt/pyproject, go.mod, pom.xml/gradle, BizTalk/SQL/SSIS
-   projects), source and configuration. Nothing from the scanned repository is executed.
+   projects, ASP.NET Web Site projects listed in a .sln), source and configuration. Nothing from the scanned repository is executed.
 2. **Role rules** (`rules/00-roles.yaml`) decide what each project is: web, worker, console, spa,
    desktop, library, test, tool, BizTalk, SharePoint, SQL CLR, SSIS.
 3. **Fact rules** (`rules/05-facts.yaml`) extract ports, health endpoints, run-once arguments,
@@ -76,8 +76,9 @@ python -m containerizer bench --technique hybrid --model claude-haiku-5-5
    `info < config < refactor < rewrite < blocker`, an effort estimate, an explanation, a fix, and
    whether a Windows container would be a workable stop-gap.
 5. **Reachability**: findings in shared libraries only count for components whose code actually
-   reaches the offending types (a type/extension-method mention graph), and Windows-only calls
-   guarded by `OperatingSystem.IsWindows()` are ignored.
+   reaches the offending types (a type/extension-method mention graph) and that it compiles for its
+   target framework, and Windows-only calls guarded by `OperatingSystem.IsWindows()` (directly, through
+   a helper, or at every caller) are ignored.
 6. **Confidence**: packages and references unknown to `rules/packages*.yaml`, and uncertain rules,
    lower a component's confidence. Low confidence triggers verification and, optionally, Claude.
 7. **Rating** per application: **A** lift and shift, **B** minor refactoring, **C** framework port,
@@ -111,11 +112,55 @@ listed with its reason and links at the top of the generated `Dockerfile` and in
 Condition primitives: `sdk`, `tfm`, `package`, `reference`, `framework_ref`, `property`,
 `output_type`, `kind`, `role`, `name`, `path` (regex on the project file's path relative to the
 repository root), `file` (glob), `code` / `config` / `text` (regex with optional `in:` glob and
-`unguarded: true`), `readme`, combined with `any` / `all` / `not`.
-`unguarded: true` skips hits right after an `OperatingSystem.IsWindows()` check or inside a method/type
-marked `[SupportedOSPlatform("windows")]`. `same_file: true` next to an `all` requires its
-`code`/`config`/`text` conditions to match in the same file (e.g. an assembly loader *and* an install
-path probe, not two unrelated files). Next to `title` / `why` / `fix`, a finding rule takes `refs:`, a
+`unguarded`), `readme`, `closure` (a condition that holds for the project or any project it
+references, e.g. a file-system class elsewhere in the solution), `references` (a condition that holds
+for a project this one references directly), combined with `any` / `all` / `not`.
+`unguarded: true` skips Windows-only hits the code already keeps off Linux: a few lines after an
+`OperatingSystem.IsWindows()`/`IsOSPlatform(...)` check or after a call of a project helper whose body is
+one (`bool IsWindows { get; } = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)`,
+`static bool IsModuleLoaded() => OperatingSystem.IsWindows() && ...`, also from referenced projects),
+inside `if (<OS check> && ...) { }` or the `else` of `if (!<OS check>)`, after
+`if (!<OS check>) return/throw`, inside a method/type marked `[SupportedOSPlatform("windows")]`, or in a
+member/type whose every caller is guarded. Callers are searched in the project and the projects that
+reference it (test projects excluded), two levels deep: calls of a static member or a P/Invoke,
+constructions (`new T(...)`) and static accesses of the type for instance members. A virtual/override
+member, a method group, a type created through `typeof`/a generic method argument (DI) or subclassed
+has callers that cannot be followed, so the hit counts. `unguarded: callers` applies only the caller
+check (for an annotation on the type itself, as `supported-os-windows` does). `same_file: true` next to
+an `all` requires its `code`/`config`/`text` conditions to match in the same file (e.g. an assembly
+loader *and* an install path probe, not two unrelated files).
+
+The scanner evaluates the target-framework part of MSBuild conditions: an item under
+`Condition="'$(TargetFramework)' == 'net472'"` (also `TargetFrameworkIdentifier`,
+`GetTargetPlatformIdentifier(...)`, `$(TargetFramework.StartsWith(...))`, properties whose value is a TFM
+such as `$(SAMPLES_TFM)`) is dropped when no TFM of the project gets it, and recorded per TFM otherwise;
+conditions on anything else (Configuration, `Exists()`, OS) count as possibly true. The same holds for
+`<Compile Remove/Include>` in SDK-style projects. A consumer follows a multi-targeted library along the
+TFM it compiles against (NuGet's nearest framework), so a net8.0 app does not inherit the net472-only
+references, project references or source files of a `net472;net8.0` library. C# `#if` branches that none
+of the project's TFMs compile are blanked before code rules run (`NETFRAMEWORK`, `NETCOREAPP`,
+`NETSTANDARD`, `NETx_y[_OR_GREATER]`, `NET4xx`, platform symbols such as `WINDOWS`, and legacy platforms
+`NETCF`, `MONO`, `SSCLI`, `SILVERLIGHT` that no current SDK defines); symbols the project defines in any
+configuration (`DefineConstants`), `#define`d in the file, or unknown stay possibly active.
+
+Properties the scanner sets on projects (usable with `property:`):
+
+| Property | Meaning |
+| --- | --- |
+| `RunByBuild` | an MSBuild `<Exec>` elsewhere in the repository runs this executable (`dotnet Name.dll`, `Name.exe`, `dotnet run --project ...`): a build-time helper; the value is that build file |
+| `RunFromSourceBy` | a repository script starts it with `dotnet run` (compiled from the checkout): a developer utility; the value is the script |
+| `ReferencedBy` | the first project that references this one (`ProjectReference`): it is compiled into something else |
+| `HostedBy` | a front-end (Node) or Blazor WebAssembly project served by a .NET project: nested in its folder, referenced by it, or writing its bundles into its folder (webpack `output.path: "../Web/Scripts"`, `"destination": "../Web/Styles"`, a `copyfiles ... ../Web/...` script; Visual Studio `.esproj` projects) |
+| `SpaRoot` | on the .NET host: the folder of the nested front-end project |
+| `WebSiteProject` | an ASP.NET Web Site project (no project file) found in this solution |
+
+ASP.NET **Web Site projects** (Visual Studio "New Web Site", solution entries with project type
+`{E24C65DC-7377-472B-9ABA-BC803B73C61A}` and no .csproj) are read from the `.sln`: the folder becomes a
+.NET project named after the entry, with the target framework from `TargetFrameworkMoniker` and the
+solution's `ProjectReferences`/`ProjectDependencies` of the entry as project references. Its project
+path is shown as `<folder>/<name>.website` (there is no such file).
+
+Next to `title` / `why` / `fix`, a finding rule takes `refs:`, a
 list of verified https links (docs page, upstream issue, vendor statement) shown with each finding;
 `tests/test_rule_docs.py` enforces that every refactor/rewrite/blocker rule has one or is on its
 commented allowlist.

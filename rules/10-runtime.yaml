@@ -572,13 +572,19 @@ rules:
     when:
       all:
         - any:
-            - package: System\.Drawing\.Common
             # clear GDI+ use; `using System.Drawing;` alone is often only System.Drawing.Primitives (Color, Point, Rectangle)
             - code: '\bGraphics\.From(Image|Hwnd|Hdc)\(|\b(System\.Drawing\.)?Image\.From(File|Stream|Hbitmap)\(|\bSystem\.Drawing\.(Imaging|Drawing2D|Printing|Text)\b|\bnew\s+System\.Drawing\.(Bitmap|Font|Icon|Pen|SolidBrush)\('
             - all:
                 - code: '^\s*using\s+System\.Drawing\s*;'
                 - code: '\bnew\s+(Bitmap|Metafile|Pen|SolidBrush)\(|\bnew\s+Font\(\s*("|FontFamily\.)|\.DrawImage\(|\bBitmap\.FromHicon\('
               same_file: true
+            # with the package referenced, GDI+-only types used in a file that imports System.Drawing
+            - all:
+                - package: System\.Drawing\.Common
+                - all:
+                    - code: '^\s*using\s+System\.Drawing(\.Imaging|\.Drawing2D)?\s*;'
+                    - code: '\b(Bitmap|Graphics|Metafile|ImageFormat|PixelFormat|InterpolationMode|SmoothingMode|CompositingQuality)\b'
+                  same_file: true
         - not: {tfm: 'net[1-4]\d{1,2}'}
         - not: {role: 'desktop|test'}
     severity: refactor
@@ -590,6 +596,31 @@ rules:
       TypeInitializationException / PlatformNotSupportedException at runtime, and the .NET 6
       opt-in switch was removed in .NET 7.
     fix: Replace with ImageSharp, SkiaSharp or QuestPDF/PdfSharpCore for rendering.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/compatibility/core-libraries/6.0/system-drawing-common-windows-only
+
+  # The package alone (often a version pin for a dependency) is not GDI+ use: the assembly loads on
+  # Linux, only its GDI+ types throw when they are used.
+  - id: system-drawing-package
+    applies_to: [dotnet]
+    when:
+      all:
+        - package: System\.Drawing\.Common
+        - not: {tfm: 'net[1-4]\d{1,2}'}
+        - not: {role: 'desktop|test'}
+    severity: info
+    category: libraries
+    effort: 0
+    title: System.Drawing.Common package reference
+    why: >-
+      The project references System.Drawing.Common, which is Windows-only from .NET 6: its GDI+
+      types (Bitmap, Graphics, Image.FromFile/FromStream, Font) throw PlatformNotSupportedException
+      or TypeInitializationException on Linux when they are used. A reference without such code
+      (often a version pin for a dependency) does no harm; GDI+ use found in the code is reported
+      as system-drawing-core.
+    fix: >-
+      Remove the reference if nothing needs it. If a dependency draws images with it at run time,
+      replace that dependency (ImageSharp, SkiaSharp) or keep that part on Windows.
     refs:
       - https://learn.microsoft.com/en-us/dotnet/core/compatibility/core-libraries/6.0/system-drawing-common-windows-only
 

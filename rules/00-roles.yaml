@@ -22,7 +22,8 @@ rules:
         - name: '[.\-](LabStubs|LabTools|Lab|Simulators?|TestTools|Seed(er)?|DevTools|Benchmarks?|Fuzz(ing)?)$'
         # a project that lives in a repository tools/ folder (tools/X/X.csproj, src/Tools/X/X.csproj);
         # a Tools/ subfolder *inside* a project (Areas/Mcp/Tools, admin/settings/tools) says nothing
-        - path: '(^|/)tools/[^/]+/'
+        # (also 'Dev Tools/', 'DevTools/', 'BuildTools/', 'build-tools/': folders of developer utilities)
+        - path: '(^|/)((dev|build)[ ._\-]?)?tools/[^/]+/'
         - package: 'BenchmarkDotNet|SharpFuzz'
         - kind: installer
         # .NET Aspire AppHost: a local orchestrator for the services, not a service itself
@@ -37,11 +38,17 @@ rules:
             - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
         # packaged as a `dotnet tool` (installed on developer/CI machines with `dotnet tool install`)
         - property: {PackAsTool: "true"}
-        # MSBuild task libraries run inside the build, never in production
+        # MSBuild task libraries run inside the build, never in production. The package alone is not
+        # enough: runtime libraries reference the MSBuild API too (Umbraco's ModelsBuilder compiles
+        # models in memory with Microsoft.Build.Tasks.Core). A task library declares a task class, or
+        # at least no other project compiles it in (ReferencedBy is set by the scanner).
         - all:
             - package: 'Microsoft\.Build\.Utilities\.Core|Microsoft\.Build\.Framework|Microsoft\.Build\.Tasks\.Core'
             - not: {output_type: 'Exe|WinExe'}
             - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
+            - any:
+                - not: {property: {ReferencedBy: '.+'}}
+                - code: '\bclass\s+\w+\s*(<[^>]*>)?\s*:\s*(Microsoft\.Build\.Utilities\.)?(Task|ToolTask|ToolTaskExtension|AppDomainIsolatedTask)\b|:\s*([\w.]+\s*,\s*)*(Microsoft\.Build\.Framework\.)?ITask\b'
         # source/client code generators (NSwag/NJsonSchema code generation) run at development time
         - all:
             - package: '(NSwag|NJsonSchema)\.CodeGeneration(\.\w+)*'
@@ -63,6 +70,18 @@ rules:
             - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
             - not: {framework_ref: 'Microsoft\.AspNetCore\.App'}
             - not: {code: '\bAddHostedService\b|:\s*BackgroundService\b|\bIHostedService\b|\bServiceBase\b|\bHostFactory\.Run\b|\bUseWindowsService\b|\bUseSystemd\b'}
+        # source-code generators run by developers against the checkout (Rock.CodeGeneration, a WPF app
+        # that writes C# and TypeScript into the source tree)
+        - all:
+            - name: '[.\-]CodeGen(eration|erator)?$'
+            - output_type: 'Exe|WinExe'
+        # build scripts written as .NET programs (NUKE, Cake Frosting, Bullseye) run on CI and developer machines
+        - all:
+            - any:
+                - package: 'Nuke\.Common|Cake\.Frosting|Bullseye'
+                - code: ':\s*NukeBuild\b|\bclass\s+\w+\s*:\s*FrostingTask(<[^>]*>)?|\bnew\s+CakeHost\s*\(\s*\)'
+            - output_type: 'Exe'
+            - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
         # version-control hook executables (svn/hg/git hooks) are invoked by the VCS server per commit
         - all:
             - name: '[.\-]\w*(?<!web)Hooks?$'
@@ -315,6 +334,11 @@ rules:
             - any:
                 - file: ["Web.config"]
                 - type_guid: 349c5851-65df-11da-9384-00065b846f21
+            # pages without a Global.asax of their own, built against a web application that has one:
+            # a module/plugin whose pages and dll are copied into that host (mojoPortal Features.UI,
+            # SuperFlexiUI), not a site of its own
+            - not:
+                references: {file: Global.asax}
         - all:
             - type_guid: 349c5851-65df-11da-9384-00065b846f21
             - package: Microsoft\.Owin\.Host\.SystemWeb
@@ -364,6 +388,26 @@ rules:
                 - code: '\bRemotingConfiguration\.Configure\s*\('
                 - config: '<service>\s*<(wellknown|activated)\b'
                 - code: *listener_wait
+
+  # A generic-host program whose hosted service stops the application when its work is done
+  # (IHostApplicationLifetime.StopApplication() as the last statement of StartAsync/ExecuteAsync):
+  # a run-to-completion job such as a database migrator/seeder (Kubernetes Job), not a long-running
+  # worker. Not when the stop is an error path (inside catch) or the service loops until cancelled.
+  - id: role-run-once-hosted
+    phase: role
+    role: console
+    priority: 51
+    when:
+      all:
+        - output_type: Exe
+        - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
+        - all:
+            - code: ':\s*(BackgroundService|IHostedService)\b'
+            - code: '\.StopApplication\s*\(\s*\)\s*;(\s*\})+\s*(public|private|protected|internal|override|\[|\}|\Z)'
+          same_file: true
+        - not: {code: 'catch\s*(\([^)]*\))?\s*\{[^{}]*\.StopApplication\s*\(\s*\)'}
+        - not: {code: '\bwhile\s*\(\s*!\s*[\w.]*IsCancellationRequested|\bPeriodicTimer\b|\bwhile\s*\(\s*true\s*\)|\bfor\s*\(\s*;\s*;\s*\)'}
+        - not: {code: '\bServiceBase\b|HostFactory\.Run|UseWindowsService|UseSystemd|RunAsService'}
 
   - id: role-worker
     phase: role

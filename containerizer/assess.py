@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .rules import SEV_RANK, SEVERITIES, Context, Match, Rule, load_rules, run_rule
 from .reach import CODE_EXT, mode_reachability, reachable_files
-from .scan import Project, Repo, scan
+from .scan import Project, Repo, nearest_tfms, scan
 
 SERVER_ROLES = {"web", "worker", "console", "spa"}
 PLATFORM_ROLES = {"biztalk", "sharepoint"}          # deployables that need a Windows product
@@ -277,17 +277,42 @@ def hosts_web_via_library(repo: Repo, p: Project) -> bool:
 
 
 def _closure(repo: Repo, p: Project) -> list[Project]:
-    out, stack, seen = [], list(p.project_refs), set()
+    """Projects that p references, directly or through other projects, each as compiled for p:
+    a multi-targeted library is followed only along the target frameworks its consumer picks
+    (NuGet's nearest framework), so a net8.0 app does not inherit the net472-only references or
+    project references of a net472;net8.0 library. Libraries used with fewer TFMs than they have
+    are returned as per-TFM views (Project.view)."""
+    order: list[Path] = []
+    active: dict[Path, set[str]] = {}
+    projects: dict[Path, Project] = {}
+    stack = [(ref, p.tfms) for ref in p.refs_for(p.tfms)]
     while stack:
-        ref = stack.pop()
-        if ref in seen:
-            continue
-        seen.add(ref)
+        ref, consumer = stack.pop()
         q = repo.project_by_path(ref)
-        if q is not None:
-            out.append(q)
-            stack.extend(q.project_refs)
-    return out
+        if q is None:
+            continue
+        key = q.path.resolve()
+        tf = set(nearest_tfms(consumer, q.tfms)) if q.kind_hint == "dotnet" else set(q.tfms)
+        if key in active:
+            if tf <= active[key]:
+                continue
+            tf |= active[key]
+        else:
+            order.append(key)
+            projects[key] = q
+        active[key] = tf
+        stack.extend((r, [t for t in q.tfms if t in tf]) for r in q.refs_for(list(tf)))
+    return [projects[k].view(list(active[k])) if active[k] else projects[k] for k in order]
+
+
+def _view_findings(repo: Repo, lib: Project, finding_rules: list[Rule], cache: dict) -> list[Finding]:
+    """Findings of a library as compiled for some of its target frameworks (see _closure)."""
+    key = (lib.path.resolve(), tuple(lib.tfms))
+    if key not in cache:
+        ctx = Context(repo, lib, "library")
+        cache[key] = [Finding(r, m.evidence) for r in finding_rules
+                      if r.scope == "project" and (m := run_rule(r, ctx))]
+    return cache[key]
 
 
 def assess(path: str | Path, rules: list[Rule] | None = None, repo: Repo | None = None) -> AppAssessment:
@@ -313,6 +338,7 @@ def assess(path: str | Path, rules: list[Rule] | None = None, repo: Repo | None 
 
     # Propagate library findings to the deployables that reference them, but
     # only when the library code that triggered them is reachable.
+    view_cache: dict = {}
     for c in comps.values():
         if c.role in NON_DEPLOYABLE:
             continue
@@ -322,7 +348,8 @@ def assess(path: str | Path, rules: list[Rule] | None = None, repo: Repo | None 
         reached = {repo.rel(f) for f in reachable_files(c.project, libs)}
         for lib in libs:
             lc = comps[lib.path.resolve()]
-            for f in lc.findings:
+            lib_findings = lc.findings if lib.view_of is None else _view_findings(repo, lib, finding_rules, view_cache)
+            for f in lib_findings:
                 if f.rule.id in own or f.rule.id == "netfx-library" and c.project.is_netfx:
                     continue
                 code_ev = [e for e in f.evidence if e.line and Path(e.file).suffix.lower() in CODE_EXT]
