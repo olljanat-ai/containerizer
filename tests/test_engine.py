@@ -196,7 +196,8 @@ def test_spa_is_built_before_publish():
             "strategy": "rollforward", "base": "chiseled", "add_packages": [], "env": {}, "add_writable": [],
             "publish_args": [], "remove_files": [], "entry": "X.dll", "args": [], "applied": [], "spa_root": "ClientApp"}
     df = dockerfile_dotnet(plan)
-    assert df.index('"src/X/ClientApp/package.json"') < df.index("dotnet publish")
+    assert df.index('"src/X/ClientApp/package.json"') < df.index(" && dotnet publish")
+    assert df.index("export PATH=/opt/npm-prebuilt:$PATH") < df.index(" && dotnet publish")
 
 
 def test_gitops_examples_for_argo_and_flux(tmp_path):
@@ -225,3 +226,15 @@ def test_gitops_examples_for_argo_and_flux(tmp_path):
     kinds = [d["kind"] for d in load("flux/git/image-automation.yaml")]
     assert kinds == ["ImageRepository", "ImagePolicy", "ImageUpdateAutomation"]
     assert '{"$imagepolicy": "' in (out / "kustomization.yaml").read_text()
+
+
+def test_docker_outage_is_not_a_build_failure(monkeypatch):
+    import subprocess
+    import pytest
+    from containerizer import verify
+
+    class P:
+        returncode, stdout = 1, "ERROR: Cannot connect to the Docker daemon at unix:///var/run/docker.sock."
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: P())
+    with pytest.raises(verify.DockerUnavailable):
+        verify._run(["docker", "build", "."], 10)
