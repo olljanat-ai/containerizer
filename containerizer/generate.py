@@ -301,9 +301,12 @@ def dockerfile_dotnet(plan: dict) -> str:
     rid_arg = "" if rid == "portable" else f" -p:RuntimeIdentifier={rid}"
     pub = ["-c Release", "-o /out", "-p:UseAppHost=false"] + ([rid_arg.strip(), "--self-contained false"] if rid_arg else [])
     target = target_tfm()
-    if plan["strategy"] == "retarget" and tfm and _tfm_major(tfm) != _tfm_major(target):
-        pub.append(f"-p:TargetFramework={target}")
-        pub.append(f"-p:TargetFrameworks={target}")
+    retarget = plan["strategy"] == "retarget" and tfm and _tfm_major(tfm) != _tfm_major(target)
+    if retarget:
+        # the entry project is retargeted in the build stage's copy of its .csproj; a global
+        # -p:TargetFramework would also retarget its netstandard libraries and break their restore.
+        # Only when the TFM is not in the .csproj (Directory.Build.props) is the global property used.
+        pub.append("$TFP")
     elif plan["multi_target"] or (tfm and "-" in tfm):
         pub.append(f"-f {tfm}")
     pub += plan["publish_args"]
@@ -320,12 +323,13 @@ def dockerfile_dotnet(plan: dict) -> str:
     lines += ["WORKDIR /src", "COPY . ."]
     for f in plan["remove_files"]:
         lines.append(f"RUN find . -name '{f}' -not -path '*/node_modules/*' -delete")
-    restore_tfm = ""
-    if plan["strategy"] == "retarget" and tfm and _tfm_major(tfm) != _tfm_major(target):
-        restore_tfm = f" -p:TargetFramework={target} -p:TargetFrameworks={target}"
+    restore_tfm = " $TFP" if retarget else ""
     lines += ["# optional build secret 'ca': CA bundle for TLS-inspecting corporate proxies",
               'RUN --mount=type=cache,target=/root/.nuget/packages --mount=type=secret,id=ca,required=false \\',
               '    if [ -f /run/secrets/ca ]; then export SSL_CERT_FILE=/run/secrets/ca NODE_EXTRA_CA_CERTS=/run/secrets/ca; fi; \\',
+              *([f"    TFP=''; if grep -qE '<TargetFrameworks?[ >]' \"{proj}\"; then \\",
+                 f"      sed -i -E 's#<TargetFrameworks?([^>]*)>[^<]*</TargetFrameworks?>#<TargetFramework\\1>{target}</TargetFramework>#' \"{proj}\"; \\",
+                 f"    else TFP='-p:TargetFramework={target} -p:TargetFrameworks={target}'; fi; \\"] if retarget else []),
               f'    dotnet restore "{proj}"{rid_arg}{restore_tfm} \\',
               f' && dotnet publish "{proj}" --no-restore {" ".join(pub)}']
     writable = sorted({_writable_abs(w) for w in plan["add_writable"]})

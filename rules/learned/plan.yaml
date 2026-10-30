@@ -9,6 +9,11 @@ rules:
     rid: portable
   learned_from: control-tower/ControlTower.Booking.Web
   learned_at: '2026-10-30'
+  why: Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that conflict (package downgrade).
+    A portable publish restores the same graph as the Windows build.
+  refs:
+  - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+  - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
 - id: learned-run-readonly-path-controltower-identity
   phase: plan
   source: learned
@@ -19,6 +24,9 @@ rules:
     - /.devdata
   learned_from: control-tower/ControlTower.Identity
   learned_at: '2026-10-30'
+  why: The app writes to a folder that is read-only in the hardened container.
+  refs:
+  - https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
 - id: learned-build-rid-downgrade-controltower-scanning-api
   phase: plan
   source: learned
@@ -28,6 +36,11 @@ rules:
     rid: portable
   learned_from: control-tower/ControlTower.Scanning.Api
   learned_at: '2026-10-30'
+  why: Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that conflict (package downgrade).
+    A portable publish restores the same graph as the Windows build.
+  refs:
+  - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+  - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
 - id: learned-run-readonly-path-fieldservice-web
   phase: plan
   source: learned
@@ -38,6 +51,9 @@ rules:
     - /App_Data
   learned_from: field-service/FieldService.Web
   learned_at: '2026-10-30'
+  why: The app writes to a folder that is read-only in the hardened container.
+  refs:
+  - https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
 - id: learned-run-readonly-path-productreturns-api
   phase: plan
   source: learned
@@ -48,6 +64,9 @@ rules:
     - /app/App_Data
   learned_from: product-returns/ProductReturns.Api
   learned_at: '2026-10-30'
+  why: The app writes to a folder that is read-only in the hardened container.
+  refs:
+  - https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
 - id: learned-build-rid-downgrade-vanarsdel-gateway
   phase: plan
   source: learned
@@ -57,6 +76,11 @@ rules:
     rid: portable
   learned_from: retail-backoffice/VanArsdel.Gateway
   learned_at: '2026-10-30'
+  why: Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that conflict (package downgrade).
+    A portable publish restores the same graph as the Windows build.
+  refs:
+  - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+  - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
 - id: learned-build-rid-downgrade-vanarsdel-storemanager
   phase: plan
   source: learned
@@ -66,6 +90,11 @@ rules:
     rid: portable
   learned_from: retail-backoffice/VanArsdel.StoreManager
   learned_at: '2026-10-30'
+  why: Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that conflict (package downgrade).
+    A portable publish restores the same graph as the Windows build.
+  refs:
+  - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+  - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
 - id: learned-build-rid-downgrade-controltower-jobs
   phase: plan
   source: learned
@@ -75,6 +104,11 @@ rules:
     rid: portable
   learned_from: control-tower/ControlTower.Jobs
   learned_at: '2026-10-30'
+  why: Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that conflict (package downgrade).
+    A portable publish restores the same graph as the Windows build.
+  refs:
+  - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+  - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
 - id: learned-build-rid-downgrade-controltower-portal
   phase: plan
   source: learned
@@ -84,6 +118,11 @@ rules:
     rid: portable
   learned_from: control-tower/ControlTower.Portal
   learned_at: '2026-10-30'
+  why: Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that conflict (package downgrade).
+    A portable publish restores the same graph as the Windows build.
+  refs:
+  - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+  - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
 - id: learned-build-rid-downgrade-vanarsdel-allocation-api
   phase: plan
   source: learned
@@ -93,6 +132,11 @@ rules:
     rid: portable
   learned_from: retail-backoffice/VanArsdel.Allocation.Api
   learned_at: '2026-10-30'
+  why: Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that conflict (package downgrade).
+    A portable publish restores the same graph as the Windows build.
+  refs:
+  - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+  - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
 - id: learned-build-rid-downgrade-vanarsdel-catalog-api
   phase: plan
   source: learned
@@ -102,6 +146,11 @@ rules:
     rid: portable
   learned_from: retail-backoffice/VanArsdel.Catalog.Api
   learned_at: '2026-10-30'
+  why: Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that conflict (package downgrade).
+    A portable publish restores the same graph as the Windows build.
+  refs:
+  - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+  - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
 - id: learned-build-rid-downgrade-vanarsdel-erpconnector
   phase: plan
   source: learned
@@ -111,6 +160,11 @@ rules:
     rid: portable
   learned_from: retail-backoffice/VanArsdel.ErpConnector
   learned_at: '2026-10-30'
+  why: Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that conflict (package downgrade).
+    A portable publish restores the same graph as the Windows build.
+  refs:
+  - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+  - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
 - id: learned-run-aspnet-framework-missing-vanarsdel-erpconnector
   phase: plan
   source: learned
@@ -120,6 +174,9 @@ rules:
     aspnet_runtime: true
   learned_from: retail-backoffice/VanArsdel.ErpConnector
   learned_at: '2026-10-30'
+  why: The worker uses the ASP.NET Core shared framework; it needs the aspnet base image.
+  refs:
+  - https://learn.microsoft.com/en-us/dotnet/core/docker/container-images
 - id: learned-build-rid-downgrade-vanarsdel-inventory-api
   phase: plan
   source: learned
@@ -129,6 +186,11 @@ rules:
     rid: portable
   learned_from: retail-backoffice/VanArsdel.Inventory.Api
   learned_at: '2026-10-30'
+  why: Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that conflict (package downgrade).
+    A portable publish restores the same graph as the Windows build.
+  refs:
+  - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+  - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
 - id: learned-build-rid-downgrade-vanarsdel-notifications
   phase: plan
   source: learned
@@ -138,6 +200,11 @@ rules:
     rid: portable
   learned_from: retail-backoffice/VanArsdel.Notifications
   learned_at: '2026-10-30'
+  why: Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that conflict (package downgrade).
+    A portable publish restores the same graph as the Windows build.
+  refs:
+  - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+  - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
 - id: learned-run-aspnet-framework-missing-vanarsdel-notifications
   phase: plan
   source: learned
@@ -147,6 +214,9 @@ rules:
     aspnet_runtime: true
   learned_from: retail-backoffice/VanArsdel.Notifications
   learned_at: '2026-10-30'
+  why: The worker uses the ASP.NET Core shared framework; it needs the aspnet base image.
+  refs:
+  - https://learn.microsoft.com/en-us/dotnet/core/docker/container-images
 - id: learned-build-rid-downgrade-vanarsdel-pricing-api
   phase: plan
   source: learned
@@ -156,6 +226,11 @@ rules:
     rid: portable
   learned_from: retail-backoffice/VanArsdel.Pricing.Api
   learned_at: '2026-10-30'
+  why: Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that conflict (package downgrade).
+    A portable publish restores the same graph as the Windows build.
+  refs:
+  - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+  - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
 - id: learned-build-rid-downgrade-vanarsdel-reporting-api
   phase: plan
   source: learned
@@ -165,6 +240,11 @@ rules:
     rid: portable
   learned_from: retail-backoffice/VanArsdel.Reporting.Api
   learned_at: '2026-10-30'
+  why: Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that conflict (package downgrade).
+    A portable publish restores the same graph as the Windows build.
+  refs:
+  - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+  - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
 - id: learned-build-rid-downgrade-vanarsdel-returns-api
   phase: plan
   source: learned
@@ -174,6 +254,11 @@ rules:
     rid: portable
   learned_from: retail-backoffice/VanArsdel.Returns.Api
   learned_at: '2026-10-30'
+  why: Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that conflict (package downgrade).
+    A portable publish restores the same graph as the Windows build.
+  refs:
+  - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+  - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
 - id: learned-build-rid-downgrade-vanarsdel-storeops-api
   phase: plan
   source: learned
@@ -183,6 +268,11 @@ rules:
     rid: portable
   learned_from: retail-backoffice/VanArsdel.StoreOps.Api
   learned_at: '2026-10-30'
+  why: Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that conflict (package downgrade).
+    A portable publish restores the same graph as the Windows build.
+  refs:
+  - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+  - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
 - id: learned-build-rid-downgrade-vanarsdel-backoffice
   phase: plan
   source: learned
@@ -192,6 +282,11 @@ rules:
     rid: portable
   learned_from: retail-backoffice/VanArsdel.BackOffice
   learned_at: '2026-10-30'
+  why: Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that conflict (package downgrade).
+    A portable publish restores the same graph as the Windows build.
+  refs:
+  - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+  - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
 - id: learned-build-rid-downgrade-vanarsdel-scheduler
   phase: plan
   source: learned
@@ -201,6 +296,11 @@ rules:
     rid: portable
   learned_from: retail-backoffice/VanArsdel.Scheduler
   learned_at: '2026-10-30'
+  why: Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that conflict (package downgrade).
+    A portable publish restores the same graph as the Windows build.
+  refs:
+  - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+  - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
 - id: learned-run-aspnet-framework-missing-vanarsdel-scheduler
   phase: plan
   source: learned
@@ -210,3 +310,6 @@ rules:
     aspnet_runtime: true
   learned_from: retail-backoffice/VanArsdel.Scheduler
   learned_at: '2026-10-30'
+  why: The worker uses the ASP.NET Core shared framework; it needs the aspnet base image.
+  refs:
+  - https://learn.microsoft.com/en-us/dotnet/core/docker/container-images

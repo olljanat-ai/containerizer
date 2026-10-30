@@ -401,9 +401,14 @@ def _load(path: Path, key: str) -> dict:
     return d
 
 
+class _NoAliases(yaml.SafeDumper):
+    def ignore_aliases(self, data):      # learned files are read by people: no &id001 anchors
+        return True
+
+
 def _save(path: Path, d: dict, header: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(header + yaml.safe_dump(d, sort_keys=False, allow_unicode=True, width=120))
+    path.write_text(header + yaml.dump(d, Dumper=_NoAliases, sort_keys=False, allow_unicode=True, width=120))
 
 
 def persist_learning(a: AppAssessment, c: Component, plan: dict, patches) -> None:

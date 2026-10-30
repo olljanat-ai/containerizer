@@ -97,7 +97,16 @@ python -m containerizer bench --technique hybrid --model claude-haiku-5-5
   title: Microsoft Office automation (COM)
   why: Drives Word/Excel through COM ...
   fix: Replace with a document library (OpenXML SDK, ClosedXML, ...)
+  refs:
+    - https://learn.microsoft.com/en-us/dotnet/core/porting/
 ```
+
+Every finding is explained without AI: `why` says what breaks in a Linux container, `fix` what to
+do, and `refs` link to the documentation or upstream issue behind it. All three are shown in the
+migration report, the HTML portfolio, the PR comment and SARIF (`help`, `helpUri`). Findings
+observed at run time carry the explanation and links of the failure rule that recognised them, and
+every non-default build decision (a plan rule, a config override, a fix learned while verifying) is
+listed with its reason and links at the top of the generated `Dockerfile` and in `plan.json`.
 
 Condition primitives: `sdk`, `tfm`, `package`, `reference`, `framework_ref`, `property`,
 `output_type`, `kind`, `role`, `name`, `file` (glob), `code` / `config` / `text` (regex with optional
@@ -159,7 +168,7 @@ Techniques used to avoid application changes:
 
 - out-of-support .NET (Core 3.1, 5, 6, 7): build with the .NET 10 SDK and run on the supported .NET 10
   runtime with `DOTNET_ROLL_FORWARD=Major`; if the old target can't be built, retarget with
-  `-p:TargetFramework=net10.0`;
+  `net10.0` in the build stage's copy of the entry project (its netstandard libraries keep their targets);
 - `global.json` SDK pins are removed inside the build stage only;
 - Kestrel endpoints from `appsettings.json` are re-pointed with `Kestrel__Endpoints__X__Url`;
 - connection strings and secret settings become `ConnectionStrings__X` env vars from a Secret;

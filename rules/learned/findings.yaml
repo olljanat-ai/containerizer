@@ -6,22 +6,28 @@ rules:
   category: runtime-observed
   title: 'Windows-only API at runtime: System.Management currently is only supported for Windows desktop applications.'
   why: 'A Windows-only API was called at runtime: System.Management currently is only supported for Windows desktop applications.'
-  fix: See the verification log; fix and re-run `containerizer verify`.
+  fix: Find the call in the log's stack trace; replace it with a cross-platform API or guard it with OperatingSystem.IsWindows().
+    The platform compatibility analyzer (CA1416) lists such calls at build time.
   when:
     name: ^DocControl\.Packager$
   learned_from: document-control/Litware.DocControl.Packager
   learned_at: '2026-10-30'
+  refs:
+  - https://learn.microsoft.com/en-us/dotnet/standard/analyzers/platform-compat-analyzer
 - id: learned-runtime-productreturns-portal-2
   source: learned
   severity: refactor
   category: runtime-observed
   title: 'Windows-only API at runtime: This operation requires Windows 7 / Windows Server 2008 R2 or later.'
   why: 'A Windows-only API was called at runtime: This operation requires Windows 7 / Windows Server 2008 R2 or later.'
-  fix: See the verification log; fix and re-run `containerizer verify`.
+  fix: Find the call in the log's stack trace; replace it with a cross-platform API or guard it with OperatingSystem.IsWindows().
+    The platform compatibility analyzer (CA1416) lists such calls at build time.
   when:
     name: ^ProductReturns\.Portal$
   learned_from: product-returns/ProductReturns.Portal
   learned_at: '2026-10-30'
+  refs:
+  - https://learn.microsoft.com/en-us/dotnet/standard/analyzers/platform-compat-analyzer
 - id: learned-runtime-staffonboarding-provisioning-3
   source: learned
   severity: refactor
@@ -33,105 +39,140 @@ rules:
     name: ^StaffOnboarding\.Provisioning$
   learned_from: staff-onboarding/StaffOnboarding.Provisioning
   learned_at: '2026-10-30'
+  refs:
+  - https://learn.microsoft.com/en-us/aspnet/core/fundamentals/servers/httpsys
+  - https://learn.microsoft.com/en-us/dotnet/standard/native-interop/native-library-loading
 - id: learned-runtime-humongous-identity-4
   source: learned
   severity: config
   category: runtime-observed
   title: SQLite database needs a persistent volume (single replica)
   why: The embedded SQLite database file is not in a writable, persistent folder.
-  fix: See the verification log; fix and re-run `containerizer verify`.
+  fix: Put the database file on a PersistentVolume mounted writable (the generated manifests do this for the configured path)
+    and run one replica, or move the data to a database server.
   when:
     name: ^Humongous\.Identity$
   learned_from: broker-quotes/Humongous.Identity
   learned_at: '2026-10-30'
+  refs:
+  - https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/connection-strings
+  - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
 - id: learned-runtime-citypermits-citizen-5
   source: learned
   severity: refactor
   category: runtime-observed
   title: 'Windows-only API at runtime: Unix LocalMachine X509Store is limited to the Root and CertificateAuthority stores.'
-  why: ''
-  fix: See the verification log; fix and re-run `containerizer verify`.
+  why: 'A Windows-only API was called at runtime: Unix LocalMachine X509Store is limited to the Root and CertificateAuthority
+    stores.'
+  fix: Find the call in the log's stack trace; replace it with a cross-platform API or guard it with OperatingSystem.IsWindows().
+    The platform compatibility analyzer (CA1416) lists such calls at build time.
   when:
     name: ^CityPermits\.Citizen$
   learned_from: city-permits/CityPermits.Citizen
   learned_at: '2026-10-30'
+  refs:
+  - https://learn.microsoft.com/en-us/dotnet/standard/analyzers/platform-compat-analyzer
 - id: learned-runtime-lucerne-lending-loantape-6
   source: learned
   severity: config
   category: runtime-observed
   title: SQLite database needs a persistent volume (single replica)
   why: The embedded SQLite database file is not in a writable, persistent folder.
-  fix: See the verification log; fix and re-run `containerizer verify`.
+  fix: Put the database file on a PersistentVolume mounted writable (the generated manifests do this for the configured path)
+    and run one replica, or move the data to a database server.
   when:
     name: ^Lucerne\.Lending\.LoanTape$
   learned_from: consumer-loans/Lucerne.Lending.LoanTape
   learned_at: '2026-10-30'
+  refs:
+  - https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/connection-strings
+  - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
 - id: learned-runtime-freightrates-admin-7
   source: learned
   severity: config
   category: runtime-observed
   title: SQLite database needs a persistent volume (single replica)
   why: The embedded SQLite database file is not in a writable, persistent folder.
-  fix: See the verification log; fix and re-run `containerizer verify`.
+  fix: Put the database file on a PersistentVolume mounted writable (the generated manifests do this for the configured path)
+    and run one replica, or move the data to a database server.
   when:
     name: ^FreightRates\.Admin$
   learned_from: freight-rates/FreightRates.Admin
   learned_at: '2026-10-30'
+  refs:
+  - https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/connection-strings
+  - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
 - id: learned-runtime-freightrates-api-8
   source: learned
   severity: config
   category: runtime-observed
   title: SQLite database needs a persistent volume (single replica)
   why: The embedded SQLite database file is not in a writable, persistent folder.
-  fix: See the verification log; fix and re-run `containerizer verify`.
+  fix: Put the database file on a PersistentVolume mounted writable (the generated manifests do this for the configured path)
+    and run one replica, or move the data to a database server.
   when:
     name: ^FreightRates\.Api$
   learned_from: freight-rates/FreightRates.Api
   learned_at: '2026-10-30'
+  refs:
+  - https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/connection-strings
+  - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
 - id: learned-runtime-fabrikam-housing-backoffice-9
   source: learned
   severity: refactor
   category: runtime-observed
   title: 'Windows-only API at runtime: This operation requires Windows 7 / Windows Server 2008 R2 or later.'
-  why: ''
-  fix: See the verification log; fix and re-run `containerizer verify`.
+  why: 'A Windows-only API was called at runtime: This operation requires Windows 7 / Windows Server 2008 R2 or later.'
+  fix: Find the call in the log's stack trace; replace it with a cross-platform API or guard it with OperatingSystem.IsWindows().
+    The platform compatibility analyzer (CA1416) lists such calls at build time.
   when:
     name: ^Fabrikam\.Housing\.BackOffice$
   learned_from: housing-management/Fabrikam.Housing.BackOffice
   learned_at: '2026-10-30'
+  refs:
+  - https://learn.microsoft.com/en-us/dotnet/standard/analyzers/platform-compat-analyzer
 - id: learned-runtime-fabrikam-housing-contractorapi-10
   source: learned
   severity: refactor
   category: runtime-observed
   title: 'Windows-only API at runtime: This operation requires Windows 7 / Windows Server 2008 R2 or later.'
-  why: ''
-  fix: See the verification log; fix and re-run `containerizer verify`.
+  why: 'A Windows-only API was called at runtime: This operation requires Windows 7 / Windows Server 2008 R2 or later.'
+  fix: Find the call in the log's stack trace; replace it with a cross-platform API or guard it with OperatingSystem.IsWindows().
+    The platform compatibility analyzer (CA1416) lists such calls at build time.
   when:
     name: ^Fabrikam\.Housing\.ContractorApi$
   learned_from: housing-management/Fabrikam.Housing.ContractorApi
   learned_at: '2026-10-30'
+  refs:
+  - https://learn.microsoft.com/en-us/dotnet/standard/analyzers/platform-compat-analyzer
 - id: learned-runtime-fabrikam-housing-jobs-11
   source: learned
   severity: refactor
   category: runtime-observed
   title: 'Windows-only API at runtime: This operation requires Windows 7 / Windows Server 2008 R2 or later.'
-  why: ''
-  fix: See the verification log; fix and re-run `containerizer verify`.
+  why: 'A Windows-only API was called at runtime: This operation requires Windows 7 / Windows Server 2008 R2 or later.'
+  fix: Find the call in the log's stack trace; replace it with a cross-platform API or guard it with OperatingSystem.IsWindows().
+    The platform compatibility analyzer (CA1416) lists such calls at build time.
   when:
     name: ^Fabrikam\.Housing\.Jobs$
   learned_from: housing-management/Fabrikam.Housing.Jobs
   learned_at: '2026-10-30'
+  refs:
+  - https://learn.microsoft.com/en-us/dotnet/standard/analyzers/platform-compat-analyzer
 - id: learned-runtime-fabrikam-housing-tenantportal-12
   source: learned
   severity: refactor
   category: runtime-observed
   title: 'Windows-only API at runtime: This operation requires Windows 7 / Windows Server 2008 R2 or later.'
-  why: ''
-  fix: See the verification log; fix and re-run `containerizer verify`.
+  why: 'A Windows-only API was called at runtime: This operation requires Windows 7 / Windows Server 2008 R2 or later.'
+  fix: Find the call in the log's stack trace; replace it with a cross-platform API or guard it with OperatingSystem.IsWindows().
+    The platform compatibility analyzer (CA1416) lists such calls at build time.
   when:
     name: ^Fabrikam\.Housing\.TenantPortal$
   learned_from: housing-management/Fabrikam.Housing.TenantPortal
   learned_at: '2026-10-30'
+  refs:
+  - https://learn.microsoft.com/en-us/dotnet/standard/analyzers/platform-compat-analyzer
 - id: learned-runtime-vanarsdel-customers-api-13
   source: learned
   severity: refactor
@@ -139,11 +180,15 @@ rules:
   title: Machine-wide named mutex for single-instance
   why: A machine-wide named mutex (Global\\...) guards against a second instance. Containers do not share it; run a single
     replica or use a Kubernetes Lease / database lock.
-  fix: See the verification log; fix and re-run `containerizer verify`.
+  fix: Run a single replica (Deployment replicas 1, strategy Recreate), or replace the mutex with a distributed lock such
+    as a Kubernetes Lease or a database lock.
   when:
     name: ^VanArsdel\.Customers\.Api$
   learned_from: retail-backoffice/VanArsdel.Customers.Api
   learned_at: '2026-10-30'
+  refs:
+  - https://learn.microsoft.com/en-us/dotnet/api/system.threading.mutex
+  - https://kubernetes.io/docs/concepts/architecture/leases/
 - id: learned-runtime-doccontrol-indexer-14
   source: learned
   severity: refactor
@@ -151,33 +196,44 @@ rules:
   title: Machine-wide named mutex for single-instance
   why: A machine-wide named mutex (Global\\...) guards against a second instance. Containers do not share it; run a single
     replica or use a Kubernetes Lease / database lock.
-  fix: See the verification log; fix and re-run `containerizer verify`.
+  fix: Run a single replica (Deployment replicas 1, strategy Recreate), or replace the mutex with a distributed lock such
+    as a Kubernetes Lease or a database lock.
   when:
     name: ^DocControl\.Indexer$
   learned_from: document-control/Litware.DocControl.Indexer
   learned_at: '2026-10-30'
+  refs:
+  - https://learn.microsoft.com/en-us/dotnet/api/system.threading.mutex
+  - https://kubernetes.io/docs/concepts/architecture/leases/
 - id: learned-runtime-fabrikam-housing-identity-15
   source: learned
   severity: refactor
   category: runtime-observed
   title: 'Windows-only API at runtime: Unix LocalMachine X509Store is limited to the Root and CertificateAuthority stores.'
-  why: ''
-  fix: See the verification log; fix and re-run `containerizer verify`.
+  why: 'A Windows-only API was called at runtime: Unix LocalMachine X509Store is limited to the Root and CertificateAuthority
+    stores.'
+  fix: Find the call in the log's stack trace; replace it with a cross-platform API or guard it with OperatingSystem.IsWindows().
+    The platform compatibility analyzer (CA1416) lists such calls at build time.
   when:
     name: ^Fabrikam\.Housing\.Identity$
   learned_from: housing-management/Fabrikam.Housing.Identity
   learned_at: '2026-10-30'
+  refs:
+  - https://learn.microsoft.com/en-us/dotnet/standard/analyzers/platform-compat-analyzer
 - id: learned-runtime-productreturns-jobs-16
   source: learned
   severity: refactor
   category: runtime-observed
   title: 'Windows-only API at runtime: EventLog access is not supported on this platform.'
   why: 'A Windows-only API was called at runtime: EventLog access is not supported on this platform.'
-  fix: See the verification log; fix and re-run `containerizer verify`.
+  fix: Find the call in the log's stack trace; replace it with a cross-platform API or guard it with OperatingSystem.IsWindows().
+    The platform compatibility analyzer (CA1416) lists such calls at build time.
   when:
     name: ^ProductReturns\.Jobs$
   learned_from: product-returns/ProductReturns.Jobs
   learned_at: '2026-10-30'
+  refs:
+  - https://learn.microsoft.com/en-us/dotnet/standard/analyzers/platform-compat-analyzer
 - id: learned-runtime-staffonboarding-provisioning-17
   source: learned
   severity: refactor
@@ -185,8 +241,12 @@ rules:
   title: Windows system library HTTPAPI.dll called at runtime
   why: The app calls a Windows system library (HTTPAPI.dll) that has a cross-platform .NET replacement (HTTP.sys -> Kestrel,
     Win32 security/registry -> managed APIs).
-  fix: See the verification log; fix and re-run `containerizer verify`.
+  fix: Replace the Windows-specific call with its cross-platform .NET API (HTTP.sys hosting -> Kestrel, P/Invoke to HTTPAPI.dll
+    -> managed equivalent), or guard it with OperatingSystem.IsWindows().
   when:
     name: ^StaffOnboarding\.Provisioning$
   learned_from: staff-onboarding/StaffOnboarding.Provisioning
   learned_at: '2026-10-30'
+  refs:
+  - https://learn.microsoft.com/en-us/aspnet/core/fundamentals/servers/httpsys
+  - https://learn.microsoft.com/en-us/dotnet/standard/native-interop/native-library-loading
