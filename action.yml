@@ -76,11 +76,20 @@ runs:
       env:
         INPUT_BASE: ${{ inputs.base-ref }}
         PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: |
         ref="$INPUT_BASE"
         if [ -z "$ref" ] && [ -n "$PR_BASE_SHA" ]; then
           ref="$PR_BASE_SHA"
           git cat-file -e "$ref^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$ref"
+          # The default checkout is the PR merge commit, whose first parent is the base tip: compare with it.
+          # If the PR head itself is checked out, compare with the merge base instead, so changes made on
+          # the base branch after the PR branched off are not attributed to the PR.
+          if [ "$(git rev-parse HEAD)" = "$PR_HEAD_SHA" ]; then
+            [ "$(git rev-parse --is-shallow-repository)" = "true" ] && git fetch --no-tags --quiet --unshallow origin
+            git fetch --no-tags --quiet origin "$PR_BASE_SHA"
+            ref="$(git merge-base HEAD "$PR_BASE_SHA")"
+          fi
         fi
         [ "$ref" = "none" ] && ref=""
         echo "ref=$ref" >> "$GITHUB_OUTPUT"
