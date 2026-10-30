@@ -54,9 +54,10 @@ repos:
   - name: rw-functions-quickstart-dotnet-azd-cosmosdb
     url: https://github.com/Azure-Samples/functions-quickstart-dotnet-azd-cosmosdb
     commit: ba187eb2508163a7849e8938ca13f476b83cdc56
-    expected_rating: B
+    expected_rating: A
     expected_roles: {worker: [functions-quickstart-dotnet-azd-cosmosdb]}
     notes: .NET 10 isolated-worker Azure Function (new Sdk="Azure.Functions.Sdk", package Microsoft.Azure.Functions.Worker), CosmosDB trigger. Runs in the azure-functions dotnet-isolated Linux image; trigger scaling needs KEDA. Must not be reported as "no server-side component".
+    review: "2026-10-30 changed B->A after review: no code change needed; isolated base image, Secret-bound settings and a KEDA scaler are infra/config, which is A on the scale."
 
   - name: rw-eshopmodernizing
     url: https://github.com/dotnet-architecture/eShopModernizing
@@ -461,3 +462,163 @@ repos:
       Authority "https://localhost:5005" -> code change; worker URLs are in appsettings (env override). gRPC over
       HTTP/2 needs TLS certs or h2c endpoints in containers. EOL net5 + IdentityServer4 retarget -> B.
       tool (2026-10-30): A, roles match (host-grpc-server config on the three gRPC services). Misses Cart.gRPC/Startup.cs:43 hard-coded Authority "https://localhost:5005" (no localhost-endpoint-in-code rule) and IdentityServer4 AddDeveloperSigningCredential (IdentityServer/Startup.cs:22, writes tempkey.jwk to the content root; IdentityServer4 only appears as a known package in rules/packages.yaml:19). Disagreement is partly judgement (net5 + IdentityServer4 retarget).
+
+  # --- rw4: enterprise line-of-business shapes (10+ project solutions, mixed netfx + modern, ERP/CRM/CMS/e-commerce) ---
+  - name: rw4-smartstore
+    url: https://github.com/smartstore/Smartstore
+    commit: b247deb2d8a02294716ed88382953fb7e4f8394b
+    expected_rating: A
+    expected_roles: {web: [Smartstore.Web], library: [Smartstore.Core, Smartstore.Web.Common, Smartstore.PayPal, Smartstore.Data.SqlServer], tool: [Smartstore.DevTools, Smartstore.Build, Smartstore.ModuleBuilder, Smartstore.Packager, Smartstore.Packager.Cli, Smartstore.WebApi.Client]}
+    notes: >-
+      Successor of SmartStoreNET on net10.0: one ASP.NET Core host (Smartstore.Web) + ~20 Razor-SDK modules loaded as
+      plugins + MySql/Postgres/SqlServer/Sqlite data providers. Ships an official Linux Dockerfile, docker-compose
+      (Postgres/SQL Server) and install-wkhtmltopdf.sh for PDF output. tools/ holds two net10.0-windows WinForms
+      developer utilities (module packager, Web API test client) and build/ holds build executables: tools, not
+      server components. App_Data (tenants, media) must be a volume -> A.
+      tool (2026-10-30): B. os-backslash-path-join (rules/35-config-os.yaml:59) on Areas/Admin/Controllers/MaintenanceController.cs:1133 `BackupDir + "\\" + name`, but that path goes through Smartstore's LocalFileSystem.MapPathInternal which rewrites '\\' to '/' (src/Smartstore/IO/LocalFileSystem/LocalFileSystem.cs:152-156), and ModuleDescriptor.cs:69 is inside `if (CommonHelper.IsDevEnvironment)`; process-start-exe (rules/20-platform.yaml:245) on LightningCssTransformer.cs:160 which already picks `runtimeInfo.IsWindows ? "lightningcss.exe" : "lightningcss"`. Both false positives -> A. Role: Smartstore.Build is a NUKE build project (Nuke.Common), classified console (no role-tool clause for Nuke); build/wkhtml-tests/Probe also console.
+
+  - name: rw4-virtocommerce
+    url: https://github.com/VirtoCommerce/vc-platform
+    commit: f4049f2357bd7da615dc3b484aa4a6be8b27a11f
+    expected_rating: A
+    expected_roles: {web: [VirtoCommerce.Platform.Web], library: [VirtoCommerce.Platform.Data.SqlServer, VirtoCommerce.Platform.Data.PostgreSql], tool: [VirtoCommerce.Platform.Benchmark]}
+    notes: >-
+      net10.0 modular commerce platform host (Hangfire jobs in-process, SignalR, Redis optional), 16 projects.
+      Modules are downloaded/installed into a modules folder at run time (volume or bake into image); official
+      docker images and DockerCompose/ folder. appsettings connection string uses Data Source=(local) with SQL login
+      -> config override only. A.
+      tool (2026-10-30): B, roles match. Only refactor is system-drawing-core (rules/10-runtime.yaml:570) from the bare `<PackageReference Include="System.Drawing.Common">` (VirtoCommerce.Platform.Web.csproj:49); no System.Drawing code anywhere in src/ (a version pin for module dependencies). The package-alone clause over-fires; I keep A.
+
+  - name: rw4-grandnode
+    url: https://github.com/grandnode/grandnode2
+    commit: ba4fc7109265e6c164015d599c1137e4bd91a37d
+    expected_rating: A
+    expected_roles: {web: [Grand.Web, Grand.Web.Admin, Grand.Web.Store, Grand.Web.Vendor], library: [Grand.Web.Common, Grand.Business.Catalog, Grand.Infrastructure, Theme.Modern, Payments.StripeCheckout], tool: [Aspire.AppHost]}
+    notes: >-
+      71-project net10.0 e-commerce on MongoDB/LiteDB: storefront host Grand.Web (references Admin/Vendor) plus
+      Admin/Store/Vendor hosts that each have their own Program.cs, ~20 Razor plugins, Aspire AppHost. Official
+      Linux Dockerfile builds modules + plugins and chowns App_Data/Plugins/media for the app user -> A.
+      tool (2026-10-30): A, roles match. OK.
+
+  - name: rw4-simplcommerce
+    url: https://github.com/simplcommerce/SimplCommerce
+    commit: 3472ba02a6f2d9b6bdca7f7fb84957176aa799dc
+    expected_rating: A
+    expected_roles: {web: [SimplCommerce.WebHost], library: [SimplCommerce.Infrastructure, SimplCommerce.Module.Catalog, SimplCommerce.Module.HangfireJobs, SimplCommerce.Module.DinkToPdf], tool: [SimplCommerce.MSBuildTasks]}
+    notes: >-
+      net8.0 modular monolith (one WebHost, ~45 Razor-SDK modules copied into the host). Linux Dockerfile and
+      Dockerfile-sqlite exist (stale: sdk 5.0 image, sed-swaps SQL Server for Npgsql). DinkToPdf ships
+      libwkhtmltox per OS (csproj IsOSPlatform conditions; Dockerfile downloads the .so). HangfireJobs module is not
+      in the .sln. MSBuildTasks (netcoreapp2.0;net46) is a build task library. A.
+      tool (2026-10-30): A, roles match. OK.
+
+  - name: rw4-eshoponabp
+    url: https://github.com/abpframework/eShopOnAbp
+    commit: 7bfed7a322d16b34a5a66208c03486fa5dfacee9
+    expected_rating: A
+    expected_roles: {web: [EShopOnAbp.PublicWeb, EShopOnAbp.WebGateway, EShopOnAbp.WebPublicGateway, EShopOnAbp.BasketService, "EShopOnAbp.*Service.HttpApi.Host"], library: [EShopOnAbp.Shared.Hosting.Microservices, EShopOnAbp.CatalogService.Domain, EShopOnAbp.OrderingService.Application], tool: [eShopOnAbp.AppHost], console: [EShopOnAbp.Keycloak.DbMigrator]}
+    notes: >-
+      88-project ABP microservice reference (net9.0): 7 service hosts, 2 YARP gateways, public MVC web, Angular SPA,
+      Keycloak, RabbitMQ, Redis, Postgres/MongoDB, Aspire AppHost and tye.yaml; netstandard2.0 contracts shared
+      across services. Built for Linux containers/Helm. Keycloak.DbMigrator is a run-to-completion seeding job
+      (Kubernetes Job). A.
+      tool (2026-10-30): A. Role: Keycloak.DbMigrator classified worker (role-worker: Exe + AddHostedService, Program.cs:34) although DbMigratorHostedService.cs:42 calls StopApplication() after seeding -> run-to-completion job (console/Job), not a long-running worker.
+
+  - name: rw4-umbraco13
+    url: https://github.com/umbraco/Umbraco-CMS
+    commit: 2ac750821d57c46434430ff129c59143125665fd
+    ref: release-13.16.4
+    expected_rating: A
+    expected_roles: {web: [Umbraco.Web.UI], library: [Umbraco.Web.Common, Umbraco.Web.BackOffice, Umbraco.Web.Website, Umbraco.Cms.StaticAssets, Umbraco.Infrastructure, Umbraco.TestData], tool: [Umbraco.Tests.Benchmarks, Umbraco.JsonSchema]}
+    notes: >-
+      Umbraco 13 LTS (net8.0) contrast to rw-umbraco8. Runs on Linux with SQLite or SQL Server; media, Examine/Lucene
+      indexes and NuCache files under umbraco/ and wwwroot/media need volumes (or blob media + SyncTempEnvDirectoryFactory).
+      MiniDump.cs P/Invokes dbghelp.dll but only on ThreadAbort with DumpOnTimeoutThreadAbort (off by default).
+      templates/ holds dotnet-new template content (UmbracoProject etc.), not part of the product. A.
+      tool (2026-10-30): B. os-named-sync-objects (rules/35-config-os.yaml:359) on Umbraco.Core/SystemLock.cs:52 named Semaphore, only reached from MainDomSemaphoreLock, which throws PlatformNotSupportedException off Windows (Runtime/MainDomSemaphoreLock.cs:23) and is opt-in by config (UmbracoBuilder.CoreServices.cs:314; default is the SQL MainDom lock); os-backslash-path-join on SqlLocalDbDatabaseProviderMetadata.cs:81 (LocalDB provider, Windows-only by design); cfg-localhost-endpoint-in-code (rules/35-config-os.yaml:710) on UmbracoContext.cs:96 `new Uri("http://localhost")`, a null fallback, not an endpoint. All false positives -> A. Role: Umbraco.Infrastructure (the core runtime library) classified tool by role-tool's MSBuild-task clause (rules/00-roles.yaml, package Microsoft.Build.Tasks.Core, used by ModelsBuilder in-memory compilation). templates/UmbracoProject reported as a web component (template content).
+
+  - name: rw4-accountgo
+    url: https://github.com/mebael/accountgo
+    commit: 3fb9d53a58f82099b6e15fd85f8f10015706de36
+    expected_rating: A
+    expected_roles: {web: [AccountGoWeb, Api], library: [Core, Services, Dto, Infrastructure, SampleModule], test: [Module.Tests]}
+    notes: >-
+      Accounting/ERP (GL, AR/AP, inventory, sales/purchasing): netcoreapp3.1 MVC front end + Web API, netstandard2.x
+      domain libraries (Core/Dto/Services use Sdk.Web but OutputType Library). DB server, credentials and API host come
+      from environment variables (Startup.cs:30, Api/Startup.cs:41); Dockerfiles + docker-compose exist. EOL TFM is a
+      retarget note only -> A.
+      tool (2026-10-30): A, roles match (AccountGoWeb ClientApp package.json also reported as spa). OK.
+
+  - name: rw4-orchard1
+    url: https://github.com/OrchardCMS/Orchard
+    commit: 5953441c0b9ed91db83c7cd824aa13016f3c7940
+    expected_rating: C
+    expected_roles: {web: [Orchard.Web], library: [Orchard.Core, Orchard.Framework, Themes, Orchard.Users, Orchard.Azure], tool: [Orchard, MSBuild.Orchard.Tasks]}
+    notes: >-
+      Orchard 1.x CMS: .NET Framework 4.8 ASP.NET MVC5 host (Orchard.Web) + ~70 module projects that use the web
+      application project GUID but are libraries compiled into the host (Dynamic compilation of Modules/*), NHibernate,
+      Lucene.Net, SQL CE as one of the DB options. Orchard.exe (src/Tools/Orchard) is the admin command line that
+      hosts the site in-process. Needs a port to ASP.NET Core (i.e. Orchard Core) -> C.
+      tool (2026-10-30): C, roles match. rewrite from netfx-target/aspnet-mvc5; also msdtc (Web.config system.transactions), efs-ntfs (AppDataFolder.cs:164 GetAccessControl), mig-binaryformatter (SessionConfigurationCache.cs:89). OK.
+
+  - name: rw4-dnn
+    url: https://github.com/dnnsoftware/Dnn.Platform
+    commit: 4565538dad3d3bb0010c757754e8d4d9403e876c
+    expected_rating: C
+    expected_roles: {web: [DotNetNuke.Website], library: [DotNetNuke.Library, DotNetNuke.Web, DotNetNuke.Modules.Html, Dnn.ContactList.Mvc, DotNetNuke.Abstractions, Dnn.PersonaBar.UI], tool: [Build, DotNetNuke.BulkInstall.DeployClient]}
+    notes: >-
+      DNN Platform 10: .NET Framework 4.8 WebForms host (DNN Platform/Website, Global.asax, Default.aspx) + ~70 modules /
+      providers / PersonaBar libraries, several multi-targeted netstandard2.0;net48 abstractions, a net10.0 Cake build
+      and BulkInstall deploy client CLI. App_Data/Database.mdf in the solution items (LocalDB dev default). No
+      Linux runtime for System.Web WebForms -> port -> C.
+      tool (2026-10-30): D. Only blocker is pinvoke-vendor (rules/20-platform.yaml:99) on the vendored log4net source: DotNetNuke.Log4net/log4net/Appender/OutputDebugStringAppender.cs:104 `[DllImport("CoreDll.dll")]` sits in `#if NETCF || NETSTANDARD` (the net48 build uses Kernel32, line 106) and Util/NativeError.cs:233 likewise -- preprocessor branches are not evaluated, so a Windows CE import counts as a vendor DLL. Without it the worst is rewrite (netfx-target, webforms, aspnet-mvc5, windows-identity-impersonation) -> C. Roles match.
+
+  - name: rw4-mojoportal
+    url: https://github.com/i7media/mojoportal
+    commit: 31b4fb1efd121dba2aab58af5ad6b0f30161259e
+    expected_rating: C
+    expected_roles: {web: [mojoPortal.Web], library: [mojoPortal.Business, mojoPortal.Data.MSSQL, mojoPortal.Features.UI, SuperFlexiUI, mojoPortal.Web.Framework]}
+    notes: >-
+      mojoPortal CMS: .NET Framework 4.8.1 WebForms site (Web/, AuthenticationService.svc / RoleService.svc ASP.NET
+      AJAX services) with MSSQL/MySql/SQLite/pgsql data layers; historically also ran on Mono. 26 projects, plugin UI
+      projects are web-app-GUID libraries. WebForms needs a port for a modern Linux runtime -> C.
+      tool (2026-10-30): C. Roles: mojoPortal.Features.UI and SuperFlexiUI (and Plugins.HtmlInclude) classified web by role-web-systemweb from the web-application project GUID although they have no Global.asax and are deployed into Web/ (same pattern as SmartStoreNET plugins). Rating unaffected.
+
+  - name: rw4-rock
+    url: https://github.com/SparkDevNetwork/Rock
+    commit: 7c77ea1e6bd577bf6e4d591e6ff8c4f7cab2ed6b
+    expected_rating: C
+    expected_roles: {web: [RockWeb], worker: [Rock.CloudPrint.Service], desktop: [Rock.CloudPrint.Desktop, CheckScannerUtility, StatementGenerator], tool: [Rock.CodeGeneration, BlockGenerator, RockDbBackupManager], library: [Rock, Rock.Rest, Rock.Blocks, Rock.Common, Rock.ViewModels]}
+    notes: >-
+      Rock RMS (church CRM/ERP), mixed solution: RockWeb is an ASP.NET Web Site project (no csproj; Rock.sln line 6,
+      Global.asax, .aspx/.ashx) on net472 WebForms + Web API 2 (Rock.Rest), with SDK-style net472 libraries, a few
+      net472;net9.0 shared libraries, a net8.0 Worker-SDK CloudPrint proxy (DockerDefaultTargetOS Linux, Windows named-pipe
+      ACL behind OperatingSystem.IsWindows, RuntimeIdentifier win-x64), and WPF/WinForms desktop tools (check scanner,
+      statement generator, CloudPrint tray). Server code uses System.Drawing + ImageResizer (AssetStorageComponent.cs:561)
+      and references PresentationCore/WindowsBase (Rock.csproj:126) -- part of the port. 900 MB clone (~30 s).
+      Web needs a port -> C; worker is A; desktop does not lower.
+      tool (2026-10-30): C, but for the wrong reasons. RockWeb is not found at all: it is a Web Site project (Rock.sln:6, project type E24C65DC-7377-472B-9ABA-BC803B73C61A, no .csproj) and the scanner only reads project files, so the main application is never assessed. C comes from dev tools under `Dev Tools/` (CheckVariableNaming, EnsureCopyrightHeader, Rock.ModelMapBuilder rewrite) and RockInstaller, which role-tool's path clause `(^|/)tools/[^/]+/` misses (capital T, preceded by a space). Roles: Rock.CodeGeneration, BlockGenerator, RockDbBackupManager desktop != tool (WinForms/WPF dev utilities); Rock.JavaScript.* .esproj build-time frontends reported as spa servers. CloudPrint.Service: worker, refactor named-pipes (NamedPipeService.cs:42; the non-Windows branch uses a plain NamedPipeServerStream, i.e. a Unix socket).
+
+  - name: rw4-opencbs
+    url: https://github.com/OpenCBS/OpenCBS-Desktop
+    commit: 3474ff24f0d78e74e43f586a32c2601df39beba4
+    expected_rating: E
+    expected_roles: {desktop: [OpenCBS.GUI, OpenCBS.GUI.Restarter], library: [OpenCBS.Services, OpenCBS.Engine, OpenCBS.CoreDomain, OpenCBS.Manager]}
+    notes: >-
+      Microfinance core banking (loans, savings, accounting) as a .NET 4.0 WinForms two-tier client over SQL Server,
+      20 projects; Services/DbAccess/Remoting.cs is an HTTP .NET Remoting *client* for a server that is not in this
+      repo. No server-side component in the repository (like rw-sharex) -> E.
+      tool (2026-10-30): E, roles match. GUI via role-clickonce; OpenCBS.Stringifier correctly found as SQL CLR ([SqlFunction] in UDF.cs:29, I missed it) -> database tier. OK.
+
+  - name: rw4-systemweb-adapters
+    url: https://github.com/dotnet/systemweb-adapters
+    commit: 036fcaae67314d6837cac9c0f0d649a800832af4
+    expected_rating: C
+    expected_roles: {web: [AppConfigCore, AuthRemoteFormsAuthCore, AuthRemoteIdentityCore, AuthWindowsCore, MachineKeyCore, ModulesCore, SessionLocalCore, SessionRemoteCore, WebFormsToBlazorCore, AppConfigFramework, AuthRemoteFormsAuthFramework, AuthRemoteIdentityFramework, DependencyInjectionFramework, MachineKeyFramework, ModulesFramework, SessionRemoteFramework, WebFormsToBlazorFramework], tool: ["*AppHost"], library: [Microsoft.AspNetCore.SystemWebAdapters, Microsoft.AspNetCore.SystemWebAdapters.FrameworkServices, MachineKeyShared, ModulesLibrary, Samples.ServiceDefaults]}
+    notes: >-
+      Incremental-migration shape: each sample pairs a net481 ASP.NET (MSBuild.SDK.SystemWeb, MVC/WebForms, OWIN)
+      app with an ASP.NET Core app (YARP fallback, remote session/auth to the Framework app) under an Aspire AppHost;
+      shared libraries multi-target netstandard2.0 + modern. The Core halves are Linux-ready (AuthWindowsCore uses
+      Negotiate, which needs a keytab; LogonUserIdentity behind OperatingSystem.IsWindows); the Framework halves are
+      System.Web and need the port the samples demonstrate -> C.
+      tool (2026-10-30): D. (1) The scanner ignores Condition on <Reference>/<ProjectReference> (containerizer/scan.py:357-368 drop the `cond` that _msbuild_elements yields), so in multi-targeted projects TFM-specific references are flattened: Aspire.Microsoft.AspNetCore.SystemWebAdapters.csproj:19 (CoreServices, net8+ only) and :23-24 (FrameworkServices + System.Web, net472 only) make every Core sample inherit aspnet-mvc5/netfx-library and every Framework sample inherit CoreServices findings (via Samples.ServiceDefaults). (2) pinvoke-vendor blocker on CoreServices/NativeMethods.cs:19 `[DllImport("aspnetcorev2_inprocess.dll")]` is only called after IsAspNetCoreModuleLoaded() (NativeMethods.cs:24 `OperatingSystem.IsWindows() && ...`, caller HostingRuntimeExtensions.cs:73) -- an indirect guard the unguarded check does not follow. Without these the Core samples are A/B and the Framework samples rewrite -> C. Roles match.

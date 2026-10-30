@@ -429,6 +429,118 @@ def parse_generic(path: Path, root: Path, kind: str) -> Project:
     return pr
 
 
+# --------------------------------------------------------------------------- build-time executables
+
+MSBUILD_FILE_EXT = (".proj", ".targets", ".props") + DOTNET_PROJ_EXT
+SCRIPT_FILE_EXT = (".sh", ".ps1", ".psm1", ".cmd", ".bat")
+_EXEC_TAG_RE = re.compile(r"<Exec\b([^>]*)>", re.S)
+_ATTR_RE = r"""\b{}\s*=\s*(?:"([^"]*)"|'([^']*)')"""
+# the executable of one command segment: `dotnet [exec] path/Name.dll`, `"path\Name.exe" args`
+_RUN_DLL_RE = re.compile(r'^\s*(?:call\s+|&\s*)?"?dotnet(?:\.exe)?"?\s+(?:exec\s+)?"?(?:[^"\s]*[\\/])?([\w.\-]+)\.dll"?(?:\s|$)', re.I)
+_RUN_EXE_RE = re.compile(r'^\s*(?:call\s+|&\s*)?"?(?:[^"\s]*[\\/])?([\w.\-]+)\.exe"?(?:\s|$)', re.I)
+_DOTNET_RUN_RE = re.compile(r'^\s*(?:&\s*|exec\s+)?"?(?:[^"\s]*[\\/])?dotnet(?:\.exe)?"?\s+run\b(.*)$', re.I)
+_RUN_PROJECT_RE = re.compile(r'(?:--project|-p)\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))')
+_CD_RE = re.compile(r"^\s*(?:cd|chdir|pushd|Push-Location|Set-Location)\b\s*(.*)$", re.I)
+
+
+def _resolve_dir(base: Path | None, arg: str) -> Path | None:
+    """Directory a script's `cd`/`--project` argument points at, or None when it cannot be known."""
+    if base is None:
+        return None
+    a = re.sub(r"\bJoin-Path\b|\$PSScriptRoot|%~dp0|\$\(dirname\s+\"?\$0\"?\)|\$\(MSBuildThisFileDirectory\)|"
+               r"\$\(MSBuildProjectDirectory\)|\$\(ProjectDir\)|-Path\b|/d\b", " ", arg)
+    toks = [t for t in re.split(r"[\s()\"';]+", a) if t]
+    if not toks:
+        return None
+    t = toks[-1].replace("\\", "/")
+    if "$" in t or "%" in t or t.startswith(("/", "~")) or re.match(r"^[A-Za-z]:", t):
+        return None
+    return (base / t).resolve()
+
+
+def _projects_at(path: Path | None, by_path: dict, by_dir: dict) -> list:
+    if path is None:
+        return []
+    if path in by_path:
+        return [by_path[path]]
+    return by_dir.get(path, [])
+
+
+def _mark_build_time_runs(projects: list[Project], files: list[Path], root: Path) -> None:
+    """Mark .NET executables that the repository's own build or developer scripts run.
+
+    * RunByBuild: an MSBuild <Exec> in another project/targets file runs the built program
+      (`dotnet Name.dll`, `Name.exe`, `dotnet run --project ...`), so it is a build-time helper
+      (a post-build cleaner, a module packer, a schema generator), not a deployable.
+    * RunFromSourceBy: a repository script starts it with `dotnet run`, i.e. compiled from a
+      source checkout with the SDK, the way developer utilities are run; deployed programs are
+      published and started from binaries. (Only `dotnet run`: `dotnet Name.dll` in a script is
+      how a deployed program is started.)
+    The value is the file that runs it, so the role rule can show its evidence."""
+    exes = [p for p in projects if p.kind_hint == "dotnet" and (p.output_type or "").lower() in ("exe", "winexe")]
+    if not exes:
+        return
+    by_name: dict[str, list[Project]] = {}
+    for p in exes:
+        by_name.setdefault((p.assembly_name or p.name).lower(), []).append(p)
+    by_path = {p.path.resolve(): p for p in exes}
+    by_dir: dict[Path, list[Project]] = {}
+    for p in exes:
+        by_dir.setdefault(p.dir.resolve(), []).append(p)
+
+    def mark(ps, key, f):
+        for p in ps:
+            if p.path.resolve() != f.resolve():
+                p.properties.setdefault(key, str(f.relative_to(root)))
+
+    import html
+    for f in files:
+        n = f.name.lower()
+        if n.endswith(MSBUILD_FILE_EXT):
+            txt = read_text(f, strip_comments=f.suffix.lower() in (".csproj", ".vbproj"))
+            if "<Exec" not in txt:
+                continue
+            txt = _XML_COMMENT_RE.sub("", txt)
+            for m in _EXEC_TAG_RE.finditer(txt):
+                attrs = m.group(1)
+                cm = re.search(_ATTR_RE.format("Command"), attrs)
+                if not cm:
+                    continue
+                cmd = html.unescape(cm.group(1) if cm.group(1) is not None else cm.group(2))
+                wm = re.search(_ATTR_RE.format("WorkingDirectory"), attrs)
+                cwd = _resolve_dir(f.parent, html.unescape(wm.group(1) or wm.group(2) or "")) if wm else f.parent.resolve()
+                for seg in re.split(r"&&|\|\||\r?\n", cmd):
+                    hit = _RUN_DLL_RE.match(seg) or _RUN_EXE_RE.match(seg)
+                    if hit:
+                        mark(by_name.get(hit.group(1).lower(), []), "RunByBuild", f)
+                        continue
+                    run = _DOTNET_RUN_RE.match(seg)
+                    if run:
+                        pm = _RUN_PROJECT_RE.search(re.split(r"\s--(?:\s|$)", run.group(1))[0])
+                        target = _resolve_dir(cwd, next(g for g in pm.groups() if g)) if pm else cwd
+                        mark(_projects_at(target, by_path, by_dir), "RunByBuild", f)
+        elif n.endswith(SCRIPT_FILE_EXT):
+            txt = read_text(f)
+            if not re.search(r"dotnet(\.exe)?\"?\s+run\b", txt, re.I):
+                continue
+            cwd: Path | None = f.parent.resolve()
+            for line in txt.splitlines():
+                s = line.strip()
+                if not s or s.startswith(("#", "::", "REM ", "rem ")):
+                    continue
+                cdm = _CD_RE.match(s)
+                if cdm:
+                    cwd = _resolve_dir(cwd, cdm.group(1))
+                    if cwd is not None and not cwd.is_dir():
+                        cwd = None
+                    continue
+                run = _DOTNET_RUN_RE.match(s)
+                if run:
+                    pm = _RUN_PROJECT_RE.search(re.split(r"\s--(?:\s|$)", run.group(1))[0])
+                    target = _resolve_dir(cwd, next(g for g in pm.groups() if g)) if pm else cwd
+                    mark(_projects_at(target, by_path, by_dir), "RunFromSourceBy", f)
+
+
 def scan(root: str | Path) -> Repo:
     root = Path(root).resolve()
     files = walk(root)
@@ -478,6 +590,8 @@ def scan(root: str | Path) -> Repo:
                          and p.path.resolve() in q.project_refs), None)
             if host is not None:
                 p.properties["HostedBy"] = host.rel
+
+    _mark_build_time_runs(projects, files, root)
 
     readme = ""
     for cand in ("README.md", "readme.md", "README.txt", "README"):

@@ -47,6 +47,22 @@ rules:
             - package: '(NSwag|NJsonSchema)\.CodeGeneration(\.\w+)*'
             - output_type: 'Exe'
             - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
+        # an executable the repository's own build runs from an MSBuild <Exec> (a post-build
+        # cleaner, module packer, schema generator) is a build-time helper; RunByBuild names that
+        # build file (set by the scanner)
+        - all:
+            - property: {RunByBuild: '.+'}
+            - output_type: 'Exe'
+            - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
+        # an executable that the repository's scripts start with `dotnet run` (compiled from the
+        # checkout with the SDK) is a developer utility; deployed programs are published and
+        # started from binaries. RunFromSourceBy names the script. Hosted services stay workers.
+        - all:
+            - property: {RunFromSourceBy: '.+'}
+            - output_type: 'Exe'
+            - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
+            - not: {framework_ref: 'Microsoft\.AspNetCore\.App'}
+            - not: {code: '\bAddHostedService\b|:\s*BackgroundService\b|\bIHostedService\b|\bServiceBase\b|\bHostFactory\.Run\b|\bUseWindowsService\b|\bUseSystemd\b'}
         # version-control hook executables (svn/hg/git hooks) are invoked by the VCS server per commit
         - all:
             - name: '[.\-]\w*(?<!web)Hooks?$'
@@ -317,6 +333,37 @@ rules:
             - package: Microsoft\.Owin\.(Host\.HttpListener|Hosting|SelfHost)|Microsoft\.AspNet\.WebApi\.OwinSelfHost|Nancy\.Hosting\.Self
             - code: '\bWebApp\.Start\b|\bHttpSelfHostServer\b'
         - not: {code: '\bServiceBase\b|HostFactory\.Run'}
+
+  # A plain console Exe that opens a listening endpoint and then blocks forever is a long-running
+  # server (a Deployment), not a run-once job (a CronJob). The listener and the wait must be in the
+  # same file (the Main that starts it), so a client that connects somewhere and waits for a key
+  # press stays a console app: a Remoting client registers a channel too, but no service type and
+  # no port. HTTP self-hosts (WebApp.Start, HttpSelfHostServer) are web via role-web-selfhost.
+  - id: role-network-listener
+    phase: role
+    role: worker
+    priority: 52
+    when:
+      all:
+        - output_type: Exe
+        - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
+        - any:
+            - all:
+                # .NET Remoting server: publishes objects for remote callers
+                - code: '\bRemotingConfiguration\.Register(WellKnownServiceType|ActivatedServiceType)\s*\(|\bRemotingServices\.Marshal\s*\('
+                - code: &listener_wait '\bConsole\.Read(Line|Key)?\s*\(|\.WaitOne\s*\(\s*\)|\bThread\.Sleep\s*\(\s*(Timeout\.Infinite|-1)\s*\)|\bTask\.Delay\s*\(\s*(Timeout\.Infinite|-1)\s*\)|\bwhile\s*\(\s*true\s*\)|\bfor\s*\(\s*;\s*;\s*\)'
+              same_file: true
+            - all:
+                # raw socket / HttpListener server; a single GetContext() without a loop or wait
+                # (a CLI catching an OAuth redirect on localhost) does not count
+                - code: '\bnew\s+TcpListener\s*\(|\bTcpListener\.Create\s*\(|\bnew\s+HttpListener\s*\(|\bnew\s+UdpClient\s*\(\s*\d+\s*\)|\.Listen\s*\(\s*(\d+|\w*[Bb]acklog\w*|int\.MaxValue|SocketOptionName\.MaxConnections)\s*\)'
+                - code: *listener_wait
+              same_file: true
+            # Remoting server configured from the .config file (<service><wellknown .../>)
+            - all:
+                - code: '\bRemotingConfiguration\.Configure\s*\('
+                - config: '<service>\s*<(wellknown|activated)\b'
+                - code: *listener_wait
 
   - id: role-worker
     phase: role

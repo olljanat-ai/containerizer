@@ -63,7 +63,7 @@ rules:
         - not: {role: 'test|desktop'}
         - any:
             - code: >-
-                ^(?=[^\n]*(?:path|file|folder|dir|root|relative|upload|attachment|archive|export|import|inbox|outbox|\.(?:txt|csv|xml|json|log|pdf|dat|xlsx?)\b))(?![^\n]*(?:domain|samaccount|netbios|username|account|role|group|ManagementScope|subkey|registry|\\\\\\\\|@\"\\\\))[^\n]*?(?:\+\s*"\\\\"\s*\+|\+\s*@"\\"\s*\+|\+\s*'\\\\'\s*\+|\+\s*"\\\\[\w\- ]+(\.\w{2,4}|\\\\[\w.\- ]+)"|\+\s*@"\\[\w\- ]+(\.\w{2,4}|\\[\w.\- ]+)"|Path\.Combine\([^;)]*(@"[\w.\-]+\\[\w.\-]|(?<!@)"[\w.\-]+\\\\[\w.\-])|\$"[^"\n]*\}\\\\(\{|[\w\- ]+(\.\w{2,4}"|\\\\))|(\$@|@\$)"[^"\n]*\}\\(\{|[\w\- ]+(\.\w{2,4}"|\\))|\.Replace\(\s*("/"\s*,\s*"\\\\"|'/'\s*,\s*'\\\\'|"/"\s*,\s*@"\\")\s*\))
+                ^(?!\s*(?:(?:var|bool)\s+\w+\s*=|if\s*\(|return\b|\w+\s*=)\s*[\w.]*?(?:File|Directory)?Exists\s*\()(?![^\n]*\b(?:TryGetValue|ContainsKey|GetEntry)\s*\([^\n]*\.Replace\()(?=[^\n]*(?:path|file|folder|dir|root|relative|upload|attachment|archive|export|import|inbox|outbox|\.(?:txt|csv|xml|json|log|pdf|dat|xlsx?)\b))(?![^\n]*(?:domain|samaccount|netbios|username|account|role|group|ManagementScope|subkey|registry|\\\\\\\\|@\"\\\\))[^\n]*?(?:\+\s*"\\\\"\s*\+|\+\s*@"\\"\s*\+|\+\s*'\\\\'\s*\+|\+\s*"\\\\[\w\- ]+(\.\w{2,4}|\\\\[\w.\- ]+)"|\+\s*@"\\[\w\- ]+(\.\w{2,4}|\\[\w.\- ]+)"|Path\.Combine\([^;)]*(@"[\w.\-]+\\[\w.\-]|(?<!@)"[\w.\-]+\\\\[\w.\-])|\$"[^"\n]*\}\\\\(\{|[\w\- ]+(\.\w{2,4}"|\\\\))|(\$@|@\$)"[^"\n]*\}\\(\{|[\w\- ]+(\.\w{2,4}"|\\))|\.Replace\(\s*("/"\s*,\s*"\\\\"|'/'\s*,\s*'\\\\'|"/"\s*,\s*@"\\")\s*\))
               in: ['*.cs', '*.cshtml', '*.razor']
             - code: '^(?=[^\n]*(?:path|file|folder|dir|root))(?![^\n]*(?:domain|username|account))[^\n]*?(?:&\s*"\\"\s*&|&\s*"\\[\w\- ]+\.\w{2,4}")'
               in: ['*.vb']
@@ -76,9 +76,42 @@ rules:
       '\' is a valid file-name character on Linux, not a separator. folder + "\\" + name or
       Path.Combine(root, "Logs\\app.log") produce names like "/data/Logs\app.log": the file is
       created next to the intended folder, or not found at all.
+      Rated refactor because a write or read at the wrong name fails or loses data; a path that is
+      only probed with File.Exists/Directory.Exists is reported separately as os-backslash-path-probe
+      (info), since there the code just takes its "file missing" branch. A `.Replace('/', '\\')`
+      inside a dictionary/archive lookup (TryGetValue, ContainsKey, GetEntry) is a key fallback for
+      zip entries written by Windows tools, not a file-system path, and is not reported.
     fix: >-
       Use Path.Combine with separate segments, Path.DirectorySeparatorChar, or '/' (which works
       on Windows too). Normalise stored relative paths with path.Replace('\\', '/').
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/api/system.io.path.directoryseparatorchar
+      - https://learn.microsoft.com/en-us/dotnet/standard/io/file-path-formats
+
+  # The same mistake where the mis-joined path is only tested for existence (assigned to a bool, an
+  # `if (...Exists(...))` or a return): on Linux the test is simply false.
+  - id: os-backslash-path-probe
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop'}
+        - code: >-
+            ^\s*(?:(?:var|bool)\s+\w+\s*=|if\s*\(|return\b|\w+\s*=)\s*[\w.]*?(?:File|Directory)?Exists\s*\([^\n]*?(?:\+\s*"\\\\"\s*\+|\+\s*@"\\"\s*\+|\+\s*'\\\\'\s*\+|\+\s*"\\\\[\w\- ]+(\.\w{2,4}|\\\\[\w.\- ]+)"|\+\s*@"\\[\w\- ]+(\.\w{2,4}|\\[\w.\- ]+)"|Path\.Combine\([^;)]*(@"[\w.\-]+\\[\w.\-]|(?<!@)"[\w.\-]+\\\\[\w.\-])|\$"[^"\n]*\}\\\\(\{|[\w\- ]+(\.\w{2,4}"|\\\\))|(\$@|@\$)"[^"\n]*\}\\(\{|[\w\- ]+(\.\w{2,4}"|\\))|\.Replace\(\s*("/"\s*,\s*"\\\\"|'/'\s*,\s*'\\\\'|"/"\s*,\s*@"\\")\s*\))
+          in: ['*.cs', '*.cshtml', '*.razor']
+    severity: info
+    category: storage
+    effort: 0.25
+    windows_container: true
+    title: Existence check on a path built with backslashes
+    why: >-
+      '\' is not a directory separator on Linux, so File.Exists / Directory.Exists on a name built
+      with "\\" (folder + "\\" + name, $"{dir}\\{file}") is always false in a Linux container
+      and the code takes its "not found" branch: typically an optional file (a localized resource,
+      an override, a plugin asset) is silently skipped. Rated info rather than refactor because the
+      app keeps running; check what that branch does, and treat it as a refactor if the file is
+      required.
+    fix: >-
+      Build the path with Path.Combine(dir, file) or '/' (which works on Windows too).
     refs:
       - https://learn.microsoft.com/en-us/dotnet/api/system.io.path.directoryseparatorchar
       - https://learn.microsoft.com/en-us/dotnet/standard/io/file-path-formats
