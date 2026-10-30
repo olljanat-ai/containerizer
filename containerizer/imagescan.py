@@ -57,6 +57,7 @@ class ScanResult:
     vulns: list[Vuln] = field(default_factory=list)
     error: str = ""
     os: str = ""
+    notes: list[str] = field(default_factory=list)      # scanners that failed when others worked
 
     def counts(self, fixed_only: bool = False) -> dict:
         out = {s: 0 for s in ("CRITICAL", "HIGH", "MEDIUM", "LOW")}
@@ -157,6 +158,8 @@ def scan_image(ref: str, scanner: str = "auto", local: bool = False) -> ScanResu
 
 
 def _scan_image(ref: str, scanner: str, local: bool) -> ScanResult:
+    if scanner == "all":
+        return _scan_all(ref, local)
     sc = scanner_command(scanner)
     if not sc:
         return ScanResult(ref, error="no scanner: install trivy or grype, or make docker available")
@@ -174,6 +177,33 @@ def _scan_image(ref: str, scanner: str, local: bool) -> ScanResult:
         return ScanResult(ref, name, error=(err or out).strip()[-600:] or f"{name} exited with {rc}")
     os_ = (data.get("Metadata") or {}).get("OS") or (data.get("distro") or {})
     return ScanResult(ref, name, parse(data), os=f"{os_.get('Family', os_.get('name', ''))} {os_.get('Name', os_.get('version', ''))}".strip())
+
+
+def _scan_all(ref: str, local: bool) -> ScanResult:
+    """Scan with every available scanner and merge: databases differ, so the union finds more.
+    A finding seen by several scanners keeps the highest severity and any fixed version."""
+    results = [_scan_image(ref, s["name"], local) for s in security()["scan"]["scanners"]
+               if scanner_command(s["name"])]
+    ok = [r for r in results if not r.error]
+    if not ok:
+        return ScanResult(ref, "+".join(r.scanner for r in results if r.scanner) or "none",
+                          error="; ".join(r.error for r in results) or "no scanner available")
+    merged: dict = {}
+    for r in ok:
+        for v in r.vulns:
+            k = (v.id, v.package)
+            cur = merged.get(k)
+            if cur is None:
+                merged[k] = v
+            else:
+                if RANK.get(v.severity, 0) > RANK.get(cur.severity, 0):
+                    cur.severity = v.severity
+                cur.fixed = cur.fixed or v.fixed
+    res = ScanResult(ref, "+".join(r.scanner for r in ok), list(merged.values()), os=ok[0].os)
+    failed = [f"{r.scanner or '?'}: {r.error[:200]}" for r in results if r.error]
+    if failed:
+        res.notes = failed
+    return res
 
 
 # --------------------------------------------------------------------------- policy
@@ -564,9 +594,13 @@ def run_as_manifest(tag: str, k8s_docs: list[dict], wait: int = 40) -> dict:
 
 def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str = "auto",
              fail_on: str | None = None, registry: str = "registry.local", pin: bool = False,
-             base_cache: dict | None = None, run: bool = False) -> dict:
+             base_cache: dict | None = None, run: bool = False, refresh: bool = True) -> dict:
     from .generate import generate_app, k8s_name
 
+    age = lock_age_days()
+    if refresh and scan and age is not None and age > security()["images"].get("lock_max_age_days", 14):
+        # the gate runs rarely per repository: pick today's patched base images rather than a stale lock
+        update_images(scan=True, scanner=scanner)
     generate_app(a, out, registry=registry, pin=pin)
     pol = policy(fail_on)
     base_cache = base_cache if base_cache is not None else {}
@@ -625,6 +659,7 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
 
 def _scan_entry(res: ScanResult, ev: dict, kind: str) -> dict:
     return {"kind": kind, "image": res.image, "scanner": res.scanner, "os": res.os, "error": res.error,
+            "scanner_notes": res.notes,
             "passed": ev["passed"], "counts": res.counts(), "fixable": res.counts(fixed_only=True),
             "blocking": [asdict(v) for v in ev["blocking"]], "accepted": ev["accepted"],
             "expired_allowlist": ev["expired_allowlist"], "patched": ev.get("patched", []),
@@ -661,7 +696,8 @@ def security_markdown(r: dict) -> str:
         errs = [v for v in c["lint"] if v["severity"] != "info"]
         app_fix = sorted({x for s in c["scans"] for x in s["app_fixable"]})
         hard = (c.get("run") or {}).get("status") == "hardening-failure"
-        if not (block or errs or app_fix or c.get("os_patch") or c.get("build_error") or hard):
+        notes = any(s.get("scanner_notes") for s in c["scans"])
+        if not (block or errs or app_fix or c.get("os_patch") or c.get("build_error") or hard or notes):
             continue
         lines += ["", f"## {c['component']}", ""]
         if hard:
@@ -684,6 +720,8 @@ def security_markdown(r: dict) -> str:
         for v in errs:
             lines.append(f"- [{v['severity']}] {v['check']}: {v['message']} ({v['target']})")
         for s in c["scans"]:
+            for n in s.get("scanner_notes") or []:
+                lines.append(f"- scanner unavailable for `{s['image']}` (others were used): {n}")
             if s["error"]:
                 lines.append(f"- scan error for `{s['image']}`: {s['error'][:300]}")
     return "\n".join(lines) + "\n"

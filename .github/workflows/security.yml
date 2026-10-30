@@ -23,7 +23,7 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
       - name: Security gate
-        run: python -m containerizer gate examples/ci-demo --out out --build
+        run: python -m containerizer gate examples/ci-demo --out out
       - name: Job summary
         if: always()
         run: cat out/*/SECURITY.md >> "$GITHUB_STEP_SUMMARY" || true

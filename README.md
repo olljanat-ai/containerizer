@@ -39,8 +39,9 @@ python -m containerizer verify ../containerization-challenge/scenarios/parts-cat
 # ask Claude about the components the rules are unsure of
 python -m containerizer assess ../containerization-challenge/scenarios/document-control --ai --model claude-sonnet-5-5
 
-# security gate: lint the generated manifests, scan the images (Trivy or Grype), fail on fixable CRITICAL CVEs
-python -m containerizer gate ../containerization-challenge/scenarios/parts-catalog --out out/ --build
+# security gate: lint the manifests, build + scan the images (Trivy and Grype), run them hardened,
+# fail on fixable CRITICAL CVEs (--no-build: scan only the base images)
+python -m containerizer gate ../containerization-challenge/scenarios/parts-catalog --out out/
 python -m containerizer images --update        # pick patched base image tags -> rules/images.lock.yaml
 
 # measure against the hand-made labels
@@ -197,12 +198,17 @@ limits, image tags and NetworkPolicies, and the Dockerfiles for a non-root final
 images, `ADD <url>`/`curl | sh` and base image end of support. Errors fail the gate. A pod annotation
 `containerizer.io/waives: "check,check"` relaxes named checks for hand-made exceptions.
 
-**Vulnerability scan.** `gate` scans the final base image of every component, and with `--build` also
-builds and scans the image itself; findings missing from the base are attributed to the application's
+The tool is meant to be run once or a few times per repository, so `gate` favours accuracy over
+speed: by default it builds every image, scans it with every available scanner and merges the
+results, and starts it with the docker equivalent of its pod spec (user, read-only root, dropped
+capabilities, sysctls, `emptyDir` mounts) to prove the exceptions are enough; read-only or permission
+errors in the log fail the gate. A lock older than 14 days is refreshed first.
+
+**Vulnerability scan.** `gate` scans the final base image of every component and the built image; findings missing from the base are attributed to the application's
 own packages (upgrade them) rather than the base (bump it). It fails on vulnerabilities at or above
 `scan.fail_on` (default `CRITICAL`, `--fail-on HIGH` to tighten) that have a fix; accepted risks go in
 `scan.allowlist` with a reason and an expiry date. Trivy is used if installed, then Grype, then either
-one as a container (`aquasec/trivy`, `anchore/grype`). When even the newest base tag still ships a
+one as a container (`aquasec/trivy`, `anchore/grype`); `scan.default_scanner: all` uses all of them. When even the newest base tag still ships a
 vulnerable OS package with a fix, the gate upgrades just that package in the final stage (`apk upgrade`
 / `apt-get --only-upgrade`; chiseled images have no package manager and need a newer tag). Results go
 to `SECURITY.md` and `security.json` next to the generated files.

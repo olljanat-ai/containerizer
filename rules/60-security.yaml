@@ -148,7 +148,10 @@ lint:
 scan:
   fail_on: CRITICAL           # lowest severity that fails the gate (UNKNOWN LOW MEDIUM HIGH CRITICAL)
   ignore_unfixed: true        # only vulnerabilities with a fixed version count against the gate
-  scanners:                   # tried in order by `--scanner auto`
+  # `all` scans with every available scanner and merges the findings (their
+  # databases differ, so the union misses less); `auto` uses the first one.
+  default_scanner: all
+  scanners:                   # in order of preference
     - name: trivy
       binary: trivy
       image: aquasec/trivy:0.67.2
