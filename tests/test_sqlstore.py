@@ -360,4 +360,12 @@ def test_import_json(db, tmp_path):
     assert cur.fetchone()["Rating"] == "E"
     cur.execute("SELECT COUNT(*) AS N FROM cz.vFindingLatest WHERE ApplicationName = N'importme' AND Severity = 'blocker'")
     assert cur.fetchone()["N"] >= 1
+    # migration assistant: plan and AI agent prompt, readable by the UI login
+    cur.execute("SELECT ApplicationId FROM cz.vApplicationLatest WHERE ScanName = N'importme'")
+    app_id = cur.fetchone()["ApplicationId"]
+    migs = webui.load_migrations(rd, app_id)
+    assert len(migs) == 1 and migs[0]["ItemCount"] >= 1
+    assert "replace-office-automation" in migs[0]["PlanJson"]
+    assert migs[0]["AgentPrompt"].startswith("# Task: make `Web`")
+    assert "Prompt for an AI coding agent" in webui.render_application(webui.load_application(rd, app_id))
     rd.close()

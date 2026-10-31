@@ -18,7 +18,7 @@ main obstacles and, for every component, what needs to change, why, and where to
 ```
 BusinessUnit 1─* Product 1─* Application 1─* Component            administrators / scan
                              Application 1─* ApplicationAssessment   one per scan
-                                              1─* ComponentAssessment
+                                              1─* ComponentAssessment 0─1 ComponentMigration   plan, AI agent prompt
                                               1─* Finding            why, fix, references
 AuditLog                                                             every mapping change
 AccessLog                                                            who looked at what (optional)
@@ -164,6 +164,10 @@ GROUP BY Title, Severity ORDER BY Applications DESC;
 -- components of one application
 SELECT ComponentName, Role, Verdict, VerdictText, EffortDays, VerifyStatus
 FROM containerizer.vComponentLatest WHERE ApplicationName = N'parts-catalog';
+
+-- migration assistant: effort to move the not-ready components, and their AI coding agent prompts
+SELECT ApplicationName, ComponentName, Outcome, EffortDays, ItemCount, AgentPrompt
+FROM containerizer.vComponentMigrationLatest ORDER BY EffortDays;
 ```
 
 ## Web UI
@@ -183,6 +187,12 @@ or the `web` service of `results/compose.yaml` / the image built from `results/D
 - **Application**: rating and what it means, readiness, effort, confidence, main obstacles, the
   components (what each one is and its verdict), and per component every item to change with why, how
   to fix it and links to the documentation; the rating history.
+- **Migration assistant** (per component that is not ready): the concrete replacements from
+  [`rules/migrations.yaml`](../rules/migrations.yaml) (what to replace with what, packages, effort,
+  references) and a **prompt for an AI coding agent** (Claude Code, GitHub Copilot, ...) with the
+  findings and their evidence, the plan, constraints (minimal changes, security, container readiness)
+  and how to verify. Copy it with the button, or open it as plain text at
+  `/app/<id>/component/<id>/agent-prompt.md`.
 - **Trends** (`/trends`, linked from the overview): how the portfolio changed from scan to scan. The
   headline numbers compare now with the start of the range (applications assessed, ready now, obstacles
   that cannot run in a Linux container, how many applications got a better or worse rating), then the
@@ -205,6 +215,8 @@ reader role can select (schema version 3; run `db init` after upgrading).
 
 ![Trends: headline changes, rating mix and obstacles over time, rating history per application](images/results-trends.png)
 
+![Migration assistant of a component: replacements with effort, and the prompt for an AI coding agent](images/results-migration-assistant.png)
+
 <details><summary>Dark mode</summary>
 
 ![Overview in dark mode](images/results-overview-dark.png)
@@ -215,8 +227,9 @@ reader role can select (schema version 3; run `db init` after upgrading).
 
 The results pages need no sign-in unless you [turn it on](#sign-in-for-the-results-pages-optional),
 and only read (through the reader login). Pages are rendered on the
-server without JavaScript; all text is escaped; responses carry a strict Content-Security-Policy
-(`default-src 'none'`), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: same-origin` and
+server; the only script is the prompt's copy button (`/static/app.js`, `script-src 'self'`, everything
+works without it); all text is escaped; responses carry a strict Content-Security-Policy
+(`default-src 'none'`, no inline script), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: same-origin` and
 `no-store`; errors are logged on the server and never shown. Run it behind a TLS-terminating reverse
 proxy or ingress, and keep it off the internet.
 

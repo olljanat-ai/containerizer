@@ -103,6 +103,17 @@ def migration_markdown(a: AppAssessment) -> str:
                 L.append(f"  - Learn more: {refs_md(refs_of(f))}")
         if any(r.get("finding") for r in ver):
             L.append("")
+    plans = a.migration_plans()
+    if plans:
+        from .migrate import plan_markdown, prompt_filename
+        L += ["## Migration assistant", "",
+              "Concrete replacements for what keeps each component out of a Linux container, with effort estimates "
+              "(rules/migrations.yaml). Each component that can be changed also gets a ready-to-use prompt for an "
+              f"AI coding agent: `agent-prompts/{prompt_dir(a.name)}/<component>.md` next to this report.", ""]
+        for plan in plans.values():
+            L += plan_markdown(plan)
+            if plan.get("prompt"):
+                L += [f"AI agent prompt: `agent-prompts/{prompt_dir(a.name)}/{prompt_filename(plan['component'])}`", ""]
     other = [c for c in a.libraries if any(f.severity in ("blocker", "rewrite") for f in c.findings)]
     if other:
         L += ["## Libraries with notable findings", ""]
@@ -110,6 +121,23 @@ def migration_markdown(a: AppAssessment) -> str:
             L.append(f"- {c.name}: " + ", ".join(sorted({f.rule.title for f in c.findings if f.severity in ('blocker', 'rewrite', 'refactor')})))
         L.append("")
     return "\n".join(L)
+
+
+def prompt_dir(app: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", app).strip("-") or "app"
+
+
+def write_agent_prompts(a: AppAssessment, out: Path) -> list[Path]:
+    """agent-prompts/<app>/<component>.md: the AI coding agent prompt of every component that has one."""
+    from .migrate import prompt_filename
+    written = []
+    for plan in a.migration_plans().values():
+        if plan.get("prompt"):
+            f = out / "agent-prompts" / prompt_dir(a.name) / prompt_filename(plan["component"])
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(plan["prompt"])
+            written.append(f)
+    return written
 
 
 def portfolio_markdown(results: list[AppAssessment]) -> str:
@@ -162,6 +190,7 @@ def write_reports(results: list[AppAssessment], out: Path, fmt: str = "md,html,j
         (out / "portfolio.md").write_text(portfolio_markdown(results))
         for a in results:
             (out / f"{a.name}.md").write_text(migration_markdown(a))
+            write_agent_prompts(a, out)
     if "html" in fmts:
         (out / "portfolio.html").write_text(portfolio_html(results))
     if "json" in fmts:

@@ -175,6 +175,33 @@ list of verified https links (docs page, upstream issue, vendor statement) shown
 commented allowlist.
 Later files override earlier rules with the same id; `rules/learned/` is loaded last.
 
+### Migration assistant
+
+For every component that is not ready (verdict refactor, rewrite or blocker), each blocking finding is
+mapped to a concrete Linux-compatible replacement from [`rules/migrations.yaml`](rules/migrations.yaml):
+System.Drawing → SkiaSharp/ImageSharp, WCF → CoreWCF, Windows Service → worker service, Office
+automation → Open XML SDK/ClosedXML, registry → configuration, Event Log → ILogger, MSMQ → a broker,
+and so on, with packages to add and remove, steps, checks, an effort estimate and references. Parts
+with no Linux replacement (desktop UI, hardware, vendor COM SDKs, BizTalk) are marked "keep on Windows"
+instead of being forced into a code change.
+
+```yaml
+- id: replace-system-drawing
+  for: [system-drawing-core, pkg-mschart, pkg-qrcoder-gdi]
+  kind: replace                    # replace | port | externalize | isolate
+  replace: System.Drawing (GDI+)
+  with: SkiaSharp or ImageSharp for images, QuestPDF for documents
+  packages: {add: [SkiaSharp, SkiaSharp.NativeAssets.Linux.NoDependencies], remove: [System.Drawing.Common]}
+  steps: [...]
+  verify: [...]
+```
+
+The plan is rendered as a self-contained **prompt for AI coding agents** (Claude Code, GitHub Copilot,
+...): the findings with their evidence, the replacements in order, constraints (minimal changes,
+no secrets in code, non-root and read-only file system) and how to verify. It is written to
+`agent-prompts/<app>/<component>.md` next to the reports, summarised in `<app>.md` / `MIGRATION.md`,
+included in `assessment.json`, stored in the results database and shown with a copy button in the web UI.
+
 ### Self-learning loop (`verify --learn`)
 
 For each component that can be containerized the tool:
