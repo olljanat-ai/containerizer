@@ -514,7 +514,9 @@ GO
 INSERT [${schema}].LabService (Name, Title, Enabled)
 SELECT v.Name, v.Title, v.Enabled
 FROM (VALUES (N'sqlserver', N'SQL Server', 1), (N'postgres', N'PostgreSQL', 0), (N'redis', N'Redis', 0),
-             (N's3', N'S3 object storage', 0), (N'azure-blob', N'Azure Blob storage', 0)) v (Name, Title, Enabled)
+             (N's3', N'S3 object storage', 0), (N'azure-blob', N'Azure Blob storage', 0), (N'mysql', N'MySQL', 0),
+             (N'mongodb', N'MongoDB', 0), (N'rabbitmq', N'RabbitMQ', 0), (N'kafka', N'Kafka', 0), (N'sftp', N'SFTP', 0)
+     ) v (Name, Title, Enabled)
 WHERE NOT EXISTS (SELECT 1 FROM [${schema}].LabService x WHERE x.Name = v.Name);
 GO
 

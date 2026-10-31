@@ -16,11 +16,11 @@ service that is on:
 
 Two kinds of service:
 
-- shared (SQL Server, PostgreSQL): one server; each app gets its own database and login, owner of that
-  database only;
-- per app (Redis, S3, Azure Blob): one small instance per app, because these protocols cannot keep
-  apps apart on one server without code changes (Redis has no per-database ACL; S3 bucket and Azure
-  container names would collide between apps).
+- shared (SQL Server, PostgreSQL, MySQL, MongoDB, RabbitMQ): one server; each app gets its own database and
+  login (RabbitMQ: virtual host and user), with rights on that database only;
+- per app (Redis, S3, Azure Blob, Kafka, SFTP): one small instance per app, because these protocols
+  cannot keep apps apart on one server without code changes (Redis has no per-database ACL; bucket,
+  container and topic names would collide between apps; an SFTP client expects its own root).
 
 Data lives on persistent volumes (k3s local-path storage, on the appliance's persistent partition).
 Turning a service off stops it but keeps the volumes and the credentials, so turning it on again
@@ -69,6 +69,11 @@ class Service:
     memory: tuple[str, str]     # request, limit
     storage: str                # PersistentVolumeClaim request
     summary: str
+    service_port: int = 0       # the Service's port when it differs from the container's (SFTP: 22)
+
+    @property
+    def svc_port(self) -> int:
+        return self.service_port or self.port
 
 
 SERVICES: dict[str, Service] = {s.id: s for s in (
@@ -79,6 +84,9 @@ SERVICES: dict[str, Service] = {s.id: s for s in (
     Service("postgres", "PostgreSQL", "PostgreSQL 18", True, 5432, 70,
             "CZ_IMAGE_LAB_POSTGRES", False, ("256Mi", "1Gi"), "10Gi",
             "One server, a database and role per app (owner of its own database only)."),
+    Service("mysql", "MySQL", "MySQL 8.4 LTS", True, 3306, 999,
+            "CZ_IMAGE_LAB_MYSQL", False, ("512Mi", "1Gi"), "10Gi",
+            "One server, a database and user per app (all rights on its own database only)."),
     Service("redis", "Redis", "Redis 8.8", False, 6379, 999,
             "CZ_IMAGE_LAB_REDIS", False, ("32Mi", "256Mi"), "1Gi",
             "One instance per app with its own password; append-only file on a persistent volume."),
@@ -88,6 +96,18 @@ SERVICES: dict[str, Service] = {s.id: s for s in (
     Service("azure-blob", "Azure Blob storage", "Azurite (Azure Storage emulator), blob service", False, 10000, 1000,
             "CZ_IMAGE_LAB_AZURITE", False, ("64Mi", "512Mi"), "5Gi",
             "One Azurite blob endpoint per app with its own account key."),
+    Service("mongodb", "MongoDB", "MongoDB 8.0 Community", True, 27017, 999,
+            "CZ_IMAGE_LAB_MONGODB", False, ("256Mi", "1Gi"), "10Gi",
+            "One server, a database and user per app (dbOwner of its own database only)."),
+    Service("rabbitmq", "RabbitMQ", "RabbitMQ 4.4", True, 5672, 100,
+            "CZ_IMAGE_LAB_RABBITMQ", False, ("256Mi", "768Mi"), "5Gi",
+            "One broker, a virtual host and user per app (rights on its own virtual host only)."),
+    Service("kafka", "Kafka", "Apache Kafka 4.4 (KRaft, one node)", False, 9092, 1000,
+            "CZ_IMAGE_LAB_KAFKA", False, ("512Mi", "1Gi"), "5Gi",
+            "One single-node broker per app; only the app's namespace can reach it (no client login)."),
+    Service("sftp", "SFTP", "SFTPGo (SFTP server)", False, 2022, 1000,
+            "CZ_IMAGE_LAB_SFTP", False, ("32Mi", "256Mi"), "5Gi",
+            "One SFTP server per app with its own user and password, on port 22.", service_port=22),
 )}
 ORDER = list(SERVICES)
 
@@ -184,6 +204,9 @@ _SQLSERVER = re.compile(r"(?i)\b(Initial Catalog|Integrated Security|Trusted_Con
                         r"\b(Data Source|Server|Addr|Address)\s*=\s*(tcp:)?[^;]*(\\|,\s*\d{2,5}\b)")
 _SERVER_DB = re.compile(r"(?i)\b(Server|Data Source)\s*=[^;]+;.*\bDatabase\s*=")
 _NOT_SQLSERVER = re.compile(r"(?i)\b(Port|Host|SslMode|Ssl Mode|Uid|CharSet|AllowPublicKeyRetrieval)\s*=")
+_MYSQL = re.compile(r"(?i)^\s*mysql://|\b(Server|Host|Data Source)\s*=[^;]+;.*(\b(Uid|Pwd)\s*=|\bPort\s*=\s*3306\b|"
+                    r"\b(AllowPublicKeyRetrieval|CharSet|AllowUserVariables|ConvertZeroDateTime|TreatTinyAsBoolean)\s*=)")
+_ODBC_SQLSERVER = re.compile(r"(?i)\bDriver\s*=\s*\{?[^;]*SQL Server")
 _POSTGRES = re.compile(r"(?i)^\s*postgres(ql)?://|\bHost\s*=[^;]+;.*\b(Username|User ID|User Id|UserName|Database|Port)\s*=|"
                        r"\b(Username|Database|Port)\s*=[^;]*;.*\bHost\s*=")
 _REDIS_OPTS = re.compile(r"(?i)^\s*rediss?://|,\s*(abortConnect|connectTimeout|syncTimeout|allowAdmin|ssl|password|"
@@ -196,22 +219,55 @@ _S3_LEAF = {"serviceurl": "s3:endpoint", "endpoint": "s3:endpoint", "endpointurl
             "serviceuri": "s3:endpoint", "accesskey": "s3:access-key", "accesskeyid": "s3:access-key",
             "secretkey": "s3:secret-key", "secretaccesskey": "s3:secret-key", "region": "s3:region",
             "authenticationregion": "s3:region", "forcepathstyle": "s3:path-style"}
+_MONGO = re.compile(r"(?i)^\s*mongodb(\+srv)?://")
+_AMQP = re.compile(r"(?i)^\s*amqps?://")
+_RABBIT_KEY = re.compile(r"(?i)rabbit|amqp|easynetq")
+# the pieces of a client configuration in its own section: {service: (section, {leaf: secret key})}
+PARTS: dict[str, tuple[re.Pattern, dict[str, str]]] = {
+    "mongodb": (re.compile(r"(?i)(^|:)[^:]*mongo[^:]*:"),
+                {"databasename": "database", "database": "database", "dbname": "database"}),
+    "rabbitmq": (re.compile(r"(?i)(^|:)[^:]*(rabbit|amqp|easynetq)[^:]*:"),
+                 {"host": "host", "hostname": "host", "server": "host", "port": "port", "username": "username",
+                  "user": "username", "password": "password", "virtualhost": "vhost", "vhost": "vhost",
+                  "uri": "connection-string", "url": "connection-string", "amqpuri": "connection-string",
+                  "connectionstring": "connection-string"}),
+    "kafka": (re.compile(r"(?i)(^|:)[^:]*kafka[^:]*:"),
+              {"bootstrapservers": "bootstrap-servers", "brokers": "bootstrap-servers", "brokerlist": "bootstrap-servers",
+               "metadatabrokerlist": "bootstrap-servers", "securityprotocol": "security-protocol"}),
+    "sftp": (re.compile(r"(?i)(^|:)[^:]*(sftp|ssh)[^:]*:"),
+             {"host": "host", "hostname": "host", "server": "host", "address": "host", "port": "port",
+              "username": "username", "user": "username", "login": "username", "password": "password"}),
+}
+# parts that are plain settings, not values from the lab secret
+_PLAIN_PARTS = {"kafka:security-protocol": "Plaintext"}
 
 
 def classify(key: str, value) -> str | None:
     """Which lab service a configuration value (appsettings key `Section:Name`) is the setting of:
     a service id, `s3:<part>` for the pieces of an S3 client configuration, or None."""
-    if not isinstance(value, (str, bool)) or key.startswith("Logging:"):
+    if not isinstance(value, (str, bool, int)) or key.startswith("Logging:"):
         return None
     leaf = key.rsplit(":", 1)[-1].replace("_", "").lower()
-    if _S3_SECTION.search(key) and leaf in _S3_LEAF:
+    if _S3_SECTION.search(key) and leaf in _S3_LEAF and type(value) is not int:
         return _S3_LEAF[leaf]
+    if isinstance(value, str) and _MONGO.search(value):
+        return "mongodb"
+    if isinstance(value, str) and (_AMQP.search(value) or (_RABBIT_KEY.search(key) and re.search(r"(?i)\bhost\s*=", value))):
+        return "rabbitmq"
+    leaf = leaf.replace(".", "")
+    for svc, (section, leaves) in PARTS.items():
+        if section.search(key) and leaf in leaves and not isinstance(value, bool):
+            return f"{svc}:{leaves[leaf]}"
+    if leaf == "bootstrapservers" and isinstance(value, str):     # "bootstrap.servers" in a flat client config
+        return "kafka:bootstrap-servers"
     if not isinstance(value, str) or not value.strip() or len(value) > 2000:
         return None
     if _AZURE.search(value):
         return "azure-blob"
     if _POSTGRES.search(value):
         return "postgres"
+    if _MYSQL.search(value) and not _ODBC_SQLSERVER.search(value):
+        return "mysql"
     if _SQLSERVER.search(value) or (_SERVER_DB.search(value) and not _NOT_SQLSERVER.search(value)):
         return "sqlserver"
     rediskey = re.search(r"(?i)redis|cache", key)
@@ -259,7 +315,7 @@ def needs(repo, c) -> dict[str, list[str]]:
                 out.setdefault(svc, []).append(f"package in {p.rel}" if p is not c.project else "package")
                 break
     for key, kind in sorted(((c.facts or {}).get("lab_settings") or {}).items()):
-        svc = "s3" if kind.startswith("s3:") else kind
+        svc = kind.split(":", 1)[0]
         if svc in SERVICES:
             out.setdefault(svc, []).append(f"setting {key}")
     return {k: out[k] for k in ORDER if k in out}
@@ -283,7 +339,7 @@ def connection_keys(c, svc: str, needed: dict) -> list[str]:
     # database the component needs; otherwise the conventional DefaultConnection
     css = [f"ConnectionStrings:{k}" for k in (c.facts or {}).get("connection_strings") or []]
     unknown = [k for k in css if k not in lab]
-    dbs = [s for s in ("sqlserver", "postgres") if s in needed]
+    dbs = [s for s in ("sqlserver", "postgres", "mysql") if s in needed]
     if unknown and dbs == [svc]:
         return unknown
     if not css:
@@ -300,7 +356,7 @@ def env_for(svc: str, ns: str, c, needed: dict) -> tuple[list[dict], list[str]]:
         return {"name": name, "valueFrom": {"secretKeyRef": {"name": sec, "key": key}}}
     h, notes = host(svc, ns), []
     keys = connection_keys(c, svc, needed)
-    if svc in ("sqlserver", "postgres", "redis"):
+    if svc in ("sqlserver", "postgres", "mysql", "redis"):
         # the whole connection string comes from the store: nothing secret in the manifest
         return [ref(_env_key(k), "connection-string") for k in keys], notes
     if svc == "s3":
@@ -320,6 +376,21 @@ def env_for(svc: str, ns: str, c, needed: dict) -> tuple[list[dict], list[str]]:
             notes.append("No Azure Storage connection string found in appsettings.json: point the app's setting at "
                          f"the Secret {sec}, key connection-string.")
         return [ref(_env_key(k), "connection-string") for k in keys], notes
+    if svc in PARTS:
+        lab = (c.facts or {}).get("lab_settings") or {}
+        env = [ref(_env_key(k), "connection-string") for k in keys]
+        for k in sorted(lab):
+            kind = lab[k]
+            if not kind.startswith(f"{svc}:"):
+                continue
+            if kind in _PLAIN_PARTS:
+                env.append({"name": _env_key(k), "value": _PLAIN_PARTS[kind]})
+            else:
+                env.append(ref(_env_key(k), kind.split(":", 1)[1]))
+        if not env:
+            notes.append(f"No {SERVICES[svc].title} setting found in appsettings.json: point the app's settings at the "
+                         f"Secret {sec} (keys: {', '.join(secret_keys(svc))}).")
+        return env, notes
     raise LabError(f"unknown lab service {svc!r}")
 
 
@@ -494,10 +565,11 @@ def _deployment(name: str, labels: dict, template: dict, checksum: str | None = 
                      "selector": {"matchLabels": sel}, "template": tpl}}
 
 
-def _service(name: str, labels: dict, port: int) -> dict:
+def _service(name: str, labels: dict, svc: str) -> dict:
     sel = {k: labels[k] for k in ("app.kubernetes.io/name", LABEL)}
+    s = SERVICES[svc]
     return {"apiVersion": "v1", "kind": "Service", "metadata": {"name": name, "namespace": LAB_NS, "labels": dict(labels)},
-            "spec": {"selector": sel, "ports": [{"name": "svc", "port": port, "targetPort": port, "protocol": "TCP"}]}}
+            "spec": {"selector": sel, "ports": [{"name": "svc", "port": s.svc_port, "targetPort": s.port, "protocol": "TCP"}]}}
 
 
 def ingress_policy(svc: str, ns: str) -> dict:
@@ -560,9 +632,63 @@ def shared_manifests(svc: str, image: str) -> list[dict]:
              "livenessProbe": {"tcpSocket": {"port": s.port}, "periodSeconds": 30},
              "volumeMounts": mounts}
         tpl = _pod(svc, labels, c, vols)
+    elif svc == "mysql":
+        vols, mounts = _scratch("/tmp", "/var/run/mysqld", "/var/lib/mysql-files")
+        vols.append({"name": "data", "persistentVolumeClaim": {"claimName": f"{svc}-data"}})
+        mounts.append({"name": "data", "mountPath": "/var/lib/mysql"})
+        ready = ["/bin/sh", "-c", 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqladmin -uroot --protocol=socket ping']
+        c = {"name": svc, "image": image, "imagePullPolicy": "IfNotPresent",
+             "args": ["mysqld", "--innodb-buffer-pool-size=256M", "--max-connections=200", "--skip-name-resolve"],
+             "env": [{"name": "MYSQL_ROOT_PASSWORD", **admin}, {"name": "MYSQL_ROOT_HOST", "value": "localhost"}],
+             "ports": [{"name": "svc", "containerPort": s.port}],
+             "startupProbe": {"exec": {"command": ready}, "periodSeconds": 5, "failureThreshold": 120},
+             "readinessProbe": {"exec": {"command": ready}, "periodSeconds": 10, "timeoutSeconds": 5},
+             "livenessProbe": {"tcpSocket": {"port": s.port}, "periodSeconds": 30},
+             "volumeMounts": mounts}
+        tpl = _pod(svc, labels, c, vols)
+    elif svc == "mongodb":
+        vols, mounts = _scratch("/tmp", "/data/configdb")
+        vols.append({"name": "data", "persistentVolumeClaim": {"claimName": f"{svc}-data"}})
+        mounts.append({"name": "data", "mountPath": "/data/db"})
+        ready = ["mongosh", "--nodb", "--quiet", "--eval",
+                 'quit(new Mongo("mongodb://127.0.0.1:27017").getDB("admin").runCommand({ping: 1}).ok ? 0 : 1)']
+        # the image's entry point creates the root user on first start and then runs mongod --auth
+        c = {"name": svc, "image": image, "imagePullPolicy": "IfNotPresent",
+             "args": ["mongod", "--bind_ip_all", "--wiredTigerCacheSizeGB", "0.25"],
+             "env": [{"name": "MONGO_INITDB_ROOT_USERNAME", "value": "root"},
+                     {"name": "MONGO_INITDB_ROOT_PASSWORD", **admin}],
+             "ports": [{"name": "svc", "containerPort": s.port}],
+             "startupProbe": {"tcpSocket": {"port": s.port}, "periodSeconds": 5, "failureThreshold": 60},
+             "readinessProbe": {"exec": {"command": ready}, "periodSeconds": 15, "timeoutSeconds": 10},
+             "livenessProbe": {"tcpSocket": {"port": s.port}, "periodSeconds": 30},
+             "volumeMounts": mounts}
+        tpl = _pod(svc, labels, c, vols)
+    elif svc == "rabbitmq":
+        conf = {"apiVersion": "v1", "kind": "ConfigMap",
+                "metadata": {"name": f"{svc}-config", "namespace": LAB_NS, "labels": dict(labels)},
+                # replaces the image's conf.d, which lets guest/guest in from anywhere
+                "data": {"10-lab.conf": "listeners.tcp.default = 5672\nloopback_users.guest = true\n"
+                                        "log.console = true\nlog.console.level = info\nlog.file = false\n"}}
+        vols, mounts = _scratch("/tmp")
+        vols += [{"name": "config", "configMap": {"name": f"{svc}-config"}},
+                 {"name": "data", "persistentVolumeClaim": {"claimName": f"{svc}-data"}}]
+        mounts += [{"name": "config", "mountPath": "/etc/rabbitmq/conf.d", "readOnly": True},
+                   {"name": "data", "mountPath": "/var/lib/rabbitmq"}]
+        c = {"name": svc, "image": image, "imagePullPolicy": "IfNotPresent",
+             # a fixed node name: the data directory is named after it and the pod name changes
+             "env": [{"name": "RABBITMQ_NODENAME", "value": "rabbit@localhost"}],
+             "ports": [{"name": "svc", "containerPort": s.port}],
+             "startupProbe": {"tcpSocket": {"port": s.port}, "periodSeconds": 5, "failureThreshold": 60},
+             "readinessProbe": {"tcpSocket": {"port": s.port}, "periodSeconds": 10},
+             "livenessProbe": {"tcpSocket": {"port": s.port}, "periodSeconds": 30},
+             "volumeMounts": mounts}
+        tpl = _pod(svc, labels, c, vols)
+        checksum = hashlib.sha256(json.dumps(conf["data"], sort_keys=True).encode()).hexdigest()
+        return [conf, pvc(f"{svc}-data", labels, s.storage), _deployment(svc, labels, tpl, checksum),
+                _service(svc, labels, svc)]
     else:
         raise LabError(f"{svc} is not a shared service")
-    return [pvc(f"{svc}-data", labels, s.storage), _deployment(svc, labels, tpl), _service(svc, labels, s.port)]
+    return [pvc(f"{svc}-data", labels, s.storage), _deployment(svc, labels, tpl), _service(svc, labels, svc)]
 
 
 def per_app_manifests(svc: str, ns: str, image: str, cred: dict) -> list[dict]:
@@ -621,6 +747,48 @@ def per_app_manifests(svc: str, ns: str, image: str, cred: dict) -> list[dict]:
              "readinessProbe": {"tcpSocket": {"port": s.port}, "periodSeconds": 10},
              "livenessProbe": {"tcpSocket": {"port": s.port}, "periodSeconds": 30},
              "volumeMounts": mounts}
+    elif svc == "kafka":
+        files = {"server.properties": kafka_properties(ns)}
+        vols, mounts = _scratch("/tmp")
+        vols += [{"name": "config", "secret": {"secretName": name, "defaultMode": 0o440}},
+                 {"name": "data", "persistentVolumeClaim": {"claimName": f"{name}-data"}}]
+        mounts += [{"name": "config", "mountPath": "/etc/kafka-lab", "readOnly": True},
+                   {"name": "data", "mountPath": "/var/lib/kafka/data"}]
+        c = {"name": svc, "image": image, "imagePullPolicy": "IfNotPresent",
+             "command": ["/bin/sh", "-c", "/opt/kafka/bin/kafka-storage.sh format --ignore-formatted "
+                         f"--cluster-id {kafka_cluster_id(ns)} --config /etc/kafka-lab/server.properties && "
+                         "exec /opt/kafka/bin/kafka-server-start.sh /etc/kafka-lab/server.properties"],
+             "env": [{"name": "KAFKA_HEAP_OPTS", "value": "-Xms256m -Xmx384m"}, {"name": "LOG_DIR", "value": "/tmp/logs"}],
+             "ports": [{"name": "svc", "containerPort": s.port}],
+             "startupProbe": {"tcpSocket": {"port": s.port}, "periodSeconds": 5, "failureThreshold": 60},
+             "readinessProbe": {"tcpSocket": {"port": s.port}, "periodSeconds": 10},
+             "livenessProbe": {"tcpSocket": {"port": s.port}, "periodSeconds": 30},
+             "volumeMounts": mounts}
+    elif svc == "sftp":
+        # SFTPGo with its in-memory user store loaded from this file: one user, the app's
+        users = {"users": [{"id": 1, "status": 1, "username": cred["username"], "password": cred["password"],
+                            "home_dir": f"/var/lib/sftpgo/data/{cred['username']}", "permissions": {"/": ["*"]}}],
+                 "folders": [], "groups": [], "admins": [], "api_keys": [], "shares": [], "event_actions": [],
+                 "event_rules": [], "roles": [], "ip_lists": [], "configs": {}, "version": 17}
+        files = {"users.json": json.dumps(users, indent=1, sort_keys=True)}
+        vols, mounts = _scratch("/tmp")
+        vols += [{"name": "config", "secret": {"secretName": name, "defaultMode": 0o440}},
+                 {"name": "data", "persistentVolumeClaim": {"claimName": f"{name}-data"}}]
+        mounts += [{"name": "config", "mountPath": "/etc/sftpgo-lab", "readOnly": True},
+                   {"name": "data", "mountPath": "/var/lib/sftpgo"}]
+        env = {"SFTPGO_DATA_PROVIDER__DRIVER": "memory", "SFTPGO_DATA_PROVIDER__NAME": "/etc/sftpgo-lab/users.json",
+               "SFTPGO_SFTPD__BINDINGS__0__PORT": str(s.port),
+               # no web admin, REST API, WebDAV, FTP or telemetry listener: SFTP only
+               "SFTPGO_HTTPD__BINDINGS__0__PORT": "0", "SFTPGO_TELEMETRY__BIND_PORT": "0",
+               "SFTPGO_FTPD__BINDINGS__0__PORT": "0", "SFTPGO_WEBDAVD__BINDINGS__0__PORT": "0",
+               "SFTPGO_COMMON__DEFENDER__ENABLED": "true", "SFTPGO_LOG_FILE_PATH": ""}
+        c = {"name": svc, "image": image, "imagePullPolicy": "IfNotPresent",
+             "command": ["sftpgo", "serve", "--config-dir", "/var/lib/sftpgo"],
+             "env": [{"name": k, "value": v} for k, v in sorted(env.items())],
+             "ports": [{"name": "svc", "containerPort": s.port}],
+             "readinessProbe": {"tcpSocket": {"port": s.port}, "periodSeconds": 10},
+             "livenessProbe": {"tcpSocket": {"port": s.port}, "periodSeconds": 30},
+             "volumeMounts": mounts}
     else:
         raise LabError(f"{svc} is not a per-app service")
     checksum = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
@@ -628,7 +796,29 @@ def per_app_manifests(svc: str, ns: str, image: str, cred: dict) -> list[dict]:
               "type": "Opaque", "stringData": files}
     tpl = _pod(svc, labels, c, vols)
     return [secret, pvc(f"{name}-data", labels, s.storage), _deployment(name, labels, tpl, checksum),
-            _service(name, labels, s.port), ingress_policy(svc, ns)]
+            _service(name, labels, svc), ingress_policy(svc, ns)]
+
+
+def kafka_cluster_id(ns: str) -> str:
+    """A fixed KRaft cluster id per app (16 bytes, base64url without padding)."""
+    import base64
+    return base64.urlsafe_b64encode(hashlib.sha256(f"kafka/{ns}".encode()).digest()[:16]).decode().rstrip("=")
+
+
+def kafka_properties(ns: str) -> str:
+    """One node that is broker and controller. Clients connect without a login: only the app's own
+    namespace can reach the instance (NetworkPolicy)."""
+    h = host("kafka", ns)
+    return "\n".join([
+        "process.roles=broker,controller", "node.id=1", "controller.quorum.voters=1@localhost:9093",
+        "listeners=PLAINTEXT://:9092,CONTROLLER://localhost:9093", f"advertised.listeners=PLAINTEXT://{h}:9092",
+        "controller.listener.names=CONTROLLER", "inter.broker.listener.name=PLAINTEXT",
+        "listener.security.protocol.map=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT",
+        "log.dirs=/var/lib/kafka/data/logs", "num.partitions=1", "default.replication.factor=1",
+        "offsets.topic.replication.factor=1", "transaction.state.log.replication.factor=1",
+        "transaction.state.log.min.isr=1", "share.coordinator.state.topic.replication.factor=1",
+        "share.coordinator.state.topic.min.isr=1", "group.initial.rebalance.delay.ms=0",
+        "auto.create.topics.enable=true", "log.retention.hours=168", "log.segment.bytes=104857600", ""])
 
 
 # --------------------------------------------------------------------------- credentials and provisioning
@@ -647,6 +837,7 @@ def new_password(length: int = 32) -> str:
 
 
 SECRET_PARTS = ("password", "access-key-id", "secret-access-key", "account-key")
+ADMIN_PASSWORD = ("sqlserver", "postgres", "mysql", "mongodb")      # shared servers with an admin password secret
 
 
 def new_credentials(svc: str, ns: str, keep: dict | None = None) -> dict:
@@ -656,7 +847,7 @@ def new_credentials(svc: str, ns: str, keep: dict | None = None) -> dict:
     import secrets
     keep = {k: v for k, v in (keep or {}).items() if k in SECRET_PARTS and isinstance(v, str) and v}
     h, port = host(svc, ns), str(SERVICES[svc].port)
-    if svc in ("sqlserver", "postgres"):
+    if svc in ("sqlserver", "postgres", "mysql"):
         cred = {"host": h, "port": port, "database": db_name(ns), "username": db_name(ns),
                 "password": keep.get("password") or new_password()}
         return {**cred, "connection-string": connection_string(svc, cred)}
@@ -668,6 +859,19 @@ def new_credentials(svc: str, ns: str, keep: dict | None = None) -> dict:
                 "access-key-id": keep.get("access-key-id") or
                 "CZ" + "".join(secrets.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567") for _ in range(18)),
                 "secret-access-key": keep.get("secret-access-key") or new_password(40)}
+    if svc == "mongodb":
+        cred = {"host": h, "port": port, "database": db_name(ns), "username": db_name(ns),
+                "password": keep.get("password") or new_password()}
+        return {**cred, "connection-string": connection_string(svc, cred)}
+    if svc == "rabbitmq":
+        cred = {"host": h, "port": port, "vhost": ns, "username": db_name(ns),
+                "password": keep.get("password") or new_password()}
+        return {**cred, "connection-string": connection_string(svc, cred)}
+    if svc == "kafka":
+        return {"bootstrap-servers": f"{h}:{port}"}
+    if svc == "sftp":
+        return {"host": h, "port": str(SERVICES[svc].svc_port), "username": db_name(ns),
+                "password": keep.get("password") or new_password()}
     if svc == "azure-blob":
         account = "lab" + hashlib.sha256(ns.encode()).hexdigest()[:12]
         key = keep.get("account-key") or base64.b64encode(secrets.token_bytes(64)).decode()
@@ -685,9 +889,22 @@ def connection_string(svc: str, c: dict) -> str:
                 f"Password={c['password']};Encrypt=True;TrustServerCertificate=True")
     if svc == "postgres":
         return f"Host={c['host']};Port={c['port']};Database={c['database']};Username={c['username']};Password={c['password']}"
+    if svc == "mysql":
+        # MySQL encrypts with the certificate it made at first start; Required does not check it
+        return (f"Server={c['host']};Port={c['port']};Database={c['database']};User ID={c['username']};"
+                f"Password={c['password']};SslMode=Required")
     if svc == "redis":
         return f"{c['host']}:{c['port']},password={c['password']},abortConnect=false"
+    if svc == "mongodb":
+        return f"mongodb://{c['username']}:{c['password']}@{c['host']}:{c['port']}/{c['database']}?authSource={c['database']}"
+    if svc == "rabbitmq":
+        return f"amqp://{c['username']}:{c['password']}@{c['host']}:{c['port']}/{c['vhost']}"
     raise LabError(f"{svc} has no connection string")
+
+
+def secret_keys(svc: str) -> list[str]:
+    """The keys of Secret lab-<svc> in the app's namespace."""
+    return sorted(new_credentials(svc, "app"))
 
 
 def complete(svc: str, ns: str, cred: dict) -> bool:
@@ -737,7 +954,46 @@ GRANT CONNECT, TEMPORARY ON DATABASE "{db}" TO "{user}";
 ALTER SCHEMA public OWNER TO "{user}";
 REVOKE ALL ON SCHEMA public FROM PUBLIC;
 """
+    if svc == "mysql":
+        return f"""CREATE DATABASE IF NOT EXISTS `{db}`;
+CREATE USER IF NOT EXISTS '{user}'@'%' IDENTIFIED BY '{pw}';
+ALTER USER '{user}'@'%' IDENTIFIED BY '{pw}';
+GRANT ALL PRIVILEGES ON `{db}`.* TO '{user}'@'%';
+"""
+    if svc == "mongodb":
+        # mongosh reads this from stdin; the root password stays in the server's environment
+        return f"""try {{
+  const conn = new Mongo("mongodb://127.0.0.1:27017");
+  const admin = conn.getDB("admin");
+  admin.auth("root", process.env.MONGO_INITDB_ROOT_PASSWORD);
+  const d = conn.getDB("{db}");
+  const roles = [{{ role: "dbOwner", db: "{db}" }}];
+  if (d.getUser("{user}")) {{ d.updateUser("{user}", {{ pwd: "{pw}", roles: roles }}); }}
+  else {{ d.createUser({{ user: "{user}", pwd: "{pw}", roles: roles }}); }}
+}} catch (e) {{ print("provisioning failed: " + e.message); quit(1); }}
+"""
+    if svc == "rabbitmq":
+        vhost = _safe_ns(ns)
+        # sh -s: printf is a builtin, so the password never is a process argument; every other
+        # rabbitmqctl reads /dev/null, not the rest of this script
+        return f"""set -e
+q() {{ rabbitmqctl -q "$@" </dev/null; }}
+if q list_users --no-table-headers | cut -f1 | grep -qx guest; then q delete_user guest; fi
+q list_vhosts --no-table-headers | grep -qx '{vhost}' || q add_vhost '{vhost}'
+if q list_users --no-table-headers | cut -f1 | grep -qx '{user}'; then
+  printf '%s\n' '{pw}' | rabbitmqctl -q change_password '{user}'
+else
+  printf '%s\n' '{pw}' | rabbitmqctl -q add_user '{user}'
+fi
+q set_permissions -p '{vhost}' '{user}' '.*' '.*' '.*'
+"""
     raise LabError(f"{svc} has no database to provision")
+
+
+def _safe_ns(v: str) -> str:
+    if not NS_RE.fullmatch(v or ""):
+        raise LabError("unsafe namespace")
+    return v
 
 
 def provision_command(svc: str) -> list[str]:
@@ -748,4 +1004,10 @@ def provision_command(svc: str) -> list[str]:
                                  '-U sa -b -I -i /dev/stdin']
     if svc == "postgres":
         return ["psql", "-X", "-q", "-U", "postgres", "-d", "postgres", "-f", "-"]
+    if svc == "mysql":
+        return ["/bin/sh", "-c", 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot --protocol=socket']
+    if svc == "mongodb":
+        return ["mongosh", "--nodb", "--quiet"]
+    if svc == "rabbitmq":
+        return ["/bin/sh", "-s"]
     raise LabError(f"{svc} has no database to provision")

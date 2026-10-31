@@ -41,7 +41,23 @@ SETTINGS = {"ConnectionStrings": {"Shop": "Host=db;Database=shop;Username=u;Pass
     ("AWS:ServiceURL", "http://minio:9000", "s3:endpoint"),
     ("S3:AccessKey", "minio", "s3:access-key"),
     ("ConnectionStrings:Lite", "Data Source=app.db", None),
-    ("ConnectionStrings:My", "Server=x;Port=3306;Database=a;Uid=r", None),
+    ("ConnectionStrings:My", "Server=x;Port=3306;Database=a;Uid=r", "mysql"),
+    ("ConnectionStrings:My2", "Server=db;Database=a;Uid=u;Pwd=p", "mysql"),
+    ("ConnectionStrings:Odbc", "Driver={ODBC Driver 18 for SQL Server};Server=db;Database=a;Uid=u;Pwd=p", None),
+    ("ConnectionStrings:Mongo", "mongodb://u:p@db:27017/x", "mongodb"),
+    ("Mongo:ConnectionString", "mongodb+srv://u:p@cluster0.example.net/x", "mongodb"),
+    ("MongoDbSettings:DatabaseName", "Shop", "mongodb:database"),
+    ("ConnectionStrings:Bus", "amqp://guest:guest@rabbit:5672/", "rabbitmq"),
+    ("ConnectionStrings:EasyNetQ", "host=rabbit;username=u;password=p", "rabbitmq"),
+    ("RabbitMQ:HostName", "rabbit", "rabbitmq:host"),
+    ("RabbitMq:Port", 5672, "rabbitmq:port"),
+    ("RabbitMq:VirtualHost", "/", "rabbitmq:vhost"),
+    ("Kafka:BootstrapServers", "kafka:9092", "kafka:bootstrap-servers"),
+    ("Producer:bootstrap.servers", "kafka:9092", "kafka:bootstrap-servers"),
+    ("Kafka:SecurityProtocol", "SaslSsl", "kafka:security-protocol"),
+    ("Sftp:Host", "files.example.com", "sftp:host"),
+    ("Sftp:Password", "x", "sftp:password"),
+    ("Smtp:Port", 25, None),
     ("Api:Url", "http://localhost:5000", None),
     ("Kestrel:Endpoints:Http:Url", "http://0.0.0.0:8080", None),
 ])
@@ -127,11 +143,15 @@ def test_dev_database_backup_wins_over_the_lab_sql_server(tmp_path):
 
 # -- the lab side ---------------------------------------------------------------------------------
 
+SHARED = [s for s in L.ORDER if L.SERVICES[s].shared]
+PER_APP = [s for s in L.ORDER if not L.SERVICES[s].shared]
+
+
 def _lab_docs() -> list[dict]:
     docs = L.namespace_docs()
-    for svc in ("sqlserver", "postgres"):
+    for svc in SHARED:
         docs += L.shared_manifests(svc, f"registry.example/{svc}:1@sha256:{'a' * 64}") + [L.ingress_policy(svc, "shop")]
-    for svc in ("redis", "s3", "azure-blob"):
+    for svc in PER_APP:
         docs += L.per_app_manifests(svc, "shop", f"registry.example/{svc}:1@sha256:{'a' * 64}", L.new_credentials(svc, "shop"))
     return docs
 
@@ -139,8 +159,7 @@ def _lab_docs() -> list[dict]:
 def test_lab_manifests_are_hardened():
     docs = _lab_docs()
     # the lab agent writes these Secrets itself (admin passwords, per-app config); they never come from Git
-    agent = {L.admin_secret_name("sqlserver"), L.admin_secret_name("postgres")} | \
-        {L.instance(svc, "shop") for svc in ("redis", "s3", "azure-blob")}
+    agent = {L.admin_secret_name(s) for s in L.ADMIN_PASSWORD} | {L.instance(svc, "shop") for svc in PER_APP}
     bad = [v for v in lint_manifests(docs, provided=agent) if v.severity == "error"
            and not (v.target.startswith("Secret/") and v.check in ("plain-secret", "secret-literals"))]
     assert bad == []
@@ -217,7 +236,7 @@ def test_config_is_validated(tmp_path):
     data = labagent.apply_request({"services": {**L.defaults(), "redis": True}, "requested_by": "ann@example.com"}, p)
     assert L.load_config(p)["services"]["redis"] is True and data["changed_by"] == "ann@example.com"
     assert oct(p.stat().st_mode & 0o777) == "0o644"
-    for bad in ({"redis": True}, {**L.defaults(), "mysql": True}, {**L.defaults(), "redis": "yes"}):
+    for bad in ({"redis": True}, {**L.defaults(), "oracle": True}, {**L.defaults(), "redis": "yes"}):
         with pytest.raises(L.LabError):
             labagent.apply_request({"services": bad}, p)
     assert L.enabled_from_env({L.CONFIG_ENV: str(p)}) == {"sqlserver", "redis"}
@@ -316,3 +335,101 @@ def test_reconcile_waits_for_eso(tmp_path):
     kube.run = lambda args, **kw: subprocess.CompletedProcess(args, 1, "", "NotFound")
     st = labagent.reconcile(kube, {"services": L.defaults()}, {}, state_path=tmp_path / "s.json", status_path=None)
     assert "External Secrets Operator" in st["error"]
+
+
+MORE_PKGS = ('<PackageReference Include="MongoDB.Driver" Version="2.28.0" />'
+             '<PackageReference Include="RabbitMQ.Client" Version="6.8.1" />'
+             '<PackageReference Include="Confluent.Kafka" Version="2.5.0" />'
+             '<PackageReference Include="SSH.NET" Version="2024.1.0" />'
+             '<PackageReference Include="MySqlConnector" Version="2.3.7" />')
+MORE_SETTINGS = {"ConnectionStrings": {"Orders": "Server=mysql;Database=orders;Uid=u;Pwd=p"},
+                 "MongoDbSettings": {"ConnectionString": "mongodb://localhost:27017", "DatabaseName": "catalog"},
+                 "RabbitMQ": {"HostName": "localhost", "UserName": "guest", "Password": "guest", "Port": 5672},
+                 "Kafka": {"BootstrapServers": "localhost:9092", "SecurityProtocol": "SaslSsl"},
+                 "Sftp": {"Host": "files.example.com", "Username": "u", "Password": "p"}}
+MORE = ["mysql", "mongodb", "rabbitmq", "kafka", "sftp"]
+
+
+def test_generate_points_the_app_at_brokers_document_stores_and_sftp(tmp_path):
+    a = _app(tmp_path, MORE_PKGS, MORE_SETTINGS)
+    out, rep = tmp_path / "out", {}
+    generate.generate_app(a, out, lab=set(MORE), lab_report=rep)
+    assert rep["provided"] == [s for s in L.ORDER if s in MORE] and rep["missing"] == []
+    docs = _docs(out / "web" / "k8s.yaml")
+    env = {e["name"]: e for e in next(d for d in docs if d["kind"] == "Deployment")["spec"]["template"]["spec"]["containers"][0]["env"]}
+
+    def ref(name):
+        return env[name]["valueFrom"]["secretKeyRef"]
+    assert ref("ConnectionStrings__Orders") == {"name": "lab-mysql", "key": "connection-string"}
+    assert ref("MongoDbSettings__ConnectionString") == {"name": "lab-mongodb", "key": "connection-string"}
+    assert ref("MongoDbSettings__DatabaseName") == {"name": "lab-mongodb", "key": "database"}
+    assert ref("RabbitMQ__HostName") == {"name": "lab-rabbitmq", "key": "host"}
+    assert ref("RabbitMQ__Password") == {"name": "lab-rabbitmq", "key": "password"}
+    assert ref("RabbitMQ__Port") == {"name": "lab-rabbitmq", "key": "port"}
+    assert ref("Kafka__BootstrapServers") == {"name": "lab-kafka", "key": "bootstrap-servers"}
+    assert env["Kafka__SecurityProtocol"]["value"] == "Plaintext"
+    assert ref("Sftp__Host") == {"name": "lab-sftp", "key": "host"} and ref("Sftp__Password")["key"] == "password"
+    pol = next(d for d in docs if d["kind"] == "NetworkPolicy")
+    ports = {r["ports"][0]["port"] for r in pol["spec"]["egress"]
+             if r["to"][0].get("namespaceSelector", {}).get("matchLabels") == {"kubernetes.io/metadata.name": L.LAB_NS}}
+    assert ports == {3306, 27017, 5672, 9092, 2022}
+    everything = [d for f in out.rglob("k8s.yaml") for d in _docs(f)]
+    assert [v for v in lint_manifests(everything) if v.severity == "error"] == []
+
+
+def test_every_secret_key_an_override_uses_exists():
+    for svc, (_, leaves) in L.PARTS.items():
+        keys = set(L.secret_keys(svc))
+        for k in set(leaves.values()):
+            assert f"{svc}:{k}" in L._PLAIN_PARTS or k in keys, (svc, k)
+
+
+def test_new_services_credentials_and_provisioning():
+    for svc in ("mysql", "mongodb", "rabbitmq"):
+        c = L.new_credentials(svc, "my-shop")
+        assert L.complete(svc, "my-shop", c) and c["password"] in c["connection-string"]
+        script = L.provision_sql(svc, "my-shop", c)
+        assert "my_shop" in script and c["password"] in script
+        with pytest.raises(L.LabError):
+            L.provision_sql(svc, "my-shop", {**c, "password": "x'; drop"})
+    rmq = L.provision_sql("rabbitmq", "my-shop", L.new_credentials("rabbitmq", "my-shop"))
+    # the password goes to rabbitmqctl through a pipe from the shell's printf builtin, never as an argument
+    assert "add_user 'my_shop'\n" in rmq and "delete_user guest" in rmq and "</dev/null" in rmq
+    assert L.new_credentials("rabbitmq", "my-shop")["connection-string"].endswith(":5672/my-shop")
+    assert L.new_credentials("kafka", "shop") == {"bootstrap-servers": "kafka-shop.containerizer-lab.svc.cluster.local:9092"}
+    sftp = L.new_credentials("sftp", "shop")
+    assert sftp["port"] == "22"
+    svc_doc = next(d for d in L.per_app_manifests("sftp", "shop", "i@sha256:" + "a" * 64, sftp) if d["kind"] == "Service")
+    assert svc_doc["spec"]["ports"][0]["port"] == 22 and svc_doc["spec"]["ports"][0]["targetPort"] == 2022
+
+
+def test_kafka_and_sftp_listen_only_where_they_should():
+    props = L.kafka_properties("shop")
+    assert "advertised.listeners=PLAINTEXT://kafka-shop.containerizer-lab.svc.cluster.local:9092" in props
+    assert "CONTROLLER://localhost:9093" in props
+    assert len(L.kafka_cluster_id("shop")) == 22 and L.kafka_cluster_id("shop") == L.kafka_cluster_id("shop")
+    dep = next(d for d in L.per_app_manifests("sftp", "shop", "i@sha256:" + "a" * 64, L.new_credentials("sftp", "shop"))
+               if d["kind"] == "Deployment")
+    env = {e["name"]: e["value"] for e in dep["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["SFTPGO_HTTPD__BINDINGS__0__PORT"] == "0" and env["SFTPGO_DATA_PROVIDER__DRIVER"] == "memory"
+    rmq = L.shared_manifests("rabbitmq", "i@sha256:" + "a" * 64)
+    conf = next(d for d in rmq if d["kind"] == "ConfigMap")["data"]["10-lab.conf"]
+    assert "loopback_users.guest = true" in conf
+
+
+def test_reconcile_runs_every_service(tmp_path):
+    kube = FakeKube([_es("shop", s) for s in L.ORDER])
+    cfg = {"services": {s: True for s in L.ORDER}}
+    images = labagent.load_images(ROOT / "appliance/rootfs/usr/lib/containerizer/images.env", env={})
+    st = labagent.reconcile(kube, cfg, images, state_path=tmp_path / "state.json", status_path=None)
+    assert st["error"] is None
+    assert {s: x["state"] for s, x in st["services"].items()} == {s: "running" for s in L.ORDER}
+    assert all(x["ready"] == ["shop"] for x in st["services"].values())
+    execs = [a for a, _ in kube.calls if "exec" in a]
+    assert len(execs) == len(SHARED)
+    secrets_ = [base64.b64decode(v).decode() for k, s in kube.store.items() if k.startswith("containerizer-secrets/")
+                for v in s["data"].values()]
+    for args, _ in kube.calls:
+        assert not any(sec in " ".join(args) for sec in secrets_ if len(sec) > 8), args
+    admins = {k.split("/", 1)[1] for k in kube.store if k.startswith(f"{L.LAB_NS}/") and k.endswith("-admin")}
+    assert admins == {L.admin_secret_name(s) for s in L.ADMIN_PASSWORD}

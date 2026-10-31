@@ -550,7 +550,7 @@ the sandbox, and points the application's connection settings at it, without cha
 [docs/dev-databases.md](docs/dev-databases.md).
 
 On the appliance, administrators can turn on **lab services** for the sandboxed apps: SQL Server, PostgreSQL,
-Redis, S3 and Azure Blob storage. An app that depends on one gets its own database or instance, with
+MySQL, MongoDB, Redis, RabbitMQ, Kafka, S3, Azure Blob storage and SFTP. An app that depends on one gets its own database or instance, with
 credentials from External Secrets Operator. Its configuration is pointed at the service without code
 changes, and the admin pages warn when an app needs a service that is off. See
 [docs/lab-services.md](docs/lab-services.md).
