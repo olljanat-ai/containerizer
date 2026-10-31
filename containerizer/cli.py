@@ -26,7 +26,8 @@ def cmd_assess(args) -> int:
 
     rules = load_rules()
     results = []
-    for app in _apps(args.paths):
+    apps = _apps(args.paths)
+    for app in apps:
         a = assess(app, rules)
         if args.ai:
             from .assess import apply_ai
@@ -46,7 +47,55 @@ def cmd_assess(args) -> int:
         print(f"reports written to {args.out}")
     if args.json:
         print(json.dumps([a.to_dict() for a in results], indent=2, default=str))
+    return _store(args, results, apps)
+
+
+def _store(args, results, apps) -> int:
+    """Write results to SQL Server when --sql or CONTAINERIZER_SQL is set."""
+    import os
+    if not (args.sql or os.environ.get("CONTAINERIZER_SQL")):
+        return 0
+    from .sqlstore import SqlError, store_results
+    try:
+        ids = store_results(args.sql, results, apps)
+    except SqlError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 3
+    print(f"{len(ids)} assessment(s) written to SQL Server")
     return 0
+
+
+def cmd_db(args) -> int:
+    import os
+    from .sqlstore import SqlError, connect, create_database, create_login, import_json, init_schema
+    try:
+        if args.db_cmd == "init":
+            if args.create_database:
+                create_database(args.sql)
+            conn = connect(args.sql)
+            try:
+                init_schema(conn)
+                for spec in args.login or []:
+                    login, _, role = spec.partition(":")
+                    env = f"CZ_{login.upper()}_PASSWORD"
+                    if not os.environ.get(env):
+                        raise SqlError(f"--login {spec}: set the password in {env}")
+                    create_login(conn, login, os.environ[env], role or "cz_reader")
+            finally:
+                conn.close()
+            print("schema is up to date")
+        elif args.db_cmd == "import":
+            ids = import_json(args.sql, [Path(f) for f in args.files], key_prefix=args.key_prefix)
+            print(f"{len(ids)} assessment(s) imported")
+    except SqlError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 3
+    return 0
+
+
+def cmd_web(args) -> int:
+    from .webui import serve
+    return serve(args.sql, args.host, args.port)
 
 
 def _gitops(args):
@@ -143,7 +192,8 @@ def cmd_analyze(args) -> int:
 
     out = Path(args.out)
     results = []
-    for app in _apps(args.paths):
+    apps = _apps(args.paths)
+    for app in apps:
         a = analyze_app(app, out, ai=args.ai, model=args.model, verify=not args.no_verify,
                         registry=args.registry, pin=args.pin_digests, timeout=args.timeout, gitops=_gitops(args))
         ver = a.verification
@@ -154,7 +204,7 @@ def cmd_analyze(args) -> int:
               f"{sum(r['status'] in ('build-failed', 'run-failed') for r in ver)} failed")
     write_reports(results, out)
     print(f"reports written to {out}")
-    return 0
+    return _store(args, results, apps)
 
 
 def cmd_bench(args) -> int:
@@ -196,6 +246,8 @@ def main(argv=None) -> int:
     s.add_argument("--format", default="md,html,json")
     s.add_argument("--ai", action="store_true", help="ask Claude about low-confidence components")
     s.add_argument("--model", default=None)
+    s.add_argument("--sql", help="also write the results to SQL Server: an ADO.NET-style connection string "
+                   "(default CONTAINERIZER_SQL; password in CONTAINERIZER_SQL_PASSWORD)")
     s.set_defaults(fn=cmd_assess)
 
     s = sub.add_parser("generate", help="generate Dockerfiles and Kubernetes manifests")
@@ -225,8 +277,31 @@ def main(argv=None) -> int:
     s.add_argument("--registry", default="registry.local")
     s.add_argument("--pin-digests", action="store_true")
     s.add_argument("--timeout", type=int, default=1800)
+    s.add_argument("--sql", help="also write the results to SQL Server: an ADO.NET-style connection string "
+                   "(default CONTAINERIZER_SQL; password in CONTAINERIZER_SQL_PASSWORD)")
     _gitops_args(s)
     s.set_defaults(fn=cmd_analyze)
+
+    s = sub.add_parser("db", help="results database on SQL Server: create or upgrade the schema, import reports")
+    dsub = s.add_subparsers(dest="db_cmd", required=True)
+    d = dsub.add_parser("init", help="create or upgrade the cz schema and roles (needs db_owner)")
+    d.add_argument("--sql", help="connection string (default CONTAINERIZER_SQL)")
+    d.add_argument("--create-database", action="store_true", help="CREATE DATABASE first when it does not exist")
+    d.add_argument("--login", action="append", metavar="LOGIN:ROLE",
+                   help="development only: create a SQL login in cz_writer, cz_reader or cz_mapper; "
+                        "password from CZ_<LOGIN>_PASSWORD")
+    d.set_defaults(fn=cmd_db)
+    d = dsub.add_parser("import", help="load assessment.json files written by assess --out, analyze or the Action")
+    d.add_argument("files", nargs="+")
+    d.add_argument("--sql", help="connection string (default CONTAINERIZER_SQL)")
+    d.add_argument("--key-prefix", default="", help="prefix for the application key, e.g. the repository URL + '#'")
+    d.set_defaults(fn=cmd_db)
+
+    s = sub.add_parser("web", help="read-only results web UI for management (reads the SQL Server results database)")
+    s.add_argument("--sql", help="connection string of a cz_reader login (default CONTAINERIZER_SQL)")
+    s.add_argument("--host", default="127.0.0.1", help="listen address (0.0.0.0 inside a container)")
+    s.add_argument("--port", type=int, default=8080)
+    s.set_defaults(fn=cmd_web)
 
     s = sub.add_parser("ai", help="ask Claude to review uncertain parts of an assessment")
     s.add_argument("paths", nargs="+")
