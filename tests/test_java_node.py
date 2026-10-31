@@ -234,6 +234,21 @@ def test_uploads_to_local_disk_is_local_state(tmp_path):
     assert "java-local-uploads" in ids(c) and not c.stateless
 
 
+def test_home_directory_is_local_state(tmp_path):
+    boot_app(tmp_path, code=BOOT_APP + """
+        class Home { java.io.File root() {
+            String h = System.getenv("ORDERS_HOME");
+            return h != null ? new java.io.File(h) : new java.io.File(System.getProperty("user.home"), ".orders"); } }
+        """)
+    c = comp(assess(tmp_path), "orders")
+    assert "java-app-home-directory" in ids(c) and not c.stateless
+
+
+def test_tool_home_variables_are_not_app_state(tmp_path):
+    boot_app(tmp_path, code=BOOT_APP + 'class J { String j = System.getenv("JAVA_HOME"); String m = System.getenv("MAVEN_HOME"); }')
+    assert "java-app-home-directory" not in ids(comp(assess(tmp_path), "orders"))
+
+
 def test_test_sources_are_not_scanned(tmp_path):
     boot_app(tmp_path)
     write(tmp_path, "src/test/java/T.java", 'class T { void t() { Runtime.getRuntime().exec("cmd /c dir"); } }')
@@ -388,6 +403,21 @@ def test_multer_disk_uploads_are_local_state(tmp_path):
     node(tmp_path, "", {**EXPRESS, "dependencies": {**EXPRESS["dependencies"], "multer": "^1"}},
          {"server.js": SERVER + "\nconst upload = require('multer')({ dest: 'uploads/' });"})
     assert "node-local-uploads" in ids(comp(assess(tmp_path), "api"))
+
+
+def test_uploaded_themes_on_local_disk_are_state(tmp_path):
+    theme = ("const fs = require('fs-extra'); const path = require('path');\n"
+             "const dir = path.join(config.contentPath, 'themes');\n"
+             "async function install(zip, name) { await fs.ensureDir(dir); await fs.move(zip, path.join(dir, name)); }")
+    node(tmp_path, "", {**EXPRESS, "dependencies": {**EXPRESS["dependencies"], "@aws-sdk/client-s3": "^3"}},
+         {"server.js": SERVER, "themes.js": theme})
+    c = comp(assess(tmp_path), "api")
+    assert "node-local-extensions" in ids(c) and not c.stateless     # the S3 client covers media, not themes
+
+
+def test_reading_bundled_themes_is_not_state(tmp_path):
+    node(tmp_path, "", EXPRESS, {"server.js": SERVER + "\nconst t = require('path').join(__dirname, 'themes');"})
+    assert "node-local-extensions" not in ids(comp(assess(tmp_path), "api"))
 
 
 def test_windows_only_node_packages(tmp_path):
