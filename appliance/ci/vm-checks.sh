@@ -96,7 +96,9 @@ k -n containerizer-secrets delete secret/ci-a--web role/app-secrets-reader-ci-a 
 
 step "local registry: push from Docker, pull from k3s"
 docker image ls
-src=$(docker image ls --format '{{.ID}}' docker.io/library/registry | head -1)
+# pulled by digest, so listed as "registry" with no tag
+src=$(docker image ls --format '{{.Repository}} {{.ID}}' | awk '$1 == "registry" || $1 == "docker.io/library/registry" {print $2; exit}')
+[ -n "$src" ] || { echo "no registry image to push" >&2; exit 1; }
 docker tag "$src" localhost:5000/ci/registry:1
 docker push localhost:5000/ci/registry:1
 k3s crictl pull localhost:5000/ci/registry:1
