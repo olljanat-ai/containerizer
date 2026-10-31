@@ -32,8 +32,6 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import yaml
-
 from . import labservices as L
 
 STATUS_PATH = Path("/run/containerizer/system/lab-status.json")
@@ -97,7 +95,8 @@ class Kubectl:
     def apply(self, docs: list[dict], force: bool = True) -> None:
         if not docs:
             return
-        body = "---\n".join(yaml.safe_dump(d, sort_keys=False) for d in docs)
+        # JSON, not YAML: kubectl reads YAML 1.1, where a plain Y (ACCEPT_EULA) is a boolean.
+        body = json.dumps({"apiVersion": "v1", "kind": "List", "items": docs})
         self.run(["apply", "--server-side", f"--field-manager={MANAGER}", *(["--force-conflicts"] if force else []),
                   "-f", "-"], input=body, timeout=120)
 

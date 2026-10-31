@@ -243,7 +243,9 @@ class FakeKube(labagent.Kubectl):
         if args[:2] == ["get", "crd"]:
             out = ""
         elif args[0] == "apply":
-            for d in yaml.safe_load_all(input):
+            body = json.loads(input)  # JSON only: a YAML body lets kubectl read "Y" as a boolean
+            assert body["kind"] == "List"
+            for d in body["items"]:
                 self.applied.append(d)
                 if d["kind"] == "Secret":
                     self.store[f"{d['metadata']['namespace']}/{d['metadata']['name']}"] = d
