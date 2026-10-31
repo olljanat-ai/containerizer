@@ -71,6 +71,11 @@ inputs:
       assess mode - open a pull request that adds the generated containerize/ folders (needs contents and
       pull-requests write, and "Allow GitHub Actions to create pull requests" in the repository settings).
     default: "false"
+  report-name:
+    description: >-
+      assess mode - name of the uploaded report artifact. Give each use of the action in one job its own
+      name (artifact names are unique per workflow run).
+    default: containerizer-report
   python-version:
     description: Python used to run the tool. Set to "" to use the runner's python3.
     default: "3.12"
@@ -259,7 +264,7 @@ runs:
       if: steps.setup.outputs.mode == 'assess' && always() && steps.assess.outputs.report-dir != ''
       uses: actions/upload-artifact@v4
       with:
-        name: containerizer-report
+        name: ${{ inputs.report-name }}
         path: ${{ steps.assess.outputs.report-dir }}
 
     - name: Open a pull request with the generated files
