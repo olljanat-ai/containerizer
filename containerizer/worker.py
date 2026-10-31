@@ -22,6 +22,10 @@ registered read-only token does not run (no anonymous access), the output reposi
 picked by its URL and only used to push there, and each token is only sent with the URLs of its own
 organization or repository. The registry's credentials stay with the worker as environment
 variables, and images are only pushed to the providers' hosts and CONTAINERIZER_WORKER_HOSTS.
+
+The worker also does what needs the internal rules repository's write token (rule review, rulereview.py):
+it opens the pull request of each rule a reviewer approved on the admin pages (a thread of its own, so
+approvals do not wait for a long scan), and before each run it fetches the approved rules for the scan.
 """
 from __future__ import annotations
 
@@ -41,6 +45,7 @@ DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 DEFAULT_HOSTS = {"api.github.com", "github.com", "gitlab.com", "dev.azure.com", "*.visualstudio.com"}
 HEARTBEAT = 30              # seconds between heartbeats of a running run
 STALE_MINUTES = 10          # a running run without a heartbeat for this long has lost its worker
+APPROVAL_POLL = 15          # seconds between looks for rules a reviewer approved
 ACTIVE = ("queued", "running")
 
 
@@ -364,6 +369,7 @@ class Worker:
         self.data.mkdir(parents=True, exist_ok=True)
         os.chmod(self.data, 0o700)
         self.recover(own=True)
+        threading.Thread(target=self.approvals_forever, name="rule-approvals", daemon=True).start()
         while not self.stopping.is_set():
             ran = False
             try:
@@ -389,6 +395,45 @@ class Worker:
             return False
         self.execute(run)
         return True
+
+    # -- rule review: approvals and the approved rules ---------------------------------------
+
+    def approvals_forever(self) -> None:
+        while not self.stopping.wait(APPROVAL_POLL):
+            try:
+                while self.approve_next() and not self.stopping.is_set():
+                    pass
+            except Exception as ex:          # the database may be away for a while: keep trying
+                self.log(f"rule review: {type(ex).__name__}: {ex}")
+
+    def approve_next(self) -> bool:
+        """Open the pull request of the oldest rule a reviewer approved. False when none was waiting."""
+        from . import rulereview as rr
+        from .credentials import Credentials, CredentialError
+        conn = self.connect()
+        try:
+            try:
+                creds = self.credentials(conn)
+            except CredentialError as ex:
+                self.log(f"rule review: {ex}")
+                creds = Credentials([])
+            return rr.process_approval(conn, creds, self.data / "rule-review", log=self.log)
+        finally:
+            conn.close()
+
+    def sync_reviewed_rules(self, conn, creds) -> None:
+        """The approved rules for the scan: a fresh checkout of the internal rules repository, if one is set
+        (CONTAINERIZER_REVIEWED_RULES of this process points at its rules folder)."""
+        from . import rulereview as rr
+        try:
+            path = rr.sync_reviewed(conn, creds, self.data / "reviewed-rules", log=self.log)
+        except Exception as ex:
+            self.log(f"rule review: approved rules not updated: {type(ex).__name__}: {ex}")
+            return
+        if path is not None:
+            os.environ["CONTAINERIZER_REVIEWED_RULES"] = str(path)
+        elif str(self.data / "reviewed-rules") in os.environ.get("CONTAINERIZER_REVIEWED_RULES", ""):
+            os.environ.pop("CONTAINERIZER_REVIEWED_RULES", None)
 
     def recover(self, own: bool = False) -> None:
         """Runs whose worker stopped: no heartbeat for STALE_MINUTES, or (at start) left running by this worker."""
@@ -543,6 +588,7 @@ class Worker:
             for c in (read, write, llm):
                 if c and c.token:
                     REDACT.add(c.token, c.username)
+            self.sync_reviewed_rules(conn, creds)
             hooks._update(ImageTag=tag)
             o = self.options(scan, store, hooks, creds)
             o.tag = tag

@@ -29,8 +29,9 @@ LINK_RE = re.compile(r"(https://[A-Za-z0-9.-]+|http://(localhost|127\.0\.0\.1|\[
 TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Application": "Application",
               "OrgScan": "Organization scan", "OrgRepository": "Repository",
               "DevDatabase": "Dev database", "RuleCandidate": "Learned rule",
-              "SourceCredential": "Source control token", "LabService": "Lab service"}
-FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
+              "SourceCredential": "Source control token", "LabService": "Lab service",
+              "RulesRepository": "Internal rules repository"}
+FIELD_TEXT = {"RepoUrl": "Repository URL", "Branch": "Branch", "Path": "Folder", "Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
               "Retired": "Hidden", "Product": "Product", "BusinessUnit": "Business unit", "InfoUrl": "Product page link",
               # organization scans
               "Provider": "Provider", "Organization": "Organization", "ApiUrl": "Server", "TokenEnv": "Token variable",
@@ -732,7 +733,7 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
                                       ("BusinessUnit", "Business units"), ("OrgScan", "Organization scans"),
                                       ("OrgRepository", "Repositories"), ("SourceCredential", "Source control"),
                                       ("DevDatabase", "Dev databases"), ("LabService", "Lab services"),
-                                      ("RuleCandidate", "Rule review")))
+                                      ("RuleCandidate", "Rule review"), ("RulesRepository", "Rules repository")))
         body = (f"<p class='muted'>Every change to business units, products, the application mapping, organization scans, "
                 f"repositories (found by a scan, enabled or disabled, skipped), source control tokens (added, replaced or removed; "
                 f"never the token itself), dev database uploads, lab services turned on or off and the rule review "
