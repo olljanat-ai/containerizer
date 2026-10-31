@@ -21,7 +21,10 @@ People review candidates on the "Rule review" admin page or with `containerizer 
 (optionally after editing the YAML) validates the rule like the curated rules are validated, then
 either opens a pull request in your internal rules repository (CONTAINERIZER_RULES_APPLY=pr, the
 default; a public repository is refused) or appends it to a local checkout of it
-(CONTAINERIZER_RULES_APPLY=direct). Approved rules never go into this tool's own rules folder: what
+(CONTAINERIZER_RULES_APPLY=direct). On the appliance the repository is set on the admin page instead
+(RulesRepository) and its token is the write token registered for it under Source control, which only
+the scan worker can open: the admin page queues the approval and the worker opens the pull request
+(process_approval) and, before each scan, fetches the approved rules (sync_reviewed). Approved rules never go into this tool's own rules folder: what
 your applications taught it stays yours. The tool loads them from CONTAINERIZER_REVIEWED_RULES (a
 checkout of that repository's rules folder), in tool-maintained files:
 

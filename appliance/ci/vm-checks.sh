@@ -98,6 +98,41 @@ wait_for 300 "pod from the local registry" sh -c 'k3s kubectl get pod ci-registr
 k3s kubectl logs ci-registry
 k3s kubectl delete pod ci-registry --wait=false
 
+step "SBOM attached to a pushed image with ORAS (as the scan worker does it)"
+oras version
+digest=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' localhost:5000/ci/registry:1 \
+  | sed -n 's#^localhost:5000/ci/registry@##p' | head -1)
+test -n "$digest"
+install -d -m 0700 -o containerizer -g containerizer /var/lib/containerizer/worker/ci
+runuser -u containerizer -- env HOME=/var/lib/containerizer/worker $PY - "$digest" <<'PY'
+import json, sys, pathlib
+from containerizer import sbom
+f = pathlib.Path("/var/lib/containerizer/worker/ci/sbom.cdx.json")
+f.write_text(json.dumps({"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1, "components": []}))
+r = sbom.attach("localhost:5000/ci/registry:1", sys.argv[1], f)
+print(r)
+assert r == "attached", r
+PY
+oras discover --format json "localhost:5000/ci/registry@$digest" | grep -q 'application/vnd.cyclonedx+json'
+rm -rf /var/lib/containerizer/worker/ci
+
+step "dev database uploads: the web UI stores them, the scan worker reads them"
+test "$(stat -c '%U:%G %a' /var/lib/containerizer/devdb)" = "cz-web:containerizer 2750"
+for u in containerizer-web containerizer-worker; do
+  tr '\0' '\n' < "/proc/$(systemctl show -p MainPID --value $u.service)/environ" \
+    | grep -qx CONTAINERIZER_DEV_DB_DIR=/var/lib/containerizer/devdb
+done
+# as the web UI, inside its sandbox (ProtectSystem=strict: only this folder and the request folder are writable)
+web=$(systemctl show -p MainPID --value containerizer-web.service)
+nsenter --target "$web" --mount --setuid 901 --setgid 901 -- $PY -c '
+import os, pathlib
+from containerizer import devdb
+s = devdb.Settings.from_env(os.environ | {"CONTAINERIZER_DEV_DB_DIR": "/var/lib/containerizer/devdb"})
+up = devdb.Upload(); up.path = s.directory / ".upload-ci"; up.path.write_bytes(b"TAPE ci"); up.sha256 = "0" * 64
+print(devdb.store(s, up, "sqlserver"))'
+runuser -u containerizer -- grep -q TAPE "/var/lib/containerizer/devdb/$(printf '0%.0s' $(seq 64)).bak"
+rm -f /var/lib/containerizer/devdb/0*.bak
+
 step "egress change through the system agent (as the Firewall page does it)"
 $PY - <<'PY'
 import json, time, pathlib

@@ -31,8 +31,10 @@ TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Applicatio
               "DevDatabase": "Dev database", "RuleCandidate": "Learned rule",
               "SourceCredential": "Source control token", "LabService": "Lab service",
               "RulesRepository": "Internal rules repository"}
-FIELD_TEXT = {"RepoUrl": "Repository URL", "Branch": "Branch", "Path": "Folder", "Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
+FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
               "Retired": "Hidden", "Product": "Product", "BusinessUnit": "Business unit", "InfoUrl": "Product page link",
+              # the internal rules repository (rule review)
+              "RepoUrl": "Repository URL", "Branch": "Branch", "Path": "Folder",
               # organization scans
               "Provider": "Provider", "Organization": "Organization", "ApiUrl": "Server", "TokenEnv": "Token variable",
               "Registry": "Image registry", "OutputRepo": "Output repository", "OutputBranch": "Output branch",

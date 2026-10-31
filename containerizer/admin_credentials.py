@@ -247,7 +247,8 @@ https://tfs.example.com/tfs; empty: github.com, gitlab.com, dev.azure.com)</span
 <div><button>Add</button></div></form>{guidance('read')}
 <h2>Add a write token for an output repository</h2>
 <p class='muted'>The repository the generated Dockerfiles, manifests and GitOps files are pushed to. Its token is used
-for nothing else, even when the repository is in an organization that is scanned, and the repository itself is never scanned.</p>
+for nothing else, even when the repository is in an organization that is scanned, and the repository itself is never scanned.
+The internal rules repository of the <a href='/admin/rules#repository'>rule review</a> gets its write token here too.</p>
 <form method='post' action='/admin/source-control/write' class='edit'>{adm._csrf(s)}
 <label for='Provider-gitlab'>Provider</label>{_provider_select(selected='gitlab')}
 <label for='wScope'>Repository URL <span class='muted'>(https, as on the scan's Output repository)</span></label>
