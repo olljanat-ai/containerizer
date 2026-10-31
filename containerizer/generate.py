@@ -543,6 +543,27 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
     return docs
 
 
+def _lab_inject(a: AppAssessment, c: Component, docs: list[dict], devdb, lab: set, plan) -> None:
+    """Point the component at the lab services it needs that are on (labservices.py); a restored dev
+    database backup takes the place of the lab SQL Server."""
+    from . import labservices
+    need = labservices.needs(a.repo, c)
+    ns = k8s_name(a.name)
+    for svc, why in need.items():
+        plan.needed.setdefault(svc, {})[c.name] = why
+        if svc not in lab or (svc == "sqlserver" and devdb is not None):
+            continue
+        notes = labservices.inject(docs, svc, ns, c, need)
+        names = [e["name"] for e in labservices.env_for(svc, ns, c, need)[0]]
+        plan.overrides.setdefault(c.name, []).extend(f"{svc}:{n}" for n in names)
+        if notes:
+            plan.notes.setdefault(c.name, []).extend(notes)
+        if svc not in plan.provided:
+            plan.provided.append(svc)
+    plan.provided.sort(key=labservices.ORDER.index)
+
+
+
 class _NoAlias(yaml.SafeDumper):
     def ignore_aliases(self, data):
         return True
@@ -562,8 +583,10 @@ def _yaml_docs(docs: list[dict]) -> str:
 
 def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, registry: str = "registry.local",
                  plans: dict | None = None, pin: bool = False, gitops=None, tag: str = "latest",
-                 devdb=None) -> list[Path]:
-    """`devdb`: a devdb.SandboxDb when an operator uploaded a database backup for this application."""
+                 devdb=None, lab: set | None = None, lab_report: dict | None = None) -> list[Path]:
+    """`devdb`: a devdb.SandboxDb when an operator uploaded a database backup for this application.
+    `lab`: the lab services that are on (labservices.py), None where the appliance's lab does not run;
+    `lab_report` (a dict) receives what the app needs, what it was pointed at and what is turned off."""
     from .gitops import gitops_manifests, image_setters, readme
     from .report import migration_markdown, write_agent_prompts
 
@@ -573,6 +596,10 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
     all_k8s = []
     images: list[tuple[str, str]] = []
     comp_docs: dict[str, list[dict]] = {}
+    lab_plan = None
+    if lab is not None:
+        from . import labservices
+        lab_plan = labservices.AppPlan(needed={}, provided=[], missing=[], notes={}, overrides={})
     for c in a.components:
         cdir = out / k8s_name(c.name)
         if buildable(c):
@@ -592,6 +619,8 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
             if devdb is not None:
                 from .devdb import inject
                 inject(docs, devdb, c.name)
+            if lab_plan is not None:
+                _lab_inject(a, c, docs, devdb, lab, lab_plan)
             images.append((c.name, image))
             all_k8s += docs
             comp_docs[k8s_name(c.name)] = docs
@@ -614,6 +643,22 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
         all_k8s += docs
         comp_docs[HOST] = docs
         images.append((HOST, devdb.image))
+    if all_k8s and lab_plan is not None and lab_plan.provided:
+        from . import labservices
+        if "lab" in comp_docs:
+            raise ValueError("a component is named 'lab', the folder of the lab service credentials")
+        docs = labservices.app_docs(k8s_name(a.name), lab_plan.provided)
+        (out / "lab").mkdir(parents=True, exist_ok=True)
+        (out / "lab" / "k8s.yaml").write_text(_yaml_docs(docs))
+        (out / "lab" / "README.md").write_text(labservices.readme(k8s_name(a.name), lab_plan))
+        written += [out / "lab" / "k8s.yaml", out / "lab" / "README.md"]
+        all_k8s += docs
+        comp_docs["lab"] = docs
+    if lab_plan is not None:
+        lab_plan.missing = [s for s in lab_plan.needed if s not in lab_plan.provided and s not in lab
+                            and not (s == "sqlserver" and devdb is not None)]
+        if lab_report is not None:
+            lab_report.update(lab_plan.to_dict())
     if all_k8s:
         from . import eso
         ns = k8s_name(a.name)

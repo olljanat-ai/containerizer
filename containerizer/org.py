@@ -92,6 +92,7 @@ class OrgOptions:
     kube_context: str | None = None
     gitops: str = "auto"                # auto | argocd | flux
     sandbox_timeout: int = 900
+    lab: set | None = None              # lab services that are on (labservices.py); None: from CONTAINERIZER_LAB_SERVICES
 
 
 @dataclass
@@ -117,6 +118,7 @@ class RepoResult:
     seconds: float = 0.0
     source_key: str = ""              # Application.SourceKey in the results database
     dev_database: dict = field(default_factory=dict)   # the uploaded dev database restored next to it, if any
+    lab_services: dict = field(default_factory=dict)   # lab services needed, provided and turned off (labservices.py)
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -742,7 +744,9 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
             from .sqlstore import store_results
             assessment_id = store_results(o.sql, [a], [src])[0]
         keep, res.excluded = select_components(a, o.verify)
-        dd, dd_row = (_dev_database(o, res, a, keep, work, reg, tag) if keep else (None, None))
+        lab = _lab_services(o)
+        lab_report: dict = {}
+        dd, dd_row = (_dev_database(o, res, a, keep, work, reg, tag, lab) if keep else (None, None))
         gen = work / "gen" / app
         names = {k8s_name(c.name): c for c in keep}
         g = None
@@ -751,13 +755,14 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
                 shutil.rmtree(gen)
             fa = dataclasses.replace(a, components=keep)
             if not o.gate:
-                generate_app(fa, gen, registry=o.registry, pin=o.pin, gitops=gitops, tag=tag, devdb=dd)
+                generate_app(fa, gen, registry=o.registry, pin=o.pin, gitops=gitops, tag=tag, devdb=dd, lab=lab,
+                             lab_report=lab_report)
                 break
             from .harden import security
             from .imagescan import gate_app
             g = gate_app(fa, gen, build=True, scan=True, run=True, registry=o.registry, pin=o.pin, gitops=gitops,
                          tag=tag, scanner=o.scanner or security()["scan"].get("default_scanner", "auto"),
-                         fail_on=o.fail_on, devdb=dd)
+                         fail_on=o.fail_on, devdb=dd, lab=lab, lab_report=lab_report)
             failed = {c["component"]: gate_failure(c) for c in g["components"] if gate_failure(c)}
             if not failed:
                 break
@@ -815,6 +820,8 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
                 print(f"warning: SBOMs not written to SQL Server: {type(e).__name__}: {REDACT(str(e))[:300]}",
                       file=sys.stderr)
 
+        if lab is not None:
+            res.lab_services = lab_report
         if dd is not None and (gen / "devdb").is_dir():
             from .devdb import readme
             (gen / "devdb" / "README.md").write_text(readme(k8s_name(a.name), dd, dd_row))
@@ -836,10 +843,25 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
 
 # --------------------------------------------------------------------------- the run
 
-def _dev_database(o: OrgOptions, res: RepoResult, a, comps: list, work: Path, reg: "Registry | None", tag: str):
+def _lab_services(o: OrgOptions) -> set | None:
+    """The lab services that are on: OrgOptions.lab, else lab-services.json on the appliance
+    (CONTAINERIZER_LAB_SERVICES), read for each repository so a change applies to the next one."""
+    if o.lab is not None:
+        return set(o.lab)
+    from .labservices import LabError, enabled_from_env
+    try:
+        return enabled_from_env()
+    except LabError as ex:
+        print(f"warning: lab services not used: {ex}", file=sys.stderr)
+        return None
+
+
+def _dev_database(o: OrgOptions, res: RepoResult, a, comps: list, work: Path, reg: "Registry | None", tag: str,
+                  lab: set | None = None):
     """The dev database an operator uploaded for this application (admin pages): its image built and
     pushed next to the application's, and the settings that point the application at it.
-    (None, None) when there is none, or when it cannot be prepared (the reason is in res.dev_database)."""
+    (None, None) when there is none, or when it cannot be prepared (the reason is in res.dev_database).
+    On the appliance, SQL Server turned off under Lab services turns these off too."""
     from . import devdb
     from .generate import k8s_name
     settings = devdb.Settings.from_env(os.environ)
@@ -851,6 +873,10 @@ def _dev_database(o: OrgOptions, res: RepoResult, a, comps: list, work: Path, re
         res.dev_database = {"status": "error", "reason": f"could not read the dev database settings: {str(ex)[:200]}"}
         return None, None
     if not row:
+        return None, None
+    if lab is not None and "sqlserver" not in lab:
+        res.dev_database = {"engine": row["Engine"], "database": row["DatabaseName"], "file": row["FileName"],
+                            "status": "disabled", "reason": "SQL Server is turned off under Admin -> Lab services"}
         return None, None
     ns = k8s_name(a.name)
     image = f"{o.registry.rstrip('/')}/{ns}/devdb:{tag}"
