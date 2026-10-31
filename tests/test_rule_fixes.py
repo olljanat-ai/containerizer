@@ -105,13 +105,14 @@ def test_windows_system_dlls_are_not_vendor_libraries(tmp_path):
     c = comp(tmp_path, '''class N {
         [DllImport("dbghelp.dll")] static extern bool MiniDumpWriteDump(IntPtr h);
         [DllImport("shlwapi.dll")] static extern int StrCmpLogicalW(string a, string b);
-        [DllImport("credui.dll")] static extern int CredUIPromptForCredentials(IntPtr i); }''')
+        [DllImport("credui.dll")] static extern int CredUIPromptForCredentials(IntPtr i);
+        void Use() { MiniDumpWriteDump(IntPtr.Zero); StrCmpLogicalW("a", "b"); CredUIPromptForCredentials(IntPtr.Zero); } }''')
     assert sev(c, "pinvoke-vendor") is None
     assert sev(c, "pinvoke-kernel32") == "refactor"
     assert sev(c, "pinvoke-security") == "rewrite"
-    c = comp(tmp_path, 'class N { [DllImport("dwmapi.dll")] static extern int DwmFlush(); }')
+    c = comp(tmp_path, 'class N { [DllImport("dwmapi.dll")] static extern int DwmFlush(); void F() => DwmFlush(); }')
     assert sev(c, "pinvoke-vendor") is None and sev(c, "pinvoke-gui") == "blocker"
-    c = comp(tmp_path, 'class N { [DllImport("AcmeScan.dll")] static extern int Scan(); }')
+    c = comp(tmp_path, 'class N { [DllImport("AcmeScan.dll")] static extern int Scan(); int F() { return Scan(); } }')
     assert sev(c, "pinvoke-vendor") == "blocker"
 
 

@@ -1162,6 +1162,9 @@ def parse_node_project(path: Path, root: Path) -> Project:
     pr.packages = deps
     pr.name = pr.manifest.get("name", pr.name)
     pr.assembly_name = pr.name
+    scripts = pr.manifest.get("scripts") if isinstance(pr.manifest.get("scripts"), dict) else {}
+    # npm script names (comma-separated, sorted) so role rules can tell a test harness from an app
+    pr.properties["NpmScripts"] = ",".join(sorted(scripts))
     return pr
 
 

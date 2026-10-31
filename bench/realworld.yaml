@@ -778,3 +778,151 @@ repos:
       port to a .NET 10 worker (Microsoft.Extensions.Hosting, console/ILogger instead of EventLog) -> C.
 
       tool (2026-10-30): C, matches first run. Worker (role-windows-service) via VB `Inherits System.ServiceProcess.ServiceBase`; netfx-target rewrite. Noise: aspnet-mvc5 from a bare System.Web reference and native-dll-shipped on the managed TeslaAuth.dll (also a PackageReference); neither changes the rating.
+
+  - name: rw6-jabbr
+    url: https://github.com/JabbR/JabbR
+    commit: eb5b4e2f1e5bdbb1ea91230f1884716170a6976d
+    expected_rating: C
+    expected_roles: {web: [JabbR], test: [JabbR.Tests], library: [JabbR.Client]}
+    notes: >-
+      JabbR chat: .NET 4.5 web application project (OWIN on System.Web via Microsoft.Owin.Host.SystemWeb) with
+      old ASP.NET SignalR 2.2 hubs (Microsoft.AspNet.SignalR.SystemWeb, SQL Server / Service Bus scale-out),
+      Nancy 0.20 pages, Web API 5, EF6 on SQL Server and Windows-auth middleware (WindowsPrincipalHandler,
+      optional); JabbR.Client (SignalR client library), portable/Xamarin clients and a console sample. Old
+      SignalR has no ASP.NET Core host: hubs and clients must move to ASP.NET Core SignalR, Nancy/OWIN pages
+      to ASP.NET Core -> C.
+      tool (2026-10-31): C. First run: D -- JabbR.Client.Sample (a VS2010 console sample, PlatformTarget x86 by template default, no native code) got the x86-only blocker. x86-only now needs native evidence (COM/interop reference, a called P/Invoke, a checked-in binary); the bare flag is x86-build-flag (config). JabbR web: netfx/owin-systemweb/aspnet-mvc5 rewrites, mig-aspnet-signalr.
+  - name: rw6-habitat
+    url: https://github.com/Sitecore/Habitat
+    commit: ea0a593ea022e59facfe291eace54c8fd22c7b47
+    expected_rating: E
+    expected_roles: {sitecore: [Sitecore.Habitat.Website, Sitecore.Common.Website, Sitecore.Feature.News, Sitecore.Foundation.DependencyInjection, Sitecore.Foundation.Installer], test: ["Sitecore.*.Tests"]}
+    notes: >-
+      Sitecore Habitat (Helix reference solution): ~50 .NET 4.7.1 web-application-type projects
+      (Project/Feature/Foundation layers) built against Sitecore.Kernel/Sitecore.Mvc 9.2 and published into a
+      Sitecore XP 9.2 instance installed with SIF (install-xp0.ps1: IIS sites for Sitecore, xConnect, Identity).
+      The code is modules of the Sitecore XP application, which runs only on .NET Framework/IIS on Windows
+      (Sitecore's own container images are Windows-only); there is no Linux Sitecore XP/XM to port onto, only a
+      re-platform to headless XM Cloud -> E, like a SharePoint farm solution.
+      Expectation corrected after reading the code again: the two Project-layer "Website" projects have no
+      Global.asax either (Sitecore's own is used); every non-test project is a module published into the same
+      Sitecore webroot, so all of them are Sitecore platform components (role sitecore), not standalone web apps.
+      tool (2026-10-31): E. First run: E for the wrong reason -- every module came out library (web GUID, no Global.asax), so "no server-side component". New role-sitecore (netfx + Sitecore.Kernel + web GUID / Sitecore config patches) is a platform tier like sharepoint, with the sitecore-xp blocker; netfx-target no longer suggests porting it.
+  - name: rw6-quicksilver
+    url: https://github.com/episerver/Quicksilver
+    commit: 859eccd2d20a4487edd9d46319701ff4d980e19f
+    expected_rating: C
+    expected_roles: {web: [EPiServer.Reference.Commerce.Site, EPiServer.Reference.Commerce.Manager], library: [EPiServer.Reference.Commerce.Shared], test: [EPiServer.Reference.Commerce.Site.Tests]}
+    notes: >-
+      Episerver Quicksilver: Commerce 13 / CMS 11 reference site on .NET 4.6.1 (MVC5 site with Global.asax,
+      EPiServer.Cms.AspNet, ASP.NET Identity) plus the WebForms Commerce Manager back office, SQL Server
+      databases. Optimizely CMS 12 / Commerce 14 run on ASP.NET Core (.NET 6+, Linux), so the site is a
+      framework port (Optimizely's upgrade path); Commerce Manager does not exist in Commerce 14 -> C.
+      tool (2026-10-31): C, matches first run. Both web (Global.asax); netfx-target/aspnet-mvc5/webforms rewrites plus real csproj references to ReportViewer, System.Runtime.Remoting and System.Data.OracleClient (ssrs/remoting/mig-oracleclient) that Episerver Commerce 13 pulled in.
+  - name: rw6-eshopondapr
+    url: https://github.com/dotnet-architecture/eShopOnDapr
+    commit: ad9a07b4d2b4aa564c53bcefcca25744642dc243
+    expected_rating: A
+    expected_roles: {web: [Identity.API, Payment.API, Catalog.API, Ordering.API, Basket.API, Web.Shopping.HttpAggregator, BlazorClient.Host, WebStatus], library: [EventBus, Healthchecks]}
+    notes: >-
+      eShopOnDapr: net7.0 ASP.NET Core microservices using Dapr sidecars (pub/sub, state, secrets, actors) with
+      Linux Dockerfiles, docker-compose, k8s and Container Apps manifests; Blazor WASM client served by
+      BlazorClient.Host; Envoy gateway. Linux containers by design -> A (net7.0 roll-forward is config).
+      tool (2026-10-31): A, matches first run. Eight web services, core-eol config only.
+  - name: rw6-idsrv-admin
+    url: https://github.com/skoruba/Duende.IdentityServer.Admin
+    commit: 06386cc726f1218d45cef82baad3f1692489300c
+    expected_rating: A
+    expected_roles: {web: [Skoruba.Duende.IdentityServer.Admin, Skoruba.Duende.IdentityServer.STS.Identity, Skoruba.Duende.IdentityServer.Admin.Api], test: ["*Tests"]}
+    notes: >-
+      Duende IdentityServer host (STS.Identity) + admin UI + admin API on net10.0, EF Core with SQL Server /
+      PostgreSQL / MySQL providers, Linux Dockerfiles and docker-compose; templates/ holds dotnet-new copies.
+      Windows auth is an optional IIS setting. Signing keys and Data Protection keys are configuration -> A.
+      tool (2026-10-31): A. First run: rating matched but tests/...STS.Identity.ClientTests (a package.json whose only script is `node --test`, devDependency jsdom) was library. New role-test-node (scanner NpmScripts property: only test/e2e/lint scripts). The templates/ dotnet-new copies are reported as extra web components (config only).
+  - name: rw6-dinnerparty
+    url: https://github.com/NancyFx/DinnerParty
+    commit: d4286f36c96ac655774d138916279583d5966eba
+    expected_rating: C
+    expected_roles: {web: [DinnerParty]}
+    notes: >-
+      Nancy port of NerdDinner: .NET 4.0 web application hosted by Nancy.Hosting.Aspnet on System.Web, Razor
+      views, forms auth, Cassette bundling, Elmah, RavenDB 1.x/2.x client (Raven.Client.Lightweight). Nancy is
+      unmaintained and its ASP.NET host is System.Web-only; Linux needs a port to ASP.NET Core (or Nancy 2 on
+      OWIN/Kestrel) and a current RavenDB client -> C.
+      tool (2026-10-31): C. First run: E -- DinnerParty came out library (web GUID, no Global.asax), so no server component. role-web-systemweb now also accepts a web application whose Web.config routes path="*" to a non-System.Web IHttpHandler (Web.config:73/85 NancyHttpRequestHandler).
+  - name: rw6-sf-quickstart
+    url: https://github.com/Azure-Samples/service-fabric-dotnet-quickstart
+    commit: 41a9c858f81f9c6c8c2f510982e5da6c556529d2
+    expected_rating: C
+    expected_roles: {web: [VotingWeb, VotingData]}
+    notes: >-
+      Service Fabric Voting app on net8.0: VotingWeb is a StatelessService with a Kestrel communication
+      listener and SF reverse-proxy calls; VotingData is a StatefulService keeping votes in a ReliableDictionary
+      (Microsoft.ServiceFabric.Data). Voting.sfproj is the application package. Off Service Fabric the stateful
+      service needs its state model redesigned (external store) -> C.
+      tool (2026-10-31): C, matches first run. VotingData host-service-fabric-stateful rewrite, VotingWeb stateless refactor.
+  - name: rw6-hanbaobao
+    url: https://github.com/ReubenBond/hanbaobao-web
+    commit: d0c8b1a1685aac75df11becbe66499f136ed689b
+    expected_rating: A
+    expected_roles: {web: [HanBaoBaoWeb]}
+    notes: >-
+      Orleans 3 sample app (Chinese dictionary lookups): one net5.0 ASP.NET Core + Orleans silo process
+      with Microsoft.Orleans.Hosting.Kubernetes, Azure Storage / Redis clustering and grain persistence,
+      a Linux Dockerfile and a Kubernetes deployment.yaml. Built for Linux containers -> A.
+      tool (2026-10-31): A, matches first run. core-eol (net5.0) and sqlite-local config.
+  - name: rw6-jobmanager
+    url: https://github.com/newcatshuang/JobManager
+    commit: 6603798ae7dcb0e22772023524a4e8b927b0710c
+    expected_rating: B
+    expected_roles: {web: [Newcats.JobManager.Api], worker: [Newcats.JobManager.Host], library: [Newcats.JobManager.Common, Newcats.System.Job.DeleteSystemLog]}
+    notes: >-
+      Quartz.NET job platform: netcoreapp2.2 Web API (manage jobs, upload job DLLs into a sibling JobHost
+      folder), a netcoreapp2.2 Topshelf Windows service hosting Quartz (HostFactory.Run, RunAsLocalSystem,
+      "must publish -r win-x64") that loads job assemblies with Assembly.LoadFrom, a Blazor WASM admin UI,
+      Dapper on SQL Server. QuartzManager.GetAbsolutePath rewrites '/' to '\\' (QuartzManager.cs:120), which
+      breaks job paths on Linux; Topshelf must give way to the generic host -> B.
+      tool (2026-10-31): B, matches first run. Host: windows-service-netfx (Topshelf) + os-backslash-path-join refactors; Api config only.
+  - name: rw6-license-manager
+    url: https://github.com/dnauck/License.Manager
+    commit: cf70f5d19045ebbcdacbd251d68d3077ca647bea
+    expected_rating: C
+    expected_roles: {web: [License.Manager], library: [License.Manager.Core]}
+    notes: >-
+      Portable.Licensing license manager: ServiceStack v3 AppHostBase on ASP.NET (.NET 4.5, Global.asax) with an
+      AngularJS UI, embedded RavenDB 2 (EmbeddableDocumentStore with embedded HTTP server, data in App_Data),
+      DotNetOpenAuth OpenID providers. Needs a port to current ServiceStack on ASP.NET Core, a RavenDB server or
+      current embedded RavenDB, and new auth providers -> C.
+      tool (2026-10-31): C, matches first run. netfx-target/aspnet-mvc5 rewrites. Not reported: embedded RavenDB 2 uses Esent storage by default (Windows-only), which would not change the rating.
+  - name: rw6-ddd-enterprise
+    url: https://github.com/charlessolar/DDD.Enterprise.Example
+    commit: 692ac2e810bfac0c0486b00a7bdf438eab325588
+    expected_rating: C
+    expected_roles: {web: [ServiceStack], worker: [Domain, Riak, Elastic]}
+    notes: >-
+      CQRS/ES example on .NET 4.6.1: ServiceStack web API (web application project) that sends commands over
+      NServiceBus/RabbitMQ, a Domain endpoint (console Exe, NServiceBus + Aggregates.NET + EventStore, optionally
+      embedded) and Riak / Elastic read-model endpoints, all waiting on Ctrl+C. Libraries are portable in
+      principle but everything is netfx and ServiceStack is hosted on System.Web -> C.
+      tool (2026-10-31): C. First run: D -- Seed (interactive seeding console) got x86-only from the VS-default Prefer32Bit=true and pinvoke-vendor from Internal/NativeMethods.cs:12, an MSMQ (mqrt.dll) P/Invoke block that nothing calls; and Domain/Riak/Elastic were console. Fixed: uncalled extern declarations are not hits, Prefer32Bit alone is config, and a bus endpoint that starts (Endpoint.Start, Endpoint.cs:188) and waits (Endpoint.cs:129) in the same file is a worker. Seed is left out of expected roles (seeds, then keeps receiving until Ctrl+C).
+  - name: rw6-drawtogether
+    url: https://github.com/petabridge/DrawTogether.NET
+    commit: 9677e1439b4fd0c7272d9aebd51703cfa1c5f66b
+    expected_rating: A
+    expected_roles: {web: [DrawTogether], worker: [DrawTogether.MigrationService], tool: [DrawTogether.AppHost], library: [DrawTogether.Actors, DrawTogether.Entities, DrawTogether.Email], test: ["DrawTogether.*Tests"]}
+    notes: >-
+      Multiplayer paint app: net10.0 Blazor Server + Akka.NET cluster/sharding/persistence (SQL Server),
+      ASP.NET Identity, Akka.Management with Kubernetes API discovery, an EF migration worker and an Aspire AppHost;
+      k8s manifests. Linux containers by design -> A.
+      tool (2026-10-31): A, matches first run. host-akka-cluster/host-blazor-server/signalr-scaleout config.
+  - name: rw6-controleestoque
+    url: https://github.com/ribeiromatheus/ControleEstoque
+    commit: 8ca2feb4736c4930f53b93ad852522729a71c335
+    expected_rating: C
+    expected_roles: {web: [ControleEstoque.Web], library: [Rotativa]}
+    notes: >-
+      Stock-control line-of-business app: ASP.NET MVC 5 + EF6 on .NET 4.6.1 (Global.asax, LocalDB attached .mdf
+      under C:\Users\...), a vendored Rotativa library that shells out to the bundled Windows wkhtmltopdf.exe /
+      wkhtmltoimage.exe for PDF reports, and a WCF service reference to the Correios SOAP API. Port to ASP.NET Core
+      + EF Core, a Linux PDF renderer, and a real SQL Server connection -> C.
+      tool (2026-10-31): C, matches first run. netfx-target/aspnet-mvc5 rewrites; libwkhtmltox and LocalDB connection config.

@@ -13,7 +13,7 @@ rules:
       all:
         - tfm: 'net[1-4]\d{1,2}|v[1-4].*'
         - not: {tfm: 'net([5-9]|\d\d)\.\d+.*|netcoreapp.*|netstandard.*'}
-        - not: {role: 'test|library|sqlclr|sharepoint|biztalk'}
+        - not: {role: 'test|library|sqlclr|sharepoint|sitecore|biztalk'}
         - not: &aspnetcore_netfx
             all:
               - sdk: 'Microsoft\.NET\.Sdk\.Web'
@@ -45,7 +45,7 @@ rules:
       all:
         - tfm: 'net[1-4]\d{1,2}'
         - not: {tfm: 'net([5-9]|\d\d)\.\d+.*|netcoreapp.*|netstandard.*'}
-        - not: {role: 'test|library|sqlclr|sharepoint|biztalk'}
+        - not: {role: 'test|library|sqlclr|sharepoint|sitecore|biztalk'}
         - *aspnetcore_netfx
     severity: refactor
     category: runtime
@@ -153,13 +153,26 @@ rules:
     refs:
       - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
 
+  # PlatformTarget x86 was the Visual Studio 2010 default for console/WinForms executables and
+  # Prefer32Bit=true the default of every AnyCPU executable since Visual Studio 2012, so on an old
+  # project neither says the process needs 32 bits. It is a blocker only next to something that does
+  # pin the bitness: a COM reference or interop assembly, a P/Invoke declaration that is called, an
+  # ActiveX control or a checked-in binary. An explicit win-x86 runtime identifier is a deliberate
+  # choice and stays a blocker on its own. The flag without such evidence is x86-build-flag (config).
   - id: x86-only
     applies_to: [dotnet]
     when:
       any:
-        - property: {PlatformTarget: x86}
         - property: {RuntimeIdentifier: 'win(7|10)?-x86'}
-        - property: {Prefer32Bit: "true"}
+        - all:
+            - any: &x86_flags
+                - property: {PlatformTarget: x86}
+                - property: {Prefer32Bit: "true"}
+            - any: &x86_native_evidence
+                - reference: 'COM:.*|Interop\..*|AxInterop\..*'
+                - code: '\[\s*(DllImport|LibraryImport|ComImport)\b|<\s*(DllImport|ComImport)\b|\bDeclare\s+(Ansi\s+|Unicode\s+|Auto\s+)?(Function|Sub)\s+\w+\s+Lib\b'
+                  unguarded: true
+                - file: ["*.ocx", "*.dll"]
     severity: blocker
     category: runtime
     effort: 0
@@ -171,6 +184,29 @@ rules:
       have no WoW64-dependent vendor installers either.
     fix: Replace the 32-bit dependency (or isolate it on a Windows VM behind an API) before containerizing.
     refs:
+      - https://github.com/dotnet/core/blob/main/release-notes/8.0/supported-os.md
+
+  - id: x86-build-flag
+    applies_to: [dotnet]
+    when:
+      all:
+        - any: *x86_flags
+        - not: {any: *x86_native_evidence}
+        - not: {property: {RuntimeIdentifier: 'win(7|10)?-x86'}}
+        - not: {role: test}
+    severity: config
+    category: runtime
+    effort: 0.1
+    title: 32-bit build setting without a native dependency
+    why: >-
+      The project is built as x86 or with Prefer32Bit, but nothing in it needs a 32-bit process:
+      there is no COM reference, interop assembly, called P/Invoke declaration or checked-in
+      binary. PlatformTarget x86 was the Visual Studio 2010 default for executables and Prefer32Bit
+      the default since Visual Studio 2012; the code is plain managed code. Linux .NET containers
+      are 64-bit (x64/arm64), so the build setting just has to go.
+    fix: Build as AnyCPU (remove PlatformTarget x86 / Prefer32Bit, or publish with -r linux-x64).
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/compiler-options/output#platformtarget
       - https://github.com/dotnet/core/blob/main/release-notes/8.0/supported-os.md
 
   - id: wcf-server
