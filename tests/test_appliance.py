@@ -33,6 +33,7 @@ state:
 def paths(tmp_path, monkeypatch):
     p = sysagent.Paths(conf=tmp_path / "appliance.conf", system_rules=tmp_path / "egress-system.json",
                        rules=tmp_path / "etc" / "egress.json", history=tmp_path / "var" / "history.jsonl",
+                       task=tmp_path / "var" / "last-task.json",
                        run=tmp_path / "run", dnsmasq=tmp_path / "run" / "dnsmasq.conf", nft=tmp_path / "run" / "fw.nft",
                        os_release=tmp_path / "os-release", snapshots=tmp_path / "snapshots",
                        appliance_env=tmp_path / "appliance.env", resolved=tmp_path / "resolv.conf",
@@ -390,3 +391,23 @@ def test_health(paths, monkeypatch):
         return "active\n"
     monkeypatch.setattr(sysagent, "run", no_fw)
     assert sysagent.health() == 1
+
+
+def test_task_survives_the_restart(paths, monkeypatch):
+    fake_run(monkeypatch)
+    (paths.run / "requests" / "1.json").write_text(json.dumps({"action": "upgrade", "version": "v1.2.0"}))
+    sysagent.process()
+    (paths.run / "status.json").unlink()                     # /run is gone after the restart
+    t = sysagent.publish()["task"]
+    assert t["state"] == "done" and t["message"].endswith("; restarted") and "restarting" not in t["message"]
+    assert sysagent.publish()["task"]["state"] == "done"
+
+
+def test_task_failed_when_boot_fell_back(paths, monkeypatch):
+    fake_run(monkeypatch)
+    (paths.run / "requests" / "1.json").write_text(json.dumps({"action": "upgrade", "version": "v1.2.0"}))
+    sysagent.process()
+    (paths.elemental_run / "active_mode").unlink()
+    (paths.elemental_run / "passive_mode").touch()
+    t = sysagent.publish()["task"]
+    assert t["state"] == "failed" and "previous snapshot" in t["message"]

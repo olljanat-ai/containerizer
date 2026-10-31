@@ -60,6 +60,7 @@ class Paths:
     system_rules: Path = Path("/usr/lib/containerizer/egress-system.json")
     rules: Path = Path("/etc/containerizer/egress.json")
     history: Path = Path("/var/lib/containerizer/system/egress-history.jsonl")
+    task: Path = Path("/var/lib/containerizer/system/last-task.json")
     run: Path = Path("/run/containerizer/system")
     dnsmasq: Path = Path("/run/containerizer/dnsmasq/egress.conf")
     nft: Path = Path("/run/containerizer/firewall.nft")
@@ -179,6 +180,33 @@ def elemental_version() -> str:
         return ""
 
 
+def last_task() -> dict | None:
+    """The last upgrade or roll back, kept on the persistent partition so the System page still shows it
+    after the restart. A task that was restarting into its new snapshot is finished now: done when this
+    boot is the active snapshot, failed when the boot assessment fell back to the previous one."""
+    try:
+        t = json.loads(P.task.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(t, dict):
+        return None
+    if t.get("state") == "rebooting":
+        if boot_mode() == "passive":
+            t.update(state="failed", message=(t.get("message") or "") + ". The new system did not pass its start-up "
+                     "check; the appliance went back to the previous snapshot.")
+        else:
+            t.update(state="done", message=(t.get("message") or "").removesuffix("; restarting") + "; restarted")
+        save_task(t)
+    return t
+
+
+def save_task(task: dict) -> None:
+    try:
+        atomic_write(P.task, json.dumps(task), 0o644)
+    except OSError as ex:
+        log(f"could not keep the task state: {ex}")
+
+
 def publish(task: dict | None = None, egress_state: dict | None = None) -> dict:
     """Write status.json (world-readable: it holds no secrets)."""
     old = {}
@@ -186,11 +214,13 @@ def publish(task: dict | None = None, egress_state: dict | None = None) -> dict:
         old = json.loads((P.run / "status.json").read_text())
     except (OSError, ValueError):
         pass
+    if task is not None:
+        save_task(task)
     c = conf()
     st = {"version": running_version(), "image": c["CZ_OS_IMAGE"], "signer": c["CZ_SIGNER_REPO"],
           "boot_mode": boot_mode(), "elemental": old.get("elemental") or elemental_version(),
           "hostname": socket.gethostname(), "snapshots": snapshots(), "updated": now(),
-          "task": task if task is not None else old.get("task"),
+          "task": task if task is not None else last_task(),
           "egress": egress_state if egress_state is not None else (old.get("egress") or egress_status())}
     atomic_write(P.run / "status.json", json.dumps(st, indent=1), 0o644)
     return st

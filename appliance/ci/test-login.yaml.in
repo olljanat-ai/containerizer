@@ -1,0 +1,8 @@
+# CI only: the test key for root, included in the test disk image (not in released images).
+name: "CI login"
+stages:
+  fs:
+    - name: "CI SSH key"
+      authorized_keys:
+        root:
+          - "@KEY@"
