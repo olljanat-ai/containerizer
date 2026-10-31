@@ -485,16 +485,25 @@ CREATE TABLE [${schema}].DevDatabase (
     DevDatabaseId int IDENTITY(1,1) NOT NULL CONSTRAINT PK_DevDatabase PRIMARY KEY,
     ApplicationId int            NOT NULL CONSTRAINT FK_DevDatabase_Application REFERENCES [${schema}].Application (ApplicationId)
                                  CONSTRAINT UQ_DevDatabase_Application UNIQUE,
-    Engine        nvarchar(20)   NOT NULL CONSTRAINT CK_DevDatabase_Engine CHECK (Engine IN (N'sqlserver')),
+    Engine        nvarchar(20)   NOT NULL CONSTRAINT CK_DevDatabase_Engine CHECK (Engine IN (N'sqlserver', N'postgres', N'mysql')),
     DatabaseName  nvarchar(128)  NOT NULL,
     FileName      nvarchar(200)  NOT NULL,       -- as uploaded
     SizeBytes     bigint         NOT NULL,
     Sha256        char(64)       NOT NULL,
-    StoredAs      nvarchar(100)  NOT NULL,       -- <sha256>.bak
+    StoredAs      nvarchar(100)  NOT NULL,       -- <sha256>.<bak|dump|sql|sql.gz>
     Prompt        nvarchar(max)  NULL,           -- how to point the application at the database
     UploadedAt    datetime2(0)   NOT NULL CONSTRAINT DF_DevDatabase_UploadedAt DEFAULT SYSUTCDATETIME(),
     UploadedBy    nvarchar(256)  NOT NULL
 );
+GO
+-- 14: PostgreSQL and MySQL backups too (databases made before allow SQL Server only)
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_DevDatabase_Engine'
+           AND parent_object_id = OBJECT_ID(N'[${schema}].DevDatabase') AND definition NOT LIKE N'%mysql%')
+    ALTER TABLE [${schema}].DevDatabase DROP CONSTRAINT CK_DevDatabase_Engine;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_DevDatabase_Engine'
+               AND parent_object_id = OBJECT_ID(N'[${schema}].DevDatabase'))
+    ALTER TABLE [${schema}].DevDatabase ADD CONSTRAINT CK_DevDatabase_Engine CHECK (Engine IN (N'sqlserver', N'postgres', N'mysql'));
 GO
 
 -- Lab services the appliance runs in its sandbox cluster for the scanned apps (labservices.py,
@@ -1005,4 +1014,7 @@ IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 10) INSER
 GO
 -- 12: lab services (LabService)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 12) INSERT [${schema}].SchemaVersion (Version) VALUES (12);
+GO
+-- 14: dev database backups for PostgreSQL and MySQL (CK_DevDatabase_Engine); more lab services
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 14) INSERT [${schema}].SchemaVersion (Version) VALUES (14);
 GO

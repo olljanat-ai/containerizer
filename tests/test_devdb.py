@@ -1,4 +1,5 @@
 """Dev database backups: upload parsing, the sandbox database manifests and the app's settings."""
+import gzip
 import io
 import sys
 from pathlib import Path
@@ -25,9 +26,17 @@ def _db(engine="sqlserver", env=None):
 def test_sniff_recognises_backup_formats():
     assert devdb.sniff(b"TAPE\x00\x00rest", "x.bak") == "sqlserver"
     assert devdb.sniff(b"MSSQLBAK\x02\x00", "x.bak") == "sqlserver"      # WITH COMPRESSION (SQL Server 2022)
-    assert devdb.sniff(b"PGDMP\x01\x0e", "x.dump") is None                     # SQL Server only for now
+    assert devdb.file_format(b"PGDMP\x01\x0e") == ("postgres", "dump")
+    pg = b"--\n-- PostgreSQL database dump\n--\n\nSET statement_timeout = 0;\n"
+    assert devdb.file_format(pg) == ("postgres", "sql")
+    assert devdb.file_format(gzip.compress(pg)) == ("postgres", "sql.gz")
+    my = b"-- MySQL dump 10.13  Distrib 8.4.3, for Linux (x86_64)\n--\n-- Host: localhost\n"
+    assert devdb.file_format(my) == ("mysql", "sql")
+    assert devdb.file_format(b"\xef\xbb\xbf-- MariaDB dump 10.19  Distrib 10.11.6-MariaDB\n") == ("mysql", "sql")
+    assert devdb.file_format(gzip.compress(my)[:200]) == ("mysql", "sql.gz")      # only the first bytes are kept
     assert devdb.sniff(b"CREATE TABLE t (id int);\n", "x.sql") is None
     assert devdb.sniff(b"\x7fELF\x02\x01", "x.bak") is None
+    assert devdb.sniff(gzip.compress(b"hello"), "x.gz") is None
 
 
 def test_check_engine_rejects_mismatch():
@@ -79,7 +88,8 @@ def test_parse_multipart_limits_and_hook(tmp_path):
 
 # -- the sandbox database -------------------------------------------------------------------------
 
-def test_manifests_are_hardened(engine="sqlserver"):
+@pytest.mark.parametrize("engine", ["sqlserver", "postgres", "mysql"])
+def test_manifests_are_hardened(engine):
     docs = devdb.manifests("shop", _db(engine))
     kinds = [d["kind"] for d in docs]
     assert kinds[:4] == ["ServiceAccount", "Deployment", "Service", "NetworkPolicy"]
@@ -354,3 +364,111 @@ def test_restore_in_docker_with_the_pod_settings(tmp_path):
         assert r.returncode == 0 and r.stdout.split() == ["1", "0"], r.stdout + r.stderr
     finally:
         subprocess.run(["docker", "rm", "-f", "cz-devdb-pytest"], capture_output=True)
+
+
+@pytest.mark.parametrize("engine,ext", [("postgres", "dump"), ("postgres", "sql.gz"), ("mysql", "sql")])
+def test_build_context_restores_with_the_image_entry_point(tmp_path, engine, ext):
+    stored = tmp_path / f"{'a' * 64}.{ext}"
+    stored.write_bytes(b"x")
+    ctx = devdb.build_context(stored, engine, "Shop", tmp_path / "ctx")
+    df = (ctx / "Dockerfile").read_text()
+    assert df.startswith(f"FROM {devdb.BASE_IMAGES[engine]}")
+    assert f"/devdb/backup.{ext}" in df and "/docker-entrypoint-initdb.d/10-devdb-restore.sh" in df
+    assert f"USER {devdb.UIDS[engine]}" in df and "DEVDB_NAME=Shop" in df
+    script = (ctx / "restore.sh").read_text()
+    assert "DEVDB_PASSWORD" in script and (ctx / f"backup.{ext}").exists()
+    assert not any(w in script for w in (" -p\"", " -p$", "--password"))       # admin passwords stay in the environment
+
+
+def test_store_names_the_file_by_its_format(tmp_path):
+    settings = devdb.Settings(tmp_path, 10 ** 6)
+    f = tmp_path / ".upload-x"
+    f.write_bytes(gzip.compress(b"-- MySQL dump 10.13\n"))
+    up = devdb.Upload(path=f, sha256="b" * 64, head=f.read_bytes()[:4096], size=10)
+    assert devdb.store(settings, up, "mysql") == "b" * 64 + ".sql.gz"
+    up.head = b"PGDMP"
+    with pytest.raises(devdb.UploadError):
+        devdb.store(settings, up, "mysql")
+
+
+def test_lab_engine_off_turns_its_dev_database_off(tmp_path, monkeypatch):
+    from containerizer import org
+    monkeypatch.setenv("CONTAINERIZER_DEV_DB_DIR", str(tmp_path))
+    monkeypatch.setattr(devdb, "lookup", lambda cs, key, password=None: {
+        "Engine": "postgres", "DatabaseName": "Shop", "FileName": "shop.dump"})
+    monkeypatch.setenv("CONTAINERIZER_SQL", "Server=x,1433;Database=d;User Id=u")
+    o = org.OrgOptions(provider="github", org="acme", output_repo="x", registry="registry.local")
+    res = org.RepoResult(provider="github", org="acme", project="", repo="shop", status="error", source_key="k")
+    assert org._dev_database(o, res, None, [], tmp_path, None, "t1", lab={"sqlserver"}) == (None, None)
+    assert res.dev_database["status"] == "disabled" and "PostgreSQL" in res.dev_database["reason"]
+
+
+PG_DUMP = """--
+-- PostgreSQL database dump
+--
+SET client_encoding = 'UTF8';
+\\connect original
+CREATE DATABASE original;
+CREATE TABLE public.product (id integer, name text);
+ALTER TABLE public.product OWNER TO someone_else;
+INSERT INTO public.product VALUES (42, 'tea');
+"""
+MYSQL_DUMP = """-- MySQL dump 10.13  Distrib 8.4.3, for Linux (x86_64)
+/*!40101 SET NAMES utf8mb4 */;
+CREATE DATABASE /*!32312 IF NOT EXISTS*/ `original` /*!40100 DEFAULT CHARACTER SET utf8mb4 */;
+USE `original`;
+CREATE TABLE `product` (`id` int, `name` varchar(20));
+INSERT INTO `product` VALUES (42,'tea');
+"""
+
+
+@pytest.mark.skipif(not os.environ.get("CONTAINERIZER_TEST_DOCKER"),
+                    reason="set CONTAINERIZER_TEST_DOCKER=1 to restore PostgreSQL and MySQL dumps in docker")
+@pytest.mark.parametrize("engine,dump,gz", [("postgres", PG_DUMP, False), ("postgres", PG_DUMP, True), ("mysql", MYSQL_DUMP, True)])
+def test_restore_dumps_in_docker_with_the_pod_settings(tmp_path, engine, dump, gz):
+    """A plain dump made from another database name lands in DatabaseName, owned by the app's user,
+    under the pod's securityContext (read-only root, non-root, ALL capabilities dropped)."""
+    import hashlib
+    import subprocess
+    import time
+    data = gzip.compress(dump.encode()) if gz else dump.encode()
+    assert devdb.file_format(data[:4096])[0] == engine
+    stored = tmp_path / f"{hashlib.sha256(data).hexdigest()}.{devdb.file_format(data[:4096])[1]}"
+    stored.write_bytes(data)
+    devdb.build_context(stored, engine, "Shop", tmp_path / "ctx")
+    tag = f"cz-devdb-test:{engine}"
+    subprocess.run(["docker", "build", "-q", "-t", tag, str(tmp_path / "ctx")], check=True)
+    docs = devdb.manifests("shop", _db(engine, env={}))
+    pod = docs[1]["spec"]["template"]["spec"]
+    c = pod["containers"][0]
+    uid = pod["securityContext"].get("runAsUser") or c["securityContext"]["runAsUser"]
+    name = f"cz-devdb-pytest-{engine}"
+    env = {e["name"]: e.get("value") for e in c["env"]}
+    for k in env:
+        if env[k] is None:
+            env[k] = "Admin1234567890abcdefXYZ" if k != "DEVDB_PASSWORD" else "App1234567890abcdefXYZ"
+    args = ["docker", "run", "-d", "--name", name, "--read-only", "--user", f"{uid}:{uid}", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges"]
+    for k, v in env.items():
+        args += ["-e", f"{k}={v}"]
+    for m in c["volumeMounts"]:
+        args += ["--tmpfs", f"{m['mountPath']}:rw,uid={uid},gid={uid},mode=0700"]
+    subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+    subprocess.run(args + [tag], check=True, capture_output=True)
+    try:
+        for _ in range(60):
+            if subprocess.run(["docker", "exec", name, *c["readinessProbe"]["exec"]["command"]], capture_output=True).returncode == 0:
+                break
+            time.sleep(3)
+        else:
+            raise AssertionError(subprocess.run(["docker", "logs", name], capture_output=True, text=True).stderr[-3000:])
+        if engine == "postgres":
+            q = ["docker", "exec", "-e", "PGPASSWORD=App1234567890abcdefXYZ", name, "psql", "-h", "127.0.0.1", "-U", "app",
+                 "-d", "Shop", "-tAc", "SELECT name FROM product WHERE id = 42"]
+        else:
+            q = ["docker", "exec", "-e", "MYSQL_PWD=App1234567890abcdefXYZ", name, "mysql", "-h", "127.0.0.1", "-uapp",
+                 "--ssl-mode=REQUIRED", "-N", "Shop", "-e", "SELECT name FROM product WHERE id = 42"]
+        r = subprocess.run(q, capture_output=True, text=True)
+        assert r.returncode == 0 and r.stdout.strip() == "tea", r.stdout + r.stderr
+    finally:
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True)

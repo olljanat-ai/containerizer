@@ -20,8 +20,9 @@ not change: only its configuration, through environment variables.
 | SFTP | [SFTPGo](https://github.com/drakkan/sftpgo), SFTP only | Its own SFTP server, user and password, on port 22 | no |
 
 SQL Server is on by default because the appliance already ran SQL Server for
-[dev database restores](dev-databases.md). An app with an uploaded backup still gets that backup restored
-next to it, and the lab SQL Server is not used for it. Turning SQL Server off stops those restores too.
+[dev database restores](dev-databases.md). An app with an uploaded backup (SQL Server, PostgreSQL or MySQL)
+still gets that backup restored next to it, and the lab's server for that engine is not used for it.
+Turning the engine off stops those restores too.
 
 ## Turn a service on or off
 
@@ -118,7 +119,7 @@ Off the appliance (`containerizer org` or `generate` without `CONTAINERIZER_LAB_
   endpoint. The same is true for Azure clients created from a `serviceUri` with managed identity: the lab
   gives each app a connection string, not an identity. `lab/README.md` says when no setting was found.
 - **Database schema.** The databases start empty. Run the app's migrations at start-up, as most EF Core
-  apps do, or upload a [dev database backup](dev-databases.md) for SQL Server.
+  apps do, or upload a [dev database backup](dev-databases.md) for SQL Server, PostgreSQL or MySQL.
 
 ## How it works
 

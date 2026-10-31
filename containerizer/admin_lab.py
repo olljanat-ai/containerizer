@@ -78,7 +78,7 @@ def save(adm, conn, s, svc: str, form: dict) -> Response:
     note = " ".join(form.get("Note", [""])[0].split())[:400] or None
     current = rows(conn)
     if svc not in current:
-        return _back("That service is not in the database yet: run `containerizer db init` (schema version 12).")
+        return _back("That service is not in the database yet: run `containerizer db init` (schema version 14).")
     st = (lab_status(adm).get("services") or {}).get(svc) or {}
     in_use = list(st.get("apps") or [])
     if not on and in_use and form.get("confirm", [""])[0] != "yes":

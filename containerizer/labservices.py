@@ -636,7 +636,7 @@ def shared_manifests(svc: str, image: str) -> list[dict]:
         vols, mounts = _scratch("/tmp", "/var/run/mysqld", "/var/lib/mysql-files")
         vols.append({"name": "data", "persistentVolumeClaim": {"claimName": f"{svc}-data"}})
         mounts.append({"name": "data", "mountPath": "/var/lib/mysql"})
-        ready = ["/bin/sh", "-c", 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqladmin -uroot --protocol=socket ping']
+        ready = ["mysqladmin", "--protocol=tcp", "-h", "127.0.0.1", "ping"]
         c = {"name": svc, "image": image, "imagePullPolicy": "IfNotPresent",
              "args": ["mysqld", "--innodb-buffer-pool-size=256M", "--max-connections=200", "--skip-name-resolve"],
              "env": [{"name": "MYSQL_ROOT_PASSWORD", **admin}, {"name": "MYSQL_ROOT_HOST", "value": "localhost"}],
