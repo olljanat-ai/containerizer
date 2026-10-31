@@ -28,7 +28,7 @@ URL_RE = re.compile(r"https://[A-Za-z0-9.-]+(:\d{1,5})?(/[^\s<>\"'`]*)?")
 LINK_RE = re.compile(r"(https://[A-Za-z0-9.-]+|http://(localhost|127\.0\.0\.1|\[::1\]))(:\d{1,5})?(/[^\s<>\"'`]*)?")
 TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Application": "Application",
               "OrgScan": "Organization scan", "OrgRepository": "Repository",
-              "DevDatabase": "Dev database"}
+              "DevDatabase": "Dev database", "RuleCandidate": "Learned rule"}
 FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
               "Retired": "Hidden", "Product": "Product", "BusinessUnit": "Business unit", "InfoUrl": "Product page link",
               # organization scans
@@ -44,7 +44,12 @@ FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Des
               "OrgScan": "Scan",
               # dev databases
               "Engine": "Engine", "DatabaseName": "Database name", "FileName": "File", "SizeBytes": "Size (bytes)",
-              "Sha256": "SHA-256", "PromptSha256": "Instructions (SHA-256)"}
+              "Sha256": "SHA-256", "PromptSha256": "Instructions (SHA-256)",
+              # rule review
+              "Kind": "Kind", "Title": "Rule", "Status": "Status", "ReviewNote": "Note", "AppliedAs": "Applied as",
+              "PullRequestUrl": "Pull request", "Edited": "Edited by the reviewer"}
+# Who may use the rule review pages: Session attributes, any of which lets a signed-in user in.
+RULE_REVIEW_ROLES = ("admin", "operator")
 UPLOAD_RE = re.compile(r"/admin/dev-databases/(\d{1,9})/upload")
 
 
@@ -70,6 +75,9 @@ class Admin:
         self.devdb = None                           # devdb.Settings when dev database uploads are on
         self.grafana_url = ""                       # CONTAINERIZER_GRAFANA_URL: link on the admin pages
         self.system = None                          # appliance.SystemPage on the appliance (System, Firewall)
+        from .rulereview import ApplyConfig
+        self.rule_apply = ApplyConfig()             # where approved rules go (CONTAINERIZER_RULES_*)
+        self.rule_apply_error = ""                  # why approving is unavailable, shown on the rule review pages
         self.cookie = ("__Host-" if cfg.secure else "") + "cz_session"
         self.login_cookie = ("__Host-" if cfg.secure else "") + "cz_login"
 
@@ -90,6 +98,11 @@ class Admin:
 
     def session(self, headers) -> Session | None:
         return self.sessions.get(self._cookies(headers.get("Cookie")).get(self.cookie))
+
+    @staticmethod
+    def may_review_rules(s: Session | None) -> bool:
+        """The single gate of the rule review pages (RULE_REVIEW_ROLES)."""
+        return bool(s) and any(getattr(s, role, False) is True for role in RULE_REVIEW_ROLES)
 
     def nav(self, headers) -> str:
         s = self.session(headers)
@@ -191,6 +204,9 @@ class Admin:
                             "<p>Your role does not include this page.</p>" if known else ""))
         if kind in ("scans", "repositories"):
             return self.route_scans(conn, s, a, method, path, q, form)
+        if kind == "rules":
+            from . import admin_rules
+            return admin_rules.route(self, conn, s, a, method, parts, q, form, q.get("msg", [""])[0][:300])
         if kind in ("system", "firewall"):           # the appliance only; administrators only (see _tabs)
             status, body, location = self.system.handle(
                 s, method, parts, q, form, lambda title, active, b, f: self._shell(s, a, title, active, b, f))
@@ -239,6 +255,8 @@ class Admin:
             tabs += [("scans", "Organization scans"), ("repositories", "Repositories")]
         if self.devdb is not None and (a.admin or a.operator):           # dev database backups (admin_devdb.py)
             tabs += [("dev-databases", "Dev databases")]
+        if self.may_review_rules(s):                                     # learned rules waiting for review
+            tabs += [("rules", "Rule review")]
         tabs += [("audit", "Change history")]
         if a.admin and self.cfg.view_audit:
             tabs += [("access", "Access log")]
@@ -696,9 +714,11 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
         chips = " ".join(f"<a class='chip{' on' if (k or None) == table else ''}' href='/admin/audit{('?table=' + k) if k else ''}'>{t}</a>"
                          for k, t in (("", "All"), ("Application", "Applications"), ("Product", "Products"),
                                       ("BusinessUnit", "Business units"), ("OrgScan", "Organization scans"),
-                                      ("OrgRepository", "Repositories"), ("DevDatabase", "Dev databases")))
+                                      ("OrgRepository", "Repositories"), ("DevDatabase", "Dev databases"),
+                                      ("RuleCandidate", "Rule review")))
         body = (f"<p class='muted'>Every change to business units, products, the application mapping, organization scans, "
-                f"repositories (found by a scan, enabled or disabled, skipped) and dev database uploads: who made it, when, "
+                f"repositories (found by a scan, enabled or disabled, skipped), dev database uploads and the rule review "
+                f"(learned rules proposed, approved or rejected): who made it, when, "
                 f"and what changed. Changes made directly in the database are recorded too, under the database login. "
                 f"Latest 200.</p><nav class='chips'>{chips}</nav>{render_audit(self._audit_rows(conn, table))}")
         return Response(200, self._shell(s, a, "Change history", "audit", body))
@@ -806,7 +826,7 @@ def render_audit(rows: list[dict], show_target: bool = True) -> str:
             changes = "".join(f"<li>{e(FIELD_TEXT.get(k, k))}: {e(_fmt(v, k))}</li>" for k, v in vals.items() if v not in (None, "", False))
         action = {"insert": "Added", "update": "Changed", "delete": "Deleted"}.get(r["Action"], r["Action"])
         if r["Action"] == "insert" and r["Via"] == "scan":
-            action = "Found by a scan"
+            action = "Proposed by the learning loop" if r["TableName"] == "RuleCandidate" else "Found by a scan"
         who = e(r["ChangedByName"] or r["ChangedBy"])
         if r["ChangedByName"] and r["ChangedByName"] != r["ChangedBy"]:
             who += f" <span class='muted'>({e(r['ChangedBy'])})</span>"
@@ -842,7 +862,14 @@ def build(env=None) -> Admin | None:
     if grafana and not LINK_RE.fullmatch(grafana):
         raise OidcError("CONTAINERIZER_GRAFANA_URL must be an https:// link (http:// only to localhost)")
     from . import api
+    from .rulereview import ApplyConfig, ReviewError
     adm = Admin(cfg, lambda: connect(cs, pw))
+    adm.rule_apply = ApplyConfig.from_env(env)
+    try:
+        adm.rule_apply.check()
+    except ReviewError as ex:          # the rest of the admin pages work; the rule review says why it cannot approve
+        adm.rule_apply_error = str(ex)
+        print(f"warning: rule review: {ex}", file=sys.stderr)
     adm.grafana_url = grafana
     adm.api = api.build(env, adm.provider, adm.connect_admin, cfg)
     from .appliance import SystemPage

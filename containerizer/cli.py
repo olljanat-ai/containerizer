@@ -126,14 +126,17 @@ def cmd_generate(args) -> int:
 
 
 def cmd_verify(args) -> int:
+    from .rulereview import LearningSession
     from .verify import verify_app
 
-    rules = load_rules()
     rc = 0
     for app in _apps(args.paths):
-        a = assess(app, rules)
-        res = verify_app(a, Path(args.out) if args.out else None, learn=args.learn, only=args.component,
-                         ai=args.ai, model=args.model, timeout=args.timeout)
+        with LearningSession(source_path=Path(app), ai=args.ai, model=args.model, enabled=None if args.learn else False) as ls:
+            a = assess(app, load_rules())
+            ls.app = a.name
+            res = verify_app(a, Path(args.out) if args.out else None, learn=args.learn, only=args.component,
+                             ai=args.ai, model=args.model, timeout=args.timeout)
+            ls.add_results(res)
         for r in res:
             print(f"{a.name}/{r['component']}: {r['status']} {r.get('detail', '')}")
             if r["status"] not in ("ok", "skipped"):
@@ -230,7 +233,8 @@ def cmd_analyze(args) -> int:
     apps = _apps(args.paths)
     for app in apps:
         a = analyze_app(app, out, ai=args.ai, model=args.model, verify=not args.no_verify,
-                        registry=args.registry, pin=args.pin_digests, timeout=args.timeout, gitops=_gitops(args))
+                        registry=args.registry, pin=args.pin_digests, timeout=args.timeout, gitops=_gitops(args),
+                        sql=args.sql)
         ver = a.verification
         results.append(a)
         print(f"{a.name:24s} {a.rating} score={a.score:3d}  verified: "
@@ -324,13 +328,109 @@ def cmd_bench(args) -> int:
 
 def cmd_ai(args) -> int:
     from .ai import ai_review_app
+    from .rulereview import LearningSession
 
-    rules = load_rules()
     for app in _apps(args.paths):
-        a = assess(app, rules)
-        res = ai_review_app(a, model=args.model, learn=args.learn, force=args.force)
+        with LearningSession(source_path=Path(app), ai=True, model=args.model, enabled=None if args.learn else False) as ls:
+            a = assess(app, load_rules())
+            ls.app = a.name
+            res = ai_review_app(a, model=args.model, learn=args.learn, force=args.force)
         print(json.dumps(res, indent=2))
     return 0
+
+
+def _review_store(args):
+    """The rule review store for `containerizer rules`: --dir (JSON file), else the results database
+    through an admin login (--sql, CONTAINERIZER_ADMIN_SQL or CONTAINERIZER_SQL), else the JSON file."""
+    import getpass
+    import os
+    from .rulereview import FileStore, SqlStore, default_dir
+    user = args.reviewer or os.environ.get("CONTAINERIZER_REVIEWER") or getpass.getuser()
+    if args.dir:
+        return FileStore(args.dir), user
+    cs, pw = args.sql, None
+    if not cs and os.environ.get("CONTAINERIZER_ADMIN_SQL"):
+        cs, pw = os.environ["CONTAINERIZER_ADMIN_SQL"], os.environ.get("CONTAINERIZER_ADMIN_SQL_PASSWORD")
+    cs = cs or os.environ.get("CONTAINERIZER_SQL")
+    if not cs:
+        return FileStore(default_dir()), user
+    st = SqlStore.connect(cs, pw)
+    st.conn.set_user(user, args.reviewer_name, via="CLI")
+    return st, user
+
+
+def cmd_rules(args) -> int:
+    from .rulereview import ReviewError, approve, reject
+    from .sqlstore import SqlError
+    try:
+        store, user = _review_store(args)
+    except SqlError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 3
+    try:
+        if args.rules_cmd == "list":
+            rows = store.list(args.status)
+            if args.json:
+                print(json.dumps(rows, indent=2, default=str))
+                return 0
+            if not rows:
+                print(f"no {args.status if args.status != 'all' else ''} candidates".replace("  ", " "))
+            for c in rows:
+                print(f"{c['CandidateId']:>5}  {c['Status']:<8} {c['Kind']:<8} conf {float(c['Confidence']):.2f}  "
+                      f"seen {c['SeenCount']}x  {c['RuleId']}\n       {c['Title']}"
+                      + (f"\n       learned from {c['LearnedFrom']}" if c.get("LearnedFrom") else "")
+                      + (f" · LLM {c['Model']}" if c.get("Model") else ""))
+            return 0
+        c = store.get(args.id)
+        if not c:
+            print(f"error: no candidate {args.id}", file=sys.stderr)
+            return 1
+        if args.rules_cmd == "show":
+            if args.json:
+                print(json.dumps(c, indent=2, default=str))
+                return 0
+            print(f"Candidate {c['CandidateId']} ({c['Status']}): {c['Title']}\nKind {c['Kind']}, source {c['Source']}, "
+                  f"confidence {float(c['Confidence']):.2f}, seen {c['SeenCount']} time(s), learned from "
+                  f"{c.get('LearnedFrom') or '-'}" + (f", LLM {c['Model']}" if c.get("Model") else ""))
+            if c["Status"] != "pending":
+                print(f"{c['Status'].capitalize()} by {c.get('ReviewedByName') or c.get('ReviewedBy')} at {c.get('ReviewedAt')}"
+                      + (f": {c['ReviewNote']}" if c.get("ReviewNote") else "")
+                      + (f"\nPull request: {c['PullRequestUrl']}" if c.get("PullRequestUrl") else ""))
+            print(f"\n--- proposed rule ({c['TargetFile']}) ---\n{c.get('FinalYaml') or c['RuleYaml']}")
+            if c.get("Diff"):
+                print(f"--- diff ---\n{c['Diff']}")
+            for ev in c.get("evidence") or []:
+                print(f"--- evidence {ev.get('SeenAt')}: {ev.get('Application') or ''}/{ev.get('Component') or ''} "
+                      f"{ev.get('RepositoryUrl') or ''} {ev.get('SourceCommit') or ''}\n"
+                      f"outcome {ev.get('Outcome') or '-'}, stage {ev.get('Stage') or '-'}"
+                      + (f", LLM {ev['Model']}" if ev.get("Model") else ""))
+                if ev.get("ExitReason"):
+                    print(ev["ExitReason"])
+                if ev.get("LogExcerpt"):
+                    print("log:\n" + ev["LogExcerpt"])
+            return 0
+        if args.rules_cmd == "approve":
+            edited = None
+            if args.edit:
+                edited = sys.stdin.read() if args.edit == "-" else Path(args.edit).read_text()
+            r = approve(store, args.id, user, args.reviewer_name, args.note, edited)
+            print(f"candidate {args.id} approved{' (edited)' if r['edited'] else ''}: "
+                  + ("pull request " if r["applied"] == "pr" else "written to ") + str(r["where"]))
+            return 0
+        if args.rules_cmd == "reject":
+            reject(store, args.id, user, args.reviewer_name, args.note)
+            print(f"candidate {args.id} rejected; it will not be proposed again")
+            return 0
+    except ReviewError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except SqlError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 3
+    finally:
+        if hasattr(store, "close"):
+            store.close()
+    return 2
 
 
 def _run_cmd(args) -> int:
@@ -371,7 +471,7 @@ def main(argv=None) -> int:
     s.add_argument("paths", nargs="+")
     s.add_argument("--out")
     s.add_argument("--component")
-    s.add_argument("--learn", action="store_true", help="persist learned rules")
+    s.add_argument("--learn", action="store_true", help="propose what is learned for review (docs/rule-review.md)")
     s.add_argument("--ai", action="store_true", help="ask the LLM when no failure rule explains a failure")
     s.add_argument("--model", default=None, help="LLM model (default CONTAINERIZER_MODEL, else claude-opus-5-5)")
     s.add_argument("--timeout", type=int, default=900)
@@ -418,6 +518,37 @@ def main(argv=None) -> int:
     s.add_argument("--learn", action="store_true")
     s.add_argument("--force", action="store_true", help="review even when confidence is high")
     s.set_defaults(fn=cmd_ai)
+
+    s = sub.add_parser("rules", help="review learned rules: list, show the evidence, approve (optionally edited) "
+                       "or reject (docs/rule-review.md)")
+    rsub = s.add_subparsers(dest="rules_cmd", required=True)
+
+    def _review_args(p):
+        p.add_argument("--sql", help="connection string of an admin login (default CONTAINERIZER_ADMIN_SQL, else "
+                       "CONTAINERIZER_SQL); without one, the local file store")
+        p.add_argument("--dir", help="use the file store in this folder (default CONTAINERIZER_REVIEW_DIR or .work/rule-review)")
+        p.add_argument("--as", dest="reviewer", help="who decides, for the change history (default CONTAINERIZER_REVIEWER, "
+                       "else the OS user)")
+        p.add_argument("--name", dest="reviewer_name", help="display name of the reviewer")
+        p.set_defaults(fn=cmd_rules)
+    r = rsub.add_parser("list", help="candidates (default: pending)")
+    r.add_argument("--status", default="pending", choices=["pending", "approved", "rejected", "all"])
+    r.add_argument("--json", action="store_true")
+    _review_args(r)
+    r = rsub.add_parser("show", help="one candidate with its rule, diff and evidence")
+    r.add_argument("id", type=int)
+    r.add_argument("--json", action="store_true")
+    _review_args(r)
+    r = rsub.add_parser("approve", help="validate and apply: a pull request (CONTAINERIZER_RULES_APPLY=pr) or the "
+                        "local ruleset files (=direct)")
+    r.add_argument("id", type=int)
+    r.add_argument("--edit", metavar="FILE", help="approve this YAML instead of the rule as learned ('-' reads stdin)")
+    r.add_argument("--note", help="why (kept in the change history)")
+    _review_args(r)
+    r = rsub.add_parser("reject", help="reject; the same rule is not proposed again")
+    r.add_argument("id", type=int)
+    r.add_argument("--note", help="why (kept in the change history)")
+    _review_args(r)
 
     s = sub.add_parser("gate", help="security gate: lint generated manifests and scan images for vulnerabilities")
     s.add_argument("paths", nargs="+")

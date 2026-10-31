@@ -684,7 +684,7 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
             shutil.rmtree(scratch)
         rules_reset()
         a = analyze_app(src, scratch, ai=o.ai, model=o.model, verify=o.verify, registry=o.registry, pin=o.pin,
-                        timeout=o.timeout, gitops=gitops)
+                        timeout=o.timeout, gitops=gitops, sql=o.sql)
         res.rating = a.rating
         from .sqlstore import source_info
         res.source_key = source_info(src, a.name)["key"]

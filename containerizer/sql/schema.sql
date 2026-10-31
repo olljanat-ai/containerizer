@@ -13,6 +13,7 @@
 --   AccessLog: who signed in to the web UI and what they looked at (optional)
 --   OrgScan 1-* OrgScanRun, OrgRepository                                    (scheduled organization scans)
 --   Application 0-1 DevDatabase                                              (dev database backup for the sandbox)
+--   RuleCandidate 1-* RuleEvidence: rules the learning loop learned, waiting for review (rule review)
 --
 -- The scan fills Application, Component and the assessment tables. People maintain business units,
 -- products and the application mapping in the admin pages of the web UI; a scan never overwrites them.
@@ -307,6 +308,114 @@ SELECT N'Application' AS Kind, a.ApplicationId AS Id, COALESCE(a.DisplayName, a.
 FROM [${schema}].Application a WHERE a.ProductId IS NULL AND a.Retired = 0
 UNION ALL
 SELECT N'Product', p.ProductId, p.Name, NULL FROM [${schema}].Product p WHERE p.BusinessUnitId IS NULL;
+GO
+
+-- Rule review (docs/rule-review.md): what the learning loop learns waits here until a person approves or
+-- rejects it. Fingerprint identifies what a rule does (not when or where it was learned), so the same
+-- rule learned again adds evidence instead of a second candidate, and a rejected rule is not proposed
+-- again. The scan proposes through ProposeRuleCandidate only (it cannot set a status); reviewers decide
+-- through the admin login. Status changes are in the AuditLog.
+IF OBJECT_ID(N'[${schema}].RuleCandidate', N'U') IS NULL
+CREATE TABLE [${schema}].RuleCandidate (
+    CandidateId    int IDENTITY(1,1) NOT NULL CONSTRAINT PK_RuleCandidate PRIMARY KEY,
+    Kind           nvarchar(20)   NOT NULL CONSTRAINT CK_RuleCandidate_Kind CHECK (Kind IN (N'rule', N'failure', N'package')),
+    Fingerprint    char(64)       NOT NULL CONSTRAINT UQ_RuleCandidate_Fingerprint UNIQUE,
+    RuleId         nvarchar(200)  NOT NULL,
+    Title          nvarchar(400)  NOT NULL,
+    Source         nvarchar(40)   NOT NULL,         -- learned (build and run) or ai (proposed by the LLM)
+    TargetFile     nvarchar(200)  NOT NULL,         -- ruleset file it is added to when approved
+    RuleYaml       nvarchar(max)  NOT NULL,         -- the rule as learned
+    Diff           nvarchar(max)  NULL,             -- unified diff of TargetFile when it was proposed
+    Confidence     decimal(4,2)   NOT NULL,
+    Model          nvarchar(200)  NULL,             -- the LLM that proposed it, if any
+    LearnedFrom    nvarchar(400)  NULL,             -- application/component
+    Status         nvarchar(20)   NOT NULL CONSTRAINT DF_RuleCandidate_Status DEFAULT N'pending'
+                   CONSTRAINT CK_RuleCandidate_Status CHECK (Status IN (N'pending', N'approved', N'rejected')),
+    SeenCount      int            NOT NULL CONSTRAINT DF_RuleCandidate_SeenCount DEFAULT 1,
+    FirstSeenAt    datetime2(0)   NOT NULL CONSTRAINT DF_RuleCandidate_FirstSeenAt DEFAULT SYSUTCDATETIME(),
+    LastSeenAt     datetime2(0)   NOT NULL CONSTRAINT DF_RuleCandidate_LastSeenAt DEFAULT SYSUTCDATETIME(),
+    ReviewedBy     nvarchar(256)  NULL,
+    ReviewedByName nvarchar(256)  NULL,
+    ReviewedAt     datetime2(0)   NULL,
+    ReviewNote     nvarchar(1000) NULL,
+    FinalYaml      nvarchar(max)  NULL,             -- the rule as approved (after the reviewer's edits)
+    AppliedAs      nvarchar(20)   NULL,             -- pr or direct
+    PullRequestUrl nvarchar(400)  NULL,
+    ClaimedBy      nvarchar(256)  NULL,             -- a reviewer applying it right now (expires after 10 minutes)
+    ClaimedAt      datetime2(0)   NULL
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_RuleCandidate_Status' AND object_id = OBJECT_ID(N'[${schema}].RuleCandidate'))
+CREATE INDEX IX_RuleCandidate_Status ON [${schema}].RuleCandidate (Status, LastSeenAt DESC);
+GO
+
+-- Why a rule was learned: one row each time a run learned it (the latest 20 are kept). Logs have
+-- credentials masked before they are stored.
+IF OBJECT_ID(N'[${schema}].RuleEvidence', N'U') IS NULL
+CREATE TABLE [${schema}].RuleEvidence (
+    EvidenceId     bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_RuleEvidence PRIMARY KEY,
+    CandidateId    int            NOT NULL CONSTRAINT FK_RuleEvidence_Candidate REFERENCES [${schema}].RuleCandidate (CandidateId) ON DELETE CASCADE,
+    SeenAt         datetime2(0)   NOT NULL CONSTRAINT DF_RuleEvidence_SeenAt DEFAULT SYSUTCDATETIME(),
+    Application    nvarchar(200)  NULL,
+    Component      nvarchar(200)  NULL,
+    RepositoryUrl  nvarchar(400)  NULL,
+    SourceCommit   nvarchar(64)   NULL,
+    Stage          nvarchar(20)   NULL,             -- build or run: where the failure behind it happened
+    Outcome        nvarchar(40)   NULL,             -- verification status of the component (ok, finding, ...)
+    ExitReason     nvarchar(2000) NULL,             -- the attempts: failure rule, exit code, diagnosis
+    LogExcerpt     nvarchar(max)  NULL,             -- tail of the failing build or run log
+    Model          nvarchar(200)  NULL,
+    AttemptsJson   nvarchar(max)  NULL
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_RuleEvidence_Candidate' AND object_id = OBJECT_ID(N'[${schema}].RuleEvidence'))
+CREATE INDEX IX_RuleEvidence_Candidate ON [${schema}].RuleEvidence (CandidateId, SeenAt DESC);
+GO
+
+CREATE OR ALTER PROCEDURE [${schema}].ProposeRuleCandidate
+    @Kind nvarchar(20), @Fingerprint char(64), @RuleId nvarchar(200), @Title nvarchar(400), @Source nvarchar(40),
+    @TargetFile nvarchar(200), @RuleYaml nvarchar(max), @Diff nvarchar(max), @Confidence decimal(4,2),
+    @Model nvarchar(200), @LearnedFrom nvarchar(400),
+    @Application nvarchar(200), @Component nvarchar(200), @RepositoryUrl nvarchar(400), @SourceCommit nvarchar(64),
+    @Stage nvarchar(20), @Outcome nvarchar(40), @ExitReason nvarchar(2000), @LogExcerpt nvarchar(max),
+    @EvidenceModel nvarchar(200), @AttemptsJson nvarchar(max)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    DECLARE @id int, @status nvarchar(20), @result nvarchar(20);
+    BEGIN TRANSACTION;
+    SELECT @id = CandidateId, @status = Status FROM [${schema}].RuleCandidate WITH (UPDLOCK, HOLDLOCK)
+    WHERE Fingerprint = @Fingerprint;
+    IF @id IS NULL
+    BEGIN
+        INSERT [${schema}].RuleCandidate (Kind, Fingerprint, RuleId, Title, Source, TargetFile, RuleYaml, Diff, Confidence,
+                                          Model, LearnedFrom)
+        VALUES (@Kind, @Fingerprint, @RuleId, @Title, @Source, @TargetFile, @RuleYaml, @Diff, @Confidence, @Model, @LearnedFrom);
+        SET @id = CAST(SCOPE_IDENTITY() AS int);
+        SET @result = N'new';
+    END
+    ELSE IF @status = N'pending'
+    BEGIN
+        UPDATE [${schema}].RuleCandidate SET SeenCount = SeenCount + 1, LastSeenAt = SYSUTCDATETIME(),
+               Confidence = CASE WHEN @Confidence > Confidence THEN @Confidence ELSE Confidence END
+        WHERE CandidateId = @id;
+        SET @result = N'seen';
+    END
+    ELSE
+        SET @result = @status;           -- rejected: remembered and not proposed again; approved: in the ruleset
+    IF @result IN (N'new', N'seen')
+    BEGIN
+        INSERT [${schema}].RuleEvidence (CandidateId, Application, Component, RepositoryUrl, SourceCommit, Stage, Outcome,
+                                         ExitReason, LogExcerpt, Model, AttemptsJson)
+        VALUES (@id, @Application, @Component, @RepositoryUrl, @SourceCommit, @Stage, @Outcome, @ExitReason, @LogExcerpt,
+                @EvidenceModel, @AttemptsJson);
+        DELETE [${schema}].RuleEvidence WHERE CandidateId = @id AND EvidenceId NOT IN
+            (SELECT TOP (20) EvidenceId FROM [${schema}].RuleEvidence WHERE CandidateId = @id ORDER BY EvidenceId DESC);
+    END
+    COMMIT TRANSACTION;
+    SELECT @id AS CandidateId, @result AS Result;
+END;
 GO
 
 -- Audit trail: one row per changed row of BusinessUnit, Product and Application (mapping and the
@@ -677,12 +786,34 @@ BEGIN
 END;
 GO
 
+-- Rule review decisions (and new candidates) in the change history; SeenCount and claims are not logged.
+CREATE OR ALTER TRIGGER [${schema}].trRuleCandidateAudit ON [${schema}].RuleCandidate
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'RuleCandidate', COALESCE(i.CandidateId, d.CandidateId),
+           LEFT(COALESCE(i.RuleId, d.RuleId), 200),
+           CASE WHEN d.CandidateId IS NULL THEN N'insert' WHEN i.CandidateId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.CandidateId IS NOT NULL THEN (SELECT d.Kind, d.Title, d.Status, d.ReviewNote, d.AppliedAs, d.PullRequestUrl
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.CandidateId IS NOT NULL THEN (SELECT i.Kind, i.Title, i.Status, i.ReviewNote, i.AppliedAs, i.PullRequestUrl,
+                CAST(CASE WHEN i.FinalYaml IS NOT NULL AND i.FinalYaml <> i.RuleYaml THEN 1 ELSE 0 END AS bit) AS Edited
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.CandidateId = i.CandidateId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.CandidateId IS NULL OR i.CandidateId IS NULL
+       OR EXISTS (SELECT i.Status, i.ReviewNote, i.AppliedAs, i.PullRequestUrl
+                  EXCEPT SELECT d.Status, d.ReviewNote, d.AppliedAs, d.PullRequestUrl);
+END;
+GO
+
 -- Least-privilege roles. Add database users to them (docs/results-database.md):
 --   ${schema}_writer: the scanner; inserts results, never touches the people-maintained columns
 --   ${schema}_reader: the web UI and report readers; views and lookup tables only
 --   ${schema}_admin: the admin pages of the web UI (and people editing with SQL): business units,
 --                    products, the application mapping, organization scans and enabling/disabling their
---                    repositories; reads the audit log; also a reader
+--                    repositories, the rule review; reads the audit log; also a reader
 --   The scan worker (`containerizer worker`) uses a ${schema}_writer login too.
 IF DATABASE_PRINCIPAL_ID(N'${schema}_writer') IS NULL CREATE ROLE [${schema}_writer];
 IF DATABASE_PRINCIPAL_ID(N'${schema}_reader') IS NULL CREATE ROLE [${schema}_reader];
@@ -709,6 +840,7 @@ GRANT UPDATE ON [${schema}].OrgRepository (ProjectName, Name, ExternalId, CloneU
     LastRating, LastScannedAt, LastRunId, LastSeconds, LastDetail) TO [${schema}_writer];
 GRANT EXECUTE ON [${schema}].QueueOrgScanRun TO [${schema}_writer];
 GRANT SELECT, INSERT ON [${schema}].SandboxCheck TO [${schema}_writer];
+GRANT EXECUTE ON [${schema}].ProposeRuleCandidate TO [${schema}_writer];
 
 GRANT SELECT ON [${schema}].vApplicationLatest TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vComponentLatest TO [${schema}_reader];
@@ -736,6 +868,10 @@ GRANT SELECT ON [${schema}].OrgRepository TO [${schema}_admin];
 GRANT UPDATE ON [${schema}].OrgRepository (AdminState, AdminNote) TO [${schema}_admin];
 GRANT EXECUTE ON [${schema}].QueueOrgScanRun TO [${schema}_admin];
 GRANT EXECUTE ON [${schema}].CancelOrgScanRun TO [${schema}_admin];
+GRANT SELECT ON [${schema}].RuleCandidate TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].RuleCandidate (Status, ReviewedBy, ReviewedByName, ReviewedAt, ReviewNote, FinalYaml, AppliedAs,
+                                           PullRequestUrl, ClaimedBy, ClaimedAt) TO [${schema}_admin];
+GRANT SELECT ON [${schema}].RuleEvidence TO [${schema}_admin];
 IF IS_ROLEMEMBER(N'${schema}_reader', N'${schema}_admin') = 0 ALTER ROLE [${schema}_reader] ADD MEMBER [${schema}_admin];
 GO
 
@@ -747,4 +883,7 @@ IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 6) INSERT
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 7) INSERT [${schema}].SchemaVersion (Version) VALUES (7);
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 8) INSERT [${schema}].SchemaVersion (Version) VALUES (8);
+GO
+-- 9: rule review (RuleCandidate, RuleEvidence)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 9) INSERT [${schema}].SchemaVersion (Version) VALUES (9);
 GO

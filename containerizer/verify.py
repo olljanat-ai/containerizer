@@ -40,7 +40,9 @@ MAX_ATTEMPTS = 5
 
 def load_failures() -> list[dict]:
     out = []
-    for f in [RULES_DIR / "50-failures.yaml", LEARNED / "failures.yaml"]:
+    from .rules import reviewed_dir
+    rd = reviewed_dir()     # failure rules approved in the rule review, from your internal rules repository
+    for f in [RULES_DIR / "50-failures.yaml", *([rd / "55-reviewed-failures.yaml"] if rd else []), LEARNED / "failures.yaml"]:
         if f.exists():
             out += (yaml.safe_load(f.read_text()) or {}).get("failures", []) or []
     # learned failure rules first: they are more specific
@@ -338,7 +340,8 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
         fr, caps = d
         caps.setdefault("tfm", plan.get("tfm") or "")
         entry = {"attempt": attempt, "stage": stage, "rule": fr["id"], "outcome": fr["outcome"],
-                 "diagnosis": _fmt(fr.get("diagnosis", ""), caps)}
+                 "diagnosis": _fmt(fr.get("diagnosis", ""), caps), **{k: v for k, v in details.items() if k == "exit_code"},
+                 "log_tail": tail[-1500:]}                    # evidence for the rule review of what is learned
         history.append(entry)
         if fr["outcome"] == "retry":
             patch = _fmt(fr.get("fix", {}), caps)

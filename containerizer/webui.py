@@ -37,6 +37,26 @@ e = html.escape
 # ---------------------------------------------------------------------------
 # data (cz_reader can read exactly these)
 
+UPLOAD_DRAIN_MAX = 64 * 1024 * 1024     # unread rest of a refused upload read and dropped before replying
+
+
+class _CountingReader:
+    """Counts what an upload handler read from the request body."""
+
+    def __init__(self, f):
+        self.f, self.count = f, 0
+
+    def read(self, n=-1):
+        b = self.f.read(n)
+        self.count += len(b)
+        return b
+
+    def readline(self, n=-1):
+        b = self.f.readline(n)
+        self.count += len(b)
+        return b
+
+
 def _rows(conn, sql: str, params: tuple = ()) -> list[dict]:
     cur = conn.cursor(as_dict=True)
     cur.execute(sql, params)
@@ -598,6 +618,16 @@ button.secondary{background:var(--card);color:var(--fg)}.formrow input{width:aut
 .prompt{margin-top:12px}.prompt-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
 .prompt p{margin:4px 0}.prompt textarea{font:12.5px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;
 white-space:pre-wrap;overflow:auto}button.copy{padding:3px 12px;font-size:13px}
+.st{display:inline-block;font-size:12px;font-weight:600;border-radius:999px;padding:1px 9px;border:1px solid currentColor;white-space:nowrap}
+.st-ok{color:#0a7d0a}.st-bad{color:#b42727}.st-off{color:var(--muted)}.st-run{color:#1f5fbf}
+@media (prefers-color-scheme:dark){.st-ok{color:#4fd14f}.st-bad{color:#f07a7a}.st-run{color:#7fb0ff}}
+button.secondary{background:var(--card);color:var(--fg)}button[disabled]{opacity:.5;cursor:not-allowed}
+pre.code,textarea.code{font:12.5px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+pre.code{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px;overflow:auto;
+white-space:pre-wrap;word-break:break-word;max-height:460px}
+pre.diff .add{color:#0a7d0a}pre.diff .del{color:#b42727}pre.diff .hunk{color:var(--muted)}
+@media (prefers-color-scheme:dark){pre.diff .add{color:#4fd14f}pre.diff .del{color:#f07a7a}}
+form.edit.wide{max-width:none;margin:12px 0}nav.chips+div.meta{margin-top:16px}
 """
 
 # The only script: the "Copy prompt" button of the migration assistant (progressive enhancement; without it the
@@ -684,7 +714,20 @@ def make_handler(connect, admin=None):
                 self.close_connection = True               # the body may be left unread on a refusal
                 self.connection.settimeout(120)            # a stalled upload does not hold a thread forever
                 n = int(self.headers.get("Content-Length") or 0)
-                r = admin.handle_upload(u.path, self.headers, self.rfile, n)
+                body_in = _CountingReader(self.rfile)
+                r = admin.handle_upload(u.path, self.headers, body_in, n)
+                # A refusal can come before the whole body is read (too large, not a backup). Read and drop
+                # a bounded rest first, so the client is not cut off mid-send and gets the page that says why.
+                left = n - body_in.count
+                if 0 < left <= UPLOAD_DRAIN_MAX:
+                    try:
+                        while left > 0:
+                            chunk = self.rfile.read(min(left, 1 << 16))
+                            if not chunk:
+                                break
+                            left -= len(chunk)
+                    except OSError:
+                        pass
                 return self._send(r.status, r.body, r.ctype, head, r.headers, forms=True)
             if method == "POST":
                 n = int(self.headers.get("Content-Length") or 0)
