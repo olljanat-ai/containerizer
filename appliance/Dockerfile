@@ -35,7 +35,7 @@ RUN apt-get update \
     rsync findutils kmod kbd tzdata less vim-tiny bash-completion \
     ca-certificates curl gpg iproute2 iputils-ping nftables iptables conntrack dnsmasq-base \
     openssh-server openssh-client \
-    apparmor docker.io docker-buildx git caddy \
+    apparmor docker.io docker-cli docker-buildx git caddy \
     python3 python3-venv \
     xz-utils zstd \
  && apt-get clean \
@@ -44,6 +44,7 @@ RUN apt-get update \
  && echo > /etc/motd \
  && ln -sf /usr/bin/grub-editenv /usr/bin/grub2-editenv \
  && systemctl mask systemd-journald-audit.socket \
+ && test -x /usr/bin/docker && command -v dockerd \
  && test "$(id -u caddy)" = 910 && test "$(id -u dnsmasq)" = 911 && test "$(getent group docker | cut -d: -f3)" = 912
 
 # k3s (single binary) and the Flux install manifest, verified by checksum; cosign for upgrade signatures
