@@ -53,4 +53,5 @@ UI and admin pages, and the appliance.
 - The appliance boot test waits for the active system after the first-boot deployment
 - Appliance fixes found by the boot test: the Docker CLI is installed (`docker-cli` on Debian 13), the
   boot health check waits for k3s to finish starting instead of rolling back, and the egress
-  allow-list includes Docker Hub's Cloudflare R2 layer host
+  allow-list includes all of Docker Hub's layer hosts (Cloudflare, CloudFront, R2); the appliance's
+  runtime folders, `/etc/resolv.conf` and kernel settings are set up even when early boot misses them
