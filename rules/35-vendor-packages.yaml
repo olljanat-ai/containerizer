@@ -536,6 +536,39 @@ rules:
     refs:
       - https://github.com/dahall/taskscheduler
 
+  # RavenDB 1.x-3.x embedded: the database engine runs inside the application process. Those
+  # packages target .NET Framework only (NuGet: RavenDB.Embedded 2.0 net40, RavenDB.Database 3.5
+  # net45), so the database does not move with a port to modern .NET; RavenDB 4+ is a separate
+  # server with a new client API. Only 1.x-3.x names match: the RavenDB.Database package and the
+  # Raven.Database / Raven.Client.Embedded assemblies do not exist from 4.0 on, and 4.x+
+  # embedding is `EmbeddedServer`, not `EmbeddableDocumentStore`.
+  - id: pkg-ravendb-embedded-legacy
+    applies_to: [dotnet]
+    when:
+      any:
+        - package: 'RavenDB\.Database'
+        - reference: 'Raven\.Database|Raven\.Client\.Embedded'
+        - code: '\bEmbeddableDocumentStore\b'
+    severity: rewrite
+    category: data
+    effort: 3
+    windows_container: true
+    title: Embedded RavenDB 1.x-3.x (in-process database on .NET Framework)
+    why: >-
+      The application hosts the RavenDB 1.x-3.x database engine in its own process
+      (EmbeddableDocumentStore / Raven.Database). Those packages target .NET Framework only, so
+      the embedded database cannot come along when the app moves to modern .NET for a Linux
+      container. Current RavenDB runs on Linux, but as version 4+ with a different client API and
+      storage format: the data must be exported and imported, and the code moved to the new client.
+    fix: >-
+      Run RavenDB 4+ as its own container (ravendb/ravendb image, data on a volume), move the
+      code to the current RavenDB.Client (DocumentStore) and migrate the data with export/import
+      (Smuggler). Keep the app on a Windows container meanwhile if the port must wait.
+    refs:
+      - https://www.nuget.org/packages/RavenDB.Embedded/2.0.2370
+      - https://www.nuget.org/packages/RavenDB.Database/3.5.9
+      - https://github.com/ravendb/ravendb
+
   - id: pkg-mmi-cim
     applies_to: [dotnet]
     when:

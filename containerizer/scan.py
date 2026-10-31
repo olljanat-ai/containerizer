@@ -919,6 +919,21 @@ def _packages_config(proj_path: Path) -> dict[str, str]:
     return out
 
 
+def _mark_template_content(projects: list[Project], root: Path) -> None:
+    """TemplateContent: the project lives in a `dotnet new` template below the repository root
+    (templates/UmbracoProject/.template.config/template.json): sample content the template
+    copies into a new solution, not a program of this repository. A repository whose root is
+    itself the template (CleanArchitecture) is the template's working source and is left alone."""
+    root = root.resolve()
+    for p in projects:
+        d = p.path.resolve().parent
+        while d != root and root in d.parents:
+            if (d / ".template.config" / "template.json").is_file():
+                p.properties.setdefault("TemplateContent", d.relative_to(root).as_posix())
+                break
+            d = d.parent
+
+
 _WIN_TOKEN_RE = re.compile(r"Windows|Win(?=[A-Z.\-_]|$)")
 
 
@@ -1476,6 +1491,7 @@ def scan(root: str | Path) -> Repo:
             if t is not None and t is not q:
                 t.properties.setdefault("ReferencedBy", q.rel)
     _mark_platform_twins(projects)
+    _mark_template_content(projects, root)
     _mark_build_time_runs(projects, files, root)
 
     readme = ""

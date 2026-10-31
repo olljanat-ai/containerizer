@@ -123,6 +123,10 @@ rules:
             - output_type: 'Exe|WinExe'
             - closure: {code: '\bServiceBase\.Run\s*\(|(\bInherits|:)\s*(System\.ServiceProcess\.)?ServiceBase\b'}
             - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
+        # sample projects inside a `dotnet new` template below the repository root (TemplateContent,
+        # set by the scanner): the template copies them into new solutions; they are not deployed
+        # from this repository
+        - property: {TemplateContent: '.+'}
         # version-control hook executables (svn/hg/git hooks) are invoked by the VCS server per commit
         - all:
             - name: '[.\-]\w*(?<!web)Hooks?$'
