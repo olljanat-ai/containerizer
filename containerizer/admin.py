@@ -63,6 +63,7 @@ class Admin:
         self.sessions = Sessions()
         self.api = None                             # api.Api when the JSON API is configured
         self.grafana_url = ""                       # CONTAINERIZER_GRAFANA_URL: link on the admin pages
+        self.system = None                          # appliance.SystemPage on the appliance (System, Firewall)
         self.cookie = ("__Host-" if cfg.secure else "") + "cz_session"
         self.login_cookie = ("__Host-" if cfg.secure else "") + "cz_login"
 
@@ -178,11 +179,16 @@ class Admin:
             return redirect(f"/admin/{tabs[0][0]}")
         kind = parts[0]
         if kind not in {k for k, _ in tabs}:
-            known = kind in ("applications", "products", "business-units", "audit", "access", "scans", "repositories")
+            known = kind in ("applications", "products", "business-units", "audit", "access", "scans", "repositories",
+                             "system", "firewall")
             return Response(403 if known else 404, self._shell(s, a, "Not allowed" if known else "Not found", "",
                             "<p>Your role does not include this page.</p>" if known else ""))
         if kind in ("scans", "repositories"):
             return self.route_scans(conn, s, a, method, path, q, form)
+        if kind in ("system", "firewall"):           # the appliance only; administrators only (see _tabs)
+            status, body, location = self.system.handle(
+                s, method, parts, q, form, lambda title, active, b, f: self._shell(s, a, title, active, b, f))
+            return redirect(location) if location else Response(status, body)
         ident = int(parts[1]) if len(parts) > 1 and re.fullmatch(r"\d{1,9}", parts[1]) else None
         if len(parts) > 1 and ident is None and parts[1] not in ("new", "bulk"):
             return Response(404, page("Not found", "<h1>Not found</h1>"))
@@ -225,6 +231,8 @@ class Admin:
         tabs += [("audit", "Change history")]
         if a.admin and self.cfg.view_audit:
             tabs += [("access", "Access log")]
+        if a.admin and self.system:                  # on the appliance: upgrade, roll back, egress firewall
+            tabs += [("system", "System"), ("firewall", "Firewall")]
         return tabs
 
     # -- sign-in --------------------------------------------------------------------------------
@@ -804,4 +812,6 @@ def build(env=None) -> Admin | None:
     adm = Admin(cfg, lambda: connect(cs, pw))
     adm.grafana_url = grafana
     adm.api = api.build(env, adm.provider, adm.connect_admin, cfg)
+    from .appliance import SystemPage
+    adm.system = SystemPage.detect(env)
     return adm
