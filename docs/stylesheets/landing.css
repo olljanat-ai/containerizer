@@ -98,3 +98,7 @@
   .md-content:has(.cz-hero) .md-typeset .grid.cards { grid-template-columns: repeat(4, 1fr); }
 }
 .md-content:has(.cz-hero) .md-typeset h2 { text-align: center; font-weight: 600; margin-top: 3rem; }
+
+/* Site name in the header: a link to the front page that looks like the title. */
+.md-header__topic .cz-home-link { color: inherit; }
+.md-header__topic .cz-home-link:hover { opacity: .7; }
