@@ -79,7 +79,7 @@ SERVICES: dict[str, Service] = {s.id: s for s in (
     Service("postgres", "PostgreSQL", "PostgreSQL 18", True, 5432, 70,
             "CZ_IMAGE_LAB_POSTGRES", False, ("256Mi", "1Gi"), "10Gi",
             "One server, a database and role per app (owner of its own database only)."),
-    Service("redis", "Redis", "Redis 8", False, 6379, 999,
+    Service("redis", "Redis", "Redis 8.8", False, 6379, 999,
             "CZ_IMAGE_LAB_REDIS", False, ("32Mi", "256Mi"), "1Gi",
             "One instance per app with its own password; append-only file on a persistent volume."),
     Service("s3", "S3 object storage", "Versity S3 Gateway (S3 API over files)", False, 7070, 10001,
@@ -646,24 +646,31 @@ def new_password(length: int = 32) -> str:
             return p
 
 
-def new_credentials(svc: str, ns: str) -> dict:
-    """The remote key's properties for a new app."""
+SECRET_PARTS = ("password", "access-key-id", "secret-access-key", "account-key")
+
+
+def new_credentials(svc: str, ns: str, keep: dict | None = None) -> dict:
+    """The remote key's properties for an app; secret parts already in `keep` (the store) are kept,
+    everything derived from them (connection strings) is built again."""
     import base64
     import secrets
+    keep = {k: v for k, v in (keep or {}).items() if k in SECRET_PARTS and isinstance(v, str) and v}
     h, port = host(svc, ns), str(SERVICES[svc].port)
     if svc in ("sqlserver", "postgres"):
-        cred = {"host": h, "port": port, "database": db_name(ns), "username": db_name(ns), "password": new_password()}
+        cred = {"host": h, "port": port, "database": db_name(ns), "username": db_name(ns),
+                "password": keep.get("password") or new_password()}
         return {**cred, "connection-string": connection_string(svc, cred)}
     if svc == "redis":
-        cred = {"host": h, "port": port, "password": new_password()}
+        cred = {"host": h, "port": port, "password": keep.get("password") or new_password()}
         return {**cred, "connection-string": connection_string(svc, cred)}
     if svc == "s3":
         return {"endpoint": f"http://{h}:{port}", "region": "us-east-1",
-                "access-key-id": "CZ" + "".join(secrets.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567") for _ in range(18)),
-                "secret-access-key": new_password(40)}
+                "access-key-id": keep.get("access-key-id") or
+                "CZ" + "".join(secrets.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567") for _ in range(18)),
+                "secret-access-key": keep.get("secret-access-key") or new_password(40)}
     if svc == "azure-blob":
         account = "lab" + hashlib.sha256(ns.encode()).hexdigest()[:12]
-        key = base64.b64encode(secrets.token_bytes(64)).decode()
+        key = keep.get("account-key") or base64.b64encode(secrets.token_bytes(64)).decode()
         return {"account-name": account, "account-key": key,
                 "connection-string": f"DefaultEndpointsProtocol=http;AccountName={account};AccountKey={key};"
                                      f"BlobEndpoint=http://{h}:{port}/{account};"}
@@ -684,8 +691,9 @@ def connection_string(svc: str, c: dict) -> str:
 
 
 def complete(svc: str, ns: str, cred: dict) -> bool:
-    want = set(new_credentials(svc, ns))
-    return want <= set(cred) and all(isinstance(cred[k], str) and cred[k] for k in want)
+    """The stored credentials are whole and match the names this version derives (host, connection
+    string): nothing to write."""
+    return bool(cred) and new_credentials(svc, ns, cred) == cred
 
 
 def _safe(v: str) -> str:

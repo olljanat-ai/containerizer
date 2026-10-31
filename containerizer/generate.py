@@ -643,6 +643,11 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
         all_k8s += docs
         comp_docs[HOST] = docs
         images.append((HOST, devdb.image))
+    if lab_plan is not None:
+        lab_plan.missing = [s for s in lab_plan.needed if s not in lab_plan.provided and s not in lab
+                            and not (s == "sqlserver" and devdb is not None)]
+        if lab_report is not None:
+            lab_report.update(lab_plan.to_dict())
     if all_k8s and lab_plan is not None and lab_plan.provided:
         from . import labservices
         if "lab" in comp_docs:
@@ -654,11 +659,6 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
         written += [out / "lab" / "k8s.yaml", out / "lab" / "README.md"]
         all_k8s += docs
         comp_docs["lab"] = docs
-    if lab_plan is not None:
-        lab_plan.missing = [s for s in lab_plan.needed if s not in lab_plan.provided and s not in lab
-                            and not (s == "sqlserver" and devdb is not None)]
-        if lab_report is not None:
-            lab_report.update(lab_plan.to_dict())
     if all_k8s:
         from . import eso
         ns = k8s_name(a.name)
