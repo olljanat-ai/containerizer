@@ -67,8 +67,11 @@ jobs:
   # Sandbox verification against a real Kubernetes cluster (tests/test_sandbox_cluster.py): rollouts, crash
   # loop, image pull failure, CronJob, the generated least-privilege RBAC and a short-lived SA token; and
   # the generated ExternalSecrets, store and per-namespace access with External Secrets Operator.
+  # ubuntu-22.04: the lab services run on the host kernel, and MongoDB 8.0 refuses Linux 6.19 and newer
+  # (tcmalloc rseq bug, SERVER-121912) that ubuntu-24.04 runners now have. The appliance runs Debian 13's
+  # kernel, which the boot test covers.
   sandbox:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4

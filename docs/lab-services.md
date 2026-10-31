@@ -19,6 +19,9 @@ not change: only its configuration, through environment variables.
 | Kafka | Apache Kafka 4.4, one node (KRaft) | Its own broker | no |
 | SFTP | [SFTPGo](https://github.com/drakkan/sftpgo), SFTP only | Its own SFTP server, user and password, on port 22 | no |
 
+MongoDB 8.0 does not start on Linux 6.19 and newer (a tcmalloc bug, SERVER-121912). The appliance runs
+Debian 13's kernel, so this only matters on a self-built cluster with a newer kernel.
+
 SQL Server is on by default because the appliance already ran SQL Server for
 [dev database restores](dev-databases.md). An app with an uploaded backup (SQL Server, PostgreSQL or MySQL)
 still gets that backup restored next to it, and the lab's server for that engine is not used for it.

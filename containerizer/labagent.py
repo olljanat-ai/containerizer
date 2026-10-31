@@ -387,7 +387,7 @@ def _shared(kube: Kubectl, svc: str, apps: list[str], image: str, state: dict, s
             done[ns] = mark
             st["ready"].append(ns)
         except KubeError as ex:
-            failed.append(f"{ns}: {ex}")
+            failed.append(f"{ns}: {ex}{_socket_dir(kube, svc, pod)}")
     for ns in [n for n in done if n not in apps]:
         done.pop(ns)          # the database stays; a new pod or password provisions it again
     # a server that only just turned ready may still be finishing its first start (MySQL's entry point
@@ -395,6 +395,18 @@ def _shared(kube: Kubectl, svc: str, apps: list[str], image: str, state: dict, s
     young = _ready_for(pod) < READY_GRACE
     st["state"] = ("starting" if young else "error") if failed else "running"
     st["message"] = "; ".join(failed)[:800]
+
+
+def _socket_dir(kube: Kubectl, svc: str, pod: dict) -> str:
+    """What the server's socket folder holds, for a provisioning error that names a missing socket."""
+    folder = {"mysql": "/var/run/mysqld", "postgres": "/var/run/postgresql"}.get(svc)
+    if not folder:
+        return ""
+    try:
+        out = kube.exec(L.LAB_NS, pod["metadata"]["name"], svc, ["ls", "-la", folder], "", timeout=30)
+    except KubeError as ex:
+        out = str(ex)
+    return f" ({folder}: {' | '.join(out.split(chr(10))[1:])[:300]})"
 
 
 def _per_app(kube: Kubectl, svc: str, apps: list[str], image: str, st: dict) -> None:
