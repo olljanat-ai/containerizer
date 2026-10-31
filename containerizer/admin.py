@@ -198,6 +198,8 @@ class Admin:
             tabs += [("applications", "Applications"), ("products", "Products")]
         if a.admin:
             tabs += [("business-units", "Business units")]
+        if (a.admin or a.operator) and hasattr(self, "route_scans"):     # scheduled organization scans
+            tabs += [("scans", "Organization scans"), ("repositories", "Repositories")]
         tabs += [("audit", "Change history")]
         if a.admin and self.cfg.view_audit:
             tabs += [("access", "Access log")]
