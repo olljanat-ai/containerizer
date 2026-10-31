@@ -9,6 +9,9 @@ S=$C/secrets
 D=/var/lib/containerizer
 DEF=/usr/lib/containerizer/defaults
 
+# the appliance's runtime folders and the /etc/resolv.conf link (systemd-tmpfiles-setup creates them too;
+# a boot was seen without them, and the web UI cannot start without /run/containerizer/system/requests)
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/containerizer.conf /usr/lib/tmpfiles.d/00-containerizer-resolv.conf || true
 install -d -m 0700 -o root -g root "$C" "$S"
 for f in appliance.env web.env worker.env sandbox.env grafana.env egress.json; do
   [ -e "$C/$f" ] || install -m 0600 -o root -g root "$DEF/$f" "$C/$f"

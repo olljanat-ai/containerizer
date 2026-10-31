@@ -27,7 +27,8 @@ ExecStart=/usr/bin/docker run --rm --name cz-grafana --network host \
   ${CZ_IMAGE_GRAFANA}
 ExecStop=/usr/bin/docker stop cz-grafana
 Restart=always
-RestartSec=10
+# image pulls count against Docker Hub's rate limit: do not retry in a tight loop
+RestartSec=30
 TimeoutStartSec=15min
 
 [Install]
