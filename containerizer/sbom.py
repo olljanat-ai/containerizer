@@ -362,13 +362,7 @@ def _license_from_nuspec(xml: bytes) -> str:
     if lic is not None and lic.get("type") == "file":
         return "LicenseRef-see-package-file"
     if url:
-        m = re.match(r"https?://licenses\.nuget\.org/(.+)$", url)
-        if m:
-            return urllib.parse.unquote(m.group(1))
-        for rx, spdx in LICENSE_URLS:
-            if re.match(rx, url, re.I):
-                return spdx
-        return "LicenseRef-url:" + url[:200]
+        return _url_license(url) or "LicenseRef-url:" + url[:200]
     return ""
 
 
@@ -415,7 +409,19 @@ def nuget_license(name: str, version: str, feed: str | None = None) -> str:
 def normalize(lic: str) -> str:
     """An SPDX identifier or expression for a licence string; known names map to their identifier."""
     s = " ".join(str(lic or "").split())
+    if s.startswith("LicenseRef-url:"):          # cached before a URL mapping was added: map it now
+        return _url_license(s[len("LicenseRef-url:"):]) or s
     return ALIASES.get(s.lower(), s)
+
+
+def _url_license(url: str) -> str:
+    m = re.match(r"https?://licenses\.nuget\.org/(.+)$", url)
+    if m:
+        return urllib.parse.unquote(m.group(1))
+    for rx, spdx in LICENSE_URLS:
+        if re.match(rx, url, re.I):
+            return spdx
+    return ""
 
 
 _SPDX: dict = {}
@@ -598,7 +604,7 @@ def enrich_licenses(doc: dict, packages: list[Package]) -> int:
     found = {}
     for p in packages:
         if p.type == "nuget" and not p.licenses and p.scope != "self" and p.found_by == "sbom":
-            lic = nuget_license(p.name, p.version, cfg.get("nuget_feed"))
+            lic = normalize(nuget_license(p.name, p.version, cfg.get("nuget_feed")))
             if lic:
                 p.licenses, p.license_source = [lic], "nuget"
                 found[purl_key(p.purl)] = lic
