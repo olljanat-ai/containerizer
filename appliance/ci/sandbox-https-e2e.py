@@ -190,8 +190,15 @@ print("ok: HSTS, no Server header, the app sees Host and X-Forwarded-Proto https
 status, _, _ = get("/", f"nothing-here.{DOMAIN}")
 assert status == 404, status
 print("ok: an unknown name under the domain is 404")
-status, _, _ = get("/", "cz.example.org")
-print(f"ok: the admin pages' site still answers ({status})")
+# the admin pages keep their own certificate (Caddy's internal CA here), never the sandbox wildcard
+raw = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+raw.check_hostname, raw.verify_mode = False, ssl.CERT_NONE
+with socket.create_connection(("127.0.0.1", PORT), 10) as s, raw.wrap_socket(s, server_hostname="cz.example.org") as t:
+    admin_cert = x509.load_der_x509_certificate(t.getpeercert(binary_form=True))
+admin_names = admin_cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(
+    x509.DNSName)
+assert admin_names == ["cz.example.org"], admin_names
+print(f"ok: the admin pages' site keeps its own certificate ({admin_names})")
 
 step("Traefik itself serves the wildcard certificate (Caddy's upstream check)")
 ctx = ssl.create_default_context(cafile=str(work / "ca.pem"))
