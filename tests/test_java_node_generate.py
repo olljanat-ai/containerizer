@@ -314,3 +314,9 @@ def test_node_run_and_loader_from_dev_dependencies(tmp_path):
     _, _, plan, df = plan_and_df(tmp_path, "kuma")
     assert plan["node_entry"] == ["--import=tsx", "server/server.js"] and not plan["prune"]
     assert "npm prune" not in df
+
+
+def test_relative_mkdir_failure_becomes_a_writable_app_folder():
+    from containerizer.generate import _writable_abs
+    r = diagnose("Error: ENOENT: no such file or directory, mkdir './data/'", "run", load_failures())
+    assert r[0]["id"] == "run-readonly-path-node-java" and _writable_abs(r[1]["dir"]) == "/app/data"

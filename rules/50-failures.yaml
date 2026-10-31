@@ -176,7 +176,7 @@ failures:
 
   - id: run-readonly-path-node-java
     stage: run
-    match: "(EROFS: read-only file system|EACCES: permission denied), (open|mkdir|scandir|copyfile|rename) '(?P<path>/[^']+)'|ENOENT: no such file or directory, mkdir '(?P<path5>/[^']+)'|java\\.nio\\.file\\.(ReadOnlyFileSystemException|AccessDeniedException): (?P<path2>/[^\\s:]+)|FileSystemException: (?P<path3>/[^\\s:]+): Read-only file system|FileNotFoundException: (?P<path4>/[^\\s(]+) \\((Read-only file system|Permission denied)\\)"
+    match: "(EROFS: read-only file system|EACCES: permission denied), (open|mkdir|scandir|copyfile|rename) '(?P<path>/[^']+)'|ENOENT: no such file or directory, mkdir '(?P<path5>[^']+)'|EROFS: read-only file system, mkdir '(?P<path6>\\.{1,2}/[^']+)'|java\\.nio\\.file\\.(ReadOnlyFileSystemException|AccessDeniedException): (?P<path2>/[^\\s:]+)|FileSystemException: (?P<path3>/[^\\s:]+): Read-only file system|FileNotFoundException: (?P<path4>/[^\\s(]+) \\((Read-only file system|Permission denied)\\)"
     outcome: retry
     refs: [https://kubernetes.io/docs/tasks/configure-pod-container/security-context/]
     diagnosis: The app writes to a folder that is read-only in the hardened container.

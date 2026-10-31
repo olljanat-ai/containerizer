@@ -331,7 +331,9 @@ def dockerignore(repo) -> str:
 
 
 def _writable_abs(w: str) -> str:
-    return w if w.startswith("/") else "/app/" + w.strip("/")
+    """A writable folder as an absolute path; relative ones are under the app folder (./data/ -> /app/data)."""
+    import posixpath
+    return posixpath.normpath(w if w.startswith("/") else "/app/" + w.strip("/"))
 
 
 def dockerfile_dotnet(plan: dict) -> str:
