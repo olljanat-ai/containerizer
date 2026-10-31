@@ -564,8 +564,10 @@ def egress_status(journal: str | None = None, history_lines: int = 50) -> dict:
     latest changes of the allow-list, for the admin page."""
     if journal is None:
         try:
+            # the DNS filter's log or (+) the kernel's: "-u ... -k" would ask for entries that are both
             journal = run(["journalctl", "--since", "-24h", "--no-pager", "-o", "cat",
-                           "-u", "containerizer-dns.service", "-k", "--grep", "query\\[|is REFUSED|cz-egress-drop"],
+                           "_SYSTEMD_UNIT=containerizer-dns.service", "+", "_TRANSPORT=kernel",
+                           "--grep", "query\\[|is REFUSED|cz-egress-drop"],
                           timeout=60, check=False)
         except (OSError, subprocess.TimeoutExpired):
             journal = ""
@@ -936,7 +938,7 @@ def main(argv=None) -> int:
     cmd = argv[0]
     try:
         if cmd == "status":
-            publish()
+            publish(egress_state=egress_status())
             return 0
         if cmd == "process":
             return process()
