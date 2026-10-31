@@ -7,7 +7,9 @@
 --
 --   BusinessUnit 1-* Product 1-* Application 1-* Component                     (who owns what)
 --   Application 1-* ApplicationAssessment 1-* ComponentAssessment, Finding     (one per scan)
+--   ComponentAssessment 0-1 ComponentMigration                                  (migration plan, agent prompt)
 --   AuditLog: every change to BusinessUnit, Product and the mapping of Application, with who made it
+--   AccessLog: who signed in to the web UI and what they looked at (optional)
 --
 -- The scan fills Application, Component and the assessment tables. People maintain business units,
 -- products and the application mapping in the admin pages of the web UI; a scan never overwrites them.
@@ -158,6 +160,23 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Finding_Assessment' A
 CREATE INDEX IX_Finding_Assessment ON [${schema}].Finding (AssessmentId, ComponentId);
 GO
 
+-- Migration assistant (rules/migrations.yaml): for each component that is not ready, the concrete
+-- replacements with effort estimates (PlanJson) and a self-contained prompt for an AI coding agent.
+IF OBJECT_ID(N'[${schema}].ComponentMigration', N'U') IS NULL
+CREATE TABLE [${schema}].ComponentMigration (
+    AssessmentId  int            NOT NULL,
+    ComponentId   int            NOT NULL,
+    Outcome       nvarchar(40)   NOT NULL,         -- linux-container, partial, stays-on-windows
+    EffortDays    decimal(9,1)   NOT NULL,         -- estimated person-days of the plan
+    ItemCount     int            NOT NULL,
+    PlanJson      nvarchar(max)  NOT NULL,         -- items: replace, with, kind, packages, steps, verify, refs, findings
+    AgentPrompt   nvarchar(max)  NULL,             -- NULL when nothing in the component can be changed
+    CONSTRAINT PK_ComponentMigration PRIMARY KEY (AssessmentId, ComponentId),
+    CONSTRAINT FK_ComponentMigration_ComponentAssessment FOREIGN KEY (AssessmentId, ComponentId)
+        REFERENCES [${schema}].ComponentAssessment (AssessmentId, ComponentId) ON DELETE CASCADE
+);
+GO
+
 MERGE [${schema}].Rating AS t
 USING (VALUES
     ('A', N'Lift and shift', N'Containers with configuration only', 1),
@@ -210,6 +229,32 @@ JOIN [${schema}].Finding f ON f.AssessmentId = l.AssessmentId
 LEFT JOIN [${schema}].Component c ON c.ComponentId = f.ComponentId;
 GO
 
+-- Every scan of every application (not only the latest), with the application's current product and
+-- business unit and how many distinct obstacles that scan found. The trends page of the web UI reads it.
+CREATE OR ALTER VIEW [${schema}].vAssessmentHistory AS
+SELECT aa.AssessmentId, aa.ApplicationId, COALESCE(a.DisplayName, a.Name) AS ApplicationName,
+       p.ProductId, p.Name AS ProductName, bu.BusinessUnitId, bu.Name AS BusinessUnitName,
+       aa.AssessedAt, aa.Rating, aa.Score, aa.EffortDays, aa.Verified,
+       COALESCE(f.Blockers, 0) AS Blockers, COALESCE(f.Rewrites, 0) AS Rewrites
+FROM [${schema}].ApplicationAssessment aa
+JOIN [${schema}].Application a ON a.ApplicationId = aa.ApplicationId
+LEFT JOIN [${schema}].Product p ON p.ProductId = a.ProductId
+LEFT JOIN [${schema}].BusinessUnit bu ON bu.BusinessUnitId = p.BusinessUnitId
+OUTER APPLY (SELECT COUNT(DISTINCT CASE WHEN x.Severity = 'blocker' THEN x.RuleId END) AS Blockers,
+                    COUNT(DISTINCT CASE WHEN x.Severity = 'rewrite' THEN x.RuleId END) AS Rewrites
+             FROM [${schema}].Finding x
+             WHERE x.AssessmentId = aa.AssessmentId AND x.Severity IN ('blocker', 'rewrite')) f
+WHERE a.Retired = 0;
+GO
+
+CREATE OR ALTER VIEW [${schema}].vComponentMigrationLatest AS
+SELECT l.ApplicationId, l.ApplicationName, l.AssessmentId, m.ComponentId, c.Name AS ComponentName, c.ProjectPath,
+       m.Outcome, m.EffortDays, m.ItemCount, m.PlanJson, m.AgentPrompt
+FROM [${schema}].vApplicationLatest l
+JOIN [${schema}].ComponentMigration m ON m.AssessmentId = l.AssessmentId
+JOIN [${schema}].Component c ON c.ComponentId = m.ComponentId;
+GO
+
 -- Applications nobody has mapped to a product yet, and products without a business unit.
 CREATE OR ALTER VIEW [${schema}].vUnmapped AS
 SELECT N'Application' AS Kind, a.ApplicationId AS Id, COALESCE(a.DisplayName, a.Name) AS Name, a.RepositoryUrl AS Detail
@@ -245,6 +290,28 @@ CREATE INDEX IX_AuditLog_ChangedAt ON [${schema}].AuditLog (ChangedAt DESC) INCL
 GO
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_AuditLog_Row' AND object_id = OBJECT_ID(N'[${schema}].AuditLog'))
 CREATE INDEX IX_AuditLog_Row ON [${schema}].AuditLog (TableName, RowId, ChangedAt DESC);
+GO
+
+-- Access log (optional, CONTAINERIZER_VIEW_AUDIT=true): who signed in to the web UI and which results
+-- pages they opened. Written by the web UI through its admin login; nobody is granted UPDATE or DELETE.
+IF OBJECT_ID(N'[${schema}].AccessLog', N'U') IS NULL
+CREATE TABLE [${schema}].AccessLog (
+    AccessId      bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_AccessLog PRIMARY KEY,
+    At            datetime2(3)  NOT NULL CONSTRAINT DF_AccessLog_At DEFAULT SYSUTCDATETIME(),
+    UserName      nvarchar(256) NOT NULL,          -- e-mail / UPN, or sub:<subject id>
+    DisplayName   nvarchar(256) NULL,
+    Event         nvarchar(20)  NOT NULL,          -- sign-in, sign-in refused, sign-out, view
+    Path          nvarchar(400) NULL,              -- page opened (no query string except the business unit filter)
+    ApplicationId int           NULL,              -- the application whose page was opened
+    ClientAddress nvarchar(64)  NULL,              -- address the request came from (a proxy, if there is one)
+    DbLogin       nvarchar(256) NOT NULL CONSTRAINT DF_AccessLog_DbLogin DEFAULT ORIGINAL_LOGIN()
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_AccessLog_At' AND object_id = OBJECT_ID(N'[${schema}].AccessLog'))
+CREATE INDEX IX_AccessLog_At ON [${schema}].AccessLog (At DESC) INCLUDE (UserName, Event, ApplicationId);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_AccessLog_User' AND object_id = OBJECT_ID(N'[${schema}].AccessLog'))
+CREATE INDEX IX_AccessLog_User ON [${schema}].AccessLog (UserName, At DESC);
 GO
 
 CREATE OR ALTER FUNCTION [${schema}].fnAuditWho()
@@ -330,6 +397,7 @@ GRANT SELECT ON [${schema}].Rating TO [${schema}_writer];
 GRANT SELECT, INSERT ON [${schema}].ApplicationAssessment TO [${schema}_writer];
 GRANT SELECT, INSERT ON [${schema}].ComponentAssessment TO [${schema}_writer];
 GRANT SELECT, INSERT ON [${schema}].Finding TO [${schema}_writer];
+GRANT SELECT, INSERT ON [${schema}].ComponentMigration TO [${schema}_writer];
 GRANT SELECT, INSERT ON [${schema}].Application TO [${schema}_writer];
 GRANT UPDATE ON [${schema}].Application (Name, RepositoryUrl, SourcePath, LastSeenAt) TO [${schema}_writer];
 GRANT SELECT, INSERT ON [${schema}].Component TO [${schema}_writer];
@@ -339,7 +407,9 @@ GRANT SELECT ON [${schema}].SchemaVersion TO [${schema}_writer];
 GRANT SELECT ON [${schema}].vApplicationLatest TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vComponentLatest TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vFindingLatest TO [${schema}_reader];
+GRANT SELECT ON [${schema}].vComponentMigrationLatest TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vUnmapped TO [${schema}_reader];
+GRANT SELECT ON [${schema}].vAssessmentHistory TO [${schema}_reader];
 GRANT SELECT ON [${schema}].Rating TO [${schema}_reader];
 GRANT SELECT ON [${schema}].BusinessUnit TO [${schema}_reader];
 GRANT SELECT ON [${schema}].Product TO [${schema}_reader];
@@ -350,8 +420,11 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].Product TO [${schema}_admin]
 GRANT SELECT ON [${schema}].Application TO [${schema}_admin];
 GRANT UPDATE ON [${schema}].Application (ProductId, DisplayName, Description, Owner, Retired) TO [${schema}_admin];
 GRANT SELECT ON [${schema}].AuditLog TO [${schema}_admin];
+GRANT SELECT, INSERT ON [${schema}].AccessLog TO [${schema}_admin];
 IF IS_ROLEMEMBER(N'${schema}_reader', N'${schema}_admin') = 0 ALTER ROLE [${schema}_reader] ADD MEMBER [${schema}_admin];
 GO
 
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 2) INSERT [${schema}].SchemaVersion (Version) VALUES (2);
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 3) INSERT [${schema}].SchemaVersion (Version) VALUES (3);
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 4) INSERT [${schema}].SchemaVersion (Version) VALUES (4);
 GO

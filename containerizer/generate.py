@@ -563,7 +563,7 @@ def _yaml_docs(docs: list[dict]) -> str:
 def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, registry: str = "registry.local",
                  plans: dict | None = None, pin: bool = False, gitops=None, tag: str = "latest") -> list[Path]:
     from .gitops import gitops_manifests, image_setters, readme
-    from .report import migration_markdown
+    from .report import migration_markdown, write_agent_prompts
 
     rules = rules if rules is not None else load_rules()
     out.mkdir(parents=True, exist_ok=True)
@@ -619,4 +619,5 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
         written.append(out / "gitops" / "README.md")
     (out / "MIGRATION.md").write_text(migration_markdown(a))
     written.append(out / "MIGRATION.md")
+    written += write_agent_prompts(a, out)
     return written
