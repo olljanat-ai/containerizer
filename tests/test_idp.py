@@ -351,7 +351,7 @@ def test_appliance_secrets_are_generated_once(sandbox_repo, tmp_path):
     assert "admin-password" in r["created"] and r["apps"] == 1
     s = json.loads(state.read_text())
     import base64
-    store = {k: base64.b64decode(v).decode() for k, v in s["secrets"][idp.REMOTE_KEY].items()}
+    store = {k: base64.b64decode(v).decode() for k, v in s["secrets"][idp.remote_key()].items()}
     comp = {k: base64.b64decode(v).decode() for k, v in s["secrets"]["oidc--oidc"].items()}
     assert comp == {"OpenIdConnect__ClientSecret": store["client-oidc--oidc"]}
     assert all(m == ["--field-manager=containerizer-idp"] for _, m in s["applies"])

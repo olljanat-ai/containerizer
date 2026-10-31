@@ -37,11 +37,6 @@ NAMESPACE = "containerizer-idp"
 SERVER = "cz-idp"
 SYNC = "cz-idp-sync"
 SECRET = "cz-idp"                                   # the Secret External Secrets writes in NAMESPACE
-REMOTE_KEY = f"{NAMESPACE}--{SERVER}"               # remote key in the store: <namespace>--<name>
-STORE = {"kind": "ClusterSecretStore", "name": "app-secrets"}
-STORE_NAMESPACE = "containerizer-secrets"           # kubernetes provider: where the remote Secrets live
-READER = "app-secrets-reader"
-ESO_API = "external-secrets.io/v1"
 TRAEFIK = {"namespace": "kube-system", "labels": {"app.kubernetes.io/name": "traefik"}, "port": 8443}
 WSO2_HOME = "/home/wso2carbon/wso2is-7.3.0"
 WSO2_UID = 802
@@ -378,7 +373,8 @@ def wso2_application(c: Client) -> dict:
             # into the app's remote key under the env name the component's ExternalSecret lists
             body["x-containerizer-client-secret"] = c.secret_property
             body["x-containerizer-secret-env"] = c.secret_env
-            body["x-containerizer-secret-remote"] = c.name
+            from . import eso
+            body["x-containerizer-secret-remote"] = eso.remote_key(c.app, c.component)
         body["claimConfiguration"] = {
             "dialect": "LOCAL",
             "requestedClaims": [{"claim": {"uri": W + x}, "mandatory": False} for x in OIDC_CLAIMS],
@@ -689,22 +685,22 @@ def sync_manifests(sb: Sandbox) -> list[dict]:
     ]
 
 
+def remote_key() -> str:
+    """Remote key of the IdP's own secrets (`containerizer-idp--cz-idp` with the default key format)."""
+    from . import eso
+    return eso.remote_key(NAMESPACE, SERVER)
+
+
 def secret_manifests() -> list[dict]:
-    """ExternalSecret of the IdP's passwords and client secrets, and the store access of the namespace
-    (kubernetes provider: the reader of containerizer-idp may get exactly REMOTE_KEY)."""
-    rbac_meta = {"name": f"{READER}-{NAMESPACE}", "namespace": STORE_NAMESPACE, "labels": dict(LABELS)}
-    return [
-        {"apiVersion": "v1", "kind": "ServiceAccount", "metadata": _meta(READER), "automountServiceAccountToken": False},
-        {"apiVersion": ESO_API, "kind": "ExternalSecret", "metadata": _meta(SECRET),
-         "spec": {"refreshInterval": "5m", "secretStoreRef": dict(STORE),
-                  "target": {"name": SECRET, "creationPolicy": "Owner", "deletionPolicy": "Retain"},
-                  "dataFrom": [{"extract": {"key": REMOTE_KEY}}]}},
-        {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": dict(rbac_meta),
-         "rules": [{"apiGroups": [""], "resources": ["secrets"], "resourceNames": [REMOTE_KEY], "verbs": ["get"]}]},
-        {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": dict(rbac_meta),
-         "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": rbac_meta["name"]},
-         "subjects": [{"kind": "ServiceAccount", "name": READER, "namespace": NAMESPACE}]},
-    ]
+    """ExternalSecret of the IdP's passwords and client secrets (remote_key()), the namespace's store
+    reader and its access (kubernetes provider: a Role on exactly that key), as eso.py writes them for
+    every namespace."""
+    from . import eso
+    es = eso.external_secret(SECRET, NAMESPACE, remote_key(), labels=LABELS, set_namespace=True)
+    es.pop("_comment")
+    es["spec"]["refreshInterval"] = "5m"          # new client secrets reach the sync job quickly
+    return [eso.reader_service_account(NAMESPACE, LABELS, set_namespace=True), es] + \
+        eso.store_access(NAMESPACE, [remote_key()], LABELS)
 
 
 def network_manifests() -> list[dict]:
@@ -817,7 +813,7 @@ from the apps in this repository; do not edit, the next run rewrites this folder
 | --- | --- | --- |
 {users_txt}
 
-Passwords are in the secret store (remote key `{REMOTE_KEY}`, properties `user-<name>`), not in Git.
+Passwords are in the secret store (remote key `{remote_key()}`, properties `user-<name>`), not in Git.
 On the appliance: `/usr/lib/containerizer/venv/bin/python -m containerizer idp users`.
 
 ## How it is applied
@@ -886,10 +882,19 @@ def _kubectl(cmd: list[str], args: list[str], stdin: str | None = None) -> str:
     return p.stdout
 
 
+def _store_namespace() -> str:
+    """The appliance runs the kubernetes provider: remote Secrets live in one namespace of its k3s."""
+    from . import eso
+    if eso.provider() != "kubernetes":
+        raise ApplianceError(f"secret store provider {eso.provider()}: create the IdP's values in that store "
+                             "yourself (docs/sandbox-idp.md)")
+    return eso.remote_namespace()
+
+
 def _remote_secret(cmd: list[str], name: str) -> dict[str, str]:
     import base64
     import subprocess
-    p = subprocess.run(cmd + ["-n", STORE_NAMESPACE, "get", "secret", name, "-o", "json"],
+    p = subprocess.run(cmd + ["-n", _store_namespace(), "get", "secret", name, "-o", "json"],
                        capture_output=True, text=True, timeout=60)
     if p.returncode:
         if "NotFound" in p.stderr or "not found" in p.stderr:
@@ -902,7 +907,7 @@ def _remote_secret(cmd: list[str], name: str) -> dict[str, str]:
 def _apply_remote(cmd: list[str], name: str, values: dict[str, str]) -> None:
     import base64
     doc = {"apiVersion": "v1", "kind": "Secret", "type": "Opaque",
-           "metadata": {"name": name, "namespace": STORE_NAMESPACE,
+           "metadata": {"name": name, "namespace": _store_namespace(),
                         "labels": {"app.kubernetes.io/managed-by": "containerizer-appliance"}},
            "data": {k: base64.b64encode(v.encode()).decode() for k, v in sorted(values.items())}}
     # server-side apply with our own field manager: we own exactly these keys of the remote Secret, other
@@ -937,11 +942,11 @@ def appliance_secrets(cmd: list[str], log=print) -> dict:
     if not cfg:
         return {"created": [], "apps": 0}
     props, app_keys = needed_secrets(cfg, apps)
-    have = _remote_secret(cmd, REMOTE_KEY)
+    have = _remote_secret(cmd, remote_key())
     values = {k: have.get(k) or make_value(kind) for k, kind in props.items()}
     created = sorted(k for k in props if not have.get(k))
     if created or any(k not in have for k in values):
-        _apply_remote(cmd, REMOTE_KEY, values)
+        _apply_remote(cmd, remote_key(), values)
     for remote, envs in sorted(app_keys.items()):
         cur = _remote_secret(cmd, remote)
         want = {env: values[prop] for env, prop in envs.items()}
@@ -956,6 +961,6 @@ def appliance_secrets(cmd: list[str], log=print) -> dict:
 def appliance_users(cmd: list[str]) -> list[tuple[str, str, str]]:
     """(user, groups, password) of the sandbox test users, for an administrator on the console."""
     cfg, _ = deployed_config(cmd)
-    have = _remote_secret(cmd, REMOTE_KEY)
+    have = _remote_secret(cmd, remote_key())
     return [(u["username"], ", ".join(u.get("groups") or []), have.get(f"user-{u['username']}", "(not generated yet)"))
             for u in cfg.get("users") or []]
