@@ -1,10 +1,13 @@
 """Repositories of one Azure DevOps, GitHub or GitLab organization, and authenticated git without
 tokens on disk or on the command line.
 
-Tokens are read from environment variables only. Git gets them as an `http.<url>.extraHeader`
-through GIT_CONFIG_COUNT/KEY/VALUE environment variables, scoped to the provider's host, so they
-are not written to `.git/config`, not shown in `ps`, and not sent to any other host (redirects,
-submodules, LFS servers). Errors are redacted before they are printed.
+Tokens come from the credentials administrators register (credentials.py, the scan worker) or from
+environment variables (`containerizer org` on the command line). Git gets them as an
+`http.<url>.extraHeader` through GIT_CONFIG_COUNT/KEY/VALUE environment variables, scoped to the one
+repository URL being cloned, fetched or pushed, so they are not written to `.git/config`, not shown in
+`ps`, and not sent for any other repository on the same host or to any other host (redirects,
+submodules, LFS servers). API requests send the token to the API's host only: a redirect or a
+pagination link to another host does not get it. Errors are redacted before they are printed.
 """
 from __future__ import annotations
 
@@ -116,13 +119,40 @@ REDACT = Redactor()
 
 # --------------------------------------------------------------------------- HTTP
 
+AUTH_HEADERS = ("Authorization", "Private-token")       # as urllib spells them (str.capitalize)
+
+
+def _origin(url: str) -> tuple[str, str]:
+    u = urllib.parse.urlsplit(url)
+    return u.scheme.lower(), (u.netloc.rsplit("@", 1)[-1]).lower()
+
+
+class _KeepTokenOnHost(urllib.request.HTTPRedirectHandler):
+    """Redirects keep the token only on the same scheme and host; https never goes down to http."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is None:
+            return None
+        old_o, new_o = _origin(req.full_url), _origin(new.full_url)
+        if old_o[0] == "https" and new_o[0] != "https":
+            raise urllib.error.HTTPError(req.full_url, code, "redirect from https to http refused", headers, fp)
+        if old_o != new_o:
+            for h in AUTH_HEADERS:
+                new.remove_header(h)
+        return new
+
+
+_OPENER = urllib.request.build_opener(_KeepTokenOnHost)
+
+
 def http_json(url: str, headers: dict, timeout: int = 60, retries: int = 4):
     """GET a JSON document. Retries on rate limits and server errors. Returns (data, response headers)."""
     delay = 2.0
     for attempt in range(retries + 1):
         req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "containerizer", **headers})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with _OPENER.open(req, timeout=timeout) as r:
                 body = r.read()
                 return (json.loads(body) if body else None), {k.lower(): v for k, v in r.headers.items()}
         except urllib.error.HTTPError as e:
@@ -166,7 +196,13 @@ class Provider:
         return {}
 
     def get(self, url: str):
+        if _origin(url) != _origin(self.api):          # a pagination link elsewhere does not get the token
+            raise SourceError(f"refusing to send the token to {_origin(url)[1]}: not the API host {_origin(self.api)[1]}")
         return http_json(url, self.headers())
+
+    def token_warnings(self) -> list[str]:
+        """Signs that the token can do more than read (shown on the admin page). Best effort."""
+        return []
 
     def repos(self):
         raise NotImplementedError
@@ -191,6 +227,26 @@ class GitHub(Provider):
         if self.token:
             h["Authorization"] = f"Bearer {self.token}"
         return h
+
+    # classic personal access token scopes that can change things; fine-grained tokens send no scope header
+    WRITE_SCOPES = ("repo", "public_repo", "write:", "admin:", "delete_repo", "workflow", "delete:", "project", "user",
+                    "gist", "codespace", "copilot")
+    scopes: str | None = None
+
+    def get(self, url: str):
+        data, h = super().get(url)
+        if self.scopes is None and "x-oauth-scopes" in h:
+            self.scopes = h["x-oauth-scopes"]
+        return data, h
+
+    def token_warnings(self) -> list[str]:
+        sc = [x.strip() for x in (self.scopes or "").split(",") if x.strip()]
+        bad = [x for x in sc if x not in ("read:org", "read:user", "read:packages", "user:email")
+               and any(x == w or x.startswith(w) for w in self.WRITE_SCOPES)]
+        if bad:
+            return [f"a classic token with scopes that can write ({', '.join(bad)}): use a fine-grained token with "
+                    "Contents: read-only and Metadata: read-only instead"]
+        return []
 
     def repos(self):
         q = urllib.parse.quote(self.org)
@@ -231,6 +287,20 @@ class GitLab(Provider):
 
     def headers(self) -> dict:
         return {"PRIVATE-TOKEN": self.token} if self.token else {}
+
+    READ_SCOPES = {"read_api", "read_repository", "read_user", "read_registry", "read_virtual_registry"}
+
+    def token_warnings(self) -> list[str]:
+        if not self.token:
+            return []
+        try:
+            data, _ = self.get(f"{self.api}/api/v4/personal_access_tokens/self")
+        except SourceError:
+            return []                               # older GitLab, or not a personal / group / project token
+        bad = sorted(set((data or {}).get("scopes") or []) - self.READ_SCOPES)
+        if bad:
+            return [f"the token has scopes that can write ({', '.join(bad)}): use read_api and read_repository only"]
+        return []
 
     def repos(self):
         g = urllib.parse.quote(self.org, safe="")
@@ -319,14 +389,27 @@ def provider(name: str, org: str, token: str = "", api_url: str | None = None) -
 # --------------------------------------------------------------------------- git
 
 def git_env(url: str | None = None, header: str = "") -> dict:
-    """Environment for git: no prompts, no LFS downloads, the auth header scoped to the URL's host."""
+    """Environment for git: no prompts, no LFS downloads, no credential helpers, and the auth header
+    scoped to this one repository URL (git matches the config URL's path on a path boundary, so
+    https://host/org/repo.git does not cover https://host/org/repo.git-other or another repository)."""
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_LFS_SKIP_SMUDGE": "1", "GCM_INTERACTIVE": "never"}
+    for k in [k for k in env if k.startswith("GIT_CONFIG_")]:
+        del env[k]                                  # nothing inherited can add headers or helpers
+    n = 0
+    env.update({f"GIT_CONFIG_KEY_{n}": "credential.helper", f"GIT_CONFIG_VALUE_{n}": ""})
+    n += 1
     if header and url and url.startswith(("https://", "http://")):
-        n = int(env.get("GIT_CONFIG_COUNT", "0") or 0)
-        env["GIT_CONFIG_COUNT"] = str(n + 1)
-        env[f"GIT_CONFIG_KEY_{n}"] = f"http.{host_prefix(url)}.extraHeader"
+        env[f"GIT_CONFIG_KEY_{n}"] = f"http.{repo_scope(url)}.extraHeader"
         env[f"GIT_CONFIG_VALUE_{n}"] = header
+        n += 1
+    env["GIT_CONFIG_COUNT"] = str(n)
     return env
+
+
+def repo_scope(url: str) -> str:
+    """The repository URL a token header is scoped to: no user info, query or fragment, no trailing slash."""
+    u = urllib.parse.urlsplit(strip_userinfo(url))
+    return urllib.parse.urlunsplit((u.scheme, u.netloc, u.path.rstrip("/"), "", ""))
 
 
 # hardening for cloning code we do not trust: no symlinks out of the tree, no local-path or

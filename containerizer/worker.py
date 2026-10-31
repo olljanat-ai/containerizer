@@ -14,11 +14,14 @@ is a separate, long-running process on a build machine with Docker. It
   marked failed; and
 - serves Prometheus metrics about the scans, itself and the machine (metrics.py).
 
-The web UI never holds the organization's, the output repository's or the registry's credentials, and
-does not need Docker: they stay with the worker, as environment variables. A scan only names the
-variables (TokenEnv, OutputTokenEnv), and only CZ_TOKEN_* or the providers' usual names are accepted,
-so a scan cannot point the worker at its database password. Tokens are only sent to the providers'
-public hosts and the hosts in CONTAINERIZER_WORKER_HOSTS.
+Source control tokens are registered by administrators (Admin → Source control, credentials.py): a
+read-only token per organization and a write token per output repository, sealed for this worker's
+public key. The web UI can seal them but never open them; the worker opens them with its private key
+(CONTAINERIZER_CREDENTIAL_KEY_FILE) at the start of a run. A scan whose organization has no
+registered read-only token does not run (no anonymous access), the output repository's token is
+picked by its URL and only used to push there, and each token is only sent with the URLs of its own
+organization or repository. The registry's credentials stay with the worker as environment
+variables, and images are only pushed to the providers' hosts and CONTAINERIZER_WORKER_HOSTS.
 """
 from __future__ import annotations
 
@@ -36,8 +39,6 @@ from pathlib import Path
 
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 DEFAULT_HOSTS = {"api.github.com", "github.com", "gitlab.com", "dev.azure.com", "*.visualstudio.com"}
-TOKEN_ENV_RE = re.compile(r"CZ_TOKEN_[A-Z0-9_]{1,56}|AZURE_DEVOPS_TOKEN|AZURE_DEVOPS_EXT_PAT|SYSTEM_ACCESSTOKEN|"
-                          r"GITHUB_TOKEN|GH_TOKEN|GITLAB_TOKEN|OUTPUT_GIT_TOKEN")
 HEARTBEAT = 30              # seconds between heartbeats of a running run
 STALE_MINUTES = 10          # a running run without a heartbeat for this long has lost its worker
 ACTIVE = ("queued", "running")
@@ -96,24 +97,22 @@ def _host(url: str) -> str:
     return (urllib.parse.urlsplit(url if "://" in url else "https://" + url).hostname or "").lower()
 
 
-def check_scan(scan: dict, hosts: set[str] | None = None) -> list[str]:
-    """What keeps a scan from running safely on this worker (empty when it can run)."""
+def check_scan(scan: dict, hosts: set[str] | None = None, creds=None, key_id: str | None = None) -> list[str]:
+    """What keeps a scan from running safely on this worker (empty when it can run). `creds`
+    (credentials.Credentials) checks that the organization and the output repository have their
+    registered tokens; `hosts` that the registry may receive the worker's registry credentials."""
     from .org import host_allowed
-    from .orgsource import DEFAULT_API, PROVIDERS
+    from .orgsource import PROVIDERS
     problems = []
     if scan.get("Provider") not in PROVIDERS:
         problems.append(f"unknown provider {scan.get('Provider')!r}")
-    for k in ("TokenEnv", "OutputTokenEnv"):
-        v = scan.get(k)
-        if v and not TOKEN_ENV_RE.fullmatch(v):
-            problems.append(f"{k} {v!r}: name a CZ_TOKEN_* variable (or GITHUB_TOKEN, GITLAB_TOKEN, AZURE_DEVOPS_TOKEN, ...)")
+    if creds is not None:
+        problems += creds.problems(scan, key_id)
     if hosts is not None:
-        api = scan.get("ApiUrl") or DEFAULT_API.get(scan.get("Provider"), "")
-        for what, url in (("API URL", api), ("output repository", scan.get("OutputRepo")),
-                          ("registry", scan.get("Registry") if scan.get("PushImages") else None)):
-            if url and not host_allowed(url, hosts):
-                problems.append(f"{what} host {_host(url)} is not allowed on this worker: add it to "
-                                "CONTAINERIZER_WORKER_HOSTS")
+        url = scan.get("Registry") if scan.get("PushImages") else None
+        if url and not host_allowed(url, hosts | (creds.hosts() if creds is not None else set())):
+            problems.append(f"registry host {_host(url)} is not allowed on this worker: add it to "
+                            "CONTAINERIZER_WORKER_HOSTS")
     for k in ("IncludeRegex", "ExcludeRegex"):
         if scan.get(k):
             try:
@@ -345,8 +344,9 @@ class RunHooks:
 
 class Worker:
     def __init__(self, connect, data_dir: str | Path, sql: str | None = None, poll: int = 30, name: str | None = None,
-                 metrics: ScanMetrics | None = None, hosts: set[str] | None = None, log=None):
+                 metrics: ScanMetrics | None = None, hosts: set[str] | None = None, log=None, key=None):
         self.connect = connect              # () -> sqlstore.Connection of a writer login
+        self.key = key                      # X25519 private key that opens the registered tokens (None: from the env)
         self.sql = sql
         self.data = Path(data_dir).resolve()
         self.poll = poll
@@ -473,18 +473,33 @@ class Worker:
             except Exception as ex:
                 self.log(f"heartbeat: {type(ex).__name__}: {ex}")
 
-    def options(self, scan: dict, store, hooks):
+    def private_key(self):
+        if self.key is None:
+            from .credentials import private_key_from_env
+            self.key = private_key_from_env()
+        return self.key
+
+    def credentials(self, conn):
+        """The registered credentials, opened with this worker's key."""
+        from .credentials import load
+        return load(conn, self.private_key())
+
+    def options(self, scan: dict, store, hooks, creds=None):
         from .org import OrgOptions
         base = self.data / f"scan-{int(scan['ScanId'])}"
+        read = creds.read_for(scan["Provider"], scan["ApiUrl"], scan["Organization"]) if creds else None
+        write = creds.write_for(scan["OutputRepo"]) if creds else None
         return OrgOptions(
             provider=scan["Provider"], org=scan["Organization"], registry=scan["Registry"], api_url=scan["ApiUrl"],
-            token_env=scan["TokenEnv"], output_repo=scan["OutputRepo"],
+            token=(read.token or "") if read else "", output_repo=scan["OutputRepo"],
             output_dir=None if scan["OutputRepo"] else str(base / "output"), output_branch=scan["OutputBranch"],
-            output_token_env=scan["OutputTokenEnv"] or "OUTPUT_GIT_TOKEN", push_images=bool(scan["PushImages"]),
+            output_token=(write.token or "") if write else "",
+            output_username=write.username if write else "x-access-token", push_images=bool(scan["PushImages"]),
             image_pull_secret=scan["ImagePullSecret"], include=scan["IncludeRegex"], exclude=scan["ExcludeRegex"],
             skip_forks=bool(scan["SkipForks"]), stale_days=int(scan["StaleDays"]), ai=bool(scan["UseAi"]),
             verify=bool(scan["Verify"]), gate=bool(scan["Gate"]), sql=self.sql, work_dir=str(base / "work"),
-            cache_dir=str(base / "repos"), state=store, hooks=hooks, allowed_hosts=self.hosts)
+            cache_dir=str(base / "repos"), state=store, hooks=hooks,
+            allowed_hosts=self.hosts | (creds.hosts() if creds else set()))
 
     def execute(self, run: dict) -> str:
         from .orgsource import REDACT, SourceError
@@ -510,16 +525,31 @@ class Worker:
         hooks = RunHooks(self, conn, run_id, name, store)
         self.log(f"{name}: run #{run_id} started ({run['TriggeredBy']}"
                  + (f" by {run['RequestedBy']}" if run.get("RequestedBy") else "") + ")")
+        read = write = None
         try:
-            problems = check_scan(scan, self.hosts)
+            from .credentials import CredentialError
+            try:
+                creds = self.credentials(conn)
+            except CredentialError as ex:
+                raise SourceError(str(ex)) from None
+            from .credentials import key_id
+            problems = check_scan(scan, self.hosts, creds, key_id(self.private_key().public_key()))
             if problems:
                 raise SourceError("; ".join(problems))
+            read = creds.read_for(scan["Provider"], scan["ApiUrl"], scan["Organization"])
+            write = creds.write_for(scan["OutputRepo"])
+            for c in (read, write):
+                if c:
+                    REDACT.add(c.token, c.username)
             hooks._update(ImageTag=tag)
-            o = self.options(scan, store, hooks)
+            o = self.options(scan, store, hooks, creds)
             o.tag = tag
+            o.on_listed = lambda prov, n: self._listed(read, prov, n)
             (self.data / f"scan-{int(scan['ScanId'])}").mkdir(parents=True, exist_ok=True)
             from .org import run_org
             results = run_org(o, log=lambda msg: self.log(f"{name}: {msg}"))
+            if write:
+                self._mark(write, "ok: pushed the generated files" if o.push else "ok")
             c = hooks.counts
             stopped = len(results) < hooks.total
             if stopped:
@@ -535,6 +565,8 @@ class Worker:
         except Exception as ex:
             message = REDACT(f"{type(ex).__name__}: {ex}")
         finally:
+            if status == "failed" and read and ("HTTP 401" in message or "HTTP 403" in message):
+                self._mark(read, f"failed: {message[:400]}")
             done.set()
             try:
                 hooks._update(Status=status, FinishedAt=naive(utcnow()), CurrentRepo=None, Message=_cut(message, 2000))
@@ -551,6 +583,30 @@ class Worker:
                 m.success.set(end, scan=name)
             self.log(f"{name}: run #{run_id} {status}: {message}")
         return status
+
+
+    def _listed(self, cred, prov, n: int) -> None:
+        """The organization's token worked: record it, with any sign that it can do more than read."""
+        try:
+            warnings = getattr(prov, "token_warnings", lambda: [])()
+        except Exception:                       # best effort only
+            warnings = []
+        for w in warnings:
+            self.log(f"warning: the read-only token for {cred.scope}: {w}")
+        self._mark(cred, f"ok: {n} repositories listed" + "".join(f"; warning: {w}" for w in warnings))
+
+    def _mark(self, cred, result: str) -> None:
+        if not cred:
+            return
+        from .credentials import mark
+        try:
+            conn = self.connect()
+            try:
+                mark(conn, cred.id, result)
+            finally:
+                conn.close()
+        except Exception as ex:                 # bookkeeping only
+            self.log(f"could not record the use of credential {cred.id}: {type(ex).__name__}")
 
 
 def build(args) -> int:

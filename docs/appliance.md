@@ -91,11 +91,11 @@ Sign in with `ssh root@<appliance>`. The first boot created `/etc/containerizer/
 | --- | --- |
 | `appliance.env` | `CZ_HOSTNAME` (the name in the HTTPS certificate and the sign-in redirect), `CZ_ACME_EMAIL` (Let's Encrypt instead of the appliance's own CA), `CZ_DNS_SERVERS`, `CZ_MSSQL_EDITION`, `CZ_MSSQL_MEMORY` |
 | `web.env` | Sign-in for the web UI: `CONTAINERIZER_OIDC_*`, `CONTAINERIZER_ADMINS`, roles, viewers ([results-database.md](results-database.md#admin-pages)) |
-| `worker.env` | Tokens for the scan worker ([scheduled-scans.md](scheduled-scans.md)) |
+| `worker.env` | Registry credentials and extra registry hosts for the scan worker ([scheduled-scans.md](scheduled-scans.md)); source control tokens are registered on the admin pages instead ([source-control.md](source-control.md)) |
 | `sandbox.env` | The output repository the sandbox cluster deploys from |
 | `grafana.env` | Optional Grafana settings, e.g. sign-in with your identity provider |
 | `egress.json` | The egress allow-list: change it on the Firewall page, not here |
-| `secrets/` | Generated passwords (SQL Server logins, Grafana `admin`): root-only, never shown in the web UI |
+| `secrets/` | Generated passwords (SQL Server logins, Grafana `admin`) and the key pair that seals source control tokens (`credential-key` for the worker only, `credential-key.pub` for the web UI): root-only, never shown in the web UI. Keep `credential-key` when restoring a backup: the registered tokens open only with it |
 | `network/` | Optional `systemd-networkd` `.network` files for static addresses (default: DHCP on every NIC) |
 
 Steps:
@@ -112,7 +112,8 @@ Steps:
    With `CZ_ACME_EMAIL`, allow `acme-v02.api.letsencrypt.org` on the Firewall page first; the name must
    resolve to the appliance from the internet (TLS-ALPN challenge on 443).
 5. **Admin → Firewall**: allow the hosts your scans need (Git servers, package feeds, registries).
-6. Tokens into `worker.env`, then define organization scans on the admin pages.
+6. **Admin → Source control**: a read-only token for each organization to scan and a write token for
+   each output repository ([source-control.md](source-control.md)), then define organization scans.
 
 Grafana is at `https://<CZ_HOSTNAME>/grafana/`, user `admin`, password in
 `/etc/containerizer/secrets/grafana-admin` (change it in Grafana, or set up sign-in in `grafana.env`).

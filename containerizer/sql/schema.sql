@@ -14,6 +14,7 @@
 --   OrgScan 1-* OrgScanRun, OrgRepository                                    (scheduled organization scans)
 --   Application 0-1 DevDatabase                                              (dev database backup for the sandbox)
 --   RuleCandidate 1-* RuleEvidence: rules the learning loop learned, waiting for review (rule review)
+--   SourceCredential: read-only tokens of the organizations scans may read, write tokens of output repositories
 --
 -- The scan fills Application, Component and the assessment tables. People maintain business units,
 -- products and the application mapping in the admin pages of the web UI; a scan never overwrites them.
@@ -568,7 +569,8 @@ GO
 
 -- Organization scans (`containerizer worker`, docs/scheduled-scans.md). Administrators define them on the
 -- admin pages: which organization, where the results go, and when to run. Tokens are never stored here:
--- TokenEnv / OutputTokenEnv name environment variables of the worker. The worker sets NextRunAt.
+-- they are in SourceCredential, matched by organization and output repository URL. TokenEnv and
+-- OutputTokenEnv are no longer used (kept for older databases). The worker sets NextRunAt.
 IF OBJECT_ID(N'[${schema}].OrgScan', N'U') IS NULL
 CREATE TABLE [${schema}].OrgScan (
     ScanId          int IDENTITY(1,1) NOT NULL CONSTRAINT PK_OrgScan PRIMARY KEY,
@@ -808,6 +810,55 @@ BEGIN
 END;
 GO
 
+-- Source control tokens (Admin → Source control, credentials.py): a read-only token for each organization
+-- the scans may read (Purpose read, Scope: the organization / group / collection), and a write token for
+-- each output repository (Purpose write, Scope: the repository URL). An organization without a read token
+-- is never scanned. TokenSealed is sealed for the scan worker's public key: the web UI can seal a token
+-- but not open it, the admin role is not granted SELECT on it, and it is never copied to AuditLog (only
+-- when it was replaced, TokenSetAt). The worker records when and how it last used a token.
+IF OBJECT_ID(N'[${schema}].SourceCredential', N'U') IS NULL
+CREATE TABLE [${schema}].SourceCredential (
+    CredentialId  int IDENTITY(1,1) NOT NULL CONSTRAINT PK_SourceCredential PRIMARY KEY,
+    Purpose       nvarchar(10)  NOT NULL CONSTRAINT CK_SourceCredential_Purpose CHECK (Purpose IN (N'read', N'write')),
+    Provider      nvarchar(20)  NOT NULL CONSTRAINT CK_SourceCredential_Provider CHECK (Provider IN (N'azure-devops', N'github', N'gitlab')),
+    ApiUrl        nvarchar(400) NULL CONSTRAINT CK_SourceCredential_ApiUrl CHECK (ApiUrl LIKE N'https://_%' AND ApiUrl NOT LIKE N'%[<>"'' ]%'),
+    Host          nvarchar(255) NOT NULL,
+    Scope         nvarchar(400) NOT NULL,
+    Note          nvarchar(400) NULL,
+    Enabled       bit NOT NULL CONSTRAINT DF_SourceCredential_Enabled DEFAULT 1,
+    ExpiresOn     date NULL,
+    TokenSealed   varchar(max) NOT NULL,
+    KeyId         char(16) NOT NULL,
+    TokenSetAt    datetime2(0) NOT NULL CONSTRAINT DF_SourceCredential_TokenSetAt DEFAULT SYSUTCDATETIME(),
+    TokenSetBy    nvarchar(256) NOT NULL,
+    CreatedAt     datetime2(0) NOT NULL CONSTRAINT DF_SourceCredential_CreatedAt DEFAULT SYSUTCDATETIME(),
+    LastUsedAt    datetime2(0) NULL,
+    LastResult    nvarchar(1000) NULL,
+    CONSTRAINT CK_SourceCredential_Write CHECK (Purpose = N'read' OR (Scope LIKE N'https://_%' AND ApiUrl IS NULL)),
+    CONSTRAINT UQ_SourceCredential UNIQUE (Purpose, Provider, Host, Scope)
+);
+GO
+
+CREATE OR ALTER TRIGGER [${schema}].trSourceCredentialAudit ON [${schema}].SourceCredential
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'SourceCredential', COALESCE(i.CredentialId, d.CredentialId),
+           LEFT(COALESCE(i.Purpose, d.Purpose) + N': ' + COALESCE(i.Scope, d.Scope), 200),
+           CASE WHEN d.CredentialId IS NULL THEN N'insert' WHEN i.CredentialId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.CredentialId IS NOT NULL THEN (SELECT d.Purpose, d.Provider, d.ApiUrl, d.Host, d.Scope, d.Note, d.Enabled,
+                d.ExpiresOn, d.TokenSetAt FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.CredentialId IS NOT NULL THEN (SELECT i.Purpose, i.Provider, i.ApiUrl, i.Host, i.Scope, i.Note, i.Enabled,
+                i.ExpiresOn, i.TokenSetAt FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.CredentialId = i.CredentialId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.CredentialId IS NULL OR i.CredentialId IS NULL
+       OR EXISTS (SELECT i.Purpose, i.Provider, i.ApiUrl, i.Host, i.Scope, i.Note, i.Enabled, i.ExpiresOn, i.TokenSetAt, i.KeyId
+                  EXCEPT SELECT d.Purpose, d.Provider, d.ApiUrl, d.Host, d.Scope, d.Note, d.Enabled, d.ExpiresOn, d.TokenSetAt, d.KeyId);
+END;
+GO
+
 -- Least-privilege roles. Add database users to them (docs/results-database.md):
 --   ${schema}_writer: the scanner; inserts results, never touches the people-maintained columns
 --   ${schema}_reader: the web UI and report readers; views and lookup tables only
@@ -872,6 +923,14 @@ GRANT SELECT ON [${schema}].RuleCandidate TO [${schema}_admin];
 GRANT UPDATE ON [${schema}].RuleCandidate (Status, ReviewedBy, ReviewedByName, ReviewedAt, ReviewNote, FinalYaml, AppliedAs,
                                            PullRequestUrl, ClaimedBy, ClaimedAt) TO [${schema}_admin];
 GRANT SELECT ON [${schema}].RuleEvidence TO [${schema}_admin];
+-- source control tokens: the admin pages add, replace and remove them but cannot read the sealed token back;
+-- the worker reads them and records their use
+GRANT SELECT ON [${schema}].SourceCredential (CredentialId, Purpose, Provider, ApiUrl, Host, Scope, Note, Enabled, ExpiresOn, KeyId,
+    TokenSetAt, TokenSetBy, CreatedAt, LastUsedAt, LastResult) TO [${schema}_admin];
+GRANT INSERT, DELETE ON [${schema}].SourceCredential TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].SourceCredential (Note, Enabled, ExpiresOn, TokenSealed, KeyId, TokenSetAt, TokenSetBy) TO [${schema}_admin];
+GRANT SELECT ON [${schema}].SourceCredential TO [${schema}_writer];
+GRANT UPDATE ON [${schema}].SourceCredential (LastUsedAt, LastResult) TO [${schema}_writer];
 IF IS_ROLEMEMBER(N'${schema}_reader', N'${schema}_admin') = 0 ALTER ROLE [${schema}_reader] ADD MEMBER [${schema}_admin];
 GO
 
@@ -886,4 +945,7 @@ IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 8) INSERT
 GO
 -- 9: rule review (RuleCandidate, RuleEvidence)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 9) INSERT [${schema}].SchemaVersion (Version) VALUES (9);
+GO
+-- 10: source control tokens (SourceCredential)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 10) INSERT [${schema}].SchemaVersion (Version) VALUES (10);
 GO

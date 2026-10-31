@@ -32,6 +32,7 @@ from pathlib import Path
 
 import yaml
 
+from .credentials import in_org, same_repo
 from .orgsource import (NO_PROJECT, REDACT, SourceError, SourceRepo, clone, code_summary, existing_dockerfiles, git,
                         head_commit, provider, read_token, strip_userinfo, update_clone)
 
@@ -48,10 +49,13 @@ class OrgOptions:
     registry: str
     api_url: str | None = None
     token_env: str | None = None
+    token: str | None = None            # the organization's read-only token (worker: registered credential);
+                                        # None: from token_env or the provider's usual environment variables
     output_repo: str | None = None
     output_dir: str | None = None
     output_branch: str = "main"
     output_token_env: str = "OUTPUT_GIT_TOKEN"
+    output_token: str | None = None     # write token of the output repository (worker: registered credential)
     output_username: str = "x-access-token"
     push: bool = True                   # push commits of the output repository
     push_images: bool = True
@@ -82,6 +86,7 @@ class OrgOptions:
     state: object = None                # RepoState store (worker.SqlRepoStore): admin enable/disable, repo history
     hooks: object = None                # progress callbacks (worker): start, repo_done, git, should_stop
     allowed_hosts: object = None        # worker: hosts the tokens may be sent to (API, clone and output URLs)
+    on_listed: object = None            # worker: (provider, number of repositories) after the listing
     verify_sandbox: bool = False        # after the run: wait for the GitOps sync and read back pod health
     kubeconfig: str | None = None
     kube_context: str | None = None
@@ -482,7 +487,8 @@ def org_index(root: Path, org_dir: Path, results: list[dict], run: dict) -> None
 
 
 class Output:
-    """The output Git repository: cloned (token from the environment) or a local folder."""
+    """The output Git repository: cloned with its own write token (never the organization's read-only
+    token; the header is scoped to this repository's URL) or a local folder."""
 
     def __init__(self, o: OrgOptions, work: Path):
         self.o = o
@@ -490,7 +496,7 @@ class Output:
         self.push = o.push
         if o.output_repo:
             self.url = strip_userinfo(o.output_repo)
-            tok = read_token("", o.output_token_env)
+            tok = o.output_token if o.output_token is not None else read_token("", o.output_token_env)
             if tok:
                 import base64
                 REDACT.add(tok, o.output_username)
@@ -614,6 +620,13 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
             return None
         return stop(status, reason)
 
+    if o.output_repo and same_repo(r.clone_url, o.output_repo):
+        # the generated files live here: never scanned, and its write token is never used for scanning
+        return stop("skipped-output", "the output repository of this scan (generated files)")
+    if not in_org(r.clone_url, o.provider, o.org, o.api_url):
+        res.reason = (f"clone URL {strip_userinfo(r.clone_url)} is outside the organization {o.org}: "
+                      "the organization's token is not sent with it")
+        return res
     if admin == "disabled":
         return stop("disabled", "disabled by an administrator")
     if r.archived:
@@ -827,17 +840,24 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
     now = o.now or datetime.now(timezone.utc)
     tag = o.tag or default_tag(now)
     cutoff = now - timedelta(days=o.stale_days) if o.stale_days else None
-    token = read_token(o.provider, o.token_env)
+    token = o.token if o.token is not None else read_token(o.provider, o.token_env)
     if not token:
         from .orgsource import TOKEN_ENVS
-        print(f"warning: no token in {o.token_env or ' / '.join(TOKEN_ENVS[o.provider])}: "
-              "only public repositories are visible", file=sys.stderr)
+        # no anonymous access: only organizations someone gave a token for are listed and cloned
+        raise SourceError(f"no read-only token for the {o.provider} organization {o.org}: set "
+                          f"{o.token_env or ' or '.join(TOKEN_ENVS[o.provider])} (scheduled scans: register one under "
+                          "Admin → Source control); organizations are never read anonymously")
+    if o.output_repo and o.output_token and o.output_token == token:
+        raise SourceError("the output repository's write token is the same as the organization's read-only token: "
+                          "use a separate read-only token for scanning")
     prov = provider(o.provider, o.org, token, o.api_url)
     work = Path(o.work_dir).resolve()
     work.mkdir(parents=True, exist_ok=True)
     os.chmod(work, 0o700)
 
     listed = list(prov.repos())
+    if o.on_listed:
+        o.on_listed(prov, len(listed))
     names = unique_names(listed)              # over every listed repository, so a filter change keeps the names
     inc = re.compile(o.include) if o.include else None
     exc = re.compile(o.exclude) if o.exclude else None

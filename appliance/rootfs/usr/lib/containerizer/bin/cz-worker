@@ -1,6 +1,8 @@
 #!/bin/sh
 CONTAINERIZER_SQL_PASSWORD="$(cat "$CREDENTIALS_DIRECTORY/sql-scanner")"
 export CONTAINERIZER_SQL_PASSWORD
+# opens the source control tokens administrators register on the admin pages
+export CONTAINERIZER_CREDENTIAL_KEY_FILE="$CREDENTIALS_DIRECTORY/credential-key"
 # the appliance's own registry (localhost:5000, no credentials) is always a valid push target
 CONTAINERIZER_WORKER_HOSTS="localhost${CONTAINERIZER_WORKER_HOSTS:+,$CONTAINERIZER_WORKER_HOSTS}"
 export CONTAINERIZER_WORKER_HOSTS

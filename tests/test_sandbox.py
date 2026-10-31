@@ -476,7 +476,7 @@ def test_org_run_with_verify_sandbox_and_no_cluster(tmp_path, monkeypatch):
     subprocess.run(["git", "clone", "-q", str(bare), str(out)], check=True, capture_output=True)
     logs = []
     o = OrgOptions(provider="github", org="acme", registry="reg.example/sandbox", output_dir=str(out), verify=False,
-                   gate=False, push_images=False, tag="1.2.3", work_dir=str(tmp_path / "work"),
+                   token="t", gate=False, push_images=False, tag="1.2.3", work_dir=str(tmp_path / "work"),
                    now=datetime(2026, 10, 31, tzinfo=timezone.utc), verify_sandbox=True)
     res = run_org(o, log=lambda *a, **k: logs.append(" ".join(map(str, a))))
     assert res[0].status == "deployed" and res[0].source_key == "https://github.com/acme/ci-demo#"
