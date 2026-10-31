@@ -374,12 +374,12 @@ CREATE TABLE [${schema}].DevDatabase (
     DevDatabaseId int IDENTITY(1,1) NOT NULL CONSTRAINT PK_DevDatabase PRIMARY KEY,
     ApplicationId int            NOT NULL CONSTRAINT FK_DevDatabase_Application REFERENCES [${schema}].Application (ApplicationId)
                                  CONSTRAINT UQ_DevDatabase_Application UNIQUE,
-    Engine        nvarchar(20)   NOT NULL CONSTRAINT CK_DevDatabase_Engine CHECK (Engine IN (N'sqlserver', N'postgresql', N'mysql')),
+    Engine        nvarchar(20)   NOT NULL CONSTRAINT CK_DevDatabase_Engine CHECK (Engine IN (N'sqlserver')),
     DatabaseName  nvarchar(128)  NOT NULL,
     FileName      nvarchar(200)  NOT NULL,       -- as uploaded
     SizeBytes     bigint         NOT NULL,
     Sha256        char(64)       NOT NULL,
-    StoredAs      nvarchar(100)  NOT NULL,       -- <sha256>.<bak|dump|sql|sql.gz>
+    StoredAs      nvarchar(100)  NOT NULL,       -- <sha256>.bak
     Prompt        nvarchar(max)  NULL,           -- how to point the application at the database
     UploadedAt    datetime2(0)   NOT NULL CONSTRAINT DF_DevDatabase_UploadedAt DEFAULT SYSUTCDATETIME(),
     UploadedBy    nvarchar(256)  NOT NULL

@@ -1,7 +1,7 @@
 """Development database backups per application, uploaded by operators on the admin pages.
 
-An operator uploads a backup of the application's development database (SQL Server .bak, PostgreSQL
-custom-format dump, or a plain / gzipped SQL script for PostgreSQL or MySQL) and writes the
+An operator uploads a backup of the application's development database (a SQL Server .bak; other
+engines can be added to ENGINES later) and writes the
 instructions an AI agent needs to point the application at it: which connection string or setting
 to use, the database name, test users, anything to run after the restore. The file goes to
 CONTAINERIZER_DEV_DB_DIR (a volume shared with the scan worker), never to the database or to git;
@@ -14,7 +14,6 @@ form. The files are never served back by the web UI.
 """
 from __future__ import annotations
 
-import gzip
 import hashlib
 import os
 import re
@@ -26,8 +25,6 @@ CHUNK = 64 * 1024
 MAX_FIELD = 64 * 1024
 ENGINES = {
     "sqlserver": ("SQL Server", "backup (.bak) made with BACKUP DATABASE ... TO DISK"),
-    "postgresql": ("PostgreSQL", "pg_dump custom format (-Fc, .dump) or a plain / gzipped SQL script"),
-    "mysql": ("MySQL / MariaDB", "mysqldump SQL script (.sql or .sql.gz)"),
 }
 NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 FILE_RE = re.compile(r"[\w.\- ]{1,200}")
@@ -57,38 +54,18 @@ class Settings:
 # --------------------------------------------------------------------------- file checks
 
 def sniff(head: bytes, filename: str) -> str | None:
-    """The engine a file's first bytes say it is for, or None. Plain SQL scripts could be either
-    PostgreSQL or MySQL: returns "sql" and the operator's choice decides."""
-    if head.startswith(b"TAPE"):                       # Microsoft Tape Format: SQL Server native backup
+    """The engine a file's first bytes say it is for, or None."""
+    if head.startswith((b"TAPE", b"MSSQLBAK")):        # SQL Server backup: Microsoft Tape Format, or compressed (2022)
         return "sqlserver"
-    if head.startswith(b"PGDMP"):                      # pg_dump custom / directory archive
-        return "postgresql"
-    data = head
-    if head.startswith(b"\x1f\x8b"):
-        try:
-            data = gzip.decompress(head) if len(head) < 64 else _gunzip_prefix(head)
-        except (OSError, EOFError):
-            return None
-    text = data[:4096].decode("utf-8", "replace").lstrip("﻿").lstrip()
-    if re.match(r"(--|/\*|SET |CREATE |INSERT |DROP |USE |BEGIN|START TRANSACTION|\\connect)", text, re.I):
-        return "sql"
     return None
-
-
-def _gunzip_prefix(b: bytes) -> bytes:
-    import zlib
-    return zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(b, 8192)
 
 
 def check_engine(engine: str, kind: str | None) -> None:
     if engine not in ENGINES:
         raise UploadError("Pick the database engine.")
     if kind is None:
-        raise UploadError("That file is not a database backup this tool recognises: a SQL Server .bak, "
-                          "a pg_dump custom-format dump, or a SQL script.")
-    if kind == "sql" and engine == "sqlserver":
-        raise UploadError("For SQL Server upload a native backup (.bak), not a SQL script.")
-    if kind not in ("sql", engine):
+        raise UploadError("That file is not a SQL Server backup (.bak made with BACKUP DATABASE ... TO DISK).")
+    if kind != engine:
         raise UploadError(f"The file is a {ENGINES[kind][0]} backup, but {ENGINES[engine][0]} was selected.")
 
 
@@ -197,10 +174,7 @@ def parse_multipart(rfile, length: int, ctype: str, tmpdir: Path, max_bytes: int
 
 def store(settings: Settings, up: Upload, engine: str) -> str:
     """Move the checked temporary file to its final name (content-addressed) and return that name."""
-    ext = {"sqlserver": ".bak", "postgresql": ".dump" if up.head.startswith(b"PGDMP") else ".sql",
-           "mysql": ".sql"}[engine]
-    if up.head.startswith(b"\x1f\x8b"):
-        ext += ".gz"
+    ext = {"sqlserver": ".bak"}[engine]
     name = f"{up.sha256}{ext}"
     final = settings.directory / name
     os.replace(up.path, final)
@@ -251,12 +225,10 @@ def human_size(n: int) -> str:
 # Kubernetes' $(VAR) expansion; which settings to set comes from the LLM, reading the operator's
 # prompt and the component's configuration, or from the connection strings the scan found.
 
-PORTS = {"sqlserver": 1433, "postgresql": 5432, "mysql": 3306}
-UIDS = {"sqlserver": 10001, "postgresql": 999, "mysql": 999}
-WRITABLE = {"sqlserver": ["/var/opt/mssql", "/tmp"],
-            "postgresql": ["/var/lib/postgresql/data", "/var/run/postgresql", "/tmp"],
-            "mysql": ["/var/lib/mysql", "/var/run/mysqld", "/tmp"]}
-MEMORY = {"sqlserver": ("2Gi", "3Gi"), "postgresql": ("256Mi", "1Gi"), "mysql": ("512Mi", "1Gi")}
+PORTS = {"sqlserver": 1433}
+UIDS = {"sqlserver": 10001}
+WRITABLE = {"sqlserver": ["/var/opt/mssql", "/tmp"]}
+MEMORY = {"sqlserver": ("2Gi", "3Gi")}
 APP_USER = "app"
 PASSWORD_ENV = "CZ_DEVDB_PASSWORD"
 SECRET, ADMIN_SECRET = "devdb", "devdb-admin"
@@ -265,8 +237,6 @@ ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,199}")
 PLACEHOLDERS = ("host", "port", "database", "user", "password")
 CONNECTION = {
     "sqlserver": "Server={host},{port};Database={database};User Id={user};Password={password};Encrypt=True;TrustServerCertificate=True",
-    "postgresql": "Host={host};Port={port};Database={database};Username={user};Password={password}",
-    "mysql": "Server={host};Port={port};Database={database};User ID={user};Password={password}",
 }
 
 
@@ -284,8 +254,7 @@ class SandboxDb:
 def base_image(engine: str) -> str:
     from .generate import images
     return (images().get("devdb") or {}).get(engine) or {
-        "sqlserver": "mcr.microsoft.com/mssql/server:2022-latest",
-        "postgresql": "postgres:16-bookworm", "mysql": "mysql:8.4"}[engine]
+        "sqlserver": "mcr.microsoft.com/mssql/server:2022-latest"}[engine]
 
 
 def build_context(stored: Path, engine: str, database: str, ctx: Path) -> Path:
@@ -304,22 +273,16 @@ def build_context(stored: Path, engine: str, database: str, ctx: Path) -> Path:
     lines = [f"FROM {base_image(engine)}", f"LABEL org.opencontainers.image.description=\"containerizer dev database {database}\""]
     if engine == "sqlserver":
         (ctx / "start.sh").write_text(SQLSERVER_START)
-        lines += [f"COPY --chown=10001:0 backup.{ext} /devdb/backup.bak", "COPY --chown=10001:0 --chmod=0555 start.sh /devdb/start.sh",
+        # sqlservr carries the file capability cap_net_bind_service=ep, which a container that drops ALL
+        # capabilities cannot exec ("Operation not permitted"); it listens on 1433 and needs none
+        lines += ["USER root", "RUN setcap -r /opt/mssql/bin/sqlservr",
+                  f"COPY --chown=10001:0 backup.{ext} /devdb/backup.bak", "COPY --chown=10001:0 --chmod=0555 start.sh /devdb/start.sh",
                   f"ENV DEVDB_NAME={database} ACCEPT_EULA=Y MSSQL_PID=Developer", "USER 10001",
                   'ENTRYPOINT ["/bin/bash", "/devdb/start.sh"]']
-    elif engine == "postgresql" and ext == "dump":
-        (ctx / "10-restore.sh").write_text(POSTGRES_RESTORE)
-        lines += ["COPY --chown=999:999 backup.dump /devdb/backup.dump",
-                  "COPY --chown=999:999 --chmod=0555 10-restore.sh /docker-entrypoint-initdb.d/10-restore.sh",
-                  f"ENV POSTGRES_DB={database} POSTGRES_USER={APP_USER}", "USER 999"]
-    elif engine == "postgresql":
-        lines += [f"COPY --chown=999:999 backup.{ext} /docker-entrypoint-initdb.d/10-backup.{ext}",
-                  f"ENV POSTGRES_DB={database} POSTGRES_USER={APP_USER}", "USER 999"]
     else:
-        lines += [f"COPY --chown=999:999 backup.{ext} /docker-entrypoint-initdb.d/10-backup.{ext}",
-                  f"ENV MYSQL_DATABASE={database} MYSQL_USER={APP_USER}", "USER 999"]
+        raise ValueError(f"unsupported engine {engine!r}")
     (ctx / "Dockerfile").write_text("\n".join(lines) + "\n")
-    (ctx / ".dockerignore").write_text("*\n!Dockerfile\n!backup.*\n!start.sh\n!10-restore.sh\n")
+    (ctx / ".dockerignore").write_text("*\n!Dockerfile\n!backup.*\n!start.sh\n")
     return ctx
 
 
@@ -348,13 +311,6 @@ touch /tmp/devdb-ready
 echo "devdb: ${DEVDB_NAME} is ready"
 wait "$pid"
 """
-
-POSTGRES_RESTORE = """#!/bin/sh
-set -eu
-echo "devdb: restoring $POSTGRES_DB"
-pg_restore --no-owner --no-privileges --exit-on-error --role="$POSTGRES_USER" -U "$POSTGRES_USER" -d "$POSTGRES_DB" /devdb/backup.dump
-"""
-
 
 def secret_docs(labels: dict) -> list[dict]:
     """The two passwords, generated in the cluster by External Secrets Operator (secrets.mode
@@ -388,11 +344,9 @@ def manifests(app: str, db: SandboxDb) -> list[dict]:
     def pw(secret: str) -> dict:
         return {"valueFrom": {"secretKeyRef": {"name": secret, "key": "password"}}}
     env = {"sqlserver": [{"name": "DEVDB_ADMIN_PASSWORD", **pw(ADMIN_SECRET)}, {"name": "DEVDB_PASSWORD", **pw(SECRET)}],
-           "postgresql": [{"name": "POSTGRES_PASSWORD", **pw(SECRET)}, {"name": "PGDATA", "value": "/var/lib/postgresql/data/pgdata"}],
-           "mysql": [{"name": "MYSQL_ROOT_PASSWORD", **pw(ADMIN_SECRET)}, {"name": "MYSQL_PASSWORD", **pw(SECRET)}]}[eng]
+           }[eng]
     ready = {"sqlserver": ["/bin/sh", "-c", "test -f /tmp/devdb-ready"],
-             "postgresql": ["/bin/sh", "-c", f"pg_isready -h 127.0.0.1 -U {APP_USER} -d {db.database}"],
-             "mysql": ["/bin/sh", "-c", 'mysqladmin ping -h 127.0.0.1 -u app -p"$MYSQL_PASSWORD" --silent']}[eng]
+             }[eng]
     req, lim = MEMORY[eng]
     volumes, mounts = [], []
     for i, path in enumerate(WRITABLE[eng]):
@@ -489,7 +443,7 @@ def ai_env(a, comps: list, engine: str, database: str, prompt: str, model: str |
         f = c.facts or {}
         lines.append(f"- component {c.name!r} (role {c.role}, project {c.project.rel}): connection strings found "
                      f"{f.get('connection_strings') or []}, secret settings {f.get('secret_settings') or []}, "
-                     f"database packages {[p for p in (f.get('packages') or []) if re.search(r'(?i)sql|npgsql|mysql|entityframework', str(p))][:15]}")
+                     f"database packages {[p for p in (f.get('packages') or []) if re.search(r'(?i)sql|entityframework', str(p))][:15]}")
     q = (f"An application is deployed to a Kubernetes sandbox next to a {ENGINES[engine][0]} development database "
          f"restored from a backup. Decide which environment variables each component needs so it uses that database.\n\n"
          f"Components:\n" + "\n".join(lines) + "\n\n"
@@ -600,7 +554,7 @@ def readme(app: str, db: SandboxDb, row: dict) -> str:
              f"- Reached at `{HOST}:{PORTS[db.engine]}` by the application's own pods only (NetworkPolicy `{HOST}`).",
              f"- The application signs in as `{APP_USER}`; the password is in the Secret `{SECRET}` (key `password`), "
              f"the {('sa' if db.engine == 'sqlserver' else 'root')} password in `{ADMIN_SECRET}`"
-             + (" (PostgreSQL: the application user is the database owner)" if db.engine == "postgresql" else "") + ".",
+             + " (the application user is db_owner of the restored database, not sysadmin).",
              "- With External Secrets Operator (secrets.mode external-secrets) both are generated in the cluster by "
              "its Password generator and never rotated; otherwise create them before the sync:",
              "", "      kubectl -n <namespace> create secret generic devdb --from-literal=password=<random>",

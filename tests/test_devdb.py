@@ -1,5 +1,4 @@
 """Dev database backups: upload parsing, the sandbox database manifests and the app's settings."""
-import gzip
 import io
 import sys
 from pathlib import Path
@@ -24,18 +23,18 @@ def _db(engine="sqlserver", env=None):
 
 def test_sniff_recognises_backup_formats():
     assert devdb.sniff(b"TAPE\x00\x00rest", "x.bak") == "sqlserver"
-    assert devdb.sniff(b"PGDMP\x01\x0e", "x.dump") == "postgresql"
-    assert devdb.sniff(b"-- MySQL dump 10.13\nCREATE TABLE t (id int);\n", "x.sql") == "sql"
-    assert devdb.sniff(gzip.compress(b"CREATE TABLE t (id int);\n"), "x.sql.gz") == "sql"
+    assert devdb.sniff(b"MSSQLBAK\x02\x00", "x.bak") == "sqlserver"      # WITH COMPRESSION (SQL Server 2022)
+    assert devdb.sniff(b"PGDMP\x01\x0e", "x.dump") is None                     # SQL Server only for now
+    assert devdb.sniff(b"CREATE TABLE t (id int);\n", "x.sql") is None
     assert devdb.sniff(b"\x7fELF\x02\x01", "x.bak") is None
 
 
 def test_check_engine_rejects_mismatch():
     devdb.check_engine("sqlserver", "sqlserver")
     with pytest.raises(devdb.UploadError):
-        devdb.check_engine("sqlserver", "postgresql")
+        devdb.check_engine("sqlserver", None)
     with pytest.raises(devdb.UploadError):
-        devdb.check_engine("postgresql", None)
+        devdb.check_engine("postgresql", "sqlserver")
 
 
 # -- multipart ------------------------------------------------------------------------------------
@@ -79,8 +78,7 @@ def test_parse_multipart_limits_and_hook(tmp_path):
 
 # -- the sandbox database -------------------------------------------------------------------------
 
-@pytest.mark.parametrize("engine", ["sqlserver", "postgresql", "mysql"])
-def test_manifests_are_hardened(engine):
+def test_manifests_are_hardened(engine="sqlserver"):
     docs = devdb.manifests("shop", _db(engine))
     kinds = [d["kind"] for d in docs]
     assert kinds[:4] == ["ServiceAccount", "Deployment", "Service", "NetworkPolicy"]
