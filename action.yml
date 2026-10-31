@@ -112,6 +112,8 @@ runs:
       run: |
         python3 -m pip install --quiet --disable-pip-version-check -r "$GITHUB_ACTION_PATH/requirements.txt"
         [ "$AI" = "true" ] && python3 -m pip install --quiet --disable-pip-version-check anthropic
+        # results database (docs/results-database.md): set CONTAINERIZER_SQL and CONTAINERIZER_SQL_PASSWORD on the step
+        [ -n "${CONTAINERIZER_SQL:-}" ] && python3 -m pip install --quiet --disable-pip-version-check -r "$GITHUB_ACTION_PATH/requirements-sql.txt"
         if [ "$MODE" = "auto" ]; then
           case "$EVENT" in pull_request|pull_request_target) MODE=gate ;; *) MODE=assess ;; esac
         fi
