@@ -35,6 +35,7 @@ def paths(tmp_path, monkeypatch):
                        rules=tmp_path / "etc" / "egress.json", history=tmp_path / "var" / "history.jsonl",
                        run=tmp_path / "run", dnsmasq=tmp_path / "run" / "dnsmasq.conf", nft=tmp_path / "run" / "fw.nft",
                        os_release=tmp_path / "os-release", snapshots=tmp_path / "snapshots",
+                       appliance_env=tmp_path / "appliance.env", resolved=tmp_path / "resolv.conf",
                        elemental_run=tmp_path / "elemental")
     monkeypatch.setattr(sysagent, "P", p)
     (p.run / "requests").mkdir(parents=True)
@@ -123,10 +124,10 @@ def test_render_dns_only_allowed_names_and_parent_sets():
     system = validate_rules({"rules": [{"host": "ghcr.io"}]})
     admin = validate_rules({"rules": [{"host": "github.com", "ports": "443"}, {"host": "ssh.github.com", "ports": "22"},
                                       {"cidr": "10.20.0.0/16", "ports": "1433"}, {"host": "pool.ntp.org", "ports": "udp/123"}]})
-    nft, dns = render(system, admin)
+    nft, dns = render(system, admin, ["192.168.1.1", "1.1.1.1"])
     lines = dns.splitlines()
-    assert "address=/#/" in lines                                  # everything else: NXDOMAIN
-    assert "server=/github.com/#" in lines and "server=/ghcr.io/#" in lines
+    assert "no-resolv" in lines                                    # everything else: REFUSED
+    assert "server=/github.com/192.168.1.1" in lines and "server=/ghcr.io/1.1.1.1" in lines
     # a subdomain with its own rule still gets the parent's set (dnsmasq uses the longest match only)
     assert "nftset=/ssh.github.com/4#inet#cz_firewall#f4_tcp22,6#inet#cz_firewall#f6_tcp22," \
            "4#inet#cz_firewall#f4_tcp443,6#inet#cz_firewall#f6_tcp443" in lines
@@ -139,16 +140,29 @@ def test_render_dns_only_allowed_names_and_parent_sets():
     def last(n):
         return [x.strip() for x in n.split("chain egress {")[1].splitlines() if x.strip() not in ("", "}")][-1]
     assert last(nft) == "drop"
-    assert last(render(system, {**admin, "mode": "log"})[0]) == "accept"
+    assert last(render(system, {**admin, "mode": "log"}, [])[0]) == "accept"
+
+
+def test_upstream_servers(paths):
+    paths.resolved.write_text("# from DHCP\nnameserver 192.168.1.1\nnameserver 127.0.0.53\nnameserver fe80::1%eth0\n"
+                              "nameserver 192.168.1.1\noptions edns0\n")
+    assert sysagent.upstream_servers() == ["192.168.1.1", "fe80::1"]
+    paths.appliance_env.write_text("CZ_DNS_SERVERS=9.9.9.9, 149.112.112.112 junk\n")
+    assert sysagent.upstream_servers() == ["9.9.9.9", "149.112.112.112"]
 
 
 def test_egress_status_parses_journal(paths):
     journal = "\n".join([
-        "query[A] api.nuget.org from 10.42.0.7",
-        "config api.nuget.org is NXDOMAIN",
-        "config api.nuget.org is NXDOMAIN",
-        "config 7.0.42.10.in-addr.arpa is NXDOMAIN",
-        "config registry.npmjs.org is NODATA",
+        "1 10.42.0.7/3301 query[A] api.github.com from 10.42.0.7",
+        "1 10.42.0.7/3301 reply api.github.com is 140.82.112.5",
+        "2 10.42.0.7/3302 query[A] api.nuget.org from 10.42.0.7",
+        "3 172.17.0.2/4100 query[AAAA] api.nuget.org from 172.17.0.2",
+        "3 172.17.0.2/4100 config error is REFUSED (EDE: not ready)",
+        "2 10.42.0.7/3302 config error is REFUSED (EDE: not ready)",
+        "4 10.42.0.7/3303 query[PTR] 7.0.42.10.in-addr.arpa from 10.42.0.7",
+        "4 10.42.0.7/3303 config error is REFUSED",
+        "5 127.0.0.1/999 query[A] registry.npmjs.org from 127.0.0.1",
+        "5 127.0.0.1/999 config error is REFUSED",
         "cz-egress-drop: IN=cni0 OUT=eth0 SRC=10.42.0.7 DST=1.2.3.4 LEN=60 PROTO=TCP SPT=4000 DPT=8443 WINDOW=1",
     ])
     st = sysagent.egress_status(journal)
@@ -162,7 +176,7 @@ def test_save_rules_applies_and_records_history(paths, monkeypatch):
     sysagent.save_rules({"rules": [{"host": "api.nuget.org"}]}, "alice@x", "Alice")
     assert json.loads(paths.rules.read_text())["rules"] == [{"host": "api.nuget.org", "ports": ["tcp/443"], "note": ""}]
     assert ["nft", "-c", "-f", str(paths.nft)] in r.calls and ["nft", "-f", str(paths.nft)] in r.calls
-    assert "server=/api.nuget.org/#" in paths.dnsmasq.read_text()
+    assert "nftset=/api.nuget.org/4#inet#cz_firewall#f4_tcp443,6#inet#cz_firewall#f6_tcp443" in paths.dnsmasq.read_text()
     h = json.loads(paths.history.read_text().splitlines()[-1])
     assert h["by"] == "alice@x" and h["added"][0]["host"] == "api.nuget.org" and h["removed"] == []
 
@@ -187,8 +201,8 @@ def test_save_rules_keeps_old_ruleset_when_nft_refuses(paths, monkeypatch):
 def test_broken_admin_rules_fall_back_to_system_rules(paths):
     paths.rules.parent.mkdir(parents=True, exist_ok=True)
     paths.rules.write_text("{not json")
-    nft, dns = render(sysagent.load_rules(paths.system_rules, system=True), sysagent.load_rules(paths.rules))
-    assert "server=/ghcr.io/#" in dns and "policy drop" in nft
+    nft, dns = render(sysagent.load_rules(paths.system_rules, system=True), sysagent.load_rules(paths.rules), ["10.0.0.1"])
+    assert "server=/ghcr.io/10.0.0.1" in dns and "policy drop" in nft
 
 
 # ------------------------------------------------------------------------------- upgrade, rollback
