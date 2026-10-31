@@ -171,8 +171,8 @@ def select_components(a, verified: bool) -> tuple[list, list[dict]]:
         why = ""
         if rating != "A":
             why = f"rated {rating} ({c.verdict})"
-        elif getattr(c, "stateless", True) is False:
-            why = "keeps local state"
+            if rating == "B" and c.verdict in ("info", "config") and getattr(c, "stateless", True) is False:
+                why = "keeps local state"     # otherwise ready: the stateless cap made it B
         elif not buildable(c):
             why = "no Linux container build for this component"
         elif verified and (ver.get(c.name) or {}).get("status") not in OK_VERIFY:

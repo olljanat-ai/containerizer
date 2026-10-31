@@ -91,8 +91,9 @@ apps:
     rating: [C]
     note: ASP.NET Core 2.1 on .NET Framework and Topshelf services.
   parts-catalog:
-    rating: [A]
+    rating: [B]
     not_blocked: [PartsCatalog]
+    note: Ready to containerize, but it keeps its catalog in a local SQLite file (App_Data/catalog.db), so it is not stateless and needs a volume and a single replica.
   policy-changes:
     rating: [D]
     blocked: [PolicyChanges.DeskRunner]

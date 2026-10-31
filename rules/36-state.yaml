@@ -1,0 +1,117 @@
+# Statefulness: a component is stateless when its persistent data lives in external services
+# (SQL databases, Redis, blob/object storage, queues: all available as managed cloud services)
+# and none on its own disk or in its process memory. Rules here carry `state:` (local | memory);
+# a component with such a finding is reported as stateful and the app is not rated A (see
+# AppAssessment.rating). Embedded databases and local search indexes are in 30-integration.yaml
+# (sqlite-local, lucene-local-index).
+rules:
+  # Files the application writes under its own content/web root or App_Data: uploads, generated
+  # documents, data files. The write and the app-relative root must be in the same file, so a
+  # file that only reads templates from the content root, or only writes to the temp folder, is
+  # not reported. Logs are not state (log to stdout; plan-file-logs makes the folder writable).
+  - id: state-local-files
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop|tool'}
+        - all:
+            - code: '\b(WebRootPath|ContentRootPath|WebRootFileProvider|ContentRootFileProvider)\b|\b(Server|HostingEnvironment|HttpContext\.Current\.Server)\.MapPath\s*\(|\bMapPath\s*\(\s*"~|["''/\\~]App_Data\b|\bAppContext\.BaseDirectory\b|\bAppDomain\.CurrentDomain\.BaseDirectory\b'
+              in: ['*.cs', '*.vb']
+            - code: '\.SaveAs\s*\(|\b(System\.IO\.)?File\.(WriteAll(Text|Bytes|Lines)|AppendAll(Text|Lines)|AppendText|Create|CreateText|Copy|Move|OpenWrite)(Async)?\s*\(|\bnew\s+(System\.IO\.)?FileStream\s*\([^;]*FileMode\.(Create|CreateNew|Append|OpenOrCreate)|\bnew\s+StreamWriter\s*\(\s*(?!\w*[Ss]tream\b)[^;,)]+[,)]|\.(Copy|Write)To(Async)?\s*\(\s*\w*(fileStream|FileStream|fs|stream|Stream|output|outStream)\s*[,)]'
+              in: ['*.cs', '*.vb']
+            - not: {code: '\bPath\.GetTemp(Path|FileName)\s*\(|\bIFormFile\b[^;]*\bBlob|\bBlob(Container)?Client\b|\bAmazonS3Client\b|\bPutObjectAsync\b', in: ['*.cs', '*.vb']}
+          same_file: true
+    severity: config
+    category: storage
+    state: local
+    effort: 1
+    title: Application data written to its own disk
+    why: >-
+      The code writes files (uploads, generated documents, data files) under the application's
+      own folder (content or web root, App_Data, the base directory). In a container that folder
+      is part of the image: the files need a persistent volume, are lost when the pod moves
+      without one, and are not shared between replicas, so the component is not stateless.
+    fix: >-
+      To run it as is, mount a PersistentVolumeClaim (ReadWriteMany for more than one replica) at
+      that folder. To make it stateless, store the files in blob/object storage (Azure Blob
+      Storage, S3) through a storage abstraction, keeping only the container and account
+      settings in configuration.
+    refs:
+      - https://12factor.net/processes
+      - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+      - https://learn.microsoft.com/en-us/azure/storage/blobs/storage-quickstart-blobs-dotnet
+
+  # Data folders under App_Data that the app declares it writes (tenants, media, uploads):
+  # frameworks such as Smartstore and nopCommerce list them for their file-permission check and
+  # write through their own file-system abstraction, so no single file holds both the path and
+  # the write call.
+  - id: state-app-data-folders
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {role: 'test|desktop|tool'}
+        - code: '["''~/\\]App_Data[/\\]+(\{?\w*\}?[/\\]+)?(Tenants|Media|Uploads?|Files|Attachments|Storage|Documents|Images|Backups?)\b'
+          in: ['*.cs', '*.vb']
+    severity: config
+    category: storage
+    state: local
+    effort: 1
+    title: Data folders under App_Data
+    why: >-
+      The code names App_Data subfolders for tenants, media, uploads or attachments, which are
+      folders the application writes its own data into (App_Data is the ASP.NET folder for
+      application data). In a container these files need a persistent volume and are not shared
+      between replicas, so the component is not stateless.
+    fix: >-
+      To run it as is, mount a PersistentVolumeClaim at App_Data (ReadWriteMany for more than one
+      replica). To make it stateless, switch the media/file storage to the database or to blob
+      storage if the application offers that provider, so only configuration is left.
+    refs:
+      - https://learn.microsoft.com/en-us/previous-versions/aspnet/ex526337(v=vs.100)
+      - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+      - https://12factor.net/processes
+
+  # ASP.NET Core session state lives in IDistributedCache; without a Redis/SQL/Cosmos-backed
+  # implementation AddSession uses the in-memory cache of the process.
+  - id: state-session-in-memory
+    applies_to: [dotnet]
+    when:
+      all:
+        - code: '\.AddSession\s*\('
+        - not:
+            closure:
+              code: '\bAdd(StackExchangeRedis|DistributedRedis|DistributedSqlServer|Cosmos|DistributedPostgreSql|DistributedMySql|NCacheDistributed|EnyimMemcached|MongoDb|AzureTableStorage|DistributedAzureTable|Redis(Distributed)?)Cache\b|\bAddDistributedCache\b|\bAddHybridCache\b[^;]*Redis|\bclass\s+\w+\s*:\s*[^{]*\bIDistributedCache\b|\bAddSingleton<\s*IDistributedCache\b'
+    severity: config
+    category: storage
+    state: memory
+    effort: 0.5
+    title: Session state kept in process memory
+    why: >-
+      The app uses ASP.NET Core session state, and no distributed cache backed by an external
+      service is registered, so sessions live in the memory of each process. They are lost on
+      every restart or rescheduling, and with more than one replica a user's next request may
+      hit a pod that does not know the session: the component is not stateless.
+    fix: >-
+      Register a distributed cache on a managed service before AddSession, e.g.
+      AddStackExchangeRedisCache (Azure Cache for Redis) or AddDistributedSqlServerCache.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/fundamentals/app-state#session-state
+      - https://learn.microsoft.com/en-us/aspnet/core/performance/caching/distributed
+
+  - id: state-hangfire-memory
+    applies_to: [dotnet]
+    when:
+      package: 'Hangfire\.MemoryStorage|Hangfire\.InMemory'
+    severity: config
+    category: storage
+    state: memory
+    effort: 0.5
+    title: Background jobs stored in process memory
+    why: >-
+      Hangfire uses in-memory storage, so queued, scheduled and recurring jobs exist only inside
+      one process: they are lost on restart, and every replica runs its own copy of each recurring
+      job. The component is not stateless.
+    fix: Use a persistent Hangfire storage on a managed service (Hangfire.SqlServer, Hangfire.PostgreSql or a Redis storage).
+    refs:
+      - https://docs.hangfire.io/en/latest/configuration/using-sql-server.html
+      - https://github.com/perrich/Hangfire.MemoryStorage
