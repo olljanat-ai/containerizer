@@ -48,6 +48,8 @@ nav:
   - Deployment:
       - Appliance: appliance.md
       - Self-hosted LLM: self-hosted-llm.md
+  - Development:
+      - Local dev server: local-dev-server.md
 
 validation:
   links:
