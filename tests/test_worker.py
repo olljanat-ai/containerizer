@@ -96,8 +96,8 @@ def test_repo_state_texts():
             "LastStatus": "deployed"}
     assert admin_scans.repo_state(base) == ("Enabled", "automatic", "")
     assert admin_scans.repo_state({**base, "LastStatus": None})[2] == "new: not scanned yet"
-    st = admin_scans.repo_state({**base, "SkipStatus": "skipped-dockerfile", "SkipReason": "already has Dockerfile"})
-    assert st == ("Disabled", "automatic", "Has a Dockerfile: already has Dockerfile")
+    st = admin_scans.repo_state({**base, "SkipStatus": "skipped-dockerfile", "SkipReason": "found Dockerfile"})
+    assert st == ("Disabled", "automatic", "Has a Dockerfile: found Dockerfile")
     st = admin_scans.repo_state({**base, "AdminState": "enabled", "SkipStatus": "skipped-no-code", "SkipReason": "x"})
     assert st[0] == "Enabled" and st[1] == "administrator" and "overrides the automatic skip: No application code" in st[2]
     st = admin_scans.repo_state({**base, "AdminState": "disabled", "AdminNote": "legacy"})
@@ -276,7 +276,7 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
         rows = {n: (int(i), html) for i, n, html in page_rows}
         assert set(rows) == {"shop", "dockerized", "handbook", "legacy"}
         assert "Enabled" in rows["shop"][1] and "Deployed to the sandbox" in rows["shop"][1]
-        assert "Disabled" in rows["dockerized"][1] and "Has a Dockerfile: already has Dockerfile" in rows["dockerized"][1]
+        assert "Disabled" in rows["dockerized"][1] and "Has a Dockerfile: found Dockerfile" in rows["dockerized"][1]
         assert "Disabled" in rows["handbook"][1] and "No application code: 2 files (.md 2), no source code" in rows["handbook"][1]
         assert "New" in rows["shop"][1]
         disabled = b.follow(f"/admin/repositories?scan={scan_id}&show=disabled")[2]

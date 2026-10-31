@@ -396,29 +396,35 @@ def update_clone(url: str, dest: Path, branch: str = "", header: str = "") -> st
     return "cloned"
 
 
-APP_CODE_EXT = {".cs", ".vb", ".fs", ".cshtml", ".vbhtml", ".razor", ".aspx", ".ascx", ".asmx", ".svc", ".ashx",
-                ".asax", ".master", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".py", ".java", ".kt", ".go",
-                ".php", ".rb", ".rs", ".c", ".cpp", ".h", ".swift", ".scala", ".groovy", ".xaml", ".sql"}
+# source files of application code, by language (scripts, SQL and markup do not count)
+LANGUAGES = {".cs": "C#", ".cshtml": "C#", ".razor": "C#", ".aspx": "ASP.NET", ".ascx": "ASP.NET", ".asmx": "ASP.NET",
+             ".svc": "WCF", ".ashx": "ASP.NET", ".asax": "ASP.NET", ".master": "ASP.NET", ".vb": "Visual Basic",
+             ".vbhtml": "Visual Basic", ".fs": "F#", ".xaml": "XAML", ".js": "JavaScript", ".mjs": "JavaScript",
+             ".cjs": "JavaScript", ".jsx": "JavaScript", ".ts": "TypeScript", ".tsx": "TypeScript", ".py": "Python",
+             ".java": "Java", ".kt": "Kotlin", ".scala": "Scala", ".groovy": "Groovy", ".go": "Go", ".php": "PHP",
+             ".rb": "Ruby", ".erb": "Ruby", ".rs": "Rust", ".c": "C", ".cpp": "C++", ".cc": "C++", ".swift": "Swift",
+             ".m": "Objective-C", ".dart": "Dart", ".ex": "Elixir", ".exs": "Elixir", ".clj": "Clojure", ".jl": "Julia",
+             ".pl": "Perl", ".lua": "Lua", ".r": "R", ".cob": "COBOL", ".cbl": "COBOL", ".pas": "Pascal", ".dpr": "Delphi"}
 
 
 def code_summary(root: Path, limit: int = 20000) -> dict:
-    """What a repository holds, for the "no application code" decision: file count, source files by
-    extension, and the most common extensions overall (outside .git and node_modules)."""
-    total, code, ext = 0, {}, {}
+    """What a repository holds, for the "no application code" decision: file count, source files per
+    language, and the most common file types (outside .git and node_modules)."""
+    total, langs, ext = 0, {}, {}
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for f in filenames:
             total += 1
-            x = os.path.splitext(f)[1].lower() or f.lower()
+            x = os.path.splitext(f)[1].lower() or "(no extension)"
             ext[x] = ext.get(x, 0) + 1
-            if x in APP_CODE_EXT:
-                code[x] = code.get(x, 0) + 1
+            if x in LANGUAGES:
+                langs[LANGUAGES[x]] = langs.get(LANGUAGES[x], 0) + 1
             if total >= limit:
                 break
         if total >= limit:
             break
-    top = sorted(ext.items(), key=lambda kv: (-kv[1], kv[0]))[:4]
-    return {"files": total, "code": code, "top": top}
+    return {"files": total, "languages": sorted(langs.items(), key=lambda kv: (-kv[1], kv[0])),
+            "top": sorted(ext.items(), key=lambda kv: (-kv[1], kv[0]))[:4]}
 
 
 def head_commit(path: Path) -> tuple[str, datetime | None]:

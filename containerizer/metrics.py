@@ -214,7 +214,7 @@ def process_metrics() -> list[_Metric]:
 
 CPU_MODES = ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal")
 _DISK = re.compile(r"^(sd[a-z]+|vd[a-z]+|xvd[a-z]+|hd[a-z]+|nvme\d+n\d+|mmcblk\d+)$")
-_VIRTUAL_NIC = re.compile(r"^(lo|veth|docker|br-|virbr|cni|flannel|cali|vxlan|tun|tap)")
+_VIRTUAL_NIC = re.compile(r"^(lo|veth|docker|br-|virbr|cni|flannel|cali|vxlan|tun|tap|ifb)")
 
 
 def host_metrics(paths: dict | None = None) -> list[_Metric]:

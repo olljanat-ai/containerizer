@@ -515,27 +515,34 @@ def host_allowed(url: str, allowed) -> bool:
     return bool(host) and any(host == h or (h.startswith("*.") and host.endswith(h[1:])) for h in allowed)
 
 
-def no_code_reason(src: Path) -> str:
-    """Why a repository has nothing to containerize, or "" when it has application code: no project
-    file the scanner knows (only documentation, configuration or scripts), or only libraries, tests and
-    tools (nothing that runs on its own)."""
+NO_CODE_STATUS = ("skipped-no-code", "skipped-unsupported", "skipped-no-app")
+
+
+def no_code_reason(src: Path) -> tuple[str, str]:
+    """(status, reason) when a repository has nothing the tool can containerize, ("", "") when it has:
+    skipped-no-code: no source code at all (documentation, configuration, pipelines, SQL or shell scripts);
+    skipped-unsupported: source code, but no project the tool can build (a language it does not handle,
+    or loose files without a project file); skipped-no-app: projects, but only libraries, tests and tools."""
     from .assess import assess
     from .scan import scan
     repo = scan(src)
     if not repo.projects:
         s = code_summary(src)
-        if not s["files"]:
-            return "no files on the default branch"
-        top = ", ".join(f"{x} {n}" for x, n in s["top"])
-        if s["code"]:
-            kinds = ", ".join(sorted(s["code"]))
-            return f"{s['files']} files ({top}): {kinds} files but no project file (.csproj, package.json, pom.xml, go.mod, ...)"
-        return f"{s['files']} files ({top}), no source code"
+        n = s["files"]
+        if not n:
+            return "skipped-no-code", "no files on the default branch"
+        files = f"{n} file{'s' if n != 1 else ''} ({', '.join(f'{x} {c}' for x, c in s['top'])})"
+        if s["languages"]:
+            langs = ", ".join(f"{lang} ({c} file{'s' if c != 1 else ''})" for lang, c in s["languages"][:3])
+            return ("skipped-unsupported", f"{langs}, but no project the tool can build (.NET project, package.json, "
+                    f"requirements.txt or pyproject.toml, pom.xml or build.gradle, go.mod); {files}")
+        return "skipped-no-code", f"{files}, no source code"
     a = assess(src, repo=repo)
     if not a.components:
         kinds = sorted({c.role for c in a.libraries + a.tests} or {p.kind_hint for p in repo.projects})
-        return f"only {', '.join(kinds)}: {len(repo.projects)} project(s), nothing that runs on its own"
-    return ""
+        n = len(repo.projects)
+        return "skipped-no-app", f"only {', '.join(kinds)}: {n} project{'s' if n != 1 else ''}, nothing that runs on its own"
+    return "", ""
 
 
 def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work: Path, reg: Registry | None,
@@ -574,7 +581,7 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
         return stop("skipped-archived", "archived or disabled")
     if r.empty:
         return stop("skipped-empty", "empty repository")
-    if o.skip_forks and r.fork and (x := skip("skipped-fork", "fork")):
+    if o.skip_forks and r.fork and (x := skip("skipped-fork", "forked from another repository")):
         return x
     if cutoff and r.last_activity and r.last_activity < cutoff:
         # the provider's activity date covers every push, so the default branch is at least as old
@@ -623,13 +630,13 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
                 (x := skip("skipped-stale", f"last commit on {r.default_branch or 'default branch'} {when:%Y-%m-%d}")):
             return x
         dockerfiles = existing_dockerfiles(src)
-        if dockerfiles and (x := skip("skipped-dockerfile", "already has " + ", ".join(dockerfiles[:3])
+        if dockerfiles and (x := skip("skipped-dockerfile", "found " + ", ".join(dockerfiles[:3])
                                       + (" ..." if len(dockerfiles) > 3 else ""))):
             return x
         if o.skip_no_code:
             rules_reset()
-            why = no_code_reason(src)
-            if why and (x := skip("skipped-no-code", why)):
+            status, why = no_code_reason(src)
+            if status and (x := skip(status, why)):
                 return x
 
         gitops = GitOpsOptions(git_url=out.url, branch=o.output_branch, path=rel, verify_commits=o.verify_commits)
@@ -666,7 +673,7 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
                                      "reason": f"security gate: {why}"})
             keep = [c for c in keep if k8s_name(c.name) not in failed]
         if not keep:
-            return skip("no-a-components", f"none of {len(res.excluded)} server components qualifies" if res.excluded
+            return stop("no-a-components", f"none of {len(res.excluded)} server components qualifies" if res.excluded
                         else "no server component")
 
         # images: built by the gate (or here), pushed under <registry>/<app>/<component>:<tag>

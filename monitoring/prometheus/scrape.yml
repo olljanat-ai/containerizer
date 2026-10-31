@@ -1,0 +1,23 @@
+# Prometheus scrape configuration for the containerizer scan worker (docs/scheduled-scans.md#metrics).
+# Merge the job into your prometheus.yml; rule_files loads the alerts next to this file.
+rule_files:
+  - containerizer-alerts.yml
+
+scrape_configs:
+  - job_name: containerizer-worker
+    scrape_interval: 30s
+    # the worker listens on 127.0.0.1:9464 by default; start it with --metrics-host 0.0.0.0 (or the
+    # VM's private address) to scrape it from another machine, and keep the port off the internet
+    static_configs:
+      - targets: ["build-vm-01.internal.example.com:9464"]
+    # with CONTAINERIZER_METRICS_TOKEN set on the worker:
+    # authorization:
+    #   type: Bearer
+    #   credentials_file: /etc/prometheus/containerizer-metrics.token
+    # scheme: https    # when a TLS-terminating proxy sits in front of the worker
+
+  # Optional: node_exporter on the same VM for the full set of machine metrics
+  # (the dashboard uses the worker's own containerizer_host_* metrics and does not need it).
+  # - job_name: node
+  #   static_configs:
+  #     - targets: ["build-vm-01.internal.example.com:9100"]

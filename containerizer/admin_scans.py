@@ -20,6 +20,7 @@ from .admin import URL_RE, Response, _code, _d, e, page, redirect
 
 PROVIDERS = {"azure-devops": "Azure DevOps", "github": "GitHub", "gitlab": "GitLab"}
 SKIP_TEXT = {"skipped-dockerfile": "Has a Dockerfile", "skipped-no-code": "No application code",
+             "skipped-unsupported": "Language not supported", "skipped-no-app": "Nothing to deploy",
              "skipped-stale": "Not updated recently", "skipped-archived": "Archived", "skipped-empty": "Empty",
              "skipped-fork": "Fork", "skipped-filter": "Left out by the filter"}
 LAST_TEXT = {"deployed": "Deployed to the sandbox", "no-a-components": "Assessed: no component rated A",

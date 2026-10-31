@@ -390,19 +390,27 @@ def test_no_code_reasons(tmp_path):
     (docs / "guide").mkdir(parents=True)
     for f in ("README.md", "guide/a.md", "guide/b.md", "pipeline.yml"):
         (docs / f).write_text("# x\n")
-    assert orgmod.no_code_reason(docs) == "4 files (.md 3, .yml 1), no source code"
-    loose = tmp_path / "scripts"
-    loose.mkdir()
-    (loose / "fix.sql").write_text("select 1")
-    assert orgmod.no_code_reason(loose).startswith("1 files (.sql 1): .sql files but no project file")
+    assert orgmod.no_code_reason(docs) == ("skipped-no-code", "4 files (.md 3, .yml 1), no source code")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "fix.sql").write_text("select 1")
+    (scripts / "deploy.sh").write_text("echo")
+    assert orgmod.no_code_reason(scripts) == ("skipped-no-code", "2 files (.sh 1, .sql 1), no source code")
+    ruby = tmp_path / "ruby"
+    (ruby / "app").mkdir(parents=True)
+    for f in ("app/a.rb", "app/b.rb", "app/view.erb", "Gemfile"):
+        (ruby / f).write_text("x")
+    st, why = orgmod.no_code_reason(ruby)
+    assert st == "skipped-unsupported" and why.startswith("Ruby (3 files), but no project the tool can build")
+    assert why.endswith("4 files (.rb 2, (no extension) 1, .erb 1)")
     lib = tmp_path / "lib"
     (lib / "src" / "Lib").mkdir(parents=True)
     (lib / "src" / "Lib" / "Lib.csproj").write_text(
         '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework>'
         '<OutputType>Library</OutputType></PropertyGroup></Project>')
     (lib / "src" / "Lib" / "Class1.cs").write_text("namespace Lib; public class C { }")
-    assert orgmod.no_code_reason(lib) == "only library: 1 project(s), nothing that runs on its own"
-    assert orgmod.no_code_reason(DEMO) == ""
+    assert orgmod.no_code_reason(lib) == ("skipped-no-app", "only library: 1 project, nothing that runs on its own")
+    assert orgmod.no_code_reason(DEMO) == ("", "")
 
 
 def test_host_allow_list():
@@ -461,9 +469,9 @@ class _Hooks:
 
 def test_run_org_with_cache_state_and_overrides(tmp_path, monkeypatch):
     sources = {}
-    for name in ("web", "dockerized", "docs", "off", "skipme"):
+    for name in ("web", "dockerized", "docs", "off", "skipme", "readme"):
         d = tmp_path / "src" / name
-        if name == "docs":
+        if name in ("docs", "readme"):
             d.mkdir(parents=True)
             (d / "README.md").write_text("# docs only\n")
         else:
@@ -486,29 +494,31 @@ def test_run_org_with_cache_state_and_overrides(tmp_path, monkeypatch):
         return "cloned"
     monkeypatch.setattr(orgmod, "update_clone", fake_update)
     cache = tmp_path / "cache"
-    state = _State({"_/dockerized": "enabled", "_/off": "disabled"})
+    state = _State({"_/dockerized": "enabled", "_/off": "disabled", "_/readme": "enabled"})
     hooks = _Hooks()
     o = OrgOptions(provider="github", org="acme", registry="reg.example/sb", output_dir=str(tmp_path / "out"),
                    verify=False, gate=False, push_images=False, tag="1.0.0", work_dir=str(tmp_path / "work"),
                    cache_dir=str(cache), exclude="skipme", state=state, hooks=hooks,
                    allowed_hosts={"github.com"}, now=datetime(2026, 10, 31, tzinfo=timezone.utc))
     res = {r.repo: r for r in run_org(o, log=lambda *a, **k: None)}
-    assert state.synced == ["_/web", "_/dockerized", "_/docs", "_/off", "_/skipme"]
+    assert state.synced == ["_/web", "_/dockerized", "_/docs", "_/off", "_/skipme", "_/readme"]
     assert res["web"].status == "deployed"
     # enabled by an administrator: processed although it has a Dockerfile, and the skip is reported
     assert res["dockerized"].status == "deployed"
-    assert res["dockerized"].overridden == [{"status": "skipped-dockerfile", "reason": "already has Dockerfile"}]
+    assert res["dockerized"].overridden == [{"status": "skipped-dockerfile", "reason": "found Dockerfile"}]
     assert res["docs"].status == "skipped-no-code" and "no source code" in res["docs"].reason
     assert res["off"].status == "disabled" and "skipme" not in res
+    # enabled although it has no code: analyzed, nothing to deploy
+    assert res["readme"].status == "no-a-components" and res["readme"].overridden[0]["status"] == "skipped-no-code"
     assert state.recorded["skipme"].status == "skipped-filter"
-    assert set(state.recorded) == {"web", "dockerized", "docs", "off", "skipme"}
-    assert ("start", 4) in hooks.events and ("git", "clone", True) in hooks.events
+    assert set(state.recorded) == {"web", "dockerized", "docs", "off", "skipme", "readme"}
+    assert ("start", 5) in hooks.events and ("git", "clone", True) in hooks.events
     assert not (cache / "off").exists()                 # disabled: never fetched
     assert (cache / "web").is_dir() and (cache / orgmod.CACHE_MARK).exists()
     # second run: clones are pulled, not cloned again; a repository that left the organization loses its clone
     repos.pop(0)
     run_org(o, log=lambda *a, **k: None)
-    assert sorted(pulls) == ["dockerized", "docs"] and not (cache / "web").exists()
+    assert sorted(pulls) == ["dockerized", "docs", "readme"] and not (cache / "web").exists()
     # a stop request ends the run between repositories, and nothing is pruned
     hooks2 = _Hooks(stop_after=1)
     o.hooks = hooks2
