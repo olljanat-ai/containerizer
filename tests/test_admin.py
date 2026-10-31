@@ -316,6 +316,12 @@ def test_admin_maps_and_audits(idp, tmp_path):
         app = re.search(r"name='app' value='(\d+)'", b.follow("/admin/applications")[2])[1]
         s, _, body = b.follow("/admin/applications/bulk", {"csrf": csrf, "app": [app], "ProductId": pid})
         assert "1 application(s) updated." in body
+        # a browser posting from our own pages sends our Origin; anything else is refused even with the token
+        assert b.go("/admin/business-units/new", {"csrf": csrf, "Name": "X", "Owner": "", "Description": ""},
+                    {"Origin": base})[0] == 303
+        for origin in ("null", "https://evil.example.com", base + ".evil.example.com"):
+            assert b.go("/admin/business-units/new", {"csrf": csrf, "Name": "Y", "Owner": "", "Description": ""},
+                        {"Origin": origin})[0] == 403
         # missing CSRF token: refused, nothing changes
         assert b.go(f"/admin/applications/{app}", {"ProductId": "", "DisplayName": "x"})[0] == 403
         s, _, body = b.follow(f"/admin/applications/{app}", {"csrf": csrf, "ProductId": pid, "DisplayName": "Web Shop",

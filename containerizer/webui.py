@@ -409,7 +409,7 @@ HEADERS = {
                                "form-action 'none'; frame-ancestors 'none'",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
-    "Referrer-Policy": "no-referrer",
+    "Referrer-Policy": "same-origin",       # cross-site: nothing; same-site POSTs keep a real Origin for the CSRF check
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cross-Origin-Resource-Policy": "same-origin",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=(), interest-cohort=()",

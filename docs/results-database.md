@@ -178,7 +178,7 @@ or the `web` service of `results/compose.yaml` / the image built from `results/D
 
 The results pages need no sign-in and only read (through the reader login). Pages are rendered on the
 server without JavaScript; all text is escaped; responses carry a strict Content-Security-Policy
-(`default-src 'none'`), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer` and
+(`default-src 'none'`), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: same-origin` and
 `no-store`; errors are logged on the server and never shown. Run it behind a TLS-terminating reverse
 proxy or ingress, and keep it off the internet.
 
