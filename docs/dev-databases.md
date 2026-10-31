@@ -7,6 +7,8 @@ to point the application at it. The next scan of the application (`containerizer
 sandbox namespace, and sets the application's connection settings. The application's code is not
 changed: only the generated Kubernetes manifests are.
 
+On the appliance, this needs **SQL Server** to be on under Admin → [Lab services](lab-services.md). It is on by default. An app without a backup that uses SQL Server gets an empty database of its own on the lab's SQL Server instead.
+
 Only SQL Server is supported for now (`.bak` made with `BACKUP DATABASE ... TO DISK`, compressed or
 not).
 

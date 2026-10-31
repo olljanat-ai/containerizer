@@ -42,6 +42,7 @@ nav:
       - Source control tokens and the LLM: source-control.md
       - Sandbox verification: sandbox-verification.md
       - Dev databases: dev-databases.md
+      - Lab services: lab-services.md
       - Secrets (External Secrets): external-secrets.md
   - Results and review:
       - Results database and web UI: results-database.md
