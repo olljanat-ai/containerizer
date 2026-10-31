@@ -91,6 +91,9 @@ def test_schema_batches():
     assert "ProductId" not in grant and "DisplayName" not in grant
     # nobody may rewrite the audit trail
     assert not re.search(r"GRANT [^;]*(UPDATE|DELETE)[^;]*AuditLog", text)
+    # work estimates were removed (schema 16): no table or view has them, older databases drop them
+    assert all(re.search(r"COL_LENGTH|DROP COLUMN|^\s*--", ln) for ln in text.splitlines() if "EffortDays" in ln)
+    assert text.count("DROP COLUMN EffortDays") == 4
 
 
 @pytest.mark.parametrize("bad", ["dbo", "sys", "a-b", "x;drop", "1abc", ""])
@@ -116,7 +119,7 @@ def test_queries_use_the_configured_schema():
 
 def _app(i, name, rating, bu=None, bid=None, product=None, pid=None):
     return {"ApplicationId": i, "ApplicationName": name, "ProductId": pid, "ProductName": product,
-            "BusinessUnitId": bid, "BusinessUnitName": bu, "Rating": rating, "Score": 80, "EffortDays": 2.5,
+            "BusinessUnitId": bid, "BusinessUnitName": bu, "Rating": rating, "Score": 80,
             "Confidence": 0.9, "Summary": "s", "AssessedAt": datetime(2026, 10, 31), "Verified": False,
             "Components": 2, "MainObstacle": ""}
 
@@ -135,6 +138,7 @@ def test_overview_groups_and_escapes():
     assert "1 application(s) are not mapped to a product" in html
     assert "style=" not in html                       # the CSP allows no inline styles
     assert "/app/3" in html
+    assert "Effort" not in html and "person-day" not in html     # work estimates were removed
 
 
 def test_overview_business_unit_filter():
@@ -150,22 +154,23 @@ def test_segmented_bar_is_proportional():
 
 def application_data():
     return {"ApplicationId": 7, "ApplicationName": "billing", "BusinessUnitId": None, "BusinessUnitName": None,
-            "ProductName": None, "Rating": "D", "Score": 40, "EffortDays": 12, "Confidence": 0.4, "Verified": True,
+            "ProductName": None, "Rating": "D", "Score": 40, "Confidence": 0.4, "Verified": True,
             "AssessedAt": datetime(2026, 10, 31), "Summary": "1 cannot run", "Description": None, "Owner": "Ops",
             "ProductOwner": None, "BusinessUnitOwner": None, "RepositoryUrl": "javascript:alert(1)",
             "SourcePath": ".", "SourceCommit": "abc",
             "components": [{"ComponentId": 1, "ComponentName": "Web", "ProjectPath": "src/Web/Web.csproj", "Role": "web",
-                            "Verdict": "blocker", "VerdictText": "Not feasible", "EffortDays": 5, "TargetFramework": "net48",
+                            "Verdict": "blocker", "VerdictText": "Not feasible", "TargetFramework": "net48",
                             "WindowsContainerOk": True, "VerifyStatus": "build-failed"}],
             "findings": [{"ComponentId": 1, "ComponentName": "Web", "RuleId": "com", "Severity": "blocker",
                           "Title": "Office automation", "Why": "COM", "Fix": "Use OpenXML", "Via": None,
                           "OnlyCommands": None, "Source": "curated",
                           "Refs": json.dumps(["https://learn.microsoft.com/x", "javascript:alert(1)"])}],
-            "history": [{"AssessedAt": datetime(2026, 10, 31), "Rating": "D", "Score": 40, "EffortDays": 12}]}
+            "history": [{"AssessedAt": datetime(2026, 10, 31), "Rating": "D", "Score": 40}]}
 
 
 def test_application_page():
     html = webui.render_application(application_data())
+    assert "Effort" not in html and "person-day" not in html
     assert "Office automation" in html and "Use OpenXML" in html and "Main obstacles" in html
     assert "href='https://learn.microsoft.com/x'" in html
     assert "href='javascript" not in html             # only http(s) links

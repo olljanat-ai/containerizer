@@ -50,7 +50,7 @@ class Finding:
     def to_dict(self) -> dict:
         r = self.rule
         return {"id": r.id, "severity": r.severity, "category": r.category, "title": r.title,
-                "why": " ".join(r.why.split()), "fix": " ".join(r.fix.split()), "effort_days": r.effort, "refs": list(r.refs),
+                "why": " ".join(r.why.split()), "fix": " ".join(r.fix.split()), "refs": list(r.refs),
                 "via": self.via, "dormant": self.dormant, "only_commands": self.modes, "evidence": [str(e) for e in self.evidence[:3]], "source": r.source,
                 "windows_container": r.windows_container}
 
@@ -93,7 +93,9 @@ class Component:
         return not self.state_findings
 
     @property
-    def effort(self) -> float:
+    def weight(self) -> float:
+        """Sum of the rule weights (`effort` in the rules), which lowers the readiness score. Internal only:
+        it is not a work estimate and is not shown or stored."""
         seen, total = set(), 0.0
         for f in self.findings:
             if f.rule.id not in seen:
@@ -111,7 +113,7 @@ class Component:
     def score(self) -> int:
         base = {"info": 100, "config": 90, "refactor": 70, "rewrite": 40, "blocker": 0}[self.verdict]
         if self.verdict in ("config", "refactor", "rewrite"):
-            base -= min(25, int(self.effort * 1.5))
+            base -= min(25, int(self.weight * 1.5))
         return max(base, 0 if self.verdict == "blocker" else 5)
 
     @property
@@ -129,7 +131,7 @@ class Component:
     def to_dict(self) -> dict:
         return {"name": self.name, "project": self.project.rel, "role": self.role, "tier": self.tier,
                 "tfm": self.project.tfms, "verdict": self.verdict, "verdict_text": VERDICT_TEXT[self.verdict],
-                "score": self.score, "effort_days": self.effort, "windows_container_ok": self.windows_container_ok,
+                "score": self.score, "windows_container_ok": self.windows_container_ok,
                 "confidence": round(self.confidence, 2), "uncertain": self.uncertain,
                 "rule_verdict": self.rule_verdict, "ai": self.ai, "stateless": self.stateless,
                 "state": [{"id": f.rule.id, "title": f.rule.title, "state": f.rule.state}
@@ -178,10 +180,6 @@ class AppAssessment:
         if not server:
             return 0
         return round(sum(c.score for c in server) / len(server))
-
-    @property
-    def effort(self) -> float:
-        return round(sum(c.effort for c in self.server() if c.verdict != "blocker"), 1)
 
     @property
     def confidence(self) -> float:
@@ -238,7 +236,7 @@ class AppAssessment:
     def to_dict(self) -> dict:
         plans = self.migration_plans()
         return {"name": self.name, "rating": self.rating, "rating_text": APP_RATINGS[self.rating],
-                "stateless": not self.stateful(), "score": self.score, "effort_days": self.effort, "confidence": self.confidence,
+                "stateless": not self.stateful(), "score": self.score, "confidence": self.confidence,
                 "summary": self.summary(), "top_blockers": self.top_blockers(),
                 "components": [{**c.to_dict(), **({"migration": plans[c.project.rel]} if c.project.rel in plans else {})}
                                for c in self.components],

@@ -107,7 +107,6 @@ CREATE TABLE [${schema}].ApplicationAssessment (
     AssessedAt     datetime2(0)   NOT NULL CONSTRAINT DF_ApplicationAssessment_AssessedAt DEFAULT SYSUTCDATETIME(),
     Rating         char(1)        NOT NULL CONSTRAINT FK_ApplicationAssessment_Rating REFERENCES [${schema}].Rating (Rating),
     Score          int            NOT NULL,         -- readiness 0-100
-    EffortDays     decimal(9,1)   NOT NULL,         -- estimated person-days
     Confidence     decimal(4,2)   NOT NULL,         -- 0-1, how sure the rules are
     Summary        nvarchar(2000) NOT NULL,
     Verified       bit            NOT NULL CONSTRAINT DF_ApplicationAssessment_Verified DEFAULT 0, -- built and run (analyze)
@@ -131,7 +130,6 @@ CREATE TABLE [${schema}].ComponentAssessment (
     Verdict            nvarchar(20)  NOT NULL,      -- info, config, refactor, rewrite, blocker
     VerdictText        nvarchar(200) NOT NULL,
     Score              int           NOT NULL,
-    EffortDays         decimal(9,1)  NOT NULL,
     Confidence         decimal(4,2)  NOT NULL,
     WindowsContainerOk bit           NOT NULL,      -- a Windows container is a workable stop-gap
     VerifyStatus       nvarchar(40)  NULL,          -- ok, ok-external, finding, build-failed, run-failed (analyze only)
@@ -153,7 +151,6 @@ CREATE TABLE [${schema}].Finding (
     Title        nvarchar(400)  NOT NULL,
     Why          nvarchar(max)  NULL,
     Fix          nvarchar(max)  NULL,
-    EffortDays   decimal(9,2)   NULL,
     Via          nvarchar(200)  NULL,               -- library the finding comes from
     OnlyCommands nvarchar(400)  NULL,               -- only these optional commands are affected
     Evidence     nvarchar(2000) NULL,
@@ -166,13 +163,12 @@ CREATE INDEX IX_Finding_Assessment ON [${schema}].Finding (AssessmentId, Compone
 GO
 
 -- Migration assistant (rules/migrations.yaml): for each component that is not ready, the concrete
--- replacements with effort estimates (PlanJson) and a self-contained prompt for an AI coding agent.
+-- replacements (PlanJson) and a self-contained prompt for an AI coding agent.
 IF OBJECT_ID(N'[${schema}].ComponentMigration', N'U') IS NULL
 CREATE TABLE [${schema}].ComponentMigration (
     AssessmentId  int            NOT NULL,
     ComponentId   int            NOT NULL,
     Outcome       nvarchar(40)   NOT NULL,         -- linux-container, partial, stays-on-windows
-    EffortDays    decimal(9,1)   NOT NULL,         -- estimated person-days of the plan
     ItemCount     int            NOT NULL,
     PlanJson      nvarchar(max)  NOT NULL,         -- items: replace, with, kind, packages, steps, verify, refs, findings
     AgentPrompt   nvarchar(max)  NULL,             -- NULL when nothing in the component can be changed
@@ -251,6 +247,18 @@ WHEN MATCHED THEN UPDATE SET Title = s.Title, Description = s.Description, SortO
 WHEN NOT MATCHED THEN INSERT (Rating, Title, Description, SortOrder) VALUES (s.Rating, s.Title, s.Description, s.SortOrder);
 GO
 
+-- 16: work estimates are gone (they said little once AI coding agents do the migration work); drop
+-- the EffortDays columns of databases created before. The views below are recreated without them.
+IF COL_LENGTH(N'[${schema}].ApplicationAssessment', N'EffortDays') IS NOT NULL
+    ALTER TABLE [${schema}].ApplicationAssessment DROP COLUMN EffortDays;
+IF COL_LENGTH(N'[${schema}].ComponentAssessment', N'EffortDays') IS NOT NULL
+    ALTER TABLE [${schema}].ComponentAssessment DROP COLUMN EffortDays;
+IF COL_LENGTH(N'[${schema}].Finding', N'EffortDays') IS NOT NULL
+    ALTER TABLE [${schema}].Finding DROP COLUMN EffortDays;
+IF COL_LENGTH(N'[${schema}].ComponentMigration', N'EffortDays') IS NOT NULL
+    ALTER TABLE [${schema}].ComponentMigration DROP COLUMN EffortDays;
+GO
+
 -- Latest assessment of every application, with its product and business unit ("(not assigned)" when
 -- nobody has mapped it yet). This is what the web UI reads.
 CREATE OR ALTER VIEW [${schema}].vApplicationLatest AS
@@ -260,7 +268,7 @@ SELECT a.ApplicationId,
        p.ProductId, p.Name AS ProductName, p.Owner AS ProductOwner, p.InfoUrl AS ProductInfoUrl,
        bu.BusinessUnitId, bu.Name AS BusinessUnitName, bu.Owner AS BusinessUnitOwner,
        x.AssessmentId, x.AssessedAt, x.Rating, r.Title AS RatingTitle, r.Description AS RatingDescription,
-       x.Score, x.EffortDays, x.Confidence, x.Summary, x.Verified, x.SourceCommit, x.SourceBranch
+       x.Score, x.Confidence, x.Summary, x.Verified, x.SourceCommit, x.SourceBranch
 FROM [${schema}].Application a
 CROSS APPLY (SELECT TOP (1) * FROM [${schema}].ApplicationAssessment aa
              WHERE aa.ApplicationId = a.ApplicationId
@@ -274,7 +282,7 @@ GO
 CREATE OR ALTER VIEW [${schema}].vComponentLatest AS
 SELECT l.ApplicationId, l.ApplicationName, l.ProductName, l.BusinessUnitName, l.AssessmentId,
        c.ComponentId, c.Name AS ComponentName, c.ProjectPath,
-       ca.Role, ca.Tier, ca.TargetFramework, ca.Verdict, ca.VerdictText, ca.Score, ca.EffortDays,
+       ca.Role, ca.Tier, ca.TargetFramework, ca.Verdict, ca.VerdictText, ca.Score,
        ca.Confidence, ca.WindowsContainerOk, ca.VerifyStatus, ca.VerifyDetail
 FROM [${schema}].vApplicationLatest l
 JOIN [${schema}].ComponentAssessment ca ON ca.AssessmentId = l.AssessmentId
@@ -283,7 +291,7 @@ GO
 
 CREATE OR ALTER VIEW [${schema}].vFindingLatest AS
 SELECT l.ApplicationId, l.ApplicationName, l.AssessmentId, f.ComponentId, c.Name AS ComponentName,
-       f.FindingId, f.RuleId, f.Severity, f.RuleSeverity, f.Category, f.Title, f.Why, f.Fix, f.EffortDays,
+       f.FindingId, f.RuleId, f.Severity, f.RuleSeverity, f.Category, f.Title, f.Why, f.Fix,
        f.Via, f.OnlyCommands, f.Evidence, f.Refs, f.Source
 FROM [${schema}].vApplicationLatest l
 JOIN [${schema}].Finding f ON f.AssessmentId = l.AssessmentId
@@ -295,7 +303,7 @@ GO
 CREATE OR ALTER VIEW [${schema}].vAssessmentHistory AS
 SELECT aa.AssessmentId, aa.ApplicationId, COALESCE(a.DisplayName, a.Name) AS ApplicationName,
        p.ProductId, p.Name AS ProductName, bu.BusinessUnitId, bu.Name AS BusinessUnitName,
-       aa.AssessedAt, aa.Rating, aa.Score, aa.EffortDays, aa.Verified,
+       aa.AssessedAt, aa.Rating, aa.Score, aa.Verified,
        COALESCE(f.Blockers, 0) AS Blockers, COALESCE(f.Rewrites, 0) AS Rewrites
 FROM [${schema}].ApplicationAssessment aa
 JOIN [${schema}].Application a ON a.ApplicationId = aa.ApplicationId
@@ -310,7 +318,7 @@ GO
 
 CREATE OR ALTER VIEW [${schema}].vComponentMigrationLatest AS
 SELECT l.ApplicationId, l.ApplicationName, l.AssessmentId, m.ComponentId, c.Name AS ComponentName, c.ProjectPath,
-       m.Outcome, m.EffortDays, m.ItemCount, m.PlanJson, m.AgentPrompt
+       m.Outcome, m.ItemCount, m.PlanJson, m.AgentPrompt
 FROM [${schema}].vApplicationLatest l
 JOIN [${schema}].ComponentMigration m ON m.AssessmentId = l.AssessmentId
 JOIN [${schema}].Component c ON c.ComponentId = m.ComponentId;
@@ -1003,7 +1011,7 @@ GRANT SELECT ON [${schema}].vSandboxIdpLatest TO [${schema}_reader];
 GRANT SELECT ON [${schema}].Rating TO [${schema}_reader];
 GRANT SELECT ON [${schema}].BusinessUnit TO [${schema}_reader];
 GRANT SELECT ON [${schema}].Product TO [${schema}_reader];
-GRANT SELECT ON [${schema}].ApplicationAssessment (AssessmentId, ApplicationId, AssessedAt, Rating, Score, EffortDays, Confidence, Verified) TO [${schema}_reader];
+GRANT SELECT ON [${schema}].ApplicationAssessment (AssessmentId, ApplicationId, AssessedAt, Rating, Score, Confidence, Verified) TO [${schema}_reader];
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].BusinessUnit TO [${schema}_admin];
 GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].Product TO [${schema}_admin];
@@ -1177,4 +1185,7 @@ IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 13) INSER
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 14) INSERT [${schema}].SchemaVersion (Version) VALUES (14);
 -- 15: approving learned rules from the admin pages (RulesRepository, RuleCandidate.Approve*)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 15) INSERT [${schema}].SchemaVersion (Version) VALUES (15);
+GO
+-- 16: work estimates removed (EffortDays dropped from the assessment tables and views)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 16) INSERT [${schema}].SchemaVersion (Version) VALUES (16);
 GO

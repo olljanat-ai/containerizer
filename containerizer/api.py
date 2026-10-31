@@ -167,9 +167,9 @@ class Api:
                    "LEFT JOIN cz.BusinessUnit b ON b.BusinessUnitId = p.BusinessUnitId",
         "Application": "SELECT a.ApplicationId AS Id, a.Name, a.DisplayName, a.Owner, a.Description, a.ProductId, "
                        "p.Name AS ProductName, a.Retired, a.RepositoryUrl, a.SourcePath, a.FirstSeenAt, a.LastSeenAt, "
-                       "x.Rating, x.Score, x.EffortDays, x.AssessedAt FROM cz.Application a "
+                       "x.Rating, x.Score, x.AssessedAt FROM cz.Application a "
                        "LEFT JOIN cz.Product p ON p.ProductId = a.ProductId "
-                       "OUTER APPLY (SELECT TOP (1) aa.Rating, aa.Score, aa.EffortDays, aa.AssessedAt "
+                       "OUTER APPLY (SELECT TOP (1) aa.Rating, aa.Score, aa.AssessedAt "
                        "FROM cz.ApplicationAssessment aa WHERE aa.ApplicationId = a.ApplicationId "
                        "ORDER BY aa.AssessedAt DESC, aa.AssessmentId DESC) x",
     }
