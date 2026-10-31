@@ -35,13 +35,24 @@ line.
    (GitHub `pushed_at`, GitLab `last_activity_at`, Azure DevOps: the newest commit of the default
    branch), so stale repositories are not cloned; the commit date of the cloned `HEAD` is checked as well.
 3. **Cloned** shallow (default branch only, no tags, no submodules, no symlinks, no LFS objects).
+   With `--cache-dir DIR` the clones are kept in `DIR` between runs and the next run only fetches the
+   newest commit of the default branch (`git fetch --depth 1`, then a hard reset and clean, so local
+   changes never survive). A broken clone is cloned again; clones of repositories that are no longer
+   listed are deleted at the end of a complete run.
 4. **Skipped when it already has a Dockerfile**: any `Dockerfile`, `Dockerfile.*`, `*.Dockerfile` or
    `Containerfile` anywhere in the repository (outside `node_modules`). Such an application is
-   already containerized by its team.
-5. **Analyzed** with `analyze`: assess, build and run every feasible component on the machine, learn
+   already containerized by its team. The reason names the file, for example `found src/api/Dockerfile`.
+5. **Skipped when it has no application code**, with the reason (`--include-no-code` turns this off):
+   - `skipped-no-code`: only documentation, configuration, scripts, SQL or markup, for example
+     "14 files (.md 9, .yaml 3, .json 2), no source code";
+   - `skipped-unsupported`: source code in a language the tool cannot build yet, for example
+     "Ruby (31 files), but no project the tool can build (...)";
+   - `skipped-no-app`: only libraries, tests or tools, nothing that runs on its own (no web, worker,
+     console or SPA component).
+6. **Analyzed** with `analyze`: assess, build and run every feasible component on the machine, learn
    from failures, re-assess. `--ai`, `--model`, `--timeout` and `--pin-digests` are passed through, and
    with `--sql` (or `CONTAINERIZER_SQL`) every assessment is written to the results database, A or not.
-6. **Selected**: a component is kept only when
+7. **Selected**: a component is kept only when
    - it is a server component (web, worker, console, SPA) rated **A** on its own: the application rating
      of a one-component application, so every rule that keeps an application from A applies, including
      the stateless requirement (no SQLite/LiteDB files, local uploads, local indexes or in-memory
@@ -49,16 +60,16 @@ line.
    - a Linux image can be generated for it; and
    - it built and ran in the verification (`ok`, or `ok-external` when it only lacks its database or
      broker). `--no-verify` skips this (less accurate).
-7. **Security gate** (`gate`): Dockerfile and manifest lint, image build, vulnerability scan (fails on
+8. **Security gate** (`gate`): Dockerfile and manifest lint, image build, vulnerability scan (fails on
    fixable vulnerabilities at `--fail-on`, default from `rules/60-security.yaml`), and a run with the
    pod's security context. A component that fails is dropped and the rest are gated again, so the
    generated namespace, network policies and GitOps files only cover what is deployed. `--no-gate`
    skips it.
-8. **Images** are pushed as `<registry>/<app>/<component>:<tag>` and `:git-<commit>`. The default tag
+9. **Images** are pushed as `<registry>/<app>/<component>:<tag>` and `:git-<commit>`. The default tag
    is `1.<yyyymmdd>.<hhmm>` of the run (semver, so the generated Flux/Argo CD image automation can
    follow it); `--tag` sets one. `--cosign-key` signs every pushed digest (the generated Kyverno policy
    only admits signed images). `--no-push-images` builds and gates without pushing.
-9. **Written** to the output repository and committed (and pushed) after every repository, so a long
+10. **Written** to the output repository and committed (and pushed) after every repository, so a long
    run can be followed and survives interruptions. When the output branch moved meanwhile, the commit
    is rebased and pushed again.
 
@@ -144,11 +155,15 @@ repository. See [sandbox-verification.md](sandbox-verification.md).
   build steps, as `analyze` and `gate` always do: run the tool on a disposable build agent that has
   no other credentials.
 - The work folder (`--work-dir`, default `.work/org`) is mode 700 and clones are deleted after each
-  repository unless `--keep-work`.
+  repository unless `--keep-work`. A `--cache-dir` is mode 700 too, marked with a
+  `.containerizer-org-cache` file, and the tool refuses to use (or prune) a non-empty folder without it.
 - Nothing secret is written to the output repository: the generated manifests reference Secrets via
   External Secrets, and build logs are not copied.
 
 ## Running it from a pipeline
+
+To schedule runs from the web UI's admin pages instead, with a worker that keeps the clones and
+exposes Prometheus metrics, see [scheduled-scans.md](scheduled-scans.md).
 
 The run is long (each component is built, run, scanned): schedule it, for example weekly, on an agent
 with Docker.

@@ -342,3 +342,195 @@ def test_run_org_writes_layout_sandbox_and_commits(tmp_path, monkeypatch):
     for f in out.rglob("*"):
         if f.is_file() and ".git" not in f.parts:
             assert str(tmp_path / "work") not in f.read_text(errors="replace")
+
+
+# --------------------------------------------------------------------------- clone cache, no-code skip, overrides
+
+def _git(path, *args):
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=path, check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def test_update_clone_clones_then_pulls(tmp_path, monkeypatch):
+    # a local "remote"; the file transport is refused for real runs, allow it for this test only
+    monkeypatch.setattr(orgsource, "SAFE_CLONE", [a.replace("protocol.file.allow=never", "protocol.file.allow=always")
+                                                  for a in orgsource.SAFE_CLONE])
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    (remote / "a.txt").write_text("1\n")
+    _commit(remote)
+    url = remote.as_uri()
+    dest = tmp_path / "cache" / "app"
+    assert orgsource.update_clone(url, dest, "main") == "cloned"
+    first = _git(dest, "rev-parse", "HEAD")
+    (remote / "a.txt").write_text("2\n")
+    _git(remote, "commit", "-qam", "two")
+    # local changes and build output in the cache are thrown away
+    (dest / "a.txt").write_text("local edit\n")
+    (dest / "bin").mkdir()
+    (dest / "bin" / "out.dll").write_text("x")
+    assert orgsource.update_clone(url, dest, "main") == "pulled"
+    assert _git(dest, "rev-parse", "HEAD") == _git(remote, "rev-parse", "HEAD") != first
+    assert (dest / "a.txt").read_text() == "2\n" and not (dest / "bin").exists()
+    assert _git(dest, "rev-parse", "--is-shallow-repository") == "true"
+    # a failing fetch keeps the clone; a broken one is cloned again, and kept until the new clone worked
+    with pytest.raises(orgsource.SourceError):
+        orgsource.update_clone((tmp_path / "missing").as_uri(), dest, "main")
+    assert (dest / "a.txt").read_text() == "2\n"
+    (dest / ".git" / "HEAD").write_text("garbage\n")
+    with pytest.raises(orgsource.SourceError):
+        orgsource.update_clone((tmp_path / "missing").as_uri(), dest, "main")
+    assert (dest / "a.txt").exists() and not (tmp_path / "cache" / "app.cloning").exists()
+    assert orgsource.update_clone(url, dest, "main") == "cloned"
+    assert (dest / "a.txt").read_text() == "2\n"
+
+
+def test_no_code_reasons(tmp_path):
+    docs = tmp_path / "docs"
+    (docs / "guide").mkdir(parents=True)
+    for f in ("README.md", "guide/a.md", "guide/b.md", "pipeline.yml"):
+        (docs / f).write_text("# x\n")
+    assert orgmod.no_code_reason(docs) == ("skipped-no-code", "4 files (.md 3, .yml 1), no source code")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "fix.sql").write_text("select 1")
+    (scripts / "deploy.sh").write_text("echo")
+    assert orgmod.no_code_reason(scripts) == ("skipped-no-code", "2 files (.sh 1, .sql 1), no source code")
+    ruby = tmp_path / "ruby"
+    (ruby / "app").mkdir(parents=True)
+    for f in ("app/a.rb", "app/b.rb", "app/view.erb", "Gemfile"):
+        (ruby / f).write_text("x")
+    st, why = orgmod.no_code_reason(ruby)
+    assert st == "skipped-unsupported" and why.startswith("Ruby (3 files), but no project the tool can build")
+    assert why.endswith("4 files (.rb 2, (no extension) 1, .erb 1)")
+    lib = tmp_path / "lib"
+    (lib / "src" / "Lib").mkdir(parents=True)
+    (lib / "src" / "Lib" / "Lib.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework>'
+        '<OutputType>Library</OutputType></PropertyGroup></Project>')
+    (lib / "src" / "Lib" / "Class1.cs").write_text("namespace Lib; public class C { }")
+    assert orgmod.no_code_reason(lib) == ("skipped-no-app", "only library: 1 project, nothing that runs on its own")
+    assert orgmod.no_code_reason(DEMO) == ("", "")
+
+
+def test_host_allow_list():
+    allowed = {"github.com", "*.visualstudio.com"}
+    assert orgmod.host_allowed("https://github.com/a/b.git", allowed)
+    assert orgmod.host_allowed("https://contoso.visualstudio.com/p/_git/r", allowed)
+    assert not orgmod.host_allowed("https://github.com.evil.example/a", allowed)
+    assert not orgmod.host_allowed("https://evilvisualstudio.com/x", allowed)
+    assert orgmod.host_allowed("https://anything", None)
+
+
+def test_cache_folder_must_be_ours(tmp_path):
+    o = OrgOptions(provider="github", org="acme", registry="r", cache_dir=str(tmp_path / "c"))
+    c = orgmod.prepare_cache(o)
+    assert (c / orgmod.CACHE_MARK).exists()
+    assert orgmod.prepare_cache(o) == c
+    with pytest.raises(orgsource.SourceError, match="one cache folder per organization"):
+        orgmod.prepare_cache(OrgOptions(provider="github", org="other", registry="r", cache_dir=str(c)))
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / "notes.txt").write_text("mine")
+    with pytest.raises(orgsource.SourceError, match="not a containerizer clone cache"):
+        orgmod.prepare_cache(OrgOptions(provider="github", org="acme", registry="r", cache_dir=str(tmp_path / "home")))
+
+
+class _State:
+    def __init__(self, admin):
+        self.admin, self.synced, self.recorded = admin, None, {}
+
+    def sync(self, repos, names):
+        self.synced = [r.key for r in repos]
+        return self.admin
+
+    def record(self, r, res):
+        self.recorded[r.name] = res
+
+
+class _Hooks:
+    def __init__(self, stop_after=None):
+        self.events, self.stop_after = [], stop_after
+
+    def start(self, total):
+        self.events.append(("start", total))
+
+    def repo_start(self, i, r):
+        self.events.append(("repo", r.name))
+
+    def repo_done(self, i, r, res):
+        self.events.append(("done", r.name, res.status))
+
+    def git(self, op, seconds, ok):
+        self.events.append(("git", op, ok))
+
+    def should_stop(self):
+        return self.stop_after is not None and sum(e[0] == "done" for e in self.events) >= self.stop_after
+
+
+def test_run_org_with_cache_state_and_overrides(tmp_path, monkeypatch):
+    sources = {}
+    for name in ("web", "dockerized", "docs", "off", "skipme", "readme"):
+        d = tmp_path / "src" / name
+        if name in ("docs", "readme"):
+            d.mkdir(parents=True)
+            (d / "README.md").write_text("# docs only\n")
+        else:
+            shutil.copytree(DEMO, d)
+        if name == "dockerized":
+            (d / "Dockerfile").write_text("FROM scratch\n")
+        _commit(d)
+        sources[name] = d
+    repos = [SourceRepo("github", "acme", NO_PROJECT, n, f"https://github.com/acme/{n}.git", default_branch="main",
+                        id=str(i)) for i, n in enumerate(sources)]
+    monkeypatch.setattr(orgmod, "provider", lambda *a, **k: _FakeProvider(repos))
+    pulls = []
+
+    def fake_update(url, dest, branch="", header=""):
+        name = url.rsplit("/", 1)[1].removesuffix(".git")
+        if dest.exists():
+            pulls.append(name)
+            return "pulled"
+        shutil.copytree(sources[name], dest)
+        return "cloned"
+    monkeypatch.setattr(orgmod, "update_clone", fake_update)
+    cache = tmp_path / "cache"
+    state = _State({"_/dockerized": "enabled", "_/off": "disabled", "_/readme": "enabled"})
+    hooks = _Hooks()
+    o = OrgOptions(provider="github", org="acme", registry="reg.example/sb", output_dir=str(tmp_path / "out"),
+                   verify=False, gate=False, push_images=False, tag="1.0.0", work_dir=str(tmp_path / "work"),
+                   cache_dir=str(cache), exclude="skipme", state=state, hooks=hooks,
+                   allowed_hosts={"github.com"}, now=datetime(2026, 10, 31, tzinfo=timezone.utc))
+    res = {r.repo: r for r in run_org(o, log=lambda *a, **k: None)}
+    assert state.synced == ["_/web", "_/dockerized", "_/docs", "_/off", "_/skipme", "_/readme"]
+    assert res["web"].status == "deployed"
+    # enabled by an administrator: processed although it has a Dockerfile, and the skip is reported
+    assert res["dockerized"].status == "deployed"
+    assert res["dockerized"].overridden == [{"status": "skipped-dockerfile", "reason": "found Dockerfile"}]
+    assert res["docs"].status == "skipped-no-code" and "no source code" in res["docs"].reason
+    assert res["off"].status == "disabled" and "skipme" not in res
+    # enabled although it has no code: analyzed, nothing to deploy
+    assert res["readme"].status == "no-a-components" and res["readme"].overridden[0]["status"] == "skipped-no-code"
+    assert state.recorded["skipme"].status == "skipped-filter"
+    assert set(state.recorded) == {"web", "dockerized", "docs", "off", "skipme", "readme"}
+    assert ("start", 5) in hooks.events and ("git", "clone", True) in hooks.events
+    assert not (cache / "off").exists()                 # disabled: never fetched
+    assert (cache / "web").is_dir() and (cache / orgmod.CACHE_MARK).exists()
+    # second run: clones are pulled, not cloned again; a repository that left the organization loses its clone
+    repos.pop(0)
+    run_org(o, log=lambda *a, **k: None)
+    assert sorted(pulls) == ["dockerized", "docs", "readme"] and not (cache / "web").exists()
+    # a stop request ends the run between repositories, and nothing is pruned
+    hooks2 = _Hooks(stop_after=1)
+    o.hooks = hooks2
+    out = run_org(o, log=lambda *a, **k: None)
+    assert len(out) == 1
+
+
+def test_disallowed_clone_host_is_an_error(tmp_path, monkeypatch):
+    repos = [SourceRepo("github", "acme", NO_PROJECT, "x", "https://evil.example/acme/x.git", default_branch="main")]
+    monkeypatch.setattr(orgmod, "provider", lambda *a, **k: _FakeProvider(repos))
+    monkeypatch.setattr(orgmod, "update_clone", lambda *a, **k: pytest.fail("must not clone"))
+    o = OrgOptions(provider="github", org="acme", registry="r", output_dir=str(tmp_path / "out"), push_images=False,
+                   work_dir=str(tmp_path / "w"), cache_dir=str(tmp_path / "c"), allowed_hosts={"github.com"})
+    [r] = run_org(o, log=lambda *a, **k: None)
+    assert r.status == "error" and "allowed hosts" in r.reason

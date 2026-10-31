@@ -24,10 +24,25 @@ e = html.escape
 MAX_BODY = 64 * 1024
 LIMITS = {"Name": 200, "DisplayName": 200, "Description": 1000, "Owner": 200, "InfoUrl": 400}
 URL_RE = re.compile(r"https://[A-Za-z0-9.-]+(:\d{1,5})?(/[^\s<>\"'`]*)?")
+# a Grafana link from the environment: https, or plain http to this machine only (a local demo)
+LINK_RE = re.compile(r"(https://[A-Za-z0-9.-]+|http://(localhost|127\.0\.0\.1|\[::1\]))(:\d{1,5})?(/[^\s<>\"'`]*)?")
 TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Application": "Application",
+              "OrgScan": "Organization scan", "OrgRepository": "Repository",
               "DevDatabase": "Dev database"}
 FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
               "Retired": "Hidden", "Product": "Product", "BusinessUnit": "Business unit", "InfoUrl": "Product page link",
+              # organization scans
+              "Provider": "Provider", "Organization": "Organization", "ApiUrl": "Server", "TokenEnv": "Token variable",
+              "Registry": "Image registry", "OutputRepo": "Output repository", "OutputBranch": "Output branch",
+              "OutputTokenEnv": "Output token variable", "ImagePullSecret": "Image pull secret",
+              "IncludeRegex": "Only repositories matching", "ExcludeRegex": "Leave out repositories matching",
+              "SkipForks": "Skip forks", "StaleDays": "Skip when not updated for (days)", "Verify": "Build and run",
+              "Gate": "Security gate", "PushImages": "Push images", "UseAi": "Ask the LLM", "ScheduleDays": "Days",
+              "ScheduleMinute": "Time (UTC)", "Enabled": "Enabled",
+              # repositories
+              "Setting": "Setting", "Note": "Note", "Skipped": "Skipped by the scan", "Removed": "Removed from the organization",
+              "OrgScan": "Scan",
+              # dev databases
               "Engine": "Engine", "DatabaseName": "Database name", "FileName": "File", "SizeBytes": "Size (bytes)",
               "Sha256": "SHA-256", "PromptSha256": "Instructions (SHA-256)"}
 UPLOAD_RE = re.compile(r"/admin/dev-databases/(\d{1,9})/upload")
@@ -53,6 +68,7 @@ class Admin:
         self.sessions = Sessions()
         self.api = None                             # api.Api when the JSON API is configured
         self.devdb = None                           # devdb.Settings when dev database uploads are on
+        self.grafana_url = ""                       # CONTAINERIZER_GRAFANA_URL: link on the admin pages
         self.cookie = ("__Host-" if cfg.secure else "") + "cz_session"
         self.login_cookie = ("__Host-" if cfg.secure else "") + "cz_login"
 
@@ -172,6 +188,8 @@ class Admin:
                              "dev-databases")
             return Response(403 if known else 404, self._shell(s, a, "Not allowed" if known else "Not found", "",
                             "<p>Your role does not include this page.</p>" if known else ""))
+        if kind in ("scans", "repositories"):
+            return self.route_scans(conn, s, a, method, path, q, form)
         if kind == "dev-databases":
             from . import admin_devdb
             return admin_devdb.route(self, conn, s, a, method, parts, q, form)
@@ -199,6 +217,11 @@ class Admin:
         if kind == "access" and method == "GET":
             return self.access(conn, s, a, q)
         return Response(404, page("Not found", "<h1>Not found</h1>"))
+
+    def route_scans(self, conn, s: Session, a: Access, method: str, path: str, q: dict, form: dict) -> Response:
+        from . import admin_scans
+        parts = path.strip("/").split("/")[1:]
+        return admin_scans.route(self, conn, s, a, method, parts[0], parts, q, form, q.get("msg", [""])[0][:300])
 
     def _tabs(self, s: Session, a: Access) -> list[tuple[str, str]]:
         """The admin pages this role may open, in menu order."""
@@ -320,6 +343,9 @@ class Admin:
 
     def _shell(self, s: Session, a: Access, title: str, active: str, body: str, flash: str = "") -> str:
         tabs = "".join(f"<a class='chip{' on' if k == active else ''}' href='/admin/{k}'>{t}</a>" for k, t in self._tabs(s, a))
+        if self.grafana_url and (a.admin or a.operator):
+            tabs += (f"<a class='chip' href='{e(self.grafana_url)}' rel='noopener noreferrer' target='_blank'"
+                     f" title='Metrics of the scans and the scan worker'>Grafana ↗</a>")
         msg = f"<p class='note'>{e(flash)}</p>" if flash else ""
         role = role_label(s.admin, s.operator, s.scopes)
         scope = f": {e(', '.join(s.scopes))}" if s.scopes and not s.admin else ""
@@ -662,8 +688,10 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
         table = table if table in TABLE_TEXT else None
         chips = " ".join(f"<a class='chip{' on' if (k or None) == table else ''}' href='/admin/audit{('?table=' + k) if k else ''}'>{t}</a>"
                          for k, t in (("", "All"), ("Application", "Applications"), ("Product", "Products"),
-                                      ("BusinessUnit", "Business units"), ("DevDatabase", "Dev databases")))
-        body = (f"<p class='muted'>Every change to business units, products and the application mapping: who made it, when, "
+                                      ("BusinessUnit", "Business units"), ("OrgScan", "Organization scans"),
+                                      ("OrgRepository", "Repositories"), ("DevDatabase", "Dev databases")))
+        body = (f"<p class='muted'>Every change to business units, products, the application mapping, organization scans, "
+                f"repositories (found by a scan, enabled or disabled, skipped) and dev database uploads: who made it, when, "
                 f"and what changed. Changes made directly in the database are recorded too, under the database login. "
                 f"Latest 200.</p><nav class='chips'>{chips}</nav>{render_audit(self._audit_rows(conn, table))}")
         return Response(200, self._shell(s, a, "Change history", "audit", body))
@@ -738,7 +766,12 @@ def _source(a: dict) -> str:
     return a["RepositoryUrl"] + ("" if a.get("SourcePath") in (None, ".") else " / " + a["SourcePath"])
 
 
-def _fmt(v) -> str:
+def _fmt(v, key: str = "") -> str:
+    if key == "ScheduleDays" and isinstance(v, int):
+        from .worker import DAYS
+        return ", ".join(DAYS[i] for i in range(7) if v & (1 << i)) or "none (on demand only)"
+    if key == "ScheduleMinute" and isinstance(v, int):
+        return f"{v // 60:02d}:{v % 60:02d}"
     if v is None or v == "":
         return "(empty)"
     if v is True:
@@ -759,11 +792,11 @@ def render_audit(rows: list[dict], show_target: bool = True) -> str:
         except ValueError:
             old, new = {}, {}
         if r["Action"] == "update":
-            changes = "".join(f"<li>{e(FIELD_TEXT.get(k, k))}: <del>{e(_fmt(old.get(k)))}</del> → <ins>{e(_fmt(new.get(k)))}</ins></li>"
+            changes = "".join(f"<li>{e(FIELD_TEXT.get(k, k))}: <del>{e(_fmt(old.get(k), k))}</del> → <ins>{e(_fmt(new.get(k), k))}</ins></li>"
                               for k in new if old.get(k) != new.get(k))
         else:
             vals = new if r["Action"] == "insert" else old
-            changes = "".join(f"<li>{e(FIELD_TEXT.get(k, k))}: {e(_fmt(v))}</li>" for k, v in vals.items() if v not in (None, "", False))
+            changes = "".join(f"<li>{e(FIELD_TEXT.get(k, k))}: {e(_fmt(v, k))}</li>" for k, v in vals.items() if v not in (None, "", False))
         action = {"insert": "Added", "update": "Changed", "delete": "Deleted"}.get(r["Action"], r["Action"])
         if r["Action"] == "insert" and r["Via"] == "scan":
             action = "Found by a scan"
@@ -798,8 +831,12 @@ def build(env=None) -> Admin | None:
     if not cs or not pw:
         raise OidcError("sign-in is configured: also set CONTAINERIZER_ADMIN_SQL and CONTAINERIZER_ADMIN_SQL_PASSWORD "
                         "(a login in the <schema>_admin role)")
+    grafana = (env.get("CONTAINERIZER_GRAFANA_URL") or "").strip()
+    if grafana and not LINK_RE.fullmatch(grafana):
+        raise OidcError("CONTAINERIZER_GRAFANA_URL must be an https:// link (http:// only to localhost)")
     from . import api
     adm = Admin(cfg, lambda: connect(cs, pw))
+    adm.grafana_url = grafana
     adm.api = api.build(env, adm.provider, adm.connect_admin, cfg)
     from . import devdb
     adm.devdb = devdb.Settings.from_env(env)

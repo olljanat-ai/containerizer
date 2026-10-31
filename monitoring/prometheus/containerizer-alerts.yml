@@ -1,0 +1,55 @@
+# Alerts for the containerizer scan worker (docs/scheduled-scans.md#metrics). Thresholds suit a weekly
+# scan: change "8d" when your scans run more or less often.
+groups:
+  - name: containerizer-worker
+    rules:
+      - alert: ContainerizerWorkerDown
+        expr: up{job="containerizer-worker"} == 0
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Scan worker {{ $labels.instance }} is not reachable"
+          description: "Prometheus cannot scrape the worker: scheduled organization scans do not run."
+
+      - alert: ContainerizerScanFailed
+        expr: increase(containerizer_scan_runs_total{status="failed"}[1h]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "Organization scan {{ $labels.scan }} failed"
+          description: "See the run on the admin pages (Organization scans) for the reason."
+
+      - alert: ContainerizerScanOverdue
+        expr: time() - containerizer_scan_last_success_timestamp_seconds > 8 * 86400
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: "No successful run of {{ $labels.scan }} for 8 days"
+
+      - alert: ContainerizerRunsWaiting
+        expr: containerizer_scan_queued_runs > 0 and containerizer_worker_busy == 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "Queued organization scans are not starting on {{ $labels.instance }}"
+
+      - alert: ContainerizerRepositoriesFailing
+        expr: containerizer_scan_repositories_last_status{status="error"} > 5
+        for: 1h
+        labels: {severity: info}
+        annotations:
+          summary: "{{ $value }} repositories of {{ $labels.scan }} failed in their latest run"
+
+      - alert: ContainerizerDiskFilling
+        expr: containerizer_host_filesystem_avail_bytes / containerizer_host_filesystem_size_bytes < 0.10
+        for: 15m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.use }} disk on {{ $labels.instance }} is over 90% full"
+          description: "Clones, build cache and images fill the disk; prune with docker system prune or add space."
+
+      - alert: ContainerizerMemoryLow
+        expr: containerizer_host_memory_available_bytes / containerizer_host_memory_total_bytes < 0.05
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "Less than 5% memory available on {{ $labels.instance }}"
