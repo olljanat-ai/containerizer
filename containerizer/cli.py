@@ -220,7 +220,8 @@ def cmd_org(args) -> int:
         stale_days=args.stale_days, max_repos=args.max_repos, ai=args.ai, model=args.model,
         verify=not args.no_verify, gate=not args.no_gate, scanner=args.scanner, fail_on=args.fail_on,
         timeout=args.timeout, pin=args.pin_digests, verify_commits=args.verify_commits, sql=args.sql,
-        work_dir=args.work_dir, keep_work=args.keep_work, dry_run=args.dry_run)
+        work_dir=args.work_dir, keep_work=args.keep_work, cache_dir=args.cache_dir,
+        skip_no_code=not args.include_no_code, dry_run=args.dry_run)
     try:
         results = run_org(o)
     except SourceError as e:
@@ -414,6 +415,10 @@ def main(argv=None) -> int:
     s.add_argument("--sql", help="also write every assessment to SQL Server (default CONTAINERIZER_SQL)")
     s.add_argument("--work-dir", default=".work/org")
     s.add_argument("--keep-work", action="store_true", help="keep the clones")
+    s.add_argument("--cache-dir", help="keep the clones in this folder (one per organization) and only pull the "
+                   "newest commit on later runs; clones of repositories the organization no longer has are removed")
+    s.add_argument("--include-no-code", action="store_true", help="do not skip repositories without application "
+                   "code (only documentation, configuration, scripts, or only libraries and tests)")
     s.add_argument("--dry-run", action="store_true", help="list the repositories and the API-level skips only")
     s.set_defaults(fn=cmd_org)
 

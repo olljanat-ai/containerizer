@@ -32,8 +32,8 @@ from pathlib import Path
 
 import yaml
 
-from .orgsource import (NO_PROJECT, REDACT, SourceError, SourceRepo, clone, existing_dockerfiles, git, head_commit,
-                        provider, read_token, strip_userinfo)
+from .orgsource import (NO_PROJECT, REDACT, SourceError, SourceRepo, clone, code_summary, existing_dockerfiles, git,
+                        head_commit, provider, read_token, strip_userinfo, update_clone)
 
 RESERVED_NS = {"default", "argocd", "flux-system", "cert-manager", "ingress-nginx", "kyverno", "gatekeeper-system"}
 OK_VERIFY = ("ok", "ok-external")
@@ -75,8 +75,13 @@ class OrgOptions:
     sql: str | None = None
     work_dir: str = ".work/org"
     keep_work: bool = False
+    cache_dir: str | None = None        # keep clones here and only pull the newest commit on later runs
+    skip_no_code: bool = True           # skip repositories without application code (docs, config, libraries only)
     dry_run: bool = False
     now: datetime | None = None
+    state: object = None                # RepoState store (worker.SqlRepoStore): admin enable/disable, repo history
+    hooks: object = None                # progress callbacks (worker): start, repo_done, git, should_stop
+    allowed_hosts: object = None        # worker: hosts the tokens may be sent to (API, clone and output URLs)
 
 
 @dataclass
@@ -85,7 +90,7 @@ class RepoResult:
     org: str
     project: str
     repo: str
-    status: str                       # deployed | no-a-components | skipped-* | error
+    status: str                       # deployed | no-a-components | skipped-* | disabled | error
     reason: str = ""
     web_url: str = ""
     clone_url: str = ""
@@ -98,6 +103,8 @@ class RepoResult:
     components: list = field(default_factory=list)
     excluded: list = field(default_factory=list)
     processed_at: str = ""
+    overridden: list = field(default_factory=list)   # automatic skips an administrator overrode (enabled)
+    seconds: float = 0.0
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -499,8 +506,43 @@ def _clean_generated(d: Path) -> None:
         f.unlink()
 
 
+def host_allowed(url: str, allowed) -> bool:
+    """`allowed` is None (no restriction) or a set of host names, `*.example.com` for subdomains."""
+    if allowed is None:
+        return True
+    import urllib.parse
+    host = (urllib.parse.urlsplit(url if "://" in url else "https://" + url).hostname or "").lower()
+    return bool(host) and any(host == h or (h.startswith("*.") and host.endswith(h[1:])) for h in allowed)
+
+
+def no_code_reason(src: Path) -> str:
+    """Why a repository has nothing to containerize, or "" when it has application code: no project
+    file the scanner knows (only documentation, configuration or scripts), or only libraries, tests and
+    tools (nothing that runs on its own)."""
+    from .assess import NON_DEPLOYABLE, assess
+    from .scan import scan
+    repo = scan(src)
+    if not repo.projects:
+        s = code_summary(src)
+        if not s["files"]:
+            return "no files on the default branch"
+        top = ", ".join(f"{x} {n}" for x, n in s["top"])
+        if s["code"]:
+            kinds = ", ".join(sorted(s["code"]))
+            return f"no application project (.csproj, package.json, pom.xml, go.mod, ...): {s['files']} files ({top}), loose {kinds} files only"
+        return f"no application code: {s['files']} files ({top})"
+    a = assess(src, repo=repo)
+    if not a.components:
+        kinds = sorted({c.role for c in a.libraries + a.tests} or {p.kind_hint for p in repo.projects})
+        return f"nothing that runs on its own: {len(repo.projects)} project(s), only {', '.join(kinds)}"
+    return ""
+
+
 def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work: Path, reg: Registry | None,
-                 tag: str, cutoff: datetime | None, rules_reset) -> RepoResult:
+                 tag: str, cutoff: datetime | None, rules_reset, admin: str | None = None) -> RepoResult:
+    """One repository. `admin` is an administrator's decision from the worker's repository list:
+    "disabled" (never processed, stops deploying), "enabled" (processed even when an automatic skip
+    applies: stale, fork, Dockerfile, no application code) or None (automatic)."""
     from .analyze import analyze_app
     from .generate import generate_app, k8s_name
     from .gitops import GitOpsOptions
@@ -511,52 +553,84 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
     res = RepoResult(provider=r.provider, org=o.org, project=r.project, repo=r.name, status="error",
                      web_url=r.web_url, clone_url=r.clone_url, branch=r.default_branch, app=app,
                      processed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    hooks = o.hooks
 
-    def skip(status: str, reason: str) -> RepoResult:
+    def stop(status: str, reason: str) -> RepoResult:
         res.status, res.reason = status, reason
         if not o.dry_run and dest.exists():                        # it no longer qualifies: stop deploying it
             shutil.rmtree(dest)
         return res
 
+    def skip(status: str, reason: str) -> RepoResult | None:
+        """An automatic skip; None when an administrator enabled the repository anyway."""
+        if admin == "enabled":
+            res.overridden.append({"status": status, "reason": reason})
+            return None
+        return stop(status, reason)
+
+    if admin == "disabled":
+        return stop("disabled", "disabled by an administrator")
     if r.archived:
-        return skip("skipped-archived", "archived or disabled")
+        return stop("skipped-archived", "archived or disabled")
     if r.empty:
-        return skip("skipped-empty", "empty repository")
-    if o.skip_forks and r.fork:
-        return skip("skipped-fork", "fork")
+        return stop("skipped-empty", "empty repository")
+    if o.skip_forks and r.fork and (x := skip("skipped-fork", "fork")):
+        return x
     if cutoff and r.last_activity and r.last_activity < cutoff:
         # the provider's activity date covers every push, so the default branch is at least as old
-        return skip("skipped-stale", f"no update since {r.last_activity:%Y-%m-%d}")
-    if cutoff and not r.last_activity:
+        if x := skip("skipped-stale", f"no update since {r.last_activity:%Y-%m-%d}"):
+            return x
+    elif cutoff and not r.last_activity:
         try:
             lc = prov.last_commit(r)
         except SourceError:
             lc = None
         if lc and lc < cutoff:
             res.last_commit = lc.isoformat()
-            return skip("skipped-stale", f"last commit {lc:%Y-%m-%d}")
+            if x := skip("skipped-stale", f"last commit {lc:%Y-%m-%d}"):
+                return x
     if o.dry_run:
         res.status, res.reason = "would-process", ""
         return res
+    if not host_allowed(r.clone_url, o.allowed_hosts):
+        res.reason = f"clone URL host is not in the worker's allowed hosts (CONTAINERIZER_WORKER_HOSTS): {r.clone_url}"
+        return res
 
-    src = work / "src" / app
-    if src.exists():
+    cached = bool(o.cache_dir)
+    src = Path(o.cache_dir) / app if cached else work / "src" / app
+    if not cached and src.exists():
         shutil.rmtree(src)
     src.parent.mkdir(parents=True, exist_ok=True)
+    import time as _time
+    t0 = _time.monotonic()
+    op = "pull" if cached and (src / ".git").is_dir() else "clone"
     try:
-        clone(r.clone_url, src, r.default_branch, prov.git_header())
+        if cached:
+            op = "pull" if update_clone(r.clone_url, src, r.default_branch, prov.git_header()) == "pulled" else "clone"
+        else:
+            clone(r.clone_url, src, r.default_branch, prov.git_header())
     except SourceError as e:
+        if hooks and hasattr(hooks, "git"):
+            hooks.git(op, _time.monotonic() - t0, False)
         res.reason = str(e)
         return res                               # keep whatever was deployed before
+    if hooks and hasattr(hooks, "git"):
+        hooks.git(op, _time.monotonic() - t0, True)
     try:
         res.commit, when = head_commit(src)
         res.last_commit = when.isoformat() if when else ""
-        if cutoff and when and when < cutoff:
-            return skip("skipped-stale", f"last commit on {r.default_branch or 'default branch'} {when:%Y-%m-%d}")
+        if cutoff and when and when < cutoff and \
+                (x := skip("skipped-stale", f"last commit on {r.default_branch or 'default branch'} {when:%Y-%m-%d}")):
+            return x
         dockerfiles = existing_dockerfiles(src)
-        if dockerfiles:
-            return skip("skipped-dockerfile", "already has " + ", ".join(dockerfiles[:3])
-                        + (" ..." if len(dockerfiles) > 3 else ""))
+        if dockerfiles and (x := skip("skipped-dockerfile", "already has " + ", ".join(dockerfiles[:3])
+                                      + (" ..." if len(dockerfiles) > 3 else ""))):
+            return x
+        if o.skip_no_code:
+            rules_reset()
+            why = no_code_reason(src)
+            if why and (x := skip("skipped-no-code", why)):
+                return x
 
         gitops = GitOpsOptions(git_url=out.url, branch=o.output_branch, path=rel, verify_commits=o.verify_commits)
         scratch = work / "analyze"
@@ -631,7 +705,7 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
         (dest / "containerizer.json").write_text(json.dumps(res.to_dict(), indent=2, default=str) + "\n")
         return res
     finally:
-        if not o.keep_work:
+        if not o.keep_work and not cached:
             shutil.rmtree(src, ignore_errors=True)
 
 
@@ -653,14 +727,24 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
     work.mkdir(parents=True, exist_ok=True)
     os.chmod(work, 0o700)
 
-    repos = list(prov.repos())
+    listed = list(prov.repos())
+    names = unique_names(listed)              # over every listed repository, so a filter change keeps the names
     inc = re.compile(o.include) if o.include else None
     exc = re.compile(o.exclude) if o.exclude else None
-    repos = [r for r in repos if (not inc or inc.search(r.key)) and not (exc and exc.search(r.key))]
+    repos = [r for r in listed if (not inc or inc.search(r.key)) and not (exc and exc.search(r.key))]
     if o.max_repos:
         repos = repos[:o.max_repos]
-    names = unique_names(repos)
-    log(f"{o.org}: {len(repos)} repositories")
+    log(f"{o.org}: {len(listed)} repositories" + (f", {len(repos)} selected by the filters" if len(repos) != len(listed) else ""))
+    admin = o.state.sync(listed, names) if o.state else {}
+    if o.state:
+        chosen = {r.key for r in repos}
+        for r in listed:
+            if r.key not in chosen:
+                o.state.record(r, RepoResult(provider=r.provider, org=o.org, project=r.project, repo=r.name,
+                                             status="skipped-filter", web_url=r.web_url, clone_url=r.clone_url,
+                                             reason="left out by the scan's include/exclude filter or repository limit",
+                                             app=names[r.key]))
+    cache = prepare_cache(o) if o.cache_dir and not o.dry_run else None
 
     out = Output(o, work) if not o.dry_run else None
     reg = Registry(o.registry) if (o.push_images and not o.dry_run) else None
@@ -668,30 +752,80 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
            "started": now.isoformat(timespec="seconds"), "stale_days": o.stale_days,
            "verify": o.verify, "gate": o.gate}
     results: list[RepoResult] = []
+    hooks = o.hooks
+    if hooks and hasattr(hooks, "start"):
+        hooks.start(len(repos))
+    import time as _time
     try:
         for i, r in enumerate(repos, 1):
+            if hooks and hasattr(hooks, "should_stop") and hooks.should_stop():
+                log(f"stopped before {r.project}/{r.name}: {len(results)} of {len(repos)} repositories done")
+                break
+            if hooks and hasattr(hooks, "repo_start"):
+                hooks.repo_start(i, r)
+            t0 = _time.monotonic()
             if o.dry_run:
-                res = process_repo(r, prov, o, names[r.key], _DryOut(), work, None, tag, cutoff, reset_cache)
+                res = process_repo(r, prov, o, names[r.key], _DryOut(), work, None, tag, cutoff, reset_cache,
+                                   admin.get(r.key))
             else:
                 try:
-                    res = process_repo(r, prov, o, names[r.key], out, work, reg, tag, cutoff, reset_cache)
+                    res = process_repo(r, prov, o, names[r.key], out, work, reg, tag, cutoff, reset_cache,
+                                       admin.get(r.key))
                 except Exception as e:          # one repository must not stop the organization run
                     res = RepoResult(provider=r.provider, org=o.org, project=r.project, repo=r.name, status="error",
                                      reason=REDACT(f"{type(e).__name__}: {e}")[:500], web_url=r.web_url,
                                      app=names[r.key])
+            res.seconds = round(_time.monotonic() - t0, 1)
             results.append(res)
             detail = ", ".join(c["component"] for c in res.components) or res.reason
             log(f"[{i}/{len(repos)}] {r.project}/{r.name}: {res.status}" + (f" - {detail}" if detail else ""))
+            if o.state and not o.dry_run:
+                o.state.record(r, res)
             if out:
                 ns = write_sandbox(out.root, out.url, o.output_branch)
                 org_index(out.root, out.root / segment(o.org), [x.to_dict() for x in results], run)
                 out.commit(f"containerizer: {o.org}/{r.project}/{r.name} {res.status}"
                            + (f" ({len(res.components)} components, {tag})" if res.components else "")
                            + f"\n\n{len(ns)} apps in {SANDBOX}/.")
+            if hooks and hasattr(hooks, "repo_done"):
+                hooks.repo_done(i, r, res)
+        else:
+            if cache:
+                prune_cache(cache, set(names.values()), log)
     finally:
         if reg:
             reg.close()
     return results
+
+
+CACHE_MARK = ".containerizer-org-cache"
+
+
+def prepare_cache(o: OrgOptions) -> Path:
+    """The clone cache folder of one organization. It is marked on first use, and a folder that holds
+    something else (or another organization's clones) is refused, so pruning never deletes foreign files."""
+    cache = Path(o.cache_dir).resolve()
+    ident = f"{o.provider} {o.api_url or ''} {o.org}".strip()
+    mark = cache / CACHE_MARK
+    if mark.exists():
+        if mark.read_text().strip() != ident:
+            raise SourceError(f"{cache} is the clone cache of {mark.read_text().strip()!r}, not {ident!r}: "
+                              "use one cache folder per organization")
+    elif cache.exists() and any(cache.iterdir()):
+        raise SourceError(f"{cache} is not empty and not a containerizer clone cache: give an empty or new folder")
+    else:
+        cache.mkdir(parents=True, exist_ok=True)
+        mark.write_text(ident + "\n")
+    os.chmod(cache, 0o700)
+    return cache
+
+
+def prune_cache(cache: Path, keep: set[str], log=print) -> None:
+    """Remove the clones of repositories the organization no longer lists (deleted or renamed)."""
+    for d in cache.iterdir():
+        if d.is_dir() and d.name not in keep and (d / ".git").is_dir():
+            shutil.rmtree(d, ignore_errors=True)
+            log(f"removed the clone of {d.name}: no longer in the organization")
 
 
 class _DryOut:
