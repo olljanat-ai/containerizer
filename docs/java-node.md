@@ -130,3 +130,28 @@ lockfile out of sync, missing native toolchains, the V8 heap during builds, a de
 run time, writes to read-only folders, and databases, brokers, config servers or variables that only
 the real environment provides. Unknown failures go to the optional LLM, which gets a
 language-specific evidence pack and plan vocabulary; what works is learned for review, as for .NET.
+
+## Organisation runs
+
+`containerizer org` treats Java and Node.js repositories like .NET ones: each buildable component
+(a Maven or Gradle jar/war, a Node.js server or single-page app) gets its Dockerfile, hardened
+manifests and GitOps entries. Repositories without .NET, Java or Node.js code are still skipped and say so.
+
+## Validation corpus
+
+`bench/realworld.yaml` holds 17 public Java (`jv-*`) and Node.js (`nd-*`) repositories, pinned to a
+commit, with ratings and roles judged by reading each repository. Run them with
+`python -m containerizer.realworld --root <dir> --clone jv-petclinic nd-ghost ...`.
+
+15 of 17 match. The two misses are both rated A where B is right:
+
+- Jenkins keeps jobs, configuration and build history in `JENKINS_HOME` through `java.io.File`
+  helpers that no rule ties to persistent data.
+- Ghost keeps uploaded themes, settings and logs in `content/` on local disk, while images can
+  use its S3 adapter, so the object storage client hides the local state.
+
+Images were built and run hardened (`verify`) for Spring PetClinic, Quarkus rest-heroes (Java 25),
+PiggyMetrics account-service (Java 8), Halo, RealWorld Express (Nx), Node-RED, Uptime Kuma and the
+React RealWorld single-page app; each either served or stopped only at a database or config server
+it needs from the real environment. Taxonomy's build needs its runtime variables (reported as a
+finding) and the NestJS RealWorld app fails on its own outdated dependencies.
