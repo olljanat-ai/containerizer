@@ -434,9 +434,13 @@ def persist_learning(a: AppAssessment, c: Component, plan: dict, patches) -> Non
         if learn is None:
             continue
         when = _fmt(learn.get("when") or {}, caps)
+        if re.search(r"\{\w+\}", json.dumps(when)):
+            when = {}                    # the log did not give what the general condition needs
         if not when:
             when = {"name": f"^{re.escape(c.project.name)}$"}
-        rid = f"learned-{fr['id']}-{k8s_name(c.project.name)}" if "name" in when else f"learned-{fr['id']}"
+        # a general condition (a package, a TFM...) is its own rule, shared by every component it matches
+        rid = f"learned-{fr['id']}-{k8s_name(c.project.name)}" if "name" in when else \
+            f"learned-{fr['id']}" + (f"-{k8s_name('-'.join(str(v) for v in caps.values()))}" if caps else "")
         if rid in ids:
             continue
         rule = {"id": rid, "phase": "plan", "source": fr.get("source", "learned"), "when": when, "plan": patch,
