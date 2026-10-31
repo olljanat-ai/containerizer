@@ -31,7 +31,6 @@ See docs/rule-review.md.
 """
 from __future__ import annotations
 
-import base64
 import difflib
 import fcntl
 import hashlib
@@ -158,8 +157,14 @@ def appended_text(kind: str, entry, current: str | None) -> str:
         current = re.sub(rf"^{key}:\s*\[\]\s*$", f"{key}:", current, count=1, flags=re.M)
     if not current.endswith("\n"):
         current += "\n"
-    new = current + to_yaml([entry])
-    d = yaml.safe_load(new) or {}
+    # same indentation as the list's existing items (hand-edited files may indent them)
+    m = re.search(rf"^{key}:[ \t]*\n(?:[ \t]*(?:#.*)?\n)*([ \t]*)- ", current, re.M)
+    pad = m.group(1) if m else ""
+    new = current + "".join(pad + line if line.strip() else line for line in to_yaml([entry]).splitlines(True))
+    try:
+        d = yaml.safe_load(new) or {}
+    except yaml.YAMLError:
+        d = {}
     items = d.get(key) if isinstance(d, dict) else None
     if not items or items[-1] != entry:
         raise ReviewError(f"{target_file(kind)}: cannot append safely (`{key}:` must be the file's last list); "

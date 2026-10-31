@@ -23,9 +23,16 @@ e = html.escape
 MAX_BODY = 64 * 1024
 LIMITS = {"Name": 200, "DisplayName": 200, "Description": 1000, "Owner": 200, "InfoUrl": 400}
 URL_RE = re.compile(r"https://[A-Za-z0-9.-]+(:\d{1,5})?(/[^\s<>\"'`]*)?")
-TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Application": "Application"}
+TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Application": "Application",
+              "RuleCandidate": "Learned rule"}
 FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
-              "Retired": "Hidden", "Product": "Product", "BusinessUnit": "Business unit", "InfoUrl": "Product page link"}
+              "Retired": "Hidden", "Product": "Product", "BusinessUnit": "Business unit", "InfoUrl": "Product page link",
+              # rule review
+              "Kind": "Kind", "Title": "Rule", "Status": "Status", "ReviewNote": "Note", "AppliedAs": "Applied as",
+              "PullRequestUrl": "Pull request", "Edited": "Edited by the reviewer"}
+# Who may use the rule review pages: Session attributes, any of which lets a signed-in user in. Add a role
+# here (e.g. "operator") once the sign-in sets it on the session; nothing else needs to change.
+RULE_REVIEW_ROLES = ("admin", "operator")
 
 
 @dataclass
@@ -47,6 +54,9 @@ class Admin:
         self.provider = provider or Provider(cfg)
         self.sessions = Sessions()
         self.api = None                             # api.Api when the JSON API is configured
+        from .rulereview import ApplyConfig
+        self.rule_apply = ApplyConfig()             # where approved rules go (CONTAINERIZER_RULES_*)
+        self.rule_apply_error = ""                  # why approving is unavailable, shown on the rule review pages
         self.cookie = ("__Host-" if cfg.secure else "") + "cz_session"
         self.login_cookie = ("__Host-" if cfg.secure else "") + "cz_login"
 
@@ -68,10 +78,17 @@ class Admin:
     def session(self, headers) -> Session | None:
         return self.sessions.get(self._cookies(headers.get("Cookie")).get(self.cookie))
 
+    @staticmethod
+    def may_review_rules(s: Session | None) -> bool:
+        """The single gate of the rule review pages (RULE_REVIEW_ROLES)."""
+        return bool(s) and any(getattr(s, role, False) is True for role in RULE_REVIEW_ROLES)
+
     def nav(self, headers) -> str:
         s = self.session(headers)
         if s and s.admin:
             return f"<a href='/admin'>Admin</a> · {e(s.name)} {self._logout_form(s)}"
+        if s and self.may_review_rules(s):
+            return f"<a href='/admin/rules'>Rule review</a> · {e(s.name)} {self._logout_form(s)}"
         if s:
             return f"{e(s.name)} {self._logout_form(s)}"
         return "<a href='/login'>Sign in</a>"
@@ -133,7 +150,10 @@ class Admin:
             return redirect("/", [self._set_cookie(self.cookie, "", 0)])
         if not s:
             return redirect("/login?" + urlencode({"next": path + (("?" + query) if query else "")}))
-        if not s.admin:
+        rules_page = path == "/admin/rules" or path.startswith("/admin/rules/")
+        if not (self.may_review_rules(s) if rules_page else s.admin):
+            if not rules_page and self.may_review_rules(s) and path in ("/admin", "/admin/"):
+                return redirect("/admin/rules")
             return Response(403, page("Not allowed", f"<h1>Not allowed</h1><p>You are signed in as {e(s.user)}, "
                                       "but you are not an administrator of the containerization results. Ask an "
                                       "administrator to add you.</p>" + self._logout_form(s)))
@@ -159,6 +179,9 @@ class Admin:
         if not parts:
             return redirect("/admin/applications")
         kind = parts[0]
+        if kind == "rules":
+            from . import admin_rules
+            return admin_rules.route(self, conn, s, method, parts, q, form, q.get("msg", [""])[0][:300])
         ident = int(parts[1]) if len(parts) > 1 and re.fullmatch(r"\d{1,9}", parts[1]) else None
         if len(parts) > 1 and ident is None and parts[1] not in ("new", "bulk"):
             return Response(404, page("Not found", "<h1>Not found</h1>"))
@@ -262,10 +285,10 @@ class Admin:
         return int(v) if re.fullmatch(r"\d{1,9}", v) else None
 
     def _shell(self, s: Session, title: str, active: str, body: str, flash: str = "") -> str:
-        tabs = "".join(f"<a class='chip{' on' if k == active else ''}' href='/admin/{k}'>{t}</a>"
-                       for k, t in (("applications", "Applications"), ("products", "Products"),
-                                    ("business-units", "Business units"), ("audit", "Change history"))
-                       + ((("access", "Access log"),) if self.cfg.view_audit else ()))
+        pages = ((("applications", "Applications"), ("products", "Products"), ("business-units", "Business units"),
+                  ("rules", "Rule review"), ("audit", "Change history"))
+                 + ((("access", "Access log"),) if self.cfg.view_audit else ())) if s.admin else (("rules", "Rule review"),)
+        tabs = "".join(f"<a class='chip{' on' if k == active else ''}' href='/admin/{k}'>{t}</a>" for k, t in pages)
         msg = f"<p class='note'>{e(flash)}</p>" if flash else ""
         return page(title, f"""<div class='topnav'><a href='/'>← Results</a><span>Signed in as <b>{e(s.name)}</b>
 <span class='muted'>({e(s.user)})</span> {self._logout_form(s)}</span></div>
@@ -511,8 +534,9 @@ last scanned {_d(a['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
         table = table if table in TABLE_TEXT else None
         chips = " ".join(f"<a class='chip{' on' if (k or None) == table else ''}' href='/admin/audit{('?table=' + k) if k else ''}'>{t}</a>"
                          for k, t in (("", "All"), ("Application", "Applications"), ("Product", "Products"),
-                                      ("BusinessUnit", "Business units")))
-        body = (f"<p class='muted'>Every change to business units, products and the application mapping: who made it, when, "
+                                      ("BusinessUnit", "Business units"), ("RuleCandidate", "Rule review")))
+        body = (f"<p class='muted'>Every change to business units, products, the application mapping and the rule review "
+                f"(learned rules proposed, approved or rejected): who made it, when, "
                 f"and what changed. Changes made directly in the database are recorded too, under the database login. "
                 f"Latest 200.</p><nav class='chips'>{chips}</nav>{render_audit(self._audit_rows(conn, table))}")
         return Response(200, self._shell(s, "Change history", "audit", body))
@@ -615,7 +639,7 @@ def render_audit(rows: list[dict], show_target: bool = True) -> str:
             changes = "".join(f"<li>{e(FIELD_TEXT.get(k, k))}: {e(_fmt(v))}</li>" for k, v in vals.items() if v not in (None, "", False))
         action = {"insert": "Added", "update": "Changed", "delete": "Deleted"}.get(r["Action"], r["Action"])
         if r["Action"] == "insert" and r["Via"] == "scan":
-            action = "Found by a scan"
+            action = "Proposed by the learning loop" if r["TableName"] == "RuleCandidate" else "Found by a scan"
         who = e(r["ChangedByName"] or r["ChangedBy"])
         if r["ChangedByName"] and r["ChangedByName"] != r["ChangedBy"]:
             who += f" <span class='muted'>({e(r['ChangedBy'])})</span>"
@@ -647,6 +671,13 @@ def build(env=None) -> Admin | None:
         raise OidcError("sign-in is configured: also set CONTAINERIZER_ADMIN_SQL and CONTAINERIZER_ADMIN_SQL_PASSWORD "
                         "(a login in the <schema>_admin role)")
     from . import api
+    from .rulereview import ApplyConfig, ReviewError
     adm = Admin(cfg, lambda: connect(cs, pw))
+    adm.rule_apply = ApplyConfig.from_env(env)
+    try:
+        adm.rule_apply.check()
+    except ReviewError as ex:          # the rest of the admin pages work; the rule review says why it cannot approve
+        adm.rule_apply_error = str(ex)
+        print(f"warning: rule review: {ex}", file=sys.stderr)
     adm.api = api.build(env, adm.provider, adm.connect_admin)
     return adm

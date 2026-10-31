@@ -12,8 +12,9 @@ Design principles:
   is consulted only for components the rules are unsure about, and what it says is validated before
   it is used or learned.
 - **Learns by doing.** When unsure, the tool builds and runs the generated container, matches failures
-  against failure rules, patches the build plan and retries. Fixes that work are written back as
-  rules (`rules/learned/`), so the next run needs no retries and no AI.
+  against failure rules, patches the build plan and retries. Fixes that work are proposed as rules
+  with their evidence; once a person approves them ([rule review](docs/rule-review.md)), the next run
+  needs no retries and no AI.
 - **No application changes.** Dockerfiles use the application folder as build context with their own
   `Dockerfile.dockerignore`; configuration is overridden with environment variables and volumes.
 - **Secure by default.** Multi-stage builds, chiseled (distroless) .NET images, non-root user,
@@ -222,9 +223,14 @@ For each component that can be containerized the tool:
    - `platform` / `code`: a runtime finding the static rules missed;
 4. if nothing matches and `--ai` is on, Claude proposes a diagnosis, a regex and a plan patch; it is
    applied only if the regex matches the log and the patch uses whitelisted plan keys;
-5. persists what worked: plan patches → `rules/learned/plan.yaml`, confirmed AI failure rules →
-   `rules/learned/failures.yaml`, runtime findings → `rules/learned/findings.yaml`, and packages of
-   components that ran → `rules/learned/packages.yaml` (raising confidence next time).
+5. learns what worked: plan patches → plan rules, confirmed AI failure rules → failure rules, runtime
+   findings → finding rules, and packages of components that ran → Linux-safe packages (raising
+   confidence next time). The run uses them right away; for everything else they wait for review:
+   each becomes a candidate with its evidence (source repository and commit, the attempts and exit
+   reasons, an excerpt of the failing log, the diff, a confidence, the LLM if one proposed it). An
+   administrator approves (optionally after editing) or rejects it on the **Rule review** admin page
+   or with `containerizer rules`; approved rules reach the ruleset through a pull request or directly,
+   rejected ones are not proposed again. See [docs/rule-review.md](docs/rule-review.md).
 
 ### AI fallback (Claude or a self-hosted LLM)
 
@@ -536,10 +542,11 @@ results and the model comparison). The labels used for scoring are in
 ```
 containerizer/   scan, rules engine, assess, reach, confidence, facts, generate, harden, imagescan, verify, ai, report, bench
 rules/           curated rules (roles, facts, findings, plan, failures, security, images + images.lock, packages)
-rules/learned/   rules written by the learning loop (reviewable, safe to delete)
+rules/learned/   rules written by the learning loop with CONTAINERIZER_RULE_REVIEW=off (safe to delete)
+rules/*reviewed* learned rules approved in the rule review (docs/rule-review.md)
 bench/           labels and results
 action.yml       GitHub Action; ci/azure/ has the Azure DevOps template
 containerizer/sql/  results database schema (sqlstore.py writes it, webui.py reads it, admin.py + oidc.py: admin pages)
 results/         Docker Compose stack and image for the results database and web UI
-docs/            results-database.md (results database, web UI, admin pages, audit), organization-run.md, self-hosted-llm.md
+docs/            results-database.md (results database, web UI, admin pages, audit), rule-review.md, organization-run.md, self-hosted-llm.md
 ```
