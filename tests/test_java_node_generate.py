@@ -273,3 +273,34 @@ def test_failure_rules_for_java_and_node():
                 "MongooseServerSelectionError: connect ECONNREFUSED 127.0.0.1:27017",
                 "Could not resolve placeholder 'jwt.secret' in value \"${jwt.secret}\""):
         assert diagnose(log, "run", fr)[0]["outcome"] == "external", log
+
+
+def test_old_pnpm_lockfile_pins_pnpm_major(tmp_path):
+    node(tmp_path, "", {"name": "svc", "scripts": {"start": "node index.js"}, "dependencies": {"express": "4"}},
+         {"index.js": SERVER, "pnpm-lock.yaml": "lockfileVersion: '6.0'\n"})
+    _, _, plan, df = plan_and_df(tmp_path, "svc")
+    assert plan["pm_pin"] == "pnpm@8" and "corepack enable && corepack install -g pnpm@8 && pnpm install" in df
+
+
+def test_git_properties_plugins_are_skipped(tmp_path):
+    plugin = "<plugin><groupId>io.github.git-commit-id</groupId><artifactId>git-commit-id-maven-plugin</artifactId></plugin>"
+    write(tmp_path, "pom.xml", pom("orders", WEB, BOOT_PARENT, plugins=BOOT_PLUGIN + plugin))
+    write(tmp_path, "src/main/java/com/acme/App.java", BOOT_APP)
+    _, _, plan, df = plan_and_df(tmp_path, "orders")
+    assert "plan-maven-git-commit-id" in plan["applied"] and "-Dmaven.gitcommitid.skip=true" in df
+
+
+def test_committed_node_modules_stay_in_the_build_context(tmp_path):
+    import subprocess
+    from containerizer.generate import DOCKERIGNORE, dockerignore
+    node(tmp_path, "", EXPRESS, {"server.js": SERVER, "packages/node_modules/@x/core/index.js": "module.exports = 1"})
+    a = assess(tmp_path)
+    assert dockerignore(a.repo) == DOCKERIGNORE                      # not a git checkout
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+    assert "**/node_modules/" not in dockerignore(a.repo)
+
+
+def test_node_util_removal_moves_to_node_22():
+    r = diagnose("TypeError: util_1.isNullOrUndefined is not a function", "run", load_failures())
+    assert r[0]["id"] == "run-node-util-removed" and r[0]["fix"] == {"node": 22}

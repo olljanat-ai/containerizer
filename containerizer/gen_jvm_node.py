@@ -373,7 +373,22 @@ def node_build_plan(a, c, plan: dict) -> None:
         install = ws_dir
     berry = pm == "yarn" and ((props.get("PackageManagerVersion") or "1").split(".")[0] not in ("", "0", "1")
                               or (install / ".yarnrc.yml").exists())
-    plan.update({"node": line, "pm": pm, "yarn_berry": berry, "lockfile": bool(lock), "uid": _images()["node"]["app_uid"],
+    # without a packageManager field corepack takes the newest pnpm, which cannot read lockfiles of
+    # older majors (ERR_PNPM_BROKEN_LOCKFILE): lockfile 5.x is pnpm 7, 6.0 is pnpm 8
+    pm_pin = ""
+    if pm == "pnpm" and lock and not props.get("PackageManagerVersion"):
+        try:
+            with open(root / lock, encoding="utf-8", errors="replace") as fh:
+                m = re.match(r"\s*lockfileVersion:\s*'?(\d+)", fh.readline())
+        except OSError:
+            m = None
+        major = {5: "7", 6: "8"}.get(int(m.group(1))) if m else None
+        if major:
+            pm_pin = f"pnpm@{major}"
+            add_reason(plan, "node-pnpm-version", f"The lockfile was written by pnpm {major} (lockfileVersion "
+                       f"{m.group(1)}) and package.json names no packageManager; the build uses pnpm {major}, as "
+                       "newer pnpm cannot read it.", ["https://pnpm.io/npmrc#lockfile-version"])
+    plan.update({"node": line, "pm": pm, "yarn_berry": berry, "pm_pin": pm_pin, "lockfile": bool(lock), "uid": _images()["node"]["app_uid"],
                  "build_root": _rel(install, root), "module": _rel(p.dir, install), "base": "distroless",
                  "workspace": install != p.dir.resolve() or bool(props.get("Workspaces"))})
     if not lock:
@@ -467,7 +482,8 @@ def node_buildable(c) -> bool:
 def _install_cmd(plan: dict) -> str:
     pm, lock = plan["pm"], plan["lockfile"]
     if pm == "pnpm":
-        return "corepack enable && pnpm install " + ("--frozen-lockfile" if lock else "--no-frozen-lockfile")
+        pin = f" && corepack install -g {plan['pm_pin']}" if plan.get("pm_pin") else ""
+        return f"corepack enable{pin} && pnpm install " + ("--frozen-lockfile" if lock else "--no-frozen-lockfile")
     if pm == "yarn":
         if plan["yarn_berry"]:
             return "corepack enable && yarn install" + (" --immutable" if lock else " --no-immutable")

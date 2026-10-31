@@ -347,6 +347,17 @@ failures:
     fix: {prune: false}
     learn: {when: {}}
 
+  - id: run-node-util-removed
+    stage: run
+    match: "TypeError: (\\w+\\.)?util(_\\d+)?\\.(?P<fn>isNullOrUndefined|isArray|isBoolean|isBuffer|isDate|isError|isFunction|isNull|isNumber|isObject|isPrimitive|isRegExp|isString|isSymbol|isUndefined|_extend) is not a function"
+    outcome: retry
+    refs: [https://nodejs.org/en/blog/release/v23.0.0, https://nodejs.org/api/deprecations.html#DEP0044]
+    diagnosis: >-
+      A dependency calls util.{fn}, which Node.js 23 removed; the image runs on Node.js 22 (supported
+      until April 2027). Upgrade the dependency to move to the current LTS line.
+    fix: {node: 22}
+    learn: {when: {}}
+
   - id: run-readonly-path-node-java
     stage: run
     match: "(EROFS: read-only file system|EACCES: permission denied), (open|mkdir|scandir|copyfile|rename) '(?P<path>/[^']+)'|java\\.nio\\.file\\.(ReadOnlyFileSystemException|AccessDeniedException): (?P<path2>/[^\\s:]+)|FileSystemException: (?P<path3>/[^\\s:]+): Read-only file system|FileNotFoundException: (?P<path4>/[^\\s(]+) \\((Read-only file system|Permission denied)\\)"
