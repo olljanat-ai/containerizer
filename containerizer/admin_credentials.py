@@ -65,7 +65,7 @@ model only the evidence of the components the rules are unsure of, never the who
             ("OpenAI-compatible server", """<p>Ollama, vLLM, LM Studio, llama.cpp <code>llama-server</code>, LocalAI and
 similar: the URL up to and including <code>/v1</code> (for example <code>https://llm.example.internal/v1</code>), the
 model name as the server knows it, and its key if it has one (vLLM <code>--api-key</code>, a gateway). A key is only
-sent over https, or plain http to this machine. Choosing a model: docs/self-hosted-llm.md.</p>"""),
+sent over https, or plain http to this machine. Choosing a model: docs/source-control.md#the-llm.</p>"""),
         ]
         return "".join(f"<details><summary><b>{t}</b>: what to enter</summary>{b}</details>" for t, b in items)
     if purpose == "read":
@@ -247,7 +247,8 @@ https://tfs.example.com/tfs; empty: github.com, gitlab.com, dev.azure.com)</span
 <div><button>Add</button></div></form>{guidance('read')}
 <h2>Add a write token for an output repository</h2>
 <p class='muted'>The repository the generated Dockerfiles, manifests and GitOps files are pushed to. Its token is used
-for nothing else, even when the repository is in an organization that is scanned, and the repository itself is never scanned.</p>
+for nothing else, even when the repository is in an organization that is scanned, and the repository itself is never scanned.
+The internal rules repository of the <a href='/admin/rules#repository'>rule review</a> gets its write token here too.</p>
 <form method='post' action='/admin/source-control/write' class='edit'>{adm._csrf(s)}
 <label for='Provider-gitlab'>Provider</label>{_provider_select(selected='gitlab')}
 <label for='wScope'>Repository URL <span class='muted'>(https, as on the scan's Output repository)</span></label>
@@ -276,7 +277,7 @@ and including /v1)</span></label><input id='lApiUrl' name='ApiUrl' type='url' ma
                        or "<span class='muted'>no scan asks the LLM</span>") + "</div></div>")
     else:
         llm_html = ("<p class='muted'>None set: scans with <i>Ask the LLM</i> use the worker's own settings "
-                    "(environment variables, docs/self-hosted-llm.md), if any.</p>")
+                    "(environment variables), if any.</p>")
     body = (f"<p class='muted'>Organization scans only read organizations that have a read-only token here: there is no "
             f"anonymous access, and each token is only sent with its own organization's or repository's URLs. On the "
             f"appliance, the hosts must also be on the Firewall page.</p>{key_note}"

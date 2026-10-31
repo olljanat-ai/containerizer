@@ -34,6 +34,9 @@ class GitOpsOptions:
     oci_url: str = ""                     # oci://registry/<app>/manifests (default from the registry)
     tag_range: str = ">=1.0.0"            # semver range image automation may roll out
     verify_commits: bool = False          # Flux: only reconcile commits signed with a key in <app>-git-gpg
+    image_pull_secret: str = ""           # Secret name the workloads pull with (an ExternalSecret, cz-registry)
+    ingress_domain: str = ""              # wildcard domain: an HTTPS Ingress per web component (sandbox_https.py)
+    sandbox_idp: bool = True              # with a domain: point components that sign in at the sandbox IdP (idp.py)
 
 
 def _api_group(api_version: str) -> str:
@@ -47,8 +50,11 @@ def _namespace_delete_patch(ns: str) -> dict:
 
 
 def gitops_manifests(a, kinds: list[tuple[str, str]], images: list[tuple[str, str]], namespace_doc: dict,
-                     opts: GitOpsOptions | None = None, registry: str = "registry.local") -> dict[str, list[dict]]:
-    """`kinds`: (apiVersion, kind) of every generated namespaced resource; `images`: (component, image)."""
+                     opts: GitOpsOptions | None = None, registry: str = "registry.local",
+                     secret_keys: list[str] | tuple = ()) -> dict[str, list[dict]]:
+    """`kinds`: (apiVersion, kind) of every generated namespaced resource; `images`: (component, image);
+    `secret_keys`: remote keys the app's own ExternalSecrets read (granted to the namespace in the tenant)."""
+    from . import eso
     o = opts or GitOpsOptions()
     ns = k8s_name(a.name)
     path = (o.path or f"deploy/{ns}").strip("/")
@@ -115,6 +121,23 @@ def gitops_manifests(a, kinds: list[tuple[str, str]], images: list[tuple[str, st
          "subjects": [{"kind": "ServiceAccount", "name": sa, "namespace": ns}]},
     ]
 
+    def credential(name: str, remote: str, what: str, secret_type: str | None = None) -> dict:
+        return eso.external_secret(name, ns, eso.remote_key(ns, remote), labels=labels, secret_type=secret_type,
+                                   set_namespace=True,
+                                   comment=f"{what}: every key of remote secret {eso.remote_key(ns, remote)} "
+                                           "in the secret store, never from Git")
+
+    git_secrets = [credential(f"{ns}-git", eso.GIT, "read-only deploy key or token (identity + known_hosts, "
+                                                    "or username + password)")]
+    if o.verify_commits:
+        git_secrets.append(credential(f"{ns}-git-gpg", eso.GIT_GPG, "public GPG keys commits must be signed with"))
+    registry_secret = credential(f"{ns}-registry", eso.REGISTRY, "registry read credential (.dockerconfigjson)",
+                                 eso.DOCKERCONFIG)
+    oci_secrets = [registry_secret, credential(f"{ns}-cosign-pub", eso.COSIGN_PUB, "cosign public key (cosign.pub)")]
+    flux_keys = eso.remote_keys(git_secrets + oci_secrets) + list(secret_keys)
+    out["flux/tenant.yaml"] += [eso.reader_service_account(ns, labels, set_namespace=True)] + \
+        eso.store_access(ns, flux_keys, labels)
+
     def kustomization(source_kind: str) -> dict:
         return {"apiVersion": KUSTOMIZE_API, "kind": "Kustomization",
                 "metadata": {"name": ns, "namespace": ns, "labels": labels},
@@ -132,7 +155,7 @@ def gitops_manifests(a, kinds: list[tuple[str, str]], images: list[tuple[str, st
                            "secretRef": {"name": f"{ns}-git"},
                            **({"verify": {"mode": "HEAD", "secretRef": {"name": f"{ns}-git-gpg"}}}
                               if o.verify_commits else {})}}
-    out["flux/git/sync.yaml"] = [git_source, kustomization("GitRepository")]
+    out["flux/git/sync.yaml"] = git_secrets + [git_source, kustomization("GitRepository")]
 
     oci_source = {"apiVersion": SOURCE_API, "kind": "OCIRepository",
                   "metadata": {"name": ns, "namespace": ns, "labels": labels},
@@ -140,10 +163,10 @@ def gitops_manifests(a, kinds: list[tuple[str, str]], images: list[tuple[str, st
                            "secretRef": {"name": f"{ns}-registry"},
                            # only artifacts signed with the key in this Secret are applied
                            "verify": {"provider": "cosign", "secretRef": {"name": f"{ns}-cosign-pub"}}}}
-    out["flux/oci/sync.yaml"] = [oci_source, kustomization("OCIRepository")]
+    out["flux/oci/sync.yaml"] = oci_secrets + [oci_source, kustomization("OCIRepository")]
 
     if images:
-        auto: list[dict] = []
+        auto: list[dict] = [registry_secret]
         for c, img in images:
             name = k8s_name(c)
             auto += [
@@ -212,8 +235,7 @@ kubectl apply -f argocd/project.yaml -f argocd/application.yaml
 ## Flux
 
 ```sh
-kubectl apply -f flux/tenant.yaml          # platform admin: namespace, ServiceAccount, RoleBinding
-kubectl -n {ns} create secret generic {ns}-git --from-file=identity=./deploy-key --from-file=known_hosts
+kubectl apply -f flux/tenant.yaml          # platform admin: namespace, ServiceAccounts, RoleBinding, store access
 kubectl apply -f flux/git/sync.yaml        # or flux/oci/sync.yaml, not both
 kubectl apply -f flux/git/image-automation.yaml   # optional
 ```
@@ -222,6 +244,17 @@ kubectl apply -f flux/git/image-automation.yaml   # optional
   applied as ServiceAccount `{ns}-reconciler`, bound to the built-in `admin` role in that
   namespace only. Run the controllers with `--no-cross-namespace-refs` and
   `--default-service-account` for a full lockdown.
+- No credential is in these files. Each Secret Flux needs is an `ExternalSecret` that External Secrets
+  Operator fills from the secret store (see `../HARDENING.md` and docs/external-secrets.md). Put these
+  remote secrets in the store first:
+
+  | Remote key | Keys | Used by |
+  | --- | --- | --- |
+  | `{ns}--cz-git` | `identity` + `known_hosts` (deploy key), or `username` + `password` (token) | `GitRepository` (read-only; write for image automation) |{f"""
+  | `{ns}--cz-git-gpg` | the public keys, one per key | commit verification |""" if o.verify_commits else ""}
+  | `{ns}--cz-registry` | `.dockerconfigjson` | `OCIRepository`, `ImageRepository`, image pulls |
+  | `{ns}--cz-cosign-pub` | `cosign.pub` | `OCIRepository` signature check |
+
 - `git/sync.yaml`: `GitRepository` with a read-only deploy key and a `Kustomization`
   (prune, wait, health checks).{" Commits must be signed with a key in Secret `" + ns + "-git-gpg`." if o.verify_commits else " Set commit verification (`spec.verify`) when your commits are signed."}
 - `oci/sync.yaml`: the same, from an OCI artifact (`flux push artifact {o.oci_url or f"oci://<registry>/{ns}/manifests"}:1.0.0

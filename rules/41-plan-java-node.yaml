@@ -1,0 +1,42 @@
+# Build-plan rules for Java and Node.js components (see 40-plan.yaml for the plan keys).
+rules:
+  - id: plan-ghost-listen
+    phase: plan
+    applies_to: [node]
+    why: >-
+      Ghost reads its listen address from configuration (server.host defaults to 127.0.0.1,
+      server.port to 2368); nconf environment variables override it so the container listens on
+      all interfaces at port 8080.
+    refs:
+      - https://ghost.org/docs/config/#running-ghost-with-config-env-variables
+    when: {name: '^ghost$'}
+    plan:
+      env: {server__host: 0.0.0.0, server__port: "8080"}
+
+  - id: plan-gradle-git-properties
+    phase: plan
+    applies_to: [java]
+    why: >-
+      The gradle-git-properties plugin fails the build when there is no .git folder, and the image
+      build context leaves .git out; the task is skipped (git.properties then has no commit data).
+    refs:
+      - https://github.com/n0mer/gradle-git-properties
+    when: {property: {Plugins: '(.*,)?com\.gorylenko\.gradle-git-properties(,.*)?'}}
+    plan:
+      publish_args: ["-x", "generateGitProperties"]
+
+  - id: plan-maven-git-commit-id
+    phase: plan
+    applies_to: [java]
+    why: >-
+      git-commit-id-maven-plugin fails the build when there is no .git folder (unless
+      failOnNoGitDirectory is false), and the image build context leaves .git out; the plugin is
+      skipped.
+    refs:
+      - https://github.com/git-commit-id/git-commit-id-maven-plugin
+    when:
+      any:
+        - property: {Plugins: '(.*,)?(git-commit-id-maven-plugin|git-commit-id-plugin)(,.*)?'}
+        - property: {ParentPlugins: '(.*,)?(git-commit-id-maven-plugin|git-commit-id-plugin)(,.*)?'}
+    plan:
+      publish_args: ["-Dmaven.gitcommitid.skip=true"]

@@ -219,11 +219,63 @@ def _days(d) -> str:
     return f"about {d:g} person-day{'s' if d != 1 else ''}"
 
 
+def _lang(c) -> dict:
+    """Wording and commands of the prompt for the component's platform."""
+    p = c.project
+    pr = p.properties or {}
+    rel = p.rel_dir if hasattr(p, "rel_dir") else p.rel
+    if p.kind_hint == "java":
+        gradle = pr.get("BuildTool") == "gradle"
+        build = "`./gradlew build`" if pr.get("Wrapper") == "gradlew" else "`gradle build`" if gradle else \
+            ("`./mvnw verify`" if pr.get("Wrapper") == "mvnw" else "`mvn verify`")
+        return {
+            "platform": f"Java {pr.get('JavaVersion') or '(version not declared)'}, {pr.get('BuildTool', 'maven')}",
+            "config": "configuration properties (Spring `@ConfigurationProperties` / `application.properties`, or the "
+                      "framework's equivalent) that environment variables can override",
+            "logs": "Logs go to stdout through the logging framework (no file appenders); temp files go to "
+                    "`java.io.tmpdir`.",
+            "packages": "Use only maintained artifacts from Maven Central at their latest stable version without known "
+                        "vulnerabilities (check with the OWASP dependency-check plugin or `mvn versions:display-dependency-updates`).",
+            "port": "Listen on the port from configuration (`server.port` / `SERVER_PORT` for Spring Boot, "
+                    "`quarkus.http.port`, or `PORT`).",
+            "guard": "guard it with an operating-system check (`System.getProperty(\"os.name\")`, or "
+                     "`SystemUtils.IS_OS_WINDOWS` from Apache Commons Lang)",
+            "build": f"1. {build} of `{rel}` succeeds, including its tests.",
+            "test": "2. All existing tests pass; add unit or integration tests for every replaced API.",
+        }
+    if p.kind_hint == "node":
+        pm = pr.get("PackageManager") or "npm"
+        return {
+            "platform": f"Node.js (engines: {pr.get('NodeEngine') or 'any'}), {pm}",
+            "config": "configuration read from environment variables (`process.env`, with defaults under a mounted path)",
+            "logs": "Logs go to stdout (console or a logger with a stdout transport), not to files; temp files go to "
+                    "`os.tmpdir()`.",
+            "packages": f"Use only maintained packages from the npm registry at their latest stable version without "
+                        f"known vulnerabilities (check with `{pm} audit`), and keep the lockfile committed.",
+            "port": "Listen on the port from the `PORT` environment variable, on all interfaces.",
+            "guard": "guard it with `process.platform === 'win32'`",
+            "build": f"1. `{pm} install` from the lockfile and the build script of `{rel}` succeed.",
+            "test": f"2. All existing tests pass (`{pm} test`); add tests for every replaced API.",
+        }
+    return {
+        "platform": "target framework: " + (";".join(p.tfms) or p.kind_hint),
+        "config": "configurable (IConfiguration / options) with a default under a mounted path",
+        "logs": "Logs go to stdout through ILogger, not to files; temp files go to the system temp folder.",
+        "packages": "Use only maintained packages from nuget.org at their latest stable version without known "
+                    "vulnerabilities (check with `dotnet list package --vulnerable`).",
+        "port": "Listen on the port from configuration (ASPNETCORE_HTTP_PORTS / Kestrel settings).",
+        "guard": "guard it with `OperatingSystem.IsWindows()`",
+        "build": f"1. `dotnet build` of `{p.rel}` succeeds with no new warnings, including no CA1416 "
+                 "(platform compatibility) warnings for the changed code.",
+        "test": "2. All existing tests pass (`dotnet test`); add unit or integration tests for every replaced API.",
+    }
+
+
 def agent_prompt(a, c, plan: dict) -> str:
     """A self-contained task description for an AI coding agent working in the component's repository."""
     actionable = [i for i in plan["items"] if i["kind"] != "isolate"]
     isolate = [i for i in plan["items"] if i["kind"] == "isolate"]
-    tfm = ";".join(c.project.tfms) or c.project.kind_hint
+    lang = _lang(c)
     L = [f"# Task: make `{c.name}` run in a Linux container", "",
          "You are a coding agent working in this repository. Change the code of the component below so that it "
          "builds and runs in a Linux container on Kubernetes, by carrying out the migration plan in this prompt. "
@@ -232,7 +284,7 @@ def agent_prompt(a, c, plan: dict) -> str:
          "## Component", "",
          f"- Application: {a.name}",
          f"- Project: `{c.project.rel}`",
-         f"- Kind: {c.role}; target framework: {tfm}",
+         f"- Kind: {c.role}; {lang['platform']}",
          f"- Current verdict: {c.verdict} ({_verdict_text(c.verdict)})",
          f"- Estimated effort of this plan: {_days(plan['effort_days'])}", ""]
     if actionable:
@@ -246,11 +298,12 @@ def agent_prompt(a, c, plan: dict) -> str:
         if st.get("writable_dirs"):
             L.append("The component writes to these folders: " + ", ".join(f"`{d}`" for d in st["writable_dirs"]) + ".")
         L += ["In Kubernetes the container's file system is read-only and pods are replaced at any time, so:",
-              "- Make every such folder configurable (IConfiguration / options) with a default under a mounted path.",
+              f"- Make every such folder part of the {lang['config']}." if c.project.kind_hint in ("java", "node") else
+              f"- Make every such folder {lang['config']}.",
               "- Data that must survive a restart or be shared between replicas (uploads, generated documents, "
               "queues, SQLite/LiteDB files) belongs in an external store: the database, object storage "
               "(S3/Azure Blob) or a cache (Redis). Change the code to use it.",
-              "- Logs go to stdout through ILogger, not to files; temp files go to the system temp folder.", ""]
+              "- " + lang["logs"], ""]
     if isolate:
         L += ["## Out of scope: keep on Windows", "",
               "These findings have no Linux replacement inside this component. Do not try to remove them by "
@@ -269,19 +322,16 @@ def agent_prompt(a, c, plan: dict) -> str:
           "rounding, encoding, culture), match the old behaviour and add a test for it.",
           "- Security: no secrets, connection strings or credentials in code or committed configuration; read "
           "them from configuration supplied by environment variables or mounted Kubernetes Secrets. Do not "
-          "disable TLS certificate validation. Use only maintained packages from nuget.org at their latest stable "
-          "version without known vulnerabilities (check with `dotnet list package --vulnerable`).",
+          "disable TLS certificate validation. " + lang["packages"],
           "- Container readiness: the app must run as a non-root user with a read-only root file system; write only "
-          "to configured, mounted folders or the temp folder. Log to stdout. Listen on the port from configuration "
-          "(ASPNETCORE_HTTP_PORTS / Kestrel settings). Handle SIGTERM by stopping gracefully.",
-          "- Where Windows-only code must stay for an existing Windows deployment, guard it with "
-          "`OperatingSystem.IsWindows()` and give Linux a working path instead of deleting it.",
+          "to configured, mounted folders or the temp folder. Log to stdout. " + lang["port"] + " Handle SIGTERM by "
+          "stopping gracefully.",
+          f"- Where Windows-only code must stay for an existing Windows deployment, {lang['guard']} and give Linux a "
+          "working path instead of deleting it.",
           "- Do not add a Dockerfile or Kubernetes manifests: containerizer generates hardened ones from the code.",
           ""]
     L += ["## How to verify", "",
-          f"1. `dotnet build` of `{c.project.rel}` succeeds with no new warnings, including no CA1416 "
-          "(platform compatibility) warnings for the changed code.",
-          "2. All existing tests pass (`dotnet test`); add unit or integration tests for every replaced API.",
+          lang["build"], lang["test"],
           "3. Every \"Check\" step in the plan above passes.",
           "4. If the containerizer tool is available, re-run the assessment from the repository root: "
           "`python -m containerizer assess . -v`. The findings "

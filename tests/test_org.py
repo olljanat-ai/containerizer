@@ -293,6 +293,39 @@ class _FakeProvider:
         return ""
 
 
+def test_run_org_deploys_java_and_node_repos(tmp_path, monkeypatch):
+    from tests.test_java_node import EXPRESS, SERVER, WEB, boot_app, dep, node
+    from tests.test_engine import write
+    sources = {"orders": tmp_path / "src" / "orders", "api": tmp_path / "src" / "api", "docs": tmp_path / "src" / "docs"}
+    boot_app(sources["orders"], WEB + dep("org.springframework.boot", "spring-boot-starter-actuator"))
+    node(sources["api"], "", EXPRESS, {"server.js": SERVER})
+    write(sources["api"], "package-lock.json", json.dumps({"lockfileVersion": 3, "packages": {"": {"name": "api"}}}))
+    write(sources["docs"], "README.md", "# docs only\n")
+    for d in sources.values():
+        _commit(d)
+    repos = [SourceRepo("github", "acme", "", n, f"https://github.com/acme/{n}", default_branch="main",
+                        web_url=f"https://github.com/acme/{n}") for n in sources]
+    monkeypatch.setattr(orgmod, "provider", lambda *a, **k: _FakeProvider(repos))
+    monkeypatch.setattr(orgmod, "clone", lambda url, dest, branch="", header="", depth=1:
+                        shutil.copytree(sources[url.rsplit("/", 1)[1]], dest))
+    out = tmp_path / "out"
+    out.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=out, check=True)
+    o = OrgOptions(provider="github", org="acme", registry="reg.example/sandbox", output_dir=str(out), token="t",
+                   verify=False, gate=False, push_images=False, tag="1.0.0", work_dir=str(tmp_path / "work"),
+                   now=datetime(2026, 10, 31, tzinfo=timezone.utc))
+    res = {r.repo: r for r in run_org(o, log=lambda *a, **k: None)}
+    assert res["orders"].status == "deployed", res["orders"]
+    assert res["api"].status == "deployed", res["api"]
+    assert res["docs"].status != "deployed"
+    java = next((out).rglob("orders/**/Dockerfile")).read_text()
+    assert "distroless/java17" in java and "USER 65532" in java
+    nodedf = next((out).rglob("api/**/Dockerfile")).read_text()
+    assert "distroless/nodejs" in nodedf and "npm ci" in nodedf
+    k8s = next((out).rglob("orders/**/k8s.yaml")).read_text()
+    assert "/actuator/health/readiness" in k8s
+
+
 def test_run_org_writes_layout_sandbox_and_commits(tmp_path, monkeypatch):
     sources = {}
     for name, df, date in [("ci-demo", False, None), ("dockerized", True, None),
@@ -338,10 +371,30 @@ def test_run_org_writes_layout_sandbox_and_commits(tmp_path, monkeypatch):
     assert yaml.safe_load((sb / "flux" / "apps" / "kustomization.yaml").read_text())["resources"] == [
         "../../../Contoso/Shop Floor/ci-demo/gitops/flux"]
     assert (sb / "namespaces.txt").read_text() == "shop-floor-ci-demo\n"
-    boot = list(yaml.safe_load_all((sb / "flux" / "bootstrap.yaml").read_text()))
-    assert boot[1]["spec"]["path"] == "./sandbox/flux/apps"
-    argo_boot = list(yaml.safe_load_all((sb / "argocd" / "bootstrap.yaml").read_text()))
-    assert argo_boot[0]["spec"]["clusterResourceWhitelist"] == []
+    boot = {d["kind"]: d for d in yaml.safe_load_all((sb / "flux" / "bootstrap.yaml").read_text())}
+    assert boot["Kustomization"]["spec"]["path"] == "./sandbox/flux/apps"
+    # the root Git credential comes from the secret store, readable only by flux-system's reader
+    assert "Secret" not in boot
+    assert boot["ExternalSecret"]["metadata"]["name"] == boot["GitRepository"]["spec"]["secretRef"]["name"]
+    assert boot["ExternalSecret"]["spec"]["dataFrom"] == [{"extract": {"key": "flux-system--cz-git"}}]
+    assert boot["Role"]["metadata"]["namespace"] == "containerizer-secrets"
+    assert boot["Role"]["rules"][0]["resourceNames"] == ["flux-system--cz-git"]
+    assert boot["RoleBinding"]["subjects"] == [{"kind": "ServiceAccount", "name": "app-secrets-reader",
+                                                "namespace": "flux-system"}]
+    argo_boot = {d["kind"]: d for d in yaml.safe_load_all((sb / "argocd" / "bootstrap.yaml").read_text())}
+    assert argo_boot["AppProject"]["spec"]["clusterResourceWhitelist"] == []
+    repo = argo_boot["ExternalSecret"]["spec"]["target"]["template"]
+    assert repo["metadata"]["labels"] == {"argocd.argoproj.io/secret-type": "repository"}
+    # --image-pull-secret: an ExternalSecret of type dockerconfigjson, granted to the app's namespace
+    pull = yaml.safe_load((app / "pull-secret.yaml").read_text())
+    assert (pull["kind"], pull["metadata"]["name"]) == ("ExternalSecret", "regcred")
+    assert pull["spec"]["target"]["template"]["type"] == "kubernetes.io/dockerconfigjson"
+    assert "pull-secret.yaml" in yaml.safe_load(k)["resources"]
+    tenant = list(yaml.safe_load_all((app / "gitops" / "flux" / "tenant.yaml").read_text()))
+    role = next(d for d in tenant if d["kind"] == "Role")
+    assert "shop-floor-ci-demo--cz-registry" in role["rules"][0]["resourceNames"]
+    assert not [d for f in app.rglob("*.yaml") for d in yaml.safe_load_all(f.read_text())
+                if isinstance(d, dict) and d.get("kind") == "Secret"]
     index = json.loads((out / "Contoso" / "org-run.json").read_text())
     assert {r["repo"]: r["status"] for r in index["repositories"]} == {
         "ci-demo": "deployed", "dockerized": "skipped-dockerfile", "old": "skipped-stale"}

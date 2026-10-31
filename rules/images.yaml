@@ -16,14 +16,48 @@ node:
   build: node:20-bookworm-slim
   static: nginxinc/nginx-unprivileged:1.27-alpine
   runtime: node:20-bookworm-slim
+  # Node.js servers: built on the LTS line the app allows (engines.node), run on distroless (no shell,
+  # no npm, uid 65532). The slim image runs only start commands distroless cannot (shell syntax).
+  server_lines: [22, 24]
+  server_build_22: node:22-bookworm-slim
+  server_build_24: node:24-bookworm-slim
+  # full Debian images (buildpack-deps): Python, make and g++ for native addons, no apt at build time
+  server_build_native_22: node:22-bookworm
+  server_build_native_24: node:24-bookworm
+  server_runtime_22: gcr.io/distroless/nodejs22-debian12:nonroot
+  server_runtime_24: gcr.io/distroless/nodejs24-debian12:nonroot
+  server_slim_22: node:22-bookworm-slim
+  server_slim_24: node:24-bookworm-slim
+  app_uid: 65532
 python:
   runtime: python:3.12-slim-bookworm
 go:
   build: golang:1.22-bookworm
   runtime: gcr.io/distroless/static-debian12:nonroot
 java:
-  build: maven:3.9-eclipse-temurin-21
-  runtime: eclipse-temurin:21-jre-jammy
+  # Java runs on the LTS line it is built for (8 and 11 are still supported by Temurin); the build
+  # uses the same JDK. Maven builds use the image's Maven; Gradle builds use the repository's wrapper
+  # on the same JDK image, or the gradle image when there is no wrapper.
+  lines: [8, 11, 17, 21, 25]
+  maven_8: maven:3.9-eclipse-temurin-8
+  maven_11: maven:3.9-eclipse-temurin-11
+  maven_17: maven:3.9-eclipse-temurin-17
+  maven_21: maven:3.9-eclipse-temurin-21
+  maven_25: maven:3.9-eclipse-temurin-25
+  gradle: gradle:8-jdk21
+  # distroless Java: no shell, uid 65532. Java 8 and 11 have no distroless image: Temurin JRE, run as 65532
+  runtime_8: eclipse-temurin:8-jre-noble
+  runtime_11: eclipse-temurin:11-jre-noble
+  runtime_17: gcr.io/distroless/java17-debian12:nonroot
+  runtime_21: gcr.io/distroless/java21-debian12:nonroot
+  runtime_25: gcr.io/distroless/java25-debian13:nonroot
+  # WAR files without an embedded server: Tomcat 9 (javax.servlet) or 10.1 (jakarta.servlet), run as 65532
+  tomcat9_8: tomcat:9.0-jre8-temurin-noble
+  tomcat9_17: tomcat:9.0-jre17-temurin-noble
+  tomcat9_21: tomcat:9.0-jre21-temurin-noble
+  tomcat10_17: tomcat:10.1-jre17-temurin-noble
+  tomcat10_21: tomcat:10.1-jre21-temurin-noble
+  app_uid: 65532
 windows:
   framework_sdk: mcr.microsoft.com/dotnet/framework/sdk:4.8.1-windowsservercore-ltsc2022
   framework_aspnet: mcr.microsoft.com/dotnet/framework/aspnet:4.8.1-windowsservercore-ltsc2022

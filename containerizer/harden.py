@@ -303,12 +303,11 @@ def default_deny_policy() -> dict:
 # --------------------------------------------------------------------------- secrets
 
 def externalize_secrets(docs: list[dict], component: str, labels: dict, plan: dict) -> None:
-    """Replace Secret skeletons, and Secrets that volumes reference, by ExternalSecrets
-    (or Sealed Secrets templates, see rules/60-security.yaml `secrets.mode`)."""
-    cfg = security()["secrets"]
-    mode = cfg.get("mode", "plain")
-    if mode == "plain":
-        return
+    """Replace Secret skeletons, and Secrets that volumes reference, by ExternalSecrets (External
+    Secrets Operator, rules/60-security.yaml `secrets`): the values come from the secret store under
+    the remote key `<namespace>--<component>`, one property per Secret key."""
+    from . import eso
+    eso.cfg()
     wanted: dict[str, list[str]] = {}
     keep = []
     for d in docs:
@@ -330,21 +329,9 @@ def externalize_secrets(docs: list[dict], component: str, labels: dict, plan: di
     docs[:] = keep
     app = labels.get("app.kubernetes.io/part-of", component)
     for name, keys in sorted(wanted.items()):
-        if mode == "external-secrets":
-            prefix = cfg.get("key_prefix", "{app}/{component}").format(app=app, component=component)
-            docs.append({"apiVersion": "external-secrets.io/v1", "kind": "ExternalSecret",
-                         "metadata": {"name": name, "labels": labels},
-                         "spec": {"refreshInterval": cfg.get("refresh_interval", "1h"),
-                                  "secretStoreRef": dict(cfg["store"]),
-                                  "target": {"name": name, "creationPolicy": "Owner", "deletionPolicy": "Retain"},
-                                  "data": [{"secretKey": k, "remoteRef": {"key": prefix, "property": k}} for k in keys]
-                                  if keys else [],
-                                  **({} if keys else {"dataFrom": [{"extract": {"key": f"{prefix}/{name}"}}]})},
-                         "_comment": f"values come from the vault ({cfg['store']['kind']} {cfg['store']['name']}); never from Git"})
-        else:   # sealed-secrets: a template to encrypt with kubeseal, not applied as is
-            plan.setdefault("sealed_secret_templates", []).append(
-                {"apiVersion": "v1", "kind": "Secret", "metadata": {"name": name, "labels": labels}, "type": "Opaque",
-                 "stringData": {k: "" for k in keys}})
+        # unknown keys: the whole remote secret of that name
+        remote = eso.remote_key(app, component if keys else name)
+        docs.append(eso.external_secret(name, app, remote, keys, labels))
 
 
 def _basename(p: str) -> str:
@@ -451,8 +438,10 @@ def write_app_security(out, app: str, comp_docs: dict[str, list[dict]], registry
     Returns (resources to add to the app's kustomization, the namespace policy docs)."""
     from pathlib import Path
     out = Path(out)
+    from . import eso
     all_docs = [d for docs in comp_docs.values() for d in docs]
-    ns_docs = namespace_policies(all_docs)
+    # the namespace's identity towards the secret store (docs/external-secrets.md)
+    ns_docs = namespace_policies(all_docs) + [eso.reader_service_account(app)]
     _NS_POLICIES[app] = ns_docs
     (out / "security.yaml").write_text(dump(ns_docs))
     for rel, docs in cluster_kit(app, registry).items():
@@ -490,19 +479,23 @@ def harden_gitops(docs: dict[str, list[dict]], a=None) -> dict[str, list[dict]]:
     policies = copy.deepcopy(_NS_POLICIES.get(ns) or namespace_policies([]))
     for p in policies:
         p.setdefault("metadata", {})["namespace"] = ns
+    from .eso import reader
+    # the secret store reader too: the Flux source's own ExternalSecret needs it before the first sync
     platform = [(p["kind"], p["metadata"]["name"], p["apiVersion"]) for p in policies
-                if p["kind"] in PLATFORM_KINDS or p["metadata"]["name"] == "default-deny-all"]
-    mode = security()["secrets"].get("mode")
+                if p["kind"] in PLATFORM_KINDS or p["metadata"]["name"] == "default-deny-all"
+                or (p["kind"], p["metadata"]["name"]) == ("ServiceAccount", reader())]
     for path, items in docs.items():
         for d in items:
-            kind, spec = d.get("kind"), d.setdefault("spec", {})
+            kind = d.get("kind")
+            if kind not in ("AppProject", "Application", "Kustomization"):
+                continue        # no spec to add (a ServiceAccount, Role or Namespace has none)
+            spec = d.setdefault("spec", {})
             if kind == "AppProject":
                 spec["clusterResourceWhitelist"] = [w for w in spec.get("clusterResourceWhitelist") or []
                                                     if (w.get("group"), w.get("kind")) == ("", "Namespace")]
                 wl = spec.setdefault("namespaceResourceWhitelist", [])
                 # a plain Secret from Git would overwrite the values the external store manages
-                if mode != "plain":
-                    wl[:] = [w for w in wl if (w.get("group"), w.get("kind")) != ("", "Secret")]
+                wl[:] = [w for w in wl if (w.get("group"), w.get("kind")) != ("", "Secret")]
                 spec["sourceNamespaces"] = []
                 spec["orphanedResources"] = {"warn": True}
                 spec.setdefault("signatureKeys", [])
@@ -532,8 +525,9 @@ def hardening_markdown(app: str, comp_docs: dict[str, list[dict]]) -> str:
     viol: dict[str, list[Violation]] = {}
     exceptions: dict[str, set] = {}
     egress: dict[str, str] = {}
+    provided = external_secret_targets([d for docs in comp_docs.values() for d in docs])
     for comp, docs in comp_docs.items():
-        for v in lint_manifests(docs, f"{comp}: "):
+        for v in lint_manifests(docs, f"{comp}: ", provided):
             viol.setdefault(v.check, []).append(v)
         for d in docs:
             for meta, _ in _pod_specs(d):
@@ -585,11 +579,31 @@ def hardening_markdown(app: str, comp_docs: dict[str, list[dict]]) -> str:
         lines += ["## Hardening exceptions", "", "| Exception | Components |", "| --- | --- |"]
         lines += [f"| {e} | {', '.join(sorted(c))} |" for e, c in sorted(exceptions.items())]
         lines.append("")
+    remote = []
+    for comp, docs in sorted(comp_docs.items()):
+        for d in docs:
+            if d.get("kind") != "ExternalSecret":
+                continue
+            spec = d.get("spec") or {}
+            for x in spec.get("data") or []:
+                remote.append((x["remoteRef"]["key"], f"`{x['remoteRef'].get('property', '')}`", comp, d["metadata"]["name"]))
+            for x in spec.get("dataFrom") or []:
+                if (x.get("extract") or {}).get("key"):
+                    remote.append((x["extract"]["key"], "every key", comp, d["metadata"]["name"]))
+    if remote:
+        lines += ["## Secret store keys", "",
+                  "Put these in the secret store before the first sync (docs/external-secrets.md); External Secrets "
+                  "Operator copies them into the Secrets the workloads use. If one property is missing, that whole "
+                  "Secret is not created; the references are optional, so the pod still starts, without its values.", "",
+                  "| Remote key | Property | Component | Secret |", "| --- | --- | --- | --- |"]
+        lines += [f"| `{k}` | {p} | {c} | `{n}` |" for k, p, c, n in sorted(remote)]
+        lines.append("")
     lines += ["## Files", "",
               "- `security.yaml`: default-deny NetworkPolicy, LimitRange and ResourceQuota for the namespace",
               "- `namespace.yaml`: Pod Security Admission `restricted` (enforce, warn, audit)",
               "- `<component>/k8s.yaml`: hardened workloads, own ServiceAccount, least-privilege NetworkPolicy, ExternalSecrets",
-              "- `cluster/audit-policy.yaml`, `cluster/verify-images.yaml`: for the cluster operator, not applied with the app", ""]
+              "- `cluster/audit-policy.yaml`, `cluster/verify-images.yaml`, `cluster/secret-store.yaml` (the secret "
+              "store and this namespace's read access): for the cluster operator, not applied with the app", ""]
     return "\n".join(lines)
 
 
@@ -622,11 +636,53 @@ def _secret_name(name: str) -> bool:
     return bool(re.search(security()["lint"]["secret_names"], name or ""))
 
 
-def lint_manifests(docs: list[dict], where: str = "") -> list[Violation]:
+def external_secret_targets(docs: list[dict]) -> set[str]:
+    """Names of the Secrets that ExternalSecrets in `docs` produce."""
+    return {((d.get("spec") or {}).get("target") or {}).get("name") or (d.get("metadata") or {}).get("name")
+            for d in docs if isinstance(d, dict) and d.get("kind") == "ExternalSecret"}
+
+
+def _secret_refs(pod: dict) -> list[tuple[str, str]]:
+    """(Secret name, where) for every Secret a pod spec references."""
+    out = [(p.get("name"), "imagePullSecrets") for p in pod.get("imagePullSecrets") or []]
+    for v in pod.get("volumes") or []:
+        if (v.get("secret") or {}).get("secretName"):
+            out.append((v["secret"]["secretName"], f"volume {v.get('name')}"))
+        for src in (v.get("projected") or {}).get("sources") or []:
+            if (src.get("secret") or {}).get("name"):
+                out.append((src["secret"]["name"], f"projected volume {v.get('name')}"))
+    for c in (pod.get("initContainers") or []) + (pod.get("containers") or []):
+        for e in c.get("env") or []:
+            ref = ((e.get("valueFrom") or {}).get("secretKeyRef") or {}).get("name")
+            if ref:
+                out.append((ref, f"{c.get('name')} env {e.get('name')}"))
+        for e in c.get("envFrom") or []:
+            if (e.get("secretRef") or {}).get("name"):
+                out.append((e["secretRef"]["name"], f"{c.get('name')} envFrom"))
+    return [(n, w) for n, w in out if n]
+
+
+def _lint_external_secret(L: "_Lint", d: dict, tgt: str) -> None:
+    """ExternalSecrets read a store (or an in-cluster generator) and never carry a value themselves."""
+    from .eso import STORE_KINDS
+    spec = d.get("spec") or {}
+    ref = spec.get("secretStoreRef") or {}
+    generated = any((x.get("sourceRef") or {}).get("generatorRef") for x in spec.get("dataFrom") or [])
+    if not generated and (ref.get("kind", "SecretStore") not in STORE_KINDS or not ref.get("name")):
+        L.add("external-secret-store", tgt, "secretStoreRef names no SecretStore / ClusterSecretStore")
+    for k, v in (((spec.get("target") or {}).get("template") or {}).get("data") or {}).items():
+        if _secret_name(k) and isinstance(v, str) and v and "{{" not in v:
+            L.add("secret-literals", tgt, f"template key {k} carries a literal value; read it from the store")
+
+
+def lint_manifests(docs: list[dict], where: str = "", provided: set[str] | None = None) -> list[Violation]:
+    """`provided`: Secret names that ExternalSecrets elsewhere in the app produce (another component's
+    folder, pull-secret.yaml)."""
     L = _Lint()
     cfg = L.cfg
     docs = [d for d in docs if isinstance(d, dict)]
     policies = [d for d in docs if d.get("kind") == "NetworkPolicy"]
+    produced = external_secret_targets(docs) | set(provided or ())
     for d in docs:
         kind, name = d.get("kind"), (d.get("metadata") or {}).get("name", "?")
         tgt = f"{where}{kind}/{name}"
@@ -634,7 +690,14 @@ def lint_manifests(docs: list[dict], where: str = "") -> list[Violation]:
             for k, v in {**(d.get("stringData") or {}), **(d.get("data") or {})}.items():
                 if v not in ("", None):
                     L.add("secret-literals", tgt, f"Secret key {k} carries a value; keep values out of manifests")
-            L.add("plain-secret", tgt, "Secret object in the manifests; use an ExternalSecret or SealedSecret")
+            L.add("plain-secret", tgt, "Secret object in the manifests; use an ExternalSecret (External Secrets Operator)")
+            continue
+        if kind in ("SecretStore", "ClusterSecretStore"):
+            L.add("external-secret-store", tgt, f"{kind} in the app's manifests; the platform defines the store "
+                                                "(cluster/secret-store.yaml)")
+            continue
+        if kind == "ExternalSecret":
+            _lint_external_secret(L, d, tgt)
             continue
         for meta, pod in _pod_specs(d):
             waived = {w.strip() for w in ((meta.get("annotations") or {}).get(f"{ANNOTATION}/waives") or "").split(",") if w.strip()}
@@ -653,6 +716,9 @@ def lint_manifests(docs: list[dict], where: str = "") -> list[Violation]:
                     L.add("sysctls", tgt, f"sysctl {s.get('name')} is not in the safe set", waived)
             if pod.get("automountServiceAccountToken") is not False:
                 L.add("sa-token", tgt, "automountServiceAccountToken is not false", waived)
+            for ref, at in _secret_refs(pod):
+                if ref not in produced:
+                    L.add("secret-source", tgt, f"Secret {ref} ({at}) is not produced by an ExternalSecret", waived)
             labels = (meta.get("labels") or {})
             selecting = [p for p in policies if _selects((p.get("spec") or {}).get("podSelector") or {}, labels)]
             if not selecting:

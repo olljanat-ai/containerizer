@@ -59,6 +59,40 @@ wait_for 900 "k3s node Ready" sh -c 'k3s kubectl get nodes --no-headers | grep -
 wait_for 900 "Flux controllers" k3s kubectl -n flux-system wait --for=condition=Available deploy --all --timeout=10s
 wait_for 600 "CoreDNS resolves through the filter" k3s kubectl -n kube-system wait --for=condition=Available deploy/coredns --timeout=10s
 
+step "secret store: External Secrets Operator, per-namespace access"
+wait_for 900 "External Secrets Operator" k3s kubectl -n external-secrets wait --for=condition=Available deploy --all --timeout=10s
+systemctl start containerizer-sandbox.service
+wait_for 300 "ClusterSecretStore app-secrets" k3s kubectl get clustersecretstore app-secrets
+test "$(k3s kubectl get ns containerizer-secrets -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}')" = restricted
+k() { k3s kubectl "$@"; }
+. /usr/lib/containerizer/lib/secret-store.sh
+cz_store_put ci-a--web 'ConnectionStrings__Db=Server=db;Password=ci-only'
+cz_store_put ci-a--web --manager ci-other Extra=1          # a second writer keeps the first one's keys
+for ns in ci-a ci-b; do k create namespace "$ns" --dry-run=client -o yaml | k apply -f - >/dev/null; done
+cz_store_grant ci-a ci-a--web
+cz_store_grant ci-b ci-b--web
+for ns in ci-a ci-b; do k apply -f - >/dev/null <<YAML
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata: {name: web-secrets, namespace: $ns}
+spec:
+  refreshInterval: 1m
+  secretStoreRef: {kind: ClusterSecretStore, name: app-secrets}
+  target: {name: web-secrets}
+  data:
+    - {secretKey: ConnectionStrings__Db, remoteRef: {key: ci-a--web, property: ConnectionStrings__Db}}
+YAML
+done
+wait_for 300 "ci-a reads its own key" sh -c 'k3s kubectl -n ci-a get secret web-secrets -o jsonpath={.data.ConnectionStrings__Db} | base64 -d | grep -q ci-only'
+test "$(k3s kubectl -n containerizer-secrets get secret ci-a--web -o jsonpath={.data.Extra} | base64 -d)" = 1
+sleep 30
+if k3s kubectl -n ci-b get secret web-secrets >/dev/null 2>&1; then echo "ci-b must not read ci-a's key" >&2; exit 1; fi
+k3s kubectl -n ci-b get externalsecret web-secrets -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' \
+  | grep -q SecretSyncedError
+k delete namespace ci-a ci-b --wait=false
+k -n containerizer-secrets delete secret/ci-a--web role/app-secrets-reader-ci-a rolebinding/app-secrets-reader-ci-a \
+  role/app-secrets-reader-ci-b rolebinding/app-secrets-reader-ci-b >/dev/null 2>&1 || true
+
 step "local registry: push from Docker, pull from k3s"
 docker image ls
 src=$(docker image ls --format '{{.ID}}' docker.io/library/registry | head -1)
@@ -69,6 +103,41 @@ k3s kubectl run ci-registry --image=localhost:5000/ci/registry:1 --restart=Never
 wait_for 300 "pod from the local registry" sh -c 'k3s kubectl get pod ci-registry -o jsonpath={.status.phase} | grep -q Succeeded'
 k3s kubectl logs ci-registry
 k3s kubectl delete pod ci-registry --wait=false
+
+step "SBOM attached to a pushed image with ORAS (as the scan worker does it)"
+oras version
+digest=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' localhost:5000/ci/registry:1 \
+  | sed -n 's#^localhost:5000/ci/registry@##p' | head -1)
+test -n "$digest"
+install -d -m 0700 -o containerizer -g containerizer /var/lib/containerizer/worker/ci
+runuser -u containerizer -- env HOME=/var/lib/containerizer/worker $PY - "$digest" <<'PY'
+import json, sys, pathlib
+from containerizer import sbom
+f = pathlib.Path("/var/lib/containerizer/worker/ci/sbom.cdx.json")
+f.write_text(json.dumps({"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1, "components": []}))
+r = sbom.attach("localhost:5000/ci/registry:1", sys.argv[1], f)
+print(r)
+assert r == "attached", r
+PY
+oras discover --format json "localhost:5000/ci/registry@$digest" | grep -q 'application/vnd.cyclonedx+json'
+rm -rf /var/lib/containerizer/worker/ci
+
+step "dev database uploads: the web UI stores them, the scan worker reads them"
+test "$(stat -c '%U:%G %a' /var/lib/containerizer/devdb)" = "cz-web:containerizer 2750"
+for u in containerizer-web containerizer-worker; do
+  tr '\0' '\n' < "/proc/$(systemctl show -p MainPID --value $u.service)/environ" \
+    | grep -qx CONTAINERIZER_DEV_DB_DIR=/var/lib/containerizer/devdb
+done
+# as the web UI, inside its sandbox (ProtectSystem=strict: only this folder and the request folder are writable)
+web=$(systemctl show -p MainPID --value containerizer-web.service)
+nsenter --target "$web" --mount --setuid 901 --setgid 901 -- $PY -c '
+import os, pathlib
+from containerizer import devdb
+s = devdb.Settings.from_env(os.environ | {"CONTAINERIZER_DEV_DB_DIR": "/var/lib/containerizer/devdb"})
+up = devdb.Upload(head=b"TAPE ci"); up.path = s.directory / ".upload-ci"; up.path.write_bytes(up.head); up.sha256 = "0" * 64
+print(devdb.store(s, up, "sqlserver"))'
+runuser -u containerizer -- grep -q TAPE "/var/lib/containerizer/devdb/$(printf '0%.0s' $(seq 64)).bak"
+rm -f /var/lib/containerizer/devdb/0*.bak
 
 step "egress change through the system agent (as the Firewall page does it)"
 $PY - <<'PY'

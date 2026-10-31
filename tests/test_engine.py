@@ -218,13 +218,28 @@ def test_gitops_examples_for_argo_and_flux(tmp_path):
     app, = load("argocd/application.yaml")
     assert "CreateNamespace=true" in app["spec"]["syncPolicy"]["syncOptions"]
     assert app["spec"]["syncPolicy"]["managedNamespaceMetadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "restricted"
-    src, ks = load("flux/git/sync.yaml")
+    git_es, gpg_es, src, ks = load("flux/git/sync.yaml")
     assert src["spec"]["verify"]["mode"] == "HEAD"
     assert ks["spec"]["serviceAccountName"] == f"{a.name}-reconciler" and ks["spec"]["prune"]
-    oci, _ = load("flux/oci/sync.yaml")
+    # the source credentials are ExternalSecrets, never Secrets
+    assert (git_es["kind"], git_es["metadata"]["name"]) == ("ExternalSecret", src["spec"]["secretRef"]["name"])
+    assert git_es["spec"]["dataFrom"] == [{"extract": {"key": f"{a.name}--cz-git"}}]
+    assert gpg_es["metadata"]["name"] == src["spec"]["verify"]["secretRef"]["name"]
+    reg_es, cos_es, oci, _ = load("flux/oci/sync.yaml")
     assert oci["spec"]["verify"]["provider"] == "cosign"
+    assert reg_es["spec"]["target"]["template"]["type"] == "kubernetes.io/dockerconfigjson"
+    assert cos_es["metadata"]["name"] == oci["spec"]["verify"]["secretRef"]["name"]
     kinds = [d["kind"] for d in load("flux/git/image-automation.yaml")]
-    assert kinds == ["ImageRepository", "ImagePolicy", "ImageUpdateAutomation"]
+    assert kinds == ["ExternalSecret", "ImageRepository", "ImagePolicy", "ImageUpdateAutomation"]
+    tenant = load("flux/tenant.yaml")
+    assert not [d for d in tenant + load("flux/git/sync.yaml") if d["kind"] == "Secret"]
+    reader = next(d for d in tenant if d["kind"] == "ServiceAccount" and d["metadata"]["name"] == "app-secrets-reader")
+    assert reader["automountServiceAccountToken"] is False
+    role = next(d for d in tenant if d["kind"] == "Role")
+    assert role["metadata"]["namespace"] == "containerizer-secrets"
+    [rule] = role["rules"]
+    assert rule["verbs"] == ["get"] and rule["resources"] == ["secrets"]          # no list/watch: named keys only
+    assert set(rule["resourceNames"]) >= {f"{a.name}--cz-{k}" for k in ("git", "git-gpg", "registry", "cosign-pub")}
     assert '{"$imagepolicy": "' in (out / "kustomization.yaml").read_text()
 
 

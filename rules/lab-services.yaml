@@ -1,0 +1,39 @@
+# Lab services: backing services the appliance runs in its k3s sandbox (docs/lab-services.md).
+# An administrator turns each one on or off under Admin -> Lab services. When a component depends on a
+# service that is on, the generated manifests point it at the lab service through environment
+# variables (no code change), with credentials from External Secrets Operator.
+#
+# when:      rule conditions (rules.py) over the component and the projects it references; a
+#            connection string or setting the scan classified as this service also counts
+# settings:  which configuration keys the generator overrides, see containerizer/labservices.py
+services:
+  sqlserver:
+    when:
+      package: 'Microsoft\.Data\.SqlClient|System\.Data\.SqlClient|Microsoft\.EntityFrameworkCore\.SqlServer.*|Hangfire\.SqlServer|dbup-sqlserver|Aspire\.Microsoft\.(Data\.SqlClient|EntityFrameworkCore\.SqlServer)'
+  postgres:
+    when:
+      package: 'Npgsql.*|dbup-postgresql|Hangfire\.PostgreSql|Aspire\.Npgsql.*'
+  redis:
+    when:
+      package: 'StackExchange\.Redis|Microsoft\.Extensions\.Caching\.StackExchangeRedis|Microsoft\.AspNetCore\.SignalR\.StackExchangeRedis|Microsoft\.AspNetCore\.DataProtection\.StackExchangeRedis|Hangfire\.Redis\.StackExchange|Aspire\.StackExchange\.Redis.*'
+  s3:
+    when:
+      package: 'AWSSDK\.S3|Minio'
+  azure-blob:
+    when:
+      package: 'Azure\.Storage\.Blobs|Microsoft\.Azure\.Storage\.Blob|WindowsAzure\.Storage|Aspire\.Azure\.Storage\.Blobs'
+  mysql:
+    when:
+      package: 'MySql\.Data|MySqlConnector|Pomelo\.EntityFrameworkCore\.MySql|MySql\.EntityFrameworkCore|Hangfire\.MySqlStorage|dbup-mysql|Aspire\.MySqlConnector|Aspire\.Pomelo\.EntityFrameworkCore\.MySql'
+  mongodb:
+    when:
+      package: 'MongoDB\.Driver.*|MongoDB\.Entities|MongoDB\.EntityFrameworkCore|Aspire\.MongoDB\.Driver.*|Hangfire\.Mongo'
+  rabbitmq:
+    when:
+      package: 'RabbitMQ\.Client|MassTransit\.RabbitMQ|EasyNetQ.*|NServiceBus\.RabbitMQ|RawRabbit.*|Aspire\.RabbitMQ\.Client.*|Rebus\.RabbitMq'
+  kafka:
+    when:
+      package: 'Confluent\.Kafka|MassTransit\.Kafka|KafkaFlow.*|Aspire\.Confluent\.Kafka|Silverback\.Integration\.Kafka|Rebus\.Kafka'
+  sftp:
+    when:
+      package: 'SSH\.NET|Renci\.SshNet.*|WinSCP|SftpCore'

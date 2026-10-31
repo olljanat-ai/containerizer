@@ -18,7 +18,7 @@
 --
 -- The scan fills Application, Component and the assessment tables. People maintain business units,
 -- products and the application mapping in the admin pages of the web UI; a scan never overwrites them.
--- See docs/results-database.md.
+-- The appliance creates and upgrades it at start (docs/appliance.md).
 
 IF SCHEMA_ID(N'${schema}') IS NULL EXEC(N'CREATE SCHEMA [${schema}] AUTHORIZATION dbo');
 GO
@@ -208,8 +208,34 @@ CREATE TABLE [${schema}].SandboxCheck (
     LogTail       nvarchar(max)  NULL              -- redacted; not granted to the reader role
 );
 GO
+-- 11: the component's public HTTPS URL (Sandbox HTTPS, docs/sandbox-https.md) and what opening it gave
+IF COL_LENGTH(N'[${schema}].SandboxCheck', N'Url') IS NULL
+    ALTER TABLE [${schema}].SandboxCheck ADD Url nvarchar(300) NULL, UrlCheck nvarchar(300) NULL;
+GO
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_SandboxCheck_Component' AND object_id = OBJECT_ID(N'[${schema}].SandboxCheck'))
 CREATE INDEX IX_SandboxCheck_Component ON [${schema}].SandboxCheck (ApplicationId, ComponentId, CheckedAt DESC, CheckId DESC);
+GO
+
+-- How the generator pointed a component at the sandbox identity provider (`containerizer org` with a
+-- sandbox domain, docs/sandbox-idp.md): one row per component, protocol and run. Nothing secret: client
+-- ids, URLs and the names of the settings that were overridden.
+IF OBJECT_ID(N'[${schema}].SandboxIdpClient', N'U') IS NULL
+CREATE TABLE [${schema}].SandboxIdpClient (
+    ClientRowId   bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_SandboxIdpClient PRIMARY KEY,
+    AssessmentId  int            NOT NULL CONSTRAINT FK_SandboxIdpClient_Assessment REFERENCES [${schema}].ApplicationAssessment (AssessmentId) ON DELETE CASCADE,
+    ComponentId   int            NOT NULL CONSTRAINT FK_SandboxIdpClient_Component REFERENCES [${schema}].Component (ComponentId),
+    WrittenAt     datetime2(0)   NOT NULL CONSTRAINT DF_SandboxIdpClient_WrittenAt DEFAULT SYSUTCDATETIME(),
+    Protocol      nvarchar(10)   NOT NULL,          -- oidc, wsfed, saml, none (could not be registered: Notes)
+    IdpUrl        nvarchar(300)  NOT NULL,          -- https://containerizer-idp.<domain>
+    AppUrl        nvarchar(300)  NULL,
+    Identifier    nvarchar(400)  NULL,              -- OIDC client id, WS-Fed realm, SAML entity id
+    MetadataUrl   nvarchar(400)  NULL,
+    Settings      nvarchar(max)  NULL,              -- JSON: overridden settings (name -> value) and the secret's name
+    Notes         nvarchar(2000) NULL
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_SandboxIdpClient_Assessment' AND object_id = OBJECT_ID(N'[${schema}].SandboxIdpClient'))
+CREATE INDEX IX_SandboxIdpClient_Assessment ON [${schema}].SandboxIdpClient (AssessmentId, ComponentId);
 GO
 
 MERGE [${schema}].Rating AS t
@@ -292,9 +318,21 @@ GO
 
 -- The latest sandbox check of every application (one row per component it had deployed then; the
 -- rows of one check share CheckedAt), without the log tail. The application page reads it.
+-- Sandbox IdP registrations of the latest assessment (with any) of each application. The application page reads it.
+CREATE OR ALTER VIEW [${schema}].vSandboxIdpLatest AS
+SELECT aa.ApplicationId, x.ComponentId, c.Name AS ComponentName, x.WrittenAt, x.Protocol, x.IdpUrl, x.AppUrl,
+       x.Identifier, x.MetadataUrl, x.Settings, x.Notes
+FROM [${schema}].SandboxIdpClient x
+JOIN [${schema}].ApplicationAssessment aa ON aa.AssessmentId = x.AssessmentId
+JOIN [${schema}].Component c ON c.ComponentId = x.ComponentId
+WHERE x.AssessmentId = (SELECT MAX(y.AssessmentId) FROM [${schema}].SandboxIdpClient y
+                        JOIN [${schema}].ApplicationAssessment ya ON ya.AssessmentId = y.AssessmentId
+                        WHERE ya.ApplicationId = aa.ApplicationId);
+GO
 CREATE OR ALTER VIEW [${schema}].vSandboxLatest AS
 SELECT x.ApplicationId, x.ComponentId, c.Name AS ComponentName, x.CheckedAt, x.Status, x.Reason, x.GitOps,
-       x.Namespace, x.Workloads, x.ImageRef, x.Revision, x.Ready, x.Restarts, x.RuleId, x.Outcome, x.Diagnosis, x.Events
+       x.Namespace, x.Workloads, x.ImageRef, x.Revision, x.Ready, x.Restarts, x.RuleId, x.Outcome, x.Diagnosis, x.Events,
+       x.Url, x.UrlCheck
 FROM (SELECT s.*, MAX(s.CheckedAt) OVER (PARTITION BY s.ApplicationId) AS LastCheck,
              ROW_NUMBER() OVER (PARTITION BY s.ApplicationId, s.ComponentId, s.CheckedAt ORDER BY s.CheckId DESC) AS n
       FROM [${schema}].SandboxCheck s) x
@@ -485,16 +523,48 @@ CREATE TABLE [${schema}].DevDatabase (
     DevDatabaseId int IDENTITY(1,1) NOT NULL CONSTRAINT PK_DevDatabase PRIMARY KEY,
     ApplicationId int            NOT NULL CONSTRAINT FK_DevDatabase_Application REFERENCES [${schema}].Application (ApplicationId)
                                  CONSTRAINT UQ_DevDatabase_Application UNIQUE,
-    Engine        nvarchar(20)   NOT NULL CONSTRAINT CK_DevDatabase_Engine CHECK (Engine IN (N'sqlserver')),
+    Engine        nvarchar(20)   NOT NULL CONSTRAINT CK_DevDatabase_Engine CHECK (Engine IN (N'sqlserver', N'postgres', N'mysql')),
     DatabaseName  nvarchar(128)  NOT NULL,
     FileName      nvarchar(200)  NOT NULL,       -- as uploaded
     SizeBytes     bigint         NOT NULL,
     Sha256        char(64)       NOT NULL,
-    StoredAs      nvarchar(100)  NOT NULL,       -- <sha256>.bak
+    StoredAs      nvarchar(100)  NOT NULL,       -- <sha256>.<bak|dump|sql|sql.gz>
     Prompt        nvarchar(max)  NULL,           -- how to point the application at the database
     UploadedAt    datetime2(0)   NOT NULL CONSTRAINT DF_DevDatabase_UploadedAt DEFAULT SYSUTCDATETIME(),
     UploadedBy    nvarchar(256)  NOT NULL
 );
+GO
+-- 14: PostgreSQL and MySQL backups too (databases made before allow SQL Server only)
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_DevDatabase_Engine'
+           AND parent_object_id = OBJECT_ID(N'[${schema}].DevDatabase') AND definition NOT LIKE N'%mysql%')
+    ALTER TABLE [${schema}].DevDatabase DROP CONSTRAINT CK_DevDatabase_Engine;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_DevDatabase_Engine'
+               AND parent_object_id = OBJECT_ID(N'[${schema}].DevDatabase'))
+    ALTER TABLE [${schema}].DevDatabase ADD CONSTRAINT CK_DevDatabase_Engine CHECK (Engine IN (N'sqlserver', N'postgres', N'mysql'));
+GO
+
+-- Lab services the appliance runs in its sandbox cluster for the scanned apps (labservices.py,
+-- docs/lab-services.md): on or off, set by administrators on Admin -> Lab services. The system agent
+-- applies the switches; this table is what the page shows and, through its trigger, the change history.
+IF OBJECT_ID(N'[${schema}].LabService', N'U') IS NULL
+CREATE TABLE [${schema}].LabService (
+    LabServiceId  int IDENTITY(1,1) NOT NULL CONSTRAINT PK_LabService PRIMARY KEY,
+    Name          nvarchar(20)   NOT NULL CONSTRAINT UQ_LabService_Name UNIQUE,
+    Title         nvarchar(100)  NOT NULL,
+    Enabled       bit            NOT NULL,
+    Note          nvarchar(400)  NULL,           -- why, from the administrator
+    ChangedAt     datetime2(0)   NOT NULL CONSTRAINT DF_LabService_ChangedAt DEFAULT SYSUTCDATETIME()
+);
+GO
+-- the services and their defaults (SQL Server was already there for dev database restores)
+INSERT [${schema}].LabService (Name, Title, Enabled)
+SELECT v.Name, v.Title, v.Enabled
+FROM (VALUES (N'sqlserver', N'SQL Server', 1), (N'postgres', N'PostgreSQL', 0), (N'redis', N'Redis', 0),
+             (N's3', N'S3 object storage', 0), (N'azure-blob', N'Azure Blob storage', 0), (N'mysql', N'MySQL', 0),
+             (N'mongodb', N'MongoDB', 0), (N'rabbitmq', N'RabbitMQ', 0), (N'kafka', N'Kafka', 0), (N'sftp', N'SFTP', 0)
+     ) v (Name, Title, Enabled)
+WHERE NOT EXISTS (SELECT 1 FROM [${schema}].LabService x WHERE x.Name = v.Name);
 GO
 
 CREATE OR ALTER FUNCTION [${schema}].fnAuditWho()
@@ -867,7 +937,27 @@ BEGIN
 END;
 GO
 
--- Least-privilege roles. Add database users to them (docs/results-database.md):
+-- Lab services turned on or off (and the administrator's note) in the change history.
+CREATE OR ALTER TRIGGER [${schema}].trLabServiceAudit ON [${schema}].LabService
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'LabService', COALESCE(i.LabServiceId, d.LabServiceId),
+           COALESCE(i.Title, d.Title),
+           CASE WHEN d.LabServiceId IS NULL THEN N'insert' WHEN i.LabServiceId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.LabServiceId IS NOT NULL THEN (SELECT d.Enabled, d.Note
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.LabServiceId IS NOT NULL THEN (SELECT i.Enabled, i.Note
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.LabServiceId = i.LabServiceId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.LabServiceId IS NULL OR i.LabServiceId IS NULL
+       OR EXISTS (SELECT i.Enabled, i.Note EXCEPT SELECT d.Enabled, d.Note);
+END;
+GO
+
+-- Least-privilege roles. Add database users to them (docs/sign-in.md#roles for the web UI roles on top of them):
 --   ${schema}_writer: the scanner; inserts results, never touches the people-maintained columns
 --   ${schema}_reader: the web UI and report readers; views and lookup tables only
 --   ${schema}_admin: the admin pages of the web UI (and people editing with SQL): business units,
@@ -899,6 +989,7 @@ GRANT UPDATE ON [${schema}].OrgRepository (ProjectName, Name, ExternalId, CloneU
     LastRating, LastScannedAt, LastRunId, LastSeconds, LastDetail) TO [${schema}_writer];
 GRANT EXECUTE ON [${schema}].QueueOrgScanRun TO [${schema}_writer];
 GRANT SELECT, INSERT ON [${schema}].SandboxCheck TO [${schema}_writer];
+GRANT SELECT, INSERT ON [${schema}].SandboxIdpClient TO [${schema}_writer];
 GRANT EXECUTE ON [${schema}].ProposeRuleCandidate TO [${schema}_writer];
 
 GRANT SELECT ON [${schema}].vApplicationLatest TO [${schema}_reader];
@@ -908,6 +999,7 @@ GRANT SELECT ON [${schema}].vComponentMigrationLatest TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vUnmapped TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vAssessmentHistory TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vSandboxLatest TO [${schema}_reader];
+GRANT SELECT ON [${schema}].vSandboxIdpLatest TO [${schema}_reader];
 GRANT SELECT ON [${schema}].Rating TO [${schema}_reader];
 GRANT SELECT ON [${schema}].BusinessUnit TO [${schema}_reader];
 GRANT SELECT ON [${schema}].Product TO [${schema}_reader];
@@ -939,7 +1031,123 @@ GRANT INSERT, DELETE ON [${schema}].SourceCredential TO [${schema}_admin];
 GRANT UPDATE ON [${schema}].SourceCredential (Model, Note, Enabled, ExpiresOn, TokenSealed, KeyId, TokenSetAt, TokenSetBy) TO [${schema}_admin];
 GRANT SELECT ON [${schema}].SourceCredential TO [${schema}_writer];
 GRANT UPDATE ON [${schema}].SourceCredential (LastUsedAt, LastResult) TO [${schema}_writer];
+-- lab services: administrators turn them on or off; the system agent applies it
+GRANT SELECT ON [${schema}].LabService TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].LabService (Enabled, Note, ChangedAt) TO [${schema}_admin];
 IF IS_ROLEMEMBER(N'${schema}_reader', N'${schema}_admin') = 0 ALTER ROLE [${schema}_reader] ADD MEMBER [${schema}_admin];
+GO
+
+-- Approving learned rules from the admin pages (rulereview.py, docs/rule-review.md). The internal rules
+-- repository is set by administrators on Admin -> Rule review (one row); its token is the write token
+-- registered for that repository URL under Source control, which only the scan worker can open. So the
+-- web UI does not push: it asks for the approval (Approve* columns), and the worker opens the pull request
+-- and records the decision through FinishRuleApproval, in the reviewer's name.
+IF OBJECT_ID(N'[${schema}].RulesRepository', N'U') IS NULL
+CREATE TABLE [${schema}].RulesRepository (
+    RulesRepositoryId int NOT NULL CONSTRAINT PK_RulesRepository PRIMARY KEY CONSTRAINT CK_RulesRepository_One CHECK (RulesRepositoryId = 1),
+    RepoUrl       nvarchar(400) NOT NULL CONSTRAINT CK_RulesRepository_Url CHECK (RepoUrl LIKE N'https://_%' AND RepoUrl NOT LIKE N'%[<>"'' ]%'),
+    Provider      nvarchar(20)  NOT NULL CONSTRAINT CK_RulesRepository_Provider CHECK (Provider IN (N'azure-devops', N'github', N'gitlab')),
+    ApiUrl        nvarchar(400) NULL CONSTRAINT CK_RulesRepository_ApiUrl CHECK (ApiUrl LIKE N'https://_%' AND ApiUrl NOT LIKE N'%[<>"'' ]%'),
+    Branch        nvarchar(200) NOT NULL CONSTRAINT DF_RulesRepository_Branch DEFAULT N'main',
+    Path          nvarchar(200) NOT NULL CONSTRAINT DF_RulesRepository_Path DEFAULT N'rules',
+    ChangedAt     datetime2(0)  NOT NULL CONSTRAINT DF_RulesRepository_ChangedAt DEFAULT SYSUTCDATETIME()
+);
+GO
+CREATE OR ALTER TRIGGER [${schema}].trRulesRepositoryAudit ON [${schema}].RulesRepository
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'RulesRepository', COALESCE(i.RulesRepositoryId, d.RulesRepositoryId),
+           LEFT(COALESCE(i.RepoUrl, d.RepoUrl), 200),
+           CASE WHEN d.RulesRepositoryId IS NULL THEN N'insert' WHEN i.RulesRepositoryId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.RulesRepositoryId IS NOT NULL THEN (SELECT d.RepoUrl, d.Provider, d.ApiUrl, d.Branch, d.Path
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.RulesRepositoryId IS NOT NULL THEN (SELECT i.RepoUrl, i.Provider, i.ApiUrl, i.Branch, i.Path
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.RulesRepositoryId = i.RulesRepositoryId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.RulesRepositoryId IS NULL OR i.RulesRepositoryId IS NULL
+       OR EXISTS (SELECT i.RepoUrl, i.Provider, i.ApiUrl, i.Branch, i.Path EXCEPT SELECT d.RepoUrl, d.Provider, d.ApiUrl, d.Branch, d.Path);
+END;
+GO
+IF COL_LENGTH(N'[${schema}].RuleCandidate', N'ApproveRequestedAt') IS NULL
+ALTER TABLE [${schema}].RuleCandidate ADD
+    ApproveRequestedAt datetime2(0)   NULL,         -- a reviewer approved it; the worker opens the pull request
+    ApproveBy          nvarchar(256)  NULL,
+    ApproveByName      nvarchar(256)  NULL,
+    ApproveRole        nvarchar(40)   NULL,
+    ApproveYaml        nvarchar(max)  NULL,         -- the rule as the reviewer approved it (with their edits)
+    ApproveNote        nvarchar(1000) NULL,
+    ApproveStartedAt   datetime2(0)   NULL,         -- the worker took it (taken again after 15 minutes)
+    ApplyError         nvarchar(1000) NULL;         -- why the last approval did not go through
+GO
+
+-- The worker takes the oldest approval waiting for it (one worker at a time per candidate).
+CREATE OR ALTER PROCEDURE [${schema}].NextRuleApproval
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    DECLARE @id int;
+    BEGIN TRANSACTION;
+    SELECT TOP (1) @id = CandidateId FROM [${schema}].RuleCandidate WITH (UPDLOCK, READPAST, ROWLOCK)
+    WHERE Status = N'pending' AND ApproveRequestedAt IS NOT NULL
+      AND (ApproveStartedAt IS NULL OR ApproveStartedAt < DATEADD(minute, -15, SYSUTCDATETIME()))
+    ORDER BY ApproveRequestedAt;
+    IF @id IS NOT NULL
+        UPDATE [${schema}].RuleCandidate SET ApproveStartedAt = SYSUTCDATETIME() WHERE CandidateId = @id;
+    COMMIT TRANSACTION;
+    SELECT CandidateId, Kind, RuleId, Title, TargetFile, RuleYaml, Confidence, Model, LearnedFrom, SeenCount,
+           ApproveBy, ApproveByName, ApproveRole, ApproveYaml, ApproveNote
+    FROM [${schema}].RuleCandidate WHERE CandidateId = @id;
+END;
+GO
+
+-- The worker's result: approved (the pull request is open) in the reviewer's name, or the request is
+-- dropped with the reason and the candidate waits again.
+CREATE OR ALTER PROCEDURE [${schema}].FinishRuleApproval
+    @CandidateId int, @FinalYaml nvarchar(max), @PullRequestUrl nvarchar(400), @Error nvarchar(1000)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @by nvarchar(256), @name nvarchar(256), @role nvarchar(40);
+    SELECT @by = ApproveBy, @name = ApproveByName, @role = ApproveRole FROM [${schema}].RuleCandidate
+    WHERE CandidateId = @CandidateId AND Status = N'pending' AND ApproveStartedAt IS NOT NULL;
+    IF @by IS NULL
+    BEGIN
+        SELECT CAST(0 AS int) AS Updated;
+        RETURN;
+    END
+    -- the change history names the reviewer, not the worker's login
+    EXEC sp_set_session_context N'containerizer.user', @by;
+    EXEC sp_set_session_context N'containerizer.user_name', @name;
+    EXEC sp_set_session_context N'containerizer.via', N'rule review';
+    EXEC sp_set_session_context N'containerizer.role', @role;
+    IF @Error IS NULL
+        UPDATE [${schema}].RuleCandidate SET Status = N'approved', ReviewedBy = ApproveBy, ReviewedByName = ApproveByName,
+               ReviewedAt = SYSUTCDATETIME(), ReviewNote = ApproveNote, FinalYaml = @FinalYaml, AppliedAs = N'pr',
+               PullRequestUrl = @PullRequestUrl, ClaimedBy = NULL, ClaimedAt = NULL, ApproveRequestedAt = NULL,
+               ApproveStartedAt = NULL, ApplyError = NULL
+        WHERE CandidateId = @CandidateId AND Status = N'pending' AND ApproveStartedAt IS NOT NULL;
+    ELSE
+        UPDATE [${schema}].RuleCandidate SET ApproveRequestedAt = NULL, ApproveStartedAt = NULL, ApplyError = @Error,
+               ClaimedBy = NULL, ClaimedAt = NULL
+        WHERE CandidateId = @CandidateId AND Status = N'pending' AND ApproveStartedAt IS NOT NULL;
+    DECLARE @n int = @@ROWCOUNT;
+    EXEC sp_set_session_context N'containerizer.user', NULL;
+    EXEC sp_set_session_context N'containerizer.user_name', NULL;
+    EXEC sp_set_session_context N'containerizer.via', NULL;
+    EXEC sp_set_session_context N'containerizer.role', NULL;
+    SELECT @n AS Updated;
+END;
+GO
+GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].RulesRepository TO [${schema}_admin];
+GRANT SELECT ON [${schema}].RulesRepository TO [${schema}_writer];
+GRANT UPDATE ON [${schema}].RuleCandidate (ApproveRequestedAt, ApproveBy, ApproveByName, ApproveRole, ApproveYaml, ApproveNote,
+                                           ApproveStartedAt, ApplyError) TO [${schema}_admin];
+GRANT EXECUTE ON [${schema}].NextRuleApproval TO [${schema}_writer];
+GRANT EXECUTE ON [${schema}].FinishRuleApproval TO [${schema}_writer];
 GO
 
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 2) INSERT [${schema}].SchemaVersion (Version) VALUES (2);
@@ -956,4 +1164,17 @@ IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 9) INSERT
 GO
 -- 10: source control tokens and the LLM (SourceCredential)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 10) INSERT [${schema}].SchemaVersion (Version) VALUES (10);
+GO
+-- 11: SandboxCheck.Url, UrlCheck (Sandbox HTTPS)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 11) INSERT [${schema}].SchemaVersion (Version) VALUES (11);
+GO
+-- 12: lab services (LabService)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 12) INSERT [${schema}].SchemaVersion (Version) VALUES (12);
+GO
+-- 13: sandbox identity provider registrations (SandboxIdpClient, vSandboxIdpLatest)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 13) INSERT [${schema}].SchemaVersion (Version) VALUES (13);
+-- 14: dev database backups for PostgreSQL and MySQL (CK_DevDatabase_Engine); more lab services
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 14) INSERT [${schema}].SchemaVersion (Version) VALUES (14);
+-- 15: approving learned rules from the admin pages (RulesRepository, RuleCandidate.Approve*)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 15) INSERT [${schema}].SchemaVersion (Version) VALUES (15);
 GO

@@ -133,6 +133,12 @@ def _build_env_args() -> list[str]:
     proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
     if proxy:
         args += ["--build-arg", f"HTTPS_PROXY={proxy}", "--build-arg", f"https_proxy={proxy}"]
+    no = os.environ.get("NO_PROXY") or os.environ.get("no_proxy")
+    if (proxy or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")) and no:
+        args += ["--build-arg", f"NO_PROXY={no}", "--build-arg", f"no_proxy={no}"]
+    http = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+    if http:        # apt (Debian/Ubuntu package sources) uses plain HTTP
+        args += ["--build-arg", f"HTTP_PROXY={http}", "--build-arg", f"http_proxy={http}"]
         if "127.0.0.1" in proxy or "localhost" in proxy:
             args += ["--network", "host"]
     ca = os.environ.get("CONTAINERIZER_CA_BUNDLE") or next(
@@ -181,7 +187,8 @@ def build(a: AppAssessment, c: Component, plan: dict, workdir: Path, timeout: in
     df = dockerfile_for(plan, c)
     _ensure_images(df)
     (workdir / "Dockerfile").write_text(df)
-    (workdir / "Dockerfile.dockerignore").write_text(DOCKERIGNORE)
+    from .generate import dockerignore
+    (workdir / "Dockerfile.dockerignore").write_text(dockerignore(a.repo))
     tag = f"containerizer/{k8s_name(a.name)}-{k8s_name(c.name)}:verify"
     rc, log = _run(["docker", "build", "--progress=plain", *_build_env_args(), "-f", str(workdir / "Dockerfile"),
                     "-t", tag, str(a.repo.root)], timeout)
@@ -193,7 +200,7 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
         wait: int = 90) -> tuple[str, str, dict]:
     """Returns (status, log, details). status: ok | exited | unhealthy"""
     name = f"cz-verify-{os.getpid()}-{int(time.time())}"
-    uid = images()["dotnet"]["app_uid"] if c.role != "spa" else 101
+    uid = 101 if c.role == "spa" else plan.get("uid") or images()["dotnet"]["app_uid"]
     cmd = ["docker", "run", "-d", "--name", name, "--read-only", "--cap-drop", "ALL",
            "--security-opt", "no-new-privileges", "--memory", "768m", "--add-host", "sql01.corp.local:127.0.0.1"]
     # writable folders are host directories during verification, so log files the app writes

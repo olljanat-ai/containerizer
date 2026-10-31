@@ -1,48 +1,65 @@
 # Dev database backups for the sandbox
 
-Many applications don't start without their database. Operators can upload a **SQL Server backup** of
-an application's development database on the admin pages, together with instructions for the AI on how
-to point the application at it. The next scan of the application (`containerizer worker` or
-`containerizer org`) restores the backup into a database that runs next to the application in the
+Many applications don't start without their database. Operators can upload a backup of an application's
+development database (**SQL Server, PostgreSQL or MySQL**) on the admin pages, together with instructions for the AI on how
+to point the application at it. The next scan of the application restores the backup into a database that runs next to the application in the
 sandbox namespace, and sets the application's connection settings. The application's code is not
 changed: only the generated Kubernetes manifests are.
 
-Only SQL Server is supported for now (`.bak` made with `BACKUP DATABASE ... TO DISK`, compressed or
-not).
+On the appliance, the backup's engine must be on under Admin → [Lab services](lab-services.md). SQL Server
+is on by default. An app without a backup gets an empty database of its own on the lab's server instead.
+
+| Engine | Files | Restored with |
+| --- | --- | --- |
+| SQL Server | `.bak` made with `BACKUP DATABASE ... TO DISK`, compressed or not | `RESTORE DATABASE ... WITH MOVE` |
+| PostgreSQL | `pg_dump` custom format (`-Fc`), or a plain SQL dump (`.sql`, `.sql.gz`) | `pg_restore`, or `psql` |
+| MySQL | `mysqldump` or `mariadb-dump` output (`.sql`, `.sql.gz`) | `mysql` |
+
+The file's first bytes decide what it is: `TAPE` or `MSSQLBAK` (SQL Server), `PGDMP` (pg_dump custom
+format), or the dump header `-- PostgreSQL database dump`, `-- MySQL dump` or `-- MariaDB dump` (also
+inside a gzip file). A plain dump made from another database name is restored into the name you give.
+For PostgreSQL and MySQL, its `CREATE DATABASE`, `USE` and `\connect` lines are left out.
 
 ## How it works
 
 ```
-operator ──upload .bak + instructions──> web UI ──> CONTAINERIZER_DEV_DB_DIR/<sha256>.bak
+operator ──upload backup + instructions──> web UI ──> /var/lib/containerizer/devdb/<sha256>.<bak|dump|sql|sql.gz>
                                            └──> DevDatabase row (name, size, SHA-256, instructions, who)
 scan worker ──reads DevDatabase──> builds <registry>/<app>/devdb:<tag> (backup inside) ──push──> registry
             └──> generated manifests: devdb Deployment + Service + NetworkPolicy, app env → devdb
 ```
 
-1. **Upload** (`/admin/dev-databases`, admins and operators). The file is streamed to disk, so it is
+1. **Upload** (**Admin → Dev databases**, admins and operators). The file is streamed to disk, so it is
    never held in memory. The page checks the session, the role and the `Origin` header before it reads
    the request body. It checks the form's CSRF token, which is the first field, before it writes any
-   of the file. The file must start with a SQL Server backup signature (`TAPE`, or `MSSQLBAK` for a
-   compressed backup). It is stored under its SHA-256 with mode 0600, and the web UI never serves it
-   back. The size limit is `CONTAINERIZER_DEV_DB_MAX_MB` (default 2048).
+   of the file. The file must start with the signature of the selected engine (see above). It is
+   stored under its SHA-256, readable only by the web UI and the scan worker, and the web UI never
+   serves it back. The size limit is 2048 MB.
 2. **Instructions.** The form starts from a template. Name the setting that holds the connection
    string (for example `ConnectionStrings:Shop`), test users, and anything else the AI needs. Never put
    a password here. You can edit the instructions later without uploading the file again.
 3. **The scan.** When an application has a backup, the scan:
    - checks the file against its SHA-256;
-   - builds an image `FROM mcr.microsoft.com/mssql/server:2022-latest` (override it with `devdb:
-     sqlserver:` in `rules/images.yaml`) that contains the backup;
+   - builds an image that contains the backup, `FROM mcr.microsoft.com/mssql/server:2025-latest`,
+     `postgres:18-alpine` or `mysql:8.4` (override them with `devdb: <engine>:` in `rules/images.yaml`).
+     SQL Server 2025 restores backups from older versions too (SQL Server 2008 and later), and upgrades
+     the database as it restores it;
    - pushes the image as `<registry>/<app>/devdb:<tag>`, also tagged `sha-<first 12 of the SHA-256>`.
 
    Each time the database pod starts, it:
-   - restores the backup, moving every data and log file into its data volume;
-   - creates the login `app`, a member of `db_owner` in the restored database (not `sysadmin`);
-   - only then reports ready.
+   - restores the backup. SQL Server moves every data and log file into its data volume. PostgreSQL and
+     MySQL restore it through the image's own `/docker-entrypoint-initdb.d`, while the server listens
+     only on its local socket;
+   - creates the user `app`, which owns the restored database and nothing else. On SQL Server it is a
+     member of `db_owner`, not `sysadmin`. On PostgreSQL it owns the database, and the dump is restored as
+     `app` without the dump's owners and grants. On MySQL it has all rights on that database only, and
+     `root` can log in only from inside the container;
+   - only then reports ready, because it listens on TCP only after the restore.
 
    Nothing is kept on a persistent volume. The database is a disposable copy, and it is restored again
    whenever its pod starts.
 4. **The application's settings.**
-   - **With the LLM** (`UseAi` on the scan, or `--ai`): the AI reads the instructions and the
+   - **With the LLM** (**Ask the LLM** on the scan): the AI reads the instructions and the
      configuration the scan found. It answers with environment variables written as templates (only
      `{host} {port} {database} {user} {password}`). Every answer is validated, and anything that
      contains a literal password, a `$(...)` reference or an unknown placeholder is dropped.
@@ -61,14 +78,14 @@ scan worker ──reads DevDatabase──> builds <registry>/<app>/devdb:<tag> (
 
 | Object | What it does |
 | --- | --- |
-| `Deployment devdb` | One replica, `Recreate` strategy. Pod Security "restricted": runs as uid 10001, read-only root filesystem, all capabilities dropped, no privilege escalation, RuntimeDefault seccomp, no service account token. `emptyDir` volumes for `/var/opt/mssql` (4 GiB) and `/tmp`. Memory 2 GiB request, 3 GiB limit (fits the namespace LimitRange; the ResourceQuota counts it). |
-| `Service devdb` | Port 1433, so the application connects to `devdb,1433`. |
-| `NetworkPolicy devdb` | Ingress on 1433 only from the application's own pods (`app.kubernetes.io/part-of`); egress to DNS only. |
-| `Password` + `ExternalSecret` `devdb`, `devdb-admin` | With External Secrets Operator (`secrets.mode: external-secrets`, the default), its [Password generator](https://external-secrets.io/latest/api/generator/password/) creates the `app` and `sa` passwords in the cluster, once (`refreshInterval: "0"`). In the `plain` and `sealed-secrets` modes, create the two Secrets (key `password`) yourself before the sync. |
+| `Deployment devdb` | One replica, `Recreate` strategy. Pod Security "restricted": runs as a non-root user (SQL Server `10001`, PostgreSQL `70`, MySQL `999`), read-only root filesystem, all capabilities dropped, no privilege escalation, RuntimeDefault seccomp, no service account token. A 4 GiB `emptyDir` for the data folder and small ones where the server writes its socket and temporary files. Memory: SQL Server 2 to 3 GiB, PostgreSQL 256 MiB to 1 GiB, MySQL 512 MiB to 1 GiB (fits the namespace LimitRange; the ResourceQuota counts it). |
+| `Service devdb` | The engine's port (1433, 5432 or 3306), so the application connects to `devdb`. |
+| `NetworkPolicy devdb` | Ingress on that port only from the application's own pods (`app.kubernetes.io/part-of`); egress to DNS only. |
+| `Password` + `ExternalSecret` `devdb`, `devdb-admin` | External Secrets Operator's [Password generator](https://external-secrets.io/latest/api/generator/password/) creates the `app` and admin (`sa`, `postgres` or `root`) passwords in the cluster, once (`refreshInterval: "0"`). They never leave the cluster and need nothing in the secret store ([external-secrets.md](external-secrets.md)). |
 
 The Argo CD AppProject allows exactly these kinds, because they are part of the generated set.
 
-Two details of the image:
+Two details of the SQL Server image:
 
 - **`setcap -r /opt/mssql/bin/sqlservr`.** The SQL Server binary carries the file capability
   `cap_net_bind_service`. Linux refuses to start a binary like that in a container that drops all
@@ -79,15 +96,10 @@ Two details of the image:
 
 ## Setting it up
 
-- **Web UI:** set `CONTAINERIZER_DEV_DB_DIR` to a writable folder. `results/compose.yaml` uses the named
-  volume `dev-databases`, and the results image creates the folder owned by its user. The
-  **Dev databases** tab appears for admins and operators only when the folder is set.
-- **Scan worker:** set the same `CONTAINERIZER_DEV_DB_DIR`, pointing at the same files. Use a shared
-  file system (NFS, an Azure Files share), or run the worker on the same host. The worker reads the
-  `DevDatabase` table with its writer login, which needs only `SELECT` (granted by `db init`, schema
-  version 8). It needs Docker to build the image, and write access to the registry.
-- **Cluster:** External Secrets Operator with the generators API, or create the Secrets yourself, as
-  described above.
+Nothing to set up: the appliance keeps the backups on its data partition in
+`/var/lib/containerizer/devdb`, where the web UI writes them and the scan worker reads them. To allow
+larger uploads than 2048 MB, set `CONTAINERIZER_DEV_DB_MAX_MB` in `/etc/containerizer/web.env` and
+restart the web UI.
 
 ## Security notes
 
@@ -98,7 +110,7 @@ Two details of the image:
   (`AuditLog`, table `DevDatabase`): engine, database name, file name, size, SHA-256 and a SHA-256 of
   the instructions, with who made the change and in which role. The instructions themselves stay only
   in `DevDatabase.Prompt`.
-- **No security gate on this image.** The security gate does not scan the database image. Its base is
-  Microsoft's SQL Server image, which you can pin and update through `rules/images.yaml`.
+- **No security gate on this image.** The security gate does not scan the database image. Its base is the
+  engine's official image, which you can pin and update through `rules/images.yaml`.
 - **Removing a backup** deletes the stored file once no application refers to it. The next scan
   deploys the application without the database.

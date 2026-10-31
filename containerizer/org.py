@@ -76,6 +76,8 @@ class OrgOptions:
     timeout: int = 1800
     pin: bool = False
     verify_commits: bool = False
+    ingress_domain: str | None = None   # wildcard domain for the HTTPS Ingresses (None: the appliance's setting)
+    sandbox_idp: bool = True            # with a domain: components that sign in use the sandbox IdP (idp.py)
     sql: str | None = None
     work_dir: str = ".work/org"
     keep_work: bool = False
@@ -92,6 +94,7 @@ class OrgOptions:
     kube_context: str | None = None
     gitops: str = "auto"                # auto | argocd | flux
     sandbox_timeout: int = 900
+    lab: set | None = None              # lab services that are on (labservices.py); None: from CONTAINERIZER_LAB_SERVICES
 
 
 @dataclass
@@ -117,6 +120,7 @@ class RepoResult:
     seconds: float = 0.0
     source_key: str = ""              # Application.SourceKey in the results database
     dev_database: dict = field(default_factory=dict)   # the uploaded dev database restored next to it, if any
+    lab_services: dict = field(default_factory=dict)   # lab services needed, provided and turned off (labservices.py)
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -325,6 +329,57 @@ def _apps_in(root: Path) -> list[tuple[str, Path, dict]]:
     return out
 
 
+def idp_entries(gen: Path, comps: list) -> list[dict]:
+    """Rows for the results database from the components' idp.json (written by the generator)."""
+    rows = []
+    for c in comps:
+        from .generate import k8s_name
+        f = gen / k8s_name(c.name) / "idp.json"
+        if not f.is_file():
+            continue
+        d = json.loads(f.read_text())
+        for cl in d.get("clients") or []:
+            rows.append({"project": c.project.rel, "protocol": cl["protocol"], "idp_url": d["idp"], "app_url": cl["url"],
+                         "identifier": cl["identifier"], "metadata_url": cl["metadata_url"],
+                         "settings": {"env": cl.get("env") or {}, "secret": cl.get("secret_env") or "",
+                                      "section": cl.get("section") or ""},
+                         "notes": cl.get("notes") or []})
+        if not d.get("clients") and d.get("notes"):
+            rows.append({"project": c.project.rel, "protocol": "none", "idp_url": d["idp"], "notes": d["notes"]})
+    return rows
+
+
+def write_idp(root: Path, apps) -> str:
+    """sandbox/idp/: the sandbox identity provider and every component registered at it (each
+    component's idp.json in the output repository). Returns the IdP URL, or "" when no component uses it."""
+    from collections import Counter
+    from .idp import Sandbox, config, sandbox_files
+    found = []
+    for rel, d, _ in apps:
+        for f in sorted(d.glob("*/idp.json")):
+            try:
+                found.append(json.loads(f.read_text()))
+            except ValueError:
+                continue
+    found = [x for x in found if x.get("applications")]
+    if not found:
+        return ""
+    # one IdP: the domain most components were generated with (an app generated before the domain changed
+    # is registered again by its next run)
+    prefix = f"https://{config()['host_label']}."
+    domains = Counter(x["idp"][len(prefix):] for x in found if str(x.get("idp", "")).startswith(prefix))
+    if not domains:
+        return ""
+    domain = sorted(domains.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+    sb = Sandbox(domain)
+    defs = {a["name"]: a for x in found if x["idp"] == sb.url for a in x["applications"]}
+    for rel, content in sandbox_files(sb, defs).items():
+        p = root / SANDBOX / "idp" / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+    return sb.url
+
+
 def write_sandbox(root: Path, git_url: str, branch: str) -> list[str]:
     """sandbox/: Argo CD app-of-apps and Flux root Kustomization over every app in the repository."""
     from .gitops import ARGO_API, ARGO_NS, FLUX_NS, IN_CLUSTER, KUSTOMIZE_API, SOURCE_API
@@ -343,7 +398,7 @@ def write_sandbox(root: Path, git_url: str, branch: str) -> list[str]:
 
     (sb / "argocd" / "apps" / "kustomization.yaml").write_text(yaml.safe_dump(
         {**k, "resources": [f"../../../{rel}/gitops/argocd" for rel, _, _ in apps]}, sort_keys=False))
-    (sb / "argocd" / "bootstrap.yaml").write_text(dump([
+    (sb / "argocd" / "bootstrap.yaml").write_text(dump(sandbox_credentials(ARGO_NS, name, labels, git_url) + [
         {"apiVersion": ARGO_API, "kind": "AppProject",
          "metadata": {"name": name, "namespace": ARGO_NS, "labels": labels},
          "spec": {"description": "containerizer sandbox: creates only the per-app AppProjects and Applications",
@@ -364,10 +419,12 @@ def write_sandbox(root: Path, git_url: str, branch: str) -> list[str]:
                                  "retry": {"limit": 5, "backoff": {"duration": "10s", "factor": 2,
                                                                    "maxDuration": "5m"}}}}},
     ]))
+    idp_url = write_idp(root, apps)
     (sb / "flux" / "apps" / "kustomization.yaml").write_text(yaml.safe_dump(
         {**k, "resources": [f"../../../{rel}/gitops/flux" for rel, d, _ in apps
-                            if (d / "gitops" / "flux" / "kustomization.yaml").exists()]}, sort_keys=False))
-    (sb / "flux" / "bootstrap.yaml").write_text(dump([
+                            if (d / "gitops" / "flux" / "kustomization.yaml").exists()]
+         + (["../../idp"] if idp_url else [])}, sort_keys=False))
+    (sb / "flux" / "bootstrap.yaml").write_text(dump(sandbox_credentials(FLUX_NS, name, labels) + [
         {"apiVersion": SOURCE_API, "kind": "GitRepository",
          "metadata": {"name": name, "namespace": FLUX_NS, "labels": labels},
          "spec": {"interval": "5m", "url": git_url, "ref": {"branch": branch}, "secretRef": {"name": f"{name}-git"}}},
@@ -380,16 +437,45 @@ def write_sandbox(root: Path, git_url: str, branch: str) -> list[str]:
     (sb / "namespaces.txt").write_text("".join(f"{n}\n" for n in namespaces))
     from .sandbox import verify_rbac
     (sb / "verify-rbac.yaml").write_text(
-        "# Read-only access for `containerizer sandbox verify` (docs/sandbox-verification.md). Apply it as a\n"
+        "# Read-only access for `containerizer sandbox verify`. Apply it as a\n"
         "# cluster admin after the namespaces exist; it grants nothing cluster-wide and no access to Secrets.\n"
         + dump(verify_rbac(namespaces)))
-    (sb / "README.md").write_text(sandbox_readme(git_url, branch, apps))
+    (sb / "README.md").write_text(sandbox_readme(git_url, branch, apps, idp_url))
     return namespaces
 
 
-def sandbox_readme(git_url: str, branch: str, apps) -> str:
+def sandbox_credentials(namespace: str, name: str, labels: dict, argocd_repo: str | None = None) -> list[dict]:
+    """The read-only Git credential of the root sync, as an ExternalSecret from the secret store (remote
+    key `<namespace>--cz-git`), with the namespace's store reader and its access. Argo CD: a repository
+    Secret (labelled for Argo CD) for `argocd_repo`."""
+    from . import eso
+    remote = eso.remote_key(namespace, eso.GIT)
+    es = eso.external_secret(f"{name}-git" if argocd_repo is None else f"{name}-repo", namespace, remote,
+                             labels=labels, set_namespace=True,
+                             comment=f"read-only token of the output repository (username + password), "
+                                     f"remote key {remote} in the secret store")
+    es.pop("_comment")
+    if argocd_repo is not None:
+        # Argo CD finds repositories by label; url and type are not secret
+        es["spec"]["target"]["template"] = {
+            "engineVersion": "v2", "mergePolicy": "Merge",
+            "metadata": {"labels": {"argocd.argoproj.io/secret-type": "repository"}},
+            "data": {"type": "git", "url": argocd_repo}}
+    return eso.store_access(namespace, [remote], labels) + \
+        [eso.reader_service_account(namespace, labels, set_namespace=True), es]
+
+
+def sandbox_readme(git_url: str, branch: str, apps, idp_url: str = "") -> str:
     rows = "\n".join(f"| `{doc.get('app')}` | [{rel}]({rel.replace(' ', '%20')}/) | "
                      f"{', '.join(c['component'] for c in doc.get('components', []))} |" for rel, _, doc in apps)
+    if idp_url:
+        idp_text = (f"\nThe components that sign users in with OpenID Connect, SAML 2.0 or WS-Federation are registered at\n"
+                    f"the sandbox identity provider (WSO2 Identity Server) at {idp_url}/. Flux applies `{SANDBOX}/idp`\n"
+                    f"with the apps; with Argo CD apply it once with `kubectl apply -k {SANDBOX}/idp`. Clients, test\n"
+                    f"users and passwords: `{SANDBOX}/idp/README.md` (docs/sandbox-idp.md).\n")
+    else:
+        idp_text = ("\nNo component signs users in with OpenID Connect, SAML 2.0 or WS-Federation, or no sandbox domain\n"
+                    "was set (`--ingress-domain`), so no identity provider is deployed.\n")
     return f"""# Sandbox deployment
 
 Every app in this repository that has components rated **A** (lift and shift, stateless, built,
@@ -400,34 +486,49 @@ run and passed the security gate). Pick Argo CD **or** Flux, not both. Generated
 | --- | --- | --- |
 {rows}
 
+Credentials come from External Secrets Operator: nothing in this repository is a Secret. Install ESO
+and a `ClusterSecretStore` named `app-secrets` first (every app's `cluster/secret-store.yaml` has one;
+docs/external-secrets.md shows Vault, Azure Key Vault and AWS Secrets Manager). Then put the read-only
+token of this repository in the store as `username` + `password` under these remote keys:
+
+| Remote key | For |
+| --- | --- |
+| `argocd--cz-git` | Argo CD: the repository Secret in `argocd` |
+| `flux-system--cz-git` | Flux: the root `GitRepository` |
+| `<namespace>--cz-git`, for every line of `namespaces.txt` | Flux: each app's own `GitRepository` |
+
+With the default kubernetes provider the store reads Secrets in namespace `containerizer-secrets`, so:
+
+```sh
+kubectl -n containerizer-secrets create secret generic flux-system--cz-git \\
+  --from-literal=username=git --from-literal=password=<read-only token>
+```
+
+The containerizer appliance does this by itself from `sandbox.env`.
+
 ## Argo CD
 
 ```sh
-argocd repo add {git_url} --username <user> --password <read-only token>   # private repository
 kubectl apply -f {SANDBOX}/argocd/bootstrap.yaml
 ```
 
 `bootstrap.yaml` is an app-of-apps: AppProject `containerizer-sandbox` may only create AppProjects and
 Applications in `argocd`, from this repository. Each app then has its own AppProject pinned to its
-namespace and generated kinds (see `<app>/gitops/README.md`).
+namespace and generated kinds (see `<app>/gitops/README.md`). Apply each app's `cluster/secret-store.yaml`
+too: it lets the app's namespace read its own keys.
 
 ## Flux
 
 ```sh
-kubectl -n flux-system create secret generic containerizer-sandbox-git \\
-  --from-literal=username=git --from-literal=password=<read-only token>
 kubectl apply -f {SANDBOX}/flux/bootstrap.yaml
-# each app reconciles as its own namespace-scoped ServiceAccount from its own source:
-while read -r ns; do
-  kubectl -n "$ns" create secret generic "$ns-git" \\
-    --from-literal=username=git --from-literal=password=<read-only token>
-done < {SANDBOX}/namespaces.txt
 ```
 
 The root Kustomization applies each app's `gitops/flux/tenant.yaml` (namespace with Pod Security
 "restricted", ServiceAccount, namespace-only RoleBinding) and `gitops/flux/git/sync.yaml`. Image
 automation (`gitops/flux/git/image-automation.yaml`) is left out: it needs a write key.
 
+## Identity provider
+{idp_text}
 ## Health read-back
 
 `containerizer org --verify-sandbox` (or `containerizer sandbox verify` on a checkout of this repository)
@@ -442,10 +543,11 @@ kubectl -n containerizer-verify create token containerizer-verifier --duration=1
 
 ## Cluster prerequisites
 
-- Pulling images: if the registry is private, create the pull secret named in the run (`--image-pull-secret`)
-  in every namespace listed in `namespaces.txt`, or give the nodes registry credentials.
-- Secrets: the apps read them through External Secrets from a `ClusterSecretStore` named `app-secrets`
-  (keys `<app>/<component>`), see each app's `HARDENING.md`.
+- Pulling images: if the registry is private, the run's `--image-pull-secret` is an ExternalSecret in each
+  app; put a `.dockerconfigjson` with a read-only registry credential in the store as `<namespace>--cz-registry`,
+  or give the nodes registry credentials.
+- Secrets: the apps read them through External Secrets from the `ClusterSecretStore` `app-secrets`
+  (remote keys `<namespace>--<component>`), see each app's `HARDENING.md`.
 - Signed images: each app's `cluster/verify-images.yaml` (Kyverno) only admits images signed with your
   cosign key; images were signed only if the run had `--cosign-key`.
 """
@@ -691,7 +793,11 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
             if status and (x := skip(status, why)):
                 return x
 
-        gitops = GitOpsOptions(git_url=out.url, branch=o.output_branch, path=rel, verify_commits=o.verify_commits)
+        from .sandbox_https import configured_domain, normalize_domain
+        domain = normalize_domain(o.ingress_domain) if o.ingress_domain else configured_domain()
+        gitops = GitOpsOptions(git_url=out.url, branch=o.output_branch, path=rel, verify_commits=o.verify_commits,
+                               image_pull_secret=o.image_pull_secret or "", ingress_domain=domain,
+                               sandbox_idp=o.sandbox_idp)
         scratch = work / "analyze"
         if scratch.exists():
             shutil.rmtree(scratch)
@@ -706,7 +812,9 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
             from .sqlstore import store_results
             assessment_id = store_results(o.sql, [a], [src])[0]
         keep, res.excluded = select_components(a, o.verify)
-        dd, dd_row = (_dev_database(o, res, a, keep, work, reg, tag) if keep else (None, None))
+        lab = _lab_services(o)
+        lab_report: dict = {}
+        dd, dd_row = (_dev_database(o, res, a, keep, work, reg, tag, lab) if keep else (None, None))
         gen = work / "gen" / app
         names = {k8s_name(c.name): c for c in keep}
         g = None
@@ -715,13 +823,14 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
                 shutil.rmtree(gen)
             fa = dataclasses.replace(a, components=keep)
             if not o.gate:
-                generate_app(fa, gen, registry=o.registry, pin=o.pin, gitops=gitops, tag=tag, devdb=dd)
+                generate_app(fa, gen, registry=o.registry, pin=o.pin, gitops=gitops, tag=tag, devdb=dd, lab=lab,
+                             lab_report=lab_report)
                 break
             from .harden import security
             from .imagescan import gate_app
             g = gate_app(fa, gen, build=True, scan=True, run=True, registry=o.registry, pin=o.pin, gitops=gitops,
                          tag=tag, scanner=o.scanner or security()["scan"].get("default_scanner", "auto"),
-                         fail_on=o.fail_on, devdb=dd)
+                         fail_on=o.fail_on, devdb=dd, lab=lab, lab_report=lab_report)
             failed = {c["component"]: gate_failure(c) for c in g["components"] if gate_failure(c)}
             if not failed:
                 break
@@ -767,6 +876,18 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
                               "digest": entry.get("digest"), "attestation": sb.get("attestation")})
             comps.append(entry)
         res.components = comps
+        idp_rows = idp_entries(gen, keep)
+        if assessment_id and idp_rows:
+            from .sqlstore import connect, store_idp_clients
+            try:
+                conn = connect(o.sql)
+                try:
+                    store_idp_clients(conn, assessment_id, idp_rows)
+                finally:
+                    conn.close()
+            except Exception as e:
+                print(f"warning: sandbox IdP registrations not written to SQL Server: {type(e).__name__}: "
+                      f"{REDACT(str(e))[:300]}", file=sys.stderr)
         if assessment_id and sboms:
             from .sqlstore import connect, store_image_sboms
             try:                              # the images are pushed already: a database error must not undo that
@@ -779,6 +900,8 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
                 print(f"warning: SBOMs not written to SQL Server: {type(e).__name__}: {REDACT(str(e))[:300]}",
                       file=sys.stderr)
 
+        if lab is not None:
+            res.lab_services = lab_report
         if dd is not None and (gen / "devdb").is_dir():
             from .devdb import readme
             (gen / "devdb" / "README.md").write_text(readme(k8s_name(a.name), dd, dd_row))
@@ -800,10 +923,25 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
 
 # --------------------------------------------------------------------------- the run
 
-def _dev_database(o: OrgOptions, res: RepoResult, a, comps: list, work: Path, reg: "Registry | None", tag: str):
+def _lab_services(o: OrgOptions) -> set | None:
+    """The lab services that are on: OrgOptions.lab, else lab-services.json on the appliance
+    (CONTAINERIZER_LAB_SERVICES), read for each repository so a change applies to the next one."""
+    if o.lab is not None:
+        return set(o.lab)
+    from .labservices import LabError, enabled_from_env
+    try:
+        return enabled_from_env()
+    except LabError as ex:
+        print(f"warning: lab services not used: {ex}", file=sys.stderr)
+        return None
+
+
+def _dev_database(o: OrgOptions, res: RepoResult, a, comps: list, work: Path, reg: "Registry | None", tag: str,
+                  lab: set | None = None):
     """The dev database an operator uploaded for this application (admin pages): its image built and
     pushed next to the application's, and the settings that point the application at it.
-    (None, None) when there is none, or when it cannot be prepared (the reason is in res.dev_database)."""
+    (None, None) when there is none, or when it cannot be prepared (the reason is in res.dev_database).
+    On the appliance, the engine turned off under Lab services turns these off too."""
     from . import devdb
     from .generate import k8s_name
     settings = devdb.Settings.from_env(os.environ)
@@ -815,6 +953,12 @@ def _dev_database(o: OrgOptions, res: RepoResult, a, comps: list, work: Path, re
         res.dev_database = {"status": "error", "reason": f"could not read the dev database settings: {str(ex)[:200]}"}
         return None, None
     if not row:
+        return None, None
+    if lab is not None and row["Engine"] not in lab:
+        from .labservices import SERVICES
+        title = SERVICES[row["Engine"]].title if row["Engine"] in SERVICES else row["Engine"]
+        res.dev_database = {"engine": row["Engine"], "database": row["DatabaseName"], "file": row["FileName"],
+                            "status": "disabled", "reason": f"{title} is turned off under Admin -> Lab services"}
         return None, None
     ns = k8s_name(a.name)
     image = f"{o.registry.rstrip('/')}/{ns}/devdb:{tag}"

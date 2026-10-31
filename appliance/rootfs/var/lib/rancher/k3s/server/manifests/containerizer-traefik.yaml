@@ -1,0 +1,34 @@
+# Traefik, the ingress controller k3s ships, for the apps in the sandbox (Admin -> Sandbox HTTPS,
+# docs/sandbox-https.md). Nothing outside the appliance reaches it: no LoadBalancer, no host ports. Caddy
+# (443 on the host, next to the admin pages) answers for *.<sandbox domain> and passes the requests to
+# this fixed cluster address over TLS; Traefik's default certificate is the same wildcard certificate
+# (TLSStore "default" in kube-system, installed by `containerizer.sysagent sandbox-https sync`).
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    service:
+      # the chart k3s ships takes the type under spec (a top-level service.type is ignored)
+      spec:
+        type: ClusterIP
+        clusterIP: 10.43.0.80
+    providers:
+      kubernetesIngress:
+        publishedService:
+          enabled: false
+    ingressRoute:
+      dashboard:
+        enabled: false
+    additionalArguments:
+      # HTTP only ever answers with a redirect to HTTPS
+      - "--entryPoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entryPoints.web.http.redirections.entryPoint.scheme=https"
+      - "--entryPoints.web.http.redirections.entryPoint.permanent=true"
+      # Caddy on the host (seen from the pod network as the node's bridge address) passes the client's address
+      - "--entryPoints.websecure.forwardedHeaders.trustedIPs=10.42.0.1/32"
+    logs:
+      access:
+        enabled: true

@@ -1,0 +1,6 @@
+# Node.js packages with native parts whose Linux behaviour is known (prebuilt Linux binaries or a
+# reliable build with Python/make/g++). Pure JavaScript packages are portable and are not counted;
+# a native addon (lockfile install script, or a known native package) that is not listed here
+# lowers the confidence of a Node.js component.
+node_ok:
+  - 'bcrypt|argon2|sharp|better-sqlite3|sqlite3|@journeyapps/sqlcipher|canvas|@napi-rs/.*|esbuild|@esbuild/.*|@swc/.*|@parcel/watcher|fsevents|lightningcss|@tailwindcss/oxide|rollup|@rollup/.*|bufferutil|utf-8-validate|cpu-features|ssh2|re2|kerberos|msgpackr-extract|lmdb|@prisma/client|@prisma/engines|prisma|protobufjs|@grpc/grpc-js|core-js|core-js-pure|husky|nodemon|puppeteer|playwright|playwright-core|@sentry/cli|@sentry/profiling-node|unrs-resolver|sqlite|libpq|pg-native|oracledb|isolated-vm|node-gyp-build|deasync|@datadog/.*|dtrace-provider|leveldown|classic-level|zeromq|iconv|libxmljs2?|node-pty|@serialport/.*|serialport|usb|spawn-sync|yarn|es5-ext|protoc|@biomejs/.*|@nestjs/core|@scarf/scarf|cypress|electron|nx|@nx/.*|@vscode/.*|aws-crt|@mongodb-js/zstd|snappy|@node-rs/.*|farmhash|bson-ext|unix-dgram|@newrelic/.*|newrelic|@opentelemetry/.*|bigint-buffer|keccak|secp256k1|tree-sitter.*|@ast-grep/.*|sodium-native|ffi-napi|ref-napi|koffi'
