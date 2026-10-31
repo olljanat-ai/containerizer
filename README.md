@@ -52,6 +52,11 @@ python -m containerizer images --update        # pick patched base image tags ->
 python -m containerizer bench
 python -m containerizer bench --technique hybrid --model claude-haiku-5-5
 
+# every repository of an Azure DevOps / GitHub / GitLab organization: A-rated components only,
+# images pushed, files + Argo CD/Flux sandbox config committed to a Git repo (docs/organization-run.md)
+python -m containerizer org --provider github --org acme --registry myacr.azurecr.io/sandbox \
+  --output-repo https://github.com/acme/sandbox-deployments.git          # GITHUB_TOKEN, OUTPUT_GIT_TOKEN
+
 # results database (SQL Server) and read-only web UI for management, see docs/results-database.md
 docker compose -f results/compose.yaml up -d --build          # SQL Server + UI on http://127.0.0.1:8080/
 python -m containerizer analyze <repo> --sql "Server=...;Database=Containerizer;User Id=cz_scanner"
@@ -465,6 +470,18 @@ files, publishes SARIF as the `CodeAnalysisLogs` artifact (shown by the SARIF SA
 extension), comments on Azure Repos pull requests with `System.AccessToken` (give the build service
 "Contribute to pull requests"), and fails the build when the gate fails.
 
+## Whole organization
+
+`containerizer org` lists every Git repository of one Azure DevOps organization, GitHub organization or
+GitLab group (private ones included, tokens from environment variables), skips repositories without a
+commit in 6 months and repositories that already have a Dockerfile, runs `analyze` on the rest and
+keeps only the components rated **A** that built, ran and passed the security gate. Their images are
+pushed to your registry and the generated files are committed to your output repository as
+`<Organization>/<Project>/<Repository>/<component>/` (GitHub has no projects: `_`), with a
+`sandbox/` folder holding an Argo CD app-of-apps and a Flux root Kustomization that deploy all of them
+to a sandbox cluster. Results go to SQL Server too with `--sql`. See
+[docs/organization-run.md](docs/organization-run.md).
+
 ## Results database and web UI
 
 `assess` and `analyze` also write their results to Microsoft SQL Server with `--sql` (or
@@ -494,5 +511,5 @@ bench/           labels and results
 action.yml       GitHub Action; ci/azure/ has the Azure DevOps template
 containerizer/sql/  results database schema (sqlstore.py writes it, webui.py reads it, admin.py + oidc.py: admin pages)
 results/         Docker Compose stack and image for the results database and web UI
-docs/            results-database.md (results database, web UI, admin pages, audit)
+docs/            results-database.md (results database, web UI, admin pages, audit), organization-run.md, self-hosted-llm.md
 ```

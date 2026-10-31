@@ -592,7 +592,8 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
                                      "reason": f"security gate: {why}"})
             keep = [c for c in keep if k8s_name(c.name) not in failed]
         if not keep:
-            return skip("no-a-components", "no component rated A passed" if res.excluded else "no server component")
+            return skip("no-a-components", f"none of {len(res.excluded)} server components qualifies" if res.excluded
+                        else "no server component")
 
         # images: built by the gate (or here), pushed under <registry>/<app>/<component>:<tag>
         from .imagescan import build_image
