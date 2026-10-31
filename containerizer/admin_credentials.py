@@ -1,10 +1,12 @@
-"""Admin → Source control: the tokens organization scans use (credentials.py, docs/source-control.md).
+"""Admin → Source control & LLM: the tokens organization scans use (credentials.py, docs/source-control.md).
 
 - Organizations: a read-only token for each Azure DevOps organization, GitHub organization or GitLab
   group (on the cloud service or a self-hosted server) the scans may read. A scan of an organization
   without one does not run.
 - Output repositories: a write token for each repository the generated files are pushed to, matched
   by its URL.
+- LLM: the server, model and key the scans ask when "Ask the LLM" is on (the Claude API or a
+  self-hosted OpenAI-compatible server). One at a time.
 
 Administrators only. A token is entered once, sealed for the scan worker's public key at once, and
 never shown again: the page offers to replace it, not to read it. Every add, replace, change and
@@ -22,6 +24,8 @@ from .admin import URL_RE, Response, _code, _d, e, page, redirect
 
 ORG_RE = re.compile(r"[\w .\-/]{1,200}")
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+MODEL_RE = re.compile(r"[\w.:/@+\-]{1,200}")
+LLM_URL_RE = re.compile(r"https?://[A-Za-z0-9.-]+(:\d{1,5})?(/[^\s<>\"'`?#]*)?")
 SOON_DAYS = 14
 
 # Where the tokens are made, and with what. Shown next to the forms; docs/source-control.md has the same.
@@ -53,6 +57,17 @@ def _a(url: str, text: str) -> str:
 def guidance(purpose: str) -> str:
     """How to make a least-privilege token, per provider."""
     d = DOCS
+    if purpose == "llm":
+        items = [
+            ("Claude API", """<p>An API key from the Claude Console, in a workspace used only by containerizer, with a
+spend limit. Server: empty for the Claude API, or the https URL of a gateway in front of it. The scans send the
+model only the evidence of the components the rules are unsure of, never the whole repository.</p>"""),
+            ("OpenAI-compatible server", """<p>Ollama, vLLM, LM Studio, llama.cpp <code>llama-server</code>, LocalAI and
+similar: the URL up to and including <code>/v1</code> (for example <code>https://llm.example.internal/v1</code>), the
+model name as the server knows it, and its key if it has one (vLLM <code>--api-key</code>, a gateway). A key is only
+sent over https, or plain http to this machine. Choosing a model: docs/self-hosted-llm.md.</p>"""),
+        ]
+        return "".join(f"<details><summary><b>{t}</b>: what to enter</summary>{b}</details>" for t, b in items)
     if purpose == "read":
         items = [
             ("GitHub", f"""<p>A <b>fine-grained personal access token</b> ({_a(d['github']['pat'], 'GitHub docs')}):
@@ -96,7 +111,7 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict) -> Res
     action = parts[2] if len(parts) > 2 else ""
     if len(parts) == 1 and method == "GET":
         return list_page(adm, conn, s, a, flash)
-    if len(parts) == 2 and parts[1] in ("read", "write") and method == "POST":
+    if len(parts) == 2 and parts[1] in ("read", "write", "llm") and method == "POST":
         return add(adm, conn, s, parts[1], form)
     if ident is not None:
         if method == "GET" and not action:
@@ -124,7 +139,7 @@ def _rows(conn) -> list[dict]:
 
 def _scans(conn) -> list[dict]:
     cur = conn.cursor(as_dict=True)
-    cur.execute("SELECT ScanId, Name, Provider, Organization, ApiUrl, OutputRepo, Enabled FROM cz.OrgScan ORDER BY Name")
+    cur.execute("SELECT ScanId, Name, Provider, Organization, ApiUrl, OutputRepo, UseAi, Enabled FROM cz.OrgScan ORDER BY Name")
     return cur.fetchall()
 
 
@@ -132,6 +147,8 @@ def _used_by(c: cr.Credential, scans: list[dict]) -> list[dict]:
     one = cr.Credentials([c])
     if c.purpose == "read":
         return [x for x in scans if one.read_for(x["Provider"], x["ApiUrl"], x["Organization"])]
+    if c.purpose == "llm":
+        return [x for x in scans if x.get("UseAi")] if c.enabled else []
     return [x for x in scans if one.write_for(x["OutputRepo"])]
 
 
@@ -168,10 +185,10 @@ def _provider_select(name: str = "Provider", selected: str = "github") -> str:
         + "</select>")
 
 
-def _token_input(field_id: str) -> str:
-    return (f"<label for='{field_id}'>Token <span class='muted'>(shown only while you type it; never shown again)"
-            f"</span></label><input id='{field_id}' name='Token' type='password' required minlength='8' maxlength='1000'"
-            f" autocomplete='off' spellcheck='false'>")
+def _token_input(field_id: str, label: str = "Token", required: bool = True) -> str:
+    return (f"<label for='{field_id}'>{label} <span class='muted'>(shown only while you type it; never shown again"
+            f"{'' if required else '; empty when the server needs none'})</span></label><input id='{field_id}' name='Token' "
+            f"type='password'{' required' if required else ''} minlength='8' maxlength='1000' autocomplete='off' spellcheck='false'>")
 
 
 def _common_inputs(prefix: str, r: dict | None = None) -> str:
@@ -237,11 +254,35 @@ for nothing else, even when the repository is in an organization that is scanned
 <input id='wScope' name='Scope' type='url' required maxlength='400' placeholder='https://github.com/contoso/sandbox-deployments.git'>
 {_token_input('wToken')}{_common_inputs('w')}
 <div><button>Add</button></div></form>{guidance('write')}"""
+        if not any(r["Purpose"] == "llm" for r in rows):
+            from .ai import CLAUDE_DEFAULT_MODEL
+            forms += f"""<h2>Set the LLM</h2>
+<form method='post' action='/admin/source-control/llm' class='edit'>{adm._csrf(s)}
+<label for='lProvider'>Kind</label><select id='lProvider' name='Provider'>{''.join(
+    f"<option value='{k}'>{t}</option>" for k, t in cr.LLM_PROVIDERS.items())}</select>
+<label for='lApiUrl'>Server <span class='muted'>(Claude API: empty, or a gateway's https URL; OpenAI-compatible: the URL up to
+and including /v1)</span></label><input id='lApiUrl' name='ApiUrl' type='url' maxlength='400' placeholder='https://llm.example.internal/v1'>
+<label for='lModel'>Model</label><input id='lModel' name='Model' required maxlength='200' value='{e(CLAUDE_DEFAULT_MODEL)}'>
+{_token_input('lToken', 'API key', required=False)}{_common_inputs('l')}
+<div><button>Save</button></div></form>{guidance('llm')}"""
+    llm = next((r for r in rows if r["Purpose"] == "llm"), None)
+    if llm:
+        used = _used_by(cr.Credential.from_row(llm), scans)
+        llm_html = (f"<div class='meta'><div><span class='label'>LLM</span> <a href='/admin/source-control/"
+                    f"{int(llm['CredentialId'])}'>{e(cr.LLM_PROVIDERS.get(llm['Provider'], llm['Provider']))}: "
+                    f"{e(llm['Model'] or '')}</a> <span class='muted small'>{e(llm['ApiUrl'] or llm['Host'])}</span> "
+                    f"{_chips(status(llm, kid, today))}</div><div><span class='label'>Used by</span> "
+                    + (", ".join(f"<a href='/admin/scans/{int(x['ScanId'])}'>{e(x['Name'])}</a>" for x in used)
+                       or "<span class='muted'>no scan asks the LLM</span>") + "</div></div>")
+    else:
+        llm_html = ("<p class='muted'>None set: scans with <i>Ask the LLM</i> use the worker's own settings "
+                    "(environment variables, docs/self-hosted-llm.md), if any.</p>")
     body = (f"<p class='muted'>Organization scans only read organizations that have a read-only token here: there is no "
             f"anonymous access, and each token is only sent with its own organization's or repository's URLs. On the "
             f"appliance, the hosts must also be on the Firewall page.</p>{key_note}"
-            f"<h2>Organizations (read-only)</h2>{table('read')}<h2>Output repositories (write)</h2>{table('write')}{forms}")
-    return Response(200, adm._shell(s, a, "Source control", "source-control", body, flash))
+            f"<h2>Organizations (read-only)</h2>{table('read')}<h2>Output repositories (write)</h2>{table('write')}"
+            f"<h2>LLM</h2>{llm_html}{forms}")
+    return Response(200, adm._shell(s, a, "Source control and LLM", "source-control", body, flash))
 
 
 # --------------------------------------------------------------------------- validation
@@ -264,7 +305,53 @@ def _common(form: dict) -> tuple[dict, list[str]]:
     return v, errors
 
 
+def _llm_url_error(provider: str, url: str | None, token: str) -> str | None:
+    if not url:
+        return "Server is required for an OpenAI-compatible server" if provider == "openai" else None
+    if len(url) > 400 or not LLM_URL_RE.fullmatch(url):
+        return "Server must be a plain http(s):// address without user name, query or fragment"
+    if provider == "anthropic" and not url.startswith("https://"):
+        return "Server must be an https:// address"
+    if url.startswith("http://") and token:
+        import ipaddress
+        host = cr._split(url)[1].split(":")[0]
+        try:
+            loop = host == "localhost" or ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loop = False
+        if not loop:
+            return "A key is only sent over https (or plain http to this machine): use an https:// server"
+    return None
+
+
+def validate_llm(form: dict) -> tuple[dict, list[str]]:
+    v, errors = _common(form)
+    prov = form.get("Provider", [""])[0]
+    if prov not in cr.LLM_PROVIDERS:
+        errors.append("Choose the kind of LLM")
+    v["Provider"] = prov
+    api = form.get("ApiUrl", [""])[0].strip().rstrip("/") or None
+    tok = form.get("Token", [""])[0].strip()
+    err = _llm_url_error(prov, api, tok)
+    errors += [err] if err else []
+    v["ApiUrl"] = api if api and cr.server_key(prov, api) else None
+    model = form.get("Model", [""])[0].strip()
+    if not MODEL_RE.fullmatch(model):
+        errors.append("Model: the model's name (letters, digits and . : / @ + - _)")
+    v["Model"] = model
+    if prov == "anthropic" and not tok:
+        errors.append("Enter the API key")
+    elif tok:
+        err = cr.check_token_text(tok)
+        errors += [err] if err else []
+    v["Token"], v["Scope"] = tok, cr.LLM_SCOPE
+    v["Host"] = cr.host_of(prov, v["ApiUrl"]) if prov in cr.LLM_PROVIDERS and not errors else ""
+    return v, errors
+
+
 def validate(purpose: str, form: dict) -> tuple[dict, list[str]]:
+    if purpose == "llm":
+        return validate_llm(form)
     v, errors = _common(form)
     prov = form.get("Provider", [""])[0]
     if prov not in cr.PROVIDER_TEXT:
@@ -314,10 +401,16 @@ def add(adm, conn, s, purpose: str, form: dict) -> Response:
     sealed = cr.seal(pub, v.pop("Token"), cr.binding(purpose, v["Provider"], v["ApiUrl"], v["Scope"]))
     cur = conn.cursor()
     try:
-        cur.execute("INSERT cz.SourceCredential (Purpose, Provider, ApiUrl, Host, Scope, Note, ExpiresOn, TokenSealed, KeyId, "
-                    "TokenSetBy) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s); SELECT CAST(SCOPE_IDENTITY() AS int)",
-                    (purpose, v["Provider"], v["ApiUrl"], v["Host"], v["Scope"], v["Note"], v["ExpiresOn"], sealed, kid,
-                     s.user[:256]))
+        if purpose == "llm":
+            # one LLM: the check and the insert in one transaction, so two admins cannot add two
+            cur.execute("SELECT COUNT(*) FROM cz.SourceCredential WITH (UPDLOCK, HOLDLOCK) WHERE Purpose = N'llm'")
+            if cur.fetchone()[0]:
+                conn.rollback()
+                return _back("/admin/source-control", "An LLM is already set: open it to change it, or remove it first.")
+        cur.execute("INSERT cz.SourceCredential (Purpose, Provider, ApiUrl, Host, Scope, Model, Note, ExpiresOn, TokenSealed, "
+                    "KeyId, TokenSetBy) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s); SELECT CAST(SCOPE_IDENTITY() AS int)",
+                    (purpose, v["Provider"], v["ApiUrl"], v["Host"], v["Scope"], v.get("Model"), v["Note"], v["ExpiresOn"],
+                     sealed, kid, s.user[:256]))
         ident = cur.fetchone()[0]
         conn.commit()
     except Exception as ex:
@@ -325,6 +418,8 @@ def add(adm, conn, s, purpose: str, form: dict) -> Response:
         if _code(ex) in (2601, 2627):
             return _back("/admin/source-control", f"{v['Scope']} already has a token: open it to replace the token.")
         raise
+    if purpose == "llm":
+        return _back(f"/admin/source-control/{ident}", "LLM saved. Scans with Ask the LLM use it from their next run.")
     what = "Read-only token" if purpose == "read" else "Write token"
     return _back(f"/admin/source-control/{ident}", f"{what} saved for {v['Scope']}. The next run of its scans uses it.")
 
@@ -342,10 +437,14 @@ def edit_page(adm, conn, s, a, ident: int, flash: str) -> Response:
     pub, kid = _key(adm)
     c = cr.Credential.from_row(r)
     used = _used_by(c, _scans(conn))
-    kind = "Read-only token of the organization" if c.purpose == "read" else "Write token of the output repository"
-    facts = [("Access", "read only: lists and clones the organization's repositories" if c.purpose == "read" else
-              "write: pushes the generated files to this repository only"),
-             ("Provider", e(cr.PROVIDER_TEXT.get(c.provider, c.provider))), ("Host", e(r["Host"])),
+    llm = c.purpose == "llm"
+    kind = {"read": "Read-only token of the organization", "write": "Write token of the output repository",
+            "llm": "The LLM scans ask when Ask the LLM is on"}[c.purpose]
+    facts = [("Access", {"read": "read only: lists and clones the organization's repositories",
+                         "write": "write: pushes the generated files to this repository only",
+                         "llm": "the evidence of uncertain components is sent to this server"}[c.purpose]),
+             ("Provider", e((cr.LLM_PROVIDERS if llm else cr.PROVIDER_TEXT).get(c.provider, c.provider))),
+             ("Model", e(c.model) if llm else ""), ("Host", e(r["Host"])),
              ("Server", e(r["ApiUrl"] or "")), ("Token", f"{_chips(status(r, kid))} saved {_d(r['TokenSetAt'])} by "
                                                         f"{e(r['TokenSetBy'])}"),
              ("Used by", ", ".join(f"<a href='/admin/scans/{int(x['ScanId'])}'>{e(x['Name'])}</a>" for x in used)
@@ -353,20 +452,24 @@ def edit_page(adm, conn, s, a, ident: int, flash: str) -> Response:
              ("Last used", (_d(r["LastUsedAt"]) + " · " + e(r["LastResult"] or "")) if r["LastUsedAt"] else "not used yet")]
     meta = "".join(f"<div><span class='label'>{k}</span> {v}</div>" for k, v in facts if v)
     replace = (f"<form method='post' action='/admin/source-control/{ident}/token' class='edit'>{adm._csrf(s)}"
-               f"{_token_input('newToken')}<label for='tExpiresOn'>Expires on</label>"
+               f"{_token_input('newToken', 'API key' if llm else 'Token', required=not llm or c.provider == 'anthropic')}"
+               f"<label for='tExpiresOn'>Expires on</label>"
                f"<input id='tExpiresOn' name='ExpiresOn' type='date'><div><button>Replace the token</button></div></form>"
                if pub is not None else "<p class='muted'>The web UI has no worker public key: tokens cannot be replaced.</p>")
+    model_in = (f"<label for='sModel'>Model</label><input id='sModel' name='Model' required maxlength='200' "
+                f"value='{e(c.model)}'>") if llm else ""
     settings = (f"<form method='post' action='/admin/source-control/{ident}' class='edit'>{adm._csrf(s)}"
-                f"{_common_inputs('s', r)}<label class='check'><input type='checkbox' name='Enabled' value='1'"
+                f"{model_in}{_common_inputs('s', r)}<label class='check'><input type='checkbox' name='Enabled' value='1'"
                 f"{' checked' if r['Enabled'] else ''}> Enabled (unchecked: scans that need it do not run)</label>"
                 f"<div><button>Save</button> <a href='/admin/source-control'>Back</a></div></form>")
     delete = (f"<form method='post' action='/admin/source-control/{ident}/delete' class='danger'>{adm._csrf(s)}"
               f"<button>Remove the token for {e(c.scope)}</button></form><p class='muted small'>Also revoke it where it was "
               f"made: removing it here only stops this tool from using it.</p>")
-    body = (f"<p class='muted'>{kind}. To point a token at another organization or repository, remove it and add a new one."
-            f"</p><div class='meta'>{meta}</div><h2>Replace the token</h2>{replace}{guidance(c.purpose)}"
+    what = "server" if llm else "organization or repository"
+    body = (f"<p class='muted'>{kind}. To point it at another {what}, remove it and add a new one."
+            f"</p><div class='meta'>{meta}</div><h2>Replace the {'key' if llm else 'token'}</h2>{replace}{guidance(c.purpose)}"
             f"<h2>Settings</h2>{settings}{delete}<h2>Changes</h2>{adm._history(conn, 'SourceCredential', ident)}")
-    return Response(200, adm._shell(s, a, c.scope, "source-control", body, flash))
+    return Response(200, adm._shell(s, a, "LLM" if llm else c.scope, "source-control", body, flash))
 
 
 def replace_token(adm, conn, s, ident: int, form: dict) -> Response:
@@ -379,11 +482,16 @@ def replace_token(adm, conn, s, ident: int, form: dict) -> Response:
         return Response(404, page("Not found", "<h1>Not found</h1>"))
     v, errors = _common(form)
     tok = form.get("Token", [""])[0].strip()
-    err = cr.check_token_text(tok)
+    c = cr.Credential.from_row(r)
+    if c.purpose == "llm" and c.provider == "openai" and not tok:
+        err = None                                   # a server without a key
+    else:
+        err = cr.check_token_text(tok)
+    if c.purpose == "llm" and not err:
+        err = _llm_url_error(c.provider, c.api_url, tok)
     errors += [err] if err else []
     if errors:
         return _back(back, "Not saved: " + "; ".join(errors))
-    c = cr.Credential.from_row(r)
     sealed = cr.seal(pub, tok, c.aad())
     cur = conn.cursor()
     cur.execute("UPDATE cz.SourceCredential SET TokenSealed = %s, KeyId = %s, TokenSetAt = SYSUTCDATETIME(), TokenSetBy = %s"
@@ -396,11 +504,18 @@ def replace_token(adm, conn, s, ident: int, form: dict) -> Response:
 def save_settings(adm, conn, s, ident: int, form: dict) -> Response:
     back = f"/admin/source-control/{ident}"
     v, errors = _common(form)
+    r = _one(conn, ident)
+    if not r:
+        return Response(404, page("Not found", "<h1>Not found</h1>"))
+    model = form.get("Model", [""])[0].strip() if r["Purpose"] == "llm" else None
+    if r["Purpose"] == "llm" and not MODEL_RE.fullmatch(model):
+        errors.append("Model: the model's name (letters, digits and . : / @ + - _)")
     if errors:
         return _back(back, "Not saved: " + "; ".join(errors))
     cur = conn.cursor()
-    cur.execute("UPDATE cz.SourceCredential SET Note = %s, ExpiresOn = %s, Enabled = %s WHERE CredentialId = %s",
-                (v["Note"], v["ExpiresOn"], form.get("Enabled", [""])[0] == "1", ident))
+    cur.execute("UPDATE cz.SourceCredential SET Note = %s, ExpiresOn = %s, Enabled = %s"
+                + (", Model = %s" if model is not None else "") + " WHERE CredentialId = %s",
+                (v["Note"], v["ExpiresOn"], form.get("Enabled", [""])[0] == "1", *([model] if model is not None else []), ident))
     n = cur.rowcount
     conn.commit()
     if not n:
@@ -426,7 +541,8 @@ def scan_tokens(conn, scan: dict) -> str:
     out = []
     read = creds.read_for(scan["Provider"], scan["ApiUrl"], scan["Organization"])
     write = creds.write_for(scan.get("OutputRepo"))
-    for c, what in ((read, "Read-only token"), (write, "Output repository token")):
+    llm = creds.llm() if scan.get("UseAi") else None
+    for c, what in ((read, "Read-only token"), (write, "Output repository token"), (llm, "LLM")):
         if c:
             out.append(f"<div><span class='label'>{what}</span> <a href='/admin/source-control/{c.id}'>{e(c.label)}</a> "
                        f"{_chips(status(by_id[c.id], None))}</div>")

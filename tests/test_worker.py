@@ -287,6 +287,26 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
         assert secret not in b.follow("/admin/audit?table=SourceCredential")[2]
         s, _, body = b.follow(f"/admin/scans/{scan_id}")
         assert "Run now" in body and "Read-only token" in body and f"/admin/source-control/{cred_id}" in body
+        # the LLM on the same page: set once, key never shown, model can change, a second one is refused
+        llm_key = "sk-llm-secret-0123456789"
+        s, _, body = b.follow("/admin/source-control/llm", {"csrf": csrf, "Provider": "openai", "ApiUrl": "https://llm.example/v1",
+                                                            "Model": "qwen3:32b", "Token": llm_key})
+        assert s == 200 and "LLM saved" in body and llm_key not in body and "qwen3:32b" in body
+        llm_id = int(re.search(r"/admin/source-control/(\d+)/token", body)[1])
+        s, _, body = b.follow("/admin/source-control/llm", {"csrf": csrf, "Provider": "anthropic", "Model": "x",
+                                                            "Token": "sk-ant-0123456789"})
+        assert "already set" in body
+        s, _, body = b.follow(f"/admin/source-control/{llm_id}", {"csrf": csrf, "Model": "qwen3:235b", "Enabled": "1"})
+        assert "Saved." in body and "<del>qwen3:32b</del> → <ins>qwen3:235b</ins>" in body and llm_key not in body
+        body = b.follow("/admin/source-control")[2]
+        assert "Source control and LLM" in body and "qwen3:235b" in body and llm_key not in body
+        c = sqlstore.connect(writer, PW)
+        from containerizer import credentials as crm
+        got = crm.load(c, cr.load_private(tmp_path / "worker.key")).llm()
+        c.close()
+        assert got.token == llm_key and got.ai_settings()["CONTAINERIZER_LLM_BASE_URL"] == "https://llm.example/v1"
+        s, _, body = b.follow(f"/admin/source-control/{llm_id}/delete", {"csrf": csrf})
+        assert "removed" in body
         # no worker has run yet: it computes the next run
         w.queue_due()
         c = sqlstore.connect(writer, PW)

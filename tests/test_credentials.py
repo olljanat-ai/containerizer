@@ -250,3 +250,46 @@ def test_admin_validation():
     v, errors = admin_credentials.validate("write", _f(Provider="azure-devops", Scope="https://dev.azure.com/c/p/_git/out/",
                                                        Token="t" * 10, ExpiresOn="2027-01-31"))
     assert errors == [] and v["Scope"] == "https://dev.azure.com/c/p/_git/out" and v["ExpiresOn"] == date(2027, 1, 31)
+
+
+# --------------------------------------------------------------------------- the LLM
+
+def test_llm_settings_apply_for_the_run_only(monkeypatch):
+    from containerizer import ai
+    monkeypatch.setenv("CONTAINERIZER_LLM_BASE_URL", "http://localhost:11434/v1")
+    monkeypatch.setenv("CONTAINERIZER_MODEL", "env-model")
+    c = cr.Credential(1, "llm", "openai", "https://llm.example.internal/v1", cr.LLM_SCOPE, model="qwen3:32b", token="k-123")
+    with ai.configured(c.ai_settings()):
+        assert ai._backend() == "openai" and ai.model_name() == "qwen3:32b"
+        assert ai._llm_base_url() == "https://llm.example.internal/v1" and ai._env("CONTAINERIZER_LLM_API_KEY") == "k-123"
+        assert "k-123" not in os.environ.values()                                # never through the environment
+    assert ai.model_name() == "env-model" and ai._llm_base_url() == "http://localhost:11434/v1"
+    claude = cr.Credential(2, "llm", "anthropic", None, cr.LLM_SCOPE, model="claude-sonnet-5-5", token="sk-ant-x")
+    with ai.configured(claude.ai_settings()):
+        assert ai._backend() == "api" and ai._env("CONTAINERIZER_LLM_BASE_URL") == ""   # the env's server is not used
+    with ai.configured(None):                                                      # no registered LLM: the env
+        assert ai.model_name() == "env-model"
+    # the LLM is not a source control host, and its key is bound to its server, not the model
+    assert cr.Credentials([c]).hosts() == set() and cr.Credentials([c]).llm() is c
+    assert cr.binding("llm", "openai", c.api_url, "x") == cr.binding("llm", "openai", c.api_url, "y")
+    assert cr.binding("llm", "openai", c.api_url, "x") != cr.binding("llm", "openai", "https://other/v1", "x")
+
+
+def test_llm_validation():
+    v, errors = admin_credentials.validate("llm", _f(Provider="anthropic", Model="claude-sonnet-5-5", Token="sk-ant-0123456789"))
+    assert errors == [] and v["ApiUrl"] is None and v["Host"] == "api.anthropic.com" and v["Scope"] == "llm"
+    v, errors = admin_credentials.validate("llm", _f(Provider="openai", ApiUrl="http://localhost:11434/v1/", Model="qwen3:32b",
+                                                     Token=""))
+    assert errors == [] and v["ApiUrl"] == "http://localhost:11434/v1" and v["Host"] == "localhost:11434"
+    for form, msg in [
+            (_f(Provider="anthropic", Model="claude-sonnet-5-5", Token=""), "API key"),
+            (_f(Provider="openai", Model="m", Token=""), "Server is required"),
+            (_f(Provider="openai", ApiUrl="http://10.0.0.5:8000/v1", Model="m", Token="secret-key-1"), "only sent over https"),
+            (_f(Provider="anthropic", ApiUrl="http://gw.example", Model="m", Token="sk-ant-0123456789"), "https"),
+            (_f(Provider="openai", ApiUrl="https://u:p@llm.example/v1", Model="m", Token=""), "user name"),
+            (_f(Provider="openai", ApiUrl="https://llm.example/v1", Model="<x>", Token=""), "Model"),
+            (_f(Provider="github", Model="m", Token="t" * 10), "kind of LLM")]:
+        _, errors = admin_credentials.validate("llm", form)
+        assert any(msg.lower() in x.lower() for x in errors), (form, errors)
+    # plain http to a LAN server is fine without a key
+    assert admin_credentials.validate("llm", _f(Provider="openai", ApiUrl="http://10.0.0.5:8000/v1", Model="m", Token=""))[1] == []

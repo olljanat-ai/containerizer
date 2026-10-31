@@ -1,8 +1,9 @@
-# Source control tokens
+# Source control tokens and the LLM
 
 Organization scans ([scheduled-scans.md](scheduled-scans.md)) read Azure DevOps, GitHub and GitLab
 organizations and push the generated files to an output Git repository. The tokens for both are
-registered by administrators under **Admin → Source control**:
+registered by administrators under **Admin → Source control & LLM**, together with the LLM the scans
+ask (see [The LLM](#the-llm) below):
 
 - **Organizations (read-only)**: one token for each Azure DevOps organization (or Azure DevOps Server
   collection), GitHub organization or GitLab group the scans may read, on the cloud service or a
@@ -96,6 +97,23 @@ Notes:
 | Azure DevOps | Personal access token of a dedicated account whose only **Contribute** permission is on the output repository ([repository permissions](https://learn.microsoft.com/en-us/azure/devops/repos/git/set-git-repository-permissions)) | **Code: Read & write** |
 
 Enter the repository's https URL exactly as on the scan's *Output repository* (with or without `.git`).
+
+## The LLM
+
+Scans with **Ask the LLM** on consult an LLM about the components the rules are unsure of
+([self-hosted-llm.md](self-hosted-llm.md)). Set it on the same page, once:
+
+| Kind | Server | Model | API key |
+| --- | --- | --- | --- |
+| Claude API | empty, or the https URL of a gateway in front of it | e.g. `claude-sonnet-5-5` | required: a key from the Claude Console, in a workspace only for containerizer, with a spend limit |
+| OpenAI-compatible server (Ollama, vLLM, LM Studio, llama.cpp, LocalAI, ...) | the URL up to and including `/v1` | the name the server knows | optional; only sent over https, or plain http to the worker's own machine |
+
+The key is sealed for the worker like the tokens and never shown again; the model can be changed
+without re-entering it, while a different server means removing it and adding it again. The worker
+hands the setting to the AI code for the run only, never through its environment, so the git and
+docker processes a scan starts never see the key. With no LLM set here, scans fall back to the
+worker's own environment variables (`CONTAINERIZER_LLM_BASE_URL`, `ANTHROPIC_API_KEY`, ...), as before.
+On the appliance, allow the server's host on the Firewall page.
 
 ## Command line runs
 

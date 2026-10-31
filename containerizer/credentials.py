@@ -6,6 +6,10 @@ Two kinds, never mixed:
   GitHub organization or GitLab group, on github.com / gitlab.com / dev.azure.com or a self-hosted
   server. An organization scan only runs for an organization that has one: there is no anonymous
   access, and a token is never sent for a repository outside its organization.
+- **llm**: the LLM the scans ask about uncertain components when a scan has "Ask the LLM" on: the
+  Claude API (or a gateway in front of it) or a self-hosted OpenAI-compatible server, its URL, model
+  and key. One at a time. The worker hands it to ai.py for the run only (never through os.environ,
+  so the processes a scan starts do not see the key).
 - **write**: a token that can push to one output repository, where the generated Dockerfiles,
   manifests and GitOps files are committed. It is chosen by the repository's URL, never by its host or
   organization, so it can live in the same organization as the scanned repositories; it is never used
@@ -34,13 +38,16 @@ from pathlib import Path
 
 PRIVATE_KEY_ENV = "CONTAINERIZER_CREDENTIAL_KEY_FILE"            # the scan worker
 PUBLIC_KEY_ENV = "CONTAINERIZER_CREDENTIAL_PUBLIC_KEY_FILE"      # the web UI
-PURPOSES = ("read", "write")
+PURPOSES = ("read", "write", "llm")
+LLM_PROVIDERS = {"anthropic": "Claude API", "openai": "OpenAI-compatible server"}
+LLM_SCOPE = "llm"                                                   # the Scope of the (single) LLM row
 MAGIC = b"CZ1"
 INFO = b"containerizer source control token v1"
 TOKEN_RE = re.compile(r"[\x21-\x7e]{8,1000}")                       # printable ASCII, no spaces
 GIT_USERNAMES = {"github": "x-access-token", "gitlab": "oauth2", "azure-devops": "pat"}
 PROVIDER_TEXT = {"azure-devops": "Azure DevOps", "github": "GitHub", "gitlab": "GitLab"}
-CLOUD = {"github": "https://api.github.com", "gitlab": "https://gitlab.com", "azure-devops": "https://dev.azure.com"}
+CLOUD = {"github": "https://api.github.com", "gitlab": "https://gitlab.com", "azure-devops": "https://dev.azure.com",
+         "anthropic": "https://api.anthropic.com"}
 
 
 class CredentialError(RuntimeError):
@@ -188,6 +195,8 @@ def server_key(provider: str, api_url: str | None) -> str:
 
 
 def scope_key(purpose: str, scope: str) -> str:
+    if purpose == "llm":
+        return LLM_SCOPE                    # bound to the server, not the model: the model can be changed
     return repo_key(scope) if purpose == "write" else scope.strip().strip("/").casefold()
 
 
@@ -198,9 +207,10 @@ def repo_key(url: str) -> str:
 
 
 def host_of(provider: str, api_url: str | None) -> str:
-    """The host a read credential's token is sent to (API and clones)."""
+    """The host a read credential's token is sent to (API and clones), or an LLM's."""
     if not server_key(provider, api_url):
-        return {"github": "github.com", "gitlab": "gitlab.com", "azure-devops": "dev.azure.com"}[provider]
+        return {"github": "github.com", "gitlab": "gitlab.com", "azure-devops": "dev.azure.com",
+                "anthropic": "api.anthropic.com"}.get(provider, "")
     return _split(api_url)[1]
 
 
@@ -261,20 +271,23 @@ class Credential:
     expires_on: date | None = None
     key_id: str = ""
     note: str = ""
+    model: str = ""                  # llm: the model name
     sealed: str = field(default="", repr=False)
     token: str | None = field(default=None, repr=False)     # opened by the worker; None elsewhere
     error: str = ""                                          # why it did not open
 
     @property
     def host(self) -> str:
-        return host_of(self.provider, self.api_url) if self.purpose == "read" else _split(self.scope)[1]
+        return host_of(self.provider, self.api_url) if self.purpose != "write" else _split(self.scope)[1]
 
     @property
     def username(self) -> str:
-        return GIT_USERNAMES[self.provider]
+        return GIT_USERNAMES.get(self.provider, "")
 
     @property
     def label(self) -> str:
+        if self.purpose == "llm":
+            return f"{LLM_PROVIDERS.get(self.provider, self.provider)} {self.model} ({self.host})"
         where = f" ({self.host})" if self.purpose == "read" and self.api_url else ""
         return f"{PROVIDER_TEXT.get(self.provider, self.provider)} {self.scope}{where}"
 
@@ -288,7 +301,16 @@ class Credential:
     def from_row(cls, r: dict) -> "Credential":
         return cls(id=int(r["CredentialId"]), purpose=r["Purpose"], provider=r["Provider"], api_url=r.get("ApiUrl"),
                    scope=r["Scope"], enabled=bool(r.get("Enabled", True)), expires_on=r.get("ExpiresOn"),
-                   key_id=(r.get("KeyId") or "").strip(), note=r.get("Note") or "", sealed=r.get("TokenSealed") or "")
+                   key_id=(r.get("KeyId") or "").strip(), note=r.get("Note") or "", model=r.get("Model") or "",
+                   sealed=r.get("TokenSealed") or "")
+
+    def ai_settings(self) -> dict:
+        """ai.configured() settings for this LLM (the worker, with the token opened)."""
+        if self.provider == "anthropic":
+            return {"CONTAINERIZER_AI_BACKEND": "api", "ANTHROPIC_API_KEY": self.token or "",
+                    "ANTHROPIC_BASE_URL": self.api_url or "", "CONTAINERIZER_MODEL": self.model}
+        return {"CONTAINERIZER_AI_BACKEND": "openai", "CONTAINERIZER_LLM_BASE_URL": self.api_url or "",
+                "CONTAINERIZER_LLM_API_KEY": self.token or "", "CONTAINERIZER_MODEL": self.model}
 
 
 class Credentials:
@@ -314,8 +336,12 @@ class Credentials:
                 return c
         return None
 
+    def llm(self) -> Credential | None:
+        return next((c for c in self.items if c.purpose == "llm" and c.enabled), None)
+
     def hosts(self) -> set[str]:
-        return {c.host.split(":")[0] for c in self.items if c.enabled}
+        """Source control hosts (not the LLM's): registered servers may receive their own tokens."""
+        return {c.host.split(":")[0] for c in self.items if c.enabled and c.purpose != "llm"}
 
     def problems(self, scan: dict, public_key_id: str | None = None, today: date | None = None) -> list[str]:
         """What keeps a scan from getting the tokens it needs (empty when it has them)."""
@@ -341,13 +367,21 @@ class Credentials:
                 out.append(f"the {what} for {c.scope}: {c.error}")
             elif public_key_id and c.key_id and c.key_id != public_key_id:
                 out.append(f"the {what} for {c.scope} was saved for another worker key: enter it again")
+        llm = self.llm() if scan.get("UseAi") else None
+        if llm:
+            if llm.expired(today):
+                out.append(f"the LLM key expired on {llm.expires_on:%Y-%m-%d}: enter a new one")
+            if llm.error:
+                out.append(f"the LLM key: {llm.error}")
+            elif public_key_id and llm.key_id and llm.key_id != public_key_id:
+                out.append("the LLM key was saved for another worker key: enter it again")
         if read and write and read.token and write.token and read.token == write.token:
             out.append("the output repository's write token is also the organization's read-only token: register a "
                        "separate read-only token for scanning")
         return out
 
 
-SELECT_COLS = ("CredentialId, Purpose, Provider, ApiUrl, Host, Scope, Note, Enabled, ExpiresOn, KeyId, TokenSetAt, "
+SELECT_COLS = ("CredentialId, Purpose, Provider, ApiUrl, Host, Scope, Model, Note, Enabled, ExpiresOn, KeyId, TokenSetAt, "
                "TokenSetBy, CreatedAt, LastUsedAt, LastResult")
 
 

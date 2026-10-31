@@ -538,8 +538,9 @@ class Worker:
                 raise SourceError("; ".join(problems))
             read = creds.read_for(scan["Provider"], scan["ApiUrl"], scan["Organization"])
             write = creds.write_for(scan["OutputRepo"])
-            for c in (read, write):
-                if c:
+            llm = creds.llm() if scan["UseAi"] else None
+            for c in (read, write, llm):
+                if c and c.token:
                     REDACT.add(c.token, c.username)
             hooks._update(ImageTag=tag)
             o = self.options(scan, store, hooks, creds)
@@ -547,7 +548,12 @@ class Worker:
             o.on_listed = lambda prov, n: self._listed(read, prov, n)
             (self.data / f"scan-{int(scan['ScanId'])}").mkdir(parents=True, exist_ok=True)
             from .org import run_org
-            results = run_org(o, log=lambda msg: self.log(f"{name}: {msg}"))
+            from .ai import configured
+            if llm:
+                o.model = llm.model
+            # the registered LLM for this run only, never through os.environ (the scan's processes inherit it)
+            with configured(llm.ai_settings() if llm else None):
+                results = run_org(o, log=lambda msg: self.log(f"{name}: {msg}"))
             if write:
                 self._mark(write, "ok: pushed the generated files" if o.push else "ok")
             c = hooks.counts

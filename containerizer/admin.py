@@ -51,7 +51,7 @@ FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Des
               "PullRequestUrl": "Pull request", "Edited": "Edited by the reviewer",
               # source control tokens (the token itself is never recorded)
               "Purpose": "Access", "Host": "Host", "Scope": "Organization or repository", "ExpiresOn": "Expires on",
-              "TokenSetAt": "Token saved"}
+              "TokenSetAt": "Token saved", "Model": "Model"}
 # Who may use the rule review pages: Session attributes, any of which lets a signed-in user in.
 RULE_REVIEW_ROLES = ("admin", "operator")
 UPLOAD_RE = re.compile(r"/admin/dev-databases/(\d{1,9})/upload")
@@ -262,7 +262,7 @@ class Admin:
         if (a.admin or a.operator) and hasattr(self, "route_scans"):     # scheduled organization scans
             tabs += [("scans", "Organization scans"), ("repositories", "Repositories")]
         if a.admin and hasattr(self, "route_scans"):                     # tokens of the organizations (admin_credentials.py)
-            tabs += [("source-control", "Source control")]
+            tabs += [("source-control", "Source control & LLM")]
         if self.devdb is not None and (a.admin or a.operator):           # dev database backups (admin_devdb.py)
             tabs += [("dev-databases", "Dev databases")]
         if self.may_review_rules(s):                                     # learned rules waiting for review
