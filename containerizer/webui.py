@@ -337,7 +337,7 @@ def render_application(app: dict, nav: str = "") -> str:
 <h2>What needs to change, and why</h2>{''.join(details)}
 <h2>History</h2><p class='muted small'><a href='/trends'>Trends of all applications</a></p><table class='narrow'><thead><tr><th>Assessed</th><th>Rating</th><th class='num'>Readiness</th>
 <th class='num'>Effort (days)</th></tr></thead><tbody>{hist}</tbody></table>
-<footer>{legend()}</footer>""")
+<footer>{legend()}</footer>""", script=any(m.get("AgentPrompt") for m in migs.values()))
 
 
 OUTCOME_TEXT = {"linux-container": "Can move to a Linux container",
@@ -439,11 +439,14 @@ def _ws(s) -> str:
     return " ".join(str(s or "").split())
 
 
-def page(title: str, body: str) -> str:
+SCRIPT_TAG = "<script src='/static/app.js'></script>"
+
+
+def page(title: str, body: str, script: bool = False) -> str:
     return (f"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'><title>{e(title)}</title>"
             f"<link rel='stylesheet' href='/static/app.css'><link rel='icon' href='data:,'></head>"
-            f"<body><main>{body}</main><script src='/static/app.js'></script></body></html>")
+            f"<body><main>{body}</main>{SCRIPT_TAG if script else ''}</body></html>")
 
 
 CSS = """
