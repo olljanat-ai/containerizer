@@ -329,6 +329,12 @@ CREATE TABLE [${schema}].AuditLog (
     NewValues     nvarchar(max) NULL               -- JSON
 );
 GO
+-- The role the change was made in (admin, operator, product owner, API client), from the same
+-- read-only SESSION_CONTEXT as the user; NULL for scans and direct SQL.
+IF COL_LENGTH(N'[${schema}].AuditLog', N'ChangedByRole') IS NULL
+ALTER TABLE [${schema}].AuditLog ADD ChangedByRole nvarchar(40) NULL
+    CONSTRAINT DF_AuditLog_ChangedByRole DEFAULT CAST(SESSION_CONTEXT(N'containerizer.role') AS nvarchar(40));
+GO
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_AuditLog_ChangedAt' AND object_id = OBJECT_ID(N'[${schema}].AuditLog'))
 CREATE INDEX IX_AuditLog_ChangedAt ON [${schema}].AuditLog (ChangedAt DESC) INCLUDE (TableName, RowId);
 GO
@@ -473,6 +479,6 @@ GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 2) INSERT [${schema}].SchemaVersion (Version) VALUES (2);
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 3) INSERT [${schema}].SchemaVersion (Version) VALUES (3);
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 4) INSERT [${schema}].SchemaVersion (Version) VALUES (4);
-GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 5) INSERT [${schema}].SchemaVersion (Version) VALUES (5);
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 6) INSERT [${schema}].SchemaVersion (Version) VALUES (6);
 GO

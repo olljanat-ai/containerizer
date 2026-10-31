@@ -10,8 +10,11 @@
 
 Callers send `Authorization: Bearer <access token>` issued by the same OpenID provider as the admin
 sign-in for this API's audience (CONTAINERIZER_API_AUDIENCE); the token's signature, issuer, audience
-and expiry are checked, and only callers on CONTAINERIZER_API_CLIENTS get in. Changes go through the
-admin database login with the caller in SESSION_CONTEXT, so the audit log shows them as "API" with the
+and expiry are checked. Who may do what follows the same roles as the admin pages (roles.py):
+callers on CONTAINERIZER_API_CLIENTS or CONTAINERIZER_ADMINS may change everything, product owners
+(CONTAINERIZER_PRODUCT_OWNERS) only their own products and applications, operators
+(CONTAINERIZER_OPERATORS) read only; anyone else is refused. Changes go through the admin database
+login with the caller and role in SESSION_CONTEXT, so the audit log shows them as "API" with the
 client or user that made them. No cookies are read, so there is no CSRF surface.
 """
 from __future__ import annotations
@@ -21,7 +24,8 @@ import re
 import sys
 
 from .admin import LIMITS, URL_RE, Response
-from .oidc import OidcError, Provider, allowed_client
+from .oidc import OidcError, Provider, allowed, allowed_client
+from .roles import Access, owner_scopes, role_label
 
 MAX_BODY = 64 * 1024
 FIELDS = {
@@ -56,8 +60,20 @@ def _camel(row: dict) -> dict:
 
 
 class Api:
-    def __init__(self, provider: Provider, audience: str, clients: list[str], connect_admin):
+    def __init__(self, provider: Provider, audience: str, clients: list[str], connect_admin, admins: list[str] | None = None,
+                 operators: list[str] | None = None, owners: list | None = None):
         self.provider, self.audience, self.clients, self.connect_admin = provider, audience, clients, connect_admin
+        self.admins, self.operators, self.owners = admins or [], operators or [], owners or []
+
+    def roles(self, claims: dict) -> tuple[bool, bool, list[str], str]:
+        """(admin, operator, product owner scopes, role label) of an access token's caller."""
+        if allowed_client(claims, self.clients):
+            return True, False, [], "API client"
+        if self.admins and allowed(claims, self.admins):
+            return True, False, [], "admin"
+        operator = bool(self.operators) and allowed(claims, self.operators)
+        scopes = owner_scopes(claims, self.owners)
+        return False, operator, scopes, role_label(False, operator, scopes)
 
     @staticmethod
     def handles(path: str) -> bool:
@@ -66,6 +82,11 @@ class Api:
     def handle(self, method: str, path: str, query: dict, headers, body: bytes) -> Response:
         try:
             claims = self._authenticate(headers)
+            admin, operator, scopes, role = self.roles(claims)
+            if not role:
+                raise ApiError(403, "insufficient_scope", "this client is not allowed to use the API")
+            if method not in ("GET", "HEAD") and not (admin or scopes):
+                raise ApiError(403, "forbidden", "your role can only read")
             data = None
             if method in ("POST", "PATCH", "PUT"):
                 if not (headers.get("Content-Type") or "").split(";")[0].strip().lower() == "application/json":
@@ -83,8 +104,8 @@ class Api:
                 user = str(claims.get("email") or claims.get("preferred_username") or claims.get("upn") or "")
                 client = str(claims.get("azp") or claims.get("appid") or claims.get("client_id") or claims["sub"])
                 who = user or f"client:{client}"
-                conn.set_user(who, str(claims.get("name") or claims.get("app_displayname") or who), via="API")
-                return self.route(conn, method, path, query, data)
+                conn.set_user(who, str(claims.get("name") or claims.get("app_displayname") or who), via="API", role=role)
+                return self.route(conn, method, path, query, data, Access.resolve(conn, admin, operator, scopes))
             finally:
                 conn.close()
         except ApiError as e:
@@ -102,13 +123,12 @@ class Api:
         except OidcError as e:
             print(f"api: {e}", file=sys.stderr)
             raise ApiError(401, "invalid_token", "the access token is not valid for this API") from None
-        if not allowed_client(claims, self.clients):
-            raise ApiError(403, "insufficient_scope", "this client is not allowed to use the API")
         return claims
 
     # -- routing --------------------------------------------------------------------------------
 
-    def route(self, conn, method: str, path: str, q: dict, data: dict | None) -> Response:
+    def route(self, conn, method: str, path: str, q: dict, data: dict | None, a: Access | None = None) -> Response:
+        a = a or Access(admin=True)
         parts = path.strip("/").split("/")[2:]
         if parts == ["audit"] and method == "GET":
             return _json(200, self.audit(conn, q))
@@ -119,7 +139,7 @@ class Api:
             if method == "GET":
                 return _json(200, self.list(conn, table, q))
             if method == "POST" and table != "Application":
-                return _json(201, self.create(conn, table, data))
+                return _json(201, self.create(conn, a, table, data))
             raise ApiError(405, "method_not_allowed", "applications are created by scans")
         if not re.fullmatch(r"\d{1,9}", parts[1]):
             raise ApiError(404, "not_found", "ids are numbers")
@@ -127,9 +147,9 @@ class Api:
         if method == "GET":
             return _json(200, self.get(conn, table, ident))
         if method in ("PATCH", "PUT"):
-            return _json(200, self.update(conn, table, ident, data, replace=method == "PUT"))
+            return _json(200, self.update(conn, a, table, ident, data, replace=method == "PUT"))
         if method == "DELETE" and table != "Application":
-            self.delete(conn, table, ident)
+            self.delete(conn, a, table, ident)
             return Response(204, "", ctype="application/json; charset=utf-8")
         raise ApiError(405, "method_not_allowed", "use GET, PATCH" + ("" if table == "Application" else ", PUT or DELETE"))
 
@@ -194,7 +214,7 @@ class Api:
             params.append(_int(q["rowId"][0], "rowId"))
         limit = min(_int(q.get("limit", ["100"])[0], "limit"), 1000)
         cur = conn.cursor(as_dict=True)
-        cur.execute(f"SELECT TOP ({limit}) AuditId, ChangedAt, ChangedBy, ChangedByName, DbLogin, Via, TableName, RowId, "
+        cur.execute(f"SELECT TOP ({limit}) AuditId, ChangedAt, ChangedBy, ChangedByName, ChangedByRole, DbLogin, Via, TableName, RowId, "
                     f"RowName, Action, OldValues, NewValues FROM cz.AuditLog {('WHERE ' + ' AND '.join(where)) if where else ''} "
                     f"ORDER BY ChangedAt DESC, AuditId DESC", tuple(params) or None)
         rows = []
@@ -254,26 +274,67 @@ class Api:
                 raise ApiError(409, "conflict", "a referenced row does not exist, or the row is still in use") from None
             raise
 
-    def create(self, conn, table: str, data: dict) -> dict:
+    @staticmethod
+    def _deny(why: str = "that is outside your business units and products"):
+        raise ApiError(403, "forbidden", why)
+
+    def _current(self, conn, table: str, ident: int) -> dict | None:
+        """The row's current product / business unit, locked until the end of the transaction."""
+        col = {"Application": "ProductId", "Product": "BusinessUnitId", "BusinessUnit": "BusinessUnitId"}[table]
+        cur = conn.cursor(as_dict=True)
+        cur.execute(f"SELECT {col} AS Parent FROM cz.{table} WITH (UPDLOCK, HOLDLOCK) WHERE {KEYS[table]} = %s", (ident,))
+        return cur.fetchone()
+
+    def _check(self, conn, a: Access, table: str, ident: int | None, vals: dict | None, delete: bool = False) -> None:
+        if a.admin:
+            return
+        if table == "BusinessUnit":
+            self._deny("only administrators change business units")
+        if ident is None:                                   # a new product
+            if not a.can_create_product(vals.get("BusinessUnitId")):
+                self._deny("pick one of your business units (businessUnitId)")
+            return
+        row = self._current(conn, table, ident)
+        if row is None:
+            conn.rollback()
+            raise ApiError(404, "not_found", f"no {table} with id {ident}")
+        old = row["Parent"]
+        if table == "Application":
+            new = vals.get("ProductId", old)
+            if not (a.can_map(old, new) and (old is not None or new is not None)):
+                conn.rollback()
+                self._deny()
+        elif delete:
+            if not a.can_delete_product(old):
+                conn.rollback()
+                self._deny()
+        elif not (a.can_edit_product(ident) and a.can_set_bu(old, vals.get("BusinessUnitId", old))):
+            conn.rollback()
+            self._deny()
+
+    def create(self, conn, a: Access, table: str, data: dict) -> dict:
         vals = self._values(table, data, replace=True)
+        self._check(conn, a, table, None, vals)
         cols = list(vals)
         ident = self._write(conn, f"INSERT cz.{table} ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))}); "
                                   "SELECT CAST(SCOPE_IDENTITY() AS int)", tuple(vals.values()))[0]
         return self.get(conn, table, ident)
 
-    def update(self, conn, table: str, ident: int, data: dict, replace: bool = False) -> dict:
+    def update(self, conn, a: Access, table: str, ident: int, data: dict, replace: bool = False) -> dict:
         if table == "Application" and replace:
             raise ApiError(405, "method_not_allowed", "use PATCH for applications")
         vals = self._values(table, data, replace)
         if not vals:
             return self.get(conn, table, ident)
+        self._check(conn, a, table, ident, vals)
         n = self._write(conn, f"UPDATE cz.{table} SET " + ", ".join(f"{c} = %s" for c in vals) + f" WHERE {KEYS[table]} = %s",
                         (*vals.values(), ident))
         if not n:
             raise ApiError(404, "not_found", f"no {table} with id {ident}")
         return self.get(conn, table, ident)
 
-    def delete(self, conn, table: str, ident: int) -> None:
+    def delete(self, conn, a: Access, table: str, ident: int) -> None:
+        self._check(conn, a, table, ident, None, delete=True)
         if not self._write(conn, f"DELETE cz.{table} WHERE {KEYS[table]} = %s", (ident,)):
             raise ApiError(404, "not_found", f"no {table} with id {ident}")
 
@@ -284,12 +345,13 @@ def _int(v: str, name: str) -> int:
     return int(v)
 
 
-def build(env, provider: Provider, connect_admin) -> Api | None:
+def build(env, provider: Provider, connect_admin, cfg=None) -> Api | None:
     """The API when CONTAINERIZER_API_AUDIENCE is set (needs the sign-in settings too)."""
     from .oidc import check_rules
     audience = env.get("CONTAINERIZER_API_AUDIENCE")
     if not audience:
         return None
     clients = [r.strip() for r in (env.get("CONTAINERIZER_API_CLIENTS") or "").split(",") if r.strip()]
-    check_rules(clients, ("client", "email", "domain", "group", "role", "sub"), "CONTAINERIZER_API_CLIENTS")
-    return Api(provider, audience, clients, connect_admin)
+    if clients or not cfg:           # with sign-in configured, the admin / owner / operator rules are enough
+        check_rules(clients, ("client", "email", "domain", "group", "role", "sub"), "CONTAINERIZER_API_CLIENTS")
+    return Api(provider, audience, clients, connect_admin, *((cfg.admins, cfg.operators, cfg.owners) if cfg else ()))

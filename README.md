@@ -533,7 +533,8 @@ application → components, with ratings, main obstacles and the why / fix / ref
 Components are mapped to their application automatically by the scan. Administrators sign in with
 single sign-on (OpenID Connect, e.g. Entra ID) to map applications to products and products to
 business units (or do it from scripts through a JSON API with OAuth access tokens), and every
-change is kept in an audit log with who made it. Optionally the results pages need the same sign-in,
+change is kept in an audit log with who made it. Besides admins there are scoped product owners (their own business units or products) and operators
+(scans). Optionally the results pages need the same sign-in,
 and an access log records who signed in and what they looked at.
 [`docs/results-database.md`](docs/results-database.md) has the model, the least-privilege roles, TLS,
 sign-in setup, the API, the audit log and a local Docker Compose stack.
