@@ -457,12 +457,14 @@ extension), comments on Azure Repos pull requests with `System.AccessToken` (giv
 ## Results database and web UI
 
 `assess` and `analyze` also write their results to Microsoft SQL Server with `--sql` (or
-`CONTAINERIZER_SQL`), and `python -m containerizer web` serves a read-only, management-friendly view of
-them: business unit → product → application → components, with ratings, main obstacles and the why /
-fix / references of every finding. Components are mapped to their application automatically by the
-scan; applications are mapped to products, and products to business units, by editing the database
-directly. [`docs/results-database.md`](docs/results-database.md) has the model, the least-privilege
-roles, TLS settings, a local Docker Compose stack, and the SQL for the mapping.
+`CONTAINERIZER_SQL`), in a dedicated schema (`containerizer` by default) so it can share a database,
+and `python -m containerizer web` serves a management-friendly view of them: business unit → product →
+application → components, with ratings, main obstacles and the why / fix / references of every finding.
+Components are mapped to their application automatically by the scan. Administrators sign in with
+single sign-on (OpenID Connect, e.g. Entra ID) to map applications to products and products to
+business units, and every change is kept in an audit log with who made it.
+[`docs/results-database.md`](docs/results-database.md) has the model, the least-privilege roles, TLS,
+sign-in setup, the audit log and a local Docker Compose stack.
 
 ## Results on the challenge
 
@@ -478,7 +480,7 @@ rules/           curated rules (roles, facts, findings, plan, failures, security
 rules/learned/   rules written by the learning loop (reviewable, safe to delete)
 bench/           labels and results
 action.yml       GitHub Action; ci/azure/ has the Azure DevOps template
-containerizer/sql/  results database schema (sqlstore.py writes it, webui.py reads it)
+containerizer/sql/  results database schema (sqlstore.py writes it, webui.py reads it, admin.py + oidc.py: admin pages)
 results/         Docker Compose stack and image for the results database and web UI
-docs/            results-database.md
+docs/            results-database.md (results database, web UI, admin pages, audit)
 ```

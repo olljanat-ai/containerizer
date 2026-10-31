@@ -11,6 +11,9 @@
 #   CONTAINERIZER_SQL="Server=127.0.0.1,1433;Database=Containerizer;User Id=cz_scanner;TrustServerCertificate=yes" \
 #   CONTAINERIZER_SQL_PASSWORD=... python -m containerizer analyze ../my-app
 #
+# Admin pages (mapping, products, business units, change history): set the CONTAINERIZER_OIDC_* lines
+# in results/.env to sign in with your identity provider.
+#
 # Development only: the SQL Server certificate is self-signed (TrustServerCertificate=yes) and every
 # port is published on 127.0.0.1 only. See docs/results-database.md for production.
 name: containerizer-results
@@ -38,19 +41,20 @@ services:
       retries: 20
       start_period: 20s
 
-  # Creates the database, the cz schema and roles, and one login per role. Runs once and exits.
+  # Creates the database, the containerizer schema, its roles and audit triggers, and one login per
+  # role. Runs once and exits.
   db-init:
     build: { context: .., dockerfile: results/Dockerfile }
     image: containerizer-results
     <<: *hardening
     command: ["db", "init", "--create-database",
-              "--login", "cz_scanner:cz_writer", "--login", "cz_web:cz_reader", "--login", "cz_editor:cz_mapper"]
+              "--login", "cz_scanner:writer", "--login", "cz_web:reader", "--login", "cz_admin:admin"]
     environment:
       CONTAINERIZER_SQL: "Server=mssql,1433;Database=Containerizer;User Id=sa;TrustServerCertificate=yes"
       CONTAINERIZER_SQL_PASSWORD: ${MSSQL_SA_PASSWORD}
       CZ_CZ_SCANNER_PASSWORD: ${CZ_SCANNER_PASSWORD:?set CZ_SCANNER_PASSWORD in results/.env}
       CZ_CZ_WEB_PASSWORD: ${CZ_WEB_PASSWORD:?set CZ_WEB_PASSWORD in results/.env}
-      CZ_CZ_EDITOR_PASSWORD: ${CZ_EDITOR_PASSWORD:?set CZ_EDITOR_PASSWORD in results/.env}
+      CZ_CZ_ADMIN_PASSWORD: ${CZ_ADMIN_PASSWORD:?set CZ_ADMIN_PASSWORD in results/.env}
     depends_on:
       mssql: { condition: service_healthy }
     restart: "no"
@@ -61,6 +65,14 @@ services:
     environment:
       CONTAINERIZER_SQL: "Server=mssql,1433;Database=Containerizer;User Id=cz_web;TrustServerCertificate=yes"
       CONTAINERIZER_SQL_PASSWORD: ${CZ_WEB_PASSWORD}
+      # admin pages: on when CONTAINERIZER_OIDC_ISSUER is set in results/.env (docs/results-database.md#admin-pages)
+      CONTAINERIZER_ADMIN_SQL: "Server=mssql,1433;Database=Containerizer;User Id=cz_admin;TrustServerCertificate=yes"
+      CONTAINERIZER_ADMIN_SQL_PASSWORD: ${CZ_ADMIN_PASSWORD}
+      CONTAINERIZER_OIDC_ISSUER: ${CONTAINERIZER_OIDC_ISSUER:-}
+      CONTAINERIZER_OIDC_CLIENT_ID: ${CONTAINERIZER_OIDC_CLIENT_ID:-}
+      CONTAINERIZER_OIDC_CLIENT_SECRET: ${CONTAINERIZER_OIDC_CLIENT_SECRET:-}
+      CONTAINERIZER_ADMINS: ${CONTAINERIZER_ADMINS:-}
+      CONTAINERIZER_PUBLIC_URL: ${CONTAINERIZER_PUBLIC_URL:-http://127.0.0.1:8080}
     ports: ["127.0.0.1:8080:8080"]
     depends_on:
       db-init: { condition: service_completed_successfully }

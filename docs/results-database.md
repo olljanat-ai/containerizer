@@ -1,29 +1,35 @@
 # Results database and web UI
 
-Assessments can be written to a Microsoft SQL Server database, and a small read-only web UI shows them
-to management grouped as **business unit → product → application → components**, with the rating,
-the main obstacles and, for every component, what needs to change, why, and where to read more.
+Assessments can be written to a Microsoft SQL Server database, and a small web UI shows them to
+management grouped as **business unit → product → application → components**, with the rating, the
+main obstacles and, for every component, what needs to change, why, and where to read more.
 
 - The **scan** fills applications, their components and the results. Components are mapped to their
   application automatically (by project file path inside the application), and an application is
   recognised again on the next scan by its git remote and folder, so history builds up per application.
-- **People** maintain business units and products, and which application belongs to which product, by
-  editing three tables directly with SQL (examples below). A scan never overwrites those columns.
+- **Administrators** maintain business units and products, and which application belongs to which
+  product, on the [admin pages](#admin-pages) behind single sign-on. A scan never overwrites that.
+- Every change to that mapping is kept in an [audit log](#change-history-audit): who, when, what
+  before and after.
 
 ```
-cz.BusinessUnit 1─* cz.Product 1─* cz.Application 1─* cz.Component            people / scan
-                                    cz.Application 1─* cz.ApplicationAssessment   one per scan
-                                                         1─* cz.ComponentAssessment
-                                                         1─* cz.Finding           why, fix, references
+BusinessUnit 1─* Product 1─* Application 1─* Component            administrators / scan
+                             Application 1─* ApplicationAssessment   one per scan
+                                              1─* ComponentAssessment
+                                              1─* Finding            why, fix, references
+AuditLog                                                             every mapping change
 ```
 
+Everything lives in **one dedicated schema**, `containerizer` by default, and the database roles are
+named after it, so the tables can share a database with other applications; nothing is created in
+`dbo`. Pick another name with `Schema=` in every connection string (or `CONTAINERIZER_SQL_SCHEMA`).
 The schema is in [`containerizer/sql/schema.sql`](../containerizer/sql/schema.sql) (SQL Server 2016 or
-later, or Azure SQL Database).
+later, or Azure SQL Database). The examples below use the default name.
 
 ## Quick start (local, Docker)
 
 ```sh
-cp results/.env.example results/.env          # set four strong passwords
+cp results/.env.example results/.env          # set four strong passwords (and sign-in, see Admin pages)
 docker compose -f results/compose.yaml up -d --build
 # http://127.0.0.1:8080/ shows the (empty) portfolio
 
@@ -37,7 +43,7 @@ python -m containerizer analyze ../my-app
 ```
 
 The compose stack runs SQL Server 2022 Developer edition, creates the database, the schema and three
-logins (`cz_scanner`, `cz_web`, `cz_editor`, one per role below), and starts the web UI with a read-only
+logins (`cz_scanner`, `cz_web`, `cz_admin`, one per role below), and starts the web UI with a read-only
 root filesystem, no Linux capabilities and `no-new-privileges`. All ports are published on 127.0.0.1
 only. Developer edition is licensed for development and test, not production.
 
@@ -56,6 +62,7 @@ python -m containerizer analyze path/to/repo        # or: assess path/to/repo
 | `Server` | `host,port` (`tcp:` prefix allowed). Named instances (`host\instance`) are not supported: give the port. |
 | `Database` / `Initial Catalog` | Database name. |
 | `User Id` | SQL login. The password comes from `CONTAINERIZER_SQL_PASSWORD` (preferred: not visible in the process list or shell history) or `Password=`. |
+| `Schema` | The dedicated schema (default `containerizer`). Not sent to the server. |
 | `Encrypt` | `yes` (default) or `no`. |
 | `TrustServerCertificate` | `no` (default) validates the server certificate against the system CAs; `yes` skips validation (local development with a self-signed certificate only). |
 | `CaFile` | PEM file with the CA that signed the server certificate, when it is not in the system store. |
@@ -77,7 +84,7 @@ writes the verified results (the gate mode on pull requests does not write):
     CONTAINERIZER_SQL_PASSWORD: ${{ secrets.CONTAINERIZER_SQL_PASSWORD }}
 ```
 
-Each run inserts one `cz.ApplicationAssessment` per application with its components, findings
+Each run inserts one `ApplicationAssessment` per application with its components, findings
 (including runtime findings from `analyze`) and the full JSON report. Results from earlier runs can be
 loaded too:
 
@@ -96,30 +103,29 @@ Run as a database owner once, and again after upgrading containerizer (it is ide
 CONTAINERIZER_SQL="Server=...;Database=Containerizer;User Id=<admin>" python -m containerizer db init
 ```
 
-It creates the `cz` schema, the tables and views, and three database roles with least privilege:
+It creates the schema, its tables, views and audit triggers, and three database roles with least privilege:
 
 | Role | For | Can |
 | --- | --- | --- |
-| `cz_writer` | the scanner (pipeline) | insert results; update only the scan-owned columns of `cz.Application` and `cz.Component` |
-| `cz_reader` | the web UI, report readers | read the `cz.v*` views, ratings, business units, products; not the raw JSON reports |
-| `cz_mapper` | people who maintain the mapping | edit `cz.BusinessUnit`, `cz.Product` and `ProductId`, `DisplayName`, `Description`, `Owner`, `Retired` of `cz.Application` |
+| `containerizer_writer` | the scanner (pipeline) | insert results; update only the scan-owned columns of `Application` and `Component` |
+| `containerizer_reader` | the web UI's results pages, report readers | read the `v*` views, ratings, business units, products; not the raw JSON reports |
+| `containerizer_admin` | the web UI's admin pages | everything the reader can, plus edit business units, products and the people-maintained columns of `Application`; read the audit log |
 
-Create one login per use and add it to a role, for example:
+No role may update or delete audit rows. Create one login per use and add it to a role, for example:
 
 ```sql
 -- in master
 CREATE LOGIN cz_scanner WITH PASSWORD = N'<strong password>', CHECK_POLICY = ON;
 CREATE LOGIN cz_web     WITH PASSWORD = N'<strong password>', CHECK_POLICY = ON;
--- in the Containerizer database
-CREATE USER cz_scanner FOR LOGIN cz_scanner;  ALTER ROLE cz_writer ADD MEMBER cz_scanner;
-CREATE USER cz_web     FOR LOGIN cz_web;      ALTER ROLE cz_reader ADD MEMBER cz_web;
--- people who edit the mapping: their own Windows/Entra logins
-CREATE USER [CONTOSO\jane] FOR LOGIN [CONTOSO\jane];  ALTER ROLE cz_mapper ADD MEMBER [CONTOSO\jane];
+CREATE LOGIN cz_admin   WITH PASSWORD = N'<strong password>', CHECK_POLICY = ON;
+-- in the database
+CREATE USER cz_scanner FOR LOGIN cz_scanner;  ALTER ROLE containerizer_writer ADD MEMBER cz_scanner;
+CREATE USER cz_web     FOR LOGIN cz_web;      ALTER ROLE containerizer_reader ADD MEMBER cz_web;
+CREATE USER cz_admin   FOR LOGIN cz_admin;    ALTER ROLE containerizer_admin  ADD MEMBER cz_admin;
 ```
 
-On Azure SQL Database use contained users instead (`CREATE USER cz_web WITH PASSWORD = ...`, and
-`CREATE USER [jane@contoso.com] FROM EXTERNAL PROVIDER` for people). Keep the scanner and web
-passwords in your pipeline's secret store.
+On Azure SQL Database use contained users instead (`CREATE USER cz_web WITH PASSWORD = ...`). Keep the
+passwords in your pipeline's or platform's secret store.
 
 ### TLS
 
@@ -128,88 +134,6 @@ the system store of the machine or container that runs containerizer, or pass `C
 Azure SQL Database certificates are trusted by default. Use `TrustServerCertificate=yes` only for a
 local development server.
 
-## Mapping applications to products and business units
-
-Do this with SQL Server Management Studio, Azure Data Studio, `sqlcmd` or any SQL client, as a member
-of `cz_mapper`. Applications appear after their first scan. Names are unique, so the examples look
-rows up by name.
-
-**1. Create business units**
-
-```sql
-INSERT cz.BusinessUnit (Name, Owner, Description)
-VALUES (N'Finance', N'CFO office', N'Finance and accounting'),
-       (N'Operations', N'COO office', NULL);
-```
-
-**2. Create products and put each in a business unit**
-
-```sql
-INSERT cz.Product (Name, Owner, BusinessUnitId)
-SELECT N'Billing', N'Jane Doe', BusinessUnitId FROM cz.BusinessUnit WHERE Name = N'Finance';
-
-INSERT cz.Product (Name, BusinessUnitId)
-SELECT N'Supply chain', BusinessUnitId FROM cz.BusinessUnit WHERE Name = N'Operations';
-```
-
-**3. See which applications still need a product**
-
-```sql
-SELECT * FROM cz.vUnmapped;       -- applications without a product, products without a business unit
-
-SELECT ApplicationId, Name, RepositoryUrl, SourcePath FROM cz.Application
-WHERE ProductId IS NULL AND Retired = 0 ORDER BY Name;
-```
-
-**4. Map applications to a product**
-
-```sql
--- one application, by the name the scan gave it (its folder name)
-UPDATE cz.Application
-SET ProductId = (SELECT ProductId FROM cz.Product WHERE Name = N'Billing')
-WHERE Name = N'meter-billing';
-
--- several at once
-UPDATE a SET ProductId = p.ProductId
-FROM cz.Application a JOIN cz.Product p ON p.Name = N'Supply chain'
-WHERE a.Name IN (N'parts-catalog', N'dealer-orders', N'freight-rates');
-
--- everything from one repository (or an Azure DevOps project, a GitHub organisation, ...)
-UPDATE a SET ProductId = p.ProductId
-FROM cz.Application a JOIN cz.Product p ON p.Name = N'Billing'
-WHERE a.RepositoryUrl LIKE N'https://dev.azure.com/contoso/Billing/%';
-```
-
-**5. Optional: friendlier names, owners, retiring an application**
-
-```sql
-UPDATE cz.Application
-SET DisplayName = N'Parts Catalog', Owner = N'Supply chain team', Description = N'Dealer parts lookup'
-WHERE Name = N'parts-catalog';
-
-UPDATE cz.Application SET Retired = 1 WHERE Name = N'old-portal';   -- hidden from the UI, history kept
-```
-
-**Moving and renaming**
-
-```sql
--- move a product to another business unit
-UPDATE cz.Product SET BusinessUnitId = (SELECT BusinessUnitId FROM cz.BusinessUnit WHERE Name = N'Operations')
-WHERE Name = N'Billing';
-
--- rename a business unit or product (everything mapped to it follows)
-UPDATE cz.BusinessUnit SET Name = N'Group Finance' WHERE Name = N'Finance';
-
--- unmap
-UPDATE cz.Application SET ProductId = NULL WHERE Name = N'meter-billing';
-```
-
-A product or business unit that still has rows mapped to it cannot be deleted (foreign key); unmap
-them first. Each application belongs to one product and each product to one business unit.
-
-When a repository moves (new remote URL), the next scan creates a new application row. Map it like
-any other and retire the old one; its history stays in the database.
-
 ## Useful queries
 
 ```sql
@@ -217,46 +141,109 @@ any other and retire the old one; its history stays in the database.
 SELECT COALESCE(BusinessUnitName, N'(not assigned)') AS BusinessUnit,
        COALESCE(ProductName, N'(not assigned)') AS Product,
        ApplicationName, Rating, RatingTitle, Score, EffortDays, AssessedAt
-FROM cz.vApplicationLatest ORDER BY BusinessUnit, Product, Rating, ApplicationName;
+FROM containerizer.vApplicationLatest ORDER BY BusinessUnit, Product, Rating, ApplicationName;
 
 -- rating mix and effort per business unit
 SELECT COALESCE(BusinessUnitName, N'(not assigned)') AS BusinessUnit, Rating, COUNT(*) AS Applications,
        SUM(EffortDays) AS EffortDays
-FROM cz.vApplicationLatest GROUP BY BusinessUnitName, Rating ORDER BY BusinessUnit, Rating;
+FROM containerizer.vApplicationLatest GROUP BY BusinessUnitName, Rating ORDER BY BusinessUnit, Rating;
 
 -- the most common blockers across the portfolio
 SELECT Title, Severity, COUNT(DISTINCT ApplicationId) AS Applications
-FROM cz.vFindingLatest WHERE Severity IN ('blocker', 'rewrite')
+FROM containerizer.vFindingLatest WHERE Severity IN ('blocker', 'rewrite')
 GROUP BY Title, Severity ORDER BY Applications DESC;
 
 -- components of one application
 SELECT ComponentName, Role, Verdict, VerdictText, EffortDays, VerifyStatus
-FROM cz.vComponentLatest WHERE ApplicationName = N'parts-catalog';
+FROM containerizer.vComponentLatest WHERE ApplicationName = N'parts-catalog';
 ```
 
 ## Web UI
 
 ```sh
-CONTAINERIZER_SQL="Server=...;Database=Containerizer;User Id=cz_web" CONTAINERIZER_SQL_PASSWORD=... \
-  python -m containerizer web            # http://127.0.0.1:8080/  (--host, --port)
+export CONTAINERIZER_SQL="Server=...;Database=Containerizer;User Id=cz_web" CONTAINERIZER_SQL_PASSWORD=...
+python -m containerizer web              # http://127.0.0.1:8080/  (--host, --port)
 ```
 
 or the `web` service of `results/compose.yaml` / the image built from `results/Dockerfile`.
 
 - **Overview**: number of applications, how many are ready now, need code changes or are partly or not
-  feasible, total estimated effort, the rating mix, then each business unit and product with its
-  applications, their rating in words, readiness, effort and main obstacle. Filter by business unit
-  with the buttons at the top.
+  feasible, total estimated effort, the rating mix, then each business unit and product (with a link
+  to the product's page in your product catalogue, when one is set) with its applications, their
+  rating in words, readiness, effort and main obstacle. Filter by business unit with the buttons at
+  the top.
 - **Application**: rating and what it means, readiness, effort, confidence, main obstacles, the
   components (what each one is and its verdict), and per component every item to change with why, how
   to fix it and links to the documentation; the rating history.
 
-It is read-only by design: GET and HEAD only, and the `cz_reader` login cannot change anything. Pages
-are rendered on the server without JavaScript; all text is escaped; responses carry a strict
-Content-Security-Policy (`default-src 'none'`), `X-Frame-Options: DENY`, `nosniff`,
-`Referrer-Policy: no-referrer` and `no-store`; errors are logged on the server and never shown.
+The results pages need no sign-in and only read (through the reader login). Pages are rendered on the
+server without JavaScript; all text is escaped; responses carry a strict Content-Security-Policy
+(`default-src 'none'`), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer` and
+`no-store`; errors are logged on the server and never shown. Run it behind a TLS-terminating reverse
+proxy or ingress, and keep it off the internet.
 
-There is **no sign-in yet**. It listens on 127.0.0.1 unless `--host` says otherwise. Before making it
-reachable by others, put it behind a reverse proxy or gateway that terminates TLS and authenticates
-users (for example Entra ID application proxy, oauth2-proxy, or an ingress with authentication), and
-do not publish it to the internet.
+## Admin pages
+
+`/admin` lets administrators, after signing in with your identity provider (OpenID Connect: Microsoft
+Entra ID, Okta, Keycloak, Google Workspace, ...):
+
+- **Application mapping**: list the applications that are not mapped yet (or all, or hidden ones),
+  select several and map them to a product in one go, or open one to set its product, a display name
+  shown instead of the folder name, an owner, a description, or hide it from the results (retired;
+  its history is kept).
+- **Products**: add, rename, put in a business unit, set an owner and a **product page link** (https
+  link to the product in another tool, for example the CMDB or product catalogue, shown next to the
+  product in the results), delete when nothing is mapped to it.
+- **Business units**: add, rename, set an owner, delete when no product is in it.
+- **Change history**: see below.
+
+They appear when sign-in is configured; without it the UI is the read-only results only.
+
+| Variable | Meaning |
+| --- | --- |
+| `CONTAINERIZER_OIDC_ISSUER` | Issuer URL, e.g. `https://login.microsoftonline.com/<tenant id>/v2.0` (Entra ID), `https://<org>.okta.com`, `https://<keycloak>/realms/<realm>` |
+| `CONTAINERIZER_OIDC_CLIENT_ID` / `CONTAINERIZER_OIDC_CLIENT_SECRET` | The app registration. The secret is optional (PKCE is always used); prefer a confidential client. |
+| `CONTAINERIZER_PUBLIC_URL` | The address users open, e.g. `https://containerizer.example.com`. The redirect URI to register is this plus `/auth/callback`. |
+| `CONTAINERIZER_ADMINS` | Who is an administrator, comma separated: `group:<group object id>`, `role:<app role>`, `email:<address>`, `domain:<e-mail domain>`, `sub:<subject id>`. `email:` and `domain:` only match when the provider marks the address verified (`email_verified`). Nobody else gets in. |
+| `CONTAINERIZER_ADMIN_SQL` / `CONTAINERIZER_ADMIN_SQL_PASSWORD` | Connection string and password of the `containerizer_admin` login the admin pages write with. |
+| `CONTAINERIZER_OIDC_SCOPES` | Default `openid profile email`. |
+
+With **Microsoft Entra ID**: register a web application with the redirect URI above, add a client
+secret, and either create an app role (for example `Containerizer.Admin`, assigned to a group in
+Enterprise applications; then `CONTAINERIZER_ADMINS=role:Containerizer.Admin`) or emit group claims
+(`group:<object id>`). Entra ID does not send `email_verified`, so use `role:` or `group:` there.
+
+Security: authorization code flow with PKCE (S256), `state` and `nonce`; the ID token's signature is
+verified with the provider's published keys, as are issuer, audience and expiry (unsigned and HMAC
+tokens are refused). The session is a random id in an `HttpOnly`, `SameSite=Lax` cookie (`Secure` and
+`__Host-` prefixed on https), new at every sign-in, ending after 8 hours or 1 hour idle, or at sign-out.
+Every form carries a per-session CSRF token and cross-site posts are refused by `Origin`; after sign-in
+only same-site paths are followed. HTTPS is required for the issuer and the public URL (plain http only
+for `localhost`), and on https the UI sends HSTS. Sessions are kept in the server's memory: run one
+instance, and a restart signs everyone out.
+
+## Change history (audit)
+
+Every insert, update and delete of a business unit, a product (including its product page link and
+business unit) and of an application's mapping and details is written to `containerizer.AuditLog` by
+database triggers, so changes made outside the admin pages, directly with SQL, are recorded too. Each
+row has:
+
+- **ChangedBy / ChangedByName**: the signed-in person (e-mail or user name, and display name) for
+  changes from the admin pages; the database login for anything else.
+- **DbLogin**: the actual database login that ran the statement, always.
+- **Via**: `admin UI`, `scan` (a new application found by a scan) or `SQL`.
+- **ChangedAt** (UTC), **TableName**, **RowId**, **RowName**, **Action** (`insert`, `update`, `delete`).
+- **OldValues / NewValues**: the values before and after, as JSON, with product and business unit
+  names rather than ids, so the history stays readable after renames and deletes.
+
+The admin pages show it under **Change history**, filterable by kind, and on each application, product
+and business unit page. The admin pages put the signed-in user in the connection's `SESSION_CONTEXT`
+as read-only, so it cannot be changed on that connection. No role can update or delete audit rows;
+database owners can, so forward the table to your SIEM if it must be tamper-proof.
+
+```sql
+-- who changed what in the last 30 days
+SELECT ChangedAt, COALESCE(ChangedByName, ChangedBy) AS Who, Via, TableName, RowName, Action, OldValues, NewValues
+FROM containerizer.AuditLog WHERE ChangedAt > DATEADD(day, -30, SYSUTCDATETIME()) ORDER BY ChangedAt DESC;
+```
