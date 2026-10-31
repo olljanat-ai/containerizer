@@ -493,7 +493,7 @@ repos:
   - name: rw4-virtocommerce
     url: https://github.com/VirtoCommerce/vc-platform
     commit: f4049f2357bd7da615dc3b484aa4a6be8b27a11f
-    expected_rating: A
+    expected_rating: B
     expected_roles: {web: [VirtoCommerce.Platform.Web], library: [VirtoCommerce.Platform.Data.SqlServer, VirtoCommerce.Platform.Data.PostgreSql], tool: [VirtoCommerce.Platform.Benchmark]}
     notes: >-
       net10.0 modular commerce platform host (Hangfire jobs in-process, SignalR, Redis optional), 16 projects.
@@ -501,6 +501,7 @@ repos:
       docker images and DockerCompose/ folder. appsettings connection string uses Data Source=(local) with SQL login
       -> config override only. A.
       tool (2026-10-30): B, roles match. Only refactor is system-drawing-core (rules/10-runtime.yaml:570) from the bare `<PackageReference Include="System.Drawing.Common">` (VirtoCommerce.Platform.Web.csproj:49); no System.Drawing code anywhere in src/ (a version pin for module dependencies). The package-alone clause over-fires; I keep A.
+      stateless (2026-10-31): B - not stateless by default: modules are uploaded and installed at run time into app_data/uploads and modules/ (ModulesController, PlatformOptions.LocalUploadFolderPath), and assets use the FileSystem provider unless switched to AzureBlobStorage. A is only for apps that keep no data on their own disk or in process memory.
 
   - name: rw4-grandnode
     url: https://github.com/grandnode/grandnode2
