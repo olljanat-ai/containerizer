@@ -18,7 +18,7 @@
 --
 -- The scan fills Application, Component and the assessment tables. People maintain business units,
 -- products and the application mapping in the admin pages of the web UI; a scan never overwrites them.
--- See docs/results-database.md.
+-- The appliance creates and upgrades it at start (docs/appliance.md).
 
 IF SCHEMA_ID(N'${schema}') IS NULL EXEC(N'CREATE SCHEMA [${schema}] AUTHORIZATION dbo');
 GO
@@ -913,7 +913,7 @@ BEGIN
 END;
 GO
 
--- Least-privilege roles. Add database users to them (docs/results-database.md):
+-- Least-privilege roles. Add database users to them (docs/sign-in.md#roles for the web UI roles on top of them):
 --   ${schema}_writer: the scanner; inserts results, never touches the people-maintained columns
 --   ${schema}_reader: the web UI and report readers; views and lookup tables only
 --   ${schema}_admin: the admin pages of the web UI (and people editing with SQL): business units,

@@ -89,11 +89,10 @@ optional LLM review, as for .NET.
 
 ## Containers
 
-`containerizer generate` (and `verify`, `gate`) builds Java and Node.js components the same way as
-.NET ones: a multi-stage Dockerfile that uses the application folder as build context, a hardened
+The scan generates Java and Node.js components the same way as .NET ones: a multi-stage Dockerfile that uses the application folder as build context, a hardened
 Kubernetes manifest (non-root, read-only root file system, no capabilities, seccomp, resource
 limits, NetworkPolicy) and a `plan.json` that explains every non-default decision. Base images are
-in `rules/images.yaml`; `containerizer images --update` pins patched tags in `rules/images.lock.yaml`.
+in `rules/images.yaml`, with patched tags pinned in `rules/images.lock.yaml`.
 
 **Java** (`containerizer/gen_jvm_node.py`)
 
@@ -123,7 +122,7 @@ Single-page apps build with the repository's package manager and are served by u
 
 ## Verification
 
-`containerizer verify` builds and runs Java and Node.js images hardened, as for .NET. Failure rules
+The scan builds and runs Java and Node.js images hardened, as for .NET. Failure rules
 in `rules/50-failures.yaml` recognise Java and Node.js build and start failures: a dependency that
 needs a newer Java line, Maven version enforcement (the build switches to the Maven wrapper), a
 lockfile out of sync, missing native toolchains, the V8 heap during builds, a devDependency needed at
@@ -131,9 +130,9 @@ run time, writes to read-only folders, and databases, brokers, config servers or
 the real environment provides. Unknown failures go to the optional LLM, which gets a
 language-specific evidence pack and plan vocabulary; what works is learned for review, as for .NET.
 
-## Organisation runs
+## Organization scans
 
-`containerizer org` treats Java and Node.js repositories like .NET ones: each buildable component
+Organization scans treat Java and Node.js repositories like .NET ones: each buildable component
 (a Maven or Gradle jar/war, a Node.js server or single-page app) gets its Dockerfile, hardened
 manifests and GitOps entries. Repositories without .NET, Java or Node.js code are still skipped and say so.
 

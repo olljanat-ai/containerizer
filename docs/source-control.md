@@ -43,26 +43,12 @@ ask (see [The LLM](#the-llm) below):
 - **Admins only.** The Source control page is for administrators; operators can schedule scans, but
   only of organizations an administrator registered.
 
-## Setting it up
+## The sealing key
 
-The appliance makes the key pair at first boot (`/etc/containerizer/secrets/credential-key` for the
-worker, `credential-key.pub` for the web UI, handed over as systemd credentials). Elsewhere, make it
-once:
-
-```sh
-python -m containerizer credentials keygen --private worker-credential.key --public worker-credential.pub
-```
-
-| Process | Variable | File |
-| --- | --- | --- |
-| scan worker | `CONTAINERIZER_CREDENTIAL_KEY_FILE` | the private key: mode 600, readable by the worker's user only |
-| web UI | `CONTAINERIZER_CREDENTIAL_PUBLIC_KEY_FILE` | the public key |
-
-Several workers share the same private key. Do not give the private key to the web UI. Making a new
-key pair means entering every token again: the page marks tokens sealed for another key.
-
-Then upgrade the database (`containerizer db init`, schema version 10), open **Admin → Source
-control** and add the tokens. On the appliance, also allow the hosts on the **Firewall** page.
+The appliance makes the key pair at first boot: `/etc/containerizer/secrets/credential-key` for the
+worker and `credential-key.pub` for the web UI. Back up `credential-key` with the database: the
+registered tokens open only with it. A new key pair means entering every token again (the page marks
+tokens sealed for another key). Also allow each Git server's host on **Admin → Firewall**.
 
 ## Making the tokens
 
@@ -100,34 +86,37 @@ Enter the repository's https URL exactly as on the scan's *Output repository* (w
 
 ## The LLM
 
-Scans with **Ask the LLM** on consult an LLM about the components the rules are unsure of
-([self-hosted-llm.md](self-hosted-llm.md)). Set it on the same page, once:
+Scans with **Ask the LLM** on consult an LLM about the components the rules are unsure of and the
+build or run failures no failure rule explains. Set it once on the same page:
 
 | Kind | Server | Model | API key |
 | --- | --- | --- | --- |
 | Claude API | empty, or the https URL of a gateway in front of it | e.g. `claude-sonnet-5-5` | required: a key from the Claude Console, in a workspace only for Containerizer, with a spend limit |
-| OpenAI-compatible server (Ollama, vLLM, LM Studio, llama.cpp, LocalAI, ...) | the URL up to and including `/v1` | the name the server knows | optional; only sent over https, or plain http to the worker's own machine |
+| OpenAI-compatible server (Ollama, vLLM, LM Studio, llama.cpp `llama-server`, LocalAI, TGI, ...) | the URL up to and including `/v1` | the name the server knows | optional; only sent over https, or plain http to the appliance itself |
 
 The key is sealed for the worker like the tokens and never shown again; the model can be changed
 without re-entering it, while a different server means removing it and adding it again. The worker
 hands the setting to the AI code for the run only, never through its environment, so the git and
-docker processes a scan starts never see the key. With no LLM set here, scans fall back to the
-worker's own environment variables (`CONTAINERIZER_LLM_BASE_URL`, `ANTHROPIC_API_KEY`, ...), as before.
-On the appliance, allow the server's host on the Firewall page.
+docker processes a scan starts never see the key. Allow the server's host on **Admin → Firewall**.
 
-## Command line runs
+**Choosing a model.** The quality of the fallback follows the quality of the model. With a self-hosted
+server, use the largest instruction-tuned model your hardware serves comfortably, ideally one that
+knows .NET well (a 30B+ Qwen, Llama, Mistral or DeepSeek model). Smaller models propose more wrong
+regexes; the scan keeps only ones that compile, do not match trivial code and fire on the code they
+were learned from, and an administrator still reviews every learned rule ([rule review](rule-review.md)).
 
-`containerizer org` outside the worker ([organization-run.md](organization-run.md)) has no database, so
-it still takes the tokens from environment variables (`GITHUB_TOKEN`, `GITLAB_TOKEN`,
-`AZURE_DEVOPS_TOKEN`, `OUTPUT_GIT_TOKEN`, or `--token-env`, `--output-token-env`). The same rules apply:
-no token, no run; the read-only token only with the organization's URLs; the write token only for the
-output repository, which is not scanned.
+**How answers are kept reliable.**
 
-## Upgrading from token variables
+- The rules stay first: the LLM never decides alone what the rules are sure of.
+- Every request carries the JSON schema of the answer, as `response_format` (which Ollama, vLLM, LM
+  Studio and llama.cpp enforce with constrained decoding) and in the prompt. A server that refuses
+  `json_schema` gets `json_object`, then plain text.
+- Every answer is checked against the schema. An invalid answer is retried once with the errors
+  listed; a second one is an error, and the component keeps the rules' verdict. `<think>` blocks of
+  reasoning models are ignored.
+- Requests use `temperature: 0` and answers are cached by prompt, model and server, so runs repeat.
+- The LLM never runs commands or edits the application: it returns JSON, and build-plan patches are
+  limited to an allow-list of plan keys. What it proposes is recorded with `source: ai` and the model.
 
-Earlier versions had the worker read the tokens from its environment (`CZ_TOKEN_*`, `GITHUB_TOKEN`,
-`OUTPUT_GIT_TOKEN`, ...) and each scan named the variables (*Token variable*, *Output token variable*).
-The worker no longer reads them: register each organization's token and each output repository's token
-under **Source control**, then remove the variables from `worker.env`. Until then the scans show
-*Token missing* and do not run. The old `TokenEnv` / `OutputTokenEnv` columns are kept in the
-database but unused.
+**What it sees.** Evidence packs contain source code excerpts, project files and the README of the
+assessed application. A self-hosted server keeps them inside your network.

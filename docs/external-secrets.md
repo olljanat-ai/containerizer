@@ -12,7 +12,7 @@ on the appliance a locked-down namespace of the same cluster. Git only holds the
 | Key and certificate files (mounted under `/secrets`), Kerberos keytab | `<component>-files`, `<component>-keytab` | `<namespace>--<component>` | the file names |
 | Flux `GitRepository` credential | `<namespace>-git` | `<namespace>--cz-git` | `username` + `password`, or `identity` + `known_hosts` |
 | Flux commit verification keys | `<namespace>-git-gpg` | `<namespace>--cz-git-gpg` | the public keys |
-| Registry read credential (Flux `OCIRepository`/`ImageRepository`; the `--image-pull-secret` of an organization run) | `<namespace>-registry`, the pull secret's name | `<namespace>--cz-registry` | `.dockerconfigjson` |
+| Registry read credential (Flux `OCIRepository`/`ImageRepository`; the image pull secret of an organization scan) | `<namespace>-registry`, the pull secret's name | `<namespace>--cz-registry` | `.dockerconfigjson` |
 | cosign public key for signed OCI artifacts | `<namespace>-cosign-pub` | `<namespace>--cz-cosign-pub` | `cosign.pub` |
 | Sandbox root sync (`sandbox/flux/bootstrap.yaml`, `sandbox/argocd/bootstrap.yaml`) | `containerizer-sandbox-git`, `containerizer-sandbox-repo` | `flux-system--cz-git`, `argocd--cz-git` | `username` + `password` |
 | Dev database passwords ([dev-databases.md](dev-databases.md)) | `devdb`, `devdb-admin` | none: ESO's Password generator creates them in the cluster | |
@@ -43,8 +43,9 @@ Git source's own ExternalSecret needs it before the first sync.
 
 The rules behind this are in [`rules/60-security.yaml`](../rules/60-security.yaml) (`secrets`): store
 name and kind, refresh interval, key format, reader name and annotations, and the provider
-definitions. `secrets.provider` (or `CONTAINERIZER_SECRET_STORE=kubernetes|vault|azurekv|aws` when you run
-`generate` or `org`) chooses which store `cluster/secret-store.yaml` defines.
+definitions. `CONTAINERIZER_SECRET_STORE=kubernetes|vault|azurekv|aws` in `/etc/containerizer/worker.env`
+chooses which store the scans write into `cluster/secret-store.yaml` (default `kubernetes`, the
+appliance's own store).
 
 ## Hardening checks
 
@@ -100,7 +101,7 @@ metadata level only.
 Install ESO (the [Helm chart](https://external-secrets.io/latest/introduction/getting-started/)), apply
 one app's `cluster/secret-store.yaml` (the store is the same for every app; the Role in it is per app), and
 put the remote keys from `HARDENING.md` in the store. Then deploy as usual. To use another backend, set
-`secrets.provider` before generating, or edit the store. The app manifests stay the same.
+`CONTAINERIZER_SECRET_STORE` for the scans, or edit the store. The app manifests stay the same.
 
 ### HashiCorp Vault or OpenBao
 

@@ -383,7 +383,7 @@ def write_sandbox(root: Path, git_url: str, branch: str) -> list[str]:
     (sb / "namespaces.txt").write_text("".join(f"{n}\n" for n in namespaces))
     from .sandbox import verify_rbac
     (sb / "verify-rbac.yaml").write_text(
-        "# Read-only access for `containerizer sandbox verify` (docs/sandbox-verification.md). Apply it as a\n"
+        "# Read-only access for `containerizer sandbox verify`. Apply it as a\n"
         "# cluster admin after the namespaces exist; it grants nothing cluster-wide and no access to Secrets.\n"
         + dump(verify_rbac(namespaces)))
     (sb / "README.md").write_text(sandbox_readme(git_url, branch, apps))

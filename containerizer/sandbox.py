@@ -14,7 +14,7 @@ records one status per component:
     skipped     no cluster access (no kubectl, no kubeconfig or the API server is unreachable)
 
 The cluster is only read, with the least-privilege Role/RoleBinding that `write_sandbox` generates in
-`sandbox/verify-rbac.yaml` (see docs/sandbox-verification.md). Nothing is written to the cluster.
+`sandbox/verify-rbac.yaml`. Nothing is written to the cluster.
 
 Failures are matched against rules/50-failures.yaml (stage `cluster` for Kubernetes states and
 events, stage `run` for the application's own log). Code and platform failures become learned
@@ -158,8 +158,7 @@ def cluster_access(kube: Kube) -> tuple[bool, str]:
     if not kube.kubectl:
         return False, "kubectl is not installed (https://kubernetes.io/docs/tasks/tools/)"
     if not _kubeconfig_present(kube.o):
-        return False, ("no kubeconfig: pass --kubeconfig, set KUBECONFIG or run in the cluster "
-                       "(see docs/sandbox-verification.md)")
+        return False, "no kubeconfig: pass --kubeconfig, set KUBECONFIG or run in the cluster"
     try:
         v = kube.version()
     except KubeError as e:

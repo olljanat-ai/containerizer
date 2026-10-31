@@ -1,4 +1,4 @@
-"""Write assessment results to Microsoft SQL Server (schema in sql/schema.sql, docs/results-database.md).
+"""Write assessment results to Microsoft SQL Server (schema in sql/schema.sql).
 
 The connection string uses the familiar ADO.NET/ODBC keys and is read from --sql or CONTAINERIZER_SQL:
 
@@ -206,7 +206,7 @@ def connect(cs: str | None = None, password: str | None = None, autocommit: bool
     try:
         return Connection(pymssql.connect(autocommit=autocommit, **args), schema)
     except pymssql.Error as e:
-        hint = " (is the server certificate trusted? see docs/results-database.md#tls)" if ca else ""
+        hint = " (is the server certificate trusted? set CaFile= to its CA, or TrustServerCertificate=yes for local development only)" if ca else ""
         raise SqlError(f"cannot connect to {args['server']},{args['port']} database {args['database']}{hint}: "
                        f"{_err(e)}") from None
 

@@ -1,271 +1,131 @@
-# Scheduled organization scans
+# Organization scans
 
-Administrators schedule [organization-wide runs](organization-run.md) on the [admin pages](results-database.md#admin-pages)
-of the web UI, and a **scan worker** (`containerizer worker`) on a build machine with Docker runs them.
-
-- **Organization scans**: which Azure DevOps organization, GitHub organization or GitLab group, where the
-  images and the generated files go, which repositories (filters), and on which days and at what time
-  (UTC) to run. **Run now**, cancel, and every run with its progress and result.
-- **Clones are kept**: the worker clones every repository once and later only fetches the newest commit
-  of the default branch (shallow), then resets the work tree to it. Clones of repositories the
-  organization no longer has are deleted.
-- **New repositories are found automatically**: every run lists the organization again. New
-  repositories are added (and processed in that run), renamed ones are followed by the provider's id,
-  and ones that are gone are marked **removed**.
-- **Repositories without application code are skipped**, as well as ones that already have a Dockerfile,
-  have not been updated recently, are archived, empty or forks. They show as **disabled, with the reason**.
-- **Administrators enable or disable repositories** after the first scan, one by one or in bulk, with
-  a note. Every change is in the change history.
-- **Prometheus metrics** about the scans, the worker process and the machine it runs on, alert rules,
-  and a **Grafana dashboard**.
-
-![Organization scans](images/admin-scans.png)
-
-## How it fits together
-
-```
- browser ──SSO──> web UI (admin pages) ──admin login──> SQL Server <──writer login── containerizer worker ──> Docker
-                  public key only:                      OrgScan, OrgScanRun,          private key opens the     │
-                  seals tokens, cannot                  OrgRepository, AuditLog,      tokens; registry          ├─> registry
-                  open them                             SourceCredential (sealed)     credentials, clones       ├─> output Git repo
-                                                                     Prometheus ──scrape /metrics──┘            └─> Argo CD / Flux
-```
-
-Administrators register the source control tokens under **Admin → Source control**
-([source-control.md](source-control.md)): a **read-only token for each organization** the scans may
-read and a **write token for each output repository**. An organization without a registered token is
-never scanned: there is no anonymous access, and a scan without one shows *Token missing* and does not
-run. Tokens are sealed for the worker's public key the moment they are saved: the web UI and the admin
-database role can add, replace and remove them but never read them back, and only the worker opens
-them, just before a run.
-
-Each token is only sent where it belongs. The organization's read-only token goes to the API of its
-own server and with the clone URLs of its own organization (`https://github.com/<org>/...`,
-`https://dev.azure.com/<org>/...`, ...); a clone URL anywhere else is refused. The output repository's
-write token is picked by the repository's URL, is only used to push there, and the output repository
-is never scanned, so it can live in the scanned organization. Git gets each token scoped to the one
-repository URL it is for. The registry credentials stay with the worker as environment variables;
-images are pushed only to `github.com`, `gitlab.com`, `dev.azure.com`, `*.visualstudio.com`, the
-hosts of the registered tokens and `CONTAINERIZER_WORKER_HOSTS`.
-
-## Setting it up
-
-1. Upgrade the database schema (adds the tables, the audit triggers and the grants), as a database owner:
-
-   ```sh
-   CONTAINERIZER_SQL="Server=...;Database=Containerizer;User Id=<owner>" python -m containerizer db init
-   ```
-
-2. Make the key pair that seals the tokens, once, and give the private key to the worker only and the
-   public key to the web UI (the appliance does this by itself at first boot):
-
-   ```sh
-   python -m containerizer credentials keygen --private worker-credential.key --public worker-credential.pub
-   # worker:  CONTAINERIZER_CREDENTIAL_KEY_FILE=/etc/containerizer/worker-credential.key  (mode 600, the worker's user)
-   # web UI:  CONTAINERIZER_CREDENTIAL_PUBLIC_KEY_FILE=/etc/containerizer/worker-credential.pub
-   ```
-
-   Several workers share the same private key. A new key pair means entering every token again.
-
-3. The admin pages show **Organization scans** and **Repositories** to administrators and operators
-   (`CONTAINERIZER_OPERATORS`, see [Roles](results-database.md#roles)), and **Source control** to
-   administrators only: register the tokens there before the first scan.
-
-4. Run the worker on a **dedicated, disposable build VM** with Docker. Building and running the
-   repositories' images executes their build steps, as `analyze` and `gate` always do, so give the VM
-   no other credentials and no access to production networks.
-
-### Running the worker
-
-```sh
-sudo useradd --system --home /var/lib/containerizer --groups docker containerizer
-sudo git clone https://github.com/olljanat-ai/containerizer /opt/containerizer
-sudo python3 -m venv /opt/containerizer/.venv
-sudo /opt/containerizer/.venv/bin/pip install -r /opt/containerizer/requirements.txt -r /opt/containerizer/requirements-sql.txt
-sudo install -d -m 700 /etc/containerizer
-sudo install -m 600 /opt/containerizer/monitoring/systemd/worker.env.example /etc/containerizer/worker.env   # fill it in
-sudo cp /opt/containerizer/monitoring/systemd/containerizer-worker.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now containerizer-worker
-journalctl -u containerizer-worker -f
-```
-
-Install Trivy or Grype for the security gate (or let the gate run them in Docker), and cosign if
-scans sign images. The worker runs directly on the VM, not in a container: the build-and-run
-verification reaches the containers it starts on `127.0.0.1`, and the scanners mount host folders.
-
-| Option / variable | Meaning |
-| --- | --- |
-| `CONTAINERIZER_SQL` / `--sql`, `CONTAINERIZER_SQL_PASSWORD` | A login in the `containerizer_writer` role (the same role as the scanner). |
-| `--data-dir` | Clones (`scan-<id>/repos`), work folders and, for scans without an output repository, the generated files (`scan-<id>/output`). Default `/var/lib/containerizer`, mode 700. |
-| `--poll` | Seconds between checks for due scans and queued runs (default 30). |
-| `--name` | Worker name shown on the runs (default the host name). |
-| `--metrics-host`, `--metrics-port`, `--no-metrics` | The metrics endpoint, default `127.0.0.1:9464`. |
-| `--once` | Run what is due or queued, then exit (for a cron job instead of a service). |
-| `CONTAINERIZER_CREDENTIAL_KEY_FILE` | The private key that opens the tokens registered under **Source control** (`containerizer credentials keygen`). The worker no longer reads organization or output repository tokens from its environment. |
-| `REGISTRY_USERNAME`, `REGISTRY_PASSWORD` | Push-only registry credentials (or an existing `docker login` of the worker's user). |
-| `CONTAINERIZER_WORKER_HOSTS` | Extra image registry hosts, comma separated, `*.example.com` for subdomains. Self-hosted Git servers need no entry: registering their token allows them. |
-| `CONTAINERIZER_METRICS_TOKEN` | When set, scrapes must send `Authorization: Bearer <token>`. |
-
-`SIGTERM` (systemctl stop) lets the worker finish the repository it is on; the run is then marked
-**cancelled**. If the worker dies, its run is marked **failed** after 10 minutes without a heartbeat
-(or at once when the same worker starts again). The next run processes every repository again, so
-nothing is lost. Several workers can share one database: each run is taken by exactly one of them,
-and each worker keeps its own clones.
-
-## Organization scans
+An organization scan reads every Git repository of one Azure DevOps organization (or Azure DevOps
+Server collection), GitHub organization or GitLab group, assesses them, and deploys the ones that are
+ready to the sandbox cluster. Administrators and operators define scans under
+**Admin → Organization scans**: the organization, filters, where images and generated files go, and the
+days and time (UTC) to run, or **Run now**. The scan worker on the appliance runs them. Before the first
+scan, an administrator registers a read-only token for the organization and a write token for the output
+repository ([source control tokens](source-control.md)), and allows the hosts on **Admin → Firewall**.
 
 ![An organization scan: runs, settings and change history](images/admin-scan-edit.png)
 
-A scan has the same settings as `containerizer org` ([organization-run.md](organization-run.md)):
-provider and organization (and the server for self-hosted Azure DevOps Server, GitHub Enterprise or
-GitLab), include/exclude filters (regular expressions on `project/repository`),
-skip forks, skip repositories not updated for N days, the image registry and whether to push, the
-output repository and branch (empty: the generated files stay on the worker), an
-image pull secret, build-and-run verification, the security gate and the LLM.
+## What happens to each repository
 
-**Schedule**: the days of the week and a time in UTC; no day selected means only **Run now**. The worker
-queues a run when it is due; if it was down at the time, it runs once when it is back. A scan runs at
-most once at a time: Run now while one is queued or running does nothing. **Paused** (Enabled
-unchecked) scans do not run at all. Changing the settings takes effect at the next run.
+1. **Listed** through the provider's API, including private and internal repositories the token can
+   read. Every run lists the organization again: new repositories are added and processed in that run,
+   renamed ones are followed by the provider's id, and ones that are gone are marked **removed**.
+2. **Skipped automatically** when there is nothing to do, with the reason shown on **Admin →
+   Repositories** ([automatic skips](#automatic-skips)).
+3. **Cloned** shallow (default branch only, no tags, submodules, symlinks or LFS objects). Clones are
+   kept on the appliance, and later runs only fetch the newest commit and reset the work tree to it.
+4. **Assessed, built and run**: every feasible component is built and run hardened, failures are matched
+   and fixed where a rule knows how, and the application is assessed again ([how it works](overview.md#how-it-works)).
+   With **Ask the LLM** on, the LLM is consulted about what the rules are unsure of. Every assessment is
+   stored, A or not, so the results pages and trends cover the whole organization.
+5. **Selected**: a component is deployed only when it is a server component (web, worker, console, SPA)
+   rated **A** on its own (including the stateless requirement), a Linux image can be generated for it,
+   and it built and ran in the verification (or ran and only lacked its database or broker).
+6. **Security gate**: lint, image build, vulnerability scan, licence policy and a run with the pod's
+   security context ([security gate](overview.md#security-gate)). A component that fails is dropped, and
+   the rest are gated again so the namespace, network policies and GitOps files cover only what is
+   deployed.
+7. **Images pushed** as `<registry>/<app>/<component>:<tag>` and `:git-<commit>`. The tag is `1.<yyyymmdd>.<hhmm>` of the run (semver, so Flux image automation can
+   follow it). With the registry set to `localhost:5000/<path>`, images go to the appliance's own
+   registry and need no credentials; an external registry needs push credentials in `worker.env`.
+8. **Committed** to the output repository after every repository, so a long run can be followed and
+   survives interruptions.
 
-Each run shows who or what started it, the worker, how long it took, its progress while running
-(repositories done of all, the one it is on), and how many repositories were deployed, skipped or
-disabled, failed, and new. **Cancel** stops a queued run at once and a running one after the
-repository it is on. A scan that has run cannot be deleted (its history is kept): pause it.
+A repository that is skipped or has no A component loses its folder in the output repository, so the
+sandbox stops deploying it. A repository that fails keeps its previous folder and is reported as failed.
 
-## Repositories
+A scan runs at most once at a time, and a paused scan does not run at all. If the worker was down at the
+scheduled time, the scan runs once when it is back. **Cancel** stops a running scan after the repository
+it is on. A scan that has run cannot be deleted (its history is kept): pause it.
 
-![Repositories: disabled ones with the reason](images/admin-repositories-disabled.png)
-
-Every repository any scan has found, filterable by scan, by state (all, enabled, disabled, new in the
-last 7 days, failed in the latest run, removed) and by name. Each shows whether it is **enabled** or
-**disabled**, who decided (**automatic**: the scan; **administrator**), the reason, and its latest
-result with the rating.
+## Automatic skips
 
 | Automatic skip | Reason shown, for example |
 | --- | --- |
 | Has a Dockerfile | `found src/Api/Dockerfile`: the team already containerizes it |
-| No application code | `14 files (.md 9, .yml 3, .json 2), no source code`: documentation, configuration, pipelines, SQL or shell scripts |
-| Language not supported | `Ruby (32 files), but no project the tool can build (...)`: source code, but no .NET project, `package.json`, `requirements.txt`/`pyproject.toml`, `pom.xml`/`build.gradle` or `go.mod` |
+| No application code | `14 files (.md 9, .yml 3, .json 2), no source code`: documentation, configuration, pipelines, SQL or scripts |
+| Language not supported | `Ruby (32 files), but no project the tool can build (...)` |
 | Nothing to deploy | `only library, test: 3 projects, nothing that runs on its own` |
-| Not updated recently | `no update since 2026-01-07` (the scan's *skip repositories not updated for*) |
-| Archived, Empty, Fork | as the provider reports |
-| Left out by the filter | the scan's include/exclude filters |
+| Not updated recently | `no update since 2026-01-07`: no commit on the default branch for the scan's *skip repositories not updated for* days (default 183) |
+| Archived, Empty, Fork | as the provider reports (forks only with *skip forks*) |
+| Left out by the filter | the scan's include/exclude regular expressions on `project/repository` |
 
 Automatic skips are checked again at every run, so a repository that gets new commits or loses its
 Dockerfile is processed again by itself. Archived, empty, filtered and stale repositories are decided
-from the provider's API without fetching anything; the others need the newest commit, which the
-worker fetches into its clone.
+from the provider's API without fetching anything. An administrator can **Enable** a repository
+(process it even though a skip applies), **Disable** it (never fetch it; it also leaves the sandbox at
+the next run) or set it back to **Automatic**, with a note in the change history.
 
-Select repositories and press **Enable** (always process it, even when an automatic skip applies: the
-skip is still shown as overridden), **Disable** (never fetch or process it; it is also removed from the
-sandbox deployment at the next run) or **Automatic** (the scan decides again), with an optional note.
-The same is on each repository's page, with its details, the deployed and excluded components, a link
-to its results, and its change history.
+## Output repository layout
 
-![One repository: enabled by an administrator although it has a Dockerfile](images/admin-repository.png)
+```
+<Organization>/
+  README.md                  every repository: status, rating, deployed and excluded components with reasons
+  org-run.json               the same as data (merged across runs)
+  <Project>/<Repository>/    one application (namespace <app>)
+    kustomization.yaml       namespace, security policies, components, image tags
+    namespace.yaml security.yaml HARDENING.md SECURITY.md MIGRATION.md cluster/
+    containerizer.json       source URL, commit, images, digests, verification
+    gitops/argocd/           AppProject + Application for this app
+    gitops/flux/             tenant.yaml, git/sync.yaml, oci/, image automation
+    <component>/             Dockerfile, Dockerfile.dockerignore, k8s.yaml, plan.json, sbom.cdx.json
+sandbox/
+  README.md namespaces.txt
+  argocd/bootstrap.yaml      app-of-apps
+  flux/bootstrap.yaml        GitRepository + root Kustomization
+```
 
-The change history (**Change history → Repositories**, and on each page) records repositories found by a
-scan, enabled, disabled or set back to automatic by whom with the note, automatic skips that start or
-stop applying, and repositories that leave the organization; and every change to a scan's settings.
+The project folder is the Azure DevOps project, `_` for GitHub (no projects), or the GitLab subgroup
+path with `--` for `/`. The **app name** (Kubernetes namespace and image path) is
+`<project>-<repository>` in DNS form, prefixed with `app-` when it would be a system namespace, shortened
+with a hash past 63 characters, and given a hash suffix when two repositories would map to the same name.
 
-## Metrics
+## The sandbox cluster
 
-The worker serves Prometheus metrics at `http://<metrics-host>:9464/metrics` (text format 0.0.4) and a
-plain `/healthz`. It listens on 127.0.0.1 by default: to scrape it from another machine, start it with
-`--metrics-host` set to the VM's private address, keep the port behind a firewall, and set
-`CONTAINERIZER_METRICS_TOKEN`. Example scrape configuration and alert rules:
-[`monitoring/prometheus/scrape.yml`](../monitoring/prometheus/scrape.yml),
-[`monitoring/prometheus/containerizer-alerts.yml`](../monitoring/prometheus/containerizer-alerts.yml)
-(worker down, run failed, no successful run for 8 days, runs not starting, repositories failing, disk
-over 90 %, memory low).
+The appliance's k3s cluster deploys what the scans commit. Fill in `/etc/containerizer/sandbox.env`
+(output repository URL, branch and a **read-only** token for it, separate from the scan's write token)
+and allow the Git server on **Admin → Firewall**. Every 2 minutes the appliance then:
 
-| Metric | Type | Labels | Meaning |
-| --- | --- | --- | --- |
-| `containerizer_worker_info` | gauge | worker, version | Always 1 |
-| `containerizer_worker_busy` | gauge | | 1 while running a scan |
-| `containerizer_worker_last_poll_timestamp_seconds` | gauge | | Last check for due scans |
-| `containerizer_worker_poll_errors_total` | counter | | Failed checks (database unreachable) |
-| `containerizer_scan_info` | gauge | scan, provider, organization, enabled | Scans defined on the admin pages |
-| `containerizer_scan_runs_total` | counter | scan, status | Finished runs: succeeded, failed, cancelled |
-| `containerizer_scan_running` | gauge | scan | 1 while a run is in progress |
-| `containerizer_scan_last_start_timestamp_seconds`, `..._last_end_...`, `..._last_success_...` | gauge | scan | Times of the latest run |
-| `containerizer_scan_last_duration_seconds` | gauge | scan | Duration of the latest run |
-| `containerizer_scan_next_run_timestamp_seconds` | gauge | scan | Next scheduled run |
-| `containerizer_scan_queued_runs` | gauge | | Runs waiting for a worker |
-| `containerizer_scan_run_repositories`, `containerizer_scan_run_repositories_done` | gauge | scan | Progress of the current or latest run |
-| `containerizer_scan_repositories_processed_total` | counter | scan, status | Repositories processed, by result (deployed, no-a-components, skipped-*, disabled, error) |
-| `containerizer_scan_repository_duration_seconds` | histogram | scan | Time per repository |
-| `containerizer_scan_repositories` | gauge | scan, state | enabled, disabled_automatic, disabled_admin, removed |
-| `containerizer_scan_repositories_last_status` | gauge | scan, status | Repositories by latest result |
-| `containerizer_scan_new_repositories_total` | counter | scan | Repositories found for the first time |
-| `containerizer_scan_git_operations_total` | counter | scan, operation, result | Clones and pulls, ok or failed |
-| `containerizer_scan_git_seconds_total` | counter | scan, operation | Time spent in git |
-| `containerizer_scan_images_pushed_total` | counter | scan | Images pushed |
-| `process_cpu_seconds_total`, `process_resident_memory_bytes`, `process_virtual_memory_bytes`, `process_open_fds`, `process_max_fds`, `process_threads`, `process_start_time_seconds` | | | The worker process (standard names) |
-| `containerizer_process_children_cpu_seconds_total` | counter | | CPU of the tools it starts (git, docker CLI, scanners) |
-| `containerizer_host_cpu_seconds_total` | counter | mode | CPU time of the machine by mode (user, system, idle, iowait, steal, ...) |
-| `containerizer_host_cpus`, `containerizer_host_load1`, `..._load5`, `..._load15` | gauge | | CPUs and load average |
-| `containerizer_host_memory_total_bytes`, `..._memory_available_bytes`, `..._swap_total_bytes`, `..._swap_free_bytes` | gauge | | Memory |
-| `containerizer_host_filesystem_size_bytes`, `..._avail_bytes`, `..._files_free` | gauge | path, use | The data folder's file system and Docker's (`/var/lib/docker`) |
-| `containerizer_host_disk_read_bytes_total`, `..._written_bytes_total`, `..._io_time_seconds_total` | counter | device | Disk I/O |
-| `containerizer_host_network_receive_bytes_total`, `..._transmit_bytes_total` | counter | device | Network (physical interfaces) |
+- puts the read-only token in the secret store for Flux's root sync and for every app namespace listed
+  in `sandbox/namespaces.txt`;
+- creates the root `GitRepository` and `Kustomization` of `sandbox/flux/`. The root creates each tenant
+  (namespace with Pod Security "restricted", ServiceAccounts, a namespace-only RoleBinding, read access to
+  its own secret store keys), and each app then reconciles as its own ServiceAccount.
 
-Machine metrics are read from `/proc`, so they describe the whole VM (Docker builds included), and are
-prefixed `containerizer_host_` so they do not clash with node_exporter. For the full set of machine
-metrics (per-CPU, file system per mount, pressure stall information, systemd, ...) run
-[node_exporter](https://github.com/prometheus/node_exporter) on the VM as well and scrape it as a
-second job (commented in `scrape.yml`); Grafana's *Node Exporter Full* dashboard (id 1860) covers it.
+Nothing in the output repository is a Secret: credentials are ExternalSecrets ([secrets](external-secrets.md)).
+Apps that need a database, cache or object storage get one from the [lab services](lab-services.md), or a
+restored copy of their [development database](dev-databases.md). `kubectl` as root on the appliance shows
+the result. To deploy the same output repository to another cluster, follow `sandbox/README.md` in it
+(Argo CD or Flux).
 
-### Grafana dashboard
+## Security
 
-Import [`monitoring/grafana/containerizer-scans.json`](../monitoring/grafana/containerizer-scans.json)
-(Dashboards → New → Import) and pick your Prometheus data source. Variables: job, worker (instance),
-scan.
+- Each token is only sent where it belongs: the read-only token to its own server's API and its own
+  organization's clone URLs, the write token only to push the output repository, which is never scanned
+  ([how the tokens are protected](source-control.md#how-the-tokens-are-protected)). Git gets each token
+  scoped to one repository URL, not in `.git/config`, the process list or clone URLs.
+- Clones are made with symlinks off, no submodules, and the `file`/`ext` transports disabled. The
+  scanner never executes scanned code, but building and running the images does execute the
+  repositories' build steps. That is why the appliance is a dedicated machine with an outbound
+  allow-list for every build.
+- Registry credentials are written only to a temporary Docker config (mode 700) for the run.
+- Nothing secret is written to the output repository, and build logs are not copied there.
 
-Set `CONTAINERIZER_GRAFANA_URL` on the web UI to the dashboard's address (for example
-`https://grafana.example.com/d/containerizer-scans`) and the admin pages link to it:
-a **Grafana ↗** tab on the admin pages of administrators and operators, and a link on Organization
-scans. It must be `https://`
-(`http://` is accepted only to `localhost`), and the web UI refuses to start with anything else.
+## Metrics and Grafana
+
+The worker exports Prometheus metrics about the scans, the worker process and the machine, and the
+appliance's Grafana (`https://<appliance>/grafana/`, linked as **Grafana ↗** on the admin pages) has a
+dashboard of them: scans running and waiting, time since the last successful run, progress of the
+current run, repositories by state and latest result, time per repository, clones and pulls, pushed
+images, and the machine's CPU, memory, disk and network.
 
 ![Grafana dashboard: scans, the machine running the worker, and the worker process](images/grafana-scans-dashboard.png)
 
-- **Scans**: worker up, scans running, runs waiting, time since the last successful run, next run,
-  latest run's duration, failed runs in 7 days; progress of the current run; repositories by state and
-  by latest result; repositories processed over time by result; time per repository (median, 95th
-  percentile); clones and pulls; time in git; new repositories and pushed images.
-- **Machine running the worker**: CPU by mode, load against CPUs, memory, disk space of the data and
-  Docker folders, disk I/O, network.
-- **Worker process**: CPU (and its child processes), memory, open files and threads.
-
-The screenshots on this page are from a trial run against the public GitLab group `gitlab-examples`
-(79 repositories) with build-and-run, gate and image push turned off.
-
-## Database
-
-Schema version 3 adds, in the same dedicated schema:
-
-| Table | Holds | Written by |
-| --- | --- | --- |
-| `OrgScan` | Scans: organization, results, filters, schedule; `NextRunAt` | admin pages (settings), worker (`NextRunAt`) |
-| `OrgScanRun` | One row per run: who started it, status, worker, heartbeat, progress, counts, result | `QueueOrgScanRun` / `CancelOrgScanRun` procedures, worker |
-| `OrgRepository` | Every repository found: names, URLs, first/last seen, removed; `SkipStatus`/`SkipReason` (automatic); `AdminState`/`AdminNote` (people); latest result; computed `Enabled` | worker, admin pages (`AdminState`, `AdminNote` only) |
-
-The `containerizer_admin` role may change the scans and only `AdminState`/`AdminNote` of repositories,
-and queue or cancel runs through the procedures; the `containerizer_writer` role (the worker) may read
-the scans, set `NextRunAt`, update the runs and every repository column except the people's. The
-`containerizer_reader` role (the results pages) sees none of it. Changes to `OrgScan` and
-`OrgRepository` are written to `AuditLog` by triggers.
-
-```sql
--- repositories an administrator disabled, and why
-SELECT s.Name AS Scan, r.ProjectName, r.Name, r.AdminNote
-FROM containerizer.OrgRepository r JOIN containerizer.OrgScan s ON s.ScanId = r.ScanId
-WHERE r.AdminState = N'disabled';
-
--- why repositories are skipped, per scan
-SELECT s.Name AS Scan, r.SkipStatus, COUNT(*) AS Repositories
-FROM containerizer.OrgRepository r JOIN containerizer.OrgScan s ON s.ScanId = r.ScanId
-WHERE r.RemovedAt IS NULL AND r.SkipStatus IS NOT NULL GROUP BY s.Name, r.SkipStatus;
-```
+Alert rules are included ([`monitoring/prometheus/containerizer-alerts.yml`](../monitoring/prometheus/containerizer-alerts.yml)):
+worker down, run failed, no successful run for 8 days, runs not starting, repositories failing, disk
+over 90 %, memory low. The metric names are listed in [`containerizer/metrics.py`](../containerizer/metrics.py).

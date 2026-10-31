@@ -2,7 +2,7 @@
 
 Publish the apps that the organization scans deploy to the sandbox cluster over HTTPS, under one
 wildcard domain that an administrator sets up. Each component that serves HTTP gets its own address,
-the sandbox health check opens it, and the application page and `sandbox/HEALTH.md` link to it.
+recorded on its generated Ingress (`containerizer.io/url`).
 
 ## What you need
 
@@ -18,33 +18,25 @@ the sandbox health check opens it, and the application page and `sandbox/HEALTH.
 - **A DNS record** that points the wildcard name at the appliance (see [DNS](#dns)).
 
 A certificate from a public CA works in every browser. A certificate from your internal CA works where
-that CA is trusted, including the appliance's own health check (see [The health check](#the-health-check)).
+that CA is trusted.
 
 ## Set it up
 
-**Admin → Sandbox HTTPS** (administrators only, on the appliance):
+**Admin → Sandbox HTTPS** (administrators only): enter the domain as `*.sandbox.example.com`, paste the
+certificate chain and the private key, and save. The page checks that the certificate names
+`*.<domain>`, matches the key, is valid now, comes with its chain in order and is a server certificate,
+and says which check failed. The system agent (root) then checks it all again and:
 
-1. Enter the domain as `*.sandbox.example.com`, paste the certificate chain and the private key, and click **Save**.
-2. The page checks what you pasted before it saves anything. The certificate must name `*.<domain>`, match
-   the key, be valid now, come with its chain in order, and be a server certificate. The page tells you
-   what is wrong if a check fails.
-3. The system agent (root) checks it all again and then does the following:
-    - It writes the certificate and key to `/var/lib/containerizer/system/sandbox-https.{crt,key}`. The key
-      is readable only by root and Caddy.
-    - It adds a site for `*.<domain>` to Caddy. Caddy validates the site before it is restarted, so a
-      broken site never takes the admin pages down. If anything fails, every file goes back to what it was.
-    - It installs the certificate in k3s as Traefik's default certificate (see [How it works](#how-it-works)).
-4. The page then shows the domain, the certificate's subject, issuer, expiry, key type and SHA-256
-   fingerprint, and who set it up and when. **The key is never shown again.** The change history on the
-   same page records each change: who, when, the domain and the certificate's fingerprint and expiry.
-   It never records the key or the certificate text.
+- writes the certificate and key to `/var/lib/containerizer/system/sandbox-https.{crt,key}`, the key
+  readable only by root and Caddy;
+- adds a site for `*.<domain>` to Caddy. Caddy validates the site before it is restarted, so a broken
+  site never takes the admin pages down; if anything fails, every file goes back to what it was;
+- installs the certificate in k3s as Traefik's default certificate (see [How it works](#how-it-works)).
 
-**Turn off** deletes the certificate and key from the appliance, Caddy and k3s. Generated Ingresses stay
-in the output repository until the next scan without a domain.
-
-Each organization scan from then on generates the Ingresses. Scans read the domain from
-`/var/lib/containerizer/system/sandbox-https.json`, which holds no secrets. Outside the appliance, pass
-`--ingress-domain sandbox.example.com` to `containerizer org` or `containerizer generate`.
+**The key is never shown again**, and the change history records the domain and the certificate's
+fingerprint and expiry, never the key or the certificate text. **Turn off** deletes the certificate and
+key from the appliance, Caddy and k3s; generated Ingresses stay in the output repository until the next
+scan. Every organization scan after setup generates the Ingresses.
 
 ## Names
 
@@ -84,9 +76,8 @@ Point the wildcard at the appliance, in the zone of the domain:
   from a public CA if the domain is one you own publicly.
 - Check it with `dig +short web-shop.sandbox.example.com` (any name under the domain must return the
   appliance), then `curl -I https://web-shop.sandbox.example.com/`.
-- The appliance itself never resolves these names: its health check connects to its own Caddy
-  (`127.0.0.1:443`) and sends the real host name. So the record is for your users, not for the appliance,
-  and nothing needs to be allowed on the Firewall page.
+- The record is for your users: the appliance itself never needs to resolve these names, and nothing
+  needs to be allowed on the Firewall page.
 
 ## How it works
 
@@ -160,26 +151,6 @@ spec:
   ingress-nginx, use `--default-ssl-certificate`. For Traefik, use a `default` TLSStore. Redirect HTTP to
   HTTPS at the entry point: the Traefik annotations above put the route on `websecure` only.
 
-## The health check
-
-`containerizer org --verify-sandbox` and `containerizer sandbox verify` open each component's URL once
-its pods are healthy:
-
-- **What is requested:** a GET of the path of the readiness probe, or `/`, over HTTPS. The certificate is
-  checked against the host name as a browser would check it.
-- **What counts as up:** any answer below 500 (a 401 or a 404 at `/` is fine). Redirects are not followed.
-- **What counts as failing:** a TLS error, a refused or timed-out connection, or a 5xx answer, after 3
-  attempts. The component is then marked failing with the reason.
-- **On the appliance:** the check connects to `127.0.0.1:443` (Caddy) and trusts the chain that was set
-  up, so it also works with an internal CA and without DNS. Elsewhere, it uses the name's DNS address and
-  the system's CAs. Override this with `--ingress-address host:port` and `--ingress-ca ca.pem`.
-
-**Where the URL shows up:**
-
-- `sandbox/HEALTH.md` (URL column) and `health.json` (`url`, `url_check`) in the output repository.
-- The results database: `SandboxCheck.Url`, `UrlCheck`, schema version 11.
-- The application page of the web UI: the component's sandbox status links the URL.
-
 ## Troubleshooting
 
 | What you see | Where to look |
@@ -189,4 +160,3 @@ its pods are healthy:
 | Browser: certificate error | The chain is incomplete (paste the intermediates) or the CA is not trusted on that machine |
 | 404 at a URL | No Ingress with that host: was the app scanned after the domain was set? `kubectl get ingress -A` |
 | 502 at a URL | Traefik is not up or does not have the certificate yet: `kubectl -n kube-system get pods,tlsstore`, `journalctl -u containerizer-sandbox` |
-| Health check: "does not answer over HTTPS" | The app's own answer (5xx) or TLS, with the detail; open the URL from the application page |

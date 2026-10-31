@@ -4,7 +4,7 @@
 page is rendered on the server (the only script is the optional copy button of the AI agent prompt) from the v* views with parameterised queries, all
 text is HTML-escaped, and responses carry a strict Content-Security-Policy. The results pages are
 read-only and need no sign-in; the admin pages (admin.py: mapping, products, business units, change
-history) appear when OpenID Connect sign-in is configured (docs/results-database.md#admin-pages).
+history) appear when OpenID Connect sign-in is configured (docs/sign-in.md).
 """
 from __future__ import annotations
 
