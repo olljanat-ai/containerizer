@@ -444,3 +444,22 @@ def test_pod_problem_names_eviction():
                                           "message": "The node was low on resource: ephemeral-storage."}}]}
     assert labagent._pod_problem(K(), "redis", "redis") == \
         "Failed (Evicted): The node was low on resource: ephemeral-storage."
+
+
+def test_ready_for_and_crash_log():
+    from datetime import datetime, timedelta, timezone
+    from containerizer import labagent
+    t = (datetime.now(timezone.utc) - timedelta(seconds=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert 20 < labagent._ready_for({"status": {"conditions": [{"type": "Ready", "lastTransitionTime": t}]}}) < 120
+    assert labagent._ready_for({}) > labagent.READY_GRACE
+
+    class K:
+        def get(self, args):
+            return {"items": [{"metadata": {"name": "mongodb-1"}, "status": {"containerStatuses": [
+                {"name": "mongodb", "state": {"waiting": {"reason": "CrashLoopBackOff", "message": "back-off"}}}]}}]}
+
+        def run(self, args, check=True):
+            assert "--previous" in args and "mongodb-1" in args
+            return subprocess.CompletedProcess(args, 0, "line 1\nchown: Operation not permitted\n", "")
+    assert labagent._pod_problem(K(), "mongodb", "mongodb") == \
+        "CrashLoopBackOff: back-off - last log: line 1 | chown: Operation not permitted"
