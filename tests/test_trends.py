@@ -173,3 +173,10 @@ def test_history_view_keeps_every_scan(tmp_path):
         m.cursor().execute(f"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]")
         m.cursor().execute("IF SUSER_ID(N'cz_tr_reader') IS NOT NULL DROP LOGIN cz_tr_reader")
         m.close()
+
+
+def test_overview_and_application_link_to_trends():
+    from test_sqlstore import application_data, overview_data
+    assert "href='/trends'" in webui.render_overview(overview_data())
+    assert "href='/trends?bu=1'" in webui.render_overview(overview_data(), bu_filter="1")
+    assert "href='/trends'" in webui.render_application(application_data())
