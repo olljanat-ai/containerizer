@@ -561,7 +561,7 @@ def _yaml_docs(docs: list[dict]) -> str:
 # --------------------------------------------------------------------------- app
 
 def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, registry: str = "registry.local",
-                 plans: dict | None = None, pin: bool = False, gitops=None) -> list[Path]:
+                 plans: dict | None = None, pin: bool = False, gitops=None, tag: str = "latest") -> list[Path]:
     from .gitops import gitops_manifests, image_setters, readme
     from .report import migration_markdown
 
@@ -585,7 +585,7 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
                 df = pin_digests(df)
             (cdir / "Dockerfile").write_text(df)
             (cdir / "Dockerfile.dockerignore").write_text(DOCKERIGNORE)
-            image = f"{registry}/{k8s_name(a.name)}/{k8s_name(c.name)}:latest"
+            image = f"{registry}/{k8s_name(a.name)}/{k8s_name(c.name)}:{tag}"
             docs = k8s_manifests(a, c, plan, image)
             images.append((c.name, image))
             all_k8s += docs
