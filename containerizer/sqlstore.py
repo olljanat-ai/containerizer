@@ -104,14 +104,20 @@ def connect_args(cs: str, password: str | None = None) -> dict:
             "appname": _pick(d, "applicationname", "app", default="containerizer"), "_ca": ca}
 
 
+_CONF: dict = {}
+
+
 def _freetds_conf(ca: str | None) -> str:
     """FreeTDS (the TDS library inside pymssql) validates the certificate only when a CA file is set."""
+    if ca in _CONF:
+        return _CONF[ca]
     d = Path(tempfile.mkdtemp(prefix="cz-tds-"))
     lines = ["[global]", "\ttds version = 7.4"]
     if ca:
         lines += [f"\tca file = {ca}", "\tcheck certificate hostname = yes"]
     (d / "freetds.conf").write_text("\n".join(lines) + "\n")
-    return str(d / "freetds.conf")
+    _CONF[ca] = str(d / "freetds.conf")
+    return _CONF[ca]
 
 
 def connect(cs: str | None = None, password: str | None = None, autocommit: bool = False):
