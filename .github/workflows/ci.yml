@@ -43,13 +43,13 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt -r requirements-sql.txt pytest
-      - run: python -m pytest -q tests/test_sqlstore.py -rs
+      - run: python -m pytest -q tests/test_sqlstore.py tests/test_admin.py -rs
       - name: Image builds and the UI serves results
         run: |
           docker build -f results/Dockerfile -t containerizer-results .
           export CONTAINERIZER_SQL="Server=127.0.0.1,1433;Database=Containerizer;User Id=sa;TrustServerCertificate=yes"
           export CZ_CZ_WEB_PASSWORD=Ci-Web-Passw0rd!
-          python -m containerizer db init --create-database --login cz_web:cz_reader
+          python -m containerizer db init --create-database --login cz_web:reader
           python -m containerizer assess -q examples/ci-demo
           docker run -d --name web --network host -e CONTAINERIZER_SQL_PASSWORD="$CZ_CZ_WEB_PASSWORD" \
             -e CONTAINERIZER_SQL="Server=127.0.0.1,1433;Database=Containerizer;User Id=cz_web;TrustServerCertificate=yes" \
