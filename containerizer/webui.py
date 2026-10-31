@@ -37,6 +37,26 @@ e = html.escape
 # ---------------------------------------------------------------------------
 # data (cz_reader can read exactly these)
 
+UPLOAD_DRAIN_MAX = 64 * 1024 * 1024     # unread rest of a refused upload read and dropped before replying
+
+
+class _CountingReader:
+    """Counts what an upload handler read from the request body."""
+
+    def __init__(self, f):
+        self.f, self.count = f, 0
+
+    def read(self, n=-1):
+        b = self.f.read(n)
+        self.count += len(b)
+        return b
+
+    def readline(self, n=-1):
+        b = self.f.readline(n)
+        self.count += len(b)
+        return b
+
+
 def _rows(conn, sql: str, params: tuple = ()) -> list[dict]:
     cur = conn.cursor(as_dict=True)
     cur.execute(sql, params)
@@ -694,7 +714,20 @@ def make_handler(connect, admin=None):
                 self.close_connection = True               # the body may be left unread on a refusal
                 self.connection.settimeout(120)            # a stalled upload does not hold a thread forever
                 n = int(self.headers.get("Content-Length") or 0)
-                r = admin.handle_upload(u.path, self.headers, self.rfile, n)
+                body_in = _CountingReader(self.rfile)
+                r = admin.handle_upload(u.path, self.headers, body_in, n)
+                # A refusal can come before the whole body is read (too large, not a backup). Read and drop
+                # a bounded rest first, so the client is not cut off mid-send and gets the page that says why.
+                left = n - body_in.count
+                if 0 < left <= UPLOAD_DRAIN_MAX:
+                    try:
+                        while left > 0:
+                            chunk = self.rfile.read(min(left, 1 << 16))
+                            if not chunk:
+                                break
+                            left -= len(chunk)
+                    except OSError:
+                        pass
                 return self._send(r.status, r.body, r.ctype, head, r.headers, forms=True)
             if method == "POST":
                 n = int(self.headers.get("Content-Length") or 0)
