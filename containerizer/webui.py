@@ -453,7 +453,7 @@ def make_handler(connect, admin=None):
                 if n > 64 * 1024:
                     return self._send(413, page("Too large", "<h1>Request too large</h1>"))
                 body = self.rfile.read(n)
-            r = admin.handle(method, u.path, u.query, self.headers, body)
+            r = admin.handle(method, u.path, u.query, self.headers, body, self.client_address[0])
             return self._send(r.status, r.body, r.ctype, head, r.headers, forms=True)
 
         def _api(self, method: str, head: bool = False):
@@ -500,6 +500,15 @@ def make_handler(connect, admin=None):
                 nav = admin.nav(self.headers) if admin else ""
                 m = re.fullmatch(r"/app/(\d{1,9})", u.path)
                 if u.path == "/" or m:
+                    if admin:                   # sign-in first when CONTAINERIZER_VIEWERS is set
+                        bu = parse_qs(u.query).get("bu", [None])[0]
+                        keep = f"bu={bu}" if bu and re.fullmatch(r"\d{1,9}|none", bu) else ""
+                        stop, s = admin.gate(self.headers, u.path, keep)
+                        if stop:
+                            return self._send(stop.status, stop.body, stop.ctype, head, stop.headers, forms=True)
+                        if s and not head and admin.viewers_required:
+                            admin.log_access(s.user, s.name, "view", u.path + ("?" + keep if keep else ""),
+                                             int(m[1]) if m else None, self.client_address[0])
                     conn = connect()
                     try:
                         if m:
@@ -554,7 +563,9 @@ def serve(cs: str | None, host: str = "127.0.0.1", port: int = 8080) -> int:
         print(f"error: {ex}", file=sys.stderr)
         return 3
     httpd = ThreadingHTTPServer((host, port), make_handler(lambda: connect(cs), admin))
-    print(f"containerizer results UI on http://{host}:{port}/ (results read-only without sign-in; "
+    print(f"containerizer results UI on http://{host}:{port}/ ("
+          + ("results behind sign-in" + (", access logged" if admin.cfg.view_audit else "") if admin and admin.viewers_required
+             else "results read-only without sign-in") + "; "
           + (f"admin pages behind sign-in at {admin.cfg.public_url}/admin" if admin else "admin pages off: no sign-in configured")
           + ("; JSON API at /api/v1)" if admin and admin.api else ")"))
     try:

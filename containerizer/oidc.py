@@ -1,10 +1,12 @@
-"""OpenID Connect sign-in for the admin pages (Microsoft Entra ID, Okta, Keycloak, Google, ...).
+"""OpenID Connect sign-in for the web UI (Microsoft Entra ID, Okta, Keycloak, Google, ...).
 
 Authorization code flow with PKCE (S256), state and nonce; the ID token's signature is checked against
 the provider's published keys (JWKS), as are its issuer, audience, expiry and nonce. Sessions live in
 the server's memory behind a random, HttpOnly, SameSite=Lax cookie (Secure, and __Host- prefixed, when
 the public URL is https). Who may use the admin pages is an explicit allow-list: nobody is an admin
-unless CONTAINERIZER_ADMINS names them.
+unless CONTAINERIZER_ADMINS names them. When CONTAINERIZER_VIEWERS is set, the read-only results pages
+need sign-in too (an automatic redirect to the provider) and only the users it names, and the admins,
+may see them; CONTAINERIZER_VIEW_AUDIT=true then also records who signed in and what they opened.
 """
 from __future__ import annotations
 
@@ -47,6 +49,8 @@ class OidcConfig:
     admins: list[str]                   # allow-list rules, see allowed()
     scopes: str = "openid profile email"
     timeout: int = 15
+    viewers: list[str] = field(default_factory=list)   # non-empty: the results pages need sign-in too
+    view_audit: bool = False                           # record sign-ins and page views in AccessLog
 
     @classmethod
     def from_env(cls, env=os.environ) -> "OidcConfig | None":
@@ -61,7 +65,9 @@ class OidcConfig:
                   client_secret=env.get("CONTAINERIZER_OIDC_CLIENT_SECRET") or None,
                   public_url=env["CONTAINERIZER_PUBLIC_URL"].rstrip("/"),
                   admins=[r.strip() for r in env["CONTAINERIZER_ADMINS"].split(",") if r.strip()],
-                  scopes=env.get("CONTAINERIZER_OIDC_SCOPES") or "openid profile email")
+                  scopes=env.get("CONTAINERIZER_OIDC_SCOPES") or "openid profile email",
+                  viewers=[r.strip() for r in (env.get("CONTAINERIZER_VIEWERS") or "").split(",") if r.strip()],
+                  view_audit=_flag(env, "CONTAINERIZER_VIEW_AUDIT"))
         cfg.check()
         return cfg
 
@@ -70,6 +76,11 @@ class OidcConfig:
             if not url.startswith("https://") and not (url.startswith("http://") and _local(url)):
                 raise OidcError(f"the {name} must be https (http only for localhost): {url}")
         check_rules(self.admins)
+        if self.viewers:
+            check_rules(self.viewers, name="CONTAINERIZER_VIEWERS")
+        if self.view_audit and not self.viewers:
+            raise OidcError("CONTAINERIZER_VIEW_AUDIT needs CONTAINERIZER_VIEWERS: without sign-in on the results "
+                            "pages there is nobody to record")
 
     @property
     def secure(self) -> bool:
@@ -78,6 +89,15 @@ class OidcConfig:
     @property
     def redirect_uri(self) -> str:
         return self.public_url + "/auth/callback"
+
+
+def _flag(env, key: str) -> bool:
+    v = (env.get(key) or "").strip().lower()
+    if v in ("", "0", "false", "no", "off"):
+        return False
+    if v in ("1", "true", "yes", "on"):
+        return True
+    raise OidcError(f"{key} must be true or false, not {v!r}")
 
 
 def allowed(claims: dict, rules: list[str]) -> bool:
@@ -225,6 +245,7 @@ class Session:
     user: str
     name: str
     admin: bool
+    viewer: bool = False                # may see the results pages (admins always may)
     csrf: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     created: float = field(default_factory=time.time)
     seen: float = field(default_factory=time.time)
@@ -259,10 +280,10 @@ class Sessions:
             self._prune(time.time())
             return self._pending.pop(key, None) if key else None
 
-    def create(self, user: str, name: str, admin: bool) -> str:
+    def create(self, user: str, name: str, admin: bool, viewer: bool = False) -> str:
         sid = secrets.token_urlsafe(32)
         with self._lock:
-            self._sessions[sid] = Session(user, name, admin)
+            self._sessions[sid] = Session(user, name, admin, admin or viewer)
         return sid
 
     def get(self, sid: str | None) -> Session | None:
