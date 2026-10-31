@@ -7,6 +7,7 @@
 --
 --   BusinessUnit 1-* Product 1-* Application 1-* Component                     (who owns what)
 --   Application 1-* ApplicationAssessment 1-* ComponentAssessment, Finding     (one per scan)
+--   ComponentAssessment 0-1 ComponentMigration                                  (migration plan, agent prompt)
 --   AuditLog: every change to BusinessUnit, Product and the mapping of Application, with who made it
 --   AccessLog: who signed in to the web UI and what they looked at (optional)
 --
@@ -159,6 +160,23 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Finding_Assessment' A
 CREATE INDEX IX_Finding_Assessment ON [${schema}].Finding (AssessmentId, ComponentId);
 GO
 
+-- Migration assistant (rules/migrations.yaml): for each component that is not ready, the concrete
+-- replacements with effort estimates (PlanJson) and a self-contained prompt for an AI coding agent.
+IF OBJECT_ID(N'[${schema}].ComponentMigration', N'U') IS NULL
+CREATE TABLE [${schema}].ComponentMigration (
+    AssessmentId  int            NOT NULL,
+    ComponentId   int            NOT NULL,
+    Outcome       nvarchar(40)   NOT NULL,         -- linux-container, partial, stays-on-windows
+    EffortDays    decimal(9,1)   NOT NULL,         -- estimated person-days of the plan
+    ItemCount     int            NOT NULL,
+    PlanJson      nvarchar(max)  NOT NULL,         -- items: replace, with, kind, packages, steps, verify, refs, findings
+    AgentPrompt   nvarchar(max)  NULL,             -- NULL when nothing in the component can be changed
+    CONSTRAINT PK_ComponentMigration PRIMARY KEY (AssessmentId, ComponentId),
+    CONSTRAINT FK_ComponentMigration_ComponentAssessment FOREIGN KEY (AssessmentId, ComponentId)
+        REFERENCES [${schema}].ComponentAssessment (AssessmentId, ComponentId) ON DELETE CASCADE
+);
+GO
+
 MERGE [${schema}].Rating AS t
 USING (VALUES
     ('A', N'Lift and shift', N'Containers with configuration only', 1),
@@ -227,6 +245,14 @@ OUTER APPLY (SELECT COUNT(DISTINCT CASE WHEN x.Severity = 'blocker' THEN x.RuleI
              FROM [${schema}].Finding x
              WHERE x.AssessmentId = aa.AssessmentId AND x.Severity IN ('blocker', 'rewrite')) f
 WHERE a.Retired = 0;
+GO
+
+CREATE OR ALTER VIEW [${schema}].vComponentMigrationLatest AS
+SELECT l.ApplicationId, l.ApplicationName, l.AssessmentId, m.ComponentId, c.Name AS ComponentName, c.ProjectPath,
+       m.Outcome, m.EffortDays, m.ItemCount, m.PlanJson, m.AgentPrompt
+FROM [${schema}].vApplicationLatest l
+JOIN [${schema}].ComponentMigration m ON m.AssessmentId = l.AssessmentId
+JOIN [${schema}].Component c ON c.ComponentId = m.ComponentId;
 GO
 
 -- Applications nobody has mapped to a product yet, and products without a business unit.
@@ -371,6 +397,7 @@ GRANT SELECT ON [${schema}].Rating TO [${schema}_writer];
 GRANT SELECT, INSERT ON [${schema}].ApplicationAssessment TO [${schema}_writer];
 GRANT SELECT, INSERT ON [${schema}].ComponentAssessment TO [${schema}_writer];
 GRANT SELECT, INSERT ON [${schema}].Finding TO [${schema}_writer];
+GRANT SELECT, INSERT ON [${schema}].ComponentMigration TO [${schema}_writer];
 GRANT SELECT, INSERT ON [${schema}].Application TO [${schema}_writer];
 GRANT UPDATE ON [${schema}].Application (Name, RepositoryUrl, SourcePath, LastSeenAt) TO [${schema}_writer];
 GRANT SELECT, INSERT ON [${schema}].Component TO [${schema}_writer];
@@ -380,6 +407,7 @@ GRANT SELECT ON [${schema}].SchemaVersion TO [${schema}_writer];
 GRANT SELECT ON [${schema}].vApplicationLatest TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vComponentLatest TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vFindingLatest TO [${schema}_reader];
+GRANT SELECT ON [${schema}].vComponentMigrationLatest TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vUnmapped TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vAssessmentHistory TO [${schema}_reader];
 GRANT SELECT ON [${schema}].Rating TO [${schema}_reader];
