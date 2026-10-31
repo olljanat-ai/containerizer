@@ -51,7 +51,7 @@ rules:
     when:
       all:
         - package: 'Microsoft\.AspNetCore\.Authentication\.WsFederation'
-        - tfm: 'net8\.'
+        - tfm: 'net8\.0'
         - not: {package: 'Microsoft\.IdentityModel\.(Tokens\.Saml|Protocols\.WsFederation)'}
     severity: config
     category: identity
