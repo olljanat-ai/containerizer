@@ -1,6 +1,6 @@
-# The containerizer appliance
+# The Containerizer appliance
 
-containerizer ships as one virtual machine: an immutable OS image built with the
+Containerizer ships as one virtual machine: an immutable OS image built with the
 [Elemental toolkit](https://github.com/rancher/elemental-toolkit) (as in
 [Firewall4AI](https://github.com/olljanat-ai/Firewall4AI)), installed from an ISO or started from a disk
 image, and upgraded from the admin pages. It runs:
@@ -161,10 +161,14 @@ the appliance. Deleted tags free their space after a garbage collection:
 `docker exec cz-registry registry garbage-collect --delete-untagged /etc/distribution/config.yml`
 (stop the worker first).
 
+k3s also runs External Secrets Operator, and the generated configurations get every secret through it
+([external-secrets.md](external-secrets.md#the-appliance-sandbox)). The values live in namespace
+`containerizer-secrets`, which runs no pods, and each namespace can read only its own keys.
+
 To deploy what the scans generate, set `sandbox.env` (output repository URL, branch, read-only token).
-Every 2 minutes `cz-sandbox` creates Flux's read-only Git secret and the root `GitRepository` +
-`Kustomization` of the output repository's `sandbox/flux/`, and gives every app namespace the Git
-secret its `GitRepository` names, so each app reconciles as its own ServiceAccount
+Every 2 minutes `cz-sandbox` puts the read-only token in the secret store for Flux's root sync and for
+every app namespace, and creates the root `GitRepository` + `Kustomization` of the output repository's
+`sandbox/flux/`. Each app reconciles as its own ServiceAccount with its own copy of the token
 ([organization-run.md](organization-run.md#deploying-to-the-sandbox-cluster)). Allow the Git server on
 the Firewall page. `kubectl` (as root on the appliance) shows the result. Argo CD is not installed; Flux
 is the supported path on the appliance.
@@ -215,7 +219,7 @@ and `/etc/containerizer` (configuration and secrets). Everything else is rebuilt
 - The scan worker is in the `docker` group, which is equivalent to root: it builds and runs the scanned
   repositories' images. That is why the appliance is a dedicated machine, and why the egress allow-list
   applies to every build. Give it no credentials beyond the scans' tokens.
-- k3s: secrets encrypted at rest, audit log (`/var/lib/rancher/k3s/server/logs/audit.log`), kernel
+- k3s: secrets encrypted at rest, delivered by External Secrets Operator from a namespace without pods, audit log (`/var/lib/rancher/k3s/server/logs/audit.log`), kernel
   defaults protected, API reachable only from the appliance and its pods. Each app's namespace runs
   under Pod Security "restricted".
 - Containers of the appliance's own services are pinned by digest in the OS image

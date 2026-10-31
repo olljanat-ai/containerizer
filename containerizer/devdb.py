@@ -219,8 +219,7 @@ def human_size(n: int) -> str:
 # For an application with an uploaded backup, the scan worker builds a database image that restores
 # the backup when it starts (pushed next to the application's images), and the generated manifests
 # get a `devdb` Deployment + Service in the application's namespace. Passwords never touch Git:
-# External Secrets Operator's Password generator creates them in the cluster (secrets.mode
-# external-secrets), otherwise the platform team creates the two Secrets. The application's
+# External Secrets Operator's Password generator creates them in the cluster. The application's
 # containers get the connection settings as environment variables that reference the password with
 # Kubernetes' $(VAR) expansion; which settings to set comes from the LLM, reading the operator's
 # prompt and the component's configuration, or from the connection strings the scan found.
@@ -313,11 +312,10 @@ wait "$pid"
 """
 
 def secret_docs(labels: dict) -> list[dict]:
-    """The two passwords, generated in the cluster by External Secrets Operator (secrets.mode
-    external-secrets); an empty list in the other modes, where the platform team creates them."""
-    from .harden import security
-    if security()["secrets"].get("mode") != "external-secrets":
-        return []
+    """The two passwords, generated in the cluster by External Secrets Operator's Password generator:
+    no secret store and no value anywhere outside the cluster."""
+    from .eso import cfg
+    cfg()
     docs = []
     for name in (SECRET, ADMIN_SECRET):
         docs += [{"apiVersion": "generators.external-secrets.io/v1alpha1", "kind": "Password",
@@ -555,10 +553,8 @@ def readme(app: str, db: SandboxDb, row: dict) -> str:
              f"- The application signs in as `{APP_USER}`; the password is in the Secret `{SECRET}` (key `password`), "
              f"the {('sa' if db.engine == 'sqlserver' else 'root')} password in `{ADMIN_SECRET}`"
              + " (the application user is db_owner of the restored database, not sysadmin).",
-             "- With External Secrets Operator (secrets.mode external-secrets) both are generated in the cluster by "
-             "its Password generator and never rotated; otherwise create them before the sync:",
-             "", "      kubectl -n <namespace> create secret generic devdb --from-literal=password=<random>",
-             "      kubectl -n <namespace> create secret generic devdb-admin --from-literal=password=<random>", "",
+             "- Both are generated in the cluster by External Secrets Operator's Password generator and never "
+             "rotated; nothing needs to be put in the secret store.", "",
              f"## Settings given to the application ({'chosen by the AI from the operator instructions' if db.source == 'ai' else 'the connection strings the scan found'})",
              ""]
     for comp, env in sorted(db.env.items()):

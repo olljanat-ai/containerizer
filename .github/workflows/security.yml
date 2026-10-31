@@ -1,8 +1,10 @@
 name: security
 
 # Security gate for what the tool generates, and a weekly refresh of the patched base image tags.
+# Documentation-only changes skip this workflow: docs.yml builds and publishes them.
 on:
   pull_request:
+    paths-ignore: ["README.md", "docs/**", "mkdocs.yml", ".github/mkdocs_hooks.py", ".github/workflows/docs.yml"]
   schedule:
     - cron: "17 4 * * 1"      # Mondays: pick up newly patched base image tags
   workflow_dispatch:

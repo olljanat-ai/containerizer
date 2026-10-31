@@ -1,0 +1,568 @@
+# Node.js finding rules: what keeps a Node.js component from running unchanged in a Linux
+# container. Node is portable; what breaks is Windows-only native addons and packages (COM,
+# SSPI, the registry, Windows services), IIS hosting (iisnode), old Node lines and native builds,
+# and data the component keeps on its own disk or in its memory (state: rules, same A-rating rule
+# as .NET).
+#
+# `runtime: true` on a package condition leaves out devDependencies; code searches leave out test
+# files and folders (rules.TEST_PATH_RE). LockWindowsOnly / LockNativeBuild come from the lockfile
+# (scan_node.py): packages among the runtime dependency tree.
+rules:
+  # ------------------------------------------------------------------ Windows-only packages
+  - id: node-com-activex
+    applies_to: [node]
+    when:
+      package: 'winax|win32ole|node-activex'
+      runtime: true
+    severity: blocker
+    category: com
+    windows_container: true
+    title: COM / ActiveX automation from Node.js (winax)
+    why: >-
+      winax is a native Windows addon that drives COM objects (Office automation, ActiveX
+      controls, vendor COM servers) through IDispatch. COM does not exist on Linux: the addon does
+      not build or load there, and the COM servers themselves are Windows programs.
+    fix: >-
+      Replace the COM component with a Node.js library or the product's REST API (for example
+      exceljs/docx for Office files), or keep this part on a Windows host and call it over the
+      network. A Windows container with the COM server installed is a stop-gap.
+    refs:
+      - https://github.com/durs/node-activex
+
+  - id: node-ffi-win32
+    applies_to: [node]
+    when:
+      any:
+        - package: 'win32-api|@nodert-win\d+/.*|windows\.\w+'
+          runtime: true
+        - all:
+            - code: '\b(ffi\.Library|koffi\.load|ffi\.DynamicLibrary|new\s+DynamicLibrary)\s*\(\s*[''"`](user32|kernel32|advapi32|gdi32|shell32|ole32|oleaut32|netapi32|secur32|crypt32|wtsapi32|psapi|winspool(\.drv)?|winmm|iphlpapi|ntdll|wininet|[^''"`]*\.dll)'
+            - not: {code: 'process\.platform\s*[!=]==?\s*[''"]win32[''"]|\bos\.platform\(\)\s*[!=]==?\s*[''"]win32[''"]'}
+          same_file: true
+    severity: rewrite
+    category: platform
+    windows_container: true
+    title: Windows API calls through FFI or NodeRT
+    why: >-
+      The code calls Windows system DLLs (user32, kernel32, advapi32, a vendor .dll) through an FFI
+      library (ffi-napi, koffi) or uses Windows Runtime bindings (NodeRT, win32-api). Those
+      libraries exist only on Windows, so loading them fails on Linux; nothing in the code checks
+      the platform first.
+    fix: >-
+      Replace each Windows API with a portable Node.js API or package, get the Linux (.so) build of
+      a vendor library, or move the Windows-specific part to a Windows host behind an API.
+    refs:
+      - https://github.com/node-ffi-napi/node-ffi-napi
+      - https://koffi.dev/
+
+  - id: node-edge-dotnet
+    applies_to: [node]
+    when:
+      package: 'edge-js|edge|electron-edge-js|edge-atom-shell'
+      runtime: true
+    severity: refactor
+    category: platform
+    windows_container: true
+    effort: 3
+    title: .NET code run in-process with Edge.js
+    why: >-
+      Edge.js runs .NET code inside the Node.js process. Outside Windows it hosts .NET (Core) or
+      the no longer supported Mono, not the .NET Framework, so the .NET part has to be ported (and
+      its Windows-only APIs replaced) before the component runs in a Linux container.
+    fix: >-
+      Port the .NET code that Edge.js loads to .NET 8+ without Windows-only APIs, or move it into a
+      separate service and call it over HTTP instead of in-process.
+    refs:
+      - https://github.com/agracio/edge-js
+
+  - id: node-windows-sspi
+    applies_to: [node]
+    when:
+      package: 'node-sspi|node-expose-sspi|express-ntlm|passport-windowsauth'
+      runtime: true
+    severity: refactor
+    category: auth
+    windows_container: true
+    effort: 3
+    title: Windows integrated authentication (SSPI, NTLM)
+    why: >-
+      Users sign in with Windows integrated authentication through SSPI (node-sspi,
+      node-expose-sspi) or NTLM against the domain controller. SSPI is a Windows API that does not
+      exist on Linux, and NTLM through a proxy pod is fragile, so users cannot sign in from the
+      container.
+    fix: >-
+      Move sign-in to OpenID Connect (Microsoft Entra ID, Keycloak) with openid-client or
+      passport-openidconnect, or use Kerberos (the kerberos package with a service keytab) where
+      Windows single sign-on is required.
+    refs:
+      - https://github.com/abbr/nodesspi
+      - https://github.com/jlguenego/node-expose-sspi
+
+  - id: node-windows-registry
+    applies_to: [node]
+    when:
+      package: 'winreg|regedit|registry-js|native-reg|windows-registry|@vscode/windows-registry|registry-utils'
+      runtime: true
+    severity: refactor
+    category: platform
+    windows_container: true
+    effort: 1
+    title: Reads or writes the Windows registry
+    why: >-
+      The component uses a registry package (winreg calls REG.EXE, regedit runs a VBScript, others
+      call the Win32 registry API). There is no registry on Linux, so settings kept there are not
+      found and writes fail.
+    fix: >-
+      Move the settings to configuration (environment variables, a ConfigMap, a Secret for
+      credentials) and read them with process.env.
+    refs:
+      - https://github.com/fresc81/node-winreg
+      - https://12factor.net/config
+
+  - id: node-windows-only-tools
+    applies_to: [node]
+    when:
+      package: 'pdf-to-printer|node-wmi|wmi-client|wmic|windows-shortcuts|win-version-info|node-windows-service|windows-eventlog|node-windows-eventlog'
+      runtime: true
+    severity: refactor
+    category: platform
+    windows_container: true
+    effort: 1
+    title: Windows-only helper packages (printing, WMI, event log)
+    why: >-
+      The component depends on packages that only work on Windows: pdf-to-printer prints through a
+      bundled Windows program, the WMI packages query Windows Management Instrumentation, others
+      write the Windows event log or read Windows shortcuts. On Linux these calls fail.
+    fix: >-
+      Replace each one: log to stdout instead of the event log, use the printer's network
+      protocol (IPP) or a print service for printing, and expose WMI data through an agent on the
+      Windows host if it is still needed.
+    refs:
+      - https://github.com/artiebits/pdf-to-printer
+
+  - id: node-windows-only-dependency
+    applies_to: [node]
+    when:
+      all:
+        - property: {LockWindowsOnly: '.+'}
+        - not: {package: 'winax|win32ole|node-activex|win32-api|@nodert-win\d+/.*', runtime: true}
+    severity: refactor
+    category: platform
+    windows_container: true
+    effort: 1
+    title: Dependency that installs only on Windows
+    why: >-
+      The lockfile has a package among the runtime dependencies whose package.json "os" field
+      allows only Windows, and it is not an optional dependency. npm refuses to install it on
+      Linux (EBADPLATFORM), so the image build fails, and the code that uses it would fail anyway.
+    fix: >-
+      Replace the package with a cross-platform one, or make its use optional
+      (optionalDependencies and a platform check in the code that loads it).
+    refs:
+      - https://docs.npmjs.com/cli/v10/configuring-npm/package-json#os
+
+  - id: node-windows-service
+    applies_to: [node]
+    when:
+      any:
+        - package: 'node-windows|os-service|windows-service|node-service-windows'
+        - code: 'require\s*\(\s*[''"]node-windows[''"]\s*\)|from\s+[''"]node-windows[''"]'
+    severity: config
+    category: hosting
+    effort: 0.25
+    title: Installed as a Windows service (node-windows)
+    why: >-
+      The application installs itself as a Windows service with node-windows, which also
+      restarts it and keeps its environment and arguments. In a container Kubernetes starts and
+      restarts the process, so the service installation script is not used; options set in it
+      must move to the container.
+    fix: >-
+      Start the application directly with node in the container and move the environment
+      variables and arguments from the service script to the manifest; drop the install script.
+    refs:
+      - https://github.com/coreybutler/node-windows
+
+  - id: node-iisnode
+    applies_to: [node]
+    when:
+      config: '<add\s+[^>]*modules\s*=\s*"iisnode"|<iisnode\b'
+      in: ['web.config', 'Web.config', 'iisnode.yml']
+    severity: config
+    category: hosting
+    effort: 0.25
+    title: Hosted in IIS with iisnode
+    why: >-
+      The application runs under IIS through iisnode (web.config handlers, iisnode.yml): IIS
+      starts the node processes, hands them requests over a named pipe in PORT and applies the
+      URL rewrite rules. In a container node listens on a TCP port itself, and rewrite rules or
+      settings in web.config are not applied.
+    fix: >-
+      Start the entry script with node and let it listen on PORT (the container sets 8080); move
+      URL rewrites to the application or the ingress and settings from web.config to environment
+      variables.
+    refs:
+      - https://github.com/Azure/iisnode
+      - https://learn.microsoft.com/en-us/azure/app-service/configure-language-nodejs
+
+  - id: node-msnodesqlv8
+    applies_to: [node]
+    when:
+      package: 'msnodesqlv8'
+      runtime: true
+    severity: config
+    category: data
+    effort: 0.5
+    title: SQL Server through the ODBC driver (msnodesqlv8)
+    why: >-
+      msnodesqlv8 talks to SQL Server through the Microsoft ODBC driver, which a Linux image does
+      not have unless it is installed, and it is mostly used for Windows integrated authentication
+      (Trusted_Connection), which needs Kerberos on Linux.
+    fix: >-
+      Switch to the pure JavaScript tedious driver (the default of the mssql package) with SQL or
+      Microsoft Entra authentication from a Secret, or install msodbcsql18 and unixODBC in the
+      image and configure Kerberos.
+    refs:
+      - https://github.com/TimelordUK/node-sqlserver-v8
+
+  - id: node-process-windows-commands
+    applies_to: [node]
+    when:
+      all:
+        - code: '\b(exec|execSync|execFile|execFileSync|spawn|spawnSync|execa|shell\.exec)\s*\(\s*[''"`](cmd(\.exe)?|powershell(\.exe)?|pwsh|wmic|reg(\.exe)?|net(\.exe)?|sc(\.exe)?|schtasks|taskkill|tasklist|cscript|wscript|rundll32|icacls|robocopy|xcopy|[^''"`\s]+\.(exe|bat|cmd|vbs|ps1))\b'
+        - not: {code: 'process\.platform\s*[!=]==?\s*[''"]win32[''"]|\bos\.platform\(\)\s*[!=]==?\s*[''"]win32[''"]|\bisWindows\b'}
+      same_file: true
+    severity: refactor
+    category: platform
+    windows_container: true
+    effort: 1
+    title: Starts Windows programs (cmd, PowerShell, .exe)
+    why: >-
+      The code starts Windows command-line programs or executables (cmd /c, powershell, reg,
+      taskkill, a .exe or .bat file) with child_process. They do not exist in a Linux image, so
+      the call fails at run time.
+    fix: >-
+      Do the work in JavaScript or with a cross-platform package, or call the Linux equivalent of
+      the tool and add it to the image; if it is a vendor tool, check whether a Linux build exists.
+
+  # ------------------------------------------------------------------ runtime and build
+  - id: node-unsupported-version
+    applies_to: [node]
+    when:
+      all:
+        - property: {NodeEngineMax: '([0-9]|1[0-7])'}
+        - not: {role: 'test|library|tool'}
+    severity: refactor
+    category: runtime
+    effort: 2
+    title: Pinned to an end-of-life Node.js line
+    why: >-
+      package.json engines.node allows only Node.js 17 or older. Those lines get no security
+      fixes, their container images are not updated, and native dependencies built for them often
+      fail to install on a current Node.js.
+    fix: >-
+      Move to the active LTS line (22 or 24): update engines.node, the native and outdated
+      dependencies, and run the tests on it.
+    refs:
+      - https://nodejs.org/en/about/previous-releases
+
+  - id: node-sass-libsass
+    applies_to: [node]
+    when:
+      package: 'node-sass|gulp-sass|sass-loader'
+      version: '.*'
+    severity: refactor
+    category: runtime
+    effort: 0.5
+    title: node-sass (LibSass) native build
+    why: >-
+      node-sass is a native binding to LibSass, which is deprecated. Each node-sass version only
+      builds for a few Node.js versions and needs Python and a C++ toolchain when no prebuilt
+      binary matches, so the image build usually fails on a current Node.js.
+    fix: >-
+      Replace node-sass with the sass package (Dart Sass, a drop-in replacement for most
+      stylesheets; sass-loader and gulp-sass accept it as their implementation).
+    refs:
+      - https://github.com/sass/node-sass
+      - https://sass-lang.com/blog/libsass-is-deprecated/
+
+  - id: node-headless-browser
+    applies_to: [node]
+    when:
+      all:
+        - not: {role: 'test|library|tool|spa'}
+        - package: 'puppeteer|puppeteer-core|playwright|playwright-core|playwright-chromium|html-pdf|phantomjs|phantomjs-prebuilt|chrome-aws-lambda|@sparticuz/chromium|html-pdf-node'
+          runtime: true
+    severity: config
+    category: runtime
+    effort: 0.5
+    title: Headless browser (Puppeteer, Playwright, PhantomJS)
+    why: >-
+      The component drives a headless browser to render pages or PDFs. Chromium needs shared
+      libraries and fonts that slim and distroless images do not have, and it has to run without
+      the setuid sandbox under a non-root, read-only container; PhantomJS is abandoned.
+    fix: >-
+      Build the image on a base with Chromium and fonts installed (or the Playwright image),
+      give it a writable /tmp and enough memory, and replace PhantomJS (html-pdf) with Puppeteer.
+    refs:
+      - https://pptr.dev/troubleshooting
+
+  - id: node-oracledb-thick
+    applies_to: [node]
+    when:
+      all:
+        - package: oracledb
+          runtime: true
+        - code: '\binitOracleClient\s*\('
+    severity: config
+    category: data
+    effort: 0.5
+    title: Oracle database in Thick mode (Instant Client)
+    why: >-
+      node-oracledb is switched to Thick mode with initOracleClient(), which loads the Oracle
+      Client libraries (Instant Client) from the machine. A Linux image does not have them unless
+      they are installed, often from a Windows path given in the code.
+    fix: >-
+      Use Thin mode (drop initOracleClient; it needs no client libraries) unless a Thick-only
+      feature is required, or install Oracle Instant Client for Linux in the image.
+    refs:
+      - https://node-oracledb.readthedocs.io/en/latest/user_guide/initialization.html
+
+  - id: node-process-manager
+    applies_to: [node]
+    when:
+      any:
+        - property: {StartScript: '.*\bpm2(?!-runtime)\b.*|.*\bforever\b.*|.*\bnodemon\b.*'}
+        - code: '\bcluster\.fork\s*\('
+    severity: config
+    category: hosting
+    effort: 0.25
+    title: Process manager or cluster mode (pm2, forever, cluster.fork)
+    why: >-
+      The application is started through a process manager (pm2, forever, nodemon) or forks
+      worker processes with the cluster module. In a container one process per pod is expected:
+      the container runtime restarts it and Kubernetes scales replicas, and a daemonizing manager
+      hides crashes and signals.
+    fix: >-
+      Start the entry script with node directly (or pm2-runtime) and scale with replicas instead
+      of cluster workers.
+    refs:
+      - https://pm2.keymetrics.io/docs/usage/docker-pm2-nodejs/
+
+  - id: node-native-addons
+    applies_to: [node]
+    when:
+      any:
+        - property: {LockNativeBuild: '.+'}
+        - package: 'bcrypt|sqlite3|better-sqlite3|canvas|argon2|re2|libxmljs2?|kerberos|node-pty|serialport|usb|leveldown|classic-level|grpc|zeromq|cpu-features|ssh2|deasync|fibers|iconv|ref-napi|ffi-napi'
+          runtime: true
+    severity: info
+    category: runtime
+    title: Native addons compiled at install
+    why: >-
+      Some runtime dependencies are native addons that compile C/C++ code at install time when no
+      prebuilt binary matches the platform. The image build needs Python, make and a C++ compiler
+      in its build stage, and the addon must be built for Linux (not copied from a Windows
+      node_modules).
+    fix: >-
+      Install dependencies inside the Linux build stage (npm ci) with build tools available; never
+      copy node_modules from a Windows machine.
+    refs:
+      - https://github.com/nodejs/docker-node/blob/main/docs/BestPractices.md
+
+  # ------------------------------------------------------------------ scaling
+  - id: node-socketio-scaleout
+    applies_to: [node]
+    when:
+      all:
+        - package: 'socket\.io'
+          runtime: true
+        - not: {package: '@socket\.io/(redis-adapter|redis-streams-adapter|postgres-adapter|mongo-adapter|cluster-adapter|sticky)|socket\.io-redis|socket\.io-adapter-mongo', runtime: true}
+    severity: config
+    category: scaling
+    effort: 0.5
+    title: Socket.IO without an adapter
+    why: >-
+      Socket.IO keeps its connections and rooms in the memory of one process. With more than one
+      replica, broadcasts reach only the clients of the same pod, and the long-polling transport
+      needs every request of a client to reach the same pod.
+    fix: >-
+      Add an adapter (@socket.io/redis-adapter) and enable sticky sessions on the ingress, or run
+      one replica.
+    refs:
+      - https://socket.io/docs/v4/using-multiple-nodes/
+
+  - id: node-scheduler-every-replica
+    applies_to: [node]
+    when:
+      all:
+        - role: web
+        - package: 'node-cron|cron|node-schedule|toad-scheduler|@nestjs/schedule|bree'
+          runtime: true
+    severity: config
+    category: scheduling
+    effort: 0.25
+    title: Scheduled jobs run in every replica
+    why: >-
+      The web application schedules jobs in-process (node-cron, node-schedule, @nestjs/schedule).
+      With more than one replica every pod runs every job, so jobs that send mail, import files or
+      update data run several times at once.
+    fix: >-
+      Move the jobs to a Kubernetes CronJob or a separate single-replica worker, or guard each run
+      with a distributed lock (Redis, the database).
+
+  # ------------------------------------------------------------------ state (not stateless)
+  - id: node-session-memory
+    applies_to: [node]
+    when:
+      all:
+        - package: 'express-session|@fastify/session|fastify-session|koa-generic-session|hapi-server-session|@hapi/yar|yar'
+          runtime: true
+        - not: {package: 'connect-redis|connect-mongo|connect-mongodb-session|connect-pg-simple|express-mysql-session|connect-session-sequelize|connect-session-knex|@quixo3/prisma-session-store|connect-dynamodb|dynamodb-store|connect-memcached|cassandra-store|@google-cloud/connect-datastore|@google-cloud/connect-firestore|connect-typeorm|connect-mssql-v2|connect-azuretables|@fastify/redis|koa-redis|catbox-redis|@hapi/catbox-redis|express-session-rsdb|session-file-store|connect-sqlite3|connect-loki|connect-nedb-session|nedb-session-store|connect-session-firebase', runtime: true}
+        - not: {code: '\bstore\s*:\s*new\s+(?!MemoryStore\b)\w+|\bstore\s*:\s*(redisStore|sessionStore|store|mongoStore|pgStore|dbStore)\b'}
+    severity: config
+    category: session
+    state: memory
+    effort: 0.5
+    title: Session state in the process memory
+    why: >-
+      Sessions are kept by the session middleware's default store, which is the memory of the
+      Node.js process (express-session's MemoryStore is not meant for production). Users are
+      logged out when the pod restarts or a request reaches another replica, so the component is
+      not stateless.
+    fix: >-
+      Configure a shared session store (connect-redis, connect-pg-simple, connect-mongo) against
+      a managed Redis or database, or move to signed cookies or tokens.
+    refs:
+      - https://github.com/expressjs/session
+      - https://12factor.net/processes
+
+  - id: node-session-file-store
+    applies_to: [node]
+    when:
+      package: 'session-file-store|connect-sqlite3|connect-loki|connect-nedb-session|nedb-session-store'
+      runtime: true
+    severity: config
+    category: session
+    state: local
+    effort: 0.5
+    title: Sessions stored in local files
+    why: >-
+      Sessions are written to files or an embedded database on the local disk (session-file-store,
+      connect-sqlite3, connect-loki). They need a persistent volume and are not shared between
+      replicas, so the component is not stateless.
+    fix: >-
+      Use a shared session store (connect-redis, connect-pg-simple) against a managed Redis or
+      database.
+    refs:
+      - https://12factor.net/processes
+
+  - id: node-embedded-db-local
+    applies_to: [node]
+    when:
+      all:
+        - not: {role: 'test|tool|spa|desktop'}
+        - package: &node_embedded_db '(@[\w.-]+/)?sqlite3|better-sqlite3|sqlite|@journeyapps/sqlcipher|lowdb|nedb|@seald-io/nedb|nedb-promises|node-json-db|lokijs|level|classic-level|leveldown|levelup|rocksdb|tingodb|pouchdb|pouchdb-node|duckdb|@duckdb/node-api|lmdb|node-persist|json-server'
+          runtime: true
+        - not: &node_server_db
+            any:
+              - closure: {package: &node_server_db_pkgs 'pg|pg-promise|postgres|@neondatabase/serverless|mysql|mysql2|mariadb|mssql|tedious|oracledb|mongodb|mongoose|@prisma/adapter-(pg|neon|planetscale|mssql)|@planetscale/database|ioredis|redis|@vercel/postgres|@libsql/client|@supabase/supabase-js|firebase-admin|@azure/cosmos|cassandra-driver|@aws-sdk/client-dynamodb|couchbase|nano', runtime: true}
+              - other_project: {package: *node_server_db_pkgs, runtime: true}
+              - text: 'provider\s*=\s*"(postgresql|mysql|sqlserver|mongodb|cockroachdb)"'
+                in: ['*.prisma']
+    severity: config
+    category: storage
+    state: local
+    effort: 0.5
+    title: Embedded file database (SQLite, LowDB, NeDB, LevelDB)
+    why: >-
+      The application keeps its data in an embedded database file on its own disk (SQLite, LowDB,
+      NeDB, LevelDB, PouchDB), and the repository wires up no server database to use instead. The
+      file has to sit on a persistent volume and only one replica may write it, so the component
+      is not stateless.
+    fix: >-
+      To run it as is, mount a PersistentVolumeClaim at the database folder and keep one replica.
+      To make it stateless, move the data to a managed database (PostgreSQL, MySQL) and keep only
+      the connection string in configuration.
+    refs:
+      - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+      - https://12factor.net/processes
+
+  - id: node-embedded-db-optional
+    applies_to: [node]
+    when:
+      all:
+        - not: {role: 'test|tool|spa|desktop'}
+        - package: *node_embedded_db
+          runtime: true
+        - *node_server_db
+    severity: info
+    category: storage
+    title: Embedded database with a server database option
+    why: >-
+      The application ships an embedded database driver (SQLite and the like) and also a driver
+      for a server database. In the container it should run against the server database,
+      configured through environment variables, so it keeps no data of its own.
+    fix: >-
+      Select the server database in the deployment's configuration (DATABASE_URL or the
+      application's database settings from a Secret).
+    refs:
+      - https://12factor.net/config
+
+  - id: node-local-uploads
+    applies_to: [node]
+    when:
+      all:
+        - not: {role: 'test|tool|spa|desktop'}
+        - code: '\bmulter\s*\(\s*\{[^}]*\bdest\s*:|[''"]multer[''"]\s*\)\s*\(\s*\{[^}]*\bdest\s*:|\bmulter\.diskStorage\s*\(|\buploadDir\s*:|\bformidable\s*\(\s*\{[^}]*\buploadDir\b|\bkeepExtensions\s*:\s*true[^}]*uploadDir|\bnew\s+IncomingForm\s*\(\s*\{[^}]*uploadDir'
+        - not: {package: '@aws-sdk/client-s3|aws-sdk|@azure/storage-blob|@google-cloud/storage|minio|multer-s3|multer-azure-blob-storage|cloudinary|multer-storage-cloudinary|@uploadthing/.*|ali-oss|cos-nodejs-sdk-v5', runtime: true}
+    severity: config
+    category: storage
+    state: local
+    effort: 1
+    title: Uploaded files stored on the local disk
+    why: >-
+      Uploads are saved to a folder on the local disk (multer dest or diskStorage, formidable
+      uploadDir), and the application has no object storage client. The files need a persistent
+      volume, are lost when the pod moves without one and are not shared between replicas, so the
+      component is not stateless.
+    fix: >-
+      To run it as is, mount a PersistentVolumeClaim (ReadWriteMany for more than one replica) at
+      the upload folder. To make it stateless, store uploads in object storage (S3, Azure Blob
+      Storage, MinIO, e.g. multer-s3) and keep only the bucket settings in configuration.
+    refs:
+      - https://github.com/expressjs/multer
+      - https://12factor.net/processes
+
+  - id: node-local-data-files
+    applies_to: [node]
+    when:
+      all:
+        - not: {role: 'test|tool|spa|desktop'}
+        - any:
+          - all:
+            - code: '\breq\.(body|file|files|params|query)\b|\bctx\.request\.(body|files?)\b|\brequest\.(payload|files?)\b|@(Body|UploadedFiles?)\s*\('
+            - code: '\bfs(\.promises)?\.(writeFile|appendFile|createWriteStream|copyFile|rename)(Sync)?\s*\(|\b(fsp|fsPromises|fse)\.(writeFile|appendFile|outputFile|writeJson|copy|move)\s*\(|\b(writeFile|appendFile|createWriteStream|outputFile|writeJson)(Sync)?\s*\(\s*(path\.(join|resolve)\s*\(\s*(__dirname|process\.cwd\(\)|[A-Z_]*(DATA|UPLOAD|STORAGE|FILES)[A-Z_]*)|[''"`]\.{0,2}/?(data|uploads?|storage|files|public)/)'
+            - not: {code: '\bos\.tmpdir\s*\(|\btmpdir\s*\(|\btmp\.(file|dir)\b'}
+            same_file: true
+          # writes into the application's data folder (Uptime Kuma: path.join(Database.dataDir, ...))
+          - all:
+            - code: '\b(fs(\.promises)?|fsp|fsPromises|fse)\.(writeFile|appendFile|createWriteStream|copyFile|outputFile|writeJson|copy|move)(Sync)?\s*\(\s*path\.(join|resolve)\s*\(\s*[\w.]*\b(dataDir|dataPath|DATA_DIR|dataFolder|uploadDir|uploadsDir|UPLOAD_DIR|uploadPath|storageDir|STORAGE_DIR|contentPath|mediaPath|filesDir)\b'
+            - not: {code: '\bos\.tmpdir\s*\('}
+            same_file: true
+        - not: {package: '@aws-sdk/client-s3|aws-sdk|@azure/storage-blob|@google-cloud/storage|minio|cloudinary|ali-oss', runtime: true}
+    severity: config
+    category: storage
+    state: local
+    effort: 1
+    title: Application data written to its own disk
+    why: >-
+      The code writes files (uploads, generated documents, data files) to the local file
+      system, and the application has no object storage client. In a container those files need a
+      persistent volume, are lost when the pod moves without one and are not shared between
+      replicas, so the component is not stateless.
+    fix: >-
+      To run it as is, mount a PersistentVolumeClaim at that folder (ReadWriteMany for more than
+      one replica). To make it stateless, store the files in object storage or the database.
+    refs:
+      - https://12factor.net/processes
+      - https://kubernetes.io/docs/concepts/storage/persistent-volumes/

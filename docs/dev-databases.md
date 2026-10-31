@@ -64,7 +64,7 @@ scan worker ──reads DevDatabase──> builds <registry>/<app>/devdb:<tag> (
 | `Deployment devdb` | One replica, `Recreate` strategy. Pod Security "restricted": runs as uid 10001, read-only root filesystem, all capabilities dropped, no privilege escalation, RuntimeDefault seccomp, no service account token. `emptyDir` volumes for `/var/opt/mssql` (4 GiB) and `/tmp`. Memory 2 GiB request, 3 GiB limit (fits the namespace LimitRange; the ResourceQuota counts it). |
 | `Service devdb` | Port 1433, so the application connects to `devdb,1433`. |
 | `NetworkPolicy devdb` | Ingress on 1433 only from the application's own pods (`app.kubernetes.io/part-of`); egress to DNS only. |
-| `Password` + `ExternalSecret` `devdb`, `devdb-admin` | With External Secrets Operator (`secrets.mode: external-secrets`, the default), its [Password generator](https://external-secrets.io/latest/api/generator/password/) creates the `app` and `sa` passwords in the cluster, once (`refreshInterval: "0"`). In the `plain` and `sealed-secrets` modes, create the two Secrets (key `password`) yourself before the sync. |
+| `Password` + `ExternalSecret` `devdb`, `devdb-admin` | External Secrets Operator's [Password generator](https://external-secrets.io/latest/api/generator/password/) creates the `app` and `sa` passwords in the cluster, once (`refreshInterval: "0"`). They never leave the cluster and need nothing in the secret store ([external-secrets.md](external-secrets.md)). |
 
 The Argo CD AppProject allows exactly these kinds, because they are part of the generated set.
 

@@ -7,7 +7,6 @@ files, Node packages, Python/Java/Go modules) plus repository-wide facts.
 from __future__ import annotations
 
 import fnmatch
-import json
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -15,10 +14,12 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 SKIP_DIRS = {".git", "node_modules", "bin", "obj", "packages", ".vs", "dist", "__pycache__",
-             ".venv", "venv", "target", ".idea", "TestResults"}
+             ".venv", "venv", "target", ".idea", "TestResults", ".gradle", ".mvn", ".yarn", ".pnpm-store",
+             ".next", ".nuxt", ".svelte-kit", ".turbo", "bower_components"}
 SOURCE_EXT = {".cs", ".vb", ".fs", ".cshtml", ".vbhtml", ".razor", ".aspx", ".ascx", ".asmx",
               ".svc", ".asax", ".master", ".ashx", ".ts", ".js", ".py", ".java", ".go", ".ps1",
-              ".psm1", ".xaml", ".tt"}
+              ".psm1", ".xaml", ".tt", ".kt", ".groovy", ".scala", ".jsp", ".tsx", ".jsx", ".mjs", ".cjs",
+              ".mts", ".cts", ".vue", ".svelte"}
 CONFIG_PATTERNS = ["*.config", "appsettings*.json", "launchSettings.json", "*.settings",
                    "hosting.json", "*.xml", "*.json", "*.yaml", "*.yml", "*.ini", "*.properties"]
 MAX_FILE_BYTES = 512 * 1024
@@ -46,6 +47,10 @@ class Project:
     type_guids: list[str] = field(default_factory=list)
     files: list[Path] = field(default_factory=list)          # all files that belong to the project
     manifest: dict = field(default_factory=dict)             # package.json etc.
+    # Java/Node: dependencies only tests and builds use (Maven test scope, Gradle test configurations,
+    # npm devDependencies); they are in `packages` too, and a `package` condition with
+    # `runtime: true` leaves them out
+    dev_packages: dict[str, str] = field(default_factory=dict)
     # items that only some target frameworks get (a Condition on '$(TargetFramework)'):
     # ("package"|"reference"|"framework"|"project", name or resolved path) -> those TFMs
     tfm_items: dict = field(default_factory=dict, repr=False)
@@ -167,7 +172,8 @@ def read_text(p: Path, strip_comments: bool = False) -> str:
     txt = data.decode("utf-8", errors="replace").lstrip("﻿")
     if strip_comments:
         ext = p.suffix.lower()
-        if ext in (".cs", ".fs", ".java", ".go", ".ts", ".js"):
+        if ext in (".cs", ".fs", ".java", ".go", ".ts", ".js", ".kt", ".groovy", ".scala", ".gradle", ".kts",
+                   ".tsx", ".jsx", ".mjs", ".cjs", ".mts", ".cts"):
             # keep string literals containing // (urls) mostly intact: only strip when
             # the // is not inside a quote on that line - cheap heuristic
             txt = _strip_c_comments(txt)
@@ -216,7 +222,7 @@ def _strip_c_comments(txt: str) -> str:
             out.append("\n" * seg.count("\n"))
             i = n if j < 0 else j + 2
             continue
-        if c in "\"'":
+        if c in "\"'`":
             verbatim = c == '"' and i > 0 and txt[i - 1] == "@" or (i > 1 and txt[i - 2:i] in ("@$", "$@"))
             in_str = c
         out.append(c)
@@ -792,10 +798,26 @@ def strip_inactive_branches(txt: str, tfms: list[str], sdk_style: bool, defines:
 
 # ---------------------------------------------------------------------------
 
+def _nuget_packages_dir(d: Path) -> bool:
+    """A `packages` folder of NuGet packages (packages.config restore: <Id>.<Version>/<Id>.<Version>.nupkg,
+    repositories.config), not a JavaScript monorepo's packages/<name>/package.json workspaces."""
+    try:
+        if (d / "repositories.config").exists():
+            return True
+        subs = [s for s in d.iterdir() if s.is_dir()]
+    except OSError:
+        return True
+    if any((s / "package.json").is_file() or (s / "pom.xml").is_file() or (s / "build.gradle").is_file()
+           or (s / "build.gradle.kts").is_file() for s in subs):
+        return False
+    return True
+
+
 def walk(root: Path) -> list[Path]:
     out = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS
+                             or d == "packages" and not _nuget_packages_dir(Path(dirpath) / d))
         for f in sorted(filenames):
             out.append(Path(dirpath) / f)
     return out
@@ -1166,21 +1188,8 @@ def _apply_compile_items(pr: Project) -> None:
 
 
 def parse_node_project(path: Path, root: Path) -> Project:
-    pr = Project(path=path, root=root, kind_hint="node", name=path.parent.name)
-    try:
-        pr.manifest = json.loads(read_text(path) or "{}")
-    except json.JSONDecodeError:
-        pr.manifest = {}
-    deps = {}
-    deps.update(pr.manifest.get("dependencies", {}) or {})
-    deps.update(pr.manifest.get("devDependencies", {}) or {})
-    pr.packages = deps
-    pr.name = pr.manifest.get("name", pr.name)
-    pr.assembly_name = pr.name
-    scripts = pr.manifest.get("scripts") if isinstance(pr.manifest.get("scripts"), dict) else {}
-    # npm script names (comma-separated, sorted) so role rules can tell a test harness from an app
-    pr.properties["NpmScripts"] = ",".join(sorted(scripts))
-    return pr
+    from .scan_node import parse_node_project as parse
+    return parse(path, root)
 
 
 def parse_generic(path: Path, root: Path, kind: str) -> Project:
@@ -1435,22 +1444,32 @@ def scan(root: str | Path) -> Repo:
             projects.append(parse_generic(f, root, "python"))
         elif n == "go.mod":
             projects.append(parse_generic(f, root, "go"))
-        elif n in ("pom.xml", "build.gradle", "build.gradle.kts"):
-            projects.append(parse_generic(f, root, "java"))
+        elif n == "pom.xml":
+            from .scan_java import parse_maven_project
+            projects.append(parse_maven_project(f, root))
+        elif n in ("build.gradle", "build.gradle.kts") and not (f.parent / "pom.xml").is_file():
+            # a module with both build files (spring-petclinic) is one project: Maven's
+            from .scan_java import parse_gradle_project
+            projects.append(parse_gradle_project(f, root))
 
     sln = [f for f in files if f.suffix.lower() in (".sln", ".slnx")]
     projects += _web_site_projects(sln, root, projects)
+    from .scan_java import link_java_projects
+    from .scan_node import link_node_projects
+    link_java_projects(projects, root)
+    link_node_projects(projects, root)
 
     # Assign every file to the deepest project directory that contains it.
-    dirs = sorted({p.dir for p in projects}, key=lambda d: len(d.parts), reverse=True)
     by_dir: dict[Path, list[Project]] = {}
     for p in projects:
         by_dir.setdefault(p.dir, []).append(p)
     for f in files:
-        for d in dirs:
-            if d == f.parent or d in f.parents:
+        for d in (f.parent, *f.parent.parents):         # the nearest (deepest) project folder
+            if d in by_dir:
                 for p in by_dir[d]:
                     p.files.append(f)
+                break
+            if d == root:
                 break
     # Node projects nested inside a .NET web project (ClientApp) are front-end
     # builds of that project, not deployables of their own.
@@ -1471,6 +1490,32 @@ def scan(root: str | Path) -> Repo:
             if host is not None:
                 q = next(q for q in projects if q.kind_hint == "dotnet" and q.dir.resolve() == host)
                 p.properties["HostedBy"] = q.rel
+    # Java modules that build a front end: a package.json in the module's own folder, or nested in a
+    # module whose build runs npm (frontend-maven-plugin, the Gradle node plugin), or a front end whose
+    # build writes into the module (vite outDir: "../app/src/main/resources/static"). The bundles are
+    # served by the Java application, so the Node project is not deployed on its own.
+    java = [q for q in projects if q.kind_hint == "java"]
+    java_dirs = sorted({q.dir.resolve() for q in java}, key=lambda d: -len(d.parts))
+    for p in projects:
+        if p.kind_hint != "node" or "HostedBy" in p.properties or not java:
+            continue
+        d = p.dir.resolve()
+        host = next((q for q in java if q.dir.resolve() == d), None)
+        if host is None:
+            anc = next((q for jd in java_dirs if jd in d.parents for q in java if q.dir.resolve() == jd), None)
+            # src/main/<webui|frontend|...>: packaged into the module's jar (Quinoa, Vaadin, Hilla)
+            if anc is not None and str(d.relative_to(anc.dir.resolve())).replace("\\", "/").startswith("src/main/"):
+                host = anc
+            elif anc is not None and re.search(r"frontend-maven-plugin|com\.github\.node-gradle\.node|"
+                                             r"com\.moowork\.node|org\.siouan\.frontend|vaadin-maven-plugin|"
+                                             r"com\.vaadin", anc.properties.get("Plugins", "")):
+                host = anc
+        if host is None:
+            hd = _asset_output_host(p, java_dirs)
+            host = next((q for q in java if q.dir.resolve() == hd), None) if hd is not None else None
+        if host is not None:
+            p.properties["HostedBy"] = host.rel
+            host.properties.setdefault("SpaRoot", str(p.dir.relative_to(host.dir)) if host.dir != p.dir else ".")
     # A Blazor WebAssembly client referenced by a server project is served by that
     # project (static web assets), not deployed on its own.
     for p in projects:

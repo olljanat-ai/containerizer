@@ -1,0 +1,42 @@
+# Rules that read the same in Java and Node.js code: Windows locations hard-coded in source.
+# (Configuration files are covered by windows-drive-paths and unc-shares in 30-integration.yaml.)
+rules:
+  - id: code-windows-env-vars
+    applies_to: [java, node]
+    when:
+      all:
+        - not: {role: 'test|library|tool|desktop'}
+        - code: '\bSystem\.getenv\s*\(\s*"(APPDATA|LOCALAPPDATA|PROGRAMDATA|ProgramData|USERPROFILE|COMPUTERNAME|USERDOMAIN|SystemRoot|windir|ProgramFiles|ProgramFiles\(x86\)|TEMP|TMP|HOMEDRIVE|HOMEPATH)"\s*\)|\bprocess\.env(\.|\[\s*[''"`])(APPDATA|LOCALAPPDATA|PROGRAMDATA|ProgramData|USERPROFILE|COMPUTERNAME|USERDOMAIN|SystemRoot|windir|ProgramFiles|HOMEDRIVE|HOMEPATH)\b'
+    severity: config
+    category: config
+    effort: 0.25
+    title: Reads Windows environment variables
+    why: >-
+      The code reads environment variables that only Windows sets (APPDATA, ProgramData,
+      USERPROFILE, COMPUTERNAME, SystemRoot). In a Linux container they are empty, so paths built
+      from them point nowhere and machine names are missing.
+    fix: >-
+      Set these variables in the container to Linux paths (a mounted volume for data), or read a
+      dedicated setting with a portable default instead.
+    refs:
+      - https://12factor.net/config
+
+  - id: code-windows-path-literals
+    applies_to: [java, node]
+    when:
+      all:
+        - not: {role: 'test|library|tool|desktop'}
+        - code: '["''`][A-Za-z]:(\\\\|/)(?![/\\])[^"''`\n]{2,}["''`]'
+    severity: config
+    category: config
+    effort: 0.5
+    title: Windows drive paths in the code
+    why: >-
+      The code contains absolute Windows paths (C:\..., D:/...). On Linux they are not valid
+      locations: reads find nothing and writes fail or land in a folder literally named after the
+      drive.
+    fix: >-
+      Read the location from configuration (an environment variable) with a portable default, and
+      mount a volume there in the container.
+    refs:
+      - https://12factor.net/config

@@ -1,4 +1,4 @@
-# containerizer
+# Containerizer
 
 A tool that tells you whether an application can run as a Linux container on Kubernetes, explains why,
 and generates hardened container builds and Kubernetes manifests for the parts that can. It was built
@@ -23,7 +23,7 @@ Design principles:
 
 ## Getting started
 
-containerizer ships as an appliance: an immutable Elemental OS image with the web UI and API, the scan
+Containerizer ships as an appliance: an immutable Elemental OS image with the web UI and API, the scan
 worker, SQL Server, a single-node k3s sandbox cluster with Flux, a local container registry,
 Prometheus and Grafana. Only SSH and HTTPS are allowed in, and outgoing traffic is blocked except for
 the hosts an admin allows under **Admin → Firewall**. Signed upgrades and roll back are under
@@ -46,7 +46,7 @@ the hosts an admin allows under **Admin → Firewall**. Signed upgrades and roll
 
 The rest of this page explains how the assessment works. The `python -m containerizer` commands it
 mentions are what the appliance runs internally and what the [pipeline integrations](#running-it-from-a-pipeline)
-use; to develop containerizer itself, see [docs/local-dev-server.md](docs/local-dev-server.md).
+use; to develop Containerizer itself, see [docs/local-dev-server.md](docs/local-dev-server.md).
 
 ## How it works
 
@@ -62,6 +62,9 @@ use; to develop containerizer itself, see [docs/local-dev-server.md](docs/local-
 1. **Scan** (`containerizer/scan.py`) reads project files (.csproj/.vbproj incl. old-style and imported
    `.props`, package.json, requirements.txt/pyproject, go.mod, pom.xml/gradle, BizTalk/SQL/SSIS
    projects, ASP.NET Web Site projects listed in a .sln), source and configuration. Nothing from the scanned repository is executed.
+   Java and Node.js have their own parsers ([docs/java-node.md](docs/java-node.md)): Maven parents,
+   profiles and modules, Gradle version catalogs and `subprojects {}`, npm/yarn/pnpm workspaces, and
+   the lockfile's Windows-only and native packages.
 2. **Role rules** (`rules/00-roles.yaml`) decide what each project is: web, worker, console, spa,
    desktop, library, test, tool, BizTalk, SharePoint, Sitecore XP, SQL CLR, SSIS.
 3. **Fact rules** (`rules/05-facts.yaml`) extract ports, health endpoints, run-once arguments,
@@ -363,9 +366,13 @@ or an action for the cluster operator, with the guide section and CIS number.
   recorded in a `containerizer.io/egress` annotation and in the report.
 - **Namespace**: a `LimitRange` (defaults without a CPU limit, so pods are not throttled) and a
   `ResourceQuota` sized from the workloads with 50 % headroom.
-- **Secrets**: Secrets become [External Secrets](https://external-secrets.io) `ExternalSecret`s
-  from a `ClusterSecretStore` named `app-secrets` (keys `<app>/<component>`), so no secret value is in
-  Git. Set `secrets.mode` to `sealed-secrets` or `plain` to change this.
+- **Secrets**: no generated file is a `Secret` or holds a value. Component settings, Flux source and
+  registry credentials and the sandbox's Git token are [External Secrets](https://external-secrets.io)
+  `ExternalSecret`s from the `ClusterSecretStore` `app-secrets` (remote keys `<namespace>--<name>`). Each
+  namespace reads the store as its own ServiceAccount and only gets its own keys. `cluster/secret-store.yaml`
+  defines the store (kubernetes provider by default; Vault, Azure Key Vault or AWS Secrets Manager by
+  setting), and the gate fails on any plain Secret or Secret reference that no ExternalSecret produces. See
+  [docs/external-secrets.md](docs/external-secrets.md).
 - **Cluster kit** (`cluster/`): an API server audit policy (metadata only for Secrets, full requests and
   responses for RBAC, every write and every exec) and a Kyverno `verifyImages` policy that only admits images signed with your cosign
   key. These are for the cluster operator to apply. The report also lists the cluster controls the
@@ -581,5 +588,6 @@ monitoring/      Grafana dashboard, Prometheus scrape config and alert rules, sy
 results/         Docker Compose stack and image for the results database and web UI
 docs/            results-database.md (results database, web UI, admin pages, audit), rule-review.md, organization-run.md,
                  scheduled-scans.md, source-control.md (tokens), dev-databases.md, sandbox-verification.md, self-hosted-llm.md, sbom.md (SBOMs, licences, CVEs per package),
+                 external-secrets.md (secret store, per-namespace access, Vault / Azure Key Vault / AWS),
                  local-dev-server.md (a Debian server that runs the whole CI suite locally)
 ```

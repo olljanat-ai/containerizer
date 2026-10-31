@@ -1,5 +1,5 @@
 ---
-title: containerizer
+title: Containerizer for Kubernetes
 description: Find out which of your applications can run as Linux containers on Kubernetes, why, and get hardened builds and manifests for the ones that can.
 hide:
   - navigation
@@ -10,7 +10,7 @@ hide:
 
 # Which of your applications can run in containers?
 
-containerizer scans your whole application portfolio, rates every application from **A** (lift and shift)
+Containerizer scans your whole application portfolio, rates every application from **A** (lift and shift)
 to **E** (keep on Windows), explains each obstacle with a fix and references, and generates hardened
 Dockerfiles and Kubernetes manifests for everything that can move. Then it proves them by building,
 running and deploying them in its own sandbox cluster.
@@ -48,7 +48,7 @@ running and deploying them in its own sandbox cluster.
 
 </div>
 
-## Why containerizer
+## Why Containerizer?
 
 <div class="grid cards" markdown>
 

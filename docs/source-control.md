@@ -105,7 +105,7 @@ Scans with **Ask the LLM** on consult an LLM about the components the rules are 
 
 | Kind | Server | Model | API key |
 | --- | --- | --- | --- |
-| Claude API | empty, or the https URL of a gateway in front of it | e.g. `claude-sonnet-5-5` | required: a key from the Claude Console, in a workspace only for containerizer, with a spend limit |
+| Claude API | empty, or the https URL of a gateway in front of it | e.g. `claude-sonnet-5-5` | required: a key from the Claude Console, in a workspace only for Containerizer, with a spend limit |
 | OpenAI-compatible server (Ollama, vLLM, LM Studio, llama.cpp, LocalAI, ...) | the URL up to and including `/v1` | the name the server knows | optional; only sent over https, or plain http to the worker's own machine |
 
 The key is sealed for the worker like the tokens and never shown again; the model can be changed
