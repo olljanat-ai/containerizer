@@ -456,14 +456,35 @@ def make_handler(connect, admin=None):
             r = admin.handle(method, u.path, u.query, self.headers, body)
             return self._send(r.status, r.body, r.ctype, head, r.headers, forms=True)
 
-        def do_POST(self):
+        def _api(self, method: str, head: bool = False):
             u = urlsplit(self.path)
-            if not (admin and admin.handles(u.path)):
-                return self._not_allowed()
+            n = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(min(n, 64 * 1024 + 1)) if n else b""
+            r = admin.api.handle(method, u.path, parse_qs(u.query), self.headers, body)
+            return self._send(r.status, r.body, r.ctype, head, r.headers)
+
+        def _write(self, method: str):
+            u = urlsplit(self.path)
             try:
-                return self._admin("POST")
+                if admin and admin.api and admin.api.handles(u.path):
+                    return self._api(method)
+                if method == "POST" and admin and admin.handles(u.path):
+                    return self._admin("POST")
+                return self._not_allowed()
             except Exception as ex:
                 return self._error(ex)
+
+        def do_POST(self):
+            return self._write("POST")
+
+        def do_PATCH(self):
+            return self._write("PATCH")
+
+        def do_PUT(self):
+            return self._write("PUT")
+
+        def do_DELETE(self):
+            return self._write("DELETE")
 
         def do_GET(self, head: bool = False):
             u = urlsplit(self.path)
@@ -472,6 +493,8 @@ def make_handler(connect, admin=None):
                     return self._send(200, CSS, "text/css; charset=utf-8", head)
                 if u.path == "/healthz":
                     return self._send(200, "ok", "text/plain; charset=utf-8", head)
+                if admin and admin.api and admin.api.handles(u.path):
+                    return self._api("GET", head)
                 if admin and admin.handles(u.path):
                     return self._admin("GET", head)
                 nav = admin.nav(self.headers) if admin else ""
@@ -506,7 +529,7 @@ def make_handler(connect, admin=None):
             self.send_header("Content-Length", "0")
             self.end_headers()
 
-        do_PUT = do_DELETE = do_PATCH = do_OPTIONS = _not_allowed
+        do_OPTIONS = _not_allowed
 
         def log_request(self, code="-", size="-"):
             # the path only: query strings can carry sign-in codes
@@ -532,7 +555,8 @@ def serve(cs: str | None, host: str = "127.0.0.1", port: int = 8080) -> int:
         return 3
     httpd = ThreadingHTTPServer((host, port), make_handler(lambda: connect(cs), admin))
     print(f"containerizer results UI on http://{host}:{port}/ (results read-only without sign-in; "
-          + (f"admin pages behind sign-in at {admin.cfg.public_url}/admin)" if admin else "admin pages off: no sign-in configured)"))
+          + (f"admin pages behind sign-in at {admin.cfg.public_url}/admin" if admin else "admin pages off: no sign-in configured")
+          + ("; JSON API at /api/v1)" if admin and admin.api else ")"))
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

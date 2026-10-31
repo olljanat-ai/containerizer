@@ -69,12 +69,7 @@ class OidcConfig:
         for name, url in (("issuer", self.issuer), ("public URL", self.public_url)):
             if not url.startswith("https://") and not (url.startswith("http://") and _local(url)):
                 raise OidcError(f"the {name} must be https (http only for localhost): {url}")
-        for r in self.admins:
-            kind, _, value = r.partition(":")
-            if kind not in ("email", "domain", "group", "role", "sub") or not value:
-                raise OidcError(f"CONTAINERIZER_ADMINS: unknown rule {r!r} (email:, domain:, group:, role:, sub:)")
-        if not self.admins:
-            raise OidcError("CONTAINERIZER_ADMINS is empty: nobody could use the admin pages")
+        check_rules(self.admins)
 
     @property
     def secure(self) -> bool:
@@ -102,6 +97,23 @@ def allowed(claims: dict, rules: list[str]) -> bool:
                 (kind == "sub" and value == str(claims.get("sub"))):
             return True
     return False
+
+
+def allowed_client(claims: dict, rules: list[str]) -> bool:
+    """API callers: client:<client/application id> (azp, appid or client_id claim), plus the allowed() rules."""
+    client = str(claims.get("azp") or claims.get("appid") or claims.get("client_id") or "")
+    if any(r.partition(":")[0] == "client" and r.partition(":")[2] == client and client for r in rules):
+        return True
+    return allowed(claims, [r for r in rules if not r.startswith("client:")])
+
+
+def check_rules(rules: list[str], kinds=("email", "domain", "group", "role", "sub"), name: str = "CONTAINERIZER_ADMINS"):
+    if not rules:
+        raise OidcError(f"{name} is empty: nobody would be let in")
+    for r in rules:
+        kind, _, value = r.partition(":")
+        if kind not in kinds or not value:
+            raise OidcError(f"{name}: unknown rule {r!r} ({', '.join(k + ':' for k in kinds)})")
 
 
 def identity(claims: dict) -> tuple[str, str]:
@@ -167,6 +179,24 @@ class Provider:
         if "id_token" not in tok:
             raise OidcError("the token response has no id_token (is the openid scope allowed?)")
         return tok
+
+    def _decode(self, token: str, audience: str) -> dict:
+        import jwt
+        if self._jwks is None:
+            self._jwks = jwt.PyJWKClient(self.meta["jwks_uri"], cache_keys=True, lifespan=3600, timeout=self.cfg.timeout)
+        algs = sorted(SAFE_ALGS & set(self.meta.get("id_token_signing_alg_values_supported") or ["RS256"]))
+        if not algs:
+            raise OidcError("the provider offers no asymmetric token signing algorithm")
+        try:
+            key = self._jwks.get_signing_key_from_jwt(token)
+            return jwt.decode(token, key.key, algorithms=algs, audience=audience, issuer=self.meta["issuer"], leeway=60,
+                              options={"require": ["exp", "iss", "aud", "sub"]})
+        except (jwt.PyJWTError, OidcError) as e:
+            raise OidcError(f"token rejected: {e}") from None
+
+    def validate_access(self, token: str, audience: str) -> dict:
+        """An OAuth access token (JWT) issued for this API (`audience`) by the same provider."""
+        return self._decode(token, audience)
 
     def validate(self, id_token: str, nonce: str) -> dict:
         import jwt

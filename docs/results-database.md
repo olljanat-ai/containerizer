@@ -9,6 +9,7 @@ main obstacles and, for every component, what needs to change, why, and where to
   recognised again on the next scan by its git remote and folder, so history builds up per application.
 - **Administrators** maintain business units and products, and which application belongs to which
   product, on the [admin pages](#admin-pages) behind single sign-on. A scan never overwrites that.
+- Scripts and other tools can do the same through a [JSON API](#api) with OAuth access tokens.
 - Every change to that mapping is kept in an [audit log](#change-history-audit): who, when, what
   before and after.
 
@@ -222,6 +223,61 @@ only same-site paths are followed. HTTPS is required for the issuer and the publ
 for `localhost`), and on https the UI sends HSTS. Sessions are kept in the server's memory: run one
 instance, and a restart signs everyone out.
 
+## API
+
+The same changes can be made by scripts and other tools through a JSON API under `/api/v1`, turned on
+with two more settings next to the sign-in ones:
+
+| Variable | Meaning |
+| --- | --- |
+| `CONTAINERIZER_API_AUDIENCE` | The audience the access tokens must be issued for, e.g. `api://containerizer` (Entra ID: the Application ID URI of the app registration). |
+| `CONTAINERIZER_API_CLIENTS` | Who may call it, comma separated: `client:<client id>` (the token's `azp`, `appid` or `client_id`), `role:<app role>`, `group:`, `email:`, `domain:`, `sub:` as for admins. |
+
+Callers send `Authorization: Bearer <access token>` from the same identity provider: the
+client-credentials flow for automation, or a user's token. The token's signature (the provider's
+published keys), issuer, audience and expiry are checked; an ID token is not accepted (its audience
+is the web app, not the API). Cookies are ignored, so the API has no CSRF surface. Bodies are JSON
+(`Content-Type: application/json`, up to 64 KiB); unknown fields are refused.
+
+| Method and path | Does |
+| --- | --- |
+| `GET /api/v1/business-units` · `POST` | list (`?name=`) · create `{"name", "owner", "description"}` |
+| `GET` · `PATCH` · `PUT` · `DELETE /api/v1/business-units/{id}` | read · change some fields · replace · delete (409 while products are in it) |
+| `GET /api/v1/products` · `POST` | list (`?name=`, `?businessUnitId=`) · create `{"name", "businessUnitId", "infoUrl", "owner", "description"}` |
+| `GET` · `PATCH` · `PUT` · `DELETE /api/v1/products/{id}` | as above (409 while applications are mapped to it) |
+| `GET /api/v1/applications` | list with the latest rating (`?unmapped=true`, `?productId=`, `?name=`, `?retired=true`) |
+| `GET` · `PATCH /api/v1/applications/{id}` | read · set `productId`, `displayName`, `owner`, `description`, `retired` (applications themselves come from scans) |
+| `GET /api/v1/audit` | the change history (`?table=Application`, `?rowId=`, `?limit=` up to 1000) |
+
+Errors are `{"error": "...", "message": "..."}` with 400 (invalid field), 401 (no or bad token),
+403 (caller not allowed), 404, 405, 409 (name taken, referenced row missing or still in use), 413, 415.
+
+```sh
+# Entra ID client credentials (register a second app as the client, grant it the API's app role)
+TOKEN=$(curl -s https://login.microsoftonline.com/$TENANT/oauth2/v2.0/token \
+  -d grant_type=client_credentials -d client_id=$CLIENT_ID -d client_secret=$CLIENT_SECRET \
+  -d scope=api://containerizer/.default | jq -r .access_token)
+API=https://containerizer.example.com/api/v1
+
+# map every unmapped application from one repository to the Billing product
+PRODUCT=$(curl -s -H "Authorization: Bearer $TOKEN" "$API/products?name=Billing" | jq '.items[0].id')
+curl -s -H "Authorization: Bearer $TOKEN" "$API/applications?unmapped=true" \
+  | jq -r '.items[] | select(.repositoryUrl == "https://dev.azure.com/contoso/Billing/_git/billing") | .id' \
+  | while read id; do
+      curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+        -d "{\"productId\": $PRODUCT}" "$API/applications/$id"
+    done
+```
+
+With Entra ID, set `accessTokenAcceptedVersion` to `2` in the API app's manifest so its access tokens
+carry the same v2.0 issuer as the sign-in, define an app role (e.g. `Containerizer.Write`, allowed
+member type Applications) and grant it to the client app; then
+`CONTAINERIZER_API_CLIENTS=role:Containerizer.Write`.
+
+API changes are written with the admin database login and appear in the change history with
+**Via** `API` and **ChangedBy** the user's e-mail for a user's token, or `client:<client id>` for an
+application.
+
 ## Change history (audit)
 
 Every insert, update and delete of a business unit, a product (including its product page link and
@@ -230,15 +286,16 @@ database triggers, so changes made outside the admin pages, directly with SQL, a
 row has:
 
 - **ChangedBy / ChangedByName**: the signed-in person (e-mail or user name, and display name) for
-  changes from the admin pages; the database login for anything else.
+  changes from the admin pages, the user or `client:<client id>` for the API; the database login for
+  anything else.
 - **DbLogin**: the actual database login that ran the statement, always.
-- **Via**: `admin UI`, `scan` (a new application found by a scan) or `SQL`.
+- **Via**: `admin UI`, `API`, `scan` (a new application found by a scan) or `SQL`.
 - **ChangedAt** (UTC), **TableName**, **RowId**, **RowName**, **Action** (`insert`, `update`, `delete`).
 - **OldValues / NewValues**: the values before and after, as JSON, with product and business unit
   names rather than ids, so the history stays readable after renames and deletes.
 
 The admin pages show it under **Change history**, filterable by kind, and on each application, product
-and business unit page. The admin pages put the signed-in user in the connection's `SESSION_CONTEXT`
+and business unit page. The admin pages and the API put the signed-in user or client in the connection's `SESSION_CONTEXT`
 as read-only, so it cannot be changed on that connection. No role can update or delete audit rows;
 database owners can, so forward the table to your SIEM if it must be tamper-proof.
 

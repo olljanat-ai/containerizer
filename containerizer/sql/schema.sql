@@ -220,8 +220,9 @@ GO
 
 -- Audit trail: one row per changed row of BusinessUnit, Product and Application (mapping and the
 -- people-maintained columns; routine LastSeenAt updates by the scan are not logged). Written by
--- triggers, so changes made directly with SQL are recorded too. Who: the admin UI sets the signed-in
--- user in SESSION_CONTEXT (read-only for the connection); otherwise it is the database login.
+-- triggers, so changes made directly with SQL are recorded too. Who: the admin UI and the API set the
+-- signed-in user or API client in SESSION_CONTEXT (read-only for the connection); otherwise it is the
+-- database login.
 -- DbLogin is always the real database login. Nobody is granted UPDATE or DELETE on this table.
 IF OBJECT_ID(N'[${schema}].AuditLog', N'U') IS NULL
 CREATE TABLE [${schema}].AuditLog (
@@ -230,7 +231,7 @@ CREATE TABLE [${schema}].AuditLog (
     ChangedBy     nvarchar(256) NOT NULL,          -- user (e-mail / UPN) or database login
     ChangedByName nvarchar(256) NULL,              -- display name from the sign-in
     DbLogin       nvarchar(256) NOT NULL CONSTRAINT DF_AuditLog_DbLogin DEFAULT ORIGINAL_LOGIN(),
-    Via           nvarchar(20)  NOT NULL,          -- admin UI, scan, SQL
+    Via           nvarchar(20)  NOT NULL,          -- admin UI, API, scan, SQL
     TableName     nvarchar(50)  NOT NULL,
     RowId         int           NOT NULL,
     RowName       nvarchar(200) NULL,
@@ -250,7 +251,8 @@ CREATE OR ALTER FUNCTION [${schema}].fnAuditWho()
 RETURNS TABLE AS RETURN
 SELECT COALESCE(CAST(SESSION_CONTEXT(N'containerizer.user') AS nvarchar(256)), ORIGINAL_LOGIN()) AS ChangedBy,
        CAST(SESSION_CONTEXT(N'containerizer.user_name') AS nvarchar(256)) AS ChangedByName,
-       CASE WHEN SESSION_CONTEXT(N'containerizer.user') IS NOT NULL THEN N'admin UI'
+       CASE WHEN SESSION_CONTEXT(N'containerizer.user') IS NOT NULL
+                 THEN COALESCE(CAST(SESSION_CONTEXT(N'containerizer.via') AS nvarchar(20)), N'admin UI')
             WHEN IS_ROLEMEMBER(N'${schema}_writer') = 1 AND IS_ROLEMEMBER(N'db_owner') = 0 THEN N'scan'
             ELSE N'SQL' END AS Via;
 GO

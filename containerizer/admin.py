@@ -45,6 +45,7 @@ class Admin:
         self.connect_admin = connect_admin          # () -> sqlstore.Connection in the admin role
         self.provider = provider or Provider(cfg)
         self.sessions = Sessions()
+        self.api = None                             # api.Api when the JSON API is configured
         self.cookie = ("__Host-" if cfg.secure else "") + "cz_session"
         self.login_cookie = ("__Host-" if cfg.secure else "") + "cz_login"
 
@@ -551,4 +552,7 @@ def build(env=None) -> Admin | None:
     if not cs or not pw:
         raise OidcError("sign-in is configured: also set CONTAINERIZER_ADMIN_SQL and CONTAINERIZER_ADMIN_SQL_PASSWORD "
                         "(a login in the <schema>_admin role)")
-    return Admin(cfg, lambda: connect(cs, pw))
+    from . import api
+    adm = Admin(cfg, lambda: connect(cs, pw))
+    adm.api = api.build(env, adm.provider, adm.connect_admin)
+    return adm

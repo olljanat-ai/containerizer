@@ -343,3 +343,121 @@ def test_admin_maps_and_audits(idp, tmp_path):
         m = sqlstore.connect(re.sub(r"Database=\w+", "Database=master", cs), autocommit=True)
         m.cursor().execute(f"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]")
         m.close()
+
+
+# ---------------------------------------------------------------------------
+# JSON API with bearer access tokens
+
+def access_token(idp, aud="api://containerizer", key=None, **claims):
+    now = int(time.time())
+    c = {"iss": idp.issuer, "aud": aud, "sub": "svc-1", "azp": "automation", "iat": now, "exp": now + 300, **claims}
+    return jwt.encode(c, key or KEY, algorithm="RS256", headers={"kid": "k1"})
+
+
+def api_call(base, method, path, token=None, body=None, ctype="application/json"):
+    data = json.dumps(body).encode() if body is not None else None
+    h = {"Content-Type": ctype} if data is not None else {}
+    if token:
+        h["Authorization"] = "Bearer " + token
+    req = urllib.request.Request(base + path, data=data, method=method, headers=h)
+    try:
+        r = urllib.request.urlopen(req, timeout=10)
+        raw = r.read().decode()
+        return r.status, dict(r.headers), json.loads(raw) if raw else None
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode()
+        return e.code, dict(e.headers), json.loads(raw) if raw else None
+
+
+def _api_server(idp, connect_admin):
+    from containerizer import api as apimod
+    port = free_port()
+    base = f"http://127.0.0.1:{port}"
+    adm = adminmod.Admin(cfg(idp, base), connect_admin)
+    adm.api = apimod.Api(adm.provider, "api://containerizer", ["client:automation", "role:Containerizer.Write"],
+                         connect_admin)
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), webui.make_handler(connect_admin, adm))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return base, httpd
+
+
+def test_api_authentication(idp):
+    def no_db():
+        raise AssertionError("no database access before authentication")
+    base, httpd = _api_server(idp, no_db)
+    try:
+        s, h, b = api_call(base, "GET", "/api/v1/products")
+        assert s == 401 and h["WWW-Authenticate"].startswith("Bearer") and b["error"] == "invalid_request"
+        assert api_call(base, "GET", "/api/v1/products", "not-a-jwt")[0] == 401
+        assert api_call(base, "GET", "/api/v1/products", access_token(idp, aud="cz"))[0] == 401      # an ID token's audience
+        assert api_call(base, "GET", "/api/v1/products", access_token(idp, key=OTHER_KEY))[0] == 401
+        assert api_call(base, "GET", "/api/v1/products", access_token(idp, exp=1000))[0] == 401
+        s, _, b = api_call(base, "GET", "/api/v1/products", access_token(idp, azp="someone-else"))
+        assert s == 403 and b["error"] == "insufficient_scope"
+        # cookies do not authenticate the API
+        req = urllib.request.Request(base + "/api/v1/products", headers={"Cookie": "cz_session=x"})
+        with pytest.raises(urllib.error.HTTPError) as ex:
+            urllib.request.urlopen(req, timeout=10)
+        assert ex.value.code == 401
+    finally:
+        httpd.shutdown()
+
+
+@needs_sql
+def test_api_updates_are_audited(idp, tmp_path):
+    import uuid
+    name = "czapi_" + uuid.uuid4().hex[:8]
+    cs = re.sub(r"(?i)(database|initial\s*catalog)\s*=[^;]*", f"Database={name}", ADMIN_SQL)
+    sqlstore.create_database(cs)
+    conn = sqlstore.connect(cs)
+    sqlstore.init_schema(conn)
+    for login, role in (("cz_p_writer", "writer"), ("cz_p_admin", "admin")):
+        sqlstore.create_login(conn, login, "Test-Passw0rd!x", role)
+    conn.close()
+
+    def as_(login):
+        return re.sub(r"(?i)(user\s*id|uid)\s*=[^;]*", f"User Id={login}", cs)
+    from containerizer.assess import assess
+    for app in ("billing", "ledger"):
+        web_app(tmp_path / app)
+    sqlstore.store_results(as_("cz_p_writer"), [assess(tmp_path / a) for a in ("billing", "ledger")],
+                           [tmp_path / "billing", tmp_path / "ledger"], password="Test-Passw0rd!x")
+    base, httpd = _api_server(idp, lambda: sqlstore.connect(as_("cz_p_admin"), "Test-Passw0rd!x"))
+    tok = access_token(idp)
+    try:
+        s, _, bu = api_call(base, "POST", "/api/v1/business-units", tok, {"name": "Finance", "owner": "CFO office"})
+        assert s == 201 and bu["name"] == "Finance"
+        assert api_call(base, "POST", "/api/v1/business-units", tok, {"name": "Finance"})[0] == 409
+        assert api_call(base, "POST", "/api/v1/products", tok, {"name": "Billing"}, ctype="text/plain")[0] == 415
+        s, _, b = api_call(base, "POST", "/api/v1/products", tok, {"name": "Billing", "infoUrl": "javascript:x"})
+        assert s == 400 and "https" in b["message"]
+        assert api_call(base, "POST", "/api/v1/products", tok, {"name": "Billing", "rating": "A"})[0] == 400
+        s, _, p = api_call(base, "POST", "/api/v1/products", tok, {"name": "Billing", "businessUnitId": bu["id"],
+                                                                    "infoUrl": "https://cmdb.example.com/p/billing"})
+        assert s == 201 and p["businessUnitName"] == "Finance"
+        s, _, apps = api_call(base, "GET", "/api/v1/applications?unmapped=true", tok)
+        assert sorted(a["name"] for a in apps["items"]) == ["billing", "ledger"] and apps["items"][0]["rating"]
+        bid = next(a["id"] for a in apps["items"] if a["name"] == "billing")
+        s, _, a = api_call(base, "PATCH", f"/api/v1/applications/{bid}", tok, {"productId": p["id"], "owner": "Team B"})
+        assert s == 200 and a["productName"] == "Billing" and a["owner"] == "Team B"
+        assert api_call(base, "PATCH", f"/api/v1/applications/{bid}", tok, {"name": "renamed"})[0] == 400   # scan-owned
+        assert api_call(base, "PATCH", "/api/v1/applications/999999", tok, {"owner": "x"})[0] == 404
+        assert api_call(base, "PATCH", f"/api/v1/applications/{bid}", tok, {"productId": 999999})[0] == 409
+        assert api_call(base, "DELETE", f"/api/v1/products/{p['id']}", tok)[0] == 409                    # still in use
+        assert api_call(base, "POST", "/api/v1/applications", tok, {"displayName": "x"})[0] == 405
+        assert [x["name"] for x in api_call(base, "GET", "/api/v1/applications?unmapped=true", tok)[2]["items"]] == ["ledger"]
+        # a user's delegated token is recorded with the user's identity
+        utok = access_token(idp, email="jane@example.com", name="Jane Doe", azp="other", roles=["Containerizer.Write"])
+        assert api_call(base, "PATCH", f"/api/v1/products/{p['id']}", utok, {"owner": "Jane"})[0] == 200
+        s, _, log = api_call(base, "GET", "/api/v1/audit?limit=10", tok)
+        items = log["items"]
+        assert items[0]["changedBy"] == "jane@example.com" and items[0]["via"] == "API"
+        assert items[0]["oldValues"]["Owner"] is None and items[0]["newValues"]["Owner"] == "Jane"
+        app_change = next(i for i in items if i["tableName"] == "Application" and i["action"] == "update")
+        assert app_change["changedBy"] == "client:automation" and app_change["via"] == "API"
+        assert app_change["newValues"]["Product"] == "Billing" and app_change["dbLogin"] == "cz_p_admin"
+    finally:
+        httpd.shutdown()
+        m = sqlstore.connect(re.sub(r"Database=\w+", "Database=master", cs), autocommit=True)
+        m.cursor().execute(f"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]")
+        m.close()
