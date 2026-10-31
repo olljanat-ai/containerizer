@@ -478,6 +478,8 @@ change is kept in an audit log with who made it.
 [`docs/results-database.md`](docs/results-database.md) has the model, the least-privilege roles, TLS,
 sign-in setup, the API, the audit log and a local Docker Compose stack.
 
+![Containerization readiness overview](docs/images/results-overview.png)
+
 ## Results on the challenge
 
 See [`bench/RESULTS.md`](bench/RESULTS.md) for the current numbers (rule accuracy, verification
