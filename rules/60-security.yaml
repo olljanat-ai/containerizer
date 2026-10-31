@@ -297,6 +297,56 @@ scan:
   #    expires: 2026-12-31
   #    images: 'dotnet/aspnet'
 
+# Software bill of materials for every image the gate builds (`gate --build`,
+# `containerizer org`): CycloneDX JSON from Syft, written as sbom.cdx.json next
+# to the component's Dockerfile, stored in the results database and, after a
+# push, attached to the image (signed with cosign when a key is configured).
+sbom:
+  enabled: true
+  # assess/analyze with --sql also store a source SBOM per component: the
+  # packages its project files declare (direct references, no CVEs).
+  source: true
+  generator: {name: syft, binary: syft, image: anchore/syft:v1.33.0}
+  # Syft does not read NuGet licences: look them up in the package's nuspec on
+  # this feed (NuGet v3 service index; answers are cached under .work/). Turn
+  # off where the runner has no access to the feed.
+  nuget_licenses: true
+  nuget_feed: https://api.nuget.org/v3/index.json
+  attach: true                # without a cosign key: OCI referrer artifact (oras attach)
+  # With `org --cosign-key` the SBOM is a signed attestation (cosign attest
+  # --type cyclonedx). cosign records it in the public Rekor transparency log
+  # by default; set false for private registries that must not show up there
+  # (verify with `cosign verify-attestation --insecure-ignore-tlog`).
+  cosign_tlog_upload: true
+  # OS packages of the base image (deb, apk, rpm): Debian copyright files name
+  # the licence of every file a package ships, so glibc reads "GPL AND LGPL".
+  # `report` shows them without counting them; `evaluate` applies the policy.
+  os_packages: report
+  licenses:
+    # Regular expressions matched against each SPDX identifier (whole id, case-
+    # insensitive). An expression is judged as written: `A OR B` passes when
+    # either side passes, `A AND B` needs both. `deny` fails the gate (and keeps
+    # the component out of an organization run); `warn` is reported.
+    deny: []
+    warn:
+      - 'AGPL(-.*)?'            # network copyleft: users of the service get the source
+      - 'GPL(-.*)?'             # strong copyleft (LGPL is not matched)
+      - 'SSPL(-.*)?'
+      - 'CC-BY-NC(-.*)?'        # non-commercial
+      - 'BUSL(-.*)?|Elastic-2\.0|Commons-Clause'
+    # Allowed explicitly: names that are not SPDX identifiers. Any SPDX licence
+    # (rules/spdx-licenses.yaml) that deny/warn do not match is allowed anyway.
+    allow:
+      - 'LicenseRef-public-domain'
+      - 'LicenseRef-Microsoft-NET-Library'   # older System.*/Microsoft.* NuGet packages: redistributable with the app
+    unknown: report           # packages without a recognised licence: report | warn | deny
+    # Accepted exceptions: package (regex), optional version (regex), reason,
+    # optional expires (YYYY-MM-DD).
+    accepted: []
+    #  - package: 'Ghostscript\.NET'
+    #    reason: separate commercial licence, contract 2026-114
+    #    expires: 2027-06-30
+
 # Base image lifecycle and bump policy for `containerizer images`.
 images:
   lock_max_age_days: 14       # the gate warns when images.lock.yaml is older

@@ -43,7 +43,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt -r requirements-sql.txt pytest
-      - run: python -m pytest -q tests/test_sqlstore.py tests/test_admin.py tests/test_roles.py tests/test_trends.py tests/test_sandbox.py tests/test_worker.py tests/test_devdb.py -rs
+      - run: python -m pytest -q tests/test_sqlstore.py tests/test_admin.py tests/test_roles.py tests/test_trends.py tests/test_sandbox.py tests/test_worker.py tests/test_sbom.py tests/test_devdb.py -rs
       - name: Image builds and the UI serves results
         run: |
           docker build -f results/Dockerfile -t containerizer-results .
@@ -58,6 +58,7 @@ jobs:
           for i in $(seq 30); do curl -fsS http://127.0.0.1:8080/healthz && break; sleep 1; done
           curl -fsS http://127.0.0.1:8080/ | grep -q ci-demo || { docker logs web; exit 1; }
           curl -fsS http://127.0.0.1:8080/trends | grep -q ci-demo || { docker logs web; exit 1; }
+          curl -fsS http://127.0.0.1:8080/sbom | grep -q "Components with an SBOM" || { docker logs web; exit 1; }
 
   # Sandbox verification against a real Kubernetes cluster (tests/test_sandbox_cluster.py): rollouts, crash
   # loop, image pull failure, CronJob, the generated least-privilege RBAC and a short-lived SA token.

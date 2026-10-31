@@ -59,6 +59,9 @@ python -m containerizer org --provider github --org acme --registry myacr.azurec
 # or schedule organization scans from the admin pages and run them with a worker (docs/scheduled-scans.md)
 python -m containerizer worker --sql "Server=...;Database=Containerizer;User Id=cz_worker"
 
+# CycloneDX SBOM of an image: licences against the policy, CVEs per package (docs/sbom.md)
+python -m containerizer sbom myregistry.example.com/app/web:1.4 --remote --scan --out web.cdx.json
+
 # results database (SQL Server) and read-only web UI for management, see docs/results-database.md
 docker compose -f results/compose.yaml up -d --build          # SQL Server + UI on http://127.0.0.1:8080/
 python -m containerizer analyze <repo> --sql "Server=...;Database=Containerizer;User Id=cz_scanner"
@@ -347,6 +350,14 @@ vulnerable OS package with a fix, the gate upgrades just that package in the fin
 / `apt-get --only-upgrade`; chiseled images have no package manager and need a newer tag). Results go
 to `SECURITY.md` and `security.json` next to the generated files.
 
+**SBOM and licences.** Every built image gets a CycloneDX SBOM from Syft (`sbom.cdx.json` next to the
+`Dockerfile`), with NuGet licences looked up from the feed, each package checked against the licence
+policy in `sbom.licenses` (deny fails the gate, warn is reported; GPL/AGPL warn by default) and the
+scan's CVEs attached to the package they are in. `containerizer org` attaches it to the pushed image
+(signed with cosign when `--cosign-key` is given) and stores it in the results database; the web UI
+shows the packages of each component and a portfolio page of licences and CVEs. See
+[docs/sbom.md](docs/sbom.md).
+
 ### NSA/CISA hardening
 
 The manifests follow the [NSA/CISA Kubernetes Hardening Guide](https://media.defense.gov/2022/Aug/29/2003066362/-1/-1/0/CTR_KUBERNETES_HARDENING_GUIDANCE_1.2_20220829.PDF)
@@ -579,5 +590,5 @@ containerizer/sql/  results database schema (sqlstore.py writes it, webui.py rea
 monitoring/      Grafana dashboard, Prometheus scrape config and alert rules, systemd unit for the worker
 results/         Docker Compose stack and image for the results database and web UI
 docs/            results-database.md (results database, web UI, admin pages, audit), organization-run.md,
-                 scheduled-scans.md, dev-databases.md, sandbox-verification.md, self-hosted-llm.md
+                 scheduled-scans.md, dev-databases.md, sandbox-verification.md, self-hosted-llm.md, sbom.md (SBOMs, licences, CVEs per package)
 ```

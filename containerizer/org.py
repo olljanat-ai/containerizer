@@ -192,6 +192,18 @@ def select_components(a, verified: bool) -> tuple[list, list[dict]]:
     return keep, excluded
 
 
+def sbom_entry(g: dict | None, folder: str, cdir: Path, local: str, c, o: OrgOptions) -> dict | None:
+    """The SBOM the gate made for a component; without the gate, one made here (no CVEs: nothing was scanned)."""
+    if g is not None:
+        sb = next((x.get("sbom") for x in g["components"] if x["component"] == folder), None)
+        return sb if sb and not sb.get("error") else None
+    from .sbom import component_sbom, config
+    if not o.push_images or not config().get("enabled", True):
+        return None
+    sb = component_sbom(local, cdir, [], (c.name, c.project.name))
+    return None if sb.get("error") else sb
+
+
 def gate_failure(comp: dict) -> str:
     if comp.get("build_error"):
         return "image build failed"
@@ -205,6 +217,9 @@ def gate_failure(comp: dict) -> str:
             return f"{len(s.get('blocking', []))} fixable vulnerabilities at or above the gate threshold ({s.get('kind')})"
     if (comp.get("run") or {}).get("status") == "hardening-failure":
         return "does not run with the hardened pod security context"
+    denied = ((comp.get("sbom") or {}).get("summary") or {}).get("denied") or []
+    if denied:
+        return f"licence denied by policy: {', '.join(denied[:3])}"[:300]
     return ""
 
 
@@ -673,13 +688,15 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
         res.rating = a.rating
         from .sqlstore import source_info
         res.source_key = source_info(src, a.name)["key"]
+        assessment_id = None
         if o.sql or os.environ.get("CONTAINERIZER_SQL"):
             from .sqlstore import store_results
-            store_results(o.sql, [a], [src])
+            assessment_id = store_results(o.sql, [a], [src])[0]
         keep, res.excluded = select_components(a, o.verify)
         dd, dd_row = (_dev_database(o, res, a, keep, work, reg, tag) if keep else (None, None))
         gen = work / "gen" / app
         names = {k8s_name(c.name): c for c in keep}
+        g = None
         while keep:
             if gen.exists():
                 shutil.rmtree(gen)
@@ -705,7 +722,7 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
 
         # images: built by the gate (or here), pushed under <registry>/<app>/<component>:<tag>
         from .imagescan import build_image
-        comps = []
+        comps, sboms = [], []
         for c in keep:
             cn = k8s_name(c.name)
             cdir = gen / cn
@@ -720,13 +737,34 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
                      "project_name": c.project.name,
                      "verification": next((v.get("status") for v in getattr(a, "verification", None) or [] if v.get("component") == c.name),
                                           "not run")}
+            sb = sbom_entry(g, cn, cdir, local, c, o)
             if o.push_images and reg:
                 entry["digest"] = reg.push(local, ref, [f"{ref.rsplit(':', 1)[0]}:git-{res.commit[:12]}"]
                                            if res.commit else [])
                 if o.cosign_key and entry["digest"]:
                     entry["signature"] = reg.sign(ref, entry["digest"], o.cosign_key)
+                if sb and entry["digest"]:
+                    from .sbom import attach
+                    sb["attestation"] = attach(ref, entry["digest"], cdir / "sbom.cdx.json", o.cosign_key, reg.config)
+            if sb:
+                entry["sbom"] = {k: sb.get(k) for k in ("file", "format", "tool", "attestation")} | {
+                    "summary": {k: v for k, v in sb["summary"].items() if k not in ("warn", "denied")}}
+                sboms.append({"project": c.project.rel, "document": json.loads((cdir / "sbom.cdx.json").read_text()),
+                              "packages": sb["packages"], "tool": sb.get("tool"), "os": sb.get("os"), "image": ref,
+                              "digest": entry.get("digest"), "attestation": sb.get("attestation")})
             comps.append(entry)
         res.components = comps
+        if assessment_id and sboms:
+            from .sqlstore import connect, store_image_sboms
+            try:                              # the images are pushed already: a database error must not undo that
+                conn = connect(o.sql)
+                try:
+                    store_image_sboms(conn, assessment_id, sboms)
+                finally:
+                    conn.close()
+            except Exception as e:
+                print(f"warning: SBOMs not written to SQL Server: {type(e).__name__}: {REDACT(str(e))[:300]}",
+                      file=sys.stderr)
 
         if dd is not None and (gen / "devdb").is_dir():
             from .devdb import readme

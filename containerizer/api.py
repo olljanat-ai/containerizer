@@ -7,6 +7,8 @@
     GET    /api/v1/applications[?unmapped=true&productId=&name=]
     GET    /api/v1/applications/{id}         PATCH  /api/v1/applications/{id}
     GET    /api/v1/audit[?table=&rowId=&limit=]
+    GET    /api/v1/applications/{id}/components/{cid}/sbom, /api/v1/sbom/packages, /api/v1/sbom/summary
+           (software bills of materials: api_sbom.py)
 
 Callers send `Authorization: Bearer <access token>` issued by the same OpenID provider as the admin
 sign-in for this API's audience (CONTAINERIZER_API_AUDIENCE); the token's signature, issuer, audience
@@ -130,6 +132,9 @@ class Api:
     def route(self, conn, method: str, path: str, q: dict, data: dict | None, a: Access | None = None) -> Response:
         a = a or Access(admin=True)
         parts = path.strip("/").split("/")[2:]
+        from . import api_sbom
+        if api_sbom.handles(parts):
+            return api_sbom.route(self, conn, method, parts, q)
         if parts == ["audit"] and method == "GET":
             return _json(200, self.audit(conn, q))
         if not parts or parts[0] not in PATHS or len(parts) > 2:
