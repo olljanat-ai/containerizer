@@ -90,7 +90,7 @@ does not change what fails the gate on vulnerabilities: that is still `scan.fail
 
 ## In the registry
 
-When the scan worker has [ORAS](https://oras.land), a scan attaches the SBOM to each pushed image as an
-OCI referrer artifact of type `application/vnd.cyclonedx+json`, addressed by the image digest (list it
-with `oras discover <image>@<digest>`, fetch it with `oras pull`). The appliance image does not include
-ORAS yet, so the component page shows *not attached* with the reason.
+A scan attaches the SBOM to each image it pushes with [ORAS](https://oras.land), which the appliance
+includes: an OCI referrer artifact of type `application/vnd.cyclonedx+json`, addressed by the image
+digest (list it with `oras discover <image>@<digest>`, fetch it with `oras pull`). The component page
+shows whether it was attached, or why not (for example a registry that does not accept referrers).

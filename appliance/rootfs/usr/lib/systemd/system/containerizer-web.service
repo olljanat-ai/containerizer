@@ -14,18 +14,20 @@ EnvironmentFile=/etc/containerizer/web.env
 Environment="CONTAINERIZER_SQL=Server=127.0.0.1,1433;Database=Containerizer;User Id=cz_web;TrustServerCertificate=yes"
 Environment="CONTAINERIZER_ADMIN_SQL=Server=127.0.0.1,1433;Database=Containerizer;User Id=cz_admin;TrustServerCertificate=yes"
 Environment=CONTAINERIZER_SYSTEM_DIR=/run/containerizer/system
+# dev database backups (Admin -> Dev databases), read by the scan worker
+Environment=CONTAINERIZER_DEV_DB_DIR=/var/lib/containerizer/devdb
 LoadCredential=sql-web:/etc/containerizer/secrets/cz-web
 LoadCredential=sql-admin:/etc/containerizer/secrets/cz-admin
 LoadCredential=credential-public-key:/etc/containerizer/secrets/credential-key.pub
 ExecStart=/usr/lib/containerizer/bin/cz-web
 Restart=always
 RestartSec=5
-# hardening: no privileges, read-only system, only the request folder writable
+# hardening: no privileges, read-only system, only the request and dev database folders writable
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 ProtectSystem=strict
-ReadWritePaths=/run/containerizer/system/requests
+ReadWritePaths=/run/containerizer/system/requests /var/lib/containerizer/devdb
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

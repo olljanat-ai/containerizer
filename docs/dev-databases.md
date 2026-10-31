@@ -14,7 +14,7 @@ not).
 ## How it works
 
 ```
-operator ──upload .bak + instructions──> web UI ──> CONTAINERIZER_DEV_DB_DIR/<sha256>.bak
+operator ──upload .bak + instructions──> web UI ──> /var/lib/containerizer/devdb/<sha256>.bak
                                            └──> DevDatabase row (name, size, SHA-256, instructions, who)
 scan worker ──reads DevDatabase──> builds <registry>/<app>/devdb:<tag> (backup inside) ──push──> registry
             └──> generated manifests: devdb Deployment + Service + NetworkPolicy, app env → devdb
@@ -24,8 +24,8 @@ scan worker ──reads DevDatabase──> builds <registry>/<app>/devdb:<tag> (
    never held in memory. The page checks the session, the role and the `Origin` header before it reads
    the request body. It checks the form's CSRF token, which is the first field, before it writes any
    of the file. The file must start with a SQL Server backup signature (`TAPE`, or `MSSQLBAK` for a
-   compressed backup). It is stored under its SHA-256 with mode 0600, and the web UI never serves it
-   back. The size limit is `CONTAINERIZER_DEV_DB_MAX_MB` (default 2048).
+   compressed backup). It is stored under its SHA-256, readable only by the web UI and the scan
+   worker, and the web UI never serves it back. The size limit is 2048 MB.
 2. **Instructions.** The form starts from a template. Name the setting that holds the connection
    string (for example `ConnectionStrings:Shop`), test users, and anything else the AI needs. Never put
    a password here. You can edit the instructions later without uploading the file again.
@@ -81,9 +81,10 @@ Two details of the image:
 
 ## Setting it up
 
-The **Dev databases** tab appears for admins and operators when `CONTAINERIZER_DEV_DB_DIR` names a
-writable folder for the web UI, and the scan worker reads the same folder. The size limit of an upload
-is `CONTAINERIZER_DEV_DB_MAX_MB` (default 2048).
+Nothing to set up: the appliance keeps the backups on its data partition in
+`/var/lib/containerizer/devdb`, where the web UI writes them and the scan worker reads them. To allow
+larger uploads than 2048 MB, set `CONTAINERIZER_DEV_DB_MAX_MB` in `/etc/containerizer/web.env` and
+restart the web UI.
 
 ## Security notes
 

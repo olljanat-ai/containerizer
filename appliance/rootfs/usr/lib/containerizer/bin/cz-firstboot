@@ -36,6 +36,8 @@ install -d -m 0700 -o 65532 -g 65532 "$D/registry"
 install -d -m 0700 -o 65534 -g 65534 "$D/prometheus"
 install -d -m 0700 -o 472 -g 0 "$D/grafana"
 install -d -m 0700 -o containerizer -g containerizer "$D/worker"
+# dev database backups (Admin -> Dev databases): the web UI writes them, the scan worker (group) reads them
+install -d -m 2750 -o cz-web -g containerizer "$D/devdb"
 
 # static networks: /etc/containerizer/network/*.network take precedence over DHCP
 if compgen -G "$C/network/*.network" >/dev/null; then
