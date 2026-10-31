@@ -438,7 +438,7 @@ def test_rule_review_gate(monkeypatch):
     reached = []
 
     class Conn:
-        def set_user(self, *a):
+        def set_user(self, *a, **k):
             pass
 
         def close(self):
