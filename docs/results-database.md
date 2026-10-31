@@ -277,7 +277,7 @@ provider and app registration, so nothing new is registered.
 | `CONTAINERIZER_VIEWERS` | Who may see the results, comma separated, with the same rules as `CONTAINERIZER_ADMINS` (`group:`, `role:`, `email:`, `domain:`, `sub:`). Administrators may always see them. Empty (the default): no sign-in for the results pages. |
 | `CONTAINERIZER_VIEW_AUDIT` | `true` to record sign-ins and page views in the [access log](#access-log-optional). Needs `CONTAINERIZER_VIEWERS`. Default `false`. |
 
-With it set, opening any results page (`/`, `/app/<id>`) without a session sends the browser straight
+With it set, opening any results page (`/`, `/app/<id>`, `/trends`) without a session sends the browser straight
 to the identity provider, with no sign-in page in between, and back to the page that was asked for
 after sign-in. Users the provider signs in who match neither list get a "not allowed" page and see no
 results; the database is not read for them. Only `/healthz` and the style sheet stay open. Signed-in
@@ -382,7 +382,8 @@ the web UI writes one row to `containerizer.AccessLog` for:
 - every **sign-in** (`sign-in`), and every sign-in of someone who is not on the viewer or admin list
   (`sign-in refused`);
 - every **results page opened** (`view`): the overview (with the business unit filter, if one was
-  used) or an application's page, with its `ApplicationId`;
+  used), the trends page (with its range and filters) or an application's page, with its
+  `ApplicationId`;
 - every **sign-out** (`sign-out`).
 
 Each row has **At** (UTC), **UserName** (e-mail or user name, as in the change history),

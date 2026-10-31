@@ -547,6 +547,8 @@ last scanned {_d(a['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
                 what = "Overview, one business unit"
             elif r["Path"] == "/":
                 what = "Overview"
+            elif r["Path"] and r["Path"].startswith("/trends"):
+                what = "Trends"
             else:
                 what = e(r["Path"] or "")
             event = {"view": "Viewed", "sign-in": "Signed in", "sign-out": "Signed out",

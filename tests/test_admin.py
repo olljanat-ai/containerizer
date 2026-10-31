@@ -293,7 +293,7 @@ def test_results_pages_need_sign_in_when_viewers_are_set(idp):
     try:
         b = Browser(base, idp)
         # straight to the identity provider, no sign-in page in between
-        for path in ("/", "/app/7", "/?bu=3"):
+        for path in ("/", "/app/7", "/?bu=3", "/trends?range=3m"):
             s, h, _ = b.go(path)
             assert s == 303 and h["Location"].startswith(idp.issuer + "/authorize"), path
         assert b.go("/static/app.css")[0] == 200 and b.go("/healthz")[0] == 200
@@ -546,6 +546,7 @@ def test_viewer_sign_in_and_access_log(idp, tmp_path):
         app = re.search(r"href='/app/(\d+)'", body)[1]
         assert viewer.follow(f"/app/{app}")[0] == 200
         assert viewer.follow("/?bu=none")[0] == 200
+        assert viewer.follow("/trends?range=all&x=1")[0] == 200
         assert viewer.follow("/admin/access")[0] == 403              # a viewer is not an admin
         assert viewer.go("/logout", {"csrf": viewer.csrf(viewer.follow("/")[2])})[0] == 200
         outsider = Browser(base, idp)
@@ -564,9 +565,10 @@ def test_viewer_sign_in_and_access_log(idp, tmp_path):
         cur.execute("SELECT UserName, Event, Path, ApplicationId FROM containerizer.AccessLog ORDER BY AccessId")
         log = [(r["UserName"], r["Event"], r["Path"], r["ApplicationId"]) for r in cur.fetchall()]
         c.close()
-        assert log[:6] == [("bob@example.com", "sign-in", None, None), ("bob@example.com", "view", "/", None),
+        assert log[:7] == [("bob@example.com", "sign-in", None, None), ("bob@example.com", "view", "/", None),
                            ("bob@example.com", "view", f"/app/{app}", int(app)), ("bob@example.com", "view", "/?bu=none", None),
-                           ("bob@example.com", "view", "/", None), ("bob@example.com", "sign-out", None, None)]
+                           ("bob@example.com", "view", "/trends?range=all", None), ("bob@example.com", "view", "/", None),
+                           ("bob@example.com", "sign-out", None, None)]
         assert ("eve@example.com", "sign-in refused", None, None) in log
         assert not any(u == "eve@example.com" and ev == "view" for u, ev, _, _ in log)
         # the log is append-only for the web UI's login, and other logins cannot write it

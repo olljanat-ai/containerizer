@@ -15,7 +15,7 @@ import sys
 from collections import Counter
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 RATINGS = ["A", "B", "C", "D", "E"]
 RATING_TITLE = {"A": "Lift and shift", "B": "Minor refactoring", "C": "Major refactoring", "D": "Partial",
@@ -442,6 +442,18 @@ HEADERS = {
 }
 
 
+def _keep_query(path: str, q: dict) -> str:
+    """The validated filters of a results page, kept through sign-in and written to the access log."""
+    if path == "/trends":
+        from .trends import parse_query
+        rng, bu, product = parse_query(q)
+        return urlencode([(k, v) for k, v in (("range", rng), ("bu", bu), ("product", product)) if v is not None])
+    if path == "/":
+        bu = q.get("bu", [None])[0]
+        return f"bu={bu}" if bu and re.fullmatch(r"\d{1,9}|none", bu) else ""
+    return ""
+
+
 def make_handler(connect, admin=None):
     """`connect()` returns a reader connection for one request; `admin` is an admin.Admin or None."""
 
@@ -523,6 +535,15 @@ def make_handler(connect, admin=None):
                 if admin and admin.handles(u.path):
                     return self._admin("GET", head)
                 nav = admin.nav(self.headers) if admin else ""
+                m = re.fullmatch(r"/app/(\d{1,9})", u.path)
+                if admin and (u.path in ("/", "/trends") or m):    # sign-in first when CONTAINERIZER_VIEWERS is set
+                    keep = _keep_query(u.path, parse_qs(u.query))
+                    stop, s = admin.gate(self.headers, u.path, keep)
+                    if stop:
+                        return self._send(stop.status, stop.body, stop.ctype, head, stop.headers, forms=True)
+                    if s and not head and admin.viewers_required:
+                        admin.log_access(s.user, s.name, "view", u.path + ("?" + keep if keep else ""),
+                                         int(m[1]) if m else None, self.client_address[0])
                 if u.path == "/trends":
                     from . import trends
                     rng, bu, product = trends.parse_query(parse_qs(u.query))
@@ -534,17 +555,7 @@ def make_handler(connect, admin=None):
                     finally:
                         conn.close()
                     return self._send(200, trends.render_trends(data, rng, bu, product, nav), head=head, forms=bool(nav))
-                m = re.fullmatch(r"/app/(\d{1,9})", u.path)
                 if u.path == "/" or m:
-                    if admin:                   # sign-in first when CONTAINERIZER_VIEWERS is set
-                        bu = parse_qs(u.query).get("bu", [None])[0]
-                        keep = f"bu={bu}" if bu and re.fullmatch(r"\d{1,9}|none", bu) else ""
-                        stop, s = admin.gate(self.headers, u.path, keep)
-                        if stop:
-                            return self._send(stop.status, stop.body, stop.ctype, head, stop.headers, forms=True)
-                        if s and not head and admin.viewers_required:
-                            admin.log_access(s.user, s.name, "view", u.path + ("?" + keep if keep else ""),
-                                             int(m[1]) if m else None, self.client_address[0])
                     conn = connect()
                     try:
                         if m:
