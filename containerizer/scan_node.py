@@ -260,7 +260,7 @@ def _npm_lock(p: Project, lock: Path, runtime: list[str]) -> tuple[set[str], set
         opt = optional or bool(e.get("optional"))
         if _windows_only(e.get("os")) and not opt:
             win.add(name)
-        if e.get("hasInstallScript"):
+        if e.get("hasInstallScript") and not opt:
             native.add(name)
         for n in (e.get("dependencies") or {}):
             stack.append((key, n, opt))
@@ -313,8 +313,8 @@ def _pnpm_lock(p: Project, lock: Path, runtime: list[str]) -> tuple[set[str], se
         opt = optional or bool(md.get("optional") or sn.get("optional"))
         if _windows_only(md.get("os")) and not opt:
             win.add(name)
-        if md.get("requiresBuild") or sn.get("requiresBuild"):
-            native.add(name)
+        if (md.get("requiresBuild") or sn.get("requiresBuild")) and not opt:
+            native.add(name)          # optional ones (platform binaries such as @esbuild/*) may fail to build
         for n, v in (sn.get("dependencies") or md.get("dependencies") or {}).items():
             stack.append((n, v, opt))
         for n, v in (sn.get("optionalDependencies") or md.get("optionalDependencies") or {}).items():

@@ -263,6 +263,9 @@ Per component: `Dockerfile` (+ `Dockerfile.dockerignore`), `k8s.yaml` (Deploymen
 Service, NetworkPolicy, Secret skeleton, PVCs where state must persist), `plan.json` (the build
 plan, editable and re-usable). For .NET Framework components that could work in Windows Server
 containers, a `Dockerfile.windows` stop-gap. Per app: `kustomization.yaml` and `MIGRATION.md`.
+Java (Maven/Gradle; Spring Boot, Quarkus, plain JVM programs, WARs on Tomcat) and Node.js
+(npm/pnpm/yarn; Express, NestJS, Next.js and others) components get distroless, non-root images
+built on the runtime line they declare; see [docs/java-node.md](docs/java-node.md#containers).
 
 GitOps: every app also gets `gitops/` with Argo CD and Flux examples built from the same data
 (`--git-url`, `--git-branch`, `--git-path`, `--verify-commits` on `generate` and `analyze`):

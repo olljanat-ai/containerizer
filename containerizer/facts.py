@@ -188,6 +188,9 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
     spa = p.properties.get("SpaRoot")
     if spa:
         facts["spa_root"] = spa.replace("\\", "/").strip("/")
+    if p.kind_hint in ("java", "node"):
+        from .facts_jvm_node import java_facts, node_facts
+        (java_facts if p.kind_hint == "java" else node_facts)(repo, comp, facts)
     if p.kind_hint == "node":
         scripts = (p.manifest.get("scripts") or {})
         facts["build_script"] = "build" if "build" in scripts else ""
@@ -200,4 +203,16 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
                 if op:
                     facts["dist_dir"] = op if isinstance(op, str) else op.get("base", "dist")
                     break
+        if "dist_dir" not in facts:
+            # the bundler's output folder: Create React App writes build/, Vite and Vue CLI dist/
+            # unless the config names another (build.outDir / outputDir)
+            for n in ("vite.config.ts", "vite.config.js", "vite.config.mts", "vite.config.mjs", "vue.config.js"):
+                f = p.dir / n
+                if f.exists():
+                    m = re.search(r"\b(outDir|outputDir)\s*:\s*['\"`]([\w./-]+)['\"`]", p.text(f))
+                    if m:
+                        facts["dist_dir"] = m.group(2).strip("./") or "dist"
+                    break
+            if "dist_dir" not in facts and "react-scripts" in p.packages:
+                facts["dist_dir"] = "build"
     return facts
