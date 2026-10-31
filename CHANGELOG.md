@@ -1,6 +1,7 @@
 # Changelog
 
-Releases are tagged `vX.Y.Z`. Each release publishes the appliance OS image to
+Releases are tagged `vX.Y.Z`: bump `containerizer/__init__.py` and this file, then run the **release** workflow
+by hand on `main` with the version, and it tags the commit and releases from the tag. Each release publishes the appliance OS image to
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHD images as release assets.
 
@@ -25,8 +26,8 @@ UI and admin pages, and the appliance. Results database schema version 16.
   Server, for OIDC, SAML 2.0 and WS-Federation (#55)
 - External Secrets Operator for every secret in generated configs (#47)
 - Rule approval from the admin UI and SBOMs attached to sandbox images with ORAS (#61)
-- Release workflow: OS image on GHCR signed with cosign and its SBOM attested; ISO, qcow2 and VHD as
-  release assets with signed checksums
+- Release workflow, started by hand with the version: tags the commit, then the OS image on GHCR signed
+  with cosign and its SBOM attested; ISO, qcow2 and VHD as release assets with signed checksums
 
 ### Web UI, admin pages and API
 - SQL Server results database and read-only results web UI (#23)
