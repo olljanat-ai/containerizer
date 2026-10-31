@@ -15,7 +15,7 @@
 # in results/.env to sign in with your identity provider.
 #
 # Development only: the SQL Server certificate is self-signed (TrustServerCertificate=yes) and every
-# port is published on 127.0.0.1 only. See docs/results-database.md for production.
+# port is published on 127.0.0.1 only. See docs/local-dev-server.md; production runs on the appliance (docs/appliance.md).
 name: containerizer-results
 
 x-hardening: &hardening
@@ -65,7 +65,7 @@ services:
     environment:
       CONTAINERIZER_SQL: "Server=mssql,1433;Database=Containerizer;User Id=cz_web;TrustServerCertificate=yes"
       CONTAINERIZER_SQL_PASSWORD: ${CZ_WEB_PASSWORD}
-      # admin pages: on when CONTAINERIZER_OIDC_ISSUER is set in results/.env (docs/results-database.md#admin-pages)
+      # admin pages: on when CONTAINERIZER_OIDC_ISSUER is set in results/.env (docs/sign-in.md)
       CONTAINERIZER_ADMIN_SQL: "Server=mssql,1433;Database=Containerizer;User Id=cz_admin;TrustServerCertificate=yes"
       CONTAINERIZER_ADMIN_SQL_PASSWORD: ${CZ_ADMIN_PASSWORD}
       CONTAINERIZER_OIDC_ISSUER: ${CONTAINERIZER_OIDC_ISSUER:-}

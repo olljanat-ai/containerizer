@@ -86,7 +86,7 @@ running and deploying them in its own sandbox cluster.
     Schedule scans of Azure DevOps, GitHub and GitLab organizations. New repositories are found
     automatically, and the A-rated ones are pushed and committed for Argo CD or Flux.
 
-    [:octicons-arrow-right-24: Scheduled scans](scheduled-scans.md)
+    [:octicons-arrow-right-24: Organization scans](scheduled-scans.md)
 
 -   :material-kubernetes:{ .lg .middle } **Proven in a sandbox**
 
@@ -95,7 +95,7 @@ running and deploying them in its own sandbox cluster.
     A built-in k3s cluster deploys what was generated and reports "deployed and healthy" or exactly why
     not, even with a restored copy of the application's development database.
 
-    [:octicons-arrow-right-24: Sandbox verification](sandbox-verification.md)
+    [:octicons-arrow-right-24: The sandbox cluster](scheduled-scans.md#the-sandbox-cluster)
 
 -   :material-wrench:{ .lg .middle } **A migration plan, not just a verdict**
 
@@ -113,7 +113,7 @@ running and deploying them in its own sandbox cluster.
     One immutable appliance with signed upgrades and roll back, only SSH and HTTPS in, and outgoing
     traffic blocked except for hosts an admin allows. Use Claude or your own self-hosted LLM.
 
-    [:octicons-arrow-right-24: Appliance](appliance.md) · [Self-hosted LLM](self-hosted-llm.md)
+    [:octicons-arrow-right-24: Appliance](appliance.md) · [The LLM](source-control.md#the-llm)
 
 -   :material-account-lock:{ .lg .middle } **Built for management and audit**
 
@@ -122,7 +122,7 @@ running and deploying them in its own sandbox cluster.
     Single sign-on, admins, product owners and operators, an audit log of every change, an access log,
     trends over time, and SBOMs with licences and CVEs per package.
 
-    [:octicons-arrow-right-24: Results and web UI](results-database.md)
+    [:octicons-arrow-right-24: Sign-in and roles](sign-in.md)
 
 </div>
 
@@ -137,7 +137,7 @@ running and deploying them in its own sandbox cluster.
 Open an application to see its components, the rating, the main obstacles, and for each finding what
 to change, why, and where to read more. Everything links back to the rule that decided it.
 
-[Results database and web UI :octicons-arrow-right-24:](results-database.md)
+[How it works :octicons-arrow-right-24:](overview.md#how-it-works)
 
 </div>
 
@@ -172,7 +172,7 @@ Windows" instead of being forced.
 Trends show how ratings change over time per business unit and product, so you can see the effect
 of each fix and each newly learned rule.
 
-[Trends :octicons-arrow-right-24:](results-database.md)
+[Install the appliance :octicons-arrow-right-24:](appliance.md)
 
 </div>
 
@@ -190,7 +190,7 @@ of each fix and each newly learned rule.
 Define organization scans on the admin pages, by day and time or "Run now". Every repository shows
 its last result, and skipped ones are listed with the reason, such as "no source code".
 
-[Scheduled scans :octicons-arrow-right-24:](scheduled-scans.md)
+[Organization scans :octicons-arrow-right-24:](scheduled-scans.md)
 
 </div>
 
@@ -241,7 +241,7 @@ across the whole portfolio.
 The scan worker exports Prometheus metrics about scans, the process and the VM, with a Grafana
 dashboard included in the appliance.
 
-[Grafana dashboard :octicons-arrow-right-24:](scheduled-scans.md#grafana-dashboard)
+[Metrics and Grafana :octicons-arrow-right-24:](scheduled-scans.md#metrics-and-grafana)
 
 </div>
 
@@ -256,7 +256,7 @@ dashboard included in the appliance.
 Download the appliance from the latest release, boot it, and point it at your source control.
 
 [Install the appliance](appliance.md){ .md-button .md-button--primary }
-[Read the overview](overview.md){ .md-button }
+[How it works](overview.md#how-it-works){ .md-button }
 [Releases](https://github.com/olljanat-ai/containerizer/releases){ .md-button }
 
 </div>

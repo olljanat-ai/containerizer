@@ -528,6 +528,35 @@ rules:
       - https://12factor.net/processes
       - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
 
+  - id: java-app-home-directory
+    applies_to: [java]
+    when:
+      all:
+        - not: {role: 'test|desktop|tool|console|library'}
+        - any:
+            # a data folder in the user's home (Jenkins: new File(System.getProperty("user.home"), ".jenkins"))
+            - closure: {code: '\bnew\s+File\s*\(\s*(new\s+File\s*\(\s*)?System\.getProperty\s*\(\s*"user\.home"\s*\)\s*\)?\s*,\s*"\.[\w.-]+"|\bPaths?\.(get|of)\s*\(\s*System\.getProperty\s*\(\s*"user\.home"\s*\)\s*,\s*"\.[\w.-]+"'}
+            - config: '\$\{user\.home\}[/\\]\.[\w.-]+'
+            # a home folder named by its own variable (FOO_HOME, FOO_DATA_DIR), not a tool's install path
+            - closure: {code: '\bSystem\.(getenv|getProperty)\s*\(\s*"(?!(JAVA|JRE|JDK|CATALINA|MAVEN|M2|GRADLE|ANT|ANDROID|HADOOP|SPARK|GROOVY|SCALA|KOTLIN|USER)_)[A-Z][A-Z0-9]*_(HOME|DATA_DIR|DATA_HOME|WORK_DIR)"\s*\)'}
+    severity: config
+    category: storage
+    state: local
+    effort: 1
+    title: Data kept in an application home directory
+    why: >-
+      The application keeps its data (configuration, jobs, history, installed plugins) in a home
+      directory on the local disk: a folder under the user's home such as ~/.jenkins, or one named by
+      its own FOO_HOME variable. In a container that folder is lost when the pod restarts unless it
+      sits on a persistent volume, and replicas cannot share it, so the component is not stateless.
+    fix: >-
+      Set the home variable to a mounted path and mount a PersistentVolumeClaim there, running one
+      replica (a StatefulSet). Moving that data to a database or object storage is a code change.
+    refs:
+      - https://12factor.net/processes
+      - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+      - https://www.jenkins.io/doc/book/installing/kubernetes/
+
   - id: java-local-search-index
     applies_to: [java]
     when:

@@ -1,4 +1,5 @@
-# Real-world validation corpus: public .NET repositories with hand-judged expectations.
+# Real-world validation corpus: public .NET, Java and Node.js repositories with hand-judged expectations.
+# Java entries are named jv-*, Node.js entries nd-*; their verification results are in docs/java-node.md.
 # Clone each with `git clone --depth 1 <url> /home/claude/validation/<name>` then
 # `git fetch --depth 1 origin <commit> && git checkout <commit>` to pin (Umbraco: tag release-8.18.9).
 # Never build or run their code. Expectations come from reading each repo, not from tool output.
@@ -1124,3 +1125,139 @@ repos:
       Orchestrator. Deployment README targets IIS + WinSW. Core is containerisable, MDB/barcode parts stay on Windows -> D.
       tool (2026-10-31): D, but Captive.Barcode (Sdk.Worker + UseWindowsForms) was desktop. role-desktop now
       ignores UseWPF/UseWindowsForms in Web/Worker SDK projects. Matches.
+
+  - name: jv-petclinic
+    url: https://github.com/spring-projects/spring-petclinic
+    commit: 500158f732419217507c7656904b8e6aa1bcc0d6
+    expected_rating: A
+    expected_roles: {web: [spring-petclinic]}
+    notes: >-
+      Spring Boot 3, Java 17, Maven wrapper; H2 by default with MySQL/Postgres profiles; actuator. Stateless. Verified: builds and serves /actuator/health.
+
+  - name: jv-petclinic-micro
+    url: https://github.com/spring-petclinic/spring-petclinic-microservices
+    commit: e8b747ab522721076cacb5cf688eb8a54ba8c5c9
+    expected_rating: A
+    expected_roles: {web: [spring-petclinic-admin-server, spring-petclinic-api-gateway, spring-petclinic-config-server, spring-petclinic-customers-service, spring-petclinic-discovery-server, spring-petclinic-genai-service, spring-petclinic-vets-service, spring-petclinic-visits-service]}
+    notes: >-
+      Spring Cloud microservices (config server, Eureka, gateway), Maven multi-module, already run in containers by the project.
+
+  - name: jv-piggymetrics
+    url: https://github.com/sqshq/piggymetrics
+    commit: 6bb2cf9ddbca980b664d3edbb6ff775d75369278
+    expected_rating: A
+    expected_roles: {web: [account-service, auth-service, config, gateway, monitoring, notification-service, registry, statistics-service, turbine-stream-service]}
+    notes: >-
+      Spring Boot 1.5 / Java 8 Spring Cloud microservices over MongoDB. Old but stateless. Verified: account-service builds on Java 8 and waits for its config server (external).
+
+  - name: jv-mall
+    url: https://github.com/macrozheng/mall
+    commit: dcaa93b3150352e5044708d7211b5bed0af4509f
+    expected_rating: A
+    expected_roles: {web: [mall-admin, mall-demo, mall-portal, mall-search]}
+    notes: >-
+      Spring Boot e-commerce over MySQL, Redis, MongoDB, RabbitMQ, Elasticsearch; files go to OSS/MinIO. All state is external.
+
+  - name: jv-halo
+    url: https://github.com/halo-dev/halo
+    commit: 03aa37c5a16bb59cc3284f833bf372047ce6949b
+    expected_rating: B
+    expected_roles: {web: [application]}
+    notes: >-
+      Spring WebFlux blog/CMS on Java 21, Gradle. Attachments are stored under the local work dir and the Lucene search index is on local disk, so it needs a volume and one replica. Verified: builds (generateGitProperties skipped) and starts until the database (external).
+
+  - name: jv-jenkins
+    url: https://github.com/jenkinsci/jenkins
+    commit: e0c87d73ae77bc5559803da3299613b3be7706d7
+    expected_rating: B
+    expected_roles: {web: [jenkins-war]}
+    notes: >-
+      Jenkins core WAR. All configuration, jobs and build history live in JENKINS_HOME on local disk, so it needs a persistent volume and one replica (B). Found by java-app-home-directory (~/.jenkins default home). Not verified: repo.jenkins-ci.org does not resolve in the sandbox.
+
+  - name: jv-superheroes
+    url: https://github.com/quarkusio/quarkus-super-heroes
+    commit: e195d0a36d6d863213bbfe527db64cb51b3637f5
+    expected_rating: A
+    expected_roles: {web: [event-statistics, grpc-locations, rest-fights, rest-heroes, rest-narration, rest-villains, ui-super-heroes]}
+    notes: >-
+      Quarkus microservices built for Kubernetes (Postgres, MongoDB, Kafka, Apicurio). Verified: rest-heroes builds on Java 25 and waits for Postgres (external).
+
+  - name: jv-freeplane
+    url: https://github.com/freeplane/freeplane
+    commit: 25f7e70756c7d93b11ee9061a4134f61324be873
+    expected_rating: E
+    expected_roles: {desktop: [freeplane, freeplane_plugin_latex, JOrtho_0.4_freeplane]}
+    notes: >-
+      Swing mind-mapping desktop application; nothing to run as a server -> E.
+
+  - name: nd-ghost
+    url: https://github.com/TryGhost/Ghost
+    commit: 3081cad76be8f1a77049642d6cd673b55f1a34ab
+    expected_rating: B
+    expected_roles: {web: [ghost], spa: ["@tryghost/admin", "@tryghost/signup-form"]}
+    notes: >-
+      Ghost 6 on MySQL. Images can go to the built-in S3 storage adapter, but uploaded themes, settings files and logs stay in content/ on local disk, which the official image keeps on a volume -> B. Found by node-local-extensions (theme uploads unpacked under content/themes). Production config uses MySQL; SQLite is only the development default.
+
+  - name: nd-juiceshop
+    url: https://github.com/juice-shop/juice-shop
+    commit: 717f5efa886b0417eeecb52378b03cf10567b7e2
+    expected_rating: B
+    expected_roles: {web: [juice-shop], spa: [frontend]}
+    notes: >-
+      Deliberately insecure training app: Express + Angular, SQLite file database and uploads written to its own folders; one replica with a volume -> B.
+
+  - name: nd-realworld-express
+    url: https://github.com/gothinkster/node-express-realworld-example-app
+    commit: 30b68e1e881462b2f4164ea09ab4c4f5699c7b0b
+    expected_rating: A
+    expected_roles: {web: ["@api/source"]}
+    notes: >-
+      Nx workspace, Express + Prisma over Postgres. Stateless. Verified: builds and serves.
+
+  - name: nd-realworld-nest
+    url: https://github.com/lujakob/nestjs-realworld-example-app
+    commit: c1c2cc4e448b279ff083272df1ac50d20c3304fa
+    expected_rating: A
+    expected_roles: {web: [nestjs-realworld-example-app]}
+    notes: >-
+      NestJS + TypeORM over MySQL. Stateless; the out-of-sync lockfile and outdated dependencies are code problems found by verify, not hosting problems.
+
+  - name: nd-taxonomy
+    url: https://github.com/shadcn-ui/taxonomy
+    commit: 298a8857c7128a0d121e7f699dfd729f23b3966d
+    expected_rating: A
+    expected_roles: {web: [taxonomy]}
+    notes: >-
+      Next.js 13 app over Postgres (Prisma), Stripe, NextAuth. Stateless; its build validates runtime env vars, which verify reports as a finding.
+
+  - name: nd-nodered
+    url: https://github.com/node-red/node-red
+    commit: 22d019c4eccac31d95f3b6167c7334de72ef02a6
+    expected_rating: B
+    expected_roles: {web: [node-red]}
+    notes: >-
+      Node-RED keeps flows, credentials and installed nodes in its user directory (~/.node-red), so it needs a volume and one replica -> B. Its source lives under packages/node_modules. Verified: builds and serves with the user directory writable.
+
+  - name: nd-uptimekuma
+    url: https://github.com/louislam/uptime-kuma
+    commit: a7664195e5cee6b3059a446dff3818b22db82cff
+    expected_rating: B
+    expected_roles: {web: [uptime-kuma], console: [javascript-fetch]}
+    notes: >-
+      Monitoring app with a SQLite data directory by default (MariaDB optional) and Socket.IO without an adapter: one replica with a volume -> B. javascript-fetch is a push example script. Verified: builds and serves with ./data writable.
+
+  - name: nd-outline
+    url: https://github.com/outline/outline
+    commit: a374ce9b4656341b77673a7e8b413b087fbb6f77
+    expected_rating: A
+    expected_roles: {web: [outline]}
+    notes: >-
+      Koa + React wiki over Postgres and Redis, file storage through S3 (local storage optional). Stateless when S3 is configured.
+
+  - name: nd-react-realworld
+    url: https://github.com/gothinkster/react-redux-realworld-example-app
+    commit: ee72eba4056392c95a27bc48d385d3f54ba38a18
+    expected_rating: A
+    expected_roles: {spa: [react-redux-realworld-example-app]}
+    notes: >-
+      Create React App single-page app served as static files. Verified: builds and serves from the build/ folder.

@@ -1,4 +1,4 @@
-"""Write assessment results to Microsoft SQL Server (schema in sql/schema.sql, docs/results-database.md).
+"""Write assessment results to Microsoft SQL Server (schema in sql/schema.sql).
 
 The connection string uses the familiar ADO.NET/ODBC keys and is read from --sql or CONTAINERIZER_SQL:
 
@@ -206,7 +206,7 @@ def connect(cs: str | None = None, password: str | None = None, autocommit: bool
     try:
         return Connection(pymssql.connect(autocommit=autocommit, **args), schema)
     except pymssql.Error as e:
-        hint = " (is the server certificate trusted? see docs/results-database.md#tls)" if ca else ""
+        hint = " (is the server certificate trusted? set CaFile= to its CA, or TrustServerCertificate=yes for local development only)" if ca else ""
         raise SqlError(f"cannot connect to {args['server']},{args['port']} database {args['database']}{hint}: "
                        f"{_err(e)}") from None
 
@@ -452,6 +452,35 @@ def store_image_sboms(conn, assessment_id: int, entries: list[dict]) -> int:
     return n
 
 
+def store_idp_clients(conn, assessment_id: int, entries: list[dict]) -> int:
+    """Sandbox IdP registrations of the components deployed after an assessment (`containerizer org`).
+    Each entry: project (path as stored), protocol, idp_url, app_url, identifier, metadata_url, settings
+    (dict, no secret values), notes. Returns rows written."""
+    cur = conn.cursor()
+    n = 0
+    try:
+        for e in entries:
+            cur.execute("SELECT c.ComponentId FROM cz.Component c JOIN cz.ApplicationAssessment aa "
+                        "ON aa.ApplicationId = c.ApplicationId WHERE aa.AssessmentId = %s AND c.ProjectPath = %s",
+                        (assessment_id, _cut(e["project"], 400)))
+            row = cur.fetchone()
+            if not row:
+                continue
+            cur.execute("INSERT cz.SandboxIdpClient (AssessmentId, ComponentId, Protocol, IdpUrl, AppUrl, Identifier, "
+                        "MetadataUrl, Settings, Notes) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        (assessment_id, row[0], _cut(e.get("protocol") or "none", 10), _cut(e["idp_url"], 300),
+                         _cut(e.get("app_url") or None, 300), _cut(e.get("identifier") or None, 400),
+                         _cut(e.get("metadata_url") or None, 400),
+                         json.dumps(e.get("settings") or {}, sort_keys=True) if e.get("settings") else None,
+                         _cut("; ".join(e.get("notes") or []) or None, 2000)))
+            n += 1
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return n
+
+
 def source_sboms(a) -> dict:
     """Source SBOMs of an AppAssessment's components (sbom.source in rules/60-security.yaml)."""
     from .sbom import config, source_component_sbom
@@ -536,14 +565,15 @@ def store_sandbox_checks(conn, doc: dict) -> tuple[int, int]:
             d = r.get("diagnosis") or {}
             events = [{k: e.get(k) for k in ("reason", "message", "count", "object")} for e in r.get("events") or []]
             cur.execute("INSERT cz.SandboxCheck (ApplicationId, ComponentId, CheckedAt, Status, Reason, GitOps, Namespace, "
-                        "Workloads, ImageRef, Revision, Ready, Restarts, RuleId, Outcome, Diagnosis, Events, LogTail) "
-                        "VALUES (%s, %s, COALESCE(%s, SYSUTCDATETIME()), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        "Workloads, ImageRef, Revision, Ready, Restarts, RuleId, Outcome, Diagnosis, Events, LogTail, Url, UrlCheck) "
+                        "VALUES (%s, %s, COALESCE(%s, SYSUTCDATETIME()), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                         (app_id, row[0] if row else None, when, _cut(r["status"], 20), _cut(r.get("reason"), 2000),
                          _cut(r.get("gitops") or None, 20), _cut(r.get("app") or "", 63),
                          _cut(", ".join(r.get("workloads") or []) or None, 400), _cut(r.get("image") or None, 400),
                          _cut(doc.get("revision") or None, 64), _cut(r.get("ready") or None, 20), r.get("restarts"),
                          _cut(d.get("rule"), 200), _cut(d.get("outcome"), 20), _cut(d.get("diagnosis"), 2000),
-                         json.dumps(events) if events else None, r.get("log_tail") or None))
+                         json.dumps(events) if events else None, r.get("log_tail") or None,
+                         _cut(r.get("url") or None, 300), _cut(r.get("url_check") or None, 300)))
             n += 1
         conn.commit()
     except Exception:

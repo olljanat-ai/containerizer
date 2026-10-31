@@ -4,7 +4,7 @@
 page is rendered on the server (the only script is the optional copy button of the AI agent prompt) from the v* views with parameterised queries, all
 text is HTML-escaped, and responses carry a strict Content-Security-Policy. The results pages are
 read-only and need no sign-in; the admin pages (admin.py: mapping, products, business units, change
-history) appear when OpenID Connect sign-in is configured (docs/results-database.md#admin-pages).
+history) appear when OpenID Connect sign-in is configured (docs/sign-in.md).
 """
 from __future__ import annotations
 
@@ -93,14 +93,72 @@ def load_application(conn, app_id: int) -> dict | None:
                                   "Refs, Source FROM cz.vFindingLatest WHERE ApplicationId = %s AND Severity <> 'info'",
                             (app_id,))
     app["sandbox"] = _rows(conn, "SELECT ComponentId, ComponentName, CheckedAt, Status, Reason, GitOps, Namespace, Workloads, "
-                                 "Ready, Restarts, RuleId, Outcome, Diagnosis, Events FROM cz.vSandboxLatest "
+                                 "Ready, Restarts, RuleId, Outcome, Diagnosis, Events, Url, UrlCheck FROM cz.vSandboxLatest "
                                  "WHERE ApplicationId = %s", (app_id,))
     app["history"] = _rows(conn, "SELECT TOP (20) AssessedAt, Rating, Score, EffortDays FROM cz.ApplicationAssessment "
                                  "WHERE ApplicationId = %s ORDER BY AssessedAt DESC, AssessmentId DESC", (app_id,))
     app["migrations"] = load_migrations(conn, app_id)
     from .sbomui import load_app_sboms
     app["sboms"] = load_app_sboms(conn, app_id)
+    app["idp"] = load_idp_clients(conn, app_id)
     return app
+
+
+def load_idp_clients(conn, app_id: int) -> list[dict]:
+    """Sandbox identity provider registrations of the latest deployment (empty before `db init` added them)."""
+    try:
+        return _rows(conn, "SELECT ComponentId, ComponentName, WrittenAt, Protocol, IdpUrl, AppUrl, Identifier, MetadataUrl, "
+                           "Settings, Notes FROM cz.vSandboxIdpLatest WHERE ApplicationId = %s ORDER BY ComponentName, Protocol",
+                     (app_id,))
+    except Exception as ex:       # schema not upgraded yet
+        print(f"warning: sandbox IdP clients not available ({type(ex).__name__}); run `containerizer db init`",
+              file=sys.stderr)
+        return []
+
+
+IDP_PROTOCOL = {"oidc": "OpenID Connect", "wsfed": "WS-Federation", "saml": "SAML 2.0"}
+IDP_ID_LABEL = {"oidc": "Client ID", "wsfed": "Realm (wtrealm)", "saml": "SP entity ID"}
+
+
+def _link(u) -> str:
+    u = str(u or "")
+    return f"<a href='{e(u)}' rel='noopener noreferrer'>{e(u)}</a>" if re.match(r"https://[^\s'\"<>]+$", u) else e(u)
+
+
+def _idp_section(rows: list[dict]) -> str:
+    """Sign-in at the sandbox identity provider: where it is, and what each component was registered as
+    and configured with (no secret values: the client secret is named, it lives in the secret store)."""
+    if not rows:
+        return ""
+    idp = next((r["IdpUrl"] for r in rows if r.get("IdpUrl")), "")
+    from .idp import config
+    users = ", ".join(f"<code>{e(u['username'])}</code> ({e(', '.join(u.get('groups') or []))})"
+                      for u in config().get("users") or [])
+    items = []
+    for r in rows:
+        try:
+            st = json.loads(r.get("Settings") or "{}")
+        except ValueError:
+            st = {}
+        notes = f"<div class='muted small'>{e(r['Notes'])}</div>" if r.get("Notes") else ""
+        if r["Protocol"] == "none":
+            items.append(f"<tr><td>{e(r['ComponentName'])}</td><td colspan='3'>Not registered{notes}</td></tr>")
+            continue
+        env = "".join(f"<div><code>{e(k)}</code> = {_link(v)}</div>" for k, v in sorted((st.get("env") or {}).items()))
+        if st.get("secret"):
+            env += f"<div><code>{e(st['secret'])}</code> = <span class='muted'>client secret, from the secret store</span></div>"
+        items.append(f"<tr><td>{e(r['ComponentName'])}<div class='muted small'>{_link(r.get('AppUrl'))}</div></td>"
+                     f"<td>{e(IDP_PROTOCOL.get(r['Protocol'], r['Protocol']))}</td>"
+                     f"<td><div class='muted small'>{e(IDP_ID_LABEL.get(r['Protocol'], 'Identifier'))}</div>"
+                     f"<code>{e(r.get('Identifier') or '')}</code>"
+                     f"<div class='muted small'>Metadata</div>{_link(r.get('MetadataUrl'))}</td>"
+                     f"<td class='small'>{env or '-'}{notes}</td></tr>")
+    return (f"<h2>Sign-in in the sandbox</h2><p>Components that sign users in are registered at the sandbox identity "
+            f"provider {_link(idp + '/') if idp else ''} (WSO2 Identity Server: OpenID Connect, SAML 2.0, WS-Federation) "
+            f"and pointed at it through configuration only. Test users: {users}; an administrator sees their "
+            f"passwords with <code>containerizer idp users</code> on the appliance console.</p>"
+            f"<table><thead><tr><th>Component</th><th>Protocol</th><th>Registered as</th><th>Settings applied</th></tr></thead>"
+            f"<tbody>{''.join(items)}</tbody></table>")
 
 
 def load_migrations(conn, app_id: int, component_id: int | None = None) -> list[dict]:
@@ -371,6 +429,7 @@ def render_application(app: dict, nav: str = "") -> str:
 <h2>Components</h2>
 <table><thead><tr><th>Component</th><th>What it is</th><th>Verdict</th><th class='num'>Effort (days)</th><th>Build and run</th>{"<th>Sandbox cluster</th>" if sandbox else ""}<th>Migration</th>{"<th>Packages</th>" if sboms else ""}</tr></thead>
 <tbody>{comp_rows}</tbody></table>
+{_idp_section(app.get("idp") or [])}
 <h2>What needs to change, and why</h2>{''.join(details)}
 <h2>History</h2><p class='muted small'><a href='/trends'>Trends of all applications</a></p><table class='narrow'><thead><tr><th>Assessed</th><th>Rating</th><th class='num'>Readiness</th>
 <th class='num'>Effort (days)</th></tr></thead><tbody>{hist}</tbody></table>
@@ -469,7 +528,17 @@ def _sandbox(s: dict | None) -> str:
         return "<span class='muted'>not deployed</span>"
     st = s["Status"]
     return f"<span class='v-sb-{e(st)}'>{e(SANDBOX_TEXT.get(st, st))}</span>" + \
-        (f" <span class='muted small'>{e(s['Ready'])}</span>" if s.get("Ready") and st == "healthy" else "")
+        (f" <span class='muted small'>{e(s['Ready'])}</span>" if s.get("Ready") and st == "healthy" else "") + \
+        (f"<div class='small'>{_app_url(s)}</div>" if _app_url(s) else "")
+
+
+def _app_url(s: dict | None) -> str:
+    """The component's public HTTPS URL as a link (only well-formed https URLs from the health check)."""
+    from .sandbox import URL_RE
+    url = (s or {}).get("Url") or ""
+    if not URL_RE.fullmatch(url):
+        return ""
+    return f"<a href='{e(url)}' rel='noopener noreferrer' target='_blank'>{e(url.removeprefix('https://').rstrip('/'))}</a>"
 
 
 def _sandbox_detail(s: dict | None) -> str:
@@ -482,6 +551,9 @@ def _sandbox_detail(s: dict | None) -> str:
                                     f"checked {_date(s['CheckedAt'])}") if x)
     out = [f"<div class='sandbox'><div><span class='label'>Sandbox cluster</span> {_sandbox(s)}"
            f" <span class='muted small'>({e(where)})</span></div>"]
+    if _app_url(s):
+        out.append(f"<p><span class='label'>URL</span> {_app_url(s)}"
+                   f"{' <span class=' + chr(39) + 'muted small' + chr(39) + '>(' + e(s['UrlCheck']) + ')</span>' if s.get('UrlCheck') else ''}</p>")
     if st != "healthy" and s.get("Reason"):
         out.append(f"<p><span class='label'>Why</span> {e(_ws(s['Reason']))}</p>")
     elif st == "healthy":

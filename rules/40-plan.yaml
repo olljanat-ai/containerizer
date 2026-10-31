@@ -10,6 +10,7 @@
 rules:
   - id: plan-negotiate-krb5
     phase: plan
+    applies_to: [dotnet]
     why: >-
       Windows (Negotiate/Kerberos) authentication on Linux needs the GSSAPI libraries and a keytab; the image gets the packages and KRB5_KTNAME points at a keytab mounted from a Secret.
     refs:
@@ -21,6 +22,7 @@ rules:
 
   - id: plan-wkhtmltox
     phase: plan
+    applies_to: [dotnet]
     why: >-
       The PDF library wraps wkhtmltopdf, a native library; the Linux build is installed from the distribution packages.
     when:
@@ -32,6 +34,7 @@ rules:
 
   - id: plan-global-json
     phase: plan
+    applies_to: [dotnet]
     why: >-
       global.json pins an SDK version that the build image may not have; it is removed in the build stage only (never in the repository) so the image's SDK builds the project.
     refs:
@@ -43,6 +46,7 @@ rules:
 
   - id: plan-sqlite-data
     phase: plan
+    applies_to: [dotnet]
     why: >-
       SQLite keeps data in a local file that only one process can safely write; the component runs as a single replica with the file on a volume.
     refs:
@@ -54,6 +58,7 @@ rules:
 
   - id: plan-hangfire-memory
     phase: plan
+    applies_to: [dotnet]
     why: >-
       Hangfire in-memory storage keeps jobs inside one process; more replicas would each run their own copy of every job, so one replica is used.
     when: {package: 'Hangfire\.MemoryStorage|Hangfire\.InMemory'}
@@ -62,6 +67,7 @@ rules:
 
   - id: plan-dataprotection-keys
     phase: plan
+    applies_to: [dotnet]
     why: >-
       ASP.NET Core Data Protection writes its key ring under the user's home folder; with a read-only root file system that folder must be writable (persist it, or share it via PersistKeysTo*, when running more than one replica).
     refs:
@@ -75,6 +81,7 @@ rules:
 
   - id: plan-file-logs
     phase: plan
+    applies_to: [dotnet]
     why: >-
       The app logs to files under its own folder; the folder is made writable so start-up does not fail on the read-only root file system (console logging is preferred).
     refs:
@@ -85,6 +92,7 @@ rules:
 
   - id: plan-aspnet-framework-worker
     phase: plan
+    applies_to: [dotnet]
     why: >-
       The worker references the ASP.NET Core shared framework, which is only in the aspnet runtime image.
     refs:
@@ -103,6 +111,7 @@ rules:
 
   - id: plan-rid-portable-netstandard1
     phase: plan
+    applies_to: [dotnet]
     why: >-
       A dependency built for netstandard1.x pins System.* 4.0.x packages (SSH.NET 2016.x directly;
       Microsoft.Azure.Amqp 2.5.6 through System.Net.WebSockets.Client 4.0.2, pulled in by

@@ -2,8 +2,7 @@
 
 Many applications don't start without their database. Operators can upload a backup of an application's
 development database (**SQL Server, PostgreSQL or MySQL**) on the admin pages, together with instructions for the AI on how
-to point the application at it. The next scan of the application (`containerizer worker` or
-`containerizer org`) restores the backup into a database that runs next to the application in the
+to point the application at it. The next scan of the application restores the backup into a database that runs next to the application in the
 sandbox namespace, and sets the application's connection settings. The application's code is not
 changed: only the generated Kubernetes manifests are.
 
@@ -30,7 +29,7 @@ scan worker ──reads DevDatabase──> builds <registry>/<app>/devdb:<tag> (
             └──> generated manifests: devdb Deployment + Service + NetworkPolicy, app env → devdb
 ```
 
-1. **Upload** (`/admin/dev-databases`, admins and operators). The file is streamed to disk, so it is
+1. **Upload** (**Admin → Dev databases**, admins and operators). The file is streamed to disk, so it is
    never held in memory. The page checks the session, the role and the `Origin` header before it reads
    the request body. It checks the form's CSRF token, which is the first field, before it writes any
    of the file. The file must start with the signature of the selected engine (see above). It is stored under its SHA-256 with mode 0600, and the web UI never serves it
@@ -59,7 +58,7 @@ scan worker ──reads DevDatabase──> builds <registry>/<app>/devdb:<tag> (
    Nothing is kept on a persistent volume. The database is a disposable copy, and it is restored again
    whenever its pod starts.
 4. **The application's settings.**
-   - **With the LLM** (`UseAi` on the scan, or `--ai`): the AI reads the instructions and the
+   - **With the LLM** (**Ask the LLM** on the scan): the AI reads the instructions and the
      configuration the scan found. It answers with environment variables written as templates (only
      `{host} {port} {database} {user} {password}`). Every answer is validated, and anything that
      contains a literal password, a `$(...)` reference or an unknown placeholder is dropped.
@@ -96,15 +95,9 @@ Two details of the SQL Server image:
 
 ## Setting it up
 
-- **Web UI:** set `CONTAINERIZER_DEV_DB_DIR` to a writable folder. `results/compose.yaml` uses the named
-  volume `dev-databases`, and the results image creates the folder owned by its user. The
-  **Dev databases** tab appears for admins and operators only when the folder is set.
-- **Scan worker:** set the same `CONTAINERIZER_DEV_DB_DIR`, pointing at the same files. Use a shared
-  file system (NFS, an Azure Files share), or run the worker on the same host. The worker reads the
-  `DevDatabase` table with its writer login, which needs only `SELECT` (granted by `db init`, schema
-  version 8). It needs Docker to build the image, and write access to the registry.
-- **Cluster:** External Secrets Operator with the generators API, or create the Secrets yourself, as
-  described above.
+The **Dev databases** tab appears for admins and operators when `CONTAINERIZER_DEV_DB_DIR` names a
+writable folder for the web UI, and the scan worker reads the same folder. The size limit of an upload
+is `CONTAINERIZER_DEV_DB_MAX_MB` (default 2048).
 
 ## Security notes
 
