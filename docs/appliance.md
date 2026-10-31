@@ -11,7 +11,7 @@ image, and upgraded from the admin pages. It runs:
 | Scan worker ([organization scans](scheduled-scans.md)) | systemd service, user `containerizer` + Docker | - |
 | SQL Server 2025 (results database) | container, non-root, data on the persistent partition | `127.0.0.1:1433` only |
 | Sandbox cluster: k3s (single node) with Flux and Traefik | systemd service | `kubectl` on the appliance; apps at `https://<component>-<app>.<domain>/` with [Sandbox HTTPS](sandbox-https.md) |
-| [Lab services](lab-services.md) for the sandboxed apps: SQL Server, PostgreSQL, Redis, S3, Azure Blob storage (each optional) | k3s, namespace `containerizer-lab`, data on the persistent partition | Admin → Lab services; inside the cluster only |
+| [Lab services](lab-services.md) for the sandboxed apps: SQL Server, PostgreSQL, MySQL, MongoDB, Redis, RabbitMQ, Kafka, S3, Azure Blob storage, SFTP (each optional) | k3s, namespace `containerizer-lab`, data on the persistent partition | Admin → Lab services; inside the cluster only |
 | Local container registry | container | `127.0.0.1:5000` only (Docker and k3s) |
 | Prometheus and Grafana, with the scan worker's metrics, alerts and dashboard | containers | `https://<appliance>/grafana/` |
 | HTTPS (Caddy), SSH | systemd services | ports 443 and 22: the only open ports |
@@ -179,6 +179,12 @@ is the supported path on the appliance.
 To reach the deployed apps over HTTPS, set up a wildcard domain and certificate on **Admin → Sandbox
 HTTPS**: Caddy answers for `*.<domain>` on the same port 443 and passes the requests to Traefik in k3s,
 and every web component gets `https://<component>-<app>.<domain>/` ([sandbox-https.md](sandbox-https.md)).
+
+Components that sign users in get the sandbox identity provider, WSO2 Identity Server at
+`https://containerizer-idp.<sandbox domain>/` ([sandbox-idp.md](sandbox-idp.md)). `cz-sandbox` creates its
+passwords and client secrets in the secret store once Flux has deployed it.
+`containerizer idp users` (as root) prints the test users and their passwords. Its images come from
+Docker Hub, which the default firewall rules allow.
 
 ## Upgrade and roll back
 

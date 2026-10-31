@@ -53,6 +53,7 @@ nav:
       - Organization scans: scheduled-scans.md
       - Sandbox HTTPS: sandbox-https.md
       - Lab services: lab-services.md
+      - Sandbox identity provider: sandbox-idp.md
       - Dev databases: dev-databases.md
       - Rule review: rule-review.md
       - Secrets (External Secrets): external-secrets.md

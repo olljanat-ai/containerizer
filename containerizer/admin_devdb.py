@@ -127,7 +127,7 @@ def edit(adm, conn, s, a, app_id: int, flash: str) -> Response:
               f"string, test users, anything to run after the restore; never a password)</span></label>"
               f"<textarea id='UpPrompt' name='Prompt' maxlength='{devdb.PROMPT_MAX}' rows='10'>{e(prompt)}</textarea>"
               f"<label for='backup'>Backup file <span class='muted'>(up to {e(devdb.human_size(adm.devdb.max_bytes))})</span></label>"
-              f"<input id='backup' name='backup' type='file' required accept='.bak'>"
+              f"<input id='backup' name='backup' type='file' required accept='{devdb.ACCEPT}'>"
               f"<div><button>Upload</button> <a href='/admin/dev-databases'>Cancel</a></div></form>")
     body = (f"<p class='muted'>Scanned as <b>{e(app['Name'])}</b>. <a href='/app/{app_id}'>View results</a></p>"
             f"{current}{upload}<h2>Changes</h2>{adm._history(conn, 'DevDatabase', app_id)}")

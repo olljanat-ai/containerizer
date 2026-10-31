@@ -333,7 +333,8 @@ def reconcile(kube: Kubectl, config: dict, images: dict, state_path: Path = STAT
 
 
 def _shared(kube: Kubectl, svc: str, apps: list[str], image: str, state: dict, st: dict, timeout: int) -> None:
-    admin_password(kube, svc)
+    if svc in L.ADMIN_PASSWORD:
+        admin_password(kube, svc)
     kube.apply(L.shared_manifests(svc, image) + [L.ingress_policy(svc, ns) for ns in apps])
     stop(kube, svc, keep_apps=apps)         # policies of apps that left
     creds = {}

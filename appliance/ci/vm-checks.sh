@@ -128,7 +128,7 @@ nsenter --target "$web" --mount --setuid 901 --setgid 901 -- $PY -c '
 import os, pathlib
 from containerizer import devdb
 s = devdb.Settings.from_env(os.environ | {"CONTAINERIZER_DEV_DB_DIR": "/var/lib/containerizer/devdb"})
-up = devdb.Upload(); up.path = s.directory / ".upload-ci"; up.path.write_bytes(b"TAPE ci"); up.sha256 = "0" * 64
+up = devdb.Upload(head=b"TAPE ci"); up.path = s.directory / ".upload-ci"; up.path.write_bytes(up.head); up.sha256 = "0" * 64
 print(devdb.store(s, up, "sqlserver"))'
 runuser -u containerizer -- grep -q TAPE "/var/lib/containerizer/devdb/$(printf '0%.0s' $(seq 64)).bak"
 rm -f /var/lib/containerizer/devdb/0*.bak

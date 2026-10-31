@@ -452,6 +452,35 @@ def store_image_sboms(conn, assessment_id: int, entries: list[dict]) -> int:
     return n
 
 
+def store_idp_clients(conn, assessment_id: int, entries: list[dict]) -> int:
+    """Sandbox IdP registrations of the components deployed after an assessment (`containerizer org`).
+    Each entry: project (path as stored), protocol, idp_url, app_url, identifier, metadata_url, settings
+    (dict, no secret values), notes. Returns rows written."""
+    cur = conn.cursor()
+    n = 0
+    try:
+        for e in entries:
+            cur.execute("SELECT c.ComponentId FROM cz.Component c JOIN cz.ApplicationAssessment aa "
+                        "ON aa.ApplicationId = c.ApplicationId WHERE aa.AssessmentId = %s AND c.ProjectPath = %s",
+                        (assessment_id, _cut(e["project"], 400)))
+            row = cur.fetchone()
+            if not row:
+                continue
+            cur.execute("INSERT cz.SandboxIdpClient (AssessmentId, ComponentId, Protocol, IdpUrl, AppUrl, Identifier, "
+                        "MetadataUrl, Settings, Notes) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        (assessment_id, row[0], _cut(e.get("protocol") or "none", 10), _cut(e["idp_url"], 300),
+                         _cut(e.get("app_url") or None, 300), _cut(e.get("identifier") or None, 400),
+                         _cut(e.get("metadata_url") or None, 400),
+                         json.dumps(e.get("settings") or {}, sort_keys=True) if e.get("settings") else None,
+                         _cut("; ".join(e.get("notes") or []) or None, 2000)))
+            n += 1
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return n
+
+
 def source_sboms(a) -> dict:
     """Source SBOMs of an AppAssessment's components (sbom.source in rules/60-security.yaml)."""
     from .sbom import config, source_component_sbom
