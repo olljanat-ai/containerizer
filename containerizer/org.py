@@ -111,6 +111,7 @@ class RepoResult:
     overridden: list = field(default_factory=list)   # automatic skips an administrator overrode (enabled)
     seconds: float = 0.0
     source_key: str = ""              # Application.SourceKey in the results database
+    dev_database: dict = field(default_factory=dict)   # the uploaded dev database restored next to it, if any
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -692,6 +693,7 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
             from .sqlstore import store_results
             assessment_id = store_results(o.sql, [a], [src])[0]
         keep, res.excluded = select_components(a, o.verify)
+        dd, dd_row = (_dev_database(o, res, a, keep, work, reg, tag) if keep else (None, None))
         gen = work / "gen" / app
         names = {k8s_name(c.name): c for c in keep}
         g = None
@@ -700,13 +702,13 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
                 shutil.rmtree(gen)
             fa = dataclasses.replace(a, components=keep)
             if not o.gate:
-                generate_app(fa, gen, registry=o.registry, pin=o.pin, gitops=gitops, tag=tag)
+                generate_app(fa, gen, registry=o.registry, pin=o.pin, gitops=gitops, tag=tag, devdb=dd)
                 break
             from .harden import security
             from .imagescan import gate_app
             g = gate_app(fa, gen, build=True, scan=True, run=True, registry=o.registry, pin=o.pin, gitops=gitops,
                          tag=tag, scanner=o.scanner or security()["scan"].get("default_scanner", "auto"),
-                         fail_on=o.fail_on)
+                         fail_on=o.fail_on, devdb=dd)
             failed = {c["component"]: gate_failure(c) for c in g["components"] if gate_failure(c)}
             if not failed:
                 break
@@ -764,6 +766,9 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
                 print(f"warning: SBOMs not written to SQL Server: {type(e).__name__}: {REDACT(str(e))[:300]}",
                       file=sys.stderr)
 
+        if dd is not None and (gen / "devdb").is_dir():
+            from .devdb import readme
+            (gen / "devdb" / "README.md").write_text(readme(k8s_name(a.name), dd, dd_row))
         _clean_generated(gen)
         if o.image_pull_secret and (gen / "kustomization.yaml").exists():
             add_pull_secret(gen / "kustomization.yaml", o.image_pull_secret)
@@ -781,6 +786,40 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
 
 
 # --------------------------------------------------------------------------- the run
+
+def _dev_database(o: OrgOptions, res: RepoResult, a, comps: list, work: Path, reg: "Registry | None", tag: str):
+    """The dev database an operator uploaded for this application (admin pages): its image built and
+    pushed next to the application's, and the settings that point the application at it.
+    (None, None) when there is none, or when it cannot be prepared (the reason is in res.dev_database)."""
+    from . import devdb
+    from .generate import k8s_name
+    settings = devdb.Settings.from_env(os.environ)
+    if settings is None or not (o.sql or os.environ.get("CONTAINERIZER_SQL")) or not res.source_key:
+        return None, None
+    try:
+        row = devdb.lookup(o.sql, res.source_key)
+    except Exception as ex:                                  # e.g. a database from before the DevDatabase table
+        res.dev_database = {"status": "error", "reason": f"could not read the dev database settings: {str(ex)[:200]}"}
+        return None, None
+    if not row:
+        return None, None
+    ns = k8s_name(a.name)
+    image = f"{o.registry.rstrip('/')}/{ns}/devdb:{tag}"
+    local = f"containerizer/{ns}-devdb:gate"
+    info = {"engine": row["Engine"], "database": row["DatabaseName"], "file": row["FileName"], "sha256": row["Sha256"],
+            "image": image}
+    try:
+        db = devdb.prepare(row, a, comps, settings, image, local, work, ai=o.ai, model=o.model,
+                           timeout=max(o.timeout, 1800))
+        if o.push_images and reg:
+            info["digest"] = reg.push(local, image, [f"{image.rsplit(':', 1)[0]}:sha-{row['Sha256'][:12]}"])
+    except (devdb.DevDbError, SourceError, OSError, ValueError) as ex:
+        res.dev_database = {**info, "status": "error", "reason": str(ex)[:500]}
+        return None, None
+    res.dev_database = {**info, "status": "deployed", "settings": db.source,
+                        "components": {c: [e["name"] for e in env] for c, env in db.env.items()}}
+    return db, row
+
 
 def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
     from .confidence import reset_cache
