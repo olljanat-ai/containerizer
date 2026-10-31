@@ -1,0 +1,14 @@
+# Build-plan rules for Java and Node.js components (see 40-plan.yaml for the plan keys).
+rules:
+  - id: plan-ghost-listen
+    phase: plan
+    applies_to: [node]
+    why: >-
+      Ghost reads its listen address from configuration (server.host defaults to 127.0.0.1,
+      server.port to 2368); nconf environment variables override it so the container listens on
+      all interfaces at port 8080.
+    refs:
+      - https://ghost.org/docs/config/#running-ghost-with-config-env-variables
+    when: {name: '^ghost$'}
+    plan:
+      env: {server__host: 0.0.0.0, server__port: "8080"}

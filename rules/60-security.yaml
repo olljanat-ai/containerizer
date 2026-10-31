@@ -31,6 +31,8 @@ hardening:
   run_as:
     dotnet: 1654          # 'app' user of the Microsoft .NET 8+ images
     spa: 101              # nginx-unprivileged
+    java: 65532           # 'nonroot' of the distroless images (also set in the Temurin and Tomcat images)
+    node: 65532           # 'nonroot' of the distroless Node.js images
     default: 10001
 
   # Exceptions: added only when `when` (rule conditions, see rules.py) and

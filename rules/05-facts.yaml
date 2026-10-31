@@ -47,13 +47,26 @@ rules:
   - id: port-node
     phase: facts
     priority: 40
-    when: {code: '\.listen\(\s*(process\.env\.PORT\s*\|\|\s*)?(?P<port>\d{2,5})|PORT\s*\|\|\s*(?P<port2>\d{2,5})', in: ["*.js", "*.ts", "*.mjs"]}
+    when: {code: '\.listen\(\s*(process\.env\.PORT\s*\|\|\s*)?(?P<port>\d{2,5})|\bPORT\s*(\|\||\?\?)\s*(?P<port2>\d{2,5})', in: ["*.js", "*.ts", "*.mjs", "*.cjs", "*.mts", "*.cts"]}
     set: {port_source: code}
+
+  - id: port-env-node
+    phase: facts
+    priority: 39
+    when: {code: 'process\.env\.PORT\b|process\.env\[\s*[''"]PORT[''"]\s*\]|\{[^}]*\bPORT\b[^}]*\}\s*=\s*process\.env', in: ["*.js", "*.ts", "*.mjs", "*.cjs", "*.mts", "*.cts"]}
+    set: {port_env: "true"}
 
   - id: port-python
     phase: facts
     priority: 40
     when: {code: 'port\s*=\s*(int\(os\.environ\.get\("PORT",\s*)?"?(?P<port>\d{2,5})', in: ["*.py"]}
+    set: {port_source: code}
+
+  - id: port-java-code
+    phase: facts
+    priority: 41
+    why: A port fixed in code (Javalin, Spark, the JDK HTTP server) is where the container listens.
+    when: {code: 'Javalin\.create\([^;]*?\.start\(\s*(?P<port>\d{2,5})\s*\)|\bport\(\s*(?P<port2>\d{4,5})\s*\)|HttpServer\.create\(\s*new\s+InetSocketAddress\(\s*(?P<port3>\d{2,5})', in: ["*.java", "*.kt"]}
     set: {port_source: code}
 
   - id: port-spring
@@ -112,3 +125,19 @@ rules:
   - id: fact-run-once-arg
     phase: facts
     when: {code: '"(?P<oneshot_arg>--(run|once|run-once|run-nightly|nightly|import|export)[\w\-]*)"'}
+
+  # Node.js: a health route on the application object itself (a router may be mounted under a prefix,
+  # which a probe path cannot know, so only app/server/fastify routes count)
+  - id: health-node-route
+    phase: facts
+    priority: 60
+    when: {code: '\b(app|server|fastify|api)\.(get|all|head|route)\(\s*[''"`](?P<health>/(api/)?(health|healthz|healthcheck|ping|status|livez|readyz|alive))[''"`]', in: ["*.js", "*.ts", "*.mjs", "*.cjs", "*.mts", "*.cts"]}
+
+  # NestJS Terminus: @Controller('health') without a global route prefix
+  - id: health-nest-controller
+    phase: facts
+    priority: 59
+    when:
+      all:
+        - {code: '@Controller\(\s*[''"`](?P<health>health|healthz)[''"`]\s*\)', in: ["*.ts", "*.js"]}
+        - {not: {code: 'setGlobalPrefix\(', in: ["*.ts", "*.js"]}}

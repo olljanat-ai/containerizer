@@ -85,6 +85,65 @@ failures:
     finding: {severity: blocker, title: 'Windows-only namespace {parent}.{ns}',
       fix: 'Move the code that needs {parent}.{ns} behind an interface with a Linux implementation, or split it into a separate Windows component.'}
 
+  # ---- Java and Node.js builds
+  - id: build-java-release-too-new
+    stage: build
+    # javac: "release version 21 not supported" / "invalid target release: 21"; a dependency built for a
+    # newer line: "class file has wrong version 61.0, should be 55.0" (class file 61 = Java 17)
+    match: 'release version (?P<ver>\d+) not supported|invalid target release: (?:1\.)?(?P<ver2>\d+)|class file has wrong version (?P<ver3>\d+)\.0, should be'
+    outcome: retry
+    refs: [https://docs.oracle.com/en/java/javase/21/docs/specs/man/javac.html, https://docs.oracle.com/javase/specs/jvms/se21/html/jvms-4.html]
+    diagnosis: The code or a dependency needs a newer Java line than the build used ({ver}); the build and runtime move to it.
+    fix: {java: '{ver}'}
+    learn: {when: {}}
+
+  - id: build-maven-version-enforced
+    stage: build
+    match: 'RequireMavenVersion failed|Detected Maven Version: [\d.]+ is not in the allowed range'
+    outcome: retry
+    refs: [https://maven.apache.org/enforcer/enforcer-rules/requireMavenVersion.html, https://maven.apache.org/wrapper/]
+    diagnosis: The build requires another Maven version than the build image has; the repository's Maven wrapper is used.
+    fix: {maven_wrapper: true}
+    learn: {when: {}}
+
+  - id: build-npm-lock-out-of-sync
+    stage: build
+    match: '`npm ci` can only install packages when your package\.json and package-lock\.json[^\n]*are in sync|ERR_PNPM_OUTDATED_LOCKFILE|ERR_PNPM_LOCKFILE_CONFIG_MISMATCH|YN0028: [^\n]*lockfile would have been modified|Your lockfile needs to be updated, but yarn was run with `--frozen-lockfile`'
+    outcome: retry
+    refs: [https://docs.npmjs.com/cli/commands/npm-ci, https://pnpm.io/cli/install#--frozen-lockfile]
+    diagnosis: >-
+      The lockfile does not match package.json, so a reproducible install from it fails; the
+      dependencies are resolved again at build time. Update and commit the lockfile.
+    fix: {lockfile: false}
+    learn: {when: {}}
+
+  - id: build-node-gyp-toolchain
+    stage: build
+    match: 'gyp ERR! (find Python|stack Error: not found: (make|g\+\+))|node-gyp[^\n]*(not found|ENOENT)|No (Python|C\+\+ compiler) found'
+    outcome: retry
+    refs: [https://github.com/nodejs/node-gyp#on-unix]
+    diagnosis: A dependency compiles a native addon at install time; the build stage gets Python, make and a C++ compiler.
+    fix: {native_build: true}
+    learn: {when: {}}
+
+  - id: build-node-heap
+    stage: build
+    match: 'JavaScript heap out of memory|Reached heap limit Allocation failed'
+    outcome: retry
+    refs: [https://nodejs.org/api/cli.html#--max-old-space-sizesize-in-mib]
+    diagnosis: The front-end or TypeScript build runs out of the default V8 heap; the build gets a larger heap.
+    fix: {build_env: {NODE_OPTIONS: --max-old-space-size=4096}}
+    learn: {when: {}}
+
+  - id: build-node-engine-unsupported
+    stage: build
+    match: 'The engine "node" is incompatible with this module\. Expected version "(?P<range>[^"]+)"|ERR_PNPM_UNSUPPORTED_ENGINE[^\n]*\n[^\n]*wanted: (?P<range2>[^\n]+)|EBADENGINE[^\n]*\n[^\n]*required: \{[^}]*node: .(?P<range3>[^\x27"]+)'
+    outcome: code
+    refs: [https://nodejs.org/en/about/previous-releases, https://docs.npmjs.com/cli/configuring-npm/package-json#engines]
+    diagnosis: A package requires a Node.js version ({range}) outside the supported LTS lines the image uses.
+    finding: {severity: refactor, title: Requires an unsupported Node.js version,
+      fix: 'Upgrade the dependency (or the engines range) to a version that supports a current Node.js LTS line.'}
+
   # ------------------------------------------------------------------ run
   - id: run-aspnet-framework-missing
     stage: run
@@ -275,6 +334,55 @@ failures:
     diagnosis: The embedded SQLite database file is not in a writable, persistent folder.
     finding: {severity: config, title: SQLite database needs a persistent volume (single replica),
       fix: 'Put the database file on a PersistentVolume mounted writable (the generated manifests do this for the configured path) and run one replica, or move the data to a database server.'}
+
+  # ---- Java and Node.js at run time
+  - id: run-node-module-not-found
+    stage: run
+    match: "Error: Cannot find module '(?P<mod>[^'./][^']*)'"
+    outcome: retry
+    refs: [https://docs.npmjs.com/cli/commands/npm-prune]
+    diagnosis: >-
+      The app loads the package '{mod}' at run time but declares it as a devDependency, so pruning
+      removed it; the image keeps devDependencies. Move the package to dependencies.
+    fix: {prune: false}
+    learn: {when: {}}
+
+  - id: run-readonly-path-node-java
+    stage: run
+    match: "(EROFS: read-only file system|EACCES: permission denied), (open|mkdir|scandir|copyfile|rename) '(?P<path>/[^']+)'|java\\.nio\\.file\\.(ReadOnlyFileSystemException|AccessDeniedException): (?P<path2>/[^\\s:]+)|FileSystemException: (?P<path3>/[^\\s:]+): Read-only file system|FileNotFoundException: (?P<path4>/[^\\s(]+) \\((Read-only file system|Permission denied)\\)"
+    outcome: retry
+    refs: [https://kubernetes.io/docs/tasks/configure-pod-container/security-context/]
+    diagnosis: The app writes to a folder that is read-only in the hardened container.
+    fix: {add_writable: ['{dir}']}
+    learn: {when: {}}
+
+  - id: run-java-db-unreachable
+    stage: run
+    match: "Communications link failure|PSQLException|Failed to obtain JDBC Connection|Unable to acquire JDBC Connection|Failed to initialize pool|Failed to configure a DataSource|Unable to determine Dialect without JDBC metadata|MongoTimeoutException|RedisConnectionFailureException|AmqpConnectException|Unable to connect to Redis|Connection to [\\w.-]+:\\d+ refused|UnknownHostException"
+    outcome: external
+    refs: [https://docs.spring.io/spring-boot/reference/data/sql.html]
+    diagnosis: A database or broker the app needs is not reachable from the test container (expected without the real environment).
+
+  - id: run-java-config-missing
+    stage: run
+    match: "Could not resolve placeholder '(?P<key>[^']+)'|Could not locate PropertySource|ConfigClientFailFastException|I/O error on GET request for \"http://[\\w.-]+:8888"
+    outcome: external
+    refs: [https://docs.spring.io/spring-boot/reference/features/external-config.html]
+    diagnosis: The app needs configuration it gets from the environment or a config server ({key}); supply it in the deployment.
+
+  - id: run-node-service-unreachable
+    stage: run
+    match: "ECONNREFUSED|getaddrinfo (ENOTFOUND|EAI_AGAIN)|MongooseServerSelectionError|MongoServerSelectionError|SequelizeConnection\\w*Error|PrismaClientInitializationError|Can't reach database server|connect ETIMEDOUT|KnexTimeoutError|Redis connection to [\\w.:-]+ failed"
+    outcome: external
+    refs: [https://nodejs.org/api/errors.html#common-system-errors]
+    diagnosis: A database or service the app needs is not reachable from the test container (expected without the real environment).
+
+  - id: run-node-env-missing
+    stage: run
+    match: "Missing required environment variable|Invalid environment variables|environment variable [A-Z_]+ is (not set|required|missing)|(?P<var>[A-Z][A-Z0-9_]{2,}) (is not defined|is required|must be (set|defined|provided))"
+    outcome: external
+    refs: [https://12factor.net/config]
+    diagnosis: The app needs configuration from environment variables ({var}); supply it in the deployment (Secrets for credentials).
 
   # ------------------------------------------------------------------ sandbox cluster (Kubernetes)
   - id: cluster-image-pull

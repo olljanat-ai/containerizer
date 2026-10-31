@@ -607,7 +607,7 @@ def _apply_os_patch(dockerfile: str, comp: dict) -> str:
 def _build_with_retries(a, cdir: Path, tag: str, comp: dict, pin: bool, post) -> tuple[bool, str]:
     """Build; when the build fails in a way the verification failure rules know how to fix
     (rules/50-failures.yaml, outcome retry), patch the build plan, regenerate and build again."""
-    from .generate import dockerfile_dotnet, dockerfile_spa, k8s_manifests, k8s_name, merge_plan, pin_digests, _yaml_docs
+    from .generate import dockerfile_for, k8s_manifests, k8s_name, merge_plan, pin_digests, _yaml_docs
     from .verify import MAX_ATTEMPTS, _fmt, diagnose, load_failures
     comps = {k8s_name(c.name): c for c in a.components}
     c = comps.get(cdir.name)
@@ -627,7 +627,7 @@ def _build_with_retries(a, cdir: Path, tag: str, comp: dict, pin: bool, post) ->
         if json.dumps(plan, sort_keys=True) == before:
             break
         applied.append(fr["id"])
-        df = dockerfile_spa(plan, c.facts) if c.role == "spa" else dockerfile_dotnet(plan)
+        df = dockerfile_for(plan, c)
         df = post(pin_digests(df) if pin else df)
         (cdir / "Dockerfile").write_text(df)
         from .harden import _pod_specs

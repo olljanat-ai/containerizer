@@ -86,3 +86,47 @@ Java runtime dependencies that are not in `rules/packages-java.yaml` lower the c
 Node.js native addons and Windows-only packages not in `rules/packages-node.yaml` (pure
 JavaScript packages are portable and do not count). Low confidence triggers verification and the
 optional LLM review, as for .NET.
+
+## Containers
+
+`containerizer generate` (and `verify`, `gate`) builds Java and Node.js components the same way as
+.NET ones: a multi-stage Dockerfile that uses the application folder as build context, a hardened
+Kubernetes manifest (non-root, read-only root file system, no capabilities, seccomp, resource
+limits, NetworkPolicy) and a `plan.json` that explains every non-default decision. Base images are
+in `rules/images.yaml`; `containerizer images --update` pins patched tags in `rules/images.lock.yaml`.
+
+**Java** (`containerizer/gen_jvm_node.py`)
+
+| | |
+|---|---|
+| Java line | the version the build declares (`maven.compiler.release`, `java.version`, toolchains), rounded up to an LTS line: 8, 11, 17, 21 or 25. The build and the runtime use the same line. |
+| Build | Maven from the image (`-pl <module> -am` from the in-repository aggregator), or the repository's Gradle wrapper (`bootJar`, `quarkusBuild`, `installDist`, `shadowJar`, `war`). Tests are skipped in the image build. A CA bundle passed as the `ca` build secret is added to the build JDK; `HTTPS_PROXY` is passed to Maven and Gradle. |
+| Runtime | distroless Java 17/21/25, or the Temurin JRE for Java 8 and 11, as uid 65532. Spring Boot and executable jars or WARs run with `java -jar`; Quarkus runs its fast-jar; a plain program runs its main class with its dependencies on the class path; a WAR without an embedded server is unpacked into Tomcat 9 (`javax.servlet`) or 10.1 (`jakarta.servlet`). |
+| Port | `SERVER_PORT`, `QUARKUS_HTTP_PORT`, `MICRONAUT_SERVER_PORT` or `PORT` set to 8080; a port fixed in code is kept. |
+| Probes | Spring Boot Actuator liveness and readiness groups (not when Spring Security protects them and the code does not open them), SmallRye Health, Micronaut management; a TCP probe otherwise. The context path is taken into account. |
+| Configuration | Windows paths in `application.properties`/`.yml` (and the prod profile) are overridden through environment variables (Spring relaxed binding, MicroProfile names) to folders under `/data`. Credentials (passwords, secrets, JDBC URLs) become optional Secret references; a `${DB_PASSWORD}` placeholder references that variable. |
+| Memory | `-XX:MaxRAMPercentage=75`, request 512Mi, limit 1Gi. |
+
+**Node.js**
+
+| | |
+|---|---|
+| Node.js line | the newest supported LTS line (22 or 24) that `engines.node` allows. |
+| Install | `npm ci`, `pnpm install --frozen-lockfile` or `yarn install` (classic or Berry, with the `node-modules` linker) through corepack, at the workspace root. Packages with native addons build on the full Debian image (Python, make, g++). |
+| Build | the `build` script of the package and of the in-repository packages it uses, dependencies first (pnpm orders a filtered run itself). devDependencies are pruned afterwards with npm and pnpm (not in pnpm or yarn workspaces, where that means a reinstall). |
+| Start | the production start script (`start:prod`, `start`, ...), parsed without a shell: `node <file>`, a package's command (`next start`, resolved at build time to the file it runs), `nest start` and `nx serve` mapped to their compiled output. Without a start script: `server.js`, `main` or `index.js`. A start command that needs a shell runs with `npm run` on the slim image. |
+| Runtime | distroless Node.js as uid 65532, `NODE_ENV=production`, `PORT=8080`, `HOST=0.0.0.0`. |
+| Probes | a `/health`-style route on the application object, a NestJS Terminus controller; a TCP probe otherwise. |
+| Configuration | variables listed in `.env.example` that hold credentials or connection URLs become Secret references; Windows paths in node-config files (`config/default.json`) are overridden with `NODE_CONFIG`. |
+
+Single-page apps build with the repository's package manager and are served by unprivileged nginx.
+
+## Verification
+
+`containerizer verify` builds and runs Java and Node.js images hardened, as for .NET. Failure rules
+in `rules/50-failures.yaml` recognise Java and Node.js build and start failures: a dependency that
+needs a newer Java line, Maven version enforcement (the build switches to the Maven wrapper), a
+lockfile out of sync, missing native toolchains, the V8 heap during builds, a devDependency needed at
+run time, writes to read-only folders, and databases, brokers, config servers or variables that only
+the real environment provides. Unknown failures go to the optional LLM, which gets a
+language-specific evidence pack and plan vocabulary; what works is learned for review, as for .NET.

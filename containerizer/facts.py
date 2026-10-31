@@ -183,6 +183,9 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
     spa = p.properties.get("SpaRoot")
     if spa:
         facts["spa_root"] = spa.replace("\\", "/").strip("/")
+    if p.kind_hint in ("java", "node"):
+        from .facts_jvm_node import java_facts, node_facts
+        (java_facts if p.kind_hint == "java" else node_facts)(repo, comp, facts)
     if p.kind_hint == "node":
         scripts = (p.manifest.get("scripts") or {})
         facts["build_script"] = "build" if "build" in scripts else ""
