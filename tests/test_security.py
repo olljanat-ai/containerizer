@@ -415,6 +415,8 @@ def test_gitops_hardening_keeps_platform_policies_out_of_sync(tmp_path):
     # the store reader is platform-owned on Flux (the source's ExternalSecret needs it before the first sync)
     assert ("ServiceAccount", "app-secrets-reader") in {(d["kind"], d["metadata"]["name"]) for d in tenant}
     assert "ServiceAccount" in deleted
+    # kinds without a spec stay without one (strict field validation rejects `spec` on them)
+    assert not [d for d in tenant if d["kind"] in ("ServiceAccount", "Role", "RoleBinding") and "spec" in d]
     store = list(_y.safe_load_all((out / "cluster/secret-store.yaml").read_text()))
     assert {d["kind"] for d in store} == {"Namespace", "ResourceQuota", "ClusterSecretStore", "Role", "RoleBinding"}
     md = (out / "HARDENING.md").read_text()

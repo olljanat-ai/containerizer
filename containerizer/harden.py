@@ -486,7 +486,10 @@ def harden_gitops(docs: dict[str, list[dict]], a=None) -> dict[str, list[dict]]:
                 or (p["kind"], p["metadata"]["name"]) == ("ServiceAccount", reader())]
     for path, items in docs.items():
         for d in items:
-            kind, spec = d.get("kind"), d.setdefault("spec", {})
+            kind = d.get("kind")
+            if kind not in ("AppProject", "Application", "Kustomization"):
+                continue        # no spec to add (a ServiceAccount, Role or Namespace has none)
+            spec = d.setdefault("spec", {})
             if kind == "AppProject":
                 spec["clusterResourceWhitelist"] = [w for w in spec.get("clusterResourceWhitelist") or []
                                                     if (w.get("group"), w.get("kind")) == ("", "Namespace")]

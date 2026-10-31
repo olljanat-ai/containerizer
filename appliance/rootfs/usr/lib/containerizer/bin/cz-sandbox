@@ -25,10 +25,14 @@ git_token() {  # remote key
   cz_store_put "$1" username="${CZ_SANDBOX_GIT_USERNAME:-git}" password="$CZ_SANDBOX_GIT_TOKEN"
 }
 legacy_secret() {  # namespace name: output generated before ExternalSecrets (no ExternalSecret of that name)
-  k -n "$1" create secret generic "$2" --from-literal=username="${CZ_SANDBOX_GIT_USERNAME:-git}" \
-    --from-literal=password="$CZ_SANDBOX_GIT_TOKEN" --dry-run=client -o yaml \
-  | k label --local -f - app.kubernetes.io/managed-by=containerizer-appliance -o yaml \
-  | k apply -f - >/dev/null
+  k apply -f - >/dev/null <<YAML
+apiVersion: v1
+kind: Secret
+metadata: {name: $2, namespace: $1, labels: {app.kubernetes.io/managed-by: containerizer-appliance}}
+data:
+  username: $(printf %s "${CZ_SANDBOX_GIT_USERNAME:-git}" | base64 -w0)
+  password: $(printf %s "$CZ_SANDBOX_GIT_TOKEN" | base64 -w0)
+YAML
 }
 
 git_token flux-system--cz-git
@@ -81,7 +85,11 @@ k get gitrepositories.source.toolkit.fluxcd.io -A -l app.kubernetes.io/managed-b
 | while read -r ns url name; do
     [ "$url" = "$CZ_SANDBOX_GIT_URL" ] && [ -n "$name" ] && [ "$ns" != flux-system ] || continue
     if k -n "$ns" get externalsecrets.external-secrets.io "$name" >/dev/null 2>&1; then
+      new=; k -n "$CZ_STORE_NS" get secret "$ns--cz-git" >/dev/null 2>&1 || new=1
       git_token "$ns--cz-git"
+      # a new app: sync now rather than after ESO's back-off from the first, failed read
+      [ -z "$new" ] || k -n "$ns" annotate --overwrite externalsecrets.external-secrets.io "$name" \
+        "force-sync=$(date +%s)" >/dev/null
     else
       legacy_secret "$ns" "$name"
     fi
