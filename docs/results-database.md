@@ -177,6 +177,16 @@ or the `web` service of `results/compose.yaml` / the image built from `results/D
   components (what each one is and its verdict), and per component every item to change with why, how
   to fix it and links to the documentation; the rating history.
 
+![Overview: headline numbers, rating mix, then business unit, product and application](images/results-overview.png)
+
+![An application: rating in words, main obstacles, components, what needs to change and why](images/results-application.png)
+
+<details><summary>Dark mode</summary>
+
+![Overview in dark mode](images/results-overview-dark.png)
+
+</details>
+
 The results pages need no sign-in and only read (through the reader login). Pages are rendered on the
 server without JavaScript; all text is escaped; responses carry a strict Content-Security-Policy
 (`default-src 'none'`), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: same-origin` and
@@ -199,6 +209,12 @@ Entra ID, Okta, Keycloak, Google Workspace, ...):
 - **Change history**: see below.
 
 They appear when sign-in is configured; without it the UI is the read-only results only.
+
+![Application mapping: select applications and map them to a product](images/admin-applications.png)
+
+![Editing one application: product, display name, owner, and its change history](images/admin-application-edit.png)
+
+![Products with their business unit and product page link](images/admin-products.png)
 
 | Variable | Meaning |
 | --- | --- |
@@ -298,6 +314,8 @@ The admin pages show it under **Change history**, filterable by kind, and on eac
 and business unit page. The admin pages and the API put the signed-in user or client in the connection's `SESSION_CONTEXT`
 as read-only, so it cannot be changed on that connection. No role can update or delete audit rows;
 database owners can, so forward the table to your SIEM if it must be tamper-proof.
+
+![Change history: who changed what, when, before and after](images/admin-change-history.png)
 
 ```sql
 -- who changed what in the last 30 days
