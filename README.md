@@ -603,11 +603,12 @@ containerizer/   scan, rules engine, assess, reach, confidence, facts, generate,
 rules/           curated rules (roles, facts, findings, plan, failures, security, images + images.lock, packages)
 rules/learned/   rules written by the learning loop with CONTAINERIZER_RULE_REVIEW=off (safe to delete)
 bench/           labels and results
-action.yml       GitHub Action; ci/azure/ has the Azure DevOps template
+action.yml       GitHub Action; ci/azure/ has the Azure DevOps template, ci/local.sh runs the CI jobs locally
 containerizer/sql/  results database schema (sqlstore.py writes it, webui.py reads it, admin.py + oidc.py: admin pages)
                  worker.py: scheduled organization scans, metrics.py: Prometheus metrics
 monitoring/      Grafana dashboard, Prometheus scrape config and alert rules, systemd unit for the worker
 results/         Docker Compose stack and image for the results database and web UI
 docs/            results-database.md (results database, web UI, admin pages, audit), rule-review.md, organization-run.md,
-                 scheduled-scans.md, source-control.md (tokens), dev-databases.md, sandbox-verification.md, self-hosted-llm.md, sbom.md (SBOMs, licences, CVEs per package)
+                 scheduled-scans.md, source-control.md (tokens), dev-databases.md, sandbox-verification.md, self-hosted-llm.md, sbom.md (SBOMs, licences, CVEs per package),
+                 local-dev-server.md (a Debian server that runs the whole CI suite locally)
 ```
