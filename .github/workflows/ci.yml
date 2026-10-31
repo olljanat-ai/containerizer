@@ -43,7 +43,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt -r requirements-sql.txt pytest
-      - run: python -m pytest -q tests/test_sqlstore.py tests/test_admin.py tests/test_trends.py -rs
+      - run: python -m pytest -q tests/test_sqlstore.py tests/test_admin.py tests/test_roles.py tests/test_trends.py -rs
       - name: Image builds and the UI serves results
         run: |
           docker build -f results/Dockerfile -t containerizer-results .

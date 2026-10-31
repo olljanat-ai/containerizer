@@ -140,9 +140,11 @@ class Connection:
     def close(self):
         self._conn.close()
 
-    def set_user(self, user: str, name: str | None = None, via: str = "admin UI") -> None:
-        """Who the audit log names for changes on this connection (read-only for its lifetime)."""
+    def set_user(self, user: str, name: str | None = None, via: str = "admin UI", role: str | None = None) -> None:
+        """Who the audit log names for changes on this connection, and in which role (read-only for its lifetime)."""
         cur = self._conn.cursor()
+        if role:
+            cur.execute("EXEC sp_set_session_context @key = N'containerizer.role', @value = %s, @read_only = 1", (role[:40],))
         cur.execute("EXEC sp_set_session_context @key = N'containerizer.via', @value = %s, @read_only = 1", (via[:20],))
         cur.execute("EXEC sp_set_session_context @key = N'containerizer.user', @value = %s, @read_only = 1", (user[:256],))
         if name:
