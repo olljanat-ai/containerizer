@@ -1,4 +1,4 @@
-site_name: containerizer
+site_name: Containerizer
 site_description: Can this application run as a Linux container on Kubernetes? Assessment, hardened builds and manifests.
 site_url: https://containerizer.eu/
 repo_url: https://github.com/olljanat-ai/containerizer
