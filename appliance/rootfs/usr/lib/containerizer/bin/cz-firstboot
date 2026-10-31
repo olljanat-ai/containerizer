@@ -58,6 +58,7 @@ install -d -m 0755 /run/containerizer
 } > /run/containerizer/caddy.env
 echo "CONTAINERIZER_PUBLIC_URL=https://$host" > /run/containerizer/web-url.env
 echo "GF_SERVER_ROOT_URL=https://$host/grafana/" > /run/containerizer/grafana-url.env
+echo "CONTAINERIZER_GRAFANA_URL=https://$host/grafana/d/containerizer-scans" >> /run/containerizer/web-url.env
 chmod 0644 /run/containerizer/caddy.env /run/containerizer/web-url.env /run/containerizer/grafana-url.env
 
 # Learned rules: the code reads and writes rules/learned/, which on the appliance is a link to the
