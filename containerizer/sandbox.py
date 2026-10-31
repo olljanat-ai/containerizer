@@ -90,9 +90,9 @@ class KubeOptions:
 class Kube:
     """Read-only kubectl wrapper (get, logs). Credentials stay in the kubeconfig, never in arguments."""
 
-    def __init__(self, o: KubeOptions | None = None, kubectl: str | None = None):
+    def __init__(self, o: KubeOptions | None = None, kubectl: str | None = "auto"):
         self.o = o or KubeOptions()
-        self.kubectl = kubectl or shutil.which("kubectl")
+        self.kubectl = shutil.which("kubectl") if kubectl == "auto" else kubectl     # None: no kubectl
 
     def _base(self) -> list[str]:
         cmd = [self.kubectl or "kubectl", f"--request-timeout={self.o.request_timeout}s"]
@@ -116,7 +116,7 @@ class Kube:
                 kind = "not-found"
             elif "Forbidden" in err or "forbidden" in err:
                 kind = "forbidden"
-            elif re.search(r"Unable to connect|connection refused|no such host|i/o timeout|dial tcp|"
+            elif re.search(r"Unable to connect|connection refused|was refused|no such host|i/o timeout|dial tcp|"
                            r"no configuration has been provided|context .* does not exist|"
                            r"the server has asked for the client to provide credentials|Unauthorized", err):
                 kind = "unreachable"
