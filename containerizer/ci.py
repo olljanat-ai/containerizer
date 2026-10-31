@@ -47,7 +47,7 @@ def snapshot_app(a: AppAssessment, prefix: str = "") -> dict:
         if f.severity != "info":
             findings.append(_item("(repository)", f, prefix))
     return {"name": a.name, "path": prefix, "rating": a.rating, "rating_text": APP_RATINGS[a.rating],
-            "score": a.score, "effort_days": a.effort, "confidence": a.confidence, "summary": a.summary(),
+            "score": a.score, "confidence": a.confidence, "summary": a.summary(),
             "components": {c.name: {"verdict": c.verdict, "role": c.role, "tier": c.tier} for c in a.components},
             "findings": findings}
 
@@ -59,7 +59,7 @@ def _item(component: str, f, prefix: str, verdict: str = "") -> dict:
             "category": r.category, "title": r.title, "why": " ".join(r.why.split()), "fix": " ".join(r.fix.split()),
             "refs": list(getattr(r, "refs", None) or []),
             "via": f.via, "only_commands": list(f.modes), "windows_container": r.windows_container,
-            "effort_days": r.effort, "evidence": loc}
+            "evidence": loc}
 
 
 def _join(prefix: str, rel: str) -> str:
@@ -176,7 +176,7 @@ def markdown(d: dict, link: str | None = None) -> str:
             rating += f" (was **{b['rating']}**)"
         title = h["path"] or h["name"]
         L += [f"### {title}: {rating}", "",
-              f"Score {h['score']}/100{_delta(h, b, 'score')} · effort {h['effort_days']} d{_delta(h, b, 'effort_days')}"
+              f"Score {h['score']}/100{_delta(h, b, 'score')}"
               f" · confidence {h['confidence']}", "", h["summary"], ""]
         if a["reasons"]:
             L += ["**Gate failed:**", ""] + [f"- {r}" for r in a["reasons"]] + [""]

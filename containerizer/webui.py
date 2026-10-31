@@ -65,7 +65,7 @@ def _rows(conn, sql: str, params: tuple = ()) -> list[dict]:
 
 def load_overview(conn) -> dict:
     apps = _rows(conn, "SELECT ApplicationId, ApplicationName, ProductId, ProductName, ProductInfoUrl, BusinessUnitId, BusinessUnitName, "
-                       "Rating, Score, EffortDays, Confidence, Summary, AssessedAt, Verified FROM cz.vApplicationLatest")
+                       "Rating, Score, Confidence, Summary, AssessedAt, Verified FROM cz.vApplicationLatest")
     comps = _rows(conn, "SELECT ApplicationId, COUNT(*) AS N FROM cz.vComponentLatest GROUP BY ApplicationId")
     top = _rows(conn, "SELECT ApplicationId, Title, Severity, COUNT(*) AS N FROM cz.vFindingLatest "
                       "WHERE Severity IN ('blocker', 'rewrite') GROUP BY ApplicationId, Title, Severity")
@@ -95,7 +95,7 @@ def load_application(conn, app_id: int) -> dict | None:
     app["sandbox"] = _rows(conn, "SELECT ComponentId, ComponentName, CheckedAt, Status, Reason, GitOps, Namespace, Workloads, "
                                  "Ready, Restarts, RuleId, Outcome, Diagnosis, Events, Url, UrlCheck FROM cz.vSandboxLatest "
                                  "WHERE ApplicationId = %s", (app_id,))
-    app["history"] = _rows(conn, "SELECT TOP (20) AssessedAt, Rating, Score, EffortDays FROM cz.ApplicationAssessment "
+    app["history"] = _rows(conn, "SELECT TOP (20) AssessedAt, Rating, Score FROM cz.ApplicationAssessment "
                                  "WHERE ApplicationId = %s ORDER BY AssessedAt DESC, AssessmentId DESC", (app_id,))
     app["migrations"] = load_migrations(conn, app_id)
     from .sbomui import load_app_sboms
@@ -163,7 +163,7 @@ def _idp_section(rows: list[dict]) -> str:
 
 def load_migrations(conn, app_id: int, component_id: int | None = None) -> list[dict]:
     """Migration plans and AI agent prompts of the latest assessment (empty before `db init` added them)."""
-    sql = ("SELECT ComponentId, ComponentName, Outcome, EffortDays, ItemCount, PlanJson, AgentPrompt "
+    sql = ("SELECT ComponentId, ComponentName, Outcome, ItemCount, PlanJson, AgentPrompt "
            "FROM cz.vComponentMigrationLatest WHERE ApplicationId = %s")
     params: tuple = (app_id,)
     if component_id is not None:
@@ -229,8 +229,7 @@ def _mix(apps: list[dict]) -> Counter:
 def _summary_line(apps: list[dict]) -> str:
     c = _mix(apps)
     ready = c["A"]
-    return (f"{len(apps)} application{'s' if len(apps) != 1 else ''} · {ready} ready to containerize · "
-            f"{_num(sum(float(a['EffortDays'] or 0) for a in apps), 0)} person-days estimated")
+    return f"{len(apps)} application{'s' if len(apps) != 1 else ''} · {ready} ready to containerize"
 
 
 def _bu_href(bu) -> str:
@@ -252,7 +251,6 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "") -> 
         apps = [a for a in apps if str(a["BusinessUnitId"] if a["BusinessUnitId"] is not None else "none") == bu_filter]
     c = _mix(apps)
     total = len(apps)
-    effort = sum(float(a["EffortDays"] or 0) for a in apps)
     last = max((a["AssessedAt"] for a in apps if a["AssessedAt"]), default=None)
 
     def pct(n):
@@ -263,9 +261,7 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "") -> 
              f"<div class='tile'><div class='label'>Need code changes (B, C)</div><div class='value'>{c['B'] + c['C']}</div>"
              f"<div class='sub'>{pct(c['B'] + c['C'])}</div></div>"
              f"<div class='tile'><div class='label'>Partly or not feasible (D, E)</div><div class='value'>{c['D'] + c['E']}</div>"
-             f"<div class='sub'>{pct(c['D'] + c['E'])}</div></div>"
-             f"<div class='tile'><div class='label'>Estimated effort</div><div class='value'>{_num(effort)}</div>"
-             f"<div class='sub'>person-days</div></div>")
+             f"<div class='sub'>{pct(c['D'] + c['E'])}</div></div>")
 
     bus: dict = {}
     for a in all_apps:
@@ -290,13 +286,13 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "") -> 
                 f"<tr><td>{badge(a['Rating'])}</td>"
                 f"<td><a href='/app/{int(a['ApplicationId'])}'>{e(a['ApplicationName'])}</a>"
                 f"<div class='muted small'>{e(RATING_TITLE.get(a['Rating'], ''))}: {e(RATING_TEXT.get(a['Rating'], ''))}</div></td>"
-                f"<td class='num'>{int(a['Score'])}</td><td class='num'>{_num(a['EffortDays'], 1)}</td>"
+                f"<td class='num'>{int(a['Score'])}</td>"
                 f"<td class='num'>{int(a['Components'])}</td><td>{e(a['MainObstacle'] or '-')}</td></tr>"
                 for a in sorted(lst, key=lambda a: (a["Rating"], -int(a["Score"]), a["ApplicationName"].lower())))
             body.append(f"<div class='product'><h3>{e(prod or UNASSIGNED + ' to a product')}{_info_link(lst[0].get('ProductInfoUrl'))} "
                         f"<span class='muted small'>{_summary_line(lst)}</span></h3>"
                         f"<table><thead><tr><th>Rating</th><th>Application</th><th class='num'>Readiness</th>"
-                        f"<th class='num'>Effort (days)</th><th class='num'>Components</th><th>Main obstacle</th></tr></thead>"
+                        f"<th class='num'>Components</th><th>Main obstacle</th></tr></thead>"
                         f"<tbody>{rows}</tbody></table></div>")
         bc = _mix(bu_apps)
         sections.append(f"<section class='bu'><h2>{e(bu or UNASSIGNED + ' to a business unit')}</h2>"
@@ -324,8 +320,8 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "") -> 
 <div class='tiles'>{tiles if all_apps else ''}</div>
 {f"<div class='overall'>{segmented(c, total, 'Ratings of all applications shown')}{legend(c)}</div>" if total else ''}
 {note}{''.join(sections)}
-<footer>{legend()}<p class='muted small'>Readiness is 0-100 (higher is better) across the server components. Effort is
-an estimate in person-days for the work the rules identified. Ratings come from rule-based analysis of the source code,
+<footer>{legend()}<p class='muted small'>Readiness is 0-100 (higher is better) across the server components.
+Ratings come from rule-based analysis of the source code,
 and where noted were confirmed by building and running the generated containers.</p></footer>""")
 
 
@@ -378,7 +374,6 @@ def render_application(app: dict, nav: str = "") -> str:
         f"<div class='muted small'>{e(c['ProjectPath'])}</div></td>"
         f"<td>{e(ROLE_TEXT.get(c['Role'], c['Role'].title()))}</td>"
         f"<td><span class='sev s-{e(c['Verdict'])}'>{e(VERDICT_LABEL.get(c['Verdict'], c['Verdict']))}</span></td>"
-        f"<td class='num'>{_num(c['EffortDays'], 1)}</td>"
         f"<td>{_verify(c)}</td>"
         + (f"<td>{_sandbox(sandbox.get(c['ComponentId']))}</td>" if sandbox else "")
         + f"<td>{_plan_cell(app['ApplicationId'], c, migs.get(c['ComponentId']))}</td>"
@@ -401,8 +396,8 @@ def render_application(app: dict, nav: str = "") -> str:
     if repo:
         details.append("<details><summary><b>Repository</b></summary>" + "".join(_finding(f) for f in repo) + "</details>")
 
-    hist = "".join(f"<tr><td>{_date(h['AssessedAt'])}</td><td>{badge(h['Rating'])}</td><td class='num'>{int(h['Score'])}</td>"
-                   f"<td class='num'>{_num(h['EffortDays'], 1)}</td></tr>" for h in app["history"])
+    hist = "".join(f"<tr><td>{_date(h['AssessedAt'])}</td><td>{badge(h['Rating'])}</td><td class='num'>{int(h['Score'])}</td></tr>"
+                   for h in app["history"])
     src = ""
     if app.get("RepositoryUrl"):
         u = app["RepositoryUrl"]
@@ -419,7 +414,6 @@ def render_application(app: dict, nav: str = "") -> str:
 {f"<p>{e(app['Description'])}</p>" if app.get('Description') else ''}<p>{e(app['Summary'])}</p></div></header>
 <div class='tiles'>
 <div class='tile'><div class='label'>Readiness</div><div class='value'>{int(app['Score'])}<span class='unit'>/100</span></div></div>
-<div class='tile'><div class='label'>Estimated effort</div><div class='value'>{_num(app['EffortDays'], 1)}</div><div class='sub'>person-days</div></div>
 <div class='tile'><div class='label'>Confidence</div><div class='value'>{_confidence(app['Confidence'])}</div>
 <div class='sub'>{'confirmed by building and running' if app['Verified'] else 'from source analysis'}</div></div>
 <div class='tile'><div class='label'>Last assessed</div><div class='value small-value'>{_date(app['AssessedAt'])}</div></div>
@@ -427,16 +421,16 @@ def render_application(app: dict, nav: str = "") -> str:
 <div class='meta'>{owner}{src}</div>
 {f"<h2>Main obstacles</h2><ul class='obstacles'>{obs_html}</ul>" if obs_html else ''}
 <h2>Components</h2>
-<table><thead><tr><th>Component</th><th>What it is</th><th>Verdict</th><th class='num'>Effort (days)</th><th>Build and run</th>{"<th>Sandbox cluster</th>" if sandbox else ""}<th>Migration</th>{"<th>Packages</th>" if sboms else ""}</tr></thead>
+<table><thead><tr><th>Component</th><th>What it is</th><th>Verdict</th><th>Build and run</th>{"<th>Sandbox cluster</th>" if sandbox else ""}<th>Migration</th>{"<th>Packages</th>" if sboms else ""}</tr></thead>
 <tbody>{comp_rows}</tbody></table>
 {_idp_section(app.get("idp") or [])}
 <h2>What needs to change, and why</h2>{''.join(details)}
 <h2>History</h2><p class='muted small'><a href='/trends'>Trends of all applications</a></p><table class='narrow'><thead><tr><th>Assessed</th><th>Rating</th><th class='num'>Readiness</th>
-<th class='num'>Effort (days)</th></tr></thead><tbody>{hist}</tbody></table>
+</tr></thead><tbody>{hist}</tbody></table>
 <footer>{legend()}</footer>""", script=any(m.get("AgentPrompt") for m in migs.values()))
 
 
-OUTCOME_TEXT = {"linux-container": "Can move to a Linux container",
+PLAN_OUTCOME_TEXT = {"linux-container": "Can move to a Linux container",
                 "partial": "Can move once the Windows-only parts are isolated",
                 "stays-on-windows": "Stays on Windows"}
 KIND_TEXT = {"replace": "Replace", "port": "Port", "externalize": "Move out of the process", "isolate": "Keep on Windows"}
@@ -481,12 +475,11 @@ def _migration(app_id, m: dict | None) -> str:
             + (f"<div class='small'>{'; '.join(extra)}</div>" if extra else "")
             + ("<div class='small'>" + ", ".join(f"<a href='{e(u)}' rel='noopener noreferrer'>{e(_ref_label(u))}</a>"
                                                  for u in refs) + "</div>" if refs else "")
-            + f"</td><td class='num'>{_num(it.get('effort_days'), 1)}</td></tr>")
+            + "</td></tr>")
     out = [f"<section class='migration' id='m{cid}'><h3>Migration assistant "
-           f"<span class='muted small'>{e(OUTCOME_TEXT.get(m['Outcome'], m['Outcome']))} · about "
-           f"{_num(m['EffortDays'], 1)} person-days</span></h3>"]
+           f"<span class='muted small'>{e(PLAN_OUTCOME_TEXT.get(m['Outcome'], m['Outcome']))}</span></h3>"]
     if rows:
-        out.append("<table><thead><tr><th>Action</th><th>Replace</th><th>With</th><th class='num'>Effort (days)</th>"
+        out.append("<table><thead><tr><th>Action</th><th>Replace</th><th>With</th>"
                    "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>")
     if m.get("AgentPrompt"):
         out.append(f"<div class='prompt' id='p{cid}'><div class='prompt-head'><b>Prompt for an AI coding agent</b>"

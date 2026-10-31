@@ -2,7 +2,7 @@
 
 For every component that is not ready (verdict refactor, rewrite or blocker, or one that keeps local
 state), each serious finding is mapped to a migration from rules/migrations.yaml (what to replace with
-what, packages, steps, verification, effort, references). Findings without an entry get an item built
+what, packages, steps, verification, references). Findings without an entry get an item built
 from their own rule. The plan is rendered as Markdown for the reports and as a self-contained prompt that
 can be handed to an AI coding agent (Claude Code, GitHub Copilot, ...) to carry out the migration.
 
@@ -36,7 +36,6 @@ class Migration:
     kind: str
     replace: str
     with_: str
-    effort: float | None = None
     packages: dict = field(default_factory=dict)
     steps: list[str] = field(default_factory=list)
     verify: list[str] = field(default_factory=list)
@@ -46,7 +45,6 @@ class Migration:
     def from_dict(cls, d: dict) -> "Migration":
         m = cls(id=d["id"], rules=list(d.get("for") or []), kind=d.get("kind", "replace"),
                 replace=str(d.get("replace", "")).strip(), with_=str(d.get("with", "")).strip(),
-                effort=float(d["effort"]) if d.get("effort") is not None else None,
                 packages={k: list(v or []) for k, v in (d.get("packages") or {}).items()},
                 steps=[" ".join(str(s).split()) for s in d.get("steps") or []],
                 verify=[" ".join(str(s).split()) for s in d.get("verify") or []],
@@ -126,19 +124,16 @@ def component_plan(a, c, index: dict[str, Migration] | None = None) -> dict | No
         if it is None:
             if m:
                 it = {"id": m.id, "kind": m.kind, "replace": m.replace, "with": m.with_,
-                      "effort_days": m.effort if m.effort is not None else r.effort,
                       "packages": _packages(m, c), "steps": list(m.steps),
                       "verify": list(m.verify), "refs": _refs(m.refs, r.refs), "curated": True, "findings": []}
             else:
                 it = {"id": key, "kind": "isolate" if r.severity == "blocker" and r.windows_container is False
                       and r.effort == 0 else "replace",
-                      "replace": r.title, "with": _ws(r.fix), "effort_days": r.effort, "packages": {},
+                      "replace": r.title, "with": _ws(r.fix), "packages": {},
                       "steps": [_ws(r.fix)] if r.fix else [], "verify": [], "refs": _refs(r.refs),
                       "curated": False, "findings": []}
             items[key] = it
         else:
-            if m is None or m.effort is None:
-                it["effort_days"] = max(it["effort_days"], r.effort)
             it["refs"] = _refs(it["refs"], r.refs)
         it["findings"].append(finding)
         if f.modes:
@@ -148,13 +143,11 @@ def component_plan(a, c, index: dict[str, Migration] | None = None) -> dict | No
         dirs = list((c.facts or {}).get("writable_dirs") or [])
         state = {"writable_dirs": dirs, "stateless": getattr(c, "stateless", None)}
     ordered = sorted(items.values(), key=lambda i: (i["kind"] == "isolate",
-                                                    -max(SEV_RANK[f["severity"]] for f in i["findings"]),
-                                                    -float(i["effort_days"] or 0)))
+                                                    -max(SEV_RANK[f["severity"]] for f in i["findings"])))
     actionable = [i for i in ordered if i["kind"] != "isolate"]
     isolate = [i for i in ordered if i["kind"] == "isolate"]
     plan = {
         "component": c.name, "project": c.project.rel, "role": c.role, "verdict": c.verdict,
-        "effort_days": round(sum(float(i["effort_days"] or 0) for i in ordered), 1),
         "items": ordered, "state": state,
         "outcome": ("stays-on-windows" if isolate and not actionable else
                     "partial" if isolate else "linux-container"),
@@ -185,8 +178,7 @@ def _item_md(n: int, it: dict, for_agent: bool) -> list[str]:
     head = f"### {n}. {it['replace']} → {it['with']}" if it["with"] != it["replace"] else f"### {n}. {it['replace']}"
     L = [head, ""]
     sev = sorted({f["severity"] for f in it["findings"]}, key=lambda s: -SEV_RANK[s])
-    L.append(f"Kind: {KIND_TEXT[it['kind']]} · severity: {', '.join(sev)} · estimated effort: "
-             f"{_days(it['effort_days'])}")
+    L.append(f"Kind: {KIND_TEXT[it['kind']]} · severity: {', '.join(sev)}")
     if it.get("only_commands"):
         L.append(f"Only the {', '.join('`' + m + '`' for m in it['only_commands'])} command(s) are affected; "
                  "the other commands already run on Linux.")
@@ -210,13 +202,6 @@ def _item_md(n: int, it: dict, for_agent: bool) -> list[str]:
     if it["refs"]:
         L += ["", "References: " + ", ".join(it["refs"] if for_agent else (f"<{u}>" for u in it["refs"]))]
     return L + [""]
-
-
-def _days(d) -> str:
-    d = float(d or 0)
-    if d == 0:
-        return "not estimated (no code change in this component)"
-    return f"about {d:g} person-day{'s' if d != 1 else ''}"
 
 
 def _lang(c) -> dict:
@@ -285,8 +270,7 @@ def agent_prompt(a, c, plan: dict) -> str:
          f"- Application: {a.name}",
          f"- Project: `{c.project.rel}`",
          f"- Kind: {c.role}; {lang['platform']}",
-         f"- Current verdict: {c.verdict} ({_verdict_text(c.verdict)})",
-         f"- Estimated effort of this plan: {_days(plan['effort_days'])}", ""]
+         f"- Current verdict: {c.verdict} ({_verdict_text(c.verdict)})", ""]
     if actionable:
         L += ["## Migration plan", "",
               "Do the items in this order; each is independent enough to be its own commit.", ""]
@@ -353,10 +337,10 @@ def _verdict_text(v: str) -> str:
 
 def plan_markdown(plan: dict, heading: str = "###") -> list[str]:
     """Short human-readable form of a plan for the migration report."""
-    L = [f"{heading} {plan['component']}: {_outcome_text(plan['outcome'])} ({_days(plan['effort_days'])})", "",
-         "| # | Replace | With | Kind | Effort (d) |", "| --- | --- | --- | --- | --- |"]
+    L = [f"{heading} {plan['component']}: {_outcome_text(plan['outcome'])}", "",
+         "| # | Replace | With | Kind |", "| --- | --- | --- | --- |"]
     for n, it in enumerate(plan["items"], 1):
-        L.append(f"| {n} | {it['replace']} | {it['with']} | {KIND_TEXT[it['kind']]} | {float(it['effort_days'] or 0):g} |")
+        L.append(f"| {n} | {it['replace']} | {it['with']} | {KIND_TEXT[it['kind']]} |")
     L.append("")
     if plan.get("state") and plan["state"].get("writable_dirs"):
         L += [f"Local state: writes to {', '.join('`' + d + '`' for d in plan['state']['writable_dirs'])}; "

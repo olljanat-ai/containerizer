@@ -2,7 +2,7 @@
 #
 # The finding rules (rules/1x-6x) say what breaks and, in `fix`, what to do in one sentence. The entries
 # here turn that into a migration plan a person or an AI coding agent can execute: what to replace with
-# what, which packages to add and remove, the steps, how to check the result, and an effort estimate.
+# what, which packages to add and remove, the steps and how to check the result.
 # containerizer/migrate.py reads them for every component that is not ready (verdict refactor, rewrite
 # or blocker), and renders the plan into the reports (<app>.md, MIGRATION.md, assessment.json), the
 # results database (ComponentMigration) and a copyable prompt for AI coding agents in the web UI.
@@ -18,16 +18,13 @@
 #                         not try to "fix" it in code
 #   replace   what is being replaced (short)
 #   with      the recommended replacement (short; alternatives in `steps`)
-#   effort    person-days per component for the change itself, including tests; when omitted the
-#             finding rule's effort is used. Blocker rules carry effort 0 (they are not counted in the
-#             assessment), so their migrations always state one.
 #   packages  {add: [...], remove: [...]}: NuGet package ids to add (only the primary choice; alternatives
 #             go in `steps`) and package ids or assembly references to remove (`*` allowed)
 #   steps     ordered, concrete steps
 #   verify    how to prove the change works (in addition to build, tests and a re-assessment)
 #   refs      extra https links; the finding rule's own refs are always added
 #
-# A finding without an entry here still gets a plan item built from its rule (`fix`, `effort`, `refs`).
+# A finding without an entry here still gets a plan item built from its rule (`fix`, `refs`).
 # tests/test_migrations.py checks that every blocker and rewrite rule has an entry and that every id in
 # `for` exists.
 migrations:
@@ -368,7 +365,6 @@ migrations:
     kind: replace
     replace: WinForms/WPF APIs used in server code (rendering, clipboard, message boxes)
     with: server-side libraries (QuestPDF, SkiaSharp) and plain .NET types
-    effort: 3
     packages:
       add: [QuestPDF]
     steps:
@@ -386,7 +382,6 @@ migrations:
     kind: replace
     replace: Microsoft Office automation (COM interop)
     with: Open XML SDK / ClosedXML (Word, Excel) and QuestPDF (PDF)
-    effort: 4
     packages:
       add: [DocumentFormat.OpenXml, ClosedXML]
       remove: [Microsoft.Office.Interop.*, NetOffice.*]
@@ -586,7 +581,6 @@ migrations:
     kind: replace
     replace: OLE DB / Access database engine
     with: a server database (SQL Server, PostgreSQL) or ODBC with a Linux driver
-    effort: 3
     steps:
       - Migrate Access/Excel-as-database data to a server database and use its managed provider.
       - For a source that must stay, use System.Data.Odbc with that system's Linux ODBC driver.
@@ -875,7 +869,6 @@ migrations:
     kind: isolate
     replace: Registered COM components, vendor native SDKs, 32-bit-only or WinRT dependencies
     with: the vendor's Linux SDK or network API if one exists; otherwise a small Windows-hosted service that wraps the dependency
-    effort: 5
     steps:
       - Ask the vendor for a Linux SDK, a REST/gRPC API or a cross-platform successor (OPC UA for OPC DA, AIF/OData for AX).
       - If there is none, move the calls that need the dependency into a separate small service on a Windows host (VM or Windows container) and call it over HTTP/gRPC from the containerized component.
@@ -888,7 +881,6 @@ migrations:
     kind: isolate
     replace: Local hardware, printers or desktop session APIs
     with: an edge/host service that owns the device and talks to the cluster over the network
-    effort: 3
     steps:
       - Keep the device-facing code on the machine that has the device and send events/commands over a queue or API.
       - Replace direct printing with generating a PDF and sending it to a print service (IPP/CUPS).
@@ -898,7 +890,6 @@ migrations:
     kind: isolate
     replace: Code that runs inside a Windows server product or manages Windows hosts
     with: stays with the product; re-platforming (Logic Apps, SharePoint Online/remote add-ins, headless Sitecore) is a separate project
-    effort: 0
     steps:
       - No code change in this component makes it run in a Linux container; plan a re-platforming project, or leave it on Windows.
 
@@ -907,7 +898,6 @@ migrations:
     kind: isolate
     replace: Windows desktop UI (WinForms/WPF) or Office add-in
     with: stays a desktop client calling containerized APIs, or is rebuilt as a web app
-    effort: 0
     steps:
       - Move business logic the UI shares with server code into a UI-free library or API so the server side can be containerized.
       - The client itself stays on PCs; rebuilding it as a web app is a separate project.
@@ -918,7 +908,6 @@ migrations:
     kind: replace
     replace: COM / ActiveX automation through JACOB or com4j
     with: a Java library or the product's REST/SOAP API (Apache POI for Office documents)
-    effort: 5
     packages:
       add: [org.apache.poi:poi-ooxml]
       remove: ['com.hynnet:jacob', 'net.sf.jacob-project:jacob', 'org.jvnet.com4j:com4j']
@@ -935,7 +924,6 @@ migrations:
     kind: replace
     replace: Windows DLL calls through JNA/JNI
     with: portable Java APIs, or the Linux (.so) build of the native library
-    effort: 3
     steps:
       - List each Windows API or DLL entry point the code calls and what it is used for (files and ACLs, processes, the registry, the event log, a vendor SDK).
       - Replace system calls with Java APIs (java.nio.file, ProcessHandle, java.util.logging/SLF4J to stdout, configuration instead of the registry).
@@ -949,7 +937,6 @@ migrations:
     kind: replace
     replace: 'JDBC-ODBC bridge (sun.jdbc.odbc, jdbc:odbc: URLs)'
     with: the database's own JDBC driver, configured with a JDBC URL from the environment
-    effort: 3
     packages:
       add: [com.microsoft.sqlserver:mssql-jdbc]
     steps:
@@ -1006,7 +993,6 @@ migrations:
     kind: replace
     replace: COM / ActiveX automation through winax
     with: a Node.js library or the product's REST API (exceljs, docx for Office files)
-    effort: 5
     packages:
       add: [exceljs]
       remove: [winax]
@@ -1023,7 +1009,6 @@ migrations:
     kind: replace
     replace: Windows DLL calls through FFI or NodeRT
     with: portable Node.js APIs or packages, or the Linux build of the native library
-    effort: 3
     steps:
       - List each Windows DLL function or WinRT API the code calls and what it is used for.
       - Replace system calls with Node.js APIs or cross-platform packages; for a vendor library, load its Linux .so build instead of the DLL.
@@ -1050,7 +1035,6 @@ migrations:
     kind: replace
     replace: node-sass (LibSass)
     with: sass (Dart Sass)
-    effort: 0.5
     packages:
       add: [sass]
       remove: [node-sass]

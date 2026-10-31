@@ -64,7 +64,7 @@ The rest of this page explains how the assessment works and what it generates.
    connection strings, folders the app writes to, Kestrel endpoints.
 4. **Finding rules** (`rules/10-runtime.yaml`, `20-platform.yaml`, `30-integration.yaml`) detect
    blockers and work items with a severity:
-   `info < config < refactor < rewrite < blocker`, an effort estimate, an explanation, a fix, and
+   `info < config < refactor < rewrite < blocker`, an explanation, a fix, and
    whether a Windows container would be a workable stop-gap.
 5. **Reachability**: findings in shared libraries only count for components whose code actually
    reaches the offending types (a type/extension-method mention graph) and that it compiles for its
@@ -176,7 +176,7 @@ For every component that is not ready (verdict refactor, rewrite or blocker), ea
 mapped to a concrete Linux-compatible replacement from [`rules/migrations.yaml`](rules/migrations.yaml):
 System.Drawing → SkiaSharp/ImageSharp, WCF → CoreWCF, Windows Service → worker service, Office
 automation → Open XML SDK/ClosedXML, registry → configuration, Event Log → ILogger, MSMQ → a broker,
-and so on, with packages to add and remove, steps, checks, an effort estimate and references. Parts
+and so on, with packages to add and remove, steps, checks and references. Parts
 with no Linux replacement (desktop UI, hardware, vendor COM SDKs, BizTalk) are marked "keep on Windows"
 instead of being forced into a code change.
 

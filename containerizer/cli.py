@@ -35,7 +35,7 @@ def cmd_assess(args) -> int:
             apply_ai(a, args.model)
         results.append(a)
         if not args.quiet:
-            print(f"{a.name:24s} {a.rating} score={a.score:3d} effort={a.effort:5.1f}d conf={a.confidence:.2f}  {a.summary()}")
+            print(f"{a.name:24s} {a.rating} score={a.score:3d} conf={a.confidence:.2f}  {a.summary()}")
             if args.verbose:
                 for c in a.components:
                     print(f"    {c.verdict:8s} {c.role:8s} {c.name:45s} {','.join(c.project.tfms)}")

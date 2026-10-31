@@ -78,7 +78,7 @@ class Rule:
     applies_to: list[str] = field(default_factory=list)
     severity: str = "info"
     category: str = "general"
-    effort: float = 0.0
+    effort: float = 0.0             # weight in the readiness score (internal, not shown as an estimate)
     title: str = ""
     why: str = ""
     fix: str = ""

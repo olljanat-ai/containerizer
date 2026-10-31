@@ -36,7 +36,7 @@ def refs_md(refs: list[str]) -> str:
 def migration_markdown(a: AppAssessment) -> str:
     L = [f"# {a.name}: containerization assessment", "",
          f"**Rating {a.rating}** - {APP_RATINGS[a.rating]}  ",
-         f"Readiness score {a.score}/100 · estimated effort {a.effort} person-days · confidence {a.confidence}  ",
+         f"Readiness score {a.score}/100 · confidence {a.confidence}  ",
          "Stateless: " + ("yes" if not a.stateful() else "no - " + "; ".join(
              f"{c.name}: {', '.join(sorted({f.rule.title for f in c.state_findings}))}" for c in a.stateful())), "",
          a.summary(), ""]
@@ -46,11 +46,11 @@ def migration_markdown(a: AppAssessment) -> str:
         for b in tb:
             L.append(f"- **{b['title']}** ({b['severity']}): {', '.join(b['components'])}")
         L.append("")
-    L += ["## Components", "", "| Component | Role | Target | Verdict | Score | Effort (d) | Windows container stop-gap |",
-          "| --- | --- | --- | --- | --- | --- | --- |"]
+    L += ["## Components", "", "| Component | Role | Target | Verdict | Score | Windows container stop-gap |",
+          "| --- | --- | --- | --- | --- | --- |"]
     for c in a.components:
         L.append(f"| {c.name} | {c.role} | {';'.join(c.project.tfms) or c.project.kind_hint} | {VERDICT_TEXT[c.verdict]} | "
-                 f"{c.score} | {c.effort} | {'yes' if c.windows_container_ok and c.project.is_netfx else '-'} |")
+                 f"{c.score} | {'yes' if c.windows_container_ok and c.project.is_netfx else '-'} |")
     L.append("")
     for c in a.components:
         L += [f"### {c.name}", "", f"`{c.project.rel}` · {c.role} · {VERDICT_TEXT[c.verdict]}", ""]
@@ -109,7 +109,7 @@ def migration_markdown(a: AppAssessment) -> str:
     if plans:
         from .migrate import plan_markdown, prompt_filename
         L += ["## Migration assistant", "",
-              "Concrete replacements for what keeps each component out of a Linux container, with effort estimates "
+              "Concrete replacements for what keeps each component out of a Linux container "
               "(rules/migrations.yaml). Each component that can be changed also gets a ready-to-use prompt for an "
               f"AI coding agent: `agent-prompts/{prompt_dir(a.name)}/<component>.md` next to this report.", ""]
         for plan in plans.values():
@@ -144,9 +144,9 @@ def write_agent_prompts(a: AppAssessment, out: Path) -> list[Path]:
 
 def portfolio_markdown(results: list[AppAssessment]) -> str:
     L = ["# Containerization portfolio", "",
-         "| App | Rating | Score | Effort (d) | Confidence | Summary |", "| --- | --- | --- | --- | --- | --- |"]
+         "| App | Rating | Score | Confidence | Summary |", "| --- | --- | --- | --- | --- |"]
     for a in sorted(results, key=lambda a: (a.rating, -a.score)):
-        L.append(f"| {a.name} | {a.rating} | {a.score} | {a.effort} | {a.confidence} | {a.summary()} |")
+        L.append(f"| {a.name} | {a.rating} | {a.score} | {a.confidence} | {a.summary()} |")
     L += ["", "Ratings: " + "; ".join(f"**{k}** {v}" for k, v in APP_RATINGS.items())]
     return "\n".join(L) + "\n"
 
@@ -168,7 +168,7 @@ def portfolio_html(results: list[AppAssessment]) -> str:
                          f"<td class='v-{c.verdict}'>{e(VERDICT_TEXT[c.verdict])}</td><td>{c.score}</td>"
                          f"<td><details><summary>{sum(1 for f in c.findings if f.severity != 'info')} findings</summary><ul>{items}</ul></details></td></tr>")
         rows.append(f"""<details class='app'><summary><span class='r r{a.rating}'>{a.rating}</span> <b>{e(a.name)}</b>
-<span class='meta'>score {a.score} · {a.effort} d · confidence {a.confidence}</span><br><small>{e(a.summary())}</small></summary>
+<span class='meta'>score {a.score} · confidence {a.confidence}</span><br><small>{e(a.summary())}</small></summary>
 <table><tr><th>Component</th><th>Role</th><th>Target</th><th>Verdict</th><th>Score</th><th>Findings</th></tr>{''.join(comps)}</table></details>""")
     legend = "".join(f"<li><span class='r r{k}'>{k}</span> {e(v)}</li>" for k, v in APP_RATINGS.items())
     return f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
