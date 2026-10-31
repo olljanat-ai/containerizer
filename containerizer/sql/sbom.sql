@@ -95,3 +95,7 @@ GRANT SELECT ON [${schema}].vSbomLatest TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vSbomPackageLatest TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vSbomDocumentLatest TO [${schema}_reader];
 GO
+
+-- Version 8: software bills of materials (this file).
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 8) INSERT [${schema}].SchemaVersion (Version) VALUES (8);
+GO
