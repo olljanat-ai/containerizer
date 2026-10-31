@@ -78,6 +78,7 @@ sandbox/
   README.md namespaces.txt
   argocd/bootstrap.yaml      app-of-apps
   flux/bootstrap.yaml        GitRepository + root Kustomization
+  idp/                       sandbox identity provider, when a component signs users in
 ```
 
 The project folder is the Azure DevOps project, `_` for GitHub (no projects), or the GitLab subgroup
@@ -99,7 +100,8 @@ and allow the Git server on **Admin → Firewall**. Every 2 minutes the applianc
 
 Nothing in the output repository is a Secret: credentials are ExternalSecrets ([secrets](external-secrets.md)).
 Apps that need a database, cache or object storage get one from the [lab services](lab-services.md), or a
-restored copy of their [development database](dev-databases.md). `kubectl` as root on the appliance shows
+restored copy of their [development database](dev-databases.md). Apps that sign users in with OpenID
+Connect, SAML 2.0 or WS-Federation are pointed at the [sandbox identity provider](sandbox-idp.md). `kubectl` as root on the appliance shows
 the result. To deploy the same output repository to another cluster, follow `sandbox/README.md` in it
 (Argo CD or Flux).
 

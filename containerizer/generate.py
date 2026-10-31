@@ -663,6 +663,10 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
     rules = rules if rules is not None else load_rules()
     out.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
+    idp_sb = None
+    if gitops is not None and getattr(gitops, "ingress_domain", "") and getattr(gitops, "sandbox_idp", False):
+        from .idp import Sandbox
+        idp_sb = Sandbox(gitops.ingress_domain)
     all_k8s = []
     images: list[tuple[str, str]] = []
     comp_docs: dict[str, list[dict]] = {}
@@ -692,6 +696,17 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
             if devdb is not None:
                 from .devdb import inject
                 inject(docs, devdb, c.name)
+            if idp_sb is not None:
+                from . import idp as _idp
+                clients, notes = _idp.clients_for(k8s_name(a.name), k8s_name(c.name), c.facts or {},
+                                                  list(c.project.packages), idp_sb)
+                _idp.inject(docs, clients)
+                if clients or notes:
+                    (cdir / "idp.json").write_text(json.dumps({
+                        "idp": idp_sb.url, "project": c.project.rel, "clients": [x.to_dict() for x in clients],
+                        "applications": [_idp.wso2_application(x) for x in clients], "notes": notes},
+                        indent=2) + "\n")
+                    written.append(cdir / "idp.json")
             if lab_plan is not None:
                 _lab_inject(a, c, docs, devdb, lab, lab_plan)
             images.append((c.name, image))

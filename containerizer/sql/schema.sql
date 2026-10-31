@@ -216,6 +216,28 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_SandboxCheck_Componen
 CREATE INDEX IX_SandboxCheck_Component ON [${schema}].SandboxCheck (ApplicationId, ComponentId, CheckedAt DESC, CheckId DESC);
 GO
 
+-- How the generator pointed a component at the sandbox identity provider (`containerizer org` with a
+-- sandbox domain, docs/sandbox-idp.md): one row per component, protocol and run. Nothing secret: client
+-- ids, URLs and the names of the settings that were overridden.
+IF OBJECT_ID(N'[${schema}].SandboxIdpClient', N'U') IS NULL
+CREATE TABLE [${schema}].SandboxIdpClient (
+    ClientRowId   bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_SandboxIdpClient PRIMARY KEY,
+    AssessmentId  int            NOT NULL CONSTRAINT FK_SandboxIdpClient_Assessment REFERENCES [${schema}].ApplicationAssessment (AssessmentId) ON DELETE CASCADE,
+    ComponentId   int            NOT NULL CONSTRAINT FK_SandboxIdpClient_Component REFERENCES [${schema}].Component (ComponentId),
+    WrittenAt     datetime2(0)   NOT NULL CONSTRAINT DF_SandboxIdpClient_WrittenAt DEFAULT SYSUTCDATETIME(),
+    Protocol      nvarchar(10)   NOT NULL,          -- oidc, wsfed, saml, none (could not be registered: Notes)
+    IdpUrl        nvarchar(300)  NOT NULL,          -- https://containerizer-idp.<domain>
+    AppUrl        nvarchar(300)  NULL,
+    Identifier    nvarchar(400)  NULL,              -- OIDC client id, WS-Fed realm, SAML entity id
+    MetadataUrl   nvarchar(400)  NULL,
+    Settings      nvarchar(max)  NULL,              -- JSON: overridden settings (name -> value) and the secret's name
+    Notes         nvarchar(2000) NULL
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_SandboxIdpClient_Assessment' AND object_id = OBJECT_ID(N'[${schema}].SandboxIdpClient'))
+CREATE INDEX IX_SandboxIdpClient_Assessment ON [${schema}].SandboxIdpClient (AssessmentId, ComponentId);
+GO
+
 MERGE [${schema}].Rating AS t
 USING (VALUES
     ('A', N'Lift and shift', N'Containers with configuration only', 1),
@@ -296,6 +318,17 @@ GO
 
 -- The latest sandbox check of every application (one row per component it had deployed then; the
 -- rows of one check share CheckedAt), without the log tail. The application page reads it.
+-- Sandbox IdP registrations of the latest assessment (with any) of each application. The application page reads it.
+CREATE OR ALTER VIEW [${schema}].vSandboxIdpLatest AS
+SELECT aa.ApplicationId, x.ComponentId, c.Name AS ComponentName, x.WrittenAt, x.Protocol, x.IdpUrl, x.AppUrl,
+       x.Identifier, x.MetadataUrl, x.Settings, x.Notes
+FROM [${schema}].SandboxIdpClient x
+JOIN [${schema}].ApplicationAssessment aa ON aa.AssessmentId = x.AssessmentId
+JOIN [${schema}].Component c ON c.ComponentId = x.ComponentId
+WHERE x.AssessmentId = (SELECT MAX(y.AssessmentId) FROM [${schema}].SandboxIdpClient y
+                        JOIN [${schema}].ApplicationAssessment ya ON ya.AssessmentId = y.AssessmentId
+                        WHERE ya.ApplicationId = aa.ApplicationId);
+GO
 CREATE OR ALTER VIEW [${schema}].vSandboxLatest AS
 SELECT x.ApplicationId, x.ComponentId, c.Name AS ComponentName, x.CheckedAt, x.Status, x.Reason, x.GitOps,
        x.Namespace, x.Workloads, x.ImageRef, x.Revision, x.Ready, x.Restarts, x.RuleId, x.Outcome, x.Diagnosis, x.Events,
@@ -945,6 +978,7 @@ GRANT UPDATE ON [${schema}].OrgRepository (ProjectName, Name, ExternalId, CloneU
     LastRating, LastScannedAt, LastRunId, LastSeconds, LastDetail) TO [${schema}_writer];
 GRANT EXECUTE ON [${schema}].QueueOrgScanRun TO [${schema}_writer];
 GRANT SELECT, INSERT ON [${schema}].SandboxCheck TO [${schema}_writer];
+GRANT SELECT, INSERT ON [${schema}].SandboxIdpClient TO [${schema}_writer];
 GRANT EXECUTE ON [${schema}].ProposeRuleCandidate TO [${schema}_writer];
 
 GRANT SELECT ON [${schema}].vApplicationLatest TO [${schema}_reader];
@@ -954,6 +988,7 @@ GRANT SELECT ON [${schema}].vComponentMigrationLatest TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vUnmapped TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vAssessmentHistory TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vSandboxLatest TO [${schema}_reader];
+GRANT SELECT ON [${schema}].vSandboxIdpLatest TO [${schema}_reader];
 GRANT SELECT ON [${schema}].Rating TO [${schema}_reader];
 GRANT SELECT ON [${schema}].BusinessUnit TO [${schema}_reader];
 GRANT SELECT ON [${schema}].Product TO [${schema}_reader];
@@ -1011,4 +1046,7 @@ IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 11) INSER
 GO
 -- 12: lab services (LabService)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 12) INSERT [${schema}].SchemaVersion (Version) VALUES (12);
+GO
+-- 13: sandbox identity provider registrations (SandboxIdpClient, vSandboxIdpLatest)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 13) INSERT [${schema}].SchemaVersion (Version) VALUES (13);
 GO

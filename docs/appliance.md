@@ -180,6 +180,12 @@ To reach the deployed apps over HTTPS, set up a wildcard domain and certificate 
 HTTPS**: Caddy answers for `*.<domain>` on the same port 443 and passes the requests to Traefik in k3s,
 and every web component gets `https://<component>-<app>.<domain>/` ([sandbox-https.md](sandbox-https.md)).
 
+Components that sign users in get the sandbox identity provider, WSO2 Identity Server at
+`https://containerizer-idp.<sandbox domain>/` ([sandbox-idp.md](sandbox-idp.md)). `cz-sandbox` creates its
+passwords and client secrets in the secret store once Flux has deployed it.
+`containerizer idp users` (as root) prints the test users and their passwords. Its images come from
+Docker Hub, which the default firewall rules allow.
+
 ## Upgrade and roll back
 
 **Admin → System** (administrators only) shows the running version, the snapshots on the disk and the
