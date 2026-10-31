@@ -226,8 +226,8 @@ def _refs(raw) -> list[str]:
 
 
 def _ref_label(u: str) -> str:
-    m = re.match(r"https?://(?:www\.)?([^/]+)", u)
-    return m[1] if m else u
+    from .report import ref_label     # "learn.microsoft.com: kestrel endpoints", same as the reports
+    return ref_label(u)
 
 
 def render_application(app: dict) -> str:
