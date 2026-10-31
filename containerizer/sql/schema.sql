@@ -1037,6 +1037,119 @@ GRANT UPDATE ON [${schema}].LabService (Enabled, Note, ChangedAt) TO [${schema}_
 IF IS_ROLEMEMBER(N'${schema}_reader', N'${schema}_admin') = 0 ALTER ROLE [${schema}_reader] ADD MEMBER [${schema}_admin];
 GO
 
+-- Approving learned rules from the admin pages (rulereview.py, docs/rule-review.md). The internal rules
+-- repository is set by administrators on Admin -> Rule review (one row); its token is the write token
+-- registered for that repository URL under Source control, which only the scan worker can open. So the
+-- web UI does not push: it asks for the approval (Approve* columns), and the worker opens the pull request
+-- and records the decision through FinishRuleApproval, in the reviewer's name.
+IF OBJECT_ID(N'[${schema}].RulesRepository', N'U') IS NULL
+CREATE TABLE [${schema}].RulesRepository (
+    RulesRepositoryId int NOT NULL CONSTRAINT PK_RulesRepository PRIMARY KEY CONSTRAINT CK_RulesRepository_One CHECK (RulesRepositoryId = 1),
+    RepoUrl       nvarchar(400) NOT NULL CONSTRAINT CK_RulesRepository_Url CHECK (RepoUrl LIKE N'https://_%' AND RepoUrl NOT LIKE N'%[<>"'' ]%'),
+    Provider      nvarchar(20)  NOT NULL CONSTRAINT CK_RulesRepository_Provider CHECK (Provider IN (N'azure-devops', N'github', N'gitlab')),
+    ApiUrl        nvarchar(400) NULL CONSTRAINT CK_RulesRepository_ApiUrl CHECK (ApiUrl LIKE N'https://_%' AND ApiUrl NOT LIKE N'%[<>"'' ]%'),
+    Branch        nvarchar(200) NOT NULL CONSTRAINT DF_RulesRepository_Branch DEFAULT N'main',
+    Path          nvarchar(200) NOT NULL CONSTRAINT DF_RulesRepository_Path DEFAULT N'rules',
+    ChangedAt     datetime2(0)  NOT NULL CONSTRAINT DF_RulesRepository_ChangedAt DEFAULT SYSUTCDATETIME()
+);
+GO
+CREATE OR ALTER TRIGGER [${schema}].trRulesRepositoryAudit ON [${schema}].RulesRepository
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'RulesRepository', COALESCE(i.RulesRepositoryId, d.RulesRepositoryId),
+           LEFT(COALESCE(i.RepoUrl, d.RepoUrl), 200),
+           CASE WHEN d.RulesRepositoryId IS NULL THEN N'insert' WHEN i.RulesRepositoryId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.RulesRepositoryId IS NOT NULL THEN (SELECT d.RepoUrl, d.Provider, d.ApiUrl, d.Branch, d.Path
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.RulesRepositoryId IS NOT NULL THEN (SELECT i.RepoUrl, i.Provider, i.ApiUrl, i.Branch, i.Path
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.RulesRepositoryId = i.RulesRepositoryId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.RulesRepositoryId IS NULL OR i.RulesRepositoryId IS NULL
+       OR EXISTS (SELECT i.RepoUrl, i.Provider, i.ApiUrl, i.Branch, i.Path EXCEPT SELECT d.RepoUrl, d.Provider, d.ApiUrl, d.Branch, d.Path);
+END;
+GO
+IF COL_LENGTH(N'[${schema}].RuleCandidate', N'ApproveRequestedAt') IS NULL
+ALTER TABLE [${schema}].RuleCandidate ADD
+    ApproveRequestedAt datetime2(0)   NULL,         -- a reviewer approved it; the worker opens the pull request
+    ApproveBy          nvarchar(256)  NULL,
+    ApproveByName      nvarchar(256)  NULL,
+    ApproveRole        nvarchar(40)   NULL,
+    ApproveYaml        nvarchar(max)  NULL,         -- the rule as the reviewer approved it (with their edits)
+    ApproveNote        nvarchar(1000) NULL,
+    ApproveStartedAt   datetime2(0)   NULL,         -- the worker took it (taken again after 15 minutes)
+    ApplyError         nvarchar(1000) NULL;         -- why the last approval did not go through
+GO
+
+-- The worker takes the oldest approval waiting for it (one worker at a time per candidate).
+CREATE OR ALTER PROCEDURE [${schema}].NextRuleApproval
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    DECLARE @id int;
+    BEGIN TRANSACTION;
+    SELECT TOP (1) @id = CandidateId FROM [${schema}].RuleCandidate WITH (UPDLOCK, READPAST, ROWLOCK)
+    WHERE Status = N'pending' AND ApproveRequestedAt IS NOT NULL
+      AND (ApproveStartedAt IS NULL OR ApproveStartedAt < DATEADD(minute, -15, SYSUTCDATETIME()))
+    ORDER BY ApproveRequestedAt;
+    IF @id IS NOT NULL
+        UPDATE [${schema}].RuleCandidate SET ApproveStartedAt = SYSUTCDATETIME() WHERE CandidateId = @id;
+    COMMIT TRANSACTION;
+    SELECT CandidateId, Kind, RuleId, Title, TargetFile, RuleYaml, Confidence, Model, LearnedFrom, SeenCount,
+           ApproveBy, ApproveByName, ApproveRole, ApproveYaml, ApproveNote
+    FROM [${schema}].RuleCandidate WHERE CandidateId = @id;
+END;
+GO
+
+-- The worker's result: approved (the pull request is open) in the reviewer's name, or the request is
+-- dropped with the reason and the candidate waits again.
+CREATE OR ALTER PROCEDURE [${schema}].FinishRuleApproval
+    @CandidateId int, @FinalYaml nvarchar(max), @PullRequestUrl nvarchar(400), @Error nvarchar(1000)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @by nvarchar(256), @name nvarchar(256), @role nvarchar(40);
+    SELECT @by = ApproveBy, @name = ApproveByName, @role = ApproveRole FROM [${schema}].RuleCandidate
+    WHERE CandidateId = @CandidateId AND Status = N'pending' AND ApproveStartedAt IS NOT NULL;
+    IF @by IS NULL
+    BEGIN
+        SELECT CAST(0 AS int) AS Updated;
+        RETURN;
+    END
+    -- the change history names the reviewer, not the worker's login
+    EXEC sp_set_session_context N'containerizer.user', @by;
+    EXEC sp_set_session_context N'containerizer.user_name', @name;
+    EXEC sp_set_session_context N'containerizer.via', N'rule review';
+    EXEC sp_set_session_context N'containerizer.role', @role;
+    IF @Error IS NULL
+        UPDATE [${schema}].RuleCandidate SET Status = N'approved', ReviewedBy = ApproveBy, ReviewedByName = ApproveByName,
+               ReviewedAt = SYSUTCDATETIME(), ReviewNote = ApproveNote, FinalYaml = @FinalYaml, AppliedAs = N'pr',
+               PullRequestUrl = @PullRequestUrl, ClaimedBy = NULL, ClaimedAt = NULL, ApproveRequestedAt = NULL,
+               ApproveStartedAt = NULL, ApplyError = NULL
+        WHERE CandidateId = @CandidateId AND Status = N'pending' AND ApproveStartedAt IS NOT NULL;
+    ELSE
+        UPDATE [${schema}].RuleCandidate SET ApproveRequestedAt = NULL, ApproveStartedAt = NULL, ApplyError = @Error,
+               ClaimedBy = NULL, ClaimedAt = NULL
+        WHERE CandidateId = @CandidateId AND Status = N'pending' AND ApproveStartedAt IS NOT NULL;
+    DECLARE @n int = @@ROWCOUNT;
+    EXEC sp_set_session_context N'containerizer.user', NULL;
+    EXEC sp_set_session_context N'containerizer.user_name', NULL;
+    EXEC sp_set_session_context N'containerizer.via', NULL;
+    EXEC sp_set_session_context N'containerizer.role', NULL;
+    SELECT @n AS Updated;
+END;
+GO
+GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].RulesRepository TO [${schema}_admin];
+GRANT SELECT ON [${schema}].RulesRepository TO [${schema}_writer];
+GRANT UPDATE ON [${schema}].RuleCandidate (ApproveRequestedAt, ApproveBy, ApproveByName, ApproveRole, ApproveYaml, ApproveNote,
+                                           ApproveStartedAt, ApplyError) TO [${schema}_admin];
+GRANT EXECUTE ON [${schema}].NextRuleApproval TO [${schema}_writer];
+GRANT EXECUTE ON [${schema}].FinishRuleApproval TO [${schema}_writer];
+GO
+
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 2) INSERT [${schema}].SchemaVersion (Version) VALUES (2);
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 3) INSERT [${schema}].SchemaVersion (Version) VALUES (3);
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 4) INSERT [${schema}].SchemaVersion (Version) VALUES (4);
@@ -1062,4 +1175,6 @@ GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 13) INSERT [${schema}].SchemaVersion (Version) VALUES (13);
 -- 14: dev database backups for PostgreSQL and MySQL (CK_DevDatabase_Engine); more lab services
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 14) INSERT [${schema}].SchemaVersion (Version) VALUES (14);
+-- 15: approving learned rules from the admin pages (RulesRepository, RuleCandidate.Approve*)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 15) INSERT [${schema}].SchemaVersion (Version) VALUES (15);
 GO

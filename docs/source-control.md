@@ -10,7 +10,9 @@ ask (see [The LLM](#the-llm) below):
   self-hosted server. **This is the allow-list**: a scan of an organization without a registered,
   enabled token does not run, and nothing is ever read anonymously.
 - **Output repositories (write)**: one token for each repository the generated Dockerfiles, manifests
-  and GitOps files are pushed to, matched by the repository's URL.
+  and GitOps files are pushed to, matched by the repository's URL. The internal rules repository of
+  the [rule review](rule-review.md#setting-up-the-internal-rules-repository) gets its write token here
+  too.
 
 ## How the tokens are protected
 

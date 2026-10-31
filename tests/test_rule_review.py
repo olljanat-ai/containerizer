@@ -395,6 +395,112 @@ def test_pull_request_failure_keeps_it_pending(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# approving through the scan worker (the appliance): the repository is set on the admin page, its token is
+# the write token under Source control, which only the worker can open
+
+def test_rules_repository_settings_are_checked():
+    cfg, errors = rr.check_repository("https://github.com/acme/rules", "", "", "", "/rules/")
+    assert not errors and (cfg.provider, cfg.branch, cfg.path) == ("github", "main", "rules")
+    assert rr.repository_config({"RepoUrl": cfg.repo, "Provider": "github", "ApiUrl": None, "Branch": "main",
+                                 "Path": "rules"}).describe().startswith("proposed in a pull request")
+    for bad, msg in ((("http://github.com/acme/rules", "", "", "", ""), "https"),
+                     (("https://git.example.com/rules", "", "", "", ""), "provider"),
+                     (("https://x:tok@github.com/acme/rules", "", "", "", ""), "user name or token"),
+                     (("https://github.com/acme/rules", "", "", "a..b", ""), "branch"),
+                     (("https://github.com/acme/rules", "", "", "", "../x"), "folder"),
+                     (("https://github.com/acme/rules", "gitlab", "http://gl.example.com", "", ""), "API URL")):
+        assert any(msg in x for x in rr.check_repository(*bad)[1]), (bad, msg)
+
+
+def _approval(monkeypatch, token="tok-123456", repo="https://github.com/acme/rules"):
+    """process_approval with the database calls replaced: returns (credentials, what was finished)."""
+    from containerizer import credentials as cr
+    finished, marked = [], []
+    monkeypatch.setattr(rr, "next_approval", lambda conn: {
+        "CandidateId": 5, "Kind": "rule", "RuleId": PLAN_RULE["id"], "Title": "t", "TargetFile": "70-reviewed.yaml",
+        "RuleYaml": rr.to_yaml(PLAN_RULE), "Confidence": 0.9, "Model": None, "LearnedFrom": "shop/Shop.Web", "SeenCount": 2,
+        "ApproveBy": "jane@example.com", "ApproveByName": "Jane Doe", "ApproveRole": "admin",
+        "ApproveYaml": rr.to_yaml({**PLAN_RULE, "id": "reviewed-shop-web-data"}), "ApproveNote": "renamed"})
+    monkeypatch.setattr(rr, "load_repository", lambda conn: {"RepoUrl": "https://github.com/acme/rules", "Provider": "github",
+                                                             "ApiUrl": None, "Branch": "main", "Path": "rules"})
+    monkeypatch.setattr(rr, "finish_approval", lambda conn, cid, y, url, err: finished.append((cid, y, url, err)) or True)
+    monkeypatch.setattr(cr, "mark", lambda conn, i, r: marked.append(r))
+    creds = cr.Credentials([cr.Credential(1, "write", "github", None, repo, token=token)] if token else [])
+    return creds, finished, marked
+
+
+def test_worker_opens_the_pull_request_of_an_approval(tmp_path, monkeypatch):
+    creds, finished, marked = _approval(monkeypatch)
+    opened = []
+
+    def fake_open(cfg, kind, entry, cid, title, body, work, token=None):
+        opened.append((cfg.repo, cfg.branch, cfg.path, entry, token, body))
+        return "https://github.com/acme/rules/pull/9"
+    monkeypatch.setattr(rr, "open_pull_request", fake_open)
+    assert rr.process_approval(object(), creds, tmp_path, log=lambda m: None)
+    repo, branch, path, entry, token, body = opened[0]
+    assert (repo, branch, path, token) == ("https://github.com/acme/rules", "main", "rules", "tok-123456")
+    assert entry["id"] == "reviewed-shop-web-data" and entry["reviewed"]["by"] == "Jane Doe"
+    assert "approved in the rule review by Jane Doe" in body and "renamed" in body
+    cid, final, url, err = finished[0]
+    assert cid == 5 and url.endswith("/pull/9") and err is None and "reviewed-shop-web-data" in final
+    assert marked == ["ok: rule review pull request https://github.com/acme/rules/pull/9"]
+    monkeypatch.setattr(rr, "next_approval", lambda conn: None)
+    assert not rr.process_approval(object(), creds, tmp_path)
+
+
+@pytest.mark.parametrize("token,repo,msg", [
+    (None, "https://github.com/acme/rules", "no write token is registered for https://github.com/acme/rules"),
+    ("tok-123456", "https://github.com/acme/other", "no write token is registered"),
+])
+def test_approval_without_a_token_is_recorded_as_failed(tmp_path, monkeypatch, token, repo, msg):
+    creds, finished, _ = _approval(monkeypatch, token, repo)
+    monkeypatch.setattr(rr, "open_pull_request", lambda *a, **k: pytest.fail("no pull request without a token"))
+    assert rr.process_approval(object(), creds, tmp_path, log=lambda m: None)
+    assert finished[0][2] is None and msg in finished[0][3]
+
+
+def test_failed_pull_request_is_recorded_without_the_token(tmp_path, monkeypatch):
+    creds, finished, marked = _approval(monkeypatch)
+
+    def boom(*a, **k):
+        raise rr.ReviewError("push to https://x-access-token:tok-123456@github.com/acme/rules refused")
+    monkeypatch.setattr(rr, "open_pull_request", boom)
+    rr.process_approval(object(), creds, tmp_path, log=lambda m: None)
+    assert "refused" in finished[0][3] and "tok-123456" not in finished[0][3] and "tok-123456" not in marked[0]
+
+
+def test_worker_fetches_the_approved_rules_before_a_scan(tmp_path, monkeypatch):
+    import subprocess
+    from containerizer import orgsource
+    from containerizer import credentials as cr
+    from containerizer.worker import Worker
+    creds, _, _ = _approval(monkeypatch)
+    clones = []
+
+    def fake_clone(u, dest, branch="", header="", depth=1):
+        clones.append((u, branch, header.startswith("Authorization: Basic ")))
+        (dest / "rules").mkdir(parents=True)
+        (dest / "rules" / "70-reviewed.yaml").write_text(rr.to_yaml({"rules": [{**PLAN_RULE, "id": "reviewed-x"}]}))
+    monkeypatch.setattr(orgsource, "clone", fake_clone)
+    monkeypatch.delenv("CONTAINERIZER_REVIEWED_RULES", raising=False)
+    w = Worker(lambda: None, tmp_path / "data", log=lambda m: None)
+    w.sync_reviewed_rules(object(), creds)
+    assert clones == [("https://github.com/acme/rules", "main", True)]
+    assert os.environ["CONTAINERIZER_REVIEWED_RULES"] == str(tmp_path / "data" / "reviewed-rules" / "rules")
+    assert "reviewed-x" in {r.id for r in load_rules()}
+    # the server is away: the previous checkout stays in use
+    monkeypatch.setattr(orgsource, "clone", lambda *a, **k: (_ for _ in ()).throw(orgsource.SourceError("timeout")))
+    w.sync_reviewed_rules(object(), creds)
+    assert "reviewed-x" in {r.id for r in load_rules()}
+    # no repository any more: the scans stop loading them
+    monkeypatch.setattr(rr, "load_repository", lambda conn: None)
+    w.sync_reviewed_rules(object(), creds)
+    assert "CONTAINERIZER_REVIEWED_RULES" not in os.environ
+    monkeypatch.delenv("CONTAINERIZER_REVIEWED_RULES", raising=False)
+
+
+# ---------------------------------------------------------------------------
 # command line
 
 def test_cli(tmp_path, capsys, monkeypatch):
@@ -559,6 +665,120 @@ def test_rule_review_end_to_end(tmp_path, monkeypatch):
         m = sqlstore.connect(re.sub(r"Database=\w+", "Database=master", cs), autocommit=True)
         m.cursor().execute(f"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]")
         m.close()
+
+
+@needs_sql
+def test_approval_through_the_worker_end_to_end(tmp_path, monkeypatch):
+    """The appliance: the rules repository is set on the admin page, the reviewer approves, the worker (a
+    writer login with the private key) opens the pull request and the decision is in the reviewer's name."""
+    import uuid
+    pytest.importorskip("jwt")
+    from test_admin import Browser, MockIdP, cfg, free_port
+    from containerizer import admin as adminmod
+    from containerizer import credentials as cr
+    from containerizer import sqlstore, webui
+    name = "czra_" + uuid.uuid4().hex[:8]
+    cs = re.sub(r"(?i)(database|initial\s*catalog)\s*=[^;]*", f"Database={name}", ADMIN_SQL) + ";Schema=ra_cz"
+    sqlstore.create_database(cs)
+    conn = sqlstore.connect(cs)
+    sqlstore.init_schema(conn)
+    sqlstore.init_schema(conn)        # idempotent, also with the new columns and procedures
+    for login, role in (("cz_a_reader", "reader"), ("cz_a_writer", "writer"), ("cz_a_admin", "admin")):
+        sqlstore.create_login(conn, login, "Test-Passw0rd!x", role)
+    conn.close()
+    pw = "Test-Passw0rd!x"
+
+    def as_(login):
+        return re.sub(r"(?i)(user\s*id|uid)\s*=[^;]*", f"User Id={login}", cs)
+    priv, pub = tmp_path / "k", tmp_path / "k.pub"
+    kid = cr.keygen(priv, pub)
+    idp = MockIdP()
+    httpd = None
+    try:
+        w = rr.SqlStore.connect(as_("cz_a_writer"), pw)
+        cid, other = _pending(w), _pending(w, FINDING_RULE)
+        w.close()
+        port = free_port()
+        base = f"http://127.0.0.1:{port}"
+        adm = adminmod.Admin(cfg(idp, base), lambda: sqlstore.connect(as_("cz_a_admin"), pw))
+        httpd = ThreadingHTTPServer(("127.0.0.1", port), webui.make_handler(lambda: sqlstore.connect(as_("cz_a_reader"), pw), adm))
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        idp.claims = {"email": "jane@example.com", "name": "Jane Doe", "groups": ["cz-admins"]}
+        b = Browser(base, idp)
+        s, _, body = b.follow("/admin/rules")
+        assert "Approving is not available: no internal rules repository is set" in body and "Internal rules repository" in body
+        csrf = b.csrf(body)
+        body = b.follow("/admin/rules/repository", {"csrf": csrf, "RepoUrl": "http://github.com/acme/rules"})[2]
+        assert "Not saved:" in body and "https" in body
+        body = b.follow("/admin/rules/repository", {"csrf": csrf, "RepoUrl": "https://github.com/acme/rules", "Branch": "main",
+                                                    "Path": "rules", "Provider": "", "ApiUrl": ""})[2]
+        assert "Saved. Approved rules now go to https://github.com/acme/rules" in body
+        assert "no write token is registered for https://github.com/acme/rules" in body
+        # the write token, as Admin -> Source control saves it (sealed for the worker's key)
+        a = sqlstore.connect(as_("cz_a_admin"), pw)
+        scope = "https://github.com/acme/rules"
+        a.cursor().execute("INSERT cz.SourceCredential (Purpose, Provider, ApiUrl, Host, Scope, TokenSealed, KeyId, TokenSetBy) "
+                           "VALUES (N'write', N'github', NULL, N'github.com', %s, %s, %s, N'jane')",
+                           (scope, cr.seal(cr.load_public(pub), "tok-123456", cr.binding("write", "github", None, scope)), kid))
+        a.commit()
+        a.close()
+        body = b.follow(f"/admin/rules/{cid}")[2]
+        assert "Approving is not available" not in body and "opened by the scan worker" in body
+        edited = rr.to_yaml({**PLAN_RULE, "id": "reviewed-shop-web-data"})
+        body = b.follow(f"/admin/rules/{cid}/approve", {"csrf": csrf, "Yaml": edited, "Note": "renamed the id"})[2]
+        assert "the scan worker opens the pull request" in body and "the scan worker is opening the pull request" in body
+        assert "Approve</button>" not in body
+        assert "already being approved" in b.follow(f"/admin/rules/{cid}/approve", {"csrf": csrf, "Yaml": edited})[2]
+        # the worker: opens the pull request with the token only it can open
+        opened = []
+
+        def fake_open(cfg_, kind, entry, cid_, title, body_, work, token=None):
+            opened.append((cfg_.repo, entry["id"], token))
+            return "https://github.com/acme/rules/pull/9"
+        monkeypatch.setattr(rr, "open_pull_request", fake_open)
+        wc = sqlstore.connect(as_("cz_a_writer"), pw)
+        creds = cr.load(wc, cr.load_private(priv))
+        assert rr.process_approval(wc, creds, tmp_path / "work", log=lambda m: None)
+        assert not rr.process_approval(wc, creds, tmp_path / "work", log=lambda m: None)
+        # still no reading or deciding for the worker outside the procedures
+        with pytest.raises(Exception, match="permission was denied"):
+            wc.cursor().execute("SELECT TOP 1 * FROM cz.RuleCandidate")
+        wc.rollback()
+        wc.close()
+        assert opened == [("https://github.com/acme/rules", "reviewed-shop-web-data", "tok-123456")]
+        body = b.follow(f"/admin/rules/{cid}")[2]
+        assert "Approved</span> by Jane Doe" in body and "/pull/9" in body and "reviewed-shop-web-data" in body
+        audit = b.follow("/admin/audit?table=RuleCandidate")[2]
+        assert "<ins>approved</ins>" in audit and "Jane Doe" in audit
+        a = sqlstore.connect(as_("cz_a_admin"), pw)
+        cur = a.cursor()
+        cur.execute("SELECT TOP 1 ChangedBy, Via, ChangedByRole FROM cz.AuditLog WHERE TableName = N'RuleCandidate' "
+                    "AND RowId = %s ORDER BY AuditId DESC", (cid,))
+        assert tuple(cur.fetchone()) == ("jane@example.com", "rule review", "admin")
+        cur.execute("SELECT LastResult FROM cz.SourceCredential WHERE Scope = %s", (scope,))
+        assert cur.fetchone()[0].endswith("/pull/9")
+        a.close()
+        # a failed pull request: the reason on the page, and the rule waits for a new decision
+        monkeypatch.setattr(rr, "open_pull_request", lambda *a, **k: (_ for _ in ()).throw(rr.ReviewError("HTTP 403 denied")))
+        b.follow(f"/admin/rules/{other}/approve", {"csrf": csrf, "Yaml": "", "Note": ""})
+        wc = sqlstore.connect(as_("cz_a_writer"), pw)
+        rr.process_approval(wc, cr.load(wc, cr.load_private(priv)), tmp_path / "work", log=lambda m: None)
+        wc.close()
+        body = b.follow(f"/admin/rules/{other}")[2]
+        assert "The last approval did not go through: HTTP 403 denied" in body and "Approve</button>" in body
+        assert "Rejected" in b.follow(f"/admin/rules/{other}/reject", {"csrf": csrf, "Note": "no"})[2]
+        # removing the repository turns approving off again
+        body = b.follow("/admin/rules/repository/delete", {"csrf": csrf})[2]
+        assert "approving is off" in body and "no internal rules repository is set" in body
+        audit = b.follow("/admin/audit?table=RulesRepository")[2]
+        assert "Internal rules repository" in audit and "https://github.com/acme/rules" in audit and "Jane Doe" in audit
+    finally:
+        idp.claims = {}
+        if httpd:
+            httpd.shutdown()
+        idp.httpd.shutdown()
+        m = sqlstore.connect(re.sub(r"Database=\w+", "Database=master", cs), autocommit=True)
+        m.cursor().execute(f"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]")
 
 
 def _cand(entry, kind="rule"):

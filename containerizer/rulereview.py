@@ -21,7 +21,10 @@ People review candidates on the "Rule review" admin page or with `containerizer 
 (optionally after editing the YAML) validates the rule like the curated rules are validated, then
 either opens a pull request in your internal rules repository (CONTAINERIZER_RULES_APPLY=pr, the
 default; a public repository is refused) or appends it to a local checkout of it
-(CONTAINERIZER_RULES_APPLY=direct). Approved rules never go into this tool's own rules folder: what
+(CONTAINERIZER_RULES_APPLY=direct). On the appliance the repository is set on the admin page instead
+(RulesRepository) and its token is the write token registered for it under Source control, which only
+the scan worker can open: the admin page queues the approval and the worker opens the pull request
+(process_approval) and, before each scan, fetches the approved rules (sync_reviewed). Approved rules never go into this tool's own rules folder: what
 your applications taught it stays yours. The tool loads them from CONTAINERIZER_REVIEWED_RULES (a
 checkout of that repository's rules folder), in tool-maintained files:
 
@@ -523,7 +526,8 @@ class FileStore:
 
 _COLS = ("CandidateId, Kind, Fingerprint, RuleId, Title, Source, TargetFile, RuleYaml, Diff, Confidence, Model, LearnedFrom, "
          "Status, SeenCount, FirstSeenAt, LastSeenAt, ReviewedBy, ReviewedByName, ReviewedAt, ReviewNote, FinalYaml, "
-         "AppliedAs, PullRequestUrl, ClaimedBy, ClaimedAt")
+         "AppliedAs, PullRequestUrl, ClaimedBy, ClaimedAt, ApproveRequestedAt, ApproveByName, ApproveBy, ApproveStartedAt, "
+         "ApplyError")
 
 
 class SqlStore:
@@ -605,11 +609,28 @@ class SqlStore:
 
     def decide(self, cid: int, status: str, user: str, name: str | None, note: str | None, final_yaml: str | None = None,
                applied_as: str | None = None, pr_url: str | None = None) -> bool:
+        """Not while the scan worker is opening the pull request of an approval (unless it stopped on it)."""
         cur = self.conn.cursor()
         cur.execute("UPDATE cz.RuleCandidate SET Status = %s, ReviewedBy = %s, ReviewedByName = %s, ReviewedAt = SYSUTCDATETIME(), "
-                    "ReviewNote = %s, FinalYaml = %s, AppliedAs = %s, PullRequestUrl = %s, ClaimedBy = NULL, ClaimedAt = NULL "
-                    "WHERE CandidateId = %s AND Status = N'pending'",
+                    "ReviewNote = %s, FinalYaml = %s, AppliedAs = %s, PullRequestUrl = %s, ClaimedBy = NULL, ClaimedAt = NULL, "
+                    "ApproveRequestedAt = NULL, ApproveStartedAt = NULL, ApplyError = NULL "
+                    "WHERE CandidateId = %s AND Status = N'pending' "
+                    "AND (ApproveStartedAt IS NULL OR ApproveStartedAt < DATEADD(minute, -15, SYSUTCDATETIME()))",
                     (status, _cut(user, 256), _cut(name, 256), _cut(note, 1000), final_yaml, applied_as, _cut(pr_url, 400), cid))
+        n = cur.rowcount
+        self.conn.commit()
+        return n == 1
+
+    def request_approval(self, cid: int, user: str, name: str | None, role: str | None, yaml_text: str,
+                         note: str | None) -> bool:
+        """Approve through the scan worker, which holds the rules repository's token: it opens the pull
+        request and records the decision in this reviewer's name (FinishRuleApproval)."""
+        cur = self.conn.cursor()
+        cur.execute("UPDATE cz.RuleCandidate SET ApproveRequestedAt = SYSUTCDATETIME(), ApproveBy = %s, ApproveByName = %s, "
+                    "ApproveRole = %s, ApproveYaml = %s, ApproveNote = %s, ApproveStartedAt = NULL, ApplyError = NULL "
+                    "WHERE CandidateId = %s AND Status = N'pending' AND ApproveRequestedAt IS NULL "
+                    "AND (ClaimedAt IS NULL OR ClaimedAt < DATEADD(minute, -10, SYSUTCDATETIME()))",
+                    (_cut(user, 256), _cut(name, 256), _cut(role, 40), yaml_text, _cut(note, 1000), cid))
         n = cur.rowcount
         self.conn.commit()
         return n == 1
@@ -795,6 +816,156 @@ class ApplyConfig:
                 if self.repo else "pull request (not configured)")
 
 
+# --------------------------------------------------------------------------- the internal rules repository
+# set on the admin pages (one RulesRepository row); its token is the write token registered for its URL under
+# Source control, which only the scan worker can open. The worker opens the pull requests of approvals and
+# keeps a checkout of the approved rules for the scans.
+
+REPO_COLS = "RepoUrl, Provider, ApiUrl, Branch, Path, ChangedAt"
+
+
+def load_repository(conn) -> dict | None:
+    cur = conn.cursor(as_dict=True)
+    cur.execute(f"SELECT {REPO_COLS} FROM cz.RulesRepository WHERE RulesRepositoryId = 1")
+    return cur.fetchone()
+
+
+def repository_config(row: dict) -> ApplyConfig:
+    return ApplyConfig(mode="pr", repo=row["RepoUrl"], provider=row["Provider"], api_url=row.get("ApiUrl") or "",
+                       branch=row.get("Branch") or "main", path=(row.get("Path") or "rules").strip("/"))
+
+
+def check_repository(url: str, provider: str, api_url: str, branch: str, path: str) -> tuple[ApplyConfig, list[str]]:
+    """The settings an administrator entered, checked like the environment settings are."""
+    from .orgsource import strip_userinfo
+    url = (url or "").strip()
+    errors = []
+    if url != strip_userinfo(url):
+        errors.append("the repository URL must not contain a user name or token: register the token under Source control")
+    cfg = ApplyConfig(mode="pr", repo=url, provider=(provider or "").strip().lower() or infer_provider(url),
+                      api_url=(api_url or "").strip().rstrip("/"), branch=(branch or "").strip() or "main",
+                      path=(path or "").strip().strip("/") or "rules")
+    if re.search(r"[<>\"' ]", url + cfg.api_url):
+        errors.append("the URLs must not contain spaces, quotes or angle brackets")
+    try:
+        cfg.check()
+    except ReviewError as ex:
+        errors.append(str(ex).replace("CONTAINERIZER_RULES_REPO", "the repository URL")
+                      .replace("CONTAINERIZER_RULES_PROVIDER", "the provider").replace("CONTAINERIZER_RULES_API_URL", "the API URL")
+                      .replace("CONTAINERIZER_RULES_BRANCH", "branch").replace("CONTAINERIZER_RULES_PATH", "folder"))
+    if len(url) > 400 or len(cfg.api_url) > 400:
+        errors.append("the URLs can be at most 400 characters")
+    return cfg, errors
+
+
+def save_repository(conn, cfg: ApplyConfig) -> None:
+    cur = conn.cursor()
+    cur.execute("UPDATE cz.RulesRepository SET RepoUrl = %s, Provider = %s, ApiUrl = %s, Branch = %s, Path = %s, "
+                "ChangedAt = SYSUTCDATETIME() WHERE RulesRepositoryId = 1",
+                (cfg.repo, cfg.provider, cfg.api_url or None, cfg.branch, cfg.path))
+    if cur.rowcount == 0:
+        cur.execute("INSERT cz.RulesRepository (RulesRepositoryId, RepoUrl, Provider, ApiUrl, Branch, Path) "
+                    "VALUES (1, %s, %s, %s, %s, %s)", (cfg.repo, cfg.provider, cfg.api_url or None, cfg.branch, cfg.path))
+    conn.commit()
+
+
+def delete_repository(conn) -> None:
+    conn.cursor().execute("DELETE cz.RulesRepository WHERE RulesRepositoryId = 1")
+    conn.commit()
+
+
+def next_approval(conn) -> dict | None:
+    """The oldest approval waiting for the scan worker (taken: no other worker gets it for 15 minutes)."""
+    cur = conn.cursor(as_dict=True)
+    cur.execute("EXEC cz.NextRuleApproval")
+    row = cur.fetchone()
+    conn.commit()
+    return row
+
+
+def finish_approval(conn, cid: int, final_yaml: str | None, pr_url: str | None, error: str | None) -> bool:
+    cur = conn.cursor()
+    cur.execute("EXEC cz.FinishRuleApproval @CandidateId = %s, @FinalYaml = %s, @PullRequestUrl = %s, @Error = %s",
+                (cid, final_yaml, _cut(pr_url, 400), _cut(error, 1000)))
+    row = cur.fetchone()
+    conn.commit()
+    return bool(row and row[0])
+
+
+def process_approval(conn, creds, work: Path, log=print) -> bool:
+    """The scan worker: open the pull request of the oldest waiting approval and record the result.
+    `creds` is the registered credentials opened with the worker's key. False when none was waiting."""
+    from .orgsource import REDACT
+    c = next_approval(conn)
+    if not c:
+        return False
+    cid = int(c["CandidateId"])
+    final_yaml = url = error = None
+    cred = None
+    try:
+        repo = load_repository(conn)
+        if not repo:
+            raise ReviewError("no internal rules repository is set (Admin -> Rule review)")
+        cfg = repository_config(repo)
+        cred = creds.write_for(cfg.repo)
+        if not cred:
+            raise ReviewError(f"no write token is registered for {cfg.repo} under Source control")
+        if cred.error or not cred.token:
+            raise ReviewError(f"the write token for {cfg.repo}: {cred.error or 'it does not open'}")
+        REDACT.add(cred.token, cred.username)
+        kind = c["Kind"]
+        entry = parse_entry(kind, c["ApproveYaml"] or c["RuleYaml"])
+        problems = validate(kind, entry, None)
+        if problems:
+            raise ReviewError("; ".join(problems))
+        who = c.get("ApproveByName") or c["ApproveBy"]
+        final = reviewed_entry(kind, entry, cid, who, c.get("ApproveNote"))
+        title, body = pr_text(c, final, who, c.get("ApproveNote"), cfg.path)
+        work.mkdir(parents=True, exist_ok=True)
+        url = open_pull_request(cfg, kind, final, cid, title, body, Path(tempfile.mkdtemp(prefix="cz-review-", dir=work)),
+                                token=cred.token)
+        final_yaml = to_yaml(final)
+    except Exception as ex:                  # recorded on the candidate; it waits for the next decision
+        error = REDACT(str(ex) if isinstance(ex, ReviewError) else f"{type(ex).__name__}: {ex}")
+    if cred is not None:
+        try:
+            from .credentials import mark
+            mark(conn, cred.id, f"ok: rule review pull request {url}" if url else f"failed: {error}"[:1000])
+        except Exception:
+            pass
+    done = finish_approval(conn, cid, final_yaml, url, error)
+    log(f"rule review: candidate {cid}: " + (f"approved, pull request {url}" if url else f"not approved: {error}")
+        + ("" if done else " (the candidate changed meanwhile; nothing recorded)"))
+    return True
+
+
+def sync_reviewed(conn, creds, dest: Path, log=print) -> Path | None:
+    """A fresh checkout of the internal rules repository's rules folder for the scans (None: not set up).
+    On failure the previous checkout, if any, stays in use."""
+    from .orgsource import REDACT, SourceError, clone, provider as make_provider
+    repo = load_repository(conn)
+    if not repo:
+        return None
+    cfg = repository_config(repo)
+    cred = creds.write_for(cfg.repo)
+    prev = dest / cfg.path
+    if not cred or not cred.token:
+        log(f"rule review: no usable write token for {cfg.repo}: the scans run without the approved rules")
+        return prev if prev.is_dir() else None
+    REDACT.add(cred.token, cred.username)
+    tmp = dest.with_name(dest.name + ".new")
+    shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        clone(cfg.repo, tmp, cfg.branch, make_provider(cfg.provider, "-", cred.token, None).git_header(), depth=1)
+    except SourceError as ex:
+        shutil.rmtree(tmp, ignore_errors=True)
+        log(f"rule review: could not update the approved rules from {cfg.repo}: {REDACT(str(ex))[:300]}")
+        return prev if prev.is_dir() else None
+    shutil.rmtree(dest, ignore_errors=True)
+    tmp.rename(dest)
+    return prev if prev.is_dir() else None
+
+
 def infer_provider(url: str) -> str:
     host = urllib.parse.urlsplit(url).hostname or ""
     if host == "github.com" or host.endswith(".github.com") or host.endswith(".ghe.com"):
@@ -885,11 +1056,13 @@ def ensure_private(cfg: ApplyConfig, headers: dict) -> None:
         raise ReviewError(f"{cfg.repo} is {vis}: approved rules only go to a private or internal repository")
 
 
-def open_pull_request(cfg: ApplyConfig, kind: str, entry, cid: int, title: str, body: str, work: Path) -> str:
-    """Clone the rules repository, append the rule on a branch of its own, push, open (or find) the PR."""
+def open_pull_request(cfg: ApplyConfig, kind: str, entry, cid: int, title: str, body: str, work: Path,
+                      token: str | None = None) -> str:
+    """Clone the rules repository, append the rule on a branch of its own, push, open (or find) the PR.
+    The token: `token` (the scan worker, from Source control), else the environment (cfg.token_env)."""
     from .orgsource import REDACT, SourceError, clone, git, provider as make_provider, read_token
     cfg.check()
-    token = read_token("", cfg.token_env)
+    token = token or read_token("", cfg.token_env)
     if not token:
         raise ReviewError(f"no token for the rules repository: set {cfg.token_env}")
     prov = make_provider(cfg.provider, "-", token, None)

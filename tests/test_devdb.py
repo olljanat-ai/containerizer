@@ -269,7 +269,7 @@ def test_upload_end_to_end(tmp_path, idp):
         import hashlib
         sha = hashlib.sha256(backup).hexdigest()
         stored = tmp_path / "store" / f"{sha}.bak"
-        assert stored.read_bytes() == backup and oct(stored.stat().st_mode & 0o777) == "0o600"
+        assert stored.read_bytes() == backup and oct(stored.stat().st_mode & 0o777) == "0o640"
         assert [p.name for p in (tmp_path / "store").iterdir()] == [stored.name]     # no temporary files left
         # edit the instructions, then replace the file: the old one is removed
         s, _, body = op.follow(f"/admin/dev-databases/{app_id}", {"csrf": csrf, "DatabaseName": "ShopDev",

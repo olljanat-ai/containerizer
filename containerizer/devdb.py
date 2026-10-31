@@ -207,7 +207,7 @@ def store(settings: Settings, up: Upload, engine: str) -> str:
     name = f"{up.sha256}.{ext}"
     final = settings.directory / name
     os.replace(up.path, final)
-    os.chmod(final, 0o600)
+    os.chmod(final, 0o640)          # the scan worker reads it through the folder's group (the appliance)
     return name
 
 

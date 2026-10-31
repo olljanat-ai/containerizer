@@ -53,7 +53,11 @@ ADD --chmod=0644 --checksum=sha256:a8c838ccd9be5d30eba9df87cd229b7c4eb80c0049fba
     https://github.com/fluxcd/flux2/releases/download/v2.10.0/install.yaml /var/lib/rancher/k3s/server/manifests/flux.yaml
 ADD --chmod=0755 --checksum=sha256:424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa \
     https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64 /usr/bin/cosign
-RUN ln -s k3s /usr/bin/kubectl && ln -s k3s /usr/bin/crictl
+# ORAS: the scan worker attaches each pushed image's SBOM to it as an OCI referrer (docs/sbom.md)
+ADD --chmod=0644 --checksum=sha256:66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0 \
+    https://github.com/oras-project/oras/releases/download/v1.3.6/oras_1.3.6_linux_amd64.tar.gz /tmp/oras.tar.gz
+RUN tar -xzf /tmp/oras.tar.gz -C /usr/bin --no-same-owner oras && chmod 0755 /usr/bin/oras && rm /tmp/oras.tar.gz \
+ && ln -s k3s /usr/bin/kubectl && ln -s k3s /usr/bin/crictl
 # External Secrets Operator Helm chart 2.14.0 (ghcr.io OCI artifact, fetched by its content digest and
 # checked), served to the k3s Helm controller from the API server (static/charts); see
 # /var/lib/rancher/k3s/server/manifests/external-secrets.yaml

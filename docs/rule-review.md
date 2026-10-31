@@ -44,26 +44,29 @@ A learned rule has to meet the same bar as the curated ones:
 
 ## Setting up the internal rules repository
 
-Create a private or internal Git repository for the approved rules (it can start empty), and a token
-that can push a branch and open a pull request in that one repository: contents and pull requests
-write plus metadata read (GitHub fine-grained token), Developer (GitLab), or Code read & write (Azure
-DevOps). Then set, in `/etc/containerizer/web.env`:
+1. Create a private or internal Git repository for the approved rules. It needs one commit (a README
+   is enough); the rules folder is created by the first approval.
+2. Under **Admin → Source control**, add a **write token** for that repository's URL. It must be able
+   to push a branch and open a pull request in that one repository: GitHub fine-grained token with
+   **Contents** and **Pull requests: Read and write**, GitLab project access token with the role
+   **Developer** and the scopes **api** and **write_repository**, or Azure DevOps **Code: Read & write**.
+3. Under **Admin → Rule review → Internal rules repository**, enter the repository URL, the branch the
+   pull requests target (default `main`) and the folder of the rules in it (default `rules`). The
+   provider is worked out from the URL for github.com, gitlab.com and `gitlab.*` hosts, dev.azure.com
+   and `*.visualstudio.com`; choose it for other servers, and give the API URL of a self-hosted
+   GitHub Enterprise Server or GitLab if it is not at the usual address.
+4. Allow the Git server on **Admin → Firewall**.
 
-| Variable | Meaning |
-| --- | --- |
-| `CONTAINERIZER_RULES_REPO` | https URL of the internal repository |
-| `CONTAINERIZER_RULES_TOKEN` | the token above |
-| `CONTAINERIZER_RULES_BRANCH` | branch the pull requests target (default `main`) |
-| `CONTAINERIZER_RULES_PATH` | folder of the rules in that repository (default `rules`; created by the first approval) |
-| `CONTAINERIZER_RULES_PROVIDER` | `github`, `gitlab` or `azure-devops`; worked out from the URL for github.com, gitlab.com and `gitlab.*` hosts, dev.azure.com and `*.visualstudio.com` |
-| `CONTAINERIZER_RULES_API_URL` | API of a self-hosted GitHub Enterprise Server or GitLab, if it is not the usual address |
+Until all of this is in place, the Rule review page says what is missing, and candidates keep waiting.
+The settings are in the change history.
 
-Scans load the approved rules from a checkout of that repository: `CONTAINERIZER_REVIEWED_RULES` in
-`worker.env` names its rules folder, and it has to be kept current (`git pull`) before scans. Allow the
-Git server on **Admin → Firewall**. Until approving is configured, the Rule review page says what is
-missing, and candidates keep waiting.
+Like every source control token, the write token is sealed for the scan worker: the web UI cannot use
+it. So approving hands the rule to the scan worker, which opens the pull request within a minute, also
+while a scan is running. The candidate shows *the pull request is being opened* until then, and
+*approved* with the pull request's link after. If it fails (a token without the permission, a
+repository the token cannot see), the page shows why and the rule waits for a new decision.
 
-Approving clones the internal repository, appends the rule to the right file on a branch
+The worker clones the internal repository, appends the rule to the right file on a branch
 `containerizer/rule-review-<candidate>`, pushes it and opens a pull request that names the reviewer and
 their note. It contains the rule, not the evidence logs. Safeguards:
 
@@ -72,6 +75,9 @@ their note. It contains the rule, not the evidence logs. Safeguards:
   cannot read, is refused and the rule stays pending.
 - Approved rules are never written into this tool's `rules/` folder.
 - Approving the same candidate again after a failure reuses the branch and the open pull request.
+
+Before every scan the worker fetches the repository again, so scans use an approved rule as soon as its
+pull request is merged. If the Git server cannot be reached, the scan uses the rules it fetched last.
 
 Approved rules are loaded after the curated ones and carry `reviewed: {candidate, by, at}`. Editing or
 deleting them by hand in the internal repository later is fine.

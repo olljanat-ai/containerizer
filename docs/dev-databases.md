@@ -23,7 +23,7 @@ For PostgreSQL and MySQL, its `CREATE DATABASE`, `USE` and `\connect` lines are 
 ## How it works
 
 ```
-operator ──upload backup + instructions──> web UI ──> CONTAINERIZER_DEV_DB_DIR/<sha256>.<bak|dump|sql|sql.gz>
+operator ──upload backup + instructions──> web UI ──> /var/lib/containerizer/devdb/<sha256>.<bak|dump|sql|sql.gz>
                                            └──> DevDatabase row (name, size, SHA-256, instructions, who)
 scan worker ──reads DevDatabase──> builds <registry>/<app>/devdb:<tag> (backup inside) ──push──> registry
             └──> generated manifests: devdb Deployment + Service + NetworkPolicy, app env → devdb
@@ -32,8 +32,9 @@ scan worker ──reads DevDatabase──> builds <registry>/<app>/devdb:<tag> (
 1. **Upload** (**Admin → Dev databases**, admins and operators). The file is streamed to disk, so it is
    never held in memory. The page checks the session, the role and the `Origin` header before it reads
    the request body. It checks the form's CSRF token, which is the first field, before it writes any
-   of the file. The file must start with the signature of the selected engine (see above). It is stored under its SHA-256 with mode 0600, and the web UI never serves it
-   back. The size limit is `CONTAINERIZER_DEV_DB_MAX_MB` (default 2048).
+   of the file. The file must start with the signature of the selected engine (see above). It is
+   stored under its SHA-256, readable only by the web UI and the scan worker, and the web UI never
+   serves it back. The size limit is 2048 MB.
 2. **Instructions.** The form starts from a template. Name the setting that holds the connection
    string (for example `ConnectionStrings:Shop`), test users, and anything else the AI needs. Never put
    a password here. You can edit the instructions later without uploading the file again.
@@ -95,9 +96,10 @@ Two details of the SQL Server image:
 
 ## Setting it up
 
-The **Dev databases** tab appears for admins and operators when `CONTAINERIZER_DEV_DB_DIR` names a
-writable folder for the web UI, and the scan worker reads the same folder. The size limit of an upload
-is `CONTAINERIZER_DEV_DB_MAX_MB` (default 2048).
+Nothing to set up: the appliance keeps the backups on its data partition in
+`/var/lib/containerizer/devdb`, where the web UI writes them and the scan worker reads them. To allow
+larger uploads than 2048 MB, set `CONTAINERIZER_DEV_DB_MAX_MB` in `/etc/containerizer/web.env` and
+restart the web UI.
 
 ## Security notes
 

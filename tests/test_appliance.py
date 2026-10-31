@@ -411,3 +411,35 @@ def test_task_failed_when_boot_fell_back(paths, monkeypatch):
     (paths.elemental_run / "passive_mode").touch()
     t = sysagent.publish()["task"]
     assert t["state"] == "failed" and "previous snapshot" in t["message"]
+
+
+# ---------------------------------------------------------------------------
+# the image and its units: features that need something of the OS work out of the box
+
+APPLIANCE = Path(__file__).resolve().parent.parent / "appliance"
+UNITS = APPLIANCE / "rootfs" / "usr" / "lib" / "systemd" / "system"
+
+
+def _unit(name: str) -> dict:
+    out: dict = {}
+    for line in (UNITS / name).read_text().splitlines():
+        if "=" in line and not line.startswith("#"):
+            k, _, v = line.partition("=")
+            out.setdefault(k, []).append(v)
+    return out
+
+
+def test_dev_database_folder_is_shared_by_the_web_ui_and_the_worker():
+    web, worker = _unit("containerizer-web.service"), _unit("containerizer-worker.service")
+    d = "/var/lib/containerizer/devdb"
+    assert f"CONTAINERIZER_DEV_DB_DIR={d}" in web["Environment"] and f"CONTAINERIZER_DEV_DB_DIR={d}" in worker["Environment"]
+    assert d in web["ReadWritePaths"][0].split()        # the web UI's sandbox lets it write there, and nowhere else new
+    assert worker["Group"] == ["containerizer"]           # reads the files through the folder's group
+    firstboot = (APPLIANCE / "rootfs" / "usr" / "lib" / "containerizer" / "bin" / "cz-firstboot").read_text()
+    assert f'install -d -m 2750 -o cz-web -g containerizer "$D/devdb"' in firstboot
+
+
+def test_sbom_attach_tool_is_in_the_image():
+    docker = (APPLIANCE / "Dockerfile").read_text()
+    assert "oras-project/oras/releases/download/" in docker and "-C /usr/bin --no-same-owner oras" in docker
+    assert docker.count("--checksum=sha256:") >= 4        # every download is pinned

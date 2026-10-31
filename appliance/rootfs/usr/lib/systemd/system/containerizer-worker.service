@@ -13,6 +13,8 @@ SupplementaryGroups=docker
 EnvironmentFile=/etc/containerizer/worker.env
 # lab services that are on (Admin -> Lab services): the scans point the apps at them
 Environment=CONTAINERIZER_LAB_SERVICES=/var/lib/containerizer/system/lab-services.json
+# dev database backups the web UI stored (read through the group of the folder)
+Environment=CONTAINERIZER_DEV_DB_DIR=/var/lib/containerizer/devdb
 Environment="CONTAINERIZER_SQL=Server=127.0.0.1,1433;Database=Containerizer;User Id=cz_scanner;TrustServerCertificate=yes"
 LoadCredential=sql-scanner:/etc/containerizer/secrets/cz-scanner
 LoadCredential=credential-key:/etc/containerizer/secrets/credential-key
