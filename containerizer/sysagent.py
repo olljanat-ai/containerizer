@@ -625,11 +625,17 @@ def process() -> int:
             elif action == "egress":
                 save_rules({"mode": req.get("mode"), "rules": req.get("rules")}, user, name)
                 publish(egress_state=egress_status())
+            elif action == "lab":               # Admin -> Lab services (labagent.py checks it again)
+                from .labagent import apply_request
+                apply_request(req)
+                run(["systemctl", "start", "--no-block", "containerizer-lab.service"], timeout=60)
             else:
                 log(f"unknown action {action!r} ignored")
-        except (AgentError, RuleError, OSError, subprocess.TimeoutExpired) as ex:
+        except (AgentError, RuleError, OSError, subprocess.TimeoutExpired, ValueError) as ex:
             rc = 1
             log(f"{action} failed: {ex}")
+            if action == "lab":
+                continue                        # the Lab services page shows the agent's status
             if action in ("upgrade", "rollback"):
                 task.update(state="failed", finished=now(), message=str(ex)[-1000:])
                 publish(task)

@@ -1,0 +1,19 @@
+[Unit]
+Description=containerizer appliance: lab services in the sandbox cluster (Admin -> Lab services)
+After=k3s.service
+Requires=k3s.service
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+
+[Service]
+Type=oneshot
+Environment=KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+Environment="CZ_KUBECTL=/usr/bin/k3s kubectl"
+Environment=CONTAINERIZER_LAB_SERVICES=/var/lib/containerizer/system/lab-services.json
+ExecStart=/usr/lib/containerizer/venv/bin/python -m containerizer.labagent reconcile
+# first start of a server can wait for its image download
+TimeoutStartSec=30min
+PrivateTmp=yes
+ProtectHome=yes
+NoNewPrivileges=yes
+UMask=0077

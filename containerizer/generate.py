@@ -603,7 +603,7 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
     if secret_keys:
         docs.append({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": secret_name, "labels": labels},
                      "type": "Opaque", "stringData": {k: "" for k in secret_keys},
-                     "_comment": "fill in values out of band (sealed-secrets / external-secrets); never commit real values"})
+                     "_comment": "skeleton: harden_manifests turns it into an ExternalSecret"})
     docs.append({"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
                  "metadata": {"name": f"{name}-ingress", "labels": labels},
                  "spec": {"podSelector": {"matchLabels": labels}, "policyTypes": ["Ingress"],
@@ -611,6 +611,27 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
     # security baseline + the exceptions this component needs (rules/60-security.yaml)
     plan["hardening_exceptions"] = harden_manifests(docs, a.repo, c, plan, name)
     return docs
+
+
+def _lab_inject(a: AppAssessment, c: Component, docs: list[dict], devdb, lab: set, plan) -> None:
+    """Point the component at the lab services it needs that are on (labservices.py); a restored dev
+    database backup takes the place of the lab SQL Server."""
+    from . import labservices
+    need = labservices.needs(a.repo, c)
+    ns = k8s_name(a.name)
+    for svc, why in need.items():
+        plan.needed.setdefault(svc, {})[c.name] = why
+        if svc not in lab or (svc == "sqlserver" and devdb is not None):
+            continue
+        notes = labservices.inject(docs, svc, ns, c, need)
+        names = [e["name"] for e in labservices.env_for(svc, ns, c, need)[0]]
+        plan.overrides.setdefault(c.name, []).extend(f"{svc}:{n}" for n in names)
+        if notes:
+            plan.notes.setdefault(c.name, []).extend(notes)
+        if svc not in plan.provided:
+            plan.provided.append(svc)
+    plan.provided.sort(key=labservices.ORDER.index)
+
 
 
 class _NoAlias(yaml.SafeDumper):
@@ -632,8 +653,10 @@ def _yaml_docs(docs: list[dict]) -> str:
 
 def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, registry: str = "registry.local",
                  plans: dict | None = None, pin: bool = False, gitops=None, tag: str = "latest",
-                 devdb=None) -> list[Path]:
-    """`devdb`: a devdb.SandboxDb when an operator uploaded a database backup for this application."""
+                 devdb=None, lab: set | None = None, lab_report: dict | None = None) -> list[Path]:
+    """`devdb`: a devdb.SandboxDb when an operator uploaded a database backup for this application.
+    `lab`: the lab services that are on (labservices.py), None where the appliance's lab does not run;
+    `lab_report` (a dict) receives what the app needs, what it was pointed at and what is turned off."""
     from .gitops import gitops_manifests, image_setters, readme
     from .report import migration_markdown, write_agent_prompts
 
@@ -643,6 +666,10 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
     all_k8s = []
     images: list[tuple[str, str]] = []
     comp_docs: dict[str, list[dict]] = {}
+    lab_plan = None
+    if lab is not None:
+        from . import labservices
+        lab_plan = labservices.AppPlan(needed={}, provided=[], missing=[], notes={}, overrides={})
     for c in a.components:
         cdir = out / k8s_name(c.name)
         if buildable(c):
@@ -660,6 +687,8 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
             if devdb is not None:
                 from .devdb import inject
                 inject(docs, devdb, c.name)
+            if lab_plan is not None:
+                _lab_inject(a, c, docs, devdb, lab, lab_plan)
             images.append((c.name, image))
             all_k8s += docs
             comp_docs[k8s_name(c.name)] = docs
@@ -682,7 +711,35 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
         all_k8s += docs
         comp_docs[HOST] = docs
         images.append((HOST, devdb.image))
+    if lab_plan is not None:
+        lab_plan.missing = [s for s in lab_plan.needed if s not in lab_plan.provided and s not in lab
+                            and not (s == "sqlserver" and devdb is not None)]
+        if lab_report is not None:
+            lab_report.update(lab_plan.to_dict())
+    if all_k8s and lab_plan is not None and lab_plan.provided:
+        from . import labservices
+        if "lab" in comp_docs:
+            raise ValueError("a component is named 'lab', the folder of the lab service credentials")
+        docs = labservices.app_docs(k8s_name(a.name), lab_plan.provided)
+        (out / "lab").mkdir(parents=True, exist_ok=True)
+        (out / "lab" / "k8s.yaml").write_text(_yaml_docs(docs))
+        (out / "lab" / "README.md").write_text(labservices.readme(k8s_name(a.name), lab_plan))
+        written += [out / "lab" / "k8s.yaml", out / "lab" / "README.md"]
+        all_k8s += docs
+        comp_docs["lab"] = docs
     if all_k8s:
+        from . import eso
+        ns = k8s_name(a.name)
+        extra: list[str] = []
+        if gitops is not None and gitops.image_pull_secret:
+            # the pull secret the workloads reference (org --image-pull-secret): from the store, never Git
+            pull = [eso.external_secret(gitops.image_pull_secret, ns, eso.remote_key(ns, eso.REGISTRY),
+                                        labels={"app.kubernetes.io/part-of": ns}, secret_type=eso.DOCKERCONFIG,
+                                        comment="image pull credential (.dockerconfigjson) from the secret store")]
+            (out / "pull-secret.yaml").write_text(_yaml_docs(pull))
+            written.append(out / "pull-secret.yaml")
+            all_k8s += pull
+            extra.append("pull-secret.yaml")
         ns_doc = namespace_manifest(k8s_name(a.name))
         (out / "namespace.yaml").write_text(_yaml_docs([ns_doc]))
         # namespace-level security (default deny, quota, limits), HARDENING.md and the cluster/ kit
@@ -690,15 +747,23 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
         (out / "kustomization.yaml").write_text(yaml.safe_dump(
             {"apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization",
              "namespace": k8s_name(a.name),
-             "resources": ["namespace.yaml"] + sec + sorted(f"{d.name}/k8s.yaml" for d in out.iterdir() if (d / "k8s.yaml").exists())},
+             "resources": ["namespace.yaml"] + sec + extra
+                          + sorted(f"{d.name}/k8s.yaml" for d in out.iterdir() if (d / "k8s.yaml").exists())},
             sort_keys=False) + image_setters(k8s_name(a.name), images))
         written += [out / "namespace.yaml", out / "kustomization.yaml", out / "HARDENING.md"] + [out / r for r in sec]
         kinds = sorted({(d["apiVersion"], d["kind"]) for d in all_k8s + sec_docs if isinstance(d, dict) and d.get("kind")})
-        for rel, docs in gitops_manifests(a, kinds, images, ns_doc, gitops, registry).items():
+        app_keys = eso.remote_keys(all_k8s)
+        g_docs = gitops_manifests(a, kinds, images, ns_doc, gitops, registry, secret_keys=app_keys)
+        for rel, docs in g_docs.items():
             f = out / "gitops" / rel
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text(_yaml_docs(docs))
             written.append(f)
+        # the store and this namespace's read access to its keys, for the cluster operator
+        keys = sorted(set(app_keys) | set(eso.remote_keys([d for docs in g_docs.values() for d in docs])))
+        (out / "cluster" / "secret-store.yaml").write_text(_yaml_docs(
+            eso.secret_store() + eso.store_access(ns, keys, {"app.kubernetes.io/part-of": ns})))
+        written.append(out / "cluster" / "secret-store.yaml")
         (out / "gitops" / "README.md").write_text(readme(a, gitops))
         written.append(out / "gitops" / "README.md")
     (out / "MIGRATION.md").write_text(migration_markdown(a))

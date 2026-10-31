@@ -53,6 +53,40 @@ wait_for 900 "k3s node Ready" sh -c 'k3s kubectl get nodes --no-headers | grep -
 wait_for 900 "Flux controllers" k3s kubectl -n flux-system wait --for=condition=Available deploy --all --timeout=10s
 wait_for 600 "CoreDNS resolves through the filter" k3s kubectl -n kube-system wait --for=condition=Available deploy/coredns --timeout=10s
 
+step "secret store: External Secrets Operator, per-namespace access"
+wait_for 900 "External Secrets Operator" k3s kubectl -n external-secrets wait --for=condition=Available deploy --all --timeout=10s
+systemctl start containerizer-sandbox.service
+wait_for 300 "ClusterSecretStore app-secrets" k3s kubectl get clustersecretstore app-secrets
+test "$(k3s kubectl get ns containerizer-secrets -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}')" = restricted
+k() { k3s kubectl "$@"; }
+. /usr/lib/containerizer/lib/secret-store.sh
+cz_store_put ci-a--web 'ConnectionStrings__Db=Server=db;Password=ci-only'
+cz_store_put ci-a--web --manager ci-other Extra=1          # a second writer keeps the first one's keys
+for ns in ci-a ci-b; do k create namespace "$ns" --dry-run=client -o yaml | k apply -f - >/dev/null; done
+cz_store_grant ci-a ci-a--web
+cz_store_grant ci-b ci-b--web
+for ns in ci-a ci-b; do k apply -f - >/dev/null <<YAML
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata: {name: web-secrets, namespace: $ns}
+spec:
+  refreshInterval: 1m
+  secretStoreRef: {kind: ClusterSecretStore, name: app-secrets}
+  target: {name: web-secrets}
+  data:
+    - {secretKey: ConnectionStrings__Db, remoteRef: {key: ci-a--web, property: ConnectionStrings__Db}}
+YAML
+done
+wait_for 300 "ci-a reads its own key" sh -c 'k3s kubectl -n ci-a get secret web-secrets -o jsonpath={.data.ConnectionStrings__Db} | base64 -d | grep -q ci-only'
+test "$(k3s kubectl -n containerizer-secrets get secret ci-a--web -o jsonpath={.data.Extra} | base64 -d)" = 1
+sleep 30
+if k3s kubectl -n ci-b get secret web-secrets >/dev/null 2>&1; then echo "ci-b must not read ci-a's key" >&2; exit 1; fi
+k3s kubectl -n ci-b get externalsecret web-secrets -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' \
+  | grep -q SecretSyncedError
+k delete namespace ci-a ci-b --wait=false
+k -n containerizer-secrets delete secret/ci-a--web role/app-secrets-reader-ci-a rolebinding/app-secrets-reader-ci-a \
+  role/app-secrets-reader-ci-b rolebinding/app-secrets-reader-ci-b >/dev/null 2>&1 || true
+
 step "local registry: push from Docker, pull from k3s"
 docker image ls
 src=$(docker image ls --format '{{.ID}}' docker.io/library/registry | head -1)

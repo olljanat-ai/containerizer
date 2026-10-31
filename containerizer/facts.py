@@ -99,6 +99,11 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
                 secrets.append(key)
         if folders:
             facts["folder_settings"] = folders
+        # connection strings and settings of services the appliance can run in the lab (labservices.py)
+        from .labservices import settings_facts
+        lab = settings_facts(flat)
+        if lab:
+            facts["lab_settings"] = lab
         # Serilog sinks that write only to files: containers should log to stdout
         wt = (cfg.get("Serilog") or {}).get("WriteTo") if isinstance(cfg.get("Serilog"), dict) else None
         if isinstance(wt, list):

@@ -497,6 +497,27 @@ CREATE TABLE [${schema}].DevDatabase (
 );
 GO
 
+-- Lab services the appliance runs in its sandbox cluster for the scanned apps (labservices.py,
+-- docs/lab-services.md): on or off, set by administrators on Admin -> Lab services. The system agent
+-- applies the switches; this table is what the page shows and, through its trigger, the change history.
+IF OBJECT_ID(N'[${schema}].LabService', N'U') IS NULL
+CREATE TABLE [${schema}].LabService (
+    LabServiceId  int IDENTITY(1,1) NOT NULL CONSTRAINT PK_LabService PRIMARY KEY,
+    Name          nvarchar(20)   NOT NULL CONSTRAINT UQ_LabService_Name UNIQUE,
+    Title         nvarchar(100)  NOT NULL,
+    Enabled       bit            NOT NULL,
+    Note          nvarchar(400)  NULL,           -- why, from the administrator
+    ChangedAt     datetime2(0)   NOT NULL CONSTRAINT DF_LabService_ChangedAt DEFAULT SYSUTCDATETIME()
+);
+GO
+-- the services and their defaults (SQL Server was already there for dev database restores)
+INSERT [${schema}].LabService (Name, Title, Enabled)
+SELECT v.Name, v.Title, v.Enabled
+FROM (VALUES (N'sqlserver', N'SQL Server', 1), (N'postgres', N'PostgreSQL', 0), (N'redis', N'Redis', 0),
+             (N's3', N'S3 object storage', 0), (N'azure-blob', N'Azure Blob storage', 0)) v (Name, Title, Enabled)
+WHERE NOT EXISTS (SELECT 1 FROM [${schema}].LabService x WHERE x.Name = v.Name);
+GO
+
 CREATE OR ALTER FUNCTION [${schema}].fnAuditWho()
 RETURNS TABLE AS RETURN
 SELECT COALESCE(CAST(SESSION_CONTEXT(N'containerizer.user') AS nvarchar(256)), ORIGINAL_LOGIN()) AS ChangedBy,
@@ -867,6 +888,26 @@ BEGIN
 END;
 GO
 
+-- Lab services turned on or off (and the administrator's note) in the change history.
+CREATE OR ALTER TRIGGER [${schema}].trLabServiceAudit ON [${schema}].LabService
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'LabService', COALESCE(i.LabServiceId, d.LabServiceId),
+           COALESCE(i.Title, d.Title),
+           CASE WHEN d.LabServiceId IS NULL THEN N'insert' WHEN i.LabServiceId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.LabServiceId IS NOT NULL THEN (SELECT d.Enabled, d.Note
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.LabServiceId IS NOT NULL THEN (SELECT i.Enabled, i.Note
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.LabServiceId = i.LabServiceId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.LabServiceId IS NULL OR i.LabServiceId IS NULL
+       OR EXISTS (SELECT i.Enabled, i.Note EXCEPT SELECT d.Enabled, d.Note);
+END;
+GO
+
 -- Least-privilege roles. Add database users to them (docs/results-database.md):
 --   ${schema}_writer: the scanner; inserts results, never touches the people-maintained columns
 --   ${schema}_reader: the web UI and report readers; views and lookup tables only
@@ -939,6 +980,9 @@ GRANT INSERT, DELETE ON [${schema}].SourceCredential TO [${schema}_admin];
 GRANT UPDATE ON [${schema}].SourceCredential (Model, Note, Enabled, ExpiresOn, TokenSealed, KeyId, TokenSetAt, TokenSetBy) TO [${schema}_admin];
 GRANT SELECT ON [${schema}].SourceCredential TO [${schema}_writer];
 GRANT UPDATE ON [${schema}].SourceCredential (LastUsedAt, LastResult) TO [${schema}_writer];
+-- lab services: administrators turn them on or off; the system agent applies it
+GRANT SELECT ON [${schema}].LabService TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].LabService (Enabled, Note, ChangedAt) TO [${schema}_admin];
 IF IS_ROLEMEMBER(N'${schema}_reader', N'${schema}_admin') = 0 ALTER ROLE [${schema}_reader] ADD MEMBER [${schema}_admin];
 GO
 
@@ -956,4 +1000,7 @@ IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 9) INSERT
 GO
 -- 10: source control tokens and the LLM (SourceCredential)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 10) INSERT [${schema}].SchemaVersion (Version) VALUES (10);
+GO
+-- 12: lab services (LabService)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 12) INSERT [${schema}].SchemaVersion (Version) VALUES (12);
 GO

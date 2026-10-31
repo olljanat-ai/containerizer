@@ -338,10 +338,30 @@ def test_run_org_writes_layout_sandbox_and_commits(tmp_path, monkeypatch):
     assert yaml.safe_load((sb / "flux" / "apps" / "kustomization.yaml").read_text())["resources"] == [
         "../../../Contoso/Shop Floor/ci-demo/gitops/flux"]
     assert (sb / "namespaces.txt").read_text() == "shop-floor-ci-demo\n"
-    boot = list(yaml.safe_load_all((sb / "flux" / "bootstrap.yaml").read_text()))
-    assert boot[1]["spec"]["path"] == "./sandbox/flux/apps"
-    argo_boot = list(yaml.safe_load_all((sb / "argocd" / "bootstrap.yaml").read_text()))
-    assert argo_boot[0]["spec"]["clusterResourceWhitelist"] == []
+    boot = {d["kind"]: d for d in yaml.safe_load_all((sb / "flux" / "bootstrap.yaml").read_text())}
+    assert boot["Kustomization"]["spec"]["path"] == "./sandbox/flux/apps"
+    # the root Git credential comes from the secret store, readable only by flux-system's reader
+    assert "Secret" not in boot
+    assert boot["ExternalSecret"]["metadata"]["name"] == boot["GitRepository"]["spec"]["secretRef"]["name"]
+    assert boot["ExternalSecret"]["spec"]["dataFrom"] == [{"extract": {"key": "flux-system--cz-git"}}]
+    assert boot["Role"]["metadata"]["namespace"] == "containerizer-secrets"
+    assert boot["Role"]["rules"][0]["resourceNames"] == ["flux-system--cz-git"]
+    assert boot["RoleBinding"]["subjects"] == [{"kind": "ServiceAccount", "name": "app-secrets-reader",
+                                                "namespace": "flux-system"}]
+    argo_boot = {d["kind"]: d for d in yaml.safe_load_all((sb / "argocd" / "bootstrap.yaml").read_text())}
+    assert argo_boot["AppProject"]["spec"]["clusterResourceWhitelist"] == []
+    repo = argo_boot["ExternalSecret"]["spec"]["target"]["template"]
+    assert repo["metadata"]["labels"] == {"argocd.argoproj.io/secret-type": "repository"}
+    # --image-pull-secret: an ExternalSecret of type dockerconfigjson, granted to the app's namespace
+    pull = yaml.safe_load((app / "pull-secret.yaml").read_text())
+    assert (pull["kind"], pull["metadata"]["name"]) == ("ExternalSecret", "regcred")
+    assert pull["spec"]["target"]["template"]["type"] == "kubernetes.io/dockerconfigjson"
+    assert "pull-secret.yaml" in yaml.safe_load(k)["resources"]
+    tenant = list(yaml.safe_load_all((app / "gitops" / "flux" / "tenant.yaml").read_text()))
+    role = next(d for d in tenant if d["kind"] == "Role")
+    assert "shop-floor-ci-demo--cz-registry" in role["rules"][0]["resourceNames"]
+    assert not [d for f in app.rglob("*.yaml") for d in yaml.safe_load_all(f.read_text())
+                if isinstance(d, dict) and d.get("kind") == "Secret"]
     index = json.loads((out / "Contoso" / "org-run.json").read_text())
     assert {r["repo"]: r["status"] for r in index["repositories"]} == {
         "ci-demo": "deployed", "dockerized": "skipped-dockerfile", "old": "skipped-stale"}
