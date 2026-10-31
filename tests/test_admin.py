@@ -293,7 +293,7 @@ def test_results_pages_need_sign_in_when_viewers_are_set(idp):
     try:
         b = Browser(base, idp)
         # straight to the identity provider, no sign-in page in between
-        for path in ("/", "/app/7", "/?bu=3", "/trends?range=3m"):
+        for path in ("/", "/app/7", "/?bu=3", "/trends?range=3m", "/app/7/component/1/agent-prompt.md"):
             s, h, _ = b.go(path)
             assert s == 303 and h["Location"].startswith(idp.issuer + "/authorize"), path
         assert b.go("/static/app.css")[0] == 200 and b.go("/healthz")[0] == 200

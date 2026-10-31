@@ -1,0 +1,913 @@
+# Migration assistant: concrete Linux-compatible replacements for blocking findings.
+#
+# The finding rules (rules/1x-6x) say what breaks and, in `fix`, what to do in one sentence. The entries
+# here turn that into a migration plan a person or an AI coding agent can execute: what to replace with
+# what, which packages to add and remove, the steps, how to check the result, and an effort estimate.
+# containerizer/migrate.py reads them for every component that is not ready (verdict refactor, rewrite
+# or blocker), and renders the plan into the reports (<app>.md, MIGRATION.md, assessment.json), the
+# results database (ComponentMigration) and a copyable prompt for AI coding agents in the web UI.
+#
+# Fields:
+#   id        unique id of the migration
+#   for       finding rule ids this migration resolves (several rules can share one migration)
+#   kind      replace     swap a Windows-only API or library for a cross-platform one (code change)
+#             port        move the component to a different framework/host model (larger code change)
+#             externalize move state, configuration, secrets or a capability out of the process
+#             isolate     no Linux replacement inside this component: keep that part on Windows (VM,
+#                         Windows container, desktop) and integrate over the network; an agent must
+#                         not try to "fix" it in code
+#   replace   what is being replaced (short)
+#   with      the recommended replacement (short; alternatives in `steps`)
+#   effort    person-days per component for the change itself, including tests; when omitted the
+#             finding rule's effort is used. Blocker rules carry effort 0 (they are not counted in the
+#             assessment), so their migrations always state one.
+#   packages  {add: [...], remove: [...]}: NuGet package ids to add (only the primary choice; alternatives
+#             go in `steps`) and package ids or assembly references to remove (`*` allowed)
+#   steps     ordered, concrete steps
+#   verify    how to prove the change works (in addition to build, tests and a re-assessment)
+#   refs      extra https links; the finding rule's own refs are always added
+#
+# A finding without an entry here still gets a plan item built from its rule (`fix`, `effort`, `refs`).
+# tests/test_migrations.py checks that every blocker and rewrite rule has an entry and that every id in
+# `for` exists.
+migrations:
+  # ------------------------------------------------------------------ framework ports
+  - id: port-netfx-to-net
+    for: [netfx-target, netfx-old, aspnetcore-on-netfx, core-windows-tfm, winrt-tfm]
+    kind: port
+    replace: .NET Framework (or a Windows-only target framework)
+    with: net10.0 (SDK-style project, plain TFM without -windows)
+    steps:
+      - Convert the project file to SDK style (<Project Sdk="Microsoft.NET.Sdk"> or Microsoft.NET.Sdk.Web) and packages.config to PackageReference.
+      - Retarget referenced class libraries first, to netstandard2.0 or multi-targeted net48;net10.0, so the .NET Framework consumers keep working during the move.
+      - Set <TargetFramework>net10.0</TargetFramework> (no -windows suffix) and update every package to a version that supports it; drop packages that are now part of the shared framework.
+      - Turn on the platform compatibility analyzer (CA1416, on by default) and fix every warning about Windows-only APIs; the other items of this plan cover the known ones.
+      - Move app.config/web.config settings to appsettings.json read through IConfiguration, so they can be overridden with environment variables in the container.
+    verify:
+      - dotnet build -c Release succeeds with no CA1416 warnings for this project.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/porting/
+      - https://learn.microsoft.com/en-us/dotnet/core/project-sdk/overview
+
+  - id: port-netfx-library
+    for: [netfx-library]
+    kind: port
+    replace: Shared library targeting .NET Framework
+    with: netstandard2.0, or multi-targeting net48;net10.0
+    steps:
+      - Convert the library to an SDK-style project and set <TargetFrameworks>netstandard2.0</TargetFrameworks> (or net48;net10.0 when it needs APIs netstandard2.0 lacks).
+      - Put the few framework-specific parts behind #if NETFRAMEWORK, keeping the .NET Framework build unchanged for its existing consumers.
+    verify:
+      - Both the existing .NET Framework consumers and this component build against the library.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/standard/net-standard
+
+  - id: port-aspnet-mvc-webapi
+    for: [aspnet-mvc5, owin-systemweb, mig-http-modules-handlers, pkg-web-ui-suite-systemweb]
+    kind: port
+    replace: ASP.NET (System.Web) MVC 5 / Web API 2 / OWIN on IIS
+    with: ASP.NET Core MVC / minimal APIs on Kestrel
+    packages:
+      remove: [Microsoft.AspNet.Mvc, Microsoft.AspNet.WebApi.*, Microsoft.Owin.*]
+    steps:
+      - Create the ASP.NET Core host (Program.cs with WebApplication.CreateBuilder) and move Global.asax / Startup / WebApiConfig / RouteConfig into it.
+      - Move controllers; replace System.Web.Mvc / System.Web.Http types with Microsoft.AspNetCore.Mvc (ApiController and Controller merge into ControllerBase/Controller).
+      - Rewrite HTTP modules and OWIN middleware as ASP.NET Core middleware, and handlers as endpoints; replace action filters' System.Web types.
+      - Replace the DI container bootstrapping with Microsoft.Extensions.DependencyInjection (or keep Autofac through its ASP.NET Core integration).
+      - Move static files to wwwroot and bundling to a build-time tool or WebOptimizer.
+      - For a large site, port route by route behind YARP with the System.Web adapters (strangler fig) instead of in one step.
+    verify:
+      - Every route that existed before answers with the same status code and payload shape (compare with a request list from the IIS logs or the API description).
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/migration/fx-to-core/
+      - https://github.com/dotnet/systemweb-adapters
+
+  - id: port-webforms
+    for: [webforms]
+    kind: port
+    replace: ASP.NET Web Forms pages
+    with: Razor Pages or Blazor (server-side rendering)
+    steps:
+      - Inventory the pages, user controls and master pages; port page by page, starting with the most used.
+      - Map master pages to Razor layouts, user controls to Razor components or partials, code-behind event handlers to page handlers (OnGet/OnPost) or component events.
+      - Replace ViewState and postback-dependent logic with explicit form models and server state (session over a distributed cache only where needed).
+      - Replace vendor Web Forms controls with their ASP.NET Core/Blazor editions or plain components.
+      - Run the old and new UI side by side behind YARP with the System.Web adapters until every page is moved; until then a Windows container is a workable stop-gap.
+    verify:
+      - Each ported page passes a UI test (Playwright) of its main flows, recorded against the old page first.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/architecture/blazor-for-web-forms-developers/
+      - https://github.com/dotnet/systemweb-adapters
+
+  - id: port-wcf-server
+    for: [wcf-server, wcf-nettcp-msmq, mig-wcf-message-security]
+    kind: port
+    replace: WCF service host (System.ServiceModel)
+    with: CoreWCF (keeps the service contracts) or gRPC/REST for new clients
+    packages:
+      add: [CoreWCF.Primitives, CoreWCF.Http]
+    steps:
+      - Keep the [ServiceContract]/[OperationContract] interfaces and implementations; change the using to CoreWCF.
+      - Host in ASP.NET Core with AddServiceModelServices() and UseServiceModel(), configuring BasicHttpBinding/WSHttpBinding (or NetTcpBinding without port sharing) in code; move the system.serviceModel config there.
+      - Replace bindings that do not exist on Linux (NetNamedPipe across machines, MSMQ, WS-* message security with Windows credentials) with BasicHttp/NetTcp over TLS, or with gRPC for new consumers; agree the change with every client team.
+      - Serve WSDL with UseServiceMetadata when clients generate proxies from it.
+    verify:
+      - Existing clients (or a dotnet-svcutil generated test client) call every operation successfully against the container.
+    refs:
+      - https://github.com/CoreWCF/CoreWCF
+      - https://learn.microsoft.com/en-us/aspnet/core/grpc/
+
+  - id: port-asmx
+    for: [asmx]
+    kind: port
+    replace: ASMX web services
+    with: CoreWCF BasicHttpBinding (same SOAP contract) or a REST API
+    packages:
+      add: [CoreWCF.Primitives, CoreWCF.Http]
+    steps:
+      - Extract an interface from each WebService class, mark it [ServiceContract] (Namespace equal to the old [WebService(Namespace)]) and the methods [OperationContract].
+      - Host with CoreWCF BasicHttpBinding at the old .asmx path so existing SOAP clients keep their URL and contract.
+      - Compare the new WSDL with the old one (namespaces, element names, SOAPAction) before switching clients.
+    verify:
+      - A client generated from the old WSDL calls every operation against the container.
+    refs:
+      - https://github.com/CoreWCF/CoreWCF
+
+  - id: replace-asmx-client
+    for: [mig-asmx-client]
+    kind: replace
+    replace: ASMX web reference proxy (SoapHttpClientProtocol)
+    with: dotnet-svcutil generated WCF client, or HttpClient
+    packages:
+      add: [System.ServiceModel.Http]
+    steps:
+      - Regenerate the proxy with dotnet-svcutil from the service WSDL and replace the old Web References.
+      - Read the endpoint address from configuration instead of the generated default.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/additional-tools/dotnet-svcutil-guide
+
+  - id: port-windows-service
+    for: [windows-service-netfx, pkg-windows-service-hosts]
+    kind: port
+    replace: Windows Service host (ServiceBase, Topshelf, ...)
+    with: .NET Generic Host worker service (BackgroundService)
+    packages:
+      add: [Microsoft.Extensions.Hosting]
+      remove: [Topshelf, Topshelf.*]
+    steps:
+      - Create Program.cs with Host.CreateApplicationBuilder(args) and register the work as an IHostedService/BackgroundService; move OnStart into ExecuteAsync and OnStop into the CancellationToken / StopAsync.
+      - Replace timers that keep the service alive with a loop over PeriodicTimer, or move purely scheduled work to a Kubernetes CronJob with a run-once entry point.
+      - Log through ILogger to the console instead of the Event Log or local files.
+      - Keep UseWindowsService() only if the same build must still install as a Windows Service.
+    verify:
+      - The container starts the worker as its main process and stops within the termination grace period on SIGTERM (docker stop logs a clean shutdown).
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/extensions/workers
+
+  - id: port-wf
+    for: [wf3-wf4]
+    kind: port
+    replace: Windows Workflow Foundation
+    with: CoreWF (WF4 XAML workflows) or Elsa / code-based state machines
+    packages:
+      add: [UiPath.Workflow]
+    steps:
+      - For WF4 workflows, load the existing XAML with CoreWF and port custom activities; WF3 workflows have no runtime on .NET and must be re-implemented.
+      - Move persistence (SqlWorkflowInstanceStore) to the new engine's store and plan how in-flight instances finish on the old system.
+    verify:
+      - Each workflow runs end to end with the same inputs and outcome as on the old host.
+    refs:
+      - https://github.com/UiPath/corewf
+      - https://github.com/elsa-workflows/elsa-core
+
+  - id: replace-remoting
+    for: [remoting]
+    kind: replace
+    replace: .NET Remoting
+    with: gRPC or HTTP APIs (StreamJsonRpc for same-pod IPC)
+    packages:
+      add: [Grpc.AspNetCore, Grpc.Net.Client]
+    steps:
+      - Describe the remoted interface as a .proto service (or an HTTP API) with explicit DTOs instead of MarshalByRefObject types.
+      - Host the server in ASP.NET Core and replace Activator.GetObject/RemotingConfiguration on the client with a generated gRPC client whose address comes from configuration.
+    verify:
+      - Client and server exchange every call over the network between two containers.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/grpc/
+
+  - id: replace-appdomain
+    for: [appdomain]
+    kind: replace
+    replace: Multiple AppDomains
+    with: AssemblyLoadContext (plugins) or separate processes/containers (isolation)
+    steps:
+      - For plugin loading and unloading, use a collectible AssemblyLoadContext per plugin.
+      - For isolation of untrusted or crash-prone work, run it as a separate process or its own container and talk to it over HTTP/gRPC.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/dependency-loading/understanding-assemblyloadcontext
+
+  - id: replace-enterprise-services
+    for: [enterprise-services, msdtc]
+    kind: replace
+    replace: COM+ / Enterprise Services and distributed transactions (MSDTC)
+    with: plain services with local transactions plus an outbox or saga
+    steps:
+      - Remove ServicedComponent base classes and COM+ registration; register the classes in DI.
+      - Replace [Transaction]/TransactionScope spanning several resources with one local transaction per resource; make cross-resource updates idempotent and coordinate them with the outbox pattern or a saga.
+    verify:
+      - A failure injected between the two resource updates leaves data consistent after the retry.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/api/system.transactions.transactionmanager.implicitdistributedtransactions
+
+  # ------------------------------------------------------------------ ASP.NET features
+  - id: replace-session-cache
+    for: [mig-session-out-of-proc, mig-system-web-cache]
+    kind: externalize
+    replace: ASP.NET session state / System.Web cache
+    with: ASP.NET Core session and IMemoryCache, over a distributed cache (Redis or SQL Server) when there are several replicas
+    packages:
+      add: [Microsoft.Extensions.Caching.StackExchangeRedis]
+    steps:
+      - Register AddDistributedMemoryCache for development and AddStackExchangeRedisCache (or AddDistributedSqlServerCache) in the container, with the connection string from a Secret.
+      - Store session values as JSON strings or bytes; replace HttpRuntime.Cache with IMemoryCache (per pod) or IDistributedCache (shared).
+    verify:
+      - With two replicas, a user's session survives requests landing on either pod.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/performance/caching/distributed
+
+  - id: replace-httpcontext-current
+    for: [mig-httpcontext-in-library, system-web-apis-in-core]
+    kind: replace
+    replace: HttpContext.Current / System.Web types in libraries
+    with: IHttpContextAccessor behind a small abstraction
+    steps:
+      - Introduce an interface for what the library needs (e.g. ICurrentUser, IRequestInfo) and inject it.
+      - Implement it in the ASP.NET Core host with IHttpContextAccessor (services.AddHttpContextAccessor()).
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/fundamentals/http-context
+
+  - id: port-signalr
+    for: [mig-aspnet-signalr]
+    kind: port
+    replace: ASP.NET SignalR 2
+    with: ASP.NET Core SignalR (Redis backplane for several replicas)
+    packages:
+      add: [Microsoft.AspNetCore.SignalR.StackExchangeRedis]
+      remove: [Microsoft.AspNet.SignalR, Microsoft.AspNet.SignalR.*]
+    steps:
+      - Port hubs to Microsoft.AspNetCore.SignalR.Hub and map them with app.MapHub<T>().
+      - Switch browser clients to @microsoft/signalr and .NET clients to Microsoft.AspNetCore.SignalR.Client (the protocols are not compatible).
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/signalr/version-differences
+
+  - id: replace-membership
+    for: [mig-membership-providers, mig-apiauthorization-identityserver]
+    kind: replace
+    replace: ASP.NET Membership/Role providers or SPA-template IdentityServer
+    with: ASP.NET Core Identity or the corporate identity provider (OIDC)
+    steps:
+      - Prefer signing in with the corporate IdP (OpenID Connect); otherwise use ASP.NET Core Identity.
+      - Migrate users from the aspnet_* tables with a custom IPasswordHasher that verifies legacy hashes and rehashes on the next sign-in.
+    verify:
+      - An existing user signs in with their current password, and a new user can register or is provisioned by the IdP.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/security/authentication/identity
+
+  - id: replace-wif
+    for: [mig-wif]
+    kind: replace
+    replace: Windows Identity Foundation
+    with: WS-Federation or OpenID Connect handlers of ASP.NET Core
+    packages:
+      add: [Microsoft.AspNetCore.Authentication.WsFederation]
+    steps:
+      - Configure AddWsFederation (or AddOpenIdConnect) with the metadata address from configuration.
+      - Port ClaimsAuthenticationManager to IClaimsTransformation and ClaimsAuthorizationManager to authorization policies.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/security/authentication/ws-federation
+
+  # ------------------------------------------------------------------ identity
+  - id: replace-windows-auth
+    for: [windows-auth-iis, http-sys]
+    kind: replace
+    replace: IIS / HTTP.sys Windows authentication
+    with: OpenID Connect at the app or ingress, or the Negotiate handler on Kestrel with a keytab
+    packages:
+      add: [Microsoft.Identity.Web]
+    steps:
+      - Prefer OIDC with the corporate IdP (Entra ID, AD FS, Keycloak) and map groups/roles from token claims.
+      - If Kerberos must stay, use AddAuthentication(NegotiateDefaults.AuthenticationScheme).AddNegotiate() on Kestrel, mount the keytab from a Secret (KRB5_KTNAME) and configure LDAP for role lookups.
+      - Remove UseHttpSys and run on Kestrel.
+    verify:
+      - A signed-in user's name and roles reach the app in the container; anonymous requests to protected routes get 401/302.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/security/authentication/windowsauth
+      - https://github.com/AzureAD/microsoft-identity-web
+
+  - id: replace-active-directory
+    for: [active-directory-ds]
+    kind: replace
+    replace: System.DirectoryServices (ADSI)
+    with: System.DirectoryServices.Protocols (LDAP) or Microsoft Graph
+    packages:
+      add: [System.DirectoryServices.Protocols]
+      remove: [System.DirectoryServices, System.DirectoryServices.AccountManagement]
+    steps:
+      - Rewrite DirectoryEntry/DirectorySearcher/PrincipalContext lookups as LdapConnection searches (LDAPS, bind account from a Secret) or as Microsoft Graph calls for Entra ID.
+      - The base image needs libldap (e.g. libldap-2.5-0 on Debian/Ubuntu) for System.DirectoryServices.Protocols on Linux.
+    verify:
+      - The lookups return the same users and groups for a known test account.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/api/system.directoryservices.protocols
+
+  - id: replace-impersonation
+    for: [windows-identity-impersonation, pinvoke-security]
+    kind: replace
+    replace: Windows impersonation, delegation and security APIs
+    with: service identities with explicit authorization (OIDC on-behalf-of, scoped database logins)
+    steps:
+      - Identify what each impersonated call accesses (file share, database, downstream API) and give the service its own least-privilege identity for it.
+      - Pass the end user's identity as a token (OIDC on-behalf-of) where the downstream must authorize per user.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/security/authentication/windowsauth
+
+  - id: externalize-easyauth
+    for: [host-app-service-easyauth]
+    kind: replace
+    replace: App Service Authentication (Easy Auth) headers
+    with: in-app OpenID Connect (Microsoft.Identity.Web) or an auth proxy at the ingress
+    packages:
+      add: [Microsoft.Identity.Web]
+    steps:
+      - Authenticate in the app with AddMicrosoftIdentityWebApp/Api, or put oauth2-proxy in front and configure it to strip client-supplied identity headers.
+      - Stop trusting X-MS-CLIENT-PRINCIPAL headers in the app.
+    refs:
+      - https://github.com/AzureAD/microsoft-identity-web
+
+  # ------------------------------------------------------------------ platform APIs
+  - id: replace-system-drawing
+    for: [system-drawing-core, pkg-mschart, pkg-qrcoder-gdi]
+    kind: replace
+    replace: System.Drawing (GDI+)
+    with: SkiaSharp or ImageSharp for images, QuestPDF for documents
+    packages:
+      add: [SkiaSharp, SkiaSharp.NativeAssets.Linux.NoDependencies]
+      remove: [System.Drawing.Common]
+    steps:
+      - Replace Bitmap/Graphics/Image code with SKBitmap/SKCanvas (SkiaSharp) or Image<Rgba32> (SixLabors.ImageSharp; check its licence for commercial use).
+      - Return image bytes (PNG/JPEG/SVG) from APIs instead of Bitmap objects.
+      - Install the fonts the rendering uses in the image (or embed them) instead of relying on Windows fonts.
+    verify:
+      - Rendered output from the container matches a reference image or document for the main cases.
+    refs:
+      - https://github.com/mono/SkiaSharp
+      - https://github.com/SixLabors/ImageSharp
+
+  - id: replace-winforms-in-server
+    for: [winforms-in-library]
+    kind: replace
+    replace: WinForms/WPF APIs used in server code (rendering, clipboard, message boxes)
+    with: server-side libraries (QuestPDF, SkiaSharp) and plain .NET types
+    effort: 3
+    packages:
+      add: [QuestPDF]
+    steps:
+      - Find what the server code uses the UI framework for; usually rendering charts, images or printable documents, sometimes a helper type such as Color or a message box.
+      - Render documents with QuestPDF and images with SkiaSharp instead of drawing on controls or forms.
+      - Remove UI calls that only make sense with a desktop session (MessageBox, Clipboard) and report the condition through logging or an API error instead.
+      - Drop UseWindowsForms/UseWPF and the -windows target framework once nothing uses them.
+    verify:
+      - The rendered output from the container matches the old output for sample inputs.
+    refs:
+      - https://github.com/QuestPDF/QuestPDF
+
+  - id: replace-office-automation
+    for: [com-office-automation, pkg-netoffice, pkg-office-interop-package]
+    kind: replace
+    replace: Microsoft Office automation (COM interop)
+    with: Open XML SDK / ClosedXML (Word, Excel) and QuestPDF (PDF)
+    effort: 4
+    packages:
+      add: [DocumentFormat.OpenXml, ClosedXML]
+      remove: [Microsoft.Office.Interop.*, NetOffice.*]
+    steps:
+      - List each document the code creates or reads, with its template.
+      - Generate .xlsx with ClosedXML and .docx with the Open XML SDK (or a template engine on top of it) from the same templates; generate PDFs with QuestPDF instead of "Save as PDF" in Word.
+      - If an Office feature has no library equivalent (macros, exotic formats), keep only that conversion on a Windows host behind an API.
+    verify:
+      - Generated documents open in Office without repair prompts and match the old output for sample inputs.
+    refs:
+      - https://github.com/dotnet/Open-XML-SDK
+      - https://github.com/ClosedXML/ClosedXML
+
+  - id: replace-registry
+    for: [registry]
+    kind: externalize
+    replace: Windows Registry reads and writes
+    with: IConfiguration (appsettings, environment variables, ConfigMap)
+    steps:
+      - Move each value the code reads from the registry to a configuration key with the same meaning, and read it through IConfiguration or bound options.
+      - State the code writes to the registry moves to the application's database or a mounted volume.
+    verify:
+      - The app starts in the container with the values supplied only as environment variables.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/extensions/configuration
+
+  - id: replace-eventlog
+    for: [eventlog-write]
+    kind: replace
+    replace: Windows Event Log
+    with: ILogger to the console (collected by the cluster)
+    packages:
+      add: [Microsoft.Extensions.Logging.Console]
+    steps:
+      - Replace EventLog.WriteEntry and EventLog sources with ILogger calls at the matching level; keep the event ids as EventId.
+      - Remove event source creation from startup/installers.
+    verify:
+      - The messages appear in docker logs / kubectl logs of the container.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/extensions/logging
+
+  - id: replace-perf-counters
+    for: [perf-counters]
+    kind: replace
+    replace: Windows performance counters
+    with: System.Diagnostics.Metrics exported with OpenTelemetry (Prometheus)
+    packages:
+      add: [OpenTelemetry.Extensions.Hosting, OpenTelemetry.Exporter.Prometheus.AspNetCore]
+    steps:
+      - Replace each PerformanceCounter with a Counter/Histogram/ObservableGauge on a Meter named after the component.
+      - Export with OpenTelemetry (Prometheus scrape endpoint or OTLP).
+    verify:
+      - The metrics endpoint shows the new instruments with values after a few requests.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/diagnostics/metrics
+
+  - id: replace-wmi
+    for: [wmi, pkg-mmi-cim]
+    kind: replace
+    replace: WMI / CIM queries
+    with: .NET APIs (Environment, Process, DriveInfo), /proc, or configuration
+    steps:
+      - Replace each query with the cross-platform API that answers it (Environment.ProcessorCount, GC.GetGCMemoryInfo, DriveInfo, Process), or with a configuration value.
+      - Queries that manage other Windows machines belong to a tool that stays on Windows.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/porting/windows-compat-pack
+
+  - id: replace-dpapi
+    for: [dpapi, mig-crypto-pnse]
+    kind: externalize
+    replace: DPAPI / Windows CSP-only cryptography
+    with: ASP.NET Core Data Protection with a shared key ring, keys from Kubernetes Secrets or a KMS
+    packages:
+      add: [Microsoft.AspNetCore.DataProtection.StackExchangeRedis]
+    steps:
+      - Replace ProtectedData.Protect/Unprotect with IDataProtector, persisting the key ring to shared storage and protecting it with a KMS key.
+      - Replace CspParameters/RSACryptoServiceProvider key containers with RSA.Create()/Aes.Create() and keys loaded from a mounted Secret or a KMS.
+      - Re-encrypt existing DPAPI-protected data once, on Windows, with the new keys.
+    verify:
+      - Data protected by one replica is readable by another, and after a pod restart.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/security/data-protection/introduction
+      - https://learn.microsoft.com/en-us/dotnet/standard/security/cross-platform-cryptography
+
+  - id: replace-kernel32
+    for: [pinvoke-kernel32, supported-os-windows]
+    kind: replace
+    replace: Win32 P/Invoke and Windows-only annotated code
+    with: managed .NET APIs, or OperatingSystem.IsWindows() guards
+    steps:
+      - Replace each P/Invoke with its managed equivalent (file, process, time, memory APIs all have one).
+      - Where Windows behaviour must stay for Windows deployments, guard the call with OperatingSystem.IsWindows() and give Linux a working path.
+    verify:
+      - No CA1416 warnings remain for this project.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/ca1416
+
+  - id: replace-service-control
+    for: [windows-service-control, pkg-taskscheduler-api, pkg-web-administration]
+    kind: replace
+    replace: Control of Windows services, scheduled tasks or IIS from code
+    with: Kubernetes objects (CronJob, Deployment, Service, Ingress) or in-process scheduling
+    steps:
+      - Define schedules as Kubernetes CronJobs (or Quartz.NET in-process) instead of creating Windows scheduled tasks.
+      - Remove code that starts/stops Windows services or configures IIS; the deployment manifests do that in the cluster.
+    refs:
+      - https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/
+
+  - id: replace-process-start
+    for: [process-start-exe]
+    kind: replace
+    replace: Starting Windows executables
+    with: a library, or the Linux build of the tool installed in the image
+    steps:
+      - For each executable started, use a .NET library that does the same work, or install the tool's Linux build in the image and call it without the .exe suffix and with Linux paths.
+    verify:
+      - The external step runs inside the container and its output is consumed correctly.
+
+  - id: replace-named-sync
+    for: [os-named-sync-objects]
+    kind: replace
+    replace: Machine-wide named mutexes, semaphores and wait handles
+    with: SemaphoreSlim in-process, a distributed lock across pods
+    steps:
+      - Use SemaphoreSlim/lock within the process.
+      - Coordinate between replicas with a distributed lock (SQL Server sp_getapplock, Redis) or a single-consumer queue; a single-instance guard becomes replicas: 1 or a leader election.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/api/system.threading.semaphoreslim
+
+  - id: replace-windows-paths
+    for: [os-backslash-path-join, os-drive-letters, os-drive-path-hardcoded, os-special-folder-windows, os-exe-location]
+    kind: externalize
+    replace: Windows drive letters, backslash paths and special folders
+    with: configured paths under mounted volumes, Path.Combine and AppContext.BaseDirectory
+    steps:
+      - Move each hard-coded folder to a configuration key with a Linux default under a mounted volume (e.g. /data/import).
+      - Build paths with Path.Combine and use AppContext.BaseDirectory for files shipped with the app.
+    verify:
+      - The app reads and writes its files in the container with only the configured folders mounted writable.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/standard/io/file-path-formats
+
+  - id: replace-ntfs-acl
+    for: [efs-ntfs]
+    kind: replace
+    replace: NTFS ACLs / EFS encryption in code
+    with: storage-level encryption and volume permissions
+    steps:
+      - Remove File.Encrypt/SetAccessControl calls; rely on encrypted storage classes and Kubernetes volume permissions (fsGroup), and authorize access in the app.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/porting/windows-compat-pack
+
+  # ------------------------------------------------------------------ data access
+  - id: replace-linq-to-sql
+    for: [linq-to-sql]
+    kind: replace
+    replace: LINQ to SQL
+    with: EF Core (or Dapper)
+    packages:
+      add: [Microsoft.EntityFrameworkCore.SqlServer]
+    steps:
+      - Scaffold a DbContext from the database (dotnet ef dbcontext scaffold) and move queries to it; DataContext.SubmitChanges becomes SaveChanges.
+      - Check generated SQL and lazy-loading behaviour of the busiest queries.
+    verify:
+      - Integration tests against a SQL Server container return the same results as before.
+    refs:
+      - https://learn.microsoft.com/en-us/ef/core/
+
+  - id: replace-ef6-edmx
+    for: [mig-ef6-edmx]
+    kind: replace
+    replace: EF6 EDMX designer model
+    with: EF Core code-first (or EF 6.4+ with embedded metadata)
+    packages:
+      add: [Microsoft.EntityFrameworkCore.SqlServer]
+    steps:
+      - Reverse-engineer the model into EF Core entity classes, or keep EF 6.4+ (runs on .NET) and embed the CSDL/SSDL/MSL resources at build time.
+    refs:
+      - https://learn.microsoft.com/en-us/ef/efcore-and-ef6/porting/
+
+  - id: replace-legacy-db-providers
+    for: [mig-oracleclient, pkg-oracle-unmanaged, pkg-db2-netfx-provider, pkg-informix, pkg-sybase-ase, ibm-i-access]
+    kind: replace
+    replace: Database provider that needs a Windows client install
+    with: fully managed provider for Linux (Oracle.ManagedDataAccess.Core, Net.IBM.Data.Db2-lnx, AdoNetCore.AseClient)
+    steps:
+      - Swap the provider package and namespace; the ADO.NET API (connection, command, reader) stays the same.
+      - Move client configuration (tnsnames.ora, wallets, db2dsdriver.cfg) to a ConfigMap/Secret mounted into the container.
+      - Check parameter binding, type mapping and connection-string keywords that differ between providers.
+    verify:
+      - Integration tests run against the real database (or its container image) from the Linux container.
+    refs:
+      - https://www.nuget.org/packages/Oracle.ManagedDataAccess.Core
+
+  - id: replace-oledb-access
+    for: [oledb-odbc-access]
+    kind: replace
+    replace: OLE DB / Access database engine
+    with: a server database (SQL Server, PostgreSQL) or ODBC with a Linux driver
+    effort: 3
+    steps:
+      - Migrate Access/Excel-as-database data to a server database and use its managed provider.
+      - For a source that must stay, use System.Data.Odbc with that system's Linux ODBC driver.
+    verify:
+      - Queries return the same data from the new store.
+
+  - id: replace-sql-filestream
+    for: [sql-filestream]
+    kind: replace
+    replace: SQL Server FILESTREAM / SqlFileStream
+    with: varbinary(max) streaming over T-SQL, or object storage
+    steps:
+      - Read and write the column with SqlDataReader (CommandBehavior.SequentialAccess, GetStream) and parameter streaming, or move blobs to object storage with a reference column.
+    refs:
+      - https://learn.microsoft.com/en-us/sql/connect/ado-net/sqlclient-streaming-support
+
+  - id: replace-ravendb-embedded
+    for: [pkg-ravendb-embedded-legacy]
+    kind: externalize
+    replace: Embedded RavenDB 1.x-3.x
+    with: RavenDB server container and the current RavenDB.Client
+    packages:
+      add: [RavenDB.Client]
+      remove: [RavenDB.Embedded, RavenDB.Database]
+    steps:
+      - Run RavenDB as its own StatefulSet; connect with DocumentStore and a URL from configuration.
+      - Export the existing data and import it into the new server.
+    refs:
+      - https://github.com/ravendb/ravendb
+
+  # ------------------------------------------------------------------ messaging and integration
+  - id: replace-msmq
+    for: [msmq]
+    kind: replace
+    replace: MSMQ
+    with: RabbitMQ or Azure Service Bus (MassTransit/NServiceBus as the abstraction)
+    packages:
+      add: [MassTransit.RabbitMQ]
+      remove: [System.Messaging, MSMQ.Messaging]
+    steps:
+      - Map each queue to a broker queue/topic; replace MessageQueue.Send/Receive with a publisher and a consumer.
+      - Keep message contracts; serialize as JSON instead of XmlMessageFormatter/BinaryMessageFormatter.
+      - Drain or bridge the old queues during the switch.
+    verify:
+      - A message sent by the producer is consumed once by the container, also after a consumer restart.
+    refs:
+      - https://github.com/MassTransit/MassTransit
+
+  - id: replace-named-pipes
+    for: [named-pipes]
+    kind: replace
+    replace: Windows named pipes
+    with: gRPC/HTTP between containers, or Unix domain sockets inside one pod
+    steps:
+      - Between separate deployments, expose the server over gRPC/HTTP with a Kubernetes Service.
+      - For two processes in one pod, use a Unix domain socket on a shared emptyDir volume.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/grpc/interprocess
+
+  - id: replace-legacy-servicebus
+    for: [pkg-legacy-azure-servicebus]
+    kind: replace
+    replace: WindowsAzure.ServiceBus SDK
+    with: Azure.Messaging.ServiceBus
+    packages:
+      add: [Azure.Messaging.ServiceBus]
+      remove: [WindowsAzure.ServiceBus]
+    steps:
+      - Replace QueueClient/TopicClient/MessagingFactory with ServiceBusClient, ServiceBusSender and ServiceBusProcessor; BrokeredMessage becomes ServiceBusMessage.
+      - Authenticate with workload identity (DefaultAzureCredential) or a connection string from a Secret.
+    refs:
+      - https://github.com/Azure/azure-sdk-for-net/blob/main/sdk/servicebus/Azure.Messaging.ServiceBus/MigrationGuide.md
+
+  - id: replace-smtp-pickup
+    for: [cfg-smtp-pickup-iis]
+    kind: replace
+    replace: IIS SMTP pickup directory
+    with: SMTP over the network to a relay (SmtpClient network delivery or MailKit)
+    packages:
+      add: [MailKit]
+    steps:
+      - Send through an SMTP relay whose host, port and credentials come from configuration and a Secret.
+    refs:
+      - https://github.com/jstedfast/MailKit
+
+  # ------------------------------------------------------------------ configuration and secrets
+  - id: externalize-config
+    for: [conn-string-compiled-in, cfg-localhost-endpoint-in-code, os-machine-name-switch]
+    kind: externalize
+    replace: Connection strings, endpoints and environment switches in code
+    with: IConfiguration with environment variables, ConfigMaps and Secrets
+    steps:
+      - Read connection strings with Configuration.GetConnectionString and endpoints from bound options; give each a configuration key.
+      - Select environment-specific behaviour with ASPNETCORE_ENVIRONMENT/DOTNET_ENVIRONMENT or a setting, not the machine name.
+    verify:
+      - The container starts against a different database/endpoint by changing only environment variables.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/extensions/configuration
+
+  - id: externalize-credentials
+    for: [cfg-hardcoded-credentials]
+    kind: externalize
+    replace: Credentials in source code
+    with: Kubernetes Secrets (or a vault) read through configuration
+    steps:
+      - Remove the literals, read the values from configuration, and supply them as Secret environment variables or mounted files.
+      - Treat the exposed values as compromised: rotate them.
+    verify:
+      - A secret scanner (gitleaks/trufflehog) finds nothing in the changed files.
+    refs:
+      - https://kubernetes.io/docs/concepts/configuration/secret/
+
+  # ------------------------------------------------------------------ libraries
+  - id: replace-binaryformatter
+    for: [mig-binaryformatter]
+    kind: replace
+    replace: BinaryFormatter-family serializers
+    with: System.Text.Json (or protobuf-net / MessagePack for binary)
+    steps:
+      - Replace serialization with System.Text.Json using explicit DTOs; never enable the unsafe BinaryFormatter switch.
+      - For data already persisted in the old format, add a one-off converter run outside the production path.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/standard/serialization/binaryformatter-migration-guide/
+
+  - id: replace-thread-abort
+    for: [mig-thread-abort, mig-delegate-begininvoke]
+    kind: replace
+    replace: Thread.Abort/Suspend and delegate BeginInvoke
+    with: CancellationToken and Task.Run
+    steps:
+      - Pass a CancellationToken and stop cooperatively instead of aborting threads.
+      - Replace delegate.BeginInvoke/EndInvoke with Task.Run(() => d(...)) and await the task.
+    refs:
+      - https://devblogs.microsoft.com/dotnet/migrating-delegate-begininvoke-calls-for-net-core/
+
+  - id: replace-codedom
+    for: [mig-codedom-compile, mig-reflection-only-load, mig-xslt-script]
+    kind: replace
+    replace: CodeDom compilation, reflection-only loading, XSLT script blocks
+    with: Roslyn into an AssemblyLoadContext, MetadataLoadContext, XSLT extension objects
+    packages:
+      add: [Microsoft.CodeAnalysis.CSharp, System.Reflection.MetadataLoadContext]
+    steps:
+      - Compile generated code with CSharpCompilation and load it into a collectible AssemblyLoadContext.
+      - Inspect assemblies with MetadataLoadContext instead of ReflectionOnlyLoad.
+      - Move msxsl:script functions into a C# extension object passed through XsltArgumentList.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/standard/assembly/inspect-contents-using-metadataloadcontext
+
+  # ------------------------------------------------------------------ reporting and documents
+  - id: replace-reporting
+    for: [pkg-crystal-reports, ssrs, ssrs-reportviewercore, pkg-activereports-legacy, pkg-stimulsoft-netfx, pkg-fastreport-gdi]
+    kind: replace
+    replace: Windows-bound reporting engine
+    with: a Linux-capable engine (ReportViewerCore for RDLC, the vendor's .NET Core edition, QuestPDF) or the report server's API
+    steps:
+      - For RDLC, render with ReportViewerCore.NETCore in a full (non-chiseled) image with the report fonts installed.
+      - For vendor engines, switch to their .NET Core/Skia edition and reuse the report templates.
+      - For Crystal Reports, re-implement the reports (QuestPDF or another engine) or keep rendering on a Windows host behind an HTTP API.
+      - For server reports, call the SSRS REST API or URL access instead of embedding the WebForms ReportViewer.
+    verify:
+      - Every report renders in the container in every export format the app offers, compared with the old output.
+    refs:
+      - https://github.com/lkosson/reportviewercore
+      - https://github.com/QuestPDF/QuestPDF
+
+  - id: replace-pdf-imaging-natives
+    for: [pkg-pdfiumviewer, pkg-ghostscript-net, pkg-tesseract-native, pkg-windows-browser-engine, pkg-imaging-sdk, pkg-spire-netfx, pkg-telerik-documents-netfx]
+    kind: replace
+    replace: Document/imaging library with Windows-only native parts
+    with: the Linux-capable edition of the library, or a cross-platform alternative (PDFtoImage, headless Chromium via Playwright)
+    steps:
+      - Switch to the library's .NET Standard/Linux package, or to the alternative named in the finding.
+      - Install the native dependencies and fonts it needs in the image (full, non-chiseled base image if required).
+      - Mount licence files from a Secret.
+    verify:
+      - The document/image conversion produces correct output inside the container.
+
+  # ------------------------------------------------------------------ hosting models
+  - id: port-cloud-hosting-models
+    for: [host-cloud-services-classic, host-service-fabric-stateless, host-aws-lambda-handler, host-azure-functions-inprocess]
+    kind: port
+    replace: Cloud-specific hosting model (Cloud Services role, Service Fabric, Lambda handler, in-process Functions)
+    with: .NET Generic Host (ASP.NET Core endpoints and BackgroundServices), Kubernetes Services and CronJobs
+    packages:
+      add: [Microsoft.Extensions.Hosting]
+    steps:
+      - Keep the business logic; replace the entry points (RoleEntryPoint, StatelessService, Lambda handler, Functions triggers) with ASP.NET Core endpoints for HTTP and BackgroundServices for queues.
+      - Replace platform configuration and discovery (RoleEnvironment, config packages, naming service) with IConfiguration and Kubernetes Service DNS.
+      - Timer triggers become Kubernetes CronJobs; queue triggers scale with KEDA.
+    verify:
+      - Each former trigger or endpoint works in the container.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/extensions/workers
+
+  - id: externalize-sf-stateful
+    for: [host-service-fabric-stateful]
+    kind: externalize
+    replace: Service Fabric reliable collections / Reliable Actors
+    with: an external state store (SQL, Cosmos DB, Redis) or Orleans/Dapr actors
+    steps:
+      - Move reliable collections to an external store with explicit transactions.
+      - Port actors to Orleans grains or Dapr actors with a persistent state store, then run the services stateless.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/orleans/overview
+
+  - id: configure-orleans-clustering
+    for: [host-orleans-localhost-clustering]
+    kind: externalize
+    replace: Orleans localhost clustering
+    with: a real clustering provider and persistent grain storage
+    steps:
+      - Configure ADO.NET, Azure Storage or Redis clustering for non-development environments and persistent grain storage.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/orleans/host/configuration-guide/server-configuration
+
+  # ------------------------------------------------------------------ smaller replacements
+  - id: replace-vb-specifics
+    for: [mig-vb-compatibility, mig-vb-my-namespace, mig-javascriptserializer, mig-enterprise-library]
+    kind: replace
+    replace: Legacy helper libraries (VB6 compatibility, My namespace, JavaScriptSerializer, Enterprise Library)
+    with: their plain .NET equivalents (System.Text.Json, ILogger, IConfiguration, ADO.NET/Dapper)
+    steps:
+      - Replace each helper with the .NET API named in the finding, keeping behaviour (date formats, casing, logging levels) the same.
+
+  - id: replace-desktop-refs
+    for: [winforms-reference-library, pkg-desktop-ui-library-ref, pkg-winrt-packages]
+    kind: replace
+    replace: References to WinForms/WPF/WinRT assemblies in server code
+    with: no reference, or the vendor's cross-platform package
+    steps:
+      - Remove the reference and replace the few types used from it (often Color, Size or a message box helper) with plain .NET types.
+
+  - id: replace-powershell
+    for: [pkg-powershell-windows]
+    kind: replace
+    replace: Windows PowerShell 5.1 hosting
+    with: PowerShell 7 SDK
+    packages:
+      add: [Microsoft.PowerShell.SDK]
+    steps:
+      - Host scripts with the PowerShell 7 SDK and check that every module they import exists on Linux.
+    refs:
+      - https://learn.microsoft.com/en-us/powershell/scripting/dev-cross-plat/choosing-the-right-nuget-package
+
+  - id: replace-ftp-mail-apis
+    for: [pkg-winscp, pkg-ews-managed-api]
+    kind: replace
+    replace: WinSCP .NET assembly / EWS Managed API
+    with: SSH.NET or FluentFTP; Microsoft Graph or MailKit
+    steps:
+      - Use SSH.NET for SFTP/SCP or FluentFTP for FTP/FTPS, with host keys and credentials from Secrets.
+      - Use Microsoft Graph for Exchange Online, IMAP/SMTP with MailKit for on-premises mail.
+
+  - id: replace-speech-audio
+    for: [pkg-system-speech, pkg-naudio-windows]
+    kind: replace
+    replace: Windows speech and audio APIs
+    with: a speech service or Linux engine behind an API; cross-platform audio codecs
+    steps:
+      - Call a speech service (cloud or a Linux engine in its own container) over HTTP; decode/encode audio with FFmpeg or managed codecs.
+
+  - id: replace-sap-nco
+    for: [pkg-sap-nco]
+    kind: replace
+    replace: SAP .NET Connector (NCo)
+    with: SAP OData/SOAP services, or the NetWeaver RFC SDK's Linux build via SapNwRfc
+    steps:
+      - Call the same BAPIs through SAP Gateway OData services, or through SapNwRfc with the Linux RFC SDK in the image.
+    refs:
+      - https://github.com/huysentruitw/SapNwRfc
+
+  - id: replace-native-dlls
+    for: [native-dll-shipped]
+    kind: replace
+    replace: Windows DLLs checked into the source tree
+    with: NuGet packages with Linux runtimes, or Linux builds of the libraries
+    steps:
+      - For each DLL, find the package that ships it for linux-x64 (runtimes/linux-x64/native) or a managed replacement; delete the checked-in binary.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/standard/native-interop/cross-platform
+
+  # ------------------------------------------------------------------ keep on Windows (no Linux replacement in this component)
+  - id: isolate-com-native
+    for: [com-interop, sta-apartment, pinvoke-vendor, vendor-sdk-install-dir, x86-only, dcom-opc, ax-business-connector, winrt-apis]
+    kind: isolate
+    replace: Registered COM components, vendor native SDKs, 32-bit-only or WinRT dependencies
+    with: the vendor's Linux SDK or network API if one exists; otherwise a small Windows-hosted service that wraps the dependency
+    effort: 5
+    steps:
+      - Ask the vendor for a Linux SDK, a REST/gRPC API or a cross-platform successor (OPC UA for OPC DA, AIF/OData for AX).
+      - If there is none, move the calls that need the dependency into a separate small service on a Windows host (VM or Windows container) and call it over HTTP/gRPC from the containerized component.
+      - Keep everything else of this component in the Linux container.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/standard/native-interop/cross-platform
+
+  - id: isolate-hardware
+    for: [serial-port, hardware-sdk, printing, pinvoke-gui]
+    kind: isolate
+    replace: Local hardware, printers or desktop session APIs
+    with: an edge/host service that owns the device and talks to the cluster over the network
+    effort: 3
+    steps:
+      - Keep the device-facing code on the machine that has the device and send events/commands over a queue or API.
+      - Replace direct printing with generating a PDF and sending it to a print service (IPP/CUPS).
+
+  - id: isolate-windows-products
+    for: [biztalk, sharepoint-server, sitecore-xp, windows-host-services]
+    kind: isolate
+    replace: Code that runs inside a Windows server product or manages Windows hosts
+    with: stays with the product; re-platforming (Logic Apps, SharePoint Online/remote add-ins, headless Sitecore) is a separate project
+    effort: 0
+    steps:
+      - No code change in this component makes it run in a Linux container; plan a re-platforming project, or leave it on Windows.
+
+  - id: isolate-desktop
+    for: [desktop-ui, pkg-desktop-ui-library-code, pkg-office-addin]
+    kind: isolate
+    replace: Windows desktop UI (WinForms/WPF) or Office add-in
+    with: stays a desktop client calling containerized APIs, or is rebuilt as a web app
+    effort: 0
+    steps:
+      - Move business logic the UI shares with server code into a UI-free library or API so the server side can be containerized.
+      - The client itself stays on PCs; rebuilding it as a web app is a separate project.

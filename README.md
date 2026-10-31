@@ -94,6 +94,17 @@ python -m containerizer analyze <repo> --sql "Server=...;Database=Containerizer;
    lower a component's confidence. Low confidence triggers verification and, optionally, Claude.
 7. **Rating** per application: **A** lift and shift, **B** minor refactoring, **C** framework port,
    **D** partial (some components must stay on Windows), **E** not feasible.
+   **A** also requires every server component to be **stateless**: persistent data may live in
+   services that are available as managed cloud services (SQL Server, PostgreSQL, MySQL, MongoDB,
+   Redis, blob storage, queues), but not on the component's own disk or in its process memory. Rules
+   that find such data carry `state: local` or `state: memory` (`rules/36-state.yaml`, `sqlite-local`,
+   `lucene-local-index`): a local SQLite/LiteDB file with no server database wired up, a local
+   Lucene/Examine index, uploads or data files written under the content root or App_Data,
+   ASP.NET Core session without a distributed cache, and Hangfire in-memory storage. An app that is
+   otherwise ready but keeps such data is rated **B**, and the report lists what keeps it stateful.
+   Not counted: SQLite next to a server database provider (`sqlite-optional`), a read-only SQLite
+   file shipped with the app, Lucene used only for text analysis, temp files and logs, and the
+   ASP.NET Core Data Protection key ring (one `PersistKeysTo*` line; reported separately).
 
 ### Rules are data
 
@@ -176,6 +187,33 @@ list of verified https links (docs page, upstream issue, vendor statement) shown
 `tests/test_rule_docs.py` enforces that every refactor/rewrite/blocker rule has one or is on its
 commented allowlist.
 Later files override earlier rules with the same id; `rules/learned/` is loaded last.
+
+### Migration assistant
+
+For every component that is not ready (verdict refactor, rewrite or blocker), each blocking finding is
+mapped to a concrete Linux-compatible replacement from [`rules/migrations.yaml`](rules/migrations.yaml):
+System.Drawing → SkiaSharp/ImageSharp, WCF → CoreWCF, Windows Service → worker service, Office
+automation → Open XML SDK/ClosedXML, registry → configuration, Event Log → ILogger, MSMQ → a broker,
+and so on, with packages to add and remove, steps, checks, an effort estimate and references. Parts
+with no Linux replacement (desktop UI, hardware, vendor COM SDKs, BizTalk) are marked "keep on Windows"
+instead of being forced into a code change.
+
+```yaml
+- id: replace-system-drawing
+  for: [system-drawing-core, pkg-mschart, pkg-qrcoder-gdi]
+  kind: replace                    # replace | port | externalize | isolate
+  replace: System.Drawing (GDI+)
+  with: SkiaSharp or ImageSharp for images, QuestPDF for documents
+  packages: {add: [SkiaSharp, SkiaSharp.NativeAssets.Linux.NoDependencies], remove: [System.Drawing.Common]}
+  steps: [...]
+  verify: [...]
+```
+
+The plan is rendered as a self-contained **prompt for AI coding agents** (Claude Code, GitHub Copilot,
+...): the findings with their evidence, the replacements in order, constraints (minimal changes,
+no secrets in code, non-root and read-only file system) and how to verify. It is written to
+`agent-prompts/<app>/<component>.md` next to the reports, summarised in `<app>.md` / `MIGRATION.md`,
+included in `assessment.json`, stored in the results database and shown with a copy button in the web UI.
 
 ### Self-learning loop (`verify --learn`)
 
@@ -483,8 +521,13 @@ keeps only the components rated **A** that built, ran and passed the security ga
 pushed to your registry and the generated files are committed to your output repository as
 `<Organization>/<Project>/<Repository>/<component>/` (GitHub has no projects: `_`), with a
 `sandbox/` folder holding an Argo CD app-of-apps and a Flux root Kustomization that deploy all of them
-to a sandbox cluster. Results go to SQL Server too with `--sql`. `--cache-dir` keeps the clones
-between runs and only pulls the newest commit. See [docs/organization-run.md](docs/organization-run.md).
+to a sandbox cluster. Results go to SQL Server too with `--sql`. See
+[docs/organization-run.md](docs/organization-run.md). `--cache-dir` keeps the clones between runs and only
+pulls the newest commit. With `--verify-sandbox` it then waits for Argo CD or
+Flux to sync, reads back rollout, readiness, restarts and events with a read-only ServiceAccount, and records
+per component "deployed and healthy" or "deployed but failing (reason)" in `sandbox/HEALTH.md`, the results
+database and the web UI; failures the cluster shows feed the learning loop
+([docs/sandbox-verification.md](docs/sandbox-verification.md)).
 
 Organization scans can also be **scheduled from the admin pages** (days of the week and time, or
 "Run now") and run by `containerizer worker`, a separate process that holds the tokens and Docker.
@@ -529,5 +572,6 @@ containerizer/sql/  results database schema (sqlstore.py writes it, webui.py rea
                  worker.py: scheduled organization scans, metrics.py: Prometheus metrics
 monitoring/      Grafana dashboard, Prometheus scrape config and alert rules, systemd unit for the worker
 results/         Docker Compose stack and image for the results database and web UI
-docs/            results-database.md (results database, web UI, admin pages, audit), organization-run.md, scheduled-scans.md, self-hosted-llm.md
+docs/            results-database.md (results database, web UI, admin pages, audit), organization-run.md,
+                 scheduled-scans.md, sandbox-verification.md, self-hosted-llm.md
 ```
