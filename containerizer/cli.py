@@ -224,7 +224,9 @@ def cmd_org(args) -> int:
         stale_days=args.stale_days, max_repos=args.max_repos, ai=args.ai, model=args.model,
         verify=not args.no_verify, gate=not args.no_gate, scanner=args.scanner, fail_on=args.fail_on,
         timeout=args.timeout, pin=args.pin_digests, verify_commits=args.verify_commits, sql=args.sql,
-        work_dir=args.work_dir, keep_work=args.keep_work, dry_run=args.dry_run)
+        work_dir=args.work_dir, keep_work=args.keep_work, dry_run=args.dry_run,
+        verify_sandbox=args.verify_sandbox, kubeconfig=args.kubeconfig, kube_context=args.kube_context,
+        gitops=args.gitops, sandbox_timeout=args.sandbox_timeout)
     try:
         results = run_org(o)
     except SourceError as e:
@@ -235,6 +237,45 @@ def cmd_org(args) -> int:
         by[r.status] = by.get(r.status, 0) + 1
     print(" ".join(f"{k}={v}" for k, v in sorted(by.items())))
     return 1 if by.get("error") else 0
+
+
+def cmd_sandbox(args) -> int:
+    import os
+    from .sandbox import (HEALTHY, SCHEDULED, SKIPPED, KubeOptions, SandboxOptions, summary,
+                          verify_sandbox, write_health)
+    root = Path(args.output_dir)
+    if not (root / "sandbox").is_dir():
+        print(f"error: {root} has no sandbox/ folder: point --output-dir at a checkout of the output repository "
+              "of `containerizer org`", file=sys.stderr)
+        return 2
+    o = SandboxOptions(kube=KubeOptions(kubeconfig=args.kubeconfig, context=args.kube_context), gitops=args.gitops,
+                       timeout=args.timeout, settle=args.settle, revision=args.revision or "", learn=not args.no_learn)
+    doc = verify_sandbox(root, o)
+    write_health(root, doc)
+    for r in doc["components"]:
+        print(f"{r['app']}/{r['component']}: {r['status']}" + (f" - {r['reason']}" if r.get("reason") else ""))
+    print(f"sandbox health: {summary(doc)} -> {root / 'sandbox' / 'HEALTH.md'}")
+    if doc.get("learned"):
+        print(f"learned from the cluster: {', '.join(doc['learned'])}")
+    if (args.sql or os.environ.get("CONTAINERIZER_SQL")) and doc["components"] and not doc.get("skipped"):
+        from .sqlstore import SqlError, store_sandbox
+        try:
+            n, missing = store_sandbox(args.sql, doc)
+        except SqlError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 3
+        print(f"{n} sandbox check(s) written to SQL Server" + (f"; {missing} not matched to an assessed component"
+                                                             if missing else ""))
+    bad = [r for r in doc["components"] if r["status"] not in (HEALTHY, SCHEDULED, SKIPPED)]
+    return 1 if bad and args.fail_on_unhealthy else 0
+
+
+def _kube_args(s) -> None:
+    s.add_argument("--kubeconfig", help="kubeconfig of the sandbox cluster (default KUBECONFIG, ~/.kube/config or "
+                   "the in-cluster service account); use a read-only identity, see sandbox/verify-rbac.yaml")
+    s.add_argument("--kube-context", help="context in the kubeconfig (default: its current context)")
+    s.add_argument("--gitops", default="auto", choices=["auto", "argocd", "flux"],
+                   help="which GitOps tool deploys the sandbox (auto: Argo CD Application, else Flux Kustomization)")
 
 
 def cmd_bench(args) -> int:
@@ -546,7 +587,28 @@ def main(argv=None) -> int:
     s.add_argument("--work-dir", default=".work/org")
     s.add_argument("--keep-work", action="store_true", help="keep the clones")
     s.add_argument("--dry-run", action="store_true", help="list the repositories and the API-level skips only")
+    g = s.add_argument_group("sandbox verification (read back pod health after Argo CD / Flux synced the push)")
+    g.add_argument("--verify-sandbox", action="store_true", help="at the end, wait for the sandbox cluster to sync "
+                   "the pushed commit and record per component: deployed and healthy / deployed but failing (reason); "
+                   "skipped with a message when there is no cluster access")
+    _kube_args(g)
+    g.add_argument("--sandbox-timeout", type=int, default=900, help="seconds to wait for sync and rollout (default 900)")
     s.set_defaults(fn=cmd_org)
+
+    s = sub.add_parser("sandbox", help="sandbox cluster deployed by `org`: read back health of every component")
+    ssub = s.add_subparsers(dest="sandbox_cmd", required=True)
+    v = ssub.add_parser("verify", help="wait for the Argo CD / Flux sync, read rollout, readiness, restarts and events; "
+                        "write sandbox/HEALTH.md + health.json, the results database and learned rules")
+    v.add_argument("--output-dir", default=".", help="checkout of the output repository (default: current folder)")
+    _kube_args(v)
+    v.add_argument("--revision", help="commit to wait for (default: HEAD of --output-dir)")
+    v.add_argument("--timeout", type=int, default=900, help="seconds to wait for sync and rollout (default 900)")
+    v.add_argument("--settle", type=int, default=60,
+                   help="a component is healthy only when it stays ready without restarts this long (default 60)")
+    v.add_argument("--no-learn", action="store_true", help="do not turn code/platform failures into learned rules")
+    v.add_argument("--fail-on-unhealthy", action="store_true", help="exit 1 when a component is not healthy")
+    v.add_argument("--sql", help="also write the checks to SQL Server (default CONTAINERIZER_SQL)")
+    v.set_defaults(fn=cmd_sandbox)
 
     s = sub.add_parser("bench", help="score assessments against labelled expectations")
     s.add_argument("--challenge", default="../containerization-challenge")

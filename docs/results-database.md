@@ -20,6 +20,7 @@ BusinessUnit 1─* Product 1─* Application 1─* Component            administ
                              Application 1─* ApplicationAssessment   one per scan
                                               1─* ComponentAssessment 0─1 ComponentMigration   plan, AI agent prompt
                                               1─* Finding            why, fix, references
+                             Application 1─* SandboxCheck         sandbox cluster health (org --verify-sandbox)
 AuditLog                                                             every mapping change
 AccessLog                                                            who looked at what (optional)
 ```

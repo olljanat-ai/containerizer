@@ -72,6 +72,9 @@ def load_application(conn, app_id: int) -> dict | None:
     app["findings"] = _rows(conn, "SELECT ComponentId, ComponentName, RuleId, Severity, Title, Why, Fix, Via, OnlyCommands, "
                                   "Refs, Source FROM cz.vFindingLatest WHERE ApplicationId = %s AND Severity <> 'info'",
                             (app_id,))
+    app["sandbox"] = _rows(conn, "SELECT ComponentId, ComponentName, CheckedAt, Status, Reason, GitOps, Namespace, Workloads, "
+                                 "Ready, Restarts, RuleId, Outcome, Diagnosis, Events FROM cz.vSandboxLatest "
+                                 "WHERE ApplicationId = %s", (app_id,))
     app["history"] = _rows(conn, "SELECT TOP (20) AssessedAt, Rating, Score, EffortDays FROM cz.ApplicationAssessment "
                                  "WHERE ApplicationId = %s ORDER BY AssessedAt DESC, AssessmentId DESC", (app_id,))
     app["migrations"] = load_migrations(conn, app_id)
@@ -268,6 +271,7 @@ def render_application(app: dict, nav: str = "") -> str:
     crumbs = (f"<a href='/'>All</a> › <a href='{e(_bu_href(app['BusinessUnitId']))}'>"
               f"{e(app['BusinessUnitName'] or UNASSIGNED)}</a> › {e(app['ProductName'] or UNASSIGNED)}"
               f"{_info_link(app.get('ProductInfoUrl'))}")
+    sandbox = {s["ComponentId"]: s for s in app.get("sandbox") or []}
     by_comp: dict = {}
     for f in app["findings"]:
         by_comp.setdefault(f["ComponentId"], []).append(f)
@@ -289,7 +293,9 @@ def render_application(app: dict, nav: str = "") -> str:
         f"<td>{e(ROLE_TEXT.get(c['Role'], c['Role'].title()))}</td>"
         f"<td><span class='sev s-{e(c['Verdict'])}'>{e(VERDICT_LABEL.get(c['Verdict'], c['Verdict']))}</span></td>"
         f"<td class='num'>{_num(c['EffortDays'], 1)}</td>"
-        f"<td>{_verify(c)}</td><td>{_plan_cell(app['ApplicationId'], c, migs.get(c['ComponentId']))}</td></tr>"
+        f"<td>{_verify(c)}</td>"
+        + (f"<td>{_sandbox(sandbox.get(c['ComponentId']))}</td>" if sandbox else "")
+        + f"<td>{_plan_cell(app['ApplicationId'], c, migs.get(c['ComponentId']))}</td></tr>"
         for c in app["components"])
 
     details = []
@@ -300,7 +306,8 @@ def render_application(app: dict, nav: str = "") -> str:
                        f"<summary><b>{e(c['ComponentName'])}</b> · {e(VERDICT_LABEL.get(c['Verdict'], c['Verdict']))}"
                        f" <span class='muted'>({len(fs)} item{'s' if len(fs) != 1 else ''})</span></summary>"
                        f"<div class='muted small'>{e(c['VerdictText'])}{'; a Windows container is a workable stop-gap' if c['WindowsContainerOk'] and c['Verdict'] in ('rewrite', 'blocker') else ''}"
-                       f"{'; targets ' + e(c['TargetFramework']) if c['TargetFramework'] else ''}</div>{items}"
+                       f"{'; targets ' + e(c['TargetFramework']) if c['TargetFramework'] else ''}</div>"
+                       f"{_sandbox_detail(sandbox.get(c['ComponentId']))}{items}"
                        f"{_migration(app['ApplicationId'], migs.get(c['ComponentId']))}</details>")
     repo = by_comp.get(None, [])
     if repo:
@@ -332,7 +339,7 @@ def render_application(app: dict, nav: str = "") -> str:
 <div class='meta'>{owner}{src}</div>
 {f"<h2>Main obstacles</h2><ul class='obstacles'>{obs_html}</ul>" if obs_html else ''}
 <h2>Components</h2>
-<table><thead><tr><th>Component</th><th>What it is</th><th>Verdict</th><th class='num'>Effort (days)</th><th>Build and run</th><th>Migration</th></tr></thead>
+<table><thead><tr><th>Component</th><th>What it is</th><th>Verdict</th><th class='num'>Effort (days)</th><th>Build and run</th>{"<th>Sandbox cluster</th>" if sandbox else ""}<th>Migration</th></tr></thead>
 <tbody>{comp_rows}</tbody></table>
 <h2>What needs to change, and why</h2>{''.join(details)}
 <h2>History</h2><p class='muted small'><a href='/trends'>Trends of all applications</a></p><table class='narrow'><thead><tr><th>Assessed</th><th>Rating</th><th class='num'>Readiness</th>
@@ -414,6 +421,52 @@ def _verify(c: dict) -> str:
     return f"<span class='v-{e(s)}'>{e(text)}</span>"
 
 
+SANDBOX_TEXT = {"healthy": "Deployed and healthy", "failing": "Deployed but failing", "pending": "Not ready in time",
+                "scheduled": "Deployed, job not run yet", "not-found": "Not deployed", "error": "Could not be checked"}
+OUTCOME_TEXT = {"environment": "a sandbox cluster setting, not the application",
+                "external": "a missing external service (database, broker, identity provider)",
+                "code": "the application: needs a change", "platform": "the application: a Windows-only API",
+                "retry": "the generated configuration: fixed on the next scan"}
+
+
+def _sandbox(s: dict | None) -> str:
+    if not s:
+        return "<span class='muted'>not deployed</span>"
+    st = s["Status"]
+    return f"<span class='v-sb-{e(st)}'>{e(SANDBOX_TEXT.get(st, st))}</span>" + \
+        (f" <span class='muted small'>{e(s['Ready'])}</span>" if s.get("Ready") and st == "healthy" else "")
+
+
+def _sandbox_detail(s: dict | None) -> str:
+    """What the sandbox cluster showed for a component: status, why, the Warning events."""
+    if not s:
+        return ""
+    st = s["Status"]
+    where = " · ".join(x for x in (f"namespace {s['Namespace']}" if s.get("Namespace") else "",
+                                    {"argocd": "Argo CD", "flux": "Flux"}.get(s.get("GitOps") or "", ""),
+                                    f"checked {_date(s['CheckedAt'])}") if x)
+    out = [f"<div class='sandbox'><div><span class='label'>Sandbox cluster</span> {_sandbox(s)}"
+           f" <span class='muted small'>({e(where)})</span></div>"]
+    if st != "healthy" and s.get("Reason"):
+        out.append(f"<p><span class='label'>Why</span> {e(_ws(s['Reason']))}</p>")
+    elif st == "healthy":
+        out.append(f"<p class='muted small'>{e(_ws(s.get('Reason') or ''))}"
+                   f"{'; restarted ' + str(int(s['Restarts'])) + ' time(s)' if s.get('Restarts') else ''}</p>")
+    if s.get("Outcome") in OUTCOME_TEXT and st != "healthy":
+        out.append(f"<p><span class='label'>Caused by</span> {e(OUTCOME_TEXT[s['Outcome']])}"
+                   f"{' (rule ' + e(s['RuleId']) + ')' if s.get('RuleId') else ''}</p>")
+    try:
+        events = json.loads(s.get("Events") or "[]")
+    except ValueError:
+        events = []
+    if events and st != "healthy":
+        out.append("<ul class='events small'>" + "".join(
+            f"<li><b>{e(ev.get('reason', ''))}</b> {e(ev.get('message', ''))}"
+            f"{' (' + str(int(ev['count'])) + '×)' if isinstance(ev.get('count'), int) and ev['count'] > 1 else ''}</li>"
+            for ev in events[:5]) + "</ul>")
+    return "".join(out) + "</div>"
+
+
 def _finding(f: dict) -> str:
     refs = _refs(f.get("Refs"))
     extra = []
@@ -480,6 +533,12 @@ header.app{display:flex;gap:18px;align-items:flex-start;margin-top:8px}.lead{fon
 .s-blocker{color:#b42727}.s-rewrite{color:#b85a2e}.s-refactor{color:#8a6100}.s-config,.s-info{color:#0a7d0a}
 @media (prefers-color-scheme:dark){.s-blocker{color:#f07a7a}.s-rewrite{color:#f2a07f}.s-refactor{color:#fac35a}.s-config,.s-info{color:#4fd14f}}
 .v-ok,.v-ok-external{color:#0a7d0a}.v-build-failed,.v-run-failed{color:#b42727}
+.v-sb-healthy{color:#0a7d0a;font-weight:600}.v-sb-failing,.v-sb-not-found,.v-sb-error{color:#b42727;font-weight:600}
+.v-sb-pending,.v-sb-scheduled{color:#8a6100}
+@media (prefers-color-scheme:dark){.v-ok,.v-ok-external,.v-sb-healthy{color:#4fd14f}
+.v-build-failed,.v-run-failed,.v-sb-failing,.v-sb-not-found,.v-sb-error{color:#f07a7a}.v-sb-pending,.v-sb-scheduled{color:#fac35a}}
+.sandbox{margin-top:8px;padding:8px 10px;border-radius:6px;background:var(--bg)}.sandbox p{margin:4px 0}
+ul.events{margin:4px 0;padding-left:18px}
 details{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:8px 0}
 summary{cursor:pointer}.finding{border-top:1px solid var(--line);padding:10px 0 4px;margin-top:10px}.finding p{margin:4px 0}
 .obstacles{padding-left:18px}.obstacles li{margin:4px 0}

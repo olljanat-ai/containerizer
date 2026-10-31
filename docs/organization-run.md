@@ -80,7 +80,8 @@ is reported as `error`.
     gitops/flux/             tenant.yaml, git/sync.yaml (+ kustomization.yaml), oci/, image automation
     <component>/             Dockerfile, Dockerfile.dockerignore, k8s.yaml, plan.json
 sandbox/
-  README.md namespaces.txt
+  README.md namespaces.txt verify-rbac.yaml
+  HEALTH.md health.json      with --verify-sandbox: what the cluster showed per component
   argocd/bootstrap.yaml      app-of-apps
   argocd/apps/               kustomization over every <app>/gitops/argocd
   flux/bootstrap.yaml        GitRepository + root Kustomization
@@ -115,6 +116,18 @@ past 63 characters, and given a hash suffix when two repositories would map to t
   in each namespace from `namespaces.txt` (or give the nodes registry credentials).
 - **Secrets**: apps get their connection strings through External Secrets (`ClusterSecretStore`
   `app-secrets`), see each app's `HARDENING.md`.
+
+## Checking the sandbox
+
+`--verify-sandbox` adds a last step: wait until Argo CD or Flux has synced the pushed commit, then read
+back every component's rollout, readiness, restarts and Warning events (and a redacted log tail on
+failure), and record **deployed and healthy** or **deployed but failing (reason)** in
+`sandbox/HEALTH.md` + `health.json`, the results database (`--sql`) and the web UI. Failures the
+application causes become learned rules for the next run. It reads the cluster with the
+least-privilege Roles in `sandbox/verify-rbac.yaml`; without cluster access it is skipped with a message.
+`--kubeconfig`, `--kube-context`, `--gitops auto|argocd|flux` and `--sandbox-timeout` (default 900 s)
+configure it; `containerizer sandbox verify` runs the same check later on a checkout of the output
+repository. See [sandbox-verification.md](sandbox-verification.md).
 
 ## Security
 

@@ -6,6 +6,10 @@
 #   platform  - the app hit a Windows-only API at runtime -> finding
 #   code      - needs a code change -> finding
 # `learn` makes the fix permanent as a plan rule when the retry succeeds.
+#   environment - (stage cluster) the sandbox cluster's setup, not the app: reported, never learned
+# Stage `cluster` rules are matched by the sandbox verification (containerizer/sandbox.py) against pod
+# states and Warning events of the deployed workloads; the app's log there is matched with the `run`
+# rules. Code/platform outcomes found in the cluster become learned findings with their evidence.
 failures:
   - id: build-no-space
     stage: build
@@ -269,3 +273,84 @@ failures:
     diagnosis: The embedded SQLite database file is not in a writable, persistent folder.
     finding: {severity: config, title: SQLite database needs a persistent volume (single replica),
       fix: 'Put the database file on a PersistentVolume mounted writable (the generated manifests do this for the configured path) and run one replica, or move the data to a database server.'}
+
+  # ------------------------------------------------------------------ sandbox cluster (Kubernetes)
+  - id: cluster-image-pull
+    stage: cluster
+    match: 'ErrImagePull|ImagePullBackOff|Failed to pull image|pull access denied|unauthorized: authentication required|manifest unknown'
+    outcome: environment
+    refs: [https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/]
+    diagnosis: >-
+      The cluster cannot pull the image: the pull secret named with --image-pull-secret is missing in the
+      namespace, the nodes have no registry credentials, or the image was not pushed (--no-push-images).
+
+  - id: cluster-image-not-signed
+    stage: cluster
+    match: 'image verification failed|failed to verify image|no matching signatures|verifyImages'
+    outcome: environment
+    refs: [https://kyverno.io/docs/writing-policies/verify-images/sigstore/]
+    diagnosis: >-
+      The admission policy only admits signed images and this image has no valid signature: run the
+      organization scan with --cosign-key, or put the matching public key in cluster/verify-images.yaml.
+
+  - id: cluster-config-missing
+    stage: cluster
+    match: 'CreateContainerConfigError|(secret|configmap) "(?P<name>[^"]+)" not found|couldn''t find key (?P<key>\S+) in (Secret|ConfigMap)'
+    outcome: environment
+    refs: [https://kubernetes.io/docs/concepts/configuration/secret/, https://external-secrets.io/latest/]
+    diagnosis: >-
+      A Secret or ConfigMap the pod needs does not exist in the namespace yet; create it, or let External
+      Secrets create it from the ClusterSecretStore app-secrets (see HARDENING.md).
+
+  - id: cluster-pod-security
+    stage: cluster
+    match: 'violates PodSecurity|forbidden: .*(PodSecurity|pod security)'
+    outcome: environment
+    refs: [https://kubernetes.io/docs/concepts/security/pod-security-standards/]
+    diagnosis: >-
+      Pod Security admission rejected the pods. The generated manifests target the "restricted" profile;
+      a mutating webhook or a cluster default changed them, check the namespace labels and policies.
+
+  - id: cluster-quota
+    stage: cluster
+    match: 'exceeded quota|forbidden: .*(LimitRange|must specify limits|maximum (cpu|memory) usage)'
+    outcome: environment
+    refs: [https://kubernetes.io/docs/concepts/policy/resource-quotas/]
+    diagnosis: The namespace's ResourceQuota or LimitRange does not admit the pods' resource requests and limits.
+
+  - id: cluster-unschedulable
+    stage: cluster
+    match: 'FailedScheduling|Unschedulable|Insufficient (cpu|memory)|didn''t match Pod''s node affinity|untolerated taint|unbound immediate PersistentVolumeClaims'
+    outcome: environment
+    refs: [https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/]
+    diagnosis: >-
+      The pods cannot be scheduled: no node has the requested CPU/memory, a taint or affinity excludes the
+      nodes, or a PersistentVolumeClaim has no storage class to bind to.
+
+  - id: cluster-pod-sandbox
+    stage: cluster
+    match: 'FailedCreatePodSandBox|failed to create pod sandbox|failed to setup network for sandbox|FailedMount'
+    outcome: environment
+    refs: [https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/]
+    diagnosis: >-
+      The node could not start the pod (container runtime, network plugin or volume mount failed before
+      the application ran); check the node and the events, the application was not started.
+
+  - id: cluster-oom
+    stage: cluster
+    match: 'OOMKilled|exit 137\)'
+    outcome: code
+    refs: [https://kubernetes.io/docs/tasks/configure-pod-container/assign-memory-resource/]
+    diagnosis: The container was killed for using more memory than its limit (512Mi in the generated manifests).
+    finding: {severity: config, title: Needs a higher memory limit than generated,
+      fix: 'Measure the working set under load and raise resources.limits.memory (and requests) in k8s.yaml; check for unbounded caches if it keeps growing.'}
+
+  - id: cluster-readonly-filesystem
+    stage: cluster
+    match: "(Read-only file system|EROFS)[^\n]*?'(?P<path>/[^']+)'|Access to the path '(?P<path2>/[^']+)' is denied"
+    outcome: retry
+    refs: [https://kubernetes.io/docs/tasks/configure-pod-container/security-context/]
+    diagnosis: The app writes to a folder that is read-only in the hardened pod.
+    fix: {add_writable: ['{dir}']}
+    learn: {when: {}}
+
