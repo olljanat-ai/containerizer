@@ -215,3 +215,66 @@ def test_turning_off_keeps_the_data(lab):
     phase, log = run_pod(A, "redis2", lab["images"]["CZ_IMAGE_LAB_REDIS"],
                          'redis-cli -h "$H" --no-auth-warning -a "$P" GET k', {"H": a["host"], "P": a["password"]})
     assert log.strip().endswith("v"), log
+
+
+def test_mysql_database_per_app(lab):
+    a, b = secret(A, "lab-mysql"), secret(B, "lab-mysql")
+    q = 'mysql -h "$H" -u "$U" --ssl-mode=REQUIRED '
+    phase, log = run_pod(A, "mysql", lab["images"]["CZ_IMAGE_LAB_MYSQL"],
+                         q + '"$D" -e "CREATE TABLE t (i int); INSERT INTO t VALUES (42); SELECT i FROM t;" && echo OWN-OK; '
+                         + q + '"$OTHER" -e "SELECT 1" && echo OTHER-OPEN || echo OTHER-REFUSED',
+                         {"H": a["host"], "U": a["username"], "D": a["database"], "MYSQL_PWD": a["password"],
+                          "OTHER": b["database"]})
+    assert "42" in log and "OWN-OK" in log and "OTHER-REFUSED" in log, log
+
+
+def test_mongodb_database_per_app(lab):
+    a, b = secret(A, "lab-mongodb"), secret(B, "lab-mongodb")
+    script = ('const c = new Mongo(process.env.CS); const d = c.getDB(process.env.D);'
+              'd.t.insertOne({i: 42}); print("GOT " + d.t.findOne().i);'
+              'try { c.getDB(process.env.OTHER).t.findOne(); print("OTHER-OPEN"); } catch (e) { print("OTHER-REFUSED"); }')
+    phase, log = run_pod(A, "mongo", lab["images"]["CZ_IMAGE_LAB_MONGODB"], f"mongosh --nodb --quiet --eval '{script}'",
+                         {"CS": a["connection-string"], "D": a["database"], "OTHER": b["database"]})
+    assert "GOT 42" in log and "OTHER-REFUSED" in log, log
+
+
+PY_BROKERS = r"""
+import os, sys, subprocess, socket
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--disable-pip-version-check", "pika", "kafka-python", "paramiko"], check=True)
+import pika
+p = pika.URLParameters(os.environ["AMQP"])
+ch = pika.BlockingConnection(p).channel()
+ch.queue_declare("q"); ch.basic_publish("", "q", b"hi")
+print("AMQP", ch.basic_get("q", auto_ack=True)[2].decode())
+try:
+    other = pika.URLParameters(os.environ["AMQP"].rsplit("/", 1)[0] + "/" + os.environ["OTHER_VHOST"])
+    pika.BlockingConnection(other).channel(); print("AMQP-OTHER-OPEN")
+except Exception as ex:
+    print("AMQP-OTHER-REFUSED", type(ex).__name__)
+from kafka import KafkaProducer, KafkaConsumer
+KafkaProducer(bootstrap_servers=os.environ["KAFKA"]).send("t", b"hello").get(timeout=60)
+c = KafkaConsumer("t", bootstrap_servers=os.environ["KAFKA"], auto_offset_reset="earliest", consumer_timeout_ms=20000)
+print("KAFKA", next(iter(c)).value.decode())
+import paramiko
+t = paramiko.Transport((os.environ["SFTP"], 22)); t.connect(username=os.environ["SU"], password=os.environ["SP"])
+s = paramiko.SFTPClient.from_transport(t)
+with s.open("a.txt", "w") as f: f.write("files")
+print("SFTP", s.open("a.txt").read().decode())
+for name, h, port in (("KAFKA", os.environ["OTHER_KAFKA"], 9092), ("SFTP", os.environ["OTHER_SFTP"], 22)):
+    try:
+        socket.create_connection((h, port), timeout=8).close(); print(name + "-OTHER-OPEN")
+    except OSError:
+        print(name + "-OTHER-BLOCKED")
+"""
+
+
+def test_brokers_and_sftp_per_app(lab):
+    r, k, s = secret(A, "lab-rabbitmq"), secret(A, "lab-kafka"), secret(A, "lab-sftp")
+    rb, kb, sb = secret(B, "lab-rabbitmq"), secret(B, "lab-kafka"), secret(B, "lab-sftp")
+    phase, log = run_pod(A, "brokers", "python:3.12-alpine", "python - <<'EOF'\n" + PY_BROKERS + "\nEOF",
+                         {"AMQP": r["connection-string"], "OTHER_VHOST": rb["vhost"], "KAFKA": k["bootstrap-servers"],
+                          "SFTP": s["host"], "SU": s["username"], "SP": s["password"],
+                          "OTHER_KAFKA": kb["bootstrap-servers"].split(":")[0], "OTHER_SFTP": sb["host"]}, timeout=600)
+    assert "AMQP hi" in log and "AMQP-OTHER-REFUSED" in log, log
+    assert "KAFKA hello" in log and "SFTP files" in log, log
+    assert "KAFKA-OTHER-BLOCKED" in log and "SFTP-OTHER-BLOCKED" in log, log

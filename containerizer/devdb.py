@@ -1,7 +1,8 @@
 """Development database backups per application, uploaded by operators on the admin pages.
 
-An operator uploads a backup of the application's development database (a SQL Server .bak; other
-engines can be added to ENGINES later) and writes the
+An operator uploads a backup of the application's development database (a SQL Server .bak, a
+PostgreSQL pg_dump file in the custom or plain format, or a MySQL / MariaDB mysqldump file; plain SQL
+dumps may be gzipped) and writes the
 instructions an AI agent needs to point the application at it: which connection string or setting
 to use, the database name, test users, anything to run after the restore. The file goes to
 CONTAINERIZER_DEV_DB_DIR (a volume shared with the scan worker), never to the database or to git;
@@ -25,7 +26,10 @@ CHUNK = 64 * 1024
 MAX_FIELD = 64 * 1024
 ENGINES = {
     "sqlserver": ("SQL Server", "backup (.bak) made with BACKUP DATABASE ... TO DISK"),
+    "postgres": ("PostgreSQL", "pg_dump file: custom format (pg_dump -Fc) or plain SQL (.sql, .sql.gz)"),
+    "mysql": ("MySQL", "mysqldump or mariadb-dump file (.sql, .sql.gz)"),
 }
+ACCEPT = ".bak,.dump,.backup,.sql,.gz"
 NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 FILE_RE = re.compile(r"[\w.\- ]{1,200}")
 PROMPT_MAX = 8000
@@ -53,18 +57,41 @@ class Settings:
 
 # --------------------------------------------------------------------------- file checks
 
+def _gunzip_head(head: bytes) -> bytes:
+    import zlib
+    try:
+        return zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(head, 4096)
+    except zlib.error:
+        return b""
+
+
+def file_format(head: bytes) -> tuple[str | None, str | None]:
+    """(engine, stored file extension) from a file's first bytes, or (None, None)."""
+    if head.startswith((b"TAPE", b"MSSQLBAK")):        # SQL Server backup: Microsoft Tape Format, or compressed (2022)
+        return "sqlserver", "bak"
+    if head.startswith(b"PGDMP"):                      # pg_dump -Fc
+        return "postgres", "dump"
+    gz = head.startswith(b"\x1f\x8b")
+    text = _gunzip_head(head) if gz else head
+    text = text.lstrip(b"\xef\xbb\xbf")[:4096].decode("utf-8", "replace")
+    ext = "sql.gz" if gz else "sql"
+    if re.search(r"(?m)^-- PostgreSQL database dump|^SET client_encoding = ", text):
+        return "postgres", ext
+    if re.search(r"(?mi)^-- (MySQL|MariaDB) dump|^/\*!40101 SET |^/\*M?!999999", text):
+        return "mysql", ext
+    return None, None
+
+
 def sniff(head: bytes, filename: str) -> str | None:
     """The engine a file's first bytes say it is for, or None."""
-    if head.startswith((b"TAPE", b"MSSQLBAK")):        # SQL Server backup: Microsoft Tape Format, or compressed (2022)
-        return "sqlserver"
-    return None
+    return file_format(head)[0]
 
 
 def check_engine(engine: str, kind: str | None) -> None:
     if engine not in ENGINES:
         raise UploadError("Pick the database engine.")
     if kind is None:
-        raise UploadError("That file is not a SQL Server backup (.bak made with BACKUP DATABASE ... TO DISK).")
+        raise UploadError(f"That file is not a {ENGINES[engine][0]} backup ({ENGINES[engine][1]}).")
     if kind != engine:
         raise UploadError(f"The file is a {ENGINES[kind][0]} backup, but {ENGINES[engine][0]} was selected.")
 
@@ -174,8 +201,10 @@ def parse_multipart(rfile, length: int, ctype: str, tmpdir: Path, max_bytes: int
 
 def store(settings: Settings, up: Upload, engine: str) -> str:
     """Move the checked temporary file to its final name (content-addressed) and return that name."""
-    ext = {"sqlserver": ".bak"}[engine]
-    name = f"{up.sha256}{ext}"
+    kind, ext = file_format(up.head)
+    if kind != engine:
+        raise UploadError(f"That file is not a {ENGINES[engine][0]} backup.")
+    name = f"{up.sha256}.{ext}"
     final = settings.directory / name
     os.replace(up.path, final)
     os.chmod(final, 0o600)
@@ -224,10 +253,13 @@ def human_size(n: int) -> str:
 # Kubernetes' $(VAR) expansion; which settings to set comes from the LLM, reading the operator's
 # prompt and the component's configuration, or from the connection strings the scan found.
 
-PORTS = {"sqlserver": 1433}
-UIDS = {"sqlserver": 10001}
-WRITABLE = {"sqlserver": ["/var/opt/mssql", "/tmp"]}
-MEMORY = {"sqlserver": ("2Gi", "3Gi")}
+PORTS = {"sqlserver": 1433, "postgres": 5432, "mysql": 3306}
+UIDS = {"sqlserver": 10001, "postgres": 70, "mysql": 999}
+# the data folder first: it gets the large emptyDir (the database is restored again at every start)
+WRITABLE = {"sqlserver": ["/var/opt/mssql", "/tmp"],
+            "postgres": ["/var/lib/postgresql", "/var/run/postgresql", "/tmp"],
+            "mysql": ["/var/lib/mysql", "/var/run/mysqld", "/var/lib/mysql-files", "/tmp"]}
+MEMORY = {"sqlserver": ("2Gi", "3Gi"), "postgres": ("256Mi", "1Gi"), "mysql": ("512Mi", "1Gi")}
 APP_USER = "app"
 PASSWORD_ENV = "CZ_DEVDB_PASSWORD"
 SECRET, ADMIN_SECRET = "devdb", "devdb-admin"
@@ -236,7 +268,11 @@ ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,199}")
 PLACEHOLDERS = ("host", "port", "database", "user", "password")
 CONNECTION = {
     "sqlserver": "Server={host},{port};Database={database};User Id={user};Password={password};Encrypt=True;TrustServerCertificate=True",
+    "postgres": "Host={host};Port={port};Database={database};Username={user};Password={password}",
+    "mysql": "Server={host};Port={port};Database={database};User ID={user};Password={password};SslMode=Required",
 }
+BASE_IMAGES = {"sqlserver": "mcr.microsoft.com/mssql/server:2025-latest", "postgres": "postgres:18-alpine",
+               "mysql": "mysql:8.4"}
 
 
 @dataclass
@@ -252,8 +288,7 @@ class SandboxDb:
 
 def base_image(engine: str) -> str:
     from .generate import images
-    return (images().get("devdb") or {}).get(engine) or {
-        "sqlserver": "mcr.microsoft.com/mssql/server:2025-latest"}[engine]
+    return (images().get("devdb") or {}).get(engine) or BASE_IMAGES[engine]
 
 
 def build_context(stored: Path, engine: str, database: str, ctx: Path) -> Path:
@@ -278,10 +313,18 @@ def build_context(stored: Path, engine: str, database: str, ctx: Path) -> Path:
                   f"COPY --chown=10001:0 backup.{ext} /devdb/backup.bak", "COPY --chown=10001:0 --chmod=0555 start.sh /devdb/start.sh",
                   f"ENV DEVDB_NAME={database} ACCEPT_EULA=Y MSSQL_PID=Developer", "USER 10001",
                   'ENTRYPOINT ["/bin/bash", "/devdb/start.sh"]']
+    elif engine in ("postgres", "mysql"):
+        # the image's own entry point initialises an empty data folder and runs /docker-entrypoint-initdb.d
+        # before the server listens on TCP: the pod is ready only after the restore
+        uid = UIDS[engine]
+        (ctx / "restore.sh").write_text(POSTGRES_RESTORE if engine == "postgres" else MYSQL_RESTORE)
+        lines += [f"COPY --chown={uid}:{uid} backup.{ext} /devdb/backup.{ext}",
+                  f"COPY --chown={uid}:{uid} --chmod=0555 restore.sh /docker-entrypoint-initdb.d/10-devdb-restore.sh",
+                  f"ENV DEVDB_NAME={database} DEVDB_FILE=/devdb/backup.{ext}", f"USER {uid}"]
     else:
         raise ValueError(f"unsupported engine {engine!r}")
     (ctx / "Dockerfile").write_text("\n".join(lines) + "\n")
-    (ctx / ".dockerignore").write_text("*\n!Dockerfile\n!backup.*\n!start.sh\n")
+    (ctx / ".dockerignore").write_text("*\n!Dockerfile\n!backup.*\n!start.sh\n!restore.sh\n")
     return ctx
 
 
@@ -310,6 +353,46 @@ touch /tmp/devdb-ready
 echo "devdb: ${DEVDB_NAME} is ready"
 wait "$pid"
 """
+
+# PostgreSQL (sourced by the image's entry point during initdb, server on the local socket only):
+# the app's role owns the database; the dump is restored as that role, without the dump's owners and
+# grants. A plain dump's \connect and CREATE DATABASE lines are dropped, so any database name works.
+POSTGRES_RESTORE = r"""#!/bin/sh
+set -eu
+pw=$(printf %s "${DEVDB_PASSWORD:?}" | sed "s/'/''/g")
+psql -v ON_ERROR_STOP=1 -X -q -U postgres -d postgres <<SQL
+CREATE ROLE app LOGIN PASSWORD '${pw}';
+CREATE DATABASE "${DEVDB_NAME}" OWNER app;
+SQL
+echo "devdb: restoring ${DEVDB_NAME}"
+case "$DEVDB_FILE" in
+  *.dump) pg_restore --no-owner --no-acl --role=app -U postgres -d "$DEVDB_NAME" "$DEVDB_FILE" \
+            || echo "devdb: pg_restore reported errors (see above); the database is up with what it restored" ;;
+  *) { echo "SET ROLE app;"; case "$DEVDB_FILE" in *.gz) gunzip -c "$DEVDB_FILE" ;; *) cat "$DEVDB_FILE" ;; esac \
+         | sed -E '/^\\connect /d; /^CREATE DATABASE /d; /^ALTER DATABASE .* OWNER TO /d'; } \
+       | psql -X -q -U postgres -d "$DEVDB_NAME" >/dev/null ;;
+esac
+echo "devdb: ${DEVDB_NAME} is ready"
+"""
+
+# MySQL (sourced by the image's entry point during its first start, server on the socket only): the
+# dump goes into DEVDB_NAME whatever database it was made from; the app's user has all rights on it only.
+MYSQL_RESTORE = r"""#!/bin/sh
+set -eu
+pw=$(printf %s "${DEVDB_PASSWORD:?}" | sed "s/'/''/g")
+export MYSQL_PWD="${MYSQL_ROOT_PASSWORD:?}"
+mysql -uroot --protocol=socket <<SQL
+CREATE DATABASE IF NOT EXISTS \`${DEVDB_NAME}\`;
+CREATE USER IF NOT EXISTS 'app'@'%' IDENTIFIED BY '${pw}';
+GRANT ALL PRIVILEGES ON \`${DEVDB_NAME}\`.* TO 'app'@'%';
+SQL
+echo "devdb: restoring ${DEVDB_NAME}"
+case "$DEVDB_FILE" in *.gz) gunzip -c "$DEVDB_FILE" ;; *) cat "$DEVDB_FILE" ;; esac \
+  | sed -E '/^CREATE DATABASE /d; /^USE `/d' | mysql -uroot --protocol=socket --force "$DEVDB_NAME"
+unset MYSQL_PWD
+echo "devdb: ${DEVDB_NAME} is ready"
+"""
+
 
 def secret_docs(labels: dict) -> list[dict]:
     """The two passwords, generated in the cluster by External Secrets Operator's Password generator:
@@ -342,8 +425,14 @@ def manifests(app: str, db: SandboxDb) -> list[dict]:
     def pw(secret: str) -> dict:
         return {"valueFrom": {"secretKeyRef": {"name": secret, "key": "password"}}}
     env = {"sqlserver": [{"name": "DEVDB_ADMIN_PASSWORD", **pw(ADMIN_SECRET)}, {"name": "DEVDB_PASSWORD", **pw(SECRET)}],
+           "postgres": [{"name": "POSTGRES_PASSWORD", **pw(ADMIN_SECRET)}, {"name": "DEVDB_PASSWORD", **pw(SECRET)}],
+           "mysql": [{"name": "MYSQL_ROOT_PASSWORD", **pw(ADMIN_SECRET)}, {"name": "MYSQL_ROOT_HOST", "value": "localhost"},
+                     {"name": "DEVDB_PASSWORD", **pw(SECRET)}],
            }[eng]
+    # TCP answers only after the restore: during it the servers listen on their local socket only
     ready = {"sqlserver": ["/bin/sh", "-c", "test -f /tmp/devdb-ready"],
+             "postgres": ["pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "postgres"],
+             "mysql": ["mysqladmin", "--protocol=tcp", "-h", "127.0.0.1", "ping"],
              }[eng]
     req, lim = MEMORY[eng]
     volumes, mounts = [], []
@@ -441,7 +530,7 @@ def ai_env(a, comps: list, engine: str, database: str, prompt: str, model: str |
         f = c.facts or {}
         lines.append(f"- component {c.name!r} (role {c.role}, project {c.project.rel}): connection strings found "
                      f"{f.get('connection_strings') or []}, secret settings {f.get('secret_settings') or []}, "
-                     f"database packages {[p for p in (f.get('packages') or []) if re.search(r'(?i)sql|entityframework', str(p))][:15]}")
+                     f"database packages {[p for p in (f.get('packages') or []) if re.search(r'(?i)sql|entityframework|npgsql|mysql|pomelo', str(p))][:15]}")
     q = (f"An application is deployed to a Kubernetes sandbox next to a {ENGINES[engine][0]} development database "
          f"restored from a backup. Decide which environment variables each component needs so it uses that database.\n\n"
          f"Components:\n" + "\n".join(lines) + "\n\n"
@@ -551,8 +640,8 @@ def readme(app: str, db: SandboxDb, row: dict) -> str:
              "(nothing is kept on a volume: it is a disposable copy for testing).", "",
              f"- Reached at `{HOST}:{PORTS[db.engine]}` by the application's own pods only (NetworkPolicy `{HOST}`).",
              f"- The application signs in as `{APP_USER}`; the password is in the Secret `{SECRET}` (key `password`), "
-             f"the {('sa' if db.engine == 'sqlserver' else 'root')} password in `{ADMIN_SECRET}`"
-             + " (the application user is db_owner of the restored database, not sysadmin).",
+             f"the {({'sqlserver': 'sa', 'postgres': 'postgres'}).get(db.engine, 'root')} password in `{ADMIN_SECRET}`"
+             + " (the application user owns the restored database only; it is not an administrator).",
              "- Both are generated in the cluster by External Secrets Operator's Password generator and never "
              "rotated; nothing needs to be put in the secret store.", "",
              f"## Settings given to the application ({'chosen by the AI from the operator instructions' if db.source == 'ai' else 'the connection strings the scan found'})",

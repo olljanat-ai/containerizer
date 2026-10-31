@@ -941,7 +941,7 @@ def _dev_database(o: OrgOptions, res: RepoResult, a, comps: list, work: Path, re
     """The dev database an operator uploaded for this application (admin pages): its image built and
     pushed next to the application's, and the settings that point the application at it.
     (None, None) when there is none, or when it cannot be prepared (the reason is in res.dev_database).
-    On the appliance, SQL Server turned off under Lab services turns these off too."""
+    On the appliance, the engine turned off under Lab services turns these off too."""
     from . import devdb
     from .generate import k8s_name
     settings = devdb.Settings.from_env(os.environ)
@@ -954,9 +954,11 @@ def _dev_database(o: OrgOptions, res: RepoResult, a, comps: list, work: Path, re
         return None, None
     if not row:
         return None, None
-    if lab is not None and "sqlserver" not in lab:
+    if lab is not None and row["Engine"] not in lab:
+        from .labservices import SERVICES
+        title = SERVICES[row["Engine"]].title if row["Engine"] in SERVICES else row["Engine"]
         res.dev_database = {"engine": row["Engine"], "database": row["DatabaseName"], "file": row["FileName"],
-                            "status": "disabled", "reason": "SQL Server is turned off under Admin -> Lab services"}
+                            "status": "disabled", "reason": f"{title} is turned off under Admin -> Lab services"}
         return None, None
     ns = k8s_name(a.name)
     image = f"{o.registry.rstrip('/')}/{ns}/devdb:{tag}"

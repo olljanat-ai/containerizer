@@ -40,6 +40,7 @@ jobs:
     env:
       CONTAINERIZER_TEST_SQL: "Server=127.0.0.1,1433;Database=master;User Id=sa;TrustServerCertificate=yes"
       CONTAINERIZER_SQL_PASSWORD: Ci-Only-Passw0rd!
+      CONTAINERIZER_TEST_DOCKER: "1"        # PostgreSQL and MySQL dev database dumps restored in docker
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

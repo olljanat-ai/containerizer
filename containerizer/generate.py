@@ -621,7 +621,7 @@ def _lab_inject(a: AppAssessment, c: Component, docs: list[dict], devdb, lab: se
     ns = k8s_name(a.name)
     for svc, why in need.items():
         plan.needed.setdefault(svc, {})[c.name] = why
-        if svc not in lab or (svc == "sqlserver" and devdb is not None):
+        if svc not in lab or (devdb is not None and svc == devdb.engine):
             continue
         notes = labservices.inject(docs, svc, ns, c, need)
         names = [e["name"] for e in labservices.env_for(svc, ns, c, need)[0]]
@@ -733,7 +733,7 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
         images.append((HOST, devdb.image))
     if lab_plan is not None:
         lab_plan.missing = [s for s in lab_plan.needed if s not in lab_plan.provided and s not in lab
-                            and not (s == "sqlserver" and devdb is not None)]
+                            and not (devdb is not None and s == devdb.engine)]
         if lab_report is not None:
             lab_report.update(lab_plan.to_dict())
     if all_k8s and lab_plan is not None and lab_plan.provided:

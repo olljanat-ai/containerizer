@@ -22,3 +22,18 @@ services:
   azure-blob:
     when:
       package: 'Azure\.Storage\.Blobs|Microsoft\.Azure\.Storage\.Blob|WindowsAzure\.Storage|Aspire\.Azure\.Storage\.Blobs'
+  mysql:
+    when:
+      package: 'MySql\.Data|MySqlConnector|Pomelo\.EntityFrameworkCore\.MySql|MySql\.EntityFrameworkCore|Hangfire\.MySqlStorage|dbup-mysql|Aspire\.MySqlConnector|Aspire\.Pomelo\.EntityFrameworkCore\.MySql'
+  mongodb:
+    when:
+      package: 'MongoDB\.Driver.*|MongoDB\.Entities|MongoDB\.EntityFrameworkCore|Aspire\.MongoDB\.Driver.*|Hangfire\.Mongo'
+  rabbitmq:
+    when:
+      package: 'RabbitMQ\.Client|MassTransit\.RabbitMQ|EasyNetQ.*|NServiceBus\.RabbitMQ|RawRabbit.*|Aspire\.RabbitMQ\.Client.*|Rebus\.RabbitMq'
+  kafka:
+    when:
+      package: 'Confluent\.Kafka|MassTransit\.Kafka|KafkaFlow.*|Aspire\.Confluent\.Kafka|Silverback\.Integration\.Kafka|Rebus\.Kafka'
+  sftp:
+    when:
+      package: 'SSH\.NET|Renci\.SshNet.*|WinSCP|SftpCore'
