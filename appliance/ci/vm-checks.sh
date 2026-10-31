@@ -43,7 +43,8 @@ wait_for 2400 "SQL Server, schema and web UI" curl -fsS http://127.0.0.1:8080/he
 wait_for 600 "registry" curl -fsS http://127.0.0.1:5000/v2/
 wait_for 900 "Prometheus" curl -fsS http://127.0.0.1:9090/-/ready
 wait_for 900 "Grafana" curl -fsS http://127.0.0.1:3000/grafana/api/health
-wait_for 300 "Caddy" curl -fsSk https://127.0.0.1/healthz --resolve "$(hostname):443:127.0.0.1" -H "Host: $(hostname)"
+# by name, so the TLS handshake carries the SNI Caddy has a certificate for (none for 127.0.0.1)
+wait_for 300 "Caddy" curl -fsSk "https://$(hostname)/healthz" --resolve "$(hostname):443:127.0.0.1"
 systemctl is-active containerizer-db-init.service containerizer-web.service containerizer-mssql.service \
   containerizer-registry.service containerizer-prometheus.service containerizer-grafana.service caddy.service \
   docker.service k3s.service ssh.service
