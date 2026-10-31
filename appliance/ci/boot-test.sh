@@ -50,7 +50,7 @@ diag() {
     for u in elemental-boot-assessment elemental-setup-initramfs elemental-setup-rootfs elemental-setup-network elemental-setup-boot \
       containerizer-firstboot containerizer-firewall containerizer-dns containerizer-mssql containerizer-db-init \
       containerizer-web containerizer-worker containerizer-registry caddy k3s containerizer-sysagent; do
-      echo "--- $u"; journalctl -b -u $u --no-pager | tail -40; done' > "$OUT/diagnostics.txt" 2>&1 || true
+      echo "--- $u"; journalctl -a -b -u $u --no-pager | tail -40; done' > "$OUT/diagnostics.txt" 2>&1 || true
   tail -c 20000 "$OUT/diagnostics.txt" || true
 }
 trap 'diag; kill "$(cat "$OUT/qemu.pid" 2>/dev/null)" 2>/dev/null || true' EXIT
