@@ -43,7 +43,7 @@ def step(msg: str) -> None:
 def kubectl(*args: str, input: str | None = None, check: bool = True) -> str:
     p = subprocess.run(["k3s", "kubectl", *args], capture_output=True, text=True, input=input)
     if check and p.returncode:
-        raise SystemExit(f"kubectl {' '.join(args)}: {p.stderr}")
+        raise RuntimeError(f"kubectl {' '.join(args)}: {p.stderr}")
     return p.stdout
 
 
@@ -131,8 +131,8 @@ sysagent._caddy(check_only=True)
 
 step("Traefik from the appliance's HelmChartConfig")
 wait("Traefik service at the fixed address",
-     lambda: kubectl("-n", "kube-system", "get", "svc", "traefik", "-o", "jsonpath={.spec.clusterIP} {.spec.type}")
-     == f"{TRAEFIK_ADDR} ClusterIP", 600)
+     lambda: kubectl("-n", "kube-system", "get", "svc", "traefik", "-o", "jsonpath={.spec.clusterIP} {.spec.type}",
+                     check=False) == f"{TRAEFIK_ADDR} ClusterIP", 600)
 wait("Traefik running", lambda: "condition met" in kubectl("-n", "kube-system", "wait", "--for=condition=Available",
                                                            "deploy/traefik", "--timeout=10s", check=False), 600)
 wait("TLSStore CRD", lambda: kubectl("get", "crd", "tlsstores.traefik.io", "-o", "name", check=False).strip(), 300)
