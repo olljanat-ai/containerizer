@@ -12,8 +12,9 @@ from containerizer.report import write_reports
 from containerizer.rules import load_rules
 from tests.test_engine import web_app, write
 
-PKG = re.compile(r"^[A-Za-z0-9_.-]+$")
-PKG_GLOB = re.compile(r"^[A-Za-z0-9_.*-]+$")
+# NuGet ids, Maven groupId:artifactId, npm names (@scope/name)
+PKG = re.compile(r"^@?[A-Za-z0-9_.:/-]+$")
+PKG_GLOB = re.compile(r"^@?[A-Za-z0-9_.*:/-]+$")
 
 
 def curated_findings():

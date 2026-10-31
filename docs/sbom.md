@@ -28,7 +28,7 @@ runtime, npm, Python, Java and Go packages. Syft runs from `PATH` if it is insta
 container `anchore/syft` (version pinned in `sbom.generator.image`), with the same proxy and CA bundle
 handling as the scanners.
 
-**NuGet licences.** Syft does not read NuGet licences, so containerizer looks them up in each
+**NuGet licences.** Syft does not read NuGet licences, so Containerizer looks them up in each
 package's `.nuspec` on the NuGet feed (`sbom.nuget_feed`, the v3 service index; nuget.org by default):
 the licence expression when there is one, else the licence URL of older packages, mapped to an SPDX
 identifier where the URL names one licence unambiguously (`licenses.nuget.org/MIT`, the Apache and

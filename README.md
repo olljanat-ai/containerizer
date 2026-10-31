@@ -1,4 +1,4 @@
-# containerizer
+# Containerizer
 
 A tool that tells you whether an application can run as a Linux container on Kubernetes, explains why,
 and generates hardened container builds and Kubernetes manifests for the parts that can. It was built
@@ -23,7 +23,7 @@ Design principles:
 
 ## Getting started
 
-containerizer ships as an appliance: an immutable Elemental OS image with the web UI and API, the scan
+Containerizer ships as an appliance: an immutable Elemental OS image with the web UI and API, the scan
 worker, SQL Server, a single-node k3s sandbox cluster with Flux, a local container registry,
 Prometheus and Grafana. Only SSH and HTTPS are allowed in, and outgoing traffic is blocked except for
 the hosts an admin allows under **Admin → Firewall**. Signed upgrades and roll back are under
@@ -46,7 +46,7 @@ the hosts an admin allows under **Admin → Firewall**. Signed upgrades and roll
 
 The rest of this page explains how the assessment works. The `python -m containerizer` commands it
 mentions are what the appliance runs internally and what the [pipeline integrations](#running-it-from-a-pipeline)
-use; to develop containerizer itself, see [docs/local-dev-server.md](docs/local-dev-server.md).
+use; to develop Containerizer itself, see [docs/local-dev-server.md](docs/local-dev-server.md).
 
 ## How it works
 
@@ -62,6 +62,9 @@ use; to develop containerizer itself, see [docs/local-dev-server.md](docs/local-
 1. **Scan** (`containerizer/scan.py`) reads project files (.csproj/.vbproj incl. old-style and imported
    `.props`, package.json, requirements.txt/pyproject, go.mod, pom.xml/gradle, BizTalk/SQL/SSIS
    projects, ASP.NET Web Site projects listed in a .sln), source and configuration. Nothing from the scanned repository is executed.
+   Java and Node.js have their own parsers ([docs/java-node.md](docs/java-node.md)): Maven parents,
+   profiles and modules, Gradle version catalogs and `subprojects {}`, npm/yarn/pnpm workspaces, and
+   the lockfile's Windows-only and native packages.
 2. **Role rules** (`rules/00-roles.yaml`) decide what each project is: web, worker, console, spa,
    desktop, library, test, tool, BizTalk, SharePoint, Sitecore XP, SQL CLR, SSIS.
 3. **Fact rules** (`rules/05-facts.yaml`) extract ports, health endpoints, run-once arguments,

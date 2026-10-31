@@ -35,6 +35,11 @@ NO_VERIFIED_REF = {
     "pkg-mmi-cim": "Microsoft.Management.Infrastructure docs carry no platform statement",
     "pkg-informix": "IBM's Informix client SDK pages could not be verified",
     "pkg-tesseract-native": "package contents (Windows-only native builds) are shown by the package, not a doc page",
+    # 12-java
+    "java-jdbc-odbc-bridge": "Oracle's JDK 8 bridge page now redirects to the docs index; no stable page states the removal",
+    "java-process-windows-commands": "depends on which tool is launched; nothing generic to link",
+    # 13-node
+    "node-process-windows-commands": "depends on which tool is launched; nothing generic to link",
 }
 
 

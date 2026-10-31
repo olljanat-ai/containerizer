@@ -329,6 +329,7 @@ rules:
     fix: Switch to SQL authentication or Entra managed identity with the password from a Secret.
 
   - id: msdtc
+    applies_to: [dotnet]
     when:
       any:
         - code: &dtc_code 'EnterpriseServicesInteropOption|TransactionInterop|DependentTransaction|EnlistDistributedTransaction|\.EnlistDurable\(|\bIPromotableSinglePhaseNotification\b'
@@ -356,6 +357,7 @@ rules:
       - https://learn.microsoft.com/en-us/dotnet/api/system.transactions.transactionmanager.implicitdistributedtransactions
 
   - id: transaction-scope
+    applies_to: [dotnet]
     when:
       all:
         - code: '\bTransactionScope\b'
@@ -375,6 +377,7 @@ rules:
       - https://learn.microsoft.com/en-us/dotnet/api/system.transactions.transactionmanager.implicitdistributedtransactions
 
   - id: sql-filestream
+    applies_to: [dotnet]
     when:
       any:
         - code: '(?-i:SqlFileStream|FILESTREAM|\.PathName\(\)|GET_FILESTREAM_TRANSACTION_CONTEXT)'
@@ -458,6 +461,7 @@ rules:
       - https://github.com/lkosson/reportviewercore
 
   - id: oledb-odbc-access
+    applies_to: [dotnet]
     when:
       any:
         - package: System\.Data\.OleDb
@@ -474,6 +478,7 @@ rules:
     fix: Use a managed provider (e.g. ODBC with a Linux driver, or export the data); keep on Windows otherwise.
 
   - id: ibm-i-access
+    applies_to: [dotnet]
     when:
       any:
         - code: 'cwbx|IBM\.Data\.DB2\.iSeries|AS400System|iDB2Connection|cwbapi|IBMDA400'
@@ -492,6 +497,7 @@ rules:
       - https://www.ibm.com/support/pages/odbc-driver-ibm-i-access-client-solutions
 
   - id: ax-business-connector
+    applies_to: [dotnet]
     when:
       any:
         - reference: Microsoft\.Dynamics\.BusinessConnectorNet|Microsoft\.Dynamics\.AX\..*
@@ -507,6 +513,7 @@ rules:
       - https://learn.microsoft.com/en-us/previous-versions/dynamicsax-2012/developer/net-business-connector-overview
 
   - id: sharepoint-server
+    applies_to: [dotnet]
     when:
       any:
         - role: sharepoint
@@ -579,6 +586,7 @@ rules:
 
   # ---------------------------------------------------------------- messaging
   - id: msmq
+    applies_to: [dotnet]
     when:
       any:
         - reference: System\.Messaging
@@ -597,6 +605,7 @@ rules:
       - https://github.com/dotnet/corefx/issues/6204
 
   - id: rabbitmq
+    applies_to: [dotnet]
     when:
       package: RabbitMQ\.Client|MassTransit\.RabbitMQ|EasyNetQ.*|NServiceBus\.RabbitMQ
     severity: info
@@ -610,6 +619,7 @@ rules:
     fix: Provide the broker connection via Secret.
 
   - id: mqtt
+    applies_to: [dotnet]
     when:
       package: MQTTnet.*
     severity: info
@@ -625,6 +635,7 @@ rules:
   # same-machine pipes between processes in one container (or pod, with a shared /tmp) keep working.
   # What breaks: WCF net.pipe endpoints, a pipe to another machine, and .NET Framework code.
   - id: named-pipes
+    applies_to: [dotnet]
     when:
       any:
         - code: 'net\.pipe://'
@@ -649,6 +660,7 @@ rules:
       - https://learn.microsoft.com/en-us/aspnet/core/grpc/interprocess
 
   - id: named-pipes-local
+    applies_to: [dotnet]
     when:
       all:
         - code: 'NamedPipe(Server|Client)Stream'
@@ -698,6 +710,7 @@ rules:
     fix: Override the settings with Linux paths (env vars) that point at mounted volumes.
 
   - id: local-state-files
+    applies_to: [dotnet]
     when:
       all:
         - not: {role: 'test|library'}
@@ -721,6 +734,7 @@ rules:
   # project, the projects it references and the rest of the repository, because the provider
   # choice often lives in another project than the SQLite package.
   - id: sqlite-local
+    applies_to: [dotnet]
     when:
       all:
         - package: &sqlite_pkgs 'Microsoft\.EntityFrameworkCore\.Sqlite(\.Core)?|Microsoft\.Data\.Sqlite(\.Core)?|System\.Data\.SQLite.*|LiteDB(\.Async)?|dbup-sqlite|sqlite-net-pcl|Hangfire\.(LiteDB|SQLite|Storage\.SQLite)'
@@ -753,6 +767,7 @@ rules:
       - https://12factor.net/processes
 
   - id: sqlite-optional
+    applies_to: [dotnet]
     when:
       all:
         - package: *sqlite_pkgs
@@ -771,6 +786,7 @@ rules:
       - https://12factor.net/backing-services
 
   - id: sqlite-readonly
+    applies_to: [dotnet]
     when:
       all:
         - package: *sqlite_pkgs
@@ -791,6 +807,7 @@ rules:
       - https://12factor.net/processes
 
   - id: lucene-local-index
+    applies_to: [dotnet]
     when:
       all:
         - package: Lucene\.Net.*|Examine
@@ -813,6 +830,7 @@ rules:
       - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
 
   - id: lucene-text-analysis
+    applies_to: [dotnet]
     when:
       all:
         - package: Lucene\.Net.*
@@ -861,6 +879,7 @@ rules:
       - https://learn.microsoft.com/en-us/aspnet/core/fundamentals/app-state
 
   - id: signalr-scaleout
+    applies_to: [dotnet]
     when:
       all:
         - code: 'AddSignalR\(|MapHub<'
@@ -875,6 +894,7 @@ rules:
       - https://learn.microsoft.com/en-us/aspnet/core/signalr/scale
 
   - id: hangfire-quartz
+    applies_to: [dotnet]
     when:
       package: Hangfire.*|Quartz.*|FluentScheduler|Cronos
     severity: info

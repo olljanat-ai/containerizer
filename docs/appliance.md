@@ -1,6 +1,6 @@
-# The containerizer appliance
+# The Containerizer appliance
 
-containerizer ships as one virtual machine: an immutable OS image built with the
+Containerizer ships as one virtual machine: an immutable OS image built with the
 [Elemental toolkit](https://github.com/rancher/elemental-toolkit) (as in
 [Firewall4AI](https://github.com/olljanat-ai/Firewall4AI)), installed from an ISO or started from a disk
 image, and upgraded from the admin pages. It runs:
