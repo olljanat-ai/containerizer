@@ -18,9 +18,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 RATINGS = ["A", "B", "C", "D", "E"]
-RATING_TITLE = {"A": "Lift and shift", "B": "Minor refactoring", "C": "Major refactoring", "D": "Partial",
+RATING_TITLE = {"A": "Container-ready", "B": "Minor refactoring", "C": "Major refactoring", "D": "Partial",
                 "E": "Not feasible"}
-RATING_TEXT = {"A": "Containers with configuration only", "B": "Small code changes",
+RATING_TEXT = {"A": "Modern stack, containers with configuration only, no code changes", "B": "Small code changes",
                "C": "Framework port needed", "D": "Some components must stay on Windows",
                "E": "Core depends on Windows-only technology"}
 ROLE_TEXT = {"web": "Web application", "worker": "Background service", "console": "Console / scheduled job",

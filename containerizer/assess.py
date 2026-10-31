@@ -23,7 +23,7 @@ VERDICT_TEXT = {
     "blocker": "Not feasible in a Linux container",
 }
 APP_RATINGS = {
-    "A": "Lift and shift - stateless containers with configuration only",
+    "A": "Container-ready - modern, stateless stack; containers with configuration only, no code changes",
     "B": "Minor refactoring - small code changes",
     "C": "Major refactoring - framework port needed",
     "D": "Partial - some components must stay on Windows",

@@ -10,8 +10,8 @@ hide:
 
 # Which of your applications can run in containers?
 
-Containerizer scans your whole application portfolio, rates every application from **A** (lift and shift)
-to **E** (keep on Windows), explains each obstacle with a fix and references, and generates hardened
+Containerizer scans your whole application portfolio, rates every application from **A** (container-ready: a modern
+stack that moves to containers without code changes) to **E** (not feasible: stays on Windows), explains each obstacle with a fix and references, and generates hardened
 Dockerfiles and Kubernetes manifests for everything that can move. Then it proves them by building,
 running and deploying them in its own sandbox cluster.
 
