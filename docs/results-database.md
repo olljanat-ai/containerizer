@@ -233,6 +233,9 @@ Entra ID, Okta, Keycloak, Google Workspace, ...):
   link to the product in another tool, for example the CMDB or product catalogue, shown next to the
   product in the results), delete when nothing is mapped to it.
 - **Business units**: add, rename, set an owner, delete when no product is in it.
+- **Organization scans** and **Repositories**: schedule whole-organization scans, run one now, and
+  enable or disable the repositories they found (skipped ones are shown disabled with the reason).
+  See [scheduled-scans.md](scheduled-scans.md).
 - **Change history**: see below.
 
 They appear when sign-in is configured; without it the UI is the read-only results only.
