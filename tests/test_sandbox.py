@@ -574,7 +574,8 @@ def test_sandbox_checks_in_sql(tmp_path):
                 {"app": "shop", "source_key": "shop", "component": comp.name, "project": comp.project.rel,
                  "status": status, "reason": kw.get("reason", ""), "gitops": "argocd", "ready": kw.get("ready", ""),
                  "restarts": kw.get("restarts", 0), "workloads": ["Deployment/web"], "image": "reg/shop/web:1",
-                 "events": kw.get("events", []), "diagnosis": kw.get("diagnosis"), "log_tail": kw.get("log", "")},
+                 "events": kw.get("events", []), "diagnosis": kw.get("diagnosis"), "log_tail": kw.get("log", ""),
+                 "url": "https://web-shop.sandbox.example.com/", "url_check": "HTTP 503"},
                 {"app": "shop", "source_key": "unknown-app", "component": "x", "project": "x", "status": "healthy"}]}
         n, missing = sqlstore.store_sandbox(as_("cz_s_writer"), doc("2026-10-30T08:00:00+00:00", "healthy",
                                                                      ready="1/1"), password="Test-Passw0rd!x")
@@ -590,6 +591,8 @@ def test_sandbox_checks_in_sql(tmp_path):
             app_id = cur.fetchone()["ApplicationId"]
             detail = webui.load_application(rd, app_id)
             assert [(s["Status"], s["Restarts"], s["Outcome"]) for s in detail["sandbox"]] == [("failing", 4, "external")]
+            assert (detail["sandbox"][0]["Url"], detail["sandbox"][0]["UrlCheck"]) == \
+                ("https://web-shop.sandbox.example.com/", "HTTP 503")
             assert json.loads(detail["sandbox"][0]["Events"])[0]["reason"] == "BackOff"
             assert "Deployed but failing" in webui.render_application(detail)
             with pytest.raises(Exception, match="(?i)permission"):
