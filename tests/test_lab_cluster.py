@@ -76,6 +76,24 @@ def run_pod(ns: str, name: str, image: str, script: str, env: dict | None = None
     return phase, log
 
 
+# kind nodes cannot enforce AppArmor (no securityfs in the node container), and the kubelet rejects pods
+# that ask for a profile; CI sets this for kind. The appliance's k3s enforces it (appliance boot test).
+NO_APPARMOR = os.environ.get("CONTAINERIZER_TEST_NO_APPARMOR") == "1"
+
+
+def _strip_apparmor(x):
+    if isinstance(x, dict):
+        return {k: _strip_apparmor(v) for k, v in x.items() if k != "appArmorProfile"}
+    if isinstance(x, list):
+        return [_strip_apparmor(v) for v in x]
+    return x
+
+
+class KindKubectl(labagent.Kubectl):
+    def apply(self, docs, force=True):
+        return super().apply(_strip_apparmor(docs) if NO_APPARMOR else docs, force)
+
+
 @pytest.fixture(scope="module")
 def lab(tmp_path_factory):
     images = labagent.load_images(ROOT / "appliance/rootfs/usr/lib/containerizer/images.env", env={})
@@ -85,7 +103,7 @@ def lab(tmp_path_factory):
                eso.reader_service_account(ns, set_namespace=True)]
               + eso.store_access(ns, [L.remote_key(ns, s) for s in SERVICES]))
         apply([{**d, "metadata": {**d["metadata"], "namespace": ns}} for d in L.app_docs(ns, SERVICES)])
-    kube = labagent.Kubectl(cmd="kubectl", kubeconfig=ADMIN, timeout=120)
+    kube = KindKubectl(cmd="kubectl", kubeconfig=ADMIN, timeout=120)
     cfg = {"services": {s: True for s in SERVICES}}
     state = tmp_path_factory.mktemp("lab") / "state.json"
     end, st = time.time() + 900, {}

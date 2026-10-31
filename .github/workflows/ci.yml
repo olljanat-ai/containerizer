@@ -99,6 +99,8 @@ jobs:
       - run: python -m pytest -q tests/test_lab_cluster.py -rs -s
         env:
           CONTAINERIZER_TEST_KUBE: /home/runner/.kube/config
+          # kind nodes cannot enforce AppArmor; the appliance's k3s does
+          CONTAINERIZER_TEST_NO_APPARMOR: "1"
 
   # Sandbox HTTPS end to end (appliance/ci/sandbox-https-e2e.py): k3s with the appliance's Traefik settings,
   # the appliance's Caddyfile on Caddy 2.6 (as in Debian 13), the system agent's own code, a generated Ingress.
