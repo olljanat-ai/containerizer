@@ -14,6 +14,10 @@ request again before acting on it:
             system (no download, no registry needed).
 - egress:   the administrators' egress allow-list (validated here, not trusted from the web UI), then
             the firewall and the DNS filter are rebuilt from it.
+- sandbox-https: the wildcard domain, certificate and key for the apps in the k3s sandbox (checked
+            again here, sandbox_https.py): Caddy answers for *.<domain> with it and passes the requests to
+            Traefik in k3s, whose default certificate becomes the same one. The key is written for root
+            and Caddy only and is never published; the web UI cannot read it back.
 
 Commands (also for an administrator on the console or over SSH):
 
@@ -23,6 +27,7 @@ Commands (also for an administrator on the console or over SSH):
     rollback <snapshot id>     install a copy of a snapshot and restart
     firewall apply             (re)build the nftables ruleset and the dnsmasq allow-list
     firewall show              print what `apply` would load
+    sandbox-https sync         install the sandbox certificate in k3s (containerizer-sandbox runs it)
     health                     boot-assessment check (exit 1 when the appliance is not up)
 """
 from __future__ import annotations
@@ -69,6 +74,14 @@ class Paths:
     resolved: Path = Path("/run/systemd/resolve/resolv.conf")
     snapshots: Path = Path("/.snapshots")
     elemental_run: Path = Path("/run/elemental")
+    https_dir: Path = Path("/var/lib/containerizer/system")    # sandbox-https.{json,crt,key,caddy}, -history.jsonl
+    caddyfile: Path = Path("/etc/caddy/Caddyfile")
+    caddy_env: Path = Path("/run/containerizer/caddy.env")
+    web_env: Path = Path("/etc/containerizer/web.env")
+    kubeconfig: Path = Path("/etc/rancher/k3s/k3s.yaml")
+
+    def https(self, ext: str) -> Path:
+        return self.https_dir / f"sandbox-https{ext}"
 
 
 P = Paths()
@@ -207,7 +220,7 @@ def save_task(task: dict) -> None:
         log(f"could not keep the task state: {ex}")
 
 
-def publish(task: dict | None = None, egress_state: dict | None = None) -> dict:
+def publish(task: dict | None = None, egress_state: dict | None = None, https_state: dict | None = None) -> dict:
     """Write status.json (world-readable: it holds no secrets)."""
     old = {}
     try:
@@ -221,7 +234,8 @@ def publish(task: dict | None = None, egress_state: dict | None = None) -> dict:
           "boot_mode": boot_mode(), "elemental": old.get("elemental") or elemental_version(),
           "hostname": socket.gethostname(), "snapshots": snapshots(), "updated": now(),
           "task": task if task is not None else last_task(),
-          "egress": egress_state if egress_state is not None else (old.get("egress") or egress_status())}
+          "egress": egress_state if egress_state is not None else (old.get("egress") or egress_status()),
+          "sandbox_https": https_state if https_state is not None else (old.get("sandbox_https") or sandbox_https_status())}
     atomic_write(P.run / "status.json", json.dumps(st, indent=1), 0o644)
     return st
 
@@ -589,6 +603,170 @@ def egress_status(journal: str | None = None, history_lines: int = 50) -> dict:
             "denied_names": top(names), "dropped": top(drops), "history": hist[::-1], "updated": now()}
 
 
+# =============================================================================== sandbox HTTPS
+
+CADDY_GROUP = "caddy"
+HTTPS_KINDS = ("set", "remove")
+
+
+def appliance_host() -> str:
+    """The web UI's host name (CONTAINERIZER_PUBLIC_URL, else CZ_HOSTNAME, else the machine's name)."""
+    from urllib.parse import urlsplit
+    url = read_env(P.web_env).get("CONTAINERIZER_PUBLIC_URL") or ""
+    return (urlsplit(url).hostname or read_env(P.appliance_env).get("CZ_HOSTNAME") or socket.gethostname() or "").lower()
+
+
+def _write_key(path: Path, text: str) -> None:
+    """The private key: root and Caddy (group) may read it, nobody else; written under a new name and
+    renamed, so a reader never sees half a key."""
+    import grp
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        try:
+            os.chown(tmp, 0, grp.getgrnam(CADDY_GROUP).gr_gid)
+            os.chmod(tmp, 0o640)
+        except (KeyError, PermissionError):
+            pass                                    # tests, or no Caddy: root only
+        tmp.replace(path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _caddy(check_only: bool) -> None:
+    """Check the Caddyfile with the imported site; then restart Caddy (its admin API is off, so no reload)."""
+    env = {**os.environ, **read_env(P.appliance_env), **read_env(P.caddy_env)}
+    p = subprocess.run(["caddy", "validate", "--config", str(P.caddyfile), "--adapter", "caddyfile"],
+                       capture_output=True, text=True, timeout=120, env=env, errors="replace")
+    if p.returncode:
+        raise AgentError("Caddy does not accept the configuration: " + (p.stderr or p.stdout).strip()[-600:])
+    if not check_only:
+        run(["systemctl", "restart", "caddy.service"], timeout=120)
+
+
+def _https_history(entry: dict) -> None:
+    h = P.https("-history.jsonl")
+    h.parent.mkdir(parents=True, exist_ok=True)
+    with h.open("a") as f:
+        f.write(json.dumps(entry) + "\n")
+    os.chmod(h, 0o644)
+
+
+def sandbox_https_status(history_lines: int = 50) -> dict:
+    """For the admin page: what is set up (no key, no certificate text) and the change history."""
+    try:
+        st = json.loads(P.https(".json").read_text())
+        st = st if isinstance(st, dict) else {}
+    except (OSError, ValueError):
+        st = {}
+    hist = []
+    try:
+        hist = [json.loads(x) for x in P.https("-history.jsonl").read_text().splitlines()[-history_lines:] if x.strip()]
+    except (OSError, ValueError):
+        pass
+    return {**{k: v for k, v in st.items() if k in ("enabled", "domain", "cert", "set_by", "set_by_name", "set_at", "edge")},
+            "history": hist[::-1], "updated": now()}
+
+
+def save_sandbox_https(req: dict, user: str, name: str) -> dict:
+    """Set or remove the sandbox's wildcard domain and certificate (a request from the admin page)."""
+    from .sandbox_https import SandboxHttpsError, caddy_site, check
+    kind = req.get("do")
+    if kind not in HTTPS_KINDS:
+        raise AgentError("unknown sandbox-https request")
+    files = {ext: P.https(ext) for ext in (".crt", ".key", ".caddy", ".json")}
+    old = {ext: (f.read_bytes() if f.exists() else None) for ext, f in files.items()}
+    entry = {"at": now(), "by": user, "name": name, "action": kind}
+    try:
+        if kind == "set":
+            try:
+                ok = check(str(req.get("domain") or ""), str(req.get("cert") or ""), str(req.get("key") or ""),
+                           appliance_host=appliance_host())
+            except SandboxHttpsError as ex:
+                raise AgentError(str(ex)) from None
+            info = ok.info.to_dict()
+            atomic_write(files[".crt"], ok.cert_pem, 0o644)
+            _write_key(files[".key"], ok.key_pem)
+            atomic_write(files[".caddy"], caddy_site(ok.info.domain, str(files[".crt"]), str(files[".key"]),
+                                                     str(files[".crt"])), 0o644)
+            _caddy(check_only=True)
+            settings = {"enabled": True, "domain": ok.info.domain, "cert": info, "cert_file": str(files[".crt"]),
+                        "edge": "127.0.0.1:443", "set_by": user, "set_by_name": name, "set_at": now()}
+            entry.update(domain=ok.info.domain, fingerprint=info["fingerprint"], subject=info["subject"],
+                         issuer=info["issuer"], not_after=info["not_after"])
+        else:
+            for ext in (".crt", ".key", ".caddy"):
+                files[ext].unlink(missing_ok=True)
+            prev = sandbox_https_status()
+            settings = {"enabled": False, "set_by": user, "set_by_name": name, "set_at": now()}
+            entry.update(domain=prev.get("domain") or "", fingerprint=(prev.get("cert") or {}).get("fingerprint", ""))
+        atomic_write(files[".json"], json.dumps(settings, indent=1), 0o644)
+        _caddy(check_only=False)
+    except BaseException:
+        for ext, data in old.items():           # back to what worked before
+            if data is None:
+                files[ext].unlink(missing_ok=True)
+            elif ext == ".key":
+                _write_key(files[ext], data.decode())
+            else:
+                atomic_write(files[ext], data.decode(), 0o644)
+        try:
+            _caddy(check_only=False)            # whatever Caddy had loaded, it serves the old files again
+        except (AgentError, OSError, subprocess.TimeoutExpired) as ex:
+            log(f"sandbox-https: Caddy not restarted with the previous configuration: {ex}")
+        raise
+    _https_history(entry)
+    try:
+        sync_sandbox_https()
+    except (AgentError, OSError, subprocess.TimeoutExpired) as ex:     # containerizer-sandbox retries every 2 minutes
+        log(f"sandbox-https: k3s not updated yet: {ex}")
+    return settings
+
+
+def _kubectl(args: list[str], input: str | None = None, check: bool = True) -> str:
+    return run(["k3s", "kubectl", "--kubeconfig", str(P.kubeconfig), *args], timeout=120, input=input, check=check)
+
+
+def tls_manifests(cert_pem: str, key_pem: str) -> str:
+    """The TLS Secret Traefik serves by default and the default TLSStore that names it (kube-system)."""
+    import base64
+    from .sandbox_https import SECRET_NAME, SECRET_NAMESPACE
+    b = lambda t: base64.b64encode(t.encode()).decode()
+    labels = {"app.kubernetes.io/managed-by": "containerizer-appliance", "app.kubernetes.io/part-of": "containerizer-sandbox"}
+    secret = {"apiVersion": "v1", "kind": "Secret", "type": "kubernetes.io/tls",
+              "metadata": {"name": SECRET_NAME, "namespace": SECRET_NAMESPACE, "labels": labels},
+              "data": {"tls.crt": b(cert_pem), "tls.key": b(key_pem)}}
+    store = {"apiVersion": "traefik.io/v1alpha1", "kind": "TLSStore",
+             "metadata": {"name": "default", "namespace": SECRET_NAMESPACE, "labels": labels},
+             "spec": {"defaultCertificate": {"secretName": SECRET_NAME}}}
+    return json.dumps({"apiVersion": "v1", "kind": "List", "items": [secret, store]})
+
+
+def sync_sandbox_https() -> str:
+    """Make k3s match the settings: the TLS Secret and the default TLSStore when Sandbox HTTPS is on,
+    neither when it is off. Idempotent; containerizer-sandbox runs it every 2 minutes."""
+    from .sandbox_https import SECRET_NAME, SECRET_NAMESPACE
+    try:
+        on = bool(json.loads(P.https(".json").read_text()).get("enabled"))
+    except (OSError, ValueError, AttributeError):
+        on = False
+    if not on:
+        _kubectl(["-n", SECRET_NAMESPACE, "delete", "tlsstores.traefik.io/default", f"secret/{SECRET_NAME}",
+                  "--ignore-not-found"], check=False)
+        return "off"
+    if not _kubectl(["get", "crd", "tlsstores.traefik.io", "-o", "name"], check=False).strip():
+        raise AgentError("Traefik is not running in k3s yet (no TLSStore CRD)")
+    cert = P.https(".crt").read_text()
+    key = P.https(".key").read_text()
+    _kubectl(["apply", "--server-side", "--field-manager", "containerizer-appliance", "--force-conflicts", "-f", "-"],
+             input=tls_manifests(cert, key))
+    return "on"
+
+
 # =============================================================================== requests
 
 def process() -> int:
@@ -629,6 +807,9 @@ def process() -> int:
                 from .labagent import apply_request
                 apply_request(req)
                 run(["systemctl", "start", "--no-block", "containerizer-lab.service"], timeout=60)
+            elif action == "sandbox-https":
+                save_sandbox_https(req, user, name)
+                publish(https_state=sandbox_https_status())
             else:
                 log(f"unknown action {action!r} ignored")
         except (AgentError, RuleError, OSError, subprocess.TimeoutExpired, ValueError) as ex:
@@ -639,6 +820,10 @@ def process() -> int:
             if action in ("upgrade", "rollback"):
                 task.update(state="failed", finished=now(), message=str(ex)[-1000:])
                 publish(task)
+            elif action == "sandbox-https":
+                st = sandbox_https_status()
+                st["error"] = f"{now()}: {ex}"[:1000]
+                publish(https_state=st)
             else:
                 st = egress_status()
                 st["error"] = f"{now()}: {ex}"[:1000]
@@ -702,7 +887,10 @@ def main(argv=None) -> int:
             return 0
         if cmd == "health":
             return health()
-    except (AgentError, RuleError, subprocess.TimeoutExpired) as ex:
+        if cmd == "sandbox-https" and argv[1:2] == ["sync"]:
+            print(sync_sandbox_https())
+            return 0
+    except (AgentError, RuleError, OSError, subprocess.TimeoutExpired) as ex:
         log(f"error: {ex}")
         return 1
     print(__doc__)

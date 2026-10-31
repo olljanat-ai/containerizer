@@ -35,6 +35,7 @@ class GitOpsOptions:
     tag_range: str = ">=1.0.0"            # semver range image automation may roll out
     verify_commits: bool = False          # Flux: only reconcile commits signed with a key in <app>-git-gpg
     image_pull_secret: str = ""           # Secret name the workloads pull with (an ExternalSecret, cz-registry)
+    ingress_domain: str = ""              # wildcard domain: an HTTPS Ingress per web component (sandbox_https.py)
 
 
 def _api_group(api_version: str) -> str:
