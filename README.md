@@ -536,6 +536,9 @@ Flux to sync, reads back rollout, readiness, restarts and events with a read-onl
 per component "deployed and healthy" or "deployed but failing (reason)" in `sandbox/HEALTH.md`, the results
 database and the web UI; failures the cluster shows feed the learning loop
 ([docs/sandbox-verification.md](docs/sandbox-verification.md)).
+With a wildcard domain and certificate (`--ingress-domain`, or **Admin → Sandbox HTTPS** on the appliance)
+every web component also gets an HTTPS Ingress at `https://<component>-<app>.<domain>/`, which the health
+check opens and the web UI links ([docs/sandbox-https.md](docs/sandbox-https.md)).
 
 Organization scans can also be **scheduled from the admin pages** (days of the week and time, or
 "Run now") and run by `containerizer worker`, a separate process with Docker. Administrators register a
@@ -596,7 +599,8 @@ containerizer/sql/  results database schema (sqlstore.py writes it, webui.py rea
 monitoring/      Grafana dashboard, Prometheus scrape config and alert rules, systemd unit for the worker
 results/         Docker Compose stack and image for the results database and web UI
 docs/            results-database.md (results database, web UI, admin pages, audit), rule-review.md, organization-run.md,
-                 scheduled-scans.md, source-control.md (tokens), dev-databases.md, sandbox-verification.md, self-hosted-llm.md, sbom.md (SBOMs, licences, CVEs per package),
+                 scheduled-scans.md, source-control.md (tokens), dev-databases.md, sandbox-verification.md, sandbox-https.md,
+                 self-hosted-llm.md, sbom.md (SBOMs, licences, CVEs per package),
                  external-secrets.md (secret store, per-namespace access, Vault / Azure Key Vault / AWS),
                  lab-services.md (SQL Server, PostgreSQL, Redis, S3, Azure Blob for the sandboxed apps),
                  local-dev-server.md (a Debian server that runs the whole CI suite locally)

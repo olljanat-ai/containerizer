@@ -204,7 +204,8 @@ class Admin:
         kind = parts[0]
         if kind not in {k for k, _ in tabs}:
             known = kind in ("applications", "products", "business-units", "audit", "access", "scans", "repositories",
-                             "dev-databases", "system", "firewall", "source-control", "lab-services")
+                             "dev-databases", "system", "firewall", "source-control", "lab-services",
+                             "sandbox-https")
             return Response(403 if known else 404, self._shell(s, a, "Not allowed" if known else "Not found", "",
                             "<p>Your role does not include this page.</p>" if known else ""))
         if kind in ("scans", "repositories"):
@@ -212,7 +213,7 @@ class Admin:
         if kind == "rules":
             from . import admin_rules
             return admin_rules.route(self, conn, s, a, method, parts, q, form, q.get("msg", [""])[0][:300])
-        if kind in ("system", "firewall"):           # the appliance only; administrators only (see _tabs)
+        if kind in ("system", "firewall", "sandbox-https"):     # the appliance only; administrators only (see _tabs)
             status, body, location = self.system.handle(
                 s, method, parts, q, form, lambda title, active, b, f: self._shell(s, a, title, active, b, f))
             return redirect(location) if location else Response(status, body)
@@ -276,7 +277,7 @@ class Admin:
         if a.admin and self.cfg.view_audit:
             tabs += [("access", "Access log")]
         if a.admin and self.system:                  # on the appliance: upgrade, roll back, egress firewall
-            tabs += [("system", "System"), ("firewall", "Firewall")]
+            tabs += [("system", "System"), ("firewall", "Firewall"), ("sandbox-https", "Sandbox HTTPS")]
         return tabs
 
     # -- streamed uploads -----------------------------------------------------------------------
