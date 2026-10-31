@@ -1,1 +1,2 @@
 pyyaml>=6.0
+cryptography>=42   # seals the source control tokens and the LLM key (credentials.py)
