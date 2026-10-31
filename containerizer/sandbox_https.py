@@ -38,6 +38,8 @@ SECRET_NAME = "containerizer-sandbox-tls"
 SECRET_NAMESPACE = "kube-system"
 EDGE_LABEL = "containerizer-edge"        # the name Caddy asks Traefik's certificate for (inside the wildcard)
 URL_ANNOTATION = "containerizer.io/url"
+# labels the appliance itself uses under the domain: an app never gets one of them
+RESERVED_LABELS = frozenset({EDGE_LABEL, "containerizer-idp"})
 
 CERT_BLOCK = re.compile(r"-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+?-----END CERTIFICATE-----")
 KEY_BLOCK = re.compile(r"-----BEGIN ((?:RSA |EC )?PRIVATE KEY)-----[A-Za-z0-9+/=\s]+?-----END \1-----")
@@ -65,7 +67,7 @@ def host_label(app: str, component: str) -> str:
     """The one DNS label of a component under the wildcard domain. `app` and `component` are the
     Kubernetes names (namespace and Service). Deterministic; at most 63 characters."""
     label = app if component == app else f"{component}-{app}"
-    if len(label) > LABEL_MAX:
+    if len(label) > LABEL_MAX or label in RESERVED_LABELS:
         h = hashlib.sha256(f"{app}/{component}".encode()).hexdigest()[:8]
         label = label[:LABEL_MAX - 9].rstrip("-") + "-" + h
     return label

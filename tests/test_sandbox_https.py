@@ -88,6 +88,8 @@ def test_domain_and_host_names():
     long = host_label("a" * 40, "b" * 40)
     assert len(long) <= 63 and long == host_label("a" * 40, "b" * 40) and long != host_label("a" * 40, "b" * 39 + "c")
     assert host_for("sandbox.example.com", "shop", "web") == "web-shop.sandbox.example.com"
+    for app, comp in (("containerizer-idp", "containerizer-idp"), ("idp", "containerizer"), ("edge", "containerizer")):
+        assert host_label(app, comp) not in ("containerizer-idp", "containerizer-edge")
     assert covered("web-shop.sandbox.example.com", "sandbox.example.com")
     assert not covered("web.shop.sandbox.example.com", "sandbox.example.com")     # one label only
     assert not covered("sandbox.example.com", "sandbox.example.com")

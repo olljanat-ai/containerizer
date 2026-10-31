@@ -59,7 +59,9 @@ Each component that serves HTTP gets exactly one DNS label under the domain:
 The rule is `<component>-<app>.<domain>`, or just `<app>.<domain>` when the component has the app's
 name. Both parts are the Kubernetes names (lower case, letters, digits and hyphens). A name longer than
 63 characters is cut and gets 8 hex characters of a SHA-256 of `<app>/<component>`, so it stays unique
-and does not change between scans. The name has one label because a wildcard certificate covers exactly
+and does not change between scans. The names `containerizer-edge` and `containerizer-idp` are the
+appliance's own (Caddy's check of Traefik, the sandbox identity provider): a component that would get one
+of them gets the hash suffix instead. The name has one label because a wildcard certificate covers exactly
 one label: `*.sandbox.example.com` covers `web-shop.sandbox.example.com` but not
 `web.shop.sandbox.example.com`.
 
