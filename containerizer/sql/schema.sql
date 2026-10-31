@@ -208,6 +208,10 @@ CREATE TABLE [${schema}].SandboxCheck (
     LogTail       nvarchar(max)  NULL              -- redacted; not granted to the reader role
 );
 GO
+-- 11: the component's public HTTPS URL (Sandbox HTTPS, docs/sandbox-https.md) and what opening it gave
+IF COL_LENGTH(N'[${schema}].SandboxCheck', N'Url') IS NULL
+    ALTER TABLE [${schema}].SandboxCheck ADD Url nvarchar(300) NULL, UrlCheck nvarchar(300) NULL;
+GO
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_SandboxCheck_Component' AND object_id = OBJECT_ID(N'[${schema}].SandboxCheck'))
 CREATE INDEX IX_SandboxCheck_Component ON [${schema}].SandboxCheck (ApplicationId, ComponentId, CheckedAt DESC, CheckId DESC);
 GO
@@ -294,7 +298,8 @@ GO
 -- rows of one check share CheckedAt), without the log tail. The application page reads it.
 CREATE OR ALTER VIEW [${schema}].vSandboxLatest AS
 SELECT x.ApplicationId, x.ComponentId, c.Name AS ComponentName, x.CheckedAt, x.Status, x.Reason, x.GitOps,
-       x.Namespace, x.Workloads, x.ImageRef, x.Revision, x.Ready, x.Restarts, x.RuleId, x.Outcome, x.Diagnosis, x.Events
+       x.Namespace, x.Workloads, x.ImageRef, x.Revision, x.Ready, x.Restarts, x.RuleId, x.Outcome, x.Diagnosis, x.Events,
+       x.Url, x.UrlCheck
 FROM (SELECT s.*, MAX(s.CheckedAt) OVER (PARTITION BY s.ApplicationId) AS LastCheck,
              ROW_NUMBER() OVER (PARTITION BY s.ApplicationId, s.ComponentId, s.CheckedAt ORDER BY s.CheckId DESC) AS n
       FROM [${schema}].SandboxCheck s) x
@@ -1000,6 +1005,9 @@ IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 9) INSERT
 GO
 -- 10: source control tokens and the LLM (SourceCredential)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 10) INSERT [${schema}].SchemaVersion (Version) VALUES (10);
+GO
+-- 11: SandboxCheck.Url, UrlCheck (Sandbox HTTPS)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 11) INSERT [${schema}].SchemaVersion (Version) VALUES (11);
 GO
 -- 12: lab services (LabService)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 12) INSERT [${schema}].SchemaVersion (Version) VALUES (12);

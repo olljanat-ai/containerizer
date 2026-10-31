@@ -3,8 +3,9 @@
 write-kubeconfig-mode: "0600"
 # the API answers only on this host and to the pods; the firewall lets no one else reach 6443
 resolv-conf: /usr/lib/containerizer/resolv.conf
+# Traefik (k3s' ingress controller) runs for the sandbox apps' HTTPS, reachable only through Caddy
+# (/var/lib/rancher/k3s/server/manifests/containerizer-traefik.yaml); no service load balancer
 disable:
-  - traefik
   - servicelb
 secrets-encryption: true
 protect-kernel-defaults: true

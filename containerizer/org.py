@@ -76,6 +76,7 @@ class OrgOptions:
     timeout: int = 1800
     pin: bool = False
     verify_commits: bool = False
+    ingress_domain: str | None = None   # wildcard domain for the HTTPS Ingresses (None: the appliance's setting)
     sql: str | None = None
     work_dir: str = ".work/org"
     keep_work: bool = False
@@ -728,8 +729,10 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
             if status and (x := skip(status, why)):
                 return x
 
+        from .sandbox_https import configured_domain, normalize_domain
+        domain = normalize_domain(o.ingress_domain) if o.ingress_domain else configured_domain()
         gitops = GitOpsOptions(git_url=out.url, branch=o.output_branch, path=rel, verify_commits=o.verify_commits,
-                               image_pull_secret=o.image_pull_secret or "")
+                               image_pull_secret=o.image_pull_secret or "", ingress_domain=domain)
         scratch = work / "analyze"
         if scratch.exists():
             shutil.rmtree(scratch)

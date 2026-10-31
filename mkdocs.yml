@@ -51,6 +51,7 @@ nav:
       - Source control tokens and the LLM: source-control.md
   - Scans:
       - Organization scans: scheduled-scans.md
+      - Sandbox HTTPS: sandbox-https.md
       - Lab services: lab-services.md
       - Dev databases: dev-databases.md
       - Rule review: rule-review.md

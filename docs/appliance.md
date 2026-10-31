@@ -7,10 +7,10 @@ image, and upgraded from the admin pages. It runs:
 
 | Part | How | Reached at |
 | --- | --- | --- |
-| Web UI and API (results, admin pages, System and Firewall pages) | systemd service, user `cz-web`, no privileges | `https://<appliance>/` |
+| Web UI and API (results, admin pages, System, Firewall and Sandbox HTTPS pages) | systemd service, user `cz-web`, no privileges | `https://<appliance>/` |
 | Scan worker ([organization scans](scheduled-scans.md)) | systemd service, user `containerizer` + Docker | - |
 | SQL Server 2025 (results database) | container, non-root, data on the persistent partition | `127.0.0.1:1433` only |
-| Sandbox cluster: k3s (single node) with Flux | systemd service | `kubectl` on the appliance |
+| Sandbox cluster: k3s (single node) with Flux and Traefik | systemd service | `kubectl` on the appliance; apps at `https://<component>-<app>.<domain>/` with [Sandbox HTTPS](sandbox-https.md) |
 | [Lab services](lab-services.md) for the sandboxed apps: SQL Server, PostgreSQL, Redis, S3, Azure Blob storage (each optional) | k3s, namespace `containerizer-lab`, data on the persistent partition | Admin → Lab services; inside the cluster only |
 | Local container registry | container | `127.0.0.1:5000` only (Docker and k3s) |
 | Prometheus and Grafana, with the scan worker's metrics, alerts and dashboard | containers | `https://<appliance>/grafana/` |
@@ -175,6 +175,10 @@ every app namespace, and creates the root `GitRepository` + `Kustomization` of t
 ([the sandbox cluster](scheduled-scans.md#the-sandbox-cluster)). Allow the Git server on
 the Firewall page. `kubectl` (as root on the appliance) shows the result. Argo CD is not installed; Flux
 is the supported path on the appliance.
+
+To reach the deployed apps over HTTPS, set up a wildcard domain and certificate on **Admin → Sandbox
+HTTPS**: Caddy answers for `*.<domain>` on the same port 443 and passes the requests to Traefik in k3s,
+and every web component gets `https://<component>-<app>.<domain>/` ([sandbox-https.md](sandbox-https.md)).
 
 ## Upgrade and roll back
 

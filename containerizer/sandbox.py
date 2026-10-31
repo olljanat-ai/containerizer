@@ -193,9 +193,97 @@ def deployed_apps(root: Path) -> list[dict]:
                     docs = []
                 workloads = [(x["kind"], x["metadata"]["name"]) for x in docs
                              if x.get("kind") in ("Deployment", "StatefulSet", "CronJob") and x.get("metadata", {}).get("name")]
+                url, probe = _published(docs)
+                if url:
+                    comps.append({**c, "workloads": workloads, "url": url, "probe_path": probe})
+                    continue
             comps.append({**c, "workloads": workloads})
         apps.append({"rel": rel, "app": doc.get("app") or "", "doc": doc, "components": comps})
     return [a for a in apps if a["app"]]
+
+
+def _published(docs: list[dict]) -> tuple[str, str]:
+    """(https URL of the component's Ingress, path its readiness probe asks) from its k8s.yaml."""
+    from .sandbox_https import URL_ANNOTATION
+    url = ""
+    for d in docs:
+        if d.get("kind") == "Ingress":
+            url = ((d.get("metadata") or {}).get("annotations") or {}).get(URL_ANNOTATION) or ""
+            if not url:
+                rules = (d.get("spec") or {}).get("rules") or []
+                host = rules[0].get("host") if rules and isinstance(rules[0], dict) else ""
+                url = f"https://{host}/" if host else ""
+            break
+    if not URL_RE.fullmatch(url or ""):
+        return "", ""
+    path = "/"
+    for d in docs:
+        if d.get("kind") in ("Deployment", "StatefulSet"):
+            for c in (((d.get("spec") or {}).get("template") or {}).get("spec") or {}).get("containers") or []:
+                p = ((c.get("readinessProbe") or {}).get("httpGet") or {}).get("path")
+                if isinstance(p, str) and PATH_RE.fullmatch(p):
+                    path = p
+                    break
+    return url, path
+
+
+# --------------------------------------------------------------------------- the public URL
+
+URL_RE = re.compile(r"https://[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?/")
+PATH_RE = re.compile(r"/[A-Za-z0-9._~/-]{0,200}")
+
+
+@dataclass
+class UrlCheck:
+    ok: bool
+    detail: str                       # "200", "TLS: certificate has expired", "connection refused"
+
+
+def check_url(url: str, path: str = "/", address: str = "", ca_file: str = "", timeout: float = 10.0) -> UrlCheck:
+    """GET `path` on the component's public URL over HTTPS, the certificate checked against the host name
+    (system CAs, plus `ca_file`). `address` (host:port) connects there instead of the name's DNS address
+    (on the appliance: 127.0.0.1:443, Caddy), still asking for and checking the real host name. Any HTTP
+    answer below 500 means the app is published (401, 404 at / are fine); no redirects are followed."""
+    import http.client
+    import socket
+    import ssl
+    host = url[len("https://"):].split("/", 1)[0]
+    ctx = ssl.create_default_context()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    # judge the certificate as browsers do: Python 3.13's stricter RFC 5280 checks (e.g. a required Authority
+    # Key Identifier) would fail certificates every browser accepts
+    ctx.verify_flags &= ~getattr(ssl, "VERIFY_X509_STRICT", 0)
+    if ca_file:
+        try:
+            ctx.load_verify_locations(cafile=ca_file)
+        except (OSError, ssl.SSLError) as ex:
+            return UrlCheck(False, f"CA file {ca_file}: {type(ex).__name__}")
+    target, port = host, 443
+    if address:
+        a, _, p = address.rpartition(":")
+        target, port = (a.strip("[]") or "127.0.0.1"), int(p or 443)
+
+    class _Conn(http.client.HTTPSConnection):
+        def connect(self):
+            sock = socket.create_connection((target, port), self.timeout)
+            self.sock = ctx.wrap_socket(sock, server_hostname=host)
+
+    conn = _Conn(host, 443, timeout=timeout, context=ctx)
+    try:
+        conn.request("GET", path, headers={"User-Agent": "containerizer-sandbox-verify", "Accept": "*/*"})
+        r = conn.getresponse()
+        r.read(64 * 1024)
+        if r.status >= 500:
+            return UrlCheck(False, f"HTTP {r.status} {r.reason}".strip())
+        return UrlCheck(True, f"HTTP {r.status}")
+    except ssl.SSLCertVerificationError as ex:
+        return UrlCheck(False, f"TLS: {ex.verify_message or ex.reason or 'certificate not accepted'}")
+    except ssl.SSLError as ex:
+        return UrlCheck(False, f"TLS: {ex.reason or type(ex).__name__}")
+    except (OSError, http.client.HTTPException) as ex:
+        return UrlCheck(False, (getattr(ex, "strerror", None) or str(ex) or type(ex).__name__)[:200])
+    finally:
+        conn.close()
 
 
 # --------------------------------------------------------------------------- GitOps sync
@@ -495,6 +583,9 @@ class SandboxOptions:
     interval: int = 10
     revision: str = ""                # output repository commit to wait for (default: its HEAD)
     learn: bool = True
+    ingress_address: str = ""         # host:port to open the public URLs at (default: their DNS name)
+    ingress_ca: str = ""              # extra CA file for the URL check
+    url_attempts: int = 3             # a new Ingress takes a moment to be routed
 
 
 def _now() -> str:
@@ -505,15 +596,20 @@ def _result(app: dict, c: dict, status: str, reason: str, **kw) -> dict:
     return {"app": app["app"], "folder": app["rel"], "source_key": app["doc"].get("source_key", ""),
             "clone_url": app["doc"].get("clone_url", ""), "component": c.get("component", ""),
             "project": c.get("project", ""), "project_name": c.get("project_name", ""), "image": c.get("image", ""),
-            "workloads": [f"{k}/{n}" for k, n in c.get("workloads") or []],
+            "workloads": [f"{k}/{n}" for k, n in c.get("workloads") or []], **({"url": c["url"]} if c.get("url") else {}),
             "status": status, "status_text": STATUS_TEXT[status], "reason": reason, "checked_at": _now(), **kw}
 
 
 def verify_sandbox(root: Path, o: SandboxOptions | None = None, kube: Kube | None = None, log=print,
-                   sleep=time.sleep, clock=time.monotonic) -> dict:
+                   sleep=time.sleep, clock=time.monotonic, url_checker=None) -> dict:
     """Wait for the sync of every deployed app, then read back each component. Returns the health
     document written to sandbox/health.json (also when the step is skipped)."""
     o = o or SandboxOptions()
+    url_checker = url_checker or check_url
+    if not (o.ingress_address or o.ingress_ca):     # on the appliance: through its Caddy, its own certificate chain
+        from .sandbox_https import load_settings
+        st = load_settings() or {}
+        o.ingress_address, o.ingress_ca = st.get("edge") or "", st.get("cert_file") or ""
     root = Path(root)
     kube = kube or Kube(o.kube)
     apps = deployed_apps(root)
@@ -609,6 +705,18 @@ def verify_sandbox(root: Path, o: SandboxOptions | None = None, kube: Kube | Non
                 reason += f"; last warning {ob.events[0]['reason']}: {ob.events[0]['message'][:300]}"
         r = _result(a, c, ob.status, reason, gitops=tool, sync=detail, ready=ob.ready, restarts=ob.restarts,
                     states=ob.states, events=ob.events, pod=ob.pod)
+        if c.get("url") and ob.status == HEALTHY:
+            uc = UrlCheck(False, "not checked")
+            for i in range(max(1, o.url_attempts)):
+                uc = url_checker(c["url"], c.get("probe_path") or "/", o.ingress_address, o.ingress_ca)
+                if uc.ok:
+                    break
+                if i + 1 < o.url_attempts:
+                    sleep(o.interval)
+            r["url_check"] = uc.detail
+            if not uc.ok:
+                r["status"], r["status_text"] = FAILING, STATUS_TEXT[FAILING]
+                r["reason"] = f"{reason}; but {c['url']} does not answer over HTTPS: {uc.detail}"
         if ob.status in (FAILING, PENDING) and (ob.log or ob.states or ob.events):
             if failures is None:
                 from .verify import load_failures
@@ -686,8 +794,8 @@ def learn_from_cluster(results: list[dict], learned_dir: Path | None = None) -> 
 
 # --------------------------------------------------------------------------- report
 
-PUBLIC = ("app", "folder", "component", "project", "image", "workloads", "status", "status_text", "reason",
-          "checked_at", "gitops", "ready", "restarts", "states", "events", "diagnosis")
+PUBLIC = ("app", "folder", "component", "project", "image", "workloads", "url", "url_check", "status", "status_text",
+          "reason", "checked_at", "gitops", "ready", "restarts", "states", "events", "diagnosis")
 
 
 def public(r: dict) -> dict:
@@ -719,10 +827,12 @@ def write_health(root: Path, doc: dict) -> None:
     if doc.get("skipped"):
         lines += [f"Not checked: {doc['skipped']}.", ""]
     lines += [" · ".join(f"{k}: {v}" for k, v in sorted(counts.items())), "",
-              "| Namespace | Component | Status | Ready | Restarts | Reason |", "| --- | --- | --- | --- | --- | --- |"]
+              "| Namespace | Component | URL | Status | Ready | Restarts | Reason |",
+              "| --- | --- | --- | --- | --- | --- | --- |"]
     for r in comps:
         reason = (r.get("reason") or "").replace("|", "/").replace("\n", " ")
-        lines.append(f"| `{r['app']}` | [{r['component']}](../{r['folder'].replace(' ', '%20')}/) | "
+        url = f"<{r['url']}>" + (f" ({r['url_check']})" if r.get("url_check") else "") if r.get("url") else ""
+        lines.append(f"| `{r['app']}` | [{r['component']}](../{r['folder'].replace(' ', '%20')}/) | {url} | "
                      f"{ICON.get(r['status'], r['status'])} | {r.get('ready', '')} | {r.get('restarts', '')} | {reason[:300]} |")
     (sb / "HEALTH.md").write_text("\n".join(lines) + "\n")
 

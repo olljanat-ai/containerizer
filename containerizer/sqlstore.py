@@ -536,14 +536,15 @@ def store_sandbox_checks(conn, doc: dict) -> tuple[int, int]:
             d = r.get("diagnosis") or {}
             events = [{k: e.get(k) for k in ("reason", "message", "count", "object")} for e in r.get("events") or []]
             cur.execute("INSERT cz.SandboxCheck (ApplicationId, ComponentId, CheckedAt, Status, Reason, GitOps, Namespace, "
-                        "Workloads, ImageRef, Revision, Ready, Restarts, RuleId, Outcome, Diagnosis, Events, LogTail) "
-                        "VALUES (%s, %s, COALESCE(%s, SYSUTCDATETIME()), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        "Workloads, ImageRef, Revision, Ready, Restarts, RuleId, Outcome, Diagnosis, Events, LogTail, Url, UrlCheck) "
+                        "VALUES (%s, %s, COALESCE(%s, SYSUTCDATETIME()), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                         (app_id, row[0] if row else None, when, _cut(r["status"], 20), _cut(r.get("reason"), 2000),
                          _cut(r.get("gitops") or None, 20), _cut(r.get("app") or "", 63),
                          _cut(", ".join(r.get("workloads") or []) or None, 400), _cut(r.get("image") or None, 400),
                          _cut(doc.get("revision") or None, 64), _cut(r.get("ready") or None, 20), r.get("restarts"),
                          _cut(d.get("rule"), 200), _cut(d.get("outcome"), 20), _cut(d.get("diagnosis"), 2000),
-                         json.dumps(events) if events else None, r.get("log_tail") or None))
+                         json.dumps(events) if events else None, r.get("log_tail") or None,
+                         _cut(r.get("url") or None, 300), _cut(r.get("url_check") or None, 300)))
             n += 1
         conn.commit()
     except Exception:
