@@ -9,8 +9,13 @@ mkdir -p "$OUT"
 qemu-img convert -O qcow2 "$RAW" "$OUT/disk.qcow2"
 qemu-img resize "$OUT/disk.qcow2" 96G
 cp /usr/share/OVMF/OVMF_VARS_4M.fd "$OUT/vars.fd"
+# size the VM to the runner: all CPUs, and the free memory less 1 GiB for the host (SQL Server needs 2 GiB)
+CPUS=$(nproc)
+MEM=$(awk '/MemAvailable/ {m = int($2 / 1024) - 1024; print (m > 11264 ? 11264 : m)}' /proc/meminfo)
+[ "$MEM" -ge 4096 ] || { echo "only ${MEM} MiB free for the VM" >&2; exit 1; }
+echo "VM: $CPUS CPUs, $MEM MiB"
 start_vm() {
-  qemu-system-x86_64 -enable-kvm -cpu host -smp 4 -m 11264 -machine q35 \
+  qemu-system-x86_64 -enable-kvm -cpu host -smp "$CPUS" -m "$MEM" -machine q35 \
     -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
     -drive if=pflash,format=raw,unit=1,file="$OUT/vars.fd" \
     -drive file="$OUT/disk.qcow2",if=virtio,format=qcow2 \
