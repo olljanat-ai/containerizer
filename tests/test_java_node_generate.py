@@ -222,7 +222,7 @@ def test_node_spa_uses_the_repository_package_manager(tmp_path):
          {"index.html": "<div id=root></div>", "pnpm-lock.yaml": "lockfileVersion: '9.0'\n"})
     a, c, plan, df = plan_and_df(tmp_path, "web")
     assert c.role == "spa"
-    assert "pnpm install --frozen-lockfile" in df and "nginx-unprivileged" in df and "cp -r 'dist' /site" in df
+    assert "pnpm install --frozen-lockfile" in df and "nginx-unprivileged" in df and "for d in 'dist/browser' 'dist'" in df
 
 
 def test_node_config_windows_paths(tmp_path):
@@ -304,3 +304,13 @@ def test_committed_node_modules_stay_in_the_build_context(tmp_path):
 def test_node_util_removal_moves_to_node_22():
     r = diagnose("TypeError: util_1.isNullOrUndefined is not a function", "run", load_failures())
     assert r[0]["id"] == "run-node-util-removed" and r[0]["fix"] == {"node": 22}
+
+
+def test_node_run_and_loader_from_dev_dependencies(tmp_path):
+    node(tmp_path, "", {"name": "kuma", "scripts": {"start": "node --run start-server",
+                                                    "start-server": "node --import=tsx server/server.js"},
+                        "dependencies": {"express": "4"}, "devDependencies": {"tsx": "4"}},
+         {"server/server.js": SERVER})
+    _, _, plan, df = plan_and_df(tmp_path, "kuma")
+    assert plan["node_entry"] == ["--import=tsx", "server/server.js"] and not plan["prune"]
+    assert "npm prune" not in df

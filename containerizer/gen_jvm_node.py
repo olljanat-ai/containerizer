@@ -428,6 +428,20 @@ def node_plan(a, c, plan: dict) -> None:
                    "or init container, or at build time.")
     if argv and argv[0] == "node":
         plan["node_entry"] = argv[1:]
+        # packages loaded by node itself (--import=tsx, -r ts-node/register) must survive pruning
+        loaded = []
+        for i, x in enumerate(argv[1:], 1):
+            m = re.match(r"--(?:import|require|loader|experimental-loader)=(.+)", x)
+            if m:
+                loaded.append(m.group(1))
+            elif x in ("-r", "--require", "--import", "--loader", "--experimental-loader") and i + 1 < len(argv):
+                loaded.append(argv[i + 1])
+        dev = [m for m in loaded if not m.startswith(".") and
+               re.sub(r"^(@[^/]+/[^/]+|[^/]+).*$", r"\1", m) in p.dev_packages]
+        if dev:
+            plan["prune"] = False
+            add_reason(plan, "node-start-dev-dependency", f"The start command loads `{dev[0]}`, a development "
+                       "dependency, so the image keeps devDependencies. Compile at build time, or move it to dependencies.")
         if st.get("default"):
             add_reason(plan, "node-default-start", f"package.json has no production start script; the image runs "
                        f"`node {argv[-1]}` (npm's default start command is `node server.js`, a package's entry point "
@@ -521,7 +535,7 @@ def node_build_stage(plan: dict) -> list[str]:
         + [f"{k}={json.dumps(str(v))}" for k, v in sorted((plan.get("build_env") or {}).items())]
     lines.append("ENV " + " ".join(envb))
     mounts = ("--mount=type=cache,target=/root/.npm --mount=type=cache,target=/root/.local/share/pnpm/store "
-              "--mount=type=cache,target=/root/.cache/node/corepack --mount=type=secret,id=ca,required=false")
+              "--mount=type=secret,id=ca,required=false")      # corepack's own home stays in the layer: it holds the pinned version
     lines += ["# optional build secret 'ca': CA bundle for TLS-inspecting corporate proxies",
               f"RUN {mounts} \\", f"    {CA_ENV}; \\", f"    {_install_cmd(plan)}"]
     return lines + _build_lines(plan)

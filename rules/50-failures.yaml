@@ -135,6 +135,17 @@ failures:
     fix: {build_env: {NODE_OPTIONS: --max-old-space-size=4096}}
     learn: {when: {}}
 
+  - id: build-node-env-validation
+    stage: build
+    match: 'Invalid environment variables|❌ Invalid environment variables'
+    outcome: code
+    refs: [https://env.t3.gg/docs/nextjs#validate-schema-on-build-(recommended), https://12factor.net/build-release-run]
+    diagnosis: >-
+      The build validates the runtime environment variables (t3-env / zod in next.config), so the
+      image cannot be built without the production values.
+    finding: {severity: config, title: The build requires runtime environment variables,
+      fix: 'Skip the validation at build time (t3-env skipValidation, e.g. SKIP_ENV_VALIDATION=1) and validate when the server starts, so one image works in every environment.'}
+
   - id: build-node-engine-unsupported
     stage: build
     match: 'The engine "node" is incompatible with this module\. Expected version "(?P<range>[^"]+)"|ERR_PNPM_UNSUPPORTED_ENGINE[^\n]*\n[^\n]*wanted: (?P<range2>[^\n]+)|EBADENGINE[^\n]*\n[^\n]*required: \{[^}]*node: .(?P<range3>[^\x27"]+)'
@@ -157,6 +168,15 @@ failures:
   - id: run-readonly-path
     stage: run
     match: "(Access to the path '(?P<path>/[^']+)' is denied|Read-only file system : '(?P<path2>/[^']+)'|UnauthorizedAccessException: Access to the path '(?P<path3>/[^']+)')"
+    outcome: retry
+    refs: [https://kubernetes.io/docs/tasks/configure-pod-container/security-context/]
+    diagnosis: The app writes to a folder that is read-only in the hardened container.
+    fix: {add_writable: ['{dir}']}
+    learn: {when: {}}
+
+  - id: run-readonly-path-node-java
+    stage: run
+    match: "(EROFS: read-only file system|EACCES: permission denied), (open|mkdir|scandir|copyfile|rename) '(?P<path>/[^']+)'|ENOENT: no such file or directory, mkdir '(?P<path5>/[^']+)'|java\\.nio\\.file\\.(ReadOnlyFileSystemException|AccessDeniedException): (?P<path2>/[^\\s:]+)|FileSystemException: (?P<path3>/[^\\s:]+): Read-only file system|FileNotFoundException: (?P<path4>/[^\\s(]+) \\((Read-only file system|Permission denied)\\)"
     outcome: retry
     refs: [https://kubernetes.io/docs/tasks/configure-pod-container/security-context/]
     diagnosis: The app writes to a folder that is read-only in the hardened container.
@@ -356,15 +376,6 @@ failures:
       A dependency calls util.{fn}, which Node.js 23 removed; the image runs on Node.js 22 (supported
       until April 2027). Upgrade the dependency to move to the current LTS line.
     fix: {node: 22}
-    learn: {when: {}}
-
-  - id: run-readonly-path-node-java
-    stage: run
-    match: "(EROFS: read-only file system|EACCES: permission denied), (open|mkdir|scandir|copyfile|rename) '(?P<path>/[^']+)'|java\\.nio\\.file\\.(ReadOnlyFileSystemException|AccessDeniedException): (?P<path2>/[^\\s:]+)|FileSystemException: (?P<path3>/[^\\s:]+): Read-only file system|FileNotFoundException: (?P<path4>/[^\\s(]+) \\((Read-only file system|Permission denied)\\)"
-    outcome: retry
-    refs: [https://kubernetes.io/docs/tasks/configure-pod-container/security-context/]
-    diagnosis: The app writes to a folder that is read-only in the hardened container.
-    fix: {add_writable: ['{dir}']}
     learn: {when: {}}
 
   - id: run-java-db-unreachable

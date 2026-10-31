@@ -272,6 +272,9 @@ def _parse_start(scripts: dict, name: str, cmd: str, depth: int) -> dict:
     if not argv:
         return {"script": name, "shell": cmd}
     head = argv[0]
+    if head == "node" and len(argv) > 2 and argv[1] == "--run":
+        argv = ["npm", "run"] + argv[2:]               # Node.js 22+: `node --run <script>`
+        head = "npm"
     if head in ("npm", "pnpm", "yarn", "bun") and depth < 3:
         rest = argv[1:]
         if rest and rest[0] in ("run", "run-script"):
