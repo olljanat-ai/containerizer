@@ -13,7 +13,11 @@ UI and admin pages, and the appliance.
 - Immutable VM image and installer ISO built with the Elemental toolkit (Debian 13): signed upgrades and
   roll back from **Admin → System**, local container registry, k3s sandbox cluster with Flux, and an
   egress firewall with a DNS filter (#37)
-- Source control tokens for Azure DevOps, GitHub and GitLab organizations managed in the admin UI
+- Source control tokens and the LLM settings on the admin pages: read-only tokens per Azure DevOps,
+  GitHub or GitLab organization (sealed at rest), access only to organizations with a token, and a
+  separate write token for the repository that receives generated files (#44). The scan worker no
+  longer reads organization or output tokens from its environment; see
+  [docs/source-control.md](docs/source-control.md). Results database schema version 10.
 - Release workflow: OS image on GHCR signed with cosign and its SBOM attested; ISO, qcow2 and VHD as
   release assets with signed checksums
 
@@ -30,6 +34,8 @@ UI and admin pages, and the appliance.
 - Dev database backups: operators upload a SQL Server `.bak`, the sandbox restores it next to the app (#39)
 - Rule review: learned rules wait for approval, with their evidence (#36)
 - Screenshots of the results and admin pages in the docs (#27)
+- Documentation published to GitHub Pages at containerizer.eu (#42), an appliance Getting started
+  guide (#45), and how to run the CI suite on a local Debian 13 server (#43)
 
 ### Assessment and rules
 - `containerizer org`: run across a whole Azure DevOps, GitHub or GitLab organization (#26)
@@ -45,3 +51,6 @@ UI and admin pages, and the appliance.
 ### CI
 - The action takes a `report-name` input, so one job can run it more than once
 - The appliance boot test waits for the active system after the first-boot deployment
+- Appliance fixes found by the boot test: the Docker CLI is installed (`docker-cli` on Debian 13), the
+  boot health check waits for k3s to finish starting instead of rolling back, and the egress
+  allow-list includes Docker Hub's Cloudflare R2 layer host
