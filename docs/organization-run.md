@@ -118,17 +118,23 @@ past 63 characters, and given a hash suffix when two repositories would map to t
 
 `sandbox/README.md` in the output repository has the commands. In short:
 
-- **Argo CD**: register the output repository with a read-only token and apply
-  `sandbox/argocd/bootstrap.yaml`. Its AppProject may only create AppProjects and Applications in
-  `argocd` from that repository; each app's own AppProject is pinned to its namespace and generated kinds.
-- **Flux**: create the `containerizer-sandbox-git` secret in `flux-system` and a `<app>-git` secret in
-  each namespace in `sandbox/namespaces.txt`, then apply `sandbox/flux/bootstrap.yaml`. The root
-  Kustomization creates each tenant (namespace with Pod Security "restricted", ServiceAccount,
-  namespace-only RoleBinding); each app then reconciles as its own ServiceAccount.
-- **Registry**: with `--image-pull-secret regcred` every workload references that pull secret; create it
-  in each namespace from `namespaces.txt` (or give the nodes registry credentials).
-- **Secrets**: apps get their connection strings through External Secrets (`ClusterSecretStore`
-  `app-secrets`), see each app's `HARDENING.md`.
+Nothing in the output repository is a Secret: credentials are ExternalSecrets that External Secrets
+Operator fills from the `ClusterSecretStore` `app-secrets` ([external-secrets.md](external-secrets.md)).
+
+- **Argo CD**: put the read-only token in the store as `argocd--cz-git` (`username`, `password`) and apply
+  `sandbox/argocd/bootstrap.yaml`, which makes Argo CD's repository Secret from it. Its AppProject may only
+  create AppProjects and Applications in `argocd` from that repository; each app's own AppProject is
+  pinned to its namespace and generated kinds. Apply each app's `cluster/secret-store.yaml` for its store access.
+- **Flux**: put the token in the store as `flux-system--cz-git` and as `<namespace>--cz-git` for each
+  namespace in `sandbox/namespaces.txt`, then apply `sandbox/flux/bootstrap.yaml`. The root Kustomization
+  creates each tenant (namespace with Pod Security "restricted", ServiceAccounts, namespace-only
+  RoleBinding, read access to its own keys); each app then reconciles as its own ServiceAccount.
+- **Registry**: with `--image-pull-secret regcred` every workload references `regcred`, an ExternalSecret
+  of type `dockerconfigjson` from `<namespace>--cz-registry` (or give the nodes registry credentials).
+- **Secrets**: apps get their connection strings from `<namespace>--<component>`, see each app's
+  `HARDENING.md` for the keys.
+
+The appliance does all of this by itself from `sandbox.env`.
 
 ## Checking the sandbox
 
@@ -164,8 +170,8 @@ repository. See [sandbox-verification.md](sandbox-verification.md).
 - The work folder (`--work-dir`, default `.work/org`) is mode 700 and clones are deleted after each
   repository unless `--keep-work`. A `--cache-dir` is mode 700 too, marked with a
   `.containerizer-org-cache` file, and the tool refuses to use (or prune) a non-empty folder without it.
-- Nothing secret is written to the output repository: the generated manifests reference Secrets via
-  External Secrets, and build logs are not copied.
+- Nothing secret is written to the output repository: there is no Secret object in it, every credential
+  is an ExternalSecret, and build logs are not copied.
 
 ## Running it from a pipeline
 

@@ -611,7 +611,7 @@ def main(argv=None) -> int:
                    "credentials from REGISTRY_USERNAME / REGISTRY_PASSWORD or an existing docker login")
     s.add_argument("--tag", help="image tag (default 1.<yyyymmdd>.<hhmm> of the run, semver for image automation)")
     s.add_argument("--no-push-images", action="store_true", help="build and gate, but do not push images")
-    s.add_argument("--image-pull-secret", help="add this imagePullSecret to every generated workload")
+    s.add_argument("--image-pull-secret", help="add this imagePullSecret to every generated workload (an ExternalSecret from <namespace>--cz-registry)")
     s.add_argument("--cosign-key", help="sign pushed images with cosign (key file, env://VAR or KMS URI)")
     s.add_argument("--output-repo", help="Git repository (https) the generated files are committed to")
     s.add_argument("--output-dir", help="local folder instead of --output-repo (committed when it is a Git checkout)")

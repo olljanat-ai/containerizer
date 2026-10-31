@@ -285,7 +285,70 @@ def test_own_service_account_apparmor_and_external_secrets(tmp_path):
     assert es["spec"]["secretStoreRef"]["kind"] == "ClusterSecretStore"
     assert es["spec"]["data"][0]["secretKey"] == "ConnectionStrings__Main"
     checks = {v.check for v in lint_manifests(docs)}
-    assert not checks & {"service-account", "apparmor", "plain-secret", "secret-literals"}
+    assert not checks & {"service-account", "apparmor", "plain-secret", "secret-literals", "secret-source",
+                         "external-secret-store"}
+    # remote key <namespace>--<component>, one property per key
+    app = pod["containers"][0]["name"]
+    assert es["spec"]["data"][0]["remoteRef"] == {"key": f"{es['metadata']['labels']['app.kubernetes.io/part-of']}--{app}",
+                                                  "property": "ConnectionStrings__Main"}
+
+
+def test_lint_secret_checks():
+    pod = {"automountServiceAccountToken": False, "imagePullSecrets": [{"name": "regcred"}],
+           "volumes": [{"name": "f", "secret": {"secretName": "files"}},
+                       {"name": "p", "projected": {"sources": [{"secret": {"name": "proj"}}]}}],
+           "containers": [{"name": "c", "env": [{"name": "A", "valueFrom": {"secretKeyRef": {"name": "env", "key": "A"}}}],
+                           "envFrom": [{"secretRef": {"name": "bulk"}}]}]}
+    deploy = {"kind": "Deployment", "metadata": {"name": "w"}, "spec": {"template": {"metadata": {}, "spec": pod}}}
+    es = lambda n, **spec: {"kind": "ExternalSecret", "metadata": {"name": n},
+                            "spec": {"secretStoreRef": {"kind": "ClusterSecretStore", "name": "app-secrets"}, **spec}}
+    missing = {v.message.split()[1] for v in lint_manifests([deploy]) if v.check == "secret-source"}
+    assert missing == {"regcred", "files", "proj", "env", "bulk"}
+    produced = [es("files"), es("x", target={"name": "proj"}), es("env"), es("bulk")]
+    left = [v for v in lint_manifests([deploy] + produced, provided={"regcred"}) if v.check == "secret-source"]
+    assert left == [] and all(v.severity == "error" for v in lint_manifests([deploy]) if v.check == "secret-source")
+    # a plain Secret, a store in the app, an ExternalSecret without a store or with a literal in its template
+    bad = [{"kind": "Secret", "metadata": {"name": "s"}, "stringData": {"k": ""}},
+           {"kind": "ClusterSecretStore", "metadata": {"name": "mine"}},
+           {"kind": "ExternalSecret", "metadata": {"name": "nostore"}, "spec": {}},
+           es("lit", target={"template": {"data": {"Password": "hunter2", "url": "https://x", "Token": "{{ .t }}"}}})]
+    got = {(v.check, v.target) for v in lint_manifests(bad)}
+    assert ("plain-secret", "Secret/s") in got and ("external-secret-store", "ClusterSecretStore/mine") in got
+    assert ("external-secret-store", "ExternalSecret/nostore") in got
+    assert [v.message for v in lint_manifests(bad) if v.target == "ExternalSecret/lit"] == [
+        "template key Password carries a literal value; read it from the store"]
+    # a generator (devdb passwords) needs no store
+    gen = {"kind": "ExternalSecret", "metadata": {"name": "g"},
+           "spec": {"dataFrom": [{"sourceRef": {"generatorRef": {"kind": "Password", "name": "g"}}}]}}
+    assert not lint_manifests([gen])
+
+
+def test_secret_store_per_provider(monkeypatch):
+    from containerizer import eso
+    docs = eso.secret_store()
+    assert [d["kind"] for d in docs] == ["Namespace", "ResourceQuota", "ClusterSecretStore"]
+    ns, quota, store = docs
+    assert ns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "restricted"
+    assert quota["spec"]["hard"] == {"pods": "0"}
+    k8s = store["spec"]["provider"]["kubernetes"]
+    # referent auth: no namespace, so ESO uses the reader of each ExternalSecret's own namespace
+    assert k8s["auth"] == {"serviceAccount": {"name": "app-secrets-reader"}}
+    assert k8s["server"]["caProvider"]["namespace"] == k8s["remoteNamespace"] == "containerizer-secrets"
+    for p, auth in (("vault", lambda s: s["auth"]["kubernetes"]["serviceAccountRef"]),
+                    ("azurekv", lambda s: s["serviceAccountRef"]),
+                    ("aws", lambda s: s["auth"]["jwt"]["serviceAccountRef"])):
+        monkeypatch.setenv("CONTAINERIZER_SECRET_STORE", p)
+        [store] = eso.secret_store()
+        spec = store["spec"]["provider"][p]
+        assert "namespace" not in auth(spec) and auth(spec)["name"] == "app-secrets-reader"
+        assert "readerAnnotations" not in spec
+        assert eso.store_access("shop", ["shop--web"]) == []          # access is granted outside the cluster
+    sa = eso.reader_service_account("shop")
+    assert sa["metadata"]["annotations"]["eks.amazonaws.com/role-arn"].endswith("role/app-secrets-shop")
+    monkeypatch.setenv("CONTAINERIZER_SECRET_STORE", "plaintext")
+    import pytest
+    with pytest.raises(ValueError):
+        eso.secret_store()
 
 
 def test_kubernetes_api_client_gets_token_and_empty_role(tmp_path):
@@ -349,3 +412,12 @@ def test_gitops_hardening_keeps_platform_policies_out_of_sync(tmp_path):
     assert proj["spec"]["clusterResourceWhitelist"] == [{"group": "", "kind": "Namespace"}]
     assert {"group": "", "kind": "Secret"} not in proj["spec"]["namespaceResourceWhitelist"]
     assert proj["spec"]["sourceNamespaces"] == []
+    # the store reader is platform-owned on Flux (the source's ExternalSecret needs it before the first sync)
+    assert ("ServiceAccount", "app-secrets-reader") in {(d["kind"], d["metadata"]["name"]) for d in tenant}
+    assert "ServiceAccount" in deleted
+    # kinds without a spec stay without one (strict field validation rejects `spec` on them)
+    assert not [d for d in tenant if d["kind"] in ("ServiceAccount", "Role", "RoleBinding") and "spec" in d]
+    store = list(_y.safe_load_all((out / "cluster/secret-store.yaml").read_text()))
+    assert {d["kind"] for d in store} == {"Namespace", "ResourceQuota", "ClusterSecretStore", "Role", "RoleBinding"}
+    md = (out / "HARDENING.md").read_text()
+    assert "| Each namespace reads only its own keys from the secret store | cluster action |" in md

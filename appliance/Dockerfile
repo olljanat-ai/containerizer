@@ -54,6 +54,16 @@ ADD --chmod=0644 --checksum=sha256:a8c838ccd9be5d30eba9df87cd229b7c4eb80c0049fba
 ADD --chmod=0755 --checksum=sha256:424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa \
     https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64 /usr/bin/cosign
 RUN ln -s k3s /usr/bin/kubectl && ln -s k3s /usr/bin/crictl
+# External Secrets Operator Helm chart 2.14.0 (ghcr.io OCI artifact, fetched by its content digest and
+# checked), served to the k3s Helm controller from the API server (static/charts); see
+# /var/lib/rancher/k3s/server/manifests/external-secrets.yaml
+ARG ESO_CHART=external-secrets/charts/external-secrets
+ARG ESO_CHART_DIGEST=sha256:0a6d9e91b1ff50adfdbf24b50b582babfa7c5b7df42b21974ca4b3fb88ee5e34
+RUN set -eu; mkdir -p /var/lib/rancher/k3s/server/static/charts; \
+    f=/var/lib/rancher/k3s/server/static/charts/external-secrets-2.14.0.tgz; \
+    token=$(curl -fsS "https://ghcr.io/token?scope=repository:${ESO_CHART}:pull" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p'); \
+    curl -fsSL -H "Authorization: Bearer ${token}" -o "$f" "https://ghcr.io/v2/${ESO_CHART}/blobs/${ESO_CHART_DIGEST}"; \
+    echo "${ESO_CHART_DIGEST#sha256:}  $f" | sha256sum -c -; chmod 0644 "$f"
 
 COPY --from=elemental /elemental /usr/bin/elemental
 
