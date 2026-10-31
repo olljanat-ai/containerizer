@@ -39,6 +39,7 @@ nav:
   - Running at scale:
       - Whole organization: organization-run.md
       - Scheduled scans: scheduled-scans.md
+      - Source control tokens and the LLM: source-control.md
       - Sandbox verification: sandbox-verification.md
       - Dev databases: dev-databases.md
   - Results and review:
