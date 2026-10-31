@@ -15,7 +15,7 @@ import sys
 from collections import Counter
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 RATINGS = ["A", "B", "C", "D", "E"]
 RATING_TITLE = {"A": "Lift and shift", "B": "Minor refactoring", "C": "Major refactoring", "D": "Partial",
@@ -442,6 +442,18 @@ HEADERS = {
 }
 
 
+def _keep_query(path: str, q: dict) -> str:
+    """The validated filters of a results page, kept through sign-in and written to the access log."""
+    if path == "/trends":
+        from .trends import parse_query
+        rng, bu, product = parse_query(q)
+        return urlencode([(k, v) for k, v in (("range", rng), ("bu", bu), ("product", product)) if v is not None])
+    if path == "/":
+        bu = q.get("bu", [None])[0]
+        return f"bu={bu}" if bu and re.fullmatch(r"\d{1,9}|none", bu) else ""
+    return ""
+
+
 def make_handler(connect, admin=None):
     """`connect()` returns a reader connection for one request; `admin` is an admin.Admin or None."""
 
@@ -478,7 +490,7 @@ def make_handler(connect, admin=None):
                 if n > 64 * 1024:
                     return self._send(413, page("Too large", "<h1>Request too large</h1>"))
                 body = self.rfile.read(n)
-            r = admin.handle(method, u.path, u.query, self.headers, body)
+            r = admin.handle(method, u.path, u.query, self.headers, body, self.client_address[0])
             return self._send(r.status, r.body, r.ctype, head, r.headers, forms=True)
 
         def _api(self, method: str, head: bool = False):
@@ -523,6 +535,15 @@ def make_handler(connect, admin=None):
                 if admin and admin.handles(u.path):
                     return self._admin("GET", head)
                 nav = admin.nav(self.headers) if admin else ""
+                m = re.fullmatch(r"/app/(\d{1,9})", u.path)
+                if admin and (u.path in ("/", "/trends") or m):    # sign-in first when CONTAINERIZER_VIEWERS is set
+                    keep = _keep_query(u.path, parse_qs(u.query))
+                    stop, s = admin.gate(self.headers, u.path, keep)
+                    if stop:
+                        return self._send(stop.status, stop.body, stop.ctype, head, stop.headers, forms=True)
+                    if s and not head and admin.viewers_required:
+                        admin.log_access(s.user, s.name, "view", u.path + ("?" + keep if keep else ""),
+                                         int(m[1]) if m else None, self.client_address[0])
                 if u.path == "/trends":
                     from . import trends
                     rng, bu, product = trends.parse_query(parse_qs(u.query))
@@ -534,7 +555,6 @@ def make_handler(connect, admin=None):
                     finally:
                         conn.close()
                     return self._send(200, trends.render_trends(data, rng, bu, product, nav), head=head, forms=bool(nav))
-                m = re.fullmatch(r"/app/(\d{1,9})", u.path)
                 if u.path == "/" or m:
                     conn = connect()
                     try:
@@ -590,7 +610,9 @@ def serve(cs: str | None, host: str = "127.0.0.1", port: int = 8080) -> int:
         print(f"error: {ex}", file=sys.stderr)
         return 3
     httpd = ThreadingHTTPServer((host, port), make_handler(lambda: connect(cs), admin))
-    print(f"containerizer results UI on http://{host}:{port}/ (results read-only without sign-in; "
+    print(f"containerizer results UI on http://{host}:{port}/ ("
+          + ("results behind sign-in" + (", access logged" if admin.cfg.view_audit else "") if admin and admin.viewers_required
+             else "results read-only without sign-in") + "; "
           + (f"admin pages behind sign-in at {admin.cfg.public_url}/admin" if admin else "admin pages off: no sign-in configured")
           + ("; JSON API at /api/v1)" if admin and admin.api else ")"))
     try:

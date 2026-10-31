@@ -12,6 +12,8 @@ main obstacles and, for every component, what needs to change, why, and where to
 - Scripts and other tools can do the same through a [JSON API](#api) with OAuth access tokens.
 - Every change to that mapping is kept in an [audit log](#change-history-audit): who, when, what
   before and after.
+- Optionally, the results pages need [sign-in too](#sign-in-for-the-results-pages-optional), and an
+  [access log](#access-log-optional) records who signed in and which pages they opened.
 
 ```
 BusinessUnit 1─* Product 1─* Application 1─* Component            administrators / scan
@@ -19,6 +21,7 @@ BusinessUnit 1─* Product 1─* Application 1─* Component            administ
                                               1─* ComponentAssessment
                                               1─* Finding            why, fix, references
 AuditLog                                                             every mapping change
+AccessLog                                                            who looked at what (optional)
 ```
 
 Everything lives in **one dedicated schema**, `containerizer` by default, and the database roles are
@@ -210,7 +213,8 @@ reader role can select (schema version 3; run `db init` after upgrading).
 
 </details>
 
-The results pages need no sign-in and only read (through the reader login). Pages are rendered on the
+The results pages need no sign-in unless you [turn it on](#sign-in-for-the-results-pages-optional),
+and only read (through the reader login). Pages are rendered on the
 server without JavaScript; all text is escaped; responses carry a strict Content-Security-Policy
 (`default-src 'none'`), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: same-origin` and
 `no-store`; errors are logged on the server and never shown. Run it behind a TLS-terminating reverse
@@ -261,6 +265,30 @@ Every form carries a per-session CSRF token and cross-site posts are refused by 
 only same-site paths are followed. HTTPS is required for the issuer and the public URL (plain http only
 for `localhost`), and on https the UI sends HSTS. Sessions are kept in the server's memory: run one
 instance, and a restart signs everyone out.
+
+## Sign-in for the results pages (optional)
+
+By default anyone who can reach the web UI can read the results. To limit that to named people, set
+`CONTAINERIZER_VIEWERS` next to the [admin sign-in settings](#admin-pages); it uses the same identity
+provider and app registration, so nothing new is registered.
+
+| Variable | Meaning |
+| --- | --- |
+| `CONTAINERIZER_VIEWERS` | Who may see the results, comma separated, with the same rules as `CONTAINERIZER_ADMINS` (`group:`, `role:`, `email:`, `domain:`, `sub:`). Administrators may always see them. Empty (the default): no sign-in for the results pages. |
+| `CONTAINERIZER_VIEW_AUDIT` | `true` to record sign-ins and page views in the [access log](#access-log-optional). Needs `CONTAINERIZER_VIEWERS`. Default `false`. |
+
+With it set, opening any results page (`/`, `/app/<id>`, `/trends`) without a session sends the browser straight
+to the identity provider, with no sign-in page in between, and back to the page that was asked for
+after sign-in. Users the provider signs in who match neither list get a "not allowed" page and see no
+results; the database is not read for them. Only `/healthz` and the style sheet stay open. Signed-in
+users see their name and a **Sign out** button at the top. The [API](#api) is not affected: it always
+needs an access token.
+
+With **Microsoft Entra ID**, the simplest set-up is a second app role, for example
+`Containerizer.Read`, assigned to the groups that may read the results:
+`CONTAINERIZER_VIEWERS=role:Containerizer.Read`. To let everyone in your organisation in, assign the
+role to an all-employees group, or turn on *Assignment required* for the enterprise application and
+assign the role to the users and groups who need it.
 
 ## API
 
@@ -344,4 +372,46 @@ database owners can, so forward the table to your SIEM if it must be tamper-proo
 -- who changed what in the last 30 days
 SELECT ChangedAt, COALESCE(ChangedByName, ChangedBy) AS Who, Via, TableName, RowName, Action, OldValues, NewValues
 FROM containerizer.AuditLog WHERE ChangedAt > DATEADD(day, -30, SYSUTCDATETIME()) ORDER BY ChangedAt DESC;
+```
+
+## Access log (optional)
+
+With `CONTAINERIZER_VIEW_AUDIT=true` (and [sign-in for the results pages](#sign-in-for-the-results-pages-optional)),
+the web UI writes one row to `containerizer.AccessLog` for:
+
+- every **sign-in** (`sign-in`), and every sign-in of someone who is not on the viewer or admin list
+  (`sign-in refused`);
+- every **results page opened** (`view`): the overview (with the business unit filter, if one was
+  used), the trends page (with its range and filters) or an application's page, with its
+  `ApplicationId`;
+- every **sign-out** (`sign-out`).
+
+Each row has **At** (UTC), **UserName** (e-mail or user name, as in the change history),
+**DisplayName**, **Event**, **Path**, **ApplicationId**, **ClientAddress** (the address the request
+came from; behind a reverse proxy that is the proxy) and **DbLogin**. The admin pages and the API are
+not in this log: changes are in the [change history](#change-history-audit), and admin page views are
+not recorded.
+
+Administrators see it on the admin pages under **Access log**: the latest 200 entries, and, by
+clicking a person or "who else" next to an application, everything one person opened or everyone who
+opened one application.
+
+![Access log: who signed in, refused sign-ins, and which pages they opened](images/admin-access-log.png)
+
+The web UI writes the log through its admin login, which may only insert and read it; no role can
+change or delete rows. If a row cannot be written, the page is not shown (an error instead), so a
+view is never left unrecorded. Like the change history, forward it to your SIEM if it must be
+tamper-proof.
+
+The access log is personal data: tell users that their access is recorded, and keep it only as long
+as your policy says; removing old rows needs a database owner (second query below).
+
+```sql
+-- who opened an application's results in the last 30 days
+SELECT l.At, COALESCE(l.DisplayName, l.UserName) AS Who, COALESCE(a.DisplayName, a.Name) AS Application
+FROM containerizer.AccessLog l JOIN containerizer.Application a ON a.ApplicationId = l.ApplicationId
+WHERE l.Event = N'view' AND l.At > DATEADD(day, -30, SYSUTCDATETIME()) ORDER BY l.At DESC;
+
+-- retention: delete entries older than 400 days (database owner)
+DELETE containerizer.AccessLog WHERE At < DATEADD(day, -400, SYSUTCDATETIME());
 ```

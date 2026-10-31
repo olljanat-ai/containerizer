@@ -98,8 +98,9 @@ def idp():
     i.httpd.shutdown()
 
 
-def cfg(idp, public, admins=("group:cz-admins",)):
-    c = OidcConfig(issuer=idp.issuer, client_id="cz", client_secret="s3cret", public_url=public, admins=list(admins))
+def cfg(idp, public, admins=("group:cz-admins",), viewers=(), view_audit=False):
+    c = OidcConfig(issuer=idp.issuer, client_id="cz", client_secret="s3cret", public_url=public, admins=list(admins),
+                   viewers=list(viewers), view_audit=view_audit)
     c.check()
     return c
 
@@ -130,6 +131,23 @@ def test_config_is_checked(env, msg):
     with pytest.raises(OidcError, match=msg):
         OidcConfig.from_env(env)
     assert OidcConfig.from_env({}) is None
+
+
+BASE_ENV = {"CONTAINERIZER_OIDC_ISSUER": "https://login.example.com", "CONTAINERIZER_OIDC_CLIENT_ID": "c",
+            "CONTAINERIZER_PUBLIC_URL": "https://cz.example.com", "CONTAINERIZER_ADMINS": "group:g"}
+
+
+def test_viewer_config():
+    assert OidcConfig.from_env(BASE_ENV).viewers == [] and not OidcConfig.from_env(BASE_ENV).view_audit
+    c = OidcConfig.from_env({**BASE_ENV, "CONTAINERIZER_VIEWERS": "group:v, domain:contoso.com",
+                             "CONTAINERIZER_VIEW_AUDIT": "true"})
+    assert c.viewers == ["group:v", "domain:contoso.com"] and c.view_audit
+    with pytest.raises(OidcError, match="needs CONTAINERIZER_VIEWERS"):
+        OidcConfig.from_env({**BASE_ENV, "CONTAINERIZER_VIEW_AUDIT": "true"})
+    with pytest.raises(OidcError, match="true or false"):
+        OidcConfig.from_env({**BASE_ENV, "CONTAINERIZER_VIEWERS": "group:v", "CONTAINERIZER_VIEW_AUDIT": "maybe"})
+    with pytest.raises(OidcError, match="CONTAINERIZER_VIEWERS: unknown rule"):
+        OidcConfig.from_env({**BASE_ENV, "CONTAINERIZER_VIEWERS": "everyone"})
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +276,39 @@ def test_sign_in_flow_and_authorization(idp):
         s, h, _ = b.go("/login?next=//evil.example.com/")
         back = idp.authorize(h["Location"])
         assert b.go(back)[1]["Location"] == "/admin"
+    finally:
+        idp.claims = {}
+        httpd.shutdown()
+
+
+def test_results_pages_need_sign_in_when_viewers_are_set(idp):
+    port = free_port()
+    base = f"http://127.0.0.1:{port}"
+
+    def no_db():
+        raise AssertionError("no database access before authorization")
+    adm = adminmod.Admin(cfg(idp, base, viewers=["group:cz-viewers"]), no_db)
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), webui.make_handler(no_db, adm))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        b = Browser(base, idp)
+        # straight to the identity provider, no sign-in page in between
+        for path in ("/", "/app/7", "/?bu=3", "/trends?range=3m"):
+            s, h, _ = b.go(path)
+            assert s == 303 and h["Location"].startswith(idp.issuer + "/authorize"), path
+        assert b.go("/static/app.css")[0] == 200 and b.go("/healthz")[0] == 200
+        # signed in, but neither a viewer nor an admin
+        idp.claims = {"email": "eve@example.com", "groups": ["other"]}
+        s, h, body = b.follow("/app/7")
+        assert s == 403 and "not been given access" in body and "form-action 'self'" in h["Content-Security-Policy"]
+        # sign-out shows a page instead of bouncing back to the provider
+        s, _, body = b.go("/logout", {"csrf": b.csrf(body)})
+        assert s == 200 and "signed out" in body
+        # the page asked for is kept through the sign-in, the query string only for the business unit filter
+        s, h, _ = b.go("/?bu=3&x=<script>")
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(h["Location"]).query)
+        back = idp.authorize(h["Location"])
+        assert b.go(back)[1]["Location"] == "/?bu=3" and q["response_type"] == ["code"]
     finally:
         idp.claims = {}
         httpd.shutdown()
@@ -457,6 +508,81 @@ def test_api_updates_are_audited(idp, tmp_path):
         assert app_change["changedBy"] == "client:automation" and app_change["via"] == "API"
         assert app_change["newValues"]["Product"] == "Billing" and app_change["dbLogin"] == "cz_p_admin"
     finally:
+        httpd.shutdown()
+        m = sqlstore.connect(re.sub(r"Database=\w+", "Database=master", cs), autocommit=True)
+        m.cursor().execute(f"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]")
+        m.close()
+
+
+@needs_sql
+def test_viewer_sign_in_and_access_log(idp, tmp_path):
+    import uuid
+    name = "czview_" + uuid.uuid4().hex[:8]
+    cs = re.sub(r"(?i)(database|initial\s*catalog)\s*=[^;]*", f"Database={name}", ADMIN_SQL)
+    sqlstore.create_database(cs)
+    conn = sqlstore.connect(cs)
+    sqlstore.init_schema(conn)
+    for login, role in (("cz_v_reader", "reader"), ("cz_v_writer", "writer"), ("cz_v_admin", "admin")):
+        sqlstore.create_login(conn, login, "Test-Passw0rd!x", role)
+    conn.close()
+
+    def as_(login):
+        return re.sub(r"(?i)(user\s*id|uid)\s*=[^;]*", f"User Id={login}", cs)
+    from containerizer.assess import assess
+    web_app(tmp_path / "shop")
+    sqlstore.store_results(as_("cz_v_writer"), [assess(tmp_path / "shop")], [tmp_path / "shop"], password="Test-Passw0rd!x")
+    port = free_port()
+    base = f"http://127.0.0.1:{port}"
+    adm = adminmod.Admin(cfg(idp, base, viewers=["group:cz-viewers"], view_audit=True),
+                         lambda: sqlstore.connect(as_("cz_v_admin"), "Test-Passw0rd!x"))
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), webui.make_handler(
+        lambda: sqlstore.connect(as_("cz_v_reader"), "Test-Passw0rd!x"), adm))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        viewer = Browser(base, idp)
+        idp.claims = {"email": "bob@example.com", "name": "Bob Viewer", "groups": ["cz-viewers"]}
+        s, _, body = viewer.follow("/")
+        assert s == 200 and "shop" in body and "Bob Viewer" in body and "Sign out" in body
+        app = re.search(r"href='/app/(\d+)'", body)[1]
+        assert viewer.follow(f"/app/{app}")[0] == 200
+        assert viewer.follow("/?bu=none")[0] == 200
+        assert viewer.follow("/trends?range=all&x=1")[0] == 200
+        assert viewer.follow("/admin/access")[0] == 403              # a viewer is not an admin
+        assert viewer.go("/logout", {"csrf": viewer.csrf(viewer.follow("/")[2])})[0] == 200
+        outsider = Browser(base, idp)
+        idp.claims = {"email": "eve@example.com", "name": "Eve", "groups": ["other"]}
+        assert outsider.follow("/")[0] == 403
+        boss = Browser(base, idp)
+        idp.claims = {"email": "jane@example.com", "name": "Jane Admin", "groups": ["cz-admins"]}
+        assert boss.follow("/")[0] == 200                            # admins see the results without being viewers
+        s, _, body = boss.follow(f"/admin/access?app={app}")
+        assert s == 200 and "Bob Viewer" in body and "Jane Admin" not in body.split("<tbody>")[1]
+        s, _, body = boss.follow("/admin/access")
+        assert "Sign-in refused" in body and "eve@example.com" in body and "Signed out" in body
+        assert "Overview, one business unit" in body and "127.0.0.1" in body
+        c = sqlstore.connect(cs)
+        cur = c.cursor(as_dict=True)
+        cur.execute("SELECT UserName, Event, Path, ApplicationId FROM containerizer.AccessLog ORDER BY AccessId")
+        log = [(r["UserName"], r["Event"], r["Path"], r["ApplicationId"]) for r in cur.fetchall()]
+        c.close()
+        assert log[:7] == [("bob@example.com", "sign-in", None, None), ("bob@example.com", "view", "/", None),
+                           ("bob@example.com", "view", f"/app/{app}", int(app)), ("bob@example.com", "view", "/?bu=none", None),
+                           ("bob@example.com", "view", "/trends?range=all", None), ("bob@example.com", "view", "/", None),
+                           ("bob@example.com", "sign-out", None, None)]
+        assert ("eve@example.com", "sign-in refused", None, None) in log
+        assert not any(u == "eve@example.com" and ev == "view" for u, ev, _, _ in log)
+        # the log is append-only for the web UI's login, and other logins cannot write it
+        a = sqlstore.connect(as_("cz_v_admin"), "Test-Passw0rd!x")
+        for stmt in ("UPDATE cz.AccessLog SET UserName = N'x'", "DELETE cz.AccessLog"):
+            with pytest.raises(Exception, match="(?i)permission"):
+                a.cursor().execute(stmt)
+        a.close()
+        r = sqlstore.connect(as_("cz_v_reader"), "Test-Passw0rd!x")
+        with pytest.raises(Exception, match="(?i)permission"):
+            r.cursor().execute("INSERT cz.AccessLog (UserName, Event) VALUES (N'x', N'view')")
+        r.close()
+    finally:
+        idp.claims = {}
         httpd.shutdown()
         m = sqlstore.connect(re.sub(r"Database=\w+", "Database=master", cs), autocommit=True)
         m.cursor().execute(f"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]")

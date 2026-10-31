@@ -8,6 +8,7 @@
 --   BusinessUnit 1-* Product 1-* Application 1-* Component                     (who owns what)
 --   Application 1-* ApplicationAssessment 1-* ComponentAssessment, Finding     (one per scan)
 --   AuditLog: every change to BusinessUnit, Product and the mapping of Application, with who made it
+--   AccessLog: who signed in to the web UI and what they looked at (optional)
 --
 -- The scan fills Application, Component and the assessment tables. People maintain business units,
 -- products and the application mapping in the admin pages of the web UI; a scan never overwrites them.
@@ -265,6 +266,28 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_AuditLog_Row' AND obj
 CREATE INDEX IX_AuditLog_Row ON [${schema}].AuditLog (TableName, RowId, ChangedAt DESC);
 GO
 
+-- Access log (optional, CONTAINERIZER_VIEW_AUDIT=true): who signed in to the web UI and which results
+-- pages they opened. Written by the web UI through its admin login; nobody is granted UPDATE or DELETE.
+IF OBJECT_ID(N'[${schema}].AccessLog', N'U') IS NULL
+CREATE TABLE [${schema}].AccessLog (
+    AccessId      bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_AccessLog PRIMARY KEY,
+    At            datetime2(3)  NOT NULL CONSTRAINT DF_AccessLog_At DEFAULT SYSUTCDATETIME(),
+    UserName      nvarchar(256) NOT NULL,          -- e-mail / UPN, or sub:<subject id>
+    DisplayName   nvarchar(256) NULL,
+    Event         nvarchar(20)  NOT NULL,          -- sign-in, sign-in refused, sign-out, view
+    Path          nvarchar(400) NULL,              -- page opened (no query string except the business unit filter)
+    ApplicationId int           NULL,              -- the application whose page was opened
+    ClientAddress nvarchar(64)  NULL,              -- address the request came from (a proxy, if there is one)
+    DbLogin       nvarchar(256) NOT NULL CONSTRAINT DF_AccessLog_DbLogin DEFAULT ORIGINAL_LOGIN()
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_AccessLog_At' AND object_id = OBJECT_ID(N'[${schema}].AccessLog'))
+CREATE INDEX IX_AccessLog_At ON [${schema}].AccessLog (At DESC) INCLUDE (UserName, Event, ApplicationId);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_AccessLog_User' AND object_id = OBJECT_ID(N'[${schema}].AccessLog'))
+CREATE INDEX IX_AccessLog_User ON [${schema}].AccessLog (UserName, At DESC);
+GO
+
 CREATE OR ALTER FUNCTION [${schema}].fnAuditWho()
 RETURNS TABLE AS RETURN
 SELECT COALESCE(CAST(SESSION_CONTEXT(N'containerizer.user') AS nvarchar(256)), ORIGINAL_LOGIN()) AS ChangedBy,
@@ -369,10 +392,11 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].Product TO [${schema}_admin]
 GRANT SELECT ON [${schema}].Application TO [${schema}_admin];
 GRANT UPDATE ON [${schema}].Application (ProductId, DisplayName, Description, Owner, Retired) TO [${schema}_admin];
 GRANT SELECT ON [${schema}].AuditLog TO [${schema}_admin];
+GRANT SELECT, INSERT ON [${schema}].AccessLog TO [${schema}_admin];
 IF IS_ROLEMEMBER(N'${schema}_reader', N'${schema}_admin') = 0 ALTER ROLE [${schema}_reader] ADD MEMBER [${schema}_admin];
 GO
 
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 2) INSERT [${schema}].SchemaVersion (Version) VALUES (2);
-GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 3) INSERT [${schema}].SchemaVersion (Version) VALUES (3);
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 4) INSERT [${schema}].SchemaVersion (Version) VALUES (4);
 GO

@@ -1,4 +1,5 @@
-"""Admin pages of the web UI: business units, products, the application mapping, and the audit log.
+"""Admin pages of the web UI: business units, products, the application mapping, the audit log and,
+when CONTAINERIZER_VIEW_AUDIT is on, the access log. Also the optional sign-in gate of the results pages.
 
 Behind OpenID Connect sign-in (oidc.py); only users on the CONTAINERIZER_ADMINS allow-list get in.
 Every change goes through a separate database login in the <schema>_admin role, with the signed-in
@@ -70,24 +71,65 @@ class Admin:
     def nav(self, headers) -> str:
         s = self.session(headers)
         if s and s.admin:
-            return f"<a href='/admin'>Admin</a> · {e(s.name)}"
+            return f"<a href='/admin'>Admin</a> · {e(s.name)} {self._logout_form(s)}"
+        if s:
+            return f"{e(s.name)} {self._logout_form(s)}"
         return "<a href='/login'>Sign in</a>"
+
+    # -- sign-in for the results pages (CONTAINERIZER_VIEWERS) ----------------------------------
+
+    @property
+    def viewers_required(self) -> bool:
+        return bool(self.cfg.viewers)
+
+    def gate(self, headers, path: str, query: str) -> tuple[Response | None, Session | None]:
+        """For a results page: (response to send instead, None) or (None, the session if any)."""
+        s = self.session(headers)
+        if not self.viewers_required:
+            return None, s
+        if not s:                           # straight to the identity provider, no sign-in page in between
+            return self.login(path + (("?" + query) if query else "")), None
+        if not s.viewer:
+            return Response(403, page("Not allowed", f"<h1>Not allowed</h1><p>You are signed in as {e(s.user)}, "
+                                      "but you have not been given access to the containerization results. Ask an "
+                                      "administrator to add you.</p>" + self._logout_form(s))), None
+        return None, s
+
+    def log_access(self, user: str, name: str | None, event: str, path: str | None = None,
+                   app_id: int | None = None, addr: str | None = None) -> None:
+        """One row in AccessLog when CONTAINERIZER_VIEW_AUDIT is on. Errors propagate: if the access
+        cannot be recorded, the page is not shown (fail closed)."""
+        if not self.cfg.view_audit:
+            return
+        conn = self.connect_admin()
+        try:
+            conn.cursor().execute("INSERT cz.AccessLog (UserName, DisplayName, Event, Path, ApplicationId, ClientAddress) "
+                                  "VALUES (%s, %s, %s, %s, %s, %s)",
+                                  (user[:256], (name or "")[:256] or None, event, (path or "")[:400] or None, app_id,
+                                   (addr or "")[:64] or None))
+            conn.commit()
+        finally:
+            conn.close()
 
     # -- routing --------------------------------------------------------------------------------
 
     def handles(self, path: str) -> bool:
         return path in ("/login", "/logout", "/auth/callback") or path == "/admin" or path.startswith("/admin/")
 
-    def handle(self, method: str, path: str, query: str, headers, body: bytes) -> Response:
+    def handle(self, method: str, path: str, query: str, headers, body: bytes, addr: str | None = None) -> Response:
         if path == "/login" and method == "GET":
             return self.login(parse_qs(query).get("next", ["/admin"])[0])
         if path == "/auth/callback" and method == "GET":
-            return self.callback(headers, parse_qs(query))
+            return self.callback(headers, parse_qs(query), addr)
         s = self.session(headers)
         if path == "/logout" and method == "POST":
             form = self._form(body)
             if s and self._csrf_ok(s, form, headers):
                 self.sessions.end(self._cookies(headers.get("Cookie")).get(self.cookie))
+                self.log_access(s.user, s.name, "sign-out", addr=addr)
+                if self.viewers_required:   # "/" would send them straight back to the provider
+                    return Response(200, page("Signed out", "<h1>You are signed out</h1><p><a href='/'>Sign in again</a></p>"),
+                                    [self._set_cookie(self.cookie, "", 0)])
             return redirect("/", [self._set_cookie(self.cookie, "", 0)])
         if not s:
             return redirect("/login?" + urlencode({"next": path + (("?" + query) if query else "")}))
@@ -138,6 +180,8 @@ class Admin:
             return self.list_named(conn, s, table, flash)
         if kind == "audit" and method == "GET":
             return self.audit(conn, s, q)
+        if kind == "access" and method == "GET" and self.cfg.view_audit:
+            return self.access(conn, s, q)
         return Response(404, page("Not found", "<h1>Not found</h1>"))
 
     # -- sign-in --------------------------------------------------------------------------------
@@ -154,7 +198,7 @@ class Admin:
                                       "<p>The identity provider could not be reached. The details are in the server log.</p>"))
         return redirect(url, [self._set_cookie(self.login_cookie, key, 600)])
 
-    def callback(self, headers, q: dict) -> Response:
+    def callback(self, headers, q: dict, addr: str | None = None) -> Response:
         clear = self._set_cookie(self.login_cookie, "", 0)
         pending = self.sessions.finish(self._cookies(headers.get("Cookie")).get(self.login_cookie))
         state = q.get("state", [""])[0]
@@ -174,8 +218,10 @@ class Admin:
                                       "<a href='/login'>Try again</a></p>"), [clear])
         user, name = identity(claims)
         admin = allowed(claims, self.cfg.admins)
-        print(f"sign-in: {user} admin={admin}", file=sys.stderr)
-        sid = self.sessions.create(user, name, admin)       # a new id at every sign-in (no fixation)
+        viewer = admin or (self.viewers_required and allowed(claims, self.cfg.viewers))
+        print(f"sign-in: {user} admin={admin} viewer={viewer}", file=sys.stderr)
+        self.log_access(user, name, "sign-in" if viewer or not self.viewers_required else "sign-in refused", addr=addr)
+        sid = self.sessions.create(user, name, admin, viewer)   # a new id at every sign-in (no fixation)
         return redirect(pending["next"], [clear, self._set_cookie(self.cookie, sid, 8 * 3600)])
 
     # -- forms ----------------------------------------------------------------------------------
@@ -218,7 +264,8 @@ class Admin:
     def _shell(self, s: Session, title: str, active: str, body: str, flash: str = "") -> str:
         tabs = "".join(f"<a class='chip{' on' if k == active else ''}' href='/admin/{k}'>{t}</a>"
                        for k, t in (("applications", "Applications"), ("products", "Products"),
-                                    ("business-units", "Business units"), ("audit", "Change history")))
+                                    ("business-units", "Business units"), ("audit", "Change history"))
+                       + ((("access", "Access log"),) if self.cfg.view_audit else ()))
         msg = f"<p class='note'>{e(flash)}</p>" if flash else ""
         return page(title, f"""<div class='topnav'><a href='/'>← Results</a><span>Signed in as <b>{e(s.name)}</b>
 <span class='muted'>({e(s.user)})</span> {self._logout_form(s)}</span></div>
@@ -469,6 +516,53 @@ last scanned {_d(a['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
                 f"and what changed. Changes made directly in the database are recorded too, under the database login. "
                 f"Latest 200.</p><nav class='chips'>{chips}</nav>{render_audit(self._audit_rows(conn, table))}")
         return Response(200, self._shell(s, "Change history", "audit", body))
+
+    def access(self, conn, s: Session, q: dict) -> Response:
+        user = q.get("user", [""])[0][:256]
+        app = q.get("app", [""])[0]
+        app = int(app) if re.fullmatch(r"\d{1,9}", app) else None
+        where, params = [], []
+        if user:
+            where.append("l.UserName = %s")
+            params.append(user)
+        if app is not None:
+            where.append("l.ApplicationId = %s")
+            params.append(app)
+        cur = conn.cursor(as_dict=True)
+        cur.execute("SELECT TOP (200) l.At, l.UserName, l.DisplayName, l.Event, l.Path, l.ApplicationId, l.ClientAddress, "
+                    "COALESCE(a.DisplayName, a.Name) AS AppName FROM cz.AccessLog l "
+                    "LEFT JOIN cz.Application a ON a.ApplicationId = l.ApplicationId "
+                    f"{('WHERE ' + ' AND '.join(where)) if where else ''} ORDER BY l.At DESC, l.AccessId DESC",
+                    tuple(params) or None)
+        rows = []
+        for r in cur.fetchall():
+            who = e(r["DisplayName"] or r["UserName"])
+            if r["DisplayName"] and r["DisplayName"] != r["UserName"]:
+                who += f" <span class='muted'>({e(r['UserName'])})</span>"
+            who = f"<a href='/admin/access?{urlencode({'user': r['UserName']})}'>{who}</a>"
+            if r["ApplicationId"] is not None:
+                what = (f"<a href='/app/{int(r['ApplicationId'])}'>{e(r['AppName'] or 'application ' + str(r['ApplicationId']))}</a>"
+                        f" <a class='small' href='/admin/access?app={int(r['ApplicationId'])}'>(who else)</a>")
+            elif r["Path"] and r["Path"].startswith("/?bu="):
+                what = "Overview, one business unit"
+            elif r["Path"] == "/":
+                what = "Overview"
+            elif r["Path"] and r["Path"].startswith("/trends"):
+                what = "Trends"
+            else:
+                what = e(r["Path"] or "")
+            event = {"view": "Viewed", "sign-in": "Signed in", "sign-out": "Signed out",
+                     "sign-in refused": "Sign-in refused (not on the viewer list)"}.get(r["Event"], r["Event"])
+            rows.append(f"<tr><td class='nowrap'>{_d(r['At'])}</td><td>{who}<div class='muted small'>{e(r['ClientAddress'] or '')}"
+                        f"</div></td><td>{e(event)}</td><td>{what}</td></tr>")
+        shown = ""
+        if user or app is not None:
+            shown = (" Showing " + (f"<b>{e(user)}</b>" if user else "") + (" and " if user and app is not None else "")
+                     + (f"application {app}" if app is not None else "") + ". <a href='/admin/access'>Show everyone</a>.")
+        body = (f"<p class='muted'>Who signed in to the results pages and which pages they opened. Latest 200.{shown}</p>"
+                f"<table class='audit'><thead><tr><th>When</th><th>Who</th><th>What happened</th><th>Page</th></tr></thead>"
+                f"<tbody>{''.join(rows) or '<tr><td colspan=4 class=muted>Nothing recorded.</td></tr>'}</tbody></table>")
+        return Response(200, self._shell(s, "Access log", "access", body))
 
 
 def info_link(url) -> str:
