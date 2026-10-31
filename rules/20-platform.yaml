@@ -83,18 +83,55 @@ rules:
   - id: pinvoke-kernel32
     applies_to: [dotnet]
     when:
-      code: '(DllImport|LibraryImport)\(\s*"(kernel32|kernelbase|ntdll|ole32|oleaut32|combase|psapi|iphlpapi|ws2_32|version|dbghelp|dbgeng|winmm|setupapi|wininet|winhttp|shlwapi|rpcrt4|dnsapi|wintrust|msvcrt|(api|ext)-ms-win-[\w\-]+)(\.dll)?"|(DllImport|LibraryImport)\(\s*Kernel32\b|\bDeclare\s+(Ansi\s+|Unicode\s+|Auto\s+)?(Function|Sub)\s+\w+\s+Lib\s+"(kernel32|kernelbase|ntdll|ole32|oleaut32|combase|psapi|iphlpapi|ws2_32|version|dbghelp|dbgeng|winmm|setupapi|wininet|winhttp|shlwapi|rpcrt4|dnsapi|wintrust|msvcrt|(api|ext)-ms-win-[\w\-]+)(\.dll)?"'
-      unguarded: true
+      any:
+        # a kernel32 helper (GetCurrentThreadId, GetCurrentProcess) declared next to
+        # MiniDumpWriteDump belongs to the crash-dump writer: reported with it as pinvoke-dbghelp
+        - all:
+            - code: '(DllImport|LibraryImport)\(\s*"(kernel32|kernelbase)(\.dll)?"|(DllImport|LibraryImport)\(\s*Kernel32\b|\bDeclare\s+(Ansi\s+|Unicode\s+|Auto\s+)?(Function|Sub)\s+\w+\s+Lib\s+"(kernel32|kernelbase)(\.dll)?"'
+              unguarded: true
+            - not: {code: '\bMiniDumpWriteDump\b'}
+          same_file: true
+        - code: '(DllImport|LibraryImport)\(\s*"(ntdll|ole32|oleaut32|combase|psapi|iphlpapi|ws2_32|version|winmm|setupapi|wininet|winhttp|shlwapi|rpcrt4|dnsapi|wintrust|msvcrt|(api|ext)-ms-win-[\w\-]+)(\.dll)?"|\bDeclare\s+(Ansi\s+|Unicode\s+|Auto\s+)?(Function|Sub)\s+\w+\s+Lib\s+"(ntdll|ole32|oleaut32|combase|psapi|iphlpapi|ws2_32|version|winmm|setupapi|wininet|winhttp|shlwapi|rpcrt4|dnsapi|wintrust|msvcrt|(api|ext)-ms-win-[\w\-]+)(\.dll)?"'
+          unguarded: true
     severity: refactor
     category: native
     effort: 1
     windows_container: true
     title: Win32 kernel/OLE/system DLL native calls
-    why: P/Invoke into kernel32/ole32 and other Windows system DLLs (dbghelp, winmm, wininet, shlwapi, ...) does not resolve on Linux.
+    why: P/Invoke into kernel32/ole32 and other Windows system DLLs (winmm, wininet, shlwapi, ...) does not resolve on Linux.
     fix: Replace with the managed .NET API (most kernel32 calls have one) or guard with OperatingSystem.IsWindows().
     refs:
       - https://learn.microsoft.com/en-us/dotnet/standard/native-interop/cross-platform
       - https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/quality-rules/ca1416
+
+  # dbghelp/dbgeng are the Windows debugging helpers: MiniDumpWriteDump for crash dumps,
+  # SymFromAddr & co. for symbolised stack traces. When they do not load the app loses that
+  # diagnostic, not a feature, so this is info rather than refactor (pinvoke-kernel32).
+  - id: pinvoke-dbghelp
+    applies_to: [dotnet]
+    when:
+      code: '(DllImport|LibraryImport)\(\s*"(dbghelp|dbgeng)(\.dll)?"|\bDeclare\s+(Ansi\s+|Unicode\s+|Auto\s+)?(Function|Sub)\s+\w+\s+Lib\s+"(dbghelp|dbgeng)(\.dll)?"'
+      unguarded: true
+    severity: info
+    category: native
+    effort: 0.25
+    windows_container: true
+    title: Windows debug-helper calls (crash dumps, symbols)
+    why: >-
+      P/Invoke into dbghelp.dll/dbgeng.dll, typically MiniDumpWriteDump to write a crash dump or
+      the Sym* functions to symbolise a stack trace. These DLLs do not exist on Linux, so the call
+      throws DllNotFoundException there; the application keeps working but loses that diagnostic.
+      Reported as info because it does not block containerization; make sure the call sits in a
+      try/catch or behind OperatingSystem.IsWindows(). kernel32 helpers declared in the same file
+      as MiniDumpWriteDump (GetCurrentThreadId, GetCurrentProcess) belong to the dump writer and
+      are covered by this finding instead of pinvoke-kernel32.
+    fix: >-
+      On Linux let the runtime write dumps (DOTNET_DbgEnableMiniDump=1, DOTNET_DbgMiniDumpType,
+      DOTNET_DbgMiniDumpName) or collect them with dotnet-dump; .NET stack traces are already
+      symbolised from the portable PDBs.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/core/diagnostics/collect-dumps-crash
+      - https://learn.microsoft.com/en-us/dotnet/core/diagnostics/dotnet-dump
 
   - id: pinvoke-vendor
     applies_to: [dotnet]
@@ -345,19 +382,53 @@ rules:
   - id: efs-ntfs
     applies_to: [dotnet]
     when:
-      # calls, not declarations (an interface member returning DirectorySecurity is not ACL use)
-      code: 'File\.Encrypt\(|FileSystemAclExtensions|\.(Set|Get)AccessControl\(|\bnew\s+(File|Directory)Security\(|\bFileSystemAccessRule\b|\bEFS\b'
+      # calls that set ACLs or encrypt, not declarations (an interface member returning
+      # DirectorySecurity is not ACL use); reading an ACL is efs-acl-read
+      code: 'File\.(Encrypt|Decrypt)\(|FileSystemAclExtensions\.(SetAccessControl|Create)\b|\.SetAccessControl\(|\bnew\s+FileSystemAccessRule\b|\.(Add|Set|Remove|Reset|Purge)AccessRule(Specific|All)?\(|\bEFS\b'
       unguarded: true
     severity: refactor
     category: storage
     effort: 1.5
     windows_container: true
     title: NTFS ACLs / EFS encryption
-    why: NTFS permissions and EFS encryption do not exist on Linux volumes.
+    why: >-
+      The code sets NTFS permissions (SetAccessControl, new FileSystemAccessRule) or uses EFS
+      encryption (File.Encrypt). Neither exists on Linux: the System.Security.AccessControl file APIs
+      throw PlatformNotSupportedException, so the step that hardens or encrypts files fails.
     fix: Use storage-level encryption and Kubernetes RBAC/volume permissions; drop per-file ACLs in code.
     refs:
       - https://learn.microsoft.com/en-us/dotnet/api/system.io.file.encrypt
       - https://learn.microsoft.com/en-us/dotnet/core/porting/windows-compat-pack
+
+  # Judgement call: code that only reads an ACL is nearly always a "may I write here?" probe
+  # (Umbraco's installer check, upload-folder health checks). On Linux it throws instead of
+  # answering; that breaks the probe, not the application, so it is info, not refactor.
+  - id: efs-acl-read
+    applies_to: [dotnet]
+    when:
+      all:
+        - code: '\.GetAccessControl\(|\bnew\s+(File|Directory)Security\(\s*[^)\s]|\.GetAccessRules\('
+          unguarded: true
+        - not:
+            code: 'File\.(Encrypt|Decrypt)\(|FileSystemAclExtensions\.(SetAccessControl|Create)\b|\.SetAccessControl\(|\bnew\s+FileSystemAccessRule\b|\.(Add|Set|Remove|Reset|Purge)AccessRule(Specific|All)?\(|\bEFS\b'
+            unguarded: true
+    severity: info
+    category: storage
+    effort: 0.25
+    windows_container: true
+    title: Reads NTFS permissions (ACL probe)
+    why: >-
+      The code reads a file or folder ACL (GetAccessControl, new DirectorySecurity(path, ...),
+      GetAccessRules), usually to check whether the process may write there. On Linux these APIs
+      throw PlatformNotSupportedException, so the check fails or reports "no access" even though
+      the folder is writable. Reported as info: it affects that check, not the rest of the app.
+    fix: >-
+      Probe by writing and deleting a temp file in try/catch (works on every OS), or guard the
+      ACL read with OperatingSystem.IsWindows(). In a container, grant access with the volume's
+      ownership (fsGroup / chown) instead.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/api/system.io.filesystemaclextensions
+      - https://learn.microsoft.com/en-us/dotnet/core/compatibility/unsupported-apis
 
   - id: desktop-ui
     applies_to: [dotnet]
@@ -463,8 +534,9 @@ rules:
     when:
       # a type every caller of which (in this project and the projects that reference it) creates or
       # uses only behind an OS check is the Windows branch of code that has another one: not counted
-      # (C# and VB attribute syntax; the attribute may be written fully qualified)
-      code: &supported_os_type '\[\s*assembly:\s*(System\.Runtime\.Versioning\.)?SupportedOSPlatform(Attribute)?\(\s*"windows|\[\s*(global::)?(System\.Runtime\.Versioning\.)?SupportedOSPlatform(Attribute)?\(\s*"windows[^"]*"\s*\)\s*\]\s*(\[[^\]]*\]\s*)*((public|internal|private|protected|sealed|static|partial|abstract|unsafe|readonly)\s+)*(class|struct|interface|record|enum)\b|<\s*Assembly:\s*(System\.Runtime\.Versioning\.)?SupportedOSPlatform(Attribute)?\(\s*"windows|<\s*(Global\.)?(System\.Runtime\.Versioning\.)?SupportedOSPlatform(Attribute)?\(\s*"windows[^"]*"\s*\)\s*>\s*_?\s*((Public|Friend|Private|Protected|NotInheritable|MustInherit|Partial)\s+)*(Class|Structure|Interface|Module|Enum)\b'
+      # (C# and VB attribute syntax; the attribute may be written fully qualified). An enum is not
+      # counted: its values are constants and nothing in it runs Windows code.
+      code: &supported_os_type '\[\s*assembly:\s*(System\.Runtime\.Versioning\.)?SupportedOSPlatform(Attribute)?\(\s*"windows|\[\s*(global::)?(System\.Runtime\.Versioning\.)?SupportedOSPlatform(Attribute)?\(\s*"windows[^"]*"\s*\)\s*\]\s*(\[[^\]]*\]\s*)*((public|internal|private|protected|sealed|static|partial|abstract|unsafe|readonly)\s+)*(class|struct|interface|record)\b|<\s*Assembly:\s*(System\.Runtime\.Versioning\.)?SupportedOSPlatform(Attribute)?\(\s*"windows|<\s*(Global\.)?(System\.Runtime\.Versioning\.)?SupportedOSPlatform(Attribute)?\(\s*"windows[^"]*"\s*\)\s*>\s*_?\s*((Public|Friend|Private|Protected|NotInheritable|MustInherit|Partial)\s+)*(Class|Structure|Interface|Module)\b'
       unguarded: callers
     severity: refactor
     category: os

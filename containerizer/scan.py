@@ -903,7 +903,7 @@ def reference_name(include: str) -> str:
 
 
 def _packages_config(proj_path: Path) -> dict[str, str]:
-    """NuGet packages.config of an old-style project (id -> version)."""
+    """NuGet packages.config of an old-style project, or Paket paket.references (id -> version)."""
     out: dict[str, str] = {}
     for cand in (proj_path.parent / "packages.config", proj_path.parent / f"packages.{proj_path.stem}.config"):
         if not cand.is_file():
@@ -914,7 +914,74 @@ def _packages_config(proj_path: Path) -> dict[str, str]:
                     out.setdefault(el.attrib["id"], el.attrib.get("version", ""))
         except (ET.ParseError, OSError):
             continue
+    for name in _paket_references(proj_path.parent / "paket.references"):
+        out.setdefault(name, _paket_lock(proj_path.parent).get(name.lower(), ""))
     return out
+
+
+_WIN_TOKEN_RE = re.compile(r"Windows|Win(?=[A-Z.\-_]|$)")
+
+
+def _mark_platform_twins(projects: list[Project]) -> None:
+    """PlatformTwin: for a project named with a Windows token (Duplicati.WindowsService,
+    Contoso.Win.Agent), the cross-platform executable of the same name without it
+    (Duplicati.Service): the Windows project is the Windows packaging of that program."""
+    exes = {}
+    for q in projects:
+        if q.kind_hint == "dotnet" and re.fullmatch(r"(?i)exe", q.properties.get("OutputType", "")) \
+                and not any("-windows" in t for t in q.tfms):
+            exes.setdefault(q.name.lower(), q)
+    for p in projects:
+        if p.kind_hint != "dotnet" or not _WIN_TOKEN_RE.search(p.name):
+            continue
+        twin = re.sub(r"\.{2,}", ".", _WIN_TOKEN_RE.sub("", p.name)).strip(".-_")
+        q = exes.get(twin.lower())
+        if twin and q is not None and q is not p:
+            p.properties.setdefault("PlatformTwin", q.rel)
+
+
+def _paket_references(path: Path) -> list[str]:
+    """Package ids from a Paket paket.references file (one id per line, `group` headers)."""
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+    except OSError:
+        return []
+    out = []
+    tooling = False  # build/docs/analyzer groups are not shipped with the app
+    for line in lines:
+        line = line.strip()
+        g = re.match(r"(?i)group\s+(\S+)", line)
+        if g:
+            tooling = bool(re.search(r"(?i)build|docs|fake|analy[sz]er", g.group(1)))
+            continue
+        if tooling or not line or line.startswith(("//", "#")) or re.match(r"(?i)file:", line):
+            continue
+        m = re.match(r"([A-Za-z0-9_][\w.\-]*)", line)
+        if m:
+            out.append(m.group(1))
+    return out
+
+
+_PAKET_LOCKS: dict[Path, dict[str, str]] = {}
+
+
+def _paket_lock(folder: Path) -> dict[str, str]:
+    """Resolved versions (lower-case id -> version) from the nearest paket.lock above folder."""
+    for d in (folder, *folder.parents):
+        lock = d / "paket.lock"
+        if lock in _PAKET_LOCKS:
+            return _PAKET_LOCKS[lock]
+        if lock.is_file():
+            try:
+                text = lock.read_text(errors="replace")
+            except OSError:
+                text = ""
+            vers: dict[str, str] = {}
+            for m in re.finditer(r"(?m)^    ([A-Za-z0-9_][\w.\-]*) \(([^)\s]+)", text):
+                vers.setdefault(m.group(1).lower(), m.group(2))
+            _PAKET_LOCKS[lock] = vers
+            return vers
+    return {}
 
 
 def parse_dotnet_project(path: Path, root: Path) -> Project:
@@ -1405,6 +1472,7 @@ def scan(root: str | Path) -> Repo:
             t = by_proj.get(r)
             if t is not None and t is not q:
                 t.properties.setdefault("ReferencedBy", q.rel)
+    _mark_platform_twins(projects)
     _mark_build_time_runs(projects, files, root)
 
     readme = ""

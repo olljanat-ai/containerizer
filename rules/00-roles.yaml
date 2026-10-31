@@ -86,6 +86,31 @@ rules:
                 - code: ':\s*NukeBuild\b|\bclass\s+\w+\s*:\s*FrostingTask(<[^>]*>)?|\bnew\s+CakeHost\s*\(\s*\)'
             - output_type: 'Exe'
             - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
+        # Windows-only companion executable of a cross-platform application: an Exe named *Windows*
+        # that targets only net*-windows, next to cross-platform executables in the same repository
+        # (Duplicati.WindowsModulesLoader loads the VSS snapshot modules for the Windows build). A
+        # Linux deployment leaves it out, so it is not a server component of its own; a hosted
+        # service is not treated this way (it may run work the Linux build would also need).
+        - all:
+            - name: '(^|[.\-])Windows\w*$'
+            - output_type: 'Exe|WinExe'
+            - tfm: 'net\d+\.\d+-windows[\d.]*'
+            - not: {tfm: '(?!net\d+\.\d+-windows).*'}
+            - not: {code: '\bServiceBase\b|\bAddHostedService\b|(\bInherits|:)\s*BackgroundService\b|\bIHostedService\b|\bHostFactory\.Run\b'}
+            - other_project:
+                all:
+                  - output_type: 'Exe'
+                  - tfm: 'net(coreapp)?\d+\.\d+'
+                  - not: {name: '(?i)(^|[.\-])(Unit|Integration)?Tests?$'}
+        # Windows Service wrapper of a program the repository also builds as a cross-platform
+        # executable (Duplicati.WindowsService next to Duplicati.Service): on Linux that executable
+        # is what runs, and the SCM wrapper is the Windows packaging of it. PlatformTwin names the
+        # twin (set by the scanner); without one the service is a worker as usual.
+        - all:
+            - property: {PlatformTwin: '.+'}
+            - output_type: 'Exe|WinExe'
+            - closure: {code: '\bServiceBase\.Run\s*\(|(\bInherits|:)\s*(System\.ServiceProcess\.)?ServiceBase\b'}
+            - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)'}
         # version-control hook executables (svn/hg/git hooks) are invoked by the VCS server per commit
         - all:
             - name: '[.\-]\w*(?<!web)Hooks?$'

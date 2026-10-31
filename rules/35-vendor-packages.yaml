@@ -539,16 +539,25 @@ rules:
   - id: pkg-mmi-cim
     applies_to: [dotnet]
     when:
-      any:
-        - package: 'Microsoft\.Management\.Infrastructure(\.[\w.]+)?'
-        - reference: 'Microsoft\.Management\.Infrastructure(\.[\w.]+)?'
-        - code: '^\s*(using|Imports)\s+Microsoft\.Management\.Infrastructure'
+      all:
+        - any:
+            - package: 'Microsoft\.Management\.Infrastructure(\.[\w.]+)?'
+            - reference: 'Microsoft\.Management\.Infrastructure(\.[\w.]+)?'
+            - code: '^\s*(using|Imports)\s+Microsoft\.Management\.Infrastructure'
+        # every MI call starts from a CimSession; one created only behind an OS check (or in a
+        # Windows-only member/type whose callers check) is the Windows branch of portable code
+        - code: '\bCimSession\.Create(Async)?\s*\('
+          unguarded: true
     severity: refactor
     category: os
     effort: 1
     windows_container: true
     title: CIM/WMI through Microsoft.Management.Infrastructure
-    why: The MI .NET API (CimSession) talks to WMI on the local or remote Windows machines; it does not work on Linux.
+    why: >-
+      The MI .NET API (CimSession) talks to WMI on the local or remote Windows machines; it does
+      not work on Linux. Reported where a CimSession is created outside an OS check; a session
+      that is only opened behind OperatingSystem.IsWindows() (or in [SupportedOSPlatform("windows")]
+      code whose callers check) is not, since the Linux build takes the other branch.
     fix: Replace local WMI queries with configuration/Kubernetes facilities; keep remote Windows management on a Windows host or use WinRM/PowerShell remoting from a supported host.
 
   - id: pkg-powershell-windows

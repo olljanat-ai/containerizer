@@ -62,9 +62,15 @@ rules:
       all:
         - not: {role: 'test|desktop'}
         - any:
-            - code: >-
-                ^(?![^\n]*\b(?!(?:File|Directory|Path)\.)\w+\.(?:(?:Get|TryGet|Create|TryCreate|Delete|TryDelete|Open|Read|Write|Copy|Move)?(?:File|Directory|Folder)(?:Info|Exists)?|(?:File|Directory|Folder)Exists)(?:Async)?\(\s*[\w.]+\s*\+\s*(?:"\\\\"|'\\\\'|@"\\")\s*\+)(?!\s*(?:(?:var|bool)\s+\w+\s*=|if\s*\(|return\b|\w+\s*=)\s*[\w.]*?(?:File|Directory)?Exists\s*\()(?![^\n]*\b(?:TryGetValue|ContainsKey|GetEntry)\s*\([^\n]*\.Replace\()(?=[^\n]*(?:path|file|folder|dir|root|relative|upload|attachment|archive|export|import|inbox|outbox|\.(?:txt|csv|xml|json|log|pdf|dat|xlsx?)\b))(?![^\n]*(?:domain|samaccount|netbios|username|account|role|group|ManagementScope|subkey|registry|attachdbfilename|\\\\\\\\|@\"\\\\))[^\n]*?(?:\+\s*"\\\\"\s*\+|\+\s*@"\\"\s*\+|\+\s*'\\\\'\s*\+|\+\s*"\\\\[\w\- ]+(\.\w{2,4}|\\\\[\w.\- ]+)"|\+\s*@"\\[\w\- ]+(\.\w{2,4}|\\[\w.\- ]+)"|Path\.Combine\([^;)]*(@"[\w.\-]+\\[\w.\-]|(?<!@)"[\w.\-]+\\\\[\w.\-])|\$"[^"\n]*\}\\\\(\{|[\w\- ]+(\.\w{2,4}"|\\\\))|(\$@|@\$)"[^"\n]*\}\\(\{|[\w\- ]+(\.\w{2,4}"|\\))|\.Replace\(\s*("/"\s*,\s*"\\\\"|'/'\s*,\s*'\\\\'|"/"\s*,\s*@"\\")\s*\))
-              in: ['*.cs', '*.cshtml', '*.razor']
+            # SMB client code (SMBLibrary, SharpCifs, EzSmb) joins share paths with '\\' because the
+            # SMB protocol itself uses backslashes on every OS; such files are left out
+            - all:
+                - code: >-
+                    ^(?![^\n]*\b(?!(?:File|Directory|Path)\.)\w+\.(?:(?:Get|TryGet|Create|TryCreate|Delete|TryDelete|Open|Read|Write|Copy|Move)?(?:File|Directory|Folder)(?:Info|Exists)?|(?:File|Directory|Folder)Exists)(?:Async)?\(\s*[\w.]+\s*\+\s*(?:"\\\\"|'\\\\'|@"\\")\s*\+)(?!\s*(?:(?:var|bool)\s+\w+\s*=|if\s*\(|return\b|\w+\s*=)\s*[\w.]*?(?:File|Directory)?Exists\s*\()(?![^\n]*\b(?:TryGetValue|ContainsKey|GetEntry)\s*\([^\n]*\.Replace\()(?=[^\n]*(?:path|file|folder|dir|root|relative|upload|attachment|archive|export|import|inbox|outbox|\.(?:txt|csv|xml|json|log|pdf|dat|xlsx?)\b))(?![^\n]*(?:domain|samaccount|netbios|username|account|role|group|ManagementScope|subkey|registry|attachdbfilename|\\\\\\\\|@\"\\\\))[^\n]*?(?:\+\s*"\\\\"\s*\+|\+\s*@"\\"\s*\+|\+\s*'\\\\'\s*\+|\+\s*"\\\\[\w\- ]+(\.\w{2,4}|\\\\[\w.\- ]+)"|\+\s*@"\\[\w\- ]+(\.\w{2,4}|\\[\w.\- ]+)"|Path\.Combine\([^;)]*(@"[\w.\-]+\\[\w.\-]|(?<!@)"[\w.\-]+\\\\[\w.\-])|\$"[^"\n]*\}\\\\(\{|[\w\- ]+(\.\w{2,4}"|\\\\))|(\$@|@\$)"[^"\n]*\}\\(\{|[\w\- ]+(\.\w{2,4}"|\\)))
+                  in: ['*.cs', '*.cshtml', '*.razor']
+                  unguarded: true
+                - not: {code: &smb_client '\busing\s+(SMBLibrary|SharpCifs|EzSmb)\b|\b(SMB2Client|SMB1Client|ISMBFileStore|SmbFile|SMBFileStore)\b'}
+              same_file: true
             # `fs.GetFileAsync(dir + "\\" + name)`: a relative path handed to the application's own
             # virtual file system, whose implementation (a *FileSystem/*FileProvider class in the project
             # or a project it references) maps '\' to '/' before it touches the disk (Smartstore's
@@ -73,6 +79,7 @@ rules:
                 - code: >-
                     ^(?=[^\n]*\b(?!(?:File|Directory|Path)\.)\w+\.(?:(?:Get|TryGet|Create|TryCreate|Delete|TryDelete|Open|Read|Write|Copy|Move)?(?:File|Directory|Folder)(?:Info|Exists)?|(?:File|Directory|Folder)Exists)(?:Async)?\(\s*[\w.]+\s*\+\s*(?:"\\\\"|'\\\\'|@"\\")\s*\+)(?!\s*(?:(?:var|bool)\s+\w+\s*=|if\s*\(|return\b|\w+\s*=)\s*[\w.]*?(?:File|Directory)?Exists\s*\()(?![^\n]*\b(?:TryGetValue|ContainsKey|GetEntry)\s*\([^\n]*\.Replace\()(?=[^\n]*(?:path|file|folder|dir|root|relative|upload|attachment|archive|export|import|inbox|outbox|\.(?:txt|csv|xml|json|log|pdf|dat|xlsx?)\b))(?![^\n]*(?:domain|samaccount|netbios|username|account|role|group|ManagementScope|subkey|registry|attachdbfilename|\\\\\\\\|@\"\\\\))[^\n]*?(?:\+\s*"\\\\"\s*\+|\+\s*@"\\"\s*\+|\+\s*'\\\\'\s*\+|\+\s*"\\\\[\w\- ]+(\.\w{2,4}|\\\\[\w.\- ]+)"|\+\s*@"\\[\w\- ]+(\.\w{2,4}|\\[\w.\- ]+)"|Path\.Combine\([^;)]*(@"[\w.\-]+\\[\w.\-]|(?<!@)"[\w.\-]+\\\\[\w.\-])|\$"[^"\n]*\}\\\\(\{|[\w\- ]+(\.\w{2,4}"|\\\\))|(\$@|@\$)"[^"\n]*\}\\(\{|[\w\- ]+(\.\w{2,4}"|\\))|\.Replace\(\s*("/"\s*,\s*"\\\\"|'/'\s*,\s*'\\\\'|"/"\s*,\s*@"\\")\s*\))
                   in: ['*.cs', '*.cshtml', '*.razor']
+                  unguarded: true
                 - not:
                     closure:
                       all:
@@ -80,6 +87,22 @@ rules:
                         - code: >-
                             '\\\\'\s*\?\s*'/'|\.Replace\(\s*'\\\\'\s*,\s*'/'\s*\)|\.Replace\(\s*"\\\\\\\\"\s*,\s*"/"\s*\)|\.Replace\(\s*@"\\"\s*,\s*"/"\s*\)
                       same_file: true
+            # `rel.Replace('/', '\\')` handed to the application's own normalising file system (Umbraco's
+            # IFileSystem maps '\\' back to '/'), as above; without such a normaliser it is reported.
+            - all:
+                - code: >-
+                    ^(?![^\n]*\b(?!(?:File|Directory|Path)\.)\w+\.(?:(?:Get|TryGet|Create|TryCreate|Delete|TryDelete|Open|Read|Write|Copy|Move)?(?:File|Directory|Folder)(?:Info|Exists)?|(?:File|Directory|Folder)Exists)(?:Async)?\(\s*[\w.]+\s*\+\s*(?:"\\\\"|'\\\\'|@"\\")\s*\+)(?!\s*(?:(?:var|bool)\s+\w+\s*=|if\s*\(|return\b|\w+\s*=)\s*[\w.]*?(?:File|Directory)?Exists\s*\()(?![^\n]*\b(?:TryGetValue|ContainsKey|GetEntry)\s*\([^\n]*\.Replace\()(?=[^\n]*(?:path|file|folder|dir|root|relative|upload|attachment|archive|export|import|inbox|outbox|\.(?:txt|csv|xml|json|log|pdf|dat|xlsx?)\b))(?![^\n]*(?:domain|samaccount|netbios|username|account|role|group|ManagementScope|subkey|registry|attachdbfilename|\\\\\\\\|@\"\\\\))[^\n]*?\.Replace\(\s*("/"\s*,\s*"\\\\"|'/'\s*,\s*'\\\\'|"/"\s*,\s*@"\\")\s*\)
+                  in: ['*.cs', '*.cshtml', '*.razor']
+                  unguarded: true
+                - not:
+                    closure:
+                      all:
+                        - code: '\bclass\s+\w*(FileSystem|FileProvider)\b'
+                        - code: >-
+                            '\\\\'\s*\?\s*'/'|\.Replace\(\s*'\\\\'\s*,\s*('/'|Path\.(Alt)?DirectorySeparatorChar)\s*\)|\.Replace\(\s*"\\\\\\\\"\s*,\s*"/"\s*\)|\.Replace\(\s*@"\\"\s*,\s*"/"\s*\)
+                      same_file: true
+                - not: {code: *smb_client}
+              same_file: true
             - code: '^(?=[^\n]*(?:path|file|folder|dir|root))(?![^\n]*(?:domain|username|account))[^\n]*?(?:&\s*"\\"\s*&|&\s*"\\[\w\- ]+\.\w{2,4}")'
               in: ['*.vb']
     severity: refactor
@@ -97,8 +120,12 @@ rules:
       inside a dictionary/archive lookup (TryGetValue, ContainsKey, GetEntry) is a key fallback for
       zip entries written by Windows tools, not a file-system path, and is not reported; neither is
       an AttachDBFilename (resolved by the SQL Server process, e.g. Windows-only LocalDB), nor a
-      relative path passed straight to the application's own file-system abstraction when that
-      abstraction maps '\' to '/' itself.
+      relative path passed straight to (or converted with Replace('/', '\\') for) the application's
+      own file-system abstraction when that abstraction maps '\' to '/' itself. Joins inside an
+      OS check or a development-only branch (`if (env.IsDevelopment()) {...}`) are not reported
+      either: the production Linux container never runs them. Files that talk SMB through a
+      client library (SMBLibrary, SharpCifs, EzSmb) are left out, because share paths in the SMB
+      protocol use '\' on every OS.
     fix: >-
       Use Path.Combine with separate segments, Path.DirectorySeparatorChar, or '/' (which works
       on Windows too). Normalise stored relative paths with path.Replace('\\', '/').
