@@ -478,12 +478,24 @@ file_name = "client-truststore.p12"
 password = "wso2carbon"
 type = "PKCS12"
 
-# TLS ends at Traefik (443); the pod serves HTTP on {HTTP_PORT} inside the cluster
+# TLS ends at Traefik (443); the pod serves HTTP on {HTTP_PORT} inside the cluster, to Traefik only
+# (network policy)
 [transport.http.properties]
 proxyPort = 443
 
 [transport.https.properties]
 proxyPort = 443
+
+# requests through Traefik count as HTTPS (X-Forwarded-Proto), so the APIs that require a confidential
+# transport (SCIM 2.0) answer instead of redirecting to the pod's port 9443. Only Traefik reaches the
+# pod (network policy); the IdP calls itself on https://localhost:9443.
+[catalinaValves.remoteIpValve]
+enable = true
+internalProxies = '10\\.\\d{{1,3}}\\.\\d{{1,3}}\\.\\d{{1,3}}|172\\.(1[6-9]|2[0-9]|3[0-1])\\.\\d{{1,3}}\\.\\d{{1,3}}|192\\.168\\.\\d{{1,3}}\\.\\d{{1,3}}'
+remoteIpHeader = "X-Forwarded-For"
+protocolHeader = "X-Forwarded-Proto"
+proxiesHeader = "X-Forwarded-By"
+trustedProxies = ""
 
 # SAML entity id and WS-Federation token issuer
 [saml]
@@ -731,8 +743,13 @@ def namespace() -> dict:
     return ns
 
 
+class _NoAlias(yaml.SafeDumper):
+    def ignore_aliases(self, data):
+        return True
+
+
 def _dump(docs: list[dict]) -> str:
-    return "---\n".join(yaml.safe_dump(d, sort_keys=False) for d in docs)
+    return "---\n".join(yaml.dump(d, Dumper=_NoAlias, sort_keys=False) for d in docs)
 
 
 def sandbox_files(sb: Sandbox, apps: dict[str, dict]) -> dict[str, str]:
