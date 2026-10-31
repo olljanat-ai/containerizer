@@ -6,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 
+from . import __version__
 from .assess import assess
 from .rules import load_rules
 
@@ -444,6 +445,7 @@ def _run_cmd(args) -> int:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="containerizer", description="Rule-based containerization assessment and generator")
+    ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("assess", help="assess one or more applications")
