@@ -47,7 +47,7 @@ wait_reboot() {  # the VM restarts on its own: wait for SSH to go away, then to 
 diag() {
   echo "--- diagnostics"
   "${SSH[@]}" 'systemctl --failed --no-pager; journalctl -b --no-pager -p warning | tail -200;
-    for u in elemental-setup-initramfs elemental-setup-rootfs elemental-setup-network elemental-setup-boot \
+    for u in elemental-boot-assessment elemental-setup-initramfs elemental-setup-rootfs elemental-setup-network elemental-setup-boot \
       containerizer-firstboot containerizer-firewall containerizer-dns containerizer-mssql containerizer-db-init \
       containerizer-web containerizer-worker containerizer-registry caddy k3s containerizer-sysagent; do
       echo "--- $u"; journalctl -b -u $u --no-pager | tail -40; done' > "$OUT/diagnostics.txt" 2>&1 || true

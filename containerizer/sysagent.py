@@ -35,6 +35,7 @@ import shlex
 import socket
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -642,21 +643,32 @@ def process() -> int:
 
 # =============================================================================== health
 
+HEALTH_START_WAIT = 900     # seconds a unit may take to start
+HEALTH_POLL = 10
+
+
 def health() -> int:
     """Boot assessment (elemental-boot-assessment runs it until it passes, at most 5 times 30 s apart,
     then restarts into the previous snapshot): the firewall is loaded, the DNS filter, Docker and k3s
-    are running, and the web UI's code imports. Image downloads and the database are not waited for:
+    are running (each may take HEALTH_START_WAIT seconds to finish starting), and the web UI's code imports. Image downloads and the database are not waited for:
     on a slow network they take longer than the assessment allows."""
     try:
         run(["nft", "list", "table", "inet", TABLE], timeout=30)
     except (AgentError, OSError) as ex:
         log(f"health: firewall not loaded: {ex}")
         return 1
+    # k3s takes minutes to report ready on a first boot; a unit still starting is waited for (the
+    # checker runs as a oneshot without a start timeout), one that failed or is not started fails now
+    deadline = time.monotonic() + HEALTH_START_WAIT
     for unit in ("containerizer-dns.service", "docker.service", "k3s.service"):
-        state = run(["systemctl", "is-active", unit], timeout=30, check=False).strip()
-        if state != "active":
-            log(f"health: {unit} is {state or 'unknown'}")
-            return 1
+        while True:
+            state = run(["systemctl", "is-active", unit], timeout=30, check=False).strip()
+            if state == "active":
+                break
+            if state not in ("activating", "reloading") or time.monotonic() >= deadline:
+                log(f"health: {unit} is {state or 'unknown'}")
+                return 1
+            time.sleep(HEALTH_POLL)
     try:
         import importlib
         for m in ("containerizer.webui", "containerizer.admin", "containerizer.cli"):
