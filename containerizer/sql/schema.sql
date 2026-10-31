@@ -53,6 +53,11 @@ CREATE TABLE [${schema}].Product (
     CreatedAt      datetime2(0)   NOT NULL CONSTRAINT DF_Product_CreatedAt DEFAULT SYSUTCDATETIME()
 );
 GO
+-- Link to the product's page in another tool (CMDB, product catalogue, wiki); https only.
+IF COL_LENGTH(N'[${schema}].Product', N'InfoUrl') IS NULL
+ALTER TABLE [${schema}].Product ADD InfoUrl nvarchar(400) NULL
+    CONSTRAINT CK_Product_InfoUrl CHECK (InfoUrl LIKE N'https://_%' AND InfoUrl NOT LIKE N'%[<>"'' ]%');
+GO
 
 -- One row per assessed application (a repository, or an app folder in one). SourceKey is the stable
 -- identity the scan matches on: "<git remote URL>#<folder in the repository>", or the app name.
@@ -172,7 +177,7 @@ CREATE OR ALTER VIEW [${schema}].vApplicationLatest AS
 SELECT a.ApplicationId,
        COALESCE(a.DisplayName, a.Name) AS ApplicationName,
        a.Name AS ScanName, a.Description, a.Owner, a.RepositoryUrl, a.SourcePath,
-       p.ProductId, p.Name AS ProductName, p.Owner AS ProductOwner,
+       p.ProductId, p.Name AS ProductName, p.Owner AS ProductOwner, p.InfoUrl AS ProductInfoUrl,
        bu.BusinessUnitId, bu.Name AS BusinessUnitName, bu.Owner AS BusinessUnitOwner,
        x.AssessmentId, x.AssessedAt, x.Rating, r.Title AS RatingTitle, r.Description AS RatingDescription,
        x.Score, x.EffortDays, x.Confidence, x.Summary, x.Verified, x.SourceCommit, x.SourceBranch
@@ -274,16 +279,17 @@ BEGIN
     INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
     SELECT w.ChangedBy, w.ChangedByName, w.Via, N'Product', COALESCE(i.ProductId, d.ProductId), COALESCE(i.Name, d.Name),
            CASE WHEN d.ProductId IS NULL THEN N'insert' WHEN i.ProductId IS NULL THEN N'delete' ELSE N'update' END,
-           CASE WHEN d.ProductId IS NOT NULL THEN (SELECT d.Name, d.Description, d.Owner,
+           CASE WHEN d.ProductId IS NOT NULL THEN (SELECT d.Name, d.Description, d.Owner, d.InfoUrl,
                 (SELECT b.Name FROM [${schema}].BusinessUnit b WHERE b.BusinessUnitId = d.BusinessUnitId) AS BusinessUnit
                 FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
-           CASE WHEN i.ProductId IS NOT NULL THEN (SELECT i.Name, i.Description, i.Owner,
+           CASE WHEN i.ProductId IS NOT NULL THEN (SELECT i.Name, i.Description, i.Owner, i.InfoUrl,
                 (SELECT b.Name FROM [${schema}].BusinessUnit b WHERE b.BusinessUnitId = i.BusinessUnitId) AS BusinessUnit
                 FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
     FROM inserted i FULL OUTER JOIN deleted d ON d.ProductId = i.ProductId
     CROSS JOIN [${schema}].fnAuditWho() w
     WHERE d.ProductId IS NULL OR i.ProductId IS NULL
-       OR EXISTS (SELECT i.Name, i.Description, i.Owner, i.BusinessUnitId EXCEPT SELECT d.Name, d.Description, d.Owner, d.BusinessUnitId);
+       OR EXISTS (SELECT i.Name, i.Description, i.Owner, i.InfoUrl, i.BusinessUnitId
+                  EXCEPT SELECT d.Name, d.Description, d.Owner, d.InfoUrl, d.BusinessUnitId);
 END;
 GO
 

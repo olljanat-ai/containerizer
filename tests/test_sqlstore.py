@@ -82,12 +82,33 @@ def test_effective_severity_matches_assess():
 
 
 def test_schema_batches():
-    b = sqlstore.schema_batches()
+    b = sqlstore.schema_batches("shared_cz")
+    text = "\n".join(b)
     assert len(b) > 15 and not any(re.match(r"(?im)^\s*GO\s*$", x) for x in b)
-    text = sqlstore.SCHEMA.read_text()
+    assert "${" not in text and not re.search(r"\bdbo\.\w", text) and "[shared_cz].AuditLog" in text
     # the scanner may never write the columns people maintain
-    grant = re.search(r"GRANT UPDATE ON cz\.Application \(([^)]*)\) TO cz_writer", text)[1]
+    grant = re.search(r"GRANT UPDATE ON \[shared_cz\]\.Application \(([^)]*)\) TO \[shared_cz_writer\]", text)[1]
     assert "ProductId" not in grant and "DisplayName" not in grant
+    # nobody may rewrite the audit trail
+    assert not re.search(r"GRANT [^;]*(UPDATE|DELETE)[^;]*AuditLog", text)
+
+
+@pytest.mark.parametrize("bad", ["dbo", "sys", "a-b", "x;drop", "1abc", ""])
+def test_schema_name_is_validated(bad, monkeypatch):
+    monkeypatch.delenv("CONTAINERIZER_SQL_SCHEMA", raising=False)
+    if bad == "":
+        assert sqlstore.schema_name(bad) == "containerizer"
+    else:
+        with pytest.raises(SqlError):
+            sqlstore.schema_name(bad)
+
+
+def test_queries_use_the_configured_schema():
+    c = sqlstore.Connection(None, "shared_cz")
+    assert c.sql("SELECT * FROM cz.vApplicationLatest a JOIN cz.Product p") == \
+        "SELECT * FROM [shared_cz].vApplicationLatest a JOIN [shared_cz].Product p"
+    assert c.sql("SELECT x.cz.y, 'cz' FROM t") == "SELECT x.cz.y, 'cz' FROM t"
+    assert connect_args("Server=db;Database=D;User Id=u;Password=p;Schema=shared_cz")["_schema"] == "shared_cz"
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +265,7 @@ def db():
     conn = sqlstore.connect(cs)
     sqlstore.init_schema(conn)
     sqlstore.init_schema(conn)        # idempotent
-    for login, role in (("cz_t_reader", "cz_reader"), ("cz_t_writer", "cz_writer"), ("cz_t_editor", "cz_mapper")):
+    for login, role in (("cz_t_reader", "reader"), ("cz_t_writer", "writer"), ("cz_t_editor", "admin")):
         sqlstore.create_login(conn, login, "Test-Passw0rd!x", role)
     conn.close()
     yield cs
@@ -272,6 +293,7 @@ def test_store_maps_components_and_keeps_human_mapping(db, tmp_path):
 
     # a person maps the application, as docs/results-database.md describes
     ed = sqlstore.connect(_as(db, "cz_t_editor"), password="Test-Passw0rd!x")
+    ed.set_user("jane@example.com", "Jane Doe")
     cur = ed.cursor()
     cur.execute("INSERT cz.BusinessUnit (Name) VALUES (N'Retail')")
     cur.execute("INSERT cz.Product (Name, BusinessUnitId) SELECT N'Web shop', BusinessUnitId FROM cz.BusinessUnit WHERE Name = N'Retail'")
@@ -280,6 +302,10 @@ def test_store_maps_components_and_keeps_human_mapping(db, tmp_path):
     ed.commit()
     with pytest.raises(Exception):
         cur.execute("UPDATE cz.ApplicationAssessment SET Rating = 'A'")
+    with pytest.raises(Exception):
+        cur.execute("DELETE cz.AuditLog")
+    with pytest.raises(Exception):     # the signed-in user cannot be swapped on the same connection
+        cur.execute("EXEC sp_set_session_context @key = N'containerizer.user', @value = N'mallory'")
     ed.close()
 
     # a second scan reuses the application and components and leaves the mapping alone
@@ -306,6 +332,18 @@ def test_store_maps_components_and_keeps_human_mapping(db, tmp_path):
     assert cur.fetchone()[0] == 1
     cur.execute("SELECT COUNT(*) FROM cz.Component")
     assert cur.fetchone()[0] == len(a.components)
+    # the audit trail names the person and the values before and after; the second scan added nothing
+    cur = adm.cursor(as_dict=True)
+    cur.execute("SELECT ChangedBy, ChangedByName, DbLogin, Via, TableName, Action, OldValues, NewValues FROM cz.AuditLog "
+                "ORDER BY AuditId")
+    log = cur.fetchall()
+    assert [(r["TableName"], r["Action"], r["Via"]) for r in log] == [
+        ("Application", "insert", "scan"), ("BusinessUnit", "insert", "admin UI"), ("Product", "insert", "admin UI"),
+        ("Application", "update", "admin UI")]
+    upd = log[-1]
+    assert (upd["ChangedBy"], upd["ChangedByName"], upd["DbLogin"]) == ("jane@example.com", "Jane Doe", "cz_t_editor")
+    assert json.loads(upd["OldValues"])["Product"] is None and json.loads(upd["NewValues"])["Product"] == "Web shop"
+    assert log[0]["ChangedBy"] == "cz_t_writer"
     adm.close()
 
 
@@ -318,7 +356,7 @@ def test_import_json(db, tmp_path):
     sqlstore.import_json(_as(db, "cz_t_writer"), [f], key_prefix="https://git.example.com/x#", password="Test-Passw0rd!x")
     rd = sqlstore.connect(_as(db, "cz_t_reader"), password="Test-Passw0rd!x")
     cur = rd.cursor(as_dict=True)
-    cur.execute("SELECT Rating FROM cz.vApplicationLatest WHERE ScanName = N'importme'")
+    cur.execute("SELECT Rating FROM cz.vApplicationLatest WHERE ScanName = N'importme'")  # schema from the connection
     assert cur.fetchone()["Rating"] == "E"
     cur.execute("SELECT COUNT(*) AS N FROM cz.vFindingLatest WHERE ApplicationName = N'importme' AND Severity = 'blocker'")
     assert cur.fetchone()["N"] >= 1
