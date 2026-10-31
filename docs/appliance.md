@@ -9,7 +9,7 @@ image, and upgraded from the admin pages. It runs:
 | --- | --- | --- |
 | Web UI and API (results, admin pages, System and Firewall pages) | systemd service, user `cz-web`, no privileges | `https://<appliance>/` |
 | Scan worker (`containerizer worker`, [scheduled scans](scheduled-scans.md)) | systemd service, user `containerizer` + Docker | - |
-| SQL Server 2022 (results database) | container, non-root, data on the persistent partition | `127.0.0.1:1433` only |
+| SQL Server 2025 (results database) | container, non-root, data on the persistent partition | `127.0.0.1:1433` only |
 | Sandbox cluster: k3s (single node) with Flux | systemd service | `kubectl` on the appliance |
 | [Lab services](lab-services.md) for the sandboxed apps: SQL Server, PostgreSQL, Redis, S3, Azure Blob storage (each optional) | k3s, namespace `containerizer-lab`, data on the persistent partition | Admin → Lab services; inside the cluster only |
 | Local container registry | container | `127.0.0.1:5000` only (Docker and k3s) |

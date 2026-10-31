@@ -32,8 +32,9 @@ scan worker ──reads DevDatabase──> builds <registry>/<app>/devdb:<tag> (
    a password here. You can edit the instructions later without uploading the file again.
 3. **The scan.** When an application has a backup, the scan:
    - checks the file against its SHA-256;
-   - builds an image `FROM mcr.microsoft.com/mssql/server:2022-latest` (override it with `devdb:
-     sqlserver:` in `rules/images.yaml`) that contains the backup;
+   - builds an image `FROM mcr.microsoft.com/mssql/server:2025-latest` (override it with `devdb:
+     sqlserver:` in `rules/images.yaml`) that contains the backup. SQL Server 2025 restores backups
+     from older versions too (SQL Server 2008 and later), and upgrades the database as it restores it;
    - pushes the image as `<registry>/<app>/devdb:<tag>`, also tagged `sha-<first 12 of the SHA-256>`.
 
    Each time the database pod starts, it:

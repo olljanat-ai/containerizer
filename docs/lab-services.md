@@ -8,7 +8,7 @@ not change: only its configuration, through environment variables.
 
 | Service | What runs | What each app gets | On by default |
 | --- | --- | --- | --- |
-| SQL Server | SQL Server 2022, Developer edition (the appliance's own pinned image) | Its own database and login, owner of that database only | yes |
+| SQL Server | SQL Server 2025, Developer edition (the appliance's own pinned image) | Its own database and login, owner of that database only | yes |
 | PostgreSQL | PostgreSQL 18 | Its own database and role, owner of that database only | no |
 | Redis | Redis 8.8 | Its own instance and password | no |
 | S3 object storage | [Versity S3 Gateway](https://github.com/versity/versitygw) (Apache 2.0) | Its own S3 endpoint and access key | no |
@@ -17,10 +17,6 @@ not change: only its configuration, through environment variables.
 SQL Server is on by default because the appliance already ran SQL Server for
 [dev database restores](dev-databases.md). An app with an uploaded backup still gets that backup restored
 next to it, and the lab SQL Server is not used for it. Turning SQL Server off stops those restores too.
-
-**Why not MinIO?** MinIO stopped publishing community images and binaries, so there is no maintained
-image to pin. Versity S3 Gateway serves the S3 API over plain files on a volume. It is a single small
-binary, licensed Apache 2.0, and published on Docker Hub.
 
 ## Turn a service on or off
 
