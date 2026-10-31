@@ -13,12 +13,13 @@ from pathlib import Path
 
 import yaml
 
+from . import rules as _rules
 from .rules import RULES_DIR
 
 @lru_cache(maxsize=1)
 def _catalog():
     ok, neutral = [], []
-    for f in sorted(RULES_DIR.glob("packages*.yaml")) + [RULES_DIR / "learned" / "packages.yaml"]:
+    for f in sorted(RULES_DIR.glob("packages*.yaml")) + [_rules.LEARNED_DIR / "packages.yaml"]:
         if f.exists():
             d = yaml.safe_load(f.read_text()) or {}
             ok += d.get("linux_ok", []) or []

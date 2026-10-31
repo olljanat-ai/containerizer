@@ -564,7 +564,7 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
             shutil.rmtree(scratch)
         rules_reset()
         a = analyze_app(src, scratch, ai=o.ai, model=o.model, verify=o.verify, registry=o.registry, pin=o.pin,
-                        timeout=o.timeout, gitops=gitops)
+                        timeout=o.timeout, gitops=gitops, sql=o.sql)
         res.rating = a.rating
         if o.sql or os.environ.get("CONTAINERIZER_SQL"):
             from .sqlstore import store_results

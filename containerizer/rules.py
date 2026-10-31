@@ -54,6 +54,9 @@ from .scan import Project, Repo, read_text
 SEVERITIES = ["info", "config", "refactor", "rewrite", "blocker"]
 SEV_RANK = {s: i for i, s in enumerate(SEVERITIES)}
 RULES_DIR = Path(__file__).resolve().parent.parent / "rules"
+# Where learned rules are read from. A learning run points this (and verify.LEARNED, ai.LEARNED) at a
+# staging copy, so what it learns waits for review instead of entering the ruleset (rulereview.py).
+LEARNED_DIR = RULES_DIR / "learned"
 
 
 @dataclass
@@ -110,7 +113,7 @@ class Match:
 
 
 def load_rules(dirs: list[Path] | None = None) -> list[Rule]:
-    dirs = dirs or [RULES_DIR, RULES_DIR / "learned"]
+    dirs = dirs or [RULES_DIR, LEARNED_DIR]
     rules: list[Rule] = []
     seen: dict[str, Rule] = {}
     for d in dirs:
@@ -119,13 +122,20 @@ def load_rules(dirs: list[Path] | None = None) -> list[Rule]:
         for f in sorted(d.glob("*.yaml")):
             data = yaml.safe_load(f.read_text()) or {}
             for item in data.get("rules", []):
-                r = Rule.from_dict(item, file=str(f.relative_to(RULES_DIR.parent)))
+                r = Rule.from_dict(item, file=_rel(f))
                 if r.id in seen:
                     # later (learned) definitions override curated ones with the same id
                     rules.remove(seen[r.id])
                 seen[r.id] = r
                 rules.append(r)
     return rules
+
+
+def _rel(f: Path) -> str:
+    try:
+        return str(f.relative_to(RULES_DIR.parent))
+    except ValueError:                  # a staging copy of the learned rules (rulereview.LearningSession)
+        return "rules/learned/" + f.name
 
 
 @lru_cache(maxsize=4096)
