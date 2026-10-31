@@ -3,4 +3,6 @@
 CONTAINERIZER_SQL_PASSWORD="$(cat "$CREDENTIALS_DIRECTORY/sql-web")"
 CONTAINERIZER_ADMIN_SQL_PASSWORD="$(cat "$CREDENTIALS_DIRECTORY/sql-admin")"
 export CONTAINERIZER_SQL_PASSWORD CONTAINERIZER_ADMIN_SQL_PASSWORD
+# seals source control tokens for the worker; cannot open them
+export CONTAINERIZER_CREDENTIAL_PUBLIC_KEY_FILE="$CREDENTIALS_DIRECTORY/credential-public-key"
 exec /usr/lib/containerizer/venv/bin/python -m containerizer web --host 127.0.0.1 --port 8080

@@ -259,6 +259,9 @@ for their own products, and operators run the scans; see [Roles](#roles).
 - **Organization scans** and **Repositories**: schedule whole-organization scans, run one now, and
   enable or disable the repositories they found (skipped ones are shown disabled with the reason).
   See [scheduled-scans.md](scheduled-scans.md).
+- **Source control** (administrators only): the read-only token of each organization the scans may read
+  and the write token of each output repository, sealed for the scan worker and never shown again. See
+  [source-control.md](source-control.md).
 - **Rule review**: approve (optionally after editing) or reject the rules the learning loop learned,
   with their evidence; see [rule-review.md](rule-review.md).
 - **Change history**: see below.

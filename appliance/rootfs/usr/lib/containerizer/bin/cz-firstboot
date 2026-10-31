@@ -21,6 +21,14 @@ for n in mssql-sa cz-scanner cz-web cz-admin grafana-admin; do secret "$n"; done
 printf 'MSSQL_SA_PASSWORD=%s\n' "$(cat $S/mssql-sa)" > "$S/mssql.env"
 printf 'GF_SECURITY_ADMIN_USER=admin\nGF_SECURITY_ADMIN_PASSWORD=%s\n' "$(cat $S/grafana-admin)" > "$S/grafana.env"
 chmod 0400 "$S/mssql.env" "$S/grafana.env"
+# Source control tokens (Admin → Source control) are sealed for the scan worker's key: the web UI gets only the
+# public key. Never replaced: tokens sealed for the old key would no longer open.
+if [ ! -s "$S/credential-key" ]; then
+  rm -f "$S/credential-key.pub"
+  /usr/lib/containerizer/venv/bin/python -m containerizer credentials keygen \
+    --private "$S/credential-key" --public "$S/credential-key.pub" >/dev/null
+  chmod 0400 "$S/credential-key" "$S/credential-key.pub"
+fi
 
 install -d -m 0755 -o root -g root "$D" "$D/system"
 install -d -m 0770 -o 10001 -g 0 "$D/mssql"

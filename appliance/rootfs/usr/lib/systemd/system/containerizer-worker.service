@@ -13,6 +13,7 @@ SupplementaryGroups=docker
 EnvironmentFile=/etc/containerizer/worker.env
 Environment="CONTAINERIZER_SQL=Server=127.0.0.1,1433;Database=Containerizer;User Id=cz_scanner;TrustServerCertificate=yes"
 LoadCredential=sql-scanner:/etc/containerizer/secrets/cz-scanner
+LoadCredential=credential-key:/etc/containerizer/secrets/credential-key
 WorkingDirectory=/var/lib/containerizer/worker
 ExecStart=/usr/lib/containerizer/bin/cz-worker
 # finishes the repository it is on, then stops; the run is marked cancelled

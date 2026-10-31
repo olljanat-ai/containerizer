@@ -528,7 +528,10 @@ database and the web UI; failures the cluster shows feed the learning loop
 ([docs/sandbox-verification.md](docs/sandbox-verification.md)).
 
 Organization scans can also be **scheduled from the admin pages** (days of the week and time, or
-"Run now") and run by `containerizer worker`, a separate process that holds the tokens and Docker.
+"Run now") and run by `containerizer worker`, a separate process with Docker. Administrators register a
+read-only token for each organization the scans may read and a write token for each output repository
+under **Admin → Source control**; organizations without one are never scanned, and the tokens are
+sealed for the worker so the web UI cannot read them back ([docs/source-control.md](docs/source-control.md)).
 New repositories are found on every run, every repository appears on the admin **Repositories** page
 with its last result, and skipped ones are shown disabled with the reason; an administrator can
 enable or disable any of them. The worker exposes Prometheus metrics about the scans, the process and
@@ -577,6 +580,6 @@ containerizer/sql/  results database schema (sqlstore.py writes it, webui.py rea
 monitoring/      Grafana dashboard, Prometheus scrape config and alert rules, systemd unit for the worker
 results/         Docker Compose stack and image for the results database and web UI
 docs/            results-database.md (results database, web UI, admin pages, audit), rule-review.md, organization-run.md,
-                 scheduled-scans.md, dev-databases.md, sandbox-verification.md, self-hosted-llm.md, sbom.md (SBOMs, licences, CVEs per package),
+                 scheduled-scans.md, source-control.md (tokens), dev-databases.md, sandbox-verification.md, self-hosted-llm.md, sbom.md (SBOMs, licences, CVEs per package),
                  local-dev-server.md (a Debian server that runs the whole CI suite locally)
 ```

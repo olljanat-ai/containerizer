@@ -51,19 +51,39 @@ def test_schedule_text():
 
 # --------------------------------------------------------------------------- configuration checks
 
-SCAN = {"Provider": "github", "Organization": "acme", "ApiUrl": None, "TokenEnv": None, "Registry": "reg.example.com/sb",
-        "OutputRepo": None, "OutputTokenEnv": None, "PushImages": False, "IncludeRegex": None, "ExcludeRegex": None}
+SCAN = {"Provider": "github", "Organization": "acme", "ApiUrl": None, "Registry": "reg.example.com/sb",
+        "OutputRepo": None, "PushImages": False, "IncludeRegex": None, "ExcludeRegex": None}
 
 
-def test_check_scan_refuses_foreign_secrets_and_hosts():
-    hosts = worker.allowed_hosts({"CONTAINERIZER_WORKER_HOSTS": "ghe.example.com, reg.example.com"})
+def _creds(*items):
+    from containerizer.credentials import Credential, Credentials
+    return Credentials([Credential(id=i, purpose=p, provider=pr, api_url=api, scope=sc, token=tok)
+                        for i, (p, pr, api, sc, tok) in enumerate(items, 1)])
+
+
+def test_check_scan_needs_registered_tokens_and_allowed_registry():
+    hosts = worker.allowed_hosts({"CONTAINERIZER_WORKER_HOSTS": "reg.example.com"})
+    acme = ("read", "github", None, "Acme", "ro-token")
     assert worker.check_scan(SCAN, hosts) == []
-    assert "CZ_TOKEN_" in worker.check_scan({**SCAN, "TokenEnv": "CONTAINERIZER_SQL_PASSWORD"}, hosts)[0]
-    assert worker.check_scan({**SCAN, "OutputTokenEnv": "REGISTRY_PASSWORD"}, hosts)
-    assert worker.check_scan({**SCAN, "TokenEnv": "CZ_TOKEN_ACME"}, hosts) == []
-    assert "evil.example" in worker.check_scan({**SCAN, "ApiUrl": "https://evil.example/api"}, hosts)[0]
-    assert worker.check_scan({**SCAN, "ApiUrl": "https://ghe.example.com/api/v3"}, hosts) == []
-    assert worker.check_scan({**SCAN, "OutputRepo": "https://evil.example/x.git"}, hosts)
+    # no token for the organization: refused (no anonymous access)
+    assert "no read-only token is registered for GitHub organization acme" in worker.check_scan(SCAN, hosts, _creds())[0]
+    assert worker.check_scan(SCAN, hosts, _creds(acme)) == []
+    # a token of another organization, or of the same name on another server, does not count
+    assert worker.check_scan(SCAN, hosts, _creds(("read", "github", None, "acme-labs", "t")))
+    assert worker.check_scan(SCAN, hosts, _creds(("read", "github", "https://ghe.example.com/api/v3", "acme", "t")))
+    assert worker.check_scan({**SCAN, "ApiUrl": "https://ghe.example.com/api/v3"}, hosts, _creds(acme))
+    assert worker.check_scan({**SCAN, "ApiUrl": "https://api.github.com"}, hosts, _creds(acme)) == []
+    assert worker.check_scan({**SCAN, "ApiUrl": "https://ghe.example.com/api/v3/"}, hosts,
+                             _creds(("read", "github", "https://GHE.example.com/api/v3", "acme", "t"))) == []
+    # the output repository needs its own write token, matched by URL, and not the read-only one
+    out = {**SCAN, "OutputRepo": "https://github.com/acme/sandbox.git"}
+    assert "no write token is registered for the output repository" in worker.check_scan(out, hosts, _creds(acme))[0]
+    wr = ("write", "github", None, "https://github.com/Acme/sandbox", "rw-token")
+    assert worker.check_scan(out, hosts, _creds(acme, wr)) == []
+    same = ("write", "github", None, "https://github.com/acme/sandbox.git", "ro-token")
+    assert "separate read-only token" in worker.check_scan(out, hosts, _creds(acme, same))[0]
+    assert worker.check_scan(out, hosts, _creds(acme, ("write", "github", None, "https://github.com/acme/sandbox2", "x")))
+    # registry hosts
     assert worker.check_scan({**SCAN, "PushImages": True, "Registry": "other.example/x"}, hosts)
     assert worker.check_scan({**SCAN, "PushImages": True}, hosts) == []
     assert worker.check_scan({**SCAN, "IncludeRegex": "("}, hosts)
@@ -81,8 +101,7 @@ def test_scan_form_validation():
     v, errors = admin_scans.validate_scan(_form())
     assert errors == [] and v["ScheduleDays"] == (1 << 5) | (1 << 6) and v["ScheduleMinute"] == 150
     assert v["Enabled"] is True and v["Gate"] is False and v["OutputBranch"] == "main"
-    for bad, msg in [({"TokenEnv": "CONTAINERIZER_SQL_PASSWORD"}, "Token variable"),
-                     ({"ApiUrl": "javascript:alert(1)"}, "https"), ({"OutputRepo": "http://x.example/r"}, "https"),
+    for bad, msg in [({"ApiUrl": "javascript:alert(1)"}, "https"), ({"OutputRepo": "http://x.example/r"}, "https"),
                      ({"Registry": "Reg Example"}, "registry"), ({"OutputBranch": "-x"}, "branch"),
                      ({"OutputBranch": "a..b"}, "branch"), ({"ImagePullSecret": "Bad_Name"}, "secret"),
                      ({"IncludeRegex": "(["}, "matching"), ({"StaleDays": "99999"}, "3650"), ({"At": "25:00"}, "HH:MM"),
@@ -205,7 +224,12 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
         return SourceRepo("github", "acme", NO_PROJECT, n, f"https://github.com/acme/{n}.git", default_branch="main",
                           web_url=f"https://github.com/acme/{n}", id=str(i))
     prov = _Provider([repo(n, i) for i, n in enumerate(("shop", "dockerized", "handbook", "legacy"))])
-    monkeypatch.setattr(orgmod, "provider", lambda *a, **k: prov)
+    tokens_used = []
+
+    def make_provider(name, org, token="", api_url=None):
+        tokens_used.append((name, org, token))
+        return prov
+    monkeypatch.setattr(orgmod, "provider", make_provider)
     fetched = []
 
     def fake_update(url, dest, branch="", header=""):
@@ -222,25 +246,67 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
     idp = MockIdP()
     port = free_port()
     base = f"http://127.0.0.1:{port}"
+    from containerizer import credentials as cr
+    cr.keygen(tmp_path / "worker.key", tmp_path / "worker.pub")
     adm = adminmod.Admin(cfg(idp, base), lambda: sqlstore.connect(as_("cz_w_admin"), PW))
+    adm.credential_key = cr.load_public(tmp_path / "worker.pub")
     httpd = ThreadingHTTPServer(("127.0.0.1", port), webui.make_handler(lambda: sqlstore.connect(as_("cz_w_reader"), PW), adm))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     idp.claims = {"email": "jane@example.com", "name": "Jane Doe", "groups": ["cz-admins"]}
     logs = []
     w = worker.Worker(lambda: sqlstore.connect(writer, PW), tmp_path / "data", sql=writer, poll=1, name="test-worker",
-                      hosts=worker.allowed_hosts({}), log=logs.append)
+                      hosts=worker.allowed_hosts({}), log=logs.append, key=cr.load_private(tmp_path / "worker.key"))
     try:
         b = Browser(base, idp)
         s, _, body = b.follow("/admin/scans")
         assert s == 200 and "No organization scans yet" in body and "Organization scans" in body
         csrf = b.csrf(body)
-        # a token variable that names the database password is refused
-        s, _, body = b.follow("/admin/scans/new", {"csrf": csrf, **_form(TokenEnv="CONTAINERIZER_SQL_PASSWORD")})
-        assert "Token variable: CZ_TOKEN_" in body
-        s, h, body = b.follow("/admin/scans/new", {"csrf": csrf, **_form(Name="Acme GitHub", TokenEnv="CZ_TOKEN_ACME",
-                                                                         Gate="", day=["5"])})
+        s, h, body = b.follow("/admin/scans/new", {"csrf": csrf, **_form(Name="Acme GitHub", Gate="", day=["5"])})
         assert s == 200 and "Saved." in body and "Sat at 02:30 UTC" in body
-        scan_id = int(re.search(r"/admin/scans/(\d+)/run", body)[1])
+        # no read-only token for the organization: the scan cannot run, and says why
+        assert "no read-only token is registered for GitHub organization acme" in body and "/run'" not in body
+        scan_id = int(re.search(r"/admin/repositories\?scan=(\d+)", body)[1])
+        assert "Token missing" in b.follow("/admin/scans")[2]
+        # an administrator registers one; the page never shows it again
+        secret = "github_pat_readonly_0123456789abcdef"
+        s, _, body = b.follow("/admin/source-control", None)
+        assert s == 200 and "Contents: Read-only" in body and "fine-grained" in body
+        s, _, body = b.follow("/admin/source-control/read", {"csrf": csrf, "Provider": "github", "Organization": "acme",
+                                                             "ApiUrl": "", "Token": secret, "ExpiresOn": "2099-01-01",
+                                                             "Note": "made by Jane"})
+        assert s == 200 and "Read-only token saved for acme" in body and secret not in body and "Acme GitHub" in body
+        cred_id = int(re.search(r"/admin/source-control/(\d+)/token", body)[1])
+        # the same organization twice is refused; a bad token text too; nothing echoes the token
+        s, _, body = b.follow("/admin/source-control/read", {"csrf": csrf, "Provider": "github", "Organization": "ACME",
+                                                             "Token": secret})
+        assert "already has a token" in body and secret not in body
+        s, _, body = b.follow("/admin/source-control/write", {"csrf": csrf, "Provider": "gitlab",
+                                                              "Scope": "https://github.com/acme/sandbox", "Token": "x y"})
+        assert "is on GitHub, not GitLab" in body and "without spaces" in body
+        assert secret not in b.follow("/admin/source-control")[2]
+        assert secret not in b.follow("/admin/audit?table=SourceCredential")[2]
+        s, _, body = b.follow(f"/admin/scans/{scan_id}")
+        assert "Run now" in body and "Read-only token" in body and f"/admin/source-control/{cred_id}" in body
+        # the LLM on the same page: set once, key never shown, model can change, a second one is refused
+        llm_key = "sk-llm-secret-0123456789"
+        s, _, body = b.follow("/admin/source-control/llm", {"csrf": csrf, "Provider": "openai", "ApiUrl": "https://llm.example/v1",
+                                                            "Model": "qwen3:32b", "Token": llm_key})
+        assert s == 200 and "LLM saved" in body and llm_key not in body and "qwen3:32b" in body
+        llm_id = int(re.search(r"/admin/source-control/(\d+)/token", body)[1])
+        s, _, body = b.follow("/admin/source-control/llm", {"csrf": csrf, "Provider": "anthropic", "Model": "x",
+                                                            "Token": "sk-ant-0123456789"})
+        assert "already set" in body
+        s, _, body = b.follow(f"/admin/source-control/{llm_id}", {"csrf": csrf, "Model": "qwen3:235b", "Enabled": "1"})
+        assert "Saved." in body and "<del>qwen3:32b</del> → <ins>qwen3:235b</ins>" in body and llm_key not in body
+        body = b.follow("/admin/source-control")[2]
+        assert "Source control and LLM" in body and "qwen3:235b" in body and llm_key not in body
+        c = sqlstore.connect(writer, PW)
+        from containerizer import credentials as crm
+        got = crm.load(c, cr.load_private(tmp_path / "worker.key")).llm()
+        c.close()
+        assert got.token == llm_key and got.ai_settings()["CONTAINERIZER_LLM_BASE_URL"] == "https://llm.example/v1"
+        s, _, body = b.follow(f"/admin/source-control/{llm_id}/delete", {"csrf": csrf})
+        assert "removed" in body
         # no worker has run yet: it computes the next run
         w.queue_due()
         c = sqlstore.connect(writer, PW)
@@ -259,13 +325,16 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
         # the worker settings for this test: no build, gate or push (no Docker here)
         real_options = w.options
 
-        def options(scan, store, hooks):
-            o = real_options(scan, store, hooks)
+        def options(scan, store, hooks, creds=None):
+            o = real_options(scan, store, hooks, creds)
             o.verify, o.gate, o.push_images = False, False, False
             return o
         w.options = options
         assert w.tick() is True
         assert w.tick() is False                         # nothing more queued
+        assert tokens_used == [("github", "acme", secret)], logs   # opened by the worker, for this organization only
+        body = b.follow(f"/admin/source-control/{cred_id}")[2]
+        assert "ok: 4 repositories listed" in body and "Working" in body and secret not in body, logs
 
         s, _, body = b.follow(f"/admin/scans/{scan_id}")
         assert "Finished" in body and "4 of 4" in body and "2 deployed" in body and "4 new" in body, body
@@ -378,8 +447,23 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
         with pytest.raises(Exception, match="(?i)permission"):
             wr.cursor().execute("UPDATE cz.OrgRepository SET AdminState = N'enabled'")
         with pytest.raises(Exception, match="(?i)permission"):
-            wr.cursor().execute("UPDATE cz.OrgScan SET TokenEnv = N'CZ_TOKEN_X'")
+            wr.cursor().execute("UPDATE cz.OrgScan SET Organization = N'other'")
+        with pytest.raises(Exception, match="(?i)permission"):
+            wr.cursor().execute("UPDATE cz.SourceCredential SET Scope = N'other'")
         wr.close()
+        # the admin login can replace a token but cannot read the sealed value back
+        a = sqlstore.connect(as_("cz_w_admin"), PW)
+        with pytest.raises(Exception, match="(?i)permission"):
+            a.cursor().execute("SELECT TokenSealed FROM cz.SourceCredential")
+        a.close()
+        c = sqlstore.connect(cs, sa_pw)
+        cur = c.cursor()
+        cur.execute("SELECT COUNT(*) FROM cz.AuditLog WHERE OldValues LIKE %s OR NewValues LIKE %s OR "
+                    "NewValues LIKE N'%%TokenSealed%%'", (f"%{secret}%", f"%{secret}%"))
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT TokenSealed FROM cz.SourceCredential WHERE CredentialId = %s", (cred_id,))
+        assert secret not in cur.fetchone()[0]
+        c.close()
         r = sqlstore.connect(as_("cz_w_reader"), PW)
         with pytest.raises(Exception, match="(?i)permission"):
             r.cursor().execute("SELECT * FROM cz.OrgScan")

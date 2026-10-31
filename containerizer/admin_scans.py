@@ -2,7 +2,9 @@
 
 - Organization scans: what to scan (provider, organization), where the results go (registry, output
   repository), the filters, and the schedule (days and time, UTC); "Run now", cancel, and the runs with
-  their progress. Tokens are not entered here: a scan names the worker's environment variables.
+  their progress. Tokens are not entered here: the scan uses the read-only token registered for its
+  organization and the write token registered for its output repository (Source control,
+  admin_credentials.py), and does not run without them.
 - Repositories: every repository the scans have found, enabled or disabled, with the reason when a
   scan skipped it (Dockerfile, no application code, stale, ...). Administrators enable or disable them
   one by one or in bulk; "Automatic" hands the decision back to the scan.
@@ -22,7 +24,8 @@ PROVIDERS = {"azure-devops": "Azure DevOps", "github": "GitHub", "gitlab": "GitL
 SKIP_TEXT = {"skipped-dockerfile": "Has a Dockerfile", "skipped-no-code": "No application code",
              "skipped-unsupported": "Language not supported", "skipped-no-app": "Nothing to deploy",
              "skipped-stale": "Not updated recently", "skipped-archived": "Archived", "skipped-empty": "Empty",
-             "skipped-fork": "Fork", "skipped-filter": "Left out by the filter"}
+             "skipped-fork": "Fork", "skipped-filter": "Left out by the filter",
+             "skipped-output": "The scan's output repository"}
 LAST_TEXT = {"deployed": "Deployed to the sandbox", "no-a-components": "Assessed: no component rated A",
              "error": "Failed", "disabled": "Not processed (disabled)", **{k: "Skipped" for k in SKIP_TEXT}}
 RUN_TEXT = {"queued": "Queued", "running": "Running", "succeeded": "Finished", "failed": "Failed",
@@ -32,8 +35,7 @@ BRANCH_RE = re.compile(r"(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}")
 SECRET_RE = re.compile(r"[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?")
 ORG_RE = re.compile(r"[\w .\-/]{1,200}")
 TIME_RE = re.compile(r"([01]\d|2[0-3]):([0-5]\d)")
-SCAN_COLS = ("Name", "Provider", "Organization", "ApiUrl", "TokenEnv", "Registry", "OutputRepo", "OutputBranch",
-             "OutputTokenEnv", "ImagePullSecret", "IncludeRegex", "ExcludeRegex", "SkipForks", "StaleDays", "Verify",
+SCAN_COLS = ("Name", "Provider", "Organization", "ApiUrl", "Registry", "OutputRepo", "OutputBranch", "ImagePullSecret", "IncludeRegex", "ExcludeRegex", "SkipForks", "StaleDays", "Verify",
              "Gate", "PushImages", "UseAi", "ScheduleDays", "ScheduleMinute", "Enabled")
 FLAGS = ("SkipForks", "Verify", "Gate", "PushImages", "UseAi", "Enabled")
 NEW_DAYS = 7
@@ -155,8 +157,12 @@ def _next(scan: dict) -> str:
 
 def list_scans(adm, conn, s, a, flash: str) -> Response:
     from .worker import schedule_text
+    from .credentials import load
+    creds = load(conn)
     rows = []
     for r in _scans(conn):
+        missing = " <span class='st st-bad' title='Add the token under Source control'>Token missing</span>" \
+            if creds.problems(r) else ""
         last = "<span class='muted'>never run</span>"
         if r["RunId"]:
             when = r["FinishedAt"] or r["StartedAt"] or r["RequestedAt"]
@@ -164,7 +170,7 @@ def list_scans(adm, conn, s, a, flash: str) -> Response:
             last = f"{run_chip(r['RunStatus'])}{e(prog)} <span class='muted small'>{_d(when)}</span>" \
                    f"<div class='muted small'>{e(r['Message'] or '')}</div>"
         rows.append(
-            f"<tr><td><a href='/admin/scans/{int(r['ScanId'])}'>{e(r['Name'])}</a>{'' if r['Enabled'] else PAUSED}</td>"
+            f"<tr><td><a href='/admin/scans/{int(r['ScanId'])}'>{e(r['Name'])}</a>{'' if r['Enabled'] else PAUSED}{missing}</td>"
             f"<td>{e(PROVIDERS.get(r['Provider'], r['Provider']))}: <b>{e(r['Organization'])}</b>"
             f"<div class='muted small'>{e(r['ApiUrl'] or '')}</div></td>"
             f"<td>{e(schedule_text(r['ScheduleDays'], r['ScheduleMinute']))}<div class='muted small'>{e(_next(r))}</div></td>"
@@ -203,7 +209,8 @@ def _scan_form(adm, s, scan: dict, ident) -> str:
 <label for='Provider'>Provider</label><select id='Provider' name='Provider'>{prov}</select>
 {inp('Organization', 'Organization', 'Azure DevOps organization or collection, GitHub organization, GitLab group path', True, 'contoso', 200)}
 {inp('ApiUrl', 'Server', 'self-hosted only: https://ghe.example.com/api/v3, https://gitlab.example.com, https://tfs.example.com/tfs', ph='https://', typ='url')}
-{inp('TokenEnv', 'Token variable', "name of the worker's environment variable with a read-only token; empty: the provider's usual one (GITHUB_TOKEN, GITLAB_TOKEN, AZURE_DEVOPS_TOKEN)", ph='CZ_TOKEN_CONTOSO', maxlen=64)}
+<p class='muted small'>The scan reads the organization with the read-only token registered for it under
+<a href='/admin/source-control'>Source control</a>; an organization without one is not scanned.</p>
 {inp('IncludeRegex', 'Only repositories matching', 'regular expression on project/repository; empty: all', ph='^Billing/')}
 {inp('ExcludeRegex', 'Leave out repositories matching', 'regular expression on project/repository', ph='(^|/)(sandbox|playground)')}
 {chk('SkipForks', 'Skip forks')}
@@ -213,7 +220,8 @@ def _scan_form(adm, s, scan: dict, ident) -> str:
 {chk('PushImages', 'Push images')}
 {inp('OutputRepo', 'Output repository', 'https Git repository the Dockerfiles, manifests and Argo CD / Flux files are committed to; empty: kept on the worker', ph='https://', typ='url')}
 {inp('OutputBranch', 'Output branch', '', maxlen=200)}
-{inp('OutputTokenEnv', 'Output token variable', 'environment variable with a token that can push to the output repository; empty: OUTPUT_GIT_TOKEN', ph='CZ_TOKEN_SANDBOX_REPO', maxlen=64)}
+<p class='muted small'>Pushing uses the write token registered for this repository URL under Source control, never the
+organization's read-only token. The output repository is never scanned.</p>
 {inp('ImagePullSecret', 'Image pull secret', 'added to every generated workload', ph='regcred', maxlen=253)}
 {chk('Verify', 'Build and run every component before rating it (recommended)')}
 {chk('Gate', 'Security gate: lint, image vulnerability scan, hardened run (recommended)')}
@@ -242,7 +250,9 @@ def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
     active = next((r for r in runs if r["Status"] in ("queued", "running")), None)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     notes = []
-    problems = check_scan(scan)
+    from . import credentials as cr
+    from .admin_credentials import _key, scan_tokens
+    problems = check_scan(scan, None, cr.load(conn), _key(adm)[1])
     if problems:
         notes.append("This scan cannot run: " + "; ".join(problems))
     if active and active["Status"] == "queued" and active["RequestedAt"] < now - timedelta(minutes=3):
@@ -282,6 +292,7 @@ def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
     body = (f"{''.join(f'<p class=note>{e(n)}</p>' for n in notes)}"
             f"<div class='formrow'>{runbtn}<span>{e(schedule_text(scan['ScheduleDays'], scan['ScheduleMinute']))} · "
             f"{e(_next(scan))}</span> · <a href='/admin/repositories?scan={ident}'>Repositories</a></div>"
+            f"{scan_tokens(conn, scan)}"
             f"<h2>Runs</h2><table><thead><tr><th class='num'>#</th><th>Status</th><th>Started</th><th class='num'>Took</th>"
             f"<th>Repositories</th><th>Result</th></tr></thead>"
             f"<tbody>{''.join(rows) or '<tr><td colspan=6 class=muted>Not run yet.</td></tr>'}</tbody></table>"
@@ -291,7 +302,6 @@ def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
 
 
 def validate_scan(form: dict) -> tuple[dict, list[str]]:
-    from .worker import TOKEN_ENV_RE
     errors, v = [], {}
 
     def text(k, label, required=False, n=400, rx=None, msg=""):
@@ -312,14 +322,10 @@ def validate_scan(form: dict) -> tuple[dict, list[str]]:
         errors.append("Choose a provider")
     text("Organization", "Organization", True, 200, ORG_RE, "Organization: letters, digits, space, . _ - and / only")
     text("ApiUrl", "Server", n=400, rx=URL_RE, msg="Server must be a plain https:// address")
-    text("TokenEnv", "Token variable", n=64, rx=TOKEN_ENV_RE,
-         msg="Token variable: CZ_TOKEN_<NAME> (capitals, digits, _), or GITHUB_TOKEN, GITLAB_TOKEN, AZURE_DEVOPS_TOKEN")
     text("Registry", "Image registry", True, 400, REGISTRY_RE, "Image registry: host[:port]/path in lower case")
     text("OutputRepo", "Output repository", n=400, rx=URL_RE, msg="Output repository must be a plain https:// address")
     text("OutputBranch", "Output branch", n=200, rx=BRANCH_RE, msg="Output branch is not a valid branch name")
     v["OutputBranch"] = v["OutputBranch"] or "main"
-    text("OutputTokenEnv", "Output token variable", n=64, rx=TOKEN_ENV_RE,
-         msg="Output token variable: CZ_TOKEN_<NAME> or OUTPUT_GIT_TOKEN")
     text("ImagePullSecret", "Image pull secret", n=253, rx=SECRET_RE, msg="Image pull secret: a Kubernetes secret name")
     for k, label in (("IncludeRegex", "Only repositories matching"), ("ExcludeRegex", "Leave out repositories matching")):
         text(k, label, n=400)

@@ -25,21 +25,28 @@ of the web UI, and a **scan worker** (`containerizer worker`) on a build machine
 
 ```
  browser ──SSO──> web UI (admin pages) ──admin login──> SQL Server <──writer login── containerizer worker ──> Docker
-                  no tokens, no Docker                  OrgScan, OrgScanRun,          org tokens, registry      │
-                                                        OrgRepository, AuditLog       credentials, clones       ├─> registry
-                                                                                                                ├─> output Git repo
+                  public key only:                      OrgScan, OrgScanRun,          private key opens the     │
+                  seals tokens, cannot                  OrgRepository, AuditLog,      tokens; registry          ├─> registry
+                  open them                             SourceCredential (sealed)     credentials, clones       ├─> output Git repo
                                                                      Prometheus ──scrape /metrics──┘            └─> Argo CD / Flux
 ```
 
-The web UI only stores what to scan and when; it never holds the organization's, the output
-repository's or the registry's credentials and does not need Docker. The worker holds them as
-environment variables. A scan only *names* the variable with its token, and only `CZ_TOKEN_*` names
-or the providers' usual ones (`GITHUB_TOKEN`, `GITLAB_TOKEN`, `AZURE_DEVOPS_TOKEN`, `OUTPUT_GIT_TOKEN`,
-...) are accepted, so a scan can never make the worker send its database password or registry
-password anywhere. Tokens go only to `github.com`, `api.github.com`, `gitlab.com`, `dev.azure.com`,
-`*.visualstudio.com` and the hosts listed in `CONTAINERIZER_WORKER_HOSTS` (self-hosted servers and the
-image registry): a scan whose server, output repository or registry is elsewhere does not run, and a
-clone URL on another host is refused.
+Administrators register the source control tokens under **Admin → Source control**
+([source-control.md](source-control.md)): a **read-only token for each organization** the scans may
+read and a **write token for each output repository**. An organization without a registered token is
+never scanned: there is no anonymous access, and a scan without one shows *Token missing* and does not
+run. Tokens are sealed for the worker's public key the moment they are saved: the web UI and the admin
+database role can add, replace and remove them but never read them back, and only the worker opens
+them, just before a run.
+
+Each token is only sent where it belongs. The organization's read-only token goes to the API of its
+own server and with the clone URLs of its own organization (`https://github.com/<org>/...`,
+`https://dev.azure.com/<org>/...`, ...); a clone URL anywhere else is refused. The output repository's
+write token is picked by the repository's URL, is only used to push there, and the output repository
+is never scanned, so it can live in the scanned organization. Git gets each token scoped to the one
+repository URL it is for. The registry credentials stay with the worker as environment variables;
+images are pushed only to `github.com`, `gitlab.com`, `dev.azure.com`, `*.visualstudio.com`, the
+hosts of the registered tokens and `CONTAINERIZER_WORKER_HOSTS`.
 
 ## Setting it up
 
@@ -49,11 +56,22 @@ clone URL on another host is refused.
    CONTAINERIZER_SQL="Server=...;Database=Containerizer;User Id=<owner>" python -m containerizer db init
    ```
 
-2. The admin pages show **Organization scans** and **Repositories** to administrators and operators
-   (`CONTAINERIZER_OPERATORS`, see [Roles](results-database.md#roles)); nothing else to configure in
-   the web UI.
+2. Make the key pair that seals the tokens, once, and give the private key to the worker only and the
+   public key to the web UI (the appliance does this by itself at first boot):
 
-3. Run the worker on a **dedicated, disposable build VM** with Docker. Building and running the
+   ```sh
+   python -m containerizer credentials keygen --private worker-credential.key --public worker-credential.pub
+   # worker:  CONTAINERIZER_CREDENTIAL_KEY_FILE=/etc/containerizer/worker-credential.key  (mode 600, the worker's user)
+   # web UI:  CONTAINERIZER_CREDENTIAL_PUBLIC_KEY_FILE=/etc/containerizer/worker-credential.pub
+   ```
+
+   Several workers share the same private key. A new key pair means entering every token again.
+
+3. The admin pages show **Organization scans** and **Repositories** to administrators and operators
+   (`CONTAINERIZER_OPERATORS`, see [Roles](results-database.md#roles)), and **Source control** to
+   administrators only: register the tokens there before the first scan.
+
+4. Run the worker on a **dedicated, disposable build VM** with Docker. Building and running the
    repositories' images executes their build steps, as `analyze` and `gate` always do, so give the VM
    no other credentials and no access to production networks.
 
@@ -83,10 +101,9 @@ verification reaches the containers it starts on `127.0.0.1`, and the scanners m
 | `--name` | Worker name shown on the runs (default the host name). |
 | `--metrics-host`, `--metrics-port`, `--no-metrics` | The metrics endpoint, default `127.0.0.1:9464`. |
 | `--once` | Run what is due or queued, then exit (for a cron job instead of a service). |
-| `CZ_TOKEN_<NAME>`, `GITHUB_TOKEN`, `GITLAB_TOKEN`, `AZURE_DEVOPS_TOKEN` | Read-only organization tokens, named in each scan's *Token variable*. See [organization-run.md](organization-run.md) for the scopes. |
-| `OUTPUT_GIT_TOKEN` or `CZ_TOKEN_<NAME>` | Push access to the output repository (*Output token variable*). |
+| `CONTAINERIZER_CREDENTIAL_KEY_FILE` | The private key that opens the tokens registered under **Source control** (`containerizer credentials keygen`). The worker no longer reads organization or output repository tokens from its environment. |
 | `REGISTRY_USERNAME`, `REGISTRY_PASSWORD` | Push-only registry credentials (or an existing `docker login` of the worker's user). |
-| `CONTAINERIZER_WORKER_HOSTS` | Extra hosts that may receive tokens, comma separated, `*.example.com` for subdomains: self-hosted servers and the image registry. |
+| `CONTAINERIZER_WORKER_HOSTS` | Extra image registry hosts, comma separated, `*.example.com` for subdomains. Self-hosted Git servers need no entry: registering their token allows them. |
 | `CONTAINERIZER_METRICS_TOKEN` | When set, scrapes must send `Authorization: Bearer <token>`. |
 
 `SIGTERM` (systemctl stop) lets the worker finish the repository it is on; the run is then marked
@@ -101,9 +118,9 @@ and each worker keeps its own clones.
 
 A scan has the same settings as `containerizer org` ([organization-run.md](organization-run.md)):
 provider and organization (and the server for self-hosted Azure DevOps Server, GitHub Enterprise or
-GitLab), the token variable, include/exclude filters (regular expressions on `project/repository`),
+GitLab), include/exclude filters (regular expressions on `project/repository`),
 skip forks, skip repositories not updated for N days, the image registry and whether to push, the
-output repository, branch and token variable (empty: the generated files stay on the worker), an
+output repository and branch (empty: the generated files stay on the worker), an
 image pull secret, build-and-run verification, the security gate and the LLM.
 
 **Schedule**: the days of the week and a time in UTC; no day selected means only **Run now**. The worker
