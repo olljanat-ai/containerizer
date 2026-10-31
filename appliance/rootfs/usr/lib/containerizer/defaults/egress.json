@@ -1,0 +1,13 @@
+{
+ "mode": "enforce",
+ "rules": [
+  {"host": "github.com", "ports": ["tcp/443"], "note": "clone repositories hosted on GitHub"},
+  {"host": "api.github.com", "ports": ["tcp/443"], "note": "list GitHub organizations"},
+  {"host": "codeload.github.com", "ports": ["tcp/443"], "note": "GitHub archives"},
+  {"host": "objects.githubusercontent.com", "ports": ["tcp/443"], "note": "GitHub release downloads"},
+  {"host": "api.nuget.org", "ports": ["tcp/443"], "note": ".NET builds: NuGet"},
+  {"host": "globalcdn.nuget.org", "ports": ["tcp/443"], "note": ".NET builds: NuGet packages"},
+  {"host": "dotnetcli.azureedge.net", "ports": ["tcp/443"], "note": ".NET SDK downloads"},
+  {"host": "builds.dotnet.microsoft.com", "ports": ["tcp/443"], "note": ".NET SDK downloads"}
+ ]
+}

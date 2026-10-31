@@ -111,6 +111,7 @@ class RepoResult:
     overridden: list = field(default_factory=list)   # automatic skips an administrator overrode (enabled)
     seconds: float = 0.0
     source_key: str = ""              # Application.SourceKey in the results database
+    dev_database: dict = field(default_factory=dict)   # the uploaded dev database restored next to it, if any
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -191,6 +192,18 @@ def select_components(a, verified: bool) -> tuple[list, list[dict]]:
     return keep, excluded
 
 
+def sbom_entry(g: dict | None, folder: str, cdir: Path, local: str, c, o: OrgOptions) -> dict | None:
+    """The SBOM the gate made for a component; without the gate, one made here (no CVEs: nothing was scanned)."""
+    if g is not None:
+        sb = next((x.get("sbom") for x in g["components"] if x["component"] == folder), None)
+        return sb if sb and not sb.get("error") else None
+    from .sbom import component_sbom, config
+    if not o.push_images or not config().get("enabled", True):
+        return None
+    sb = component_sbom(local, cdir, [], (c.name, c.project.name))
+    return None if sb.get("error") else sb
+
+
 def gate_failure(comp: dict) -> str:
     if comp.get("build_error"):
         return "image build failed"
@@ -204,6 +217,9 @@ def gate_failure(comp: dict) -> str:
             return f"{len(s.get('blocking', []))} fixable vulnerabilities at or above the gate threshold ({s.get('kind')})"
     if (comp.get("run") or {}).get("status") == "hardening-failure":
         return "does not run with the hardened pod security context"
+    denied = ((comp.get("sbom") or {}).get("summary") or {}).get("denied") or []
+    if denied:
+        return f"licence denied by policy: {', '.join(denied[:3])}"[:300]
     return ""
 
 
@@ -672,24 +688,27 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
         res.rating = a.rating
         from .sqlstore import source_info
         res.source_key = source_info(src, a.name)["key"]
+        assessment_id = None
         if o.sql or os.environ.get("CONTAINERIZER_SQL"):
             from .sqlstore import store_results
-            store_results(o.sql, [a], [src])
+            assessment_id = store_results(o.sql, [a], [src])[0]
         keep, res.excluded = select_components(a, o.verify)
+        dd, dd_row = (_dev_database(o, res, a, keep, work, reg, tag) if keep else (None, None))
         gen = work / "gen" / app
         names = {k8s_name(c.name): c for c in keep}
+        g = None
         while keep:
             if gen.exists():
                 shutil.rmtree(gen)
             fa = dataclasses.replace(a, components=keep)
             if not o.gate:
-                generate_app(fa, gen, registry=o.registry, pin=o.pin, gitops=gitops, tag=tag)
+                generate_app(fa, gen, registry=o.registry, pin=o.pin, gitops=gitops, tag=tag, devdb=dd)
                 break
             from .harden import security
             from .imagescan import gate_app
             g = gate_app(fa, gen, build=True, scan=True, run=True, registry=o.registry, pin=o.pin, gitops=gitops,
                          tag=tag, scanner=o.scanner or security()["scan"].get("default_scanner", "auto"),
-                         fail_on=o.fail_on)
+                         fail_on=o.fail_on, devdb=dd)
             failed = {c["component"]: gate_failure(c) for c in g["components"] if gate_failure(c)}
             if not failed:
                 break
@@ -703,7 +722,7 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
 
         # images: built by the gate (or here), pushed under <registry>/<app>/<component>:<tag>
         from .imagescan import build_image
-        comps = []
+        comps, sboms = [], []
         for c in keep:
             cn = k8s_name(c.name)
             cdir = gen / cn
@@ -718,14 +737,38 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
                      "project_name": c.project.name,
                      "verification": next((v.get("status") for v in getattr(a, "verification", None) or [] if v.get("component") == c.name),
                                           "not run")}
+            sb = sbom_entry(g, cn, cdir, local, c, o)
             if o.push_images and reg:
                 entry["digest"] = reg.push(local, ref, [f"{ref.rsplit(':', 1)[0]}:git-{res.commit[:12]}"]
                                            if res.commit else [])
                 if o.cosign_key and entry["digest"]:
                     entry["signature"] = reg.sign(ref, entry["digest"], o.cosign_key)
+                if sb and entry["digest"]:
+                    from .sbom import attach
+                    sb["attestation"] = attach(ref, entry["digest"], cdir / "sbom.cdx.json", o.cosign_key, reg.config)
+            if sb:
+                entry["sbom"] = {k: sb.get(k) for k in ("file", "format", "tool", "attestation")} | {
+                    "summary": {k: v for k, v in sb["summary"].items() if k not in ("warn", "denied")}}
+                sboms.append({"project": c.project.rel, "document": json.loads((cdir / "sbom.cdx.json").read_text()),
+                              "packages": sb["packages"], "tool": sb.get("tool"), "os": sb.get("os"), "image": ref,
+                              "digest": entry.get("digest"), "attestation": sb.get("attestation")})
             comps.append(entry)
         res.components = comps
+        if assessment_id and sboms:
+            from .sqlstore import connect, store_image_sboms
+            try:                              # the images are pushed already: a database error must not undo that
+                conn = connect(o.sql)
+                try:
+                    store_image_sboms(conn, assessment_id, sboms)
+                finally:
+                    conn.close()
+            except Exception as e:
+                print(f"warning: SBOMs not written to SQL Server: {type(e).__name__}: {REDACT(str(e))[:300]}",
+                      file=sys.stderr)
 
+        if dd is not None and (gen / "devdb").is_dir():
+            from .devdb import readme
+            (gen / "devdb" / "README.md").write_text(readme(k8s_name(a.name), dd, dd_row))
         _clean_generated(gen)
         if o.image_pull_secret and (gen / "kustomization.yaml").exists():
             add_pull_secret(gen / "kustomization.yaml", o.image_pull_secret)
@@ -743,6 +786,40 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
 
 
 # --------------------------------------------------------------------------- the run
+
+def _dev_database(o: OrgOptions, res: RepoResult, a, comps: list, work: Path, reg: "Registry | None", tag: str):
+    """The dev database an operator uploaded for this application (admin pages): its image built and
+    pushed next to the application's, and the settings that point the application at it.
+    (None, None) when there is none, or when it cannot be prepared (the reason is in res.dev_database)."""
+    from . import devdb
+    from .generate import k8s_name
+    settings = devdb.Settings.from_env(os.environ)
+    if settings is None or not (o.sql or os.environ.get("CONTAINERIZER_SQL")) or not res.source_key:
+        return None, None
+    try:
+        row = devdb.lookup(o.sql, res.source_key)
+    except Exception as ex:                                  # e.g. a database from before the DevDatabase table
+        res.dev_database = {"status": "error", "reason": f"could not read the dev database settings: {str(ex)[:200]}"}
+        return None, None
+    if not row:
+        return None, None
+    ns = k8s_name(a.name)
+    image = f"{o.registry.rstrip('/')}/{ns}/devdb:{tag}"
+    local = f"containerizer/{ns}-devdb:gate"
+    info = {"engine": row["Engine"], "database": row["DatabaseName"], "file": row["FileName"], "sha256": row["Sha256"],
+            "image": image}
+    try:
+        db = devdb.prepare(row, a, comps, settings, image, local, work, ai=o.ai, model=o.model,
+                           timeout=max(o.timeout, 1800))
+        if o.push_images and reg:
+            info["digest"] = reg.push(local, image, [f"{image.rsplit(':', 1)[0]}:sha-{row['Sha256'][:12]}"])
+    except (devdb.DevDbError, SourceError, OSError, ValueError) as ex:
+        res.dev_database = {**info, "status": "error", "reason": str(ex)[:500]}
+        return None, None
+    res.dev_database = {**info, "status": "deployed", "settings": db.source,
+                        "components": {c: [e["name"] for e in env] for c, env in db.env.items()}}
+    return db, row
+
 
 def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
     from .confidence import reset_cache

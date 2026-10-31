@@ -233,6 +233,37 @@ rules:
     refs:
       - https://learn.microsoft.com/en-us/dotnet/standard/security/cross-platform-cryptography
 
+  # Opening LocalMachine\My (or any LocalMachine store other than Root/CA) throws on Linux:
+  # "Unix LocalMachine X509Store is limited to the Root and CertificateAuthority stores."
+  # (observed by `containerizer verify` on city-permits and housing-management)
+  - id: cert-store-localmachine-code
+    applies_to: [dotnet]
+    when:
+      all:
+        - code: 'StoreLocation\.LocalMachine'
+          unguarded: true
+        - code: 'StoreName\.(My|AddressBook|Disallowed|TrustedPeople|TrustedPublisher)\b|new\s+([\w.]+\.)?X509Store\s*\(\s*"(My|MY)"'
+        # the same code can load the certificate from a file or Key Vault instead (a configuration
+        # choice, reported by cert-store), e.g. Skoruba IdentityServer's AddCustomSigningCredential
+        - not: {code: '\bX509CertificateLoader\.Load|\bCreateFromPemFile\s*\(|\bnew\s+X509Certificate2\s*\(\s*(File\.ReadAllBytes|[\w.]*(Path|File)\w*\s*[,)])|\bCertificateClient\b|\bKeyVault'}
+      same_file: true
+    severity: refactor
+    category: secrets
+    effort: 0.5
+    title: Code opens a LocalMachine certificate store that does not exist on Linux
+    why: >-
+      The code opens the LocalMachine personal (My) store. On Linux .NET only offers the read-only
+      Root and intermediate (CertificateAuthority) stores for LocalMachine, built from the OpenSSL CA bundle, so X509Store.Open throws a
+      CryptographicException at run time ("Unix LocalMachine X509Store is limited to the Root and
+      CertificateAuthority stores") and the certificate lookup needs a code change.
+    fix: >-
+      Load the certificate from a file mounted from a Kubernetes Secret
+      (X509Certificate2.CreateFromPemFile or X509CertificateLoader.LoadPkcs12FromFile with a path
+      from configuration), keeping the store lookup only for Windows if needed.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/standard/security/cross-platform-cryptography#x509store
+      - https://kubernetes.io/docs/concepts/configuration/secret/
+
   - id: secrets-in-config
     when:
       config: '("?(password|pwd|secret|apikey|api_key|clientsecret|accesskey)"?\s*[:=]\s*"(?!\s*"|\$\{|#\{|__|%|<|\*{3}|changeme|change_me|{{|\[[^"\]]*\]"|\{[^"}]*\}"|[x*\-]{3,}"|(your|enter[-_ ])[^"]*"|placeholder|todo)[^"]{4,}")|(Password\s*=\s*(?!\s*;|\$\{|#\{|__|<|\[|\{|[x*]{3,}\s*;|changeme|(your|my)[-_ ]?\w*\s*;)[^;"]{3,};)'
@@ -812,15 +843,20 @@ rules:
   - id: in-memory-session-scaleout
     applies_to: [dotnet]
     when:
-      any:
-        - config: '<sessionState\s+mode="InProc"|<sessionState(?![^>]*mode=)'
-        - code: 'AddDistributedMemoryCache\(\)'
+      # ASP.NET (System.Web) InProc session; ASP.NET Core session is state-session-in-memory
+      config: '<sessionState\s+mode="InProc"|<sessionState(?![^>]*mode=)'
     severity: config
     category: scaling
+    state: memory
     effort: 0.5
     title: In-process session state
-    why: Sessions are kept in memory; with several replicas users lose sessions unless sticky sessions are used.
-    fix: Use Redis/SQL distributed cache or enable session affinity on the ingress.
+    why: >-
+      Session state is kept in the worker process (sessionState mode InProc, the default). Each
+      replica has its own sessions and a restart loses them, so the component is not stateless.
+    fix: >-
+      Use the SQL Server or Redis session state provider (mode="SQLServer", or
+      Microsoft.Web.RedisSessionStateProvider with Azure Cache for Redis), or enable session
+      affinity on the ingress as a stop-gap.
     refs:
       - https://learn.microsoft.com/en-us/aspnet/core/fundamentals/app-state
 

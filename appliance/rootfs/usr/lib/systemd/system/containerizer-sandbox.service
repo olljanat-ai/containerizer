@@ -1,0 +1,12 @@
+[Unit]
+Description=containerizer appliance: connect the sandbox cluster to the scans' output repository
+After=k3s.service
+Requires=k3s.service
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/containerizer/bin/cz-sandbox
+PrivateTmp=yes
+ProtectHome=yes

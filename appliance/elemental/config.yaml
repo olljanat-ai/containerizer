@@ -1,0 +1,17 @@
+# Elemental toolkit configuration of the containerizer appliance (/etc/elemental/config.yaml).
+install:
+  grub-entry-name: Containerizer
+  partitions:
+    # OS snapshots (btrfs): the running system plus up to 3 earlier ones for roll back
+    state:
+      size: 16384
+    # everything else on the disk is COS_PERSISTENT: SQL Server data, configuration and secrets,
+    # Docker and k3s data, the local registry, clones (see /system/oem/05_layout.yaml)
+
+upgrade:
+  grub-entry-name: Containerizer
+  # the system agent always passes --system oci:<image>@<verified digest>
+  system: oci:ghcr.io/olljanat-ai/containerizer-appliance:latest
+
+reset:
+  grub-entry-name: Containerizer

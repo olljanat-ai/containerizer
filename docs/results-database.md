@@ -21,6 +21,7 @@ BusinessUnit 1─* Product 1─* Application 1─* Component            administ
                                               1─* ComponentAssessment 0─1 ComponentMigration   plan, AI agent prompt
                                               1─* Finding            why, fix, references
                              Application 1─* SandboxCheck         sandbox cluster health (org --verify-sandbox)
+                                              ApplicationAssessment 1─* ComponentSbom 1─* SbomPackage   SBOMs (docs/sbom.md)
 AuditLog                                                             every mapping change
 AccessLog                                                            who looked at what (optional)
 ```
@@ -194,6 +195,9 @@ or the `web` service of `results/compose.yaml` / the image built from `results/D
   findings and their evidence, the plan, constraints (minimal changes, security, container readiness)
   and how to verify. Copy it with the button, or open it as plain text at
   `/app/<id>/component/<id>/agent-prompt.md`.
+- **Packages** and **Dependencies and licences** (`/app/<id>/component/<id>`, `/sbom`): the software bill
+  of materials of each component (licence and policy status, CVEs per package) and the licences and
+  CVEs across the portfolio by business unit and product; see [sbom.md](sbom.md#web-ui).
 - **Trends** (`/trends`, linked from the overview): how the portfolio changed from scan to scan. The
   headline numbers compare now with the start of the range (applications assessed, ready now, obstacles
   that cannot run in a Linux container, how many applications got a better or worse rating), then the
@@ -296,7 +300,7 @@ Who signs in gets one or more roles, from the same kind of allow-list rules as `
 | --- | --- | --- |
 | Viewer | `CONTAINERIZER_VIEWERS` | Read the results pages. Only matters when [sign-in for the results pages](#sign-in-for-the-results-pages-optional) is on. |
 | Product owner | `CONTAINERIZER_PRODUCT_OWNERS` | Read everything, including the change history. Map applications, and change their display name, owner, description and hidden flag, but only for the business units or products in their scope. Change the name, owner, description and product page link of their products. With a business unit in scope, also add products to it and delete empty ones. |
-| Operator | `CONTAINERIZER_OPERATORS` | Read everything, including the change history. Run and schedule organization scans, enable and disable repositories, and open the Grafana link on the scheduled scan pages. Cannot change the mapping. |
+| Operator | `CONTAINERIZER_OPERATORS` | Read everything, including the change history. Run and schedule organization scans, enable and disable repositories, and open the Grafana link on the scheduled scan pages. Upload [dev database backups](dev-databases.md) for the sandbox. Cannot change the mapping. |
 | Admin | `CONTAINERIZER_ADMINS` | Everything, including business units and the [access log](#access-log-optional). |
 
 Admins, operators and product owners can always read the results pages; nobody else gets into
@@ -392,6 +396,7 @@ is the web app, not the API). Cookies are ignored, so the API has no CSRF surfac
 | `GET /api/v1/applications` | list with the latest rating (`?unmapped=true`, `?productId=`, `?name=`, `?retired=true`) |
 | `GET` · `PATCH /api/v1/applications/{id}` | read · set `productId`, `displayName`, `owner`, `description`, `retired` (applications themselves come from scans) |
 | `GET /api/v1/audit` | the change history (`?table=Application`, `?rowId=`, `?limit=` up to 1000) |
+| `GET /api/v1/applications/{id}/components/{cid}/sbom`, `/api/v1/sbom/packages`, `/api/v1/sbom/summary` | software bills of materials, read-only: see [sbom.md](sbom.md#api) |
 
 Errors are `{"error": "...", "message": "..."}` with 400 (invalid field), 401 (no or bad token),
 403 (caller not allowed), 404, 405, 409 (name taken, referenced row missing or still in use), 413, 415.

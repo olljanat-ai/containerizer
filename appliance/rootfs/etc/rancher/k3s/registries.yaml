@@ -1,0 +1,6 @@
+# The appliance's own registry (containerizer-registry.service, 127.0.0.1:5000, loopback only). Scans that
+# push to localhost:5000/<path> deploy to the sandbox cluster without pull secrets.
+mirrors:
+  "localhost:5000":
+    endpoint:
+      - "http://127.0.0.1:5000"

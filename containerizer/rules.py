@@ -152,7 +152,9 @@ def _rel(f: Path) -> str:
         rd = reviewed_dir()
         if rd and f.parent == rd:       # approved rules from the internal rules repository
             return "reviewed/" + f.name
-        return "rules/learned/" + f.name    # a staging copy of the learned rules (rulereview.LearningSession)
+        if f.parent == LEARNED_DIR:     # a staging copy of the learned rules (rulereview.LearningSession)
+            return "rules/learned/" + f.name
+        return str(f)                   # a rule folder outside the repository
 
 
 @lru_cache(maxsize=4096)

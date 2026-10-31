@@ -157,13 +157,48 @@ def cmd_gate(args) -> int:
         out = Path(args.out) / a.name if args.out else Path(app) / "containerize"
         r = gate_app(a, out, build=not args.no_build, scan=not args.no_scan, scanner=scanner, fail_on=args.fail_on,
                      registry=args.registry, pin=args.pin_digests, base_cache=base_cache,
-                     run=not args.no_build and not args.no_run, refresh=not args.no_refresh)
+                     run=not args.no_build and not args.no_run, refresh=not args.no_refresh,
+                     sbom=False if args.no_sbom else None)
         blocking = sum(len(s["blocking"]) for c in r["components"] for s in c["scans"])
         print(f"{a.name:24s} {'PASS' if r['passed'] else 'FAIL'}  lint errors={r['lint'].get('error', 0)} "
               f"warnings={r['lint'].get('warning', 0)}  blocking vulns={blocking}  -> {out / 'SECURITY.md'}")
         if not r["passed"]:
             rc = 1
     return rc
+
+
+def cmd_sbom(args) -> int:
+    import json as _json
+    from . import sbom
+    doc, err = sbom.image_sbom(args.image, local=not args.remote)
+    if doc is None:
+        print(f"error: {err}", file=sys.stderr)
+        return 3
+    vulns = []
+    if args.scan:
+        from .harden import security
+        from .imagescan import scan_image
+        res = scan_image(args.image, security()["scan"].get("default_scanner", "auto"), local=not args.remote)
+        if res.error:
+            print(f"warning: image scan failed, no CVEs attached: {res.error[:300]}", file=sys.stderr)
+        vulns = res.vulns
+    pkgs = sbom.analyze(doc, vulns)
+    if args.out:
+        Path(args.out).write_text(_json.dumps(doc, indent=2) + "\n")
+    s = sbom.summarize(pkgs)
+    if args.json:
+        print(_json.dumps({"summary": s, "packages": [p.to_dict() for p in pkgs]}, indent=2))
+    else:
+        for p in pkgs:
+            c = p.counts()
+            cves = " ".join(f"{k[0]}{n}" for k, n in c.items() if n)
+            print(f"{p.name[:44]:44s} {p.version[:24]:24s} {p.type:6s} {sbom.STATUSES[sbom.STATUS_RANK[p.status]]:8s}"
+                  f"{'' if p.applies else '*'} {p.license[:50]:50s} {cves}")
+        lic, vul = s["licenses"], s["vulnerabilities"]
+        print(f"\n{s['packages']} packages; licences: {lic['denied']} denied, {lic['warn']} to review, {lic['unknown']} "
+              f"unknown (* = not counted: base image OS package, the application, accepted)"
+              + (f"; CVEs: {vul['CRITICAL']} critical, {vul['HIGH']} high" if args.scan else ""))
+    return 1 if s["denied"] else 0
 
 
 def cmd_images(args) -> int:
@@ -528,7 +563,17 @@ def main(argv=None) -> int:
     s.add_argument("--fail-on", default=None, help="lowest failing severity (default from rules/60-security.yaml)")
     s.add_argument("--registry", default="registry.local")
     s.add_argument("--pin-digests", action="store_true")
+    s.add_argument("--no-sbom", action="store_true", help="do not generate SBOMs of the built images "
+                   "(default from rules/60-security.yaml sbom.enabled)")
     s.set_defaults(fn=cmd_gate)
+
+    s = sub.add_parser("sbom", help="CycloneDX SBOM of an image with licences against the policy (and CVEs with --scan)")
+    s.add_argument("image", help="image reference (local Docker image, or pulled from its registry with --remote)")
+    s.add_argument("--remote", action="store_true", help="read the image from its registry instead of the local daemon")
+    s.add_argument("--out", help="write the CycloneDX JSON document here (default: print the package table only)")
+    s.add_argument("--scan", action="store_true", help="also scan the image (Trivy/Grype) and attach CVEs to packages")
+    s.add_argument("--json", action="store_true", help="print the analysed packages as JSON")
+    s.set_defaults(fn=cmd_sbom)
 
     s = sub.add_parser("images", help="show base images, or pick patched tags with --update")
     s.add_argument("--update", action="store_true", help="choose the newest patched tags and write rules/images.lock.yaml")

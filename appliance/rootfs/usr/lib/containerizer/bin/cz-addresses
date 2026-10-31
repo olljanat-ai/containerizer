@@ -1,0 +1,15 @@
+#!/bin/bash
+# After the network is up: add the appliance's own addresses to the HTTPS certificate (internal CA only;
+# Let's Encrypt does not issue for private addresses), then (re)load Caddy.
+set -euo pipefail
+. /etc/containerizer/appliance.env
+f=/run/containerizer/caddy.env
+host="${CZ_HOSTNAME:-$(hostname)}"
+sites="https://$host"
+if [ -z "${CZ_ACME_EMAIL:-}" ]; then
+  for a in $(ip -o addr show scope global | awk '$2 !~ /^(cz-dns|docker|br-|veth|cni|flannel)/ {print $4}' | cut -d/ -f1); do
+    case "$a" in *:*) sites="$sites, https://[$a]";; *) sites="$sites, https://$a";; esac
+  done
+fi
+sed -i "s#^CZ_SITES=.*#CZ_SITES=$sites#" "$f"
+systemctl try-reload-or-restart caddy.service

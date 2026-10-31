@@ -1,0 +1,17 @@
+[Unit]
+Description=containerizer appliance: configuration, secrets and data folders
+DefaultDependencies=no
+After=local-fs.target systemd-sysusers.service systemd-tmpfiles-setup.service
+Before=containerizer-firewall.service network-pre.target sysinit.target
+Wants=network-pre.target
+ConditionPathExists=!/run/elemental/recovery_mode
+ConditionKernelCommandLine=!cdroot
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/containerizer/bin/cz-firstboot
+UMask=0077
+
+[Install]
+WantedBy=sysinit.target

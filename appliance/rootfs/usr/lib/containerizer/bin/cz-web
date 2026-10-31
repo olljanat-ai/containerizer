@@ -1,0 +1,6 @@
+#!/bin/sh
+# Passwords from systemd credentials (root-only files on the persistent partition), never in the unit.
+CONTAINERIZER_SQL_PASSWORD="$(cat "$CREDENTIALS_DIRECTORY/sql-web")"
+CONTAINERIZER_ADMIN_SQL_PASSWORD="$(cat "$CREDENTIALS_DIRECTORY/sql-admin")"
+export CONTAINERIZER_SQL_PASSWORD CONTAINERIZER_ADMIN_SQL_PASSWORD
+exec /usr/lib/containerizer/venv/bin/python -m containerizer web --host 127.0.0.1 --port 8080

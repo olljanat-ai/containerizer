@@ -12,6 +12,7 @@
 --   AuditLog: every change to BusinessUnit, Product and the mapping of Application, with who made it
 --   AccessLog: who signed in to the web UI and what they looked at (optional)
 --   OrgScan 1-* OrgScanRun, OrgRepository                                    (scheduled organization scans)
+--   Application 0-1 DevDatabase                                              (dev database backup for the sandbox)
 --   RuleCandidate 1-* RuleEvidence: rules the learning loop learned, waiting for review (rule review)
 --
 -- The scan fills Application, Component and the assessment tables. People maintain business units,
@@ -474,6 +475,27 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_AccessLog_User' AND o
 CREATE INDEX IX_AccessLog_User ON [${schema}].AccessLog (UserName, At DESC);
 GO
 
+-- Dev database backups operators upload for the sandbox (one per application). The file itself is
+-- stored by the web UI in CONTAINERIZER_DEV_DB_DIR under StoredAs (named by its SHA-256); the scan
+-- restores it into a database next to the application in the sandbox, and sets the application's
+-- connection settings following Prompt. Changes are in AuditLog (the prompt is not copied there).
+IF OBJECT_ID(N'[${schema}].DevDatabase', N'U') IS NULL
+CREATE TABLE [${schema}].DevDatabase (
+    DevDatabaseId int IDENTITY(1,1) NOT NULL CONSTRAINT PK_DevDatabase PRIMARY KEY,
+    ApplicationId int            NOT NULL CONSTRAINT FK_DevDatabase_Application REFERENCES [${schema}].Application (ApplicationId)
+                                 CONSTRAINT UQ_DevDatabase_Application UNIQUE,
+    Engine        nvarchar(20)   NOT NULL CONSTRAINT CK_DevDatabase_Engine CHECK (Engine IN (N'sqlserver')),
+    DatabaseName  nvarchar(128)  NOT NULL,
+    FileName      nvarchar(200)  NOT NULL,       -- as uploaded
+    SizeBytes     bigint         NOT NULL,
+    Sha256        char(64)       NOT NULL,
+    StoredAs      nvarchar(100)  NOT NULL,       -- <sha256>.bak
+    Prompt        nvarchar(max)  NULL,           -- how to point the application at the database
+    UploadedAt    datetime2(0)   NOT NULL CONSTRAINT DF_DevDatabase_UploadedAt DEFAULT SYSUTCDATETIME(),
+    UploadedBy    nvarchar(256)  NOT NULL
+);
+GO
+
 CREATE OR ALTER FUNCTION [${schema}].fnAuditWho()
 RETURNS TABLE AS RETURN
 SELECT COALESCE(CAST(SESSION_CONTEXT(N'containerizer.user') AS nvarchar(256)), ORIGINAL_LOGIN()) AS ChangedBy,
@@ -744,6 +766,26 @@ BEGIN
 END;
 GO
 
+CREATE OR ALTER TRIGGER [${schema}].trDevDatabaseAudit ON [${schema}].DevDatabase
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'DevDatabase', COALESCE(i.ApplicationId, d.ApplicationId),
+           (SELECT COALESCE(a.DisplayName, a.Name) FROM [${schema}].Application a
+            WHERE a.ApplicationId = COALESCE(i.ApplicationId, d.ApplicationId)),
+           CASE WHEN d.DevDatabaseId IS NULL THEN N'insert' WHEN i.DevDatabaseId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.DevDatabaseId IS NOT NULL THEN (SELECT d.Engine, d.DatabaseName, d.FileName, d.SizeBytes, d.Sha256,
+                CONVERT(char(64), HASHBYTES('SHA2_256', COALESCE(d.Prompt, N'')), 2) AS PromptSha256
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.DevDatabaseId IS NOT NULL THEN (SELECT i.Engine, i.DatabaseName, i.FileName, i.SizeBytes, i.Sha256,
+                CONVERT(char(64), HASHBYTES('SHA2_256', COALESCE(i.Prompt, N'')), 2) AS PromptSha256
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.DevDatabaseId = i.DevDatabaseId
+    CROSS JOIN [${schema}].fnAuditWho() w;
+END;
+GO
+
 -- Rule review decisions (and new candidates) in the change history; SeenCount and claims are not logged.
 CREATE OR ALTER TRIGGER [${schema}].trRuleCandidateAudit ON [${schema}].RuleCandidate
 AFTER INSERT, UPDATE, DELETE AS
@@ -818,6 +860,8 @@ GRANT SELECT ON [${schema}].Application TO [${schema}_admin];
 GRANT UPDATE ON [${schema}].Application (ProductId, DisplayName, Description, Owner, Retired) TO [${schema}_admin];
 GRANT SELECT ON [${schema}].AuditLog TO [${schema}_admin];
 GRANT SELECT, INSERT ON [${schema}].AccessLog TO [${schema}_admin];
+GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].DevDatabase TO [${schema}_admin];
+GRANT SELECT ON [${schema}].DevDatabase TO [${schema}_writer];
 GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].OrgScan TO [${schema}_admin];
 GRANT SELECT ON [${schema}].OrgScanRun TO [${schema}_admin];
 GRANT SELECT ON [${schema}].OrgRepository TO [${schema}_admin];
@@ -838,7 +882,8 @@ IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 5) INSERT
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 6) INSERT [${schema}].SchemaVersion (Version) VALUES (6);
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 7) INSERT [${schema}].SchemaVersion (Version) VALUES (7);
-GO
--- 8: rule review (RuleCandidate, RuleEvidence)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 8) INSERT [${schema}].SchemaVersion (Version) VALUES (8);
+GO
+-- 9: rule review (RuleCandidate, RuleEvidence)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 9) INSERT [${schema}].SchemaVersion (Version) VALUES (9);
 GO

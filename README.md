@@ -21,6 +21,15 @@ Design principles:
   read-only application files, read-only root filesystem, all capabilities dropped, seccomp,
   secrets only as Kubernetes Secret references, base images pinned to a version line.
 
+## Appliance (VM image / ISO)
+
+containerizer ships as an appliance: an immutable Elemental OS image with the web UI and API, the scan
+worker, SQL Server, a single-node k3s sandbox cluster with Flux, a local container registry,
+Prometheus and Grafana. Only SSH and HTTPS are allowed in, and outgoing traffic is blocked except for
+the FQDN rules an admin adds under **Admin → Firewall**. Signed upgrades and roll back are under
+**Admin → System**. Each release publishes an ISO, qcow2 and VHD; see [docs/appliance.md](docs/appliance.md).
+The commands below are what the appliance runs internally, and are useful for development.
+
 ## Quick start
 
 ```bash
@@ -59,6 +68,9 @@ python -m containerizer org --provider github --org acme --registry myacr.azurec
   --output-repo https://github.com/acme/sandbox-deployments.git          # GITHUB_TOKEN, OUTPUT_GIT_TOKEN
 # or schedule organization scans from the admin pages and run them with a worker (docs/scheduled-scans.md)
 python -m containerizer worker --sql "Server=...;Database=Containerizer;User Id=cz_worker"
+
+# CycloneDX SBOM of an image: licences against the policy, CVEs per package (docs/sbom.md)
+python -m containerizer sbom myregistry.example.com/app/web:1.4 --remote --scan --out web.cdx.json
 
 # results database (SQL Server) and read-only web UI for management, see docs/results-database.md
 docker compose -f results/compose.yaml up -d --build          # SQL Server + UI on http://127.0.0.1:8080/
@@ -354,6 +366,14 @@ vulnerable OS package with a fix, the gate upgrades just that package in the fin
 / `apt-get --only-upgrade`; chiseled images have no package manager and need a newer tag). Results go
 to `SECURITY.md` and `security.json` next to the generated files.
 
+**SBOM and licences.** Every built image gets a CycloneDX SBOM from Syft (`sbom.cdx.json` next to the
+`Dockerfile`), with NuGet licences looked up from the feed, each package checked against the licence
+policy in `sbom.licenses` (deny fails the gate, warn is reported; GPL/AGPL warn by default) and the
+scan's CVEs attached to the package they are in. `containerizer org` attaches it to the pushed image
+(signed with cosign when `--cosign-key` is given) and stores it in the results database; the web UI
+shows the packages of each component and a portfolio page of licences and CVEs. See
+[docs/sbom.md](docs/sbom.md).
+
 ### NSA/CISA hardening
 
 The manifests follow the [NSA/CISA Kubernetes Hardening Guide](https://media.defense.gov/2022/Aug/29/2003066362/-1/-1/0/CTR_KUBERNETES_HARDENING_GUIDANCE_1.2_20220829.PDF)
@@ -543,6 +563,11 @@ with its last result, and skipped ones are shown disabled with the reason; an ad
 enable or disable any of them. The worker exposes Prometheus metrics about the scans, the process and
 the VM, and a Grafana dashboard is included. See [docs/scheduled-scans.md](docs/scheduled-scans.md).
 
+Operators can also **upload a SQL Server backup of an application's development database** with
+instructions for the AI. The next scan restores it into a hardened database next to the application in
+the sandbox, and points the application's connection settings at it, without changing its code. See
+[docs/dev-databases.md](docs/dev-databases.md).
+
 ![Repositories of an organization scan, skipped ones disabled with the reason](docs/images/admin-repositories-disabled.png)
 
 ## Results database and web UI
@@ -581,5 +606,5 @@ containerizer/sql/  results database schema (sqlstore.py writes it, webui.py rea
 monitoring/      Grafana dashboard, Prometheus scrape config and alert rules, systemd unit for the worker
 results/         Docker Compose stack and image for the results database and web UI
 docs/            results-database.md (results database, web UI, admin pages, audit), rule-review.md, organization-run.md,
-                 scheduled-scans.md, sandbox-verification.md, self-hosted-llm.md
+                 scheduled-scans.md, dev-databases.md, sandbox-verification.md, self-hosted-llm.md, sbom.md (SBOMs, licences, CVEs per package)
 ```

@@ -95,5 +95,34 @@ rules:
         - any:
             - sdk: 'Microsoft\.NET\.Sdk\.Web'
             - framework_ref: 'Microsoft\.AspNetCore\.App'
+            # a referenced library with <FrameworkReference Include="Microsoft.AspNetCore.App" />
+            # puts the framework into the worker's runtimeconfig.json as well
+            - closure: {framework_ref: 'Microsoft\.AspNetCore\.App'}
     plan:
       aspnet_runtime: true
+
+  - id: plan-rid-portable-netstandard1
+    phase: plan
+    why: >-
+      A dependency built for netstandard1.x pins System.* 4.0.x packages (SSH.NET 2016.x directly;
+      Microsoft.Azure.Amqp 2.5.6 through System.Net.WebSockets.Client 4.0.2, pulled in by
+      Azure.Messaging.ServiceBus 7.5.0 and MassTransit.Azure.ServiceBus.Core 7.3). Restoring for
+      the linux-x64 runtime identifier adds runtime.unix.* packages that need 4.3.0, which NuGet
+      reports as a package downgrade (NU1605, an error in SDK builds). A portable publish (no -r)
+      restores the same graph as the Windows build and runs on the Linux runtime image. Upgrading
+      the package (SSH.NET 2020.0.0+, a current Azure.Messaging.ServiceBus) removes the conflict.
+    refs:
+      - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605
+      - https://learn.microsoft.com/en-us/dotnet/core/rid-catalog
+      - https://www.nuget.org/packages/SSH.NET/2016.1.0
+      - https://www.nuget.org/packages/Microsoft.Azure.Amqp/2.5.6
+    when:
+      # each combination below was reproduced with `dotnet restore -r linux-x64` (2026-10-31)
+      closure:
+        any:
+          - {package: 'SSH\.NET', version: '2016\..*'}
+          - {package: 'MassTransit\.Azure\.ServiceBus\.Core', version: '7\.3\..*'}
+          - {package: 'Azure\.Messaging\.ServiceBus', version: '7\.5\.0'}
+          - {package: 'Microsoft\.Azure\.Amqp', version: '2\.5\.6'}
+    plan:
+      rid: portable

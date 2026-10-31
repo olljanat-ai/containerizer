@@ -561,7 +561,9 @@ def _yaml_docs(docs: list[dict]) -> str:
 # --------------------------------------------------------------------------- app
 
 def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, registry: str = "registry.local",
-                 plans: dict | None = None, pin: bool = False, gitops=None, tag: str = "latest") -> list[Path]:
+                 plans: dict | None = None, pin: bool = False, gitops=None, tag: str = "latest",
+                 devdb=None) -> list[Path]:
+    """`devdb`: a devdb.SandboxDb when an operator uploaded a database backup for this application."""
     from .gitops import gitops_manifests, image_setters, readme
     from .report import migration_markdown, write_agent_prompts
 
@@ -587,6 +589,9 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
             (cdir / "Dockerfile.dockerignore").write_text(DOCKERIGNORE)
             image = f"{registry}/{k8s_name(a.name)}/{k8s_name(c.name)}:{tag}"
             docs = k8s_manifests(a, c, plan, image)
+            if devdb is not None:
+                from .devdb import inject
+                inject(docs, devdb, c.name)
             images.append((c.name, image))
             all_k8s += docs
             comp_docs[k8s_name(c.name)] = docs
@@ -598,6 +603,17 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
             (cdir / "Dockerfile.windows").write_text(dockerfile_windows(c))
             (cdir / "Dockerfile.windows.dockerignore").write_text(DOCKERIGNORE)
             written += [cdir / "Dockerfile.windows"]
+    if all_k8s and devdb is not None:
+        from .devdb import HOST, manifests
+        if HOST in comp_docs:
+            raise ValueError(f"a component is named {HOST!r}, the name of the sandbox database")
+        docs = manifests(k8s_name(a.name), devdb)
+        (out / HOST).mkdir(parents=True, exist_ok=True)
+        (out / HOST / "k8s.yaml").write_text(_yaml_docs(docs))
+        written.append(out / HOST / "k8s.yaml")
+        all_k8s += docs
+        comp_docs[HOST] = docs
+        images.append((HOST, devdb.image))
     if all_k8s:
         ns_doc = namespace_manifest(k8s_name(a.name))
         (out / "namespace.yaml").write_text(_yaml_docs([ns_doc]))

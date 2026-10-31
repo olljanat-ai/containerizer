@@ -133,7 +133,7 @@ Approving uses the `CONTAINERIZER_RULES_*` settings above.
   `ProposeRuleCandidate` procedure, which sets the status itself: it cannot read candidates, approve or
   reject. Reviewing uses the admin login (`CONTAINERIZER_ADMIN_SQL` for the CLI, as for the admin
   pages), with the reviewer recorded in the change history (`containerizer.AuditLog`, table
-  `RuleCandidate`). `containerizer db init` creates the tables (schema version 8).
+  `RuleCandidate`). `containerizer db init` creates the tables (schema version 9).
 - **Without a database**: in `.work/rule-review/candidates.json` (or `CONTAINERIZER_REVIEW_DIR`, or
   `containerizer rules --dir`), for a single machine.
 

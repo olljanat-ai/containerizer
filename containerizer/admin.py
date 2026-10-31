@@ -28,7 +28,7 @@ URL_RE = re.compile(r"https://[A-Za-z0-9.-]+(:\d{1,5})?(/[^\s<>\"'`]*)?")
 LINK_RE = re.compile(r"(https://[A-Za-z0-9.-]+|http://(localhost|127\.0\.0\.1|\[::1\]))(:\d{1,5})?(/[^\s<>\"'`]*)?")
 TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Application": "Application",
               "OrgScan": "Organization scan", "OrgRepository": "Repository",
-              "RuleCandidate": "Learned rule"}
+              "DevDatabase": "Dev database", "RuleCandidate": "Learned rule"}
 FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
               "Retired": "Hidden", "Product": "Product", "BusinessUnit": "Business unit", "InfoUrl": "Product page link",
               # organization scans
@@ -42,11 +42,15 @@ FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Des
               # repositories
               "Setting": "Setting", "Note": "Note", "Skipped": "Skipped by the scan", "Removed": "Removed from the organization",
               "OrgScan": "Scan",
+              # dev databases
+              "Engine": "Engine", "DatabaseName": "Database name", "FileName": "File", "SizeBytes": "Size (bytes)",
+              "Sha256": "SHA-256", "PromptSha256": "Instructions (SHA-256)",
               # rule review
               "Kind": "Kind", "Title": "Rule", "Status": "Status", "ReviewNote": "Note", "AppliedAs": "Applied as",
               "PullRequestUrl": "Pull request", "Edited": "Edited by the reviewer"}
 # Who may use the rule review pages: Session attributes, any of which lets a signed-in user in.
 RULE_REVIEW_ROLES = ("admin", "operator")
+UPLOAD_RE = re.compile(r"/admin/dev-databases/(\d{1,9})/upload")
 
 
 @dataclass
@@ -68,7 +72,9 @@ class Admin:
         self.provider = provider or Provider(cfg)
         self.sessions = Sessions()
         self.api = None                             # api.Api when the JSON API is configured
+        self.devdb = None                           # devdb.Settings when dev database uploads are on
         self.grafana_url = ""                       # CONTAINERIZER_GRAFANA_URL: link on the admin pages
+        self.system = None                          # appliance.SystemPage on the appliance (System, Firewall)
         from .rulereview import ApplyConfig
         self.rule_apply = ApplyConfig()             # where approved rules go (CONTAINERIZER_RULES_*)
         self.rule_apply_error = ""                  # why approving is unavailable, shown on the rule review pages
@@ -192,7 +198,8 @@ class Admin:
             return redirect(f"/admin/{tabs[0][0]}")
         kind = parts[0]
         if kind not in {k for k, _ in tabs}:
-            known = kind in ("applications", "products", "business-units", "audit", "access", "scans", "repositories")
+            known = kind in ("applications", "products", "business-units", "audit", "access", "scans", "repositories",
+                             "dev-databases", "system", "firewall")
             return Response(403 if known else 404, self._shell(s, a, "Not allowed" if known else "Not found", "",
                             "<p>Your role does not include this page.</p>" if known else ""))
         if kind in ("scans", "repositories"):
@@ -200,6 +207,13 @@ class Admin:
         if kind == "rules":
             from . import admin_rules
             return admin_rules.route(self, conn, s, a, method, parts, q, form, q.get("msg", [""])[0][:300])
+        if kind in ("system", "firewall"):           # the appliance only; administrators only (see _tabs)
+            status, body, location = self.system.handle(
+                s, method, parts, q, form, lambda title, active, b, f: self._shell(s, a, title, active, b, f))
+            return redirect(location) if location else Response(status, body)
+        if kind == "dev-databases":
+            from . import admin_devdb
+            return admin_devdb.route(self, conn, s, a, method, parts, q, form)
         ident = int(parts[1]) if len(parts) > 1 and re.fullmatch(r"\d{1,9}", parts[1]) else None
         if len(parts) > 1 and ident is None and parts[1] not in ("new", "bulk"):
             return Response(404, page("Not found", "<h1>Not found</h1>"))
@@ -239,12 +253,38 @@ class Admin:
             tabs += [("business-units", "Business units")]
         if (a.admin or a.operator) and hasattr(self, "route_scans"):     # scheduled organization scans
             tabs += [("scans", "Organization scans"), ("repositories", "Repositories")]
+        if self.devdb is not None and (a.admin or a.operator):           # dev database backups (admin_devdb.py)
+            tabs += [("dev-databases", "Dev databases")]
         if self.may_review_rules(s):                                     # learned rules waiting for review
             tabs += [("rules", "Rule review")]
         tabs += [("audit", "Change history")]
         if a.admin and self.cfg.view_audit:
             tabs += [("access", "Access log")]
+        if a.admin and self.system:                  # on the appliance: upgrade, roll back, egress firewall
+            tabs += [("system", "System"), ("firewall", "Firewall")]
         return tabs
+
+    # -- streamed uploads -----------------------------------------------------------------------
+
+    def is_upload(self, path: str) -> bool:
+        return self.devdb is not None and bool(UPLOAD_RE.fullmatch(path))
+
+    def handle_upload(self, path: str, headers, rfile, length: int) -> Response:
+        """POST /admin/dev-databases/<id>/upload, streamed from `rfile` (webui.py). Everything that
+        does not need the body is checked before any of it is read."""
+        s = self.session(headers)
+        if not s:
+            return redirect("/login?" + urlencode({"next": "/admin/dev-databases"}))
+        if not (s.admin or s.operator):
+            return Response(403, page("Not allowed", "<h1>Not allowed</h1><p>Only administrators and operators can "
+                                      "upload dev database backups.</p>"))
+        origin = headers.get("Origin")
+        if origin and origin.rstrip("/") != "/".join(self.cfg.public_url.split("/")[:3]):
+            return Response(403, page("Expired", "<h1>The form expired</h1><p>Go back, reload the page and try again.</p>"))
+        if length <= 0:
+            return Response(411, page("Length required", "<h1>Length required</h1>"))
+        from . import admin_devdb
+        return admin_devdb.upload(self, s, int(UPLOAD_RE.fullmatch(path).group(1)), headers, rfile, length)
 
     # -- sign-in --------------------------------------------------------------------------------
 
@@ -674,10 +714,11 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
         chips = " ".join(f"<a class='chip{' on' if (k or None) == table else ''}' href='/admin/audit{('?table=' + k) if k else ''}'>{t}</a>"
                          for k, t in (("", "All"), ("Application", "Applications"), ("Product", "Products"),
                                       ("BusinessUnit", "Business units"), ("OrgScan", "Organization scans"),
-                                      ("OrgRepository", "Repositories"), ("RuleCandidate", "Rule review")))
+                                      ("OrgRepository", "Repositories"), ("DevDatabase", "Dev databases"),
+                                      ("RuleCandidate", "Rule review")))
         body = (f"<p class='muted'>Every change to business units, products, the application mapping, organization scans, "
-                f"repositories (found by a scan, enabled or disabled, skipped) and the rule review (learned rules proposed, "
-                f"approved or rejected): who made it, when, "
+                f"repositories (found by a scan, enabled or disabled, skipped), dev database uploads and the rule review "
+                f"(learned rules proposed, approved or rejected): who made it, when, "
                 f"and what changed. Changes made directly in the database are recorded too, under the database login. "
                 f"Latest 200.</p><nav class='chips'>{chips}</nav>{render_audit(self._audit_rows(conn, table))}")
         return Response(200, self._shell(s, a, "Change history", "audit", body))
@@ -831,4 +872,10 @@ def build(env=None) -> Admin | None:
         print(f"warning: rule review: {ex}", file=sys.stderr)
     adm.grafana_url = grafana
     adm.api = api.build(env, adm.provider, adm.connect_admin, cfg)
+    from .appliance import SystemPage
+    adm.system = SystemPage.detect(env)
+    from . import devdb
+    adm.devdb = devdb.Settings.from_env(env)
+    if adm.devdb:
+        adm.devdb.directory.mkdir(parents=True, exist_ok=True)
     return adm

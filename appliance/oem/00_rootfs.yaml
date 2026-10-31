@@ -1,0 +1,23 @@
+# A machine-id and SSH host key per installation, kept on the persistent partition (the OS image has none).
+name: "Machine identity"
+stages:
+  initramfs:
+    - if: '[ ! -f "/run/elemental/recovery_mode" ]'
+      name: "Persist /etc/machine-id and the SSH host key"
+      commands:
+      - |
+        if [ -s /run/elemental/persistent/etc/machine-id ]; then
+          cat /run/elemental/persistent/etc/machine-id > /etc/machine-id
+        else
+          [ -f /etc/machine-id ] || systemd-machine-id-setup
+          mkdir -p /run/elemental/persistent/etc
+          cp /etc/machine-id /run/elemental/persistent/etc
+        fi
+        if [ -s /run/elemental/persistent/etc/ssh/ssh_host_ed25519_key ]; then
+          cp /run/elemental/persistent/etc/ssh/ssh_host_ed25519_ke* /etc/ssh/
+        else
+          [ -f /etc/ssh/ssh_host_ed25519_key ] || ssh-keygen -q -f /etc/ssh/ssh_host_ed25519_key -N '' -t ed25519
+          mkdir -p -m 0700 /run/elemental/persistent/etc/ssh
+          cp /etc/ssh/ssh_host_ed25519_ke* /run/elemental/persistent/etc/ssh/
+        fi
+        chmod 0600 /etc/ssh/ssh_host_ed25519_key

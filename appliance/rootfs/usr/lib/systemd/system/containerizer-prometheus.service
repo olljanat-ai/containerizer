@@ -1,0 +1,24 @@
+[Unit]
+Description=containerizer appliance: Prometheus (scan worker metrics)
+After=docker.service containerizer-firstboot.service containerizer-dns.service
+Requires=docker.service
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+
+[Service]
+EnvironmentFile=/usr/lib/containerizer/images.env
+ExecStartPre=-/usr/bin/docker rm -f cz-prometheus
+ExecStart=/usr/bin/docker run --rm --name cz-prometheus --network host \
+  --volume /usr/lib/containerizer/prometheus:/etc/prometheus:ro \
+  --volume /var/lib/containerizer/prometheus:/prometheus \
+  --user 65534:65534 --read-only --cap-drop ALL --security-opt no-new-privileges \
+  ${CZ_IMAGE_PROMETHEUS} \
+  --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus \
+  --storage.tsdb.retention.time=90d --web.listen-address=127.0.0.1:9090
+ExecStop=/usr/bin/docker stop cz-prometheus
+Restart=always
+RestartSec=10
+TimeoutStartSec=15min
+
+[Install]
+WantedBy=multi-user.target

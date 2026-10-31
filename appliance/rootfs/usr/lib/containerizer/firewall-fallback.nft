@@ -1,0 +1,23 @@
+# Loaded only when the allow-lists cannot be rendered: SSH in, nothing out but DNS-less local traffic.
+table inet cz_firewall
+delete table inet cz_firewall
+table inet cz_firewall {
+  chain input {
+    type filter hook input priority filter; policy drop;
+    iif "lo" accept
+    ct state established,related accept
+    meta l4proto { icmp, ipv6-icmp } accept
+    udp sport 67 udp dport 68 accept
+    tcp dport 22 accept
+  }
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+  }
+  chain output {
+    type filter hook output priority filter; policy drop;
+    oif "lo" accept
+    ct state established,related accept
+    meta l4proto { icmp, ipv6-icmp } accept
+    udp sport 68 udp dport 67 accept
+  }
+}
