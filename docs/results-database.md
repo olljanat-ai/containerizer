@@ -372,6 +372,8 @@ Administrators see it on the admin pages under **Access log**: the latest 200 en
 clicking a person or "who else" next to an application, everything one person opened or everyone who
 opened one application.
 
+![Access log: who signed in, refused sign-ins, and which pages they opened](images/admin-access-log.png)
+
 The web UI writes the log through its admin login, which may only insert and read it; no role can
 change or delete rows. If a row cannot be written, the page is not shown (an error instead), so a
 view is never left unrecorded. Like the change history, forward it to your SIEM if it must be
