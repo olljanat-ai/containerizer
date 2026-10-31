@@ -1,9 +1,12 @@
 name: ci
 
+# Documentation-only changes skip this workflow: docs.yml builds and publishes them.
 on:
   pull_request:
+    paths-ignore: ["README.md", "docs/**", "mkdocs.yml", ".github/mkdocs_hooks.py", ".github/workflows/docs.yml"]
   push:
     branches: [main]
+    paths-ignore: ["README.md", "docs/**", "mkdocs.yml", ".github/mkdocs_hooks.py", ".github/workflows/docs.yml"]
   workflow_dispatch:
 
 permissions:
