@@ -24,7 +24,15 @@ on:
       - "monitoring/**"
       - "requirements*.txt"
       - ".github/workflows/release.yml"
+  # Release: run this workflow by hand on main with a version (0.1.0 or v0.1.0). The tag job checks it
+  # against containerizer/__init__.py, tags the commit vX.Y.Z and starts this workflow again on the tag,
+  # so the image is signed with the tag identity above. Without a version it is a plain build and test.
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. 0.1.0 (empty: build and test only)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -39,7 +47,38 @@ env:
   COSIGN_SHA256: 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa
 
 jobs:
+  tag:
+    if: github.event_name == 'workflow_dispatch' && inputs.version != '' && !startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write        # push the tag
+      actions: write         # start this workflow on the tag
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag and start the release on the tag
+        env:
+          INPUT: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${INPUT#v}"
+          [[ "$v" =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$ ]] || { echo "the version is X.Y.Z, got $INPUT" >&2; exit 1; }
+          [ "$GITHUB_REF" = refs/heads/main ] || { echo "release from main, not $GITHUB_REF" >&2; exit 1; }
+          have=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' containerizer/__init__.py)
+          [ "$have" = "$v" ] || { echo "containerizer/__init__.py says $have: bump it (and CHANGELOG.md) to $v first" >&2; exit 1; }
+          if git ls-remote --exit-code --tags origin "refs/tags/v$v" >/dev/null; then
+            echo "v$v is already tagged" >&2; exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$v" -m "containerizer $v" "$GITHUB_SHA"
+          git push origin "refs/tags/v$v"
+          # a tag pushed with this token starts no workflow; a dispatch does
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "v$v"
+          echo "Tagged v$v at $GITHUB_SHA; the release runs on the tag: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/release.yml" >> "$GITHUB_STEP_SUMMARY"
+
   appliance:
+    # a manual run with a version only tags; the build, test and release run on the tag
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.version != '' && !startsWith(github.ref, 'refs/tags/')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     permissions:
