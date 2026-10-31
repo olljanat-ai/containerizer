@@ -89,6 +89,10 @@ class Rule:
     tags: list[str] = field(default_factory=list)
     source: str = "curated"
     confidence: float = 1.0
+    # the finding means the component keeps its own data: "local" (files on its disk: an embedded
+    # database, uploads, a local index) or "memory" (in-process session/job state). Such a
+    # component is not stateless, and an app is only rated A when every server component is.
+    state: str = ""
     file: str = ""
     meta: dict = field(default_factory=dict)
 
@@ -99,6 +103,8 @@ class Rule:
         r = cls(**known, file=file, meta=meta)
         if r.severity not in SEV_RANK:
             raise ValueError(f"rule {r.id}: unknown severity {r.severity}")
+        if r.state not in ("", "local", "memory"):
+            raise ValueError(f"rule {r.id}: unknown state {r.state}")
         return r
 
 

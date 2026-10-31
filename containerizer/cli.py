@@ -224,7 +224,8 @@ def cmd_org(args) -> int:
         stale_days=args.stale_days, max_repos=args.max_repos, ai=args.ai, model=args.model,
         verify=not args.no_verify, gate=not args.no_gate, scanner=args.scanner, fail_on=args.fail_on,
         timeout=args.timeout, pin=args.pin_digests, verify_commits=args.verify_commits, sql=args.sql,
-        work_dir=args.work_dir, keep_work=args.keep_work, dry_run=args.dry_run,
+        work_dir=args.work_dir, keep_work=args.keep_work, cache_dir=args.cache_dir,
+        skip_no_code=not args.include_no_code, dry_run=args.dry_run,
         verify_sandbox=args.verify_sandbox, kubeconfig=args.kubeconfig, kube_context=args.kube_context,
         gitops=args.gitops, sandbox_timeout=args.sandbox_timeout)
     try:
@@ -237,6 +238,12 @@ def cmd_org(args) -> int:
         by[r.status] = by.get(r.status, 0) + 1
     print(" ".join(f"{k}={v}" for k, v in sorted(by.items())))
     return 1 if by.get("error") else 0
+
+
+def cmd_worker(args) -> int:
+    from .worker import build
+
+    return build(args)
 
 
 def cmd_sandbox(args) -> int:
@@ -586,6 +593,10 @@ def main(argv=None) -> int:
     s.add_argument("--sql", help="also write every assessment to SQL Server (default CONTAINERIZER_SQL)")
     s.add_argument("--work-dir", default=".work/org")
     s.add_argument("--keep-work", action="store_true", help="keep the clones")
+    s.add_argument("--cache-dir", help="keep the clones in this folder (one per organization) and only pull the "
+                   "newest commit on later runs; clones of repositories the organization no longer has are removed")
+    s.add_argument("--include-no-code", action="store_true", help="do not skip repositories without application "
+                   "code (only documentation, configuration, scripts, or only libraries and tests)")
     s.add_argument("--dry-run", action="store_true", help="list the repositories and the API-level skips only")
     g = s.add_argument_group("sandbox verification (read back pod health after Argo CD / Flux synced the push)")
     g.add_argument("--verify-sandbox", action="store_true", help="at the end, wait for the sandbox cluster to sync "
@@ -609,6 +620,20 @@ def main(argv=None) -> int:
     v.add_argument("--fail-on-unhealthy", action="store_true", help="exit 1 when a component is not healthy")
     v.add_argument("--sql", help="also write the checks to SQL Server (default CONTAINERIZER_SQL)")
     v.set_defaults(fn=cmd_sandbox)
+
+    s = sub.add_parser("worker", help="run the organization scans scheduled on the admin pages (needs Docker); "
+                       "serves Prometheus metrics")
+    s.add_argument("--sql", help="connection string of a writer login (default CONTAINERIZER_SQL; password in "
+                   "CONTAINERIZER_SQL_PASSWORD)")
+    s.add_argument("--data-dir", default="/var/lib/containerizer",
+                   help="clones (kept between runs), work folders and local output, one folder per scan")
+    s.add_argument("--poll", type=int, default=30, help="seconds between checks for due scans")
+    s.add_argument("--name", help="worker name shown on the runs (default: the host name)")
+    s.add_argument("--metrics-host", default="127.0.0.1", help="listen address of the metrics endpoint")
+    s.add_argument("--metrics-port", type=int, default=9464)
+    s.add_argument("--no-metrics", action="store_true")
+    s.add_argument("--once", action="store_true", help="run what is due or queued, then exit")
+    s.set_defaults(fn=cmd_worker)
 
     s = sub.add_parser("bench", help="score assessments against labelled expectations")
     s.add_argument("--challenge", default="../containerization-challenge")

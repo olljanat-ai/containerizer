@@ -1,0 +1,36 @@
+# systemd unit for the containerizer scan worker (docs/scheduled-scans.md#running-the-worker).
+# Install: copy to /etc/systemd/system/, put the secrets in /etc/containerizer/worker.env (mode 600),
+# then: systemctl daemon-reload && systemctl enable --now containerizer-worker
+[Unit]
+Description=containerizer scan worker (scheduled organization scans)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=containerizer
+Group=docker
+WorkingDirectory=/opt/containerizer
+EnvironmentFile=/etc/containerizer/worker.env
+ExecStart=/opt/containerizer/.venv/bin/python -m containerizer worker --data-dir /var/lib/containerizer \
+  --metrics-host 127.0.0.1 --metrics-port 9464
+# finishes the repository it is on, then stops; the run is marked cancelled
+KillSignal=SIGTERM
+TimeoutStopSec=2h
+Restart=on-failure
+RestartSec=30
+StateDirectory=containerizer
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+# no PrivateTmp/ProtectHome: Docker (a separate daemon) must see the folders the worker mounts into
+# build and scanner containers
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

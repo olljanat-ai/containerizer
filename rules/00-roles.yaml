@@ -69,6 +69,9 @@ rules:
         # a Tools/ subfolder *inside* a project (Areas/Mcp/Tools, admin/settings/tools) says nothing
         # (also 'Dev Tools/', 'DevTools/', 'BuildTools/', 'build-tools/': folders of developer utilities)
         - path: '(^|/)((dev|build)[ ._\-]?)?tools/[^/]+/'
+        # a project in the repository's top-level build/ folder is a build helper (NUKE/Cake build
+        # projects, packaging or smoke-test probes), not something that is deployed
+        - path: '^(eng/|build/)'
         - package: 'BenchmarkDotNet|SharpFuzz'
         - kind: installer
         # .NET Aspire AppHost: a local orchestrator for the services, not a service itself

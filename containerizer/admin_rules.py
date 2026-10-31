@@ -16,17 +16,17 @@ STATUS_TEXT = {"pending": "Waiting for review", "approved": "Approved", "rejecte
 KIND_TEXT = {"rule": "Rule", "failure": "Failure rule", "package": "Package"}
 
 
-def route(adm, conn, s, method: str, parts: list[str], q: dict, form: dict, flash: str) -> Response:
+def route(adm, conn, s, a, method: str, parts: list[str], q: dict, form: dict, flash: str) -> Response:
     store = rr.SqlStore(conn)
     if len(parts) == 1:
         if method != "GET":
             return Response(405, "", [("Allow", "GET, HEAD")])
-        return list_page(adm, store, s, q.get("status", ["pending"])[0], flash)
+        return list_page(adm, store, s, a, q.get("status", ["pending"])[0], flash)
     if not re.fullmatch(r"\d{1,9}", parts[1]):
         return Response(404, page("Not found", "<h1>Not found</h1>"))
     cid = int(parts[1])
     if len(parts) == 2 and method == "GET":
-        return detail_page(adm, conn, store, s, cid, flash)
+        return detail_page(adm, conn, store, s, a, cid, flash)
     if len(parts) == 3 and method == "POST" and parts[2] in ("approve", "reject"):
         return decide(adm, store, s, cid, parts[2], form)
     return Response(404, page("Not found", "<h1>Not found</h1>"))
@@ -43,7 +43,7 @@ def _pr_link(url) -> str:
     return ""
 
 
-def list_page(adm, store, s, status: str, flash: str) -> Response:
+def list_page(adm, store, s, a, status: str, flash: str) -> Response:
     status = status if status in (*rr.STATUSES, "all") else "pending"
     counts = store.counts()
     rows = store.list(status)
@@ -73,7 +73,7 @@ def list_page(adm, store, s, status: str, flash: str) -> Response:
             f"<table><thead><tr><th>Learned rule</th><th>Learned from</th><th class='num'>Confidence</th>"
             f"<th class='num'>Seen</th><th>Last seen</th><th>Status</th></tr></thead>"
             f"<tbody>{''.join(body_rows) or f'<tr><td colspan=6 class=muted>{empty}</td></tr>'}</tbody></table>")
-    return Response(200, adm._shell(s, "Rule review", "rules", body, flash))
+    return Response(200, adm._shell(s, a, "Rule review", "rules", body, flash))
 
 
 def _diff(text: str | None) -> str:
@@ -106,7 +106,7 @@ def _evidence(ev: dict, i: int) -> str:
             f"<div class='meta'>{''.join(f'<div>{m}</div>' for m in meta)}</div>{reason}{log}</details>")
 
 
-def detail_page(adm, conn, store, s, cid: int, flash: str) -> Response:
+def detail_page(adm, conn, store, s, a, cid: int, flash: str) -> Response:
     c = store.get(cid)
     if not c:
         return Response(404, page("Not found", "<h1>Learned rule not found</h1>"))
@@ -156,7 +156,7 @@ def detail_page(adm, conn, store, s, cid: int, flash: str) -> Response:
             f"<div><button class='secondary'>Reject</button> <span class='muted small'>The same rule will not be "
             f"proposed again.</span></div></form>")
     body.append(f"<h2>Changes</h2>{adm._history(conn, 'RuleCandidate', cid)}")
-    return Response(200, adm._shell(s, c["Title"][:120], "rules", "".join(body), flash))
+    return Response(200, adm._shell(s, a, c["Title"][:120], "rules", "".join(body), flash))
 
 
 def decide(adm, store, s, cid: int, action: str, form: dict) -> Response:

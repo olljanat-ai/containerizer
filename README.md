@@ -57,6 +57,8 @@ python -m containerizer bench --technique hybrid --model claude-haiku-5-5
 # images pushed, files + Argo CD/Flux sandbox config committed to a Git repo (docs/organization-run.md)
 python -m containerizer org --provider github --org acme --registry myacr.azurecr.io/sandbox \
   --output-repo https://github.com/acme/sandbox-deployments.git          # GITHUB_TOKEN, OUTPUT_GIT_TOKEN
+# or schedule organization scans from the admin pages and run them with a worker (docs/scheduled-scans.md)
+python -m containerizer worker --sql "Server=...;Database=Containerizer;User Id=cz_worker"
 
 # results database (SQL Server) and read-only web UI for management, see docs/results-database.md
 docker compose -f results/compose.yaml up -d --build          # SQL Server + UI on http://127.0.0.1:8080/
@@ -93,6 +95,17 @@ python -m containerizer analyze <repo> --sql "Server=...;Database=Containerizer;
    lower a component's confidence. Low confidence triggers verification and, optionally, Claude.
 7. **Rating** per application: **A** lift and shift, **B** minor refactoring, **C** framework port,
    **D** partial (some components must stay on Windows), **E** not feasible.
+   **A** also requires every server component to be **stateless**: persistent data may live in
+   services that are available as managed cloud services (SQL Server, PostgreSQL, MySQL, MongoDB,
+   Redis, blob storage, queues), but not on the component's own disk or in its process memory. Rules
+   that find such data carry `state: local` or `state: memory` (`rules/36-state.yaml`, `sqlite-local`,
+   `lucene-local-index`): a local SQLite/LiteDB file with no server database wired up, a local
+   Lucene/Examine index, uploads or data files written under the content root or App_Data,
+   ASP.NET Core session without a distributed cache, and Hangfire in-memory storage. An app that is
+   otherwise ready but keeps such data is rated **B**, and the report lists what keeps it stateful.
+   Not counted: SQLite next to a server database provider (`sqlite-optional`), a read-only SQLite
+   file shipped with the app, Lucene used only for text analysis, temp files and logs, and the
+   ASP.NET Core Data Protection key ring (one `PersistKeysTo*` line; reported separately).
 
 ### Rules are data
 
@@ -508,17 +521,29 @@ extension), comments on Azure Repos pull requests with `System.AccessToken` (giv
 
 `containerizer org` lists every Git repository of one Azure DevOps organization, GitHub organization or
 GitLab group (private ones included, tokens from environment variables), skips repositories without a
-commit in 6 months and repositories that already have a Dockerfile, runs `analyze` on the rest and
+commit in 6 months, repositories that already have a Dockerfile and repositories without application
+code (with the reason, for example "14 files (.md 9, .yaml 5), no source code" or "Ruby (31 files), but
+no project the tool can build"), runs `analyze` on the rest and
 keeps only the components rated **A** that built, ran and passed the security gate. Their images are
 pushed to your registry and the generated files are committed to your output repository as
 `<Organization>/<Project>/<Repository>/<component>/` (GitHub has no projects: `_`), with a
 `sandbox/` folder holding an Argo CD app-of-apps and a Flux root Kustomization that deploy all of them
 to a sandbox cluster. Results go to SQL Server too with `--sql`. See
-[docs/organization-run.md](docs/organization-run.md). With `--verify-sandbox` it then waits for Argo CD or
+[docs/organization-run.md](docs/organization-run.md). `--cache-dir` keeps the clones between runs and only
+pulls the newest commit. With `--verify-sandbox` it then waits for Argo CD or
 Flux to sync, reads back rollout, readiness, restarts and events with a read-only ServiceAccount, and records
 per component "deployed and healthy" or "deployed but failing (reason)" in `sandbox/HEALTH.md`, the results
 database and the web UI; failures the cluster shows feed the learning loop
 ([docs/sandbox-verification.md](docs/sandbox-verification.md)).
+
+Organization scans can also be **scheduled from the admin pages** (days of the week and time, or
+"Run now") and run by `containerizer worker`, a separate process that holds the tokens and Docker.
+New repositories are found on every run, every repository appears on the admin **Repositories** page
+with its last result, and skipped ones are shown disabled with the reason; an administrator can
+enable or disable any of them. The worker exposes Prometheus metrics about the scans, the process and
+the VM, and a Grafana dashboard is included. See [docs/scheduled-scans.md](docs/scheduled-scans.md).
+
+![Repositories of an organization scan, skipped ones disabled with the reason](docs/images/admin-repositories-disabled.png)
 
 ## Results database and web UI
 
@@ -529,7 +554,8 @@ application → components, with ratings, main obstacles and the why / fix / ref
 Components are mapped to their application automatically by the scan. Administrators sign in with
 single sign-on (OpenID Connect, e.g. Entra ID) to map applications to products and products to
 business units (or do it from scripts through a JSON API with OAuth access tokens), and every
-change is kept in an audit log with who made it. Optionally the results pages need the same sign-in,
+change is kept in an audit log with who made it. Besides admins there are scoped product owners (their own business units or products) and operators
+(scans). Optionally the results pages need the same sign-in,
 and an access log records who signed in and what they looked at.
 [`docs/results-database.md`](docs/results-database.md) has the model, the least-privilege roles, TLS,
 sign-in setup, the API, the audit log and a local Docker Compose stack.
@@ -551,7 +577,9 @@ rules/learned/   rules written by the learning loop with CONTAINERIZER_RULE_REVI
 bench/           labels and results
 action.yml       GitHub Action; ci/azure/ has the Azure DevOps template
 containerizer/sql/  results database schema (sqlstore.py writes it, webui.py reads it, admin.py + oidc.py: admin pages)
+                 worker.py: scheduled organization scans, metrics.py: Prometheus metrics
+monitoring/      Grafana dashboard, Prometheus scrape config and alert rules, systemd unit for the worker
 results/         Docker Compose stack and image for the results database and web UI
 docs/            results-database.md (results database, web UI, admin pages, audit), rule-review.md, organization-run.md,
-                 sandbox-verification.md, self-hosted-llm.md
+                 scheduled-scans.md, sandbox-verification.md, self-hosted-llm.md
 ```

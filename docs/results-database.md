@@ -237,7 +237,8 @@ proxy or ingress, and keep it off the internet.
 ## Admin pages
 
 `/admin` lets administrators, after signing in with your identity provider (OpenID Connect: Microsoft
-Entra ID, Okta, Keycloak, Google Workspace, ...):
+Entra ID, Okta, Keycloak, Google Workspace, ...), do the following. Product owners can do part of it
+for their own products, and operators run the scans; see [Roles](#roles).
 
 - **Application mapping**: list the applications that are not mapped yet (or all, or hidden ones),
   select several and map them to a product in one go, or open one to set its product, a display name
@@ -247,6 +248,9 @@ Entra ID, Okta, Keycloak, Google Workspace, ...):
   link to the product in another tool, for example the CMDB or product catalogue, shown next to the
   product in the results), delete when nothing is mapped to it.
 - **Business units**: add, rename, set an owner, delete when no product is in it.
+- **Organization scans** and **Repositories**: schedule whole-organization scans, run one now, and
+  enable or disable the repositories they found (skipped ones are shown disabled with the reason).
+  See [scheduled-scans.md](scheduled-scans.md).
 - **Rule review**: approve (optionally after editing) or reject the rules the learning loop learned,
   with their evidence; see [rule-review.md](rule-review.md).
 - **Change history**: see below.
@@ -266,6 +270,7 @@ They appear when sign-in is configured; without it the UI is the read-only resul
 | `CONTAINERIZER_PUBLIC_URL` | The address users open, e.g. `https://containerizer.example.com`. The redirect URI to register is this plus `/auth/callback`. |
 | `CONTAINERIZER_ADMINS` | Who is an administrator, comma separated: `group:<group object id>`, `role:<app role>`, `email:<address>`, `domain:<e-mail domain>`, `sub:<subject id>`. `email:` and `domain:` only match when the provider marks the address verified (`email_verified`). Nobody else gets in. |
 | `CONTAINERIZER_ADMIN_SQL` / `CONTAINERIZER_ADMIN_SQL_PASSWORD` | Connection string and password of the `containerizer_admin` login the admin pages write with. |
+| `CONTAINERIZER_GRAFANA_URL` | Optional. Link to your Grafana dashboard of the scans ([scheduled-scans.md](scheduled-scans.md#grafana-dashboard)), shown to administrators and operators as a **Grafana ↗** tab on the admin pages and a link on Organization scans. `https://` only (`http://` only to `localhost`); checked at start. |
 | `CONTAINERIZER_OIDC_SCOPES` | Default `openid profile email`. |
 
 With **Microsoft Entra ID**: register a web application with the redirect URI above, add a client
@@ -281,6 +286,57 @@ Every form carries a per-session CSRF token and cross-site posts are refused by 
 only same-site paths are followed. HTTPS is required for the issuer and the public URL (plain http only
 for `localhost`), and on https the UI sends HSTS. Sessions are kept in the server's memory: run one
 instance, and a restart signs everyone out.
+
+## Roles
+
+Who signs in gets one or more roles, from the same kind of allow-list rules as `CONTAINERIZER_ADMINS`
+(`group:`, `role:`, `email:`, `domain:`, `sub:`):
+
+| Role | Set with | Can |
+| --- | --- | --- |
+| Viewer | `CONTAINERIZER_VIEWERS` | Read the results pages. Only matters when [sign-in for the results pages](#sign-in-for-the-results-pages-optional) is on. |
+| Product owner | `CONTAINERIZER_PRODUCT_OWNERS` | Read everything, including the change history. Map applications, and change their display name, owner, description and hidden flag, but only for the business units or products in their scope. Change the name, owner, description and product page link of their products. With a business unit in scope, also add products to it and delete empty ones. |
+| Operator | `CONTAINERIZER_OPERATORS` | Read everything, including the change history. Run and schedule organization scans, enable and disable repositories, and open the Grafana link on the scheduled scan pages. Cannot change the mapping. |
+| Admin | `CONTAINERIZER_ADMINS` | Everything, including business units and the [access log](#access-log-optional). |
+
+Admins, operators and product owners can always read the results pages; nobody else gets into
+`/admin`. The access log is for admins only. One person can have several roles; the admin role
+includes all of them.
+
+**Product owner scopes.** `CONTAINERIZER_PRODUCT_OWNERS` maps rules to the business units or products
+they cover. Each entry is `<rules>=<scopes>`; entries are separated by `;`, and the rules and scopes in
+an entry by `,`:
+
+```sh
+CONTAINERIZER_PRODUCT_OWNERS="role:Finance.Owner=bu:Finance; group:6f1c...=product:Billing,product:#12"
+```
+
+- `bu:<name>`: a business unit and every product in it, now and later.
+- `product:<name>`: one product and its applications.
+- `bu:#<id>` / `product:#<id>`: the same by id (the number in the admin page address). An id keeps
+  working after a rename. A name scope follows the name: if a product is renamed, the old name no
+  longer matches anything. Names are matched without regard to case and cannot contain `,` `;` `=`.
+
+A product owner can take over applications that are not mapped yet by mapping them to one of their
+products. They can move their own applications between their products, or unmap them. They cannot
+touch applications or products outside their scope. Those still show on the admin pages, marked
+*view only*. Scopes are checked against the database on every request, so a product moved to
+another business unit leaves (or joins) a business unit owner's scope right away.
+
+With **Microsoft Entra ID**, create one app role per role and assign it to groups, for example
+`Containerizer.Admin`, `Containerizer.Operator`, `Containerizer.Read`, and one per owned business
+unit such as `Finance.Owner`. Then:
+
+```sh
+CONTAINERIZER_ADMINS=role:Containerizer.Admin
+CONTAINERIZER_OPERATORS=role:Containerizer.Operator
+CONTAINERIZER_VIEWERS=role:Containerizer.Read
+CONTAINERIZER_PRODUCT_OWNERS="role:Finance.Owner=bu:Finance; role:Operations.Owner=bu:Operations"
+```
+
+The roles are enforced by the web UI and the API. All writes use the one `containerizer_admin`
+database login, so the database itself does not tell the roles apart. Every change records the
+role it was made in (see [change history](#change-history-audit)).
 
 ## Sign-in for the results pages (optional)
 
@@ -314,7 +370,12 @@ with two more settings next to the sign-in ones:
 | Variable | Meaning |
 | --- | --- |
 | `CONTAINERIZER_API_AUDIENCE` | The audience the access tokens must be issued for, e.g. `api://containerizer` (Entra ID: the Application ID URI of the app registration). |
-| `CONTAINERIZER_API_CLIENTS` | Who may call it, comma separated: `client:<client id>` (the token's `azp`, `appid` or `client_id`), `role:<app role>`, `group:`, `email:`, `domain:`, `sub:` as for admins. |
+| `CONTAINERIZER_API_CLIENTS` | Automation that may change everything, comma separated: `client:<client id>` (the token's `azp`, `appid` or `client_id`), `role:<app role>`, `group:`, `email:`, `domain:`, `sub:` as for admins. Optional when the roles below are enough. |
+
+The [roles](#roles) apply to API tokens too, with the token's claims matched against the same rules.
+Admins can change everything. Product owners can change only their own products and applications,
+and get 403 `forbidden` outside them. Operators can only read. Anyone who matches no role gets 403
+`insufficient_scope`.
 
 Callers send `Authorization: Bearer <access token>` from the same identity provider: the
 client-credentials flow for automation, or a user's token. The token's signature (the provider's
@@ -372,6 +433,8 @@ row has:
 - **ChangedBy / ChangedByName**: the signed-in person (e-mail or user name, and display name) for
   changes from the admin pages, the user or `client:<client id>` for the API; the database login for
   anything else.
+- **ChangedByRole**: the role the change was made in: `admin`, `product owner`, `operator`, or
+  `API client` for callers on `CONTAINERIZER_API_CLIENTS`. Empty for scans and direct SQL.
 - **DbLogin**: the actual database login that ran the statement, always.
 - **Via**: `admin UI`, `API`, `scan` (a new application found by a scan) or `SQL`.
 - **ChangedAt** (UTC), **TableName**, **RowId**, **RowName**, **Action** (`insert`, `update`, `delete`).

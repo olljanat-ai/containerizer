@@ -450,17 +450,15 @@ def test_rule_review_gate(monkeypatch):
         return adm.handle("GET", path, "", {"Cookie": f"{adm.cookie}={sid}"}, b"")
     viewer = adm.sessions.create("v@example.com", "V", False, True)
     assert get(viewer, "/admin/rules").status == 403 and not reached
-    operator = adm.sessions.create("o@example.com", "O", False, True)
-    adm.sessions.get(operator).operator = True            # what the Operator role will set at sign-in
+    operator = adm.sessions.create("o@example.com", "O", False, True, True, [])
+    owner = adm.sessions.create("p@example.com", "P", False, True, False, ["bu:Finance"])
     assert get(operator, "/admin/rules").status == 200 and reached
     assert get(operator, "/admin/rules/3").status == 200
     assert get(operator, "/admin/products").status == 403
-    r = get(operator, "/admin")
-    assert r.status == 303 and dict(r.headers)["Location"] == "/admin/rules"
     admin_ = adm.sessions.create("a@example.com", "A", True)
     assert get(admin_, "/admin/rules").status == 200
     assert adm.may_review_rules(adm.sessions.get(operator)) and not adm.may_review_rules(adm.sessions.get(viewer))
-    assert "Rule review" in adm.nav({"Cookie": f"{adm.cookie}={operator}"})
+    assert not adm.may_review_rules(adm.sessions.get(owner))
 
 
 # ---------------------------------------------------------------------------

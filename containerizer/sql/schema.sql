@@ -11,6 +11,7 @@
 --   Application 1-* SandboxCheck                                              (sandbox cluster health)
 --   AuditLog: every change to BusinessUnit, Product and the mapping of Application, with who made it
 --   AccessLog: who signed in to the web UI and what they looked at (optional)
+--   OrgScan 1-* OrgScanRun, OrgRepository                                    (scheduled organization scans)
 --   RuleCandidate 1-* RuleEvidence: rules the learning loop learned, waiting for review (rule review)
 --
 -- The scan fills Application, Component and the assessment tables. People maintain business units,
@@ -438,6 +439,12 @@ CREATE TABLE [${schema}].AuditLog (
     NewValues     nvarchar(max) NULL               -- JSON
 );
 GO
+-- The role the change was made in (admin, operator, product owner, API client), from the same
+-- read-only SESSION_CONTEXT as the user; NULL for scans and direct SQL.
+IF COL_LENGTH(N'[${schema}].AuditLog', N'ChangedByRole') IS NULL
+ALTER TABLE [${schema}].AuditLog ADD ChangedByRole nvarchar(40) NULL
+    CONSTRAINT DF_AuditLog_ChangedByRole DEFAULT CAST(SESSION_CONTEXT(N'containerizer.role') AS nvarchar(40));
+GO
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_AuditLog_ChangedAt' AND object_id = OBJECT_ID(N'[${schema}].AuditLog'))
 CREATE INDEX IX_AuditLog_ChangedAt ON [${schema}].AuditLog (ChangedAt DESC) INCLUDE (TableName, RowId);
 GO
@@ -537,6 +544,206 @@ BEGIN
 END;
 GO
 
+-- Organization scans (`containerizer worker`, docs/scheduled-scans.md). Administrators define them on the
+-- admin pages: which organization, where the results go, and when to run. Tokens are never stored here:
+-- TokenEnv / OutputTokenEnv name environment variables of the worker. The worker sets NextRunAt.
+IF OBJECT_ID(N'[${schema}].OrgScan', N'U') IS NULL
+CREATE TABLE [${schema}].OrgScan (
+    ScanId          int IDENTITY(1,1) NOT NULL CONSTRAINT PK_OrgScan PRIMARY KEY,
+    Name            nvarchar(200) NOT NULL CONSTRAINT UQ_OrgScan_Name UNIQUE,
+    Provider        nvarchar(20)  NOT NULL CONSTRAINT CK_OrgScan_Provider CHECK (Provider IN (N'azure-devops', N'github', N'gitlab')),
+    Organization    nvarchar(200) NOT NULL,
+    ApiUrl          nvarchar(400) NULL CONSTRAINT CK_OrgScan_ApiUrl CHECK (ApiUrl LIKE N'https://_%' AND ApiUrl NOT LIKE N'%[<>"'' ]%'),
+    TokenEnv        nvarchar(64)  NULL,
+    Registry        nvarchar(400) NOT NULL,
+    OutputRepo      nvarchar(400) NULL CONSTRAINT CK_OrgScan_OutputRepo CHECK (OutputRepo LIKE N'https://_%' AND OutputRepo NOT LIKE N'%[<>"'' ]%'),
+    OutputBranch    nvarchar(200) NOT NULL CONSTRAINT DF_OrgScan_OutputBranch DEFAULT N'main',
+    OutputTokenEnv  nvarchar(64)  NULL,
+    ImagePullSecret nvarchar(253) NULL,
+    IncludeRegex    nvarchar(400) NULL,
+    ExcludeRegex    nvarchar(400) NULL,
+    SkipForks       bit NOT NULL CONSTRAINT DF_OrgScan_SkipForks DEFAULT 1,
+    StaleDays       int NOT NULL CONSTRAINT DF_OrgScan_StaleDays DEFAULT 183 CONSTRAINT CK_OrgScan_StaleDays CHECK (StaleDays BETWEEN 0 AND 3650),
+    Verify          bit NOT NULL CONSTRAINT DF_OrgScan_Verify DEFAULT 1,
+    Gate            bit NOT NULL CONSTRAINT DF_OrgScan_Gate DEFAULT 1,
+    PushImages      bit NOT NULL CONSTRAINT DF_OrgScan_PushImages DEFAULT 1,
+    UseAi           bit NOT NULL CONSTRAINT DF_OrgScan_UseAi DEFAULT 0,
+    ScheduleDays    tinyint  NOT NULL CONSTRAINT DF_OrgScan_ScheduleDays DEFAULT 0 CONSTRAINT CK_OrgScan_ScheduleDays CHECK (ScheduleDays BETWEEN 0 AND 127),  -- Mon=1, Tue=2, ... Sun=64; 0: on demand only
+    ScheduleMinute  smallint NOT NULL CONSTRAINT DF_OrgScan_ScheduleMinute DEFAULT 120 CONSTRAINT CK_OrgScan_ScheduleMinute CHECK (ScheduleMinute BETWEEN 0 AND 1439),  -- minutes after midnight UTC
+    Enabled         bit NOT NULL CONSTRAINT DF_OrgScan_Enabled DEFAULT 1,
+    NextRunAt       datetime2(0) NULL,
+    CreatedAt       datetime2(0) NOT NULL CONSTRAINT DF_OrgScan_CreatedAt DEFAULT SYSUTCDATETIME()
+);
+GO
+
+-- One row per run of an organization scan: queued on schedule or with "Run now", claimed by a worker.
+IF OBJECT_ID(N'[${schema}].OrgScanRun', N'U') IS NULL
+CREATE TABLE [${schema}].OrgScanRun (
+    RunId           int IDENTITY(1,1) NOT NULL CONSTRAINT PK_OrgScanRun PRIMARY KEY,
+    ScanId          int NOT NULL CONSTRAINT FK_OrgScanRun_Scan REFERENCES [${schema}].OrgScan (ScanId),
+    TriggeredBy     nvarchar(20)  NOT NULL CONSTRAINT CK_OrgScanRun_Trigger CHECK (TriggeredBy IN (N'schedule', N'manual')),
+    RequestedBy     nvarchar(256) NULL,                 -- who pressed "Run now"
+    RequestedAt     datetime2(0)  NOT NULL CONSTRAINT DF_OrgScanRun_RequestedAt DEFAULT SYSUTCDATETIME(),
+    Status          nvarchar(20)  NOT NULL CONSTRAINT DF_OrgScanRun_Status DEFAULT N'queued'
+                    CONSTRAINT CK_OrgScanRun_Status CHECK (Status IN (N'queued', N'running', N'succeeded', N'failed', N'cancelled')),
+    CancelRequested bit NOT NULL CONSTRAINT DF_OrgScanRun_Cancel DEFAULT 0,
+    CancelledBy     nvarchar(256) NULL,
+    Worker          nvarchar(256) NULL,
+    StartedAt       datetime2(0)  NULL,
+    HeartbeatAt     datetime2(0)  NULL,
+    FinishedAt      datetime2(0)  NULL,
+    ImageTag        nvarchar(64)  NULL,
+    ReposListed     int NULL,
+    ReposTotal      int NULL,                           -- to process (after filters)
+    ReposDone       int NULL,
+    ReposNew        int NULL,                           -- found for the first time in this run
+    ReposDeployed   int NULL,
+    ReposSkipped    int NULL,
+    ReposErrors     int NULL,
+    CurrentRepo     nvarchar(400) NULL,
+    Message         nvarchar(2000) NULL
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_OrgScanRun_Scan' AND object_id = OBJECT_ID(N'[${schema}].OrgScanRun'))
+CREATE INDEX IX_OrgScanRun_Scan ON [${schema}].OrgScanRun (ScanId, RunId DESC) INCLUDE (Status);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_OrgScanRun_Status' AND object_id = OBJECT_ID(N'[${schema}].OrgScanRun'))
+CREATE INDEX IX_OrgScanRun_Status ON [${schema}].OrgScanRun (Status, RunId);
+GO
+
+-- Every repository an organization scan has listed. The scan keeps it current (new repositories are
+-- added, ones the provider no longer lists get RemovedAt) and records why it skipped one (SkipStatus /
+-- SkipReason: Dockerfile, no application code, stale, archived, ...). People set AdminState: NULL lets
+-- the scan decide, 'enabled' processes it even when an automatic skip applies, 'disabled' never does.
+IF OBJECT_ID(N'[${schema}].OrgRepository', N'U') IS NULL
+CREATE TABLE [${schema}].OrgRepository (
+    RepositoryId    int IDENTITY(1,1) NOT NULL CONSTRAINT PK_OrgRepository PRIMARY KEY,
+    ScanId          int NOT NULL CONSTRAINT FK_OrgRepository_Scan REFERENCES [${schema}].OrgScan (ScanId),
+    ProjectName     nvarchar(200) NOT NULL,            -- Azure DevOps project, GitLab subgroup, or _ (none)
+    Name            nvarchar(200) NOT NULL,
+    ExternalId      nvarchar(100) NULL,                -- the provider's id: follows renames
+    CloneUrl        nvarchar(400) NOT NULL,
+    WebUrl          nvarchar(400) NULL,
+    RepositoryUrl   nvarchar(400) NULL,                -- as Application.RepositoryUrl, to link the results
+    DefaultBranch   nvarchar(200) NULL,
+    AppName         nvarchar(63)  NULL,                -- namespace / folder name in the sandbox
+    LastActivityAt  datetime2(0)  NULL,
+    FirstSeenAt     datetime2(0)  NOT NULL CONSTRAINT DF_OrgRepository_FirstSeenAt DEFAULT SYSUTCDATETIME(),
+    FirstRunId      int NULL,
+    LastSeenAt      datetime2(0)  NOT NULL CONSTRAINT DF_OrgRepository_LastSeenAt DEFAULT SYSUTCDATETIME(),
+    RemovedAt       datetime2(0)  NULL,
+    AdminState      nvarchar(10)  NULL CONSTRAINT CK_OrgRepository_AdminState CHECK (AdminState IN (N'enabled', N'disabled')),
+    AdminNote       nvarchar(400) NULL,
+    SkipStatus      nvarchar(40)  NULL,
+    SkipReason      nvarchar(1000) NULL,
+    LastStatus      nvarchar(40)  NULL,                -- deployed, no-a-components, skipped-*, disabled, error
+    LastReason      nvarchar(1000) NULL,
+    LastCommit      nvarchar(64)  NULL,
+    LastCommitAt    datetime2(0)  NULL,
+    LastRating      char(1)       NULL,
+    LastScannedAt   datetime2(0)  NULL,
+    LastRunId       int NULL,
+    LastSeconds     decimal(9,1)  NULL,
+    LastDetail      nvarchar(max) NULL,                -- JSON: deployed and excluded components, overridden skips
+    Enabled AS (CAST(CASE WHEN AdminState = N'enabled' THEN 1 WHEN AdminState = N'disabled' THEN 0
+                          WHEN SkipStatus IS NULL THEN 1 ELSE 0 END AS bit)),
+    CONSTRAINT UQ_OrgRepository_Name UNIQUE (ScanId, ProjectName, Name)
+);
+GO
+
+-- Queue a run of an organization scan, unless one is already queued or running. Returns the RunId
+-- (0 when the scan is disabled or busy). The admin pages call it for "Run now", the worker on schedule.
+CREATE OR ALTER PROCEDURE [${schema}].QueueOrgScanRun @ScanId int, @TriggeredBy nvarchar(20)
+AS
+BEGIN
+    SET NOCOUNT ON; SET XACT_ABORT ON;
+    DECLARE @id int = 0;
+    BEGIN TRANSACTION;
+    IF EXISTS (SELECT 1 FROM [${schema}].OrgScan WITH (UPDLOCK, HOLDLOCK) WHERE ScanId = @ScanId AND Enabled = 1)
+       AND NOT EXISTS (SELECT 1 FROM [${schema}].OrgScanRun WITH (UPDLOCK, HOLDLOCK)
+                       WHERE ScanId = @ScanId AND Status IN (N'queued', N'running'))
+    BEGIN
+        INSERT [${schema}].OrgScanRun (ScanId, TriggeredBy, RequestedBy)
+        SELECT @ScanId, @TriggeredBy, CASE WHEN @TriggeredBy = N'manual' THEN w.ChangedBy END
+        FROM [${schema}].fnAuditWho() w;
+        SET @id = SCOPE_IDENTITY();
+    END
+    COMMIT;
+    SELECT @id AS RunId;
+END;
+GO
+
+-- Cancel a run: a queued one at once, a running one after the repository it is on.
+CREATE OR ALTER PROCEDURE [${schema}].CancelOrgScanRun @RunId int
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @who nvarchar(256) = (SELECT ChangedBy FROM [${schema}].fnAuditWho());
+    UPDATE [${schema}].OrgScanRun
+    SET Status = CASE WHEN Status = N'queued' THEN N'cancelled' ELSE Status END,
+        FinishedAt = CASE WHEN Status = N'queued' THEN SYSUTCDATETIME() ELSE FinishedAt END,
+        CancelRequested = 1, CancelledBy = @who
+    WHERE RunId = @RunId AND Status IN (N'queued', N'running');
+    SELECT @@ROWCOUNT AS Cancelled;
+END;
+GO
+
+CREATE OR ALTER TRIGGER [${schema}].trOrgScanAudit ON [${schema}].OrgScan
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'OrgScan', COALESCE(i.ScanId, d.ScanId), COALESCE(i.Name, d.Name),
+           CASE WHEN d.ScanId IS NULL THEN N'insert' WHEN i.ScanId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.ScanId IS NOT NULL THEN (SELECT d.Name, d.Provider, d.Organization, d.ApiUrl, d.TokenEnv, d.Registry,
+                d.OutputRepo, d.OutputBranch, d.OutputTokenEnv, d.ImagePullSecret, d.IncludeRegex, d.ExcludeRegex, d.SkipForks,
+                d.StaleDays, d.Verify, d.Gate, d.PushImages, d.UseAi, d.ScheduleDays, d.ScheduleMinute, d.Enabled
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.ScanId IS NOT NULL THEN (SELECT i.Name, i.Provider, i.Organization, i.ApiUrl, i.TokenEnv, i.Registry,
+                i.OutputRepo, i.OutputBranch, i.OutputTokenEnv, i.ImagePullSecret, i.IncludeRegex, i.ExcludeRegex, i.SkipForks,
+                i.StaleDays, i.Verify, i.Gate, i.PushImages, i.UseAi, i.ScheduleDays, i.ScheduleMinute, i.Enabled
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.ScanId = i.ScanId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.ScanId IS NULL OR i.ScanId IS NULL
+       OR EXISTS (SELECT i.Name, i.Provider, i.Organization, i.ApiUrl, i.TokenEnv, i.Registry, i.OutputRepo, i.OutputBranch,
+                         i.OutputTokenEnv, i.ImagePullSecret, i.IncludeRegex, i.ExcludeRegex, i.SkipForks, i.StaleDays,
+                         i.Verify, i.Gate, i.PushImages, i.UseAi, i.ScheduleDays, i.ScheduleMinute, i.Enabled
+                  EXCEPT SELECT d.Name, d.Provider, d.Organization, d.ApiUrl, d.TokenEnv, d.Registry, d.OutputRepo, d.OutputBranch,
+                         d.OutputTokenEnv, d.ImagePullSecret, d.IncludeRegex, d.ExcludeRegex, d.SkipForks, d.StaleDays,
+                         d.Verify, d.Gate, d.PushImages, d.UseAi, d.ScheduleDays, d.ScheduleMinute, d.Enabled);
+END;
+GO
+
+-- Repositories: found by a scan, enabled/disabled by people, automatic skips that start or stop applying,
+-- and leaving the organization. Routine per-run columns (LastStatus, LastCommit, ...) are not logged.
+CREATE OR ALTER TRIGGER [${schema}].trOrgRepositoryAudit ON [${schema}].OrgRepository
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'OrgRepository', COALESCE(i.RepositoryId, d.RepositoryId),
+           COALESCE(CASE WHEN i.ProjectName = N'_' THEN i.Name ELSE i.ProjectName + N'/' + i.Name END,
+                    CASE WHEN d.ProjectName = N'_' THEN d.Name ELSE d.ProjectName + N'/' + d.Name END),
+           CASE WHEN d.RepositoryId IS NULL THEN N'insert' WHEN i.RepositoryId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.RepositoryId IS NOT NULL THEN (SELECT COALESCE(d.AdminState, N'automatic') AS Setting, d.AdminNote AS Note,
+                d.SkipReason AS Skipped, CAST(CASE WHEN d.RemovedAt IS NULL THEN 0 ELSE 1 END AS bit) AS Removed,
+                (SELECT s.Name FROM [${schema}].OrgScan s WHERE s.ScanId = d.ScanId) AS OrgScan
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.RepositoryId IS NOT NULL THEN (SELECT COALESCE(i.AdminState, N'automatic') AS Setting, i.AdminNote AS Note,
+                i.SkipReason AS Skipped, CAST(CASE WHEN i.RemovedAt IS NULL THEN 0 ELSE 1 END AS bit) AS Removed,
+                (SELECT s.Name FROM [${schema}].OrgScan s WHERE s.ScanId = i.ScanId) AS OrgScan
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.RepositoryId = i.RepositoryId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.RepositoryId IS NULL OR i.RepositoryId IS NULL
+       OR EXISTS (SELECT i.AdminState, i.AdminNote, i.SkipStatus, i.SkipReason, CASE WHEN i.RemovedAt IS NULL THEN 0 ELSE 1 END,
+                         i.ProjectName, i.Name
+                  EXCEPT SELECT d.AdminState, d.AdminNote, d.SkipStatus, d.SkipReason, CASE WHEN d.RemovedAt IS NULL THEN 0 ELSE 1 END,
+                         d.ProjectName, d.Name);
+END;
+GO
+
 -- Rule review decisions (and new candidates) in the change history; SeenCount and claims are not logged.
 CREATE OR ALTER TRIGGER [${schema}].trRuleCandidateAudit ON [${schema}].RuleCandidate
 AFTER INSERT, UPDATE, DELETE AS
@@ -563,7 +770,9 @@ GO
 --   ${schema}_writer: the scanner; inserts results, never touches the people-maintained columns
 --   ${schema}_reader: the web UI and report readers; views and lookup tables only
 --   ${schema}_admin: the admin pages of the web UI (and people editing with SQL): business units,
---                    products, the application mapping, the rule review; reads the audit log; also a reader
+--                    products, the application mapping, organization scans and enabling/disabling their
+--                    repositories, the rule review; reads the audit log; also a reader
+--   The scan worker (`containerizer worker`) uses a ${schema}_writer login too.
 IF DATABASE_PRINCIPAL_ID(N'${schema}_writer') IS NULL CREATE ROLE [${schema}_writer];
 IF DATABASE_PRINCIPAL_ID(N'${schema}_reader') IS NULL CREATE ROLE [${schema}_reader];
 IF DATABASE_PRINCIPAL_ID(N'${schema}_admin') IS NULL CREATE ROLE [${schema}_admin];
@@ -578,6 +787,16 @@ GRANT UPDATE ON [${schema}].Application (Name, RepositoryUrl, SourcePath, LastSe
 GRANT SELECT, INSERT ON [${schema}].Component TO [${schema}_writer];
 GRANT UPDATE ON [${schema}].Component (Name, LastSeenAt) TO [${schema}_writer];
 GRANT SELECT ON [${schema}].SchemaVersion TO [${schema}_writer];
+GRANT SELECT ON [${schema}].OrgScan TO [${schema}_writer];
+GRANT UPDATE ON [${schema}].OrgScan (NextRunAt) TO [${schema}_writer];
+GRANT SELECT ON [${schema}].OrgScanRun TO [${schema}_writer];
+GRANT UPDATE ON [${schema}].OrgScanRun (Status, Worker, StartedAt, HeartbeatAt, FinishedAt, ImageTag, ReposListed, ReposTotal,
+    ReposDone, ReposNew, ReposDeployed, ReposSkipped, ReposErrors, CurrentRepo, Message) TO [${schema}_writer];
+GRANT SELECT, INSERT ON [${schema}].OrgRepository TO [${schema}_writer];
+GRANT UPDATE ON [${schema}].OrgRepository (ProjectName, Name, ExternalId, CloneUrl, WebUrl, RepositoryUrl, DefaultBranch, AppName,
+    LastActivityAt, LastSeenAt, RemovedAt, SkipStatus, SkipReason, LastStatus, LastReason, LastCommit, LastCommitAt,
+    LastRating, LastScannedAt, LastRunId, LastSeconds, LastDetail) TO [${schema}_writer];
+GRANT EXECUTE ON [${schema}].QueueOrgScanRun TO [${schema}_writer];
 GRANT SELECT, INSERT ON [${schema}].SandboxCheck TO [${schema}_writer];
 GRANT EXECUTE ON [${schema}].ProposeRuleCandidate TO [${schema}_writer];
 
@@ -599,6 +818,12 @@ GRANT SELECT ON [${schema}].Application TO [${schema}_admin];
 GRANT UPDATE ON [${schema}].Application (ProductId, DisplayName, Description, Owner, Retired) TO [${schema}_admin];
 GRANT SELECT ON [${schema}].AuditLog TO [${schema}_admin];
 GRANT SELECT, INSERT ON [${schema}].AccessLog TO [${schema}_admin];
+GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].OrgScan TO [${schema}_admin];
+GRANT SELECT ON [${schema}].OrgScanRun TO [${schema}_admin];
+GRANT SELECT ON [${schema}].OrgRepository TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].OrgRepository (AdminState, AdminNote) TO [${schema}_admin];
+GRANT EXECUTE ON [${schema}].QueueOrgScanRun TO [${schema}_admin];
+GRANT EXECUTE ON [${schema}].CancelOrgScanRun TO [${schema}_admin];
 GRANT SELECT ON [${schema}].RuleCandidate TO [${schema}_admin];
 GRANT UPDATE ON [${schema}].RuleCandidate (Status, ReviewedBy, ReviewedByName, ReviewedAt, ReviewNote, FinalYaml, AppliedAs,
                                            PullRequestUrl, ClaimedBy, ClaimedAt) TO [${schema}_admin];
@@ -610,6 +835,10 @@ IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 2) INSERT
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 3) INSERT [${schema}].SchemaVersion (Version) VALUES (3);
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 4) INSERT [${schema}].SchemaVersion (Version) VALUES (4);
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 5) INSERT [${schema}].SchemaVersion (Version) VALUES (5);
--- 6: rule review (RuleCandidate, RuleEvidence)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 6) INSERT [${schema}].SchemaVersion (Version) VALUES (6);
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 7) INSERT [${schema}].SchemaVersion (Version) VALUES (7);
+GO
+-- 8: rule review (RuleCandidate, RuleEvidence)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 8) INSERT [${schema}].SchemaVersion (Version) VALUES (8);
 GO

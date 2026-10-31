@@ -357,6 +357,76 @@ def clone(url: str, dest: Path, branch: str = "", header: str = "", depth: int |
     git(args + ["--", url, str(dest)], url=url, header=header)
 
 
+def update_clone(url: str, dest: Path, branch: str = "", header: str = "") -> str:
+    """Keep a shallow clone of the default branch in `dest` up to date: the first time clone it, later
+    fetch the newest commit and check it out, dropping any local change or untracked file. Returns
+    "cloned" or "pulled". A failed fetch (network, credentials) keeps the clone as it was; a clone that
+    cannot be checked out any more (corrupt, interrupted) is cloned again."""
+    healthy = (dest / ".git").is_dir() and \
+        git(["rev-parse", "--is-inside-work-tree"], cwd=dest, check=False).strip() == "true"
+    if healthy:
+        git([*SAFE_CLONE, "remote", "set-url", "origin", url], cwd=dest)
+        git([*SAFE_CLONE, "fetch", "--quiet", "--no-tags", "--prune", "--depth", "1", "origin", branch or "HEAD"],
+            cwd=dest, url=url, header=header)
+        try:
+            if branch:
+                git([*SAFE_CLONE, "checkout", "--quiet", "--force", "-B", branch, "FETCH_HEAD"], cwd=dest)
+            else:
+                git([*SAFE_CLONE, "reset", "--quiet", "--hard", "FETCH_HEAD"], cwd=dest)
+            git([*SAFE_CLONE, "clean", "-ffdxq"], cwd=dest)
+            # shallow fetches leave the previous commits behind: let git prune them when it is worth it
+            git([*SAFE_CLONE, "-c", "gc.reflogExpire=now", "-c", "gc.reflogExpireUnreachable=now", "-c",
+                 "gc.autoDetach=false", "gc", "--auto", "--prune=now", "--quiet"], cwd=dest, check=False)
+            return "pulled"
+        except SourceError:
+            pass
+    import shutil
+    fresh = dest.with_name(dest.name + ".cloning")
+    if fresh.exists():
+        shutil.rmtree(fresh)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        clone(url, fresh, branch, header)
+    except SourceError:
+        shutil.rmtree(fresh, ignore_errors=True)
+        raise                                    # the old clone, if any, stays until a clone succeeds
+    if dest.exists():
+        shutil.rmtree(dest)
+    fresh.rename(dest)
+    return "cloned"
+
+
+# source files of application code, by language (scripts, SQL and markup do not count)
+LANGUAGES = {".cs": "C#", ".cshtml": "C#", ".razor": "C#", ".aspx": "ASP.NET", ".ascx": "ASP.NET", ".asmx": "ASP.NET",
+             ".svc": "WCF", ".ashx": "ASP.NET", ".asax": "ASP.NET", ".master": "ASP.NET", ".vb": "Visual Basic",
+             ".vbhtml": "Visual Basic", ".fs": "F#", ".xaml": "XAML", ".js": "JavaScript", ".mjs": "JavaScript",
+             ".cjs": "JavaScript", ".jsx": "JavaScript", ".ts": "TypeScript", ".tsx": "TypeScript", ".py": "Python",
+             ".java": "Java", ".kt": "Kotlin", ".scala": "Scala", ".groovy": "Groovy", ".go": "Go", ".php": "PHP",
+             ".rb": "Ruby", ".erb": "Ruby", ".rs": "Rust", ".c": "C", ".cpp": "C++", ".cc": "C++", ".swift": "Swift",
+             ".m": "Objective-C", ".dart": "Dart", ".ex": "Elixir", ".exs": "Elixir", ".clj": "Clojure", ".jl": "Julia",
+             ".pl": "Perl", ".lua": "Lua", ".r": "R", ".cob": "COBOL", ".cbl": "COBOL", ".pas": "Pascal", ".dpr": "Delphi"}
+
+
+def code_summary(root: Path, limit: int = 20000) -> dict:
+    """What a repository holds, for the "no application code" decision: file count, source files per
+    language, and the most common file types (outside .git and node_modules)."""
+    total, langs, ext = 0, {}, {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for f in filenames:
+            total += 1
+            x = os.path.splitext(f)[1].lower() or "(no extension)"
+            ext[x] = ext.get(x, 0) + 1
+            if x in LANGUAGES:
+                langs[LANGUAGES[x]] = langs.get(LANGUAGES[x], 0) + 1
+            if total >= limit:
+                break
+        if total >= limit:
+            break
+    return {"files": total, "languages": sorted(langs.items(), key=lambda kv: (-kv[1], kv[0])),
+            "top": sorted(ext.items(), key=lambda kv: (-kv[1], kv[0]))[:4]}
+
+
 def head_commit(path: Path) -> tuple[str, datetime | None]:
     out = git(["log", "-1", "--format=%H %cI"], cwd=path, check=False).strip()
     if not out:
