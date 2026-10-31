@@ -1,0 +1,31 @@
+# HTTPS for the web UI and Grafana. The site names come from /run/containerizer/caddy.env (written by
+# cz-firstboot from CZ_HOSTNAME and the addresses of the appliance); the certificate is from Caddy's own
+# CA unless CZ_ACME_EMAIL is set (then Let's Encrypt, TLS-ALPN challenge on 443: allow
+# acme-v02.api.letsencrypt.org on the Firewall page).
+{
+	admin off
+	http_port 8081
+	auto_https disable_redirects
+	{$CZ_CADDY_ACME}
+	servers {
+		protocols h1 h2
+	}
+}
+
+{$CZ_SITES} {
+	tls {$CZ_CADDY_TLS}
+	encode zstd gzip
+	header -Server
+	handle /grafana* {
+		reverse_proxy 127.0.0.1:3000
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8080 {
+			header_up X-Forwarded-Proto https
+		}
+	}
+	log {
+		output stderr
+		format console
+	}
+}

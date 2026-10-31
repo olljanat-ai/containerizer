@@ -1,0 +1,26 @@
+# Immutable layout: the OS image (a read-only btrfs snapshot) with /etc, /var and /srv as tmpfs overlays,
+# and the paths below bind-mounted from the persistent partition (COS_PERSISTENT), so they survive reboots,
+# upgrades and roll backs. Bind mounts, not overlays: Docker and containerd cannot run on overlayfs.
+# Note: on every boot Elemental copies whatever the OS image has under these paths over the persistent
+# copy, so the image ships nothing there that an administrator edits.
+name: "Layout"
+stages:
+  rootfs.after:
+    - if: '[ ! -f "/run/elemental/recovery_mode" ]'
+      name: "Persistent paths"
+      environment_file: /run/cos/cos-layout.env
+      environment:
+        OVERLAY: "tmpfs:25%"
+        RW_PATHS: "/etc /var /srv"
+        PERSISTENT_STATE_PATHS: >-
+          /etc/containerizer
+          /etc/rancher/node
+          /home
+          /root
+          /var/lib/containerizer
+          /var/lib/docker
+          /var/lib/rancher
+          /var/lib/kubelet
+          /var/lib/caddy
+          /var/log
+        PERSISTENT_STATE_BIND: "true"

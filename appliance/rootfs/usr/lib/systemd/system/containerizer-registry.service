@@ -1,0 +1,27 @@
+[Unit]
+Description=containerizer appliance: local container registry (127.0.0.1:5000, for the sandbox cluster)
+After=docker.service containerizer-firstboot.service containerizer-dns.service
+Requires=docker.service
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+
+[Service]
+EnvironmentFile=/usr/lib/containerizer/images.env
+ExecStartPre=-/usr/bin/docker rm -f cz-registry
+# host network, loopback only: Docker (the worker's pushes) and k3s (pulls, /etc/rancher/k3s/registries.yaml)
+# reach it on 127.0.0.1; nothing outside the appliance can
+ExecStart=/usr/bin/docker run --rm --name cz-registry --network host \
+  --env REGISTRY_HTTP_ADDR=127.0.0.1:5000 \
+  --env REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY=/var/lib/registry \
+  --env REGISTRY_STORAGE_DELETE_ENABLED=true \
+  --env OTEL_TRACES_EXPORTER=none \
+  --volume /var/lib/containerizer/registry:/var/lib/registry \
+  --user 65532:65532 --read-only --tmpfs /tmp:size=64m --cap-drop ALL --security-opt no-new-privileges \
+  ${CZ_IMAGE_REGISTRY}
+ExecStop=/usr/bin/docker stop cz-registry
+Restart=always
+RestartSec=10
+TimeoutStartSec=15min
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,80 @@
+#!/bin/bash
+# containerizer appliance, every boot before anything else: configuration files from the defaults, generated
+# secrets, data folders with their owners, and the per-boot settings derived from appliance.env.
+# Idempotent: existing files are never overwritten.
+set -euo pipefail
+umask 077
+C=/etc/containerizer
+S=$C/secrets
+D=/var/lib/containerizer
+DEF=/usr/lib/containerizer/defaults
+
+install -d -m 0700 -o root -g root "$C" "$S"
+for f in appliance.env web.env worker.env sandbox.env grafana.env egress.json; do
+  [ -e "$C/$f" ] || install -m 0600 -o root -g root "$DEF/$f" "$C/$f"
+done
+[ -d "$C/network" ] || install -d -m 0755 "$C/network"
+
+# SQL Server passwords: 32 random characters plus one of each class its policy asks for
+secret() { [ -s "$S/$1" ] || { printf '%s' "$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)Aa1!" > "$S/$1"; chmod 0400 "$S/$1"; }; }
+for n in mssql-sa cz-scanner cz-web cz-admin grafana-admin; do secret "$n"; done
+printf 'MSSQL_SA_PASSWORD=%s\n' "$(cat $S/mssql-sa)" > "$S/mssql.env"
+printf 'GF_SECURITY_ADMIN_USER=admin\nGF_SECURITY_ADMIN_PASSWORD=%s\n' "$(cat $S/grafana-admin)" > "$S/grafana.env"
+chmod 0400 "$S/mssql.env" "$S/grafana.env"
+
+install -d -m 0755 -o root -g root "$D" "$D/system"
+install -d -m 0770 -o 10001 -g 0 "$D/mssql"
+install -d -m 0700 -o 65532 -g 65532 "$D/registry"
+install -d -m 0700 -o 65534 -g 65534 "$D/prometheus"
+install -d -m 0700 -o 472 -g 0 "$D/grafana"
+install -d -m 0700 -o containerizer -g containerizer "$D/worker"
+
+# static networks: /etc/containerizer/network/*.network take precedence over DHCP
+if compgen -G "$C/network/*.network" >/dev/null; then
+  install -d /run/systemd/network
+  cp "$C"/network/*.network /run/systemd/network/
+fi
+
+set -a
+. "$C/appliance.env"
+set +a
+host="${CZ_HOSTNAME:-}"
+if [ -n "$host" ]; then
+  hostnamectl hostname "$host" 2>/dev/null || hostname "$host"
+else
+  host="$(hostname)"
+fi
+install -d -m 0755 /run/containerizer
+# Caddy: the certificate covers the name and the addresses (added by cz-addresses once DHCP is done)
+{
+  echo "CZ_SITES=https://$host"
+  if [ -n "${CZ_ACME_EMAIL:-}" ]; then
+    echo "CZ_CADDY_TLS=$CZ_ACME_EMAIL"
+    echo "CZ_CADDY_ACME=email $CZ_ACME_EMAIL"
+  else
+    echo "CZ_CADDY_TLS=internal"
+    echo "CZ_CADDY_ACME="
+  fi
+} > /run/containerizer/caddy.env
+echo "CONTAINERIZER_PUBLIC_URL=https://$host" > /run/containerizer/web-url.env
+echo "GF_SERVER_ROOT_URL=https://$host/grafana/" > /run/containerizer/grafana-url.env
+chmod 0644 /run/containerizer/caddy.env /run/containerizer/web-url.env /run/containerizer/grafana-url.env
+
+# Learned rules: the code reads and writes rules/learned/, which on the appliance is a link to the
+# persistent partition. The OS image ships the project's learned rules in learned-seed/. A file nobody
+# changed locally follows the image; a file the worker added to keeps the local copy, and the image's
+# version is put next to it as <file>.shipped.
+L=$D/learned
+SEED=/usr/lib/containerizer/learned-seed
+install -d -m 0755 -o containerizer -g containerizer "$L" "$L/.seed"
+for s in "$SEED"/*.yaml; do
+  [ -e "$s" ] || continue
+  f=$(basename "$s")
+  if [ ! -e "$L/$f" ] || cmp -s "$L/$f" "$L/.seed/$f"; then
+    install -m 0644 -o containerizer -g containerizer "$s" "$L/$f"
+    rm -f "$L/$f.shipped"
+  elif ! cmp -s "$s" "$L/.seed/$f"; then
+    install -m 0644 -o containerizer -g containerizer "$s" "$L/$f.shipped"
+  fi
+  install -m 0644 -o containerizer -g containerizer "$s" "$L/.seed/$f"
+done

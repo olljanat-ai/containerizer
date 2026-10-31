@@ -1,0 +1,20 @@
+[Unit]
+Description=containerizer appliance: create or upgrade the results database schema and its logins
+After=containerizer-mssql.service
+Requires=containerizer-mssql.service
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/containerizer/bin/cz-db-init
+TimeoutStartSec=45min
+Restart=on-failure
+RestartSec=30
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

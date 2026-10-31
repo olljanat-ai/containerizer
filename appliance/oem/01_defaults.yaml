@@ -1,0 +1,10 @@
+# Replaces the Elemental default of the same name: the same settings without the keymap (Debian ships no
+# console keymaps; the kernel default is the US layout) and with a locale Debian has without locale-gen.
+name: "General settings"
+stages:
+  initramfs:
+    - name: "Setup distro"
+      systemd_firstboot:
+        locale: C.UTF-8
+        timezone: UTC
+        force: "true"

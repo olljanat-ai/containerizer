@@ -1,0 +1,9 @@
+#!/bin/sh
+# Load the appliance firewall; fall back to SSH-only if the allow-lists cannot be rendered.
+if /usr/lib/containerizer/venv/bin/python -m containerizer.sysagent firewall apply --no-dns-reload; then
+  systemctl try-restart containerizer-dns.service 2>/dev/null || true
+  exit 0
+fi
+echo "containerizer: firewall rules could not be applied; loading the SSH-only fallback" >&2
+/usr/sbin/nft -f /usr/lib/containerizer/firewall-fallback.nft
+exit 1

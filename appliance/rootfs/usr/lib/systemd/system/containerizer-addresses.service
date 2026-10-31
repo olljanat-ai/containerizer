@@ -1,0 +1,13 @@
+[Unit]
+Description=containerizer appliance: HTTPS certificate names for the appliance's addresses
+After=network-online.target containerizer-firstboot.service
+Wants=network-online.target
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/containerizer/bin/cz-addresses
+
+[Install]
+WantedBy=multi-user.target

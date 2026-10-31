@@ -370,3 +370,23 @@ def test_firewall_remove_and_cidr(page):
         f.unlink()
     page.handle(ADMIN, "POST", ["firewall"], {}, {"do": ["remove"], "rule": ["0"]}, shell)
     assert requests_in(page)[0]["rules"] == []
+
+
+def test_health(paths, monkeypatch):
+    state = {"k3s.service": "activating"}
+
+    def r(cmd, timeout=0, check=True, input=None):
+        if cmd[:2] == ["systemctl", "is-active"]:
+            return state.get(cmd[2], "active") + "\n"
+        return ""
+    monkeypatch.setattr(sysagent, "run", r)
+    assert sysagent.health() == 1
+    state.clear()
+    assert sysagent.health() == 0
+
+    def no_fw(cmd, timeout=0, check=True, input=None):
+        if cmd[0] == "nft":
+            raise sysagent.AgentError("No such file or directory")
+        return "active\n"
+    monkeypatch.setattr(sysagent, "run", no_fw)
+    assert sysagent.health() == 1

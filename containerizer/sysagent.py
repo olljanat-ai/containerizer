@@ -35,8 +35,6 @@ import shlex
 import socket
 import subprocess
 import sys
-import time
-import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -614,21 +612,29 @@ def process() -> int:
 
 # =============================================================================== health
 
-def health(url: str = "http://127.0.0.1:8080/healthz") -> int:
+def health() -> int:
     """Boot assessment (elemental-boot-assessment runs it until it passes, at most 5 times 30 s apart,
-    then restarts into the previous snapshot): the firewall is loaded and the web UI answers."""
+    then restarts into the previous snapshot): the firewall is loaded, the DNS filter, Docker and k3s
+    are running, and the web UI's code imports. Image downloads and the database are not waited for:
+    on a slow network they take longer than the assessment allows."""
     try:
         run(["nft", "list", "table", "inet", TABLE], timeout=30)
     except (AgentError, OSError) as ex:
         log(f"health: firewall not loaded: {ex}")
         return 1
+    for unit in ("containerizer-dns.service", "docker.service", "k3s.service"):
+        state = run(["systemctl", "is-active", unit], timeout=30, check=False).strip()
+        if state != "active":
+            log(f"health: {unit} is {state or 'unknown'}")
+            return 1
     try:
-        with urllib.request.urlopen(url, timeout=10) as r:
-            if r.status == 200:
-                return 0
-    except OSError as ex:
-        log(f"health: {url}: {ex}")
-    return 1
+        import importlib
+        for m in ("containerizer.webui", "containerizer.admin", "containerizer.cli"):
+            importlib.import_module(m)
+    except Exception as ex:          # noqa: BLE001 - any import failure means a broken image
+        log(f"health: {type(ex).__name__}: {ex}")
+        return 1
+    return 0
 
 
 def main(argv=None) -> int:

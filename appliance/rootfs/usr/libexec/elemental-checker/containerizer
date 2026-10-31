@@ -1,0 +1,7 @@
+#!/bin/sh
+# Elemental boot assessment after an install or upgrade: the boot counts as good when the firewall is
+# loaded and the appliance's code and engines start. It does not wait for image downloads or the
+# database, which can take longer than the assessment's 5 x 30 s on a slow network. When this fails 5
+# times, the system restarts into the previous snapshot.
+[ "$1" = check ] || exit 0
+/usr/lib/containerizer/venv/bin/python -m containerizer.sysagent health

@@ -1,0 +1,13 @@
+# Every wired interface: DHCP (IPv4 and IPv6). Static addressing: drop a .network file with a lower number
+# into /etc/containerizer/network/ (see docs/appliance.md).
+[Match]
+Name=en* eth*
+
+[Network]
+DHCP=yes
+IPv6AcceptRA=yes
+LLMNR=no
+MulticastDNS=no
+
+[DHCPv4]
+UseDomains=no

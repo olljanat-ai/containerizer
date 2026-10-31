@@ -1,0 +1,20 @@
+# k3s: the single-node sandbox cluster. Flux (and the apps it deploys) run here; the appliance's own
+# services do not.
+write-kubeconfig-mode: "0600"
+# the API answers only on this host and to the pods; the firewall lets no one else reach 6443
+resolv-conf: /usr/lib/containerizer/resolv.conf
+disable:
+  - traefik
+  - servicelb
+secrets-encryption: true
+protect-kernel-defaults: true
+kube-apiserver-arg:
+  - "anonymous-auth=false"
+  - "audit-log-path=/var/lib/rancher/k3s/server/logs/audit.log"
+  - "audit-policy-file=/usr/lib/containerizer/k3s-audit-policy.yaml"
+  - "audit-log-maxage=30"
+  - "audit-log-maxbackup=10"
+  - "audit-log-maxsize=100"
+kubelet-arg:
+  - "streaming-connection-idle-timeout=5m"
+  - "make-iptables-util-chains=true"

@@ -1,0 +1,13 @@
+[Unit]
+Description=containerizer appliance: system agent (upgrade, roll back, firewall changes)
+After=containerizer-firstboot.service
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/containerizer/venv/bin/python -m containerizer.sysagent process
+# an upgrade downloads and unpacks the OS image
+TimeoutStartSec=3h
+ProtectHome=yes
+PrivateTmp=yes

@@ -1,0 +1,6 @@
+[Unit]
+Description=containerizer appliance: re-render the firewall and the DNS filter
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/containerizer/bin/cz-firewall

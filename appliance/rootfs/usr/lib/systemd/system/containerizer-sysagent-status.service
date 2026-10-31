@@ -1,0 +1,14 @@
+[Unit]
+Description=containerizer appliance: publish version, snapshots and firewall state
+After=containerizer-firstboot.service containerizer-dns.service
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/containerizer/venv/bin/python -m containerizer.sysagent status
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
