@@ -10,6 +10,7 @@ import pytest
 pytest.importorskip("jwt")
 from containerizer import admin as adminmod  # noqa: E402
 from containerizer import sqlstore, webui  # noqa: E402
+from containerizer.appliance import SystemPage  # noqa: E402
 from containerizer.oidc import OidcConfig, OidcError  # noqa: E402
 from containerizer.roles import Access, owner_scopes, parse_owners, role_label  # noqa: E402
 
@@ -99,6 +100,11 @@ def test_roles_end_to_end(idp, tmp_path):  # noqa: F811
     c.owners = parse_owners("role:Finance.Owner=bu:Finance; role:Freight.Owner=product:Freight")
     connect_admin = lambda: sqlstore.connect(as_("cz_r_admin"), "Test-Passw0rd!x")  # noqa: E731
     adm = adminmod.Admin(c, connect_admin)
+    sysdir = tmp_path / "system"                       # as on the appliance: the System and Firewall pages
+    (sysdir / "requests").mkdir(parents=True)
+    (sysdir / "status.json").write_text('{"version": "v1.0.0", "image": "ghcr.io/x/y", "snapshots": [], '
+                                        '"egress": {"mode": "enforce", "rules": [], "system_rules": []}}')
+    adm.system = SystemPage(status_dir=sysdir, fetch_tags=lambda image: ["v1.0.0"])
     adm.api = apimod.Api(adm.provider, "api://containerizer", ["client:automation"], connect_admin,
                          c.admins, c.operators, c.owners)
     httpd = ThreadingHTTPServer(("127.0.0.1", port), webui.make_handler(
@@ -117,6 +123,12 @@ def test_roles_end_to_end(idp, tmp_path):  # noqa: F811
         for path in ("/admin/scans", "/admin/repositories", "/admin/scans/new"):
             s, _, page = op.follow(path)
             assert s == 200 and "href='/admin/scans'" in page, path
+        # the appliance's System and Firewall pages are for administrators only
+        assert "href='/admin/system'" not in body and "href='/admin/firewall'" not in body
+        for path in ("/admin/system", "/admin/firewall"):
+            assert op.follow(path)[0] == 403, path
+        assert op.go("/admin/firewall", {"csrf": op.csrf(body), "do": "add", "target": "evil.example", "ports": "443"})[0] == 403
+        assert not list((sysdir / "requests").glob("*.json"))
         # -- product owner of the Finance business unit
         fo = Browser(base, idp)
         idp.claims = {"email": "fiona@example.com", "name": "Fiona Finance", "roles": ["Finance.Owner"]}
@@ -184,6 +196,13 @@ def test_roles_end_to_end(idp, tmp_path):  # noqa: F811
         assert all(i["changedByRole"] is None for i in log["items"] if i["via"] == "scan")
         body = fo.follow("/admin/audit")[2]
         assert "admin UI as product owner" in body and "API as product owner" in body
+        ad = Browser(base, idp)
+        idp.claims = {"email": "ada@example.com", "name": "Ada Admin", "groups": ["cz-admins"]}
+        s, _, body = ad.follow("/admin/system")
+        assert s == 200 and "href='/admin/firewall'" in body and "v1.0.0 is the newest release" in body
+        s, _, body = ad.follow("/admin/firewall", {"csrf": ad.csrf(body), "do": "add", "target": "api.nuget.org",
+                                                   "ports": "443"})
+        assert s == 200 and len(list((sysdir / "requests").glob("*.json"))) == 1
     finally:
         idp.claims = {}
         httpd.shutdown()
