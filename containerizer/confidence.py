@@ -19,7 +19,9 @@ from .rules import RULES_DIR
 @lru_cache(maxsize=1)
 def _catalog():
     ok, neutral = [], []
-    for f in sorted(RULES_DIR.glob("packages*.yaml")) + [_rules.LEARNED_DIR / "packages.yaml"]:
+    rd = _rules.reviewed_dir()            # approved in the rule review (internal rules repository)
+    for f in sorted(RULES_DIR.glob("packages*.yaml")) + (sorted(rd.glob("packages*.yaml")) if rd else []) \
+            + [_rules.LEARNED_DIR / "packages.yaml"]:
         if f.exists():
             d = yaml.safe_load(f.read_text()) or {}
             ok += d.get("linux_ok", []) or []

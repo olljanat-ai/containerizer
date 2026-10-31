@@ -19,13 +19,15 @@ not proposed again; an approved one is in the ruleset.
 
 People review candidates on the "Rule review" admin page or with `containerizer rules`. Approving
 (optionally after editing the YAML) validates the rule like the curated rules are validated, then
-either opens a pull request that adds it to the rules repository (CONTAINERIZER_RULES_APPLY=pr, the
-default) or appends it to the local ruleset files directly (CONTAINERIZER_RULES_APPLY=direct).
-Approved rules go to tool-maintained files next to the curated ones:
+either opens a pull request in your internal rules repository (CONTAINERIZER_RULES_APPLY=pr, the
+default; a public repository is refused) or appends it to a local checkout of it
+(CONTAINERIZER_RULES_APPLY=direct). Approved rules never go into this tool's own rules folder: what
+your applications taught it stays yours. The tool loads them from CONTAINERIZER_REVIEWED_RULES (a
+checkout of that repository's rules folder), in tool-maintained files:
 
-  rules/70-reviewed.yaml            finding and plan rules (rules:)
-  rules/55-reviewed-failures.yaml   failure rules of the build-and-run loop (failures:)
-  rules/packages-reviewed.yaml      packages proven to work on Linux (linux_ok:)
+  70-reviewed.yaml            finding and plan rules (rules:)
+  55-reviewed-failures.yaml   failure rules of the build-and-run loop (failures:)
+  packages-reviewed.yaml      packages proven to work on Linux (linux_ok:)
 
 See docs/rule-review.md.
 """
@@ -50,7 +52,7 @@ from pathlib import Path
 
 import yaml
 
-from .rules import RULES_DIR, SEV_RANK, Rule
+from .rules import RULES_DIR, SEV_RANK, Rule, reviewed_dir
 
 KINDS = {   # kind -> (file of approved entries, list key)
     "rule": ("70-reviewed.yaml", "rules"),
@@ -145,7 +147,8 @@ def title_of(kind: str, entry) -> str:
 
 
 def target_file(kind: str) -> str:
-    return "rules/" + KINDS[kind][0]
+    """The file in the internal rules repository's rules folder."""
+    return KINDS[kind][0]
 
 
 def appended_text(kind: str, entry, current: str | None) -> str:
@@ -172,9 +175,10 @@ def appended_text(kind: str, entry, current: str | None) -> str:
     return new
 
 
-def diff_for(kind: str, entry, rules_dir: Path = RULES_DIR) -> str:
-    path = Path(rules_dir) / KINDS[kind][0]
-    cur = path.read_text() if path.exists() else ""
+def diff_for(kind: str, entry, rules_dir: Path | None = None) -> str:
+    rules_dir = rules_dir or reviewed_dir()
+    path = Path(rules_dir) / KINDS[kind][0] if rules_dir else None
+    cur = path.read_text() if path and path.exists() else ""
     try:
         new = appended_text(kind, entry, cur)
     except ReviewError as e:
@@ -210,10 +214,10 @@ def _walk_regex(node, problems: list, path: str = "when") -> None:
             _walk_regex(v, problems, f"{path}[{i}]")
 
 
-def existing_ids(rules_dir: Path = RULES_DIR) -> dict[str, set]:
+def existing_ids(*dirs: Path | None) -> dict[str, set]:
     """Ids already in the ruleset files (not the learned folder), per list key."""
     out = {"rules": set(), "failures": set(), "linux_ok": set()}
-    for f in sorted(Path(rules_dir).glob("*.yaml")):
+    for f in [f for d in dirs if d and Path(d).is_dir() for f in sorted(Path(d).glob("*.yaml"))]:
         try:
             d = yaml.safe_load(f.read_text()) or {}
         except yaml.YAMLError:
@@ -231,10 +235,11 @@ def existing_ids(rules_dir: Path = RULES_DIR) -> dict[str, set]:
     return out
 
 
-def validate(kind: str, entry, rules_dir: Path = RULES_DIR) -> list[str]:
-    """Problems that keep the rule out of the ruleset; the same bar as the curated rules."""
+def validate(kind: str, entry, rules_dir: Path | None = None) -> list[str]:
+    """Problems that keep the rule out of the ruleset; the same bar as the curated rules. Ids must be
+    new to the curated rules and to the approved ones (`rules_dir`, default CONTAINERIZER_REVIEWED_RULES)."""
     p: list[str] = []
-    ids = existing_ids(rules_dir)
+    ids = existing_ids(RULES_DIR, rules_dir or reviewed_dir())
     if kind == "package":
         if not isinstance(entry, str) or not entry.strip():
             return ["a package entry is one regular expression (a YAML string)"]
@@ -727,9 +732,9 @@ class LearningSession:
 
 @dataclass
 class ApplyConfig:
-    """Where approved rules go. CONTAINERIZER_RULES_APPLY=pr (default) opens a pull request in
-    CONTAINERIZER_RULES_REPO; =direct appends to the ruleset files in CONTAINERIZER_RULES_DIR
-    (default: the rules folder this tool runs with)."""
+    """Where approved rules go: always your internal rules repository, never this tool's rules folder.
+    CONTAINERIZER_RULES_APPLY=pr (default) opens a pull request in CONTAINERIZER_RULES_REPO (refused when
+    the repository is public); =direct appends to the checkout in CONTAINERIZER_REVIEWED_RULES."""
     mode: str = "pr"
     repo: str = ""
     branch: str = "main"
@@ -737,7 +742,7 @@ class ApplyConfig:
     api_url: str = ""
     token_env: str = "CONTAINERIZER_RULES_TOKEN"
     path: str = "rules"
-    rules_dir: Path = RULES_DIR
+    rules_dir: Path | None = None
 
     @classmethod
     def from_env(cls, env=os.environ) -> "ApplyConfig":
@@ -749,7 +754,8 @@ class ApplyConfig:
                 api_url=(env.get("CONTAINERIZER_RULES_API_URL") or "").strip().rstrip("/"),
                 token_env=(env.get("CONTAINERIZER_RULES_TOKEN_ENV") or "CONTAINERIZER_RULES_TOKEN").strip(),
                 path=(env.get("CONTAINERIZER_RULES_PATH") or "rules").strip().strip("/"),
-                rules_dir=Path(env.get("CONTAINERIZER_RULES_DIR") or RULES_DIR))
+                rules_dir=Path(env["CONTAINERIZER_REVIEWED_RULES"]).expanduser().resolve()
+                if (env.get("CONTAINERIZER_REVIEWED_RULES") or "").strip() else None)
         if c.repo and not c.provider:
             c.provider = infer_provider(c.repo)
         return c
@@ -758,10 +764,18 @@ class ApplyConfig:
         if self.mode not in ("pr", "direct"):
             raise ReviewError("CONTAINERIZER_RULES_APPLY must be pr or direct")
         if self.mode == "direct":
+            if not self.rules_dir:
+                raise ReviewError("CONTAINERIZER_RULES_APPLY=direct writes to a checkout of your internal rules "
+                                  "repository: set CONTAINERIZER_REVIEWED_RULES to its rules folder")
+            tool = RULES_DIR.parent.resolve()
+            if Path(self.rules_dir).resolve() == tool or tool in Path(self.rules_dir).resolve().parents:
+                raise ReviewError("CONTAINERIZER_REVIEWED_RULES points into this tool's own folder; approved rules "
+                                  "belong in your internal rules repository")
             return
         if not self.repo:
-            raise ReviewError("approving opens a pull request: set CONTAINERIZER_RULES_REPO (https URL of the rules "
-                              "repository) and a token in CONTAINERIZER_RULES_TOKEN, or CONTAINERIZER_RULES_APPLY=direct")
+            raise ReviewError("approving opens a pull request in your internal rules repository: set "
+                              "CONTAINERIZER_RULES_REPO (its https URL) and a token in CONTAINERIZER_RULES_TOKEN, or "
+                              "CONTAINERIZER_RULES_APPLY=direct with CONTAINERIZER_REVIEWED_RULES")
         if not self.repo.startswith("https://"):
             raise ReviewError("CONTAINERIZER_RULES_REPO must be an https:// URL")
         if self.provider not in ("github", "gitlab", "azure-devops"):
@@ -776,8 +790,9 @@ class ApplyConfig:
 
     def describe(self) -> str:
         if self.mode == "direct":
-            return f"appended to the ruleset files in {self.rules_dir}"
-        return f"proposed in a pull request to {self.repo} ({self.branch})" if self.repo else "pull request (not configured)"
+            return f"appended to the internal rules in {self.rules_dir}"
+        return (f"proposed in a pull request to the internal rules repository {self.repo} ({self.branch})"
+                if self.repo else "pull request (not configured)")
 
 
 def infer_provider(url: str) -> str:
@@ -845,6 +860,31 @@ def _pr_api(cfg: ApplyConfig) -> tuple[str, dict]:
     return f"{base}/{before.strip('/')}/_apis/git/repositories/{repo.split('/')[0]}", {}
 
 
+def ensure_private(cfg: ApplyConfig, headers: dict) -> None:
+    """Approved rules describe your applications: refuse a repository anyone can read."""
+    api, _ = _pr_api(cfg)
+    vis = None
+    if cfg.provider == "github":
+        st, d = _http("GET", api, headers)
+        if st == 200 and isinstance(d, dict):
+            vis = d.get("visibility") or ("private" if d.get("private") else "public")
+    elif cfg.provider == "gitlab":
+        st, d = _http("GET", api, headers)
+        if st == 200 and isinstance(d, dict):
+            vis = d.get("visibility")
+    else:
+        proj = api.split("/_apis/")[0]              # <collection URL>/<project>
+        coll, _, name = proj.rpartition("/")
+        st, d = _http("GET", f"{coll}/_apis/projects/{name}?api-version=7.1", headers)
+        if st == 200 and isinstance(d, dict):
+            vis = d.get("visibility")
+    if vis is None:
+        raise ReviewError(f"cannot read the visibility of {cfg.repo} with the token (HTTP {st}); approved rules only go "
+                          "to a repository known to be private or internal")
+    if str(vis).lower() not in ("private", "internal", "organization"):
+        raise ReviewError(f"{cfg.repo} is {vis}: approved rules only go to a private or internal repository")
+
+
 def open_pull_request(cfg: ApplyConfig, kind: str, entry, cid: int, title: str, body: str, work: Path) -> str:
     """Clone the rules repository, append the rule on a branch of its own, push, open (or find) the PR."""
     from .orgsource import REDACT, SourceError, clone, git, provider as make_provider, read_token
@@ -855,6 +895,7 @@ def open_pull_request(cfg: ApplyConfig, kind: str, entry, cid: int, title: str, 
     prov = make_provider(cfg.provider, "-", token, None)
     REDACT.add(token, prov.git_username)
     header = prov.git_header()
+    ensure_private(cfg, prov.headers())
     branch = f"containerizer/rule-review-{cid}"
     dest = work / f"rules-repo-{cid}"
     if dest.exists():
@@ -863,8 +904,7 @@ def open_pull_request(cfg: ApplyConfig, kind: str, entry, cid: int, title: str, 
         clone(cfg.repo, dest, cfg.branch, header, depth=1)
         git(["checkout", "-q", "-B", branch], cwd=dest)
         rules_dir = dest / cfg.path
-        if not rules_dir.is_dir():
-            raise ReviewError(f"{cfg.repo} has no folder {cfg.path}/ on {cfg.branch} (CONTAINERIZER_RULES_PATH)")
+        rules_dir.mkdir(parents=True, exist_ok=True)       # the first approved rule creates the folder
         problems = validate(kind, entry, rules_dir)
         if problems:
             raise ReviewError("against the rules repository: " + "; ".join(problems))
@@ -914,13 +954,13 @@ def open_pull_request(cfg: ApplyConfig, kind: str, entry, cid: int, title: str, 
     return url
 
 
-def pr_text(c: dict, entry, user: str, note: str | None) -> tuple[str, str]:
+def pr_text(c: dict, entry, user: str, note: str | None, folder: str = "rules") -> tuple[str, str]:
     title = f"Rule review: add {c['Kind']} {rule_id(c['Kind'], entry)}"[:200]
     body = (f"Learned by containerizer and approved in the rule review by {user} (candidate {c['CandidateId']}).\n\n"
             f"- Learned from: {c.get('LearnedFrom') or '-'}\n- Seen {c.get('SeenCount') or 1} time(s); confidence "
             f"{c.get('Confidence')}\n" + (f"- Proposed by the LLM {c['Model']}\n" if c.get("Model") else "")
             + (f"- Reviewer's note: {note}\n" if note else "")
-            + f"\nAdds to `{c['TargetFile']}`:\n\n```yaml\n{to_yaml(entry)}```\n"
+            + f"\nAdds to `{folder}/{c['TargetFile']}`:\n\n```yaml\n{to_yaml(entry)}```\n"
             "\nThe evidence (build and run logs) is on the Rule review admin page.\n")
     return title, body
 
@@ -939,7 +979,7 @@ def approve(store, cid: int, user: str, name: str | None = None, note: str | Non
     kind = c["Kind"]
     text = edited_yaml if edited_yaml is not None and edited_yaml.strip() else c["RuleYaml"]
     entry = parse_entry(kind, text)
-    problems = validate(kind, entry, cfg.rules_dir if cfg.mode == "direct" else RULES_DIR)
+    problems = validate(kind, entry, cfg.rules_dir if cfg.mode == "direct" else None)
     if problems:
         raise ReviewError("; ".join(problems))
     edited = to_yaml(entry) != to_yaml(parse_entry(kind, c["RuleYaml"]))
@@ -954,7 +994,7 @@ def approve(store, cid: int, user: str, name: str | None = None, note: str | Non
             applied, url = "direct", None
             where = str(path)
         else:
-            title, body = pr_text(c, final, name or user, note)
+            title, body = pr_text(c, final, name or user, note, cfg.path)
             work = Path(tempfile.mkdtemp(prefix="cz-review-"))
             try:
                 url = open_pull_request(cfg, kind, final, cid, title, body, work)

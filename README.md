@@ -229,7 +229,8 @@ For each component that can be containerized the tool:
    each becomes a candidate with its evidence (source repository and commit, the attempts and exit
    reasons, an excerpt of the failing log, the diff, a confidence, the LLM if one proposed it). An
    administrator approves (optionally after editing) or rejects it on the **Rule review** admin page
-   or with `containerizer rules`; approved rules reach the ruleset through a pull request or directly,
+   or with `containerizer rules`; approved rules go to your internal (private) rules repository
+   through a pull request, never into this public one, and are loaded from `CONTAINERIZER_REVIEWED_RULES`;
    rejected ones are not proposed again. See [docs/rule-review.md](docs/rule-review.md).
 
 ### AI fallback (Claude or a self-hosted LLM)
@@ -547,7 +548,6 @@ results and the model comparison). The labels used for scoring are in
 containerizer/   scan, rules engine, assess, reach, confidence, facts, generate, harden, imagescan, verify, ai, report, bench
 rules/           curated rules (roles, facts, findings, plan, failures, security, images + images.lock, packages)
 rules/learned/   rules written by the learning loop with CONTAINERIZER_RULE_REVIEW=off (safe to delete)
-rules/*reviewed* learned rules approved in the rule review (docs/rule-review.md)
 bench/           labels and results
 action.yml       GitHub Action; ci/azure/ has the Azure DevOps template
 containerizer/sql/  results database schema (sqlstore.py writes it, webui.py reads it, admin.py + oidc.py: admin pages)

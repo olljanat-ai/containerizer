@@ -42,6 +42,7 @@ captured groups become facts (e.g. `(?P<port>\\d+)`).
 from __future__ import annotations
 
 import fnmatch
+import os
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -57,6 +58,13 @@ RULES_DIR = Path(__file__).resolve().parent.parent / "rules"
 # Where learned rules are read from. A learning run points this (and verify.LEARNED, ai.LEARNED) at a
 # staging copy, so what it learns waits for review instead of entering the ruleset (rulereview.py).
 LEARNED_DIR = RULES_DIR / "learned"
+
+
+def reviewed_dir() -> Path | None:
+    """Learned rules approved in the rule review live in your own internal rules repository, never in
+    this tool's: CONTAINERIZER_REVIEWED_RULES is a checkout of its rules folder, loaded with the curated rules."""
+    v = (os.environ.get("CONTAINERIZER_REVIEWED_RULES") or "").strip()
+    return Path(v).expanduser().resolve() if v else None
 
 
 @dataclass
@@ -113,7 +121,7 @@ class Match:
 
 
 def load_rules(dirs: list[Path] | None = None) -> list[Rule]:
-    dirs = dirs or [RULES_DIR, LEARNED_DIR]
+    dirs = dirs or [RULES_DIR, *filter(None, [reviewed_dir()]), LEARNED_DIR]
     rules: list[Rule] = []
     seen: dict[str, Rule] = {}
     for d in dirs:
@@ -134,8 +142,11 @@ def load_rules(dirs: list[Path] | None = None) -> list[Rule]:
 def _rel(f: Path) -> str:
     try:
         return str(f.relative_to(RULES_DIR.parent))
-    except ValueError:                  # a staging copy of the learned rules (rulereview.LearningSession)
-        return "rules/learned/" + f.name
+    except ValueError:
+        rd = reviewed_dir()
+        if rd and f.parent == rd:       # approved rules from the internal rules repository
+            return "reviewed/" + f.name
+        return "rules/learned/" + f.name    # a staging copy of the learned rules (rulereview.LearningSession)
 
 
 @lru_cache(maxsize=4096)

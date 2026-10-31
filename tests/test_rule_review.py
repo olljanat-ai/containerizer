@@ -57,8 +57,9 @@ def learn_plan_rule(rule=PLAN_RULE):
 
 
 def ruleset_copy(tmp_path) -> Path:
-    d = tmp_path / "rules"
-    shutil.copytree(RULES_DIR, d, ignore=shutil.ignore_patterns("learned"))
+    """The rules folder of a checkout of the internal rules repository (empty at first)."""
+    d = tmp_path / "internal" / "rules"
+    d.mkdir(parents=True, exist_ok=True)
     return d
 
 
@@ -80,7 +81,7 @@ def test_learning_run_stages_and_proposes(learned, tmp_path):
     assert ls.proposed == [(1, "new", PLAN_RULE["id"])]
     [c] = store.list()
     assert c["Status"] == "pending" and c["Kind"] == "rule" and c["Confidence"] == 0.9 and c["Source"] == "learned"
-    assert c["TargetFile"] == "rules/70-reviewed.yaml" and c["LearnedFrom"] == "shop/Shop.Web"
+    assert c["TargetFile"] == "70-reviewed.yaml" and c["LearnedFrom"] == "shop/Shop.Web"
     assert "+- id: learned-run-readonly-path-shop-web" in c["Diff"]
     ev = store.get(c["CandidateId"])["evidence"][0]
     assert ev["Application"] == "shop" and ev["Component"] == "Shop.Web" and ev["Outcome"] == "ok" and ev["Stage"] == "run"
@@ -134,7 +135,7 @@ def test_ai_rules_and_packages(learned, tmp_path):
     assert by["rule"]["Model"] == "local-llm" and by["rule"]["Confidence"] == 0.7 and by["rule"]["Source"] == "ai"
     ev = store.get(by["rule"]["CandidateId"])["evidence"][0]
     assert ev["Model"] == "local-llm"
-    assert by["package"]["RuleId"] == r"Contoso\.Widgets" and by["package"]["TargetFile"] == "rules/packages-reviewed.yaml"
+    assert by["package"]["RuleId"] == r"Contoso\.Widgets" and by["package"]["TargetFile"] == "packages-reviewed.yaml"
 
 
 def test_a_failing_store_does_not_break_the_run(learned):
@@ -255,8 +256,28 @@ def test_failure_rules_reach_the_verification_loop(tmp_path, monkeypatch):
     rdir = ruleset_copy(tmp_path)
     rr.append_rule(rdir, "failure", {"id": "x-reviewed", "stage": "build", "outcome": "retry", "match": "NU9999",
                                      "diagnosis": "d", "fix": {"rid": "portable"}})
-    monkeypatch.setattr(verify, "RULES_DIR", rdir)
+    monkeypatch.setenv("CONTAINERIZER_REVIEWED_RULES", str(rdir))
     assert "x-reviewed" in {f["id"] for f in verify.load_failures()}
+
+
+def test_approved_rules_load_from_the_internal_repository(tmp_path, monkeypatch):
+    rdir = ruleset_copy(tmp_path)
+    rr.append_rule(rdir, "rule", PLAN_RULE)
+    rr.append_rule(rdir, "package", r"Contoso\.Widgets")
+    assert PLAN_RULE["id"] not in {r.id for r in load_rules()}
+    monkeypatch.setenv("CONTAINERIZER_REVIEWED_RULES", str(rdir))
+    confidence.reset_cache()
+    try:
+        loaded = {r.id: r for r in load_rules()}
+        assert loaded[PLAN_RULE["id"]].file == "reviewed/70-reviewed.yaml"
+        assert confidence._catalog()[0].match("Contoso.Widgets")
+        # ids are unique across the curated and the approved rules
+        assert any("already used" in p for p in rr.validate("rule", PLAN_RULE))
+    finally:
+        monkeypatch.delenv("CONTAINERIZER_REVIEWED_RULES")
+        confidence.reset_cache()
+    # nothing was written into this tool's own rules folder
+    assert not list(RULES_DIR.glob("*reviewed*"))
 
 
 def test_appended_text_keeps_the_file_valid():
@@ -265,7 +286,7 @@ def test_appended_text_keeps_the_file_valid():
         rr.appended_text("rule", PLAN_RULE, "rules:\n- id: a\n  when: {name: x}\nother: 1\n")
 
 
-def test_apply_config(monkeypatch):
+def test_apply_config(monkeypatch, tmp_path):
     assert rr.ApplyConfig.from_env({}).mode == "pr"
     with pytest.raises(rr.ReviewError, match="CONTAINERIZER_RULES_REPO"):
         rr.ApplyConfig.from_env({}).check()
@@ -278,7 +299,11 @@ def test_apply_config(monkeypatch):
         rr.ApplyConfig.from_env({"CONTAINERIZER_RULES_REPO": "https://git.example.com/rules"}).check()
     with pytest.raises(rr.ReviewError, match="pr or direct"):
         rr.ApplyConfig.from_env({"CONTAINERIZER_RULES_APPLY": "yolo"}).check()
-    rr.ApplyConfig.from_env({"CONTAINERIZER_RULES_APPLY": "direct"}).check()
+    with pytest.raises(rr.ReviewError, match="CONTAINERIZER_REVIEWED_RULES"):
+        rr.ApplyConfig.from_env({"CONTAINERIZER_RULES_APPLY": "direct"}).check()
+    with pytest.raises(rr.ReviewError, match="tool's own folder"):
+        rr.ApplyConfig.from_env({"CONTAINERIZER_RULES_APPLY": "direct", "CONTAINERIZER_REVIEWED_RULES": str(RULES_DIR)}).check()
+    rr.ApplyConfig.from_env({"CONTAINERIZER_RULES_APPLY": "direct", "CONTAINERIZER_REVIEWED_RULES": "/srv/rules"}).check()
     assert rr._pr_api(rr.ApplyConfig(repo="https://github.com/acme/rules.git", provider="github"))[0] == \
         "https://api.github.com/repos/acme/rules"
     assert rr._pr_api(rr.ApplyConfig(repo="https://gitlab.example.com/plat/sub/rules", provider="gitlab"))[0] == \
@@ -315,6 +340,8 @@ def test_approve_opens_a_pull_request(tmp_path, monkeypatch, prov, repo, status,
         return real_git(args, cwd=cwd, timeout=timeout, check=check)
 
     def fake_http(method, u, headers, body=None, timeout=60):
+        if method == "GET":                                       # the repository's visibility
+            return 200, {"visibility": "private"} if prov != "github" else {"private": True}
         calls.append((method, u, body))
         return status, reply
     monkeypatch.setattr(orgsource, "clone", fake_clone)
@@ -333,9 +360,31 @@ def test_approve_opens_a_pull_request(tmp_path, monkeypatch, prov, repo, status,
     assert not (upstream / "70-reviewed.yaml").exists()           # only the clone was changed
 
 
+@pytest.mark.parametrize("prov,repo,reply", [
+    ("github", "https://github.com/olljanat-ai/containerizer", {"private": False, "visibility": "public"}),
+    ("gitlab", "https://gitlab.com/acme/rules", {"visibility": "public"}),
+    ("azure-devops", "https://dev.azure.com/acme/P/_git/rules", {"visibility": "public"}),
+    ("github", "https://github.com/acme/rules", {"_error": "HTTP 404"}),
+])
+def test_public_rules_repositories_are_refused(tmp_path, monkeypatch, prov, repo, reply):
+    from containerizer import orgsource
+    gets = []
+    monkeypatch.setattr(orgsource, "clone", lambda *a, **k: pytest.fail("must not clone a public repository"))
+    monkeypatch.setattr(rr, "_http", lambda m, u, h, b=None, timeout=60: gets.append(u) or (404 if "_error" in reply else 200, reply))
+    monkeypatch.setenv("CONTAINERIZER_RULES_TOKEN", "tok-123456")
+    store = rr.FileStore(tmp_path / "review")
+    cid = _pending(store)
+    with pytest.raises(rr.ReviewError, match="public|visibility"):
+        rr.approve(store, cid, "jane", cfg=rr.ApplyConfig(mode="pr", repo=repo, provider=prov))
+    assert store.get(cid)["Status"] == "pending"
+    if prov == "azure-devops":
+        assert gets == ["https://dev.azure.com/acme/_apis/projects/P?api-version=7.1"]
+
+
 def test_pull_request_failure_keeps_it_pending(tmp_path, monkeypatch):
     from containerizer import orgsource
     monkeypatch.setattr(orgsource, "clone", lambda *a, **k: (_ for _ in ()).throw(orgsource.SourceError("denied")))
+    monkeypatch.setattr(rr, "_http", lambda *a, **k: (200, {"private": True}))
     monkeypatch.setenv("CONTAINERIZER_RULES_TOKEN", "tok-123456")
     store = rr.FileStore(tmp_path / "review")
     cid = _pending(store)
@@ -362,7 +411,7 @@ def test_cli(tmp_path, capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "Password=***" in out and "+- id: learned-run-readonly-path-shop-web" in out
     monkeypatch.setenv("CONTAINERIZER_RULES_APPLY", "direct")
-    monkeypatch.setenv("CONTAINERIZER_RULES_DIR", str(ruleset_copy(tmp_path)))
+    monkeypatch.setenv("CONTAINERIZER_REVIEWED_RULES", str(ruleset_copy(tmp_path)))
     edited = tmp_path / "edit.yaml"
     edited.write_text(rr.to_yaml({**PLAN_RULE, "id": "reviewed-shop-web-data"}))
     assert cli.main(["rules", "approve", str(cid), "--edit", str(edited), "--note", "renamed", *d]) == 0

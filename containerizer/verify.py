@@ -40,8 +40,9 @@ MAX_ATTEMPTS = 5
 
 def load_failures() -> list[dict]:
     out = []
-    # 55-reviewed-failures.yaml: learned failure rules an administrator approved (rulereview.py)
-    for f in [RULES_DIR / "50-failures.yaml", RULES_DIR / "55-reviewed-failures.yaml", LEARNED / "failures.yaml"]:
+    from .rules import reviewed_dir
+    rd = reviewed_dir()     # failure rules approved in the rule review, from your internal rules repository
+    for f in [RULES_DIR / "50-failures.yaml", *([rd / "55-reviewed-failures.yaml"] if rd else []), LEARNED / "failures.yaml"]:
         if f.exists():
             out += (yaml.safe_load(f.read_text()) or {}).get("failures", []) or []
     # learned failure rules first: they are more specific

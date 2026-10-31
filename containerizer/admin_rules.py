@@ -111,7 +111,7 @@ def detail_page(adm, conn, store, s, cid: int, flash: str) -> Response:
     if not c:
         return Response(404, page("Not found", "<h1>Learned rule not found</h1>"))
     kind = c["Kind"]
-    facts = [f"{e(KIND_TEXT.get(kind, kind))} <code>{e(c['RuleId'])}</code>, added to <code>{e(c['TargetFile'])}</code>",
+    facts = [f"{e(KIND_TEXT.get(kind, kind))} <code>{e(c['RuleId'])}</code>, added to <code>{e(c['TargetFile'])}</code> in the internal rules repository",
              f"Confidence {float(c['Confidence']):.2f} · seen {int(c['SeenCount'])} time(s), first {_d(c['FirstSeenAt'])}, "
              f"last {_d(c['LastSeenAt'])}",
              f"Learned from {e(c.get('LearnedFrom') or '-')} · source: "
@@ -124,7 +124,7 @@ def detail_page(adm, conn, store, s, cid: int, flash: str) -> Response:
                     + (" · written to the ruleset files" if c.get("AppliedAs") == "direct" else "") + "</p>")
     try:
         problems = rr.validate(kind, rr.parse_entry(kind, c["RuleYaml"]),
-                               adm.rule_apply.rules_dir if adm.rule_apply.mode == "direct" else rr.RULES_DIR)
+                               adm.rule_apply.rules_dir if adm.rule_apply.mode == "direct" else None)
     except rr.ReviewError as ex:
         problems = [str(ex)]
     shown = c.get("FinalYaml") if c["Status"] == "approved" and c.get("FinalYaml") else c["RuleYaml"]

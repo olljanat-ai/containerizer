@@ -12,8 +12,11 @@ ruleset until a person approves it:
    Linux-safe package becomes a pending candidate with its evidence trail.
 3. **A person decides.** On the **Rule review** admin page, or with `containerizer rules`, an
    administrator approves the rule (optionally after editing it) or rejects it.
-4. **Approved rules go into the ruleset**, through a pull request in the rules repository (default) or
-   directly into the ruleset files. **Rejected rules are remembered** and not proposed again.
+4. **Approved rules go into your internal rules repository**, never into this tool's public `rules/`
+   folder: what your applications taught the tool stays inside your organization. Approval opens a
+   pull request there (default; a public repository is refused) or writes to a local checkout of it.
+   The tool loads them from `CONTAINERIZER_REVIEWED_RULES`. **Rejected rules are remembered** and not
+   proposed again.
 
 Every decision is in the change history.
 
@@ -22,7 +25,7 @@ Every decision is in the change history.
 | | |
 | --- | --- |
 | The rule | As YAML, and as the diff of the ruleset file it is added to |
-| Kind | A finding or plan rule (`rules/70-reviewed.yaml`), a failure rule of the build-and-run loop (`rules/55-reviewed-failures.yaml`), or a package proven to work on Linux (`rules/packages-reviewed.yaml`) |
+| Kind | A finding or plan rule (`70-reviewed.yaml`), a failure rule of the build-and-run loop (`55-reviewed-failures.yaml`), or a package proven to work on Linux (`packages-reviewed.yaml`); files in the internal rules repository |
 | Source | `learned` (from a build and run) or `ai` (proposed by the LLM, with the model's name) |
 | Confidence | The rule's own confidence if it has one (0.7 for LLM rules), else 0.9 when the container built and ran with it, 0.8 for a failure observed at runtime, 0.6 otherwise |
 | Seen | How many runs learned the same rule, first and last time |
@@ -60,7 +63,7 @@ operators that role, they can review rules too, without access to the other admi
 
 A learned rule has to meet the same bar as the curated ones (the checks in `tests/test_rule_docs.py`):
 
-- a unique id (lower-case letters, digits, `.`, `-`, `_`), not already used in `rules/`;
+- a unique id (lower-case letters, digits, `.`, `-`, `_`), not already used by a curated or approved rule;
 - every regular expression in `when` compiles; the condition is not empty;
 - finding rules: a title, a `why` of at least 60 characters, a `fix`, and at least one https reference
   for refactor, rewrite and blocker findings;
@@ -68,37 +71,45 @@ A learned rule has to meet the same bar as the curated ones (the checks in `test
 - failure rules: stage, outcome and a `match` that does not match an empty log;
 - packages: a valid expression that does not match (almost) any package name.
 
-## Where approved rules go
+## Where approved rules go: your internal rules repository
+
+Approved rules describe your applications (their names, packages and failures), so they are kept in a
+Git repository inside your organization, not in this tool's public repository. Create a private or
+internal repository for them (it can start empty) and point the tool at it:
 
 | Variable | Meaning |
 | --- | --- |
-| `CONTAINERIZER_RULES_APPLY` | `pr` (default): open a pull request in the rules repository. `direct`: append to the ruleset files in `CONTAINERIZER_RULES_DIR`. |
-| `CONTAINERIZER_RULES_REPO` | https URL of the repository that holds the rules (usually your fork or copy of this repository) |
-| `CONTAINERIZER_RULES_TOKEN` | A token that can push a branch and open a pull request there (or name another variable with `CONTAINERIZER_RULES_TOKEN_ENV`) |
+| `CONTAINERIZER_REVIEWED_RULES` | Folder of a checkout of the internal repository's rules (for example `/srv/containerizer-rules/rules`). Every run loads the approved rules from here, with the curated ones. Keep it current with a `git pull` before scans (the scan worker host, a CI step). |
+| `CONTAINERIZER_RULES_APPLY` | `pr` (default): approving opens a pull request in the internal repository. `direct`: approving appends to the files in `CONTAINERIZER_REVIEWED_RULES` (commit them yourself). |
+| `CONTAINERIZER_RULES_REPO` | https URL of the internal repository |
+| `CONTAINERIZER_RULES_TOKEN` | A token that can read the repository's settings, push a branch and open a pull request (or name another variable with `CONTAINERIZER_RULES_TOKEN_ENV`) |
 | `CONTAINERIZER_RULES_BRANCH` | Branch the pull request targets (default `main`) |
-| `CONTAINERIZER_RULES_PATH` | Folder of the rules in that repository (default `rules`) |
+| `CONTAINERIZER_RULES_PATH` | Folder of the rules in that repository (default `rules`; created by the first approval) |
 | `CONTAINERIZER_RULES_PROVIDER` | `github`, `gitlab` or `azure-devops`; worked out from the URL for github.com, gitlab.com / `gitlab.*` hosts, dev.azure.com and `*.visualstudio.com` |
 | `CONTAINERIZER_RULES_API_URL` | API of a self-hosted GitHub Enterprise Server or GitLab, if it is not the usual address |
-| `CONTAINERIZER_RULES_DIR` | For `direct`: the rules folder to write (default: the one this installation runs with) |
 
-With `pr`, approving clones the rules repository, appends the rule to the right file on the branch
+Safeguards:
+
+- Before anything is pushed, the repository's visibility is read with the token: only `private` or
+  `internal` repositories (Azure DevOps: a private project) are accepted. A public repository, or one
+  whose visibility the token cannot read, is refused and the rule stays pending.
+- `direct` refuses a folder inside this tool's own checkout.
+- Approved rules are never written into this tool's `rules/` folder, so they cannot end up in a pull
+  request to the public repository.
+
+With `pr`, approving clones the internal repository, appends the rule to the right file on the branch
 `containerizer/rule-review-<candidate>`, pushes it and opens the pull request. The pull request names
-the reviewer and their note, and contains the rule but not the evidence logs. It is checked against
-the repository's own rules first (an id taken there is refused). Approving the same candidate again
-after a failure reuses the branch and the open pull request. Give the token only the rights it needs:
-contents write and pull requests write on that one repository (GitHub fine-grained token), Developer on
-the project (GitLab), or Code read & write (Azure DevOps).
+the reviewer and their note, and contains the rule but not the evidence logs. Approving the same
+candidate again after a failure reuses the branch and the open pull request. Give the token only the
+rights it needs on that one repository: contents and pull requests write plus metadata read (GitHub
+fine-grained token), Developer (GitLab), or Code read & write (Azure DevOps).
 
-With `direct`, the rule is appended to the files of a writable rules folder, which suits a single
-machine or a shared volume. The results image runs with a read-only file system, so use `pr` there.
+When approving is not configured, the admin pages still work and the Rule review page says what to set.
 
-When approving is not configured (pull request mode without a repository), the admin pages still work
-and the Rule review page says what to set.
-
-The approved files are loaded with the curated rules: `70-reviewed.yaml` after the curated finding and
-plan rules, `55-reviewed-failures.yaml` with the failure rules, and `packages-reviewed.yaml` with the
-package lists. Each approved rule carries `reviewed: {candidate, by, at}`. Editing or deleting
-approved rules by hand later is fine; new approvals are appended to the end of the file.
+The approved files are loaded after the curated rules: `70-reviewed.yaml` with the finding and plan
+rules, `55-reviewed-failures.yaml` with the failure rules, and `packages-reviewed.yaml` with the
+package lists. Each approved rule carries `reviewed: {candidate, by, at}`. Editing or deleting approved
+rules by hand later is fine; new approvals are appended to the end of the file.
 
 ## Command line
 
