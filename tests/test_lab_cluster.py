@@ -99,7 +99,8 @@ def lab(tmp_path_factory):
             break
         time.sleep(15)
     else:
-        kubectl("-n", L.LAB_NS, "get", "pods", "-o", "wide", check=False)
+        print(kubectl("-n", L.LAB_NS, "get", "pods", "-o", "wide", check=False).stdout)
+        print(kubectl("describe", "nodes", check=False).stdout[-4000:])
         raise AssertionError(f"lab services did not start: {json.dumps(st, indent=1)}")
     yield {"images": images, "kube": kube, "cfg": cfg, "state": state}
     kubectl("delete", "namespace", A, B, L.LAB_NS, "--wait=false", check=False)

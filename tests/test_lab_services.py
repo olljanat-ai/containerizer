@@ -433,3 +433,14 @@ def test_reconcile_runs_every_service(tmp_path):
         assert not any(sec in " ".join(args) for sec in secrets_ if len(sec) > 8), args
     admins = {k.split("/", 1)[1] for k in kube.store if k.startswith(f"{L.LAB_NS}/") and k.endswith("-admin")}
     assert admins == {L.admin_secret_name(s) for s in L.ADMIN_PASSWORD}
+
+
+def test_pod_problem_names_eviction():
+    from containerizer import labagent
+
+    class K:
+        def get(self, args):
+            return {"items": [{"status": {"phase": "Failed", "reason": "Evicted",
+                                          "message": "The node was low on resource: ephemeral-storage."}}]}
+    assert labagent._pod_problem(K(), "redis", "redis") == \
+        "Failed (Evicted): The node was low on resource: ephemeral-storage."

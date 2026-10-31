@@ -227,7 +227,10 @@ def _pod_problem(kube: Kubectl, svc: str, name: str) -> str:
             w = (cs.get("state") or {}).get("waiting") or {}
             if w.get("reason"):
                 return f"{w['reason']}: {str(w.get('message') or '')[:200]}".rstrip(": ")
-        return (p.get("status") or {}).get("phase") or "starting"
+        status = p.get("status") or {}
+        if status.get("reason"):        # e.g. Evicted: The node was low on resource: ephemeral-storage
+            return f"{status.get('phase') or 'Failed'} ({status['reason']}): {str(status.get('message') or '')[:200]}".rstrip(": ")
+        return status.get("phase") or "starting"
     return "starting"
 
 
