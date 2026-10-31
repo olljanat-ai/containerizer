@@ -533,6 +533,33 @@ rules:
       - https://github.com/expressjs/multer
       - https://12factor.net/processes
 
+  - id: node-local-extensions
+    applies_to: [node]
+    when:
+      all:
+        - not: {role: 'test|tool|spa|desktop|console|library'}
+        - all:
+          - code: '\b(getContentPath|path\.(join|resolve))\s*\([^)\n]*[''"`](themes|plugins|extensions|addons)[''"`]'
+          - code: '\b(fs|fse|fsp|fsExtra|fsPromises)(\.promises)?\.(move|copy|writeFile|outputFile|mkdirs?|ensureDir|createWriteStream|rename)(Sync)?\s*\(|\bextract(Zip)?\s*\('
+          same_file: true
+    severity: config
+    category: storage
+    state: local
+    effort: 1
+    title: Uploaded themes or plugins installed on the local disk
+    why: >-
+      Themes, plugins or extensions that users upload or install at run time are unpacked into a
+      folder on the local file system and loaded from there. Object storage settings, where the
+      application has them, cover media, not these folders, so they need a persistent volume and
+      are not shared between replicas: the component is not stateless.
+    fix: >-
+      Mount a PersistentVolumeClaim at the themes/plugins folder (ReadWriteMany for more than one
+      replica), or bake the themes and plugins into the image and turn off installing them at run time.
+    refs:
+      - https://12factor.net/processes
+      - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+      - https://ghost.org/docs/config/#content-path
+
   - id: node-local-data-files
     applies_to: [node]
     when:

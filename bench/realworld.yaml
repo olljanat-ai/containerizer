@@ -1172,7 +1172,7 @@ repos:
     expected_rating: B
     expected_roles: {web: [jenkins-war]}
     notes: >-
-      Jenkins core WAR. All configuration, jobs and build history live in JENKINS_HOME on local disk, so it needs a persistent volume and one replica (B). Known miss: the tool rates A because JENKINS_HOME writes go through java.io.File helpers no rule recognises. Not verified: repo.jenkins-ci.org does not resolve in the sandbox.
+      Jenkins core WAR. All configuration, jobs and build history live in JENKINS_HOME on local disk, so it needs a persistent volume and one replica (B). Found by java-app-home-directory (~/.jenkins default home). Not verified: repo.jenkins-ci.org does not resolve in the sandbox.
 
   - name: jv-superheroes
     url: https://github.com/quarkusio/quarkus-super-heroes
@@ -1196,7 +1196,7 @@ repos:
     expected_rating: B
     expected_roles: {web: [ghost], spa: ["@tryghost/admin", "@tryghost/signup-form"]}
     notes: >-
-      Ghost 6 on MySQL. Images can go to the built-in S3 storage adapter, but uploaded themes, settings files and logs stay in content/ on local disk, which the official image keeps on a volume -> B. Known miss: the tool rates A (the storage adapter writes are not tied to a request handler, and the S3 client counts as object storage).
+      Ghost 6 on MySQL. Images can go to the built-in S3 storage adapter, but uploaded themes, settings files and logs stay in content/ on local disk, which the official image keeps on a volume -> B. Found by node-local-extensions (theme uploads unpacked under content/themes). Production config uses MySQL; SQLite is only the development default.
 
   - name: nd-juiceshop
     url: https://github.com/juice-shop/juice-shop

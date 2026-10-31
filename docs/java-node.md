@@ -142,12 +142,10 @@ manifests and GitOps entries. Repositories without .NET, Java or Node.js code ar
 commit, with ratings and roles judged by reading each repository. Run them with
 `python -m containerizer.realworld --root <dir> --clone jv-petclinic nd-ghost ...`.
 
-15 of 17 match. The two misses are both rated A where B is right:
-
-- Jenkins keeps jobs, configuration and build history in `JENKINS_HOME` through `java.io.File`
-  helpers that no rule ties to persistent data.
-- Ghost keeps uploaded themes, settings and logs in `content/` on local disk, while images can
-  use its S3 adapter, so the object storage client hides the local state.
+All 17 match. Jenkins and Ghost are the two that need a volume for state that is easy to miss:
+Jenkins keeps jobs, configuration and history in its home directory (`JENKINS_HOME`, by default
+`~/.jenkins`), found by `java-app-home-directory`; Ghost unpacks uploaded themes into
+`content/themes`, which its S3 adapter does not cover, found by `node-local-extensions`.
 
 Images were built and run hardened (`verify`) for Spring PetClinic, Quarkus rest-heroes (Java 25),
 PiggyMetrics account-service (Java 8), Halo, RealWorld Express (Nx), Node-RED, Uptime Kuma and the
