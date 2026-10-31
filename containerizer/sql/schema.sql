@@ -8,6 +8,7 @@
 --   BusinessUnit 1-* Product 1-* Application 1-* Component                     (who owns what)
 --   Application 1-* ApplicationAssessment 1-* ComponentAssessment, Finding     (one per scan)
 --   ComponentAssessment 0-1 ComponentMigration                                  (migration plan, agent prompt)
+--   Application 1-* SandboxCheck                                              (sandbox cluster health)
 --   AuditLog: every change to BusinessUnit, Product and the mapping of Application, with who made it
 --   AccessLog: who signed in to the web UI and what they looked at (optional)
 --
@@ -177,6 +178,36 @@ CREATE TABLE [${schema}].ComponentMigration (
 );
 GO
 
+-- What the sandbox cluster showed after Argo CD / Flux deployed a component (`containerizer org
+-- --verify-sandbox`, `containerizer sandbox verify`). One row per component and check; history is kept.
+-- Status: healthy, failing, pending, scheduled, not-found, error. LogTail is a redacted tail of the
+-- failing container's log: the scanner writes it, the reader role cannot read it (only the view).
+IF OBJECT_ID(N'[${schema}].SandboxCheck', N'U') IS NULL
+CREATE TABLE [${schema}].SandboxCheck (
+    CheckId       bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_SandboxCheck PRIMARY KEY,
+    ApplicationId int            NOT NULL CONSTRAINT FK_SandboxCheck_Application REFERENCES [${schema}].Application (ApplicationId),
+    ComponentId   int            NULL CONSTRAINT FK_SandboxCheck_Component REFERENCES [${schema}].Component (ComponentId),
+    CheckedAt     datetime2(0)   NOT NULL CONSTRAINT DF_SandboxCheck_CheckedAt DEFAULT SYSUTCDATETIME(),
+    Status        nvarchar(20)   NOT NULL,
+    Reason        nvarchar(2000) NULL,             -- why not healthy, or "2/2 ready"
+    GitOps        nvarchar(20)   NULL,             -- argocd, flux
+    Namespace     nvarchar(63)   NOT NULL,
+    Workloads     nvarchar(400)  NULL,             -- Deployment/web, CronJob/report, ...
+    ImageRef      nvarchar(400)  NULL,
+    Revision      nvarchar(64)   NULL,             -- output repository commit that was checked
+    Ready         nvarchar(20)   NULL,             -- ready/desired replicas
+    Restarts      int            NULL,
+    RuleId        nvarchar(200)  NULL,             -- failure rule that explained it (rules/50-failures.yaml)
+    Outcome       nvarchar(20)   NULL,             -- environment, external, code, platform, retry
+    Diagnosis     nvarchar(2000) NULL,
+    Events        nvarchar(max)  NULL,             -- JSON: recent Warning events (reason, message, count)
+    LogTail       nvarchar(max)  NULL              -- redacted; not granted to the reader role
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_SandboxCheck_Component' AND object_id = OBJECT_ID(N'[${schema}].SandboxCheck'))
+CREATE INDEX IX_SandboxCheck_Component ON [${schema}].SandboxCheck (ApplicationId, ComponentId, CheckedAt DESC, CheckId DESC);
+GO
+
 MERGE [${schema}].Rating AS t
 USING (VALUES
     ('A', N'Lift and shift', N'Containers with configuration only', 1),
@@ -253,6 +284,19 @@ SELECT l.ApplicationId, l.ApplicationName, l.AssessmentId, m.ComponentId, c.Name
 FROM [${schema}].vApplicationLatest l
 JOIN [${schema}].ComponentMigration m ON m.AssessmentId = l.AssessmentId
 JOIN [${schema}].Component c ON c.ComponentId = m.ComponentId;
+GO
+
+-- The latest sandbox check of every application (one row per component it had deployed then; the
+-- rows of one check share CheckedAt), without the log tail. The application page reads it.
+CREATE OR ALTER VIEW [${schema}].vSandboxLatest AS
+SELECT x.ApplicationId, x.ComponentId, c.Name AS ComponentName, x.CheckedAt, x.Status, x.Reason, x.GitOps,
+       x.Namespace, x.Workloads, x.ImageRef, x.Revision, x.Ready, x.Restarts, x.RuleId, x.Outcome, x.Diagnosis, x.Events
+FROM (SELECT s.*, MAX(s.CheckedAt) OVER (PARTITION BY s.ApplicationId) AS LastCheck,
+             ROW_NUMBER() OVER (PARTITION BY s.ApplicationId, s.ComponentId, s.CheckedAt ORDER BY s.CheckId DESC) AS n
+      FROM [${schema}].SandboxCheck s) x
+JOIN [${schema}].Application a ON a.ApplicationId = x.ApplicationId
+LEFT JOIN [${schema}].Component c ON c.ComponentId = x.ComponentId
+WHERE x.CheckedAt = x.LastCheck AND x.n = 1 AND a.Retired = 0;
 GO
 
 -- Applications nobody has mapped to a product yet, and products without a business unit.
@@ -403,6 +447,7 @@ GRANT UPDATE ON [${schema}].Application (Name, RepositoryUrl, SourcePath, LastSe
 GRANT SELECT, INSERT ON [${schema}].Component TO [${schema}_writer];
 GRANT UPDATE ON [${schema}].Component (Name, LastSeenAt) TO [${schema}_writer];
 GRANT SELECT ON [${schema}].SchemaVersion TO [${schema}_writer];
+GRANT SELECT, INSERT ON [${schema}].SandboxCheck TO [${schema}_writer];
 
 GRANT SELECT ON [${schema}].vApplicationLatest TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vComponentLatest TO [${schema}_reader];
@@ -410,6 +455,7 @@ GRANT SELECT ON [${schema}].vFindingLatest TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vComponentMigrationLatest TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vUnmapped TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vAssessmentHistory TO [${schema}_reader];
+GRANT SELECT ON [${schema}].vSandboxLatest TO [${schema}_reader];
 GRANT SELECT ON [${schema}].Rating TO [${schema}_reader];
 GRANT SELECT ON [${schema}].BusinessUnit TO [${schema}_reader];
 GRANT SELECT ON [${schema}].Product TO [${schema}_reader];
@@ -427,4 +473,6 @@ GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 2) INSERT [${schema}].SchemaVersion (Version) VALUES (2);
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 3) INSERT [${schema}].SchemaVersion (Version) VALUES (3);
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 4) INSERT [${schema}].SchemaVersion (Version) VALUES (4);
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 5) INSERT [${schema}].SchemaVersion (Version) VALUES (5);
 GO

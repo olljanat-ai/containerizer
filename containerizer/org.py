@@ -77,6 +77,11 @@ class OrgOptions:
     keep_work: bool = False
     dry_run: bool = False
     now: datetime | None = None
+    verify_sandbox: bool = False        # after the run: wait for the GitOps sync and read back pod health
+    kubeconfig: str | None = None
+    kube_context: str | None = None
+    gitops: str = "auto"                # auto | argocd | flux
+    sandbox_timeout: int = 900
 
 
 @dataclass
@@ -98,6 +103,7 @@ class RepoResult:
     components: list = field(default_factory=list)
     excluded: list = field(default_factory=list)
     processed_at: str = ""
+    source_key: str = ""              # Application.SourceKey in the results database
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -344,6 +350,11 @@ def write_sandbox(root: Path, git_url: str, branch: str) -> list[str]:
     ]))
     namespaces = sorted({doc.get("app") for _, _, doc in apps if doc.get("app")})
     (sb / "namespaces.txt").write_text("".join(f"{n}\n" for n in namespaces))
+    from .sandbox import verify_rbac
+    (sb / "verify-rbac.yaml").write_text(
+        "# Read-only access for `containerizer sandbox verify` (docs/sandbox-verification.md). Apply it as a\n"
+        "# cluster admin after the namespaces exist; it grants nothing cluster-wide and no access to Secrets.\n"
+        + dump(verify_rbac(namespaces)))
     (sb / "README.md").write_text(sandbox_readme(git_url, branch, apps))
     return namespaces
 
@@ -388,6 +399,18 @@ done < {SANDBOX}/namespaces.txt
 The root Kustomization applies each app's `gitops/flux/tenant.yaml` (namespace with Pod Security
 "restricted", ServiceAccount, namespace-only RoleBinding) and `gitops/flux/git/sync.yaml`. Image
 automation (`gitops/flux/git/image-automation.yaml`) is left out: it needs a write key.
+
+## Health read-back
+
+`containerizer org --verify-sandbox` (or `containerizer sandbox verify` on a checkout of this repository)
+waits until Argo CD or Flux has synced the commit, reads back rollout, readiness, restarts and Warning
+events of every component and writes `{SANDBOX}/HEALTH.md` and `{SANDBOX}/health.json`. It only reads the
+cluster, as ServiceAccount `containerizer-verifier` with the Roles in `verify-rbac.yaml`:
+
+```sh
+kubectl apply -f {SANDBOX}/verify-rbac.yaml        # after the namespaces exist; again when apps are added
+kubectl -n containerizer-verify create token containerizer-verifier --duration=1h   # short-lived token
+```
 
 ## Cluster prerequisites
 
@@ -566,6 +589,8 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
         a = analyze_app(src, scratch, ai=o.ai, model=o.model, verify=o.verify, registry=o.registry, pin=o.pin,
                         timeout=o.timeout, gitops=gitops)
         res.rating = a.rating
+        from .sqlstore import source_info
+        res.source_key = source_info(src, a.name)["key"]
         if o.sql or os.environ.get("CONTAINERIZER_SQL"):
             from .sqlstore import store_results
             store_results(o.sql, [a], [src])
@@ -609,6 +634,7 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
             ref = f"{o.registry.rstrip('/')}/{k8s_name(a.name)}/{cn}:{tag}"
             entry = {"component": c.name, "folder": cn, "image": ref, "rating": "A", "verdict": c.verdict,
                      "role": c.role, "project": c.project.rel,
+                     "project_name": c.project.name,
                      "verification": next((v.get("status") for v in getattr(a, "verification", None) or [] if v.get("component") == c.name),
                                           "not run")}
             if o.push_images and reg:
@@ -691,7 +717,38 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
     finally:
         if reg:
             reg.close()
+    if o.verify_sandbox and out:
+        sandbox_step(o, out, log)
     return results
+
+
+def sandbox_step(o: OrgOptions, out: "Output", log=print) -> dict:
+    """Wait for the sandbox cluster to sync what was pushed and record the health of every component:
+    sandbox/HEALTH.md + health.json in the output repository, the results database, the learning loop."""
+    from .sandbox import KubeOptions, SandboxOptions, summary, verify_sandbox, write_health
+    so = SandboxOptions(kube=KubeOptions(kubeconfig=o.kubeconfig, context=o.kube_context), gitops=o.gitops,
+                        timeout=o.sandbox_timeout)
+    if out.git and not out.push:
+        doc = {"checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "revision": "",
+               "gitops": o.gitops, "cluster": "", "components": [],
+               "skipped": "the output repository was not pushed (--no-push or no remote): the cluster cannot sync it"}
+        log(f"sandbox verification skipped: {doc['skipped']}")
+    else:
+        doc = verify_sandbox(out.root, so, log=log)
+    write_health(out.root, doc)
+    log(f"sandbox health: {summary(doc)}" + (f" (skipped: {doc['skipped']})" if doc.get("skipped") else ""))
+    if doc.get("learned"):
+        log(f"learned from the cluster: {', '.join(doc['learned'])}")
+    if (o.sql or os.environ.get("CONTAINERIZER_SQL")) and doc.get("components") and not doc.get("skipped"):
+        from .sqlstore import SqlError, store_sandbox
+        try:
+            n, missing = store_sandbox(o.sql, doc)
+            log(f"{n} sandbox check(s) written to SQL Server" + (f"; {missing} not matched to an assessed component"
+                                                                 if missing else ""))
+        except SqlError as e:
+            print(f"warning: sandbox health not written to SQL Server: {e}", file=sys.stderr)
+    out.commit(f"containerizer: sandbox health {summary(doc)}")
+    return doc
 
 
 class _DryOut:
