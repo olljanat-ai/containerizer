@@ -22,7 +22,7 @@ unless noted):
                           `if (!<OS check>) return/throw`, inside a method/type marked
                           [SupportedOSPlatform("windows"|"macos"|"linux"...)], or in a member/type
                           whose every caller (in the project and the projects referencing it) is
-                          guarded
+                          guarded, or on a P/Invoke (extern) declaration that nothing calls
   unguarded: callers      only the last check (for annotations on the member/type itself)
   any: [...], all: [...], not: {...}
   same_file: true         (next to `all`) the code/config/text conditions directly under the
@@ -721,6 +721,20 @@ class GuardScope:
                 out.append((p, f, txt, s))
         return out
 
+    def _mentioned_elsewhere(self, member: _Member, decl_file: Path) -> bool:
+        """Whether the member's name appears anywhere outside its own declaration (a plain word
+        search, so any call form `sites` does not follow still counts as a possible call)."""
+        word = re.compile(rf"\b{re.escape(member.name)}\b")
+        for p, f in self._files():
+            txt = p.text(f, True)
+            if member.name not in txt:
+                continue
+            for m in word.finditer(txt):
+                if f == decl_file and member.start <= m.start() < member.end:
+                    continue
+                return True
+        return False
+
     def callers_guarded(self, f: Path, txt: str, pos: int) -> bool:
         if self.project is None or self.depth >= 2:
             return False
@@ -733,7 +747,11 @@ class GuardScope:
         self._memo[key] = False                       # recursion guard
         sites = self.sites(member, f)
         ok = False
-        if sites:
+        if sites == [] and member.kind == "extern" and not self._mentioned_elsewhere(member, f):
+            # a P/Invoke declaration nothing calls (NativeMethods copied in with unused entries):
+            # the runtime binds the native library on the first call, so it is never loaded
+            ok = True
+        elif sites:
             self.depth += 1
             try:
                 ok = all(_guarded(t, s, scope=self, file=sf) for _, sf, t, s in sites)

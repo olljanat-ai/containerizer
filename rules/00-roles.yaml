@@ -1,6 +1,6 @@
 # Role rules decide what a project *is*. The matching rule with the highest
 # priority wins. Roles that are deployable on their own: web, worker, console,
-# spa, desktop, biztalk, sharepoint, sqlclr, ssis, sqldb.
+# spa, desktop, biztalk, sharepoint, sitecore, sqlclr, ssis, sqldb.
 rules:
   - id: role-test
     phase: role
@@ -16,6 +16,18 @@ rules:
         # instead of a package, and Visual Studio test projects carry the test-project type GUID
         - reference: 'Microsoft\.VisualStudio\.QualityTools\.UnitTestFramework|Microsoft\.VisualStudio\.TestPlatform\.TestFramework|xunit(\.core|\.assert)?|nunit\.framework'
         - type_guid: '3ac096d0-a1c2-e12c-1390-a8335801fdab'
+
+  # A package.json whose only npm scripts run tests (test, test:*, e2e, lint): a JavaScript test
+  # harness (node --test, jest, playwright) that exercises another project, not a deployable app or
+  # a front-end build. Needs at least one test script, so a bare dependency manifest is unaffected.
+  - id: role-test-node
+    phase: role
+    role: test
+    priority: 100
+    when:
+      all:
+        - kind: node
+        - property: {NpmScripts: '^((test|e2e|lint)(:[\w:\-]+)?,)*(test|e2e)(:[\w:\-]+)?(,(test|e2e|lint)(:[\w:\-]+)?)*$'}
 
   - id: role-tool
     phase: role
@@ -158,6 +170,27 @@ rules:
         - any:
             - file: ["*.wsp", "*.spdata", "Package.package", "*.feature", "Elements.xml"]
             - code: '\bSPFarm\b|\bSPSite\b|\bSPWeb\b|\bSPFeatureReceiver\b|\bSPJobDefinition\b'
+
+  # Sitecore XP/XM (9.x, 10.x) modules: .NET Framework projects built against Sitecore.Kernel that
+  # are published into a Sitecore instance (Helix Feature/Foundation/Project modules, with
+  # App_Config/Include patch files and no Global.asax of their own: Sitecore's is used). They run
+  # inside the Sitecore application, which exists only on .NET Framework/IIS and in Windows
+  # containers, like a SharePoint farm solution. Sitecore's ASP.NET Core rendering hosts
+  # (Sitecore.AspNet.RenderingEngine, .NET 6+) are ordinary web apps and do not match (no netfx).
+  - id: role-sitecore
+    phase: role
+    role: sitecore
+    priority: 91
+    when:
+      all:
+        - any:
+            - package: 'Sitecore\.Kernel(\.NoReferences)?'
+            - reference: 'Sitecore\.Kernel'
+        - tfm: 'net4\d{1,2}|v4.*'
+        - any:
+            - type_guid: 349c5851-65df-11da-9384-00065b846f21
+            - config: 'xmlns:patch="http://www\.sitecore\.net/xmlconfig/"'
+            - file: ["*.csproj.sitecore"]
 
   # Windows services: the Visual Studio service template uses OutputType WinExe,
   # which would otherwise make them desktop apps.
@@ -404,6 +437,17 @@ rules:
             - any:
                 - code: '[\[<]\s*assembly\s*:\s*OwinStartup'
                 - config: '<add\s+key="owin:appStartup"'
+        # a web application whose Web.config sends every request (path="*") to a framework's own
+        # IHttpHandler instead of a Global.asax: Nancy.Hosting.Aspnet's NancyHttpRequestHandler,
+        # ServiceStack's HttpHandlerFactory. Built-in System.Web handlers (HttpNotFoundHandler in
+        # Views/Web.config, TransferRequestHandler) and IIS static-file modules do not count, nor do
+        # modules built against a host web application that has the Global.asax.
+        - all:
+            - type_guid: 349c5851-65df-11da-9384-00065b846f21
+            - config: '<add\b(?=[^>]*\bpath="\*")(?=[^>]*\btype="(?!System\.Web\.)[A-Za-z_][\w.]*)[^>]*>'
+              in: "[Ww]eb.config"
+            - not:
+                references: {file: Global.asax}
 
   - id: role-web-selfhost
     phase: role
@@ -441,6 +485,14 @@ rules:
                 # (a CLI catching an OAuth redirect on localhost) does not count
                 - code: '\bnew\s+TcpListener\s*\(|\bTcpListener\.Create\s*\(|\bnew\s+HttpListener\s*\(|\bnew\s+UdpClient\s*\(\s*\d+\s*\)|\.Listen\s*\(\s*(\d+|\w*[Bb]acklog\w*|int\.MaxValue|SocketOptionName\.MaxConnections)\s*\)'
                 - code: *listener_wait
+              same_file: true
+            - all:
+                # message-bus endpoint that starts receiving and then blocks until Ctrl+C or a key
+                # press (NServiceBus Endpoint.Start, MassTransit bus.Start, a RabbitMQ BasicConsume
+                # consumer): a long-running consumer. A send-only NServiceBus endpoint is a client.
+                - code: '\bEndpoint\.Start(WithEndpointConfiguration)?\s*\(|\bBus\.Factory\.CreateUsing\w+\s*\(|\.BasicConsume\s*\('
+                - code: *listener_wait
+                - not: {code: '\.SendOnly\s*\(\s*\)'}
               same_file: true
             # Remoting server configured from the .config file (<service><wellknown .../>)
             - all:

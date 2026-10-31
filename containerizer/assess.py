@@ -10,7 +10,7 @@ from .reach import CODE_EXT, mode_reachability, reachable_files
 from .scan import Project, Repo, nearest_tfms, scan
 
 SERVER_ROLES = {"web", "worker", "console", "spa"}
-PLATFORM_ROLES = {"biztalk", "sharepoint"}          # deployables that need a Windows product
+PLATFORM_ROLES = {"biztalk", "sharepoint", "sitecore"}  # deployables that need a Windows product
 DB_TIER_ROLES = {"sqlclr", "ssis", "sqldb"}         # live with the database, not containers
 CLIENT_ROLES = {"desktop"}
 NON_DEPLOYABLE = {"library", "test", "spa-assets", "tool"}

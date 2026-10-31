@@ -68,7 +68,7 @@ python -m containerizer bench --technique hybrid --model claude-haiku-5-5
    `.props`, package.json, requirements.txt/pyproject, go.mod, pom.xml/gradle, BizTalk/SQL/SSIS
    projects, ASP.NET Web Site projects listed in a .sln), source and configuration. Nothing from the scanned repository is executed.
 2. **Role rules** (`rules/00-roles.yaml`) decide what each project is: web, worker, console, spa,
-   desktop, library, test, tool, BizTalk, SharePoint, SQL CLR, SSIS.
+   desktop, library, test, tool, BizTalk, SharePoint, Sitecore XP, SQL CLR, SSIS.
 3. **Fact rules** (`rules/05-facts.yaml`) extract ports, health endpoints, run-once arguments,
    connection strings, folders the app writes to, Kestrel endpoints.
 4. **Finding rules** (`rules/10-runtime.yaml`, `20-platform.yaml`, `30-integration.yaml`) detect

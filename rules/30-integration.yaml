@@ -463,6 +463,32 @@ rules:
     refs:
       - https://learn.microsoft.com/en-us/sharepoint/dev/scenario-guidance/development-models
 
+  # Judgement call: a Sitecore XP/XM module is rated "not feasible" rather than "port": the code
+  # is a plug-in of the Sitecore application, which itself has no .NET (Core)/Linux build, so there
+  # is nothing to port it onto. Moving off Windows means re-platforming to headless (XM Cloud with
+  # an ASP.NET Core or Next.js rendering host), a rewrite of the presentation layer.
+  - id: sitecore-xp
+    when:
+      role: sitecore
+    severity: blocker
+    category: thirdparty
+    effort: 0
+    windows_container: true
+    title: Sitecore XP/XM module (runs inside Sitecore on .NET Framework)
+    why: >-
+      The project is a module of a Sitecore XP/XM site (built against Sitecore.Kernel, deployed
+      into the Sitecore webroot with App_Config/Include patches). Sitecore XP/XM runs only on .NET
+      Framework under IIS; Sitecore's own container images are Windows containers and its
+      container setup tells you to choose Windows containers, so there is no Linux Sitecore to run
+      the module in.
+    fix: >-
+      Keep the site on Windows (Sitecore's Windows container images on Windows nodes, or IIS VMs),
+      or re-platform to a headless architecture (XM Cloud / Sitecore Headless with an ASP.NET Core
+      or Next.js rendering host, which does run in Linux containers) and rewrite the presentation
+      modules for it.
+    refs:
+      - https://doc.sitecore.com/xp/developers/103/developer-tools/set-up-the-environment.html
+
   - id: sharepoint-csom
     when:
       all:

@@ -83,7 +83,8 @@ def test_replace_to_backslash_for_own_normalising_file_system(tmp_path):
 def test_dbghelp_minidump_is_info(tmp_path):
     c = comp(tmp_path, '''static class MiniDump {
         [DllImport("dbghelp.dll", EntryPoint = "MiniDumpWriteDump")]
-        static extern bool Write(IntPtr p, uint id, SafeHandle f, int t, IntPtr e, IntPtr u, IntPtr c); }''')
+        static extern bool Write(IntPtr p, uint id, SafeHandle f, int t, IntPtr e, IntPtr u, IntPtr c);
+        public static bool Dump(SafeHandle f) => Write(IntPtr.Zero, 0, f, 2, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero); }''')
     assert sev(c, "pinvoke-dbghelp") == "info"
     assert sev(c, "pinvoke-kernel32") is None and sev(c, "pinvoke-vendor") is None
 
@@ -193,10 +194,12 @@ def test_windows_only_executable_alone_is_not_a_tool(tmp_path):
 def test_kernel32_helpers_of_minidump_writer_are_info(tmp_path):
     c = comp(tmp_path, '''static class MiniDump {
         [DllImport("dbghelp.dll")] static extern bool MiniDumpWriteDump(IntPtr p, uint id, IntPtr f, int t, IntPtr e, IntPtr u, IntPtr c);
-        [DllImport("kernel32.dll", EntryPoint = "GetCurrentThreadId")] static extern uint GetCurrentThreadId(); }''')
+        [DllImport("kernel32.dll", EntryPoint = "GetCurrentThreadId")] static extern uint GetCurrentThreadId();
+        public static void Dump(IntPtr f) { var t = GetCurrentThreadId(); MiniDumpWriteDump(IntPtr.Zero, t, f, 2, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero); } }''')
     assert sev(c, "pinvoke-kernel32") is None and sev(c, "pinvoke-dbghelp") == "info"
     c = comp(tmp_path / "other", '''static class Native {
-        [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId(); }''')
+        [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+        public static uint Id() { return GetCurrentThreadId(); } }''')
     assert sev(c, "pinvoke-kernel32") == "refactor"
 
 
