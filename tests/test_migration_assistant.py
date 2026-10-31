@@ -153,6 +153,7 @@ def test_application_page_shows_migration_and_prompt(tmp_path):
     assert "Migration assistant" in html and "Prompt for an AI coding agent" in html
     assert "SkiaSharp" in html and "data-copy='pt1'" in html
     assert "Effort" not in html and "person-day" not in html
+    assert "Can move to a Linux container" in html        # the plan outcome in words, not its key
     assert "/app/7/component/1/agent-prompt.md" in html
     assert "<script>alert" not in html and "&lt;/textarea&gt;" in html       # prompt text is escaped
     assert html.count("<script") == 1 and "<script src='/static/app.js'>" in html

@@ -430,7 +430,7 @@ def render_application(app: dict, nav: str = "") -> str:
 <footer>{legend()}</footer>""", script=any(m.get("AgentPrompt") for m in migs.values()))
 
 
-OUTCOME_TEXT = {"linux-container": "Can move to a Linux container",
+PLAN_OUTCOME_TEXT = {"linux-container": "Can move to a Linux container",
                 "partial": "Can move once the Windows-only parts are isolated",
                 "stays-on-windows": "Stays on Windows"}
 KIND_TEXT = {"replace": "Replace", "port": "Port", "externalize": "Move out of the process", "isolate": "Keep on Windows"}
@@ -477,7 +477,7 @@ def _migration(app_id, m: dict | None) -> str:
                                                  for u in refs) + "</div>" if refs else "")
             + "</td></tr>")
     out = [f"<section class='migration' id='m{cid}'><h3>Migration assistant "
-           f"<span class='muted small'>{e(OUTCOME_TEXT.get(m['Outcome'], m['Outcome']))}</span></h3>"]
+           f"<span class='muted small'>{e(PLAN_OUTCOME_TEXT.get(m['Outcome'], m['Outcome']))}</span></h3>"]
     if rows:
         out.append("<table><thead><tr><th>Action</th><th>Replace</th><th>With</th>"
                    "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>")
