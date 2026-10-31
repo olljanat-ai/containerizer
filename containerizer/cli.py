@@ -207,6 +207,32 @@ def cmd_analyze(args) -> int:
     return _store(args, results, apps)
 
 
+def cmd_org(args) -> int:
+    from .org import OrgOptions, run_org
+    from .orgsource import SourceError
+
+    o = OrgOptions(
+        provider=args.provider, org=args.org, registry=args.registry, api_url=args.api_url, token_env=args.token_env,
+        output_repo=args.output_repo, output_dir=args.output_dir, output_branch=args.output_branch,
+        output_token_env=args.output_token_env, output_username=args.output_username, push=not args.no_push,
+        push_images=not args.no_push_images, tag=args.tag, image_pull_secret=args.image_pull_secret,
+        cosign_key=args.cosign_key, include=args.include, exclude=args.exclude, skip_forks=args.skip_forks,
+        stale_days=args.stale_days, max_repos=args.max_repos, ai=args.ai, model=args.model,
+        verify=not args.no_verify, gate=not args.no_gate, scanner=args.scanner, fail_on=args.fail_on,
+        timeout=args.timeout, pin=args.pin_digests, verify_commits=args.verify_commits, sql=args.sql,
+        work_dir=args.work_dir, keep_work=args.keep_work, dry_run=args.dry_run)
+    try:
+        results = run_org(o)
+    except SourceError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 3
+    by = {}
+    for r in results:
+        by[r.status] = by.get(r.status, 0) + 1
+    print(" ".join(f"{k}={v}" for k, v in sorted(by.items())))
+    return 1 if by.get("error") else 0
+
+
 def cmd_bench(args) -> int:
     from .bench import run_bench
 
@@ -347,6 +373,49 @@ def main(argv=None) -> int:
                    help="print inline annotations; github also writes the job summary and step outputs")
     s.add_argument("--link", help="URL prefix for file links in the markdown, e.g. https://github.com/o/r/blob/SHA")
     s.set_defaults(fn=cmd_check)
+
+    s = sub.add_parser("org", help="run analyze on every Git repository of an Azure DevOps, GitHub or GitLab "
+                       "organization; deploy the A-rated components (images, manifests, Argo CD + Flux)")
+    s.add_argument("--provider", required=True, choices=["azure-devops", "github", "gitlab"])
+    s.add_argument("--org", required=True, help="organization (Azure DevOps organization or collection, GitHub "
+                   "organization, GitLab group path)")
+    s.add_argument("--api-url", help="self-hosted server: https://ghe.example.com/api/v3, https://gitlab.example.com, "
+                   "https://tfs.example.com/tfs")
+    s.add_argument("--token-env", help="environment variable with the read token (default AZURE_DEVOPS_TOKEN / "
+                   "SYSTEM_ACCESSTOKEN, GITHUB_TOKEN / GH_TOKEN, GITLAB_TOKEN)")
+    s.add_argument("--registry", required=True, help="image registry and path, e.g. myacr.azurecr.io/sandbox; "
+                   "credentials from REGISTRY_USERNAME / REGISTRY_PASSWORD or an existing docker login")
+    s.add_argument("--tag", help="image tag (default 1.<yyyymmdd>.<hhmm> of the run, semver for image automation)")
+    s.add_argument("--no-push-images", action="store_true", help="build and gate, but do not push images")
+    s.add_argument("--image-pull-secret", help="add this imagePullSecret to every generated workload")
+    s.add_argument("--cosign-key", help="sign pushed images with cosign (key file, env://VAR or KMS URI)")
+    s.add_argument("--output-repo", help="Git repository (https) the generated files are committed to")
+    s.add_argument("--output-dir", help="local folder instead of --output-repo (committed when it is a Git checkout)")
+    s.add_argument("--output-branch", default="main")
+    s.add_argument("--output-token-env", default="OUTPUT_GIT_TOKEN",
+                   help="environment variable with a token that can push to the output repository")
+    s.add_argument("--output-username", default="x-access-token", help="user name sent with that token")
+    s.add_argument("--no-push", action="store_true", help="commit to the output repository but do not push")
+    s.add_argument("--include", help="regex on <project>/<repository> to process")
+    s.add_argument("--exclude", help="regex on <project>/<repository> to skip")
+    s.add_argument("--skip-forks", action="store_true")
+    s.add_argument("--stale-days", type=int, default=183,
+                   help="skip repositories with no commit for this many days (default 183, about 6 months; 0: off)")
+    s.add_argument("--max-repos", type=int, default=0)
+    s.add_argument("--ai", action="store_true", help="ask the LLM about uncertain components and unexplained failures")
+    s.add_argument("--model", default=None)
+    s.add_argument("--no-verify", action="store_true", help="do not build and run before rating (less accurate)")
+    s.add_argument("--no-gate", action="store_true", help="skip the security gate (lint, image scan, hardened run)")
+    s.add_argument("--scanner", default=None, choices=["all", "auto", "trivy", "grype"])
+    s.add_argument("--fail-on", default=None)
+    s.add_argument("--timeout", type=int, default=1800)
+    s.add_argument("--pin-digests", action="store_true")
+    s.add_argument("--verify-commits", action="store_true", help="Flux: only apply signed commits")
+    s.add_argument("--sql", help="also write every assessment to SQL Server (default CONTAINERIZER_SQL)")
+    s.add_argument("--work-dir", default=".work/org")
+    s.add_argument("--keep-work", action="store_true", help="keep the clones")
+    s.add_argument("--dry-run", action="store_true", help="list the repositories and the API-level skips only")
+    s.set_defaults(fn=cmd_org)
 
     s = sub.add_parser("bench", help="score assessments against labelled expectations")
     s.add_argument("--challenge", default="../containerization-challenge")
