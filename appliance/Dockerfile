@@ -86,8 +86,7 @@ RUN chmod 0755 /usr/lib/containerizer/bin/* /usr/libexec/elemental-checker/conta
       containerizer-mssql.service containerizer-db-init.service containerizer-web.service \
       containerizer-worker.service containerizer-registry.service \
       containerizer-prometheus.service containerizer-grafana.service \
-      k3s.service containerizer-sandbox.timer \
- && printf '# the DNS filter (containerizer-dns.service)\nnameserver 169.254.53.53\n' > /etc/resolv.conf.cz
+      k3s.service containerizer-sandbox.timer
 
 # Elemental: snapshots, layout, boot assessment, initrd
 COPY appliance/elemental/snapshotter.yaml /etc/elemental/config.d/snapshotter.yaml
@@ -100,9 +99,6 @@ RUN mkdir -p /usr/lib/elemental/bootloader \
  && cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed /usr/lib/elemental/bootloader/grubx64.efi \
  && cp /usr/lib/shim/shimx64.efi.signed /usr/lib/elemental/bootloader/shimx64.efi \
  && cp /usr/lib/shim/mmx64.efi /usr/lib/elemental/bootloader/mmx64.efi
-
-# The host resolves through the DNS filter only (systemd-resolved just collects the DHCP servers)
-RUN rm -f /etc/resolv.conf && mv /etc/resolv.conf.cz /etc/resolv.conf
 
 ARG VERSION=dev
 ARG IMAGE=ghcr.io/olljanat-ai/containerizer-appliance
