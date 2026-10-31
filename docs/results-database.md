@@ -253,6 +253,7 @@ They appear when sign-in is configured; without it the UI is the read-only resul
 | `CONTAINERIZER_PUBLIC_URL` | The address users open, e.g. `https://containerizer.example.com`. The redirect URI to register is this plus `/auth/callback`. |
 | `CONTAINERIZER_ADMINS` | Who is an administrator, comma separated: `group:<group object id>`, `role:<app role>`, `email:<address>`, `domain:<e-mail domain>`, `sub:<subject id>`. `email:` and `domain:` only match when the provider marks the address verified (`email_verified`). Nobody else gets in. |
 | `CONTAINERIZER_ADMIN_SQL` / `CONTAINERIZER_ADMIN_SQL_PASSWORD` | Connection string and password of the `containerizer_admin` login the admin pages write with. |
+| `CONTAINERIZER_GRAFANA_URL` | Optional. Link to your Grafana dashboard of the scans ([scheduled-scans.md](scheduled-scans.md#grafana-dashboard)), shown as **Grafana ↗** on every admin page and on Organization scans. `https://` only (`http://` only to `localhost`); checked at start. |
 | `CONTAINERIZER_OIDC_SCOPES` | Default `openid profile email`. |
 
 With **Microsoft Entra ID**: register a web application with the redirect URI above, add a client

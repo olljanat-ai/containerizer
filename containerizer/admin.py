@@ -23,6 +23,8 @@ e = html.escape
 MAX_BODY = 64 * 1024
 LIMITS = {"Name": 200, "DisplayName": 200, "Description": 1000, "Owner": 200, "InfoUrl": 400}
 URL_RE = re.compile(r"https://[A-Za-z0-9.-]+(:\d{1,5})?(/[^\s<>\"'`]*)?")
+# a Grafana link from the environment: https, or plain http to this machine only (a local demo)
+LINK_RE = re.compile(r"(https://[A-Za-z0-9.-]+|http://(localhost|127\.0\.0\.1|\[::1\]))(:\d{1,5})?(/[^\s<>\"'`]*)?")
 TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Application": "Application",
               "OrgScan": "Organization scan", "OrgRepository": "Repository"}
 FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
@@ -59,6 +61,7 @@ class Admin:
         self.provider = provider or Provider(cfg)
         self.sessions = Sessions()
         self.api = None                             # api.Api when the JSON API is configured
+        self.grafana_url = ""                       # CONTAINERIZER_GRAFANA_URL: link on the admin pages
         self.cookie = ("__Host-" if cfg.secure else "") + "cz_session"
         self.login_cookie = ("__Host-" if cfg.secure else "") + "cz_login"
 
@@ -286,6 +289,9 @@ class Admin:
                                     ("business-units", "Business units"), ("scans", "Organization scans"),
                                     ("repositories", "Repositories"), ("audit", "Change history"))
                        + ((("access", "Access log"),) if self.cfg.view_audit else ()))
+        if self.grafana_url:
+            tabs += (f"<a class='chip' href='{e(self.grafana_url)}' rel='noopener noreferrer' target='_blank'"
+                     f" title='Metrics of the scans and the scan worker'>Grafana ↗</a>")
         msg = f"<p class='note'>{e(flash)}</p>" if flash else ""
         return page(title, f"""<div class='topnav'><a href='/'>← Results</a><span>Signed in as <b>{e(s.name)}</b>
 <span class='muted'>({e(s.user)})</span> {self._logout_form(s)}</span></div>
@@ -673,7 +679,11 @@ def build(env=None) -> Admin | None:
     if not cs or not pw:
         raise OidcError("sign-in is configured: also set CONTAINERIZER_ADMIN_SQL and CONTAINERIZER_ADMIN_SQL_PASSWORD "
                         "(a login in the <schema>_admin role)")
+    grafana = (env.get("CONTAINERIZER_GRAFANA_URL") or "").strip()
+    if grafana and not LINK_RE.fullmatch(grafana):
+        raise OidcError("CONTAINERIZER_GRAFANA_URL must be an https:// link (http:// only to localhost)")
     from . import api
     adm = Admin(cfg, lambda: connect(cs, pw))
+    adm.grafana_url = grafana
     adm.api = api.build(env, adm.provider, adm.connect_admin)
     return adm

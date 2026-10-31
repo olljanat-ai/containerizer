@@ -205,6 +205,11 @@ Import [`monitoring/grafana/containerizer-scans.json`](../monitoring/grafana/con
 (Dashboards → New → Import) and pick your Prometheus data source. Variables: job, worker (instance),
 scan.
 
+Set `CONTAINERIZER_GRAFANA_URL` on the web UI to the dashboard's address (for example
+`https://grafana.example.com/d/containerizer-scans`) and the admin pages link to it:
+a **Grafana ↗** tab on every admin page and a link on Organization scans. It must be `https://`
+(`http://` is accepted only to `localhost`), and the web UI refuses to start with anything else.
+
 ![Grafana dashboard: scans, the machine running the worker, and the worker process](images/grafana-scans-dashboard.png)
 
 - **Scans**: worker up, scans running, runs waiting, time since the last successful run, next run,

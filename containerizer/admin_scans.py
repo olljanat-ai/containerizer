@@ -121,6 +121,12 @@ def route(adm, conn, s, method: str, kind: str, parts: list, q: dict, form: dict
     return _nf()
 
 
+def _grafana(adm) -> str:
+    url = getattr(adm, "grafana_url", "")
+    return (f" Progress, results over time and the worker's machine: <a href='{e(url)}' rel='noopener noreferrer'"
+            f" target='_blank'>Grafana dashboard ↗</a>.") if url else ""
+
+
 def _nf() -> Response:
     return Response(404, page("Not found", "<h1>Not found</h1>"))
 
@@ -167,7 +173,7 @@ def list_scans(adm, conn, s, flash: str) -> Response:
             f"<a href='/admin/repositories?scan={int(r['ScanId'])}&amp;show=disabled'>{int(r['ReposOff'])}</a></td></tr>")
     body = (f"<p class='muted'>Organization scans run <code>containerizer org</code> on every repository of an Azure DevOps "
             f"organization, GitHub organization or GitLab group, on the days and at the time you choose. The scan worker "
-            f"(<code>containerizer worker</code>) runs them and keeps the repositories' clones between runs.</p>"
+            f"(<code>containerizer worker</code>) runs them and keeps the repositories' clones between runs.{_grafana(adm)}</p>"
             f"<p><a class='chip' href='/admin/scans/new'>+ Add an organization scan</a></p>"
             f"<table><thead><tr><th>Scan</th><th>Organization</th><th>Schedule</th><th>Latest run</th>"
             f"<th class='num'>Repositories<div class='small'>enabled / disabled</div></th></tr></thead>"
