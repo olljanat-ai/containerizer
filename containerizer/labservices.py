@@ -72,7 +72,7 @@ class Service:
 
 
 SERVICES: dict[str, Service] = {s.id: s for s in (
-    Service("sqlserver", "SQL Server", "SQL Server 2022 Developer edition", True, 1433, 10001,
+    Service("sqlserver", "SQL Server", "SQL Server 2025 Developer edition", True, 1433, 10001,
             "CZ_IMAGE_MSSQL", True, ("2Gi", "3Gi"), "20Gi",
             "One server, a database and login per app (db_owner of its own database only). Apps with an "
             "uploaded dev database backup get that backup restored next to them instead."),

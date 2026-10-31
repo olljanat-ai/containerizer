@@ -17,7 +17,7 @@ VENV=${CI_LOCAL_VENV:-$ROOT/.venv-ci}
 PY_VERSION=${CI_LOCAL_PYTHON:-3.12}              # actions/setup-python in every workflow
 CHALLENGE_REPO=${CHALLENGE_REPO:-https://github.com/onek8s/containerization-challenge}
 SQL_PASSWORD='Ci-Only-Passw0rd!'                 # the same throwaway password as ci.yml; bound to 127.0.0.1 only
-SQL_IMAGE=mcr.microsoft.com/mssql/server:2022-latest
+SQL_IMAGE=mcr.microsoft.com/mssql/server:2025-latest
 KIND_NAME=cz-sandbox
 KEEP=${KEEP:-0}
 

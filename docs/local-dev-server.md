@@ -21,7 +21,7 @@ Derived from the workflows themselves, so the local run matches CI:
 | `ci.yml` containerizer, containerizer-head | Python, git (the composite action is `python -m containerizer check`) | `gate` |
 | `ci.yml` action-selftest | git, network access to `github.com/onek8s/containerization-challenge` | `selftest` |
 | `security.yml` gate | Docker; Trivy and Grype run as containers (`aquasec/trivy`, `anchore/grype`, pinned in [`rules/60-security.yaml`](../rules/60-security.yaml)) | `security` |
-| `ci.yml` sql | Docker, `mcr.microsoft.com/mssql/server:2022-latest`, `requirements-sql.txt` (pymssql) | `sql` |
+| `ci.yml` sql | Docker, `mcr.microsoft.com/mssql/server:2025-latest`, `requirements-sql.txt` (pymssql) | `sql` |
 | `ci.yml` sandbox | Docker, kind, kubectl | `sandbox` |
 | `ci.yml` assess-oneshot | Docker with BuildKit (builds and runs every generated container), a lot of disk | `assess` |
 | `release.yml` appliance | Docker + buildx, KVM, `qemu-system-x86`, `qemu-utils`, `ovmf`, `zstd`; the Elemental toolkit is built inside `appliance/Dockerfile`, so it needs no install | `appliance` |

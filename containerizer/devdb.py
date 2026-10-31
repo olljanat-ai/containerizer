@@ -253,7 +253,7 @@ class SandboxDb:
 def base_image(engine: str) -> str:
     from .generate import images
     return (images().get("devdb") or {}).get(engine) or {
-        "sqlserver": "mcr.microsoft.com/mssql/server:2022-latest"}[engine]
+        "sqlserver": "mcr.microsoft.com/mssql/server:2025-latest"}[engine]
 
 
 def build_context(stored: Path, engine: str, database: str, ctx: Path) -> Path:
