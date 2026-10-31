@@ -731,40 +731,98 @@ def _kubectl(args: list[str], input: str | None = None, check: bool = True) -> s
     return run(["k3s", "kubectl", "--kubeconfig", str(P.kubeconfig), *args], timeout=120, input=input, check=check)
 
 
-def tls_manifests(cert_pem: str, key_pem: str) -> str:
-    """The TLS Secret Traefik serves by default and the default TLSStore that names it (kube-system)."""
+ESO_CRD = "externalsecrets.external-secrets.io"
+STORE = "app-secrets"                       # the ClusterSecretStore of the sandbox (kubernetes provider)
+STORE_NS = "containerizer-secrets"          # where that store keeps the values
+STORE_READER = "app-secrets-reader"         # ServiceAccount the store authenticates as, in the reading namespace
+APPLIANCE_LABELS = {"app.kubernetes.io/managed-by": "containerizer-appliance",
+                    "app.kubernetes.io/part-of": "containerizer-sandbox"}
+
+
+def tls_manifests(cert_pem: str, key_pem: str, eso: bool) -> str:
+    """What makes the wildcard certificate Traefik's default one (kube-system: Secret
+    containerizer-sandbox-tls named by the default TLSStore).
+
+    With External Secrets Operator (eso): the value goes into the sandbox's secret store (namespace
+    containerizer-secrets), kube-system may read that one key only, and an ExternalSecret materialises the
+    TLS Secret. Without it (before ESO is installed) the Secret is written directly."""
     import base64
     from .sandbox_https import SECRET_NAME, SECRET_NAMESPACE
     b = lambda t: base64.b64encode(t.encode()).decode()
-    labels = {"app.kubernetes.io/managed-by": "containerizer-appliance", "app.kubernetes.io/part-of": "containerizer-sandbox"}
-    secret = {"apiVersion": "v1", "kind": "Secret", "type": "kubernetes.io/tls",
-              "metadata": {"name": SECRET_NAME, "namespace": SECRET_NAMESPACE, "labels": labels},
-              "data": {"tls.crt": b(cert_pem), "tls.key": b(key_pem)}}
+    data = {"tls.crt": b(cert_pem), "tls.key": b(key_pem)}
     store = {"apiVersion": "traefik.io/v1alpha1", "kind": "TLSStore",
-             "metadata": {"name": "default", "namespace": SECRET_NAMESPACE, "labels": labels},
+             "metadata": {"name": "default", "namespace": SECRET_NAMESPACE, "labels": APPLIANCE_LABELS},
              "spec": {"defaultCertificate": {"secretName": SECRET_NAME}}}
-    return json.dumps({"apiVersion": "v1", "kind": "List", "items": [secret, store]})
+    if not eso:
+        items = [{"apiVersion": "v1", "kind": "Secret", "type": "kubernetes.io/tls",
+                  "metadata": {"name": SECRET_NAME, "namespace": SECRET_NAMESPACE, "labels": APPLIANCE_LABELS},
+                  "data": data}, store]
+        return json.dumps({"apiVersion": "v1", "kind": "List", "items": items})
+    grant = f"{STORE_READER}-{SECRET_NAMESPACE}"
+    items = [
+        {"apiVersion": "v1", "kind": "Secret", "type": "kubernetes.io/tls",
+         "metadata": {"name": SECRET_NAME, "namespace": STORE_NS, "labels": APPLIANCE_LABELS}, "data": data},
+        {"apiVersion": "v1", "kind": "ServiceAccount", "automountServiceAccountToken": False,
+         "metadata": {"name": STORE_READER, "namespace": SECRET_NAMESPACE, "labels": APPLIANCE_LABELS}},
+        {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role",
+         "metadata": {"name": grant, "namespace": STORE_NS, "labels": APPLIANCE_LABELS},
+         "rules": [{"apiGroups": [""], "resources": ["secrets"], "resourceNames": [SECRET_NAME], "verbs": ["get"]}]},
+        {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding",
+         "metadata": {"name": grant, "namespace": STORE_NS, "labels": APPLIANCE_LABELS},
+         "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": grant},
+         "subjects": [{"kind": "ServiceAccount", "name": STORE_READER, "namespace": SECRET_NAMESPACE}]},
+        {"apiVersion": "external-secrets.io/v1", "kind": "ExternalSecret",
+         "metadata": {"name": SECRET_NAME, "namespace": SECRET_NAMESPACE, "labels": APPLIANCE_LABELS},
+         "spec": {"refreshInterval": "5m", "secretStoreRef": {"kind": "ClusterSecretStore", "name": STORE},
+                  "target": {"name": SECRET_NAME, "creationPolicy": "Owner", "deletionPolicy": "Delete",
+                             "template": {"type": "kubernetes.io/tls"}},
+                  "data": [{"secretKey": k, "remoteRef": {"key": SECRET_NAME, "property": k}}
+                           for k in ("tls.crt", "tls.key")]}},
+        store,
+    ]
+    return json.dumps({"apiVersion": "v1", "kind": "List", "items": items})
+
+
+def _has_crd(name: str) -> bool:
+    return bool(_kubectl(["get", "crd", name, "-o", "name", "--ignore-not-found"], check=False).strip())
 
 
 def sync_sandbox_https() -> str:
-    """Make k3s match the settings: the TLS Secret and the default TLSStore when Sandbox HTTPS is on,
-    neither when it is off. Idempotent; containerizer-sandbox runs it every 2 minutes."""
+    """Make k3s match the settings: the certificate as Traefik's default when Sandbox HTTPS is on, none of
+    it when it is off. Idempotent; containerizer-sandbox runs it every 2 minutes."""
     from .sandbox_https import SECRET_NAME, SECRET_NAMESPACE
+    if not P.https(".json").exists():
+        return "not set up"                     # never configured: nothing to install or remove
     try:
         on = bool(json.loads(P.https(".json").read_text()).get("enabled"))
     except (OSError, ValueError, AttributeError):
         on = False
+    eso = _has_crd(ESO_CRD)
     if not on:
+        if eso:
+            _kubectl(["-n", SECRET_NAMESPACE, "delete", f"externalsecrets.external-secrets.io/{SECRET_NAME}",
+                      "--ignore-not-found"], check=False)
         _kubectl(["-n", SECRET_NAMESPACE, "delete", "tlsstores.traefik.io/default", f"secret/{SECRET_NAME}",
                   "--ignore-not-found"], check=False)
+        _kubectl(["-n", STORE_NS, "delete", f"secret/{SECRET_NAME}", f"role/{STORE_READER}-{SECRET_NAMESPACE}",
+                  f"rolebinding/{STORE_READER}-{SECRET_NAMESPACE}", "--ignore-not-found"], check=False)
         return "off"
-    if not _kubectl(["get", "crd", "tlsstores.traefik.io", "-o", "name"], check=False).strip():
+    if not _has_crd("tlsstores.traefik.io"):
         raise AgentError("Traefik is not running in k3s yet (no TLSStore CRD)")
+    if eso and not _kubectl(["get", "namespace", STORE_NS, "-o", "name", "--ignore-not-found"], check=False).strip():
+        eso = False                             # ESO without the sandbox's store yet: write the Secret directly
     cert = P.https(".crt").read_text()
     key = P.https(".key").read_text()
+    if eso:   # the directly written Secret of an earlier sync would stop the ExternalSecret from owning it
+        owner = _kubectl(["-n", SECRET_NAMESPACE, "get", f"secret/{SECRET_NAME}", "--ignore-not-found", "-o",
+                          "jsonpath={.metadata.ownerReferences[0].kind}"], check=False).strip()
+        exists = _kubectl(["-n", SECRET_NAMESPACE, "get", f"secret/{SECRET_NAME}", "--ignore-not-found", "-o", "name"],
+                          check=False).strip()
+        if exists and owner != "ExternalSecret":
+            _kubectl(["-n", SECRET_NAMESPACE, "delete", f"secret/{SECRET_NAME}", "--ignore-not-found"], check=False)
     _kubectl(["apply", "--server-side", "--field-manager", "containerizer-appliance", "--force-conflicts", "-f", "-"],
-             input=tls_manifests(cert, key))
-    return "on"
+             input=tls_manifests(cert, key, eso))
+    return "on (external secrets)" if eso else "on"
 
 
 # =============================================================================== requests

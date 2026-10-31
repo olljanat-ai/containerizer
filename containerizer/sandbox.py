@@ -251,6 +251,9 @@ def check_url(url: str, path: str = "/", address: str = "", ca_file: str = "", t
     host = url[len("https://"):].split("/", 1)[0]
     ctx = ssl.create_default_context()
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    # judge the certificate as browsers do: Python 3.13's stricter RFC 5280 checks (e.g. a required Authority
+    # Key Identifier) would fail certificates every browser accepts
+    ctx.verify_flags &= ~getattr(ssl, "VERIFY_X509_STRICT", 0)
     if ca_file:
         try:
             ctx.load_verify_locations(cafile=ca_file)

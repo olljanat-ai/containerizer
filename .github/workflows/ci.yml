@@ -93,6 +93,35 @@ jobs:
         env:
           CONTAINERIZER_TEST_KUBE: /home/runner/.kube/config
 
+  # Sandbox HTTPS end to end (appliance/ci/sandbox-https-e2e.py): k3s with the appliance's Traefik settings,
+  # the appliance's Caddyfile on Caddy 2.6 (as in Debian 13), the system agent's own code, a generated Ingress.
+  sandbox-https:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Caddy (the distribution package, not started)
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q caddy
+          sudo systemctl disable --now caddy
+          caddy version
+      - name: k3s with the appliance's Traefik settings
+        run: |
+          sudo install -D -m 0600 appliance/rootfs/var/lib/rancher/k3s/server/manifests/containerizer-traefik.yaml \
+            /var/lib/rancher/k3s/server/manifests/containerizer-traefik.yaml
+          curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable servicelb --write-kubeconfig-mode 0644" sh -
+      - run: python appliance/ci/sandbox-https-e2e.py
+      - if: failure()
+        run: |
+          sudo k3s kubectl get all -A || true
+          sudo k3s kubectl -n kube-system logs deploy/traefik --tail=100 || true
+          sudo k3s kubectl -n kube-system get helmchart,helmchartconfig -o yaml || true
+          cat /tmp/cz-https-*/caddy.log || true
+
   # Dogfood: gate this repository's own example app with the action, as a user's repo would.
   containerizer:
     runs-on: ubuntu-latest

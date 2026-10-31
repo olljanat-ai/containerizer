@@ -132,8 +132,9 @@ class SystemPage:
         body = {"action": action, "requested_by": user, "requested_by_name": name,
                 "requested_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), **args}
         tmp = d / f".{secrets.token_hex(8)}.tmp"
-        tmp.write_text(json.dumps(body))
-        os.chmod(tmp, 0o640)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)   # may carry a private key: owner only
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(body))
         tmp.rename(d / f"{int(time.time() * 1000)}-{secrets.token_hex(4)}.json")
 
     # -- pages ----------------------------------------------------------------------------------
@@ -147,6 +148,8 @@ class SystemPage:
         st = self.status()
         if kind == "firewall":
             return self.firewall(s, method, parts, q, form, shell, st)
+        if kind == "sandbox-https":
+            return self.sandbox_https(s, method, q, form, shell, st)
         if method == "POST":
             what = parts[1] if len(parts) > 1 else ""
             back = "/admin/system?"
@@ -286,6 +289,105 @@ placeholder='443 or 80,443 or udp/123'></div>
                        "</thead><tbody>" + "".join(
                            f"<tr><td class='nowrap'>{e(_when(h.get('at')))}</td><td>{e(h.get('name') or h.get('by') or '')}"
                            f"<div class='muted small'>{e(h.get('by') or '')}</div></td><td>{ch(h)}</td></tr>" for h in hist)
+                       + "</tbody></table>")
+        return "".join(out)
+
+    # -- sandbox HTTPS --------------------------------------------------------------------------
+
+    def sandbox_https(self, s, method, q, form, shell, st) -> tuple[int, str, str | None]:
+        """Admin -> Sandbox HTTPS: the wildcard domain and certificate the apps in k3s are published with.
+        The page checks what was pasted (the system agent checks it again) and never shows a key."""
+        from .sandbox_https import SandboxHttpsError, check
+        back = "/admin/sandbox-https?"
+        if method == "POST":
+            if any(p.get("action") == "sandbox-https" for p in self.pending()):
+                return 303, "", back + urlencode({"msg": "The previous change is still being applied. Try again in a moment."})
+            what = form.get("do", [""])[0]
+            if what == "remove":
+                if form.get("confirm", [""])[0] != "yes":
+                    return 303, "", back + urlencode({"msg": "Tick the box to confirm."})
+                self.request("sandbox-https", s.user, s.name, do="remove")
+                return 303, "", back + urlencode({"msg": "HTTPS for the sandbox apps is being turned off."})
+            if what != "set":
+                return 303, "", back
+            domain, cert, key = (form.get(k, [""])[0] for k in ("domain", "cert", "key"))
+            try:
+                ok = check(domain, cert, key, appliance_host=self.appliance_host(st))
+            except SandboxHttpsError as ex:
+                return 303, "", back + urlencode({"msg": f"Not saved: {ex}"})
+            # the re-encoded PEMs: nothing but the certificates and the key reaches the system agent
+            self.request("sandbox-https", s.user, s.name, do="set", domain=ok.info.domain, cert=ok.cert_pem, key=ok.key_pem)
+            warn = f" Note: {'; '.join(ok.info.warnings)}." if ok.info.warnings else ""
+            return 303, "", back + urlencode({"msg": f"*.{ok.info.domain} is being set up; the web UI restarts its "
+                                                     f"HTTPS listener for a moment.{warn}"})
+        flash = q.get("msg", [""])[0][:400]
+        return 200, shell("Sandbox HTTPS", "sandbox-https", self.render_sandbox_https(st, s), flash), None
+
+    @staticmethod
+    def appliance_host(st: dict) -> str:
+        from urllib.parse import urlsplit
+        return (urlsplit(os.environ.get("CONTAINERIZER_PUBLIC_URL") or "").hostname or st.get("hostname") or "").lower()
+
+    def render_sandbox_https(self, st: dict, s) -> str:
+        from .sandbox_https import host_for
+        hs = st.get("sandbox_https") or {}
+        csrf = f"<input type='hidden' name='csrf' value='{e(s.csrf)}'>"
+        pend = any(p.get("action") == "sandbox-https" for p in self.pending())
+        dis = " disabled" if pend else ""
+        out = ["<p>Publish the apps deployed to the sandbox cluster (k3s on this appliance) over HTTPS under one "
+               "wildcard domain. Each component that serves HTTP gets its own name, "
+               "<code>&lt;component&gt;-&lt;app&gt;.&lt;domain&gt;</code> (just <code>&lt;app&gt;.&lt;domain&gt;</code> when "
+               "the component has the app's name), from the next organization scan on. The appliance answers for them on "
+               "port 443, next to the admin pages, and only over HTTPS.</p>"]
+        if pend:
+            out.append("<p class='note'>Waiting for the system agent to apply the last change.</p>")
+        if hs.get("error"):
+            out.append(f"<p class='note'>The last change was not applied: {e(hs['error'])}</p>")
+        cert = hs.get("cert") or {}
+        if hs.get("enabled") and hs.get("domain"):
+            d = hs["domain"]
+            example = host_for(d, "myapp", "web")
+            warn = "".join(f"<li>{e(w)}</li>" for w in cert.get("warnings") or [])
+            out.append(f"""<h2>Now</h2><table><tbody>
+<tr><th>Domain</th><td><code>*.{e(d)}</code>, for example <code>https://{e(example)}/</code></td></tr>
+<tr><th>Certificate</th><td>{e(cert.get('subject') or '')}<div class='muted small'>issued by {e(cert.get('issuer') or '')}</div></td></tr>
+<tr><th>Valid until</th><td>{e(_when(cert.get('not_after')))}</td></tr>
+<tr><th>Key</th><td>{e(cert.get('key_type') or '')} <span class='muted small'>(stored on the appliance for its web
+server and k3s only; it is never shown again)</span></td></tr>
+<tr><th>SHA-256 fingerprint</th><td class='small'><code>{e(cert.get('fingerprint') or '')}</code></td></tr>
+<tr><th>Set</th><td>{e(_when(hs.get('set_at')))} by {e(hs.get('set_by_name') or hs.get('set_by') or '')}</td></tr>
+</tbody></table>{"<ul class='note'>" + warn + "</ul>" if warn else ""}
+<h2>DNS</h2><p>Point the wildcard name at this appliance, for example
+<code>*.{e(d)}. 300 IN A &lt;appliance address&gt;</code> or <code>*.{e(d)}. 300 IN CNAME {e(self.appliance_host(st) or 'appliance.example.com')}.</code>
+See <a href='https://containerizer.eu/sandbox-https/'>Sandbox HTTPS</a> in the documentation.</p>""")
+        else:
+            out.append("<p class='muted'>Not set up: the sandbox apps get no Ingress and no URL.</p>")
+        out.append(f"""<h2>{"Replace the certificate" if hs.get("enabled") else "Set up"}</h2>
+<form method='post' action='/admin/sandbox-https' autocomplete='off'>{csrf}<input type='hidden' name='do' value='set'>
+<div class='formrow'><label for='domain'>Wildcard domain</label><input name='domain' id='domain' required maxlength='200'
+placeholder='*.sandbox.example.com' value='{e("*." + hs["domain"]) if hs.get("domain") and hs.get("enabled") else ""}'></div>
+<div class='formrow'><label for='cert'>Certificate (PEM)</label><textarea name='cert' id='cert' rows='8' cols='70' required
+spellcheck='false' placeholder='-----BEGIN CERTIFICATE-----&#10;(the server certificate for *.sandbox.example.com, then its intermediates)'></textarea></div>
+<div class='formrow'><label for='key'>Private key (PEM)</label><textarea name='key' id='key' rows='6' cols='70' required
+spellcheck='false' autocomplete='off' placeholder='-----BEGIN PRIVATE KEY-----'></textarea></div>
+<p class='muted small'>The certificate must name <code>*.&lt;domain&gt;</code>, be valid now and match the key (RSA 2048+ or
+ECDSA P-256/P-384, without a password). Use a domain of its own: not the one the admin pages are under.</p>
+<button{dis}>Save</button></form>""")
+        if hs.get("enabled"):
+            out.append(f"""<form method='post' action='/admin/sandbox-https' class='danger'>{csrf}<input type='hidden' name='do' value='remove'>
+<label class='small'><input type='checkbox' name='confirm' value='yes' required> stop publishing the sandbox apps and delete the
+certificate and key from the appliance</label> <button{dis}>Turn off</button></form>""")
+        hist = hs.get("history") or []
+        if hist:
+            def what(h):
+                if h.get("action") == "remove":
+                    return f"turned off (was *.{h.get('domain') or '?'})"
+                return (f"*.{h.get('domain', '')}: {h.get('subject', '')}, valid until {_when(h.get('not_after'))}"
+                        f" (SHA-256 {str(h.get('fingerprint', ''))[:23]}…)")
+            out.append("<h2>Change history</h2><table class='audit'><thead><tr><th>When</th><th>Who</th><th>Change</th></tr>"
+                       "</thead><tbody>" + "".join(
+                           f"<tr><td class='nowrap'>{e(_when(h.get('at')))}</td><td>{e(h.get('name') or h.get('by') or '')}"
+                           f"<div class='muted small'>{e(h.get('by') or '')}</div></td><td>{e(what(h))}</td></tr>" for h in hist)
                        + "</tbody></table>")
         return "".join(out)
 

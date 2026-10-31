@@ -10,6 +10,9 @@
 #   <namespace>--cz-git for every app whose GitRepository asks for one (each app reconciles as its own
 #   ServiceAccount from its own source; its generated tenant.yaml grants it that key).
 set -euo pipefail
+# Sandbox HTTPS (Admin -> Sandbox HTTPS): the wildcard certificate as Traefik's default, or none when it is off
+/usr/lib/containerizer/venv/bin/python -m containerizer.sysagent sandbox-https sync >/dev/null \
+  || echo "containerizer: the sandbox certificate is not installed in k3s yet; retrying in 2 minutes" >&2
 . /etc/containerizer/sandbox.env
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 k() { /usr/bin/k3s kubectl "$@"; }
