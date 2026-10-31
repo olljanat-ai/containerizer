@@ -320,7 +320,7 @@ OS package with a fix, the gate upgrades just that package in the final stage (`
 **SBOM and licences.** Every built image gets a CycloneDX SBOM from Syft, with NuGet licences looked
 up from the feed, each package checked against the licence policy (deny fails the gate, warn is
 reported; GPL/AGPL warn by default) and the scan's CVEs attached to the package they are in. The SBOM
-is attached to the pushed image and stored with the results; the web UI shows the packages of each
+is stored with the results and committed next to the generated files; the web UI shows the packages of each
 component and a portfolio page of licences and CVEs. See [docs/sbom.md](docs/sbom.md).
 
 ### NSA/CISA hardening

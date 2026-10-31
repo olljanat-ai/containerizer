@@ -105,7 +105,7 @@ sudo install -m 0755 /tmp/cosign /usr/local/bin/cosign
 
 ### Optional: Ollama for the self-hosted LLM backend
 
-To test `--ai` against a local model ([Self-hosted LLM](self-hosted-llm.md)):
+To test `--ai` against a local model ([the LLM](source-control.md#the-llm)):
 
 ```sh
 curl -fsSL https://ollama.com/install.sh | sh       # a systemd service on 127.0.0.1:11434

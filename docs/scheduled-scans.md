@@ -30,8 +30,7 @@ repository ([source control tokens](source-control.md)), and allows the hosts on
    security context ([security gate](overview.md#security-gate)). A component that fails is dropped, and
    the rest are gated again so the namespace, network policies and GitOps files cover only what is
    deployed.
-7. **Images pushed** as `<registry>/<app>/<component>:<tag>` and `:git-<commit>`, with the SBOM attached
-   ([SBOM](sbom.md)). The tag is `1.<yyyymmdd>.<hhmm>` of the run (semver, so Flux image automation can
+7. **Images pushed** as `<registry>/<app>/<component>:<tag>` and `:git-<commit>`. The tag is `1.<yyyymmdd>.<hhmm>` of the run (semver, so Flux image automation can
    follow it). With the registry set to `localhost:5000/<path>`, images go to the appliance's own
    registry and need no credentials; an external registry needs push credentials in `worker.env`.
 8. **Committed** to the output repository after every repository, so a long run can be followed and
