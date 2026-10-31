@@ -2,7 +2,8 @@
 
 The README is the Overview page (generated as overview.md, so it is not duplicated under docs/), and links that
 point outside docs/ (rules, examples, source files) are rewritten to the repository on GitHub so they
-work on the published site as they do when browsing the repository.
+work on the published site as they do when browsing the repository. The site name in the header links
+to the front page on every page.
 """
 
 import posixpath
@@ -43,3 +44,21 @@ def on_page_markdown(markdown, page, config, files):
     if not page_dir:
         page.edit_url = f"{REPO}/edit/main/README.md"
     return LINK.sub(lambda m: m.group(1) + _rewrite(m.group(2), page_dir) + m.group(3), markdown)
+
+
+HEADER_NAME = re.compile(r'(<div class="md-header__topic">\s*<span class="md-ellipsis">)\s*([^<]+?)\s*(</span>)')
+
+
+def on_post_page(output, page, config):
+    # Material shows the site name in the header as plain text; make it a link to the front page.
+    home = page.url.count("/") * "../" or "./"
+    return HEADER_NAME.sub(lambda m: f'{m.group(1)}<a href="{home}" class="cz-home-link">{m.group(2)}</a>{m.group(3)}',
+                           output, count=1)
+
+
+def on_post_template(output, template_name, config):
+    # 404.html is served at any path, so it links to the site root.
+    if template_name != "404.html":
+        return output
+    return HEADER_NAME.sub(lambda m: f'{m.group(1)}<a href="/" class="cz-home-link">{m.group(2)}</a>{m.group(3)}',
+                           output, count=1)
