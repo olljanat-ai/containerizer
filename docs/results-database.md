@@ -52,7 +52,7 @@ export CONTAINERIZER_SQL_PASSWORD=...         # CZ_SCANNER_PASSWORD from results
 python -m containerizer analyze ../my-app
 ```
 
-The compose stack runs SQL Server 2022 Developer edition, creates the database, the schema and three
+The compose stack runs SQL Server 2025 Developer edition, creates the database, the schema and three
 logins (`cz_scanner`, `cz_web`, `cz_admin`, one per role below), and starts the web UI with a read-only
 root filesystem, no Linux capabilities and `no-new-privileges`. All ports are published on 127.0.0.1
 only. Developer edition is licensed for development and test, not production.

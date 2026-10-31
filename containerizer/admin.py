@@ -29,7 +29,7 @@ LINK_RE = re.compile(r"(https://[A-Za-z0-9.-]+|http://(localhost|127\.0\.0\.1|\[
 TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Application": "Application",
               "OrgScan": "Organization scan", "OrgRepository": "Repository",
               "DevDatabase": "Dev database", "RuleCandidate": "Learned rule",
-              "SourceCredential": "Source control token"}
+              "SourceCredential": "Source control token", "LabService": "Lab service"}
 FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
               "Retired": "Hidden", "Product": "Product", "BusinessUnit": "Business unit", "InfoUrl": "Product page link",
               # organization scans
@@ -204,7 +204,7 @@ class Admin:
         kind = parts[0]
         if kind not in {k for k, _ in tabs}:
             known = kind in ("applications", "products", "business-units", "audit", "access", "scans", "repositories",
-                             "dev-databases", "system", "firewall", "source-control")
+                             "dev-databases", "system", "firewall", "source-control", "lab-services")
             return Response(403 if known else 404, self._shell(s, a, "Not allowed" if known else "Not found", "",
                             "<p>Your role does not include this page.</p>" if known else ""))
         if kind in ("scans", "repositories"):
@@ -219,6 +219,9 @@ class Admin:
         if kind == "source-control":                 # administrators only (see _tabs)
             from . import admin_credentials
             return admin_credentials.route(self, conn, s, a, method, parts, q, form)
+        if kind == "lab-services":                   # the appliance only; administrators only (see _tabs)
+            from . import admin_lab
+            return admin_lab.route(self, conn, s, a, method, parts, q, form)
         if kind == "dev-databases":
             from . import admin_devdb
             return admin_devdb.route(self, conn, s, a, method, parts, q, form)
@@ -265,6 +268,8 @@ class Admin:
             tabs += [("source-control", "Source control & LLM")]
         if self.devdb is not None and (a.admin or a.operator):           # dev database backups (admin_devdb.py)
             tabs += [("dev-databases", "Dev databases")]
+        if a.admin and self.system:                                      # lab services in the sandbox (admin_lab.py)
+            tabs += [("lab-services", "Lab services")]
         if self.may_review_rules(s):                                     # learned rules waiting for review
             tabs += [("rules", "Rule review")]
         tabs += [("audit", "Change history")]
@@ -725,10 +730,11 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
                          for k, t in (("", "All"), ("Application", "Applications"), ("Product", "Products"),
                                       ("BusinessUnit", "Business units"), ("OrgScan", "Organization scans"),
                                       ("OrgRepository", "Repositories"), ("SourceCredential", "Source control"),
-                                      ("DevDatabase", "Dev databases"), ("RuleCandidate", "Rule review")))
+                                      ("DevDatabase", "Dev databases"), ("LabService", "Lab services"),
+                                      ("RuleCandidate", "Rule review")))
         body = (f"<p class='muted'>Every change to business units, products, the application mapping, organization scans, "
                 f"repositories (found by a scan, enabled or disabled, skipped), source control tokens (added, replaced or removed; "
-                f"never the token itself), dev database uploads and the rule review "
+                f"never the token itself), dev database uploads, lab services turned on or off and the rule review "
                 f"(learned rules proposed, approved or rejected): who made it, when, "
                 f"and what changed. Changes made directly in the database are recorded too, under the database login. "
                 f"Latest 200.</p><nav class='chips'>{chips}</nav>{render_audit(self._audit_rows(conn, table))}")

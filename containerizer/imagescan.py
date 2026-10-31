@@ -607,7 +607,7 @@ def _apply_os_patch(dockerfile: str, comp: dict) -> str:
 def _build_with_retries(a, cdir: Path, tag: str, comp: dict, pin: bool, post) -> tuple[bool, str]:
     """Build; when the build fails in a way the verification failure rules know how to fix
     (rules/50-failures.yaml, outcome retry), patch the build plan, regenerate and build again."""
-    from .generate import dockerfile_dotnet, dockerfile_spa, k8s_manifests, k8s_name, merge_plan, pin_digests, _yaml_docs
+    from .generate import dockerfile_for, k8s_manifests, k8s_name, merge_plan, pin_digests, _yaml_docs
     from .verify import MAX_ATTEMPTS, _fmt, diagnose, load_failures
     comps = {k8s_name(c.name): c for c in a.components}
     c = comps.get(cdir.name)
@@ -627,7 +627,7 @@ def _build_with_retries(a, cdir: Path, tag: str, comp: dict, pin: bool, post) ->
         if json.dumps(plan, sort_keys=True) == before:
             break
         applied.append(fr["id"])
-        df = dockerfile_spa(plan, c.facts) if c.role == "spa" else dockerfile_dotnet(plan)
+        df = dockerfile_for(plan, c)
         df = post(pin_digests(df) if pin else df)
         (cdir / "Dockerfile").write_text(df)
         from .harden import _pod_specs
@@ -644,7 +644,8 @@ def _build_with_retries(a, cdir: Path, tag: str, comp: dict, pin: bool, post) ->
 def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str = "auto",
              fail_on: str | None = None, registry: str = "registry.local", pin: bool = False,
              base_cache: dict | None = None, run: bool = False, refresh: bool = True, gitops=None,
-             tag: str = "latest", sbom: bool | None = None, devdb=None) -> dict:
+             tag: str = "latest", sbom: bool | None = None, devdb=None, lab: set | None = None,
+             lab_report: dict | None = None) -> dict:
     from .generate import generate_app, k8s_name
     from .sbom import config as sbom_config
 
@@ -652,7 +653,8 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
     if refresh and scan and age is not None and age > security()["images"].get("lock_max_age_days", 14):
         # the gate runs rarely per repository: pick today's patched base images rather than a stale lock
         update_images(scan=True, scanner=scanner)
-    generate_app(a, out, registry=registry, pin=pin, gitops=gitops, tag=tag, devdb=devdb)
+    generate_app(a, out, registry=registry, pin=pin, gitops=gitops, tag=tag, devdb=devdb, lab=lab,
+                 lab_report=lab_report)
     pol = policy(fail_on)
     base_cache = base_cache if base_cache is not None else {}
     sbom = sbom_config().get("enabled", True) if sbom is None else sbom

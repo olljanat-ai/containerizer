@@ -263,6 +263,9 @@ Per component: `Dockerfile` (+ `Dockerfile.dockerignore`), `k8s.yaml` (Deploymen
 Service, NetworkPolicy, Secret skeleton, PVCs where state must persist), `plan.json` (the build
 plan, editable and re-usable). For .NET Framework components that could work in Windows Server
 containers, a `Dockerfile.windows` stop-gap. Per app: `kustomization.yaml` and `MIGRATION.md`.
+Java (Maven/Gradle; Spring Boot, Quarkus, plain JVM programs, WARs on Tomcat) and Node.js
+(npm/pnpm/yarn; Express, NestJS, Next.js and others) components get distroless, non-root images
+built on the runtime line they declare; see [docs/java-node.md](docs/java-node.md#containers).
 
 GitOps: every app also gets `gitops/` with Argo CD and Flux examples built from the same data
 (`--git-url`, `--git-branch`, `--git-path`, `--verify-commits` on `generate` and `analyze`):
@@ -549,6 +552,12 @@ instructions for the AI. The next scan restores it into a hardened database next
 the sandbox, and points the application's connection settings at it, without changing its code. See
 [docs/dev-databases.md](docs/dev-databases.md).
 
+On the appliance, administrators can turn on **lab services** for the sandboxed apps: SQL Server, PostgreSQL,
+Redis, S3 and Azure Blob storage. An app that depends on one gets its own database or instance, with
+credentials from External Secrets Operator. Its configuration is pointed at the service without code
+changes, and the admin pages warn when an app needs a service that is off. See
+[docs/lab-services.md](docs/lab-services.md).
+
 ![Repositories of an organization scan, skipped ones disabled with the reason](docs/images/admin-repositories-disabled.png)
 
 ## Results database and web UI
@@ -589,5 +598,6 @@ results/         Docker Compose stack and image for the results database and web
 docs/            results-database.md (results database, web UI, admin pages, audit), rule-review.md, organization-run.md,
                  scheduled-scans.md, source-control.md (tokens), dev-databases.md, sandbox-verification.md, self-hosted-llm.md, sbom.md (SBOMs, licences, CVEs per package),
                  external-secrets.md (secret store, per-namespace access, Vault / Azure Key Vault / AWS),
+                 lab-services.md (SQL Server, PostgreSQL, Redis, S3, Azure Blob for the sandboxed apps),
                  local-dev-server.md (a Debian server that runs the whole CI suite locally)
 ```

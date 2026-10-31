@@ -102,7 +102,13 @@ def buildable(c: Component) -> bool:
         return False
     if c.project.kind_hint == "dotnet":
         return c.project.is_core and bool(c.project.best_core_tfm())
-    return c.project.kind_hint in ("node", "python", "go", "java")
+    if c.project.kind_hint == "java":
+        # an EAR needs a full Jakarta EE server (finding java-ee-application-server)
+        return (c.project.properties or {}).get("Packaging", "jar") in ("jar", "war")
+    if c.project.kind_hint == "node":
+        from .gen_jvm_node import node_buildable
+        return c.role == "spa" or node_buildable(c)
+    return False
 
 
 # --------------------------------------------------------------------------- plan
@@ -125,6 +131,7 @@ def default_plan(c: Component) -> dict:
         "publish_args": [],
         "remove_files": [],
         "single_replica": False,
+        "uid": images()["dotnet"]["app_uid"] if p.kind_hint == "dotnet" else None,
         "port": CONTAINER_PORT if c.role in ("web", "spa") else None,
         "health": c.facts.get("health"),
         "entry": c.facts.get("entry"),
@@ -141,6 +148,7 @@ def default_plan(c: Component) -> dict:
             plan["env"][f"Kestrel__Endpoints__{ep}__Url"] = f"http://+:{CONTAINER_PORT + i}"
     if p.kind_hint == "dotnet":
         _repoint_config(plan, c.facts)
+        _repoint_nlog(plan, c.facts)
         plan["env"]["DOTNET_ENVIRONMENT"] = "Production"
         if c.role == "web":
             plan["env"]["ASPNETCORE_ENVIRONMENT"] = "Production"
@@ -192,31 +200,44 @@ def _repoint_config(plan: dict, facts: dict) -> None:
         parts = key.split(":")
         if parts[:2] == ["Serilog", "WriteTo"] and len(parts) > 2 and parts[2].isdigit() and int(parts[2]) in sinks:
             continue
-        segs = [s for s in re.split(r"[\\/]+", val) if s]
-        segs = segs[1:] if re.fullmatch(r"[A-Za-z]:", segs[0]) else segs[2:]   # drop drive or \\server\share
-        is_file = bool(re.search(r"\.[A-Za-z]\w{0,7}$", segs[-1])) if segs else False
-        if any(x.lower() in ("program files", "program files (x86)") for x in segs[:1]) or val.lower().endswith(".exe"):
-            # an installed tool: use the Linux binary of the same name from PATH (see native packages)
-            if is_file:
-                name = segs[-1]
-                if name.lower().endswith(".dll"):     # native library: Linux naming
-                    name = "lib" + name[:-4] + ".so"
-                plan["env"]["__".join(parts)] = re.sub(r"\.exe$", "", name, flags=re.I)
-            continue
-        if is_file and re.search(r"\.(pem|pfx|p12|key|crt|cer|snk|jks|keytab)$", segs[-1], re.I):
-            # keys and certificates come from a Kubernetes Secret volume, never from the image
-            plan["env"]["__".join(parts)] = f"/secrets/{segs[-1]}"
-            if segs[-1] not in plan.setdefault("secret_files", []):
-                plan["secret_files"].append(segs[-1])
-            continue
-        folder = "/data/" + "/".join(k8s_name(s) for s in (segs[:-1] if is_file else segs)) if segs else "/data"
-        folder = folder.rstrip("/") or "/data"
-        plan["env"]["__".join(parts)] = f"{folder}/{segs[-1]}" if is_file else folder
-        add_reason(plan, "config-windows-paths", "Windows paths in configuration (drive letters, UNC shares) are "
-                   "overridden with environment variables to folders under /data, which the manifests mount as "
-                   "volumes; the application code is not changed.", [CONFIG_DOCS])
-        if folder not in plan["add_writable"]:
-            plan["add_writable"].append(folder)
+        new = linux_path(plan, val)
+        if new:
+            plan["env"]["__".join(parts)] = new
+            if new.startswith("/data"):
+                add_reason(plan, "config-windows-paths", "Windows paths in configuration (drive letters, UNC shares) are "
+                           "overridden with environment variables to folders under /data, which the manifests mount as "
+                           "volumes; the application code is not changed.", [CONFIG_DOCS])
+
+
+def linux_path(plan: dict, val: str) -> str | None:
+    """The Linux replacement of a Windows path from configuration: an installed tool becomes its
+    Linux binary name (from PATH), a key or certificate file comes from the Secret volume at
+    /secrets, anything else moves under /data (made writable; the manifests mount it)."""
+    segs = [s for s in re.split(r"[\\/]+", val) if s]
+    if not segs:
+        return None
+    segs = segs[1:] if re.fullmatch(r"[A-Za-z]:", segs[0]) else segs[2:]   # drop drive or \\server\share
+    is_file = bool(re.search(r"\.[A-Za-z]\w{0,7}$", segs[-1])) if segs else False
+    if any(x.lower() in ("program files", "program files (x86)") for x in segs[:1]) or val.lower().endswith(".exe"):
+        if not is_file:
+            return None
+        name = segs[-1]
+        if name.lower().endswith(".dll"):     # native library: Linux naming
+            name = "lib" + name[:-4] + ".so"
+        return re.sub(r"\.exe$", "", name, flags=re.I)
+    if is_file and re.search(r"\.(pem|pfx|p12|key|crt|cer|snk|jks|keytab)$", segs[-1], re.I):
+        # keys and certificates come from a Kubernetes Secret volume, never from the image
+        if segs[-1] not in plan.setdefault("secret_files", []):
+            plan["secret_files"].append(segs[-1])
+        return f"/secrets/{segs[-1]}"
+    folder = "/data/" + "/".join(k8s_name(s) for s in (segs[:-1] if is_file else segs)) if segs else "/data"
+    folder = folder.rstrip("/") or "/data"
+    if folder not in plan["add_writable"]:
+        plan["add_writable"].append(folder)
+    return f"{folder}/{segs[-1]}" if is_file else folder
+
+
+def _repoint_nlog(plan: dict, facts: dict) -> None:
     for item in facts.get("nlog_folder_settings") or []:
         # trailing slash: NLog targets append "\\file.log", which on Linux then stays inside the folder
         key = item.replace(".", "__")
@@ -257,7 +278,15 @@ def merge_plan(plan: dict, patch: dict) -> dict:
 
 def make_plan(a: AppAssessment, c: Component, rules: list[Rule] | None = None, extra: dict | None = None) -> dict:
     rules = rules if rules is not None else load_rules()
-    plan = apply_plan_rules(default_plan(c), a.repo, c, rules)
+    plan = default_plan(c)
+    if c.project.kind_hint in ("java", "node"):
+        from .gen_jvm_node import java_plan, node_build_plan, node_plan
+        if c.role == "spa":
+            if c.project.kind_hint == "node":
+                node_build_plan(a, c, plan)
+        else:
+            (java_plan if c.project.kind_hint == "java" else node_plan)(a, c, plan)
+    plan = apply_plan_rules(plan, a.repo, c, rules)
     if extra:
         merge_plan(plan, extra)
     return plan
@@ -278,13 +307,33 @@ DOCKERIGNORE = """# generated by containerizer - build context is the applicatio
 **/secrets*.json
 **/appsettings.Development.json
 **/.env
+**/.gradle/
+**/.next/
+**/.nuxt/
+**/.turbo/
 **/*.ps1
 !**/ClientApp/**/*.ps1
 """
 
 
+def dockerignore(repo) -> str:
+    """The build context filter. A repository that commits source under a node_modules folder
+    (Node-RED keeps its packages in packages/node_modules) keeps those folders in the context."""
+    import subprocess
+    try:
+        out = subprocess.run(["git", "-C", str(repo.root), "ls-files", "--", ":(glob)**/node_modules/**"],
+                             capture_output=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        out = ""
+    if not out.strip():
+        return DOCKERIGNORE
+    return DOCKERIGNORE.replace("**/node_modules/\n", "# node_modules folders are kept: the repository commits source in them\n")
+
+
 def _writable_abs(w: str) -> str:
-    return w if w.startswith("/") else "/app/" + w.strip("/")
+    """A writable folder as an absolute path; relative ones are under the app folder (./data/ -> /app/data)."""
+    import posixpath
+    return posixpath.normpath(w if w.startswith("/") else "/app/" + w.strip("/"))
 
 
 def dockerfile_dotnet(plan: dict) -> str:
@@ -373,6 +422,21 @@ def dockerfile_dotnet(plan: dict) -> str:
 def dockerfile_spa(plan: dict, facts: dict) -> str:
     n = images()["node"]
     dist = facts.get("dist_dir") or "dist"
+    if plan.get("pm"):
+        # the package manager and workspace of the repository, then the static files
+        from .gen_jvm_node import node_build_stage
+        mod = plan.get("module") or "."
+        out = str(PurePosixPath(mod) / dist)
+        return "\n".join([
+            "# syntax=docker/dockerfile:1.7",
+            f"# Generated by containerizer for {plan['component']} (single-page app, {plan['pm']})",
+            *reason_comments(plan), *node_build_stage(plan),
+            # the output folder from the facts, else the usual ones (Angular puts the site in browser/)
+            f"RUN for d in '{out}/browser' '{out}' '{mod}/dist' '{mod}/build' '{mod}/out'; do "
+            'if [ -f "$d/index.html" ]; then cp -r "$d" /site; break; fi; done; '
+            '[ -d /site ] || { echo "containerizer: no built index.html found" >&2; exit 1; }',
+            "",
+        ] + _static_site_stage("/site")) + "\n"
     proj_dir = str(Path(plan["project"]).parent)
     return "\n".join([
         "# syntax=docker/dockerfile:1.7",
@@ -422,6 +486,9 @@ def dockerfile_blazor_wasm(plan: dict) -> str:
 def dockerfile_for(plan: dict, c: Component) -> str:
     if c.role == "spa":
         return dockerfile_blazor_wasm(plan) if c.project.kind_hint == "dotnet" else dockerfile_spa(plan, c.facts)
+    if c.project.kind_hint in ("java", "node"):
+        from .gen_jvm_node import dockerfile_java, dockerfile_node
+        return (dockerfile_java if c.project.kind_hint == "java" else dockerfile_node)(plan)
     return dockerfile_dotnet(plan)
 
 
@@ -469,7 +536,7 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
         secret_keys.append(key)
         env.append({"name": key, "valueFrom": {"secretKeyRef": {"name": secret_name, "key": key, "optional": True}}})
     for s in c.facts.get("secret_settings", []) or []:
-        key = s.replace(":", "__")
+        key = s.replace(":", "__")          # .NET configuration keys; Java/Node facts are variable names already
         secret_keys.append(key)
         env.append({"name": key, "valueFrom": {"secretKeyRef": {"name": secret_name, "key": key, "optional": True}}})
     volumes, mounts = [], []
@@ -489,16 +556,19 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
         "name": name, "image": image, "imagePullPolicy": "IfNotPresent", "env": env,
         "securityContext": {"runAsNonRoot": True, "allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True,
                             "capabilities": {"drop": ["ALL"]}},
-        "resources": {"requests": {"cpu": "100m", "memory": "256Mi"}, "limits": {"memory": "512Mi"}},
+        "resources": {"requests": {"cpu": "100m", "memory": (plan.get("memory") or {}).get("request", "256Mi")},
+                      "limits": {"memory": (plan.get("memory") or {}).get("limit", "512Mi")}},
         "volumeMounts": mounts,
     }
     if plan.get("port"):
         container["ports"] = [{"name": "http", "containerPort": plan["port"]}]
         probe = {"httpGet": {"path": plan["health"], "port": "http"}} if plan.get("health") else {"tcpSocket": {"port": "http"}}
-        container["readinessProbe"] = {**probe, "periodSeconds": 10}
+        ready = {"httpGet": {"path": plan["readiness"], "port": "http"}} if plan.get("readiness") and plan.get("health") else probe
+        container["readinessProbe"] = {**ready, "periodSeconds": 10}
         container["livenessProbe"] = {**probe, "periodSeconds": 20, "initialDelaySeconds": 20}
         container["startupProbe"] = {**probe, "periodSeconds": 5, "failureThreshold": 30}
-    pod = {"securityContext": {"runAsNonRoot": True, "fsGroup": images()["dotnet"]["app_uid"],
+    uid = 101 if c.role == "spa" else plan.get("uid") or images()["dotnet"]["app_uid"]
+    pod = {"securityContext": {"runAsNonRoot": True, "fsGroup": uid,
                                "seccompProfile": {"type": "RuntimeDefault"}},
            "automountServiceAccountToken": False, "containers": [container], "volumes": volumes}
     docs: list[dict] = []
@@ -543,6 +613,27 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
     return docs
 
 
+def _lab_inject(a: AppAssessment, c: Component, docs: list[dict], devdb, lab: set, plan) -> None:
+    """Point the component at the lab services it needs that are on (labservices.py); a restored dev
+    database backup takes the place of the lab SQL Server."""
+    from . import labservices
+    need = labservices.needs(a.repo, c)
+    ns = k8s_name(a.name)
+    for svc, why in need.items():
+        plan.needed.setdefault(svc, {})[c.name] = why
+        if svc not in lab or (svc == "sqlserver" and devdb is not None):
+            continue
+        notes = labservices.inject(docs, svc, ns, c, need)
+        names = [e["name"] for e in labservices.env_for(svc, ns, c, need)[0]]
+        plan.overrides.setdefault(c.name, []).extend(f"{svc}:{n}" for n in names)
+        if notes:
+            plan.notes.setdefault(c.name, []).extend(notes)
+        if svc not in plan.provided:
+            plan.provided.append(svc)
+    plan.provided.sort(key=labservices.ORDER.index)
+
+
+
 class _NoAlias(yaml.SafeDumper):
     def ignore_aliases(self, data):
         return True
@@ -562,8 +653,10 @@ def _yaml_docs(docs: list[dict]) -> str:
 
 def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, registry: str = "registry.local",
                  plans: dict | None = None, pin: bool = False, gitops=None, tag: str = "latest",
-                 devdb=None) -> list[Path]:
-    """`devdb`: a devdb.SandboxDb when an operator uploaded a database backup for this application."""
+                 devdb=None, lab: set | None = None, lab_report: dict | None = None) -> list[Path]:
+    """`devdb`: a devdb.SandboxDb when an operator uploaded a database backup for this application.
+    `lab`: the lab services that are on (labservices.py), None where the appliance's lab does not run;
+    `lab_report` (a dict) receives what the app needs, what it was pointed at and what is turned off."""
     from .gitops import gitops_manifests, image_setters, readme
     from .report import migration_markdown, write_agent_prompts
 
@@ -577,6 +670,10 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
     all_k8s = []
     images: list[tuple[str, str]] = []
     comp_docs: dict[str, list[dict]] = {}
+    lab_plan = None
+    if lab is not None:
+        from . import labservices
+        lab_plan = labservices.AppPlan(needed={}, provided=[], missing=[], notes={}, overrides={})
     for c in a.components:
         cdir = out / k8s_name(c.name)
         if buildable(c):
@@ -584,13 +681,11 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
             cdir.mkdir(parents=True, exist_ok=True)
             if c.role == "spa":
                 plan["port"], plan["health"] = 8080, "/healthz"
-            elif c.project.kind_hint != "dotnet":
-                continue
             df = dockerfile_for(plan, c)
             if pin:
                 df = pin_digests(df)
             (cdir / "Dockerfile").write_text(df)
-            (cdir / "Dockerfile.dockerignore").write_text(DOCKERIGNORE)
+            (cdir / "Dockerfile.dockerignore").write_text(dockerignore(a.repo))
             image = f"{registry}/{k8s_name(a.name)}/{k8s_name(c.name)}:{tag}"
             docs = k8s_manifests(a, c, plan, image)
             if devdb is not None:
@@ -607,6 +702,8 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
                         "applications": [_idp.wso2_application(x) for x in clients], "notes": notes},
                         indent=2) + "\n")
                     written.append(cdir / "idp.json")
+            if lab_plan is not None:
+                _lab_inject(a, c, docs, devdb, lab, lab_plan)
             images.append((c.name, image))
             all_k8s += docs
             comp_docs[k8s_name(c.name)] = docs
@@ -629,6 +726,22 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
         all_k8s += docs
         comp_docs[HOST] = docs
         images.append((HOST, devdb.image))
+    if lab_plan is not None:
+        lab_plan.missing = [s for s in lab_plan.needed if s not in lab_plan.provided and s not in lab
+                            and not (s == "sqlserver" and devdb is not None)]
+        if lab_report is not None:
+            lab_report.update(lab_plan.to_dict())
+    if all_k8s and lab_plan is not None and lab_plan.provided:
+        from . import labservices
+        if "lab" in comp_docs:
+            raise ValueError("a component is named 'lab', the folder of the lab service credentials")
+        docs = labservices.app_docs(k8s_name(a.name), lab_plan.provided)
+        (out / "lab").mkdir(parents=True, exist_ok=True)
+        (out / "lab" / "k8s.yaml").write_text(_yaml_docs(docs))
+        (out / "lab" / "README.md").write_text(labservices.readme(k8s_name(a.name), lab_plan))
+        written += [out / "lab" / "k8s.yaml", out / "lab" / "README.md"]
+        all_k8s += docs
+        comp_docs["lab"] = docs
     if all_k8s:
         from . import eso
         ns = k8s_name(a.name)

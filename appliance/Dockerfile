@@ -96,7 +96,7 @@ RUN chmod 0755 /usr/lib/containerizer/bin/* /usr/libexec/elemental-checker/conta
       containerizer-mssql.service containerizer-db-init.service containerizer-web.service \
       containerizer-worker.service containerizer-registry.service \
       containerizer-prometheus.service containerizer-grafana.service \
-      k3s.service containerizer-sandbox.timer
+      k3s.service containerizer-sandbox.timer containerizer-lab.timer
 
 # Elemental: snapshots, layout, boot assessment, initrd
 COPY appliance/elemental/snapshotter.yaml /etc/elemental/config.d/snapshotter.yaml

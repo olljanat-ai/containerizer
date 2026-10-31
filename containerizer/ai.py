@@ -43,11 +43,13 @@ PRICING = {"claude-fable-5-1": (10.0, 50.0), "claude-opus-5-5": (4.0, 20.0),
 LEARNED = RULES_DIR / "learned"
 USAGE_LOG: list[dict] = []
 
-SYSTEM = """You are a senior platform engineer who moves Windows/.NET applications to Linux containers on Kubernetes.
+SYSTEM = """You are a senior platform engineer who moves Windows-hosted applications (.NET, Java, Node.js) to Linux
+containers on Kubernetes.
 You are called by a rule-based assessment tool only where its rules are unsure. Judge from the evidence given,
 prefer concrete technical reasons, and answer only with JSON matching the requested schema.
 Severity scale: info (no impact), config (works with configuration/infra changes only), refactor (targeted code
-changes), rewrite (port of the component, e.g. .NET Framework to .NET 8), blocker (cannot run in a Linux container;
+changes), rewrite (port of the component, e.g. .NET Framework to .NET 8, or replacing a Windows-only native or COM
+library a Java/Node.js component is built on), blocker (cannot run in a Linux container;
 needs Windows, a desktop session, hardware, or a Windows-only vendor product)."""
 
 
@@ -343,10 +345,45 @@ def _snippet(path: Path, line: int, ctx: int = 6) -> str:
     return "\n".join(f"{i + 1}: {lines[i]}" for i in range(s, e))
 
 
+LANG = {"dotnet": "C#", "java": "Java/Kotlin", "node": "JavaScript/TypeScript"}
+
+
+def _platform_lines(p) -> list[str]:
+    pr = p.properties or {}
+    if p.kind_hint == "java":
+        return [f"Language: Java {pr.get('JavaVersion') or '(version not declared)'}; build: {pr.get('BuildTool', '-')}; "
+                f"packaging: {pr.get('Packaging', 'jar')}; Spring Boot: {pr.get('SpringBootVersion') or 'no'}; "
+                f"main class: {pr.get('MainClass') or '-'}"]
+    if p.kind_hint == "node":
+        return [f"Language: Node.js (engines: {pr.get('NodeEngine') or 'any'}); package manager: {pr.get('PackageManager', 'npm')}; "
+                f"start: {pr.get('StartScript') or '-'}; native addons: {pr.get('LockNativeBuild') or 'none'}; "
+                f"Windows-only packages: {pr.get('LockWindowsOnly') or 'none'}"]
+    return [f"Target frameworks: {', '.join(p.tfms) or p.kind_hint}", f"SDK: {p.sdk or '-'}  OutputType: {p.output_type}"]
+
+
+def _entry_files(p) -> list[Path]:
+    """The files that start the component: Program.cs/Startup.cs, the Java main class, the Node.js start file."""
+    if p.kind_hint == "dotnet":
+        return [p.dir / n for n in ("Program.cs", "Startup.cs", "Global.asax.cs")]
+    if p.kind_hint == "node":
+        out = [p.path]
+        for n in ((p.manifest or {}).get("main"), "server.js", "index.js", "app.js", "src/main.ts", "src/index.ts", "src/server.ts"):
+            if isinstance(n, str) and (p.dir / n).is_file():
+                out.append(p.dir / n)
+                break
+        return out
+    main = ((p.properties or {}).get("MainClass") or "").split(".")[-1]
+    for f in p.source_files():
+        if f.suffix in (".java", ".kt") and (main and f.stem == main or not main and re.search(
+                r"@SpringBootApplication|@QuarkusMain|public static void main", p.text(f))):
+            return [p.path, f]
+    return [p.path]
+
+
 def evidence_pack(a, c, max_chars: int = 24000) -> str:
     p = c.project
     out = [f"Application: {a.name}", f"Component: {c.name} (project {p.rel})", f"Role (from rules): {c.role}",
-           f"Target frameworks: {', '.join(p.tfms) or p.kind_hint}", f"SDK: {p.sdk or '-'}  OutputType: {p.output_type}",
+           *_platform_lines(p),
            f"Packages: {', '.join(f'{k} {v}'.strip() for k, v in sorted(p.packages.items())) or '-'}",
            f"Framework references: {', '.join(sorted(set(p.references))) or '-'}",
            f"Rule verdict: {c.verdict}; unknown to the rules: {', '.join(c.uncertain) or 'none'}", "", "Rule findings:"]
@@ -361,10 +398,9 @@ def evidence_pack(a, c, max_chars: int = 24000) -> str:
             if e.line and (e.file, e.line) not in seen:
                 seen.add((e.file, e.line))
                 out.append(f"--- {e.file} around line {e.line} ---\n{_snippet(a.repo.root / e.file, e.line)}")
-    for name in ("Program.cs", "Startup.cs", "Global.asax.cs"):
-        f = p.dir / name
+    for f in _entry_files(p):
         if f.exists():
-            out.append(f"--- {p.rel_dir}/{name} ---\n{f.read_text(errors='replace')[:4000]}")
+            out.append(f"--- {a.repo.rel(f)} ---\n{f.read_text(errors='replace')[:4000]}")
     readme = a.repo.readme
     if readme:
         out.append("--- application README (excerpt) ---\n" + readme[:5000])
@@ -401,7 +437,8 @@ def ai_review_component(a, c, model: str | None = None) -> dict:
     prompt = (evidence_pack(a, c) + "\n\nTask: decide whether this component can run in a Linux container on Kubernetes. "
               "Check each rule finding (is it real? is the code actually used on the component's main path, or only in an "
               "optional/legacy command?), classify every package listed as unknown, and add findings the rules missed. "
-              "For new findings give a regex over C# source that would detect the same issue elsewhere (or empty).")
+              f"For new findings give a regex over {LANG.get(c.project.kind_hint, 'source')} source that would detect the "
+              "same issue elsewhere (or empty).")
     res = ask_json(prompt, REVIEW_SCHEMA, model=model)
     res["model"] = model_name(model)
     return res
@@ -437,7 +474,9 @@ def _valid_regex(rx: str) -> bool:
     except re.error:
         return False
     # reject regexes that match almost anything
-    return not re.search(rx, "class Foo { void Bar() { var x = 1; } }")
+    return not any(re.search(rx, s) for s in (
+        "class Foo { void Bar() { var x = 1; } }", "public class Foo { public static void main(String[] a) { int x = 1; } }",
+        "const x = require('y'); function f() { return 1; } export default f;"))
 
 
 def learn_from_review(a, c, r: dict) -> None:
@@ -462,7 +501,7 @@ def learn_from_review(a, c, r: dict) -> None:
             continue
         rule = {"id": "ai-" + re.sub(r"[^a-z0-9]+", "-", f["title"].lower()).strip("-")[:50],
                 "source": "ai", "confidence": 0.7, "model": r.get("model"), "learned_from": f"{a.name}/{c.name}",
-                "learned_at": stamp, "applies_to": ["dotnet"], "when": {"code": rx},
+                "learned_at": stamp, "applies_to": [c.project.kind_hint or "dotnet"], "when": {"code": rx},
                 "severity": f["severity"], "category": "ai", "effort": 1, "title": f["title"], "why": f["why"],
                 "fix": f["fix"]}
         # only keep a rule that actually fires on the component it was learned from
@@ -494,15 +533,30 @@ DIAG_SCHEMA = {
     },
 }
 
-PLAN_HELP = """Build-plan patch keys you may use (JSON): base ("chiseled"|"full"), add_packages [apt packages for Ubuntu 24.04,
+PLAN_HELP = {
+    "dotnet": """Build-plan patch keys you may use (JSON): base ("chiseled"|"full"), add_packages [apt packages for Ubuntu 24.04,
 forces base full], env {NAME: value}, add_writable [absolute folders that must be writable], publish_args [extra
-`dotnet publish` args], remove_files [file names deleted in the build stage], strategy ("rollforward"|"retarget" to the supported runtime line).
-Never change application source code. Never run as root or disable security settings."""
+`dotnet publish` args], remove_files [file names deleted in the build stage], strategy ("rollforward"|"retarget" to the supported runtime line).""",
+    "java": """Build-plan patch keys you may use (JSON): java (LTS line to build and run on: 8, 11, 17, 21 or 25), env {NAME: value}
+(runtime environment, e.g. Spring relaxed-binding overrides), build_env {NAME: value} (build stage only), add_writable [absolute
+folders that must be writable], publish_args [extra Maven or Gradle arguments], remove_files [file names deleted in the build
+stage], maven_wrapper (true: build with the repository's mvnw).""",
+    "node": """Build-plan patch keys you may use (JSON): env {NAME: value} (runtime environment), build_env {NAME: value} (build stage
+only, e.g. NODE_OPTIONS), add_writable [absolute folders that must be writable], remove_files [file names deleted in the
+build stage], native_build (true: build on the full image with Python, make and g++), prune (false: keep devDependencies),
+lockfile (false: resolve dependencies again instead of installing from the lockfile).""",
+}
+PLAN_KEYS = {"dotnet": {"base", "add_packages", "env", "add_writable", "publish_args", "remove_files", "strategy"},
+             "java": {"java", "env", "build_env", "add_writable", "publish_args", "remove_files", "maven_wrapper"},
+             "node": {"env", "build_env", "add_writable", "remove_files", "native_build", "prune", "lockfile"}}
+PLAN_RULES = "Never change application source code. Never run as root or disable security settings."
 
 
 def diagnose_failure(a, c, plan: dict, stage: str, log_tail: str, model: str | None = None):
+    kind = c.project.kind_hint if c.project.kind_hint in PLAN_KEYS and c.role != "spa" else "dotnet"
     prompt = (f"A generated container for {a.name}/{c.name} failed at the {stage} stage.\n\nBuild plan:\n"
-              f"{json.dumps({k: v for k, v in plan.items() if k != 'applied'}, indent=1)}\n\n{PLAN_HELP}\n\n"
+              f"{json.dumps({k: v for k, v in plan.items() if k != 'applied'}, indent=1)}\n\n"
+              f"{PLAN_HELP.get(kind, PLAN_HELP['dotnet'])}\n{PLAN_RULES}\n\n"
               f"Log tail:\n{log_tail[-8000:]}\n\nDiagnose the failure. outcome=retry if a plan patch can fix it, "
               "external if the container itself is fine and only an external service/config is missing, platform if "
               "a Windows-only API/library is needed, code if the application code must change.")
@@ -511,8 +565,7 @@ def diagnose_failure(a, c, plan: dict, stage: str, log_tail: str, model: str | N
         fix = json.loads(r.get("fix_json") or "{}")
         if not isinstance(fix, dict):
             fix = {}
-        allowed = {"base", "add_packages", "env", "add_writable", "publish_args", "remove_files", "strategy"}
-        fix = {k: v for k, v in fix.items() if k in allowed}
+        fix = {k: v for k, v in fix.items() if k in PLAN_KEYS[kind]}
         if not re.search(r["match"], log_tail, re.I | re.M):
             r["match"] = re.escape(log_tail.strip().splitlines()[-1][:120]) if log_tail.strip() else "$^"
     except Exception:  # noqa: BLE001
@@ -541,7 +594,8 @@ APP_SCHEMA = {
     },
 }
 RATING_HELP = ("Ratings: A lift and shift (all server components run in Linux containers with configuration only); "
-               "B minor refactoring; C major refactoring (framework port, e.g. .NET Framework to .NET 8); "
+               "B minor refactoring; C major refactoring (framework port, e.g. .NET Framework to .NET 8, or a Java EE "
+               "server application to an embedded server); "
                "D partial (some server components cannot run in Linux containers and must stay on Windows, at least a "
                "quarter of them can); E not feasible (three quarters or more of the server components cannot, or there is "
                "no server component). Desktop clients, test tools and database-tier code (SQL CLR, SSIS) do not count "
