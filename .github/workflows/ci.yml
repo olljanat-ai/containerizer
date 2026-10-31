@@ -43,7 +43,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt -r requirements-sql.txt pytest
-      - run: python -m pytest -q tests/test_sqlstore.py tests/test_admin.py tests/test_roles.py tests/test_trends.py tests/test_sandbox.py tests/test_worker.py -rs
+      - run: python -m pytest -q tests/test_sqlstore.py tests/test_admin.py tests/test_roles.py tests/test_trends.py tests/test_sandbox.py tests/test_worker.py tests/test_sbom.py tests/test_devdb.py -rs
       - name: Image builds and the UI serves results
         run: |
           docker build -f results/Dockerfile -t containerizer-results .
@@ -58,6 +58,7 @@ jobs:
           for i in $(seq 30); do curl -fsS http://127.0.0.1:8080/healthz && break; sleep 1; done
           curl -fsS http://127.0.0.1:8080/ | grep -q ci-demo || { docker logs web; exit 1; }
           curl -fsS http://127.0.0.1:8080/trends | grep -q ci-demo || { docker logs web; exit 1; }
+          curl -fsS http://127.0.0.1:8080/sbom | grep -q "Components with an SBOM" || { docker logs web; exit 1; }
 
   # Sandbox verification against a real Kubernetes cluster (tests/test_sandbox_cluster.py): rollouts, crash
   # loop, image pull failure, CronJob, the generated least-privilege RBAC and a short-lived SA token.
@@ -145,7 +146,9 @@ jobs:
         with:
           path: challenge/scenarios/expense-claims
           base-ref: HEAD~1
-          max-rating: A
+          # B: ExpenseClaims.Jobs loads its bank client certificate from LocalMachine\My, which
+          # does not exist on Linux (cert-store-localmachine-code), so a small code change is needed
+          max-rating: B
           comment: "false"
           sarif-file: good.sarif
       - name: Assert
@@ -153,7 +156,7 @@ jobs:
           echo "bad: outcome=${{ steps.bad.outcome }} failed=${{ steps.bad.outputs.failed }} rating=${{ steps.bad.outputs.rating }}"
           echo "good: outcome=${{ steps.good.outcome }} failed=${{ steps.good.outputs.failed }} rating=${{ steps.good.outputs.rating }}"
           test "${{ steps.bad.outcome }}" = failure && test "${{ steps.bad.outputs.failed }}" = true
-          test "${{ steps.good.outputs.failed }}" = false && test "${{ steps.good.outputs.rating }}" = A
+          test "${{ steps.good.outputs.failed }}" = false && test "${{ steps.good.outputs.rating }}" = B
           python3 -c "import json; r=json.load(open('bad.sarif'))['runs'][0]['results']; assert any(x.get('baselineState')=='new' for x in r), r"
 
   # One-shot assessment, the main way the tool is used: assess, generate, then build and run every
@@ -183,5 +186,5 @@ jobs:
           ls -R "$REPORT" | head -100
           test -f "$REPORT/portfolio.md" && test -d "$REPORT/parts-catalog"
           python3 -c "import json,sys; a={x['name']: x for x in json.load(open(sys.argv[1]))}; v=a['parts-catalog'].get('verification') or []; print(v); assert any(r['status'].startswith('ok') for r in v)" "$REPORT/assessment.json"
-          test "${{ steps.assess.outputs.rating }}" = D        # worst of A, A and D
+          test "${{ steps.assess.outputs.rating }}" = D        # worst of B, B and D
           test "${{ steps.assess.outputs.unconfirmed }}" = 0

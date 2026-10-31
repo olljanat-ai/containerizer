@@ -125,7 +125,7 @@ def load_rules(dirs: list[Path] | None = None) -> list[Rule]:
         for f in sorted(d.glob("*.yaml")):
             data = yaml.safe_load(f.read_text()) or {}
             for item in data.get("rules", []):
-                r = Rule.from_dict(item, file=str(f.relative_to(RULES_DIR.parent)))
+                r = Rule.from_dict(item, file=str(f.relative_to(RULES_DIR.parent)) if f.is_relative_to(RULES_DIR.parent) else str(f))
                 if r.id in seen:
                     # later (learned) definitions override curated ones with the same id
                     rules.remove(seen[r.id])

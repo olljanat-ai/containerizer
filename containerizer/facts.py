@@ -81,8 +81,15 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
         if names:
             facts["kestrel_endpoints"] = sorted(names)
         folders, secrets = {}, []
-        for key, val in _flatten(cfg):
+        flat = list(_flatten(cfg))
+        # objects that describe an HTTP call ({"Service": "Catalog", "Path": "api/search/reindex"}):
+        # their Path is a URL route, not a folder
+        routes = {k.rsplit(":", 1)[0] for k, _ in flat if ":" in k and re.fullmatch(
+            r"(Service|Url|Uri|BaseUrl|Endpoint|Method|HttpMethod|Route|Cron|Verb)", k.rsplit(":", 1)[1], re.I)}
+        for key, val in flat:
             leaf = key.split(":")[-1]
+            if ":" in key and key.rsplit(":", 1)[0] in routes or isinstance(val, str) and re.match(r"/?api/", val):
+                continue
             if isinstance(val, str) and FOLDER_KEY.search(leaf) and not val.startswith(("http", "~/")) \
                     and ("/" in val or "\\" in val or re.fullmatch(r"[\w\-. ]+", val or "")) and val \
                     and not re.search(r"\.(dll|exe|json|xml|pfx|cer|pem)$", val, re.I) \

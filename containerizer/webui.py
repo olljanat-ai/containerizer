@@ -78,6 +78,8 @@ def load_application(conn, app_id: int) -> dict | None:
     app["history"] = _rows(conn, "SELECT TOP (20) AssessedAt, Rating, Score, EffortDays FROM cz.ApplicationAssessment "
                                  "WHERE ApplicationId = %s ORDER BY AssessedAt DESC, AssessmentId DESC", (app_id,))
     app["migrations"] = load_migrations(conn, app_id)
+    from .sbomui import load_app_sboms
+    app["sboms"] = load_app_sboms(conn, app_id)
     return app
 
 
@@ -161,6 +163,10 @@ def _trends_href(bu) -> str:
     return "/trends" + (f"?bu={quote(str(bu))}" if bu is not None else "")
 
 
+def _sbom_href(bu) -> str:
+    return "/sbom" + (f"?bu={quote(str(bu))}" if bu is not None else "")
+
+
 def render_overview(data: dict, bu_filter: str | None = None, nav: str = "") -> str:
     apps = data["apps"]
     all_apps = apps
@@ -234,7 +240,8 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "") -> 
     return page("Containerization readiness", f"""{_nav(nav)}
 <header><h1>Containerization readiness</h1>
 <p class='muted'>How ready our applications are to run in Linux containers{f' · last assessed {_date(last)}' if last else ''}
-{f" · <a href='{e(_trends_href(bu_filter))}'>Trends over time</a>" if all_apps else ''}</p></header>
+{f" · <a href='{e(_trends_href(bu_filter))}'>Trends over time</a>" if all_apps else ''}
+{f" · <a href='{e(_sbom_href(bu_filter))}'>Dependencies and licences</a>" if all_apps else ''}</p></header>
 {empty}<nav class='chips'>{''.join(chips) if all_apps else ''}</nav>
 <div class='tiles'>{tiles if all_apps else ''}</div>
 {f"<div class='overall'>{segmented(c, total, 'Ratings of all applications shown')}{legend(c)}</div>" if total else ''}
@@ -287,6 +294,7 @@ def render_application(app: dict, nav: str = "") -> str:
                        for t, o in obs)
 
     migs = {m["ComponentId"]: m for m in app.get("migrations") or []}
+    sboms = app.get("sboms") or {}
     comp_rows = "".join(
         f"<tr><td><a href='#c{int(c['ComponentId'])}'>{e(c['ComponentName'])}</a>"
         f"<div class='muted small'>{e(c['ProjectPath'])}</div></td>"
@@ -295,7 +303,9 @@ def render_application(app: dict, nav: str = "") -> str:
         f"<td class='num'>{_num(c['EffortDays'], 1)}</td>"
         f"<td>{_verify(c)}</td>"
         + (f"<td>{_sandbox(sandbox.get(c['ComponentId']))}</td>" if sandbox else "")
-        + f"<td>{_plan_cell(app['ApplicationId'], c, migs.get(c['ComponentId']))}</td></tr>"
+        + f"<td>{_plan_cell(app['ApplicationId'], c, migs.get(c['ComponentId']))}</td>"
+        + (f"<td>{_sbom_cell(app['ApplicationId'], c['ComponentId'], sboms.get(c['ComponentId']))}</td>" if sboms else "")
+        + "</tr>"
         for c in app["components"])
 
     details = []
@@ -339,7 +349,7 @@ def render_application(app: dict, nav: str = "") -> str:
 <div class='meta'>{owner}{src}</div>
 {f"<h2>Main obstacles</h2><ul class='obstacles'>{obs_html}</ul>" if obs_html else ''}
 <h2>Components</h2>
-<table><thead><tr><th>Component</th><th>What it is</th><th>Verdict</th><th class='num'>Effort (days)</th><th>Build and run</th>{"<th>Sandbox cluster</th>" if sandbox else ""}<th>Migration</th></tr></thead>
+<table><thead><tr><th>Component</th><th>What it is</th><th>Verdict</th><th class='num'>Effort (days)</th><th>Build and run</th>{"<th>Sandbox cluster</th>" if sandbox else ""}<th>Migration</th>{"<th>Packages</th>" if sboms else ""}</tr></thead>
 <tbody>{comp_rows}</tbody></table>
 <h2>What needs to change, and why</h2>{''.join(details)}
 <h2>History</h2><p class='muted small'><a href='/trends'>Trends of all applications</a></p><table class='narrow'><thead><tr><th>Assessed</th><th>Rating</th><th class='num'>Readiness</th>
@@ -410,6 +420,11 @@ def _migration(app_id, m: dict | None) -> str:
         out.append("<p class='muted'>No code change inside this component makes it run in a Linux container, so there "
                    "is no agent prompt.</p>")
     return "".join(out) + "</section>"
+
+
+def _sbom_cell(app_id, comp_id, s) -> str:
+    from .sbomui import app_cell
+    return app_cell(app_id, comp_id, s)
 
 
 def _verify(c: dict) -> str:
@@ -621,6 +636,12 @@ def _keep_query(path: str, q: dict) -> str:
         from .trends import parse_query
         rng, bu, product = parse_query(q)
         return urlencode([(k, v) for k, v in (("range", rng), ("bu", bu), ("product", product)) if v is not None])
+    if path == "/sbom":
+        from .sbomui import parse_query
+        bu, product = parse_query(q)
+        return urlencode([(k, v) for k, v in (("bu", bu), ("product", product)) if v is not None])
+    if re.fullmatch(r"/app/\d{1,9}/component/\d{1,9}", path):
+        return "show=attention" if q.get("show", [""])[0] == "attention" else ""
     if path == "/":
         bu = q.get("bu", [None])[0]
         return f"bu={bu}" if bu and re.fullmatch(r"\d{1,9}|none", bu) else ""
@@ -658,6 +679,13 @@ def make_handler(connect, admin=None):
         def _admin(self, method: str, head: bool = False):
             u = urlsplit(self.path)
             body = b""
+            if method == "POST" and admin.is_upload(u.path):
+                # dev database backups: streamed to disk by admin_devdb.py, never held in memory
+                self.close_connection = True               # the body may be left unread on a refusal
+                self.connection.settimeout(120)            # a stalled upload does not hold a thread forever
+                n = int(self.headers.get("Content-Length") or 0)
+                r = admin.handle_upload(u.path, self.headers, self.rfile, n)
+                return self._send(r.status, r.body, r.ctype, head, r.headers, forms=True)
             if method == "POST":
                 n = int(self.headers.get("Content-Length") or 0)
                 if n > 64 * 1024:
@@ -700,7 +728,8 @@ def make_handler(connect, admin=None):
             u = urlsplit(self.path)
             try:
                 if u.path == "/static/app.css":
-                    return self._send(200, CSS, "text/css; charset=utf-8", head)
+                    from .sbomui import CSS as SBOM_CSS
+                    return self._send(200, CSS + SBOM_CSS, "text/css; charset=utf-8", head)
                 if u.path == "/static/app.js":
                     return self._send(200, JS, "text/javascript; charset=utf-8", head)
                 if u.path == "/healthz":
@@ -712,14 +741,15 @@ def make_handler(connect, admin=None):
                 nav = admin.nav(self.headers) if admin else ""
                 m = re.fullmatch(r"/app/(\d{1,9})", u.path)
                 pm = re.fullmatch(r"/app/(\d{1,9})/component/(\d{1,9})/agent-prompt\.md", u.path)
-                if admin and (u.path in ("/", "/trends") or m or pm):    # sign-in first when CONTAINERIZER_VIEWERS is set
+                cm = re.fullmatch(r"/app/(\d{1,9})/component/(\d{1,9})(/sbom\.cdx\.json)?", u.path)
+                if admin and (u.path in ("/", "/trends", "/sbom") or m or pm or cm):    # sign-in first when CONTAINERIZER_VIEWERS is set
                     keep = _keep_query(u.path, parse_qs(u.query))
                     stop, s = admin.gate(self.headers, u.path, keep)
                     if stop:
                         return self._send(stop.status, stop.body, stop.ctype, head, stop.headers, forms=True)
                     if s and not head and admin.viewers_required:
                         admin.log_access(s.user, s.name, "view", u.path + ("?" + keep if keep else ""),
-                                         int((m or pm)[1]) if (m or pm) else None, self.client_address[0])
+                                         int((m or pm or cm)[1]) if (m or pm or cm) else None, self.client_address[0])
                 if pm:
                     conn = connect()
                     try:
@@ -729,6 +759,29 @@ def make_handler(connect, admin=None):
                     if not rows or not rows[0].get("AgentPrompt"):
                         return self._send(404, "No agent prompt for this component.\n", "text/plain; charset=utf-8", head)
                     return self._send(200, rows[0]["AgentPrompt"], "text/plain; charset=utf-8", head)
+                if cm or u.path == "/sbom":
+                    from . import sbomui
+                    conn = connect()
+                    try:
+                        if u.path == "/sbom":
+                            bu, product = sbomui.parse_query(parse_qs(u.query))
+                            return self._send(200, sbomui.render_portfolio(sbomui.load_portfolio(conn, bu, product), bu,
+                                                                           product, nav), head=head, forms=bool(nav))
+                        if cm[3]:
+                            doc = sbomui.load_document(conn, int(cm[1]), int(cm[2]))
+                            if doc is None:
+                                return self._send(404, "No SBOM for this component.\n", "text/plain; charset=utf-8", head)
+                            name = re.sub(r"[^A-Za-z0-9._-]", "_", f"app{cm[1]}-component{cm[2]}") + ".cdx.json"
+                            return self._send(200, doc, "application/vnd.cyclonedx+json", head,
+                                              [("Content-Disposition", f'attachment; filename="{name}"')])
+                        comp = sbomui.load_component(conn, int(cm[1]), int(cm[2]))
+                        if comp is None:
+                            return self._send(404, page("Not found", "<h1>Component not found</h1><p><a href='/'>Back</a></p>"),
+                                              head=head)
+                        show = "attention" if parse_qs(u.query).get("show", [""])[0] == "attention" else "all"
+                        return self._send(200, sbomui.render_component(comp, show, nav), head=head, forms=bool(nav))
+                    finally:
+                        conn.close()
                 if u.path == "/trends":
                     from . import trends
                     rng, bu, product = trends.parse_query(parse_qs(u.query))
