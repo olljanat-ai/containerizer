@@ -1,7 +1,7 @@
 """Web UI over the results database: business unit -> product -> application -> components.
 
-`python -m containerizer web --sql "<reader connection string>"`. Standard library HTTP server, no
-JavaScript: every page is rendered on the server from the v* views with parameterised queries, all
+`python -m containerizer web --sql "<reader connection string>"`. Standard library HTTP server; every
+page is rendered on the server (the only script is the optional copy button of the AI agent prompt) from the v* views with parameterised queries, all
 text is HTML-escaped, and responses carry a strict Content-Security-Policy. The results pages are
 read-only and need no sign-in; the admin pages (admin.py: mapping, products, business units, change
 history) appear when OpenID Connect sign-in is configured (docs/results-database.md#admin-pages).
@@ -74,7 +74,24 @@ def load_application(conn, app_id: int) -> dict | None:
                             (app_id,))
     app["history"] = _rows(conn, "SELECT TOP (20) AssessedAt, Rating, Score, EffortDays FROM cz.ApplicationAssessment "
                                  "WHERE ApplicationId = %s ORDER BY AssessedAt DESC, AssessmentId DESC", (app_id,))
+    app["migrations"] = load_migrations(conn, app_id)
     return app
+
+
+def load_migrations(conn, app_id: int, component_id: int | None = None) -> list[dict]:
+    """Migration plans and AI agent prompts of the latest assessment (empty before `db init` added them)."""
+    sql = ("SELECT ComponentId, ComponentName, Outcome, EffortDays, ItemCount, PlanJson, AgentPrompt "
+           "FROM cz.vComponentMigrationLatest WHERE ApplicationId = %s")
+    params: tuple = (app_id,)
+    if component_id is not None:
+        sql += " AND ComponentId = %s"
+        params += (component_id,)
+    try:
+        return _rows(conn, sql, params)
+    except Exception as ex:       # schema not upgraded yet: show the page without plans
+        print(f"warning: migration plans not available ({type(ex).__name__}); run `containerizer db init`",
+              file=sys.stderr)
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -265,13 +282,15 @@ def render_application(app: dict, nav: str = "") -> str:
                        f"{' <span class=muted>(' + e(', '.join(o['comps'])) + ')</span>' if o['comps'] else ''}</li>"
                        for t, o in obs)
 
+    migs = {m["ComponentId"]: m for m in app.get("migrations") or []}
     comp_rows = "".join(
         f"<tr><td><a href='#c{int(c['ComponentId'])}'>{e(c['ComponentName'])}</a>"
         f"<div class='muted small'>{e(c['ProjectPath'])}</div></td>"
         f"<td>{e(ROLE_TEXT.get(c['Role'], c['Role'].title()))}</td>"
         f"<td><span class='sev s-{e(c['Verdict'])}'>{e(VERDICT_LABEL.get(c['Verdict'], c['Verdict']))}</span></td>"
         f"<td class='num'>{_num(c['EffortDays'], 1)}</td>"
-        f"<td>{_verify(c)}</td></tr>" for c in app["components"])
+        f"<td>{_verify(c)}</td><td>{_plan_cell(app['ApplicationId'], c, migs.get(c['ComponentId']))}</td></tr>"
+        for c in app["components"])
 
     details = []
     for c in app["components"]:
@@ -281,7 +300,8 @@ def render_application(app: dict, nav: str = "") -> str:
                        f"<summary><b>{e(c['ComponentName'])}</b> · {e(VERDICT_LABEL.get(c['Verdict'], c['Verdict']))}"
                        f" <span class='muted'>({len(fs)} item{'s' if len(fs) != 1 else ''})</span></summary>"
                        f"<div class='muted small'>{e(c['VerdictText'])}{'; a Windows container is a workable stop-gap' if c['WindowsContainerOk'] and c['Verdict'] in ('rewrite', 'blocker') else ''}"
-                       f"{'; targets ' + e(c['TargetFramework']) if c['TargetFramework'] else ''}</div>{items}</details>")
+                       f"{'; targets ' + e(c['TargetFramework']) if c['TargetFramework'] else ''}</div>{items}"
+                       f"{_migration(app['ApplicationId'], migs.get(c['ComponentId']))}</details>")
     repo = by_comp.get(None, [])
     if repo:
         details.append("<details><summary><b>Repository</b></summary>" + "".join(_finding(f) for f in repo) + "</details>")
@@ -312,12 +332,77 @@ def render_application(app: dict, nav: str = "") -> str:
 <div class='meta'>{owner}{src}</div>
 {f"<h2>Main obstacles</h2><ul class='obstacles'>{obs_html}</ul>" if obs_html else ''}
 <h2>Components</h2>
-<table><thead><tr><th>Component</th><th>What it is</th><th>Verdict</th><th class='num'>Effort (days)</th><th>Build and run</th></tr></thead>
+<table><thead><tr><th>Component</th><th>What it is</th><th>Verdict</th><th class='num'>Effort (days)</th><th>Build and run</th><th>Migration</th></tr></thead>
 <tbody>{comp_rows}</tbody></table>
 <h2>What needs to change, and why</h2>{''.join(details)}
 <h2>History</h2><p class='muted small'><a href='/trends'>Trends of all applications</a></p><table class='narrow'><thead><tr><th>Assessed</th><th>Rating</th><th class='num'>Readiness</th>
 <th class='num'>Effort (days)</th></tr></thead><tbody>{hist}</tbody></table>
 <footer>{legend()}</footer>""")
+
+
+OUTCOME_TEXT = {"linux-container": "Can move to a Linux container",
+                "partial": "Can move once the Windows-only parts are isolated",
+                "stays-on-windows": "Stays on Windows"}
+KIND_TEXT = {"replace": "Replace", "port": "Port", "externalize": "Move out of the process", "isolate": "Keep on Windows"}
+
+
+def _prompt_href(app_id, comp_id) -> str:
+    return f"/app/{int(app_id)}/component/{int(comp_id)}/agent-prompt.md"
+
+
+def _plan_cell(app_id, c: dict, m: dict | None) -> str:
+    if not m:
+        return "<span class='muted'>-</span>"
+    cid = int(c["ComponentId"])
+    out = f"<a href='#m{cid}'>{int(m['ItemCount'])} step{'s' if m['ItemCount'] != 1 else ''}</a>"
+    if m.get("AgentPrompt"):
+        out += f" · <a href='#p{cid}'>AI agent prompt</a>"
+    return out
+
+
+def _migration(app_id, m: dict | None) -> str:
+    """Migration assistant of one component: suggested replacements and the AI coding agent prompt."""
+    if not m:
+        return ""
+    cid = int(m["ComponentId"])
+    try:
+        plan = json.loads(m["PlanJson"] or "{}")
+    except ValueError:
+        plan = {}
+    rows = []
+    for it in plan.get("items") or []:
+        refs = [u for u in it.get("refs") or [] if isinstance(u, str) and re.match(r"https?://[^\s'\"<>]+$", u)][:3]
+        pk = it.get("packages") or {}
+        extra = []
+        if pk.get("add"):
+            extra.append("add " + ", ".join(f"<code>{e(str(p))}</code>" for p in pk["add"]))
+        if pk.get("remove"):
+            extra.append("remove " + ", ".join(f"<code>{e(str(p))}</code>" for p in pk["remove"]))
+        rows.append(
+            f"<tr><td>{e(KIND_TEXT.get(it.get('kind'), str(it.get('kind'))))}</td><td>{e(_ws(it.get('replace')))}"
+            f"<div class='muted small'>{e(', '.join(_ws(f.get('title')) for f in it.get('findings') or []))}</div></td>"
+            f"<td>{e(_ws(it.get('with')))}"
+            + (f"<div class='small'>{'; '.join(extra)}</div>" if extra else "")
+            + ("<div class='small'>" + ", ".join(f"<a href='{e(u)}' rel='noopener noreferrer'>{e(_ref_label(u))}</a>"
+                                                 for u in refs) + "</div>" if refs else "")
+            + f"</td><td class='num'>{_num(it.get('effort_days'), 1)}</td></tr>")
+    out = [f"<section class='migration' id='m{cid}'><h3>Migration assistant "
+           f"<span class='muted small'>{e(OUTCOME_TEXT.get(m['Outcome'], m['Outcome']))} · about "
+           f"{_num(m['EffortDays'], 1)} person-days</span></h3>"]
+    if rows:
+        out.append("<table><thead><tr><th>Action</th><th>Replace</th><th>With</th><th class='num'>Effort (days)</th>"
+                   "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>")
+    if m.get("AgentPrompt"):
+        out.append(f"<div class='prompt' id='p{cid}'><div class='prompt-head'><b>Prompt for an AI coding agent</b>"
+                   f"<span><button type='button' class='copy' data-copy='pt{cid}'>Copy prompt</button> "
+                   f"<a href='{_prompt_href(app_id, cid)}'>Open as text</a></span></div>"
+                   f"<p class='muted small'>Give this to Claude Code, GitHub Copilot or another coding agent working in "
+                   f"the repository: it lists the findings, the replacements, the constraints and how to verify.</p>"
+                   f"<textarea id='pt{cid}' readonly rows='14' spellcheck='false'>{e(m['AgentPrompt'])}</textarea></div>")
+    else:
+        out.append("<p class='muted'>No code change inside this component makes it run in a Linux container, so there "
+                   "is no agent prompt.</p>")
+    return "".join(out) + "</section>"
 
 
 def _verify(c: dict) -> str:
@@ -358,7 +443,7 @@ def page(title: str, body: str) -> str:
     return (f"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'><title>{e(title)}</title>"
             f"<link rel='stylesheet' href='/static/app.css'><link rel='icon' href='data:,'></head>"
-            f"<body><main>{body}</main></body></html>")
+            f"<body><main>{body}</main><script src='/static/app.js'></script></body></html>")
 
 
 CSS = """
@@ -427,10 +512,31 @@ font-size:11px;font-weight:700;border-radius:4px;color:#fff}.cell.rB,.cell.rC{co
 @media (prefers-color-scheme:dark){.good{color:#4fd14f}.bad{color:#f07a7a}}
 .chips+.chips{margin-top:8px}
 @media (forced-colors:active){.bar,.badge,.key,.cell,.chart{forced-color-adjust:none;border:1px solid CanvasText}}
+.migration{border-top:1px solid var(--line);margin-top:12px;padding-top:4px}.migration table{margin:6px 0}
+.prompt{margin-top:12px}.prompt-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.prompt p{margin:4px 0}.prompt textarea{font:12.5px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;
+white-space:pre-wrap;overflow:auto}button.copy{padding:3px 12px;font-size:13px}
+"""
+
+# The only script: the "Copy prompt" button of the migration assistant (progressive enhancement; without it the
+# prompt is still selectable in its read-only text box and available as plain text).
+JS = """document.addEventListener('click', function (ev) {
+  var b = ev.target.closest && ev.target.closest('button[data-copy]');
+  if (!b) return;
+  var t = document.getElementById(b.getAttribute('data-copy'));
+  if (!t) return;
+  var done = function () { b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy prompt'; }, 2000); };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(t.value).then(done, function () { t.select(); });
+  } else {
+    t.select();
+    try { if (document.execCommand('copy')) done(); } catch (e) { /* selected for manual copy */ }
+  }
+});
 """
 
 HEADERS = {
-    "Content-Security-Policy": "default-src 'none'; style-src 'self'; img-src 'self' data:; base-uri 'none'; "
+    "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; "
                                "form-action 'none'; frame-ancestors 'none'",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
@@ -528,6 +634,8 @@ def make_handler(connect, admin=None):
             try:
                 if u.path == "/static/app.css":
                     return self._send(200, CSS, "text/css; charset=utf-8", head)
+                if u.path == "/static/app.js":
+                    return self._send(200, JS, "text/javascript; charset=utf-8", head)
                 if u.path == "/healthz":
                     return self._send(200, "ok", "text/plain; charset=utf-8", head)
                 if admin and admin.api and admin.api.handles(u.path):
@@ -536,14 +644,24 @@ def make_handler(connect, admin=None):
                     return self._admin("GET", head)
                 nav = admin.nav(self.headers) if admin else ""
                 m = re.fullmatch(r"/app/(\d{1,9})", u.path)
-                if admin and (u.path in ("/", "/trends") or m):    # sign-in first when CONTAINERIZER_VIEWERS is set
+                pm = re.fullmatch(r"/app/(\d{1,9})/component/(\d{1,9})/agent-prompt\.md", u.path)
+                if admin and (u.path in ("/", "/trends") or m or pm):    # sign-in first when CONTAINERIZER_VIEWERS is set
                     keep = _keep_query(u.path, parse_qs(u.query))
                     stop, s = admin.gate(self.headers, u.path, keep)
                     if stop:
                         return self._send(stop.status, stop.body, stop.ctype, head, stop.headers, forms=True)
                     if s and not head and admin.viewers_required:
                         admin.log_access(s.user, s.name, "view", u.path + ("?" + keep if keep else ""),
-                                         int(m[1]) if m else None, self.client_address[0])
+                                         int((m or pm)[1]) if (m or pm) else None, self.client_address[0])
+                if pm:
+                    conn = connect()
+                    try:
+                        rows = load_migrations(conn, int(pm[1]), int(pm[2]))
+                    finally:
+                        conn.close()
+                    if not rows or not rows[0].get("AgentPrompt"):
+                        return self._send(404, "No agent prompt for this component.\n", "text/plain; charset=utf-8", head)
+                    return self._send(200, rows[0]["AgentPrompt"], "text/plain; charset=utf-8", head)
                 if u.path == "/trends":
                     from . import trends
                     rng, bu, product = trends.parse_query(parse_qs(u.query))

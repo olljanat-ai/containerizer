@@ -346,7 +346,7 @@ migrations:
 
   # ------------------------------------------------------------------ platform APIs
   - id: replace-system-drawing
-    for: [system-drawing-core, winforms-in-library, pkg-mschart, pkg-qrcoder-gdi]
+    for: [system-drawing-core, pkg-mschart, pkg-qrcoder-gdi]
     kind: replace
     replace: System.Drawing (GDI+)
     with: SkiaSharp or ImageSharp for images, QuestPDF for documents
@@ -362,6 +362,24 @@ migrations:
     refs:
       - https://github.com/mono/SkiaSharp
       - https://github.com/SixLabors/ImageSharp
+
+  - id: replace-winforms-in-server
+    for: [winforms-in-library]
+    kind: replace
+    replace: WinForms/WPF APIs used in server code (rendering, clipboard, message boxes)
+    with: server-side libraries (QuestPDF, SkiaSharp) and plain .NET types
+    effort: 3
+    packages:
+      add: [QuestPDF]
+    steps:
+      - Find what the server code uses the UI framework for; usually rendering charts, images or printable documents, sometimes a helper type such as Color or a message box.
+      - Render documents with QuestPDF and images with SkiaSharp instead of drawing on controls or forms.
+      - Remove UI calls that only make sense with a desktop session (MessageBox, Clipboard) and report the condition through logging or an API error instead.
+      - Drop UseWindowsForms/UseWPF and the -windows target framework once nothing uses them.
+    verify:
+      - The rendered output from the container matches the old output for sample inputs.
+    refs:
+      - https://github.com/QuestPDF/QuestPDF
 
   - id: replace-office-automation
     for: [com-office-automation, pkg-netoffice, pkg-office-interop-package]
