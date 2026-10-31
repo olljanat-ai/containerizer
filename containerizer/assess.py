@@ -23,7 +23,7 @@ VERDICT_TEXT = {
     "blocker": "Not feasible in a Linux container",
 }
 APP_RATINGS = {
-    "A": "Lift and shift - containers with configuration only",
+    "A": "Lift and shift - stateless containers with configuration only",
     "B": "Minor refactoring - small code changes",
     "C": "Major refactoring - framework port needed",
     "D": "Partial - some components must stay on Windows",
@@ -84,6 +84,15 @@ class Component:
         return max((f.severity for f in self.findings), key=lambda s: SEV_RANK[s])
 
     @property
+    def state_findings(self) -> list[Finding]:
+        """Findings that say the component keeps its own data (on local disk or in memory)."""
+        return [f for f in self.findings if f.rule.state and not f.dormant]
+
+    @property
+    def stateless(self) -> bool:
+        return not self.state_findings
+
+    @property
     def effort(self) -> float:
         seen, total = set(), 0.0
         for f in self.findings:
@@ -122,7 +131,9 @@ class Component:
                 "tfm": self.project.tfms, "verdict": self.verdict, "verdict_text": VERDICT_TEXT[self.verdict],
                 "score": self.score, "effort_days": self.effort, "windows_container_ok": self.windows_container_ok,
                 "confidence": round(self.confidence, 2), "uncertain": self.uncertain,
-                "rule_verdict": self.rule_verdict, "ai": self.ai,
+                "rule_verdict": self.rule_verdict, "ai": self.ai, "stateless": self.stateless,
+                "state": [{"id": f.rule.id, "title": f.rule.title, "state": f.rule.state}
+                          for f in {f.rule.id: f for f in self.state_findings}.values()],
                 "facts": self.facts, "findings": [f.to_dict() for f in sorted(
                     self.findings, key=lambda f: -SEV_RANK[f.severity])]}
 
@@ -151,7 +162,15 @@ class AppAssessment:
         if blocked:
             return "E" if len(blocked) * 4 >= len(server) * 3 else "D"
         worst = max((c.verdict for c in server), key=lambda s: SEV_RANK[s])
-        return {"info": "A", "config": "A", "refactor": "B", "rewrite": "C"}[worst]
+        rating = {"info": "A", "config": "A", "refactor": "B", "rewrite": "C"}[worst]
+        # A means stateless: data only in external services (SQL, Redis, blob storage, queues),
+        # none on a component's own disk or in its memory, so replicas can come and go
+        if rating == "A" and any(not c.stateless for c in server):
+            return "B"
+        return rating
+
+    def stateful(self) -> list[Component]:
+        return [c for c in self.server() if not c.stateless]
 
     @property
     def score(self) -> int:
@@ -185,6 +204,11 @@ class AppAssessment:
             parts.append(f"{len(by['rewrite'])} need a port to .NET 8 or a rewrite")
         if by.get("blocker"):
             parts.append(f"{len(by['blocker'])} cannot run in Linux containers ({', '.join(by['blocker'])})")
+        stateful = self.stateful()
+        if stateful:
+            what = "; ".join(f"{c.name}: " + ", ".join(dict.fromkeys(f.rule.title for f in c.state_findings))
+                             for c in stateful)
+            parts.append(f"{len(stateful)} keep their own data, so the app is not stateless ({what})")
         clients = [c.name for c in self.components if c.tier == "client"]
         if clients:
             parts.append(f"desktop clients stay on PCs ({', '.join(clients)})")
@@ -208,7 +232,7 @@ class AppAssessment:
 
     def to_dict(self) -> dict:
         return {"name": self.name, "rating": self.rating, "rating_text": APP_RATINGS[self.rating],
-                "score": self.score, "effort_days": self.effort, "confidence": self.confidence,
+                "stateless": not self.stateful(), "score": self.score, "effort_days": self.effort, "confidence": self.confidence,
                 "summary": self.summary(), "top_blockers": self.top_blockers(),
                 "components": [c.to_dict() for c in self.components],
                 "libraries": [{"name": c.name, "project": c.project.rel, "tfm": c.project.tfms,

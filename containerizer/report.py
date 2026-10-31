@@ -36,7 +36,9 @@ def refs_md(refs: list[str]) -> str:
 def migration_markdown(a: AppAssessment) -> str:
     L = [f"# {a.name}: containerization assessment", "",
          f"**Rating {a.rating}** - {APP_RATINGS[a.rating]}  ",
-         f"Readiness score {a.score}/100 · estimated effort {a.effort} person-days · confidence {a.confidence}", "",
+         f"Readiness score {a.score}/100 · estimated effort {a.effort} person-days · confidence {a.confidence}  ",
+         "Stateless: " + ("yes" if not a.stateful() else "no - " + "; ".join(
+             f"{c.name}: {', '.join(sorted({f.rule.title for f in c.state_findings}))}" for c in a.stateful())), "",
          a.summary(), ""]
     tb = a.top_blockers()
     if tb:

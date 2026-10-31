@@ -684,31 +684,119 @@ rules:
     refs:
       - https://kubernetes.io/docs/concepts/storage/volumes/
 
+  # Stateful unless the repository also wires up a server database: then SQLite is one of the
+  # selectable providers (CleanArchitecture: SQLite, SQL Server or PostgreSQL by configuration)
+  # and the app can run stateless; that case is sqlite-optional (info). The check looks at the
+  # project, the projects it references and the rest of the repository, because the provider
+  # choice often lives in another project than the SQLite package.
   - id: sqlite-local
     when:
-      package: Microsoft\.EntityFrameworkCore\.Sqlite|Microsoft\.Data\.Sqlite|System\.Data\.SQLite.*|LiteDB|dbup-sqlite
+      all:
+        - package: &sqlite_pkgs 'Microsoft\.EntityFrameworkCore\.Sqlite(\.Core)?|Microsoft\.Data\.Sqlite(\.Core)?|System\.Data\.SQLite.*|LiteDB(\.Async)?|dbup-sqlite|sqlite-net-pcl|Hangfire\.(LiteDB|SQLite|Storage\.SQLite)'
+        - not: &server_db
+            any:
+              - closure: {package: &server_db_pkgs 'Microsoft\.EntityFrameworkCore\.(SqlServer|Cosmos)|Npgsql(\..*)?|Pomelo\.EntityFrameworkCore\.MySql|MySql\.(Data|EntityFrameworkCore)|MySqlConnector|Oracle\.(ManagedDataAccess(\.Core)?|EntityFrameworkCore)|Microsoft\.Data\.SqlClient|System\.Data\.SqlClient|MongoDB\.Driver(\..*)?|MongoDB\.EntityFrameworkCore|RavenDB\.Client|Aspire\.(Npgsql|Microsoft\.Data\.SqlClient|Pomelo|Oracle|MongoDB)[\w.]*|Hangfire\.(SqlServer|PostgreSql|Pro\.Redis|Redis\.StackExchange|Mongo)'}
+              - other_project: {package: *server_db_pkgs}
+        - not: &sqlite_readonly
+            all:
+              - closure: {code: 'SqliteOpenMode\.ReadOnly|\bMode\s*=\s*ReadOnly\b|Read\s*Only\s*=\s*True'}
+              - not: {closure: {code: '\bSaveChanges(Async)?\s*\(|\bExecuteNonQuery(Async)?\s*\(|\bINSERT\s+(OR\s+\w+\s+)?INTO\b|\bUPDATE\s+\w+\s+SET\b|\bDELETE\s+FROM\b|\.(Insert|Update|Upsert|Delete)(All)?(Async)?\s*\('}}
     severity: config
     category: storage
+    state: local
     effort: 0.25
     title: Embedded file database (SQLite/LiteDB)
-    why: The database file must be on a persistent volume and the app limited to one replica.
-    fix: Mount a PVC at the database folder and run a single replica (or move to a server database).
+    why: >-
+      The application keeps its data in a database file on its own disk (SQLite or LiteDB), and
+      the repository wires up no server database to use instead. The file has to sit on a
+      persistent volume and only one replica may write it, so the component is not stateless:
+      it cannot be scaled out or rescheduled freely, and backups are per volume.
+    fix: >-
+      To run it as is, mount a PersistentVolumeClaim at the database folder and keep one replica.
+      To make it stateless, move the data to a managed database (Azure SQL / PostgreSQL, e.g.
+      UseSqlServer or UseNpgsql in place of UseSqlite) and keep only the connection string in
+      configuration.
     refs:
+      - https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/connection-strings
       - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+      - https://12factor.net/processes
+
+  - id: sqlite-optional
+    when:
+      all:
+        - package: *sqlite_pkgs
+        - *server_db
+    severity: info
+    category: storage
+    effort: 0
+    title: SQLite available next to a server database
+    why: >-
+      The repository supports SQLite and also a server database (SQL Server, PostgreSQL, MySQL,
+      MongoDB...). Configured for the server database, the app keeps no data on its own disk and
+      runs stateless; with SQLite it would need a persistent volume and a single replica.
+    fix: Configure the server database provider for container deployments.
+    refs:
+      - https://learn.microsoft.com/en-us/ef/core/providers/
+      - https://12factor.net/backing-services
+
+  - id: sqlite-readonly
+    when:
+      all:
+        - package: *sqlite_pkgs
+        - not: *server_db
+        - *sqlite_readonly
+    severity: info
+    category: storage
+    effort: 0
+    title: Read-only SQLite reference data
+    why: >-
+      SQLite is opened read-only (Mode=ReadOnly) and the code never writes to it, so the database
+      file is reference data shipped with the application, like any other content file. Every
+      replica reads its own copy from the image and nothing has to be persisted, so the component
+      stays stateless.
+    fix: Keep the database file in the published output (Content/CopyToOutputDirectory) so it is part of the image.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/connection-strings#mode
+      - https://12factor.net/processes
 
   - id: lucene-local-index
     when:
-      package: Lucene\.Net.*
+      all:
+        - package: Lucene\.Net.*|Examine
+        - any: &lucene_index
+            - package: 'Examine|Lucene\.Net\.Replicator'
+            - closure: {code: '\b(FSDirectory|SimpleFSDirectory|MMapDirectory|NIOFSDirectory)\b|\bnew\s+IndexWriter\s*\('}
     severity: config
     category: storage
+    state: local
     effort: 0.5
     title: Local Lucene index
     why: >-
       Lucene.NET keeps its index in a local directory. In a container that folder is lost on restart
-      unless it is on a persistent volume, and only one process may write to an index at a time.
-    fix: PVC for the index and one replica for the indexer (or Elasticsearch/OpenSearch).
+      unless it is on a persistent volume, and only one process may write to an index at a time,
+      so the component is not stateless (each replica would build and own a separate index).
+    fix: >-
+      To run it as is, put the index on a PVC with one replica doing the indexing. To make it
+      stateless, move search to a managed service (Azure AI Search, Elasticsearch/OpenSearch).
     refs:
       - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+
+  - id: lucene-text-analysis
+    when:
+      all:
+        - package: Lucene\.Net.*
+        - not: {any: *lucene_index}
+    severity: info
+    category: storage
+    effort: 0
+    title: Lucene used for text analysis only
+    why: >-
+      The code references Lucene.NET but never opens an index directory or an IndexWriter: it uses
+      the analyzers or the query parser only (for example to tokenize text or parse search syntax
+      for another search store), so nothing is written to the local disk.
+    fix: No change needed.
+    refs:
+      - https://lucenenet.apache.org/docs/4.8.0-beta00016/api/core/Lucene.Net.Store.FSDirectory.html
 
   - id: ftp-server-iis
     when:
