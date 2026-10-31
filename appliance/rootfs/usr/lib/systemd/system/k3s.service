@@ -21,6 +21,9 @@ Restart=always
 RestartSec=5s
 ExecStartPre=-/sbin/modprobe br_netfilter
 ExecStartPre=-/sbin/modprobe overlay
+# protect-kernel-defaults: apply /etc/sysctl.d again (bridge settings need br_netfilter, loaded above;
+# a boot was seen with none of the settings applied)
+ExecStartPre=-/usr/lib/systemd/systemd-sysctl
 ExecStart=/usr/bin/k3s server
 
 [Install]

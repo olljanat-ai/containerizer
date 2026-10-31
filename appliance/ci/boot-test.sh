@@ -32,24 +32,39 @@ wait_ssh() {  # seconds
     sleep 10
   done
 }
+wait_active() {  # seconds: SSH answers in the active system (not the recovery system that deploys it)
+  local end=$((SECONDS + $1))
+  until "${SSH[@]}" test -f /run/elemental/active_mode 2>/dev/null; do
+    [ $SECONDS -lt $end ] || { echo "not in the active system after $1 s" >&2; tail -100 "$OUT"/serial-*.log >&2; return 1; }
+    sleep 10
+  done
+}
 wait_reboot() {  # the VM restarts on its own: wait for SSH to go away, then to come back
   local end=$((SECONDS + 300))
   while "${SSH[@]}" true 2>/dev/null; do [ $SECONDS -lt $end ] || break; sleep 5; done
   wait_ssh 1200
 }
-diag() {
+diag() {  # the key facts first, then the units' journals; stdout gets the head and the tail of it
   echo "--- diagnostics"
-  "${SSH[@]}" 'systemctl --failed --no-pager; journalctl -b --no-pager -p warning | tail -200;
-    for u in containerizer-firstboot containerizer-firewall containerizer-dns containerizer-mssql containerizer-db-init \
-      containerizer-web containerizer-worker containerizer-registry caddy k3s containerizer-sysagent; do
-      echo "--- $u"; journalctl -b -u $u --no-pager | tail -40; done' > "$OUT/diagnostics.txt" 2>&1 || true
-  tail -c 20000 "$OUT/diagnostics.txt" || true
+  "${SSH[@]}" 'set +e
+    echo "## failed units"; systemctl --failed --no-pager --plain
+    echo "## ordering cycles"; journalctl -b --no-pager -o cat | grep -i -B1 -A4 "ordering cycle" | head -60
+    echo "## early boot"; systemctl status systemd-tmpfiles-setup systemd-sysctl containerizer-firstboot --no-pager -n 8
+    sysctl kernel.panic vm.overcommit_memory; ls -l /etc/resolv.conf; ls -la /run/containerizer /run/containerizer/system
+    echo "## warnings"; journalctl -b --no-pager -p warning | grep -v dnsmasq | tail -60
+    for u in elemental-boot-assessment elemental-setup-initramfs elemental-setup-rootfs elemental-setup-network \
+      elemental-setup-boot containerizer-firstboot containerizer-firewall containerizer-dns containerizer-mssql \
+      containerizer-db-init containerizer-web containerizer-worker containerizer-registry caddy k3s containerizer-sysagent; do
+      echo "--- $u"; journalctl -a -b -u $u --no-pager | grep -Ev "dnsmasq.*(query|reply|forwarded|cached|config)" | tail -15
+    done' > "$OUT/diagnostics.txt" 2>&1 || true
+  head -c 14000 "$OUT/diagnostics.txt"; echo; echo "[...]"; tail -c 10000 "$OUT/diagnostics.txt"
 }
 trap 'diag; kill "$(cat "$OUT/qemu.pid" 2>/dev/null)" 2>/dev/null || true' EXIT
 
 start_vm 1
-# an expandable image deploys itself to the whole disk on the first boot (elemental reset), then restarts
-wait_ssh 1800
+# an expandable image boots the recovery system first, which deploys the active system to the whole disk
+# (elemental reset) and restarts; SSH already answers in the recovery system, so wait for the active one
+wait_active 1800
 "${SSH[@]}" 'bash -s' < "$HERE/vm-checks.sh"
 
 echo "=== from outside: only HTTPS and SSH are forwarded; HTTPS answers"

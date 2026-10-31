@@ -67,14 +67,23 @@ jobs:
   # Sandbox verification against a real Kubernetes cluster (tests/test_sandbox_cluster.py): rollouts, crash
   # loop, image pull failure, CronJob, the generated least-privilege RBAC and a short-lived SA token; and
   # the generated ExternalSecrets, store and per-namespace access with External Secrets Operator.
+  # ubuntu-22.04: the lab services run on the host kernel, and MongoDB 8.0 refuses Linux 6.19 and newer
+  # (tcmalloc rseq bug, SERVER-121912) that ubuntu-24.04 runners now have. The appliance runs Debian 13's
+  # kernel, which the boot test covers.
   sandbox:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # the lab services pull several GB of images (SQL Server, Kafka, MongoDB, ...): without this the kind
+      # node runs low on disk and evicts them
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
       - uses: helm/kind-action@v1.12.0
         with:
           cluster_name: cz-sandbox
@@ -93,6 +102,8 @@ jobs:
       - run: python -m pytest -q tests/test_lab_cluster.py -rs -s
         env:
           CONTAINERIZER_TEST_KUBE: /home/runner/.kube/config
+          # kind nodes cannot enforce AppArmor; the appliance's k3s does
+          CONTAINERIZER_TEST_NO_APPARMOR: "1"
 
   # Sandbox HTTPS end to end (appliance/ci/sandbox-https-e2e.py): k3s with the appliance's Traefik settings,
   # the appliance's Caddyfile on Caddy 2.6 (as in Debian 13), the system agent's own code, a generated Ingress.
@@ -185,6 +196,7 @@ jobs:
           base-ref: HEAD~1
           comment: "false"
           sarif-file: bad.sarif
+          report-name: containerizer-report-bad
       - name: Gate must pass on the unchanged app
         id: good
         uses: ./tool
@@ -196,6 +208,7 @@ jobs:
           max-rating: B
           comment: "false"
           sarif-file: good.sarif
+          report-name: containerizer-report-good
       - name: Assert
         run: |
           echo "bad: outcome=${{ steps.bad.outcome }} failed=${{ steps.bad.outputs.failed }} rating=${{ steps.bad.outputs.rating }}"

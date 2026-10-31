@@ -374,13 +374,28 @@ def test_firewall_remove_and_cidr(page):
 
 
 def test_health(paths, monkeypatch):
-    state = {"k3s.service": "activating"}
+    # k3s still starting: waited for until it is active
+    seq = {"k3s.service": ["activating", "activating", "active"]}
+    state = {}
 
     def r(cmd, timeout=0, check=True, input=None):
         if cmd[:2] == ["systemctl", "is-active"]:
+            if seq.get(cmd[2]):
+                return seq[cmd[2]].pop(0) + "\n"
             return state.get(cmd[2], "active") + "\n"
         return ""
     monkeypatch.setattr(sysagent, "run", r)
+    monkeypatch.setattr(sysagent.time, "sleep", lambda s: None)
+    assert sysagent.health() == 0
+    assert seq["k3s.service"] == []
+    # failed or not started: fails at once
+    state["k3s.service"] = "failed"
+    assert sysagent.health() == 1
+    state["k3s.service"] = "inactive"
+    assert sysagent.health() == 1
+    # still starting after the wait
+    state["k3s.service"] = "activating"
+    monkeypatch.setattr(sysagent, "HEALTH_START_WAIT", 0)
     assert sysagent.health() == 1
     state.clear()
     assert sysagent.health() == 0

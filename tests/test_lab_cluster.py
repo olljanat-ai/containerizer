@@ -76,6 +76,24 @@ def run_pod(ns: str, name: str, image: str, script: str, env: dict | None = None
     return phase, log
 
 
+# kind nodes cannot enforce AppArmor (no securityfs in the node container), and the kubelet rejects pods
+# that ask for a profile; CI sets this for kind. The appliance's k3s enforces it (appliance boot test).
+NO_APPARMOR = os.environ.get("CONTAINERIZER_TEST_NO_APPARMOR") == "1"
+
+
+def _strip_apparmor(x):
+    if isinstance(x, dict):
+        return {k: _strip_apparmor(v) for k, v in x.items() if k != "appArmorProfile"}
+    if isinstance(x, list):
+        return [_strip_apparmor(v) for v in x]
+    return x
+
+
+class KindKubectl(labagent.Kubectl):
+    def apply(self, docs, force=True):
+        return super().apply(_strip_apparmor(docs) if NO_APPARMOR else docs, force)
+
+
 @pytest.fixture(scope="module")
 def lab(tmp_path_factory):
     images = labagent.load_images(ROOT / "appliance/rootfs/usr/lib/containerizer/images.env", env={})
@@ -85,7 +103,7 @@ def lab(tmp_path_factory):
                eso.reader_service_account(ns, set_namespace=True)]
               + eso.store_access(ns, [L.remote_key(ns, s) for s in SERVICES]))
         apply([{**d, "metadata": {**d["metadata"], "namespace": ns}} for d in L.app_docs(ns, SERVICES)])
-    kube = labagent.Kubectl(cmd="kubectl", kubeconfig=ADMIN, timeout=120)
+    kube = KindKubectl(cmd="kubectl", kubeconfig=ADMIN, timeout=120)
     cfg = {"services": {s: True for s in SERVICES}}
     state = tmp_path_factory.mktemp("lab") / "state.json"
     end, st = time.time() + 900, {}
@@ -99,7 +117,8 @@ def lab(tmp_path_factory):
             break
         time.sleep(15)
     else:
-        kubectl("-n", L.LAB_NS, "get", "pods", "-o", "wide", check=False)
+        print(kubectl("-n", L.LAB_NS, "get", "pods", "-o", "wide", check=False).stdout)
+        print(kubectl("describe", "nodes", check=False).stdout[-4000:])
         raise AssertionError(f"lab services did not start: {json.dumps(st, indent=1)}")
     yield {"images": images, "kube": kube, "cfg": cfg, "state": state}
     kubectl("delete", "namespace", A, B, L.LAB_NS, "--wait=false", check=False)
@@ -244,7 +263,7 @@ subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--disable-pip-ver
 import pika
 p = pika.URLParameters(os.environ["AMQP"])
 ch = pika.BlockingConnection(p).channel()
-ch.queue_declare("q"); ch.basic_publish("", "q", b"hi")
+ch.queue_declare("q", durable=True); ch.basic_publish("", "q", b"hi")  # RabbitMQ 4 refuses transient non-exclusive queues
 print("AMQP", ch.basic_get("q", auto_ack=True)[2].decode())
 try:
     other = pika.URLParameters(os.environ["AMQP"].rsplit("/", 1)[0] + "/" + os.environ["OTHER_VHOST"])

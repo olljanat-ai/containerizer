@@ -54,6 +54,8 @@ jobs:
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             [[ "$GITHUB_REF_NAME" =~ ^v[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$ ]] || { echo "tags are vX.Y.Z" >&2; exit 1; }
+            v=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' containerizer/__init__.py)
+            [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "containerizer/__init__.py says $v, the tag is $GITHUB_REF_NAME" >&2; exit 1; }
             echo "version=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
             echo "release=true" >> "$GITHUB_OUTPUT"
           else

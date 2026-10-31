@@ -8,6 +8,8 @@
   {"host": "registry-1.docker.io", "ports": ["tcp/443"], "note": "Docker Hub: k3s system images, Prometheus, Grafana, registry, base images"},
   {"host": "auth.docker.io", "ports": ["tcp/443"], "note": "Docker Hub sign-in"},
   {"host": "production.cloudflare.docker.com", "ports": ["tcp/443"], "note": "Docker Hub image layers"},
+  {"host": "production.cloudfront.docker.com", "ports": ["tcp/443"], "note": "Docker Hub image layers (CloudFront)"},
+  {"host": "docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com", "ports": ["tcp/443"], "note": "Docker Hub image layers (Cloudflare R2)"},
   {"host": "mcr.microsoft.com", "ports": ["tcp/443"], "note": "SQL Server and .NET base images"},
   {"host": "data.mcr.microsoft.com", "ports": ["tcp/443"], "note": "Microsoft Container Registry image layers"}
  ]

@@ -639,7 +639,9 @@ def shared_manifests(svc: str, image: str) -> list[dict]:
         ready = ["mysqladmin", "--protocol=tcp", "-h", "127.0.0.1", "ping"]
         c = {"name": svc, "image": image, "imagePullPolicy": "IfNotPresent",
              "args": ["mysqld", "--innodb-buffer-pool-size=256M", "--max-connections=200", "--skip-name-resolve"],
-             "env": [{"name": "MYSQL_ROOT_PASSWORD", **admin}, {"name": "MYSQL_ROOT_HOST", "value": "localhost"}],
+             # root also as root@127.0.0.1 (TCP inside the pod only): the agent provisions over TCP, which
+             # the probes already prove, not the socket, which a restarted server may not get back
+             "env": [{"name": "MYSQL_ROOT_PASSWORD", **admin}, {"name": "MYSQL_ROOT_HOST", "value": "127.0.0.1"}],
              "ports": [{"name": "svc", "containerPort": s.port}],
              "startupProbe": {"exec": {"command": ready}, "periodSeconds": 5, "failureThreshold": 120},
              "readinessProbe": {"exec": {"command": ready}, "periodSeconds": 10, "timeoutSeconds": 5},
@@ -1005,7 +1007,7 @@ def provision_command(svc: str) -> list[str]:
     if svc == "postgres":
         return ["psql", "-X", "-q", "-U", "postgres", "-d", "postgres", "-f", "-"]
     if svc == "mysql":
-        return ["/bin/sh", "-c", 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot --protocol=socket']
+        return ["/bin/sh", "-c", 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot --protocol=tcp -h 127.0.0.1']
     if svc == "mongodb":
         return ["mongosh", "--nodb", "--quiet"]
     if svc == "rabbitmq":

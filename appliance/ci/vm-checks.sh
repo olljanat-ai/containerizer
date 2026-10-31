@@ -25,6 +25,12 @@ grep -q 'tcp dport { 22, 443 } accept' /tmp/fw.txt
 wait_for 120 "DNS filter" systemctl is-active --quiet containerizer-dns.service
 
 step "DNS filter: allowed names resolve, others are refused"
+if ! wait_for 120 "ghcr.io resolves" getent ahostsv4 ghcr.io; then
+  ls -l /etc/resolv.conf; cat /etc/resolv.conf; ip addr show cz-dns; ss -lunp 'sport = :53'
+  cat /run/systemd/resolve/resolv.conf; journalctl -b -u containerizer-dns --no-pager | tail -20
+  ls -la /etc/tmpfiles.d /usr/lib/tmpfiles.d | grep -i resolv; journalctl -b -u systemd-tmpfiles-setup --no-pager | tail -20
+  exit 1
+fi
 getent ahostsv4 ghcr.io
 if getent ahostsv4 example.com; then echo "example.com must not resolve" >&2; exit 1; fi
 step "egress: allowed name on 443 goes out, anything else does not"
@@ -37,7 +43,8 @@ wait_for 2400 "SQL Server, schema and web UI" curl -fsS http://127.0.0.1:8080/he
 wait_for 600 "registry" curl -fsS http://127.0.0.1:5000/v2/
 wait_for 900 "Prometheus" curl -fsS http://127.0.0.1:9090/-/ready
 wait_for 900 "Grafana" curl -fsS http://127.0.0.1:3000/grafana/api/health
-wait_for 300 "Caddy" curl -fsSk https://127.0.0.1/healthz --resolve "$(hostname):443:127.0.0.1" -H "Host: $(hostname)"
+# by name, so the TLS handshake carries the SNI Caddy has a certificate for (none for 127.0.0.1)
+wait_for 300 "Caddy" curl -fsSk "https://$(hostname)/healthz" --resolve "$(hostname):443:127.0.0.1"
 systemctl is-active containerizer-db-init.service containerizer-web.service containerizer-mssql.service \
   containerizer-registry.service containerizer-prometheus.service containerizer-grafana.service caddy.service \
   docker.service k3s.service ssh.service
@@ -89,7 +96,9 @@ k -n containerizer-secrets delete secret/ci-a--web role/app-secrets-reader-ci-a 
 
 step "local registry: push from Docker, pull from k3s"
 docker image ls
-src=$(docker image ls --format '{{.ID}}' docker.io/library/registry | head -1)
+# pulled by digest, so listed as "registry" with no tag
+src=$(docker image ls --format '{{.Repository}} {{.ID}}' | awk '$1 == "registry" || $1 == "docker.io/library/registry" {print $2; exit}')
+[ -n "$src" ] || { echo "no registry image to push" >&2; exit 1; }
 docker tag "$src" localhost:5000/ci/registry:1
 docker push localhost:5000/ci/registry:1
 k3s crictl pull localhost:5000/ci/registry:1
@@ -147,9 +156,17 @@ wait_for 120 "example.com allowed" getent ahostsv4 example.com
 wait_for 60 "example.com reachable on 443" curl -sS -o /dev/null --max-time 15 https://example.com/
 grep -q '"by": "ci"' /var/lib/containerizer/system/egress-history.jsonl
 step "refused names are reported"
-getent ahostsv4 not-allowed.example.org || true
-$PY -m containerizer.sysagent status
-$PY -c "import json; e=json.load(open('/run/containerizer/system/status.json'))['egress']; print(e['denied_names'][:5]); assert any(d['name']=='not-allowed.example.org' for d in e['denied_names'])"
+# the refusal reaches the journal a moment after the answer: ask again until the status shows it
+refused() {
+  getent ahostsv4 not-allowed.example.org || true
+  $PY -m containerizer.sysagent status
+  $PY -c "import json; e=json.load(open('/run/containerizer/system/status.json'))['egress']; assert any(d['name']=='not-allowed.example.org' for d in e['denied_names'])"
+}
+wait_for 60 "not-allowed.example.org reported" refused || {
+  journalctl -u containerizer-dns.service --no-pager -o cat --grep 'not-allowed|REFUSED' | tail -20
+  $PY -c "import json; print(json.load(open('/run/containerizer/system/status.json'))['egress']['denied_names'][:5])"
+  exit 1
+}
 
 step "boot assessment"
 systemctl status elemental-boot-assessment.service --no-pager || true

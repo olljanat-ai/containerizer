@@ -35,7 +35,7 @@ RUN apt-get update \
     rsync findutils kmod kbd tzdata less vim-tiny bash-completion \
     ca-certificates curl gpg iproute2 iputils-ping nftables iptables conntrack dnsmasq-base \
     openssh-server openssh-client \
-    apparmor docker.io docker-buildx git caddy \
+    apparmor docker.io docker-cli docker-buildx git caddy \
     python3 python3-venv \
     xz-utils zstd \
  && apt-get clean \
@@ -44,6 +44,7 @@ RUN apt-get update \
  && echo > /etc/motd \
  && ln -sf /usr/bin/grub-editenv /usr/bin/grub2-editenv \
  && systemctl mask systemd-journald-audit.socket \
+ && test -x /usr/bin/docker && command -v dockerd \
  && test "$(id -u caddy)" = 910 && test "$(id -u dnsmasq)" = 911 && test "$(getent group docker | cut -d: -f3)" = 912
 
 # k3s (single binary) and the Flux install manifest, verified by checksum; cosign for upgrade signatures
@@ -91,6 +92,9 @@ COPY monitoring/prometheus/containerizer-alerts.yml /usr/lib/containerizer/prome
 COPY monitoring/grafana/ /usr/lib/containerizer/grafana/dashboards/
 RUN chmod 0755 /usr/lib/containerizer/bin/* /usr/libexec/elemental-checker/containerizer \
  && chmod 0600 /etc/rancher/k3s/config.yaml \
+ && mkdir -p /etc/tmpfiles.d \
+ && for f in $(grep -l '/etc/resolv\.conf' /usr/lib/tmpfiles.d/*.conf | grep -v containerizer); do \
+      ln -sf /dev/null "/etc/tmpfiles.d/$(basename "$f")"; done \
  && systemd-sysusers \
  && test "$(id -u containerizer)" = 900 && test "$(id -u cz-web)" = 901 \
  && systemctl enable systemd-networkd.service systemd-resolved.service ssh.service docker.service caddy.service \

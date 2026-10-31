@@ -1,9 +1,14 @@
 [Unit]
 Description=containerizer appliance: follow the DNS servers learned from DHCP
+# watch from early boot (paths.target, before the network starts): a watch that starts later can miss the
+# first write of the DHCP servers and leave the DNS filter without upstreams ("not ready" for every name)
+DefaultDependencies=no
+After=local-fs.target
+Before=paths.target
 
 [Path]
 PathChanged=/run/systemd/resolve/resolv.conf
 Unit=containerizer-firewall-reload.service
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=paths.target

@@ -1,5 +1,6 @@
 [Unit]
 Description=containerizer appliance: re-render the firewall and the DNS filter
+After=containerizer-firewall.service
 
 [Service]
 Type=oneshot

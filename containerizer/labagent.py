@@ -220,14 +220,41 @@ def ready_pod(kube: Kubectl, svc: str, name: str) -> dict | None:
     return None
 
 
+READY_GRACE = 180       # seconds after a server turns ready during which a failed provisioning is retried
+
+
+def _ready_for(pod: dict) -> float:
+    """Seconds since the pod's Ready condition last turned true (a large number if unknown)."""
+    for c in (pod.get("status") or {}).get("conditions") or []:
+        if c.get("type") == "Ready" and c.get("lastTransitionTime"):
+            try:
+                t = datetime.strptime(c["lastTransitionTime"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            except ValueError:
+                break
+            return (datetime.now(timezone.utc) - t).total_seconds()
+    return 1e9
+
+
 def _pod_problem(kube: Kubectl, svc: str, name: str) -> str:
     data = kube.get(["-n", L.LAB_NS, "pods", "-l", f"{L.LABEL}={svc},app.kubernetes.io/name={name}"]) or {}
     for p in data.get("items") or []:
         for cs in (p.get("status") or {}).get("containerStatuses") or []:
             w = (cs.get("state") or {}).get("waiting") or {}
             if w.get("reason"):
-                return f"{w['reason']}: {str(w.get('message') or '')[:200]}".rstrip(": ")
-        return (p.get("status") or {}).get("phase") or "starting"
+                msg = f"{w['reason']}: {str(w.get('message') or '')[:200]}".rstrip(": ")
+                if w["reason"] == "CrashLoopBackOff":       # why it crashed: the end of its last log
+                    try:
+                        last = kube.run(["-n", L.LAB_NS, "logs", "--previous", "--tail=5", p["metadata"]["name"],
+                                         "-c", cs.get("name") or name], check=False).stdout.strip()
+                    except KubeError:
+                        last = ""
+                    if last:
+                        msg += " - last log: " + " | ".join(last.splitlines())[-400:]
+                return msg
+        status = p.get("status") or {}
+        if status.get("reason"):        # e.g. Evicted: The node was low on resource: ephemeral-storage
+            return f"{status.get('phase') or 'Failed'} ({status['reason']}): {str(status.get('message') or '')[:200]}".rstrip(": ")
+        return status.get("phase") or "starting"
     return "starting"
 
 
@@ -360,11 +387,26 @@ def _shared(kube: Kubectl, svc: str, apps: list[str], image: str, state: dict, s
             done[ns] = mark
             st["ready"].append(ns)
         except KubeError as ex:
-            failed.append(f"{ns}: {ex}")
+            failed.append(f"{ns}: {ex}{_socket_dir(kube, svc, pod)}")
     for ns in [n for n in done if n not in apps]:
         done.pop(ns)          # the database stays; a new pod or password provisions it again
-    st["state"] = "error" if failed else "running"
+    # a server that only just turned ready may still be finishing its first start (MySQL's entry point
+    # restarts it): retry on the next round before calling it an error
+    young = _ready_for(pod) < READY_GRACE
+    st["state"] = ("starting" if young else "error") if failed else "running"
     st["message"] = "; ".join(failed)[:800]
+
+
+def _socket_dir(kube: Kubectl, svc: str, pod: dict) -> str:
+    """What the server's socket folder holds, for a provisioning error that names a missing socket."""
+    folder = {"mysql": "/var/run/mysqld", "postgres": "/var/run/postgresql"}.get(svc)
+    if not folder:
+        return ""
+    try:
+        out = kube.exec(L.LAB_NS, pod["metadata"]["name"], svc, ["ls", "-la", folder], "", timeout=30)
+    except KubeError as ex:
+        out = str(ex)
+    return f" ({folder}: {' | '.join(out.split(chr(10))[1:])[:300]})"
 
 
 def _per_app(kube: Kubectl, svc: str, apps: list[str], image: str, st: dict) -> None:
