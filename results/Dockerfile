@@ -10,6 +10,11 @@ RUN pip install --no-compile -r requirements.txt -r requirements-sql.txt
 COPY containerizer/ containerizer/
 COPY rules/ rules/
 
+# dev database backups uploaded on the admin pages (CONTAINERIZER_DEV_DB_DIR, a volume in compose.yaml):
+# owned by the runtime user so a new named volume inherits it
+RUN mkdir -p /var/lib/containerizer/dev-databases && chown 10001:10001 /var/lib/containerizer/dev-databases \
+    && chmod 700 /var/lib/containerizer/dev-databases
+
 # Non-root, no shell needed at run time; the compose file adds read_only, cap_drop ALL and no-new-privileges.
 USER 10001:10001
 EXPOSE 8080

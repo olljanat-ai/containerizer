@@ -482,10 +482,10 @@ class DevDbError(Exception):
     without the database."""
 
 
-def lookup(cs: str | None, source_key: str) -> dict | None:
+def lookup(cs: str | None, source_key: str, password: str | None = None) -> dict | None:
     """The dev database row of the application with this SourceKey (the scan's writer login reads it)."""
     from .sqlstore import connect
-    conn = connect(cs)
+    conn = connect(cs, password)
     try:
         cur = conn.cursor(as_dict=True)
         cur.execute("SELECT d.Engine, d.DatabaseName, d.FileName, d.SizeBytes, d.Sha256, d.StoredAs, d.Prompt, "

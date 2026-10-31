@@ -12,6 +12,7 @@ from containerizer import devdb, generate
 from containerizer.assess import assess
 from containerizer.harden import lint_manifests
 from test_engine import web_app
+from test_admin import idp  # noqa: F401,E402
 
 
 def _db(engine="sqlserver", env=None):
@@ -160,3 +161,196 @@ def test_ai_env_validates_the_answer(monkeypatch):
     env, notes = devdb.ai_env(None, [_C("Web")], "sqlserver", "Shop", "Set ConnectionStrings:Shop", None)
     assert list(env) == ["Web"] and [e["name"] for e in env["Web"]] == ["ConnectionStrings__Shop"]
     assert notes == ["set Shop"] and "Set ConnectionStrings:Shop" in seen["q"]
+
+
+# -- end to end: the upload page against SQL Server ----------------------------------------------
+
+import os  # noqa: E402
+import re  # noqa: E402
+import threading  # noqa: E402
+import urllib.request  # noqa: E402
+from http.server import ThreadingHTTPServer  # noqa: E402
+
+ADMIN_SQL = os.environ.get("CONTAINERIZER_TEST_SQL")
+needs_sql = pytest.mark.skipif(not ADMIN_SQL, reason="set CONTAINERIZER_TEST_SQL to run against SQL Server")
+
+
+def _post_multipart(browser, path, fields, file_name, data):
+    rfile, n, ctype = _multipart(fields, file_name, data)
+    req = urllib.request.Request(browser.base + path, data=rfile.getvalue(), headers={"Content-Type": ctype})
+    try:
+        r = browser.opener.open(req, timeout=20)
+        status, h = r.status, dict(r.headers)
+    except urllib.error.HTTPError as ex:
+        status, h = ex.code, dict(ex.headers)
+    if status == 303:
+        return browser.follow(h["Location"])
+    return status, h, ""
+
+
+@needs_sql
+def test_upload_end_to_end(tmp_path, idp):
+    pytest.importorskip("jwt")
+    import uuid
+    from containerizer import admin as adminmod
+    from containerizer import sqlstore, webui
+    from containerizer.roles import parse_owners
+    from test_admin import Browser, cfg, free_port
+    name = "czdevdb_" + uuid.uuid4().hex[:8]
+    cs = re.sub(r"(?i)(database|initial\s*catalog)\s*=[^;]*", f"Database={name}", ADMIN_SQL)
+    sqlstore.create_database(cs)
+    conn = sqlstore.connect(cs)
+    sqlstore.init_schema(conn)
+    for login, role in (("cz_d_reader", "reader"), ("cz_d_writer", "writer"), ("cz_d_admin", "admin")):
+        sqlstore.create_login(conn, login, "Test-Passw0rd!x", role)
+    conn.close()
+
+    def as_(login):
+        return re.sub(r"(?i)(user\s*id|uid)\s*=[^;]*", f"User Id={login}", cs)
+    web_app(tmp_path / "shop")
+    sqlstore.store_results(as_("cz_d_writer"), [assess(tmp_path / "shop")], [tmp_path / "shop"], password="Test-Passw0rd!x")
+    port = free_port()
+    base = f"http://127.0.0.1:{port}"
+    c = cfg(idp, base)
+    c.operators = ["role:Ops"]
+    c.owners = parse_owners("role:Owner=bu:Nothing")
+    adm = adminmod.Admin(c, lambda: sqlstore.connect(as_("cz_d_admin"), "Test-Passw0rd!x"))
+    adm.devdb = devdb.Settings(tmp_path / "store", 1 << 20)
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), webui.make_handler(
+        lambda: sqlstore.connect(as_("cz_d_reader"), "Test-Passw0rd!x"), adm))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    backup = b"TAPE" + os.urandom(200_000)
+    try:
+        # a product owner has no dev database pages
+        po = Browser(base, idp)
+        idp.claims = {"email": "pat@example.com", "roles": ["Owner"]}
+        s, _, body = po.follow("/admin/dev-databases")
+        assert s == 403
+        assert _post_multipart(po, "/admin/dev-databases/1/upload", [("csrf", po.csrf(body) if "csrf" in body else "x")],
+                               "a.bak", backup)[0] == 403
+        # operator
+        op = Browser(base, idp)
+        idp.claims = {"email": "olga@example.com", "name": "Olga Ops", "roles": ["Ops"]}
+        s, _, body = op.follow("/admin/dev-databases")
+        assert s == 200 and "Dev databases" in body
+        app_id = re.search(r"<option value='(\d+)'>", body)[1]
+        csrf = op.csrf(body)
+        s, _, body = op.follow(f"/admin/dev-databases/{app_id}")
+        assert "enctype='multipart/form-data'" in body and "The development database of" in body
+        # wrong CSRF token: refused before the file is written
+        s, _, body = _post_multipart(op, f"/admin/dev-databases/{app_id}/upload", [("csrf", "nope")], "shop.bak", backup)
+        assert "Not uploaded: The form expired" in body
+        assert not [p for p in (tmp_path / "store").iterdir()] if (tmp_path / "store").exists() else True
+        # not a backup
+        s, _, body = _post_multipart(op, f"/admin/dev-databases/{app_id}/upload",
+                                     [("csrf", csrf), ("Engine", "sqlserver"), ("DatabaseName", "Shop"), ("Prompt", "x")],
+                                     "shop.bak", b"MZ\x90\x00" + backup)
+        assert "not a SQL Server backup" in body
+        # too large
+        s, _, body = _post_multipart(op, f"/admin/dev-databases/{app_id}/upload",
+                                     [("csrf", csrf), ("Engine", "sqlserver"), ("DatabaseName", "Shop"), ("Prompt", "x")],
+                                     "shop.bak", b"TAPE" + b"x" * (2 << 20))
+        assert "larger than" in body
+        # a good one
+        s, _, body = _post_multipart(op, f"/admin/dev-databases/{app_id}/upload",
+                                     [("csrf", csrf), ("Engine", "sqlserver"), ("DatabaseName", "Shop"),
+                                      ("Prompt", "Use ConnectionStrings:Shop.")], "shop.bak", backup)
+        assert "Uploaded 195.3 KB" in body and "Olga Ops" in body and "as operator" in body
+        import hashlib
+        sha = hashlib.sha256(backup).hexdigest()
+        stored = tmp_path / "store" / f"{sha}.bak"
+        assert stored.read_bytes() == backup and oct(stored.stat().st_mode & 0o777) == "0o600"
+        assert [p.name for p in (tmp_path / "store").iterdir()] == [stored.name]     # no temporary files left
+        # edit the instructions, then replace the file: the old one is removed
+        s, _, body = op.follow(f"/admin/dev-databases/{app_id}", {"csrf": csrf, "DatabaseName": "ShopDev",
+                                                                  "Prompt": "Use ConnectionStrings:Shop and seed users."})
+        assert "Saved." in body and "ShopDev" in body
+        row = devdb.lookup(as_("cz_d_writer"), _source_key(as_("cz_d_writer"), app_id), "Test-Passw0rd!x")   # what the scan reads
+        assert row["DatabaseName"] == "ShopDev" and row["Sha256"] == sha and "seed users" in row["Prompt"]
+        backup2 = b"MSSQLBAK" + os.urandom(1000)
+        s, _, body = _post_multipart(op, f"/admin/dev-databases/{app_id}/upload",
+                                     [("csrf", csrf), ("Engine", "sqlserver"), ("DatabaseName", "Shop"), ("Prompt", "p")],
+                                     "shop2.bak", backup2)
+        assert "Uploaded" in body and not stored.exists()
+        # history, and removal
+        body = op.follow("/admin/audit?table=DevDatabase")[2]
+        assert "Dev database" in body and "shop2.bak" in body and "as operator" in body
+        s, _, body = op.follow(f"/admin/dev-databases/{app_id}/delete", {"csrf": csrf})
+        assert "Removed." in body and not list((tmp_path / "store").iterdir())
+        # without CONTAINERIZER_DEV_DB_DIR the pages are not there
+        adm.devdb = None
+        assert op.follow("/admin/dev-databases")[0] == 403
+    finally:
+        idp.claims = {}
+        httpd.shutdown()
+        m = sqlstore.connect(re.sub(r"Database=\w+", "Database=master", cs), autocommit=True)
+        m.cursor().execute(f"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]")
+        m.close()
+
+
+def _source_key(cs, app_id):
+    from containerizer import sqlstore
+    c = sqlstore.connect(cs, "Test-Passw0rd!x")
+    cur = c.cursor()
+    cur.execute("SELECT SourceKey FROM cz.Application WHERE ApplicationId = %s", (int(app_id),))
+    k = cur.fetchone()[0]
+    c.close()
+    return k
+
+
+def test_org_scan_reports_a_missing_backup(tmp_path, monkeypatch):
+    from containerizer import org
+    monkeypatch.setenv("CONTAINERIZER_DEV_DB_DIR", str(tmp_path))
+    monkeypatch.setenv("CONTAINERIZER_SQL", "Server=x,1433;Database=d;User Id=u")
+    row = {"Engine": "sqlserver", "DatabaseName": "Shop", "FileName": "shop.bak", "SizeBytes": 4, "Sha256": "0" * 64,
+           "StoredAs": "0" * 64 + ".bak", "Prompt": "", "UploadedAt": "2026-10-31", "UploadedBy": "olga"}
+    monkeypatch.setattr(devdb, "lookup", lambda cs, key, password=None: row)
+    o = org.OrgOptions(provider="github", org="acme", output_repo="x", registry="registry.local")
+    res = org.RepoResult(provider="github", org="acme", project="", repo="shop", status="error", source_key="k")
+    db, r = org._dev_database(o, res, type("A", (), {"name": "shop"})(), [], tmp_path, None, "t1")
+    assert db is None and res.dev_database["status"] == "error" and "missing" in res.dev_database["reason"]
+    monkeypatch.setattr(devdb, "lookup", lambda cs, key, password=None: None)
+    res.dev_database = {}
+    assert org._dev_database(o, res, None, [], tmp_path, None, "t1") == (None, None) and res.dev_database == {}
+
+
+@pytest.mark.skipif(not os.environ.get("CONTAINERIZER_TEST_DEVDB_BACKUP"),
+                    reason="set CONTAINERIZER_TEST_DEVDB_BACKUP to a SQL Server .bak to restore it in docker")
+def test_restore_in_docker_with_the_pod_settings(tmp_path):
+    """The generated image restores a real backup under the pod's securityContext (read-only root,
+    uid 10001, ALL capabilities dropped, no-new-privileges, emptyDir mounts)."""
+    import hashlib
+    import shutil
+    import subprocess
+    import time
+    src = Path(os.environ["CONTAINERIZER_TEST_DEVDB_BACKUP"])
+    stored = tmp_path / (hashlib.sha256(src.read_bytes()).hexdigest() + ".bak")
+    shutil.copyfile(src, stored)
+    devdb.build_context(stored, "sqlserver", "Shop", tmp_path / "ctx")
+    subprocess.run(["docker", "build", "-q", "-t", "cz-devdb-test:pytest", str(tmp_path / "ctx")], check=True)
+    docs = devdb.manifests("shop", _db(env={}))
+    pod = docs[1]["spec"]["template"]["spec"]
+    c = pod["containers"][0]
+    uid = pod["securityContext"].get("runAsUser") or c["securityContext"]["runAsUser"]
+    assert c["securityContext"]["capabilities"] == {"drop": ["ALL"]}
+    args = ["docker", "run", "-d", "--name", "cz-devdb-pytest", "--read-only", "--user", f"{uid}:{uid}", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges", "-e", "DEVDB_ADMIN_PASSWORD=Admin1234567890abcdefXYZ",
+            "-e", "DEVDB_PASSWORD=App1234567890abcdefXYZ"]
+    for m in c["volumeMounts"]:
+        args += ["--tmpfs", f"{m['mountPath']}:rw,uid={uid},gid={uid},mode=0700"]
+    subprocess.run(["docker", "rm", "-f", "cz-devdb-pytest"], capture_output=True)
+    subprocess.run(args + ["cz-devdb-test:pytest"], check=True, capture_output=True)
+    try:
+        for _ in range(60):
+            if subprocess.run(["docker", "exec", "cz-devdb-pytest", *c["readinessProbe"]["exec"]["command"]]).returncode == 0:
+                break
+            time.sleep(3)
+        else:
+            raise AssertionError(subprocess.run(["docker", "logs", "cz-devdb-pytest"], capture_output=True, text=True).stdout[-2000:])
+        r = subprocess.run(["docker", "exec", "cz-devdb-pytest", "/opt/mssql-tools18/bin/sqlcmd", "-C", "-S", "localhost", "-U", "app",
+                            "-P", "App1234567890abcdefXYZ", "-d", "Shop", "-h", "-1", "-b", "-Q",
+                            "SET NOCOUNT ON; SELECT IS_MEMBER('db_owner'), IS_SRVROLEMEMBER('sysadmin')"],
+                           capture_output=True, text=True)
+        assert r.returncode == 0 and r.stdout.split() == ["1", "0"], r.stdout + r.stderr
+    finally:
+        subprocess.run(["docker", "rm", "-f", "cz-devdb-pytest"], capture_output=True)

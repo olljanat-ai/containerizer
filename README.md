@@ -536,6 +536,11 @@ with its last result, and skipped ones are shown disabled with the reason; an ad
 enable or disable any of them. The worker exposes Prometheus metrics about the scans, the process and
 the VM, and a Grafana dashboard is included. See [docs/scheduled-scans.md](docs/scheduled-scans.md).
 
+Operators can also **upload a SQL Server backup of an application's development database** with
+instructions for the AI. The next scan restores it into a hardened database next to the application in
+the sandbox, and points the application's connection settings at it, without changing its code. See
+[docs/dev-databases.md](docs/dev-databases.md).
+
 ![Repositories of an organization scan, skipped ones disabled with the reason](docs/images/admin-repositories-disabled.png)
 
 ## Results database and web UI
@@ -574,5 +579,5 @@ containerizer/sql/  results database schema (sqlstore.py writes it, webui.py rea
 monitoring/      Grafana dashboard, Prometheus scrape config and alert rules, systemd unit for the worker
 results/         Docker Compose stack and image for the results database and web UI
 docs/            results-database.md (results database, web UI, admin pages, audit), organization-run.md,
-                 scheduled-scans.md, sandbox-verification.md, self-hosted-llm.md
+                 scheduled-scans.md, dev-databases.md, sandbox-verification.md, self-hosted-llm.md
 ```

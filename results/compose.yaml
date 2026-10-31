@@ -80,6 +80,10 @@ services:
       CONTAINERIZER_API_AUDIENCE: ${CONTAINERIZER_API_AUDIENCE:-}
       CONTAINERIZER_API_CLIENTS: ${CONTAINERIZER_API_CLIENTS:-}
       CONTAINERIZER_GRAFANA_URL: ${CONTAINERIZER_GRAFANA_URL:-}
+      # dev database backups operators upload (docs/dev-databases.md); the scan worker needs the same folder
+      CONTAINERIZER_DEV_DB_DIR: /var/lib/containerizer/dev-databases
+      CONTAINERIZER_DEV_DB_MAX_MB: ${CONTAINERIZER_DEV_DB_MAX_MB:-2048}
+    volumes: ["dev-databases:/var/lib/containerizer/dev-databases"]
     ports: ["127.0.0.1:8080:8080"]
     depends_on:
       db-init: { condition: service_completed_successfully }
@@ -98,3 +102,4 @@ services:
 
 volumes:
   mssql-data:
+  dev-databases:

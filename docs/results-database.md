@@ -294,7 +294,7 @@ Who signs in gets one or more roles, from the same kind of allow-list rules as `
 | --- | --- | --- |
 | Viewer | `CONTAINERIZER_VIEWERS` | Read the results pages. Only matters when [sign-in for the results pages](#sign-in-for-the-results-pages-optional) is on. |
 | Product owner | `CONTAINERIZER_PRODUCT_OWNERS` | Read everything, including the change history. Map applications, and change their display name, owner, description and hidden flag, but only for the business units or products in their scope. Change the name, owner, description and product page link of their products. With a business unit in scope, also add products to it and delete empty ones. |
-| Operator | `CONTAINERIZER_OPERATORS` | Read everything, including the change history. Run and schedule organization scans, enable and disable repositories, and open the Grafana link on the scheduled scan pages. Cannot change the mapping. |
+| Operator | `CONTAINERIZER_OPERATORS` | Read everything, including the change history. Run and schedule organization scans, enable and disable repositories, and open the Grafana link on the scheduled scan pages. Upload [dev database backups](dev-databases.md) for the sandbox. Cannot change the mapping. |
 | Admin | `CONTAINERIZER_ADMINS` | Everything, including business units and the [access log](#access-log-optional). |
 
 Admins, operators and product owners can always read the results pages; nobody else gets into
