@@ -926,3 +926,181 @@ repos:
       wkhtmltoimage.exe for PDF reports, and a WCF service reference to the Correios SOAP API. Port to ASP.NET Core
       + EF Core, a Linux PDF renderer, and a real SQL Server connection -> C.
       tool (2026-10-31): C, matches first run. netfx-target/aspnet-mvc5 rewrites; libwkhtmltox and LocalDB connection config.
+  - name: rw7-abpzero
+    url: https://github.com/aspnetboilerplate/module-zero-core-template
+    commit: 2e9536872673a7ff1986a19e798c51684d16afe5
+    expected_rating: A
+    expected_roles: {web: [AbpCompanyName.AbpProjectName.Web.Host, AbpCompanyName.AbpProjectName.Web.Mvc], console: [AbpCompanyName.AbpProjectName.Migrator], spa: [AbpProjectName, reactjs, iview], library: [AbpCompanyName.AbpProjectName.AngularUI], test: ["*Tests"]}
+    notes: >-
+      ASP.NET Boilerplate "module zero" startup template: net9.0 ASP.NET Core Web.Host (API) and Web.Mvc, an EF Core
+      migrator console (-q quiet mode), Angular/React/Vue front ends with Linux Dockerfiles (nginx) and docker-compose.
+      angular/ carries a VS shell csproj (net452, AssemblyName angular, no code) plus an IIS URL-rewrite web.config;
+      it is the Angular SPA, not a .NET Framework component. Dockerfiles pin sdk/aspnet 8.0 while the projects target
+      net9.0 (config) -> A.
+      tool (2026-10-31): A from the start; the role miss was the expectation (angular/ is the VS shell csproj of
+      the Angular SPA, AngularUI the library the tool reports) - expected_roles corrected. Matches.
+  - name: rw7-atspm
+    url: https://github.com/udotdevelopment/ATSPM
+    commit: cfc01e88e513190403f8c9dce479257cf8d1577a
+    expected_rating: C
+    expected_roles: {web: [SPM, AtspmApi, ATSPM.Application.Reports, LeftTurnReport, LeftTurnAnalysisReportAPI], worker: [FTPTimerService, WavetronicsSpeedListener], desktop: [FTPFromOneController, InrixConfigurationTool], console: ["Aggregate*", SPMWatchDog], library: [MOE.Common, MOEWcfServiceLibrary, WcfVolumeExport]}
+    notes: >-
+      Utah DOT Automated Traffic Signal Performance Measures v4 (deprecated; 1 GB clone with committed packages/).
+      SPM is an ASP.NET MVC 5 site on .NET 4.7.2 (Global.asax, OWIN identity, EF6, MS Chart System.Web.DataVisualization
+      images, Rotativa/wkhtmltopdf, MigraDoc-gdi), AtspmApi is Web API 2, two ServiceBase Windows services (FTP pull of
+      controller logs, Wavetronics speed listener), ~30 batch consoles (Aggregate*, Decode*), WinForms tools, WCF
+      service libraries; a few netcoreapp3.1/net5.0 API projects. Nothing is Windows-bound at run time once ported,
+      but the main web app and services need a port to ASP.NET Core / generic host -> C.
+      tool (2026-10-31): C from the start, but 22 role misses: stray xunit/xunit.core packages (copied
+      packages.config) made services, consoles and referenced libraries tests, and ClickOnce publish settings made
+      consoles desktop. Fixed in role-test (weak test packages need test code or an unreferenced non-host library)
+      and role-clickonce (a console Exe also needs WinForms/WPF). Matches.
+  - name: rw7-openwaters
+    url: https://github.com/open-environment/open-waters
+    commit: e2cd705ed68b322808b46225b90ae86fc71a7e70
+    expected_rating: C
+    expected_roles: {web: [OpenWaters], worker: [OpenWatersSvc]}
+    notes: >-
+      EPA water-quality data management (Open Waters): ASP.NET Web Forms on .NET 4.6.1 (web GUID, ~100 .aspx) with
+      AJAX Control Toolkit (Web.config tagPrefix ajaxToolkit), MS Chart (System.Web.DataVisualization), EF ObjectContext
+      edmx, custom Membership/Role providers, OWIN OpenID Connect, App_Data ASPNETDB.MDF; plus a ServiceBase Windows
+      service (timer submitting to EPA WQX). Web Forms has no Linux runtime -> port -> C.
+      tool (2026-10-31): C. Matches on the first run.
+  - name: rw7-blazam
+    url: https://github.com/Blazam-App/BLAZAM
+    commit: f2dae30d9ae0831cfc410e1be04c32cd5510dd3b
+    expected_rating: B
+    expected_roles: {web: [BLAZAM], test: [BLAZAM.Tests, BLAZAM.Gui.Tests, BLAZAMCommon.Tests, BLAZAMDatabase.Tests, PlaywrightTests], library: [BLAZAMGui, BLAZAMActiveDirectory, BLAZAMTestPlugin]}
+    notes: >-
+      Active Directory management web app (Blazor Server, net10.0, MudBlazor, EF Core SQLite/SQL Server/MySQL). AD
+      access goes through System.DirectoryServices.Protocols (LdapConnectionFactory, LdapDirectoryEntry); the remaining
+      Windows-only pieces are behind OS checks: WMI computer monitoring (ViewComputer.razor:205 IsWindows), DC event logs
+      (DomainControllerEventLogReader.cs:89), Win32 impersonation (WindowsImpersonation.cs:86), DirectoryEntry auth
+      fallback (ActiveDirectoryContext.cs:752 IsLinux throws). The WMI installation id is in try/catch with a
+      MachineName fallback. Ships linux_install.sh (systemd + nginx) and an LDAP cert trust script; Linux demo; see the tool line for the B.
+      tool (2026-10-31): E on the first run: remote WMI (WmiFactory.cs:31 \\host scope) was host-service
+      management, ImpersonationContext.Impersonate(user) was Windows impersonation, private callers under OS
+      guards were not followed, and the PE scan reported portable managed DLLs. Fixed in windows-host-services,
+      windows-identity-impersonation, the private-member call graph and native-dll-shipped skip_portable -> B.
+      Expectation corrected A -> B: real unguarded Windows paths remain (ADUser.cs:130 SetAccessControl on home
+      folders, PrerequisiteChecker.cs:80 registry behind an isUnderIIS flag, DomainControllerEventLogReader.cs:57
+      remote EventLog, PSConnection.cs:184 CimSession, TaskScheduler package in BLAZAMUpdate,
+      ProgramHelpers.cs:102 WMI) that need checking or guards on Linux. Matches.
+  - name: rw7-pleasanter
+    url: https://github.com/Implem/Implem.Pleasanter
+    commit: 664c833b144d9da9b6bb58e60f7e48eb01141e58
+    expected_rating: A
+    expected_roles: {web: [Implem.Pleasanter], console: [Implem.CodeDefiner], test: [Implem.TestAutomation]}
+    notes: >-
+      Pleasanter low-code business app platform on net10.0 with official Linux Dockerfiles (app + CodeDefiner DB setup
+      job) and PostgreSQL/SQL Server/MySQL. LDAP is switched by config: Ldap.cs Platform() picks LdapDs
+      (System.DirectoryServices) only when Authentication.DsProvider is not "Novell" and the OS is Windows, otherwise
+      LdapNovellDs (Novell.Directory.Ldap.NETStandard). IIS integration only under IsOSPlatform(Windows) (Startup.cs:220).
+      ClearScript V8 ships Linux natives -> A.
+      tool (2026-10-31): C on the first run: aspnet-mvc5 fired for MVC 5 packages restored by a net10.0 Sdk.Web
+      app, AspNetCoreHttpContext.Current matched System.Web HttpContext.Current, and
+      App_Data/Licenses/Implem.License.dll (.NETStandard 2.0 IL) was a native DLL. Fixed (aspnet-mvc5 skips
+      ASP.NET Core apps, new info aspnet-mvc5-packages-on-core; qualified HttpContext.Current; portable assemblies
+      skipped) -> B. Left as a miss: active-directory-ds is refactor because DirectoryEntry is in LdapDs.cs:90 and
+      LdapNovellDs.cs:76 (UpdateOrInsert, reached only under Windows authentication, Startup.cs:924); both are
+      selected by configuration strings (Platform(), DsProvider), which the guard analysis cannot follow.
+  - name: rw7-tranga
+    url: https://github.com/C9Glax/tranga
+    commit: 7986e3c86d44135c6e8cee5f778564ac43985253
+    expected_rating: A
+    expected_roles: {web: [API], test: [Tests]}
+    notes: >-
+      Manga downloader API on net10.0 with a Linux Dockerfile (Chromium for PuppeteerSharp) and docker-compose
+      (PostgreSQL). Images are processed with SixLabors.ImageSharp; System.Drawing.Common is referenced in API.csproj
+      but nothing in the code uses System.Drawing -> A.
+      tool (2026-10-31): A. Matches on the first run.
+  - name: rw7-adsml
+    url: https://github.com/mhshahmoradi/AdsML
+    commit: 1cca02954b1fb1dc56d185b32927f38a110bc356
+    expected_rating: A
+    expected_roles: {web: [AdsML], test: [AdsML.UnitTest]}
+    notes: >-
+      net8.0 minimal API (Carter) that classifies messages with ML.NET (PredictionEnginePool from a model file path in
+      configuration, retrain endpoint saves the model back to that path; LbfgsMaximumEntropy text pipeline, managed).
+      The model file needs a mounted path; ML.NET runs on Linux x64 -> A.
+      tool (2026-10-31): A. Matches on the first run.
+  - name: rw7-enterpriseworkflow
+    url: https://github.com/PeteGoo/Demo.EnterpriseWorkflow
+    commit: dac2478bcb2d4c281bc5a1eea6e606b182928978
+    expected_rating: C
+    expected_roles: {web: [MagicEightBall.Web, BasicMagicEightBall, HumanEightBall, MildlyOffensiveMagicEightBall, StandardWorkflowService], library: [EightBallLibrary]}
+    notes: >-
+      Windows Workflow Foundation 4 workflow services on .NET 4.0: IIS-hosted .xamlx / Web.config serviceActivations
+      with a custom WorkflowServiceHostFactory (EightBallLibrary/Hosting), Receive/Send messaging activities, tracking
+      participants, plus an MVC 3 front end. WorkflowServiceHost and System.ServiceModel.Activities have no .NET (Core)
+      port (CoreWF covers the activity runtime only) -> rewrite of the hosting/messaging -> C.
+      tool (2026-10-31): C, but the .xamlx workflow services and the serviceActivations-only BasicMagicEightBall
+      were libraries. role-web-systemweb now counts *.xamlx and Web.config serviceActivations in a web-GUID
+      project. Matches.
+  - name: rw7-sdidentity
+    url: https://github.com/lishilei0523/SD.IdentitySystem
+    commit: b9de63d24482fe0bef41eda3b804a3f32cf1939a
+    expected_rating: A
+    expected_roles: {web: ["SD.IdentitySystem.AppService.Host(*)", "webs/SD.IdentitySystem.Client", SD.IdentitySystem.UpdateService], desktop: ["clients/SD.IdentitySystem.Client", SD.IdentitySystem.DataImporter, SD.IdentitySystem.LicenseWriter, SD.IdentitySystem.UniqueCode]}
+    notes: >-
+      Identity/SSO line-of-business suite on SD.Framework: net10.0 application-service hosts on Kestrel in three
+      flavours (CoreWCF HTTP + NetTcp, Web API, gRPC), an ASP.NET Core MVC admin site, an update service, a WPF
+      (Caliburn.Micro/MahApps) client and WinForms/WPF toolkits; Redis + SQL Server via App.config. Hosts ship Linux
+      publish profiles, systemd units (UseSystemd under OS_LINUX) and aspnet Dockerfiles. Not reported and not rating
+      relevant: the web captcha uses SD.Toolkits.Drawing -> SkiaSharp, which needs SkiaSharp.NativeAssets.Linux in a
+      Linux image (package add). tests/ hold manual net462 WCF stub harnesses -> A.
+      tool (2026-10-31): C on the first run: wcf-server fired for CoreWCF hosts (App.config <services>), wcf-
+      nettcp-msmq for netTcpBinding on net10.0, and tests/ stub servers were not tests. wcf-server now skips
+      CoreWCF projects, netTcpBinding alone counts only on .NET Framework, and role-test covers top-level tests/
+      -> A. Matches.
+  - name: rw7-accessmanager
+    url: https://github.com/lithnet/access-manager
+    commit: 504030d2dcce67f3f7af4e951220c238fe4fd883
+    expected_rating: E
+    expected_roles: {web: [Lithnet.AccessManager.Service], worker: [Lithnet.AccessManager.Agent], desktop: [Lithnet.AccessManager.Server.UI]}
+    notes: >-
+      LAPS / just-in-time admin access portal for Active Directory. The service (netcoreapp3.1) hosts on HTTP.sys
+      (Program.cs:84 UseHttpSys) as a Windows service, reads its configuration from the Windows registry
+      (RegistryProvider), protects secrets with DPAPI/CNG, decrypts LAPS passwords, calls netapi32/advapi32 through
+      Vanara P/Invoke, manages Windows Firewall and SSL cert bindings, and uses System.DirectoryServices + SQL LocalDB.
+      The agent (net472) runs on each managed Windows machine. Its purpose is Windows/AD administration -> E.
+      tool (2026-10-31): E. Matches on the first run.
+  - name: rw7-financialapp
+    url: https://github.com/Sebazzz/financial-app
+    commit: 35b4542025d226c06a05541363c215d13d66ee8f
+    expected_rating: B
+    expected_roles: {web: [App], test: [App.Tests]}
+    notes: >-
+      Household finance PWA on netcoreapp3.0 (ASP.NET Core, Knockout SPA via SpaServices, EF Core SQL Server, Hangfire,
+      MailKit), with Ubuntu deployment scripts. 2FA QR codes are rendered with QRCoder 1.3.6 Base64QRCode
+      (Api/AccountController.cs:220), which draws with System.Drawing (GDI+); System.Drawing.Common is referenced. That
+      works on netcoreapp3.0 + libgdiplus but throws on Linux from .NET 7, and any supported runtime needs the retarget,
+      so the QR rendering must move to PngByteQRCode / a newer QRCoder -> B.
+      tool (2026-10-31): B on the first run, but through dpapi (case KeyMode.Windows: ProtectKeysWithDpapi in a
+      configured switch). That case is now a guard (new config finding cfg-windows-option-switch), and the B comes
+      from the new pkg-qrcoder-gdi (QRCoder < 1.5 Base64QRCode). Matches.
+  - name: rw7-smartloan
+    url: https://github.com/AbSamrah/SmartLoanSystem
+    commit: d3d4ec931cfb71ffc9becbe6743f0b36e9c7cff8
+    expected_rating: A
+    expected_roles: {web: [Loan.API, Loan.Processor], library: [Loan.Contracts]}
+    notes: >-
+      Elsa Workflows 3 loan approval system on net10.0: Loan.API publishes to RabbitMQ via MassTransit; Loan.Processor
+      (Microsoft.NET.Sdk.Worker, but WebApplication.CreateBuilder with Elsa workflows API/HTTP endpoints) consumes, runs
+      a DMN rules engine, persists Elsa state in SQL Server via EF Core and caches in Redis (localhost:6379 hard-coded,
+      config). docker-compose for SQL Server/RabbitMQ/Redis -> A.
+      tool (2026-10-31): A, but Loan.Processor (Sdk.Worker + WebApplication.Create + UseWorkflowsApi) was a
+      worker. role-web-aspnetcore now takes a Worker-SDK project that maps endpoints. Matches.
+  - name: rw7-captive
+    url: https://github.com/Devisket/captive-api
+    commit: c23bf67f46e3893afbdcbe4d2f78d76d6d9d3b9a
+    expected_rating: D
+    expected_roles: {web: [Captive.Commands, Captive.Queries, Captive.MdbAPI], worker: [Captive.Orchestrator, Captive.Barcode], console: [MBTC.BarcodeGenerator]}
+    notes: >-
+      Bank cheque-order processing backend on net8.0: Commands/Queries APIs (MySQL, Linux Dockerfiles, docker-compose)
+      and a RabbitMQ Orchestrator worker are portable, but MdbAPI is net8.0-windows x86 reading Access .mdb files via
+      System.Data.OleDb (Jet/ACE, Windows-only), Captive.Barcode is an x86 Windows-service worker with a COMReference,
+      and barcodes come from MBTC.BarcodeGenerator (net472 exe over the vendor BcConfig DLL) launched by the
+      Orchestrator. Deployment README targets IIS + WinSW. Core is containerisable, MDB/barcode parts stay on Windows -> D.
+      tool (2026-10-31): D, but Captive.Barcode (Sdk.Worker + UseWindowsForms) was desktop. role-desktop now
+      ignores UseWPF/UseWindowsForms in Web/Worker SDK projects. Matches.

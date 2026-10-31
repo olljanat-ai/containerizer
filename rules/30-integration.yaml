@@ -42,7 +42,10 @@ rules:
   - id: windows-identity-impersonation
     applies_to: [dotnet]
     when:
-      code: 'WindowsIdentity\.(RunImpersonated(Async)?|Impersonate)\b|WindowsImpersonationContext|LogonUser\(|\.Impersonate\('
+      # `windowsIdentity.Impersonate()` (.NET Framework) takes no arguments; an application's own
+      # `auditLogger.Impersonate(user, ...)` (BLAZAM SignIn.cshtml.cs:74, "admin impersonates a user"
+      # audit event) is not Windows impersonation
+      code: 'WindowsIdentity\.(RunImpersonated(Async)?|Impersonate)\b|WindowsImpersonationContext|LogonUser\(|\.Impersonate\(\s*\)'
       unguarded: true
     severity: rewrite
     category: identity
@@ -175,7 +178,10 @@ rules:
     applies_to: [dotnet]
     when:
       any:
+        # behind an OS check, or in the Windows choice of a configured option (see
+        # cfg-windows-option-switch), the Linux deployment takes another branch
         - code: 'ProtectedData\.(Protect|Unprotect)|DataProtectionScope\.|ProtectKeysWithDpapi'
+          unguarded: true
         - package: System\.Security\.Cryptography\.ProtectedData
     severity: refactor
     category: secrets
@@ -186,6 +192,27 @@ rules:
     fix: Store secrets in Kubernetes Secrets/Key Vault; re-encrypt existing data with a managed key.
     refs:
       - https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.protecteddata
+
+  # A switch on a configured option whose Windows choice calls Windows-only APIs; the other choices
+  # are the portable ones (financial-app AppBuilderExtensions.cs:46 `case DataProtectionProtectionType.Windows:`
+  # -> ProtectKeysWithDpapi, next to Certificate and None). The `unguarded` checks skip the Windows
+  # branch like an OS check; this note tells the deployment to pick another value.
+  - id: cfg-windows-option-switch
+    applies_to: [dotnet]
+    when:
+      all:
+        - code: '\bcase\s+(?:[\w.]+\.)?Windows\w*\s*:'
+        - code: 'ProtectKeysWithDpapi|ProtectedData\.(Protect|Unprotect)|\bEventLog\.|\.AddEventLog\(|\bRegistry\.(LocalMachine|CurrentUser|ClassesRoot|Users|GetValue|SetValue)|\bUseHttpSys\b|\bUseWindowsService\b|\bNegotiateDefaults\b|\bWindowsIdentity\b|\bIISDefaults\b'
+      same_file: true
+    severity: config
+    category: configuration
+    effort: 0.25
+    title: Windows-only option selected by configuration
+    why: >-
+      The code switches on a configured value whose Windows choice uses Windows-only APIs (DPAPI,
+      Event Log, registry, HTTP.sys, Windows authentication); the other choices work on Linux. The
+      container works as long as its configuration selects one of those.
+    fix: Set the option to a non-Windows value (certificate or file-based key protection, console logging, environment configuration) in the container's configuration.
 
   - id: cert-store
     applies_to: [dotnet]

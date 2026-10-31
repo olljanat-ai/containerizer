@@ -8,14 +8,43 @@ rules:
     priority: 100
     when:
       any:
-        - package: 'Microsoft\.NET\.Test\.Sdk|xunit|xunit\.v3(\.[\w.\-]+)?|nunit|MSTest\.TestFramework|MSTest|NUnit3TestAdapter|TUnit(\.\w+)?'
+        # A test framework package/assembly is only a signal when the project has tests, or is a
+        # library nothing else compiles in: copy-pasted packages.config files put xunit into every
+        # project of a solution (ATSPM: FTPTimerService.csproj:115 xunit.core in a ServiceBase
+        # Windows service, MOE.Common referenced by the web app), and those stay what they are.
+        # test runners/adapters are only added to run tests
+        - package: 'Microsoft\.NET\.Test\.Sdk|xunit\.v3(\.[\w.\-]+)?|xunit\.runner\.visualstudio|MSTest\.TestAdapter|MSTest|NUnit3TestAdapter|TUnit(\.\w+)?'
+        - all:
+            - any:
+                - package: 'xunit|nunit|MSTest\.TestFramework'
+                # old-style projects reference the test framework as an assembly (GAC or a checked-in dll)
+                - reference: 'Microsoft\.VisualStudio\.QualityTools\.UnitTestFramework|Microsoft\.VisualStudio\.TestPlatform\.TestFramework|xunit(\.core|\.assert)?|nunit\.framework'
+            - any:
+                # test attributes ([Fact], [Test], [TestMethod], <TestMethod()>, [<Fact>]) or Gherkin feature files
+                - code: '[\[<]{1,2}\s*(?:Xunit\.|NUnit\.Framework\.|Microsoft\.VisualStudio\.TestTools\.UnitTesting\.)?(Fact|Theory|Test|Tests|TestMethod|DataTestMethod|TestCase|TestCaseSource|TestClass|TestFixture|SetUp|OneTimeSetUp|ClassInitialize|AssemblyInitialize|Scenario)(Attribute)?\s*[\(\]>,]'
+                - file: '*.feature'
+                - all:
+                    - not: {output_type: 'Exe|WinExe'}
+                    - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker|Razor|BlazorWebAssembly)'}
+                    - not: {type_guid: '349c5851-65df-11da-9384-00065b846f21'}
+                    - not: {property: {ReferencedBy: '.+'}}
         - sdk: '^MSTest\.Sdk'
         - property: {IsTestProject: "true"}
-        - name: '[.\-](Tests?|UnitTests|IntegrationTests|FunctionalTests|E2ETests|EndToEndTests|AcceptanceTests|Specs)$'
-        # old-style projects reference the test framework as an assembly (GAC or a checked-in dll)
-        # instead of a package, and Visual Studio test projects carry the test-project type GUID
-        - reference: 'Microsoft\.VisualStudio\.QualityTools\.UnitTestFramework|Microsoft\.VisualStudio\.TestPlatform\.TestFramework|xunit(\.core|\.assert)?|nunit\.framework'
+        - name: '[.\-](Tests?|UnitTests|IntegrationTests|FunctionalTests|E2ETests|EndToEndTests|AcceptanceTests|Specs|TestAutomation)$'
+        # Visual Studio test projects carry the test-project type GUID
         - type_guid: '3ac096d0-a1c2-e12c-1390-a8335801fdab'
+        # stub/fake/mock servers and harnesses in the repository's top-level tests/ (test/) folder
+        # are test code (SD.IdentitySystem tests/SD.IdentitySystem.StubWCF.Server: a net462 console
+        # ServiceHost that the WCF client tests call). Only those names: other projects there keep
+        # their own role (Umbraco tests/Umbraco.TestData is a shipped seeding library,
+        # tests/Umbraco.Tests.Benchmarks a BenchmarkDotNet tool), and an Aspire AppHost there is
+        # still the orchestrator (CleanArchitecture tests/TestAppHost wires up the test databases).
+        - all:
+            - path: '^tests?/'
+            - name: '(?i)(stubs?|fakes?|mocks?|harness)'
+            - not: {sdk: '^Aspire\.AppHost\.Sdk'}
+            - not: {property: {IsAspireHost: "true"}}
+            - not: {package: 'Aspire\.Hosting\.AppHost'}
 
   # A package.json whose only npm scripts run tests (test, test:*, e2e, lint): a JavaScript test
   # harness (node --test, jest, playwright) that exercises another project, not a deployable app or
@@ -250,8 +279,14 @@ rules:
         - all:
             - output_type: Exe
             - any:
-                - property: {UseWPF: "true"}
-                - property: {UseWindowsForms: "true"}
+                # a Worker/Web SDK project that sets UseWindowsForms (to host an ActiveX/COM control or
+                # use WinForms types: Captive.Barcode.csproj:9 next to AddWindowsService and two
+                # AddHostedService calls) is a service; its Windows ties are findings, not a UI role
+                - all:
+                    - any:
+                        - property: {UseWPF: "true"}
+                        - property: {UseWindowsForms: "true"}
+                    - not: {sdk: 'Microsoft\.NET\.Sdk\.(Web|Worker)$'}
                 # a leftover reference alone (common in old console/remoting hosts) is not a UI
                 - all:
                     - reference: System\.Windows\.Forms|PresentationFramework
@@ -270,8 +305,17 @@ rules:
       # <PublishUrl>publish\</PublishUrl>, <IsWebBootstrapper>, <Install> are Visual Studio
       # boilerplate in every old-style project (libraries and console apps too); only an
       # application with real ClickOnce manifests/deployment code is a ClickOnce client.
+      # ClickOnce also publishes plain console programs (ATSPM AggregateAtspmData: Exe, GenerateManifests
+      # true, Install false, run from a UNC share by a scheduler), so a console Exe needs UI code too.
       all:
-        - output_type: 'WinExe|Exe'
+        - any:
+            - output_type: 'WinExe'
+            - all:
+                - output_type: 'Exe'
+                - any:
+                    - reference: 'System\.Windows\.Forms|PresentationFramework'
+                    - property: {UseWPF: "true"}
+                    - property: {UseWindowsForms: "true"}
         - any:
             - file: "*.application"
             - property: {GenerateManifests: "true"}
@@ -395,6 +439,15 @@ rules:
             - output_type: Exe
             - code: '\bWebApplication\.Create(Builder|SlimBuilder)?\s*\('
             - not: {sdk: 'Microsoft\.NET\.Sdk\.Worker$'}
+        # ... unless that WebApplication maps application endpoints beyond health/default ones:
+        # controllers, minimal APIs, gRPC, hubs, or a framework's endpoint set (FastEndpoints; Elsa's
+        # workflow REST API and HTTP-triggered workflows, UseWorkflowsApi/UseWorkflows: SmartLoanSystem
+        # Loan.Processor/Program.cs:97-98). Those are served to clients, so the process is a web app.
+        - all:
+            - output_type: Exe
+            - sdk: 'Microsoft\.NET\.Sdk\.Worker$'
+            - code: '\bWebApplication\.Create(Builder|SlimBuilder)?\s*\('
+            - code: '\b(MapControllers|MapControllerRoute|MapGet|MapPost|MapPut|MapPatch|MapDelete|MapMethods|MapGroup|MapRazorPages|MapRazorComponents|MapBlazorHub|MapHub|MapGrpcService|MapGraphQL|UseFastEndpoints|MapFastEndpoints|UseWorkflowsApi|UseWorkflows)\s*[<(]'
 
   # ASP.NET Core host that only serves health probes while hosted services/jobs do the work
   # (Sdk.Web is used for the Kestrel health endpoint): a background worker, not a web app.
@@ -426,7 +479,8 @@ rules:
         - sdk: MSBuild\.SDK\.SystemWeb
         - file: Global.asax
         - all:
-            - file: ["*.aspx", "*.asmx", "*.svc", "*.ashx"]
+            # *.xamlx: WF4 workflow services, activated by IIS like a .svc
+            - file: ["*.aspx", "*.asmx", "*.svc", "*.ashx", "*.xamlx"]
             - any:
                 - file: ["Web.config"]
                 - type_guid: 349c5851-65df-11da-9384-00065b846f21
@@ -441,6 +495,13 @@ rules:
             - any:
                 - code: '[\[<]\s*assembly\s*:\s*OwinStartup'
                 - config: '<add\s+key="owin:appStartup"'
+        # file-less WCF/WF activation: Web.config <serviceHostingEnvironment><serviceActivations> maps
+        # a relativeAddress ("~/EightBall.svc") to a service type and host factory, so IIS serves it
+        # without a .svc file (Demo.EnterpriseWorkflow BasicMagicEightBall/Web.config:19-23)
+        - all:
+            - type_guid: 349c5851-65df-11da-9384-00065b846f21
+            - config: '<serviceActivations>\s*<add\b[^>]*\brelativeAddress\s*='
+              in: "[Ww]eb.config"
         # a web application whose Web.config sends every request (path="*") to a framework's own
         # IHttpHandler instead of a Global.asax: Nancy.Hosting.Aspnet's NancyHttpRequestHandler,
         # ServiceStack's HttpHandlerFactory. Built-in System.Web handlers (HttpNotFoundHandler in

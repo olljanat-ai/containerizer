@@ -153,7 +153,8 @@ def test_active_directory_needs_the_adsi_types(tmp_path):
 
 
 def test_windows_api_sets_and_unix_libraries_are_not_vendor_sdks(tmp_path):
-    c = comp(tmp_path, 'class P { [DllImport("api-ms-win-core-sysinfo-l1-2-1.dll")] static extern bool GetProductInfo(int a); }')
+    # (called, so the declaration is not skipped as an unused P/Invoke)
+    c = comp(tmp_path, 'class P { void M() { GetProductInfo(1); } [DllImport("api-ms-win-core-sysinfo-l1-2-1.dll")] static extern bool GetProductInfo(int a); }')
     assert sev(c, "pinvoke-vendor") is None and sev(c, "pinvoke-kernel32") == "refactor"
     c = comp(tmp_path, '''[SupportedOSPlatform("macOS")]
         public sealed class SleepAssertion {
@@ -168,7 +169,7 @@ def test_windows_api_sets_and_unix_libraries_are_not_vendor_sdks(tmp_path):
                                    Scan(); }
         [SupportedOSPlatform("windows")] [DllImport("AcmeScan.dll")] static extern int Scan(); }''')
     assert sev(c, "pinvoke-vendor") is None
-    c = comp(tmp_path, 'class N { [DllImport("AcmeScan.dll")] static extern int Scan(); }')
+    c = comp(tmp_path, 'class N { void M() { Scan(); } [DllImport("AcmeScan.dll")] static extern int Scan(); }')
     assert sev(c, "pinvoke-vendor") == "blocker"
 
 

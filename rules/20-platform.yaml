@@ -157,7 +157,10 @@ rules:
     applies_to: [dotnet]
     when:
       all:
+        # IL-only assemblies built for .NET Standard / .NET (Core) load on Linux like any package
+        # (Pleasanter App_Data/Licenses/Implem.License.dll, BLAZAM BLAZAMServices/ApplicationNews.dll)
         - file: ["*.dll", "*.ocx"]
+          skip_portable: true
         - not: {file: ["*.so", "*.so.*"]}
         - not: {role: test}
     severity: refactor
@@ -287,8 +290,14 @@ rules:
     when:
       all:
         - not: {role: 'test|desktop|tool'}
-        - code: '\bServiceController\.Get(Services|Devices)\s*\(|"\s*(SELECT\s+[^"]*\bFROM\s+)?Win32_(Service|SystemDriver|DependentService|BaseService)\b'
+        - code: '\bServiceController\.Get(Services|Devices)\s*\(\s*\)|"\s*(SELECT\s+[^"]*\bFROM\s+)?Win32_(Service|SystemDriver|DependentService|BaseService)\b'
           unguarded: true
+        # Querying the services of *other* machines (an AD/fleet admin console: BLAZAM WmiFactory.cs:31
+        # `new ManagementScope(string.Format("\\\\{0}\\root\\cimv2", hostName), connectionOptions)`
+        # with credentials, which WMI only accepts for remote connections; ServiceController.GetServices(machineName))
+        # is remote administration, reported by `wmi`, not management of the container's own host.
+        - not:
+            code: '(\bnew\s+ManagementScope|\bManagementScope\s+\w+\s*=\s*new)\s*\(\s*(string\.Format\s*\(\s*)?\$?@?"\\\\(\\\\)?(\{|"\s*\+)|\bConnectionOptions\b[\s\S]{0,300}?\bUsername\s*='
     severity: blocker
     category: os
     effort: 0
