@@ -1,4 +1,4 @@
-site_name: containerizer
+site_name: Containerizer
 site_description: Can this application run as a Linux container on Kubernetes? Assessment, hardened builds and manifests.
 site_url: https://containerizer.eu/
 repo_url: https://github.com/olljanat-ai/containerizer
@@ -12,6 +12,7 @@ theme:
   name: material
   features:
     - navigation.sections
+    - navigation.tabs
     - navigation.top
     - navigation.footer
     - search.highlight
@@ -25,7 +26,14 @@ theme:
       scheme: slate
       toggle: {icon: material/brightness-4, name: Light mode}
 
+extra_css:
+  - stylesheets/landing.css
+
 markdown_extensions:
+  - md_in_html
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - admonition
   - attr_list
   - tables
@@ -35,7 +43,8 @@ markdown_extensions:
   - pymdownx.details
 
 nav:
-  - Overview: index.md
+  - Home: index.md
+  - Overview: overview.md
   - Running at scale:
       - Whole organization: organization-run.md
       - Scheduled scans: scheduled-scans.md
@@ -44,6 +53,7 @@ nav:
       - Dev databases: dev-databases.md
       - Lab services: lab-services.md
       - Secrets (External Secrets): external-secrets.md
+  - Java and Node.js: java-node.md
   - Results and review:
       - Results database and web UI: results-database.md
       - Rule review: rule-review.md

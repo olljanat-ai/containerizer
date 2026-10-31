@@ -35,7 +35,7 @@ later, or Azure SQL Database). The examples below use the default name.
 ## Local Docker stack (development)
 
 The [appliance](appliance.md) already runs SQL Server, the web UI and the scan worker, so this is only
-for developing containerizer or trying the web UI without an appliance (see also
+for developing Containerizer or trying the web UI without an appliance (see also
 [local-dev-server.md](local-dev-server.md)).
 
 ```sh
@@ -107,7 +107,7 @@ The key prefix makes the application key match what a direct scan of the same re
 
 ## Setting up the database (production)
 
-Run as a database owner once, and again after upgrading containerizer (it is idempotent):
+Run as a database owner once, and again after upgrading Containerizer (it is idempotent):
 
 ```sh
 CONTAINERIZER_SQL="Server=...;Database=Containerizer;User Id=<admin>" python -m containerizer db init
@@ -140,7 +140,7 @@ passwords in your pipeline's or platform's secret store.
 ### TLS
 
 The server must present a certificate the client trusts. With an internal CA, either add the CA to
-the system store of the machine or container that runs containerizer, or pass `CaFile=/path/ca.pem`.
+the system store of the machine or container that runs Containerizer, or pass `CaFile=/path/ca.pem`.
 Azure SQL Database certificates are trusted by default. Use `TrustServerCertificate=yes` only for a
 local development server.
 

@@ -326,6 +326,9 @@ rules:
             - property: {IsWebBootstrapper: "true"}
             - code: '\bApplicationDeployment\b'
 
+  # A front-end app built into static files (index.html + bundles). Component libraries that other
+  # packages import (exports/module/types/files/peerDependencies in package.json and no index.html)
+  # are not apps of their own.
   - id: role-spa-standalone
     phase: role
     role: spa
@@ -333,9 +336,16 @@ rules:
     when:
       all:
         - kind: node
-        - package: '@angular/core|react|react-dom|vue|svelte|@sveltejs/kit|preact|ember-source'
+        - package: &spa_pkgs '@angular/core|react|react-dom|vue|svelte|@sveltejs/kit|preact|ember-source|solid-js|lit|gatsby|@docusaurus/core|vitepress|vuepress|@vuepress/.*|astro|hexo|@11ty/eleventy|@stencil/core'
         - not: {property: {HostedBy: ".*"}}
-        - not: {package: 'next|nuxt|express|fastify|koa|@nestjs/core|@remix-run/node'}
+        # a workspace package that another package builds in (a component library of the admin app)
+        - not: {property: {ReferencedBy: '.+'}}
+        - not: {package: 'next|nuxt|express|fastify|koa|@nestjs/core|@remix-run/node|@remix-run/serve|@sveltejs/adapter-node|@astrojs/node|@angular/ssr|@nguniversal/express-engine|h3|hono|@hono/node-server', runtime: true}
+        - not:
+            all:
+              - property: {LibraryManifest: "true"}
+              - not: {property: {IndexHtml: "true"}}
+              - not: {file: ['angular.json', 'gatsby-config.*', 'docusaurus.config.*', 'astro.config.*', 'svelte.config.*']}
 
   # Standalone Blazor WebAssembly: static files (wwwroot after publish) for a web server.
   - id: role-spa-blazor-wasm
@@ -366,6 +376,10 @@ rules:
         - kind: node
         - property: {HostedBy: ".*"}
 
+  # ------------------------------------------------------------------ Node.js
+  # A server framework among the runtime dependencies (not devDependencies or peerDependencies, where
+  # plugins and middleware libraries list them) and a way to start it: a start script, a main file, or
+  # a framework that starts itself (next start, nuxt start).
   - id: role-node-server
     phase: role
     role: web
@@ -373,7 +387,205 @@ rules:
     when:
       all:
         - kind: node
-        - package: 'next|nuxt|express|fastify|koa|@nestjs/core|@remix-run/node|hapi|@hapi/hapi|restify'
+        - package: &node_web 'express|fastify|koa|@nestjs/core|@nestjs/platform-.*|hapi|@hapi/hapi|restify|next|nuxt|@remix-run/serve|@remix-run/node|@remix-run/express|@sveltejs/adapter-node|@astrojs/node|@angular/ssr|@nguniversal/express-engine|sails|@loopback/core|@loopback/rest|loopback|@adonisjs/core|@feathersjs/feathers|@feathersjs/express|polka|h3|hono|@hono/node-server|@apollo/server|apollo-server|apollo-server-express|graphql-yoga|@strapi/strapi|@redwoodjs/api-server|json-server|socket\.io|ws|uWebSockets\.js|connect|micro|@marblejs/core|moleculer-web|@trpc/server'
+          runtime: true
+        - any:
+            - property: {StartScript: '.+'}
+            - package: 'next|nuxt|@remix-run/serve|@strapi/strapi|@nestjs/core|@sveltejs/adapter-node|@astrojs/node'
+              runtime: true
+            # the code starts the server itself (Ghost: core/boot.js rootApp.listen, started by `node index.js`)
+            - code: &node_listen '\.listen\s*\(\s*(?!\s*\))|\bcreateServer\s*\(|\bserve\s*\(\s*\{[^}]*\bfetch\b'
+        - not:
+            # a framework plugin or middleware library: published (exports/peerDependencies/files)
+            # with nothing that starts it
+            all:
+              - property: {LibraryManifest: "true"}
+              - not: {property: {StartScript: '.+'}}
+              - not: {code: *node_listen}
+
+  # A monorepo root (npm/yarn workspaces, pnpm-workspace.yaml) builds and tests the workspace
+  # packages; the deployables are the packages themselves.
+  - id: role-node-workspace-root
+    phase: role
+    role: library
+    priority: 72
+    when:
+      all:
+        - kind: node
+        - property: {Workspaces: '.+'}
+        - not:
+            all:
+              - package: *node_web
+                runtime: true
+              - property: {StartScript: 'node\s.*'}
+
+  # Electron, NW.js and Tauri desktop apps; React Native, Expo, Ionic/Capacitor and Cordova phone apps.
+  - id: role-node-desktop
+    phase: role
+    role: desktop
+    priority: 86
+    when:
+      all:
+        - kind: node
+        - package: 'electron|nw|@tauri-apps/api|@tauri-apps/cli|react-native|expo|@capacitor/core|@ionic/(angular|react|vue)|cordova(-.*)?|@nativescript/core'
+        - not: {package: 'electron-to-chromium|react-native-web'}
+
+  # A command line tool (package.json "bin") that nothing deploys: no server framework, no start script.
+  - id: role-node-cli
+    phase: role
+    role: tool
+    priority: 66
+    when:
+      all:
+        - kind: node
+        - property: {Bin: "true"}
+        - not: {property: {StartScript: '.+'}}
+
+  # A long-running process without HTTP: queue consumers, schedulers, bots.
+  - id: role-node-worker
+    phase: role
+    role: worker
+    priority: 50
+    when:
+      all:
+        - kind: node
+        - property: {StartScript: '.+'}
+        - package: 'bull|bullmq|bee-queue|amqplib|amqp-connection-manager|rascal|kafkajs|node-rdkafka|@confluentinc/kafka-javascript|@aws-sdk/client-sqs|sqs-consumer|@azure/service-bus|@google-cloud/pubsub|nats|mqtt|rhea|pg-boss|graphile-worker|agenda|node-cron|cron|node-schedule|bree|discord\.js|telegraf|node-telegram-bot-api|@slack/bolt|botbuilder|chokidar'
+          runtime: true
+
+  # Anything else with a start script that runs node: a program that does its work and exits (or a
+  # long-running process the rules cannot tell apart); run as a Job/CronJob.
+  - id: role-node-console
+    phase: role
+    role: console
+    priority: 40
+    when:
+      all:
+        - kind: node
+        - property: {StartScript: '(cross-env\s+\S+\s+)*(NODE_ENV=\S+\s+)?(node|ts-node|tsx|bun|deno run)\b.*'}
+        - not: {property: {LibraryManifest: "true"}}
+
+  # ------------------------------------------------------------------ Java
+  # A Maven aggregator or BOM (packaging pom) or a Gradle java-platform builds no program.
+  - id: role-java-aggregator
+    phase: role
+    role: library
+    priority: 95
+    when:
+      all:
+        - kind: java
+        - property: {Packaging: pom}
+
+  # Android apps (Gradle com.android.application) are phone clients.
+  - id: role-java-android
+    phase: role
+    role: desktop
+    priority: 90
+    when:
+      all:
+        - kind: java
+        - property: {Plugins: '(.*,)?com\.android\.application(,.*)?'}
+
+  # Swing, JavaFX and SWT programs: desktop clients.
+  - id: role-java-desktop
+    phase: role
+    role: desktop
+    priority: 80
+    when:
+      all:
+        - kind: java
+        - not: {property: {Packaging: war}}
+        - not: {code: '@SpringBootApplication\b'}
+        - any:
+            - package: 'org\.openjfx:javafx-.*|org\.eclipse\.platform:org\.eclipse\.swt.*|org\.eclipse\.swt:.*'
+              runtime: true
+            - property: {Plugins: '(.*,)?(javafx-maven-plugin|org\.openjfx\.javafxplugin)(,.*)?'}
+            - all:
+                - code: '\bextends\s+(JFrame|JApplet|javafx\.application\.Application)\b|\bnew\s+JFrame\s*\(|\bUIManager\.setLookAndFeel\s*\(|^\s*import\s+javafx\.application\.Application\s*;'
+                - code: '\bpublic\s+static\s+void\s+main\s*\(|\bfun\s+main\s*\('
+
+  # A Spring Boot application (@SpringBootApplication / SpringApplication.run) with a web stack, a
+  # web framework that starts its own HTTP server (Quarkus, Micronaut, Helidon, Javalin, Dropwizard,
+  # Vert.x, Spark), or a WAR for a servlet container.
+  - id: role-java-web
+    phase: role
+    role: web
+    priority: 60
+    when:
+      all:
+        - kind: java
+        - any:
+            - all:
+                - code: &boot_app '@SpringBootApplication\b|\bSpringApplication\.run\s*\(|\bnew\s+SpringApplicationBuilder\b|\brunApplication\s*<'
+                - closure:
+                    package: 'org\.springframework\.boot:spring-boot-starter-(web|webflux|webmvc|jersey|websocket|graphql|thymeleaf|freemarker|mustache|groovy-templates|data-rest|tomcat|jetty|undertow|reactor-netty|hateoas|webservices)|org\.springframework\.cloud:spring-cloud-(starter-gateway.*|gateway-server.*|config-server|starter-netflix-eureka-server|netflix-eureka-server|starter-netflix-zuul|starter-netflix-hystrix-dashboard|starter-netflix-turbine.*)|de\.codecentric:spring-boot-admin-(starter-)?server|org\.springframework:spring-webmvc|org\.springframework:spring-webflux|com\.vaadin:vaadin-spring-boot-starter'
+                    runtime: true
+            - all:
+                - package: 'io\.quarkus:quarkus-(resteasy.*|rest(-.*)?|vertx-http|undertow|reactive-routes|websockets.*|grpc|smallrye-graphql|spring-web|qute-web|oidc|keycloak-.*|smallrye-health)'
+                  runtime: true
+                - property: {Plugins: '(.*,)?(quarkus-maven-plugin|io\.quarkus)(,.*)?'}
+            - package: 'io\.micronaut:micronaut-http-server.*|io\.micronaut\.servlet:.*|io\.helidon\.webserver:.*|io\.helidon\.microprofile\.bundles:.*'
+              runtime: true
+            - all:
+                - package: 'io\.javalin:javalin.*|com\.sparkjava:spark-core|io\.dropwizard:dropwizard-core|io\.vertx:vertx-web|io\.ktor:ktor-server-.*|org\.eclipse\.jetty:jetty-server|io\.undertow:undertow-core|com\.linecorp\.armeria:armeria|org\.http4k:http4k-server-.*|io\.jooby:jooby.*'
+                  runtime: true
+                - code: &java_main '\bpublic\s+static\s+void\s+main\s*\(|\bfun\s+main\s*\(|\bstatic\s+void\s+main\s*\(\s*String'
+            - all:
+                - property: {Packaging: war}
+                - not: {property: {ReferencedBy: '.+'}}
+            - all:
+                - property: {Packaging: ear}
+                - not: {property: {ReferencedBy: '.+'}}
+
+  # A Spring Batch job without a web stack: runs and exits (a Kubernetes Job/CronJob).
+  - id: role-java-batch
+    phase: role
+    role: console
+    priority: 55
+    when:
+      all:
+        - kind: java
+        - code: *boot_app
+        - closure:
+            package: 'org\.springframework\.boot:spring-boot-starter-batch|org\.springframework\.cloud:spring-cloud-(starter-)?task.*'
+            runtime: true
+
+  # A Spring Boot (or Quarkus/Micronaut) application without HTTP: message listeners, schedulers,
+  # stream processors; a long-running Deployment.
+  - id: role-java-worker
+    phase: role
+    role: worker
+    priority: 50
+    when:
+      all:
+        - kind: java
+        - any:
+            - code: *boot_app
+            - property: {Plugins: '(.*,)?(quarkus-maven-plugin|io\.quarkus|io\.micronaut\.application)(,.*)?'}
+        - any:
+            - closure:
+                package: 'org\.springframework\.(boot:spring-boot-starter-(amqp|artemis|activemq|integration|quartz|pulsar|rsocket)|kafka:spring-kafka|cloud:spring-cloud-(starter-)?stream.*|cloud:spring-cloud-starter-aws-messaging|integration:.*|amqp:.*|jms:.*)|io\.awspring\.cloud:spring-cloud-aws-starter-sqs|com\.azure\.spring:spring-cloud-azure-starter-servicebus.*|io\.quarkus:quarkus-(messaging.*|smallrye-reactive-messaging.*|scheduler|quartz)|io\.micronaut\.(kafka|rabbitmq|nats|jms):.*|org\.quartz-scheduler:quartz|org\.apache\.kafka:kafka-(clients|streams)'
+                runtime: true
+            - code: '@(Scheduled|EnableScheduling|KafkaListener|RabbitListener|JmsListener|SqsListener|StreamListener|ServiceBusListener|EventListener)\b|\bimplements\s+(MessageListener|SmartLifecycle)\b'
+
+  # Any other Spring Boot application (CommandLineRunner/ApplicationRunner), or a plain program with
+  # a declared main class (Maven jar/shade/assembly manifest, Gradle application plugin) that no
+  # other module of the repository compiles in.
+  - id: role-java-console
+    phase: role
+    role: console
+    priority: 40
+    when:
+      all:
+        - kind: java
+        - not: {property: {ReferencedBy: '.+'}}
+        - any:
+            - code: *boot_app
+            - all:
+                - code: *java_main
+                - any:
+                    - property: {MainClass: '.+'}
+                    - property: {Plugins: '(.*,)?(application|maven-shade-plugin|maven-assembly-plugin|appassembler-maven-plugin|exec-maven-plugin|jib-maven-plugin|com\.google\.cloud\.tools\.jib|com\.github\.johnrengelman\.shadow|com\.gradleup\.shadow|org\.jetbrains\.kotlin\.jvm\.application)(,.*)?'}
 
   - id: role-python-web
     phase: role
@@ -383,15 +595,6 @@ rules:
       all:
         - kind: python
         - package: 'flask|django|fastapi|starlette|aiohttp|tornado|gunicorn|uvicorn|sanic|falcon|pyramid'
-
-  - id: role-java-web
-    phase: role
-    role: web
-    priority: 60
-    when:
-      all:
-        - kind: java
-        - package: 'spring-boot-starter-web|spring-boot-starter-webflux|quarkus-.*|micronaut-.*|javax\.servlet-api|jakarta\.servlet-api'
 
   - id: role-go-web
     phase: role

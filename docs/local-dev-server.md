@@ -1,6 +1,6 @@
 # Local development server
 
-How to set up a Debian 13 (trixie) server where Claude Code (or you) can develop containerizer and run
+How to set up a Debian 13 (trixie) server where Claude Code (or you) can develop Containerizer and run
 the whole end-to-end test suite locally, instead of pushing and waiting for GitHub workflows. Everything
 the workflows in [`.github/workflows`](../.github/workflows) do, except publishing (GHCR push, cosign
 signing, release assets, gh-pages), runs here with one command:
@@ -133,7 +133,7 @@ Ways to sign in on a headless server:
   `export CLAUDE_CODE_OAUTH_TOKEN=...` in `~dev/.bashrc` (mode 600) on the server.
 - **API key**: `export ANTHROPIC_API_KEY=...` from the Anthropic Console.
 
-`claude doctor` checks the install. With `claude` on `PATH`, containerizer's `--ai` option can also use
+`claude doctor` checks the install. With `claude` on `PATH`, Containerizer's `--ai` option can also use
 it as its backend (`CONTAINERIZER_AI_BACKEND=cli`).
 
 ## Clone and run

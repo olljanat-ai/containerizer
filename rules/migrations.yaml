@@ -911,3 +911,162 @@ migrations:
     steps:
       - Move business logic the UI shares with server code into a UI-free library or API so the server side can be containerized.
       - The client itself stays on PCs; rebuilding it as a web app is a separate project.
+
+  # ------------------------------------------------------------------ Java
+  - id: java-replace-com-bridge
+    for: [java-com-bridge]
+    kind: replace
+    replace: COM / ActiveX automation through JACOB or com4j
+    with: a Java library or the product's REST/SOAP API (Apache POI for Office documents)
+    effort: 5
+    packages:
+      add: [org.apache.poi:poi-ooxml]
+      remove: ['com.hynnet:jacob', 'net.sf.jacob-project:jacob', 'org.jvnet.com4j:com4j']
+    steps:
+      - List every COM ProgID and interface the code dispatches to (ActiveXComponent, Dispatch.call, com4j interfaces) and what each call does for the business.
+      - For Office documents, generate or read them with Apache POI (XSSF/XWPF) instead of driving Excel or Word; for a vendor COM server, use its REST/SOAP API or Java SDK.
+      - If the COM server has no other interface, keep it on a Windows host behind a small HTTP service and call that service from Java.
+      - Remove the jacob/com4j dependency and the bridge DLL from the build and the resources.
+    verify:
+      - The documents or results the component produces match those of the COM-based version for the same inputs.
+
+  - id: java-replace-windows-native
+    for: [java-jna-win32, java-native-windows-library]
+    kind: replace
+    replace: Windows DLL calls through JNA/JNI
+    with: portable Java APIs, or the Linux (.so) build of the native library
+    effort: 3
+    steps:
+      - List each Windows API or DLL entry point the code calls and what it is used for (files and ACLs, processes, the registry, the event log, a vendor SDK).
+      - Replace system calls with Java APIs (java.nio.file, ProcessHandle, java.util.logging/SLF4J to stdout, configuration instead of the registry).
+      - For a vendor native library, get its Linux build and ship lib<name>.so in the image next to the DLL; keep the Java binding unchanged.
+      - Where a call is only needed on Windows, put it behind an operating-system check so the Linux path never loads the DLL.
+    verify:
+      - The component starts in the Linux container with no UnsatisfiedLinkError, and the replaced functions pass their tests.
+
+  - id: java-replace-jdbc-odbc
+    for: [java-jdbc-odbc-bridge]
+    kind: replace
+    replace: 'JDBC-ODBC bridge (sun.jdbc.odbc, jdbc:odbc: URLs)'
+    with: the database's own JDBC driver, configured with a JDBC URL from the environment
+    effort: 3
+    packages:
+      add: [com.microsoft.sqlserver:mssql-jdbc]
+    steps:
+      - 'Find the ODBC data source each jdbc:odbc: URL names on the Windows server and the database behind it.'
+      - "Add that database's JDBC driver (mssql-jdbc, ojdbc, postgresql) and replace the URL with a jdbc:<vendor>: URL read from configuration."
+      - For Access or Excel files, move the data into a server database (or read it with UCanAccess as a stop-gap).
+      - Run the component on Java 8 or newer, which no longer has the bridge.
+    verify:
+      - Every query and update the component runs succeeds against the database through the new driver.
+
+  - id: java-externalize-windows-auth
+    for: [java-waffle-windows-auth]
+    kind: externalize
+    replace: Windows integrated authentication (WAFFLE, SSPI)
+    with: OpenID Connect sign-in (Spring Security OAuth2 login), or Kerberos/SPNEGO with a keytab
+    packages:
+      add: [org.springframework.boot:spring-boot-starter-oauth2-client]
+      remove: ['com.github.waffle:waffle-*']
+    steps:
+      - Register the application with the identity provider (Microsoft Entra ID, Keycloak) and configure spring.security.oauth2.client.* from environment variables and a Secret.
+      - Map the user's groups or roles claims to the authorities the code checked through WAFFLE.
+      - Where Windows single sign-on is required, use Spring Security Kerberos with a service principal keytab mounted from a Secret.
+    verify:
+      - A user signs in through the identity provider and sees the same authorizations as before.
+
+  - id: java-port-app-server
+    for: [java-ee-application-server, java-vendor-app-server-api]
+    kind: port
+    replace: Full Jakarta EE application server (EJB, EAR, vendor server APIs)
+    with: the vendor's Linux container image with its configuration, or Spring Boot / Quarkus
+    steps:
+      - Export the server configuration the application depends on (data sources, JMS queues, security realms, JNDI names) from the old server.
+      - Build the image on the Linux container image of a Jakarta EE server (Open Liberty, WildFly, Payara) and add that configuration as files, with secrets from environment variables.
+      - Replace vendor-specific APIs (weblogic.*, com.ibm.websphere.*) with standard Jakarta EE or MicroProfile ones so the image is not tied to one vendor.
+      - For a longer-term move, port EJBs to Spring Boot or Quarkus beans, which run as a plain JVM process.
+    verify:
+      - The application deploys in the container image with no missing JNDI resources and its main flows pass.
+
+  - id: java-upgrade-jvm
+    for: [java-unsupported-version]
+    kind: port
+    replace: Java 7 or older
+    with: Java 17 or 21 (LTS)
+    steps:
+      - Raise maven.compiler.release (or Gradle toolchain) to 17 or 21 and update the build plugins.
+      - Update libraries that use removed Java EE modules (JAXB, JAX-WS, javax.activation) by adding them as dependencies, and libraries that use illegal reflective access.
+      - Run the full test suite on the new JVM and fix the failures.
+    verify:
+      - mvn verify (or gradle build) passes on the new JDK.
+
+  # ------------------------------------------------------------------ Node.js
+  - id: node-replace-com-activex
+    for: [node-com-activex]
+    kind: replace
+    replace: COM / ActiveX automation through winax
+    with: a Node.js library or the product's REST API (exceljs, docx for Office files)
+    effort: 5
+    packages:
+      add: [exceljs]
+      remove: [winax]
+    steps:
+      - List every COM ProgID the code creates (new ActiveXObject) and what each call does for the business.
+      - For Office documents, generate or read them with exceljs or docx instead of driving Excel or Word; for a vendor COM server, use its REST API or SDK.
+      - If the COM server has no other interface, keep it on a Windows host behind a small HTTP service and call that service.
+      - Remove winax from package.json and the lockfile.
+    verify:
+      - The documents or results the component produces match those of the COM-based version for the same inputs.
+
+  - id: node-replace-windows-native
+    for: [node-ffi-win32]
+    kind: replace
+    replace: Windows DLL calls through FFI or NodeRT
+    with: portable Node.js APIs or packages, or the Linux build of the native library
+    effort: 3
+    steps:
+      - List each Windows DLL function or WinRT API the code calls and what it is used for.
+      - Replace system calls with Node.js APIs or cross-platform packages; for a vendor library, load its Linux .so build instead of the DLL.
+      - Where a call is only needed on Windows, put it behind process.platform === "win32" so the Linux path never loads the DLL.
+    verify:
+      - The component starts in the Linux container and the replaced functions pass their tests.
+
+  - id: node-externalize-windows-auth
+    for: [node-windows-sspi]
+    kind: externalize
+    replace: Windows integrated authentication (SSPI, NTLM)
+    with: OpenID Connect sign-in (openid-client), or Kerberos with a service keytab
+    packages:
+      add: [openid-client]
+      remove: [node-sspi, node-expose-sspi, express-ntlm]
+    steps:
+      - Register the application with the identity provider (Microsoft Entra ID, Keycloak) and read its client settings from environment variables and a Secret.
+      - Replace the SSPI middleware with an OIDC login flow and map the groups or roles claims to the checks the code made on the Windows user.
+    verify:
+      - A user signs in through the identity provider and sees the same authorizations as before.
+
+  - id: node-replace-sass
+    for: [node-sass-libsass]
+    kind: replace
+    replace: node-sass (LibSass)
+    with: sass (Dart Sass)
+    effort: 0.5
+    packages:
+      add: [sass]
+      remove: [node-sass]
+    steps:
+      - Replace node-sass with sass in package.json; sass-loader and gulp-sass pick it up as their implementation.
+      - Fix the few stylesheets that rely on LibSass-only behaviour (division with "/", deprecated functions) as the compiler reports them.
+    verify:
+      - The front-end build produces the same CSS bundle with no errors.
+
+  - id: node-upgrade-runtime
+    for: [node-unsupported-version]
+    kind: port
+    replace: An end-of-life Node.js line
+    with: the active Node.js LTS line (22 or 24)
+    steps:
+      - Update engines.node and the CI/runtime version to the LTS line.
+      - Update dependencies that do not support it (native addons, old build tools), regenerate the lockfile, and run the tests.
+    verify:
+      - npm ci and npm test pass on the LTS line.
