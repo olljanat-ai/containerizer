@@ -313,6 +313,11 @@ sbom:
   nuget_licenses: true
   nuget_feed: https://api.nuget.org/v3/index.json
   attach: true                # without a cosign key: OCI referrer artifact (oras attach)
+  # With `org --cosign-key` the SBOM is a signed attestation (cosign attest
+  # --type cyclonedx). cosign records it in the public Rekor transparency log
+  # by default; set false for private registries that must not show up there
+  # (verify with `cosign verify-attestation --insecure-ignore-tlog`).
+  cosign_tlog_upload: true
   # OS packages of the base image (deb, apk, rpm): Debian copyright files name
   # the licence of every file a package ships, so glibc reads "GPL AND LGPL".
   # `report` shows them without counting them; `evaluate` applies the policy.

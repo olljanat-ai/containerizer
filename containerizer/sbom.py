@@ -65,6 +65,12 @@ LICENSE_URLS = [
     # Microsoft .NET Library License (older System.* and Microsoft.* packages): proprietary, redistributable
     (r"https?://go\.microsoft\.com/fwlink/\?LinkId=329770$", "LicenseRef-Microsoft-NET-Library"),
     (r"https?://dotnet\.microsoft\.com/(en-us/)?dotnet_library_license\.htm$", "LicenseRef-Microsoft-NET-Library"),
+    (r"https?://(www\.)?microsoft\.com/web/webpi/eula/net_library_eula_enu\.htm$", "LicenseRef-Microsoft-NET-Library"),
+    # repositories whose licence file has always been the same licence
+    (r"https?://github\.com/dotnet/(corefx|runtime|extensions|aspnetcore|efcore)/blob/(master|main)/LICENSE(\.txt)?$", "MIT"),
+    (r"https?://github\.com/microsoft/dotnet/blob/(master|main)/LICENSE$", "MIT"),
+    (r"https?://raw\.github(usercontent)?\.com/JamesNK/Newtonsoft\.Json/(master|main)/LICENSE\.md$", "MIT"),
+    (r"https?://logging\.apache\.org/log4net/license\.html$", "Apache-2.0"),
 ]
 
 
@@ -245,20 +251,31 @@ def source_sbom(component, repo=None) -> dict:
     doc = new_document(component.name)
     seen = set()
     for q in projects:
-        if q.kind_hint == "node":
-            deps = (q.manifest or {}).get("dependencies") or {}
-        else:
-            deps = q.packages or {}
         qt = PURL_TYPES.get(q.kind_hint, typ)
         if not qt:
             continue
+        locked = _locked_packages(q)
+        if locked is not None:
+            for name, ver, lic in locked:
+                if (qt, name.lower(), ver) in seen:
+                    continue
+                seen.add((qt, name.lower(), ver))
+                purl = _purl(qt, name, ver)
+                c = {"type": "library", "name": name, "version": ver, "bom-ref": purl, "purl": purl,
+                     "properties": [{"name": "containerizer:declared-in", "value": q.rel},
+                                    {"name": "containerizer:source", "value": "lock file"}]}
+                if lic:
+                    c["licenses"] = [{"expression": lic}] if re.search(r"\s(AND|OR|WITH)\s", lic) else \
+                        [{"license": {"id": spdx_id(lic)} if _is_spdx(lic) else {"name": lic}}]
+                doc["components"].append(c)
+            continue
+        deps = ((q.manifest or {}).get("dependencies") or {}) if q.kind_hint == "node" else (q.packages or {})
         for name, spec in sorted(deps.items(), key=lambda kv: kv[0].lower()):
             spec = str(spec or "")
             ver = _concrete(spec)
-            key = (qt, name.lower())
-            if key in seen:
+            if any(k[:2] == (qt, name.lower()) for k in seen):
                 continue
-            seen.add(key)
+            seen.add((qt, name.lower(), ver))
             purl = _purl(qt, name, ver)
             c = {"type": "library", "name": name, "bom-ref": purl, "purl": purl,
                  "properties": [{"name": "containerizer:declared-in", "value": q.rel}]}
@@ -268,6 +285,43 @@ def source_sbom(component, repo=None) -> dict:
                 c["properties"].append({"name": "containerizer:version-range", "value": spec})
             doc["components"].append(c)
     return doc
+
+
+def _locked_packages(q) -> list[tuple[str, str, str]] | None:
+    """(name, version, licence) of every runtime package in a project's lock file, or None without one:
+    package-lock.json (npm, dev packages left out; v2+ records licences) or packages.lock.json (NuGet)."""
+    d = q.dir
+    try:
+        if q.kind_hint == "node" and (d / "package-lock.json").is_file():
+            lock = json.loads((d / "package-lock.json").read_text(errors="replace"))
+            out = []
+            if isinstance(lock.get("packages"), dict):                # lockfile v2, v3
+                for k, v in lock["packages"].items():
+                    if not k or v.get("dev") or v.get("link") or not v.get("version"):
+                        continue
+                    name = v.get("name") or k.rsplit("node_modules/", 1)[-1]
+                    lic = v.get("license")
+                    lic = lic.get("type", "") if isinstance(lic, dict) else str(lic or "")
+                    out.append((name, str(v["version"]), lic))
+            else:                                                       # lockfile v1: no licences
+                stack = list((lock.get("dependencies") or {}).items())
+                while stack:
+                    name, v = stack.pop()
+                    if not v.get("dev") and v.get("version"):
+                        out.append((name, str(v["version"]), ""))
+                    stack += list((v.get("dependencies") or {}).items())
+            return sorted(set(out), key=lambda x: (x[0].lower(), x[1]))
+        if q.kind_hint == "dotnet" and (d / "packages.lock.json").is_file():
+            lock = json.loads((d / "packages.lock.json").read_text(errors="replace"))
+            out = set()
+            for tfm in (lock.get("dependencies") or {}).values():
+                for name, v in (tfm or {}).items():
+                    if (v or {}).get("type") != "Project" and (v or {}).get("resolved"):
+                        out.add((name, str(v["resolved"]), ""))
+            return sorted(out, key=lambda x: (x[0].lower(), x[1]))
+    except (OSError, ValueError, AttributeError):
+        return None
+    return None
 
 
 # --------------------------------------------------------------------------- NuGet licences
@@ -640,7 +694,8 @@ def attach(ref: str, digest: str, sbom_file: Path, key: str | None = None, docke
     if key:
         if not shutil.which("cosign"):
             return "not attested: cosign not installed"
-        rc, out, err = _run(["cosign", "attest", "--yes", "--key", key, "--type", "cyclonedx",
+        tlog = [] if config().get("cosign_tlog_upload", True) else ["--tlog-upload=false"]
+        rc, out, err = _run(["cosign", "attest", "--yes", *tlog, "--key", key, "--type", "cyclonedx",
                              "--predicate", str(sbom_file), target], 600, env)
         return "attested" if rc == 0 else f"cosign attest failed: {REDACT(err.strip())[-200:]}"
     if not config().get("attach", True):
