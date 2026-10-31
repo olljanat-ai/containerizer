@@ -7,7 +7,7 @@ component and records one status per component.
 
 | Status | Meaning |
 | --- | --- |
-| `healthy` | **Deployed and healthy**: the rollout finished, every replica is ready, and no container restarted while it was watched (`--settle`, default 60 s). |
+| `healthy` | **Deployed and healthy**: the rollout finished, every replica is ready, and no container restarted while it was watched (`--settle`, default 60 s). With [Sandbox HTTPS](sandbox-https.md), its URL also answered over HTTPS (a TLS error, no connection or a 5xx makes it `failing`). |
 | `failing` | **Deployed but failing (reason)**: crash loop, image cannot be pulled, missing Secret, pods cannot be scheduled, Pod Security rejected them, the rollout hit its deadline, a failed CronJob run, or the Argo CD / Flux sync itself failed. |
 | `pending` | Argo CD / Flux did not sync the commit, or the rollout did not finish, within `--sandbox-timeout` / `--timeout` (default 900 s). |
 | `scheduled` | A CronJob that is deployed but has not run yet: there is no run to judge. |

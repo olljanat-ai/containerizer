@@ -22,7 +22,6 @@ public name (issuer and metadata URLs must match): a CoreDNS override sends it t
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass, field
@@ -46,7 +45,6 @@ WSFED_METADATA = "/wsfed-metadata/FederationMetadata/2007-06/FederationMetadata.
 SAML2_TOKEN = "http://docs.oasis-open.org/wss/oasis-wss-saml-token-profile-1.1#SAMLV2.0"
 LABELS = {"app.kubernetes.io/part-of": "containerizer-sandbox", "app.kubernetes.io/managed-by": "containerizer"}
 DOCS = "https://containerizer.eu/sandbox-idp/"
-LABEL_MAX = 63
 W = "http://wso2.org/claims/"
 ADFS_CLAIMS = {          # claim types AD FS sends (ClaimTypes.*) -> WSO2 local claims
     "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name": "username",
@@ -70,12 +68,9 @@ def config() -> dict:
 # --------------------------------------------------------------------------- names and URLs
 
 def host_label(app: str, component: str) -> str:
-    """The component's DNS label under the sandbox wildcard domain (as sandbox_https.host_label)."""
-    label = app if component == app else f"{component}-{app}"
-    if len(label) > LABEL_MAX or label == config()["host_label"]:
-        h = hashlib.sha256(f"{app}/{component}".encode()).hexdigest()[:8]
-        label = label[:LABEL_MAX - 9].rstrip("-") + "-" + h
-    return label
+    """The component's DNS label under the sandbox wildcard domain: the same as its HTTPS Ingress."""
+    from .sandbox_https import host_label as label
+    return label(app, component)
 
 
 @dataclass(frozen=True)

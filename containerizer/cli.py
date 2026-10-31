@@ -100,8 +100,10 @@ def cmd_web(args) -> int:
 
 def _gitops(args):
     from .gitops import GitOpsOptions
+    from .sandbox_https import configured_domain, normalize_domain
+    domain = normalize_domain(args.ingress_domain) if getattr(args, "ingress_domain", None) else configured_domain()
     return GitOpsOptions(git_url=args.git_url, branch=args.git_branch, path=args.git_path or "",
-                         verify_commits=args.verify_commits, ingress_domain=(args.ingress_domain or "").strip(". ").lower(),
+                         verify_commits=args.verify_commits, ingress_domain=domain,
                          sandbox_idp=not args.no_sandbox_idp)
 
 
@@ -297,7 +299,8 @@ def cmd_sandbox(args) -> int:
               "of `containerizer org`", file=sys.stderr)
         return 2
     o = SandboxOptions(kube=KubeOptions(kubeconfig=args.kubeconfig, context=args.kube_context), gitops=args.gitops,
-                       timeout=args.timeout, settle=args.settle, revision=args.revision or "", learn=not args.no_learn)
+                       timeout=args.timeout, settle=args.settle, revision=args.revision or "", learn=not args.no_learn,
+                       ingress_address=args.ingress_address or "", ingress_ca=args.ingress_ca or "")
     doc = verify_sandbox(root, o)
     write_health(root, doc)
     for r in doc["components"]:
@@ -687,6 +690,9 @@ def main(argv=None) -> int:
     v.add_argument("--output-dir", default=".", help="checkout of the output repository (default: current folder)")
     _kube_args(v)
     v.add_argument("--revision", help="commit to wait for (default: HEAD of --output-dir)")
+    v.add_argument("--ingress-address", help="host:port to open the apps' HTTPS URLs at instead of their DNS address "
+                   "(the host name is still sent and checked; default on the appliance: its own 127.0.0.1:443)")
+    v.add_argument("--ingress-ca", help="extra CA certificates (PEM) to accept for the apps' HTTPS URLs")
     v.add_argument("--timeout", type=int, default=900, help="seconds to wait for sync and rollout (default 900)")
     v.add_argument("--settle", type=int, default=60,
                    help="a component is healthy only when it stays ready without restarts this long (default 60)")

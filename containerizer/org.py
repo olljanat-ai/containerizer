@@ -76,7 +76,7 @@ class OrgOptions:
     timeout: int = 1800
     pin: bool = False
     verify_commits: bool = False
-    ingress_domain: str | None = None   # wildcard domain of the sandbox (HTTPS Ingresses, the sandbox IdP)
+    ingress_domain: str | None = None   # wildcard domain for the HTTPS Ingresses (None: the appliance's setting)
     sandbox_idp: bool = True            # with a domain: components that sign in use the sandbox IdP (idp.py)
     sql: str | None = None
     work_dir: str = ".work/org"
@@ -793,9 +793,11 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
             if status and (x := skip(status, why)):
                 return x
 
+        from .sandbox_https import configured_domain, normalize_domain
+        domain = normalize_domain(o.ingress_domain) if o.ingress_domain else configured_domain()
         gitops = GitOpsOptions(git_url=out.url, branch=o.output_branch, path=rel, verify_commits=o.verify_commits,
-                               image_pull_secret=o.image_pull_secret or "",
-                               ingress_domain=(o.ingress_domain or "").strip(". ").lower(), sandbox_idp=o.sandbox_idp)
+                               image_pull_secret=o.image_pull_secret or "", ingress_domain=domain,
+                               sandbox_idp=o.sandbox_idp)
         scratch = work / "analyze"
         if scratch.exists():
             shutil.rmtree(scratch)

@@ -93,7 +93,7 @@ def load_application(conn, app_id: int) -> dict | None:
                                   "Refs, Source FROM cz.vFindingLatest WHERE ApplicationId = %s AND Severity <> 'info'",
                             (app_id,))
     app["sandbox"] = _rows(conn, "SELECT ComponentId, ComponentName, CheckedAt, Status, Reason, GitOps, Namespace, Workloads, "
-                                 "Ready, Restarts, RuleId, Outcome, Diagnosis, Events FROM cz.vSandboxLatest "
+                                 "Ready, Restarts, RuleId, Outcome, Diagnosis, Events, Url, UrlCheck FROM cz.vSandboxLatest "
                                  "WHERE ApplicationId = %s", (app_id,))
     app["history"] = _rows(conn, "SELECT TOP (20) AssessedAt, Rating, Score, EffortDays FROM cz.ApplicationAssessment "
                                  "WHERE ApplicationId = %s ORDER BY AssessedAt DESC, AssessmentId DESC", (app_id,))
@@ -528,7 +528,17 @@ def _sandbox(s: dict | None) -> str:
         return "<span class='muted'>not deployed</span>"
     st = s["Status"]
     return f"<span class='v-sb-{e(st)}'>{e(SANDBOX_TEXT.get(st, st))}</span>" + \
-        (f" <span class='muted small'>{e(s['Ready'])}</span>" if s.get("Ready") and st == "healthy" else "")
+        (f" <span class='muted small'>{e(s['Ready'])}</span>" if s.get("Ready") and st == "healthy" else "") + \
+        (f"<div class='small'>{_app_url(s)}</div>" if _app_url(s) else "")
+
+
+def _app_url(s: dict | None) -> str:
+    """The component's public HTTPS URL as a link (only well-formed https URLs from the health check)."""
+    from .sandbox import URL_RE
+    url = (s or {}).get("Url") or ""
+    if not URL_RE.fullmatch(url):
+        return ""
+    return f"<a href='{e(url)}' rel='noopener noreferrer' target='_blank'>{e(url.removeprefix('https://').rstrip('/'))}</a>"
 
 
 def _sandbox_detail(s: dict | None) -> str:
@@ -541,6 +551,9 @@ def _sandbox_detail(s: dict | None) -> str:
                                     f"checked {_date(s['CheckedAt'])}") if x)
     out = [f"<div class='sandbox'><div><span class='label'>Sandbox cluster</span> {_sandbox(s)}"
            f" <span class='muted small'>({e(where)})</span></div>"]
+    if _app_url(s):
+        out.append(f"<p><span class='label'>URL</span> {_app_url(s)}"
+                   f"{' <span class=' + chr(39) + 'muted small' + chr(39) + '>(' + e(s['UrlCheck']) + ')</span>' if s.get('UrlCheck') else ''}</p>")
     if st != "healthy" and s.get("Reason"):
         out.append(f"<p><span class='label'>Why</span> {e(_ws(s['Reason']))}</p>")
     elif st == "healthy":

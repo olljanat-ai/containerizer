@@ -29,3 +29,7 @@
 		format console
 	}
 }
+
+# The apps in the k3s sandbox under the administrators' wildcard domain (Admin -> Sandbox HTTPS): written by
+# the system agent; absent until a domain and certificate are set up.
+import /var/lib/containerizer/system/sandbox-https*.caddy

@@ -688,6 +688,11 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
             (cdir / "Dockerfile.dockerignore").write_text(dockerignore(a.repo))
             image = f"{registry}/{k8s_name(a.name)}/{k8s_name(c.name)}:{tag}"
             docs = k8s_manifests(a, c, plan, image)
+            domain = getattr(gitops, "ingress_domain", "") if gitops is not None else ""
+            if domain and plan.get("port"):         # HTTPS at <component>-<app>.<domain> (sandbox_https.py)
+                from .sandbox_https import ingress
+                svc = next(d for d in docs if d.get("kind") == "Service")
+                docs.append(ingress(domain, k8s_name(a.name), svc["metadata"]["name"], dict(svc["metadata"]["labels"])))
             if devdb is not None:
                 from .devdb import inject
                 inject(docs, devdb, c.name)
