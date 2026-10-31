@@ -653,6 +653,13 @@ def make_handler(connect, admin=None):
         def _admin(self, method: str, head: bool = False):
             u = urlsplit(self.path)
             body = b""
+            if method == "POST" and admin.is_upload(u.path):
+                # dev database backups: streamed to disk by admin_devdb.py, never held in memory
+                self.close_connection = True               # the body may be left unread on a refusal
+                self.connection.settimeout(120)            # a stalled upload does not hold a thread forever
+                n = int(self.headers.get("Content-Length") or 0)
+                r = admin.handle_upload(u.path, self.headers, self.rfile, n)
+                return self._send(r.status, r.body, r.ctype, head, r.headers, forms=True)
             if method == "POST":
                 n = int(self.headers.get("Content-Length") or 0)
                 if n > 64 * 1024:

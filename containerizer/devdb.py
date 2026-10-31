@@ -232,25 +232,6 @@ def default_prompt(app: dict, engine: str, dbname: str) -> str:
             "- Anything to run after the restore (migrations, seed scripts): <none>\n")
 
 
-def agent_prompt(app: dict, row: dict) -> str:
-    """The full prompt: what was uploaded, how it is restored, then the operator's instructions."""
-    eng = row["Engine"]
-    restore = {
-        "sqlserver": f"RESTORE DATABASE [{row['DatabaseName']}] FROM DISK = N'/backups/{row['StoredAs']}' WITH MOVE ... , REPLACE",
-        "postgresql": (f"pg_restore --no-owner --dbname {row['DatabaseName']} /backups/{row['StoredAs']}"
-                       if row["StoredAs"].endswith(".dump") else
-                       f"psql --dbname {row['DatabaseName']} --file /backups/{row['StoredAs']}"),
-        "mysql": f"mysql {row['DatabaseName']} < /backups/{row['StoredAs']}",
-    }[eng]
-    return (f"You are configuring the application \"{app.get('DisplayName') or app.get('Name')}\" "
-            f"({app.get('RepositoryUrl') or 'local folder'}) to run against its development database in a container.\n\n"
-            f"Database: {ENGINES[eng][0]}, name {row['DatabaseName']}, restored from {row['FileName']} "
-            f"(SHA-256 {row['Sha256']}) with:\n    {restore}\n\n"
-            "Rules: pass the connection string as an environment variable or Kubernetes secret, never in code or a "
-            "committed file; do not change the database schema; keep the change as small as possible.\n\n"
-            f"Instructions from the operator:\n{row['Prompt']}\n")
-
-
 def human_size(n: int) -> str:
     for unit in ("bytes", "KB", "MB", "GB"):
         if n < 1024 or unit == "GB":
@@ -538,3 +519,100 @@ def ai_env(a, comps: list, engine: str, database: str, prompt: str, model: str |
         if env:
             out[entry["component"]] = env[:20]
     return out, notes
+
+
+# --------------------------------------------------------------------------- the scan
+
+class DevDbError(Exception):
+    """The uploaded backup could not be prepared for the sandbox; the scan reports it and goes on
+    without the database."""
+
+
+def lookup(cs: str | None, source_key: str) -> dict | None:
+    """The dev database row of the application with this SourceKey (the scan's writer login reads it)."""
+    from .sqlstore import connect
+    conn = connect(cs)
+    try:
+        cur = conn.cursor(as_dict=True)
+        cur.execute("SELECT d.Engine, d.DatabaseName, d.FileName, d.SizeBytes, d.Sha256, d.StoredAs, d.Prompt, "
+                    "d.UploadedAt, d.UploadedBy FROM cz.DevDatabase d JOIN cz.Application a "
+                    "ON a.ApplicationId = d.ApplicationId WHERE a.SourceKey = %s", (source_key,))
+        return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def connection_env(a, comps: list, row: dict, ai: bool, model: str | None, log=print) -> tuple[dict, str, list[str]]:
+    """component name -> env templates; who chose them ("ai" or "default"); the LLM's notes."""
+    engine, env, notes, source = row["Engine"], {}, [], "default"
+    if ai:
+        try:
+            env, notes = ai_env(a, comps, engine, row["DatabaseName"], row.get("Prompt") or "", model)
+            source = "ai" if env else "default"
+        except Exception as ex:                          # the LLM is optional: fall back to the scan's findings
+            log(f"  dev database: the LLM gave no usable settings ({str(ex)[:200]}); using the connection strings found")
+    found = {c.name: (c.facts or {}).get("connection_strings") or [] for c in comps}
+    for c in comps:
+        if c.name not in env and (found[c.name] or not any(found.values())):
+            env[c.name] = default_env(engine, found[c.name])
+    return env, source, notes
+
+
+def prepare(row: dict, a, comps: list, settings: Settings, image: str, local: str, work: Path,
+            ai: bool = False, model: str | None = None, timeout: int = 3600, log=print) -> SandboxDb:
+    """Build the database image (the backup restored at its first start) as `local` and decide the
+    application's settings. Pushing `local` to `image` is the caller's."""
+    import subprocess
+    stored = settings.directory / row["StoredAs"]
+    if not re.fullmatch(r"[0-9a-f]{64}\.[a-z.]{3,8}", row["StoredAs"]) or not stored.is_file():
+        raise DevDbError(f"the uploaded file {row['FileName']} is missing from CONTAINERIZER_DEV_DB_DIR")
+    if _sha256(stored) != row["Sha256"]:
+        raise DevDbError(f"the uploaded file {row['FileName']} does not match its SHA-256 (changed on disk)")
+    ctx = work / "devdb-build"
+    if ctx.exists():
+        import shutil
+        shutil.rmtree(ctx)
+    build_context(stored, row["Engine"], row["DatabaseName"], ctx)
+    p = subprocess.run(["docker", "build", "--progress=plain", "-t", local, str(ctx)], capture_output=True, text=True,
+                       timeout=timeout, errors="replace")
+    if p.returncode != 0:
+        raise DevDbError(f"building the database image failed: {(p.stderr or p.stdout)[-400:]}")
+    env, source, notes = connection_env(a, comps, row, ai, model, log)
+    return SandboxDb(engine=row["Engine"], database=row["DatabaseName"], image=image, env=env, source=source, notes=notes)
+
+
+def readme(app: str, db: SandboxDb, row: dict) -> str:
+    """devdb/README.md in the generated folder: what runs, how the application reaches it."""
+    eng = ENGINES[db.engine][0]
+    lines = [f"# Dev database of {app}", "",
+             f"A {eng} database `{db.database}` restored from `{row['FileName']}` (SHA-256 `{row['Sha256']}`), "
+             f"uploaded by {row['UploadedBy']} on {str(row['UploadedAt'])[:16]}. It runs as the `{HOST}` Deployment "
+             f"next to the application, from the image `{db.image}`, and is restored again whenever its pod starts "
+             "(nothing is kept on a volume: it is a disposable copy for testing).", "",
+             f"- Reached at `{HOST}:{PORTS[db.engine]}` by the application's own pods only (NetworkPolicy `{HOST}`).",
+             f"- The application signs in as `{APP_USER}`; the password is in the Secret `{SECRET}` (key `password`), "
+             f"the {('sa' if db.engine == 'sqlserver' else 'root')} password in `{ADMIN_SECRET}`"
+             + (" (PostgreSQL: the application user is the database owner)" if db.engine == "postgresql" else "") + ".",
+             "- With External Secrets Operator (secrets.mode external-secrets) both are generated in the cluster by "
+             "its Password generator and never rotated; otherwise create them before the sync:",
+             "", "      kubectl -n <namespace> create secret generic devdb --from-literal=password=<random>",
+             "      kubectl -n <namespace> create secret generic devdb-admin --from-literal=password=<random>", "",
+             f"## Settings given to the application ({'chosen by the AI from the operator instructions' if db.source == 'ai' else 'the connection strings the scan found'})",
+             ""]
+    for comp, env in sorted(db.env.items()):
+        lines.append(f"- **{comp}**: " + ", ".join(f"`{e['name']}`" for e in env))
+    if not db.env:
+        lines.append("- none: no component reads a connection string the scan could find")
+    if db.notes:
+        lines += ["", "Notes from the AI:", ""] + [f"- {n}" for n in db.notes]
+    if row.get("Prompt"):
+        lines += ["", "## Operator instructions", "", "```text", row["Prompt"].replace("```", "'''"), "```"]
+    return "\n".join(lines) + "\n"
