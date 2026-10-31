@@ -355,7 +355,10 @@ def test_acl_interface_declaration_is_not_acl_use(tmp_path):
     c = comp(tmp_path, "public interface IFiles { DirectorySecurity GetAccessControl(string path); }")
     assert sev(c, "efs-ntfs") is None
     c = comp(tmp_path, "class F { void M(string p) { var s = new DirectoryInfo(p).GetAccessControl(); } }")
-    assert sev(c, "efs-ntfs") == "refactor"
+    assert sev(c, "efs-ntfs") is None and sev(c, "efs-acl-read") == "info"  # a read is a probe
+    c = comp(tmp_path, "class F { void M(string p) { var s = new DirectoryInfo(p).GetAccessControl();"
+                       " s.AddAccessRule(r); new DirectoryInfo(p).SetAccessControl(s); } }")
+    assert sev(c, "efs-ntfs") == "refactor" and sev(c, "efs-acl-read") is None
 
 
 def test_access_extension_in_mime_map_is_not_oledb(tmp_path):

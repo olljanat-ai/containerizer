@@ -56,7 +56,6 @@ def test_vendor_rules_are_complete():
     ("System.Speech", "pkg-system-speech"),
     ("Microsoft.Web.Administration", "pkg-web-administration"),
     ("TaskScheduler", "pkg-taskscheduler-api"),
-    ("Microsoft.Management.Infrastructure", "pkg-mmi-cim"),
     ("Microsoft.PowerShell.SDK", "pkg-powershell-sdk"),
     ("Microsoft.PowerShell.5.1.ReferenceAssemblies", "pkg-powershell-windows"),
     ("NAudio.WinMM", "pkg-naudio-windows"),

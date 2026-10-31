@@ -919,6 +919,27 @@ def _packages_config(proj_path: Path) -> dict[str, str]:
     return out
 
 
+_WIN_TOKEN_RE = re.compile(r"Windows|Win(?=[A-Z.\-_]|$)")
+
+
+def _mark_platform_twins(projects: list[Project]) -> None:
+    """PlatformTwin: for a project named with a Windows token (Duplicati.WindowsService,
+    Contoso.Win.Agent), the cross-platform executable of the same name without it
+    (Duplicati.Service): the Windows project is the Windows packaging of that program."""
+    exes = {}
+    for q in projects:
+        if q.kind_hint == "dotnet" and re.fullmatch(r"(?i)exe", q.properties.get("OutputType", "")) \
+                and not any("-windows" in t for t in q.tfms):
+            exes.setdefault(q.name.lower(), q)
+    for p in projects:
+        if p.kind_hint != "dotnet" or not _WIN_TOKEN_RE.search(p.name):
+            continue
+        twin = re.sub(r"\.{2,}", ".", _WIN_TOKEN_RE.sub("", p.name)).strip(".-_")
+        q = exes.get(twin.lower())
+        if twin and q is not None and q is not p:
+            p.properties.setdefault("PlatformTwin", q.rel)
+
+
 def _paket_references(path: Path) -> list[str]:
     """Package ids from a Paket paket.references file (one id per line, `group` headers)."""
     try:
@@ -1451,6 +1472,7 @@ def scan(root: str | Path) -> Repo:
             t = by_proj.get(r)
             if t is not None and t is not q:
                 t.properties.setdefault("ReferencedBy", q.rel)
+    _mark_platform_twins(projects)
     _mark_build_time_runs(projects, files, root)
 
     readme = ""

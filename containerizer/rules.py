@@ -26,9 +26,11 @@ unless noted):
   unguarded: callers      only the last check (for annotations on the member/type itself)
   any: [...], all: [...], not: {...}
   same_file: true         (next to `all`) the code/config/text conditions directly under the
-                          `all` must all match in one and the same file
+                          `all` must all match in one and the same file; a `not: {code: ...}`
+                          directly under it leaves out the files where that matches
   closure: {...}          the condition holds for the project or a project it references
   references: {...}       the condition holds for a project this one references directly
+  other_project: {...}    the condition holds for some other project of the repository
 
 `code`, `config` and `text` may use named groups; with `set` on a facts rule the
 captured groups become facts (e.g. `(?P<port>\\d+)`).
@@ -332,7 +334,7 @@ def _guarded(txt: str, pos: int, nested: bool = True, scope: "GuardScope | None"
         return True
     if scope is None:
         return False
-    if _in_guarded_block(txt, pos, helpers):
+    if _in_guarded_block(txt, pos, helpers) or _in_unbraced_os_if(txt, pos, helpers):
         return True
     return file is not None and scope.callers_guarded(file, txt, pos)
 
@@ -406,12 +408,20 @@ OS_CHECK_RE = re.compile(
     r"|Environment\.OSVersion\.Platform\s*==\s*PlatformID\.Win32NT)")
 
 
+# A branch that only runs in development (`if (env.IsDevelopment()) {...}`, the `else` of
+# `if (!Debugger.IsAttached)`) is not reached by the production container either, so in the block
+# form it counts like an OS check. Proximity alone (GUARD_RE) does not: `if (!env.IsDevelopment())`
+# right before a hit is the production path.
+DEV_CHECK_RE = re.compile(r"(?:[\w.]+\.)?(?:IsDevelopment\(\s*\)|IsDevEnvironment\b(?:\(\s*\))?)|(?:System\.Diagnostics\.)?Debugger\.IsAttached")
+
+
 def _is_os_check(e: str, helpers: re.Pattern | None) -> bool:
-    """`e` (one conjunct) is a positive OS check: OperatingSystem.IsWindows(), a known helper."""
+    """`e` (one conjunct) is a positive OS check: OperatingSystem.IsWindows(), a known helper
+    (or a development-only check, see DEV_CHECK_RE)."""
     e = _strip_parens(e)
     if e.startswith("!"):
         return False
-    if OS_CHECK_RE.fullmatch(e):
+    if OS_CHECK_RE.fullmatch(e) or DEV_CHECK_RE.fullmatch(e):
         return True
     return bool(helpers is not None and re.fullmatch(r"(?:[\w.]+\.)?(?:" + helpers.pattern + r")(?:\s*\(\s*\))?", e))
 
@@ -644,10 +654,19 @@ class GuardScope:
         out = []
         word = re.compile(rf"\b{re.escape(name)}\b")
         consts: set[str] = set()
+        decl_ns, decl_types = "", set()
+        # a private nested type cannot be handed out by name: every mention is inside its outer type
+        private_type = False
         if construct or member.kind == "type":
             for p, f in self._files():
                 if f == decl_file:
-                    consts = set(re.findall(r"\bconst\s+[\w.<>\[\]?]+\s+(\w+)\s*=", p.text(f, True)))
+                    dtxt = p.text(f, True)
+                    consts = set(re.findall(r"\bconst\s+[\w.<>\[\]?]+\s+(\w+)\s*=", dtxt))
+                    ns = re.search(r"\bnamespace\s+([\w.]+)", dtxt)
+                    decl_ns = ns.group(1) if ns else ""
+                    decl_types = set(re.findall(r"\b(?:class|struct|record|interface)\s+(\w+)", dtxt))
+                    private_type = member.kind == "type" and bool(
+                        re.match(r"(?:\[[^\]]*\]\s*)*(?:\w+\s+)*?private\b", dtxt[member.start:member.start + 300]))
                     break
         for p, f in self._files():
             txt = p.text(f, True)
@@ -664,6 +683,15 @@ class GuardScope:
                         re.search(r"nameof\s*\(\s*$|<see\s+cref=\"$|cref=\"[\w.]*$", before):
                     continue
                 if construct or member.kind == "type":
+                    q = re.search(r"([\w.]*\w)\.$", before)
+                    # qualified by a namespace that is not the type's own (and not an enclosing type):
+                    # another symbol of that name (Microsoft.Win32.Registry next to a Win32 class)
+                    if q and not (decl_ns + ".").endswith("." + q.group(1) + ".") and decl_ns != q.group(1) \
+                            and not decl_types & set(q.group(1).split(".")) \
+                            or re.search(r"(?:^|\n)\s*(?:global\s+)?using\s+(?:static\s+)?(?:\w+\s*=\s*)?[\w.]*\Z", before):
+                        continue
+                    if re.match(r"\s*\.\s*\w+(?:\s*<[^<>;()]*>)?\s*(?:\[\s*\]\s*)?\??\s+\w+\s*[;=,)]", after):
+                        continue                              # a field/local/parameter of a nested type
                     if re.search(r"\bnew\s+(?:[\w.]+\.)?$", before) and re.match(r"\s*[({]", after):
                         out.append((p, f, txt, s))            # new T(...)
                     elif (mm := re.match(r"\s*\.\s*(\w+)", after)):
@@ -677,6 +705,9 @@ class GuardScope:
                         return None                           # used through reflection, or subclassed
                     elif re.search(r"[<,]\s*(?:[\w.]+\.)?$", before) and re.match(r"[^<>;(){}]*>\s*\(", after) and \
                             not re.search(r"\bnew\s+[\w.]+\s*<[^<>;]*$", before):
+                        if private_type:
+                            out.append((p, f, txt, s))        # Deserialize<T[]>(...) inside the outer type
+                            continue
                         return None                           # a generic method's type argument: AddSingleton<I, T>()
                     # other mentions (field/parameter/local types) do not run anything
                     continue
@@ -805,6 +836,40 @@ def _in_guarded_block(txt: str, pos: int, helpers: re.Pattern | None) -> bool:
                         return True
         if _TYPE_HEADER_RE.search(flat):
             break
+    return False
+
+
+_IF_RE = re.compile(r"\bif\s*\(")
+
+
+def _in_unbraced_os_if(txt: str, pos: int, helpers: re.Pattern | None, window: int = 3000) -> bool:
+    """pos is inside the single statement of a brace-less `if (<OS check>) statement;` that spans
+    more lines than the proximity check covers (`if (IsWindows()) return mode switch { ... };`)."""
+    for m in _IF_RE.finditer(txt, max(0, pos - window), pos):
+        depth, i = 1, m.end()
+        while i < pos and depth:
+            depth += {"(": 1, ")": -1}.get(txt[i], 0)
+            i += 1
+        if depth or not _cond_implies_os(txt[m.end():i - 1], helpers):
+            continue
+        j = i
+        while j < pos and txt[j].isspace():
+            j += 1
+        if j >= pos or txt[j] == "{":
+            continue
+        depth = 0                                     # the statement ends at its first top-level ';'
+        for k in range(j, pos):
+            c = txt[k]
+            if c in "([{":
+                depth += 1
+            elif c in ")]}":
+                depth -= 1
+                if depth < 0:
+                    break
+            elif c == ";" and depth == 0:
+                break
+        else:
+            return True
     return False
 
 
@@ -968,6 +1033,15 @@ def _eval_one(key: str, val, cond: dict, ctx: Context):
             if ok:
                 return True, e, c
         return False, [], {}
+    if key == "other_project":
+        # the condition holds for another project of the repository (keep it to cheap
+        # project-file primitives: it is evaluated against every project)
+        for q in ctx.repo.projects:
+            if q is not p:
+                ok, e, c = evaluate(val, Context(ctx.repo, q, ""))
+                if ok:
+                    return True, e, c
+        return False, [], {}
     if p is None:
         # project primitives on repo scope: true if any project matches
         for proj in ctx.repo.projects:
@@ -1023,7 +1097,17 @@ def _eval_all_same_file(subs: list, ctx: Context):
     """`all` with same_file: every code/config/text leaf must hit one common file."""
     ev, caps = [], {}
     per_leaf: list[dict[str, Evidence]] = []
+    excluded: set[str] = set()
     for sub in subs:
+        neg = isinstance(sub, dict) and list(sub) == ["not"] and isinstance(sub["not"], dict) and \
+            [k for k in sub["not"] if k in TEXT_KEYS]
+        if neg and len([k for k in sub["not"] if k not in ("in", "max", "unguarded")]) == 1:
+            # `not: {code: ...}` under same_file: leave out the files where it matches
+            key, n = neg[0], sub["not"]
+            hits, _ = _search_files(ctx, n[key], _candidate_files(ctx, key, n.get("in")),
+                                    strip=(key in ("code", "config")), max_hits=None)
+            excluded |= {h.file for h in hits}
+            continue
         leaf = isinstance(sub, dict) and [k for k in sub if k in TEXT_KEYS]
         if leaf and len([k for k in sub if k not in ("in", "max", "unguarded")]) == 1:
             key = leaf[0]
@@ -1046,6 +1130,7 @@ def _eval_all_same_file(subs: list, ctx: Context):
         common = set(per_leaf[0])
         for d in per_leaf[1:]:
             common &= set(d)
+        common -= excluded
         if not common:
             return False, [], {}
         for f in sorted(common)[:3]:

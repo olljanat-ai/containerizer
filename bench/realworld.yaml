@@ -204,6 +204,7 @@ repos:
       Duplicati.WindowsService (SCM wrapper) and WindowsModulesLoader (net10.0-windows, VSS snapshots) are optional
       Windows host integrations that a container does not need -- they must not drag the rating to D.
       tool (2026-10-30): E. Duplicati.Server is console (Exe, hosts Kestrel through the WebserverCore library, so no Sdk.Web on the exe); every CLI is a server-tier console component and inherits blockers from Duplicati.Library.Utility: pinvoke-vendor on Power/MacOSSleepAssertion.cs:86 [DllImport(IOKIT)] (macOS framework), pinvoke-gui on SHGetFolder.cs:82 Shell32 (Windows-only path), active-directory-ds on ISystemIO.cs:34 `DirectoryEntry(string path)` (own method name). com-interop on WindowsModulesLoader is real but optional.
+      tool (2026-10-31): A. WindowsModulesLoader (Exe, net10.0-windows only, cross-platform executables beside it) and WindowsService (ServiceBase wrapper of the Duplicati.Service twin) are tools; Microsoft.Win32.* no longer counts as a use of the own Win32 class; CimSession only behind OS checks; SMBLibrary share paths are not file paths.
 
   - name: rw2-customers-orders
     url: https://github.com/microsoft/Windows-appsample-customers-orders-database
@@ -476,6 +477,7 @@ repos:
       developer utilities (module packager, Web API test client) and build/ holds build executables: tools, not
       server components. App_Data (tenants, media) must be a volume -> A.
       tool (2026-10-30): B. os-backslash-path-join (rules/35-config-os.yaml:59) on Areas/Admin/Controllers/MaintenanceController.cs:1133 `BackupDir + "\\" + name`, but that path goes through Smartstore's LocalFileSystem.MapPathInternal which rewrites '\\' to '/' (src/Smartstore/IO/LocalFileSystem/LocalFileSystem.cs:152-156), and ModuleDescriptor.cs:69 is inside `if (CommonHelper.IsDevEnvironment)`; process-start-exe (rules/20-platform.yaml:245) on LightningCssTransformer.cs:160 which already picks `runtimeInfo.IsWindows ? "lightningcss.exe" : "lightningcss"`. Both false positives -> A. Role: Smartstore.Build is a NUKE build project (Nuke.Common), classified console (no role-tool clause for Nuke); build/wkhtml-tests/Probe also console.
+      tool (2026-10-31): A. ModuleDescriptor.cs:69 sits in `if (CommonHelper.IsDevEnvironment)`, now a guard.
 
   - name: rw4-virtocommerce
     url: https://github.com/VirtoCommerce/vc-platform
@@ -536,6 +538,7 @@ repos:
       MiniDump.cs P/Invokes dbghelp.dll but only on ThreadAbort with DumpOnTimeoutThreadAbort (off by default).
       templates/ holds dotnet-new template content (UmbracoProject etc.), not part of the product. A.
       tool (2026-10-30): B. os-named-sync-objects (rules/35-config-os.yaml:359) on Umbraco.Core/SystemLock.cs:52 named Semaphore, only reached from MainDomSemaphoreLock, which throws PlatformNotSupportedException off Windows (Runtime/MainDomSemaphoreLock.cs:23) and is opt-in by config (UmbracoBuilder.CoreServices.cs:314; default is the SQL MainDom lock); os-backslash-path-join on SqlLocalDbDatabaseProviderMetadata.cs:81 (LocalDB provider, Windows-only by design); cfg-localhost-endpoint-in-code (rules/35-config-os.yaml:710) on UmbracoContext.cs:96 `new Uri("http://localhost")`, a null fallback, not an endpoint. All false positives -> A. Role: Umbraco.Infrastructure (the core runtime library) classified tool by role-tool's MSBuild-task clause (rules/00-roles.yaml, package Microsoft.Build.Tasks.Core, used by ModelsBuilder in-memory compilation). templates/UmbracoProject reported as a web component (template content).
+      tool (2026-10-31): A. MiniDump (dbghelp + its kernel32 helpers) is info pinvoke-dbghelp; FilePermissionHelper ACL read is info efs-acl-read; MacroSource.Replace('/', '\\') goes to Umbraco's normalising IFileSystem.
 
   - name: rw4-accountgo
     url: https://github.com/mebael/accountgo
