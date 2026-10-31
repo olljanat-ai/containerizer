@@ -1,27 +1,31 @@
 -- Containerizer results database (Microsoft SQL Server 2016 or later, Azure SQL Database).
 -- Idempotent: `python -m containerizer db init` runs it on every upgrade. Batches are separated by GO.
 --
---   cz.BusinessUnit 1─* cz.Product 1─* cz.Application 1─* cz.Component      (who owns what)
---   cz.Application 1─* cz.ApplicationAssessment 1─* cz.ComponentAssessment  (one row per scan)
---                                                1─* cz.Finding             (why, fix, references)
+-- Everything lives in one dedicated schema (default "containerizer", set with Schema= in the connection
+-- string or CONTAINERIZER_SQL_SCHEMA), and the roles are named after it, so the tables can share a
+-- database with other applications. Nothing is created in dbo.
 --
--- The scan fills Application, Component and the assessment tables. People fill BusinessUnit and
--- Product and set Application.ProductId / Product.BusinessUnitId; a scan never overwrites them.
+--   BusinessUnit 1-* Product 1-* Application 1-* Component                     (who owns what)
+--   Application 1-* ApplicationAssessment 1-* ComponentAssessment, Finding     (one per scan)
+--   AuditLog: every change to BusinessUnit, Product and the mapping of Application, with who made it
+--
+-- The scan fills Application, Component and the assessment tables. People maintain business units,
+-- products and the application mapping in the admin pages of the web UI; a scan never overwrites them.
 -- See docs/results-database.md.
 
-IF SCHEMA_ID(N'cz') IS NULL EXEC(N'CREATE SCHEMA cz AUTHORIZATION dbo');
+IF SCHEMA_ID(N'${schema}') IS NULL EXEC(N'CREATE SCHEMA [${schema}] AUTHORIZATION dbo');
 GO
 
-IF OBJECT_ID(N'cz.SchemaVersion', N'U') IS NULL
-CREATE TABLE cz.SchemaVersion (
+IF OBJECT_ID(N'[${schema}].SchemaVersion', N'U') IS NULL
+CREATE TABLE [${schema}].SchemaVersion (
     Version     int          NOT NULL CONSTRAINT PK_SchemaVersion PRIMARY KEY,
     AppliedAt   datetime2(0) NOT NULL CONSTRAINT DF_SchemaVersion_AppliedAt DEFAULT SYSUTCDATETIME()
 );
 GO
 
 -- Plain-language meaning of the ratings, for people reading the tables directly.
-IF OBJECT_ID(N'cz.Rating', N'U') IS NULL
-CREATE TABLE cz.Rating (
+IF OBJECT_ID(N'[${schema}].Rating', N'U') IS NULL
+CREATE TABLE [${schema}].Rating (
     Rating      char(1)       NOT NULL CONSTRAINT PK_Rating PRIMARY KEY,
     Title       nvarchar(100) NOT NULL,
     Description nvarchar(400) NOT NULL,
@@ -29,8 +33,8 @@ CREATE TABLE cz.Rating (
 );
 GO
 
-IF OBJECT_ID(N'cz.BusinessUnit', N'U') IS NULL
-CREATE TABLE cz.BusinessUnit (
+IF OBJECT_ID(N'[${schema}].BusinessUnit', N'U') IS NULL
+CREATE TABLE [${schema}].BusinessUnit (
     BusinessUnitId int IDENTITY(1,1) NOT NULL CONSTRAINT PK_BusinessUnit PRIMARY KEY,
     Name           nvarchar(200)  NOT NULL CONSTRAINT UQ_BusinessUnit_Name UNIQUE,
     Description    nvarchar(1000) NULL,
@@ -39,28 +43,33 @@ CREATE TABLE cz.BusinessUnit (
 );
 GO
 
-IF OBJECT_ID(N'cz.Product', N'U') IS NULL
-CREATE TABLE cz.Product (
+IF OBJECT_ID(N'[${schema}].Product', N'U') IS NULL
+CREATE TABLE [${schema}].Product (
     ProductId      int IDENTITY(1,1) NOT NULL CONSTRAINT PK_Product PRIMARY KEY,
     Name           nvarchar(200)  NOT NULL CONSTRAINT UQ_Product_Name UNIQUE,
     Description    nvarchar(1000) NULL,
     Owner          nvarchar(200)  NULL,
-    BusinessUnitId int            NULL CONSTRAINT FK_Product_BusinessUnit REFERENCES cz.BusinessUnit (BusinessUnitId),
+    BusinessUnitId int            NULL CONSTRAINT FK_Product_BusinessUnit REFERENCES [${schema}].BusinessUnit (BusinessUnitId),
     CreatedAt      datetime2(0)   NOT NULL CONSTRAINT DF_Product_CreatedAt DEFAULT SYSUTCDATETIME()
 );
+GO
+-- Link to the product's page in another tool (CMDB, product catalogue, wiki); https only.
+IF COL_LENGTH(N'[${schema}].Product', N'InfoUrl') IS NULL
+ALTER TABLE [${schema}].Product ADD InfoUrl nvarchar(400) NULL
+    CONSTRAINT CK_Product_InfoUrl CHECK (InfoUrl LIKE N'https://_%' AND InfoUrl NOT LIKE N'%[<>"'' ]%');
 GO
 
 -- One row per assessed application (a repository, or an app folder in one). SourceKey is the stable
 -- identity the scan matches on: "<git remote URL>#<folder in the repository>", or the app name.
-IF OBJECT_ID(N'cz.Application', N'U') IS NULL
-CREATE TABLE cz.Application (
+IF OBJECT_ID(N'[${schema}].Application', N'U') IS NULL
+CREATE TABLE [${schema}].Application (
     ApplicationId int IDENTITY(1,1) NOT NULL CONSTRAINT PK_Application PRIMARY KEY,
     SourceKey     nvarchar(400)  NOT NULL CONSTRAINT UQ_Application_SourceKey UNIQUE,
     Name          nvarchar(200)  NOT NULL,          -- from the scan (folder name)
     DisplayName   nvarchar(200)  NULL,              -- set by people; shown instead of Name
     Description   nvarchar(1000) NULL,              -- set by people
     Owner         nvarchar(200)  NULL,              -- set by people
-    ProductId     int            NULL CONSTRAINT FK_Application_Product REFERENCES cz.Product (ProductId),
+    ProductId     int            NULL CONSTRAINT FK_Application_Product REFERENCES [${schema}].Product (ProductId),
     RepositoryUrl nvarchar(400)  NULL,
     SourcePath    nvarchar(400)  NULL,              -- folder in the repository
     FirstSeenAt   datetime2(0)   NOT NULL CONSTRAINT DF_Application_FirstSeenAt DEFAULT SYSUTCDATETIME(),
@@ -71,10 +80,10 @@ GO
 
 -- A deployable part of an application (web site, service, worker, desktop client, ...), matched by
 -- its project file path inside the application. Created and mapped to its application by the scan.
-IF OBJECT_ID(N'cz.Component', N'U') IS NULL
-CREATE TABLE cz.Component (
+IF OBJECT_ID(N'[${schema}].Component', N'U') IS NULL
+CREATE TABLE [${schema}].Component (
     ComponentId   int IDENTITY(1,1) NOT NULL CONSTRAINT PK_Component PRIMARY KEY,
-    ApplicationId int           NOT NULL CONSTRAINT FK_Component_Application REFERENCES cz.Application (ApplicationId),
+    ApplicationId int           NOT NULL CONSTRAINT FK_Component_Application REFERENCES [${schema}].Application (ApplicationId),
     ProjectPath   nvarchar(400) NOT NULL,
     Name          nvarchar(200) NOT NULL,
     FirstSeenAt   datetime2(0)  NOT NULL CONSTRAINT DF_Component_FirstSeenAt DEFAULT SYSUTCDATETIME(),
@@ -84,12 +93,12 @@ CREATE TABLE cz.Component (
 GO
 
 -- One row per scan of an application. History is kept; the views pick the latest.
-IF OBJECT_ID(N'cz.ApplicationAssessment', N'U') IS NULL
-CREATE TABLE cz.ApplicationAssessment (
+IF OBJECT_ID(N'[${schema}].ApplicationAssessment', N'U') IS NULL
+CREATE TABLE [${schema}].ApplicationAssessment (
     AssessmentId   int IDENTITY(1,1) NOT NULL CONSTRAINT PK_ApplicationAssessment PRIMARY KEY,
-    ApplicationId  int            NOT NULL CONSTRAINT FK_ApplicationAssessment_Application REFERENCES cz.Application (ApplicationId),
+    ApplicationId  int            NOT NULL CONSTRAINT FK_ApplicationAssessment_Application REFERENCES [${schema}].Application (ApplicationId),
     AssessedAt     datetime2(0)   NOT NULL CONSTRAINT DF_ApplicationAssessment_AssessedAt DEFAULT SYSUTCDATETIME(),
-    Rating         char(1)        NOT NULL CONSTRAINT FK_ApplicationAssessment_Rating REFERENCES cz.Rating (Rating),
+    Rating         char(1)        NOT NULL CONSTRAINT FK_ApplicationAssessment_Rating REFERENCES [${schema}].Rating (Rating),
     Score          int            NOT NULL,         -- readiness 0-100
     EffortDays     decimal(9,1)   NOT NULL,         -- estimated person-days
     Confidence     decimal(4,2)   NOT NULL,         -- 0-1, how sure the rules are
@@ -101,14 +110,14 @@ CREATE TABLE cz.ApplicationAssessment (
     ReportJson     nvarchar(max)  NULL              -- the full assessment.json entry
 );
 GO
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_ApplicationAssessment_App' AND object_id = OBJECT_ID(N'cz.ApplicationAssessment'))
-CREATE INDEX IX_ApplicationAssessment_App ON cz.ApplicationAssessment (ApplicationId, AssessedAt DESC, AssessmentId DESC);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_ApplicationAssessment_App' AND object_id = OBJECT_ID(N'[${schema}].ApplicationAssessment'))
+CREATE INDEX IX_ApplicationAssessment_App ON [${schema}].ApplicationAssessment (ApplicationId, AssessedAt DESC, AssessmentId DESC);
 GO
 
-IF OBJECT_ID(N'cz.ComponentAssessment', N'U') IS NULL
-CREATE TABLE cz.ComponentAssessment (
-    AssessmentId       int           NOT NULL CONSTRAINT FK_ComponentAssessment_Assessment REFERENCES cz.ApplicationAssessment (AssessmentId) ON DELETE CASCADE,
-    ComponentId        int           NOT NULL CONSTRAINT FK_ComponentAssessment_Component REFERENCES cz.Component (ComponentId),
+IF OBJECT_ID(N'[${schema}].ComponentAssessment', N'U') IS NULL
+CREATE TABLE [${schema}].ComponentAssessment (
+    AssessmentId       int           NOT NULL CONSTRAINT FK_ComponentAssessment_Assessment REFERENCES [${schema}].ApplicationAssessment (AssessmentId) ON DELETE CASCADE,
+    ComponentId        int           NOT NULL CONSTRAINT FK_ComponentAssessment_Component REFERENCES [${schema}].Component (ComponentId),
     Role               nvarchar(40)  NOT NULL,      -- web, worker, console, desktop, ...
     Tier               nvarchar(40)  NOT NULL,      -- server, platform, database, client, other
     TargetFramework    nvarchar(200) NULL,
@@ -125,11 +134,11 @@ CREATE TABLE cz.ComponentAssessment (
 GO
 
 -- ComponentId NULL: a finding about the repository as a whole.
-IF OBJECT_ID(N'cz.Finding', N'U') IS NULL
-CREATE TABLE cz.Finding (
+IF OBJECT_ID(N'[${schema}].Finding', N'U') IS NULL
+CREATE TABLE [${schema}].Finding (
     FindingId    bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_Finding PRIMARY KEY,
-    AssessmentId int            NOT NULL CONSTRAINT FK_Finding_Assessment REFERENCES cz.ApplicationAssessment (AssessmentId) ON DELETE CASCADE,
-    ComponentId  int            NULL CONSTRAINT FK_Finding_Component REFERENCES cz.Component (ComponentId),
+    AssessmentId int            NOT NULL CONSTRAINT FK_Finding_Assessment REFERENCES [${schema}].ApplicationAssessment (AssessmentId) ON DELETE CASCADE,
+    ComponentId  int            NULL CONSTRAINT FK_Finding_Component REFERENCES [${schema}].Component (ComponentId),
     RuleId       nvarchar(200)  NOT NULL,
     Severity     nvarchar(20)   NOT NULL,           -- as it counts for this component
     RuleSeverity nvarchar(20)   NOT NULL,           -- as written in the rule
@@ -145,11 +154,11 @@ CREATE TABLE cz.Finding (
     Source       nvarchar(40)   NULL                -- curated, learned, runtime
 );
 GO
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Finding_Assessment' AND object_id = OBJECT_ID(N'cz.Finding'))
-CREATE INDEX IX_Finding_Assessment ON cz.Finding (AssessmentId, ComponentId);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Finding_Assessment' AND object_id = OBJECT_ID(N'[${schema}].Finding'))
+CREATE INDEX IX_Finding_Assessment ON [${schema}].Finding (AssessmentId, ComponentId);
 GO
 
-MERGE cz.Rating AS t
+MERGE [${schema}].Rating AS t
 USING (VALUES
     ('A', N'Lift and shift', N'Containers with configuration only', 1),
     ('B', N'Minor refactoring', N'Small code changes', 2),
@@ -164,85 +173,185 @@ GO
 
 -- Latest assessment of every application, with its product and business unit ("(not assigned)" when
 -- nobody has mapped it yet). This is what the web UI reads.
-CREATE OR ALTER VIEW cz.vApplicationLatest AS
+CREATE OR ALTER VIEW [${schema}].vApplicationLatest AS
 SELECT a.ApplicationId,
        COALESCE(a.DisplayName, a.Name) AS ApplicationName,
        a.Name AS ScanName, a.Description, a.Owner, a.RepositoryUrl, a.SourcePath,
-       p.ProductId, p.Name AS ProductName, p.Owner AS ProductOwner,
+       p.ProductId, p.Name AS ProductName, p.Owner AS ProductOwner, p.InfoUrl AS ProductInfoUrl,
        bu.BusinessUnitId, bu.Name AS BusinessUnitName, bu.Owner AS BusinessUnitOwner,
        x.AssessmentId, x.AssessedAt, x.Rating, r.Title AS RatingTitle, r.Description AS RatingDescription,
        x.Score, x.EffortDays, x.Confidence, x.Summary, x.Verified, x.SourceCommit, x.SourceBranch
-FROM cz.Application a
-CROSS APPLY (SELECT TOP (1) * FROM cz.ApplicationAssessment aa
+FROM [${schema}].Application a
+CROSS APPLY (SELECT TOP (1) * FROM [${schema}].ApplicationAssessment aa
              WHERE aa.ApplicationId = a.ApplicationId
              ORDER BY aa.AssessedAt DESC, aa.AssessmentId DESC) x
-JOIN cz.Rating r ON r.Rating = x.Rating
-LEFT JOIN cz.Product p ON p.ProductId = a.ProductId
-LEFT JOIN cz.BusinessUnit bu ON bu.BusinessUnitId = p.BusinessUnitId
+JOIN [${schema}].Rating r ON r.Rating = x.Rating
+LEFT JOIN [${schema}].Product p ON p.ProductId = a.ProductId
+LEFT JOIN [${schema}].BusinessUnit bu ON bu.BusinessUnitId = p.BusinessUnitId
 WHERE a.Retired = 0;
 GO
 
-CREATE OR ALTER VIEW cz.vComponentLatest AS
+CREATE OR ALTER VIEW [${schema}].vComponentLatest AS
 SELECT l.ApplicationId, l.ApplicationName, l.ProductName, l.BusinessUnitName, l.AssessmentId,
        c.ComponentId, c.Name AS ComponentName, c.ProjectPath,
        ca.Role, ca.Tier, ca.TargetFramework, ca.Verdict, ca.VerdictText, ca.Score, ca.EffortDays,
        ca.Confidence, ca.WindowsContainerOk, ca.VerifyStatus, ca.VerifyDetail
-FROM cz.vApplicationLatest l
-JOIN cz.ComponentAssessment ca ON ca.AssessmentId = l.AssessmentId
-JOIN cz.Component c ON c.ComponentId = ca.ComponentId;
+FROM [${schema}].vApplicationLatest l
+JOIN [${schema}].ComponentAssessment ca ON ca.AssessmentId = l.AssessmentId
+JOIN [${schema}].Component c ON c.ComponentId = ca.ComponentId;
 GO
 
-CREATE OR ALTER VIEW cz.vFindingLatest AS
+CREATE OR ALTER VIEW [${schema}].vFindingLatest AS
 SELECT l.ApplicationId, l.ApplicationName, l.AssessmentId, f.ComponentId, c.Name AS ComponentName,
        f.FindingId, f.RuleId, f.Severity, f.RuleSeverity, f.Category, f.Title, f.Why, f.Fix, f.EffortDays,
        f.Via, f.OnlyCommands, f.Evidence, f.Refs, f.Source
-FROM cz.vApplicationLatest l
-JOIN cz.Finding f ON f.AssessmentId = l.AssessmentId
-LEFT JOIN cz.Component c ON c.ComponentId = f.ComponentId;
+FROM [${schema}].vApplicationLatest l
+JOIN [${schema}].Finding f ON f.AssessmentId = l.AssessmentId
+LEFT JOIN [${schema}].Component c ON c.ComponentId = f.ComponentId;
 GO
 
 -- Applications nobody has mapped to a product yet, and products without a business unit.
-CREATE OR ALTER VIEW cz.vUnmapped AS
+CREATE OR ALTER VIEW [${schema}].vUnmapped AS
 SELECT N'Application' AS Kind, a.ApplicationId AS Id, COALESCE(a.DisplayName, a.Name) AS Name, a.RepositoryUrl AS Detail
-FROM cz.Application a WHERE a.ProductId IS NULL AND a.Retired = 0
+FROM [${schema}].Application a WHERE a.ProductId IS NULL AND a.Retired = 0
 UNION ALL
-SELECT N'Product', p.ProductId, p.Name, NULL FROM cz.Product p WHERE p.BusinessUnitId IS NULL;
+SELECT N'Product', p.ProductId, p.Name, NULL FROM [${schema}].Product p WHERE p.BusinessUnitId IS NULL;
+GO
+
+-- Audit trail: one row per changed row of BusinessUnit, Product and Application (mapping and the
+-- people-maintained columns; routine LastSeenAt updates by the scan are not logged). Written by
+-- triggers, so changes made directly with SQL are recorded too. Who: the admin UI and the API set the
+-- signed-in user or API client in SESSION_CONTEXT (read-only for the connection); otherwise it is the
+-- database login.
+-- DbLogin is always the real database login. Nobody is granted UPDATE or DELETE on this table.
+IF OBJECT_ID(N'[${schema}].AuditLog', N'U') IS NULL
+CREATE TABLE [${schema}].AuditLog (
+    AuditId       bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_AuditLog PRIMARY KEY,
+    ChangedAt     datetime2(3)  NOT NULL CONSTRAINT DF_AuditLog_ChangedAt DEFAULT SYSUTCDATETIME(),
+    ChangedBy     nvarchar(256) NOT NULL,          -- user (e-mail / UPN) or database login
+    ChangedByName nvarchar(256) NULL,              -- display name from the sign-in
+    DbLogin       nvarchar(256) NOT NULL CONSTRAINT DF_AuditLog_DbLogin DEFAULT ORIGINAL_LOGIN(),
+    Via           nvarchar(20)  NOT NULL,          -- admin UI, API, scan, SQL
+    TableName     nvarchar(50)  NOT NULL,
+    RowId         int           NOT NULL,
+    RowName       nvarchar(200) NULL,
+    Action        nvarchar(10)  NOT NULL,          -- insert, update, delete
+    OldValues     nvarchar(max) NULL,              -- JSON
+    NewValues     nvarchar(max) NULL               -- JSON
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_AuditLog_ChangedAt' AND object_id = OBJECT_ID(N'[${schema}].AuditLog'))
+CREATE INDEX IX_AuditLog_ChangedAt ON [${schema}].AuditLog (ChangedAt DESC) INCLUDE (TableName, RowId);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_AuditLog_Row' AND object_id = OBJECT_ID(N'[${schema}].AuditLog'))
+CREATE INDEX IX_AuditLog_Row ON [${schema}].AuditLog (TableName, RowId, ChangedAt DESC);
+GO
+
+CREATE OR ALTER FUNCTION [${schema}].fnAuditWho()
+RETURNS TABLE AS RETURN
+SELECT COALESCE(CAST(SESSION_CONTEXT(N'containerizer.user') AS nvarchar(256)), ORIGINAL_LOGIN()) AS ChangedBy,
+       CAST(SESSION_CONTEXT(N'containerizer.user_name') AS nvarchar(256)) AS ChangedByName,
+       CASE WHEN SESSION_CONTEXT(N'containerizer.user') IS NOT NULL
+                 THEN COALESCE(CAST(SESSION_CONTEXT(N'containerizer.via') AS nvarchar(20)), N'admin UI')
+            WHEN IS_ROLEMEMBER(N'${schema}_writer') = 1 AND IS_ROLEMEMBER(N'db_owner') = 0 THEN N'scan'
+            ELSE N'SQL' END AS Via;
+GO
+
+CREATE OR ALTER TRIGGER [${schema}].trBusinessUnitAudit ON [${schema}].BusinessUnit
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'BusinessUnit', COALESCE(i.BusinessUnitId, d.BusinessUnitId),
+           COALESCE(i.Name, d.Name),
+           CASE WHEN d.BusinessUnitId IS NULL THEN N'insert' WHEN i.BusinessUnitId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.BusinessUnitId IS NOT NULL THEN (SELECT d.Name, d.Description, d.Owner FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.BusinessUnitId IS NOT NULL THEN (SELECT i.Name, i.Description, i.Owner FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.BusinessUnitId = i.BusinessUnitId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.BusinessUnitId IS NULL OR i.BusinessUnitId IS NULL
+       OR EXISTS (SELECT i.Name, i.Description, i.Owner EXCEPT SELECT d.Name, d.Description, d.Owner);
+END;
+GO
+
+CREATE OR ALTER TRIGGER [${schema}].trProductAudit ON [${schema}].Product
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'Product', COALESCE(i.ProductId, d.ProductId), COALESCE(i.Name, d.Name),
+           CASE WHEN d.ProductId IS NULL THEN N'insert' WHEN i.ProductId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.ProductId IS NOT NULL THEN (SELECT d.Name, d.Description, d.Owner, d.InfoUrl,
+                (SELECT b.Name FROM [${schema}].BusinessUnit b WHERE b.BusinessUnitId = d.BusinessUnitId) AS BusinessUnit
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.ProductId IS NOT NULL THEN (SELECT i.Name, i.Description, i.Owner, i.InfoUrl,
+                (SELECT b.Name FROM [${schema}].BusinessUnit b WHERE b.BusinessUnitId = i.BusinessUnitId) AS BusinessUnit
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.ProductId = i.ProductId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.ProductId IS NULL OR i.ProductId IS NULL
+       OR EXISTS (SELECT i.Name, i.Description, i.Owner, i.InfoUrl, i.BusinessUnitId
+                  EXCEPT SELECT d.Name, d.Description, d.Owner, d.InfoUrl, d.BusinessUnitId);
+END;
+GO
+
+CREATE OR ALTER TRIGGER [${schema}].trApplicationAudit ON [${schema}].Application
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'Application', COALESCE(i.ApplicationId, d.ApplicationId),
+           COALESCE(i.DisplayName, i.Name, d.DisplayName, d.Name),
+           CASE WHEN d.ApplicationId IS NULL THEN N'insert' WHEN i.ApplicationId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.ApplicationId IS NOT NULL THEN (SELECT d.Name, d.DisplayName, d.Description, d.Owner, d.Retired,
+                (SELECT p.Name FROM [${schema}].Product p WHERE p.ProductId = d.ProductId) AS Product
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.ApplicationId IS NOT NULL THEN (SELECT i.Name, i.DisplayName, i.Description, i.Owner, i.Retired,
+                (SELECT p.Name FROM [${schema}].Product p WHERE p.ProductId = i.ProductId) AS Product
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.ApplicationId = i.ApplicationId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.ApplicationId IS NULL OR i.ApplicationId IS NULL
+       OR EXISTS (SELECT i.Name, i.DisplayName, i.Description, i.Owner, i.Retired, i.ProductId
+                  EXCEPT SELECT d.Name, d.DisplayName, d.Description, d.Owner, d.Retired, d.ProductId);
+END;
 GO
 
 -- Least-privilege roles. Add database users to them (docs/results-database.md):
---   cz_writer: the scanner; inserts results, never touches the people-maintained columns
---   cz_reader: the web UI and report readers; views and lookup tables only
---   cz_mapper: people who maintain business units, products and the application mapping
-IF DATABASE_PRINCIPAL_ID(N'cz_writer') IS NULL CREATE ROLE cz_writer;
-IF DATABASE_PRINCIPAL_ID(N'cz_reader') IS NULL CREATE ROLE cz_reader;
-IF DATABASE_PRINCIPAL_ID(N'cz_mapper') IS NULL CREATE ROLE cz_mapper;
+--   ${schema}_writer: the scanner; inserts results, never touches the people-maintained columns
+--   ${schema}_reader: the web UI and report readers; views and lookup tables only
+--   ${schema}_admin: the admin pages of the web UI (and people editing with SQL): business units,
+--                    products, the application mapping; reads the audit log; also a reader
+IF DATABASE_PRINCIPAL_ID(N'${schema}_writer') IS NULL CREATE ROLE [${schema}_writer];
+IF DATABASE_PRINCIPAL_ID(N'${schema}_reader') IS NULL CREATE ROLE [${schema}_reader];
+IF DATABASE_PRINCIPAL_ID(N'${schema}_admin') IS NULL CREATE ROLE [${schema}_admin];
 GO
-GRANT SELECT ON cz.Rating TO cz_writer;
-GRANT SELECT, INSERT ON cz.ApplicationAssessment TO cz_writer;
-GRANT SELECT, INSERT ON cz.ComponentAssessment TO cz_writer;
-GRANT SELECT, INSERT ON cz.Finding TO cz_writer;
-GRANT SELECT, INSERT ON cz.Application TO cz_writer;
-GRANT UPDATE ON cz.Application (Name, RepositoryUrl, SourcePath, LastSeenAt) TO cz_writer;
-GRANT SELECT, INSERT ON cz.Component TO cz_writer;
-GRANT UPDATE ON cz.Component (Name, LastSeenAt) TO cz_writer;
-GRANT SELECT ON cz.SchemaVersion TO cz_writer;
+GRANT SELECT ON [${schema}].Rating TO [${schema}_writer];
+GRANT SELECT, INSERT ON [${schema}].ApplicationAssessment TO [${schema}_writer];
+GRANT SELECT, INSERT ON [${schema}].ComponentAssessment TO [${schema}_writer];
+GRANT SELECT, INSERT ON [${schema}].Finding TO [${schema}_writer];
+GRANT SELECT, INSERT ON [${schema}].Application TO [${schema}_writer];
+GRANT UPDATE ON [${schema}].Application (Name, RepositoryUrl, SourcePath, LastSeenAt) TO [${schema}_writer];
+GRANT SELECT, INSERT ON [${schema}].Component TO [${schema}_writer];
+GRANT UPDATE ON [${schema}].Component (Name, LastSeenAt) TO [${schema}_writer];
+GRANT SELECT ON [${schema}].SchemaVersion TO [${schema}_writer];
 
-GRANT SELECT ON cz.vApplicationLatest TO cz_reader;
-GRANT SELECT ON cz.vComponentLatest TO cz_reader;
-GRANT SELECT ON cz.vFindingLatest TO cz_reader;
-GRANT SELECT ON cz.vUnmapped TO cz_reader;
-GRANT SELECT ON cz.Rating TO cz_reader;
-GRANT SELECT ON cz.BusinessUnit TO cz_reader;
-GRANT SELECT ON cz.Product TO cz_reader;
-GRANT SELECT ON cz.ApplicationAssessment (AssessmentId, ApplicationId, AssessedAt, Rating, Score, EffortDays, Confidence, Verified) TO cz_reader;
+GRANT SELECT ON [${schema}].vApplicationLatest TO [${schema}_reader];
+GRANT SELECT ON [${schema}].vComponentLatest TO [${schema}_reader];
+GRANT SELECT ON [${schema}].vFindingLatest TO [${schema}_reader];
+GRANT SELECT ON [${schema}].vUnmapped TO [${schema}_reader];
+GRANT SELECT ON [${schema}].Rating TO [${schema}_reader];
+GRANT SELECT ON [${schema}].BusinessUnit TO [${schema}_reader];
+GRANT SELECT ON [${schema}].Product TO [${schema}_reader];
+GRANT SELECT ON [${schema}].ApplicationAssessment (AssessmentId, ApplicationId, AssessedAt, Rating, Score, EffortDays, Confidence, Verified) TO [${schema}_reader];
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON cz.BusinessUnit TO cz_mapper;
-GRANT SELECT, INSERT, UPDATE, DELETE ON cz.Product TO cz_mapper;
-GRANT SELECT ON cz.Application TO cz_mapper;
-GRANT UPDATE ON cz.Application (ProductId, DisplayName, Description, Owner, Retired) TO cz_mapper;
-GRANT SELECT ON cz.vUnmapped TO cz_mapper;
-GRANT SELECT ON cz.vApplicationLatest TO cz_mapper;
+GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].BusinessUnit TO [${schema}_admin];
+GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].Product TO [${schema}_admin];
+GRANT SELECT ON [${schema}].Application TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].Application (ProductId, DisplayName, Description, Owner, Retired) TO [${schema}_admin];
+GRANT SELECT ON [${schema}].AuditLog TO [${schema}_admin];
+IF IS_ROLEMEMBER(N'${schema}_reader', N'${schema}_admin') = 0 ALTER ROLE [${schema}_reader] ADD MEMBER [${schema}_admin];
 GO
 
-IF NOT EXISTS (SELECT 1 FROM cz.SchemaVersion WHERE Version = 1) INSERT cz.SchemaVersion (Version) VALUES (1);
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 2) INSERT [${schema}].SchemaVersion (Version) VALUES (2);
 GO

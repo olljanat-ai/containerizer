@@ -1,10 +1,10 @@
-"""Read-only web UI over the results database: business unit -> product -> application -> components.
+"""Web UI over the results database: business unit -> product -> application -> components.
 
-`python -m containerizer web --sql "<cz_reader connection string>"`. Standard library HTTP server, no
-JavaScript, no forms that write: every page is rendered on the server from the cz.v* views with
-parameterised queries, all text is HTML-escaped, and responses carry a strict Content-Security-Policy.
-There is no authentication yet, so it listens on 127.0.0.1 unless told otherwise; put it behind a
-reverse proxy with sign-in before exposing it on a network (docs/results-database.md#web-ui).
+`python -m containerizer web --sql "<reader connection string>"`. Standard library HTTP server, no
+JavaScript: every page is rendered on the server from the v* views with parameterised queries, all
+text is HTML-escaped, and responses carry a strict Content-Security-Policy. The results pages are
+read-only and need no sign-in; the admin pages (admin.py: mapping, products, business units, change
+history) appear when OpenID Connect sign-in is configured (docs/results-database.md#admin-pages).
 """
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def _rows(conn, sql: str, params: tuple = ()) -> list[dict]:
 
 
 def load_overview(conn) -> dict:
-    apps = _rows(conn, "SELECT ApplicationId, ApplicationName, ProductId, ProductName, BusinessUnitId, BusinessUnitName, "
+    apps = _rows(conn, "SELECT ApplicationId, ApplicationName, ProductId, ProductName, ProductInfoUrl, BusinessUnitId, BusinessUnitName, "
                        "Rating, Score, EffortDays, Confidence, Summary, AssessedAt, Verified FROM cz.vApplicationLatest")
     comps = _rows(conn, "SELECT ApplicationId, COUNT(*) AS N FROM cz.vComponentLatest GROUP BY ApplicationId")
     top = _rows(conn, "SELECT ApplicationId, Title, Severity, COUNT(*) AS N FROM cz.vFindingLatest "
@@ -136,7 +136,7 @@ def _bu_href(bu) -> str:
     return "/?bu=" + quote(str(bu if bu is not None else "none"))
 
 
-def render_overview(data: dict, bu_filter: str | None = None) -> str:
+def render_overview(data: dict, bu_filter: str | None = None, nav: str = "") -> str:
     apps = data["apps"]
     all_apps = apps
     if bu_filter is not None:
@@ -184,7 +184,7 @@ def render_overview(data: dict, bu_filter: str | None = None) -> str:
                 f"<td class='num'>{int(a['Score'])}</td><td class='num'>{_num(a['EffortDays'], 1)}</td>"
                 f"<td class='num'>{int(a['Components'])}</td><td>{e(a['MainObstacle'] or '-')}</td></tr>"
                 for a in sorted(lst, key=lambda a: (a["Rating"], -int(a["Score"]), a["ApplicationName"].lower())))
-            body.append(f"<div class='product'><h3>{e(prod or UNASSIGNED + ' to a product')} "
+            body.append(f"<div class='product'><h3>{e(prod or UNASSIGNED + ' to a product')}{_info_link(lst[0].get('ProductInfoUrl'))} "
                         f"<span class='muted small'>{_summary_line(lst)}</span></h3>"
                         f"<table><thead><tr><th>Rating</th><th>Application</th><th class='num'>Readiness</th>"
                         f"<th class='num'>Effort (days)</th><th class='num'>Components</th><th>Main obstacle</th></tr></thead>"
@@ -202,10 +202,11 @@ def render_overview(data: dict, bu_filter: str | None = None) -> str:
             parts.append(f"{um['Application']} application(s) are not mapped to a product")
         if um.get("Product"):
             parts.append(f"{um['Product']} product(s) are not mapped to a business unit")
-        note = (f"<p class='note'>{e('; '.join(parts))}. The mapping is maintained in the database; "
-                f"see <i>docs/results-database.md</i> in the containerizer repository.</p>")
+        note = (f"<p class='note'>{e('; '.join(parts))}. Administrators maintain the mapping on the "
+                f"<a href='/admin'>admin pages</a>.</p>") if nav else (
+                f"<p class='note'>{e('; '.join(parts))}.</p>")
     empty = "<p>No assessments yet. Run <code>containerizer assess --sql …</code> to add some.</p>" if not all_apps else ""
-    return page("Containerization readiness", f"""
+    return page("Containerization readiness", f"""{_nav(nav)}
 <header><h1>Containerization readiness</h1>
 <p class='muted'>How ready our applications are to run in Linux containers{f' · last assessed {_date(last)}' if last else ''}</p></header>
 {empty}<nav class='chips'>{''.join(chips) if all_apps else ''}</nav>
@@ -230,10 +231,20 @@ def _ref_label(u: str) -> str:
     return ref_label(u)
 
 
-def render_application(app: dict) -> str:
+def _nav(nav: str) -> str:
+    return f"<div class='topnav'><span></span><span>{nav}</span></div>" if nav else ""
+
+
+def _info_link(url) -> str:
+    from .admin import info_link
+    return info_link(url)
+
+
+def render_application(app: dict, nav: str = "") -> str:
     r = app["Rating"]
     crumbs = (f"<a href='/'>All</a> › <a href='{e(_bu_href(app['BusinessUnitId']))}'>"
-              f"{e(app['BusinessUnitName'] or UNASSIGNED)}</a> › {e(app['ProductName'] or UNASSIGNED)}")
+              f"{e(app['BusinessUnitName'] or UNASSIGNED)}</a> › {e(app['ProductName'] or UNASSIGNED)}"
+              f"{_info_link(app.get('ProductInfoUrl'))}")
     by_comp: dict = {}
     for f in app["findings"]:
         by_comp.setdefault(f["ComponentId"], []).append(f)
@@ -280,7 +291,7 @@ def render_application(app: dict) -> str:
     owner = "".join(f"<div><span class='label'>{k}</span> {e(v)}</div>" for k, v in
                     (("Owner", app.get("Owner")), ("Product owner", app.get("ProductOwner")),
                      ("Business unit owner", app.get("BusinessUnitOwner"))) if v)
-    return page(app["ApplicationName"], f"""
+    return page(app["ApplicationName"], f"""{_nav(nav)}
 <p class='crumbs'>{crumbs}</p>
 <header class='app'>{badge(r, True)}<div><h1>{e(app['ApplicationName'])}</h1>
 <p class='lead'><b>{e(RATING_TITLE.get(r, ''))}</b>: {e(RATING_TEXT.get(r, ''))}</p>
@@ -380,6 +391,16 @@ summary{cursor:pointer}.finding{border-top:1px solid var(--line);padding:10px 0 
 .obstacles{padding-left:18px}.obstacles li{margin:4px 0}
 .note{background:var(--card);border-left:4px solid var(--rC);padding:8px 12px;border-radius:4px}
 footer{margin-top:36px;border-top:1px solid var(--line);padding-top:12px}code{font-size:13px}
+.topnav{display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:14px;margin-bottom:12px}
+form.inline{display:inline}button{font:inherit;border:1px solid var(--fg);background:var(--fg);color:var(--bg);border-radius:6px;
+padding:6px 14px;cursor:pointer}button.link{border:0;background:none;color:var(--link);padding:0;text-decoration:underline}
+form.edit{display:grid;gap:6px;max-width:640px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px}
+form.edit label{font-weight:600;font-size:14px;margin-top:6px}form.edit label.check{font-weight:400}
+input:not([type=checkbox]),select,textarea{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;
+background:var(--bg);color:var(--fg);width:100%}.formrow{display:flex;gap:10px;align-items:center;margin:12px 0;flex-wrap:wrap}
+.formrow select{width:auto;min-width:260px}form.danger button{background:#b42727;border-color:#b42727;color:#fff;margin-top:12px}
+ul.changes{margin:2px 0;padding-left:18px}del{color:var(--muted)}ins{text-decoration:none;font-weight:600}.nowrap{white-space:nowrap}
+.ext{white-space:nowrap;font-weight:400}
 @media (forced-colors:active){.bar,.badge,.key{forced-color-adjust:none;border:1px solid CanvasText}}
 """
 
@@ -388,7 +409,7 @@ HEADERS = {
                                "form-action 'none'; frame-ancestors 'none'",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
-    "Referrer-Policy": "no-referrer",
+    "Referrer-Policy": "same-origin",       # cross-site: nothing; same-site POSTs keep a real Origin for the CSRF check
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cross-Origin-Resource-Policy": "same-origin",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=(), interest-cohort=()",
@@ -396,19 +417,26 @@ HEADERS = {
 }
 
 
-def make_handler(connect):
-    """`connect()` returns a DB-API connection (pymssql) for one request."""
+def make_handler(connect, admin=None):
+    """`connect()` returns a reader connection for one request; `admin` is an admin.Admin or None."""
 
     class Handler(BaseHTTPRequestHandler):
         def version_string(self):
             return "containerizer"
 
-        def _send(self, status: int, body: str, ctype: str = "text/html; charset=utf-8", head: bool = False):
+        def _send(self, status: int, body: str, ctype: str = "text/html; charset=utf-8", head: bool = False,
+                  extra: list | None = None, forms: bool = False):
             data = body.encode()
             self.send_response(status)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
             for k, v in HEADERS.items():
+                if forms and k == "Content-Security-Policy":
+                    v = v.replace("form-action 'none'", "form-action 'self'")
+                self.send_header(k, v)
+            if admin and admin.cfg.secure:
+                self.send_header("Strict-Transport-Security", "max-age=31536000")
+            for k, v in extra or []:
                 self.send_header(k, v)
             self.end_headers()
             if not head:
@@ -417,6 +445,47 @@ def make_handler(connect):
         def do_HEAD(self):
             self.do_GET(head=True)
 
+        def _admin(self, method: str, head: bool = False):
+            u = urlsplit(self.path)
+            body = b""
+            if method == "POST":
+                n = int(self.headers.get("Content-Length") or 0)
+                if n > 64 * 1024:
+                    return self._send(413, page("Too large", "<h1>Request too large</h1>"))
+                body = self.rfile.read(n)
+            r = admin.handle(method, u.path, u.query, self.headers, body)
+            return self._send(r.status, r.body, r.ctype, head, r.headers, forms=True)
+
+        def _api(self, method: str, head: bool = False):
+            u = urlsplit(self.path)
+            n = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(min(n, 64 * 1024 + 1)) if n else b""
+            r = admin.api.handle(method, u.path, parse_qs(u.query), self.headers, body)
+            return self._send(r.status, r.body, r.ctype, head, r.headers)
+
+        def _write(self, method: str):
+            u = urlsplit(self.path)
+            try:
+                if admin and admin.api and admin.api.handles(u.path):
+                    return self._api(method)
+                if method == "POST" and admin and admin.handles(u.path):
+                    return self._admin("POST")
+                return self._not_allowed()
+            except Exception as ex:
+                return self._error(ex)
+
+        def do_POST(self):
+            return self._write("POST")
+
+        def do_PATCH(self):
+            return self._write("PATCH")
+
+        def do_PUT(self):
+            return self._write("PUT")
+
+        def do_DELETE(self):
+            return self._write("DELETE")
+
         def do_GET(self, head: bool = False):
             u = urlsplit(self.path)
             try:
@@ -424,6 +493,11 @@ def make_handler(connect):
                     return self._send(200, CSS, "text/css; charset=utf-8", head)
                 if u.path == "/healthz":
                     return self._send(200, "ok", "text/plain; charset=utf-8", head)
+                if admin and admin.api and admin.api.handles(u.path):
+                    return self._api("GET", head)
+                if admin and admin.handles(u.path):
+                    return self._admin("GET", head)
+                nav = admin.nav(self.headers) if admin else ""
                 m = re.fullmatch(r"/app/(\d{1,9})", u.path)
                 if u.path == "/" or m:
                     conn = connect()
@@ -433,26 +507,33 @@ def make_handler(connect):
                             if app is None:
                                 return self._send(404, page("Not found", "<h1>Application not found</h1><p><a href='/'>Back</a></p>"),
                                                   head=head)
-                            return self._send(200, render_application(app), head=head)
+                            return self._send(200, render_application(app, nav), head=head, forms=bool(nav))
                         bu = parse_qs(u.query).get("bu", [None])[0]
                         if bu is not None and not re.fullmatch(r"\d{1,9}|none", bu):
                             bu = None
-                        return self._send(200, render_overview(load_overview(conn), bu), head=head)
+                        return self._send(200, render_overview(load_overview(conn), bu, nav), head=head, forms=bool(nav))
                     finally:
                         conn.close()
                 return self._send(404, page("Not found", "<h1>Not found</h1><p><a href='/'>Back</a></p>"), head=head)
             except Exception as ex:      # never show internals to the browser
-                print(f"error: {self.path}: {type(ex).__name__}: {ex}", file=sys.stderr)
-                return self._send(500, page("Error", "<h1>Something went wrong</h1><p>The results database could not be "
-                                                     "read. The details are in the server log.</p>"), head=head)
+                return self._error(ex, head)
+
+        def _error(self, ex, head: bool = False):
+            print(f"error: {self.command} {urlsplit(self.path).path}: {type(ex).__name__}: {ex}", file=sys.stderr)
+            return self._send(500, page("Error", "<h1>Something went wrong</h1><p>The results database could not be "
+                                                 "read or updated. The details are in the server log.</p>"), head=head)
 
         def _not_allowed(self):
             self.send_response(405)
-            self.send_header("Allow", "GET, HEAD")
+            self.send_header("Allow", "GET, HEAD" + (", POST" if admin else ""))
             self.send_header("Content-Length", "0")
             self.end_headers()
 
-        do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = _not_allowed
+        do_OPTIONS = _not_allowed
+
+        def log_request(self, code="-", size="-"):
+            # the path only: query strings can carry sign-in codes
+            print(f"{self.address_string()} {self.command} {urlsplit(self.path).path} {code}", file=sys.stderr)
 
         def log_message(self, fmt, *args):
             print(f"{self.address_string()} {fmt % args}", file=sys.stderr)
@@ -461,14 +542,21 @@ def make_handler(connect):
 
 
 def serve(cs: str | None, host: str = "127.0.0.1", port: int = 8080) -> int:
+    from .admin import build
+    from .oidc import OidcError
     from .sqlstore import SqlError, connect
     try:
         connect(cs).close()           # fail fast on a bad connection string or credentials
-    except SqlError as ex:
+        admin = build()
+        if admin:
+            admin.connect_admin().close()
+    except (SqlError, OidcError) as ex:
         print(f"error: {ex}", file=sys.stderr)
         return 3
-    httpd = ThreadingHTTPServer((host, port), make_handler(lambda: connect(cs)))
-    print(f"containerizer results UI on http://{host}:{port}/ (read-only, no sign-in: keep it on a trusted network)")
+    httpd = ThreadingHTTPServer((host, port), make_handler(lambda: connect(cs), admin))
+    print(f"containerizer results UI on http://{host}:{port}/ (results read-only without sign-in; "
+          + (f"admin pages behind sign-in at {admin.cfg.public_url}/admin" if admin else "admin pages off: no sign-in configured")
+          + ("; JSON API at /api/v1)" if admin and admin.api else ")"))
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
