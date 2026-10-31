@@ -119,6 +119,12 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
             facts["listen_url_settings"] = listen
         if secrets:
             facts["secret_settings"] = sorted(secrets)
+        # sign-in settings (OIDC, WS-Federation, SAML) the sandbox IdP overrides (idp.py)
+        if any(facts.get(f"auth_{x}") for x in ("oidc", "wsfed", "saml")):
+            from .idp import find_sections
+            sections = find_sections(cfg)
+            if sections:
+                facts["auth_sections"] = sections
     # sub-commands of a console tool: "Usage: Jobs <refunds|reminders|purge>" or case "refunds": in Program.cs
     if comp.role == "console" and "oneshot_arg" not in facts:
         cmds: list[str] = []

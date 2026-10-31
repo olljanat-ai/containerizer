@@ -34,6 +34,8 @@ class GitOpsOptions:
     oci_url: str = ""                     # oci://registry/<app>/manifests (default from the registry)
     tag_range: str = ">=1.0.0"            # semver range image automation may roll out
     verify_commits: bool = False          # Flux: only reconcile commits signed with a key in <app>-git-gpg
+    ingress_domain: str = ""              # wildcard domain of the sandbox (https://<component>-<app>.<domain>)
+    sandbox_idp: bool = True              # with a domain: point components that sign in at the sandbox IdP (idp.py)
 
 
 def _api_group(api_version: str) -> str:

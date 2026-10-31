@@ -101,7 +101,8 @@ def cmd_web(args) -> int:
 def _gitops(args):
     from .gitops import GitOpsOptions
     return GitOpsOptions(git_url=args.git_url, branch=args.git_branch, path=args.git_path or "",
-                         verify_commits=args.verify_commits)
+                         verify_commits=args.verify_commits, ingress_domain=(args.ingress_domain or "").strip(". ").lower(),
+                         sandbox_idp=not args.no_sandbox_idp)
 
 
 def _gitops_args(s) -> None:
@@ -111,6 +112,10 @@ def _gitops_args(s) -> None:
     g.add_argument("--git-branch", default="main")
     g.add_argument("--git-path", help="folder of the app in that repository (default deploy/<app>)")
     g.add_argument("--verify-commits", action="store_true", help="Flux: only apply signed commits")
+    g.add_argument("--ingress-domain", help="wildcard domain (*.sandbox.example.com): an HTTPS Ingress per web component "
+                   "at <component>-<app>.<domain> (default: the appliance's Sandbox HTTPS setting)")
+    g.add_argument("--no-sandbox-idp", action="store_true",
+                   help="do not register the components that sign users in at the sandbox identity provider")
 
 
 def cmd_generate(args) -> int:
@@ -259,6 +264,7 @@ def cmd_org(args) -> int:
         stale_days=args.stale_days, max_repos=args.max_repos, ai=args.ai, model=args.model,
         verify=not args.no_verify, gate=not args.no_gate, scanner=args.scanner, fail_on=args.fail_on,
         timeout=args.timeout, pin=args.pin_digests, verify_commits=args.verify_commits, sql=args.sql,
+        ingress_domain=args.ingress_domain, sandbox_idp=not args.no_sandbox_idp,
         work_dir=args.work_dir, keep_work=args.keep_work, cache_dir=args.cache_dir,
         skip_no_code=not args.include_no_code, dry_run=args.dry_run,
         verify_sandbox=args.verify_sandbox, kubeconfig=args.kubeconfig, kube_context=args.kube_context,
@@ -318,6 +324,25 @@ def _kube_args(s) -> None:
     s.add_argument("--kube-context", help="context in the kubeconfig (default: its current context)")
     s.add_argument("--gitops", default="auto", choices=["auto", "argocd", "flux"],
                    help="which GitOps tool deploys the sandbox (auto: Argo CD Application, else Flux Kustomization)")
+
+
+def cmd_idp(args) -> int:
+    """Appliance side of the sandbox IdP: make its passwords and client secrets (cz-sandbox runs this),
+    or show the test users' passwords to an administrator on the console."""
+    import os
+    import shlex
+    from .idp import ApplianceError, appliance_secrets, appliance_users
+    cmd = shlex.split(os.environ.get("CZ_KUBECTL") or "kubectl")
+    try:
+        if args.idp_cmd == "secrets":
+            appliance_secrets(cmd)
+        else:
+            for user, groups, pw in appliance_users(cmd):
+                print(f"{user}\t{groups}\t{pw}")
+    except ApplianceError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def cmd_bench(args) -> int:
@@ -635,6 +660,10 @@ def main(argv=None) -> int:
     s.add_argument("--timeout", type=int, default=1800)
     s.add_argument("--pin-digests", action="store_true")
     s.add_argument("--verify-commits", action="store_true", help="Flux: only apply signed commits")
+    s.add_argument("--ingress-domain", help="wildcard domain (*.sandbox.example.com): an HTTPS Ingress per web component "
+                   "at <component>-<app>.<domain> (default: the appliance's Sandbox HTTPS setting)")
+    s.add_argument("--no-sandbox-idp", action="store_true",
+                   help="do not register the components that sign users in at the sandbox identity provider")
     s.add_argument("--sql", help="also write every assessment to SQL Server (default CONTAINERIZER_SQL)")
     s.add_argument("--work-dir", default=".work/org")
     s.add_argument("--keep-work", action="store_true", help="keep the clones")
@@ -665,6 +694,13 @@ def main(argv=None) -> int:
     v.add_argument("--fail-on-unhealthy", action="store_true", help="exit 1 when a component is not healthy")
     v.add_argument("--sql", help="also write the checks to SQL Server (default CONTAINERIZER_SQL)")
     v.set_defaults(fn=cmd_sandbox)
+
+    s = sub.add_parser("idp", help="sandbox identity provider on the appliance (docs/sandbox-idp.md)")
+    isub = s.add_subparsers(dest="idp_cmd", required=True)
+    isub.add_parser("secrets", help="generate the IdP's missing passwords and client secrets into the secret "
+                    "store (kubectl as cluster admin; CZ_KUBECTL overrides the command)")
+    isub.add_parser("users", help="print the sandbox test users, their groups and passwords")
+    s.set_defaults(fn=cmd_idp)
 
     s = sub.add_parser("worker", help="run the organization scans scheduled on the admin pages (needs Docker); "
                        "serves Prometheus metrics")

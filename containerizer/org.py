@@ -76,6 +76,8 @@ class OrgOptions:
     timeout: int = 1800
     pin: bool = False
     verify_commits: bool = False
+    ingress_domain: str | None = None   # wildcard domain of the sandbox (HTTPS Ingresses, the sandbox IdP)
+    sandbox_idp: bool = True            # with a domain: components that sign in use the sandbox IdP (idp.py)
     sql: str | None = None
     work_dir: str = ".work/org"
     keep_work: bool = False
@@ -325,6 +327,57 @@ def _apps_in(root: Path) -> list[tuple[str, Path, dict]]:
     return out
 
 
+def idp_entries(gen: Path, comps: list) -> list[dict]:
+    """Rows for the results database from the components' idp.json (written by the generator)."""
+    rows = []
+    for c in comps:
+        from .generate import k8s_name
+        f = gen / k8s_name(c.name) / "idp.json"
+        if not f.is_file():
+            continue
+        d = json.loads(f.read_text())
+        for cl in d.get("clients") or []:
+            rows.append({"project": c.project.rel, "protocol": cl["protocol"], "idp_url": d["idp"], "app_url": cl["url"],
+                         "identifier": cl["identifier"], "metadata_url": cl["metadata_url"],
+                         "settings": {"env": cl.get("env") or {}, "secret": cl.get("secret_env") or "",
+                                      "section": cl.get("section") or ""},
+                         "notes": cl.get("notes") or []})
+        if not d.get("clients") and d.get("notes"):
+            rows.append({"project": c.project.rel, "protocol": "none", "idp_url": d["idp"], "notes": d["notes"]})
+    return rows
+
+
+def write_idp(root: Path, apps) -> str:
+    """sandbox/idp/: the sandbox identity provider and every component registered at it (each
+    component's idp.json in the output repository). Returns the IdP URL, or "" when no component uses it."""
+    from collections import Counter
+    from .idp import Sandbox, config, sandbox_files
+    found = []
+    for rel, d, _ in apps:
+        for f in sorted(d.glob("*/idp.json")):
+            try:
+                found.append(json.loads(f.read_text()))
+            except ValueError:
+                continue
+    found = [x for x in found if x.get("applications")]
+    if not found:
+        return ""
+    # one IdP: the domain most components were generated with (an app generated before the domain changed
+    # is registered again by its next run)
+    prefix = f"https://{config()['host_label']}."
+    domains = Counter(x["idp"][len(prefix):] for x in found if str(x.get("idp", "")).startswith(prefix))
+    if not domains:
+        return ""
+    domain = sorted(domains.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+    sb = Sandbox(domain)
+    defs = {a["name"]: a for x in found if x["idp"] == sb.url for a in x["applications"]}
+    for rel, content in sandbox_files(sb, defs).items():
+        p = root / SANDBOX / "idp" / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+    return sb.url
+
+
 def write_sandbox(root: Path, git_url: str, branch: str) -> list[str]:
     """sandbox/: Argo CD app-of-apps and Flux root Kustomization over every app in the repository."""
     from .gitops import ARGO_API, ARGO_NS, FLUX_NS, IN_CLUSTER, KUSTOMIZE_API, SOURCE_API
@@ -364,9 +417,11 @@ def write_sandbox(root: Path, git_url: str, branch: str) -> list[str]:
                                  "retry": {"limit": 5, "backoff": {"duration": "10s", "factor": 2,
                                                                    "maxDuration": "5m"}}}}},
     ]))
+    idp_url = write_idp(root, apps)
     (sb / "flux" / "apps" / "kustomization.yaml").write_text(yaml.safe_dump(
         {**k, "resources": [f"../../../{rel}/gitops/flux" for rel, d, _ in apps
-                            if (d / "gitops" / "flux" / "kustomization.yaml").exists()]}, sort_keys=False))
+                            if (d / "gitops" / "flux" / "kustomization.yaml").exists()]
+         + (["../../idp"] if idp_url else [])}, sort_keys=False))
     (sb / "flux" / "bootstrap.yaml").write_text(dump([
         {"apiVersion": SOURCE_API, "kind": "GitRepository",
          "metadata": {"name": name, "namespace": FLUX_NS, "labels": labels},
@@ -383,13 +438,21 @@ def write_sandbox(root: Path, git_url: str, branch: str) -> list[str]:
         "# Read-only access for `containerizer sandbox verify` (docs/sandbox-verification.md). Apply it as a\n"
         "# cluster admin after the namespaces exist; it grants nothing cluster-wide and no access to Secrets.\n"
         + dump(verify_rbac(namespaces)))
-    (sb / "README.md").write_text(sandbox_readme(git_url, branch, apps))
+    (sb / "README.md").write_text(sandbox_readme(git_url, branch, apps, idp_url))
     return namespaces
 
 
-def sandbox_readme(git_url: str, branch: str, apps) -> str:
+def sandbox_readme(git_url: str, branch: str, apps, idp_url: str = "") -> str:
     rows = "\n".join(f"| `{doc.get('app')}` | [{rel}]({rel.replace(' ', '%20')}/) | "
                      f"{', '.join(c['component'] for c in doc.get('components', []))} |" for rel, _, doc in apps)
+    if idp_url:
+        idp_text = (f"\nThe components that sign users in with OpenID Connect, SAML 2.0 or WS-Federation are registered at\n"
+                    f"the sandbox identity provider (WSO2 Identity Server) at {idp_url}/. Flux applies `{SANDBOX}/idp`\n"
+                    f"with the apps; with Argo CD apply it once with `kubectl apply -k {SANDBOX}/idp`. Clients, test\n"
+                    f"users and passwords: `{SANDBOX}/idp/README.md` (docs/sandbox-idp.md).\n")
+    else:
+        idp_text = ("\nNo component signs users in with OpenID Connect, SAML 2.0 or WS-Federation, or no sandbox domain\n"
+                    "was set (`--ingress-domain`), so no identity provider is deployed.\n")
     return f"""# Sandbox deployment
 
 Every app in this repository that has components rated **A** (lift and shift, stateless, built,
@@ -428,6 +491,8 @@ The root Kustomization applies each app's `gitops/flux/tenant.yaml` (namespace w
 "restricted", ServiceAccount, namespace-only RoleBinding) and `gitops/flux/git/sync.yaml`. Image
 automation (`gitops/flux/git/image-automation.yaml`) is left out: it needs a write key.
 
+## Identity provider
+{idp_text}
 ## Health read-back
 
 `containerizer org --verify-sandbox` (or `containerizer sandbox verify` on a checkout of this repository)
@@ -691,7 +756,8 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
             if status and (x := skip(status, why)):
                 return x
 
-        gitops = GitOpsOptions(git_url=out.url, branch=o.output_branch, path=rel, verify_commits=o.verify_commits)
+        gitops = GitOpsOptions(git_url=out.url, branch=o.output_branch, path=rel, verify_commits=o.verify_commits,
+                               ingress_domain=(o.ingress_domain or "").strip(". ").lower(), sandbox_idp=o.sandbox_idp)
         scratch = work / "analyze"
         if scratch.exists():
             shutil.rmtree(scratch)
@@ -767,6 +833,18 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
                               "digest": entry.get("digest"), "attestation": sb.get("attestation")})
             comps.append(entry)
         res.components = comps
+        idp_rows = idp_entries(gen, keep)
+        if assessment_id and idp_rows:
+            from .sqlstore import connect, store_idp_clients
+            try:
+                conn = connect(o.sql)
+                try:
+                    store_idp_clients(conn, assessment_id, idp_rows)
+                finally:
+                    conn.close()
+            except Exception as e:
+                print(f"warning: sandbox IdP registrations not written to SQL Server: {type(e).__name__}: "
+                      f"{REDACT(str(e))[:300]}", file=sys.stderr)
         if assessment_id and sboms:
             from .sqlstore import connect, store_image_sboms
             try:                              # the images are pushed already: a database error must not undo that

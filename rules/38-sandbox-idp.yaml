@@ -1,0 +1,117 @@
+# Sandbox identity provider (docs/sandbox-idp.md): which components sign users in with OpenID Connect,
+# WS-Federation or SAML 2.0, and how the generator points them at the sandbox IdP (WSO2 Identity Server
+# in the k3s sandbox) through configuration only.
+#
+# The `rules` set facts (auth_oidc, auth_wsfed, auth_saml, auth_entra); containerizer/idp.py then looks
+# for the settings section of that protocol in appsettings.json (+ appsettings.Production.json) with the
+# key names under `idp.protocols` and overrides them with environment variables. A component whose
+# settings are only in code is reported, not changed.
+rules:
+  - id: fact-auth-oidc
+    phase: facts
+    priority: 50
+    when:
+      any:
+        - package: 'Microsoft\.AspNetCore\.Authentication\.OpenIdConnect'
+        - code: '(?-i:\.AddOpenIdConnect\()'
+    set: {auth_oidc: "true"}
+
+  - id: fact-auth-entra
+    phase: facts
+    priority: 50
+    when:
+      any:
+        - package: 'Microsoft\.Identity\.Web(\.UI)?'
+        - code: '(?-i:\.AddMicrosoftIdentityWebApp(Authentication)?\()'
+    set: {auth_entra: "true"}
+
+  - id: fact-auth-wsfed
+    phase: facts
+    priority: 50
+    when:
+      any:
+        - package: 'Microsoft\.AspNetCore\.Authentication\.WsFederation'
+        - code: '(?-i:\.AddWsFederation\()'
+    set: {auth_wsfed: "true"}
+
+  - id: fact-auth-saml
+    phase: facts
+    priority: 50
+    when:
+      any:
+        - package: 'Sustainsys\.Saml2\.AspNetCore2|ITfoxtec\.Identity\.Saml2(\.MvcCore)?'
+        - code: '(?-i:\.AddSaml2\(|\bSaml2Configuration\b)'
+    set: {auth_saml: "true"}
+
+  # ASP.NET Core 8 references Microsoft.IdentityModel 7.1.2, whose SAML token handlers ignore the issuer
+  # from WS-Federation metadata (IDX10204 after sign-in, with AD FS as with any IdP). Fixed in 7.4.1;
+  # ASP.NET Core 9+ depends on a fixed version.
+  - id: wsfed-identitymodel-issuer-bug
+    applies_to: [dotnet]
+    when:
+      all:
+        - package: 'Microsoft\.AspNetCore\.Authentication\.WsFederation'
+        - tfm: 'net8\.'
+        - not: {package: 'Microsoft\.IdentityModel\.(Tokens\.Saml|Protocols\.WsFederation)'}
+    severity: config
+    category: identity
+    effort: 0.25
+    title: WS-Federation on .NET 8 rejects every token (IdentityModel 7.1.2)
+    why: >-
+      Microsoft.AspNetCore.Authentication.WsFederation 8.0.x depends on Microsoft.IdentityModel 7.1.2,
+      whose SAML token handlers do not take the issuer from the WS-Federation metadata, so sign-in fails
+      after the IdP posts the token back (IDX10204), with AD FS as with the sandbox IdP.
+    fix: >-
+      Reference Microsoft.IdentityModel.Tokens.Saml and Microsoft.IdentityModel.Protocols.WsFederation
+      7.4.1 or later (one version for all Microsoft.IdentityModel.* packages), or move to .NET 9+.
+    refs:
+      - https://github.com/dotnet/aspnetcore/issues/52099
+
+idp:
+  # WSO2 Identity Server: OIDC/OAuth2, SAML 2.0 and WS-Federation (passive) in one Apache-2.0 product
+  # (docs/sandbox-idp.md has the comparison with Keycloak and authentik)
+  images:
+    server: docker.io/wso2/wso2is:7.3.0@sha256:d9ffe26f8a87d479b0987e9e22df8f8214407fd0138d78ba6f2dd8c0f75fbfc6
+    sync: docker.io/library/python:3.13-slim@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb
+  host_label: containerizer-idp        # https://containerizer-idp.<sandbox domain>/ (reserved in sandbox_https)
+  namespace: containerizer-idp
+  # test users of the sandbox; one group each, because WS-Federation tokens from WSO2 carry a user's
+  # groups as one comma-separated role value
+  groups: [sandbox-admins, sandbox-users]
+  users:
+    - {username: alice, givenName: Alice, familyName: Admin, groups: [sandbox-admins]}
+    - {username: bob, givenName: Bob, familyName: User, groups: [sandbox-users]}
+    - {username: carol, givenName: Carol, familyName: User, groups: [sandbox-users]}
+  protocols:
+    # key names are matched case-insensitively within one configuration section (any depth)
+    oidc:
+      section_requires: [[ClientId, Authority], [ClientId, MetadataAddress]]
+      keys:
+        authority: [Authority]
+        metadata: [MetadataAddress]
+        client_id: [ClientId]
+        client_secret: [ClientSecret]
+        callback: [CallbackPath]
+        signout_callback: [SignedOutCallbackPath]
+        response_type: [ResponseType]
+      defaults: {callback: /signin-oidc, signout_callback: /signout-callback-oidc}
+    wsfed:
+      section_requires: [[Wtrealm], [MetadataAddress, Realm]]
+      keys:
+        metadata: [MetadataAddress, Metadata, MetadataUrl]
+        realm: [Wtrealm, Realm]
+        reply: [Wreply, ReplyUrl]
+        callback: [CallbackPath]
+      defaults: {callback: /signin-wsfed}
+    saml:
+      section_name: '(?i)saml'
+      section_requires: [[IdPMetadata], [IdpMetadata], [MetadataLocation], [IdpMetadataUrl], [MetadataUrl], [IdentityProviderMetadata]]
+      keys:
+        metadata: [IdPMetadata, IdpMetadata, MetadataLocation, IdpMetadataUrl, MetadataUrl, IdentityProviderMetadata]
+        idp_entity_id: [IdPEntityId, IdpEntityId, IdentityProviderEntityId, IdpIssuer, AllowedIssuer]
+        sp_entity_id: [EntityId, SPEntityId, SpEntityId, Issuer]
+        acs: [AssertionConsumerServiceUrl, AcsUrl, AssertionConsumerService]
+        sso_url: [SingleSignOnDestination, SingleSignOnServiceUrl]
+        slo_url: [SingleLogoutDestination, SingleLogoutServiceUrl]
+        module_path: [ModulePath]
+      defaults: {acs: /Saml2/Acs}
