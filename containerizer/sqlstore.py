@@ -315,18 +315,18 @@ def assessment_doc(a) -> dict:
     return {**a.to_dict(), **({"verification": a.verification} if getattr(a, "verification", None) else {})}
 
 
-def store_results(cs: str | None, results: list, paths: list[Path]) -> list[int]:
+def store_results(cs: str | None, results: list, paths: list[Path], password: str | None = None) -> list[int]:
     """Store AppAssessments assessed from `paths` (same order). Returns the AssessmentIds."""
-    conn = connect(cs)
+    conn = connect(cs, password)
     try:
         return [store_assessment(conn, assessment_doc(a), source_info(p, a.name)) for a, p in zip(results, paths)]
     finally:
         conn.close()
 
 
-def import_json(cs: str | None, files: list[Path], key_prefix: str = "") -> list[int]:
+def import_json(cs: str | None, files: list[Path], key_prefix: str = "", password: str | None = None) -> list[int]:
     """Load assessment.json files written earlier (`assess --out`, `analyze`, the GitHub Action)."""
-    conn = connect(cs)
+    conn = connect(cs, password)
     ids = []
     try:
         for fp in files:

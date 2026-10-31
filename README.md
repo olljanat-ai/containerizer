@@ -51,6 +51,10 @@ python -m containerizer images --update        # pick patched base image tags ->
 # measure against the hand-made labels
 python -m containerizer bench
 python -m containerizer bench --technique hybrid --model claude-haiku-5-5
+
+# results database (SQL Server) and read-only web UI for management, see docs/results-database.md
+docker compose -f results/compose.yaml up -d --build          # SQL Server + UI on http://127.0.0.1:8080/
+python -m containerizer analyze <repo> --sql "Server=...;Database=Containerizer;User Id=cz_scanner"
 ```
 
 ## How it works
@@ -450,6 +454,16 @@ files, publishes SARIF as the `CodeAnalysisLogs` artifact (shown by the SARIF SA
 extension), comments on Azure Repos pull requests with `System.AccessToken` (give the build service
 "Contribute to pull requests"), and fails the build when the gate fails.
 
+## Results database and web UI
+
+`assess` and `analyze` also write their results to Microsoft SQL Server with `--sql` (or
+`CONTAINERIZER_SQL`), and `python -m containerizer web` serves a read-only, management-friendly view of
+them: business unit → product → application → components, with ratings, main obstacles and the why /
+fix / references of every finding. Components are mapped to their application automatically by the
+scan; applications are mapped to products, and products to business units, by editing the database
+directly. [`docs/results-database.md`](docs/results-database.md) has the model, the least-privilege
+roles, TLS settings, a local Docker Compose stack, and the SQL for the mapping.
+
 ## Results on the challenge
 
 See [`bench/RESULTS.md`](bench/RESULTS.md) for the current numbers (rule accuracy, verification
@@ -464,4 +478,7 @@ rules/           curated rules (roles, facts, findings, plan, failures, security
 rules/learned/   rules written by the learning loop (reviewable, safe to delete)
 bench/           labels and results
 action.yml       GitHub Action; ci/azure/ has the Azure DevOps template
+containerizer/sql/  results database schema (sqlstore.py writes it, webui.py reads it)
+results/         Docker Compose stack and image for the results database and web UI
+docs/            results-database.md
 ```
