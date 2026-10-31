@@ -289,8 +289,9 @@ made of, their licences and known vulnerabilities · <span class='small'>{e(c['P
                       " Attached to the image in the registry." if att == "attached" else f" Not in the registry: {e(att)}.")
         cve_note = "Vulnerabilities come from the security gate's image scan (Trivy, Grype)."
     else:
-        where = (f"From the project files on {_date(sb['CreatedAt'])}: the packages the component declares (a lock file "
-                 f"gives every runtime package). The image was not built, so no vulnerability scan ran.")
+        where = (f"From the project files on {_date(sb['CreatedAt'])}: the packages the component declares, or every "
+                 f"runtime package when the project has a lock file. The image was not built, so no vulnerability "
+                 f"scan ran.")
         cve_note = ""
     tiles = (_tile("Packages", f"{len(pkgs):,}")
              + _tile("Licences denied", f"{st['denied']:,}", "the gate fails on these")
