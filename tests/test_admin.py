@@ -592,16 +592,22 @@ def test_viewer_sign_in_and_access_log(idp, tmp_path):
 def test_grafana_link_from_environment():
     from containerizer.admin import build
     from containerizer.oidc import Session
+    from containerizer.roles import Access
     base = {"CONTAINERIZER_OIDC_ISSUER": "https://login.example.com", "CONTAINERIZER_OIDC_CLIENT_ID": "c",
             "CONTAINERIZER_OIDC_CLIENT_SECRET": "s", "CONTAINERIZER_PUBLIC_URL": "https://cz.example.com",
             "CONTAINERIZER_ADMINS": "group:g", "CONTAINERIZER_ADMIN_SQL": "Server=x", "CONTAINERIZER_ADMIN_SQL_PASSWORD": "p"}
     s = Session(user="u", name="U", admin=True)
-    assert "Grafana" not in build(base)._shell(s, "T", "scans", "")
+    a = Access(admin=True)
+    assert "Grafana" not in build(base)._shell(s, a, "T", "scans", "")
     url = "https://grafana.example.com/d/containerizer-scans/scans?orgId=1&var-job=cz"
-    page = build({**base, "CONTAINERIZER_GRAFANA_URL": url})._shell(s, "T", "scans", "")
+    page = build({**base, "CONTAINERIZER_GRAFANA_URL": url})._shell(s, a, "T", "scans", "")
     assert "href='https://grafana.example.com/d/containerizer-scans/scans?orgId=1&amp;var-job=cz'" in page
     assert "rel='noopener noreferrer' target='_blank'" in page
-    assert "Grafana ↗" in build({**base, "CONTAINERIZER_GRAFANA_URL": "http://localhost:3000/d/x"})._shell(s, "T", "scans", "")
+    assert "Grafana ↗" in build({**base, "CONTAINERIZER_GRAFANA_URL": "http://localhost:3000/d/x"})._shell(s, a, "T", "scans", "")
+    # operators see it too; a product owner (mapping only) does not
+    adm = build({**base, "CONTAINERIZER_GRAFANA_URL": url})
+    assert "Grafana ↗" in adm._shell(Session(user="o", name="O", admin=False), Access(admin=False, operator=True), "T", "scans", "")
+    assert "Grafana" not in adm._shell(Session(user="p", name="P", admin=False), Access(admin=False, products={1}), "T", "applications", "")
     for bad in ("http://grafana.example.com", "javascript:alert(1)", "https://g.example.com/'><script>", "ftp://g"):
         with pytest.raises(OidcError, match="GRAFANA_URL"):
             build({**base, "CONTAINERIZER_GRAFANA_URL": bad})

@@ -92,14 +92,14 @@ def run_chip(status: str) -> str:
 
 # --------------------------------------------------------------------------- routing
 
-def route(adm, conn, s, method: str, kind: str, parts: list, q: dict, form: dict, flash: str) -> Response:
+def route(adm, conn, s, a, method: str, kind: str, parts: list, q: dict, form: dict, flash: str) -> Response:
     ident = int(parts[1]) if len(parts) > 1 and re.fullmatch(r"\d{1,9}", parts[1]) else None
     action = parts[2] if len(parts) > 2 else ""
     if kind == "scans":
         if len(parts) > 1 and parts[1] == "new":
-            return save_scan(conn, None, form) if method == "POST" else edit_scan(adm, conn, s, None, flash, q)
+            return save_scan(conn, None, form) if method == "POST" else edit_scan(adm, conn, s, a, None, flash, q)
         if ident is None:
-            return list_scans(adm, conn, s, flash) if method == "GET" and len(parts) == 1 else _nf()
+            return list_scans(adm, conn, s, a, flash) if method == "GET" and len(parts) == 1 else _nf()
         if method == "POST":
             if action == "run":
                 return run_now(conn, ident)
@@ -110,14 +110,14 @@ def route(adm, conn, s, method: str, kind: str, parts: list, q: dict, form: dict
             if not action:
                 return save_scan(conn, ident, form)
             return _nf()
-        return edit_scan(adm, conn, s, ident, flash, q) if not action else _nf()
+        return edit_scan(adm, conn, s, a, ident, flash, q) if not action else _nf()
     if kind == "repositories":
         if method == "POST" and len(parts) > 1 and parts[1] == "bulk":
             return bulk_repos(conn, form)
         if ident is not None and not action:
-            return save_repo(conn, ident, form) if method == "POST" else edit_repo(adm, conn, s, ident, flash)
+            return save_repo(conn, ident, form) if method == "POST" else edit_repo(adm, conn, s, a, ident, flash)
         if len(parts) == 1 and method == "GET":
-            return list_repos(adm, conn, s, q, flash)
+            return list_repos(adm, conn, s, a, q, flash)
     return _nf()
 
 
@@ -153,7 +153,7 @@ def _next(scan: dict) -> str:
     return f"next {_d(n.replace(tzinfo=None))}" if n else ""
 
 
-def list_scans(adm, conn, s, flash: str) -> Response:
+def list_scans(adm, conn, s, a, flash: str) -> Response:
     from .worker import schedule_text
     rows = []
     for r in _scans(conn):
@@ -178,7 +178,7 @@ def list_scans(adm, conn, s, flash: str) -> Response:
             f"<table><thead><tr><th>Scan</th><th>Organization</th><th>Schedule</th><th>Latest run</th>"
             f"<th class='num'>Repositories<div class='small'>enabled / disabled</div></th></tr></thead>"
             f"<tbody>{''.join(rows) or '<tr><td colspan=5 class=muted>No organization scans yet.</td></tr>'}</tbody></table>")
-    return Response(200, adm._shell(s, "Organization scans", "scans", body, flash))
+    return Response(200, adm._shell(s, a, "Organization scans", "scans", body, flash))
 
 
 def _scan_form(adm, s, scan: dict, ident) -> str:
@@ -226,12 +226,12 @@ def _scan_form(adm, s, scan: dict, ident) -> str:
 <div><button>{'Save' if ident else 'Add'}</button> <a href='/admin/scans'>Cancel</a></div></form>"""
 
 
-def edit_scan(adm, conn, s, ident, flash: str, q: dict) -> Response:
+def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
     from .worker import check_scan, schedule_text
     if ident is None:
         scan = {"Provider": "github", "OutputBranch": "main", "SkipForks": True, "StaleDays": 183, "Verify": True,
                 "Gate": True, "PushImages": True, "UseAi": False, "ScheduleDays": 32, "ScheduleMinute": 120, "Enabled": True}
-        return Response(200, adm._shell(s, "New organization scan", "scans", _scan_form(adm, s, scan, None), flash))
+        return Response(200, adm._shell(s, a, "New organization scan", "scans", _scan_form(adm, s, scan, None), flash))
     cur = conn.cursor(as_dict=True)
     cur.execute("SELECT * FROM cz.OrgScan WHERE ScanId = %s", (ident,))
     scan = cur.fetchone()
@@ -287,7 +287,7 @@ def edit_scan(adm, conn, s, ident, flash: str, q: dict) -> Response:
             f"<tbody>{''.join(rows) or '<tr><td colspan=6 class=muted>Not run yet.</td></tr>'}</tbody></table>"
             f"<h2>Settings</h2>{_scan_form(adm, s, scan, ident)}{delete}"
             f"<h2>Changes</h2>{adm._history(conn, 'OrgScan', ident)}")
-    return Response(200, adm._shell(s, scan["Name"], "scans", body, flash))
+    return Response(200, adm._shell(s, a, scan["Name"], "scans", body, flash))
 
 
 def validate_scan(form: dict) -> tuple[dict, list[str]]:
@@ -415,7 +415,7 @@ REPO_SHOW = {"all": ("All", "r.RemovedAt IS NULL"), "enabled": ("Enabled", "r.Re
              "removed": ("Removed", "r.RemovedAt IS NOT NULL")}
 
 
-def list_repos(adm, conn, s, q: dict, flash: str) -> Response:
+def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
     show = _q(q, "show", "all")
     show = show if show in REPO_SHOW else "all"
     scan = _q(q, "scan")
@@ -481,7 +481,7 @@ def list_repos(adm, conn, s, q: dict, flash: str) -> Response:
             f"<table><thead><tr><th></th><th>Repository</th><th>State</th><th>Reason</th><th>Latest result</th></tr></thead>"
             f"<tbody>{''.join(rows) or '<tr><td colspan=5 class=muted>Nothing here.</td></tr>'}</tbody></table></form>"
             + ("<p class='muted small'>Showing the first 2000.</p>" if len(repos) == 2000 else ""))
-    return Response(200, adm._shell(s, "Repositories", "repositories", body, flash))
+    return Response(200, adm._shell(s, a, "Repositories", "repositories", body, flash))
 
 
 ACTIONS = {"enable": "enabled", "disable": "disabled", "auto": None}
@@ -507,7 +507,7 @@ def bulk_repos(conn, form: dict) -> Response:
     return _back("/admin/repositories", f"{n} repositor{'y' if n == 1 else 'ies'} {what}. The next run follows it.")
 
 
-def edit_repo(adm, conn, s, ident: int, flash: str) -> Response:
+def edit_repo(adm, conn, s, a, ident: int, flash: str) -> Response:
     cur = conn.cursor(as_dict=True)
     cur.execute("SELECT r.*, s.Name AS ScanName FROM cz.OrgRepository r JOIN cz.OrgScan s ON s.ScanId = r.ScanId "
                 "WHERE r.RepositoryId = %s", (ident,))
@@ -557,7 +557,7 @@ def edit_repo(adm, conn, s, ident: int, flash: str) -> Response:
             + (f"<h2>Deployed components</h2><ul>{comps}</ul>" if comps else "")
             + (f"<h2>Not deployed</h2><ul>{excl}</ul>" if excl else "")
             + f"<h2>Enabled or disabled</h2>{form}<h2>Changes</h2>{adm._history(conn, 'OrgRepository', ident)}")
-    return Response(200, adm._shell(s, _repo_name(r), "repositories", body, flash))
+    return Response(200, adm._shell(s, a, _repo_name(r), "repositories", body, flash))
 
 
 def save_repo(conn, ident: int, form: dict) -> Response:

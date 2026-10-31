@@ -49,8 +49,9 @@ clone URL on another host is refused.
    CONTAINERIZER_SQL="Server=...;Database=Containerizer;User Id=<owner>" python -m containerizer db init
    ```
 
-2. The admin pages show **Organization scans** and **Repositories** to administrators; nothing else
-   to configure in the web UI.
+2. The admin pages show **Organization scans** and **Repositories** to administrators and operators
+   (`CONTAINERIZER_OPERATORS`, see [Roles](results-database.md#roles)); nothing else to configure in
+   the web UI.
 
 3. Run the worker on a **dedicated, disposable build VM** with Docker. Building and running the
    repositories' images executes their build steps, as `analyze` and `gate` always do, so give the VM
@@ -207,7 +208,8 @@ scan.
 
 Set `CONTAINERIZER_GRAFANA_URL` on the web UI to the dashboard's address (for example
 `https://grafana.example.com/d/containerizer-scans`) and the admin pages link to it:
-a **Grafana ↗** tab on every admin page and a link on Organization scans. It must be `https://`
+a **Grafana ↗** tab on the admin pages of administrators and operators, and a link on Organization
+scans. It must be `https://`
 (`http://` is accepted only to `localhost`), and the web UI refuses to start with anything else.
 
 ![Grafana dashboard: scans, the machine running the worker, and the worker process](images/grafana-scans-dashboard.png)

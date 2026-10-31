@@ -50,6 +50,8 @@ class OidcConfig:
     scopes: str = "openid profile email"
     timeout: int = 15
     viewers: list[str] = field(default_factory=list)   # non-empty: the results pages need sign-in too
+    operators: list[str] = field(default_factory=list) # organization scans and repositories (roles.py)
+    owners: list = field(default_factory=list)         # [(rules, scopes)]: scoped product owners (roles.py)
     view_audit: bool = False                           # record sign-ins and page views in AccessLog
 
     @classmethod
@@ -67,7 +69,10 @@ class OidcConfig:
                   admins=[r.strip() for r in env["CONTAINERIZER_ADMINS"].split(",") if r.strip()],
                   scopes=env.get("CONTAINERIZER_OIDC_SCOPES") or "openid profile email",
                   viewers=[r.strip() for r in (env.get("CONTAINERIZER_VIEWERS") or "").split(",") if r.strip()],
-                  view_audit=_flag(env, "CONTAINERIZER_VIEW_AUDIT"))
+                  view_audit=_flag(env, "CONTAINERIZER_VIEW_AUDIT"),
+                  operators=[r.strip() for r in (env.get("CONTAINERIZER_OPERATORS") or "").split(",") if r.strip()])
+        from .roles import parse_owners
+        cfg.owners = parse_owners(env.get("CONTAINERIZER_PRODUCT_OWNERS"))
         cfg.check()
         return cfg
 
@@ -78,6 +83,8 @@ class OidcConfig:
         check_rules(self.admins)
         if self.viewers:
             check_rules(self.viewers, name="CONTAINERIZER_VIEWERS")
+        if self.operators:
+            check_rules(self.operators, name="CONTAINERIZER_OPERATORS")
         if self.view_audit and not self.viewers:
             raise OidcError("CONTAINERIZER_VIEW_AUDIT needs CONTAINERIZER_VIEWERS: without sign-in on the results "
                             "pages there is nobody to record")
@@ -245,7 +252,9 @@ class Session:
     user: str
     name: str
     admin: bool
-    viewer: bool = False                # may see the results pages (admins always may)
+    viewer: bool = False                # may see the results pages (admins, operators, product owners always may)
+    operator: bool = False              # organization scans and repositories
+    scopes: list = field(default_factory=list)   # product owner scopes, e.g. ["bu:Finance"] (roles.py)
     csrf: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     created: float = field(default_factory=time.time)
     seen: float = field(default_factory=time.time)
@@ -280,10 +289,12 @@ class Sessions:
             self._prune(time.time())
             return self._pending.pop(key, None) if key else None
 
-    def create(self, user: str, name: str, admin: bool, viewer: bool = False) -> str:
+    def create(self, user: str, name: str, admin: bool, viewer: bool = False, operator: bool = False,
+               scopes: list | None = None) -> str:
         sid = secrets.token_urlsafe(32)
         with self._lock:
-            self._sessions[sid] = Session(user, name, admin, admin or viewer)
+            self._sessions[sid] = Session(user, name, admin, admin or operator or bool(scopes) or viewer,
+                                          operator and not admin, [] if admin else list(scopes or []))
         return sid
 
     def get(self, sid: str | None) -> Session | None:
