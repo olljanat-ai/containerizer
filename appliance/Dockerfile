@@ -13,7 +13,8 @@ ARG ELEMENTAL_COMMIT=66a0d43154760440b674c94949cc212fb236b423
 RUN git clone --depth 1 --branch "${ELEMENTAL_VERSION}" https://github.com/rancher/elemental-toolkit.git /src \
  && test "$(git -C /src rev-parse HEAD)" = "${ELEMENTAL_COMMIT}"
 WORKDIR /src
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-w -s \
+# go:embed needs the feature tarballs (pkg/features/generated), as in upstream `make build`
+RUN go generate ./... && CGO_ENABLED=0 go build -trimpath -ldflags "-w -s \
       -X github.com/rancher/elemental-toolkit/v2/internal/version.version=${ELEMENTAL_VERSION} \
       -X github.com/rancher/elemental-toolkit/v2/internal/version.gitCommit=${ELEMENTAL_COMMIT}" \
       -o /elemental .
