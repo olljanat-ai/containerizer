@@ -62,6 +62,9 @@ use; to develop containerizer itself, see [docs/local-dev-server.md](docs/local-
 1. **Scan** (`containerizer/scan.py`) reads project files (.csproj/.vbproj incl. old-style and imported
    `.props`, package.json, requirements.txt/pyproject, go.mod, pom.xml/gradle, BizTalk/SQL/SSIS
    projects, ASP.NET Web Site projects listed in a .sln), source and configuration. Nothing from the scanned repository is executed.
+   Java and Node.js have their own parsers ([docs/java-node.md](docs/java-node.md)): Maven parents,
+   profiles and modules, Gradle version catalogs and `subprojects {}`, npm/yarn/pnpm workspaces, and
+   the lockfile's Windows-only and native packages.
 2. **Role rules** (`rules/00-roles.yaml`) decide what each project is: web, worker, console, spa,
    desktop, library, test, tool, BizTalk, SharePoint, Sitecore XP, SQL CLR, SSIS.
 3. **Fact rules** (`rules/05-facts.yaml`) extract ports, health endpoints, run-once arguments,

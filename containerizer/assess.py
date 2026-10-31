@@ -201,7 +201,7 @@ class AppAssessment:
         if by.get("refactor"):
             parts.append(f"{len(by['refactor'])} need targeted code changes")
         if by.get("rewrite"):
-            parts.append(f"{len(by['rewrite'])} need a port to .NET 8 or a rewrite")
+            parts.append(f"{len(by['rewrite'])} need a framework port or a rewrite")
         if by.get("blocker"):
             parts.append(f"{len(by['blocker'])} cannot run in Linux containers ({', '.join(by['blocker'])})")
         stateful = self.stateful()
