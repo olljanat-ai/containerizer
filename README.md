@@ -56,6 +56,8 @@ python -m containerizer bench --technique hybrid --model claude-haiku-5-5
 # images pushed, files + Argo CD/Flux sandbox config committed to a Git repo (docs/organization-run.md)
 python -m containerizer org --provider github --org acme --registry myacr.azurecr.io/sandbox \
   --output-repo https://github.com/acme/sandbox-deployments.git          # GITHUB_TOKEN, OUTPUT_GIT_TOKEN
+# or schedule organization scans from the admin pages and run them with a worker (docs/scheduled-scans.md)
+python -m containerizer worker --sql "Server=...;Database=Containerizer;User Id=cz_worker"
 
 # results database (SQL Server) and read-only web UI for management, see docs/results-database.md
 docker compose -f results/compose.yaml up -d --build          # SQL Server + UI on http://127.0.0.1:8080/
@@ -512,17 +514,29 @@ extension), comments on Azure Repos pull requests with `System.AccessToken` (giv
 
 `containerizer org` lists every Git repository of one Azure DevOps organization, GitHub organization or
 GitLab group (private ones included, tokens from environment variables), skips repositories without a
-commit in 6 months and repositories that already have a Dockerfile, runs `analyze` on the rest and
+commit in 6 months, repositories that already have a Dockerfile and repositories without application
+code (with the reason, for example "14 files (.md 9, .yaml 5), no source code" or "Ruby (31 files), but
+no project the tool can build"), runs `analyze` on the rest and
 keeps only the components rated **A** that built, ran and passed the security gate. Their images are
 pushed to your registry and the generated files are committed to your output repository as
 `<Organization>/<Project>/<Repository>/<component>/` (GitHub has no projects: `_`), with a
 `sandbox/` folder holding an Argo CD app-of-apps and a Flux root Kustomization that deploy all of them
 to a sandbox cluster. Results go to SQL Server too with `--sql`. See
-[docs/organization-run.md](docs/organization-run.md). With `--verify-sandbox` it then waits for Argo CD or
+[docs/organization-run.md](docs/organization-run.md). `--cache-dir` keeps the clones between runs and only
+pulls the newest commit. With `--verify-sandbox` it then waits for Argo CD or
 Flux to sync, reads back rollout, readiness, restarts and events with a read-only ServiceAccount, and records
 per component "deployed and healthy" or "deployed but failing (reason)" in `sandbox/HEALTH.md`, the results
 database and the web UI; failures the cluster shows feed the learning loop
 ([docs/sandbox-verification.md](docs/sandbox-verification.md)).
+
+Organization scans can also be **scheduled from the admin pages** (days of the week and time, or
+"Run now") and run by `containerizer worker`, a separate process that holds the tokens and Docker.
+New repositories are found on every run, every repository appears on the admin **Repositories** page
+with its last result, and skipped ones are shown disabled with the reason; an administrator can
+enable or disable any of them. The worker exposes Prometheus metrics about the scans, the process and
+the VM, and a Grafana dashboard is included. See [docs/scheduled-scans.md](docs/scheduled-scans.md).
+
+![Repositories of an organization scan, skipped ones disabled with the reason](docs/images/admin-repositories-disabled.png)
 
 ## Results database and web UI
 
@@ -556,7 +570,9 @@ rules/learned/   rules written by the learning loop (reviewable, safe to delete)
 bench/           labels and results
 action.yml       GitHub Action; ci/azure/ has the Azure DevOps template
 containerizer/sql/  results database schema (sqlstore.py writes it, webui.py reads it, admin.py + oidc.py: admin pages)
+                 worker.py: scheduled organization scans, metrics.py: Prometheus metrics
+monitoring/      Grafana dashboard, Prometheus scrape config and alert rules, systemd unit for the worker
 results/         Docker Compose stack and image for the results database and web UI
 docs/            results-database.md (results database, web UI, admin pages, audit), organization-run.md,
-                 sandbox-verification.md, self-hosted-llm.md
+                 scheduled-scans.md, sandbox-verification.md, self-hosted-llm.md
 ```

@@ -105,7 +105,7 @@ def test_roles_end_to_end(idp, tmp_path):  # noqa: F811
         lambda: sqlstore.connect(as_("cz_r_reader"), "Test-Passw0rd!x"), adm))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     try:
-        # -- operator: change history only (scans and repositories come with the scan pages), no mapping
+        # -- operator: organization scans, repositories and change history, no mapping
         op = Browser(base, idp)
         idp.claims = {"email": "olga@example.com", "name": "Olga Ops", "roles": ["Ops"]}
         s, _, body = op.follow("/admin")
@@ -114,11 +114,17 @@ def test_roles_end_to_end(idp, tmp_path):  # noqa: F811
             assert op.follow(path)[0] == 403, path
         assert op.go("/admin/applications/bulk", {"csrf": op.csrf(body), "app": ["1"], "ProductId": ""})[0] == 403
         assert op.follow("/")[0] == 200
+        for path in ("/admin/scans", "/admin/repositories", "/admin/scans/new"):
+            s, _, page = op.follow(path)
+            assert s == 200 and "href='/admin/scans'" in page, path
         # -- product owner of the Finance business unit
         fo = Browser(base, idp)
         idp.claims = {"email": "fiona@example.com", "name": "Fiona Finance", "roles": ["Finance.Owner"]}
         s, _, body = fo.follow("/admin/applications")
         assert s == 200 and "product owner: bu:Finance" in body and "href='/admin/business-units'" not in body
+        assert "href='/admin/scans'" not in body
+        for path in ("/admin/scans", "/admin/repositories", "/admin/scans/new"):
+            assert fo.follow(path)[0] == 403, path
         csrf = fo.csrf(body)
         ids = {n: re.search(rf"value='(\d+)' id='a\d+' aria-label='Select {n}'", body)[1] for n in ("billing", "freight", "ledger")}
         prods = dict((n, i) for i, n in re.findall(r"<option value='(\d+)'>(\w+)", body))

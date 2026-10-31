@@ -248,6 +248,9 @@ for their own products, and operators run the scans; see [Roles](#roles).
   link to the product in another tool, for example the CMDB or product catalogue, shown next to the
   product in the results), delete when nothing is mapped to it.
 - **Business units**: add, rename, set an owner, delete when no product is in it.
+- **Organization scans** and **Repositories**: schedule whole-organization scans, run one now, and
+  enable or disable the repositories they found (skipped ones are shown disabled with the reason).
+  See [scheduled-scans.md](scheduled-scans.md).
 - **Change history**: see below.
 
 They appear when sign-in is configured; without it the UI is the read-only results only.
@@ -265,6 +268,7 @@ They appear when sign-in is configured; without it the UI is the read-only resul
 | `CONTAINERIZER_PUBLIC_URL` | The address users open, e.g. `https://containerizer.example.com`. The redirect URI to register is this plus `/auth/callback`. |
 | `CONTAINERIZER_ADMINS` | Who is an administrator, comma separated: `group:<group object id>`, `role:<app role>`, `email:<address>`, `domain:<e-mail domain>`, `sub:<subject id>`. `email:` and `domain:` only match when the provider marks the address verified (`email_verified`). Nobody else gets in. |
 | `CONTAINERIZER_ADMIN_SQL` / `CONTAINERIZER_ADMIN_SQL_PASSWORD` | Connection string and password of the `containerizer_admin` login the admin pages write with. |
+| `CONTAINERIZER_GRAFANA_URL` | Optional. Link to your Grafana dashboard of the scans ([scheduled-scans.md](scheduled-scans.md#grafana-dashboard)), shown to administrators and operators as a **Grafana ↗** tab on the admin pages and a link on Organization scans. `https://` only (`http://` only to `localhost`); checked at start. |
 | `CONTAINERIZER_OIDC_SCOPES` | Default `openid profile email`. |
 
 With **Microsoft Entra ID**: register a web application with the redirect URI above, add a client
