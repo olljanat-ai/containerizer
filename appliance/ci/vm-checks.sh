@@ -28,6 +28,7 @@ step "DNS filter: allowed names resolve, others are refused"
 if ! wait_for 120 "ghcr.io resolves" getent ahostsv4 ghcr.io; then
   ls -l /etc/resolv.conf; cat /etc/resolv.conf; ip addr show cz-dns; ss -lunp 'sport = :53'
   cat /run/systemd/resolve/resolv.conf; journalctl -b -u containerizer-dns --no-pager | tail -20
+  ls -la /etc/tmpfiles.d /usr/lib/tmpfiles.d | grep -i resolv; journalctl -b -u systemd-tmpfiles-setup --no-pager | tail -20
   exit 1
 fi
 getent ahostsv4 ghcr.io

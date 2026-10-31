@@ -7,6 +7,9 @@ Wants=nss-lookup.target
 
 [Service]
 Type=simple
+# the host resolves through this filter: make sure /etc/resolv.conf points here (tmpfiles links it at
+# boot, but a boot was seen without it); "+" runs this one step outside the sandbox below
+ExecStartPre=+/usr/bin/ln -sfn /usr/lib/containerizer/resolv.conf /etc/resolv.conf
 ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/usr/lib/containerizer/dnsmasq.conf
 Restart=always
 RestartSec=2
