@@ -263,7 +263,7 @@ subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--disable-pip-ver
 import pika
 p = pika.URLParameters(os.environ["AMQP"])
 ch = pika.BlockingConnection(p).channel()
-ch.queue_declare("q", durable=True)  # RabbitMQ 4 refuses transient non-exclusive queues; ch.basic_publish("", "q", b"hi")
+ch.queue_declare("q", durable=True); ch.basic_publish("", "q", b"hi")  # RabbitMQ 4 refuses transient non-exclusive queues
 print("AMQP", ch.basic_get("q", auto_ack=True)[2].decode())
 try:
     other = pika.URLParameters(os.environ["AMQP"].rsplit("/", 1)[0] + "/" + os.environ["OTHER_VHOST"])
