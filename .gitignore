@@ -4,3 +4,4 @@ __pycache__/
 out/
 .work/
 results/.env
+site/

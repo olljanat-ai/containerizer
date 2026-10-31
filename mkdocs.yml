@@ -1,0 +1,54 @@
+site_name: containerizer
+site_description: Can this application run as a Linux container on Kubernetes? Assessment, hardened builds and manifests.
+site_url: https://containerizer.eu/
+repo_url: https://github.com/olljanat-ai/containerizer
+repo_name: olljanat-ai/containerizer
+edit_uri: edit/main/docs/
+docs_dir: docs
+hooks:
+  - .github/mkdocs_hooks.py
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.highlight
+    - content.code.copy
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle: {icon: material/brightness-7, name: Dark mode}
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle: {icon: material/brightness-4, name: Light mode}
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc: {permalink: true}
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.details
+
+nav:
+  - Overview: index.md
+  - Running at scale:
+      - Whole organization: organization-run.md
+      - Scheduled scans: scheduled-scans.md
+      - Sandbox verification: sandbox-verification.md
+      - Dev databases: dev-databases.md
+  - Results and review:
+      - Results database and web UI: results-database.md
+      - Rule review: rule-review.md
+      - SBOM, licences and CVEs: sbom.md
+  - Deployment:
+      - Appliance: appliance.md
+      - Self-hosted LLM: self-hosted-llm.md
+
+validation:
+  links:
+    anchors: warn
