@@ -203,16 +203,55 @@ namespace_policy:
   quota_extra: {pods: 10, services: 10, persistentvolumeclaims: 10, secrets: 20, configmaps: 20}
   quota_floor: {requests.cpu: '1', requests.memory: 1Gi, limits.memory: 2Gi}
 
-# Secrets (NSA/CISA "Secrets", CIS 5.4.2): values never live in Git.
-#   external-secrets  ExternalSecret objects (External Secrets Operator) pull the values
-#                     from a vault through the ClusterSecretStore `store`
-#   sealed-secrets    a Secret template per component under secrets/ to encrypt with kubeseal
-#   plain             an empty Secret skeleton (applying it from Git overwrites real values)
+# Secrets (NSA/CISA "Secrets", CIS 5.4.2): no generated file holds a Secret object or a secret value.
+# Every Secret is an ExternalSecret (External Secrets Operator) read from `store`. The store
+# authenticates as ServiceAccount `reader.name` in the namespace of each ExternalSecret (ESO
+# "referent" auth: no namespace in the store's serviceAccountRef), so each namespace reads only what
+# its own reader is granted. Remote keys are `key_format`; `{namespace}` is the app's namespace and
+# `{name}` the component, or cz-git / cz-git-gpg / cz-registry / cz-cosign-pub for platform credentials.
+# docs/external-secrets.md: populating the store, and pointing it at Vault, Azure Key Vault or AWS.
 secrets:
-  mode: external-secrets
+  mode: external-secrets            # the only mode
   store: {kind: ClusterSecretStore, name: app-secrets}
   refresh_interval: 1h
-  key_prefix: '{app}/{component}'     # remote key in the vault
+  key_format: '{namespace}--{name}'  # valid as a Kubernetes Secret, Azure Key Vault, AWS and Vault name
+  reader:
+    name: app-secrets-reader
+    annotations: {}                 # e.g. eks.amazonaws.com/role-arn, azure.workload.identity/client-id
+  # backend of the generated cluster/secret-store.yaml (CONTAINERIZER_SECRET_STORE overrides it).
+  # `kubernetes` is the appliance sandbox default: Secrets in a locked-down namespace of the same cluster.
+  provider: kubernetes
+  providers:
+    kubernetes:
+      remoteNamespace: containerizer-secrets
+      server:
+        url: https://kubernetes.default.svc
+        caProvider: {type: ConfigMap, name: kube-root-ca.crt, key: ca.crt, namespace: containerizer-secrets}
+      auth:
+        serviceAccount: {name: app-secrets-reader}
+    vault:                          # HashiCorp Vault / OpenBao, KV v2, Kubernetes auth per namespace
+      server: https://vault.example.com:8200
+      path: secret
+      version: v2
+      auth:
+        kubernetes:
+          mountPath: kubernetes
+          role: app-secrets
+          serviceAccountRef: {name: app-secrets-reader, audiences: [vault]}
+    azurekv:                        # Azure Key Vault, workload identity of each namespace's reader
+      authType: WorkloadIdentity
+      vaultUrl: https://example-vault.vault.azure.net
+      serviceAccountRef: {name: app-secrets-reader}
+      readerAnnotations:
+        azure.workload.identity/client-id: 00000000-0000-0000-0000-000000000000
+    aws:                            # AWS Secrets Manager, IRSA role of each namespace's reader
+      service: SecretsManager
+      region: eu-north-1
+      auth:
+        jwt:
+          serviceAccountRef: {name: app-secrets-reader}
+      readerAnnotations:
+        eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/app-secrets-{namespace}
 
 # Lint checks over the generated (or hand-edited) manifests and Dockerfiles.
 # severity: error fails the gate, warning and info are reported only.

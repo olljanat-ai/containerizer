@@ -303,12 +303,11 @@ def default_deny_policy() -> dict:
 # --------------------------------------------------------------------------- secrets
 
 def externalize_secrets(docs: list[dict], component: str, labels: dict, plan: dict) -> None:
-    """Replace Secret skeletons, and Secrets that volumes reference, by ExternalSecrets
-    (or Sealed Secrets templates, see rules/60-security.yaml `secrets.mode`)."""
-    cfg = security()["secrets"]
-    mode = cfg.get("mode", "plain")
-    if mode == "plain":
-        return
+    """Replace Secret skeletons, and Secrets that volumes reference, by ExternalSecrets (External
+    Secrets Operator, rules/60-security.yaml `secrets`): the values come from the secret store under
+    the remote key `<namespace>--<component>`, one property per Secret key."""
+    from . import eso
+    eso.cfg()
     wanted: dict[str, list[str]] = {}
     keep = []
     for d in docs:
@@ -330,21 +329,9 @@ def externalize_secrets(docs: list[dict], component: str, labels: dict, plan: di
     docs[:] = keep
     app = labels.get("app.kubernetes.io/part-of", component)
     for name, keys in sorted(wanted.items()):
-        if mode == "external-secrets":
-            prefix = cfg.get("key_prefix", "{app}/{component}").format(app=app, component=component)
-            docs.append({"apiVersion": "external-secrets.io/v1", "kind": "ExternalSecret",
-                         "metadata": {"name": name, "labels": labels},
-                         "spec": {"refreshInterval": cfg.get("refresh_interval", "1h"),
-                                  "secretStoreRef": dict(cfg["store"]),
-                                  "target": {"name": name, "creationPolicy": "Owner", "deletionPolicy": "Retain"},
-                                  "data": [{"secretKey": k, "remoteRef": {"key": prefix, "property": k}} for k in keys]
-                                  if keys else [],
-                                  **({} if keys else {"dataFrom": [{"extract": {"key": f"{prefix}/{name}"}}]})},
-                         "_comment": f"values come from the vault ({cfg['store']['kind']} {cfg['store']['name']}); never from Git"})
-        else:   # sealed-secrets: a template to encrypt with kubeseal, not applied as is
-            plan.setdefault("sealed_secret_templates", []).append(
-                {"apiVersion": "v1", "kind": "Secret", "metadata": {"name": name, "labels": labels}, "type": "Opaque",
-                 "stringData": {k: "" for k in keys}})
+        # unknown keys: the whole remote secret of that name
+        remote = eso.remote_key(app, component if keys else name)
+        docs.append(eso.external_secret(name, app, remote, keys, labels))
 
 
 def _basename(p: str) -> str:
@@ -451,8 +438,10 @@ def write_app_security(out, app: str, comp_docs: dict[str, list[dict]], registry
     Returns (resources to add to the app's kustomization, the namespace policy docs)."""
     from pathlib import Path
     out = Path(out)
+    from . import eso
     all_docs = [d for docs in comp_docs.values() for d in docs]
-    ns_docs = namespace_policies(all_docs)
+    # the namespace's identity towards the secret store (docs/external-secrets.md)
+    ns_docs = namespace_policies(all_docs) + [eso.reader_service_account(app)]
     _NS_POLICIES[app] = ns_docs
     (out / "security.yaml").write_text(dump(ns_docs))
     for rel, docs in cluster_kit(app, registry).items():
@@ -490,9 +479,11 @@ def harden_gitops(docs: dict[str, list[dict]], a=None) -> dict[str, list[dict]]:
     policies = copy.deepcopy(_NS_POLICIES.get(ns) or namespace_policies([]))
     for p in policies:
         p.setdefault("metadata", {})["namespace"] = ns
+    from .eso import reader
+    # the secret store reader too: the Flux source's own ExternalSecret needs it before the first sync
     platform = [(p["kind"], p["metadata"]["name"], p["apiVersion"]) for p in policies
-                if p["kind"] in PLATFORM_KINDS or p["metadata"]["name"] == "default-deny-all"]
-    mode = security()["secrets"].get("mode")
+                if p["kind"] in PLATFORM_KINDS or p["metadata"]["name"] == "default-deny-all"
+                or (p["kind"], p["metadata"]["name"]) == ("ServiceAccount", reader())]
     for path, items in docs.items():
         for d in items:
             kind, spec = d.get("kind"), d.setdefault("spec", {})
@@ -501,8 +492,7 @@ def harden_gitops(docs: dict[str, list[dict]], a=None) -> dict[str, list[dict]]:
                                                     if (w.get("group"), w.get("kind")) == ("", "Namespace")]
                 wl = spec.setdefault("namespaceResourceWhitelist", [])
                 # a plain Secret from Git would overwrite the values the external store manages
-                if mode != "plain":
-                    wl[:] = [w for w in wl if (w.get("group"), w.get("kind")) != ("", "Secret")]
+                wl[:] = [w for w in wl if (w.get("group"), w.get("kind")) != ("", "Secret")]
                 spec["sourceNamespaces"] = []
                 spec["orphanedResources"] = {"warn": True}
                 spec.setdefault("signatureKeys", [])
