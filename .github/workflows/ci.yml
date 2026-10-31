@@ -114,7 +114,7 @@ jobs:
           sudo install -D -m 0600 appliance/rootfs/var/lib/rancher/k3s/server/manifests/containerizer-traefik.yaml \
             /var/lib/rancher/k3s/server/manifests/containerizer-traefik.yaml
           curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable servicelb --write-kubeconfig-mode 0644" sh -
-      - run: python appliance/ci/sandbox-https-e2e.py
+      - run: PYTHONPATH=$PWD python appliance/ci/sandbox-https-e2e.py
       - if: failure()
         run: |
           sudo k3s kubectl get all -A || true
