@@ -1,24 +1,33 @@
-"""Claude as a fallback: only consulted when the rules are unsure.
+"""An LLM as a fallback: only consulted when the rules are unsure.
 
-Two backends:
-  api - the Anthropic Python SDK with structured outputs (needs credentials:
-        ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or an `ant auth login` profile)
-  cli - the `claude` CLI in print mode (`claude -p --model ...`)
-Select with CONTAINERIZER_AI_BACKEND=api|cli (default: api if the SDK and a
-key are available, else cli). The model is configurable per call, via
---model or CONTAINERIZER_MODEL; default claude-opus-5-5.
+Three backends:
+  api    - Claude through the Anthropic Python SDK with structured outputs (needs
+           credentials: ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or an `ant auth login` profile)
+  cli    - Claude through the `claude` CLI in print mode (`claude -p --model ...`)
+  openai - a self-hosted LLM behind an OpenAI-compatible chat completions API
+           (Ollama, vLLM, LM Studio, llama.cpp server, LocalAI, ...). Configure with
+           CONTAINERIZER_LLM_BASE_URL (e.g. http://localhost:11434/v1), the model with
+           --model or CONTAINERIZER_MODEL, and optionally CONTAINERIZER_LLM_API_KEY.
+Select with CONTAINERIZER_AI_BACKEND=api|cli|openai (default: openai if
+CONTAINERIZER_LLM_BASE_URL is set, else api if the SDK and a key are available,
+else cli). The model is configurable per call, via --model or CONTAINERIZER_MODEL;
+default claude-opus-5-5 for the Claude backends (the openai backend needs one set).
 
 Every answer is validated before use, and anything learned from it is written
 to rules/learned/ with `source: ai` and the model name, so it can be reviewed.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
 import shutil
 import subprocess
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,7 +35,7 @@ import yaml
 
 from .rules import RULES_DIR, SEV_RANK, Rule, evaluate, Context
 
-DEFAULT_MODEL = os.environ.get("CONTAINERIZER_MODEL", "claude-opus-5-5")
+CLAUDE_DEFAULT_MODEL = "claude-opus-5-5"
 MODELS = ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
 # $ per 1M tokens (input, output)
 PRICING = {"claude-fable-5-1": (10.0, 50.0), "claude-opus-5-5": (4.0, 20.0),
@@ -44,10 +53,17 @@ needs Windows, a desktop session, hardware, or a Windows-only vendor product).""
 
 # --------------------------------------------------------------------------- backends
 
+BACKENDS = ("api", "cli", "openai")
+
+
 def _backend() -> str:
-    b = os.environ.get("CONTAINERIZER_AI_BACKEND")
+    b = os.environ.get("CONTAINERIZER_AI_BACKEND", "").strip().lower()
     if b:
+        if b not in BACKENDS:
+            raise RuntimeError(f"CONTAINERIZER_AI_BACKEND must be one of {', '.join(BACKENDS)}, not {b!r}")
         return b
+    if os.environ.get("CONTAINERIZER_LLM_BASE_URL"):
+        return "openai"
     try:
         import anthropic  # noqa: F401
         if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
@@ -57,27 +73,47 @@ def _backend() -> str:
     return "cli" if shutil.which("claude") else "none"
 
 
+def model_name(model: str | None = None) -> str:
+    """The model a call uses: --model, else CONTAINERIZER_MODEL, else the Claude default.
+    A self-hosted server has no sensible default, so the openai backend needs one set."""
+    if model:
+        return model
+    env = os.environ.get("CONTAINERIZER_MODEL")
+    if env:
+        return env
+    if _backend() == "openai":
+        raise RuntimeError("the openai backend needs a model: pass --model or set CONTAINERIZER_MODEL "
+                           "(the name your server knows, e.g. qwen3:32b on Ollama)")
+    return CLAUDE_DEFAULT_MODEL
+
+
 CACHE = Path(os.environ.get("CONTAINERIZER_AI_CACHE", Path(__file__).resolve().parent.parent / ".work" / "ai-cache"))
 
 
 def ask_json(prompt: str, schema: dict, model: str | None = None, effort: str = "medium") -> dict:
     import hashlib
 
-    model = model or DEFAULT_MODEL
-    key = hashlib.sha256(json.dumps([SYSTEM, prompt, schema, model, effort]).encode()).hexdigest()[:24]
+    model = model_name(model)
+    backend = _backend()
+    parts = [SYSTEM, prompt, schema, model, effort]
+    if backend == "openai":
+        parts.append(_llm_base_url())     # same model name on another server is another model
+    key = hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
     cf = CACHE / f"{key}.json"
     if cf.exists():
         cached = json.loads(cf.read_text())
         USAGE_LOG.append({**cached["usage"], "cached": True})
         return cached["data"]
-    backend = _backend()
     t0 = time.time()
     if backend == "api":
         data, usage = _ask_api(prompt, schema, model, effort)
     elif backend == "cli":
         data, usage = _ask_cli(prompt, schema, model)
+    elif backend == "openai":
+        data, usage = _ask_openai(prompt, schema, model)
     else:
-        raise RuntimeError("No Claude backend available (install `anthropic` and set credentials, or install the claude CLI)")
+        raise RuntimeError("No LLM backend available (install `anthropic` and set credentials, install the claude CLI, "
+                           "or set CONTAINERIZER_LLM_BASE_URL to a self-hosted OpenAI-compatible server)")
     usage.update({"model": model, "backend": backend, "seconds": round(time.time() - t0, 1)})
     pin, pout = PRICING.get(model, (0, 0))
     if usage.get("cost_usd") is None:
@@ -108,6 +144,8 @@ def _ask_api(prompt: str, schema: dict, model: str, effort: str):
 
 def _first_json(text: str):
     """The first JSON object in a model answer (tolerates prose or code fences around it)."""
+    # reasoning models served locally (DeepSeek-R1, Qwen3, ...) may think out loud before answering
+    text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S)
     dec = json.JSONDecoder()
     for m in re.finditer(r"\{", text):
         try:
@@ -131,8 +169,8 @@ def _ask_cli(prompt: str, schema: dict, model: str, _retry: bool = False):
         raise RuntimeError(f"claude CLI failed: {p.stderr[-500:] or p.stdout[-500:]}")
     text = env.get("result", "")
     data = _first_json(text)
-    if data is not None and any(k not in data for k in schema.get("required", [])):
-        data = None                      # the CLI cannot enforce the schema; check required keys
+    if data is not None and _schema_errors(data, schema):
+        data = None                      # the CLI cannot enforce the schema; check it here
     if data is None:
         if not _retry:
             return _ask_cli(prompt + "\n\nYour previous answer was not valid JSON. Answer with the JSON object only.",
@@ -142,6 +180,125 @@ def _ask_cli(prompt: str, schema: dict, model: str, _retry: bool = False):
     return data, {"input_tokens": (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
                   + (u.get("cache_creation_input_tokens") or 0),
                   "output_tokens": u.get("output_tokens") or 0, "cost_usd": env.get("total_cost_usd")}
+
+
+def _schema_errors(value, schema: dict, path: str = "$") -> list[str]:
+    """Check an answer against the subset of JSON schema used here (object, array, string, number,
+    boolean, enum, required). Backends that cannot enforce a schema are checked with this, so a
+    weaker model's answer never reaches code that trusts its shape."""
+    t = schema.get("type")
+    errs: list[str] = []
+    if t == "object":
+        if not isinstance(value, dict):
+            return [f"{path}: expected object"]
+        for k in schema.get("required", []):
+            if k not in value:
+                errs.append(f"{path}.{k}: missing")
+        for k, sub in schema.get("properties", {}).items():
+            if k in value:
+                errs += _schema_errors(value[k], sub, f"{path}.{k}")
+    elif t == "array":
+        if not isinstance(value, list):
+            return [f"{path}: expected array"]
+        for i, v in enumerate(value):
+            errs += _schema_errors(v, schema.get("items", {}), f"{path}[{i}]")
+    elif t == "string" and not isinstance(value, str):
+        errs.append(f"{path}: expected string")
+    elif t == "number" and (isinstance(value, bool) or not isinstance(value, (int, float))):
+        errs.append(f"{path}: expected number")
+    elif t == "boolean" and not isinstance(value, bool):
+        errs.append(f"{path}: expected boolean")
+    if "enum" in schema and value not in schema["enum"]:
+        errs.append(f"{path}: {value!r} not in {schema['enum']}")
+    return errs
+
+
+def _llm_base_url() -> str:
+    url = os.environ.get("CONTAINERIZER_LLM_BASE_URL", "").strip().rstrip("/")
+    if not url:
+        raise RuntimeError("the openai backend needs CONTAINERIZER_LLM_BASE_URL, e.g. http://localhost:11434/v1 "
+                           "(Ollama), http://localhost:8000/v1 (vLLM) or http://localhost:1234/v1 (LM Studio)")
+    u = urllib.parse.urlsplit(url)
+    if u.scheme not in ("http", "https") or not u.hostname:
+        raise RuntimeError(f"CONTAINERIZER_LLM_BASE_URL must be an http(s) URL, not {url!r}")
+    if u.username or u.password:
+        raise RuntimeError("put credentials in CONTAINERIZER_LLM_API_KEY, not in CONTAINERIZER_LLM_BASE_URL")
+    return url
+
+
+def _is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _post_json(url: str, body: dict, headers: dict, timeout: float) -> dict:
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", "Accept": "application/json", **headers})
+    with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 - scheme checked in _llm_base_url
+        return json.loads(r.read().decode("utf-8", "replace"))
+
+
+# Structured output modes, strongest first. Servers differ in what they support; on a 400/422 the next
+# one is tried. The schema is always in the prompt too, and every answer is validated here.
+JSON_MODES = ("json_schema", "json_object", "none")
+
+
+def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False):
+    """A self-hosted LLM behind an OpenAI-compatible /chat/completions endpoint."""
+    base = _llm_base_url()
+    key = os.environ.get("CONTAINERIZER_LLM_API_KEY", "")
+    host = urllib.parse.urlsplit(base).hostname or ""
+    if key and base.startswith("http://") and not _is_loopback(host) \
+            and os.environ.get("CONTAINERIZER_LLM_ALLOW_HTTP") != "1":
+        raise RuntimeError("refusing to send CONTAINERIZER_LLM_API_KEY over plain http to a remote host; use https, "
+                           "or set CONTAINERIZER_LLM_ALLOW_HTTP=1 if the network path is trusted")
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    timeout = float(os.environ.get("CONTAINERIZER_LLM_TIMEOUT", "900"))
+    mode = os.environ.get("CONTAINERIZER_LLM_JSON_MODE", "json_schema")
+    if mode not in JSON_MODES:
+        raise RuntimeError(f"CONTAINERIZER_LLM_JSON_MODE must be one of {', '.join(JSON_MODES)}, not {mode!r}")
+    user = (f"{prompt}\n\nRespond with ONLY a JSON object (no prose, no code fences) that validates "
+            f"against this JSON schema:\n{json.dumps(schema)}")
+    body = {"model": model, "temperature": 0, "stream": False,
+            "max_tokens": int(os.environ.get("CONTAINERIZER_LLM_MAX_TOKENS", "16000")),
+            "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]}
+    resp = None
+    for m in JSON_MODES[JSON_MODES.index(mode):]:
+        b = dict(body)
+        if m == "json_schema":
+            b["response_format"] = {"type": "json_schema",
+                                    "json_schema": {"name": "answer", "strict": True, "schema": schema}}
+        elif m == "json_object":
+            b["response_format"] = {"type": "json_object"}
+        try:
+            resp = _post_json(base + "/chat/completions", b, headers, timeout)
+            break
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:300]
+            if e.code in (400, 422) and m != "none":
+                continue                 # server does not support this structured output mode
+            raise RuntimeError(f"LLM server {base} answered HTTP {e.code}: {detail}") from None
+        except (urllib.error.URLError, OSError) as e:
+            raise RuntimeError(f"cannot reach LLM server {base}: {getattr(e, 'reason', e)}") from None
+    try:
+        choice = resp["choices"][0]
+        text = choice["message"].get("content") or ""
+    except (KeyError, IndexError, TypeError):
+        raise RuntimeError(f"unexpected answer from LLM server {base}: {json.dumps(resp)[:300]}") from None
+    data = _first_json(text)
+    errs = _schema_errors(data, schema) if data is not None else ["no JSON object"]
+    if errs:
+        if not _retry:
+            return _ask_openai(prompt + "\n\nYour previous answer did not match the schema (" + "; ".join(errs[:5])
+                               + "). Answer with the JSON object only.", schema, model, _retry=True)
+        hint = " (answer cut off: raise CONTAINERIZER_LLM_MAX_TOKENS)" if choice.get("finish_reason") == "length" else ""
+        raise RuntimeError(f"no valid JSON in answer{hint}: {'; '.join(errs[:3])}: {text[:300]}")
+    u = resp.get("usage") or {}
+    return data, {"input_tokens": u.get("prompt_tokens") or 0, "output_tokens": u.get("completion_tokens") or 0}
 
 
 # --------------------------------------------------------------------------- evidence packs
@@ -215,13 +372,13 @@ def ai_review_component(a, c, model: str | None = None) -> dict:
               "optional/legacy command?), classify every package listed as unknown, and add findings the rules missed. "
               "For new findings give a regex over C# source that would detect the same issue elsewhere (or empty).")
     res = ask_json(prompt, REVIEW_SCHEMA, model=model)
-    res["model"] = model or DEFAULT_MODEL
+    res["model"] = model_name(model)
     return res
 
 
 def ai_review_app(a, model: str | None = None, learn: bool = False, force: bool = False,
                   threshold: float = 0.85) -> dict:
-    out = {"app": a.name, "model": model or DEFAULT_MODEL, "components": []}
+    out = {"app": a.name, "model": model_name(model), "components": []}
     for c in a.components:
         if c.tier not in ("server", "platform"):
             continue
@@ -263,7 +420,7 @@ def learn_from_review(a, c, r: dict) -> None:
         for n in ok:
             if re.escape(n) not in cur:
                 cur.append(re.escape(n))
-        path.write_text("# Packages observed working in a verified Linux container, or classified by Claude (see ai-rules.yaml).\n"
+        path.write_text("# Packages observed working in a verified Linux container, or classified by the AI fallback (see ai-rules.yaml).\n"
                         + yaml.safe_dump(d, sort_keys=False))
     new_rules = []
     for f in r.get("findings", []):
@@ -288,7 +445,7 @@ def learn_from_review(a, c, r: dict) -> None:
         for nr in new_rules:
             if nr["id"] not in ids:
                 d["rules"].append(nr)
-        path.write_text("# Finding rules proposed by Claude and validated against the code they were learned from.\n"
+        path.write_text("# Finding rules proposed by the AI fallback (model in each rule) and validated against the code they were learned from.\n"
                         "# confidence 0.7: components they decide are re-checked by verification. Review before trusting.\n"
                         + yaml.safe_dump(d, sort_keys=False, width=120))
 
@@ -331,7 +488,7 @@ def diagnose_failure(a, c, plan: dict, stage: str, log_tail: str, model: str | N
         return None
     fr = {"id": "ai-" + re.sub(r"[^a-z0-9]+", "-", r["diagnosis"].lower())[:40].strip("-"), "stage": stage,
           "match": r["match"], "outcome": r["outcome"], "diagnosis": r["diagnosis"], "fix": fix,
-          "source": "ai", "model": model or DEFAULT_MODEL, "learn": {"when": {}}, "_new": True}
+          "source": "ai", "model": model_name(model), "learn": {"when": {}}, "_new": True}
     if r["outcome"] in ("platform", "code"):
         fr["finding"] = {"severity": "blocker" if r["outcome"] == "platform" else "refactor", "title": r["diagnosis"][:120]}
     return fr, {}

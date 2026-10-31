@@ -20,10 +20,13 @@ parameters:
   - name: verifyTimeout         # seconds per build or run
     type: number
     default: 1800
-  - name: ai                    # ask Claude about uncertain components; needs the ANTHROPIC_API_KEY secret variable
+  - name: ai                    # ask an LLM about uncertain components; Claude needs the ANTHROPIC_API_KEY secret variable
     type: boolean
     default: false
-  - name: model
+  - name: llmBaseUrl            # self-hosted OpenAI-compatible LLM instead of Claude, e.g. http://ollama.internal:11434/v1
+    type: string                # (needs model; optional LLM_API_KEY secret variable)
+    default: ""
+  - name: model                 # default claude-opus-5-5; required with llmBaseUrl
     type: string
     default: ""
   - name: maxRating             # A-E: fail the build when an app is rated worse; empty = never fail
@@ -49,12 +52,13 @@ steps:
       set -euo pipefail
       git clone --quiet --depth 1 --branch "$TOOL_VERSION" "$TOOL_REPO" "$(Agent.TempDirectory)/containerizer"
       python -m pip install --quiet --disable-pip-version-check -r "$(Agent.TempDirectory)/containerizer/requirements.txt"
-      [ "$AI" = "True" ] && python -m pip install --quiet --disable-pip-version-check anthropic || true
+      [ "$AI" = "True" ] && [ -z "${LLM_BASE_URL:-}" ] && python -m pip install --quiet --disable-pip-version-check anthropic || true
     displayName: Install containerizer
     env:
       TOOL_REPO: ${{ parameters.toolRepo }}
       TOOL_VERSION: ${{ parameters.toolVersion }}
       AI: ${{ parameters.ai }}
+      LLM_BASE_URL: ${{ parameters.llmBaseUrl }}
 
   - bash: |
       set -uo pipefail
@@ -63,8 +67,16 @@ steps:
       mkdir -p "$out"
       read -ra paths <<< "$CHECK_PATHS"
       ai=()
+      # an undefined secret variable reaches the script as the literal macro text
+      [ "${LLM_API_KEY_IN:-}" = '$(LLM_API_KEY)' ] && LLM_API_KEY_IN=""
+      [ "${ANTHROPIC_API_KEY:-}" = '$(ANTHROPIC_API_KEY)' ] && ANTHROPIC_API_KEY=""
+      export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" CONTAINERIZER_LLM_API_KEY="${LLM_API_KEY_IN:-}"
+      unset LLM_API_KEY_IN
+      if [ -n "${CONTAINERIZER_LLM_BASE_URL:-}" ]; then export CONTAINERIZER_AI_BACKEND=openai; else export CONTAINERIZER_AI_BACKEND=api; fi
       if [ "$AI" = "True" ]; then
-        if [ -z "${ANTHROPIC_API_KEY:-}" ]; then echo "##vso[task.logissue type=error]ai is on but ANTHROPIC_API_KEY is not set"; exit 2; fi
+        if [ -n "${CONTAINERIZER_LLM_BASE_URL:-}" ]; then
+          if [ -z "${MODEL:-}" ]; then echo "##vso[task.logissue type=error]ai with llmBaseUrl needs the model parameter"; exit 2; fi
+        elif [ -z "$ANTHROPIC_API_KEY" ]; then echo "##vso[task.logissue type=error]ai is on but ANTHROPIC_API_KEY (or llmBaseUrl) is not set"; exit 2; fi
         ai=(--ai); [ -n "$MODEL" ] && ai+=(--model "$MODEL")
       fi
       args=(--out "$out" --timeout "$VERIFY_TIMEOUT")
@@ -95,7 +107,8 @@ steps:
       MODEL: ${{ parameters.model }}
       MAX_RATING: ${{ parameters.maxRating }}
       ANTHROPIC_API_KEY: $(ANTHROPIC_API_KEY)
-      CONTAINERIZER_AI_BACKEND: api
+      CONTAINERIZER_LLM_BASE_URL: ${{ parameters.llmBaseUrl }}
+      LLM_API_KEY_IN: $(LLM_API_KEY)
 
   - publish: $(Build.ArtifactStagingDirectory)/containerizer-report
     artifact: containerizer-report

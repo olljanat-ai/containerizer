@@ -48,13 +48,23 @@ inputs:
     description: assess mode - seconds allowed per build or run.
     default: "1800"
   ai:
-    description: assess mode - ask Claude about components the rules are unsure of, and about failures no rule explains.
+    description: >-
+      assess mode - ask an LLM (Claude, or a self-hosted one with llm-base-url) about components the rules are
+      unsure of, and about failures no rule explains.
     default: "false"
   anthropic-api-key:
-    description: assess mode - API key for the ai option.
+    description: assess mode - Anthropic API key for the ai option (not needed with llm-base-url).
+    default: ""
+  llm-base-url:
+    description: >-
+      assess mode - base URL of a self-hosted OpenAI-compatible LLM server for the ai option, used instead of
+      Claude (e.g. http://ollama.internal:11434/v1). Needs model. The runner must be able to reach it.
+    default: ""
+  llm-api-key:
+    description: assess mode - optional API key for llm-base-url (sent as a Bearer token).
     default: ""
   model:
-    description: assess mode - Claude model for the ai option (default is the tool's default).
+    description: assess mode - model for the ai option (default claude-opus-5-5; required with llm-base-url).
     default: ""
   open-pr:
     description: >-
@@ -108,10 +118,11 @@ runs:
       env:
         MODE: ${{ inputs.mode }}
         AI: ${{ inputs.ai }}
+        LLM_BASE_URL: ${{ inputs.llm-base-url }}
         EVENT: ${{ github.event_name }}
       run: |
         python3 -m pip install --quiet --disable-pip-version-check -r "$GITHUB_ACTION_PATH/requirements.txt"
-        [ "$AI" = "true" ] && python3 -m pip install --quiet --disable-pip-version-check anthropic
+        [ "$AI" = "true" ] && [ -z "$LLM_BASE_URL" ] && python3 -m pip install --quiet --disable-pip-version-check anthropic
         # results database (docs/results-database.md): set CONTAINERIZER_SQL and CONTAINERIZER_SQL_PASSWORD on the step
         [ -n "${CONTAINERIZER_SQL:-}" ] && python3 -m pip install --quiet --disable-pip-version-check -r "$GITHUB_ACTION_PATH/requirements-sql.txt"
         if [ "$MODE" = "auto" ]; then
@@ -209,14 +220,18 @@ runs:
         MODEL: ${{ inputs.model }}
         OPEN_PR: ${{ inputs.open-pr }}
         ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
-        CONTAINERIZER_AI_BACKEND: api
+        CONTAINERIZER_LLM_BASE_URL: ${{ inputs.llm-base-url }}
+        CONTAINERIZER_LLM_API_KEY: ${{ inputs.llm-api-key }}
+        CONTAINERIZER_AI_BACKEND: ${{ inputs.llm-base-url != '' && 'openai' || 'api' }}
       run: |
         out="$RUNNER_TEMP/containerizer-report"
         mkdir -p "$out"
         read -ra paths <<< "$CHECK_PATHS"
         ai=()
         if [ "$AI" = "true" ]; then
-          if [ -z "$ANTHROPIC_API_KEY" ]; then echo "::error::ai is on but anthropic-api-key is empty"; exit 2; fi
+          if [ -n "$CONTAINERIZER_LLM_BASE_URL" ]; then
+            if [ -z "$MODEL" ]; then echo "::error::ai with llm-base-url needs the model input"; exit 2; fi
+          elif [ -z "$ANTHROPIC_API_KEY" ]; then echo "::error::ai is on but anthropic-api-key (or llm-base-url) is empty"; exit 2; fi
           ai=(--ai); [ -n "$MODEL" ] && ai+=(--model "$MODEL")
         fi
         args=(--out "$out" --timeout "$VERIFY_TIMEOUT")

@@ -403,7 +403,7 @@ def assess(path: str | Path, rules: list[Rule] | None = None, repo: Repo | None 
 
 
 def apply_ai(a: AppAssessment, model: str | None = None, threshold: float = 0.85, learn: bool = False) -> list[dict]:
-    """Hybrid mode: ask Claude about the components the rules are unsure of."""
+    """Hybrid mode: ask the LLM about the components the rules are unsure of."""
     from .ai import ai_review_component, learn_from_review
 
     usage = []
