@@ -420,6 +420,68 @@ def import_json(cs: str | None, files: list[Path], key_prefix: str = "", passwor
     return ids
 
 
+def sandbox_key(r: dict) -> str:
+    """The Application.SourceKey of a checked component: recorded at deploy time, else what a scan of the
+    cloned repository root would have used (`<remote URL>#`)."""
+    if r.get("source_key"):
+        return r["source_key"]
+    return f"{clean_remote(r['clone_url'])}#" if r.get("clone_url") else ""
+
+
+def store_sandbox_checks(conn, doc: dict) -> tuple[int, int]:
+    """Insert one SandboxCheck per checked component of a sandbox health document. Components are matched
+    by application source key and project path; returns (rows written, components not found)."""
+    from datetime import datetime
+    when = None
+    try:
+        when = datetime.fromisoformat(doc.get("checked_at") or "").replace(tzinfo=None)
+    except ValueError:
+        pass
+    cur = conn.cursor()
+    n = missing = 0
+    try:
+        for r in doc.get("components", []):
+            if r.get("status") == "skipped":
+                continue
+            key = sandbox_key(r)
+            cur.execute("SELECT ApplicationId FROM cz.Application WHERE SourceKey = %s", (_cut(key, 400),))
+            row = cur.fetchone()
+            if not row:
+                missing += 1
+                continue
+            app_id = row[0]
+            cur.execute("SELECT ComponentId FROM cz.Component WHERE ApplicationId = %s AND ProjectPath = %s",
+                        (app_id, _cut(r.get("project") or r.get("component"), 400)))
+            row = cur.fetchone()
+            if not row:
+                missing += 1
+            d = r.get("diagnosis") or {}
+            events = [{k: e.get(k) for k in ("reason", "message", "count", "object")} for e in r.get("events") or []]
+            cur.execute("INSERT cz.SandboxCheck (ApplicationId, ComponentId, CheckedAt, Status, Reason, GitOps, Namespace, "
+                        "Workloads, ImageRef, Revision, Ready, Restarts, RuleId, Outcome, Diagnosis, Events, LogTail) "
+                        "VALUES (%s, %s, COALESCE(%s, SYSUTCDATETIME()), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        (app_id, row[0] if row else None, when, _cut(r["status"], 20), _cut(r.get("reason"), 2000),
+                         _cut(r.get("gitops") or None, 20), _cut(r.get("app") or "", 63),
+                         _cut(", ".join(r.get("workloads") or []) or None, 400), _cut(r.get("image") or None, 400),
+                         _cut(doc.get("revision") or None, 64), _cut(r.get("ready") or None, 20), r.get("restarts"),
+                         _cut(d.get("rule"), 200), _cut(d.get("outcome"), 20), _cut(d.get("diagnosis"), 2000),
+                         json.dumps(events) if events else None, r.get("log_tail") or None))
+            n += 1
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return n, missing
+
+
+def store_sandbox(cs: str | None, doc: dict, password: str | None = None) -> tuple[int, int]:
+    conn = connect(cs, password)
+    try:
+        return store_sandbox_checks(conn, doc)
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # local development: logins for the docker compose stack
 

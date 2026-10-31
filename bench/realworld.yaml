@@ -26,30 +26,38 @@ repos:
   - name: rw-nopcommerce
     url: https://github.com/nopSolutions/nopCommerce
     commit: 51f116ac16a1c039d0bf4574cf88bbdae5ac5e36
-    expected_rating: A
+    expected_rating: B
     expected_roles: {web: [Nop.Web], tool: [ClearPluginAssemblies]}
-    notes: Ships an official Linux Dockerfile + docker-compose (MySQL/Postgres/MSSQL). Windows-only ACL/identity code is behind OperatingSystem.IsWindows() and [SupportedOSPlatform("windows")]; Data Protection keys persisted in Nop.Web.Framework.
+    notes: >-
+      Ships an official Linux Dockerfile + docker-compose (MySQL/Postgres/MSSQL). Windows-only ACL/identity code is behind OperatingSystem.IsWindows() and [SupportedOSPlatform("windows")]; Data Protection keys persisted in Nop.Web.Framework.
+      stateless (2026-10-31): B - not stateless: nopCommerce writes plugins, thumbnails, export files and App_Data settings to its own folder (official Docker image mounts volumes for them). A is only for apps that keep no data on their own disk or in process memory.
 
   - name: rw-orchardcore
     url: https://github.com/OrchardCMS/OrchardCore
     commit: 0c8e1bc1537cdd1e76e1d20c277fec7b3c38d5b2
-    expected_rating: A
+    expected_rating: B
     expected_roles: {web: [OrchardCore.Cms.Web, OrchardCore.Mvc.Web], tool: [OrchardCore.AspireHost]}
-    notes: Very large (400MB clone, ~900 projects). Official Linux docker images exist. TFMs come from $(CommonTargetFrameworks) in src/OrchardCore.Build/TargetFrameworks.props.
+    notes: >-
+      Very large (400MB clone, ~900 projects). Official Linux docker images exist. TFMs come from $(CommonTargetFrameworks) in src/OrchardCore.Build/TargetFrameworks.props.
+      stateless (2026-10-31): B - not stateless: Orchard Core keeps tenants, media and Lucene indexes under App_Data by default (Azure media/Elasticsearch are optional modules). A is only for apps that keep no data on their own disk or in process memory.
 
   - name: rw-jellyfin
     url: https://github.com/jellyfin/jellyfin
     commit: f62045f56e07ac3f4617bdba88d3597563c45121
-    expected_rating: A
+    expected_rating: B
     expected_roles: {web: [jellyfin], tool: [Emby.Server.Implementations.Fuzz, Jellyfin.Api.Fuzz]}
-    notes: Official Linux docker image; needs persistent data/config volumes (SQLite) and ffmpeg in the image. `using System.Drawing;` is only System.Drawing.Primitives (Size/Point).
+    notes: >-
+      Official Linux docker image; needs persistent data/config volumes (SQLite) and ffmpeg in the image. `using System.Drawing;` is only System.Drawing.Primitives (Size/Point).
+      stateless (2026-10-31): B - not stateless: Jellyfin keeps its library database (SQLite) and metadata in local data/config folders. A is only for apps that keep no data on their own disk or in process memory.
 
   - name: rw-blazor-workshop
     url: https://github.com/dotnet-presentations/blazor-workshop
     commit: e0f5968e7c4699209dc7b5b0b2edc86162287792
-    expected_rating: A
+    expected_rating: B
     expected_roles: {web: [BlazingPizza]}
-    notes: Blazor (server + WASM client) with SQLite. save-points/ contains 7 copies of the same app (workshop steps); only src/ is the real app.
+    notes: >-
+      Blazor (server + WASM client) with SQLite. save-points/ contains 7 copies of the same app (workshop steps); only src/ is the real app.
+      stateless (2026-10-31): B - not stateless: the pizza store keeps orders in a local SQLite file (pizza.db). A is only for apps that keep no data on their own disk or in process memory.
 
   - name: rw-functions-quickstart-dotnet-azd-cosmosdb
     url: https://github.com/Azure-Samples/functions-quickstart-dotnet-azd-cosmosdb
@@ -163,12 +171,13 @@ repos:
   - name: rw2-btcpayserver
     url: https://github.com/btcpayserver/btcpayserver
     commit: 381ad1f0ac32fb011163239fcacdde1e6f7538b9
-    expected_rating: A
+    expected_rating: B
     expected_roles: {web: [BTCPayServer], tool: [BTCPayServer.PluginPacker], test: [BTCPayServer.Tests]}
     notes: >-
       Mid-size modern ASP.NET Core (net10.0 via Build/Common.csproj import), official Linux Dockerfile; external deps
       are Postgres + NBXplorer + bitcoind. BTCPayServer.Tests uses Sdk.Web but is a test project.
       tool (2026-10-30): D. winforms-in-library blocker on BTCPayServer from Plugins/Forms/UIFormsController.cs:50 `new Form()` -- BTCPayServer's own Form model (BTCPayServer.Abstractions.Form), not System.Windows.Forms. PluginPacker classified console (I expected tool).
+      stateless (2026-10-31): B - not stateless: BTCPay installs plugins into its data folder at run time and uses in-memory ASP.NET session (main data is in PostgreSQL). A is only for apps that keep no data on their own disk or in process memory.
 
   - name: rw2-squidex
     url: https://github.com/Squidex/squidex
@@ -196,7 +205,7 @@ repos:
   - name: rw2-duplicati
     url: https://github.com/duplicati/duplicati
     commit: 240c2bc7fe6e63d456bdb5196cbb3c7b1b80904c
-    expected_rating: A
+    expected_rating: B
     expected_roles: {web: [Duplicati.Server], desktop: [Duplicati.GUI.TrayIcon]}
     notes: >-
       Backup server, net10.0, official Linux docker image exists. Mixed solution: Duplicati.Server (hosts
@@ -205,6 +214,7 @@ repos:
       Windows host integrations that a container does not need -- they must not drag the rating to D.
       tool (2026-10-30): E. Duplicati.Server is console (Exe, hosts Kestrel through the WebserverCore library, so no Sdk.Web on the exe); every CLI is a server-tier console component and inherits blockers from Duplicati.Library.Utility: pinvoke-vendor on Power/MacOSSleepAssertion.cs:86 [DllImport(IOKIT)] (macOS framework), pinvoke-gui on SHGetFolder.cs:82 Shell32 (Windows-only path), active-directory-ds on ISystemIO.cs:34 `DirectoryEntry(string path)` (own method name). com-interop on WindowsModulesLoader is real but optional.
       tool (2026-10-31): A. WindowsModulesLoader (Exe, net10.0-windows only, cross-platform executables beside it) and WindowsService (ServiceBase wrapper of the Duplicati.Service twin) are tools; Microsoft.Win32.* no longer counts as a use of the own Win32 class; CimSession only behind OS checks; SMBLibrary share paths are not file paths.
+      stateless (2026-10-31): B - not stateless: Duplicati keeps its job and backup databases in local SQLite files. A is only for apps that keep no data on their own disk or in process memory.
 
   - name: rw2-customers-orders
     url: https://github.com/microsoft/Windows-appsample-customers-orders-database
@@ -468,7 +478,7 @@ repos:
   - name: rw4-smartstore
     url: https://github.com/smartstore/Smartstore
     commit: b247deb2d8a02294716ed88382953fb7e4f8394b
-    expected_rating: A
+    expected_rating: B
     expected_roles: {web: [Smartstore.Web], library: [Smartstore.Core, Smartstore.Web.Common, Smartstore.PayPal, Smartstore.Data.SqlServer], tool: [Smartstore.DevTools, Smartstore.Build, Smartstore.ModuleBuilder, Smartstore.Packager, Smartstore.Packager.Cli, Smartstore.WebApi.Client]}
     notes: >-
       Successor of SmartStoreNET on net10.0: one ASP.NET Core host (Smartstore.Web) + ~20 Razor-SDK modules loaded as
@@ -478,11 +488,12 @@ repos:
       server components. App_Data (tenants, media) must be a volume -> A.
       tool (2026-10-30): B. os-backslash-path-join (rules/35-config-os.yaml:59) on Areas/Admin/Controllers/MaintenanceController.cs:1133 `BackupDir + "\\" + name`, but that path goes through Smartstore's LocalFileSystem.MapPathInternal which rewrites '\\' to '/' (src/Smartstore/IO/LocalFileSystem/LocalFileSystem.cs:152-156), and ModuleDescriptor.cs:69 is inside `if (CommonHelper.IsDevEnvironment)`; process-start-exe (rules/20-platform.yaml:245) on LightningCssTransformer.cs:160 which already picks `runtimeInfo.IsWindows ? "lightningcss.exe" : "lightningcss"`. Both false positives -> A. Role: Smartstore.Build is a NUKE build project (Nuke.Common), classified console (no role-tool clause for Nuke); build/wkhtml-tests/Probe also console.
       tool (2026-10-31): A. ModuleDescriptor.cs:69 sits in `if (CommonHelper.IsDevEnvironment)`, now a guard.
+      stateless (2026-10-31): B - not stateless: Smartstore keeps tenants, media and installed-module lists under App_Data/Tenants by default. A is only for apps that keep no data on their own disk or in process memory.
 
   - name: rw4-virtocommerce
     url: https://github.com/VirtoCommerce/vc-platform
     commit: f4049f2357bd7da615dc3b484aa4a6be8b27a11f
-    expected_rating: A
+    expected_rating: B
     expected_roles: {web: [VirtoCommerce.Platform.Web], library: [VirtoCommerce.Platform.Data.SqlServer, VirtoCommerce.Platform.Data.PostgreSql], tool: [VirtoCommerce.Platform.Benchmark]}
     notes: >-
       net10.0 modular commerce platform host (Hangfire jobs in-process, SignalR, Redis optional), 16 projects.
@@ -490,17 +501,19 @@ repos:
       docker images and DockerCompose/ folder. appsettings connection string uses Data Source=(local) with SQL login
       -> config override only. A.
       tool (2026-10-30): B, roles match. Only refactor is system-drawing-core (rules/10-runtime.yaml:570) from the bare `<PackageReference Include="System.Drawing.Common">` (VirtoCommerce.Platform.Web.csproj:49); no System.Drawing code anywhere in src/ (a version pin for module dependencies). The package-alone clause over-fires; I keep A.
+      stateless (2026-10-31): B - not stateless by default: modules are uploaded and installed at run time into app_data/uploads and modules/ (ModulesController, PlatformOptions.LocalUploadFolderPath), and assets use the FileSystem provider unless switched to AzureBlobStorage. A is only for apps that keep no data on their own disk or in process memory.
 
   - name: rw4-grandnode
     url: https://github.com/grandnode/grandnode2
     commit: ba4fc7109265e6c164015d599c1137e4bd91a37d
-    expected_rating: A
+    expected_rating: B
     expected_roles: {web: [Grand.Web, Grand.Web.Admin, Grand.Web.Store, Grand.Web.Vendor], library: [Grand.Web.Common, Grand.Business.Catalog, Grand.Infrastructure, Theme.Modern, Payments.StripeCheckout], tool: [Aspire.AppHost]}
     notes: >-
       71-project net10.0 e-commerce on MongoDB/LiteDB: storefront host Grand.Web (references Admin/Vendor) plus
       Admin/Store/Vendor hosts that each have their own Program.cs, ~20 Razor plugins, Aspire AppHost. Official
       Linux Dockerfile builds modules + plugins and chowns App_Data/Plugins/media for the app user -> A.
       tool (2026-10-30): A, roles match. OK.
+      stateless (2026-10-31): B - not stateless: GrandNode uploads and installs plugins into ContentRoot/Plugins and writes downloads to App_Data (data itself is in MongoDB). A is only for apps that keep no data on their own disk or in process memory.
 
   - name: rw4-simplcommerce
     url: https://github.com/simplcommerce/SimplCommerce
@@ -530,7 +543,7 @@ repos:
     url: https://github.com/umbraco/Umbraco-CMS
     commit: 2ac750821d57c46434430ff129c59143125665fd
     ref: release-13.16.4
-    expected_rating: A
+    expected_rating: B
     expected_roles: {web: [Umbraco.Web.UI], library: [Umbraco.Web.Common, Umbraco.Web.BackOffice, Umbraco.Web.Website, Umbraco.Cms.StaticAssets, Umbraco.Infrastructure, Umbraco.TestData], tool: [Umbraco.Tests.Benchmarks, Umbraco.JsonSchema]}
     notes: >-
       Umbraco 13 LTS (net8.0) contrast to rw-umbraco8. Runs on Linux with SQLite or SQL Server; media, Examine/Lucene
@@ -539,6 +552,7 @@ repos:
       templates/ holds dotnet-new template content (UmbracoProject etc.), not part of the product. A.
       tool (2026-10-30): B. os-named-sync-objects (rules/35-config-os.yaml:359) on Umbraco.Core/SystemLock.cs:52 named Semaphore, only reached from MainDomSemaphoreLock, which throws PlatformNotSupportedException off Windows (Runtime/MainDomSemaphoreLock.cs:23) and is opt-in by config (UmbracoBuilder.CoreServices.cs:314; default is the SQL MainDom lock); os-backslash-path-join on SqlLocalDbDatabaseProviderMetadata.cs:81 (LocalDB provider, Windows-only by design); cfg-localhost-endpoint-in-code (rules/35-config-os.yaml:710) on UmbracoContext.cs:96 `new Uri("http://localhost")`, a null fallback, not an endpoint. All false positives -> A. Role: Umbraco.Infrastructure (the core runtime library) classified tool by role-tool's MSBuild-task clause (rules/00-roles.yaml, package Microsoft.Build.Tasks.Core, used by ModelsBuilder in-memory compilation). templates/UmbracoProject reported as a web component (template content).
       tool (2026-10-31): A. MiniDump (dbghelp + its kernel32 helpers) is info pinvoke-dbghelp; FilePermissionHelper ACL read is info efs-acl-read; MacroSource.Replace('/', '\\') goes to Umbraco's normalising IFileSystem.
+      stateless (2026-10-31): B - not stateless: Umbraco keeps Examine/Lucene indexes on local disk (and media in wwwroot/media by default). A is only for apps that keep no data on their own disk or in process memory.
 
   - name: rw4-accountgo
     url: https://github.com/mebael/accountgo
@@ -643,7 +657,7 @@ repos:
   - name: rw5-giraffesample
     url: https://github.com/cartermp/GiraffeSample
     commit: f53d2edb92a69445ef8699a7945be0a655f105d8
-    expected_rating: A
+    expected_rating: B
     expected_roles: {web: [GiraffeSample]}
     notes: >-
       F# Giraffe web API (LunchAPI/LunchApi.fsproj, AssemblyName GiraffeSample) on netcoreapp2.0 with package-based
@@ -652,10 +666,11 @@ repos:
       builds and rolls forward (or runs on its own runtime) without code changes -> A. Moving to a supported TFM
       later means a Giraffe API upgrade, which is not needed to containerize.
       tool (2026-10-30): A, matches first run. .fsproj scanned, role web (role-web-aspnetcore), netcoreapp2.0 core-eol config only.
+      stateless (2026-10-31): B - not stateless: the lunch API keeps its data in a local SQLite file. A is only for apps that keep no data on their own disk or in process memory.
   - name: rw5-saturn-example
     url: https://github.com/MarneeDear/saturn-example
     commit: 416e3a147204936c10f39887d8d2984ec46e29fd
-    expected_rating: A
+    expected_rating: B
     review: "2026-10-30 changed B->A after review: Saturn's `url` is UseUrls, and Kestrel endpoints from configuration (Kestrel__Endpoints__Http__Url=http://0.0.0.0:8080) replace UseUrls addresses (learn.microsoft.com Kestrel endpoints docs), so the hard-coded https://localhost/ is overridden by environment configuration without a code change."
     expected_roles: {web: [Template.Saturn.WebHost], test: [Template.Saturn.Tests], library: [Template.Saturn.Core, Template.Saturn.Infrastructure]}
     notes: >-
@@ -664,6 +679,7 @@ repos:
       the listen address in the application CE (`url "https://localhost/"`): loopback on 443 with HTTPS, which a
       container cannot serve and ASPNETCORE_URLS does not override (UseUrls in code wins) -> one-line code change -> B.
       tool (2026-10-30): A on first run (expected B, see review). Template.Saturn.WebHost web, config only; Paket packages are not read (no paket.references support), which does not change the verdict here.
+      stateless (2026-10-31): B - not stateless: the template keeps its data in a local SQLite file. A is only for apps that keep no data on their own disk or in process memory.
   - name: rw5-biztalk-learning-path
     url: https://github.com/sandroasp/BizTalk-Server-Learning-Path
     commit: 80e9d76165c81cf59daa257c74c8c4c6164059c6
@@ -725,7 +741,7 @@ repos:
   - name: rw5-papercut
     url: https://github.com/ChangemakerStudios/Papercut-SMTP
     commit: 9924d1fba886be915df2db8a9de49e51ff03a02b
-    expected_rating: A
+    expected_rating: B
     expected_roles: {web: [Papercut.Service], desktop: [Papercut, Papercut.Service.TrayNotification], test: ["Papercut.*.Tests"]}
     notes: >-
       Papercut SMTP: net10.0 Papercut.Service (WebApplication web UI + SMTP listener + MCP endpoint, UseWindowsService
@@ -733,10 +749,11 @@ repos:
       (net10.0-windows, UseWPF) and a WinForms tray notifier for the service, shared net10.0 libraries, examples.
       Service + admin-UI pair whose server half already runs in Linux containers; desktop parts stay on PCs -> A.
       tool (2026-10-30): A. First run: B -- Papercut.Service (Microsoft.NET.Sdk + WebApplication.CreateBuilder) came out worker, and registry refactor via Papercut.Message from MessageHelper.cs:52 inside a [System.Runtime.Versioning.SupportedOSPlatform("windows")] method (qualified attribute was not seen as a guard). Both fixed; WPF/WinForms clients are desktop.
+      stateless (2026-10-31): B - not stateless: Papercut stores received mails and its rules.json next to the executable. A is only for apps that keep no data on their own disk or in process memory.
   - name: rw5-vahti
     url: https://github.com/ilpork/Vahti
     commit: 3f6c4b64b8300b680b85bca42de32a1ab5f488af
-    expected_rating: A
+    expected_rating: B
     expected_roles: {worker: [Vahti.Server], desktop: [Vahti.Mobile], spa: [Vahti], test: ["Vahti.*.Test"], library: [Vahti.Collector, Vahti.DataBroker, Vahti.Mqtt, Vahti.Shared]}
     notes: >-
       Home monitoring: Vahti.Server (netcoreapp3.1 generic host, Linux/Raspberry Pi) hosts an MQTT broker (MQTTnet),
@@ -745,6 +762,7 @@ repos:
       React web app. The server is a Linux program already: config.json and SQLite go to volumes, the collector
       needs the node's Bluetooth (D-Bus socket) -- deployment configuration, no code change -> A.
       tool (2026-10-30): A, matches first run. Vahti.Server worker, config only; Vahti.Mobile desktop (role-maui); React app spa.
+      stateless (2026-10-31): B - not stateless: the Vahti server keeps sensor data in a local SQLite file (sqlite-net). A is only for apps that keep no data on their own disk or in process memory.
   - name: rw5-sqlclr-mail
     url: https://github.com/Darko-Martinovic/SQLCLR
     commit: 471252236ec1e82e8885ca565d28d5f08ddee66a
@@ -989,7 +1007,7 @@ repos:
   - name: rw7-pleasanter
     url: https://github.com/Implem/Implem.Pleasanter
     commit: 664c833b144d9da9b6bb58e60f7e48eb01141e58
-    expected_rating: A
+    expected_rating: B
     expected_roles: {web: [Implem.Pleasanter], console: [Implem.CodeDefiner], test: [Implem.TestAutomation]}
     notes: >-
       Pleasanter low-code business app platform on net10.0 with official Linux Dockerfiles (app + CodeDefiner DB setup
@@ -1004,6 +1022,7 @@ repos:
       skipped) -> B. Left as a miss: active-directory-ds is refactor because DirectoryEntry is in LdapDs.cs:90 and
       LdapNovellDs.cs:76 (UpdateOrInsert, reached only under Windows authentication, Startup.cs:924); both are
       selected by configuration strings (Platform(), DsProvider), which the guard analysis cannot follow.
+      stateless (2026-10-31): B - not stateless: ASP.NET session (TempData) is kept in AddDistributedMemoryCache, so replicas need sticky sessions. A is only for apps that keep no data on their own disk or in process memory.
   - name: rw7-tranga
     url: https://github.com/C9Glax/tranga
     commit: 7986e3c86d44135c6e8cee5f778564ac43985253
@@ -1017,13 +1036,14 @@ repos:
   - name: rw7-adsml
     url: https://github.com/mhshahmoradi/AdsML
     commit: 1cca02954b1fb1dc56d185b32927f38a110bc356
-    expected_rating: A
+    expected_rating: B
     expected_roles: {web: [AdsML], test: [AdsML.UnitTest]}
     notes: >-
       net8.0 minimal API (Carter) that classifies messages with ML.NET (PredictionEnginePool from a model file path in
       configuration, retrain endpoint saves the model back to that path; LbfgsMaximumEntropy text pipeline, managed).
       The model file needs a mounted path; ML.NET runs on Linux x64 -> A.
       tool (2026-10-31): A. Matches on the first run.
+      stateless (2026-10-31): B - not stateless: only an EF Core SQLite provider is wired up, so data lives in a local AdsML.db. A is only for apps that keep no data on their own disk or in process memory.
   - name: rw7-enterpriseworkflow
     url: https://github.com/PeteGoo/Demo.EnterpriseWorkflow
     commit: dac2478bcb2d4c281bc5a1eea6e606b182928978

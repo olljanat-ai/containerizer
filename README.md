@@ -92,6 +92,17 @@ python -m containerizer analyze <repo> --sql "Server=...;Database=Containerizer;
    lower a component's confidence. Low confidence triggers verification and, optionally, Claude.
 7. **Rating** per application: **A** lift and shift, **B** minor refactoring, **C** framework port,
    **D** partial (some components must stay on Windows), **E** not feasible.
+   **A** also requires every server component to be **stateless**: persistent data may live in
+   services that are available as managed cloud services (SQL Server, PostgreSQL, MySQL, MongoDB,
+   Redis, blob storage, queues), but not on the component's own disk or in its process memory. Rules
+   that find such data carry `state: local` or `state: memory` (`rules/36-state.yaml`, `sqlite-local`,
+   `lucene-local-index`): a local SQLite/LiteDB file with no server database wired up, a local
+   Lucene/Examine index, uploads or data files written under the content root or App_Data,
+   ASP.NET Core session without a distributed cache, and Hangfire in-memory storage. An app that is
+   otherwise ready but keeps such data is rated **B**, and the report lists what keeps it stateful.
+   Not counted: SQLite next to a server database provider (`sqlite-optional`), a read-only SQLite
+   file shipped with the app, Lucene used only for text analysis, temp files and logs, and the
+   ASP.NET Core Data Protection key ring (one `PersistKeysTo*` line; reported separately).
 
 ### Rules are data
 
@@ -507,7 +518,11 @@ pushed to your registry and the generated files are committed to your output rep
 `<Organization>/<Project>/<Repository>/<component>/` (GitHub has no projects: `_`), with a
 `sandbox/` folder holding an Argo CD app-of-apps and a Flux root Kustomization that deploy all of them
 to a sandbox cluster. Results go to SQL Server too with `--sql`. See
-[docs/organization-run.md](docs/organization-run.md).
+[docs/organization-run.md](docs/organization-run.md). With `--verify-sandbox` it then waits for Argo CD or
+Flux to sync, reads back rollout, readiness, restarts and events with a read-only ServiceAccount, and records
+per component "deployed and healthy" or "deployed but failing (reason)" in `sandbox/HEALTH.md`, the results
+database and the web UI; failures the cluster shows feed the learning loop
+([docs/sandbox-verification.md](docs/sandbox-verification.md)).
 
 ## Results database and web UI
 
@@ -542,5 +557,6 @@ bench/           labels and results
 action.yml       GitHub Action; ci/azure/ has the Azure DevOps template
 containerizer/sql/  results database schema (sqlstore.py writes it, webui.py reads it, admin.py + oidc.py: admin pages)
 results/         Docker Compose stack and image for the results database and web UI
-docs/            results-database.md (results database, web UI, admin pages, audit), organization-run.md, self-hosted-llm.md
+docs/            results-database.md (results database, web UI, admin pages, audit), organization-run.md,
+                 sandbox-verification.md, self-hosted-llm.md
 ```
