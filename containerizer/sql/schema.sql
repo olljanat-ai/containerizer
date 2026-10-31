@@ -236,7 +236,7 @@ GO
 
 MERGE [${schema}].Rating AS t
 USING (VALUES
-    ('A', N'Lift and shift', N'Containers with configuration only', 1),
+    ('A', N'Container-ready', N'Modern stack, containers with configuration only, no code changes', 1),
     ('B', N'Minor refactoring', N'Small code changes', 2),
     ('C', N'Major refactoring', N'Framework port needed', 3),
     ('D', N'Partial', N'Some components must stay on Windows', 4),

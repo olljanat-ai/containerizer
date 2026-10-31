@@ -72,8 +72,9 @@ The rest of this page explains how the assessment works and what it generates.
    a helper, or at every caller) are ignored.
 6. **Confidence**: packages and references unknown to `rules/packages*.yaml`, and uncertain rules,
    lower a component's confidence. Low confidence triggers verification and, optionally, Claude.
-7. **Rating** per application: **A** lift and shift, **B** minor refactoring, **C** framework port,
-   **D** partial (some components must stay on Windows), **E** not feasible.
+7. **Rating** per application: **A** container-ready (built on a modern stack and libraries, runs in
+   containers with configuration only, no code changes), **B** minor refactoring, **C** major refactoring
+   (framework port), **D** partial (some components must stay on Windows), **E** not feasible.
    **A** also requires every server component to be **stateless**: persistent data may live in
    services that are available as managed cloud services (SQL Server, PostgreSQL, MySQL, MongoDB,
    Redis, blob storage, queues), but not on the component's own disk or in its process memory. Rules

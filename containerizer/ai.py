@@ -593,7 +593,8 @@ APP_SCHEMA = {
                            "reason": {"type": "string"}}}},
     },
 }
-RATING_HELP = ("Ratings: A lift and shift (all server components run in Linux containers with configuration only); "
+RATING_HELP = ("Ratings: A container-ready (modern stack: all server components run in Linux containers with "
+               "configuration only, no code changes); "
                "B minor refactoring; C major refactoring (framework port, e.g. .NET Framework to .NET 8, or a Java EE "
                "server application to an embedded server); "
                "D partial (some server components cannot run in Linux containers and must stay on Windows, at least a "
