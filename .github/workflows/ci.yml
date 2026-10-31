@@ -145,7 +145,9 @@ jobs:
         with:
           path: challenge/scenarios/expense-claims
           base-ref: HEAD~1
-          max-rating: A
+          # B: ExpenseClaims.Jobs loads its bank client certificate from LocalMachine\My, which
+          # does not exist on Linux (cert-store-localmachine-code), so a small code change is needed
+          max-rating: B
           comment: "false"
           sarif-file: good.sarif
       - name: Assert
@@ -153,7 +155,7 @@ jobs:
           echo "bad: outcome=${{ steps.bad.outcome }} failed=${{ steps.bad.outputs.failed }} rating=${{ steps.bad.outputs.rating }}"
           echo "good: outcome=${{ steps.good.outcome }} failed=${{ steps.good.outputs.failed }} rating=${{ steps.good.outputs.rating }}"
           test "${{ steps.bad.outcome }}" = failure && test "${{ steps.bad.outputs.failed }}" = true
-          test "${{ steps.good.outputs.failed }}" = false && test "${{ steps.good.outputs.rating }}" = A
+          test "${{ steps.good.outputs.failed }}" = false && test "${{ steps.good.outputs.rating }}" = B
           python3 -c "import json; r=json.load(open('bad.sarif'))['runs'][0]['results']; assert any(x.get('baselineState')=='new' for x in r), r"
 
   # One-shot assessment, the main way the tool is used: assess, generate, then build and run every
@@ -183,5 +185,5 @@ jobs:
           ls -R "$REPORT" | head -100
           test -f "$REPORT/portfolio.md" && test -d "$REPORT/parts-catalog"
           python3 -c "import json,sys; a={x['name']: x for x in json.load(open(sys.argv[1]))}; v=a['parts-catalog'].get('verification') or []; print(v); assert any(r['status'].startswith('ok') for r in v)" "$REPORT/assessment.json"
-          test "${{ steps.assess.outputs.rating }}" = D        # worst of A, A and D
+          test "${{ steps.assess.outputs.rating }}" = D        # worst of B, B and D
           test "${{ steps.assess.outputs.unconfirmed }}" = 0
