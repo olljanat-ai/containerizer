@@ -212,16 +212,21 @@ rules:
   - id: wcf-server
     applies_to: [dotnet]
     when:
-      any:
-        - file: "*.svc"
-        - all:
-            - reference: System\.ServiceModel(\.Activation|\.Web)?
-            - code: '\b(Web)?ServiceHost(Factory)?\b|[\[<]\s*ServiceContract\b|[\[<]\s*(WebGet|WebInvoke)\b|<system\.serviceModel>'
-            - not: {role: 'library|test'}
-        - all:
-            - code: '\bnew\s+WebServiceHost\(|\bWebServiceHostFactory\b'
-            - not: {role: 'library|test'}
-        - config: '<system\.serviceModel\b(?:(?!</system\.serviceModel>)[\s\S])*?<services>\s*<service\s'
+      all:
+        - any:
+            - file: "*.svc"
+            - all:
+                - reference: System\.ServiceModel(\.Activation|\.Web)?
+                - code: '\b(Web)?ServiceHost(Factory)?\b|[\[<]\s*ServiceContract\b|[\[<]\s*(WebGet|WebInvoke)\b|<system\.serviceModel>'
+                - not: {role: 'library|test'}
+            - all:
+                - code: '\bnew\s+WebServiceHost\(|\bWebServiceHostFactory\b'
+                - not: {role: 'library|test'}
+            - config: '<system\.serviceModel\b(?:(?!</system\.serviceModel>)[\s\S])*?<services>\s*<service\s'
+        # already on CoreWCF (UseServiceModel on Kestrel; CoreWCF.ConfigurationManager reads the same
+        # <system.serviceModel><services> section from App.config: SD.IdentitySystem
+        # AppService.Host(WCF)/App.config:110): the port this rule asks for is done
+        - not: {package: 'CoreWCF\.[\w.]+'}
     severity: rewrite
     category: framework
     effort: 5
@@ -239,7 +244,14 @@ rules:
   - id: wcf-nettcp-msmq
     applies_to: [dotnet]
     when:
-      config: '(netTcpBinding|netNamedPipeBinding|netMsmqBinding|msmqIntegrationBinding|wsDualHttpBinding|NetTcpPortSharing)'
+      any:
+        - config: '(netNamedPipeBinding|netMsmqBinding|msmqIntegrationBinding|wsDualHttpBinding|NetTcpPortSharing|portSharingEnabled\s*=\s*"true")'
+        # plain netTcpBinding is Windows-bound only on .NET Framework (IIS/WAS activation, port
+        # sharing); the .NET client (System.ServiceModel.NetTcp) and CoreWCF.NetTcp run on Linux
+        # (SD.IdentitySystem AppService.Host(WCF) UseNetTcp on Kestrel, App.config:116)
+        - all:
+            - config: 'netTcpBinding'
+            - tfm: 'net[1-4]\d{1,2}'
     severity: rewrite
     category: framework
     effort: 3
@@ -249,6 +261,9 @@ rules:
       Net.Tcp port sharing, named pipes and MSMQ bindings depend on Windows services (the Net.Tcp
       Port Sharing Service, Windows named pipes, Message Queuing), which do not exist in a Linux
       container; wsDualHttpBinding (duplex over HTTP) is a WS-* binding without a .NET 8 server.
+      On .NET Framework, NetTcp services are activated by IIS/WAS and the port sharing service. A
+      plain netTcpBinding on .NET (the WCF client package or CoreWCF.NetTcp) works on Linux and is
+      not reported.
     fix: Move to HTTP/gRPC or CoreWCF NetTcp without port sharing; replace MSMQ with a broker.
     refs:
       - https://devblogs.microsoft.com/dotnet/corewcf-v1-released/
@@ -310,10 +325,18 @@ rules:
   - id: aspnet-mvc5
     applies_to: [dotnet]
     when:
-      any:
-        - package: Microsoft\.AspNet\.(Mvc|WebApi\.WebHost|WebApi|WebPages|Razor)
-        - sdk: MSBuild\.SDK\.SystemWeb
-        - reference: System\.Web(\.Mvc|\.Http)?
+      all:
+        - any:
+            - package: Microsoft\.AspNet\.(Mvc|WebApi\.WebHost|WebApi|WebPages|Razor)
+            - sdk: MSBuild\.SDK\.SystemWeb
+            - reference: System\.Web(\.Mvc|\.Http)?
+        # an ASP.NET Core app on .NET 5+ that also restores the .NET Framework MVC packages (with
+        # NoWarn NU1701, to compile against a helper type: Pleasanter Implem.Pleasanter.csproj:54-62)
+        # has already been ported; see aspnet-mvc5-packages-on-core
+        - not:
+            all:
+              - sdk: 'Microsoft\.NET\.Sdk\.Web$'
+              - not: {tfm: 'net[1-4]\d{1,2}'}
     severity: rewrite
     category: framework
     effort: 6
@@ -469,11 +492,38 @@ rules:
       - https://learn.microsoft.com/en-us/ef/ef6/what-is-new/
       - https://learn.microsoft.com/en-us/ef/efcore-and-ef6/porting/
 
+  # The .NET Framework ASP.NET packages restored into an ASP.NET Core project (NuGet falls back to
+  # their net45 assemblies with warning NU1701). The app itself runs on ASP.NET Core; the old
+  # assemblies load on Linux as long as nothing calls into System.Web, whose use is reported by
+  # system-web-apis-in-core. Kept as a note so the leftover dependency is visible.
+  - id: aspnet-mvc5-packages-on-core
+    applies_to: [dotnet]
+    when:
+      all:
+        - sdk: 'Microsoft\.NET\.Sdk\.Web$'
+        - not: {tfm: 'net[1-4]\d{1,2}'}
+        - package: 'Microsoft\.AspNet\.(Mvc|WebApi\.WebHost|WebApi|WebPages|Razor)|Microsoft\.Web\.Infrastructure'
+    severity: info
+    category: framework
+    effort: 0
+    title: .NET Framework ASP.NET packages in an ASP.NET Core app
+    why: >-
+      The project is ASP.NET Core on .NET, but also restores the .NET Framework MVC 5 / Web Pages
+      packages; NuGet uses their .NET Framework assemblies with warning NU1701. They load on Linux
+      until code calls a type that needs System.Web, which then fails at run time.
+    fix: >-
+      Remove the packages and replace the few types still used (System.Web.Helpers, HtmlString)
+      with their ASP.NET Core equivalents; keep them only if a test run on Linux exercises those paths.
+    refs:
+      - https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1701
+
   - id: system-web-apis-in-core
     applies_to: [dotnet]
     when:
       all:
-        - code: 'HttpContext\.Current\b|System\.Web\.HttpContext'
+        # whole identifier: AspNetCoreCurrentRequestContext's `AspNetCoreHttpContext.Current`
+        # (Pleasanter Context.cs:267) is an ASP.NET Core accessor, not System.Web
+        - code: '(?<![\w.])HttpContext\.Current\b|\bSystem\.Web\.HttpContext\b'
         - not: {tfm: 'net[1-4]\d{1,2}'}
     severity: refactor
     category: framework

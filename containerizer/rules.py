@@ -11,7 +11,9 @@ unless noted):
   sdk, tfm, package, reference, framework_ref, output_type, kind, role, name
   path: regex             the project file's path relative to the repository root ('/' separators)
   property: {Name: regex}
-  file: glob              file name (or relative path when the glob has '/')
+  package: regex          package name; optional `version: regex` on its version (full match)
+  file: glob              file name (or relative path when the glob has '/'); `skip_portable: true`
+                          leaves out IL-only .NET Standard/.NET (Core) assemblies
   code: regex             source files, comments stripped; optional `in: glob`
   config: regex           configuration files; optional `in: glob`
   text: regex             any text file; optional `in: glob`
@@ -22,7 +24,9 @@ unless noted):
                           `if (!<OS check>) return/throw`, inside a method/type marked
                           [SupportedOSPlatform("windows"|"macos"|"linux"...)], or in a member/type
                           whose every caller (in the project and the projects referencing it) is
-                          guarded, or on a P/Invoke (extern) declaration that nothing calls
+                          guarded, or on a P/Invoke (extern) declaration that nothing calls, or in
+                          the `case <Option>.Windows:` section of a switch on a configured option;
+                          a private member's callers are its calls inside its own (non-partial) type
   unguarded: callers      only the last check (for annotations on the member/type itself)
   any: [...], all: [...], not: {...}
   same_file: true         (next to `all`) the code/config/text conditions directly under the
@@ -334,7 +338,7 @@ def _guarded(txt: str, pos: int, nested: bool = True, scope: "GuardScope | None"
         return True
     if scope is None:
         return False
-    if _in_guarded_block(txt, pos, helpers) or _in_unbraced_os_if(txt, pos, helpers):
+    if _in_guarded_block(txt, pos, helpers) or _in_unbraced_os_if(txt, pos, helpers) or _in_windows_option_case(txt, pos):
         return True
     return file is not None and scope.callers_guarded(file, txt, pos)
 
@@ -519,6 +523,11 @@ class _Member:
     overridable: bool
     start: int           # declaration span in its file
     end: int
+    private: bool = False  # declared `private` (not `private protected`): callable only inside its type
+
+
+def _is_private(mods: str) -> bool:
+    return bool(re.search(r"\bprivate\b", mods)) and not re.search(r"\bprotected\b", mods)
 
 
 def _enclosing_type(txt: str, pos: int) -> tuple[str, int, int] | None:
@@ -551,17 +560,26 @@ def _enclosing_member(txt: str, pos: int) -> _Member | None:
             enc = _enclosing_type(txt, pos)
             mods = mm.group("mods")
             return _Member(mm.group("name"), "extern" if "extern" in mods else "method", "static" in mods or "extern" in mods,
-                           enc[0] if enc else "", bool(re.search(r"\b(virtual|override|abstract)\b", mods)), pos, stmt_end)
+                           enc[0] if enc else "", bool(re.search(r"\b(virtual|override|abstract)\b", mods)), pos, stmt_end,
+                           _is_private(mods))
     # expression-bodied member: ... Name(...) => <pos>
     prev = max(txt.rfind(";", 0, pos), txt.rfind("}", 0, pos), txt.rfind("{", 0, pos))
     seg = txt[prev + 1:pos]
+    # inside a P/Invoke declaration itself: [DllImport("advapi32.dll")] private static extern bool LogonUser(...);
+    if "extern" in txt[prev + 1:stmt_end]:
+        decl = re.sub(r"^\s*(?:\[[^\]]*\]\s*)*", "", txt[prev + 1:stmt_end])
+        xm = re.match(rf"(?P<mods>(?:{_MODS}\s+)*)[\w<>\[\],.?() ]+?\s+(?P<name>\w+)\s*\(", decl)
+        if xm and re.search(r"\bextern\b", xm.group("mods")):
+            enc = _enclosing_type(txt, pos)
+            return _Member(xm.group("name"), "extern", True, enc[0] if enc else "", False, prev + 1, stmt_end,
+                           _is_private(xm.group("mods")))
     em = re.search(rf"(?P<mods>(?:{_MODS}\s+)*)[\w<>\[\],.?]+\s+(?P<name>\w+)\s*(?:\((?P<params>[^;{{}}]*)\))?\s*=>", seg)
     if em and em.group("name") not in _KEYWORDS:
         enc = _enclosing_type(txt, pos)
         mods = em.group("mods")
         return _Member(em.group("name"), "method" if em.group("params") is not None else "property", "static" in mods,
                        enc[0] if enc else "", bool(re.search(r"\b(virtual|override|abstract)\b", mods)),
-                       prev + 1, txt.find(";", pos) if txt.find(";", pos) >= 0 else len(txt))
+                       prev + 1, txt.find(";", pos) if txt.find(";", pos) >= 0 else len(txt), _is_private(mods))
     found = None
     for b in _openers(txt, pos):
         h, hs = _header(txt, b)
@@ -583,11 +601,13 @@ def _enclosing_member(txt: str, pos: int) -> _Member | None:
             ("method" if m.group("params") is not None else "property")
         # a local function or accessor inside a member: keep looking for the member that holds it
         found = _Member(m.group("name"), kind, "static" in mods, tname,
-                        bool(re.search(r"\b(virtual|override|abstract)\b", mods)), hs, _block_end(txt, b))
+                        bool(re.search(r"\b(virtual|override|abstract)\b", mods)), hs, _block_end(txt, b), _is_private(mods))
     return found
 
 
-_DECL_BEFORE_RE = re.compile(rf"(?:\b{_MODS}|[\w>\]?])\s+$")
+# a type (or modifier) right before the name: `int Name(`, `List<T> Name(`, `T[] Name(`. The `>` of
+# an expression body's `=>` is not the end of a generic type: `private int Load() => Open();` calls Open
+_DECL_BEFORE_RE = re.compile(rf"(?:\b{_MODS}|[\w\]?]|(?<!=)>)\s+$")
 
 
 class GuardScope:
@@ -646,6 +666,12 @@ class GuardScope:
         instance member. None when some use cannot be followed."""
         construct = member.kind in ("ctor", "type") and not member.static or \
             member.kind in ("method", "property") and not member.static
+        # a private method/property runs only from its own type: follow its calls in the declaring
+        # file instead of the constructions of the type (a private GetImpersonatedToken() called
+        # from the Windows branch of RunImpersonated: BLAZAM WindowsImpersonation.cs:29/155)
+        own_file_only = False
+        if member.private and member.kind in ("method", "property") and not member.overridable:
+            construct, own_file_only = False, not self._in_partial_type(member, decl_file)
         name = member.type_name if construct or member.kind == "type" else member.name
         if not name:
             return None
@@ -669,6 +695,8 @@ class GuardScope:
                         re.match(r"(?:\[[^\]]*\]\s*)*(?:\w+\s+)*?private\b", dtxt[member.start:member.start + 300]))
                     break
         for p, f in self._files():
+            if own_file_only and f != decl_file:
+                continue
             txt = p.text(f, True)
             if name not in txt:
                 continue
@@ -720,6 +748,18 @@ class GuardScope:
                     continue                                  # a type or namespace of the same name
                 out.append((p, f, txt, s))
         return out
+
+    def _in_partial_type(self, member: _Member, decl_file: Path) -> bool:
+        """The member's type is `partial` (other parts, in other files, may call its private members)."""
+        for p, f in self._files():
+            if f == decl_file:
+                txt = p.text(f, True)
+                enc = _enclosing_type(txt, member.start)
+                if enc is None:
+                    return True
+                brace = txt.find("{", enc[1])
+                return bool(re.search(r"\bpartial\b", txt[enc[1]:brace if brace >= 0 else enc[1] + 300]))
+        return True
 
     def _mentioned_elsewhere(self, member: _Member, decl_file: Path) -> bool:
         """Whether the member's name appears anywhere outside its own declaration (a plain word
@@ -796,7 +836,9 @@ def _ref_closure(repo: Repo, p: Project) -> list[Project]:
 
 
 _TEST_PKG_RE = re.compile(r"^(Microsoft\.NET\.Test\.Sdk|xunit(\.v3)?|nunit|MSTest(\.TestFramework)?|NUnit3TestAdapter|TUnit)$", re.I)
-_TEST_NAME_RE = re.compile(r"[.\-](Tests?|UnitTests|IntegrationTests|FunctionalTests|E2ETests|EndToEndTests|AcceptanceTests|Specs)$|^(Unit)?Tests?$", re.I)
+# runners/adapters: only a project that runs tests adds them (a bare xunit/nunit package may be copy-paste)
+_TEST_RUNNER_PKG_RE = re.compile(r"^(Microsoft\.NET\.Test\.Sdk|xunit\.v3(\.[\w.\-]+)?|xunit\.runner\.visualstudio|MSTest(\.TestAdapter)?|NUnit3TestAdapter|TUnit(\.\w+)?)$", re.I)
+_TEST_NAME_RE = re.compile(r"[.\-](Tests?|UnitTests|IntegrationTests|FunctionalTests|E2ETests|EndToEndTests|AcceptanceTests|Specs|TestAutomation)$|^(Unit)?Tests?$", re.I)
 
 
 _TEST_REF_RE = re.compile(r"^(Microsoft\.VisualStudio\.QualityTools\.UnitTestFramework|Microsoft\.VisualStudio\.TestPlatform\.TestFramework"
@@ -804,12 +846,37 @@ _TEST_REF_RE = re.compile(r"^(Microsoft\.VisualStudio\.QualityTools\.UnitTestFra
 _TEST_GUID = "3ac096d0-a1c2-e12c-1390-a8335801fdab"
 
 
+# test attributes (C#, VB, F#) and Gherkin feature files: the project really holds tests (see role-test)
+_TEST_CODE_RE = re.compile(r"[\[<]{1,2}\s*(?:Xunit\.|NUnit\.Framework\.|Microsoft\.VisualStudio\.TestTools\.UnitTesting\.)?"
+                           r"(?:Fact|Theory|Test|Tests|TestMethod|DataTestMethod|TestCase|TestCaseSource|TestClass|TestFixture|SetUp|"
+                           r"OneTimeSetUp|ClassInitialize|AssemblyInitialize|Scenario)(?:Attribute)?\s*[\(\]>,]")
+
+
+def _has_test_code(p: Project) -> bool:
+    hit = _HELPER_CACHE.get(("testcode", id(p)))
+    if hit is not None and hit[0] is p:
+        return hit[1]
+    ok = any(f.suffix.lower() == ".feature" for f in p.files) or any(
+        f.suffix.lower() in (".cs", ".vb", ".fs") and _TEST_CODE_RE.search(p.text(f, True)) for f in p.files)
+    _HELPER_CACHE[("testcode", id(p))] = (p, ok)
+    return ok
+
+
 def _looks_like_test(p: Project) -> bool:
     """The role-test signals (packages, assembly references, test-project GUID, IsTestProject, name),
-    without running the role rules."""
-    return bool(any(_TEST_PKG_RE.match(n) for n in p.packages) or any(_TEST_REF_RE.match(r) for r in p.references)
-                or _TEST_GUID in p.type_guids or p.properties.get("IsTestProject", "").lower() == "true"
-                or _TEST_NAME_RE.search(p.name))
+    without running the role rules. A test framework package or assembly counts only when the
+    project holds tests or is a library nothing references (role-test)."""
+    if _TEST_GUID in p.type_guids or p.properties.get("IsTestProject", "").lower() == "true" or _TEST_NAME_RE.search(p.name):
+        return True
+    if any(_TEST_RUNNER_PKG_RE.match(n) for n in p.packages):
+        return True
+    if not (any(_TEST_PKG_RE.match(n) for n in p.packages) or any(_TEST_REF_RE.match(r) for r in p.references)):
+        return False
+    if _has_test_code(p):
+        return True
+    host = (p.output_type or "").lower() in ("exe", "winexe") or bool(p.sdk and re.search(r"Sdk\.(Web|Worker|Razor|BlazorWebAssembly)", p.sdk)) \
+        or "349c5851-65df-11da-9384-00065b846f21" in [g.lower() for g in p.type_guids]
+    return not host and not p.properties.get("ReferencedBy")
 
 
 def _dependents(repo: Repo, p: Project) -> list[Project]:
@@ -858,6 +925,30 @@ def _in_guarded_block(txt: str, pos: int, helpers: re.Pattern | None) -> bool:
 
 
 _IF_RE = re.compile(r"\bif\s*\(")
+_SWITCH_LABEL_RE = re.compile(r"\b(?:case\s+(?P<label>[^:;{}]+?)|default)\s*:(?!:)")
+_WINDOWS_OPTION_RE = re.compile(r"(?:[\w.]+\.)?Windows\w*")
+
+
+def _in_windows_option_case(txt: str, pos: int) -> bool:
+    """pos is in the `case <Enum>.Windows...:` section of a switch: an option the deployment picks
+    in configuration (`case DataProtectionProtectionType.Windows: ProtectKeysWithDpapi()` next to
+    Certificate/None choices, financial-app AppBuilderExtensions.cs:46). A Linux deployment
+    configures one of the other choices, as with an OS check; cfg-windows-option-switch notes it."""
+    if "case" not in txt or "Windows" not in txt:
+        return False
+    for b in _openers(txt, pos, 20000):
+        h, _ = _header(txt, b)
+        flat = re.sub(r"\s+", " ", h)
+        if re.fullmatch(r"switch ?\(.*\)", flat):
+            last = None
+            for m in _SWITCH_LABEL_RE.finditer(txt, b, pos):
+                seg = txt[b + 1:m.start()]
+                if seg.count("{") - seg.count("}") == 0:      # a label of this switch, not a nested one
+                    last = m
+            return bool(last and last.group("label") and _WINDOWS_OPTION_RE.fullmatch(last.group("label").strip()))
+        if _TYPE_HEADER_RE.search(flat):
+            break
+    return False
 
 
 def _in_unbraced_os_if(txt: str, pos: int, helpers: re.Pattern | None, window: int = 3000) -> bool:
@@ -979,7 +1070,7 @@ def evaluate(cond, ctx: Context) -> tuple[bool, list[Evidence], dict]:
         cond = {"all": cond}
     ev: list[Evidence] = []
     caps: dict = {}
-    keys = [k for k in cond.keys() if k not in ("in", "max", "unguarded", "same_file")]
+    keys = [k for k in cond.keys() if k not in ("in", "max", "unguarded", "same_file", "skip_portable", "version")]
     if not keys:
         return True, [], {}
     for key in keys:
@@ -1027,7 +1118,8 @@ def _eval_one(key: str, val, cond: dict, ctx: Context):
     if key == "file":
         globs = val if isinstance(val, list) else [val]
         hits = [Evidence(ctx.repo.rel(f)) for f in ctx.files()
-                if any(_glob_match(ctx.repo.rel(f), f.name, g) for g in globs)]
+                if any(_glob_match(ctx.repo.rel(f), f.name, g) for g in globs)
+                and not (cond.get("skip_portable") and _portable_assembly(f))]
         return bool(hits), hits[:3], {}
     if key == "role":
         return bool(_rx(f"^(?:{val})$").search(ctx.role or "")), [], {}
@@ -1074,6 +1166,8 @@ def _eval_one(key: str, val, cond: dict, ctx: Context):
         return bool(hits), [Evidence(proj_file, 0, f"TargetFramework={';'.join(p.tfms)}")], {}
     if key == "package":
         hits = [n for n in p.packages if _rx(f"^(?:{val})$").search(n)]
+        if cond.get("version"):
+            hits = [n for n in hits if _rx(f"^(?:{cond['version']})$").search(p.packages[n] or "")]
         return bool(hits), [Evidence(proj_file, 0, f"package {n} {p.packages[n]}".strip()) for n in hits[:3]], {}
     if key == "reference":
         hits = [n for n in p.references if _rx(f"^(?:{val})$").search(n)]
@@ -1104,6 +1198,44 @@ def _eval_one(key: str, val, cond: dict, ctx: Context):
 
 
 TEXT_KEYS = ("code", "config", "text")
+
+
+@lru_cache(maxsize=4096)
+def _portable_assembly(f: Path) -> bool:
+    """A checked-in .dll that is an IL-only managed assembly (CLI header with COMIMAGE_FLAGS_ILONLY,
+    no 32BITREQUIRED) built for .NET Standard or .NET (Core): it loads on Linux like a NuGet package
+    would (Pleasanter App_Data/Licenses/Implem.License.dll, .NETStandard 2.0). Native, mixed-mode
+    (C++/CLI), x86-only and .NET Framework assemblies are not portable."""
+    import struct
+    try:
+        data = f.read_bytes()
+        if len(data) < 0x200 or data[:2] != b"MZ":
+            return False
+        pe = struct.unpack_from("<I", data, 0x3C)[0]
+        if data[pe:pe + 4] != b"PE\0\0":
+            return False
+        nsec, opt_size = struct.unpack_from("<H", data, pe + 6)[0], struct.unpack_from("<H", data, pe + 20)[0]
+        opt = pe + 24
+        magic = struct.unpack_from("<H", data, opt)[0]
+        dirs = opt + (96 if magic == 0x10B else 112)
+        clr_rva, clr_size = struct.unpack_from("<II", data, dirs + 14 * 8)
+        if not clr_rva or not clr_size:
+            return False
+        off = None
+        for i in range(nsec):
+            sh = opt + opt_size + i * 40
+            vsize, va, rawsize, raw = struct.unpack_from("<IIII", data, sh + 8)
+            if va <= clr_rva < va + max(vsize, rawsize):
+                off = clr_rva - va + raw
+                break
+        if off is None:
+            return False
+        flags = struct.unpack_from("<I", data, off + 16)[0]
+        if not flags & 0x1 or flags & 0x2:
+            return False
+        return b".NETStandard,Version=" in data or b".NETCoreApp,Version=" in data
+    except (OSError, struct.error):
+        return False
 
 
 def _unguarded_mode(cond: dict) -> bool | str:

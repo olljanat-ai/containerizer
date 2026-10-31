@@ -109,6 +109,43 @@ rules:
       - https://fast-report.com/blogs/fastreport-core-skia
       - https://learn.microsoft.com/en-us/dotnet/core/compatibility/core-libraries/6.0/system-drawing-common-windows-only
 
+  # QRCoder's QRCode / ArtQRCode renderers return System.Drawing.Bitmap in every version, and
+  # Base64QRCode drew through System.Drawing until 1.5.0 ("Added support for non-Windows platforms
+  # on .NET6+ in Base64QRCode"). PngByteQRCode, SvgQRCode and AsciiQRCode never need GDI+, so the
+  # package alone is fine (rules/packages.yaml lists it as Linux-safe); only these renderers count.
+  - id: pkg-qrcoder-gdi
+    applies_to: [dotnet]
+    when:
+      all:
+        - not: {tfm: 'net[1-4]\d{1,2}'}
+        - not: {role: 'desktop|test'}
+        - any:
+            # C#/VB source only: BTCPayServer's Razor views call qrcode.js `new QRCode(element, {...})`
+            - all:
+                - package: 'QRCoder'
+                - code: '\bnew\s+(QRCoder\.)?(QRCode|ArtQRCode)\s*\('
+                  in: ['*.cs', '*.vb']
+            - all:
+                - package: 'QRCoder'
+                  version: '(0|1\.[0-4])(\.\d+)*(-[\w.]+)?'
+                - code: '\bnew\s+(QRCoder\.)?Base64QRCode\s*\('
+                  in: ['*.cs', '*.vb']
+    severity: refactor
+    category: libraries
+    effort: 0.5
+    title: QRCoder renderer drawing with System.Drawing
+    why: >-
+      QRCoder's QRCode and ArtQRCode classes render to System.Drawing.Bitmap, and Base64QRCode did
+      too before QRCoder 1.5.0. System.Drawing.Common is Windows-only from .NET 6 and throws on
+      Linux from .NET 7, so generating these QR codes (2FA enrolment images, labels) fails in a
+      Linux container once the app runs on a supported runtime.
+    fix: >-
+      Render with PngByteQRCode or SvgQRCode (no GDI+), or upgrade QRCoder to 1.5.0 or later where
+      Base64QRCode works on Linux; return the PNG bytes or SVG instead of a Bitmap.
+    refs:
+      - https://github.com/codebude/QRCoder/releases
+      - https://learn.microsoft.com/en-us/dotnet/core/compatibility/core-libraries/6.0/system-drawing-common-windows-only
+
   - id: pkg-document-engine-fonts
     applies_to: [dotnet]
     confidence: 0.9
