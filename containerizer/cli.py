@@ -80,7 +80,7 @@ def cmd_db(args) -> int:
                     env = f"CZ_{login.upper()}_PASSWORD"
                     if not os.environ.get(env):
                         raise SqlError(f"--login {spec}: set the password in {env}")
-                    create_login(conn, login, os.environ[env], role or "cz_reader")
+                    create_login(conn, login, os.environ[env], role or "reader")
             finally:
                 conn.close()
             print("schema is up to date")
@@ -284,11 +284,11 @@ def main(argv=None) -> int:
 
     s = sub.add_parser("db", help="results database on SQL Server: create or upgrade the schema, import reports")
     dsub = s.add_subparsers(dest="db_cmd", required=True)
-    d = dsub.add_parser("init", help="create or upgrade the cz schema and roles (needs db_owner)")
+    d = dsub.add_parser("init", help="create or upgrade the results schema, its roles and audit triggers (needs db_owner)")
     d.add_argument("--sql", help="connection string (default CONTAINERIZER_SQL)")
     d.add_argument("--create-database", action="store_true", help="CREATE DATABASE first when it does not exist")
     d.add_argument("--login", action="append", metavar="LOGIN:ROLE",
-                   help="development only: create a SQL login in cz_writer, cz_reader or cz_mapper; "
+                   help="development only: create a SQL login in role writer, reader or admin; "
                         "password from CZ_<LOGIN>_PASSWORD")
     d.set_defaults(fn=cmd_db)
     d = dsub.add_parser("import", help="load assessment.json files written by assess --out, analyze or the Action")
@@ -298,7 +298,7 @@ def main(argv=None) -> int:
     d.set_defaults(fn=cmd_db)
 
     s = sub.add_parser("web", help="read-only results web UI for management (reads the SQL Server results database)")
-    s.add_argument("--sql", help="connection string of a cz_reader login (default CONTAINERIZER_SQL)")
+    s.add_argument("--sql", help="connection string of a reader login (default CONTAINERIZER_SQL)")
     s.add_argument("--host", default="127.0.0.1", help="listen address (0.0.0.0 inside a container)")
     s.add_argument("--port", type=int, default=8080)
     s.set_defaults(fn=cmd_web)

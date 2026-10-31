@@ -2,7 +2,7 @@
 
 The connection string uses the familiar ADO.NET/ODBC keys and is read from --sql or CONTAINERIZER_SQL:
 
-    Server=tcp:sql.example.com,1433;Database=Containerizer;User Id=cz_scanner;Encrypt=yes
+    Server=tcp:sql.example.com,1433;Database=Containerizer;User Id=cz_scanner;Encrypt=yes;Schema=containerizer
 
 The password comes from CONTAINERIZER_SQL_PASSWORD (preferred: it keeps it out of the process list and
 shell history) or from Password= in the string. Like Microsoft's ODBC Driver 18, the connection is
@@ -101,7 +101,70 @@ def connect_args(cs: str, password: str | None = None) -> dict:
     return {"server": host.strip(), "port": (port.strip() or "1433"), "user": user, "password": pwd,
             "database": database, "encryption": "require" if encrypt in _TRUE else "off",
             "login_timeout": int(_pick(d, "connecttimeout", "connectiontimeout", "logintimeout", default="30")),
-            "appname": _pick(d, "applicationname", "app", default="containerizer"), "_ca": ca}
+            "appname": _pick(d, "applicationname", "app", default="containerizer"), "_ca": ca,
+            "_schema": schema_name(_pick(d, "schema"))}
+
+
+DEFAULT_SCHEMA = "containerizer"
+
+
+def schema_name(name: str | None = None) -> str:
+    """The dedicated schema: Schema= in the connection string, CONTAINERIZER_SQL_SCHEMA, or "containerizer"."""
+    name = name or os.environ.get("CONTAINERIZER_SQL_SCHEMA") or DEFAULT_SCHEMA
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name) or name.lower() in ("dbo", "sys", "guest", "information_schema"):
+        raise SqlError(f"schema must be a plain identifier other than dbo/sys: {name!r}")
+    return name
+
+
+_CZ = re.compile(r"(?<![\w\]\.])cz\.(?=[A-Za-z])")
+
+
+class Connection:
+    """pymssql connection whose queries name tables `cz.X`; `cz.` becomes the configured schema."""
+
+    def __init__(self, conn, schema: str):
+        self._conn, self.schema = conn, schema
+
+    def sql(self, text: str) -> str:
+        return _CZ.sub(f"[{self.schema}].", text)
+
+    def cursor(self, as_dict: bool = False):
+        return _Cursor(self._conn.cursor(as_dict=as_dict), self)
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
+
+    def set_user(self, user: str, name: str | None = None) -> None:
+        """Who the audit log names for changes on this connection (read-only for its lifetime)."""
+        cur = self._conn.cursor()
+        cur.execute("EXEC sp_set_session_context @key = N'containerizer.user', @value = %s, @read_only = 1", (user[:256],))
+        if name:
+            cur.execute("EXEC sp_set_session_context @key = N'containerizer.user_name', @value = %s, @read_only = 1",
+                        (name[:256],))
+
+
+class _Cursor:
+    def __init__(self, cur, conn: Connection):
+        self._cur, self._conn = cur, conn
+
+    def execute(self, sql: str, params=None):
+        return self._cur.execute(self._conn.sql(sql), params) if params is not None else self._cur.execute(self._conn.sql(sql))
+
+    def fetchone(self):
+        return self._cur.fetchone()
+
+    def fetchall(self):
+        return self._cur.fetchall()
+
+    @property
+    def rowcount(self):
+        return self._cur.rowcount
 
 
 _CONF: dict = {}
@@ -130,9 +193,10 @@ def connect(cs: str | None = None, password: str | None = None, autocommit: bool
         raise SqlError("the SQL Server output needs pymssql: pip install -r requirements-sql.txt") from e
     args = connect_args(cs, password)
     ca = args.pop("_ca")
+    schema = args.pop("_schema")
     os.environ["FREETDSCONF"] = _freetds_conf(ca)
     try:
-        return pymssql.connect(autocommit=autocommit, **args)
+        return Connection(pymssql.connect(autocommit=autocommit, **args), schema)
     except pymssql.Error as e:
         hint = " (is the server certificate trusted? see docs/results-database.md#tls)" if ca else ""
         raise SqlError(f"cannot connect to {args['server']},{args['port']} database {args['database']}{hint}: "
@@ -148,14 +212,15 @@ def _err(e) -> str:
 # ---------------------------------------------------------------------------
 # schema
 
-def schema_batches(text: str | None = None) -> list[str]:
-    text = SCHEMA.read_text() if text is None else text
+def schema_batches(schema: str = DEFAULT_SCHEMA, text: str | None = None) -> list[str]:
+    from string import Template
+    text = Template(SCHEMA.read_text() if text is None else text).substitute(schema=schema_name(schema))
     return [b.strip() for b in re.split(r"^\s*GO\s*$", text, flags=re.M | re.I) if b.strip()]
 
 
 def init_schema(conn) -> None:
-    cur = conn.cursor()
-    for b in schema_batches():
+    cur = conn._conn.cursor()          # the schema script names its schema itself
+    for b in schema_batches(conn.schema):
         cur.execute(b)
     conn.commit()
 
@@ -233,8 +298,9 @@ def store_assessment(conn, doc: dict, source: dict, assessed_at=None) -> int:
                         (_cut(doc["name"], 200), _cut(source.get("repository_url"), 400),
                          _cut(source.get("path"), 400), app_id))
         else:
+            # SCOPE_IDENTITY, not OUTPUT: the audit trigger on Application rules out a bare OUTPUT clause
             cur.execute("INSERT cz.Application (SourceKey, Name, RepositoryUrl, SourcePath) "
-                        "OUTPUT INSERTED.ApplicationId VALUES (%s, %s, %s, %s)",
+                        "VALUES (%s, %s, %s, %s); SELECT CAST(SCOPE_IDENTITY() AS int)",
                         (_cut(source["key"], 400), _cut(doc["name"], 200), _cut(source.get("repository_url"), 400),
                          _cut(source.get("path"), 400)))
             app_id = cur.fetchone()[0]
@@ -344,15 +410,17 @@ def import_json(cs: str | None, files: list[Path], key_prefix: str = "", passwor
 # local development: logins for the docker compose stack
 
 def create_login(conn, login: str, password: str, role: str) -> None:
-    """Create (or reset) a SQL login + database user in `role`. Needs an admin connection."""
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", login) or role not in ("cz_writer", "cz_reader", "cz_mapper"):
-        raise SqlError(f"bad login or role: {login} {role}")
+    """Create (or reset) a SQL login + database user in role writer, reader or admin. Needs an admin connection."""
+    role = role.removeprefix(conn.schema + "_")
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", login) or role not in ("writer", "reader", "admin"):
+        raise SqlError(f"bad login or role: {login} {role} (roles: writer, reader, admin)")
+    role = f"{conn.schema}_{role}"
     cur = conn.cursor()
     pw = password.replace("'", "''")
     cur.execute(f"IF SUSER_ID(N'{login}') IS NULL CREATE LOGIN [{login}] WITH PASSWORD = N'{pw}', CHECK_POLICY = ON "
                 f"ELSE ALTER LOGIN [{login}] WITH PASSWORD = N'{pw}'")
     cur.execute(f"IF DATABASE_PRINCIPAL_ID(N'{login}') IS NULL CREATE USER [{login}] FOR LOGIN [{login}]")
-    cur.execute(f"ALTER ROLE {role} ADD MEMBER [{login}]")
+    cur.execute(f"ALTER ROLE [{role}] ADD MEMBER [{login}]")
     conn.commit()
 
 
