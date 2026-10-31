@@ -23,30 +23,23 @@ Design principles:
 
 ## Getting started
 
-Containerizer ships as an appliance: an immutable Elemental OS image with the web UI and API, the scan
-worker, SQL Server, a single-node k3s sandbox cluster with Flux, a local container registry,
-Prometheus and Grafana. Only SSH and HTTPS are allowed in, and outgoing traffic is blocked except for
-the hosts an admin allows under **Admin → Firewall**. Signed upgrades and roll back are under
-**Admin → System**.
+Containerizer ships as an appliance: one virtual machine with an immutable OS image, the web UI and
+API, the scan worker, SQL Server, a single-node k3s sandbox cluster with Flux, a local container
+registry, Prometheus and Grafana. Everything day to day is done in the web UI.
 
 1. **Download** the ISO, qcow2 or VHD from the latest
-   [release](https://github.com/olljanat-ai/containerizer/releases) and check it against the signed
-   `SHA256SUMS` ([install](docs/appliance.md#install)). The VM needs UEFI, 4 vCPU, 16 GB memory and a
-   64 GB disk ([requirements](docs/appliance.md#requirements)).
-2. **Install**: boot the ISO and answer the three console questions (disk, SSH key for `root`, host
-   name), or start the disk image and give the SSH key on the console.
-3. **First boot**: `ssh root@<appliance>`, set the host name and single sign-on in
-   `/etc/containerizer/`, restart, and open `https://<host name>/admin`
-   ([first boot](docs/appliance.md#first-boot)).
-4. **Allow** the Git servers, package feeds and registries your scans need on **Admin → Firewall**, put
-   the source control tokens into `worker.env`, and define organization scans on the admin pages
-   ([scheduled scans](docs/scheduled-scans.md)).
-5. **Read the results** in the web UI ([results database and web UI](docs/results-database.md)) and
-   approve what the learning loop proposes ([rule review](docs/rule-review.md)).
+   [release](https://github.com/olljanat-ai/containerizer/releases), check it against the signed
+   `SHA256SUMS` and install it ([install](docs/appliance.md#install)).
+2. **First boot**: set the host name and single sign-on, then open `https://<host name>/admin`
+   ([first boot](docs/appliance.md#first-boot), [sign-in and roles](docs/sign-in.md)).
+3. **Admin → Firewall**: allow the Git servers, package feeds and registries your scans need.
+4. **Admin → Source control & LLM**: register a read-only token for each organization and a write token
+   for each output repository ([making the tokens](docs/source-control.md#making-the-tokens)), and
+   optionally the LLM.
+5. **Admin → Organization scans**: schedule the scans ([organization scans](docs/scheduled-scans.md)),
+   then read the results and approve what the learning loop proposes ([rule review](docs/rule-review.md)).
 
-The rest of this page explains how the assessment works. The `python -m containerizer` commands it
-mentions are what the appliance runs internally and what the [pipeline integrations](#running-it-from-a-pipeline)
-use; to develop Containerizer itself, see [docs/local-dev-server.md](docs/local-dev-server.md).
+The rest of this page explains how the assessment works and what it generates.
 
 ## How it works
 
@@ -59,7 +52,7 @@ use; to develop Containerizer itself, see [docs/local-dev-server.md](docs/local-
   │                                                     Claude (validated) ──► rules/learned/
 ```
 
-1. **Scan** (`containerizer/scan.py`) reads project files (.csproj/.vbproj incl. old-style and imported
+1. **Scan** reads project files (.csproj/.vbproj incl. old-style and imported
    `.props`, package.json, requirements.txt/pyproject, go.mod, pom.xml/gradle, BizTalk/SQL/SSIS
    projects, ASP.NET Web Site projects listed in a .sln), source and configuration. Nothing from the scanned repository is executed.
    Java and Node.js have their own parsers ([docs/java-node.md](docs/java-node.md)): Maven parents,
@@ -93,6 +86,7 @@ use; to develop Containerizer itself, see [docs/local-dev-server.md](docs/local-
    file shipped with the app, Lucene used only for text analysis, temp files and logs, and the
    ASP.NET Core Data Protection key ring (one `PersistKeysTo*` line; reported separately).
 
+
 ### Rules are data
 
 ```yaml
@@ -112,8 +106,8 @@ use; to develop Containerizer itself, see [docs/local-dev-server.md](docs/local-
 ```
 
 Every finding is explained without AI: `why` says what breaks in a Linux container, `fix` what to
-do, and `refs` link to the documentation or upstream issue behind it. All three are shown in the
-migration report, the HTML portfolio, the PR comment and SARIF (`help`, `helpUri`). Findings
+do, and `refs` link to the documentation or upstream issue behind it. All three are shown with the
+finding in the web UI and in the generated `MIGRATION.md`. Findings
 observed at run time carry the explanation and links of the failure rule that recognised them, and
 every non-default build decision (a plan rule, a config override, a fix learned while verifying) is
 listed with its reason and links at the top of the generated `Dockerfile` and in `plan.json`.
@@ -175,6 +169,7 @@ list of verified https links (docs page, upstream issue, vendor statement) shown
 commented allowlist.
 Later files override earlier rules with the same id; `rules/learned/` is loaded last.
 
+
 ### Migration assistant
 
 For every component that is not ready (verdict refactor, rewrite or blocker), each blocking finding is
@@ -196,19 +191,18 @@ instead of being forced into a code change.
   verify: [...]
 ```
 
-The plan is rendered as a self-contained **prompt for AI coding agents** (Claude Code, GitHub Copilot,
-...): the findings with their evidence, the replacements in order, constraints (minimal changes,
-no secrets in code, non-root and read-only file system) and how to verify. It is written to
-`agent-prompts/<app>/<component>.md` next to the reports, summarised in `<app>.md` / `MIGRATION.md`,
-included in `assessment.json`, stored in the results database and shown with a copy button in the web UI.
+The plan is also rendered as a self-contained **prompt for AI coding agents** (Claude Code, GitHub
+Copilot, ...): the findings with their evidence, the replacements in order, constraints (minimal
+changes, no secrets in code, non-root and read-only file system) and how to verify. The web UI shows
+it on the component's migration assistant with a copy button.
 
-### Self-learning loop (`verify --learn`)
+### Self-learning loop
 
-For each component that can be containerized the tool:
+For each component that can be containerized the scan:
 
-1. builds the generated Dockerfile (`docker build`, application folder as context);
-2. runs it hardened (`--read-only --cap-drop ALL --security-opt no-new-privileges`, non-root, only
-   the writable folders mounted) and probes the health endpoint. Writable folders are host
+1. builds the generated Dockerfile (application folder as context);
+2. runs it hardened (read-only root filesystem, all capabilities dropped, no new privileges, non-root,
+   only the writable folders mounted) and probes the health endpoint. Writable folders are host
    directories during the test, so apps that log only to files can still be diagnosed;
 3. matches the log against `rules/50-failures.yaml`:
    - `retry`: patch the build plan (e.g. remove a pinned `global.json`, retarget an out-of-support
@@ -220,55 +214,34 @@ For each component that can be containerized the tool:
      SQLite paths are made absolute and writable, and sample input files are mounted from the repo.
      An app that never answers HTTP gets the same smoke retry;
    - `platform` / `code`: a runtime finding the static rules missed;
-4. if nothing matches and `--ai` is on, Claude proposes a diagnosis, a regex and a plan patch; it is
-   applied only if the regex matches the log and the patch uses whitelisted plan keys;
+4. if nothing matches and the scan has **Ask the LLM** on, the LLM proposes a diagnosis, a regex and a
+   plan patch; it is applied only if the regex matches the log and the patch uses whitelisted plan keys;
 5. learns what worked: plan patches → plan rules, confirmed AI failure rules → failure rules, runtime
    findings → finding rules, and packages of components that ran → Linux-safe packages (raising
-   confidence next time). The run uses them right away; for everything else they wait for review:
-   each becomes a candidate with its evidence (source repository and commit, the attempts and exit
-   reasons, an excerpt of the failing log, the diff, a confidence, the LLM if one proposed it). An
-   administrator approves (optionally after editing) or rejects it on the **Rule review** admin page
-   or with `containerizer rules`; approved rules go to your internal (private) rules repository
-   through a pull request, never into this public one, and are loaded from `CONTAINERIZER_REVIEWED_RULES`;
-   rejected ones are not proposed again. See [docs/rule-review.md](docs/rule-review.md).
+   confidence next time). The run uses them right away; for everything else they wait as candidates
+   with their evidence until an administrator approves or rejects them under **Admin → Rule review**.
+   Approved rules go to your internal (private) rules repository, never into this public one
+   ([rule review](docs/rule-review.md)).
 
 ### AI fallback (Claude or a self-hosted LLM)
 
-`containerizer/ai.py` has three backends: the Anthropic Python SDK with structured outputs
-(`CONTAINERIZER_AI_BACKEND=api`, needs credentials), the `claude` CLI in print mode
-(`CONTAINERIZER_AI_BACKEND=cli`), and any self-hosted OpenAI-compatible server such as Ollama,
-vLLM, LM Studio or llama.cpp (`CONTAINERIZER_AI_BACKEND=openai`, selected automatically when
-`CONTAINERIZER_LLM_BASE_URL` is set; see [docs/self-hosted-llm.md](docs/self-hosted-llm.md)).
-The model is configurable with `--model` or `CONTAINERIZER_MODEL` (default `claude-opus-5-5`;
-required for a self-hosted server). Every answer is validated against its schema, responses are
-cached in `.work/ai-cache/`, usage and cost are tracked.
-
-```sh
-export CONTAINERIZER_LLM_BASE_URL=http://localhost:11434/v1 CONTAINERIZER_MODEL=qwen3:32b   # Ollama
-python -m containerizer analyze <repo> --out out/ --ai
-```
-
-Three AI techniques can be compared with `bench --technique`:
-
-| Technique | What the LLM sees | What decides |
-| --- | --- | --- |
-| `rules` | nothing | rules only |
-| `hybrid` | evidence pack (findings, code snippets, Program.cs, README) for low-confidence components | rules, overridden by the LLM where confident |
-| `ai-only` | project inventory + README | LLM only |
-| `ai+rules` | inventory + README + rule verdicts | LLM, informed by the rules |
+The LLM is set once under **Admin → Source control & LLM**
+([the LLM](docs/source-control.md#the-llm)): the Claude API, or any self-hosted OpenAI-compatible
+server such as Ollama, vLLM, LM Studio or llama.cpp. It is asked only about components the rules are
+unsure of and failures no failure rule explains. Every answer is validated against its schema before
+it is used or learned, responses are cached, and usage and cost are tracked.
 
 ## Generated output
 
 Per component: `Dockerfile` (+ `Dockerfile.dockerignore`), `k8s.yaml` (Deployment or CronJob,
-Service, NetworkPolicy, Secret skeleton, PVCs where state must persist), `plan.json` (the build
-plan, editable and re-usable). For .NET Framework components that could work in Windows Server
+Service, NetworkPolicy, PVCs where state must persist, ExternalSecrets for every credential),
+`plan.json` (the build plan). For .NET Framework components that could work in Windows Server
 containers, a `Dockerfile.windows` stop-gap. Per app: `kustomization.yaml` and `MIGRATION.md`.
 Java (Maven/Gradle; Spring Boot, Quarkus, plain JVM programs, WARs on Tomcat) and Node.js
 (npm/pnpm/yarn; Express, NestJS, Next.js and others) components get distroless, non-root images
 built on the runtime line they declare; see [docs/java-node.md](docs/java-node.md#containers).
 
-GitOps: every app also gets `gitops/` with Argo CD and Flux examples built from the same data
-(`--git-url`, `--git-branch`, `--git-path`, `--verify-commits` on `generate` and `analyze`):
+GitOps: every app also gets `gitops/` with Argo CD and Flux configuration built from the same data:
 
 | | Argo CD | Flux |
 | --- | --- | --- |
@@ -298,6 +271,7 @@ Techniques used to avoid application changes:
 - old netstandard1.x packages that break a linux-x64 restore (NU1605) get a portable publish;
 - corporate TLS-inspecting proxies: an optional `ca` build secret is honoured.
 
+
 ## Security gate
 
 Everything here is data in [`rules/60-security.yaml`](rules/60-security.yaml).
@@ -321,35 +295,33 @@ service links, CPU/memory/ephemeral-storage requests and limits, and a `sizeLimi
 | `kubernetes-api-client` | KubernetesClient and similar | service account token mounted, `sa-token` check waived |
 | `privileged-port` | plan port below 1024 | `NET_BIND_SERVICE` |
 
-**Lint.** `gate` checks the manifests against Pod Security `restricted` (host namespaces, privileged,
+**Lint.** The gate checks the manifests against Pod Security `restricted` (host namespaces, privileged,
 capabilities, volume types, host ports, privilege escalation, non-root, seccomp, sysctls) plus read-only
 root FS, resources, secret literals (in env, `ENV` and Secrets), the service account token, `emptyDir`
 limits, image tags and NetworkPolicies, and the Dockerfiles for a non-root final stage, tagged base
 images, `ADD <url>`/`curl | sh` and base image end of support. Errors fail the gate. A pod annotation
 `containerizer.io/waives: "check,check"` relaxes named checks for hand-made exceptions.
 
-The tool is meant to be run once or a few times per repository, so `gate` favours accuracy over
-speed: by default it builds every image, scans it with every available scanner and merges the
+The gate favours accuracy over speed: it builds every image, scans it with every available scanner and merges the
 results, and starts it with the docker equivalent of its pod spec (user, read-only root, dropped
 capabilities, sysctls, `emptyDir` mounts) to prove the exceptions are enough; read-only or permission
 errors in the log fail the gate. A lock older than 14 days is refreshed first.
 
-**Vulnerability scan.** `gate` scans the final base image of every component and the built image; findings missing from the base are attributed to the application's
-own packages (upgrade them) rather than the base (bump it). It fails on vulnerabilities at or above
-`scan.fail_on` (default `CRITICAL`, `--fail-on HIGH` to tighten) that have a fix; accepted risks go in
-`scan.allowlist` with a reason and an expiry date. Trivy is used if installed, then Grype, then either
-one as a container (`aquasec/trivy`, `anchore/grype`); `scan.default_scanner: all` uses all of them. When even the newest base tag still ships a
-vulnerable OS package with a fix, the gate upgrades just that package in the final stage (`apk upgrade`
-/ `apt-get --only-upgrade`; chiseled images have no package manager and need a newer tag). Results go
-to `SECURITY.md` and `security.json` next to the generated files.
 
-**SBOM and licences.** Every built image gets a CycloneDX SBOM from Syft (`sbom.cdx.json` next to the
-`Dockerfile`), with NuGet licences looked up from the feed, each package checked against the licence
-policy in `sbom.licenses` (deny fails the gate, warn is reported; GPL/AGPL warn by default) and the
-scan's CVEs attached to the package they are in. `containerizer org` attaches it to the pushed image
-(signed with cosign when `--cosign-key` is given) and stores it in the results database; the web UI
-shows the packages of each component and a portfolio page of licences and CVEs. See
-[docs/sbom.md](docs/sbom.md).
+**Vulnerability scan.** The gate scans the final base image of every component and the built image;
+findings missing from the base are attributed to the application's own packages (upgrade them) rather
+than the base (bump it). It fails on vulnerabilities at or above `scan.fail_on` (default `CRITICAL`)
+that have a fix; accepted risks go in `scan.allowlist` with a reason and an expiry date. Trivy and
+Grype both scan, and their results are merged. When even the newest base tag still ships a vulnerable
+OS package with a fix, the gate upgrades just that package in the final stage (`apk upgrade` /
+`apt-get --only-upgrade`; chiseled images have no package manager and need a newer tag). Results go to
+`SECURITY.md` and `security.json` next to the generated files.
+
+**SBOM and licences.** Every built image gets a CycloneDX SBOM from Syft, with NuGet licences looked
+up from the feed, each package checked against the licence policy (deny fails the gate, warn is
+reported; GPL/AGPL warn by default) and the scan's CVEs attached to the package they are in. The SBOM
+is attached to the pushed image and stored with the results; the web UI shows the packages of each
+component and a portfolio page of licences and CVEs. See [docs/sbom.md](docs/sbom.md).
 
 ### NSA/CISA hardening
 
@@ -387,195 +359,13 @@ or an action for the cluster operator, with the guide section and CIS number.
   deletes them from its set with `$patch: delete` and doesn't `force`, so the app repository can't
   loosen them under the tenant's impersonated ServiceAccount.
 
-**Patched base images.** `images --update` lists the registry tags of every line in `images.yaml`,
-scans the newest patch tags and writes the first one that passes the policy to
-`rules/images.lock.yaml` with its digest; the generator then uses the exact tag (and
-`--pin-digests` the locked digest). The bump policy is per image: patch releases of the same line by
-default, newer stable lines for nginx, and the successor line for toolchains past end of support (node,
-golang). .NET majors are never moved automatically. `images` alone shows each line and its end of
-support. `CONTAINERIZER_IMAGES_LOCK=0` ignores the lock; the gate warns when it is older than 14 days.
 
-## Running it from a pipeline
-
-The tool is meant to be run once or a few times per repository, so the main pipeline use is a
-**one-shot assessment**: the pipeline runs `analyze` (assess, build and run every feasible component on the
-build agent, learn from failures, re-assess, write reports and generated files), so the verdicts are
-confirmed, not just predicted. Speed is not a goal: verification is on by default and each build or run may take up to 30 minutes.
-
-### One-shot assessment on GitHub Actions
-
-```yaml
-on: workflow_dispatch
-permissions:
-  contents: write               # only for open-pr
-  pull-requests: write          # only for open-pr
-jobs:
-  assess:
-    runs-on: ubuntu-latest      # has Docker, needed for verification
-    steps:
-      - uses: actions/checkout@v4
-      - uses: olljanat-ai/containerizer@main
-        with:
-          mode: assess
-          path: src
-          # ai: true                                       # ask the LLM about uncertain components
-          # anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
-          # llm-base-url: https://llm.example.internal/v1  # self-hosted LLM instead of Claude (needs model)
-          # llm-api-key: ${{ secrets.LLM_API_KEY }}
-          # open-pr: true                                  # PR adding <app>/containerize/ folders
-```
-
-The job summary has the portfolio table, a build-and-run table that flags every component predicted
-ready that did not build or run ("static verdict not confirmed"), and each app's full report. The
-`containerizer-report` artifact holds the Markdown/HTML/JSON reports, generated files, verification
-results and logs. Outputs: `rating`, `unconfirmed`, `report-dir`, `pr-url`. With the default
-`mode: auto` the action runs the assessment on any event except pull requests, where it runs the gate.
-
-### One-shot assessment on Azure DevOps
-
-```yaml
-trigger: none
-pool:
-  vmImage: ubuntu-latest
-steps:
-  - checkout: self
-  - template: ci/azure/containerizer-assess.yml
-    parameters:
-      path: src
-```
-
-[`ci/azure/containerizer-assess.yml`](ci/azure/containerizer-assess.yml) publishes the same report as
-the `containerizer-report` artifact and the summary on the build's Extensions tab.
-
-## CI/CD gate
-
-If a team keeps working on an application after the assessment, the gate stops new Windows-only
-dependencies from creeping in.
-
-
-`check` compares the current tree with a base branch (or a saved baseline) and fails when a change makes
-an application harder to containerize: a new finding of severity `rewrite` or worse (Windows-only APIs,
-COM, Office automation, WCF server, ...), or a worse rating. It also writes the PR comment, SARIF 2.1.0
-and inline annotations. The base is read with `git archive`, so the working tree is never touched, and
-findings in library code the app never reaches don't count.
-
-```bash
-python -m containerizer check src/ --base-ref origin/main --markdown comment.md --sarif out.sarif
-python -m containerizer check src/ --save-baseline baseline.json          # later: --baseline baseline.json
-python -m containerizer check src/ --max-rating B --fail-on blocker      # absolute limit, no base needed
-```
-
-Exit code 0 = pass, 1 = gate failed, anything else = error. Options: `--fail-on none|config|refactor|rewrite|blocker`,
-`--allow-rating-drop`, `--max-rating A-E`, `--annotations github|azure`, `--json`, `--link <blob URL prefix>`.
-
-### Gate on GitHub Actions
-
-```yaml
-on: pull_request
-permissions:
-  contents: read
-  pull-requests: write          # for the PR comment
-jobs:
-  containerizer:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: olljanat-ai/containerizer@main
-        with:
-          path: src              # app folder(s), space separated
-          fail-on: rewrite       # default
-          # max-rating: C        # optional absolute limit
-          # upload-sarif: true   # code scanning (needs security-events: write)
-```
-
-On pull requests the action compares with the PR's base commit (fetched if the checkout is shallow), posts
-one comment that it keeps updating, writes the job summary, annotates the offending lines, and fails the
-job when the gate fails. Outputs: `rating`, `failed`, `new-findings`, `markdown-file`, `sarif-file`.
-This repository dogfoods it in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) on
-[`examples/ci-demo`](examples/ci-demo) and self-tests it on a challenge app with a Windows-only change.
-
-### Gate on Azure DevOps
-
-[`ci/azure/containerizer-steps.yml`](ci/azure/containerizer-steps.yml) is a steps template. Copy it into
-your repository (or reference it through a repository resource):
-
-```yaml
-trigger: none
-pr: [main]
-pool:
-  vmImage: ubuntu-latest
-steps:
-  - checkout: self
-    fetchDepth: 0
-  - template: ci/azure/containerizer-steps.yml
-    parameters:
-      path: src
-      failOn: rewrite
-```
-
-It compares with the PR target branch, adds the report to the build summary, annotates the offending
-files, publishes SARIF as the `CodeAnalysisLogs` artifact (shown by the SARIF SAST Scans Tab
-extension), comments on Azure Repos pull requests with `System.AccessToken` (give the build service
-"Contribute to pull requests"), and fails the build when the gate fails.
-
-## Whole organization
-
-`containerizer org` lists every Git repository of one Azure DevOps organization, GitHub organization or
-GitLab group (private ones included, tokens from environment variables), skips repositories without a
-commit in 6 months, repositories that already have a Dockerfile and repositories without application
-code (with the reason, for example "14 files (.md 9, .yaml 5), no source code" or "Ruby (31 files), but
-no project the tool can build"), runs `analyze` on the rest and
-keeps only the components rated **A** that built, ran and passed the security gate. Their images are
-pushed to your registry and the generated files are committed to your output repository as
-`<Organization>/<Project>/<Repository>/<component>/` (GitHub has no projects: `_`), with a
-`sandbox/` folder holding an Argo CD app-of-apps and a Flux root Kustomization that deploy all of them
-to a sandbox cluster. Results go to SQL Server too with `--sql`. See
-[docs/organization-run.md](docs/organization-run.md). `--cache-dir` keeps the clones between runs and only
-pulls the newest commit. With `--verify-sandbox` it then waits for Argo CD or
-Flux to sync, reads back rollout, readiness, restarts and events with a read-only ServiceAccount, and records
-per component "deployed and healthy" or "deployed but failing (reason)" in `sandbox/HEALTH.md`, the results
-database and the web UI; failures the cluster shows feed the learning loop
-([docs/sandbox-verification.md](docs/sandbox-verification.md)).
-
-Organization scans can also be **scheduled from the admin pages** (days of the week and time, or
-"Run now") and run by `containerizer worker`, a separate process with Docker. Administrators register a
-read-only token for each organization the scans may read and a write token for each output repository
-under **Admin → Source control**; organizations without one are never scanned, and the tokens are
-sealed for the worker so the web UI cannot read them back ([docs/source-control.md](docs/source-control.md)).
-New repositories are found on every run, every repository appears on the admin **Repositories** page
-with its last result, and skipped ones are shown disabled with the reason; an administrator can
-enable or disable any of them. The worker exposes Prometheus metrics about the scans, the process and
-the VM, and a Grafana dashboard is included. See [docs/scheduled-scans.md](docs/scheduled-scans.md).
-
-Operators can also **upload a SQL Server backup of an application's development database** with
-instructions for the AI. The next scan restores it into a hardened database next to the application in
-the sandbox, and points the application's connection settings at it, without changing its code. See
-[docs/dev-databases.md](docs/dev-databases.md).
-
-On the appliance, administrators can turn on **lab services** for the sandboxed apps: SQL Server, PostgreSQL,
-Redis, S3 and Azure Blob storage. An app that depends on one gets its own database or instance, with
-credentials from External Secrets Operator. Its configuration is pointed at the service without code
-changes, and the admin pages warn when an app needs a service that is off. See
-[docs/lab-services.md](docs/lab-services.md).
-
-![Repositories of an organization scan, skipped ones disabled with the reason](docs/images/admin-repositories-disabled.png)
-
-## Results database and web UI
-
-`assess` and `analyze` also write their results to Microsoft SQL Server with `--sql` (or
-`CONTAINERIZER_SQL`), in a dedicated schema (`containerizer` by default) so it can share a database,
-and `python -m containerizer web` serves a management-friendly view of them: business unit → product →
-application → components, with ratings, main obstacles and the why / fix / references of every finding.
-Components are mapped to their application automatically by the scan. Administrators sign in with
-single sign-on (OpenID Connect, e.g. Entra ID) to map applications to products and products to
-business units (or do it from scripts through a JSON API with OAuth access tokens), and every
-change is kept in an audit log with who made it. Besides admins there are scoped product owners (their own business units or products) and operators
-(scans). Optionally the results pages need the same sign-in,
-and an access log records who signed in and what they looked at.
-[`docs/results-database.md`](docs/results-database.md) has the model, the least-privilege roles, TLS,
-sign-in setup, the API, the audit log and a local Docker Compose stack.
-
-![Containerization readiness overview](docs/images/results-overview.png)
+**Patched base images.** `rules/images.yaml` lists the base image lines and
+`rules/images.lock.yaml` the newest patch tag of each line that passed the vulnerability policy, with
+its digest; the generator uses the exact tag. The bump policy is per image: patch releases of the same
+line by default, newer stable lines for nginx, and the successor line for toolchains past end of
+support (node, golang). .NET majors are never moved automatically. A lock older than 14 days is
+refreshed before the gate runs.
 
 ## Results on the challenge
 
@@ -583,21 +373,16 @@ See [`bench/RESULTS.md`](bench/RESULTS.md) for the current numbers (rule accurac
 results and the model comparison). The labels used for scoring are in
 [`bench/labels.yaml`](bench/labels.yaml), written from each scenario's README and code.
 
+
 ## Layout
 
 ```
-containerizer/   scan, rules engine, assess, reach, confidence, facts, generate, harden, imagescan, verify, ai, report, bench
+containerizer/   scan, rules engine, assess, reach, confidence, facts, generate, harden, imagescan, verify, ai, report
+                 webui.py, admin*.py, api*.py: web UI, admin pages and API; worker.py: scheduled organization scans
+containerizer/sql/  results database schema
 rules/           curated rules (roles, facts, findings, plan, failures, security, images + images.lock, packages)
-rules/learned/   rules written by the learning loop with CONTAINERIZER_RULE_REVIEW=off (safe to delete)
-bench/           labels and results
-action.yml       GitHub Action; ci/azure/ has the Azure DevOps template, ci/local.sh runs the CI jobs locally
-containerizer/sql/  results database schema (sqlstore.py writes it, webui.py reads it, admin.py + oidc.py: admin pages)
-                 worker.py: scheduled organization scans, metrics.py: Prometheus metrics
-monitoring/      Grafana dashboard, Prometheus scrape config and alert rules, systemd unit for the worker
-results/         Docker Compose stack and image for the results database and web UI
-docs/            results-database.md (results database, web UI, admin pages, audit), rule-review.md, organization-run.md,
-                 scheduled-scans.md, source-control.md (tokens), dev-databases.md, sandbox-verification.md, self-hosted-llm.md, sbom.md (SBOMs, licences, CVEs per package),
-                 external-secrets.md (secret store, per-namespace access, Vault / Azure Key Vault / AWS),
-                 lab-services.md (SQL Server, PostgreSQL, Redis, S3, Azure Blob for the sandboxed apps),
-                 local-dev-server.md (a Debian server that runs the whole CI suite locally)
+appliance/       the appliance OS image (Elemental), its services, system agent and boot tests
+monitoring/      Grafana dashboard, Prometheus scrape config and alert rules
+bench/           labels and results of the challenge
+docs/            this documentation site (containerizer.eu)
 ```

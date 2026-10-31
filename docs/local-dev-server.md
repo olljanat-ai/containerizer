@@ -231,3 +231,35 @@ touches the assessment or the appliance). Use .venv-ci/bin/python for ad hoc tes
 - The SQL Server and web passwords in `ci/local.sh` are the throwaway values from `ci.yml`; the
   database is recreated on every run and is reachable from localhost only.
 - Keep the OS patched: `dpkg-reconfigure -plow unattended-upgrades`.
+
+## The web UI without an appliance
+
+`results/compose.yaml` runs SQL Server 2025 Developer edition, creates the database, the schema and the
+three logins (`cz_scanner`, `cz_web`, `cz_admin`), and starts the web UI hardened, all on 127.0.0.1:
+
+```sh
+cp results/.env.example results/.env          # four strong passwords, and sign-in (docs/sign-in.md)
+docker compose -f results/compose.yaml up -d --build
+# http://127.0.0.1:8080/ shows the (empty) portfolio
+
+# scan an app into it, static analysis only (mount it under its real folder name)
+docker compose -f results/compose.yaml run --rm -v "$PWD/../my-app:/apps/my-app:ro" scan assess /apps/my-app
+```
+
+## Building the appliance image
+
+```sh
+docker build -f appliance/Dockerfile --build-arg VERSION=v0.0.0-dev -t containerizer-appliance:dev .
+# disk image (expandable), ISO
+docker run --rm --privileged -v /dev:/dev -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/build:/build" \
+  --entrypoint /usr/bin/elemental containerizer-appliance:dev build-disk --expandable --local \
+  --system containerizer-appliance:dev -n containerizer -o /build
+docker run --rm --privileged -v /dev:/dev -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/build:/build" \
+  --entrypoint /usr/bin/elemental containerizer-appliance:dev build-iso --local --bootloader-in-rootfs \
+  --extra-cmdline "console=tty1 console=ttyS0" -n containerizer -o /build containerizer-appliance:dev
+```
+
+A fork that publishes its own images sets `--build-arg IMAGE=ghcr.io/<owner>/containerizer-appliance
+--build-arg SIGNER_REPO=<owner>/<repo>`, so its appliances accept only its own signed releases.
+`.github/workflows/release.yml` builds, boot-tests (QEMU: firewall, DNS filter, services, sandbox cluster,
+registry, roll back) and, on a `vX.Y.Z` tag, pushes, signs and publishes.
