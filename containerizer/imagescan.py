@@ -640,14 +640,14 @@ def _build_with_retries(a, cdir: Path, tag: str, comp: dict, pin: bool, post) ->
 def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str = "auto",
              fail_on: str | None = None, registry: str = "registry.local", pin: bool = False,
              base_cache: dict | None = None, run: bool = False, refresh: bool = True, gitops=None,
-             tag: str = "latest") -> dict:
+             tag: str = "latest", devdb=None) -> dict:
     from .generate import generate_app, k8s_name
 
     age = lock_age_days()
     if refresh and scan and age is not None and age > security()["images"].get("lock_max_age_days", 14):
         # the gate runs rarely per repository: pick today's patched base images rather than a stale lock
         update_images(scan=True, scanner=scanner)
-    generate_app(a, out, registry=registry, pin=pin, gitops=gitops, tag=tag)
+    generate_app(a, out, registry=registry, pin=pin, gitops=gitops, tag=tag, devdb=devdb)
     pol = policy(fail_on)
     base_cache = base_cache if base_cache is not None else {}
     comps = []
