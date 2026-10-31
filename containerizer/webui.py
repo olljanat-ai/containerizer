@@ -13,6 +13,7 @@ import json
 import re
 import sys
 from collections import Counter
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlsplit
 
@@ -136,6 +137,10 @@ def _bu_href(bu) -> str:
     return "/?bu=" + quote(str(bu if bu is not None else "none"))
 
 
+def _trends_href(bu) -> str:
+    return "/trends" + (f"?bu={quote(str(bu))}" if bu is not None else "")
+
+
 def render_overview(data: dict, bu_filter: str | None = None, nav: str = "") -> str:
     apps = data["apps"]
     all_apps = apps
@@ -208,7 +213,8 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "") -> 
     empty = "<p>No assessments yet. Run <code>containerizer assess --sql …</code> to add some.</p>" if not all_apps else ""
     return page("Containerization readiness", f"""{_nav(nav)}
 <header><h1>Containerization readiness</h1>
-<p class='muted'>How ready our applications are to run in Linux containers{f' · last assessed {_date(last)}' if last else ''}</p></header>
+<p class='muted'>How ready our applications are to run in Linux containers{f' · last assessed {_date(last)}' if last else ''}
+{f" · <a href='{e(_trends_href(bu_filter))}'>Trends over time</a>" if all_apps else ''}</p></header>
 {empty}<nav class='chips'>{''.join(chips) if all_apps else ''}</nav>
 <div class='tiles'>{tiles if all_apps else ''}</div>
 {f"<div class='overall'>{segmented(c, total, 'Ratings of all applications shown')}{legend(c)}</div>" if total else ''}
@@ -309,7 +315,7 @@ def render_application(app: dict, nav: str = "") -> str:
 <table><thead><tr><th>Component</th><th>What it is</th><th>Verdict</th><th class='num'>Effort (days)</th><th>Build and run</th></tr></thead>
 <tbody>{comp_rows}</tbody></table>
 <h2>What needs to change, and why</h2>{''.join(details)}
-<h2>History</h2><table class='narrow'><thead><tr><th>Assessed</th><th>Rating</th><th class='num'>Readiness</th>
+<h2>History</h2><p class='muted small'><a href='/trends'>Trends of all applications</a></p><table class='narrow'><thead><tr><th>Assessed</th><th>Rating</th><th class='num'>Readiness</th>
 <th class='num'>Effort (days)</th></tr></thead><tbody>{hist}</tbody></table>
 <footer>{legend()}</footer>""")
 
@@ -401,7 +407,26 @@ background:var(--bg);color:var(--fg);width:100%}.formrow{display:flex;gap:10px;a
 .formrow select{width:auto;min-width:260px}form.danger button{background:#b42727;border-color:#b42727;color:#fff;margin-top:12px}
 ul.changes{margin:2px 0;padding-left:18px}del{color:var(--muted)}ins{text-decoration:none;font-weight:600}.nowrap{white-space:nowrap}
 .ext{white-space:nowrap;font-weight:400}
-@media (forced-colors:active){.bar,.badge,.key{forced-color-adjust:none;border:1px solid CanvasText}}
+section.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:4px 18px 14px;margin:18px 0}
+section.card details{border:0;padding:0;background:none}
+.chart{display:block;width:100%;height:auto;margin:6px 0;--grid:#e1e0d9;--axis:#c3c2b7;--o1:#2a78d6;--o2:#eb6834}
+@media (prefers-color-scheme:dark){.chart{--grid:#2c2c2a;--axis:#4a4a46;--o1:#3987e5;--o2:#d95926}}
+.chart .grid{stroke:var(--grid);stroke-width:1}.chart .axis{stroke:var(--axis);stroke-width:1}
+.chart .tick{fill:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}.chart .val{fill:var(--fg);font-size:13px;font-weight:600}
+.chart .hit{fill:transparent}.chart g:hover .hit{fill:var(--line);fill-opacity:.35}
+.chart .line{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.chart .line.o1{stroke:var(--o1)}.chart .line.o2{stroke:var(--o2)}
+.chart .dot{stroke:var(--card);stroke-width:2}.chart .dot.o1{fill:var(--o1)}.chart .dot.o2{fill:var(--o2)}
+.lkey{display:inline-block;width:14px;height:2px;border-radius:1px;margin-right:6px;vertical-align:middle}
+.legend .lkey.o1{background:#2a78d6}.legend .lkey.o2{background:#eb6834}
+@media (prefers-color-scheme:dark){.legend .lkey.o1{background:#3987e5}.legend .lkey.o2{background:#d95926}}
+.strip{display:inline-flex;gap:2px}.cell{display:inline-block;width:20px;height:20px;line-height:20px;text-align:center;
+font-size:11px;font-weight:700;border-radius:4px;color:#fff}.cell.rB,.cell.rC{color:#0b0b0b}
+.cell.none{background:var(--line);opacity:.5}
+.good{color:#006300;font-weight:600}.bad{color:#b42727;font-weight:600}
+@media (prefers-color-scheme:dark){.good{color:#4fd14f}.bad{color:#f07a7a}}
+.chips+.chips{margin-top:8px}
+@media (forced-colors:active){.bar,.badge,.key,.cell,.chart{forced-color-adjust:none;border:1px solid CanvasText}}
 """
 
 HEADERS = {
@@ -498,6 +523,17 @@ def make_handler(connect, admin=None):
                 if admin and admin.handles(u.path):
                     return self._admin("GET", head)
                 nav = admin.nav(self.headers) if admin else ""
+                if u.path == "/trends":
+                    from . import trends
+                    rng, bu, product = trends.parse_query(parse_qs(u.query))
+                    now = datetime.now(timezone.utc).replace(tzinfo=None)
+                    since = trends.since_for(rng, now)
+                    conn = connect()
+                    try:
+                        data = trends.compute(trends.load_history(conn, since), now, since)
+                    finally:
+                        conn.close()
+                    return self._send(200, trends.render_trends(data, rng, bu, product, nav), head=head, forms=bool(nav))
                 m = re.fullmatch(r"/app/(\d{1,9})", u.path)
                 if u.path == "/" or m:
                     if admin:                   # sign-in first when CONTAINERIZER_VIEWERS is set

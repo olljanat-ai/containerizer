@@ -147,6 +147,10 @@ SELECT COALESCE(BusinessUnitName, N'(not assigned)') AS BusinessUnit,
        ApplicationName, Rating, RatingTitle, Score, EffortDays, AssessedAt
 FROM containerizer.vApplicationLatest ORDER BY BusinessUnit, Product, Rating, ApplicationName;
 
+-- rating of every application per scan, with the obstacles that scan found (what /trends reads)
+SELECT ApplicationName, AssessedAt, Rating, Blockers, Rewrites
+FROM containerizer.vAssessmentHistory ORDER BY ApplicationName, AssessedAt;
+
 -- rating mix and effort per business unit
 SELECT COALESCE(BusinessUnitName, N'(not assigned)') AS BusinessUnit, Rating, COUNT(*) AS Applications,
        SUM(EffortDays) AS EffortDays
@@ -179,14 +183,33 @@ or the `web` service of `results/compose.yaml` / the image built from `results/D
 - **Application**: rating and what it means, readiness, effort, confidence, main obstacles, the
   components (what each one is and its verdict), and per component every item to change with why, how
   to fix it and links to the documentation; the rating history.
+- **Trends** (`/trends`, linked from the overview): how the portfolio changed from scan to scan. The
+  headline numbers compare now with the start of the range (applications assessed, ready now, obstacles
+  that cannot run in a Linux container, how many applications got a better or worse rating), then the
+  rating mix and the obstacles at the end of every day, week, month or quarter (picked from the range),
+  and each application's rating per period with its change. Filter by time range (last 3 months, last
+  12 months, all time), business unit and, within a business unit, product. Every chart has a table view
+  and a tooltip on every mark.
+
+Every scan is kept, so the trends need nothing extra: the state of an application at the end of a
+period is its latest scan up to then (a period without a scan repeats the previous result), and an
+application appears from its first scan. Obstacles are the distinct rules with the severity "cannot run
+in a Linux container" or "needs a port or rewrite" in that scan, added up over the applications.
+Applications are grouped by their current business unit and product, so remapping an application moves
+its whole history; retired applications are left out. The page reads `vAssessmentHistory`, which the
+reader role can select (schema version 3; run `db init` after upgrading).
 
 ![Overview: headline numbers, rating mix, then business unit, product and application](images/results-overview.png)
 
 ![An application: rating in words, main obstacles, components, what needs to change and why](images/results-application.png)
 
+![Trends: headline changes, rating mix and obstacles over time, rating history per application](images/results-trends.png)
+
 <details><summary>Dark mode</summary>
 
 ![Overview in dark mode](images/results-overview-dark.png)
+
+![Trends in dark mode](images/results-trends-dark.png)
 
 </details>
 
