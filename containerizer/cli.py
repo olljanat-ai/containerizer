@@ -682,6 +682,13 @@ def main(argv=None) -> int:
     s.add_argument("--once", action="store_true", help="run what is due or queued, then exit")
     s.set_defaults(fn=cmd_worker)
 
+    s = sub.add_parser("credentials", help="key pair that seals the source control tokens registered on the admin pages")
+    csub = s.add_subparsers(dest="ccmd", required=True)
+    c = csub.add_parser("keygen", help="make the worker's private key and the web UI's public key (docs/source-control.md)")
+    c.add_argument("--private", required=True, help="private key file for the scan worker (created with mode 600)")
+    c.add_argument("--public", required=True, help="public key file for the web UI")
+    c.set_defaults(fn=lambda a: __import__("containerizer.credentials", fromlist=["main"]).main(a))
+
     s = sub.add_parser("bench", help="score assessments against labelled expectations")
     s.add_argument("--challenge", default="../containerization-challenge")
     s.add_argument("--labels", default=str(Path(__file__).resolve().parent.parent / "bench" / "labels.yaml"))

@@ -21,61 +21,32 @@ Design principles:
   read-only application files, read-only root filesystem, all capabilities dropped, seccomp,
   secrets only as Kubernetes Secret references, base images pinned to a version line.
 
-## Appliance (VM image / ISO)
+## Getting started
 
 containerizer ships as an appliance: an immutable Elemental OS image with the web UI and API, the scan
 worker, SQL Server, a single-node k3s sandbox cluster with Flux, a local container registry,
 Prometheus and Grafana. Only SSH and HTTPS are allowed in, and outgoing traffic is blocked except for
-the FQDN rules an admin adds under **Admin → Firewall**. Signed upgrades and roll back are under
-**Admin → System**. Each release publishes an ISO, qcow2 and VHD; see [docs/appliance.md](docs/appliance.md).
-The commands below are what the appliance runs internally, and are useful for development.
+the hosts an admin allows under **Admin → Firewall**. Signed upgrades and roll back are under
+**Admin → System**.
 
-## Quick start
+1. **Download** the ISO, qcow2 or VHD from the latest
+   [release](https://github.com/olljanat-ai/containerizer/releases) and check it against the signed
+   `SHA256SUMS` ([install](docs/appliance.md#install)). The VM needs UEFI, 4 vCPU, 16 GB memory and a
+   64 GB disk ([requirements](docs/appliance.md#requirements)).
+2. **Install**: boot the ISO and answer the three console questions (disk, SSH key for `root`, host
+   name), or start the disk image and give the SSH key on the console.
+3. **First boot**: `ssh root@<appliance>`, set the host name and single sign-on in
+   `/etc/containerizer/`, restart, and open `https://<host name>/admin`
+   ([first boot](docs/appliance.md#first-boot)).
+4. **Allow** the Git servers, package feeds and registries your scans need on **Admin → Firewall**, put
+   the source control tokens into `worker.env`, and define organization scans on the admin pages
+   ([scheduled scans](docs/scheduled-scans.md)).
+5. **Read the results** in the web UI ([results database and web UI](docs/results-database.md)) and
+   approve what the learning loop proposes ([rule review](docs/rule-review.md)).
 
-```bash
-pip install -r requirements.txt            # PyYAML; `anthropic` optional for the API backend
-
-# the recommended one-shot run per repository: assess, build and run every feasible component,
-# learn from failures, re-assess with what was learned, write reports + Dockerfiles + manifests
-python -m containerizer analyze <repo> --out out/            # add --ai --model claude-sonnet-5-5 for Claude review
-
-# assess: one app, or a folder with scenarios/
-python -m containerizer assess ../containerization-challenge -v
-python -m containerizer assess ../containerization-challenge --out reports/   # md + html + json
-
-# generate Dockerfiles, Kubernetes manifests and MIGRATION.md
-python -m containerizer generate ../containerization-challenge/scenarios/parts-catalog --out out/
-python -m containerizer generate <app> --out out/ --pin-digests --registry myregistry.example.com   # immutable base images
-
-# build + run the generated containers, learn from failures
-python -m containerizer verify ../containerization-challenge/scenarios/parts-catalog --learn
-
-# ask Claude about the components the rules are unsure of
-python -m containerizer assess ../containerization-challenge/scenarios/document-control --ai --model claude-sonnet-5-5
-
-# security gate: lint the manifests, build + scan the images (Trivy and Grype), run them hardened,
-# fail on fixable CRITICAL CVEs (--no-build: scan only the base images)
-python -m containerizer gate ../containerization-challenge/scenarios/parts-catalog --out out/
-python -m containerizer images --update        # pick patched base image tags -> rules/images.lock.yaml
-
-# measure against the hand-made labels
-python -m containerizer bench
-python -m containerizer bench --technique hybrid --model claude-haiku-5-5
-
-# every repository of an Azure DevOps / GitHub / GitLab organization: A-rated components only,
-# images pushed, files + Argo CD/Flux sandbox config committed to a Git repo (docs/organization-run.md)
-python -m containerizer org --provider github --org acme --registry myacr.azurecr.io/sandbox \
-  --output-repo https://github.com/acme/sandbox-deployments.git          # GITHUB_TOKEN, OUTPUT_GIT_TOKEN
-# or schedule organization scans from the admin pages and run them with a worker (docs/scheduled-scans.md)
-python -m containerizer worker --sql "Server=...;Database=Containerizer;User Id=cz_worker"
-
-# CycloneDX SBOM of an image: licences against the policy, CVEs per package (docs/sbom.md)
-python -m containerizer sbom myregistry.example.com/app/web:1.4 --remote --scan --out web.cdx.json
-
-# results database (SQL Server) and read-only web UI for management, see docs/results-database.md
-docker compose -f results/compose.yaml up -d --build          # SQL Server + UI on http://127.0.0.1:8080/
-python -m containerizer analyze <repo> --sql "Server=...;Database=Containerizer;User Id=cz_scanner"
-```
+The rest of this page explains how the assessment works. The `python -m containerizer` commands it
+mentions are what the appliance runs internally and what the [pipeline integrations](#running-it-from-a-pipeline)
+use; to develop containerizer itself, see [docs/local-dev-server.md](docs/local-dev-server.md).
 
 ## How it works
 
@@ -557,7 +528,10 @@ database and the web UI; failures the cluster shows feed the learning loop
 ([docs/sandbox-verification.md](docs/sandbox-verification.md)).
 
 Organization scans can also be **scheduled from the admin pages** (days of the week and time, or
-"Run now") and run by `containerizer worker`, a separate process that holds the tokens and Docker.
+"Run now") and run by `containerizer worker`, a separate process with Docker. Administrators register a
+read-only token for each organization the scans may read and a write token for each output repository
+under **Admin → Source control**; organizations without one are never scanned, and the tokens are
+sealed for the worker so the web UI cannot read them back ([docs/source-control.md](docs/source-control.md)).
 New repositories are found on every run, every repository appears on the admin **Repositories** page
 with its last result, and skipped ones are shown disabled with the reason; an administrator can
 enable or disable any of them. The worker exposes Prometheus metrics about the scans, the process and
@@ -600,11 +574,12 @@ containerizer/   scan, rules engine, assess, reach, confidence, facts, generate,
 rules/           curated rules (roles, facts, findings, plan, failures, security, images + images.lock, packages)
 rules/learned/   rules written by the learning loop with CONTAINERIZER_RULE_REVIEW=off (safe to delete)
 bench/           labels and results
-action.yml       GitHub Action; ci/azure/ has the Azure DevOps template
+action.yml       GitHub Action; ci/azure/ has the Azure DevOps template, ci/local.sh runs the CI jobs locally
 containerizer/sql/  results database schema (sqlstore.py writes it, webui.py reads it, admin.py + oidc.py: admin pages)
                  worker.py: scheduled organization scans, metrics.py: Prometheus metrics
 monitoring/      Grafana dashboard, Prometheus scrape config and alert rules, systemd unit for the worker
 results/         Docker Compose stack and image for the results database and web UI
 docs/            results-database.md (results database, web UI, admin pages, audit), rule-review.md, organization-run.md,
-                 scheduled-scans.md, dev-databases.md, sandbox-verification.md, self-hosted-llm.md, sbom.md (SBOMs, licences, CVEs per package)
+                 scheduled-scans.md, source-control.md (tokens), dev-databases.md, sandbox-verification.md, self-hosted-llm.md, sbom.md (SBOMs, licences, CVEs per package),
+                 local-dev-server.md (a Debian server that runs the whole CI suite locally)
 ```

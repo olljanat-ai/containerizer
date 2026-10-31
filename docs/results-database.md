@@ -32,7 +32,11 @@ named after it, so the tables can share a database with other applications; noth
 The schema is in [`containerizer/sql/schema.sql`](../containerizer/sql/schema.sql) (SQL Server 2016 or
 later, or Azure SQL Database). The examples below use the default name.
 
-## Quick start (local, Docker)
+## Local Docker stack (development)
+
+The [appliance](appliance.md) already runs SQL Server, the web UI and the scan worker, so this is only
+for developing containerizer or trying the web UI without an appliance (see also
+[local-dev-server.md](local-dev-server.md)).
 
 ```sh
 cp results/.env.example results/.env          # set four strong passwords (and sign-in, see Admin pages)
@@ -255,6 +259,9 @@ for their own products, and operators run the scans; see [Roles](#roles).
 - **Organization scans** and **Repositories**: schedule whole-organization scans, run one now, and
   enable or disable the repositories they found (skipped ones are shown disabled with the reason).
   See [scheduled-scans.md](scheduled-scans.md).
+- **Source control** (administrators only): the read-only token of each organization the scans may read
+  and the write token of each output repository, sealed for the scan worker and never shown again. See
+  [source-control.md](source-control.md).
 - **Rule review**: approve (optionally after editing) or reject the rules the learning loop learned,
   with their evidence; see [rule-review.md](rule-review.md).
 - **Change history**: see below.

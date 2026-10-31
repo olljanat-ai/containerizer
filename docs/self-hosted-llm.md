@@ -11,6 +11,10 @@ LM Studio, llama.cpp `llama-server`, LocalAI, TGI and similar. No extra Python p
 
 ## Configure
 
+Scheduled organization scans take the LLM an administrator sets under **Admin → Source control & LLM**
+([source-control.md](source-control.md#the-llm)): server, model and key, sealed for the scan worker.
+The variables below are for command line runs, and for scans when nothing is set there.
+
 | Variable | Meaning |
 | --- | --- |
 | `CONTAINERIZER_LLM_BASE_URL` | Base URL of the server, up to and including `/v1`. Setting it selects the self-hosted backend. |

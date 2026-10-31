@@ -55,18 +55,48 @@ needs Windows, a desktop session, hardware, or a Windows-only vendor product).""
 
 BACKENDS = ("api", "cli", "openai")
 
+# Settings that override the environment for the current run: the scan worker puts the LLM an
+# administrator registered (Admin → Source control & LLM) here, so its key never enters os.environ and
+# so never reaches the processes a scan starts (git, docker builds of the scanned code).
+_OVERRIDE: dict[str, str] = {}
+
+
+def _env(name: str, default: str = "") -> str:
+    return _OVERRIDE[name] if name in _OVERRIDE else os.environ.get(name, default)
+
+
+class configured:
+    """`with configured({...}):` the given settings replace the environment's AI settings (all of
+    them: what is not given counts as unset)."""
+    KEYS = ("CONTAINERIZER_AI_BACKEND", "CONTAINERIZER_LLM_BASE_URL", "CONTAINERIZER_LLM_API_KEY", "CONTAINERIZER_MODEL",
+            "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL")
+
+    def __init__(self, values: dict | None):
+        self.values = values
+
+    def __enter__(self):
+        self.saved = dict(_OVERRIDE)
+        if self.values is not None:
+            _OVERRIDE.update({k: "" for k in self.KEYS})
+            _OVERRIDE.update({k: v for k, v in self.values.items() if v is not None})
+        return self
+
+    def __exit__(self, *exc):
+        _OVERRIDE.clear()
+        _OVERRIDE.update(self.saved)
+
 
 def _backend() -> str:
-    b = os.environ.get("CONTAINERIZER_AI_BACKEND", "").strip().lower()
+    b = _env("CONTAINERIZER_AI_BACKEND", "").strip().lower()
     if b:
         if b not in BACKENDS:
             raise RuntimeError(f"CONTAINERIZER_AI_BACKEND must be one of {', '.join(BACKENDS)}, not {b!r}")
         return b
-    if os.environ.get("CONTAINERIZER_LLM_BASE_URL"):
+    if _env("CONTAINERIZER_LLM_BASE_URL"):
         return "openai"
     try:
         import anthropic  # noqa: F401
-        if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+        if _env("ANTHROPIC_API_KEY") or _env("ANTHROPIC_AUTH_TOKEN"):
             return "api"
     except ImportError:
         pass
@@ -78,7 +108,7 @@ def model_name(model: str | None = None) -> str:
     A self-hosted server has no sensible default, so the openai backend needs one set."""
     if model:
         return model
-    env = os.environ.get("CONTAINERIZER_MODEL")
+    env = _env("CONTAINERIZER_MODEL")
     if env:
         return env
     if _backend() == "openai":
@@ -127,7 +157,8 @@ def ask_json(prompt: str, schema: dict, model: str | None = None, effort: str = 
 def _ask_api(prompt: str, schema: dict, model: str, effort: str):
     import anthropic
 
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=_env("ANTHROPIC_API_KEY") or None, base_url=_env("ANTHROPIC_BASE_URL") or None) \
+        if _OVERRIDE else anthropic.Anthropic()
     kwargs = dict(model=model, max_tokens=16000, system=SYSTEM,
                   messages=[{"role": "user", "content": prompt}],
                   output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}})
@@ -214,7 +245,7 @@ def _schema_errors(value, schema: dict, path: str = "$") -> list[str]:
 
 
 def _llm_base_url() -> str:
-    url = os.environ.get("CONTAINERIZER_LLM_BASE_URL", "").strip().rstrip("/")
+    url = _env("CONTAINERIZER_LLM_BASE_URL", "").strip().rstrip("/")
     if not url:
         raise RuntimeError("the openai backend needs CONTAINERIZER_LLM_BASE_URL, e.g. http://localhost:11434/v1 "
                            "(Ollama), http://localhost:8000/v1 (vLLM) or http://localhost:1234/v1 (LM Studio)")
@@ -250,21 +281,21 @@ JSON_MODES = ("json_schema", "json_object", "none")
 def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False):
     """A self-hosted LLM behind an OpenAI-compatible /chat/completions endpoint."""
     base = _llm_base_url()
-    key = os.environ.get("CONTAINERIZER_LLM_API_KEY", "")
+    key = _env("CONTAINERIZER_LLM_API_KEY", "")
     host = urllib.parse.urlsplit(base).hostname or ""
     if key and base.startswith("http://") and not _is_loopback(host) \
-            and os.environ.get("CONTAINERIZER_LLM_ALLOW_HTTP") != "1":
+            and _env("CONTAINERIZER_LLM_ALLOW_HTTP") != "1":
         raise RuntimeError("refusing to send CONTAINERIZER_LLM_API_KEY over plain http to a remote host; use https, "
                            "or set CONTAINERIZER_LLM_ALLOW_HTTP=1 if the network path is trusted")
     headers = {"Authorization": f"Bearer {key}"} if key else {}
-    timeout = float(os.environ.get("CONTAINERIZER_LLM_TIMEOUT", "900"))
-    mode = os.environ.get("CONTAINERIZER_LLM_JSON_MODE", "json_schema")
+    timeout = float(_env("CONTAINERIZER_LLM_TIMEOUT", "900"))
+    mode = _env("CONTAINERIZER_LLM_JSON_MODE", "json_schema")
     if mode not in JSON_MODES:
         raise RuntimeError(f"CONTAINERIZER_LLM_JSON_MODE must be one of {', '.join(JSON_MODES)}, not {mode!r}")
     user = (f"{prompt}\n\nRespond with ONLY a JSON object (no prose, no code fences) that validates "
             f"against this JSON schema:\n{json.dumps(schema)}")
     body = {"model": model, "temperature": 0, "stream": False,
-            "max_tokens": int(os.environ.get("CONTAINERIZER_LLM_MAX_TOKENS", "16000")),
+            "max_tokens": int(_env("CONTAINERIZER_LLM_MAX_TOKENS", "16000")),
             "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]}
     resp = None
     for m in JSON_MODES[JSON_MODES.index(mode):]:

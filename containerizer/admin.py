@@ -28,7 +28,8 @@ URL_RE = re.compile(r"https://[A-Za-z0-9.-]+(:\d{1,5})?(/[^\s<>\"'`]*)?")
 LINK_RE = re.compile(r"(https://[A-Za-z0-9.-]+|http://(localhost|127\.0\.0\.1|\[::1\]))(:\d{1,5})?(/[^\s<>\"'`]*)?")
 TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Application": "Application",
               "OrgScan": "Organization scan", "OrgRepository": "Repository",
-              "DevDatabase": "Dev database", "RuleCandidate": "Learned rule"}
+              "DevDatabase": "Dev database", "RuleCandidate": "Learned rule",
+              "SourceCredential": "Source control token"}
 FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
               "Retired": "Hidden", "Product": "Product", "BusinessUnit": "Business unit", "InfoUrl": "Product page link",
               # organization scans
@@ -47,7 +48,10 @@ FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Des
               "Sha256": "SHA-256", "PromptSha256": "Instructions (SHA-256)",
               # rule review
               "Kind": "Kind", "Title": "Rule", "Status": "Status", "ReviewNote": "Note", "AppliedAs": "Applied as",
-              "PullRequestUrl": "Pull request", "Edited": "Edited by the reviewer"}
+              "PullRequestUrl": "Pull request", "Edited": "Edited by the reviewer",
+              # source control tokens (the token itself is never recorded)
+              "Purpose": "Access", "Host": "Host", "Scope": "Organization or repository", "ExpiresOn": "Expires on",
+              "TokenSetAt": "Token saved", "Model": "Model"}
 # Who may use the rule review pages: Session attributes, any of which lets a signed-in user in.
 RULE_REVIEW_ROLES = ("admin", "operator")
 UPLOAD_RE = re.compile(r"/admin/dev-databases/(\d{1,9})/upload")
@@ -73,6 +77,7 @@ class Admin:
         self.sessions = Sessions()
         self.api = None                             # api.Api when the JSON API is configured
         self.devdb = None                           # devdb.Settings when dev database uploads are on
+        self.credential_key = None                  # the scan worker's public key: seals source control tokens
         self.grafana_url = ""                       # CONTAINERIZER_GRAFANA_URL: link on the admin pages
         self.system = None                          # appliance.SystemPage on the appliance (System, Firewall)
         from .rulereview import ApplyConfig
@@ -199,7 +204,7 @@ class Admin:
         kind = parts[0]
         if kind not in {k for k, _ in tabs}:
             known = kind in ("applications", "products", "business-units", "audit", "access", "scans", "repositories",
-                             "dev-databases", "system", "firewall")
+                             "dev-databases", "system", "firewall", "source-control")
             return Response(403 if known else 404, self._shell(s, a, "Not allowed" if known else "Not found", "",
                             "<p>Your role does not include this page.</p>" if known else ""))
         if kind in ("scans", "repositories"):
@@ -211,6 +216,9 @@ class Admin:
             status, body, location = self.system.handle(
                 s, method, parts, q, form, lambda title, active, b, f: self._shell(s, a, title, active, b, f))
             return redirect(location) if location else Response(status, body)
+        if kind == "source-control":                 # administrators only (see _tabs)
+            from . import admin_credentials
+            return admin_credentials.route(self, conn, s, a, method, parts, q, form)
         if kind == "dev-databases":
             from . import admin_devdb
             return admin_devdb.route(self, conn, s, a, method, parts, q, form)
@@ -253,6 +261,8 @@ class Admin:
             tabs += [("business-units", "Business units")]
         if (a.admin or a.operator) and hasattr(self, "route_scans"):     # scheduled organization scans
             tabs += [("scans", "Organization scans"), ("repositories", "Repositories")]
+        if a.admin and hasattr(self, "route_scans"):                     # tokens of the organizations (admin_credentials.py)
+            tabs += [("source-control", "Source control & LLM")]
         if self.devdb is not None and (a.admin or a.operator):           # dev database backups (admin_devdb.py)
             tabs += [("dev-databases", "Dev databases")]
         if self.may_review_rules(s):                                     # learned rules waiting for review
@@ -714,10 +724,11 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
         chips = " ".join(f"<a class='chip{' on' if (k or None) == table else ''}' href='/admin/audit{('?table=' + k) if k else ''}'>{t}</a>"
                          for k, t in (("", "All"), ("Application", "Applications"), ("Product", "Products"),
                                       ("BusinessUnit", "Business units"), ("OrgScan", "Organization scans"),
-                                      ("OrgRepository", "Repositories"), ("DevDatabase", "Dev databases"),
-                                      ("RuleCandidate", "Rule review")))
+                                      ("OrgRepository", "Repositories"), ("SourceCredential", "Source control"),
+                                      ("DevDatabase", "Dev databases"), ("RuleCandidate", "Rule review")))
         body = (f"<p class='muted'>Every change to business units, products, the application mapping, organization scans, "
-                f"repositories (found by a scan, enabled or disabled, skipped), dev database uploads and the rule review "
+                f"repositories (found by a scan, enabled or disabled, skipped), source control tokens (added, replaced or removed; "
+                f"never the token itself), dev database uploads and the rule review "
                 f"(learned rules proposed, approved or rejected): who made it, when, "
                 f"and what changed. Changes made directly in the database are recorded too, under the database login. "
                 f"Latest 200.</p><nav class='chips'>{chips}</nav>{render_audit(self._audit_rows(conn, table))}")
@@ -871,6 +882,11 @@ def build(env=None) -> Admin | None:
         adm.rule_apply_error = str(ex)
         print(f"warning: rule review: {ex}", file=sys.stderr)
     adm.grafana_url = grafana
+    from .credentials import CredentialError, public_key_from_env
+    try:
+        adm.credential_key = public_key_from_env(env)
+    except CredentialError as ex:
+        raise OidcError(str(ex)) from None
     adm.api = api.build(env, adm.provider, adm.connect_admin, cfg)
     from .appliance import SystemPage
     adm.system = SystemPage.detect(env)

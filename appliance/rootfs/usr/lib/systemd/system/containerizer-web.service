@@ -16,6 +16,7 @@ Environment="CONTAINERIZER_ADMIN_SQL=Server=127.0.0.1,1433;Database=Containerize
 Environment=CONTAINERIZER_SYSTEM_DIR=/run/containerizer/system
 LoadCredential=sql-web:/etc/containerizer/secrets/cz-web
 LoadCredential=sql-admin:/etc/containerizer/secrets/cz-admin
+LoadCredential=credential-public-key:/etc/containerizer/secrets/credential-key.pub
 ExecStart=/usr/lib/containerizer/bin/cz-web
 Restart=always
 RestartSec=5

@@ -23,7 +23,9 @@ python -m containerizer org --provider github --org acme \
 | `gitlab` | group path, e.g. `acme` or `acme/platform` (subgroups included) | `GITLAB_TOKEN`: `read_api` + `read_repository` | `https://gitlab.example.com` |
 
 `--token-env NAME` reads the token from another variable. Tokens are never accepted on the command
-line.
+line, and there is no anonymous access: without a token the run stops before listing anything.
+Scheduled scans do not use these variables: administrators register the tokens on the admin pages
+([source-control.md](source-control.md)), which also has step-by-step guidance for least-privilege tokens.
 
 ## What happens to each repository
 
@@ -142,9 +144,14 @@ repository. See [sandbox-verification.md](sandbox-verification.md).
 
 ## Security
 
-- Tokens come from environment variables only. Git receives them as an `http.<host>.extraHeader` in
-  environment variables (`GIT_CONFIG_COUNT`), scoped to the provider's host: not in `.git/config`, not
-  in the process list, not in clone URLs, and not sent to other hosts. Every error message is redacted.
+- Tokens come from environment variables here (from the registered credentials for scheduled scans).
+  Git receives them as an `http.<url>.extraHeader` in environment variables (`GIT_CONFIG_COUNT`),
+  scoped to the one repository URL being cloned or pushed: not in `.git/config`, not in the process
+  list, not in clone URLs, not sent for other repositories on the same host or to other hosts, and no
+  credential helper sees them. Only clone URLs inside the organization get the organization's token;
+  API redirects and pagination links to another host do not get it. Every error message is redacted.
+- The output repository is never scanned, even when it is in the scanned organization, and its write
+  token is only used to push to it. Giving the same token for both is refused.
 - Use separate tokens: read-only for the organization, write for the output repository only, push-only
   for the registry. In a pipeline, take them from the secret store (GitHub Actions secrets, Azure
   DevOps secret variables or a variable group linked to Key Vault, GitLab masked + protected variables).

@@ -158,12 +158,23 @@ def test_http_errors_are_redacted(api):
 
 # --------------------------------------------------------------------------- git and secrets
 
-def test_git_header_is_scoped_to_host_and_only_in_env():
-    env = git_env("https://dev.azure.com/contoso/p/_git/r", "Authorization: Basic abc")
-    n = int(env["GIT_CONFIG_COUNT"]) - 1
-    assert env[f"GIT_CONFIG_KEY_{n}"] == "http.https://dev.azure.com/.extraHeader"
-    assert env[f"GIT_CONFIG_VALUE_{n}"] == "Authorization: Basic abc"
+def test_git_header_is_scoped_to_the_repository_and_only_in_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")                    # nothing inherited survives
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "http.extraHeader")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "X-Leak: 1")
+    env = git_env("https://u@dev.azure.com/contoso/p/_git/r/", "Authorization: Basic abc")
+    keys = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"] for i in range(int(env["GIT_CONFIG_COUNT"]))}
+    assert keys == {"credential.helper": "", "http.https://dev.azure.com/contoso/p/_git/r.extraHeader": "Authorization: Basic abc"}
     assert env["GIT_TERMINAL_PROMPT"] == "0"
+    # git itself: the header covers this repository only, not a sibling on the same host or a longer name
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+
+    def match(url):
+        return subprocess.run(["git", "config", "--get-urlmatch", "http.extraHeader", url], cwd=tmp_path, env=env,
+                              capture_output=True, text=True).stdout.strip()
+    assert match("https://dev.azure.com/contoso/p/_git/r/info/refs") == "Authorization: Basic abc"
+    assert match("https://dev.azure.com/contoso/p/_git/r2/info/refs") == ""
+    assert match("https://dev.azure.com/contoso/p/_git/sandbox/info/refs") == ""
     ssh = git_env("git@ssh.example:x.git", "Authorization: x")
     assert "Authorization: x" not in ssh.values()
 
@@ -292,8 +303,8 @@ def test_run_org_writes_layout_sandbox_and_commits(tmp_path, monkeypatch):
             (d / "src" / "Dockerfile").write_text("FROM scratch\n")
         _commit(d, date)
         sources[name] = d
-    repos = [SourceRepo("azure-devops", "Contoso", "Shop Floor", n, f"https://dev.azure.com/c/p/_git/{n}",
-                        default_branch="main", web_url=f"https://dev.azure.com/c/p/_git/{n}") for n in sources]
+    repos = [SourceRepo("azure-devops", "Contoso", "Shop Floor", n, f"https://dev.azure.com/Contoso/Shop%20Floor/_git/{n}",
+                        default_branch="main", web_url=f"https://dev.azure.com/Contoso/Shop%20Floor/_git/{n}") for n in sources]
     monkeypatch.setattr(orgmod, "provider", lambda *a, **k: _FakeProvider(repos))
     monkeypatch.setattr(orgmod, "clone", lambda url, dest, branch="", header="", depth=1:
                         shutil.copytree(sources[url.rsplit("/", 1)[1]], dest))
@@ -303,7 +314,7 @@ def test_run_org_writes_layout_sandbox_and_commits(tmp_path, monkeypatch):
     # a component from an earlier run of the now-dockerized repo must disappear
     (out / "Contoso" / "Shop Floor" / "dockerized" / "old").mkdir(parents=True)
     (out / "Contoso" / "Shop Floor" / "dockerized" / "old" / "k8s.yaml").write_text("x: 1\n")
-    o = OrgOptions(provider="azure-devops", org="Contoso", registry="reg.example/sandbox", output_dir=str(out),
+    o = OrgOptions(provider="azure-devops", org="Contoso", registry="reg.example/sandbox", output_dir=str(out), token="pat",
                    verify=False, gate=False, push_images=False, image_pull_secret="regcred", tag="1.2.3",
                    work_dir=str(tmp_path / "work"), now=datetime(2026, 10, 31, tzinfo=timezone.utc))
     res = {r.repo: r for r in run_org(o, log=lambda *a, **k: None)}
@@ -496,7 +507,7 @@ def test_run_org_with_cache_state_and_overrides(tmp_path, monkeypatch):
     cache = tmp_path / "cache"
     state = _State({"_/dockerized": "enabled", "_/off": "disabled", "_/readme": "enabled"})
     hooks = _Hooks()
-    o = OrgOptions(provider="github", org="acme", registry="reg.example/sb", output_dir=str(tmp_path / "out"),
+    o = OrgOptions(provider="github", org="acme", registry="reg.example/sb", output_dir=str(tmp_path / "out"), token="t",
                    verify=False, gate=False, push_images=False, tag="1.0.0", work_dir=str(tmp_path / "work"),
                    cache_dir=str(cache), exclude="skipme", state=state, hooks=hooks,
                    allowed_hosts={"github.com"}, now=datetime(2026, 10, 31, tzinfo=timezone.utc))
@@ -531,6 +542,6 @@ def test_disallowed_clone_host_is_an_error(tmp_path, monkeypatch):
     monkeypatch.setattr(orgmod, "provider", lambda *a, **k: _FakeProvider(repos))
     monkeypatch.setattr(orgmod, "update_clone", lambda *a, **k: pytest.fail("must not clone"))
     o = OrgOptions(provider="github", org="acme", registry="r", output_dir=str(tmp_path / "out"), push_images=False,
-                   work_dir=str(tmp_path / "w"), cache_dir=str(tmp_path / "c"), allowed_hosts={"github.com"})
+                   token="t", work_dir=str(tmp_path / "w"), cache_dir=str(tmp_path / "c"), allowed_hosts={"github.com"})
     [r] = run_org(o, log=lambda *a, **k: None)
-    assert r.status == "error" and "allowed hosts" in r.reason
+    assert r.status == "error" and "outside the organization acme" in r.reason
