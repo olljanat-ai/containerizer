@@ -363,3 +363,20 @@ def test_appliance_secrets_are_generated_once(sandbox_repo, tmp_path):
     assert s2["secrets"] == s["secrets"] and len(s2["applies"]) == len(s["applies"])
     users = idp.appliance_users(cmd)
     assert [u[0] for u in users] == ["alice", "bob", "carol"] and users[0][2] == store["user-alice"]
+
+
+def test_application_page_shows_the_registrations():
+    from containerizer import webui
+    rows = [{"ComponentId": 1, "ComponentName": "Web", "Protocol": "oidc", "IdpUrl": IDP,
+             "AppUrl": "https://web-shop.sandbox.test", "Identifier": "shop--web",
+             "MetadataUrl": f"{IDP}/oauth2/token/.well-known/openid-configuration",
+             "Settings": json.dumps({"env": {"OpenIdConnect__ClientId": "shop--web"}, "secret": "OpenIdConnect__ClientSecret"}),
+             "Notes": None},
+            {"ComponentId": 2, "ComponentName": "Api<script>", "Protocol": "none", "IdpUrl": IDP,
+             "Notes": "sign-in settings only in code"}]
+    html = webui._idp_section(rows)
+    assert f"href='{IDP}/'" in html and "shop--web" in html and "OpenIdConnect__ClientSecret" in html
+    assert "client secret, from the secret store" in html and "containerizer idp users" in html
+    assert "<script>" not in html and "sign-in settings only in code" in html
+    assert webui._idp_section([]) == ""
+    assert "javascript:" not in webui._link("javascript:alert(1)") or "href" not in webui._link("javascript:alert(1)")

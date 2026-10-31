@@ -94,3 +94,12 @@ k get gitrepositories.source.toolkit.fluxcd.io -A -l app.kubernetes.io/managed-b
       legacy_secret "$ns" "$name"
     fi
   done
+
+# The sandbox identity provider (docs/sandbox-idp.md): once Flux has deployed sandbox/idp, its admin and
+# keystore passwords, the test users' passwords and the OIDC client secrets go into the store (made
+# once, kept afterwards; each component gets its client secret under its own remote key). Values go to
+# kubectl through stdin only. `containerizer idp users` on the console shows the test users' passwords.
+if k get namespace containerizer-idp >/dev/null 2>&1; then
+  CZ_KUBECTL="/usr/bin/k3s kubectl" /usr/lib/containerizer/venv/bin/python -I -m containerizer idp secrets \
+    || echo "sandbox identity provider: could not make its secrets" >&2
+fi

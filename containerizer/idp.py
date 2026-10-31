@@ -947,6 +947,13 @@ def appliance_secrets(cmd: list[str], log=print) -> dict:
     created = sorted(k for k in props if not have.get(k))
     if created or any(k not in have for k in values):
         _apply_remote(cmd, remote_key(), values)
+        # the IdP's ExternalSecret reads now, not after ESO's back-off from its first, failed read
+        import time
+        try:
+            _kubectl(cmd, ["-n", NAMESPACE, "annotate", "--overwrite", "externalsecrets.external-secrets.io", SECRET,
+                           f"force-sync={int(time.time())}"])
+        except ApplianceError:
+            pass
     for remote, envs in sorted(app_keys.items()):
         cur = _remote_secret(cmd, remote)
         want = {env: values[prop] for env, prop in envs.items()}
