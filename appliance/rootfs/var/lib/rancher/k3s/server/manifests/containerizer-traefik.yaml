@@ -11,8 +11,9 @@ metadata:
 spec:
   valuesContent: |-
     service:
-      type: ClusterIP
+      # the chart k3s ships takes the type under spec (a top-level service.type is ignored)
       spec:
+        type: ClusterIP
         clusterIP: 10.43.0.80
     providers:
       kubernetesIngress:
