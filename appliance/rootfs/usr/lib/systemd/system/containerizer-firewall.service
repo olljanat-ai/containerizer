@@ -1,0 +1,17 @@
+[Unit]
+Description=containerizer appliance: firewall (inbound SSH and HTTPS only, egress allow-list)
+DefaultDependencies=no
+After=local-fs.target containerizer-firstboot.service
+Before=network-pre.target docker.service k3s.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# the agent renders the ruleset from the allow-lists; if that fails, a fixed ruleset that keeps SSH open
+# and lets nothing out, so the appliance never runs without a firewall
+ExecStart=/usr/lib/containerizer/bin/cz-firewall
+ExecReload=/usr/lib/containerizer/bin/cz-firewall
+
+[Install]
+WantedBy=sysinit.target

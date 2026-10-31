@@ -1,0 +1,249 @@
+# The containerizer appliance
+
+containerizer ships as one virtual machine: an immutable OS image built with the
+[Elemental toolkit](https://github.com/rancher/elemental-toolkit) (as in
+[Firewall4AI](https://github.com/olljanat-ai/Firewall4AI)), installed from an ISO or started from a disk
+image, and upgraded from the admin pages. It runs:
+
+| Part | How | Reached at |
+| --- | --- | --- |
+| Web UI and API (results, admin pages, System and Firewall pages) | systemd service, user `cz-web`, no privileges | `https://<appliance>/` |
+| Scan worker (`containerizer worker`, [scheduled scans](scheduled-scans.md)) | systemd service, user `containerizer` + Docker | - |
+| SQL Server 2022 (results database) | container, non-root, data on the persistent partition | `127.0.0.1:1433` only |
+| Sandbox cluster: k3s (single node) with Flux | systemd service | `kubectl` on the appliance |
+| Local container registry | container | `127.0.0.1:5000` only (Docker and k3s) |
+| Prometheus and Grafana, with the scan worker's metrics, alerts and dashboard | containers | `https://<appliance>/grafana/` |
+| HTTPS (Caddy), SSH | systemd services | ports 443 and 22: the only open ports |
+| Firewall and DNS filter: every outgoing connection is blocked unless an allow-list rule covers it | nftables + dnsmasq | Admin → Firewall |
+
+```
+                 443 (HTTPS)                                  22 (SSH, key only)
+                     │                                              │
+ ┌───────────────────┼──────────────────────────────────────────────┼─────────────────────────────────┐
+ │ Caddy ──► web UI + API ──(status, requests)──► system agent (root): upgrade, roll back, firewall    │
+ │   │        │                                                                                       │
+ │   │        └──► SQL Server ◄── scan worker ──► Docker (builds, scans) ──push──► registry :5000      │
+ │   └──► Grafana ──► Prometheus ──scrape──┘                                           │ pull         │
+ │                                                         k3s + Flux ◄── output repo ─┘              │
+ │ nftables: in 22/443 only · out: only to addresses of allowed names (dnsmasq fills the sets)        │
+ └────────────────────────────────────────────────────────────────────────────────────────────────────┘
+   OS: read-only btrfs snapshot (A/B with fallback)      data: COS_PERSISTENT partition (rest of the disk)
+```
+
+The OS is a read-only snapshot of the container image `ghcr.io/olljanat-ai/containerizer-appliance`.
+Everything that has to survive a restart or an upgrade is on the persistent partition: the database,
+`/etc/containerizer` (configuration and generated secrets), Docker and k3s data, the registry, clones,
+learned rules, logs. An upgrade writes the new version as a new snapshot next to the running one; if it
+does not start properly, the appliance goes back to the previous snapshot by itself.
+
+## Requirements
+
+- x86-64 VM (or server) with **UEFI** firmware (Secure Boot works: the shim and GRUB are Debian's signed
+  ones). Hyper-V: generation 2. VMware: EFI firmware.
+- 4 vCPU and 16 GB memory or more (SQL Server takes 4 GB, `CZ_MSSQL_MEMORY`), more for parallel builds.
+- One disk of **64 GB or more**: 16 GB for the OS snapshots, the rest is the persistent partition.
+- Outbound HTTPS to the hosts on the Firewall page (the image registries the appliance uses are allowed
+  by default) and DNS servers from DHCP or `CZ_DNS_SERVERS`.
+
+## Install
+
+Every [release](https://github.com/olljanat-ai/containerizer/releases) has:
+
+| File | For |
+| --- | --- |
+| `containerizer-vX.Y.Z.iso` | Installer: boot it, answer three questions on the console. |
+| `containerizer-vX.Y.Z.qcow2` | KVM, Proxmox, OpenStack: resize the disk to 64 GB or more first (`qemu-img resize`). |
+| `containerizer-vX.Y.Z.vhd.zst` | Hyper-V (generation 2): `zstd -d`, then expand the disk to 64 GB or more. |
+| `SHA256SUMS`, `SHA256SUMS.sigstore.json` | Check the downloads (command in the release notes). |
+
+Check what you downloaded:
+
+```sh
+cosign verify-blob --bundle SHA256SUMS.sigstore.json \
+  --certificate-identity-regexp '^https://github\.com/olljanat-ai/containerizer/\.github/workflows/release\.yml@refs/tags/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
+**From the ISO**: the console (screen or serial) shows the installer: the disk to install to (it is
+erased), the SSH public key for `root`, and a host name. It installs and restarts; remove the ISO.
+
+**From a disk image**: the first start installs the system to the whole disk (it takes a few minutes and
+restarts once). Then the console asks for the SSH public key for `root` and, optionally, a host name.
+
+Unattended installs: pass an Elemental cloud-config with the key, e.g.
+`elemental install --cloud-init my.yaml /dev/sda` from the ISO, or put the file into the OEM partition:
+
+```yaml
+stages:
+  fs:
+    - name: "SSH key of the administrator"
+      authorized_keys:
+        root:
+          - "ssh-ed25519 AAAA... you@example.com"
+```
+
+## First boot
+
+Sign in with `ssh root@<appliance>`. The first boot created `/etc/containerizer/` (mode 700) with:
+
+| File | What to set |
+| --- | --- |
+| `appliance.env` | `CZ_HOSTNAME` (the name in the HTTPS certificate and the sign-in redirect), `CZ_ACME_EMAIL` (Let's Encrypt instead of the appliance's own CA), `CZ_DNS_SERVERS`, `CZ_MSSQL_EDITION`, `CZ_MSSQL_MEMORY` |
+| `web.env` | Sign-in for the web UI: `CONTAINERIZER_OIDC_*`, `CONTAINERIZER_ADMINS`, roles, viewers ([results-database.md](results-database.md#admin-pages)) |
+| `worker.env` | Tokens for the scan worker ([scheduled-scans.md](scheduled-scans.md)) |
+| `sandbox.env` | The output repository the sandbox cluster deploys from |
+| `grafana.env` | Optional Grafana settings, e.g. sign-in with your identity provider |
+| `egress.json` | The egress allow-list: change it on the Firewall page, not here |
+| `secrets/` | Generated passwords (SQL Server logins, Grafana `admin`): root-only, never shown in the web UI |
+| `network/` | Optional `systemd-networkd` `.network` files for static addresses (default: DHCP on every NIC) |
+
+Steps:
+
+1. Set `CZ_HOSTNAME` in `appliance.env` to the DNS name users will open, and register
+   `https://<CZ_HOSTNAME>/auth/callback` as the redirect URI of an app registration at your identity
+   provider (Entra ID, Okta, Keycloak, ...).
+2. Fill in `web.env` (issuer, client id and secret, `CONTAINERIZER_ADMINS`). Allow the identity
+   provider's host on the Firewall page once you are in (or add it to `egress.json` now: e.g.
+   `login.microsoftonline.com`), since the web UI fetches its keys.
+3. `systemctl reboot` (or `systemctl restart containerizer-web caddy`).
+4. Open `https://<CZ_HOSTNAME>/admin`. With the default certificate from the appliance's own CA, browsers
+   warn until you trust its root: `/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt`.
+   With `CZ_ACME_EMAIL`, allow `acme-v02.api.letsencrypt.org` on the Firewall page first; the name must
+   resolve to the appliance from the internet (TLS-ALPN challenge on 443).
+5. **Admin → Firewall**: allow the hosts your scans need (Git servers, package feeds, registries).
+6. Tokens into `worker.env`, then define organization scans on the admin pages.
+
+Grafana is at `https://<CZ_HOSTNAME>/grafana/`, user `admin`, password in
+`/etc/containerizer/secrets/grafana-admin` (change it in Grafana, or set up sign-in in `grafana.env`).
+
+## Firewall
+
+**Inbound**: only TCP 22 (SSH, keys only) and 443 (HTTPS). The k3s API, SQL Server, the registry,
+Prometheus and Grafana listen on the loopback interface or are not reachable from outside; NodePorts of
+the sandbox cluster are blocked too (use `ssh -L` to reach anything else).
+
+**Outbound**: blocked, except to the names and networks on the allow-list. This holds for the appliance
+itself, the scan worker, every container Docker builds or runs, and every pod in the sandbox cluster.
+
+How it works: the host, Docker and k3s resolve names only through the appliance's DNS filter (dnsmasq on
+169.254.53.53). It answers only names an allow-list rule covers (anything else gets REFUSED), and puts the
+addresses of the answer into nftables sets of that rule's ports. The firewall lets connections out only
+to addresses in those sets (and to the networks of network rules), on the rule's ports. A connection to an
+address nobody resolved through the filter, an address of a name that is not allowed, or another port is
+dropped and logged.
+
+**Admin → Firewall** (administrators only):
+
+- **Allow** a name (it covers its subdomains: `nuget.org` also allows `api.nuget.org`) or a network
+  (`10.20.0.0/16`), with ports (`443`, `80,443`, `udp/123`) and a note.
+- **Refused names, last 24 hours**: what something on the appliance tried to resolve and was refused,
+  with an **Allow** button. Run a scan, then allow what it needs.
+- **Blocked connections**: addresses and ports the firewall dropped.
+- **Log only mode** lets everything out but still lists what would have been refused, to build the list.
+  Turn blocking back on when you are done.
+- **Always allowed**: what the appliance needs itself (GHCR and Sigstore for upgrades and their signatures,
+  Docker Hub and the Microsoft registry for its own service images). Part of the OS image.
+- **Change history**: who changed what, kept on the persistent partition.
+
+The web UI does not change the firewall itself: it asks the system agent (root), which checks the rules
+again, loads the new ruleset in one transaction (checked with `nft -c` first, and the previous ruleset is
+kept if the new one does not load) and restarts the DNS filter. On the console:
+`/usr/lib/containerizer/venv/bin/python -m containerizer.sysagent firewall show`.
+
+## Local registry and the sandbox cluster
+
+The registry at `localhost:5000` is for images of the sandbox: in an organization scan, set the registry
+to `localhost:5000/<path>` and turn pushing on; the scan worker pushes there without credentials, and k3s
+pulls from it (`/etc/rancher/k3s/registries.yaml`) without pull secrets. It is not reachable from outside
+the appliance. Deleted tags free their space after a garbage collection:
+`docker exec cz-registry registry garbage-collect --delete-untagged /etc/distribution/config.yml`
+(stop the worker first).
+
+To deploy what the scans generate, set `sandbox.env` (output repository URL, branch, read-only token).
+Every 2 minutes `cz-sandbox` creates Flux's read-only Git secret and the root `GitRepository` +
+`Kustomization` of the output repository's `sandbox/flux/`, and gives every app namespace the Git
+secret its `GitRepository` names, so each app reconciles as its own ServiceAccount
+([organization-run.md](organization-run.md#deploying-to-the-sandbox-cluster)). Allow the Git server on
+the Firewall page. `kubectl` (as root on the appliance) shows the result. Argo CD is not installed; Flux
+is the supported path on the appliance.
+
+## Upgrade and roll back
+
+**Admin → System** (administrators only) shows the running version, the snapshots on the disk and the
+last upgrade or roll back with its outcome, and checks GHCR for newer releases.
+
+- **Upgrade**: pick a newer release and confirm. The system agent checks with cosign that the image was
+  signed by this repository's release workflow (keyless signature, GitHub's OIDC identity of
+  `.github/workflows/release.yml` on a `vX.Y.Z` tag), then installs exactly the verified digest as a new
+  snapshot and restarts. Only release tags of the appliance's own image repository are accepted, whatever
+  the web UI sends.
+- **Automatic fallback**: after an upgrade the boot assessment checks that the firewall is loaded and
+  the DNS filter, Docker and k3s run and the application starts. If that fails 5 times, the appliance
+  restarts into the previous snapshot, and the System page shows the upgrade as failed.
+- **Roll back**: pick an earlier snapshot. It is installed as a new active snapshot (no download) and the
+  appliance restarts. Data on the persistent partition is not rolled back: the database keeps its schema
+  (newer versions only add to it, and older code reads it).
+- The GRUB menu at start-up also lists the snapshots, and a recovery system.
+
+On the console: `python -m containerizer.sysagent upgrade vX.Y.Z` or `... rollback <snapshot>` (with
+`/usr/lib/containerizer/venv/bin/python`). The appliance checks GHCR anonymously, so the
+`containerizer-appliance` package must be public.
+
+## Backup
+
+Back up the database (from the appliance):
+
+```sh
+docker exec cz-mssql /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$(cat /etc/containerizer/secrets/mssql-sa)" \
+  -Q "BACKUP DATABASE Containerizer TO DISK = N'/var/opt/mssql/backup/containerizer.bak' WITH COMPRESSION, INIT"
+# the file is /var/lib/containerizer/mssql/backup/containerizer.bak
+```
+
+and `/etc/containerizer` (configuration and secrets). Everything else is rebuilt by the next scans.
+
+## Security notes
+
+- OS: read-only, signed upgrades only, no package manager in use, kernel and network hardening sysctls,
+  SSH with keys only, no service but SSH and HTTPS reachable, outbound allow-list for everything.
+- Web UI: no privileges (systemd sandbox: read-only system, no capabilities, system call filter); its
+  database passwords come as systemd credentials. It cannot change the OS: upgrades, roll backs and the
+  firewall go through the system agent, which checks every request again.
+- SQL Server: non-root, every capability dropped except binding its port, loopback only.
+  Edition: Express by default (free, 10 GB per database); Developer is not licensed for production.
+- The scan worker is in the `docker` group, which is equivalent to root: it builds and runs the scanned
+  repositories' images. That is why the appliance is a dedicated machine, and why the egress allow-list
+  applies to every build. Give it no credentials beyond the scans' tokens.
+- k3s: secrets encrypted at rest, audit log (`/var/lib/rancher/k3s/server/logs/audit.log`), kernel
+  defaults protected, API reachable only from the appliance and its pods. Each app's namespace runs
+  under Pod Security "restricted".
+- Containers of the appliance's own services are pinned by digest in the OS image
+  (`/usr/lib/containerizer/images.env`); each release has an SPDX SBOM attested to the image with cosign.
+
+## Building it yourself
+
+```sh
+docker build -f appliance/Dockerfile --build-arg VERSION=v0.0.0-dev -t containerizer-appliance:dev .
+# disk image (expandable), ISO
+docker run --rm --privileged -v /dev:/dev -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/build:/build" \
+  --entrypoint /usr/bin/elemental containerizer-appliance:dev build-disk --expandable --local \
+  --system containerizer-appliance:dev -n containerizer -o /build
+docker run --rm --privileged -v /dev:/dev -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/build:/build" \
+  --entrypoint /usr/bin/elemental containerizer-appliance:dev build-iso --local --bootloader-in-rootfs \
+  --extra-cmdline "console=tty1 console=ttyS0" -n containerizer -o /build containerizer-appliance:dev
+```
+
+A fork that publishes its own images sets `--build-arg IMAGE=ghcr.io/<owner>/containerizer-appliance
+--build-arg SIGNER_REPO=<owner>/<repo>`, so its appliances accept only its own signed releases.
+`.github/workflows/release.yml` builds, boot-tests (QEMU: firewall, DNS filter, services, sandbox cluster,
+registry, roll back) and, on a `vX.Y.Z` tag, pushes, signs and publishes.
+
+## Troubleshooting
+
+| | |
+| --- | --- |
+| Something does not start | `systemctl --failed`, `journalctl -b -u <unit>`; units are `containerizer-*`, `k3s`, `caddy`, `docker` |
+| A scan cannot reach a host | Admin → Firewall → Refused names; or `journalctl -u containerizer-dns \| grep REFUSED` |
+| The firewall did not load | the SSH-only fallback ruleset is active; `systemctl status containerizer-firewall` shows why |
+| Status of the system agent | `/run/containerizer/system/status.json`, `journalctl -u containerizer-sysagent` |
+| Locked out of SSH | the console of the VM: GRUB menu → recovery, or a previous snapshot |

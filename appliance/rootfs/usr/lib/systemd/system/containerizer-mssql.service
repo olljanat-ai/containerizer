@@ -1,0 +1,30 @@
+[Unit]
+Description=containerizer appliance: SQL Server (results database)
+After=docker.service containerizer-firstboot.service containerizer-dns.service
+Requires=docker.service
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+
+[Service]
+EnvironmentFile=/usr/lib/containerizer/images.env
+EnvironmentFile=/etc/containerizer/appliance.env
+ExecStartPre=-/usr/bin/docker rm -f cz-mssql
+# MSSQL_PID: Express by default (free for production, 10 GB per database); Developer is not licensed for
+# production; Standard/Enterprise need a product key (CZ_MSSQL_EDITION in /etc/containerizer/appliance.env)
+# sqlservr carries the file capability cap_net_bind_service, so exec needs it in the bounding set
+ExecStart=/usr/bin/docker run --rm --name cz-mssql \
+  --publish 127.0.0.1:1433:1433 \
+  --env ACCEPT_EULA=Y --env MSSQL_PID=${CZ_MSSQL_EDITION} \
+  --env-file /etc/containerizer/secrets/mssql.env \
+  --volume /var/lib/containerizer/mssql:/var/opt/mssql \
+  --user 10001:10001 --cap-drop ALL --cap-add NET_BIND_SERVICE --security-opt no-new-privileges \
+  --memory ${CZ_MSSQL_MEMORY} --pids-limit 2048 \
+  ${CZ_IMAGE_MSSQL}
+ExecStop=/usr/bin/docker stop --time 60 cz-mssql
+Restart=always
+RestartSec=10
+# the first start downloads the image (about 1.5 GB)
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target

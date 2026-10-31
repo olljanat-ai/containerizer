@@ -1,0 +1,9 @@
+[Unit]
+Description=containerizer appliance: follow the DNS servers learned from DHCP
+
+[Path]
+PathChanged=/run/systemd/resolve/resolv.conf
+Unit=containerizer-firewall-reload.service
+
+[Install]
+WantedBy=multi-user.target

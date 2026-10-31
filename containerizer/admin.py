@@ -69,6 +69,7 @@ class Admin:
         self.api = None                             # api.Api when the JSON API is configured
         self.devdb = None                           # devdb.Settings when dev database uploads are on
         self.grafana_url = ""                       # CONTAINERIZER_GRAFANA_URL: link on the admin pages
+        self.system = None                          # appliance.SystemPage on the appliance (System, Firewall)
         self.cookie = ("__Host-" if cfg.secure else "") + "cz_session"
         self.login_cookie = ("__Host-" if cfg.secure else "") + "cz_login"
 
@@ -185,11 +186,15 @@ class Admin:
         kind = parts[0]
         if kind not in {k for k, _ in tabs}:
             known = kind in ("applications", "products", "business-units", "audit", "access", "scans", "repositories",
-                             "dev-databases")
+                             "dev-databases", "system", "firewall")
             return Response(403 if known else 404, self._shell(s, a, "Not allowed" if known else "Not found", "",
                             "<p>Your role does not include this page.</p>" if known else ""))
         if kind in ("scans", "repositories"):
             return self.route_scans(conn, s, a, method, path, q, form)
+        if kind in ("system", "firewall"):           # the appliance only; administrators only (see _tabs)
+            status, body, location = self.system.handle(
+                s, method, parts, q, form, lambda title, active, b, f: self._shell(s, a, title, active, b, f))
+            return redirect(location) if location else Response(status, body)
         if kind == "dev-databases":
             from . import admin_devdb
             return admin_devdb.route(self, conn, s, a, method, parts, q, form)
@@ -237,6 +242,8 @@ class Admin:
         tabs += [("audit", "Change history")]
         if a.admin and self.cfg.view_audit:
             tabs += [("access", "Access log")]
+        if a.admin and self.system:                  # on the appliance: upgrade, roll back, egress firewall
+            tabs += [("system", "System"), ("firewall", "Firewall")]
         return tabs
 
     # -- streamed uploads -----------------------------------------------------------------------
@@ -838,6 +845,8 @@ def build(env=None) -> Admin | None:
     adm = Admin(cfg, lambda: connect(cs, pw))
     adm.grafana_url = grafana
     adm.api = api.build(env, adm.provider, adm.connect_admin, cfg)
+    from .appliance import SystemPage
+    adm.system = SystemPage.detect(env)
     from . import devdb
     adm.devdb = devdb.Settings.from_env(env)
     if adm.devdb:

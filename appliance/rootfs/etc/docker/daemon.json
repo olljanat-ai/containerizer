@@ -1,0 +1,9 @@
+{
+  "dns": ["169.254.53.53"],
+  "log-driver": "local",
+  "log-opts": { "max-size": "20m", "max-file": "3" },
+  "live-restore": true,
+  "userland-proxy": false,
+  "no-new-privileges": false,
+  "features": { "buildkit": true }
+}

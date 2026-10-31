@@ -1,0 +1,35 @@
+[Unit]
+Description=containerizer appliance: scan worker (scheduled organization scans)
+After=containerizer-db-init.service docker.service containerizer-dns.service containerizer-registry.service
+Requires=containerizer-db-init.service docker.service
+Wants=containerizer-registry.service
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+
+[Service]
+User=containerizer
+Group=containerizer
+SupplementaryGroups=docker
+EnvironmentFile=/etc/containerizer/worker.env
+Environment="CONTAINERIZER_SQL=Server=127.0.0.1,1433;Database=Containerizer;User Id=cz_scanner;TrustServerCertificate=yes"
+LoadCredential=sql-scanner:/etc/containerizer/secrets/cz-scanner
+WorkingDirectory=/var/lib/containerizer/worker
+ExecStart=/usr/lib/containerizer/bin/cz-worker
+# finishes the repository it is on, then stops; the run is marked cancelled
+KillSignal=SIGTERM
+TimeoutStopSec=2h
+Restart=on-failure
+RestartSec=30
+# The docker group is root-equivalent: the worker builds and runs the scanned repositories' images,
+# which is why the appliance is a dedicated machine with an egress allow-list (docs/appliance.md).
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

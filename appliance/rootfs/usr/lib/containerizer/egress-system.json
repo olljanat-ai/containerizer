@@ -1,0 +1,14 @@
+{
+ "rules": [
+  {"host": "ghcr.io", "ports": ["tcp/443"], "note": "appliance upgrades, Flux images"},
+  {"host": "pkg-containers.githubusercontent.com", "ports": ["tcp/443"], "note": "GHCR image layers"},
+  {"host": "tuf-repo-cdn.sigstore.dev", "ports": ["tcp/443"], "note": "signature check of upgrades (Sigstore trust root)"},
+  {"host": "rekor.sigstore.dev", "ports": ["tcp/443"], "note": "signature check of upgrades (transparency log)"},
+  {"host": "fulcio.sigstore.dev", "ports": ["tcp/443"], "note": "signature check of upgrades (certificate authority)"},
+  {"host": "registry-1.docker.io", "ports": ["tcp/443"], "note": "Docker Hub: k3s system images, Prometheus, Grafana, registry, base images"},
+  {"host": "auth.docker.io", "ports": ["tcp/443"], "note": "Docker Hub sign-in"},
+  {"host": "production.cloudflare.docker.com", "ports": ["tcp/443"], "note": "Docker Hub image layers"},
+  {"host": "mcr.microsoft.com", "ports": ["tcp/443"], "note": "SQL Server and .NET base images"},
+  {"host": "data.mcr.microsoft.com", "ports": ["tcp/443"], "note": "Microsoft Container Registry image layers"}
+ ]
+}

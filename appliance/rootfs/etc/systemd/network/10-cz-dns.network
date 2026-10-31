@@ -1,0 +1,10 @@
+# The address of the DNS filter for the host, Docker containers and k3s pods (like NodeLocal DNSCache).
+[Match]
+Name=cz-dns
+
+[Network]
+Address=169.254.53.53/32
+ConfigureWithoutCarrier=yes
+
+[Link]
+RequiredForOnline=no

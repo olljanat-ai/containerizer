@@ -20,6 +20,15 @@ Design principles:
   read-only application files, read-only root filesystem, all capabilities dropped, seccomp,
   secrets only as Kubernetes Secret references, base images pinned to a version line.
 
+## Appliance (VM image / ISO)
+
+containerizer ships as an appliance: an immutable Elemental OS image with the web UI and API, the scan
+worker, SQL Server, a single-node k3s sandbox cluster with Flux, a local container registry,
+Prometheus and Grafana. Only SSH and HTTPS are allowed in, and outgoing traffic is blocked except for
+the FQDN rules an admin adds under **Admin → Firewall**. Signed upgrades and roll back are under
+**Admin → System**. Each release publishes an ISO, qcow2 and VHD; see [docs/appliance.md](docs/appliance.md).
+The commands below are what the appliance runs internally, and are useful for development.
+
 ## Quick start
 
 ```bash

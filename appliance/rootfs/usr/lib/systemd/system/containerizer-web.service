@@ -1,0 +1,49 @@
+[Unit]
+Description=containerizer appliance: web UI and API
+After=containerizer-db-init.service containerizer-dns.service containerizer-sysagent-status.service
+Requires=containerizer-db-init.service
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+
+[Service]
+User=cz-web
+Group=cz-web
+# CONTAINERIZER_PUBLIC_URL from CZ_HOSTNAME (cz-firstboot); web.env may override it
+EnvironmentFile=-/run/containerizer/web-url.env
+EnvironmentFile=/etc/containerizer/web.env
+Environment="CONTAINERIZER_SQL=Server=127.0.0.1,1433;Database=Containerizer;User Id=cz_web;TrustServerCertificate=yes"
+Environment="CONTAINERIZER_ADMIN_SQL=Server=127.0.0.1,1433;Database=Containerizer;User Id=cz_admin;TrustServerCertificate=yes"
+Environment=CONTAINERIZER_SYSTEM_DIR=/run/containerizer/system
+LoadCredential=sql-web:/etc/containerizer/secrets/cz-web
+LoadCredential=sql-admin:/etc/containerizer/secrets/cz-admin
+ExecStart=/usr/lib/containerizer/bin/cz-web
+Restart=always
+RestartSec=5
+# hardening: no privileges, read-only system, only the request folder writable
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ReadWritePaths=/run/containerizer/system/requests
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

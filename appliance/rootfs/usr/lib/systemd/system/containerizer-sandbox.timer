@@ -1,0 +1,9 @@
+[Unit]
+Description=containerizer appliance: keep the sandbox cluster's Git secrets in place
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+
+[Install]
+WantedBy=timers.target
