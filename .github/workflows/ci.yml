@@ -197,6 +197,7 @@ jobs:
           comment: "false"
           sarif-file: bad.sarif
           report-name: containerizer-report-bad
+          mode: gate   # auto would assess on a push to main
       - name: Gate must pass on the unchanged app
         id: good
         uses: ./tool
@@ -209,6 +210,7 @@ jobs:
           comment: "false"
           sarif-file: good.sarif
           report-name: containerizer-report-good
+          mode: gate   # auto would assess on a push to main
       - name: Assert
         run: |
           echo "bad: outcome=${{ steps.bad.outcome }} failed=${{ steps.bad.outputs.failed }} rating=${{ steps.bad.outputs.rating }}"
