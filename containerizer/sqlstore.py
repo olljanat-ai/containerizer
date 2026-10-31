@@ -316,10 +316,10 @@ def store_assessment(conn, doc: dict, source: dict, assessed_at=None, sboms: dic
             app_id = cur.fetchone()[0]
 
         ver = {r.get("component"): r for r in doc.get("verification") or []}
-        cur.execute("INSERT cz.ApplicationAssessment (ApplicationId, AssessedAt, Rating, Score, EffortDays, Confidence, "
+        cur.execute("INSERT cz.ApplicationAssessment (ApplicationId, AssessedAt, Rating, Score, Confidence, "
                     "Summary, Verified, SourceCommit, SourceBranch, ToolVersion, ReportJson) OUTPUT INSERTED.AssessmentId "
-                    "VALUES (%s, COALESCE(%s, SYSUTCDATETIME()), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (app_id, assessed_at, doc["rating"], int(doc["score"]), float(doc["effort_days"]),
+                    "VALUES (%s, COALESCE(%s, SYSUTCDATETIME()), %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (app_id, assessed_at, doc["rating"], int(doc["score"]),
                      float(doc["confidence"]), _cut(doc.get("summary", ""), 2000),
                      any(r.get("status") not in (None, "skipped") for r in ver.values()),
                      _cut(source.get("commit"), 64), _cut(source.get("branch"), 200), _cut(tool_version(), 64),
@@ -332,11 +332,11 @@ def store_assessment(conn, doc: dict, source: dict, assessed_at=None, sboms: dic
             status = v.get("status") if v.get("status") not in (None, "skipped") else None
             detail = v.get("detail") or (v.get("finding") or {}).get("title")
             cur.execute("INSERT cz.ComponentAssessment (AssessmentId, ComponentId, Role, Tier, TargetFramework, Verdict, "
-                        "VerdictText, Score, EffortDays, Confidence, WindowsContainerOk, VerifyStatus, VerifyDetail) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        "VerdictText, Score, Confidence, WindowsContainerOk, VerifyStatus, VerifyDetail) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                         (assessment_id, comp_id, c["role"], c.get("tier", "other"), _cut(";".join(c.get("tfm") or []), 200),
                          c["verdict"], _cut(c.get("verdict_text", c["verdict"]), 200), int(c["score"]),
-                         float(c["effort_days"]), float(c.get("confidence", 1)), bool(c.get("windows_container_ok")),
+                         float(c.get("confidence", 1)), bool(c.get("windows_container_ok")),
                          status, _cut(detail if status else None, 2000)))
             if c.get("migration"):
                 _migration(cur, assessment_id, comp_id, c["migration"])
@@ -372,10 +372,10 @@ def _component(cur, app_id: int, c: dict) -> int:
 
 def _migration(cur, assessment_id: int, comp_id: int, m: dict) -> None:
     plan = {k: v for k, v in m.items() if k != "prompt"}
-    cur.execute("INSERT cz.ComponentMigration (AssessmentId, ComponentId, Outcome, EffortDays, ItemCount, PlanJson, "
-                "AgentPrompt) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+    cur.execute("INSERT cz.ComponentMigration (AssessmentId, ComponentId, Outcome, ItemCount, PlanJson, "
+                "AgentPrompt) VALUES (%s, %s, %s, %s, %s, %s)",
                 (assessment_id, comp_id, _cut(m.get("outcome") or "linux-container", 40),
-                 float(m.get("effort_days") or 0), len(m.get("items") or []), json.dumps(plan, default=str),
+                 len(m.get("items") or []), json.dumps(plan, default=str),
                  m.get("prompt")))
 
 
@@ -390,11 +390,11 @@ def _finding(cur, assessment_id: int, comp_id: int | None, f: dict) -> None:
     eff = effective_severity({**f, "severity": sev})
     refs = [u for u in f.get("refs") or [] if isinstance(u, str) and u.startswith(("https://", "http://"))]
     cur.execute("INSERT cz.Finding (AssessmentId, ComponentId, RuleId, Severity, RuleSeverity, Category, Title, Why, Fix, "
-                "EffortDays, Via, OnlyCommands, Evidence, Refs, Source) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "Via, OnlyCommands, Evidence, Refs, Source) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (assessment_id, comp_id, _cut(f.get("id") or "", 200), eff, sev, _cut(f.get("category"), 100),
                  _cut(f.get("title") or f.get("id") or "", 400), f.get("why"), f.get("fix"),
-                 f.get("effort_days"), _cut(f.get("via") or None, 200),
+                 _cut(f.get("via") or None, 200),
                  _cut(", ".join(f.get("only_commands") or []) or None, 400),
                  _cut("\n".join(f.get("evidence") or []) or None, 2000), json.dumps(refs) if refs else None,
                  _cut(f.get("source"), 40)))

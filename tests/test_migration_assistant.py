@@ -7,7 +7,7 @@ import yaml
 
 from containerizer import webui
 from containerizer.assess import assess
-from containerizer.migrate import KINDS, MIGRATIONS_FILE, load_migrations, migration_index
+from containerizer.migrate import KINDS, MIGRATIONS_FILE, load_migrations, migration_index, plan_markdown
 from containerizer.report import write_reports
 from containerizer.rules import load_rules
 from tests.test_engine import web_app, write
@@ -47,14 +47,9 @@ def test_every_blocker_and_rewrite_rule_has_a_migration():
     assert not missing
 
 
-def test_blocker_migrations_state_an_effort():
-    # blocker rules carry effort 0 (not counted in the assessment): their migration must estimate one,
-    # except "isolate" entries where nothing in the component can change
-    idx = migration_index()
-    for r in curated_findings():
-        m = idx.get(r.id)
-        if r.severity == "blocker" and m and m.kind != "isolate":
-            assert m.effort is not None, m.id
+def test_migrations_carry_no_work_estimates():
+    # work estimates were removed: with AI coding agents doing the work they say little
+    assert "effort" not in MIGRATIONS_FILE.read_text()
 
 
 def test_isolate_entries_only_for_rules_without_linux_option():
@@ -88,7 +83,9 @@ def test_plan_maps_findings_to_replacements(tmp_path):
     assert drawing["findings"][0]["evidence"]
     ev = next(i for i in plan["items"] if i["id"] == "replace-eventlog")
     assert "packages" not in ev or "add" not in ev["packages"]     # Logging.Console is in the ASP.NET Core framework
-    assert plan["effort_days"] == round(sum(i["effort_days"] for i in plan["items"]), 1)
+    assert "effort_days" not in plan and all("effort_days" not in i for i in plan["items"])
+    for text in (plan["prompt"], "\n".join(plan_markdown(plan)), json.dumps(a.to_dict())):
+        assert "effort" not in text.lower() and "person-day" not in text
 
 
 def test_ready_component_has_no_plan(tmp_path):
@@ -145,7 +142,7 @@ def _ui_data(tmp_path):
     plan = assess(tmp_path).migration_plans()["src/Web/Web.csproj"]
     d = application_data()
     d["migrations"] = [{"ComponentId": 1, "ComponentName": "Web", "Outcome": plan["outcome"],
-                        "EffortDays": plan["effort_days"], "ItemCount": len(plan["items"]),
+                        "ItemCount": len(plan["items"]),
                         "PlanJson": json.dumps({k: v for k, v in plan.items() if k != "prompt"}),
                         "AgentPrompt": plan["prompt"] + "</textarea><script>alert(1)</script>"}]
     return d
@@ -155,6 +152,7 @@ def test_application_page_shows_migration_and_prompt(tmp_path):
     html = webui.render_application(_ui_data(tmp_path))
     assert "Migration assistant" in html and "Prompt for an AI coding agent" in html
     assert "SkiaSharp" in html and "data-copy='pt1'" in html
+    assert "Effort" not in html and "person-day" not in html
     assert "/app/7/component/1/agent-prompt.md" in html
     assert "<script>alert" not in html and "&lt;/textarea&gt;" in html       # prompt text is escaped
     assert html.count("<script") == 1 and "<script src='/static/app.js'>" in html

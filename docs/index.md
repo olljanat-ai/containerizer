@@ -102,7 +102,7 @@ running and deploying them in its own sandbox cluster.
     ---
 
     Every blocker maps to a Linux replacement: System.Drawing to SkiaSharp, WCF to CoreWCF, Windows
-    Service to a worker service, with packages, steps and an effort estimate.
+    Service to a worker service, with packages, steps and checks.
 
     [:octicons-arrow-right-24: Migration assistant](overview.md#migration-assistant)
 
@@ -152,14 +152,14 @@ to change, why, and where to read more. Everything links back to the rule that d
 ### From blocker to a concrete plan
 
 The migration assistant turns each blocking finding into a Linux-compatible replacement with
-packages to add and remove, steps, checks and an effort estimate. What can't move is marked "keep on
+packages to add and remove, steps and checks. What can't move is marked "keep on
 Windows" instead of being forced.
 
 [Migration assistant :octicons-arrow-right-24:](overview.md#migration-assistant)
 
 </div>
 
-![Migration assistant with replacements, steps and effort](images/results-migration-assistant.png){ .cz-shot }
+![Migration assistant with replacements and steps](images/results-migration-assistant.png){ .cz-shot }
 
 </div>
 
