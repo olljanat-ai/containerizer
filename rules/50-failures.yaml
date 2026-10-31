@@ -48,14 +48,16 @@ failures:
 
   - id: build-rid-downgrade
     stage: build
-    match: 'error NU1605:'
+    # the dependency chain names the direct package that drags in the netstandard1.x graph:
+    #   error NU1605:  App -> Lib -> SSH.NET 2016.1.0 -> System.Net.Sockets 4.1.0 -> runtime.unix...
+    match: 'error NU1605:(?:(?=[\s\S]*?error NU1605:\s+\S+(?:\s->\s[\w.]+)*?\s->\s(?P<pkg>[\w.]+)\s(?P<ver>\d[\w.\-]*)\s->)|)'
     outcome: retry
     refs: [https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1605, https://learn.microsoft.com/en-us/dotnet/core/rid-catalog]
     diagnosis: >-
       Restoring for linux-x64 pulls RID-specific packages of an old netstandard1.x dependency that
       conflict (package downgrade). A portable publish restores the same graph as the Windows build.
     fix: {rid: portable}
-    learn: {}
+    learn: {when: {closure: {package: '{pkg}', version: '{ver}'}}}
 
   - id: build-npm-missing
     stage: build
