@@ -1,0 +1,6 @@
+# The image ships its own /etc/hosts: a container build leaves none (Docker mounts one at run time), and
+# both the first-boot setup (it adds the host name here) and containerd (every pod's hosts file) need it.
+127.0.0.1	localhost
+::1	localhost ip6-localhost ip6-loopback
+ff02::1	ip6-allnodes
+ff02::2	ip6-allrouters

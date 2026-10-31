@@ -69,3 +69,7 @@ UI and admin pages, and the appliance. Results database schema version 16.
   boot health check waits for k3s to finish starting instead of rolling back, and the egress
   allow-list includes all of Docker Hub's layer hosts (Cloudflare, CloudFront, R2); the appliance's
   runtime folders, `/etc/resolv.conf` and kernel settings are set up even when early boot misses them
+- The image ships `/etc/hosts` (a container build leaves none; first-boot setup and k3s pods need it), and
+  the DNS filter watches for the DHCP DNS servers from early boot
+- Lab services: MySQL is provisioned over TCP inside its pod; the lab cluster test runs on ubuntu-22.04
+  because MongoDB 8.0 does not start on Linux 6.19 and newer
