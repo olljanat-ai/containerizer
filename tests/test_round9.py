@@ -189,3 +189,37 @@ def test_called_pinvoke_declaration_is_reported(tmp_path):
     }
     class Q { int Open(IntPtr h) => NativeMethods.MQOpenQueue("q", 1, 0, ref h); }''')
     assert sev(tmp_path, "pinvoke-vendor") == "blocker"
+
+
+# ------------------------------------------------------------------ round 10: dotnet new templates
+
+def test_project_in_dotnet_new_template_is_a_tool(tmp_path):
+    from tests.test_engine import write, web_app
+    from tests.test_round7 import roles
+    web_app(tmp_path)
+    write(tmp_path, "templates/MyProject/.template.config/template.json", '{"identity": "My.Template"}')
+    write(tmp_path, "templates/MyProject/MyProject.csproj",
+          '<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>')
+    write(tmp_path, "templates/MyProject/Program.cs", "var app = WebApplication.CreateBuilder(args).Build(); app.Run();")
+    r = roles(tmp_path)
+    assert r["MyProject"] == "tool"
+    assert "web" in r.values()
+
+
+def test_repository_that_is_a_template_keeps_its_projects(tmp_path):
+    from tests.test_engine import write
+    from tests.test_round7 import roles
+    write(tmp_path, ".template.config/template.json", '{"identity": "Clean.Template"}')
+    write(tmp_path, "src/Web/Web.csproj",
+          '<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>')
+    write(tmp_path, "src/Web/Program.cs", "var app = WebApplication.CreateBuilder(args).Build(); app.Run();")
+    assert roles(tmp_path)["Web"] == "web"
+
+
+def test_embedded_ravendb_legacy_is_flagged(tmp_path):
+    from tests.test_round8 import comp
+    from tests.test_round7 import sev
+    c = comp(tmp_path, "class H { object S() => new Raven.Client.Embedded.EmbeddableDocumentStore(); }")
+    assert sev(c, "pkg-ravendb-embedded-legacy") == "rewrite"
+    c = comp(tmp_path / "modern", "class H { object S() => new Raven.Client.Documents.DocumentStore(); }")
+    assert sev(c, "pkg-ravendb-embedded-legacy") is None
