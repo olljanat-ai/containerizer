@@ -522,8 +522,9 @@ def hardening_markdown(app: str, comp_docs: dict[str, list[dict]]) -> str:
     viol: dict[str, list[Violation]] = {}
     exceptions: dict[str, set] = {}
     egress: dict[str, str] = {}
+    provided = external_secret_targets([d for docs in comp_docs.values() for d in docs])
     for comp, docs in comp_docs.items():
-        for v in lint_manifests(docs, f"{comp}: "):
+        for v in lint_manifests(docs, f"{comp}: ", provided):
             viol.setdefault(v.check, []).append(v)
         for d in docs:
             for meta, _ in _pod_specs(d):
@@ -575,11 +576,31 @@ def hardening_markdown(app: str, comp_docs: dict[str, list[dict]]) -> str:
         lines += ["## Hardening exceptions", "", "| Exception | Components |", "| --- | --- |"]
         lines += [f"| {e} | {', '.join(sorted(c))} |" for e, c in sorted(exceptions.items())]
         lines.append("")
+    remote = []
+    for comp, docs in sorted(comp_docs.items()):
+        for d in docs:
+            if d.get("kind") != "ExternalSecret":
+                continue
+            spec = d.get("spec") or {}
+            for x in spec.get("data") or []:
+                remote.append((x["remoteRef"]["key"], f"`{x['remoteRef'].get('property', '')}`", comp, d["metadata"]["name"]))
+            for x in spec.get("dataFrom") or []:
+                if (x.get("extract") or {}).get("key"):
+                    remote.append((x["extract"]["key"], "every key", comp, d["metadata"]["name"]))
+    if remote:
+        lines += ["## Secret store keys", "",
+                  "Put these in the secret store before the first sync (docs/external-secrets.md); External Secrets "
+                  "Operator copies them into the Secrets the workloads use. If one property is missing, that whole "
+                  "Secret is not created; the references are optional, so the pod still starts, without its values.", "",
+                  "| Remote key | Property | Component | Secret |", "| --- | --- | --- | --- |"]
+        lines += [f"| `{k}` | {p} | {c} | `{n}` |" for k, p, c, n in sorted(remote)]
+        lines.append("")
     lines += ["## Files", "",
               "- `security.yaml`: default-deny NetworkPolicy, LimitRange and ResourceQuota for the namespace",
               "- `namespace.yaml`: Pod Security Admission `restricted` (enforce, warn, audit)",
               "- `<component>/k8s.yaml`: hardened workloads, own ServiceAccount, least-privilege NetworkPolicy, ExternalSecrets",
-              "- `cluster/audit-policy.yaml`, `cluster/verify-images.yaml`: for the cluster operator, not applied with the app", ""]
+              "- `cluster/audit-policy.yaml`, `cluster/verify-images.yaml`, `cluster/secret-store.yaml` (the secret "
+              "store and this namespace's read access): for the cluster operator, not applied with the app", ""]
     return "\n".join(lines)
 
 
@@ -612,11 +633,53 @@ def _secret_name(name: str) -> bool:
     return bool(re.search(security()["lint"]["secret_names"], name or ""))
 
 
-def lint_manifests(docs: list[dict], where: str = "") -> list[Violation]:
+def external_secret_targets(docs: list[dict]) -> set[str]:
+    """Names of the Secrets that ExternalSecrets in `docs` produce."""
+    return {((d.get("spec") or {}).get("target") or {}).get("name") or (d.get("metadata") or {}).get("name")
+            for d in docs if isinstance(d, dict) and d.get("kind") == "ExternalSecret"}
+
+
+def _secret_refs(pod: dict) -> list[tuple[str, str]]:
+    """(Secret name, where) for every Secret a pod spec references."""
+    out = [(p.get("name"), "imagePullSecrets") for p in pod.get("imagePullSecrets") or []]
+    for v in pod.get("volumes") or []:
+        if (v.get("secret") or {}).get("secretName"):
+            out.append((v["secret"]["secretName"], f"volume {v.get('name')}"))
+        for src in (v.get("projected") or {}).get("sources") or []:
+            if (src.get("secret") or {}).get("name"):
+                out.append((src["secret"]["name"], f"projected volume {v.get('name')}"))
+    for c in (pod.get("initContainers") or []) + (pod.get("containers") or []):
+        for e in c.get("env") or []:
+            ref = ((e.get("valueFrom") or {}).get("secretKeyRef") or {}).get("name")
+            if ref:
+                out.append((ref, f"{c.get('name')} env {e.get('name')}"))
+        for e in c.get("envFrom") or []:
+            if (e.get("secretRef") or {}).get("name"):
+                out.append((e["secretRef"]["name"], f"{c.get('name')} envFrom"))
+    return [(n, w) for n, w in out if n]
+
+
+def _lint_external_secret(L: "_Lint", d: dict, tgt: str) -> None:
+    """ExternalSecrets read a store (or an in-cluster generator) and never carry a value themselves."""
+    from .eso import STORE_KINDS
+    spec = d.get("spec") or {}
+    ref = spec.get("secretStoreRef") or {}
+    generated = any((x.get("sourceRef") or {}).get("generatorRef") for x in spec.get("dataFrom") or [])
+    if not generated and (ref.get("kind", "SecretStore") not in STORE_KINDS or not ref.get("name")):
+        L.add("external-secret-store", tgt, "secretStoreRef names no SecretStore / ClusterSecretStore")
+    for k, v in (((spec.get("target") or {}).get("template") or {}).get("data") or {}).items():
+        if _secret_name(k) and isinstance(v, str) and v and "{{" not in v:
+            L.add("secret-literals", tgt, f"template key {k} carries a literal value; read it from the store")
+
+
+def lint_manifests(docs: list[dict], where: str = "", provided: set[str] | None = None) -> list[Violation]:
+    """`provided`: Secret names that ExternalSecrets elsewhere in the app produce (another component's
+    folder, pull-secret.yaml)."""
     L = _Lint()
     cfg = L.cfg
     docs = [d for d in docs if isinstance(d, dict)]
     policies = [d for d in docs if d.get("kind") == "NetworkPolicy"]
+    produced = external_secret_targets(docs) | set(provided or ())
     for d in docs:
         kind, name = d.get("kind"), (d.get("metadata") or {}).get("name", "?")
         tgt = f"{where}{kind}/{name}"
@@ -624,7 +687,14 @@ def lint_manifests(docs: list[dict], where: str = "") -> list[Violation]:
             for k, v in {**(d.get("stringData") or {}), **(d.get("data") or {})}.items():
                 if v not in ("", None):
                     L.add("secret-literals", tgt, f"Secret key {k} carries a value; keep values out of manifests")
-            L.add("plain-secret", tgt, "Secret object in the manifests; use an ExternalSecret or SealedSecret")
+            L.add("plain-secret", tgt, "Secret object in the manifests; use an ExternalSecret (External Secrets Operator)")
+            continue
+        if kind in ("SecretStore", "ClusterSecretStore"):
+            L.add("external-secret-store", tgt, f"{kind} in the app's manifests; the platform defines the store "
+                                                "(cluster/secret-store.yaml)")
+            continue
+        if kind == "ExternalSecret":
+            _lint_external_secret(L, d, tgt)
             continue
         for meta, pod in _pod_specs(d):
             waived = {w.strip() for w in ((meta.get("annotations") or {}).get(f"{ANNOTATION}/waives") or "").split(",") if w.strip()}
@@ -643,6 +713,9 @@ def lint_manifests(docs: list[dict], where: str = "") -> list[Violation]:
                     L.add("sysctls", tgt, f"sysctl {s.get('name')} is not in the safe set", waived)
             if pod.get("automountServiceAccountToken") is not False:
                 L.add("sa-token", tgt, "automountServiceAccountToken is not false", waived)
+            for ref, at in _secret_refs(pod):
+                if ref not in produced:
+                    L.add("secret-source", tgt, f"Secret {ref} ({at}) is not produced by an ExternalSecret", waived)
             labels = (meta.get("labels") or {})
             selecting = [p for p in policies if _selects((p.get("spec") or {}).get("podSelector") or {}, labels)]
             if not selecting:

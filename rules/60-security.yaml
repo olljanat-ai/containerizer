@@ -279,7 +279,9 @@ lint:
     egress-policy:       {severity: warning, title: Egress is restricted by a NetworkPolicy}
     service-account:     {severity: warning, title: Workload uses its own ServiceAccount, not default}
     apparmor:            {severity: info,    title: AppArmor profile set}
-    plain-secret:        {severity: warning, title: Secrets come from an external store, not Git}
+    plain-secret:        {severity: error,   title: No Secret objects in the manifests; ExternalSecrets only}
+    secret-source:       {severity: error,   title: Every Secret a workload uses is produced by an ExternalSecret}
+    external-secret-store: {severity: error, title: ExternalSecrets read a platform-defined (Cluster)SecretStore}
     df-user:             {severity: error,   title: Final image stage runs as a non-root user}
     df-base-tag:         {severity: error,   title: Base images have an explicit, non-latest tag}
     df-base-digest:      {severity: info,    title: Base images are pinned to a digest}
@@ -477,9 +479,13 @@ controls:
   - {id: encryption, nsa: 'Network separation and hardening > Encryption', scope: cluster,
      title: Traffic encrypted in transit,
      action: 'Terminate TLS at the ingress; use a service mesh (mTLS) or TLS to databases (Encrypt=True in SQL Server connection strings).'}
-  - {id: secrets, nsa: 'Network separation and hardening > Secrets', cis: '5.4.2', scope: namespace, checks: [plain-secret, secret-literals],
-     title: 'Secret values come from an external store (External Secrets / Sealed Secrets), never from Git or images',
+  - {id: secrets, nsa: 'Network separation and hardening > Secrets', cis: '5.4.2', scope: namespace,
+     checks: [plain-secret, secret-literals, secret-source, external-secret-store],
+     title: 'Secret values come from an external store through External Secrets Operator, never from Git or images',
      action: 'Enable encryption at rest for Secrets (EncryptionConfiguration with a KMS provider).'}
+  - {id: secret-store-access, nsa: 'Network separation and hardening > Secrets; Authentication and authorization', cis: '5.1.2',
+     scope: cluster, title: 'Each namespace reads only its own keys from the secret store',
+     action: 'Cluster operator: install External Secrets Operator and apply cluster/secret-store.yaml (the store; with the kubernetes provider also this namespace''s Role over exactly its remote keys). For Vault, Azure Key Vault or AWS Secrets Manager bind the namespace''s ServiceAccount app-secrets-reader to an identity that can read only <namespace>--* (docs/external-secrets.md).'}
   - {id: secrets-as-files, nsa: 'Network separation and hardening > Secrets', cis: '5.4.1', scope: deviation,
      title: Secrets mounted as files rather than environment variables,
      action: 'Not applied: the applications read their settings from configuration/environment variables, and reading them from files needs a code change (e.g. AddKeyPerFile). Keys and certificates are already mounted as files under /secrets.'}
