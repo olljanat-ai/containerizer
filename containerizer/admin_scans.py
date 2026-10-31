@@ -534,6 +534,7 @@ def edit_repo(adm, conn, s, a, ident: int, flash: str) -> Response:
     comps = "".join(f"<li><b>{e(c.get('component', ''))}</b> <span class='muted small'>{e(c.get('image', ''))}</span></li>"
                     for c in detail.get("components") or [])
     excl = "".join(f"<li>{e(x.get('component', ''))}: {e(x.get('reason', ''))}</li>" for x in detail.get("excluded") or [])
+    lab = _lab_section(detail.get("lab_services") or {})
     link = (f"<a href='{e(r['WebUrl'])}' rel='noopener noreferrer' target='_blank'>{e(r['WebUrl'])}</a>"
             if r["WebUrl"] and URL_RE.fullmatch(r["WebUrl"]) else e(r["CloneUrl"]))
     facts = [("Scan", f"<a href='/admin/scans/{int(r['ScanId'])}'>{e(r['ScanName'])}</a>"), ("Repository", link),
@@ -561,9 +562,27 @@ def edit_repo(adm, conn, s, a, ident: int, flash: str) -> Response:
             f"<div><button>Save</button> <a href='/admin/repositories?scan={int(r['ScanId'])}'>Back</a></div></form>")
     body = (f"<div class='formrow'>{state_chip(state, who)}<span>{e(reason)}</span></div><div class='meta'>{meta}</div>"
             + (f"<h2>Deployed components</h2><ul>{comps}</ul>" if comps else "")
-            + (f"<h2>Not deployed</h2><ul>{excl}</ul>" if excl else "")
+            + (f"<h2>Not deployed</h2><ul>{excl}</ul>" if excl else "") + lab
             + f"<h2>Enabled or disabled</h2>{form}<h2>Changes</h2>{adm._history(conn, 'OrgRepository', ident)}")
     return Response(200, adm._shell(s, a, _repo_name(r), "repositories", body, flash))
+
+
+def _lab_section(lab: dict) -> str:
+    """Lab services of the latest result: what the app was pointed at, and a warning for what it needs
+    that was turned off (Admin -> Lab services)."""
+    from .labservices import SERVICES
+    if not lab or not (lab.get("needed") or {}):
+        return ""
+    def title(svc: str) -> str:
+        return SERVICES[svc].title if svc in SERVICES else svc
+    items = [f"<li>{e(title(svc))}: <span class='st st-ok'>provided</span></li>" for svc in lab.get("provided") or []]
+    items += [f"<li>{e(title(svc))}: <span class='st st-bad'>needed, but off</span> "
+              f"<span class='muted small'>({e(', '.join((lab.get('needed') or {}).get(svc) or []))})</span></li>"
+              for svc in lab.get("missing") or []]
+    hint = ("<p class='note'>The app needs a lab service that is turned off. It keeps its own settings until an "
+            "administrator turns the service on under Lab services and the repository is scanned again.</p>"
+            if lab.get("missing") else "")
+    return f"<h2>Lab services</h2>{hint}<ul>{''.join(items)}</ul>"
 
 
 def save_repo(conn, ident: int, form: dict) -> Response:

@@ -1,0 +1,9 @@
+[Unit]
+Description=containerizer appliance: keep the lab services and the apps' credentials in place
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=2min
+
+[Install]
+WantedBy=timers.target

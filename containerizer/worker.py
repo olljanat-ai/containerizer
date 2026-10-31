@@ -198,7 +198,8 @@ class SqlRepoStore:
         else:
             skip = None                     # disabled by an administrator, or an error: not re-evaluated
         detail = json.dumps({"app": res.app, "path": res.path, "components": res.components, "excluded": res.excluded,
-                             "overridden": res.overridden}, default=str)
+                             "overridden": res.overridden, "lab_services": getattr(res, "lab_services", None) or {}},
+                            default=str)
         sets = ("LastStatus = %s, LastReason = %s, LastCommit = COALESCE(%s, LastCommit), "
                 "LastCommitAt = COALESCE(%s, LastCommitAt), LastRating = COALESCE(%s, LastRating), "
                 "LastScannedAt = SYSUTCDATETIME(), LastRunId = %s, LastSeconds = %s, LastDetail = %s")
