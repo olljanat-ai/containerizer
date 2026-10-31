@@ -8,7 +8,7 @@ containerize) and for real-life portfolios.
 
 Design principles:
 
-- **Rules first, AI last.** Classification is done by a data-driven rule set (`rules/*.yaml`). Claude
+- **Rules first, AI last.** Classification is done by a data-driven rule set (`rules/*.yaml`). An LLM
   is consulted only for components the rules are unsure about, and what it says is validated before
   it is used or learned.
 - **Learns by doing.** When unsure, the tool builds and runs the generated container, matches failures
@@ -194,21 +194,30 @@ For each component that can be containerized the tool:
    `rules/learned/failures.yaml`, runtime findings → `rules/learned/findings.yaml`, and packages of
    components that ran → `rules/learned/packages.yaml` (raising confidence next time).
 
-### Claude fallback
+### AI fallback (Claude or a self-hosted LLM)
 
-`containerizer/ai.py` has two backends: the Anthropic Python SDK with structured outputs
-(`CONTAINERIZER_AI_BACKEND=api`, needs credentials) and the `claude` CLI in print mode
-(`CONTAINERIZER_AI_BACKEND=cli`). The model is configurable with `--model` or `CONTAINERIZER_MODEL`
-(default `claude-opus-5-5`). Responses are cached in `.work/ai-cache/`, usage and cost are tracked.
+`containerizer/ai.py` has three backends: the Anthropic Python SDK with structured outputs
+(`CONTAINERIZER_AI_BACKEND=api`, needs credentials), the `claude` CLI in print mode
+(`CONTAINERIZER_AI_BACKEND=cli`), and any self-hosted OpenAI-compatible server such as Ollama,
+vLLM, LM Studio or llama.cpp (`CONTAINERIZER_AI_BACKEND=openai`, selected automatically when
+`CONTAINERIZER_LLM_BASE_URL` is set; see [docs/self-hosted-llm.md](docs/self-hosted-llm.md)).
+The model is configurable with `--model` or `CONTAINERIZER_MODEL` (default `claude-opus-5-5`;
+required for a self-hosted server). Every answer is validated against its schema, responses are
+cached in `.work/ai-cache/`, usage and cost are tracked.
+
+```sh
+export CONTAINERIZER_LLM_BASE_URL=http://localhost:11434/v1 CONTAINERIZER_MODEL=qwen3:32b   # Ollama
+python -m containerizer analyze <repo> --out out/ --ai
+```
 
 Three AI techniques can be compared with `bench --technique`:
 
-| Technique | What Claude sees | What decides |
+| Technique | What the LLM sees | What decides |
 | --- | --- | --- |
 | `rules` | nothing | rules only |
-| `hybrid` | evidence pack (findings, code snippets, Program.cs, README) for low-confidence components | rules, overridden by Claude where confident |
-| `ai-only` | project inventory + README | Claude only |
-| `ai+rules` | inventory + README + rule verdicts | Claude, informed by the rules |
+| `hybrid` | evidence pack (findings, code snippets, Program.cs, README) for low-confidence components | rules, overridden by the LLM where confident |
+| `ai-only` | project inventory + README | LLM only |
+| `ai+rules` | inventory + README + rule verdicts | LLM, informed by the rules |
 
 ## Generated output
 
@@ -356,8 +365,10 @@ jobs:
         with:
           mode: assess
           path: src
-          # ai: true                                       # ask Claude about uncertain components
+          # ai: true                                       # ask the LLM about uncertain components
           # anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # llm-base-url: https://llm.example.internal/v1  # self-hosted LLM instead of Claude (needs model)
+          # llm-api-key: ${{ secrets.LLM_API_KEY }}
           # open-pr: true                                  # PR adding <app>/containerize/ folders
 ```
 
