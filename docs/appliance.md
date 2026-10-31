@@ -173,6 +173,12 @@ every app namespace, and creates the root `GitRepository` + `Kustomization` of t
 the Firewall page. `kubectl` (as root on the appliance) shows the result. Argo CD is not installed; Flux
 is the supported path on the appliance.
 
+Components that sign users in get the sandbox identity provider, WSO2 Identity Server at
+`https://containerizer-idp.<sandbox domain>/` ([sandbox-idp.md](sandbox-idp.md)). `cz-sandbox` creates its
+passwords and client secrets in the secret store once Flux has deployed it.
+`containerizer idp users` (as root) prints the test users and their passwords. Its images come from
+Docker Hub, which the default firewall rules allow.
+
 ## Upgrade and roll back
 
 **Admin → System** (administrators only) shows the running version, the snapshots on the disk and the

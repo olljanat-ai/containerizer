@@ -98,7 +98,8 @@ sandbox/
   argocd/bootstrap.yaml      app-of-apps
   argocd/apps/               kustomization over every <app>/gitops/argocd
   flux/bootstrap.yaml        GitRepository + root Kustomization
-  flux/apps/                 kustomization over every <app>/gitops/flux
+  flux/apps/                 kustomization over every <app>/gitops/flux (+ ../../idp)
+  idp/                       sandbox identity provider, when a component signs users in (sandbox-idp.md)
 ```
 
 The project level:
@@ -133,6 +134,10 @@ Operator fills from the `ClusterSecretStore` `app-secrets` ([external-secrets.md
   of type `dockerconfigjson` from `<namespace>--cz-registry` (or give the nodes registry credentials).
 - **Secrets**: apps get their connection strings from `<namespace>--<component>`, see each app's
   `HARDENING.md` for the keys.
+- **Sign-in**: components that sign users in with OpenID Connect, SAML 2.0 or WS-Federation are pointed
+  at the sandbox identity provider in `sandbox/idp/`, which Flux applies with the apps (with Argo CD:
+  `kubectl apply -k sandbox/idp`). It needs a sandbox domain (`--ingress-domain`); `--no-sandbox-idp`
+  leaves the components alone. See [sandbox-idp.md](sandbox-idp.md).
 
 The appliance does all of this by itself from `sandbox.env`.
 
