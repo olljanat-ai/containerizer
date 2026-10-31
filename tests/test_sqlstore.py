@@ -291,7 +291,7 @@ def test_store_maps_components_and_keeps_human_mapping(db, tmp_path):
     ids = sqlstore.store_results(writer, [a], [tmp_path / "shop"], password="Test-Passw0rd!x")
     assert len(ids) == 1
 
-    # a person maps the application, as docs/results-database.md describes
+    # a person maps the application, as an administrator does on the admin pages
     ed = sqlstore.connect(_as(db, "cz_t_editor"), password="Test-Passw0rd!x")
     ed.set_user("jane@example.com", "Jane Doe")
     cur = ed.cursor()

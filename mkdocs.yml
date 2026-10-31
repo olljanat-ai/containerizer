@@ -44,25 +44,23 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Overview: overview.md
-  - Running at scale:
-      - Whole organization: organization-run.md
-      - Scheduled scans: scheduled-scans.md
+  - How it works: overview.md
+  - Appliance:
+      - Install and first boot: appliance.md
+      - Sign-in and roles: sign-in.md
       - Source control tokens and the LLM: source-control.md
-      - Sandbox verification: sandbox-verification.md
+  - Scans:
+      - Organization scans: scheduled-scans.md
       - Sandbox HTTPS: sandbox-https.md
-      - Dev databases: dev-databases.md
       - Lab services: lab-services.md
-      - Secrets (External Secrets): external-secrets.md
       - Sandbox identity provider: sandbox-idp.md
-  - Java and Node.js: java-node.md
-  - Results and review:
-      - Results database and web UI: results-database.md
+      - Dev databases: dev-databases.md
       - Rule review: rule-review.md
-      - SBOM, licences and CVEs: sbom.md
-  - Deployment:
-      - Appliance: appliance.md
-      - Self-hosted LLM: self-hosted-llm.md
+      - Secrets (External Secrets): external-secrets.md
+  - Reference:
+      - Java and Node.js: java-node.md
+      - SBOMs, licences and CVEs: sbom.md
+      - API: api.md
   - Development:
       - Local dev server: local-dev-server.md
 

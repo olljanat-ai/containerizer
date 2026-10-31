@@ -2,7 +2,7 @@
 
 Many applications need a database, a cache or object storage before they start. On the
 [appliance](appliance.md), administrators can turn on **lab services**: backing services that run in
-the sandbox cluster next to the apps that the [organization scans](organization-run.md) deploy. When an
+the sandbox cluster next to the apps that the [organization scans](scheduled-scans.md) deploy. When an
 app depends on a service that is on, the generated manifests point the app at it. The app's code does
 not change: only its configuration, through environment variables.
 
@@ -20,29 +20,12 @@ next to it, and the lab SQL Server is not used for it. Turning SQL Server off st
 
 ## Turn a service on or off
 
-**Admin → Lab services** is for administrators, on the appliance only.
-
-- **Turn on** / **Turn off** each service, with an optional note that says why. The change is saved
-  first, so the **change history** records who made it, when, and the note. You can see the history on
-  the same page and on the Change history page, under *Lab services*.
-- The system agent checks the change again and writes it to `/var/lib/containerizer/system/lab-services.json`.
-  The lab agent applies it within seconds. After that it checks again every 2 minutes.
-- **State** shows what the lab agent saw last:
-    - *Running*: the service is running.
-    - *Starting*: the image is still downloading or the server is starting. The reason is shown.
-    - *On, not in use*: no app has asked for the service yet, so nothing runs.
-    - *Off*: the service is turned off.
-    - *Problem*: something is wrong. The message says what.
-
-  **Apps using it** lists the app namespaces that asked for the service.
-- If you turn off a service that apps use, the page asks you to confirm. Those apps lose the service at
-  once. The next scan generates them without it.
-- **Needed but off** lists the apps whose latest scan found that they need a service that is off. The
-  repository page (Admin → Repositories → a repository) shows the same warning. Turn the service on, then
-  scan again. Until then, the app keeps its own settings, which usually point at a server the sandbox
-  cannot reach.
-
-A service that is on starts only when the first app asks for it, so a service nobody uses costs nothing.
+Administrators turn each service on or off under **Admin → Lab services**, with a note for the change
+history. A service that is on starts only when the first app asks for it, so a service nobody uses costs
+nothing. Turning off a service that apps use takes it from them at once (the page asks first), and the
+next scan generates them without it. **Needed but off** lists the apps whose latest scan found that they
+need a service that is off, and the repository's page shows the same warning: turn the service on, then
+scan again.
 
 ## What the scan changes in an app
 
@@ -84,8 +67,6 @@ For each service that the component needs and that is on, the scan writes the fo
   (for a per-app service, only the app's own instance), in namespace `containerizer-lab`.
 - **`lab/README.md`** lists the host names, the Secrets, which settings were overridden, and the services
   that were needed but off. The scan result has the same, as `lab_services` in `containerizer.json`.
-
-Off the appliance (`containerizer org` or `generate` without `CONTAINERIZER_LAB_SERVICES`), nothing changes.
 
 ### Things the scan cannot see
 

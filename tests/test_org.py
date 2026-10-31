@@ -293,6 +293,39 @@ class _FakeProvider:
         return ""
 
 
+def test_run_org_deploys_java_and_node_repos(tmp_path, monkeypatch):
+    from tests.test_java_node import EXPRESS, SERVER, WEB, boot_app, dep, node
+    from tests.test_engine import write
+    sources = {"orders": tmp_path / "src" / "orders", "api": tmp_path / "src" / "api", "docs": tmp_path / "src" / "docs"}
+    boot_app(sources["orders"], WEB + dep("org.springframework.boot", "spring-boot-starter-actuator"))
+    node(sources["api"], "", EXPRESS, {"server.js": SERVER})
+    write(sources["api"], "package-lock.json", json.dumps({"lockfileVersion": 3, "packages": {"": {"name": "api"}}}))
+    write(sources["docs"], "README.md", "# docs only\n")
+    for d in sources.values():
+        _commit(d)
+    repos = [SourceRepo("github", "acme", "", n, f"https://github.com/acme/{n}", default_branch="main",
+                        web_url=f"https://github.com/acme/{n}") for n in sources]
+    monkeypatch.setattr(orgmod, "provider", lambda *a, **k: _FakeProvider(repos))
+    monkeypatch.setattr(orgmod, "clone", lambda url, dest, branch="", header="", depth=1:
+                        shutil.copytree(sources[url.rsplit("/", 1)[1]], dest))
+    out = tmp_path / "out"
+    out.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=out, check=True)
+    o = OrgOptions(provider="github", org="acme", registry="reg.example/sandbox", output_dir=str(out), token="t",
+                   verify=False, gate=False, push_images=False, tag="1.0.0", work_dir=str(tmp_path / "work"),
+                   now=datetime(2026, 10, 31, tzinfo=timezone.utc))
+    res = {r.repo: r for r in run_org(o, log=lambda *a, **k: None)}
+    assert res["orders"].status == "deployed", res["orders"]
+    assert res["api"].status == "deployed", res["api"]
+    assert res["docs"].status != "deployed"
+    java = next((out).rglob("orders/**/Dockerfile")).read_text()
+    assert "distroless/java17" in java and "USER 65532" in java
+    nodedf = next((out).rglob("api/**/Dockerfile")).read_text()
+    assert "distroless/nodejs" in nodedf and "npm ci" in nodedf
+    k8s = next((out).rglob("orders/**/k8s.yaml")).read_text()
+    assert "/actuator/health/readiness" in k8s
+
+
 def test_run_org_writes_layout_sandbox_and_commits(tmp_path, monkeypatch):
     sources = {}
     for name, df, date in [("ci-demo", False, None), ("dockerized", True, None),

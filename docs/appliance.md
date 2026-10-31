@@ -8,7 +8,7 @@ image, and upgraded from the admin pages. It runs:
 | Part | How | Reached at |
 | --- | --- | --- |
 | Web UI and API (results, admin pages, System, Firewall and Sandbox HTTPS pages) | systemd service, user `cz-web`, no privileges | `https://<appliance>/` |
-| Scan worker (`containerizer worker`, [scheduled scans](scheduled-scans.md)) | systemd service, user `containerizer` + Docker | - |
+| Scan worker ([organization scans](scheduled-scans.md)) | systemd service, user `containerizer` + Docker | - |
 | SQL Server 2025 (results database) | container, non-root, data on the persistent partition | `127.0.0.1:1433` only |
 | Sandbox cluster: k3s (single node) with Flux and Traefik | systemd service | `kubectl` on the appliance; apps at `https://<component>-<app>.<domain>/` with [Sandbox HTTPS](sandbox-https.md) |
 | [Lab services](lab-services.md) for the sandboxed apps: SQL Server, PostgreSQL, Redis, S3, Azure Blob storage (each optional) | k3s, namespace `containerizer-lab`, data on the persistent partition | Admin → Lab services; inside the cluster only |
@@ -91,9 +91,9 @@ Sign in with `ssh root@<appliance>`. The first boot created `/etc/containerizer/
 | File | What to set |
 | --- | --- |
 | `appliance.env` | `CZ_HOSTNAME` (the name in the HTTPS certificate and the sign-in redirect), `CZ_ACME_EMAIL` (Let's Encrypt instead of the appliance's own CA), `CZ_DNS_SERVERS`, `CZ_MSSQL_EDITION`, `CZ_MSSQL_MEMORY` |
-| `web.env` | Sign-in for the web UI: `CONTAINERIZER_OIDC_*`, `CONTAINERIZER_ADMINS`, roles, viewers ([results-database.md](results-database.md#admin-pages)) |
-| `worker.env` | Registry credentials and extra registry hosts for the scan worker ([scheduled-scans.md](scheduled-scans.md)); source control tokens are registered on the admin pages instead ([source-control.md](source-control.md)) |
-| `sandbox.env` | The output repository the sandbox cluster deploys from |
+| `web.env` | Sign-in for the web UI: `CONTAINERIZER_OIDC_*`, `CONTAINERIZER_ADMINS`, roles, viewers, API ([sign-in and roles](sign-in.md)) |
+| `worker.env` | Push credentials for an external image registry, and extra registry hosts the worker may push to. Scans that push to the appliance's own registry need none; source control tokens are registered on the admin pages ([source-control.md](source-control.md)) |
+| `sandbox.env` | The output repository the sandbox cluster deploys from ([the sandbox cluster](scheduled-scans.md#the-sandbox-cluster)) |
 | `grafana.env` | Optional Grafana settings, e.g. sign-in with your identity provider |
 | `egress.json` | The egress allow-list: change it on the Firewall page, not here |
 | `secrets/` | Generated passwords (SQL Server logins, Grafana `admin`) and the key pair that seals source control tokens (`credential-key` for the worker only, `credential-key.pub` for the web UI): root-only, never shown in the web UI. Keep `credential-key` when restoring a backup: the registered tokens open only with it |
@@ -104,7 +104,7 @@ Steps:
 1. Set `CZ_HOSTNAME` in `appliance.env` to the DNS name users will open, and register
    `https://<CZ_HOSTNAME>/auth/callback` as the redirect URI of an app registration at your identity
    provider (Entra ID, Okta, Keycloak, ...).
-2. Fill in `web.env` (issuer, client id and secret, `CONTAINERIZER_ADMINS`). Allow the identity
+2. Fill in `web.env` (issuer, client id and secret, `CONTAINERIZER_ADMINS`; [sign-in and roles](sign-in.md)). Allow the identity
    provider's host on the Firewall page once you are in (or add it to `egress.json` now: e.g.
    `login.microsoftonline.com`), since the web UI fetches its keys.
 3. `systemctl reboot` (or `systemctl restart containerizer-web caddy`).
@@ -113,8 +113,10 @@ Steps:
    With `CZ_ACME_EMAIL`, allow `acme-v02.api.letsencrypt.org` on the Firewall page first; the name must
    resolve to the appliance from the internet (TLS-ALPN challenge on 443).
 5. **Admin → Firewall**: allow the hosts your scans need (Git servers, package feeds, registries).
-6. **Admin → Source control**: a read-only token for each organization to scan and a write token for
-   each output repository ([source-control.md](source-control.md)), then define organization scans.
+6. **Admin → Source control & LLM**: a read-only token for each organization to scan and a write token
+   for each output repository ([source-control.md](source-control.md)), and the LLM if scans should ask one.
+7. **Admin → Organization scans**: define the scans ([organization scans](scheduled-scans.md)), and
+   fill in `sandbox.env` so the sandbox cluster deploys what they generate.
 
 Grafana is at `https://<CZ_HOSTNAME>/grafana/`, user `admin`, password in
 `/etc/containerizer/secrets/grafana-admin` (change it in Grafana, or set up sign-in in `grafana.env`).
@@ -170,7 +172,7 @@ To deploy what the scans generate, set `sandbox.env` (output repository URL, bra
 Every 2 minutes `cz-sandbox` puts the read-only token in the secret store for Flux's root sync and for
 every app namespace, and creates the root `GitRepository` + `Kustomization` of the output repository's
 `sandbox/flux/`. Each app reconciles as its own ServiceAccount with its own copy of the token
-([organization-run.md](organization-run.md#deploying-to-the-sandbox-cluster)). Allow the Git server on
+([the sandbox cluster](scheduled-scans.md#the-sandbox-cluster)). Allow the Git server on
 the Firewall page. `kubectl` (as root on the appliance) shows the result. Argo CD is not installed; Flux
 is the supported path on the appliance.
 
@@ -235,24 +237,6 @@ and `/etc/containerizer` (configuration and secrets). Everything else is rebuilt
   under Pod Security "restricted".
 - Containers of the appliance's own services are pinned by digest in the OS image
   (`/usr/lib/containerizer/images.env`); each release has an SPDX SBOM attested to the image with cosign.
-
-## Building it yourself
-
-```sh
-docker build -f appliance/Dockerfile --build-arg VERSION=v0.0.0-dev -t containerizer-appliance:dev .
-# disk image (expandable), ISO
-docker run --rm --privileged -v /dev:/dev -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/build:/build" \
-  --entrypoint /usr/bin/elemental containerizer-appliance:dev build-disk --expandable --local \
-  --system containerizer-appliance:dev -n containerizer -o /build
-docker run --rm --privileged -v /dev:/dev -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/build:/build" \
-  --entrypoint /usr/bin/elemental containerizer-appliance:dev build-iso --local --bootloader-in-rootfs \
-  --extra-cmdline "console=tty1 console=ttyS0" -n containerizer -o /build containerizer-appliance:dev
-```
-
-A fork that publishes its own images sets `--build-arg IMAGE=ghcr.io/<owner>/containerizer-appliance
---build-arg SIGNER_REPO=<owner>/<repo>`, so its appliances accept only its own signed releases.
-`.github/workflows/release.yml` builds, boot-tests (QEMU: firewall, DNS filter, services, sandbox cluster,
-registry, roll back) and, on a `vX.Y.Z` tag, pushes, signs and publishes.
 
 ## Troubleshooting
 
