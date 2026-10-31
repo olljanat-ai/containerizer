@@ -390,18 +390,18 @@ def test_no_code_reasons(tmp_path):
     (docs / "guide").mkdir(parents=True)
     for f in ("README.md", "guide/a.md", "guide/b.md", "pipeline.yml"):
         (docs / f).write_text("# x\n")
-    assert orgmod.no_code_reason(docs).startswith("no application code: 4 files (.md 3, .yml 1)")
+    assert orgmod.no_code_reason(docs) == "4 files (.md 3, .yml 1), no source code"
     loose = tmp_path / "scripts"
     loose.mkdir()
     (loose / "fix.sql").write_text("select 1")
-    assert "loose .sql files only" in orgmod.no_code_reason(loose)
+    assert orgmod.no_code_reason(loose).startswith("1 files (.sql 1): .sql files but no project file")
     lib = tmp_path / "lib"
     (lib / "src" / "Lib").mkdir(parents=True)
     (lib / "src" / "Lib" / "Lib.csproj").write_text(
         '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework>'
         '<OutputType>Library</OutputType></PropertyGroup></Project>')
     (lib / "src" / "Lib" / "Class1.cs").write_text("namespace Lib; public class C { }")
-    assert orgmod.no_code_reason(lib).startswith("nothing that runs on its own: 1 project(s), only library")
+    assert orgmod.no_code_reason(lib) == "only library: 1 project(s), nothing that runs on its own"
     assert orgmod.no_code_reason(DEMO) == ""
 
 
@@ -498,7 +498,7 @@ def test_run_org_with_cache_state_and_overrides(tmp_path, monkeypatch):
     # enabled by an administrator: processed although it has a Dockerfile, and the skip is reported
     assert res["dockerized"].status == "deployed"
     assert res["dockerized"].overridden == [{"status": "skipped-dockerfile", "reason": "already has Dockerfile"}]
-    assert res["docs"].status == "skipped-no-code" and "no application code" in res["docs"].reason
+    assert res["docs"].status == "skipped-no-code" and "no source code" in res["docs"].reason
     assert res["off"].status == "disabled" and "skipme" not in res
     assert state.recorded["skipme"].status == "skipped-filter"
     assert set(state.recorded) == {"web", "dockerized", "docs", "off", "skipme"}

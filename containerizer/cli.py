@@ -234,6 +234,12 @@ def cmd_org(args) -> int:
     return 1 if by.get("error") else 0
 
 
+def cmd_worker(args) -> int:
+    from .worker import build
+
+    return build(args)
+
+
 def cmd_bench(args) -> int:
     from .bench import run_bench
 
@@ -421,6 +427,20 @@ def main(argv=None) -> int:
                    "code (only documentation, configuration, scripts, or only libraries and tests)")
     s.add_argument("--dry-run", action="store_true", help="list the repositories and the API-level skips only")
     s.set_defaults(fn=cmd_org)
+
+    s = sub.add_parser("worker", help="run the organization scans scheduled on the admin pages (needs Docker); "
+                       "serves Prometheus metrics")
+    s.add_argument("--sql", help="connection string of a writer login (default CONTAINERIZER_SQL; password in "
+                   "CONTAINERIZER_SQL_PASSWORD)")
+    s.add_argument("--data-dir", default="/var/lib/containerizer",
+                   help="clones (kept between runs), work folders and local output, one folder per scan")
+    s.add_argument("--poll", type=int, default=30, help="seconds between checks for due scans")
+    s.add_argument("--name", help="worker name shown on the runs (default: the host name)")
+    s.add_argument("--metrics-host", default="127.0.0.1", help="listen address of the metrics endpoint")
+    s.add_argument("--metrics-port", type=int, default=9464)
+    s.add_argument("--no-metrics", action="store_true")
+    s.add_argument("--once", action="store_true", help="run what is due or queued, then exit")
+    s.set_defaults(fn=cmd_worker)
 
     s = sub.add_parser("bench", help="score assessments against labelled expectations")
     s.add_argument("--challenge", default="../containerization-challenge")

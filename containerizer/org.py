@@ -519,7 +519,7 @@ def no_code_reason(src: Path) -> str:
     """Why a repository has nothing to containerize, or "" when it has application code: no project
     file the scanner knows (only documentation, configuration or scripts), or only libraries, tests and
     tools (nothing that runs on its own)."""
-    from .assess import NON_DEPLOYABLE, assess
+    from .assess import assess
     from .scan import scan
     repo = scan(src)
     if not repo.projects:
@@ -529,12 +529,12 @@ def no_code_reason(src: Path) -> str:
         top = ", ".join(f"{x} {n}" for x, n in s["top"])
         if s["code"]:
             kinds = ", ".join(sorted(s["code"]))
-            return f"no application project (.csproj, package.json, pom.xml, go.mod, ...): {s['files']} files ({top}), loose {kinds} files only"
-        return f"no application code: {s['files']} files ({top})"
+            return f"{s['files']} files ({top}): {kinds} files but no project file (.csproj, package.json, pom.xml, go.mod, ...)"
+        return f"{s['files']} files ({top}), no source code"
     a = assess(src, repo=repo)
     if not a.components:
         kinds = sorted({c.role for c in a.libraries + a.tests} or {p.kind_hint for p in repo.projects})
-        return f"nothing that runs on its own: {len(repo.projects)} project(s), only {', '.join(kinds)}"
+        return f"only {', '.join(kinds)}: {len(repo.projects)} project(s), nothing that runs on its own"
     return ""
 
 
