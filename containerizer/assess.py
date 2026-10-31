@@ -206,11 +206,18 @@ class AppAssessment:
                         d["components"].append(c.name)
         return sorted(seen.values(), key=lambda d: (-SEV_RANK[d["severity"]], -len(d["components"])))[:n]
 
+    def migration_plans(self) -> dict[str, dict]:
+        """Project path -> migration plan (migrate.py) for the components that are not ready."""
+        from .migrate import app_plans
+        return app_plans(self)
+
     def to_dict(self) -> dict:
+        plans = self.migration_plans()
         return {"name": self.name, "rating": self.rating, "rating_text": APP_RATINGS[self.rating],
                 "score": self.score, "effort_days": self.effort, "confidence": self.confidence,
                 "summary": self.summary(), "top_blockers": self.top_blockers(),
-                "components": [c.to_dict() for c in self.components],
+                "components": [{**c.to_dict(), **({"migration": plans[c.project.rel]} if c.project.rel in plans else {})}
+                               for c in self.components],
                 "libraries": [{"name": c.name, "project": c.project.rel, "tfm": c.project.tfms,
                                "findings": [f.to_dict() for f in c.findings]} for c in self.libraries],
                 "tests": [c.project.rel for c in self.tests],

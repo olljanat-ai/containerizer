@@ -329,6 +329,8 @@ def store_assessment(conn, doc: dict, source: dict, assessed_at=None) -> int:
                          c["verdict"], _cut(c.get("verdict_text", c["verdict"]), 200), int(c["score"]),
                          float(c["effort_days"]), float(c.get("confidence", 1)), bool(c.get("windows_container_ok")),
                          status, _cut(detail if status else None, 2000)))
+            if c.get("migration"):
+                _migration(cur, assessment_id, comp_id, c["migration"])
             for f in c.get("findings", []):
                 _finding(cur, assessment_id, comp_id, f)
             if v.get("finding"):
@@ -354,6 +356,15 @@ def _component(cur, app_id: int, c: dict) -> int:
     cur.execute("INSERT cz.Component (ApplicationId, ProjectPath, Name) OUTPUT INSERTED.ComponentId VALUES (%s, %s, %s)",
                 (app_id, path, _cut(c["name"], 200)))
     return cur.fetchone()[0]
+
+
+def _migration(cur, assessment_id: int, comp_id: int, m: dict) -> None:
+    plan = {k: v for k, v in m.items() if k != "prompt"}
+    cur.execute("INSERT cz.ComponentMigration (AssessmentId, ComponentId, Outcome, EffortDays, ItemCount, PlanJson, "
+                "AgentPrompt) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (assessment_id, comp_id, _cut(m.get("outcome") or "linux-container", 40),
+                 float(m.get("effort_days") or 0), len(m.get("items") or []), json.dumps(plan, default=str),
+                 m.get("prompt")))
 
 
 def _runtime_finding(f: dict) -> dict:
