@@ -1,0 +1,557 @@
+# Java (JVM) finding rules: what keeps a Java/Kotlin component from running unchanged in a Linux
+# container. The JVM itself is portable; what breaks is Windows-only native code (JNI/JNA, COM),
+# Windows-only drivers and authentication, application-server packaging, and data the component
+# keeps on its own disk or in its memory (state: rules, same A-rating rule as .NET).
+#
+# Packages are "groupId:artifactId" (Maven coordinates, also for Gradle). `runtime: true` leaves out
+# test-scoped dependencies; code and config searches leave out src/test/ (rules.TEST_PATH_RE).
+rules:
+  # ------------------------------------------------------------------ Windows-only native code
+  - id: java-com-bridge
+    applies_to: [java]
+    when:
+      any:
+        - package: 'com\.hynnet:jacob|net\.sf\.jacob-project:jacob|jacob:jacob|com\.jacob:jacob|org\.jvnet\.com4j:com4j|com4j:com4j|org\.kohsuke:com4j'
+          runtime: true
+        - code: '^\s*import\s+(com\.jacob\.(com|activeX)\.|com4j\.)'
+    severity: blocker
+    category: com
+    windows_container: true
+    title: COM / ActiveX automation from Java (JACOB, com4j)
+    why: >-
+      JACOB and com4j call COM components (Office automation, ActiveX controls, vendor COM servers)
+      through a native Windows bridge DLL loaded with JNI. COM does not exist on Linux, so the bridge
+      cannot load and every call into the component fails; the COM servers themselves are Windows
+      programs.
+    fix: >-
+      Replace the COM component with a Java library (Apache POI for Office documents, a REST/SOAP
+      API of the vendor product), or keep this part on a Windows host and call it over the network.
+      A Windows container with the COM server installed is a stop-gap.
+    refs:
+      - https://github.com/freemansoft/jacob-project
+      - https://github.com/kohsuke/com4j
+
+  - id: java-jna-win32
+    applies_to: [java]
+    when:
+      all:
+        - all:
+            - - code: '\bcom\.sun\.jna\.platform\.win32\b|\bNative\.load(Library)?\s*\(\s*"(user32|kernel32|advapi32|gdi32|shell32|ole32|oleaut32|netapi32|secur32|crypt32|wtsapi32|psapi|winspool(\.drv)?|winmm|iphlpapi|dbghelp|ntdll|wininet|mpr|userenv|setupapi)"'
+            - not: {code: &java_os_check '\b(Platform|Functions|SystemUtils|OsUtils|OS)?\.?isWindows\s*\(|\bIS_OS_WINDOWS\b|"os\.name"'}
+          same_file: true
+        # bindings whose callers check the OS first (Jenkins: Windows service code behind Functions.isWindows())
+        - not: {closure: {code: *java_os_check}}
+    severity: rewrite
+    category: platform
+    windows_container: true
+    title: Windows API calls through JNA
+    why: >-
+      The code calls Windows system DLLs (kernel32, advapi32, user32, ...) through JNA's
+      com.sun.jna.platform.win32 bindings or Native.load. Those libraries exist only on Windows, so
+      on Linux the first call throws UnsatisfiedLinkError; nothing in the code checks the operating
+      system first.
+    fix: >-
+      Replace each Windows API with a portable Java API (java.nio.file for files and ACLs,
+      ProcessHandle for processes, JNDI/LDAP for directory lookups), or move the Windows-specific
+      part to a Windows host behind an API.
+    refs:
+      - https://java-native-access.github.io/jna/5.13.0/javadoc/com/sun/jna/platform/win32/package-summary.html
+
+  - id: java-jna-win32-guarded
+    applies_to: [java]
+    when:
+      all:
+        - code: '\bcom\.sun\.jna\.platform\.win32\b|\bNative\.load(Library)?\s*\(\s*"(user32|kernel32|advapi32|gdi32|shell32|ole32|oleaut32|netapi32|secur32|crypt32|wtsapi32|psapi|winspool(\.drv)?|winmm|iphlpapi|dbghelp|ntdll|wininet|mpr|userenv|setupapi)"'
+        - closure: {code: *java_os_check}
+    severity: info
+    category: platform
+    title: Windows API calls through JNA, behind OS checks
+    why: >-
+      The code has JNA bindings to Windows system DLLs, and the component checks for Windows
+      before Windows-specific work (isWindows(), os.name). On Linux these bindings are normally
+      not loaded; check that every call path into them is behind such a check.
+    fix: >-
+      Nothing to change when the Linux path never calls the bindings; a test run in the container
+      (verify) confirms it.
+    refs:
+      - https://java-native-access.github.io/jna/5.13.0/javadoc/com/sun/jna/platform/win32/package-summary.html
+
+  - id: java-native-windows-library
+    applies_to: [java]
+    when:
+      all:
+        - code: '\bSystem\.load(Library)?\s*\(|\bNative\.load(Library)?\s*\('
+        - file: '*.dll'
+        - not: {file: ['*.so', '*.so.*']}
+    severity: rewrite
+    category: platform
+    windows_container: true
+    title: Native library shipped only as a Windows DLL
+    why: >-
+      The component loads a native library (System.loadLibrary / JNA) and the module ships it only
+      as a Windows .dll. On Linux the JVM looks for lib<name>.so, which is not there, so loading
+      fails with UnsatisfiedLinkError.
+    fix: >-
+      Get or build the Linux (.so) version of the native library from its vendor and package it
+      next to the DLL, or replace it with a pure Java library.
+    refs:
+      - https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/System.html#mapLibraryName(java.lang.String)
+
+  - id: java-process-windows-commands
+    applies_to: [java]
+    when:
+      all:
+        - code: '(\bexec\s*\(|\bnew\s+ProcessBuilder\s*\(|\bcommand\s*\()\s*(new\s+String\s*\[\s*\]\s*\{\s*)?"(cmd(\.exe)?|powershell(\.exe)?|pwsh|wmic|reg(\.exe)?|net(\.exe)?|sc(\.exe)?|schtasks|taskkill|tasklist|cscript|wscript|rundll32|icacls|robocopy|xcopy|[^"\s]+\.(exe|bat|cmd|vbs|ps1))(\s[^"]*)?"'
+        - not: {code: *java_os_check}
+      same_file: true
+    severity: refactor
+    category: platform
+    windows_container: true
+    effort: 1
+    title: Starts Windows programs (cmd, PowerShell, .exe)
+    why: >-
+      The code starts Windows command-line programs or executables (cmd /c, powershell, reg,
+      taskkill, a .exe or .bat file) with Runtime.exec or ProcessBuilder. They do not exist in a
+      Linux image, so the call fails at run time.
+    fix: >-
+      Do the work in Java (java.nio.file, ProcessHandle), or call the Linux equivalent of the tool
+      and add it to the image; if the program is a vendor tool, check whether a Linux build exists.
+
+  # ------------------------------------------------------------------ data access and authentication
+  - id: java-mssql-integrated-auth
+    applies_to: [java]
+    when:
+      all:
+        - any:
+            - config: '\bintegratedSecurity\s*=\s*true\b'
+            - code: '\bintegratedSecurity\s*=\s*true\b|\bsetIntegratedSecurity\s*\(\s*true\s*\)'
+        - not: {any: [{config: 'authenticationScheme\s*=\s*(JavaKerberos|NTLM)'}, {code: 'authenticationScheme\s*=\s*(JavaKerberos|NTLM)'}]}
+    severity: config
+    category: auth
+    effort: 1
+    title: SQL Server Windows authentication from JDBC
+    why: >-
+      The JDBC connection uses integratedSecurity=true without an authenticationScheme. On Windows
+      the Microsoft JDBC driver logs in as the Windows account through its native mssql-jdbc_auth
+      DLL; on Linux there is no such account or DLL, and integrated security needs Kerberos
+      (authenticationScheme=JavaKerberos with a keytab and krb5.conf).
+    fix: >-
+      Use SQL authentication or Microsoft Entra authentication from a Kubernetes Secret, or set
+      authenticationScheme=JavaKerberos and mount krb5.conf and a keytab for a service account.
+    refs:
+      - https://learn.microsoft.com/en-us/sql/connect/jdbc/using-kerberos-integrated-authentication-to-connect-to-sql-server
+      - https://learn.microsoft.com/en-us/sql/connect/jdbc/building-the-connection-url
+
+  - id: java-jdbc-odbc-bridge
+    applies_to: [java]
+    when:
+      any:
+        - code: '\bsun\.jdbc\.odbc\.JdbcOdbcDriver\b|"jdbc:odbc:'
+        - config: '\bsun\.jdbc\.odbc\.JdbcOdbcDriver\b|\bjdbc:odbc:'
+    severity: rewrite
+    category: data
+    windows_container: false
+    effort: 3
+    title: JDBC-ODBC bridge
+    why: >-
+      The code connects through the JDBC-ODBC bridge (sun.jdbc.odbc, jdbc:odbc: URLs). The bridge
+      was removed from the JDK in Java 8, so no supported runtime has it, and the ODBC data sources
+      it names are configured on the Windows machine (often an Access or Excel file).
+    fix: >-
+      Switch to the database's own JDBC driver (Microsoft JDBC Driver for SQL Server, Oracle JDBC,
+      PostgreSQL) with a JDBC URL from configuration; for Access files use UCanAccess or migrate
+      the data to a server database.
+
+  - id: java-waffle-windows-auth
+    applies_to: [java]
+    when:
+      any:
+        - package: 'com\.github\.waffle:waffle-.*|com\.github\.dblock\.waffle:waffle-.*'
+          runtime: true
+        - code: '^\s*import\s+waffle\.'
+    severity: refactor
+    category: auth
+    windows_container: true
+    effort: 3
+    title: Windows integrated authentication with WAFFLE
+    why: >-
+      WAFFLE authenticates users with Windows SSPI (Negotiate/NTLM) through native Windows APIs.
+      SSPI does not exist on Linux, so the login filter cannot start and users cannot sign in.
+    fix: >-
+      Use Kerberos/SPNEGO that runs on any OS (Spring Security Kerberos with a service keytab) or
+      move to OpenID Connect (Microsoft Entra ID, Keycloak) with Spring Security OAuth2 login.
+    refs:
+      - https://github.com/Waffle/waffle
+      - https://docs.spring.io/spring-security-kerberos/reference/
+
+  # ------------------------------------------------------------------ runtime and hosting
+  - id: java-unsupported-version
+    applies_to: [java]
+    when:
+      all:
+        - property: {JavaVersion: '[1-7]'}
+        - not: {role: 'test|library|tool'}
+    severity: refactor
+    category: runtime
+    effort: 3
+    title: Java 7 or older
+    why: >-
+      The build targets Java 7 or older. No maintained JDK or JRE container image exists for these
+      versions (Eclipse Temurin starts at Java 8), and the libraries of that era often fail on a
+      newer JVM (removed Java EE modules, illegal reflective access).
+    fix: >-
+      Raise the source/target to Java 8 at least, preferably 17 or 21, update the libraries that
+      break, and run the tests on that JVM before containerizing.
+    refs:
+      - https://adoptium.net/support/
+
+  - id: java-ee-application-server
+    applies_to: [java]
+    when:
+      all:
+        - not: {property: {SpringBoot: "true"}}
+        - not: {role: 'test|library|tool'}
+        - any:
+            - property: {Packaging: ear}
+            - code: '^\s*import\s+(javax|jakarta)\.ejb\.|@(Stateless|Stateful|Singleton|MessageDriven)\b(?!\s*=)'
+    severity: refactor
+    category: hosting
+    effort: 3
+    title: Needs a full Jakarta EE application server (EJB, EAR)
+    why: >-
+      The component is an enterprise archive or uses Enterprise JavaBeans, so it runs inside a full
+      Jakarta EE application server (WildFly/JBoss, WebSphere, WebLogic, Payara) that provides EJB,
+      JMS, transactions and the data sources. A plain JVM or servlet container image cannot run
+      it, and the server's own configuration (data sources, queues, security realms) has to come
+      along.
+    fix: >-
+      Build on the vendor's Linux container image (Open Liberty, WildFly, Payara) and move the
+      server configuration into the image as files and environment variables; or port the EJBs to
+      Spring Boot or Quarkus beans, which run as a plain JVM process.
+    refs:
+      - https://openliberty.io/docs/latest/container-images.html
+      - https://jakarta.ee/specifications/platform/
+
+  - id: java-vendor-app-server-api
+    applies_to: [java]
+    when:
+      code: '^\s*import\s+(weblogic\.|com\.ibm\.websphere\.|com\.ibm\.ws\.|com\.ibm\.wsspi\.|org\.jboss\.(ejb3|annotation\.ejb)\.|com\.sun\.enterprise\.)'
+    severity: refactor
+    category: hosting
+    effort: 2
+    title: Vendor application server APIs (WebLogic, WebSphere, JBoss)
+    why: >-
+      The code imports classes of a specific application server (weblogic.*, com.ibm.websphere.*,
+      JBoss EJB extensions). It only runs inside that server, so the image has to be built on that
+      vendor's container image with its licence, or the calls replaced with standard Jakarta EE or
+      Spring APIs.
+    fix: >-
+      Replace the vendor APIs with standard ones (Jakarta EE, MicroProfile, Spring), or build the
+      image on the vendor's supported Linux container image and its configuration tooling.
+    refs:
+      - https://openliberty.io/docs/latest/container-images.html
+
+  - id: java-windows-service-wrapper
+    applies_to: [java]
+    when:
+      any:
+        - file: ['prunsrv*.exe', 'prunmgr*.exe', 'winsw*.exe', 'WinSW*.exe', 'wrapper.conf', 'wrapper-windows-*.exe']
+        - text: '\bprunsrv(\.exe)?\b|//IS//|--StartClass\b'
+          in: ['*.bat', '*.cmd', '*.ps1']
+        - text: '<service>\s*<id>[^<]+</id>[\s\S]*?<executable>[^<]*java'
+          in: ['*.xml']
+    severity: config
+    category: hosting
+    effort: 0.25
+    title: Installed as a Windows service (procrun, WinSW, Java Service Wrapper)
+    why: >-
+      The component is installed as a Windows service with a service wrapper (Apache procrun,
+      WinSW or the Tanuki Java Service Wrapper) that starts the JVM, restarts it and keeps its
+      settings. In a container Kubernetes starts and restarts the process, so the wrapper and its
+      configuration are not used; JVM options and arguments set in it must move to the image.
+    fix: >-
+      Move the JVM options, classpath and main class from the wrapper configuration to the
+      container's command (JAVA_TOOL_OPTIONS, java -jar) and drop the service installation scripts.
+    refs:
+      - https://commons.apache.org/proper/commons-daemon/procrun.html
+      - https://github.com/winsw/winsw
+      - https://wrapper.tanukisoftware.com/doc/english/introduction.html
+
+  - id: java-file-logging
+    applies_to: [java]
+    when:
+      all:
+        - not: {role: 'test|library|tool'}
+        - any:
+            - all:
+                - config: 'class\s*=\s*"ch\.qos\.logback\.core\.(rolling\.Rolling)?FileAppender"'
+                  in: ['logback*.xml']
+                - not: {config: 'class\s*=\s*"ch\.qos\.logback\.core\.ConsoleAppender"|<appender-ref\s+ref\s*=\s*"CONSOLE"|base\.xml|console-appender\.xml', in: ['logback*.xml']}
+            - all:
+                - config: '<(RollingFile|RollingRandomAccessFile|File)\b'
+                  in: ['log4j2*.xml']
+                - not: {config: '<Console\b', in: ['log4j2*.xml']}
+            - config: '^\s*logging\.file\.(name|path)\s*[=:]|^\s*logging\.file\s*[=:]'
+              in: ['application.properties', 'application.yml', 'application.yaml']
+    severity: config
+    category: logging
+    effort: 0.25
+    title: Logs only to files
+    why: >-
+      The logging configuration writes to log files and not to the console. In a container the
+      cluster collects stdout; files inside the container are lost with the pod and need a
+      writable folder on a read-only root file system.
+    fix: >-
+      Add a console appender (Spring Boot logs to the console by default) and drop or keep the file
+      appender on a writable volume; with Spring Boot, unset logging.file.name/path through
+      environment variables.
+    refs:
+      - https://logback.qos.ch/manual/appenders.html
+      - https://docs.spring.io/spring-boot/reference/features/logging.html
+
+  - id: java-scheduled-every-replica
+    applies_to: [java]
+    when:
+      all:
+        - role: web
+        - code: '@Scheduled\s*\(|@EnableScheduling\b'
+        - not: {closure: {package: 'net\.javacrumbs\.shedlock:.*|org\.springframework\.integration:spring-integration-(jdbc|redis|zookeeper)'}}
+        - not: {closure: {code: '@SchedulerLock\b|\bLockRegistry\b'}}
+    severity: config
+    category: scheduling
+    effort: 0.25
+    title: Scheduled tasks run in every replica
+    why: >-
+      The web application runs @Scheduled tasks in-process. With more than one replica every pod
+      runs every task, so jobs that send mail, import files or update data run several times at
+      once.
+    fix: >-
+      Run one replica of the scheduler (a separate Deployment or a Kubernetes CronJob), or add a
+      distributed lock such as ShedLock so each run happens once.
+    refs:
+      - https://docs.spring.io/spring-boot/reference/features/task-execution-and-scheduling.html
+      - https://github.com/lukas-krecan/ShedLock
+
+  - id: java-quartz-ram-store
+    applies_to: [java]
+    when:
+      all:
+        - not: {role: 'test|library|tool'}
+        - closure: {package: 'org\.springframework\.boot:spring-boot-starter-quartz|org\.quartz-scheduler:quartz|io\.quarkus:quarkus-quartz', runtime: true}
+        - not: {config: 'job-store-type\s*[=:]\s*["'']?jdbc|org\.quartz\.jobStore\.class\s*[=:]\s*\S*jdbcjobstore|quarkus\.quartz\.store-type\s*[=:]\s*["'']?jdbc'}
+    severity: config
+    category: scheduling
+    effort: 0.5
+    title: Quartz with the in-memory job store
+    why: >-
+      Quartz keeps its jobs and triggers in memory (RAMJobStore, the default). Every replica then
+      schedules and fires the same jobs, and jobs scheduled at run time are lost when the pod
+      restarts.
+    fix: >-
+      Use the JDBC job store in clustered mode (spring.quartz.job-store-type=jdbc,
+      org.quartz.jobStore.isClustered=true) against the application database, or run one replica
+      of the scheduler.
+    refs:
+      - https://docs.spring.io/spring-boot/reference/io/quartz.html
+      - https://www.quartz-scheduler.org/documentation/quartz-2.3.0/configuration/ConfigRAMJobStore.html
+
+  # ------------------------------------------------------------------ state (not stateless)
+  # An embedded database in file mode (H2, HSQLDB, Derby, SQLite, UCanAccess, MapDB, RocksDB) with
+  # no server database driver anywhere in the repository: the data lives on the component's disk.
+  - id: java-embedded-db-file
+    applies_to: [java]
+    when:
+      all:
+        - not: {role: 'test|desktop|tool'}
+        - any:
+            - config: '\b(jdbc|r2dbc):(h2:(file:|~/|\./|/|[A-Za-z]:|tcp://localhost)|hsqldb:(file:|hsql://localhost)|derby:(?!memory:)|sqlite:|ucanaccess:)'
+              in: ['*.properties', '*.yml', '*.yaml', '*.xml']
+            - code: '"(jdbc|r2dbc):(h2:(file:|~/|\./)|hsqldb:file:|derby:(?!memory:)|sqlite:|ucanaccess:)'
+            - closure: {package: 'org\.xerial:sqlite-jdbc|net\.sf\.ucanaccess:ucanaccess|org\.mapdb:mapdb|org\.rocksdb:rocksdbjni|com\.sleepycat:je|org\.lmdbjava:lmdbjava|org\.dizitart:(nitrite|potassium-nitrite)|net\.openhft:chronicle-map|org\.neo4j:neo4j', runtime: true}
+        - not: &java_server_db
+            any:
+              - closure: {package: &java_server_db_pkgs 'com\.mysql:mysql-connector-j|mysql:mysql-connector-java|org\.mariadb\.jdbc:mariadb-java-client|org\.postgresql:postgresql|com\.microsoft\.sqlserver:mssql-jdbc|com\.oracle\.database\.jdbc:ojdbc\d*|com\.oracle\.ojdbc:ojdbc\d*|com\.ibm\.db2:jcc|org\.mongodb:.*|org\.springframework\.boot:spring-boot-starter-data-(mongodb|mongodb-reactive|cassandra|couchbase|elasticsearch|neo4j)|io\.r2dbc:r2dbc-(postgresql|mssql)|org\.postgresql:r2dbc-postgresql|io\.asyncer:r2dbc-mysql|org\.mariadb:r2dbc-mariadb|com\.oracle\.database\.r2dbc:oracle-r2dbc|io\.quarkus:quarkus-(jdbc|reactive)-(postgresql|mysql|mariadb|mssql|oracle|db2)|io\.quarkus:quarkus-mongodb-.*|com\.datastax\.oss:java-driver-core|org\.apache\.cassandra:.*'}
+              - other_project: {package: *java_server_db_pkgs}
+              - config: '\bjdbc:(mysql|mariadb|postgresql|sqlserver|oracle|db2):|\br2dbc:(postgres|postgresql|mysql|mariadb|mssql|oracle):|\bmongodb(\+srv)?://'
+                in: ['*.properties', '*.yml', '*.yaml', '*.xml', '*.env']
+    severity: config
+    category: storage
+    state: local
+    effort: 0.5
+    title: Embedded file database (H2, HSQLDB, Derby, SQLite)
+    why: >-
+      The application keeps its data in an embedded database file on its own disk (H2 or HSQLDB in
+      file mode, Derby, SQLite, an Access file), and the repository wires up no server database to
+      use instead. The file has to sit on a persistent volume and only one replica may open it, so
+      the component is not stateless.
+    fix: >-
+      To run it as is, mount a PersistentVolumeClaim at the database folder and keep one replica.
+      To make it stateless, point the JDBC URL at a managed database (PostgreSQL, MySQL, Azure SQL)
+      through configuration, e.g. SPRING_DATASOURCE_URL from a Secret.
+    refs:
+      - https://www.h2database.com/html/features.html
+      - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+      - https://12factor.net/processes
+
+  # H2/HSQLDB/Derby on the classpath with no server database: Spring Boot starts an in-memory
+  # database, so the data is gone when the pod restarts and every replica has its own.
+  - id: java-embedded-db-memory
+    applies_to: [java]
+    when:
+      all:
+        - not: {role: 'test|library|tool'}
+        - closure: {package: 'com\.h2database:h2|org\.hsqldb:hsqldb|org\.apache\.derby:derby(tools)?|io\.quarkus:quarkus-jdbc-(h2|derby)', runtime: true}
+        - closure: {package: 'org\.springframework\.boot:spring-boot-starter-(data-jpa|jdbc|data-jdbc|data-r2dbc)|org\.springframework\.data:spring-data-.*|org\.hibernate(\.orm)?:hibernate-core|org\.jooq:jooq|org\.mybatis.*:.*|io\.quarkus:quarkus-hibernate-orm.*|org\.jdbi:jdbi3-core', runtime: true}
+        - not: {config: '\b(jdbc|r2dbc):(h2:(file:|~/|\./|/|[A-Za-z]:)|hsqldb:file:|derby:(?!memory:))', in: ['*.properties', '*.yml', '*.yaml', '*.xml']}
+        - not: *java_server_db
+    severity: config
+    category: storage
+    state: memory
+    effort: 0.5
+    title: In-memory embedded database (H2, HSQLDB, Derby)
+    why: >-
+      The only database in the application is an embedded H2, HSQLDB or Derby database in memory
+      (Spring Boot creates one when such a driver is on the classpath and no URL is set). Its data
+      is lost whenever the pod restarts, and every replica has its own copy, so the component is
+      not stateless.
+    fix: >-
+      Add the driver of a server database (PostgreSQL, MySQL, SQL Server) and set the JDBC URL and
+      credentials through environment variables from a Secret; keep H2 for tests only.
+    refs:
+      - https://docs.spring.io/spring-boot/reference/data/sql.html
+      - https://12factor.net/processes
+
+  # An embedded database next to a server database driver: the deployment can use the server one.
+  - id: java-embedded-db-optional
+    applies_to: [java]
+    when:
+      all:
+        - not: {role: 'test|library|tool'}
+        - closure: {package: 'com\.h2database:h2|org\.hsqldb:hsqldb|org\.apache\.derby:derby(tools)?|org\.xerial:sqlite-jdbc', runtime: true}
+        - *java_server_db
+    severity: info
+    category: storage
+    title: Embedded database with a server database option
+    why: >-
+      The application ships an embedded database (H2, HSQLDB, Derby or SQLite) and also a driver
+      or configuration for a server database. In the container it should run against the server
+      database, configured through environment variables, so it keeps no data of its own.
+    fix: >-
+      Select the server database profile or URL in the deployment (SPRING_PROFILES_ACTIVE,
+      SPRING_DATASOURCE_URL from a Secret).
+    refs:
+      - https://docs.spring.io/spring-boot/reference/data/sql.html
+
+  - id: java-session-in-memory
+    applies_to: [java]
+    when:
+      all:
+        - role: web
+        - any:
+            - code: '\bHttpSession\b|\.getSession\s*\(|@SessionAttributes\b|@SessionScope\b|@(javax\.enterprise\.context\.|jakarta\.enterprise\.context\.)?SessionScoped\b|\bWebSession\b|\.formLogin\s*\('
+            - closure: {package: 'com\.vaadin:.*|org\.apache\.wicket:wicket-core|org\.glassfish:jakarta\.faces|org\.glassfish:javax\.faces|org\.apache\.myfaces\.core:myfaces-impl|org\.primefaces:primefaces|org\.zkoss\.zk:zk', runtime: true}
+        - not: {closure: {package: 'org\.springframework\.session:spring-session-.*|com\.hazelcast:hazelcast.*|org\.redisson:redisson.*|org\.apache\.ignite:ignite-.*|org\.infinispan:infinispan-.*|io\.quarkus:quarkus-infinispan-.*', runtime: true}}
+        - not: {code: 'SessionCreationPolicy\.STATELESS|NoOpServerSecurityContextRepository'}
+        - not: {config: 'spring\.session\.store-type\s*[=:]\s*["'']?(redis|jdbc|hazelcast|mongodb)'}
+    severity: config
+    category: session
+    state: memory
+    effort: 1
+    title: HTTP session state in the JVM's memory
+    why: >-
+      The application keeps per-user state in the HTTP session (HttpSession attributes, session
+      scoped beans, form login, or a server-side UI framework such as Vaadin or JSF), and the
+      session lives in the memory of one JVM. Users are logged out or lose their work when the pod
+      restarts or the next request reaches another replica, so the component is not stateless.
+    fix: >-
+      Store the session in Redis or the database with Spring Session (spring-session-data-redis or
+      spring-session-jdbc), or make the API stateless with tokens; sticky sessions on the ingress
+      only soften it.
+    refs:
+      - https://docs.spring.io/spring-session/reference/
+      - https://docs.spring.io/spring-security/reference/servlet/authentication/session-management.html
+      - https://12factor.net/processes
+
+  - id: java-local-uploads
+    applies_to: [java]
+    when:
+      all:
+        - not: {role: 'test|desktop|tool'}
+        - all:
+            - code: '\bMultipartFile\b|\bFilePart\b|\bjavax\.servlet\.http\.Part\b|\bjakarta\.servlet\.http\.Part\b|\bgetPart\s*\('
+            - code: '\.transferTo\s*\(|\bFiles\.(write|copy|createDirectories|newOutputStream)\s*\(|\bnew\s+FileOutputStream\s*\(|\bDataBufferUtils\.write\s*\('
+            - not: {code: '\bcreateTempFile\s*\(|"java\.io\.tmpdir"|\b(AmazonS3|S3Client|S3AsyncClient|BlobClient|BlobContainerClient|BlobServiceClient|MinioClient|OSSClient|OSS\b|Storage\s+storage|GridFsTemplate|GridFSBucket)\b'}
+          same_file: true
+        - not: {closure: {package: 'software\.amazon\.awssdk:s3|com\.amazonaws:aws-java-sdk-s3|com\.azure:azure-storage-blob|com\.google\.cloud:google-cloud-storage|io\.minio:minio|com\.aliyun\.oss:aliyun-sdk-oss|io\.awspring\.cloud:spring-cloud-aws-starter-s3', runtime: true}}
+    severity: config
+    category: storage
+    state: local
+    effort: 1
+    title: Uploaded files stored on the local disk
+    why: >-
+      Request handlers save uploaded files to the local file system (MultipartFile.transferTo,
+      Files.write), and the application has no object storage client. The files need a persistent
+      volume, are lost when the pod moves without one and are not shared between replicas, so the
+      component is not stateless.
+    fix: >-
+      To run it as is, mount a PersistentVolumeClaim (ReadWriteMany for more than one replica) at
+      the upload folder. To make it stateless, store uploads in object storage (S3, Azure Blob
+      Storage, MinIO) and keep only the bucket settings in configuration.
+    refs:
+      - https://12factor.net/processes
+      - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+
+  - id: java-local-data-home
+    applies_to: [java]
+    when:
+      all:
+        - not: {role: 'test|desktop|tool'}
+        - all:
+            - code: '\bSystem\.getProperty\s*\(\s*"user\.(home|dir)"|\bSystem\.getenv\s*\(\s*"[A-Z_]*(HOME|DATA_DIR|WORK_DIR|DATA_PATH)"\s*\)|\bPaths?\.get\s*\(\s*"(data|uploads?|files|storage|attachments|work)"\s*[,)]'
+            - code: '\bFiles\.(write|writeString|copy|createDirectories|newOutputStream|newBufferedWriter|move)\s*\(|\bnew\s+(FileOutputStream|FileWriter|RandomAccessFile)\s*\(|\.mkdirs\s*\(\s*\)'
+            - not: {code: '\bcreateTempFile\s*\(|"java\.io\.tmpdir"'}
+          same_file: true
+    severity: config
+    category: storage
+    state: local
+    effort: 1
+    title: Application data written to a local home or data folder
+    why: >-
+      The code writes its own data (configuration, attachments, indexes, generated files) to a
+      folder on the local disk: the user's home or working directory, or a data folder named in
+      code or in an environment variable. In a container that folder needs a persistent volume and
+      is not shared between replicas, so the component is not stateless.
+    fix: >-
+      To run it as is, mount a PersistentVolumeClaim at that folder and keep one replica. To make
+      it stateless, keep the data in the database or in object storage.
+    refs:
+      - https://12factor.net/processes
+      - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+
+  - id: java-local-search-index
+    applies_to: [java]
+    when:
+      all:
+        - not: {role: 'test|desktop|tool'}
+        - any:
+            - closure: {code: '\b(FSDirectory|MMapDirectory|NIOFSDirectory|SimpleFSDirectory)\.open\s*\(|\bnew\s+(MMapDirectory|NIOFSDirectory|SimpleFSDirectory)\s*\('}
+            - config: 'hibernate\.search\.backend\.directory\.type\s*[=:]\s*["'']?local-filesystem|hibernate\.search\.backend\.directory\.root\s*[=:]'
+            - all:
+                - closure: {package: 'org\.hibernate\.search:hibernate-search-backend-lucene|org\.hibernate:hibernate-search-orm', runtime: true}
+                - not: {closure: {package: 'org\.hibernate\.search:hibernate-search-backend-elasticsearch', runtime: true}}
+    severity: config
+    category: storage
+    state: local
+    effort: 1
+    title: Search index on the local disk (Lucene)
+    why: >-
+      The application keeps a Lucene index on the local file system (FSDirectory, the Hibernate
+      Search Lucene backend). The index has to sit on a persistent volume or be rebuilt on every
+      start, and each replica has its own index, so the component is not stateless.
+    fix: >-
+      To run it as is, mount a PersistentVolumeClaim at the index folder and keep one replica. To
+      make it stateless, move search to a search service (Elasticsearch/OpenSearch, Azure AI
+      Search), e.g. the Hibernate Search Elasticsearch backend.
+    refs:
+      - https://hibernate.org/search/documentation/
+      - https://12factor.net/processes

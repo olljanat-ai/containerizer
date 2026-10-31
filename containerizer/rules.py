@@ -11,7 +11,9 @@ unless noted):
   sdk, tfm, package, reference, framework_ref, output_type, kind, role, name
   path: regex             the project file's path relative to the repository root ('/' separators)
   property: {Name: regex}
-  package: regex          package name; optional `version: regex` on its version (full match)
+  package: regex          package name; optional `version: regex` on its version (full match) and
+                          `runtime: true` to leave out test/build-only dependencies (Java test scope,
+                          npm devDependencies). Java packages are named "groupId:artifactId".
   file: glob              file name (or relative path when the glob has '/'); `skip_portable: true`
                           leaves out IL-only .NET Standard/.NET (Core) assemblies
   code: regex             source files, comments stripped; optional `in: glob`
@@ -1055,12 +1057,23 @@ def _search_files(ctx: Context, pattern: str, files: list[Path], strip: bool, ma
 
 
 SOURCE_EXT = {".cs", ".vb", ".fs", ".cshtml", ".vbhtml", ".razor", ".aspx", ".ascx", ".asmx", ".svc",
-              ".asax", ".master", ".ashx", ".ts", ".js", ".py", ".java", ".go", ".xaml", ".tsx", ".jsx", ".mjs"}
+              ".asax", ".master", ".ashx", ".ts", ".js", ".py", ".java", ".go", ".xaml", ".tsx", ".jsx", ".mjs",
+              ".cjs", ".mts", ".cts", ".kt", ".groovy", ".scala", ".jsp", ".vue", ".svelte"}
 CONFIG_EXT = {".config", ".json", ".xml", ".yaml", ".yml", ".ini", ".properties", ".settings", ".env", ".toml"}
 
 
 DOTNET_SOURCE_EXT = {".cs", ".vb", ".fs", ".cshtml", ".vbhtml", ".razor", ".aspx", ".ascx", ".asmx", ".svc",
                      ".asax", ".master", ".ashx", ".xaml"}
+JAVA_SOURCE_EXT = {".java", ".kt", ".groovy", ".scala", ".jsp"}
+NODE_SOURCE_EXT = {".js", ".ts", ".tsx", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".svelte"}
+KIND_SOURCE_EXT = {"java": JAVA_SOURCE_EXT, "node": NODE_SOURCE_EXT}
+# Java and Node keep their tests inside the module: test sources and test resources are not what the
+# deployed component runs (src/test/resources/application.properties, __tests__/, *.spec.ts)
+TEST_PATH_RE = {
+    "java": re.compile(r"(^|/)src/(test|it|integrationTest|testFixtures|jmh)/", re.I),
+    "node": re.compile(r"(^|/)(__tests__|__mocks__|tests?|e2e|cypress|playwright|spec|specs|fixtures?|stories)/|"
+                       r"\.(test|spec|e2e|stories|cy)\.[cm]?[jt]sx?$", re.I),
+}
 # third-party bundles (minified JS, editor grammars, vendored client libraries) are not application code
 VENDORED_RE = re.compile(r"\.min\.(js|css)$|(^|/)(wwwroot/lib|monaco[^/]*|node_modules|bower_components)/", re.I)
 _FILES_CACHE: dict = {}
@@ -1075,10 +1088,14 @@ def _candidate_files(ctx: Context, key: str, glob) -> list[Path]:
     if hit is not None and hit[0] is owner:
         return hit[1]
     files = [f for f in ctx.files() if not VENDORED_RE.search(ctx.repo.rel(f).replace("\\", "/"))]
+    kind = ctx.project.kind_hint if ctx.project is not None else ""
+    if kind in TEST_PATH_RE:
+        base = ctx.project.dir
+        files = [f for f in files if not TEST_PATH_RE[kind].search(str(f.relative_to(base)).replace("\\", "/"))]
     if key == "code":
-        # .NET projects: only .NET source, unless the rule names the files itself
-        ext = DOTNET_SOURCE_EXT if (ctx.project is not None and ctx.project.kind_hint == "dotnet" and not globs) \
-            else SOURCE_EXT
+        # .NET, Java and Node projects: only their own language's source, unless the rule names the files
+        ext = DOTNET_SOURCE_EXT if (kind == "dotnet" and not globs) else \
+            KIND_SOURCE_EXT[kind] if (kind in KIND_SOURCE_EXT and not globs) else SOURCE_EXT
         files = [f for f in files if f.suffix.lower() in ext]
     elif key == "config":
         files = [f for f in files if f.suffix.lower() in CONFIG_EXT and not f.name.lower().endswith(("proj", ".sln"))
@@ -1099,7 +1116,7 @@ def evaluate(cond, ctx: Context) -> tuple[bool, list[Evidence], dict]:
         cond = {"all": cond}
     ev: list[Evidence] = []
     caps: dict = {}
-    keys = [k for k in cond.keys() if k not in ("in", "max", "unguarded", "same_file", "skip_portable", "version")]
+    keys = [k for k in cond.keys() if k not in ("in", "max", "unguarded", "same_file", "skip_portable", "version", "runtime")]
     if not keys:
         return True, [], {}
     for key in keys:
@@ -1195,6 +1212,8 @@ def _eval_one(key: str, val, cond: dict, ctx: Context):
         return bool(hits), [Evidence(proj_file, 0, f"TargetFramework={';'.join(p.tfms)}")], {}
     if key == "package":
         hits = [n for n in p.packages if _rx(f"^(?:{val})$").search(n)]
+        if cond.get("runtime"):
+            hits = [n for n in hits if n not in p.dev_packages]
         if cond.get("version"):
             hits = [n for n in hits if _rx(f"^(?:{cond['version']})$").search(p.packages[n] or "")]
         return bool(hits), [Evidence(proj_file, 0, f"package {n} {p.packages[n]}".strip()) for n in hits[:3]], {}
