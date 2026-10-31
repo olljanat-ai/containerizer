@@ -7,7 +7,7 @@ qcow2 and VHD images as release assets.
 ## 0.1.0 (2026-10-31)
 
 The first release: the assessor, the GitHub Action and Azure DevOps gate, the results database with its web
-UI and admin pages, and the appliance.
+UI and admin pages, and the appliance. Results database schema version 16.
 
 ### Appliance
 - Immutable VM image and installer ISO built with the Elemental toolkit (Debian 13): signed upgrades and
@@ -17,7 +17,7 @@ UI and admin pages, and the appliance.
   GitHub or GitLab organization (sealed at rest), access only to organizations with a token, and a
   separate write token for the repository that receives generated files (#44). The scan worker no
   longer reads organization or output tokens from its environment; see
-  [docs/source-control.md](docs/source-control.md). Results database schema version 10.
+  [docs/source-control.md](docs/source-control.md).
 - Sandbox lab services next to the scanned apps: SQL Server 2025, PostgreSQL, MySQL, MongoDB, Redis,
   RabbitMQ, Kafka, SFTP, S3 and Azure Blob (#51, #54, #59), with dev database uploads for SQL Server,
   PostgreSQL and MySQL (#59, #61)
@@ -40,6 +40,8 @@ UI and admin pages, and the appliance.
 - SBOM and licence reporting: CycloneDX per image, licence policy, CVEs per package (#38)
 - Dev database backups: operators upload a SQL Server `.bak`, the sandbox restores it next to the app (#39)
 - Rule review: learned rules wait for approval, with their evidence (#36)
+- Work estimates removed from the web UI, admin API, reports, agent prompts and the CI comment; schema
+  version 16 drops the EffortDays columns (#62)
 - Screenshots of the results and admin pages in the docs (#27)
 - Documentation published to GitHub Pages at containerizer.eu (#42), an appliance Getting started
   guide (#45), how to run the CI suite on a local Debian 13 server (#43), a landing page and trimmed
