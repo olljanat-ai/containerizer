@@ -11,6 +11,10 @@ appliance runs and how to operate it is in [Running the appliance](appliance-adm
   ones). Hyper-V: generation 2. VMware: EFI firmware.
 - 4 vCPU and 16 GB memory or more (SQL Server takes 4 GB, `CZ_MSSQL_MEMORY`), more for parallel builds.
 - One disk of **64 GB or more**: 16 GB for the OS snapshots, the rest is the persistent partition.
+- Optional, for the [built-in LLM](appliance-admin.md#built-in-llm) (off by default, for sites without an
+  LLM server of their own): **40 GB memory or more** (16 GB for the appliance, about 24 GB for the model)
+  and **about 20 GB more disk** for the model file. 48 GB and 64 GB let it answer two and three requests at
+  once.
 - Outbound HTTPS to the hosts on the Firewall page (the image registries the appliance uses are allowed
   by default) and DNS servers from DHCP or `CZ_DNS_SERVERS`.
 

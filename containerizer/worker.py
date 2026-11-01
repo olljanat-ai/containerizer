@@ -710,10 +710,13 @@ class Worker:
             (self.data / f"scan-{int(scan['ScanId'])}").mkdir(parents=True, exist_ok=True)
             from .org import run_org
             from .ai import configured
-            if llm:
-                o.model = llm.model
-            # the registered LLM for this run only, never through os.environ (the scan's processes inherit it)
-            with configured(llm.ai_settings() if llm else None):
+            from .credentials import llm_for_run
+            # the registered LLM, else the appliance's built-in one, else the environment's; for this run
+            # only, never through os.environ (the scan's processes inherit it)
+            choice = llm_for_run(llm) if scan["UseAi"] else None
+            if choice and choice.model:
+                o.model = choice.model
+            with configured(choice.settings if choice else None):
                 results = run_org(o, log=lambda msg: self.log(f"{name}: {msg}"))
             if write:
                 self._mark(write, "ok: pushed the generated files" if o.push else "ok")

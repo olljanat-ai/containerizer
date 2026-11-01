@@ -121,7 +121,8 @@ export CONTAINERIZER_MODEL=qwen3:32b
 ### Optional: Qwen3-Coder 30B-A3B on CPU only (no GPU)
 
 For a lab server without a GPU. This is for development and testing only: real environments use an
-external LLM. [ByteShape](https://byteshape.com/blogs/Devstral-Small-2-24B-Instruct-2512/) publishes
+external LLM, or the appliance's [built-in LLM](appliance-admin.md#built-in-llm), which runs the same
+model and server with the settings below (on port 8082, sized from the machine's memory). [ByteShape](https://byteshape.com/blogs/Devstral-Small-2-24B-Instruct-2512/) publishes
 quantized builds of Qwen3-Coder 30B-A3B tuned for CPUs (Apache 2.0). The model is a mixture of experts
 with only 3B of its 30B parameters active per token, so it is several times faster on a CPU than a dense
 model of similar quality. Their dense Devstral Small 2 24B builds stay under 10 tokens/s on CPUs.

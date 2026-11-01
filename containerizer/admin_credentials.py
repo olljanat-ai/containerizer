@@ -7,6 +7,8 @@
   by its URL.
 - LLM: the server, model and key the scans ask when "Ask the LLM" is on (the Claude API or a
   self-hosted OpenAI-compatible server). One at a time.
+- Built-in LLM (the appliance only, admin_local_llm.py): a CPU-only model the appliance can run itself,
+  off by default, used when no LLM is set.
 
 Administrators only. A token is entered once, sealed for the scan worker's public key at once, and
 never shown again: the page offers to replace it, not to read it. Every add, replace, change and
@@ -111,6 +113,9 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict) -> Res
     action = parts[2] if len(parts) > 2 else ""
     if len(parts) == 1 and method == "GET":
         return list_page(adm, conn, s, a, flash)
+    if len(parts) == 2 and parts[1] == "local-llm" and method == "POST":
+        from . import admin_local_llm
+        return admin_local_llm.post(adm, s, a, form)
     if len(parts) == 2 and parts[1] in ("read", "write", "llm") and method == "POST":
         return add(adm, conn, s, parts[1], form)
     if ident is not None:
@@ -275,14 +280,18 @@ and including /v1)</span></label><input id='lApiUrl' name='ApiUrl' type='url' ma
                     f"{_chips(status(llm, kid, today))}</div><div><span class='label'>Used by</span> "
                     + (", ".join(f"<a href='/admin/scans/{int(x['ScanId'])}'>{e(x['Name'])}</a>" for x in used)
                        or "<span class='muted'>no scan asks the LLM</span>") + "</div></div>")
+    elif getattr(adm, "system", None):
+        llm_html = ("<p class='muted'>None set: scans with <i>Ask the LLM</i> use the built-in LLM below when it is on, "
+                    "else the worker's own settings (environment variables), if any.</p>")
     else:
         llm_html = ("<p class='muted'>None set: scans with <i>Ask the LLM</i> use the worker's own settings "
                     "(environment variables), if any.</p>")
+    from . import admin_local_llm
     body = (f"<p class='muted'>Organization scans only read organizations that have a read-only token here: there is no "
             f"anonymous access, and each token is only sent with its own organization's or repository's URLs. On the "
             f"appliance, the hosts must also be on the Firewall page.</p>{key_note}"
             f"<h2>Organizations (read-only)</h2>{table('read')}<h2>Output repositories (write)</h2>{table('write')}"
-            f"<h2>LLM</h2>{llm_html}{forms}")
+            f"<h2>LLM</h2>{llm_html}{forms}{admin_local_llm.section(adm, s, a, registered=llm is not None)}")
     return Response(200, adm._shell(s, a, "Source control and LLM", "source-control", body, flash))
 
 
