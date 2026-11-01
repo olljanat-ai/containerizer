@@ -299,10 +299,11 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
 
 
 def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False, ai: bool = False,
-                     model: str | None = None, timeout: int = 900) -> dict:
+                     model: str | None = None, timeout: int = 900, work: Path | None = None) -> dict:
+    """Build and run one component; `work` replaces WORK (the refactoring runner's scratch space)."""
     failures = load_failures()
     plan = make_plan(a, c, rules)
-    workdir = WORK / "verify" / a.name / k8s_name(c.name)
+    workdir = (work or WORK) / "verify" / a.name / k8s_name(c.name)
     history = []
     result = {"app": a.name, "component": c.name, "status": "failed", "attempts": history,
               "predicted": c.verdict, "time": datetime.now(timezone.utc).isoformat(timespec="seconds")}

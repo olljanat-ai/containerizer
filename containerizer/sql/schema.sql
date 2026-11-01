@@ -1315,7 +1315,7 @@ GO
 IF OBJECT_ID(N'[${schema}].LlmJob', N'U') IS NULL
 CREATE TABLE [${schema}].LlmJob (
     JobId          int IDENTITY(1,1) NOT NULL CONSTRAINT PK_LlmJob PRIMARY KEY,
-    Kind           nvarchar(20)   NOT NULL CONSTRAINT CK_LlmJob_Kind CHECK (Kind IN (N'review')),
+    Kind           nvarchar(20)   NOT NULL CONSTRAINT CK_LlmJob_Kind CHECK (Kind IN (N'review', N'refactor')),
     Reason         nvarchar(40)   NULL,              -- review: uncertain, second-opinion
     Status         nvarchar(20)   NOT NULL CONSTRAINT DF_LlmJob_Status DEFAULT N'queued'
                    CONSTRAINT CK_LlmJob_Status CHECK (Status IN (N'queued', N'running', N'answered', N'failed', N'skipped')),
@@ -1521,4 +1521,43 @@ GO
 -- 19: the LLM queue (LlmJob, LlmSpeed, LlmQueueSettings, vLlmReviewLatest) and queued LLM reviews of organization scans
 -- (OrgScan.LlmMode)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 19) INSERT [${schema}].SchemaVersion (Version) VALUES (19);
+GO
+
+-- 20: refactoring patches (refactor.py, docs/refactoring.md). An operator or administrator orders the code
+-- changes of a B-rated application (or one component); the order is an LlmJob of Kind 'refactor' whose
+-- Payload lists the findings to fix, the assessed commit and where the source is (the scan worker's clone),
+-- and whose Result holds the patch (a `git format-patch`), its status (verified, applies-only, failed), what
+-- became of each finding and the log tail of the build and run. While it runs, Summary says how far it is
+-- (generating, verifying). The kind is added to CK_LlmJob_Kind of databases from schema 19.
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_LlmJob_Kind'
+           AND parent_object_id = OBJECT_ID(N'[${schema}].LlmJob') AND definition NOT LIKE N'%refactor%')
+    ALTER TABLE [${schema}].LlmJob DROP CONSTRAINT CK_LlmJob_Kind;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_LlmJob_Kind'
+               AND parent_object_id = OBJECT_ID(N'[${schema}].LlmJob'))
+    ALTER TABLE [${schema}].LlmJob ADD CONSTRAINT CK_LlmJob_Kind CHECK (Kind IN (N'review', N'refactor'));
+GO
+
+-- The refactoring orders of every application with their status, for the results pages (no patch, no
+-- payload, nobody's name: the patches are on the admin pages, for operators and administrators).
+-- Status: queued, generating, verifying, verified, applies-only, failed, cancelled (refactor.order_status).
+CREATE OR ALTER VIEW [${schema}].vRefactorOrder AS
+SELECT j.JobId, COALESCE(j.ApplicationId, a.ApplicationId) AS ApplicationId, j.AssessmentId, j.Component, j.ProjectPath,
+       CASE WHEN j.Status = N'queued' THEN N'queued'
+            WHEN j.Status = N'running' THEN CASE WHEN j.Summary LIKE N'verifying%' THEN N'verifying' ELSE N'generating' END
+            WHEN j.Status = N'answered' AND JSON_VALUE(j.Result, '$$.status') IN (N'verified', N'applies-only', N'failed')
+                 THEN JSON_VALUE(j.Result, '$$.status')
+            WHEN j.Status = N'skipped' THEN N'cancelled'
+            ELSE N'failed' END AS Status,
+       j.Summary, JSON_VALUE(j.Payload, '$$.commit') AS SourceCommit, j.QueuedAt, j.StartedAt, j.FinishedAt
+FROM [${schema}].LlmJob j
+LEFT JOIN [${schema}].Application a ON a.SourceKey = j.SourceKey
+WHERE j.Kind = N'refactor';
+GO
+GRANT SELECT ON [${schema}].vRefactorOrder TO [${schema}_reader];
+-- what an order is made from: the latest assessment's report (the findings with their evidence) and its commit
+GRANT SELECT ON [${schema}].ApplicationAssessment (ReportJson, SourceCommit, SourceBranch) TO [${schema}_admin];
+GO
+-- 20: refactoring patches (LlmJob Kind 'refactor', vRefactorOrder)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 20) INSERT [${schema}].SchemaVersion (Version) VALUES (20);
 GO

@@ -188,3 +188,15 @@ The command line does the same with `--ai-queue` (with `--ai`, on `assess`, `ana
 `llm-queue.json` in the output folder (`--work-dir` for `org`), and
 `containerizer llm-queue --file <that file>` answers them once each, in queue order. Run the command
 again afterwards to apply the answers.
+
+**Kinds of jobs.** The queue holds every kind of LLM job; the page filters by kind:
+
+| Kind | Queued by | Priority | Result |
+| --- | --- | --- | --- |
+| Component review (`review`) | a scan with queued LLM reviews | as above | the LLM's verdict, applied by the next scan |
+| Refactoring (`refactor`) | a person, on a B-rated application's results page, or `containerizer refactor --queue` | 1800: before the automatic reviews (move it like any job) | a [refactoring patch](refactoring.md), verified by building and running it |
+
+A refactoring asks the LLM once per file it changes (at most 8), so it is a long job; its estimate is
+made from the size of what it will send, and the output tokens are learned per kind like the reviews'.
+While it runs, the queue page says how far it is (generating, verifying), and the job links to its
+patch page (Admin → Refactoring).

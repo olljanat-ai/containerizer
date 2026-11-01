@@ -106,6 +106,15 @@ running and deploying them in its own sandbox cluster.
 
     [:octicons-arrow-right-24: Migration assistant](overview.md#migration-assistant)
 
+-   :material-source-pull:{ .lg .middle } **Refactoring patches, verified**
+
+    ---
+
+    For a B-rated application the LLM makes the targeted code changes, one file at a time. The patch is
+    applied to the assessed commit, checked with the rules, built and run before you download it.
+
+    [:octicons-arrow-right-24: Refactoring patches](refactoring.md)
+
 -   :material-server-security:{ .lg .middle } **Runs in your network**
 
     ---
@@ -227,6 +236,25 @@ many tokens and hours are left, estimated from the speed it has measured on your
 
 <div markdown>
 
+### From finding to a verified patch
+
+For applications that need targeted code changes, an operator orders a refactoring patch. The LLM makes
+the changes, then Containerizer applies them to the assessed commit, runs the rules again and builds and
+runs the container. You get a coloured diff, the result per finding and a `.patch` to apply with `git am`.
+
+[Refactoring patches :octicons-arrow-right-24:](refactoring.md)
+
+</div>
+
+![A verified refactoring patch as a coloured diff](images/admin-refactoring-diff.png#only-light){ .cz-shot }
+![A verified refactoring patch as a coloured diff](images/admin-refactoring-diff-dark.png#only-dark){ .cz-shot }
+
+</div>
+
+<div class="cz-feature" markdown>
+
+<div markdown>
+
 ### A person approves what the AI learns
 
 Fixes the learning loop discovers arrive as rule proposals with their evidence. Approve, edit or
@@ -241,7 +269,7 @@ reject them; approved rules make the next run faster and AI-free.
 
 </div>
 
-<div class="cz-feature" markdown>
+<div class="cz-feature cz-reverse" markdown>
 
 <div markdown>
 
@@ -259,7 +287,7 @@ across the whole portfolio.
 
 </div>
 
-<div class="cz-feature cz-reverse" markdown>
+<div class="cz-feature" markdown>
 
 <div markdown>
 

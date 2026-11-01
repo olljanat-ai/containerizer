@@ -4,7 +4,8 @@ A self-hosted LLM on CPUs can take minutes per answer. The queue (cz.LlmJob) hol
 and its runner (`containerizer llm-queue`, a process of its own) works through them when the settings let
 it (Admin → LLM queue: paused, days and hours in UTC, only when the machine is idle, parallel requests).
 
-Job kinds (JOB_KINDS, `register`): today `review`, a component review. A scan with queued LLM reviews
+Job kinds (JOB_KINDS, `register`): `review`, a component review, and `refactor`, a refactoring patch a
+person ordered for a B-rated application (refactor.py, docs/refactoring.md). A scan with queued LLM reviews
 (OrgScan.LlmMode 'queued', `--ai-queue` on the command line) asks the LLM nothing while it runs: the rules
 decide, and the component reviews the LLM would have been asked are queued with a priority instead
 (queue_reviews):
@@ -268,6 +269,16 @@ def review_handler(job: dict) -> dict:
 
 REVIEW = "review"
 register(REVIEW, "Component review", review_handler, FEATURE)
+REFACTOR = "refactor"
+
+
+def refactor_handler(job: dict) -> dict:
+    """A refactoring patch (refactor.handler; imported when a job runs)."""
+    from .refactor import handler
+    return handler(job)
+
+
+register(REFACTOR, "Refactoring", refactor_handler, "refactor-queued")
 
 
 # --------------------------------------------------------------------------- component reviews: what, how urgent
@@ -421,25 +432,29 @@ class SqlJobQueue(JobQueue):
         self.connect = connect              # () -> sqlstore.Connection of a writer (or admin) login
 
     def add(self, job: dict) -> int:
-        j = self._job(job)
         conn = self.connect()
         try:
-            cur = conn.cursor()
-            cur.execute("EXEC cz.QueueLlmJob @Kind = %s, @Reason = %s, @ScanId = %s, @ProjectName = %s, @RepoName = %s, "
-                        "@Repository = %s, @App = %s, @SourceKey = %s, @ApplicationId = %s, @AssessmentId = %s, "
-                        "@Component = %s, @ProjectPath = %s, @RuleVerdict = %s, @Confidence = %s, @Priority = %s, "
-                        "@DedupeKey = %s, @Model = %s, @RequestedBy = %s, @InputChars = %s, @EstInputTokens = %s, "
-                        "@Payload = %s",
-                        (j["Kind"], j["Reason"], j["ScanId"], _cut(j["ProjectName"], 200), _cut(j["RepoName"], 200),
-                         _cut(j["Repository"], 400), _cut(j["App"], 200), _cut(j["SourceKey"], 400),
-                         j["ApplicationId"], j["AssessmentId"], _cut(j["Component"], 200), _cut(j["ProjectPath"], 400),
-                         j["RuleVerdict"], j["Confidence"], int(j["Priority"]), j["DedupeKey"], _cut(j["Model"], 200),
-                         _cut(j["RequestedBy"], 256), j["InputChars"], j["EstInputTokens"], json.dumps(j["Payload"])))
-            rid = cur.fetchone()[0]
-            conn.commit()
-            return int(rid or 0)
+            return self.add_with(conn, job)
         finally:
             conn.close()
+
+    def add_with(self, conn, job: dict) -> int:
+        """Queue on an open connection (the admin pages': RequestedBy None is the signed-in person)."""
+        j = self._job(job)
+        cur = conn.cursor()
+        cur.execute("EXEC cz.QueueLlmJob @Kind = %s, @Reason = %s, @ScanId = %s, @ProjectName = %s, @RepoName = %s, "
+                    "@Repository = %s, @App = %s, @SourceKey = %s, @ApplicationId = %s, @AssessmentId = %s, "
+                    "@Component = %s, @ProjectPath = %s, @RuleVerdict = %s, @Confidence = %s, @Priority = %s, "
+                    "@DedupeKey = %s, @Model = %s, @RequestedBy = %s, @InputChars = %s, @EstInputTokens = %s, "
+                    "@Payload = %s",
+                    (j["Kind"], j["Reason"], j["ScanId"], _cut(j["ProjectName"], 200), _cut(j["RepoName"], 200),
+                     _cut(j["Repository"], 400), _cut(j["App"], 200), _cut(j["SourceKey"], 400),
+                     j["ApplicationId"], j["AssessmentId"], _cut(j["Component"], 200), _cut(j["ProjectPath"], 400),
+                     j["RuleVerdict"], j["Confidence"], int(j["Priority"]), j["DedupeKey"], _cut(j["Model"], 200),
+                     _cut(j["RequestedBy"], 256), j["InputChars"], j["EstInputTokens"], json.dumps(j["Payload"])))
+        rid = cur.fetchone()[0]
+        conn.commit()
+        return int(rid or 0)
 
     def result(self, kind: str, dedupe_key: str) -> dict | None:
         conn = self.connect()
@@ -823,7 +838,7 @@ class Runner:
         try:
             with ai.usage_scope(feature=kind.feature, repo=row.get("Repository") or row.get("App"),
                                 scan=row.get("ScanName")), _usage() as used:
-                out = kind.handler({**row, "Payload": _payload(row)})
+                out = kind.handler({**row, "Payload": _payload(row), "_progress": lambda text: self.progress(row, text)})
         except Exception as ex:  # noqa: BLE001
             result = self.failed(row, REDACT(f"{type(ex).__name__}: {ex}")[:1000])
         else:
@@ -871,12 +886,26 @@ class Runner:
         except Exception as ex:                 # statistics only
             self.log(f"speed statistics not updated: {type(ex).__name__}: {ex}")
 
+    def progress(self, row: dict, text: str) -> None:
+        """A long job's progress while it runs (a refactoring: generating, verifying), in Summary."""
+        try:
+            conn = self.connect()
+            try:
+                cur = conn.cursor()
+                cur.execute("UPDATE cz.LlmJob SET Summary = %s, HeartbeatAt = SYSUTCDATETIME() WHERE JobId = %s "
+                            "AND Status = N'running' AND Runner = %s", (_cut(text, 400), row["JobId"], self.name))
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as ex:                 # progress only
+            self.log(f"#{row['JobId']}: progress not recorded: {type(ex).__name__}: {ex}")
+
     def failed(self, row: dict, error: str) -> str:
         last = int(row.get("Attempts") or 1) >= MAX_ATTEMPTS
         conn = self.connect()
         try:
             cur = conn.cursor()
-            cur.execute("UPDATE cz.LlmJob SET Status = %s, Runner = NULL, HeartbeatAt = NULL, Error = %s, "
+            cur.execute("UPDATE cz.LlmJob SET Status = %s, Runner = NULL, HeartbeatAt = NULL, Error = %s, Summary = NULL, "
                         "FinishedAt = CASE WHEN %s = 1 THEN SYSUTCDATETIME() END, "
                         "NotBefore = CASE WHEN %s = 1 THEN NULL ELSE DATEADD(minute, %s, SYSUTCDATETIME()) END "
                         "WHERE JobId = %s AND Status = N'running' AND Runner = %s",

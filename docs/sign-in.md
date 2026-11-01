@@ -43,9 +43,13 @@ Each role is an allow-list of rules, comma separated:
 | Role | Variable | Can |
 | --- | --- | --- |
 | Admin | `CONTAINERIZER_ADMINS` | Everything, including business units, Source control & LLM, Rule review, Lab services, Firewall, System and the access log. |
-| Operator | `CONTAINERIZER_OPERATORS` | Read everything, including the change history. Run and schedule organization scans (discovery and full scans), enable and disable projects and repositories, order and pause the LLM queue and set when it runs, upload dev database backups. Cannot change the mapping. |
+| Operator | `CONTAINERIZER_OPERATORS` | Read everything, including the change history. Run and schedule organization scans (discovery and full scans), enable and disable projects and repositories, order and pause the LLM queue and set when it runs, order [refactoring patches](refactoring.md) of B-rated applications and download them (Admin → Refactoring), upload dev database backups. Cannot change the mapping. |
 | Product owner | `CONTAINERIZER_PRODUCT_OWNERS` | Read everything, including the change history. Map applications and change their display name, owner, description and hidden flag, and change their products, but only within their scope (below). |
 | Viewer | `CONTAINERIZER_VIEWERS` | Read the results pages. Only matters when sign-in for the results pages is on. |
+
+Refactoring patches contain source code: product owners and viewers see an order's status on the
+application's results page, but not the patch, and only administrators and operators see the
+**Request a refactoring patch** button ([who can order one](refactoring.md#who-can-order-one)).
 
 Nobody outside these lists gets into `/admin`. One person can have several roles; admin includes all of
 them. The roles are enforced by the web UI and the API, and every change in the change history records

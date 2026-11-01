@@ -39,8 +39,10 @@ install -d -m 0700 -o 65532 -g 65532 "$D/registry"
 install -d -m 0700 -o 65534 -g 65534 "$D/prometheus"
 install -d -m 0700 -o 472 -g 0 "$D/grafana"
 install -d -m 0700 -o containerizer -g containerizer "$D/worker"
-# the LLM answer cache, shared by the scan worker and the LLM queue runner (which may write only there)
+# the LLM answer cache, shared by the scan worker and the LLM queue runner (which may write only there and in
+# its refactoring scratch space)
 install -d -m 0700 -o containerizer -g containerizer "$D/worker/ai-cache"
+install -d -m 0700 -o containerizer -g containerizer "$D/refactor"
 # dev database backups (Admin -> Dev databases): the web UI writes them, the scan worker (group) reads them
 install -d -m 2750 -o cz-web -g containerizer "$D/devdb"
 

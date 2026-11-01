@@ -142,7 +142,7 @@ job_sql() {
   CONTAINERIZER_SQL_PASSWORD="$SQL_PASSWORD" \
     python -m pytest -q tests/test_sqlstore.py tests/test_admin.py tests/test_roles.py tests/test_trends.py \
       tests/test_sandbox.py tests/test_worker.py tests/test_sbom.py tests/test_devdb.py tests/test_rule_review.py \
-      tests/test_replatform.py tests/test_llm_queue.py -rs || rc=1
+      tests/test_replatform.py tests/test_llm_queue.py tests/test_refactor.py -rs || rc=1
   if [ $rc = 0 ]; then
     say "image builds and the UI serves results"
     (

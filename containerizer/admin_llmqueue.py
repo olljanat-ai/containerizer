@@ -64,7 +64,8 @@ def what(r: dict) -> str:
     """The job: its kind, and for a review the component, the reason and the rules' verdict."""
     title = lq.kind_title(r["Kind"])
     target = " / ".join(x for x in (r.get("Repository") or r.get("App"), r.get("Component")) if x)
-    out = f"<a href='{BASE}/{int(r['JobId'])}'>{e(target or title)}</a><div class='muted small'>{e(title)}"
+    href = f"/admin/refactoring/{int(r['JobId'])}" if r["Kind"] == lq.REFACTOR else f"{BASE}/{int(r['JobId'])}"
+    out = f"<a href='{href}'>{e(target or title)}</a><div class='muted small'>{e(title)}"
     if r.get("Reason"):
         out += f" · {e(lq.REASON_TEXT.get(r['Reason'], r['Reason']))}"
     if r.get("RuleVerdict"):
@@ -270,6 +271,9 @@ def show_job(adm, conn, s, a, ident: int, flash: str) -> Response:
                   + "<p class='muted small'>Used by the next scan of the repository: it changes the verdict when the LLM is "
                     "sure enough (0.6 for an uncertain component, 0.85 for a second opinion) and disagrees with the rules."
                     "</p>")
+    elif r["Kind"] == lq.REFACTOR:
+        answer = (f"<p><a class='button' href='/admin/refactoring/{ident}'>Open the refactoring patch</a> "
+                  f"<span class='muted small'>the patch, what it fixed and how it was verified</span></p>")
     elif res is not None:
         answer = f"<h2>Result</h2><pre>{e(json.dumps(res, indent=1)[:20000])}</pre>"
     question = ""
