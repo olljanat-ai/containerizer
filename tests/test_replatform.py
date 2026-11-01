@@ -348,10 +348,13 @@ def test_grafana_dashboard_shows_llm_usage():
     ids = [p["id"] for p in d["panels"]]
     assert len(ids) == len(set(ids))
     for p in d["panels"]:
-        refs = [t.get("refId") for t in p.get("targets") or []]
-        assert len(refs) == len(set(refs)), p["title"]
+        targets = p.get("targets") or []
+        # Grafana rejects a panel whose queries share a refId (HTTP 400): the panel shows only an error
+        refs = [t["refId"] for t in targets]
+        assert len(refs) == len(set(refs)), (p["title"], refs)
+        # a time series of an instant query is a single point
         if p["type"] == "timeseries":
-            assert not any(t.get("instant") for t in p.get("targets") or []), p["title"]
+            assert not any(t.get("instant") for t in targets), p["title"]
 
 
 def test_grafana_dashboard_shows_the_llm_queue():
