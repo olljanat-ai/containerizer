@@ -680,19 +680,15 @@ def _prompt_href(app_id, comp_id) -> str:
 
 
 def _plan_cell(app_id, c: dict, m: dict | None, ctx: dict | None = None) -> str:
+    """One link per component: to its migration section (the steps, the AI agent prompt and the patch the LLM can
+    make, with its estimate), or to the Refactoring box when only a patch is possible."""
     cid = int(c["ComponentId"])
-    ctx = ctx or {}
-    est = ctx.get("estimates") or {}
-    goal = "fix" if (cid, "fix") in est else "stateless" if (cid, "stateless") in est else None
-    order = (f"<div>{order_button(app_id, cid, goal, ctx['csrf'], 'Patch with LLM', est[(cid, goal)], small=True)}</div>"
-             if goal and ctx.get("csrf") else "")
-    if not m:
-        return order or "<span class='muted'>-</span>"
-    out = f"<a href='#m{cid}'>{int(m['ItemCount'])} step{'s' if m['ItemCount'] != 1 else ''}</a>"
-    if m.get("AgentPrompt"):
-        out += f" · <a href='#p{cid}'>AI agent prompt</a>"
-    return out + order
-
+    est = (ctx or {}).get("estimates") or {}
+    if m:
+        return f"<a href='#m{cid}'>How to fix ↓</a>"
+    if (cid, "fix") in est or (cid, "stateless") in est:
+        return "<a href='#refactoring'>How to fix ↓</a>"
+    return "<span class='muted'>-</span>"
 
 def _migration(app_id, m: dict | None, ctx: dict | None = None) -> str:
     """Migration assistant of one component: suggested replacements and the AI coding agent prompt."""
