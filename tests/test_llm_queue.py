@@ -626,13 +626,22 @@ def test_queue_in_sql_server(tmp_path, llm):
     cur = c.cursor(as_dict=True)
     cur.execute("SELECT JobId, Component, Reason, Status, RequestedBy, EstInputTokens FROM cz.LlmJob ORDER BY JobId")
     rows = cur.fetchall()
-    assert [(r["Component"], r["Reason"], r["Status"]) for r in rows] == [("Api", "uncertain", "queued"),
-                                                                          ("Legacy", "second-opinion", "queued")]
+    # approval is on for every job by default (schema 22): both wait until an administrator approves them
+    assert [(r["Component"], r["Reason"], r["Status"]) for r in rows] == [("Api", "uncertain", "approval"),
+                                                                          ("Legacy", "second-opinion", "approval")]
     assert rows[0]["EstInputTokens"] > 0
     c.close()
     m = lq.QueueMetrics("t")
     try:
         r = lq.Runner(writer, name="t", metrics=m, poll=1, log=lambda msg: None, load=lambda: 0.0)
+        assert r.run(once=True) == 0                                    # nothing approved yet
+        adm = sqlstore.connect(as_("cz_q_admin"), pw)
+        cur = adm.cursor()
+        cur.execute("UPDATE cz.LlmJob SET Status = N'queued', ApprovedBy = N'alice@example.com', "
+                    "ApprovedAt = SYSUTCDATETIME() WHERE Status = N'approval'")
+        assert cur.rowcount == 2
+        adm.commit()
+        adm.close()
         assert r.run(once=True) == 2
     finally:
         ai.LISTENERS.remove(m.llm)

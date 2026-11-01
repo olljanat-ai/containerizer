@@ -704,7 +704,7 @@ def test_schema_20_refactor_kind_and_view():
     sqlstore.init_schema(conn)
     cur = conn.cursor()
     cur.execute("SELECT MAX(Version) FROM cz.SchemaVersion")
-    assert cur.fetchone()[0] == 20
+    assert cur.fetchone()[0] == 22
     cur.execute("SELECT definition FROM sys.check_constraints WHERE name = N'CK_LlmJob_Kind'")
     assert "refactor" in cur.fetchone()[0]
     cur.execute("INSERT cz.Application (SourceKey, Name) VALUES (N'k', N'shop')")
