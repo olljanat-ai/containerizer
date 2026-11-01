@@ -95,6 +95,8 @@ class OrgOptions:
     gitops: str = "auto"                # auto | argocd | flux
     sandbox_timeout: int = 900
     lab: set | None = None              # lab services that are on (labservices.py); None: from CONTAINERIZER_LAB_SERVICES
+    only_projects: set | None = None    # "Scan now" on the admin pages: only these projects ...
+    only_repos: set | None = None       # ... and these repositories (project/name); None: every repository
 
 
 @dataclass
@@ -1021,6 +1023,11 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
                                              status="skipped-filter", web_url=r.web_url, clone_url=r.clone_url,
                                              reason="left out by the scan's include/exclude filter or repository limit",
                                              app=names[r.key]))
+    if o.only_projects is not None or o.only_repos is not None:
+        # a scan of chosen projects and repositories: the others keep their state from the last full run
+        want_p, want_r = o.only_projects or set(), o.only_repos or set()
+        repos = [r for r in repos if r.project in want_p or r.key in want_r]
+        log(f"{o.org}: scan now of {len(repos)} chosen repositories")
     cache = prepare_cache(o) if o.cache_dir and not o.dry_run else None
 
     out = Output(o, work) if not o.dry_run else None
@@ -1067,7 +1074,7 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
             if hooks and hasattr(hooks, "repo_done"):
                 hooks.repo_done(i, r, res)
         else:
-            if cache:
+            if cache and o.only_projects is None and o.only_repos is None:
                 prune_cache(cache, set(names.values()), log)
     finally:
         if reg:

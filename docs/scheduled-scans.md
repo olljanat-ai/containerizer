@@ -40,6 +40,11 @@ skips automatically are not hidden. Every change to a project or repository, wit
 note, is in **Admin → Change history** (Projects, Repositories) and on the project's or repository's own
 page.
 
+**Scan now**, on a project's or repository's page or for the ones selected in the lists, runs a full
+scan of only those, outside the schedule, for example after a fix was pushed. The other repositories
+keep their results from the last full run. Disabled ones stay disabled; a run of the scan that is
+already queued or running has to finish first.
+
 Discovery can be run again at any time, for example before a scheduled run, to see the new projects and
 repositories first. Scheduled runs are always full scans; new repositories found by them are processed
 in that run unless their project is disabled.

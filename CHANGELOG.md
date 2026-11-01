@@ -16,6 +16,8 @@ Results database schema version 17 (`containerizer db init` upgrades it; the app
   and the runs show which kind they were
 - Projects (Azure DevOps projects, GitLab subgroups) on **Admin → Repositories → Projects**: disabling one
   leaves all its repositories out of the full scan; changes are in the change history
+- **Scan now** on projects and repositories (their pages, or the selected ones in the lists): a full scan
+  of only those, outside the schedule
 - The repository list shows the latest commit, with **No commit for a year** and **Oldest commit first**
 - Disabled repositories and projects are hidden from the results pages (overview, trends, SBOM,
   application pages); the admin pages still show them

@@ -542,7 +542,7 @@ class Worker:
         try:
             cur = conn.cursor(as_dict=True)
             # one transaction: lock the oldest queued run (skipping ones another worker holds), then take it
-            cur.execute("SELECT TOP (1) RunId, ScanId, TriggeredBy, RequestedBy, Kind FROM cz.OrgScanRun "
+            cur.execute("SELECT TOP (1) RunId, ScanId, TriggeredBy, RequestedBy, Kind, Scope FROM cz.OrgScanRun "
                         "WITH (UPDLOCK, READPAST, ROWLOCK) WHERE Status = N'queued' ORDER BY RunId")
             run = cur.fetchone()
             if run:
@@ -654,6 +654,10 @@ class Worker:
             hooks._update(ImageTag=tag)
             o = self.options(scan, store, hooks, creds)
             o.tag = tag
+            if run.get("Scope"):                # "Scan now" of chosen projects and repositories
+                scope = json.loads(run["Scope"])
+                o.only_projects = set(scope.get("projects") or [])
+                o.only_repos = set(scope.get("repositories") or [])
             o.on_listed = lambda prov, n: self._listed(read, prov, n)
             (self.data / f"scan-{int(scan['ScanId'])}").mkdir(parents=True, exist_ok=True)
             from .org import run_org

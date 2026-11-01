@@ -682,6 +682,11 @@ IF COL_LENGTH(N'[${schema}].OrgScanRun', N'Kind') IS NULL
 ALTER TABLE [${schema}].OrgScanRun ADD Kind nvarchar(20) NOT NULL CONSTRAINT DF_OrgScanRun_Kind DEFAULT N'full'
     CONSTRAINT CK_OrgScanRun_Kind CHECK (Kind IN (N'full', N'discovery'));
 GO
+-- 17: "Scan now" of chosen projects and repositories: JSON {"projects": [...], "repositories": ["project/name", ...]};
+-- NULL: the whole organization
+IF COL_LENGTH(N'[${schema}].OrgScanRun', N'Scope') IS NULL
+ALTER TABLE [${schema}].OrgScanRun ADD Scope nvarchar(max) NULL CONSTRAINT CK_OrgScanRun_Scope CHECK (Scope IS NULL OR ISJSON(Scope) = 1);
+GO
 
 -- Every repository with its project's setting and whether the full scan processes it (Active): not removed,
 -- not disabled by an administrator (itself or its project) and not skipped automatically, unless an
@@ -814,7 +819,8 @@ GO
 -- Queue a run of an organization scan, unless one is already queued or running. Returns the RunId
 -- (0 when the scan is disabled or busy). The admin pages call it for "Run now" and "Discover", the
 -- worker on schedule (always a full scan). @Kind: 'full' or 'discovery'.
-CREATE OR ALTER PROCEDURE [${schema}].QueueOrgScanRun @ScanId int, @TriggeredBy nvarchar(20), @Kind nvarchar(20) = N'full'
+CREATE OR ALTER PROCEDURE [${schema}].QueueOrgScanRun @ScanId int, @TriggeredBy nvarchar(20), @Kind nvarchar(20) = N'full',
+    @Scope nvarchar(max) = NULL
 AS
 BEGIN
     SET NOCOUNT ON; SET XACT_ABORT ON;
@@ -824,8 +830,8 @@ BEGIN
        AND NOT EXISTS (SELECT 1 FROM [${schema}].OrgScanRun WITH (UPDLOCK, HOLDLOCK)
                        WHERE ScanId = @ScanId AND Status IN (N'queued', N'running'))
     BEGIN
-        INSERT [${schema}].OrgScanRun (ScanId, TriggeredBy, RequestedBy, Kind)
-        SELECT @ScanId, @TriggeredBy, CASE WHEN @TriggeredBy = N'manual' THEN w.ChangedBy END, @Kind
+        INSERT [${schema}].OrgScanRun (ScanId, TriggeredBy, RequestedBy, Kind, Scope)
+        SELECT @ScanId, @TriggeredBy, CASE WHEN @TriggeredBy = N'manual' THEN w.ChangedBy END, @Kind, @Scope
         FROM [${schema}].fnAuditWho() w;
         SET @id = SCOPE_IDENTITY();
     END

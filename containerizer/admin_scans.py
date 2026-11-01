@@ -19,6 +19,7 @@ session's CSRF token, everything escaped, changes audited by triggers.
 """
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
@@ -135,9 +136,13 @@ def route(adm, conn, s, a, method: str, kind: str, parts: list, q: dict, form: d
                 return bulk_projects(conn, form)
             if len(parts) == 3 and pid is not None:
                 return save_project(conn, pid, form) if method == "POST" else edit_project(adm, conn, s, a, pid, flash)
+            if len(parts) == 4 and pid is not None and parts[3] == "scan" and method == "POST":
+                return scan_now(conn, [pid], [], f"/admin/repositories/projects/{pid}")
             return _nf()
         if method == "POST" and len(parts) > 1 and parts[1] == "bulk":
             return bulk_repos(conn, form)
+        if ident is not None and action == "scan" and method == "POST":
+            return scan_now(conn, [], [ident], f"/admin/repositories/{ident}")
         if ident is not None and not action:
             return save_repo(conn, ident, form) if method == "POST" else edit_repo(adm, conn, s, a, ident, flash)
         if len(parts) == 1 and method == "GET":
@@ -289,6 +294,7 @@ def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
     rows = []
     for r in runs:
         who = "schedule" if r["TriggeredBy"] == "schedule" else f"Run now by {r['RequestedBy'] or '?'}"
+        scope = _scope_text(r.get("Scope"))
         took = ""
         if r["StartedAt"]:
             took = _secs(((r["FinishedAt"] or now) - r["StartedAt"]).total_seconds())
@@ -304,7 +310,7 @@ def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
         elif r["CancelRequested"] and r["Status"] == "running":
             cancel = "<div class='muted small'>cancelling after the current repository</div>"
         current = f"<div class='muted small'>now: {e(r['CurrentRepo'])}</div>" if r["Status"] == "running" and r["CurrentRepo"] else ""
-        kind = KIND_TEXT.get(r.get("Kind") or "full", r.get("Kind"))
+        kind = KIND_TEXT.get(r.get("Kind") or "full", r.get("Kind")) + (f": {scope}" if scope else "")
         rows.append(f"<tr><td class='num'>{int(r['RunId'])}</td><td>{run_chip(r['Status'])}"
                     f"<div class='muted small'>{e(kind)}</div>{current}{cancel}</td>"
                     f"<td class='nowrap'>{_d(r['StartedAt'] or r['RequestedAt'])}<div class='muted small'>{e(who)}"
@@ -533,6 +539,8 @@ def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
                "<button name='action' value='enable'>Enable</button>"
                "<button name='action' value='disable'>Disable</button>"
                "<button name='action' value='auto' class='secondary'>Automatic</button>"
+               "<button name='action' value='scan' class='secondary' title='A full scan of the selected repositories now, "
+               "outside the schedule'>Scan now</button>"
                "<input name='Note' maxlength='400' placeholder='Note (optional), e.g. why' aria-label='Note'></div>")
     sort = {k: v for k, v in base.items() if k != "sort"}
     sort_link = (f"<a class='chip' href='/admin/repositories?{e(urlencode({**sort, 'show': show}))}'>Sort by name</a>"
@@ -563,6 +571,9 @@ ACTIONS = {"enable": "enabled", "disable": "disabled", "auto": None}
 def bulk_repos(conn, form: dict) -> Response:
     ids = [int(x) for x in form.get("repo", []) if re.fullmatch(r"\d{1,9}", x)][:2000]
     action = form.get("action", [""])[0]
+    if action == "scan":
+        return scan_now(conn, [], ids, "/admin/repositories") if ids else \
+            _back("/admin/repositories", "Select at least one repository.")
     if action not in ACTIONS:
         return _back("/admin/repositories", "Choose Enable, Disable or Automatic.")
     if not ids:
@@ -639,6 +650,9 @@ def edit_repo(adm, conn, s, a, ident: int, flash: str) -> Response:
             + (f"<h2>Deployed components</h2><ul>{comps}</ul>" if comps else "")
             + (f"<h2>Not deployed</h2><ul>{excl}</ul>" if excl else "") + lab
             + f"<h2>Enabled or disabled</h2>{form}<h2>Changes</h2>{adm._history(conn, 'OrgRepository', ident)}")
+    if not r["RemovedAt"]:
+        body = (f"<form method='post' action='/admin/repositories/{ident}/scan' class='inline'>{adm._csrf(s)}"
+                f"<button title='A full scan of this repository now, outside the schedule'>Scan now</button></form>" + body)
     return Response(200, adm._shell(s, a, _repo_name(r), "repositories", body, flash))
 
 
@@ -745,6 +759,8 @@ def list_projects(adm, conn, s, a, q: dict, flash: str) -> Response:
     actions = ("<div class='formrow'><span>With the selected:</span>"
                "<button name='action' value='disable'>Disable</button>"
                "<button name='action' value='enable' class='secondary'>Enable</button>"
+               "<button name='action' value='scan' class='secondary' title='A full scan of the repositories of the selected "
+               "projects now, outside the schedule'>Scan now</button>"
                "<input name='Note' maxlength='400' placeholder='Note (optional), e.g. why' aria-label='Note'></div>")
     body = (f"<p class='muted'>The projects of the organization scans: Azure DevOps projects and GitLab subgroups "
             f"(GitHub organizations have none: pause the scan instead). Disable a deprecated project and the full scan "
@@ -766,6 +782,8 @@ def bulk_projects(conn, form: dict) -> Response:
     ids = [int(x) for x in form.get("project", []) if re.fullmatch(r"\d{1,9}", x)][:2000]
     action = form.get("action", [""])[0]
     back = "/admin/repositories/projects"
+    if action == "scan":
+        return scan_now(conn, ids, [], back) if ids else _back(back, "Select at least one project.")
     if action not in PROJECT_ACTIONS:
         return _back(back, "Choose Disable or Enable.")
     if not ids:
@@ -810,6 +828,10 @@ def edit_project(adm, conn, s, a, ident: int, flash: str) -> Response:
     body = (f"<div class='formrow'>{state_chip(state, 'administrator' if state == 'Disabled' else '')}<span>{e(reason)}</span>"
             f"</div><div class='meta'>{meta}</div><h2>Enabled or disabled</h2>{form}"
             f"<h2>Changes</h2>{adm._history(conn, 'OrgProject', ident)}")
+    if not p["RemovedAt"]:
+        body = (f"<form method='post' action='/admin/repositories/projects/{ident}/scan' class='inline'>{adm._csrf(s)}"
+                f"<button title='A full scan of every repository of this project now, outside the schedule'>Scan now"
+                f"</button></form>" + body)
     return Response(200, adm._shell(s, a, f"Project {p['Name']}", "repositories", body, flash))
 
 
@@ -826,3 +848,57 @@ def save_project(conn, ident: int, form: dict) -> Response:
     if not n:
         return _nf()
     return _back(f"/admin/repositories/projects/{ident}", "Saved. The next full scan follows it.")
+
+
+# --------------------------------------------------------------------------- scan now
+
+def _scope_text(scope) -> str:
+    """"2 projects, 1 repository" for a run limited to chosen ones; "" for the whole organization."""
+    if not scope:
+        return ""
+    try:
+        d = json.loads(scope)
+    except ValueError:
+        return "chosen repositories"
+    parts = []
+    for k, one, many in (("projects", "project", "projects"), ("repositories", "repository", "repositories")):
+        items = d.get(k) or []
+        if len(items) == 1:
+            parts.append(f"{one} {items[0].removeprefix('_/')}")
+        elif items:
+            parts.append(f"{len(items)} {many}")
+    return ", ".join(parts)
+
+
+def scan_now(conn, project_ids: list[int], repo_ids: list[int], back: str) -> Response:
+    """Queue a full scan, outside the schedule, of only the chosen projects and repositories (one run per
+    organization scan). Disabled ones stay disabled: the run leaves them out as any full scan does."""
+    cur = conn.cursor(as_dict=True)
+    scopes: dict[int, dict] = {}
+    for ids, sql, key in ((project_ids, "SELECT ScanId, Name FROM cz.OrgProject WHERE RemovedAt IS NULL AND ProjectId IN ({})",
+                           "projects"),
+                          (repo_ids, "SELECT ScanId, ProjectName + N'/' + Name AS Name FROM cz.OrgRepository "
+                                     "WHERE RemovedAt IS NULL AND RepositoryId IN ({})", "repositories")):
+        for i in range(0, len(ids), 500):
+            part = ids[i:i + 500]
+            cur.execute(sql.format(", ".join(["%s"] * len(part))), tuple(part))
+            for r in cur.fetchall():
+                scopes.setdefault(r["ScanId"], {"projects": [], "repositories": []})[key].append(r["Name"])
+    if not scopes:
+        return _back(back, "Nothing to scan: it is no longer in the organization.")
+    queued, busy = [], 0
+    c = conn.cursor()
+    for scan_id, scope in sorted(scopes.items()):
+        c.execute("EXEC cz.QueueOrgScanRun @ScanId = %s, @TriggeredBy = N'manual', @Kind = N'full', @Scope = %s",
+                  (scan_id, json.dumps(scope)))
+        rid = c.fetchone()[0]
+        conn.commit()
+        if rid:
+            queued.append(f"#{rid} ({_scope_text(json.dumps(scope))})")
+        else:
+            busy += 1
+    msg = (f"Scan {', '.join(queued)} queued; the worker starts it within a minute." if queued else "")
+    if busy:
+        msg += (" " if msg else "") + ("Not queued: the scan is paused, or a run is already queued or running."
+                                       if busy == 1 else f"{busy} scans not queued: paused, or already running.")
+    return _back(back, msg.strip())

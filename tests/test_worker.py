@@ -664,6 +664,29 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         text = w.metrics.registry.render()
         assert 'containerizer_scan_repositories{scan="Contoso",state="disabled_admin"} 2' in text
 
+        # Scan now: a full scan of only the chosen project or repositories, outside the schedule
+        b.follow(f"/admin/repositories/projects/{projects['Legacy']}", {"csrf": csrf, "Setting": "enabled", "Note": ""})
+        fetched.clear()
+        body = b.follow(f"/admin/repositories/projects/{projects['Legacy']}")[2]
+        assert "/scan'" in body and "Scan now" in body
+        s, _, body = b.follow(f"/admin/repositories/projects/{projects['Legacy']}/scan", {"csrf": csrf})
+        assert "project Legacy) queued" in body, body
+        assert w.tick() is True
+        assert fetched == ["Legacy/old-app"], logs
+        body = b.follow(f"/admin/scans/{scan_id}")[2]
+        assert "Full scan: project Legacy" in body and "1 of 1" in body
+        body = b.follow(f"/admin/repositories?scan={scan_id}")[2]
+        rows = dict(re.findall(r"aria-label='Select ([^']+)'>(.*?)</tr>", body, re.S))
+        assert "Not processed (disabled)" in rows["Billing/web"] and "Deployed" in rows["Legacy/old-app"]
+        assert "Left out by the filter" not in body                     # the others are not touched
+        api_id = int(re.search(r"/admin/repositories/(\d+)", rows["Billing/api"])[1])
+        fetched.clear()
+        s, _, body = b.follow("/admin/repositories/bulk", {"csrf": csrf, "repo": [str(api_id), str(web_id)], "action": "scan"})
+        assert "2 repositories) queued" in body, body
+        assert w.tick() is True
+        assert fetched == ["Billing/api"], logs                          # web stays disabled
+        b.follow(f"/admin/repositories/projects/{projects['Legacy']}", {"csrf": csrf, "Setting": "disabled", "Note": ""})
+
         # enabling the project again brings its results back; only administrators may change projects
         b.follow(f"/admin/repositories/projects/{projects['Legacy']}", {"csrf": csrf, "Setting": "enabled", "Note": ""})
         apps, _ = visible()
