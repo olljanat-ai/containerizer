@@ -1489,11 +1489,9 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "refId": "A",
+          "refId": "B",
           "expr": "sum by (feature) (increase(containerizer_llm_output_tokens_total{instance=~\"$instance\",scan=~\"$scan\"}[$__rate_interval]))",
-          "legendFormat": "{{feature}} out",
-          "instant": true,
-          "range": false
+          "legendFormat": "{{feature}} out"
         }
       ],
       "fieldConfig": {
