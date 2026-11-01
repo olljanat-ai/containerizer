@@ -375,7 +375,8 @@ CONTAINERIZER_DEV_ROLES=admin
 and restart the web UI (`docker compose -f results/compose.yaml up -d`). Opening `/admin` then signs you in
 as that person at once. Everything else works as with sign-in: the roles decide what you see, every form
 needs its CSRF token, and the change history records the changes as made by that person in development
-mode. A red banner on every page says so, and the JSON API stays off.
+mode. A red banner on every page says so. The [JSON API](api.md) works with API keys made on
+**Admin → API** (access tokens need sign-in).
 
 !!! danger "Never on a shared network"
     Everyone who reaches the web UI is an administrator. The web UI refuses to start in development mode
