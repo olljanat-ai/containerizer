@@ -255,7 +255,7 @@ def review_handler(job: dict) -> dict:
     from . import ai
     pl = job["Payload"]
     model = pl.get("model") or None
-    data = ai.ask_json(pl["prompt"], ai.REVIEW_SCHEMA, model=model, feature=FEATURE)
+    data = ai.ask_json(pl["prompt"], ai.REVIEW_SCHEMA, model=model, feature=FEATURE, max_tokens=ai.SHORT_ANSWER_TOKENS)
     note = None
     try:
         if ai.cache_key(pl["prompt"], ai.REVIEW_SCHEMA, model) != pl.get("cache_key"):
@@ -1124,4 +1124,11 @@ def build(args) -> int:
     signal.signal(signal.SIGINT, stop)
     r.log(f"{r.name}: looking at the LLM queue every {args.poll}s")
     r.run(once=args.once)
+    if r.stopping.is_set():
+        # Stopped by a signal: unfinished jobs are back in the queue (run's finally), but their threads may still
+        # wait for the LLM, and Python waits for pool threads at exit, up to an hour on a CPU LLM. Leave now:
+        # closing the connection also makes llama.cpp cancel the answer and free the slot.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
     return 0
