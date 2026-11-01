@@ -1,6 +1,7 @@
 [Unit]
 Description=containerizer appliance: create or upgrade the results database schema and its logins
-After=containerizer-mssql.service
+# with an external SQL Server (CZ_SQL_SERVER) the mssql unit is skipped by its condition, which does not fail this one
+After=containerizer-mssql.service containerizer-firstboot.service containerizer-dns.service containerizer-firewall.service
 Requires=containerizer-mssql.service
 ConditionKernelCommandLine=!cdroot
 ConditionPathExists=!/run/elemental/recovery_mode

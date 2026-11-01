@@ -1,4 +1,7 @@
 #!/bin/sh
+# Connection strings from /run/containerizer/sql.env (cz-firstboot, from appliance.env); web.env may set its own.
+export CONTAINERIZER_SQL="${CONTAINERIZER_SQL:-$CZ_SQL_WEB_CS}"
+export CONTAINERIZER_ADMIN_SQL="${CONTAINERIZER_ADMIN_SQL:-$CZ_SQL_ADMIN_CS}"
 # Passwords from systemd credentials (root-only files on the persistent partition), never in the unit.
 CONTAINERIZER_SQL_PASSWORD="$(cat "$CREDENTIALS_DIRECTORY/sql-web")"
 CONTAINERIZER_ADMIN_SQL_PASSWORD="$(cat "$CREDENTIALS_DIRECTORY/sql-admin")"

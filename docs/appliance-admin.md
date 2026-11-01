@@ -11,7 +11,7 @@ image, and upgraded from the admin pages. To install it, see [Getting started](a
 | --- | --- | --- |
 | Web UI and API (results, admin pages, System, Firewall and Sandbox HTTPS pages) | systemd service, user `cz-web`, no privileges | `https://<appliance>/` |
 | Scan worker ([organization scans](scheduled-scans.md)) | systemd service, user `containerizer` + Docker | - |
-| SQL Server 2025 (results database) | container, non-root, data on the persistent partition | `127.0.0.1:1433` only |
+| SQL Server 2025 (results database), or your own SQL Server ([external database](#external-database)) | container, non-root, data on the persistent partition | `127.0.0.1:1433` only |
 | Sandbox cluster: k3s (single node) with Flux and Traefik | systemd service | `kubectl` on the appliance; apps at `https://<component>-<app>.<domain>/` with [Sandbox HTTPS](sandbox-https.md) |
 | [Lab services](lab-services.md) for the sandboxed apps: SQL Server, PostgreSQL, MySQL, MongoDB, Redis, RabbitMQ, Kafka, S3, Azure Blob storage, SFTP (each optional) | k3s, namespace `containerizer-lab`, data on the persistent partition | Admin → Lab services; inside the cluster only |
 | Local container registry | container | `127.0.0.1:5000` only (Docker and k3s) |
@@ -78,14 +78,67 @@ The first boot creates `/etc/containerizer/` (mode 700) with:
 
 | File | What to set |
 | --- | --- |
-| `appliance.env` | `CZ_HOSTNAME` (the name in the HTTPS certificate and the sign-in redirect), `CZ_ACME_EMAIL` (Let's Encrypt instead of the appliance's own CA), `CZ_DNS_SERVERS`, `CZ_MSSQL_EDITION`, `CZ_MSSQL_MEMORY`, `CZ_LLM_HEAVY` ([LLM-heavy mode](platform-migration.md#llm-heavy-mode), off by default) |
+| `appliance.env` | `CZ_HOSTNAME` (the name in the HTTPS certificate and the sign-in redirect), `CZ_ACME_EMAIL` (Let's Encrypt instead of the appliance's own CA), `CZ_DNS_SERVERS`, `CZ_MSSQL_EDITION`, `CZ_MSSQL_MEMORY`, `CZ_SQL_*` ([external database](#external-database)), `CZ_LLM_HEAVY` ([LLM-heavy mode](platform-migration.md#llm-heavy-mode), off by default) |
 | `web.env` | Sign-in for the web UI: `CONTAINERIZER_OIDC_*`, `CONTAINERIZER_ADMINS`, roles, viewers, API ([sign-in and roles](sign-in.md)) |
 | `worker.env` | Push credentials for an external image registry, and extra registry hosts the worker may push to. Scans that push to the appliance's own registry need none; source control tokens are registered on the admin pages ([source-control.md](source-control.md)) |
 | `sandbox.env` | The output repository the sandbox cluster deploys from ([the sandbox cluster](scheduled-scans.md#the-sandbox-cluster)) |
 | `grafana.env` | Optional Grafana settings, e.g. sign-in with your identity provider |
 | `egress.json` | The egress allow-list: change it on the Firewall page, not here |
-| `secrets/` | Generated passwords (SQL Server logins, Grafana `admin`) and the key pair that seals source control tokens (`credential-key` for the worker only, `credential-key.pub` for the web UI): root-only, never shown in the web UI. Keep `credential-key` when restoring a backup: the registered tokens open only with it |
+| `secrets/` | Generated passwords (SQL Server logins, Grafana `admin`), `sql-owner` for an [external database](#external-database) and the key pair that seals source control tokens (`credential-key` for the worker only, `credential-key.pub` for the web UI): root-only, never shown in the web UI. Keep `credential-key` when restoring a backup: the registered tokens open only with it |
 | `network/` | Optional `systemd-networkd` `.network` files for static addresses (default: DHCP on every NIC) |
+
+## External database
+
+By default the results database runs on the appliance, and you back it up ([Backup](#backup)). To keep it
+on a SQL Server you already run and back up (SQL Server 2019 or later, or Azure SQL Managed Instance), point
+the appliance at it in `appliance.env`. SQL Server then does not run on the appliance, and the appliance
+holds nothing that needs a database backup.
+
+1. On your server, create the database and a login that owns it (`db_owner`). With
+   `CZ_SQL_LOGINS=create` (the default) the login also needs `ALTER ANY LOGIN` (e.g. `securityadmin`): it
+   creates the logins `cz_scanner`, `cz_web` and `cz_admin` with generated passwords. If your DBA creates
+   logins instead, create those three yourself and set `CZ_SQL_LOGINS=existing`.
+2. In `/etc/containerizer/appliance.env`:
+
+    ```sh
+    CZ_SQL_SERVER=sql01.example.com,1433
+    CZ_SQL_DATABASE=Containerizer
+    CZ_SQL_USER=containerizer_owner
+    CZ_SQL_LOGINS=create
+    # optional: more connection string options, in quotes
+    CZ_SQL_OPTIONS="Schema=containerizer"
+    # optional: the CA of the server's certificate when the system CAs do not cover it
+    CZ_SQL_CA=/etc/containerizer/sql-ca.pem
+    ```
+
+3. Put the passwords in place (root only):
+
+    ```sh
+    install -m 0400 /dev/stdin /etc/containerizer/secrets/sql-owner      # the password of CZ_SQL_USER, then Ctrl-D
+    # only with CZ_SQL_LOGINS=existing: the three logins' passwords, the same way, into
+    # secrets/cz-scanner, secrets/cz-web and secrets/cz-admin
+    ```
+
+4. Reboot.
+
+At every start `containerizer-db-init` creates or upgrades the schema on that server as `CZ_SQL_USER`
+(the same as on the appliance's own SQL Server), so an upgrade of the appliance upgrades the database.
+The connection is encrypted and the server certificate is checked (the system CAs, or `CZ_SQL_CA`);
+`TrustServerCertificate=yes` in `CZ_SQL_OPTIONS` turns the check off, for test servers only. The firewall
+allows the server and port by itself (Firewall page → Always allowed); a DNS name must resolve through the
+appliance's DNS servers (`CZ_DNS_SERVERS`). Named instances (`host\instance`) are not supported: give the
+port. The login names are fixed, so one SQL Server instance serves one appliance with
+`CZ_SQL_LOGINS=create`.
+
+To move the data of an appliance that already ran scans: back up its database ([Backup](#backup)), restore
+the `.bak` on your server, then set it up as above: the restored database users `cz_scanner`, `cz_web` and
+`cz_admin` are mapped to the logins of that server by themselves. The appliance no longer uses
+`/var/lib/containerizer/mssql`; keep it until a scan has written to the external database, then delete it. To go
+back to the appliance's own SQL Server, empty `CZ_SQL_SERVER` and reboot (it starts with what that folder
+holds).
+
+If the settings are not valid, the web UI and the scan worker do not start:
+`journalctl -b -u containerizer-firstboot -u containerizer-db-init` says why.
 
 ## Firewall
 
@@ -176,6 +229,9 @@ On the console: `python -m containerizer.sysagent upgrade vX.Y.Z` or `... rollba
 
 ## Backup
 
+With an [external database](#external-database) the database is backed up on your server: skip the
+database step below and back up only `/etc/containerizer`.
+
 Back up the database (from the appliance):
 
 ```sh
@@ -193,7 +249,8 @@ and `/etc/containerizer` (configuration and secrets). Everything else is rebuilt
 - Web UI: no privileges (systemd sandbox: read-only system, no capabilities, system call filter); its
   database passwords come as systemd credentials. It cannot change the OS: upgrades, roll backs and the
   firewall go through the system agent, which checks every request again.
-- SQL Server: non-root, every capability dropped except binding its port, loopback only.
+- SQL Server: non-root, every capability dropped except binding its port, loopback only. An external
+  database is reached encrypted, with the server certificate checked, and with the same three logins.
   Edition: Express by default (free, 10 GB per database); Developer is not licensed for production.
 - The scan worker is in the `docker` group, which is equivalent to root: it builds and runs the scanned
   repositories' images. That is why the appliance is a dedicated machine, and why the egress allow-list

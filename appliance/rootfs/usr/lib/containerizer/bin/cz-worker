@@ -1,4 +1,6 @@
 #!/bin/sh
+# connection string from /run/containerizer/sql.env (cz-firstboot, from appliance.env); worker.env may set its own
+export CONTAINERIZER_SQL="${CONTAINERIZER_SQL:-$CZ_SQL_SCANNER_CS}"
 CONTAINERIZER_SQL_PASSWORD="$(cat "$CREDENTIALS_DIRECTORY/sql-scanner")"
 export CONTAINERIZER_SQL_PASSWORD
 # opens the source control tokens administrators register on the admin pages

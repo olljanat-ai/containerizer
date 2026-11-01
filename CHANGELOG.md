@@ -23,6 +23,14 @@ Results database schema version 18 (`containerizer db init` upgrades it; the app
   application pages); the admin pages still show them
 
 ### Appliance
+- External results database: `CZ_SQL_SERVER`, `CZ_SQL_DATABASE`, `CZ_SQL_USER` (password in
+  `secrets/sql-owner`) and `CZ_SQL_LOGINS` in `appliance.env` point the appliance at a SQL Server you run and
+  back up, so the appliance needs no database backup. SQL Server then does not run on the appliance, the
+  schema is created and upgraded on that server at every start, the firewall allows it by itself, and the
+  connection is encrypted with the certificate checked (`CZ_SQL_CA` for a private CA). The logins
+  `cz_scanner`, `cz_web` and `cz_admin` are created by the owner login, or by your DBA
+  (`CZ_SQL_LOGINS=existing`; new `containerizer db init --member LOGIN:ROLE`). Database users of a restored
+  backup are mapped to the logins of the new server ([external database](docs/appliance-admin.md#external-database))
 - `root` signs in with the password `containerizer` on the console and over SSH, and the first sign-in
   asks for a new one. The changed password is kept on the persistent partition, so it survives restarts,
   upgrades and roll backs. The SSH key is now optional in the installer, the first-time key prompt on the

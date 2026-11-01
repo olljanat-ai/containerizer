@@ -4,6 +4,8 @@ After=docker.service containerizer-firstboot.service containerizer-dns.service
 Requires=docker.service
 ConditionKernelCommandLine=!cdroot
 ConditionPathExists=!/run/elemental/recovery_mode
+# not started when appliance.env points the appliance at an external SQL Server (CZ_SQL_SERVER)
+ConditionPathExists=!/run/containerizer/sql-external
 
 [Service]
 EnvironmentFile=/usr/lib/containerizer/images.env

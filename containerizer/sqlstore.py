@@ -591,19 +591,32 @@ def store_sandbox(cs: str | None, doc: dict, password: str | None = None) -> tup
 
 
 # ---------------------------------------------------------------------------
-# local development: logins for the docker compose stack
+# logins: the docker compose stack and the appliance (its own SQL Server or an external one)
 
 def create_login(conn, login: str, password: str, role: str) -> None:
     """Create (or reset) a SQL login + database user in role writer, reader or admin. Needs an admin connection."""
     role = role.removeprefix(conn.schema + "_")
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", login) or role not in ("writer", "reader", "admin"):
         raise SqlError(f"bad login or role: {login} {role} (roles: writer, reader, admin)")
+    pw = password.replace("'", "''")
+    conn.cursor().execute(f"IF SUSER_ID(N'{login}') IS NULL CREATE LOGIN [{login}] WITH PASSWORD = N'{pw}', CHECK_POLICY = ON "
+                          f"ELSE ALTER LOGIN [{login}] WITH PASSWORD = N'{pw}'")
+    add_member(conn, login, role)
+
+
+def add_member(conn, login: str, role: str) -> None:
+    """Put a login (or a contained database user) in role writer, reader or admin; creates the database user
+    FOR LOGIN when it is missing. Needs db_owner, not server permissions (an external database whose DBA made
+    the logins)."""
+    role = role.removeprefix(conn.schema + "_")
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", login) or role not in ("writer", "reader", "admin"):
+        raise SqlError(f"bad login or role: {login} {role} (roles: writer, reader, admin)")
     role = f"{conn.schema}_{role}"
     cur = conn.cursor()
-    pw = password.replace("'", "''")
-    cur.execute(f"IF SUSER_ID(N'{login}') IS NULL CREATE LOGIN [{login}] WITH PASSWORD = N'{pw}', CHECK_POLICY = ON "
-                f"ELSE ALTER LOGIN [{login}] WITH PASSWORD = N'{pw}'")
-    cur.execute(f"IF DATABASE_PRINCIPAL_ID(N'{login}') IS NULL CREATE USER [{login}] FOR LOGIN [{login}]")
+    # a database restored from another server keeps users whose login SID is gone: map them to the login here
+    cur.execute(f"IF DATABASE_PRINCIPAL_ID(N'{login}') IS NULL CREATE USER [{login}] FOR LOGIN [{login}] "
+                f"ELSE IF SUSER_SID(N'{login}') IS NOT NULL AND (SELECT sid FROM sys.database_principals "
+                f"WHERE name = N'{login}') <> SUSER_SID(N'{login}') ALTER USER [{login}] WITH LOGIN = [{login}]")
     cur.execute(f"ALTER ROLE [{role}] ADD MEMBER [{login}]")
     conn.commit()
 
