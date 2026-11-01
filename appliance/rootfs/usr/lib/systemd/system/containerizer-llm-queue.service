@@ -1,13 +1,19 @@
 [Unit]
-Description=containerizer appliance: LLM queue runner (queued LLM reviews, Admin -> LLM queue)
-After=containerizer-db-init.service containerizer-dns.service
+Description=containerizer appliance: LLM queue runner (queued LLM reviews, refactoring patches; Admin -> LLM queue)
+After=containerizer-db-init.service containerizer-dns.service docker.service
 Requires=containerizer-db-init.service
+# refactoring patches are built and run before they are offered; without Docker they are "applies only"
+Wants=docker.service
 ConditionKernelCommandLine=!cdroot
 ConditionPathExists=!/run/elemental/recovery_mode
 
 [Service]
 User=containerizer
 Group=containerizer
+# Docker, to build and run a refactoring patch's components (the verify step of the scan worker). The docker
+# group is root-equivalent, as for the scan worker: the patched code is the scanned repositories' own code,
+# built and run in the same hardened containers (docs/refactoring.md#on-the-appliance).
+SupplementaryGroups=docker
 # the scan worker's settings: a self-hosted LLM set in the environment (CONTAINERIZER_LLM_*) applies here too
 EnvironmentFile=/etc/containerizer/worker.env
 EnvironmentFile=-/run/containerizer/llm.env
@@ -15,6 +21,12 @@ EnvironmentFile=-/run/containerizer/llm.env
 Environment=CONTAINERIZER_LOCAL_LLM=/run/containerizer/system/local-llm-status.json
 # the scan worker's answer cache: an answer the runner gets is found by the next scan
 Environment=CONTAINERIZER_AI_CACHE=/var/lib/containerizer/worker/ai-cache
+# refactoring patches: the source is read from the scan worker's clones (scan-<id>/repos/<app>, read only:
+# a scratch copy is made with `git clone --shared`), the scratch copies and builds go to its own folder
+Environment=CONTAINERIZER_REFACTOR_SOURCES=/var/lib/containerizer/worker
+Environment=CONTAINERIZER_REFACTOR_WORK=/var/lib/containerizer/refactor
+Environment=CONTAINERIZER_WORK=/var/lib/containerizer/refactor/work
+Environment=DOCKER_CONFIG=/var/lib/containerizer/refactor/.docker
 # results database (CZ_SQL_SCANNER_CS): the appliance's own or CZ_SQL_SERVER (cz-firstboot)
 EnvironmentFile=/run/containerizer/sql.env
 LoadCredential=sql-scanner:/etc/containerizer/secrets/cz-scanner
@@ -27,10 +39,11 @@ KillSignal=SIGTERM
 TimeoutStopSec=60
 Restart=on-failure
 RestartSec=30
-# no Docker: it only talks to the database and the LLM
 NoNewPrivileges=yes
+# Everything is read only (the scan worker's clones too) except the answer cache and the refactoring scratch
+# space (cz-firstboot creates both).
 ProtectSystem=strict
-ReadWritePaths=/var/lib/containerizer/worker/ai-cache
+ReadWritePaths=/var/lib/containerizer/worker/ai-cache /var/lib/containerizer/refactor
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

@@ -102,7 +102,67 @@ def load_application(conn, app_id: int) -> dict | None:
     app["sboms"] = load_app_sboms(conn, app_id)
     app["idp"] = load_idp_clients(conn, app_id)
     app["llm_reviews"] = load_llm_reviews(conn, app_id)
+    app["refactors"] = load_refactor_orders(conn, app_id)
     return app
+
+
+def load_refactor_orders(conn, app_id: int) -> list[dict]:
+    """The application's refactoring orders, newest first (empty before `db init` added them: schema 20)."""
+    try:
+        return _rows(conn, "SELECT TOP (20) JobId, Component, ProjectPath, Status, Summary, SourceCommit, QueuedAt, "
+                           "FinishedAt FROM cz.vRefactorOrder WHERE ApplicationId = %s ORDER BY JobId DESC", (app_id,))
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return []
+
+
+REFACTOR_STATUS_CSS = {"queued": "st-run", "generating": "st-run", "verifying": "st-run", "verified": "st-ok",
+                       "applies-only": "st-warn", "failed": "st-bad", "cancelled": "st-off"}
+
+
+def _refactoring(app: dict, ctx: dict | None) -> str:
+    """The Refactoring box of a B-rated application: its orders (everyone sees their status) and, for signed-in
+    operators and administrators, the form that orders one (POST to the admin pages, with the CSRF token).
+    The patches themselves are on the admin pages."""
+    from .refactor import STATUS_TEXT
+    orders = app.get("refactors") or []
+    if app.get("Rating") != "B" and not orders:
+        return ""
+    ctx = ctx or {}
+    staff = bool(ctx.get("csrf"))
+    rows = []
+    for o in orders:
+        st = o.get("Status") or "queued"
+        what = e(o.get("Component") or "All components")
+        if staff:
+            what = f"<a href='/admin/refactoring/{int(o['JobId'])}'>{what}</a>"
+        when = _date(o.get("FinishedAt") or o.get("QueuedAt"))
+        rows.append(f"<tr><td>{what}</td><td><span class='st {REFACTOR_STATUS_CSS.get(st, '')}'>"
+                    f"{e(STATUS_TEXT.get(st, st))}</span></td><td class='small'>{e(o.get('Summary') or '')}</td>"
+                    f"<td class='small nowrap'>{when}</td></tr>")
+    out = ["<section class='card refactor' id='refactoring'><h2>Refactoring</h2>"
+           "<p class='muted small'>A refactoring patch has the LLM make the targeted code changes this application needs "
+           "(its refactor findings), then applies the patch to the assessed commit, runs the rules on it again and builds "
+           "and runs the changed components. The patch is a download with how to apply it: nothing is written to the "
+           "repository, and every change needs a review.</p>"]
+    if rows:
+        out.append("<table><thead><tr><th>Component</th><th>Status</th><th>Result</th><th>When</th></tr></thead>"
+                   f"<tbody>{''.join(rows)}</tbody></table>")
+    if staff and app.get("Rating") == "B":
+        comps = [c for c in app.get("components") or [] if c.get("Verdict") in ("refactor", "config")]
+        opts = "".join(f"<option value='{int(c['ComponentId'])}'>{e(c['ComponentName'])} "
+                       f"({e(VERDICT_LABEL.get(c['Verdict'], c['Verdict']))})</option>" for c in comps)
+        out.append(f"<form method='post' action='/admin/refactoring/new' class='formrow'>{ctx['csrf']}"
+                   f"<input type='hidden' name='ApplicationId' value='{int(app['ApplicationId'])}'>"
+                   f"<select name='Component' aria-label='Component'><option value=''>All components that need changes"
+                   f"</option>{opts}</select><label class='check'><input type='checkbox' name='IncludeConfig' value='1'> "
+                   f"also change code for configuration findings</label><button>Request a refactoring patch</button></form>")
+    elif ctx.get("signin") and app.get("Rating") == "B":
+        out.append("<p class='muted small'>Operators and administrators can request a refactoring patch (sign in).</p>")
+    return "".join(out) + "</section>"
 
 
 def load_llm_reviews(conn, app_id: int) -> list[dict]:
@@ -371,7 +431,7 @@ def _info_link(url) -> str:
     return info_link(url)
 
 
-def render_application(app: dict, nav: str = "") -> str:
+def render_application(app: dict, nav: str = "", refactor: dict | None = None) -> str:
     r = app["Rating"]
     crumbs = (f"<a href='/'>All</a> › <a href='{e(_bu_href(app['BusinessUnitId']))}'>"
               f"{e(app['BusinessUnitName'] or UNASSIGNED)}</a> › {e(app['ProductName'] or UNASSIGNED)}"
@@ -450,6 +510,7 @@ def render_application(app: dict, nav: str = "") -> str:
 <table><thead><tr><th>Component</th><th>What it is</th><th>Verdict</th><th>Build and run</th>{"<th>Sandbox cluster</th>" if sandbox else ""}<th>Migration</th>{"<th>Packages</th>" if sboms else ""}</tr></thead>
 <tbody>{comp_rows}</tbody></table>
 {_idp_section(app.get("idp") or [])}
+{_refactoring(app, refactor)}
 <h2>What needs to change, and why</h2>{''.join(details)}
 <h2>History</h2><p class='muted small'><a href='/trends'>Trends of all applications</a></p><table class='narrow'><thead><tr><th>Assessed</th><th>Rating</th><th class='num'>Readiness</th>
 </tr></thead><tbody>{hist}</tbody></table>
@@ -719,6 +780,21 @@ white-space:pre-wrap;word-break:break-word;max-height:460px}
 pre.diff .add{color:#0a7d0a}pre.diff .del{color:#b42727}pre.diff .hunk{color:var(--muted)}
 @media (prefers-color-scheme:dark){pre.diff .add{color:#4fd14f}pre.diff .del{color:#f07a7a}}
 form.edit.wide{max-width:none;margin:12px 0}nav.chips+div.meta{margin-top:16px}
+.st-warn{color:#8a6100}@media (prefers-color-scheme:dark){.st-warn{color:#fac35a}}
+a.button{display:inline-block;border:1px solid var(--fg);background:var(--fg);color:var(--bg);border-radius:6px;
+padding:6px 14px;text-decoration:none}section.refactor .formrow select{min-width:220px}
+section.diff{margin:14px 0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--card)}
+.diff-file{padding:6px 10px;border-bottom:1px solid var(--line);font:13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.diff-stat{float:right}.diff-add{color:#0a7d0a}.diff-del{color:#b42727}
+table.diff{font:12.5px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;table-layout:auto}
+table.diff td{padding:0 8px;border:0;white-space:pre-wrap;word-break:break-word}
+table.diff td.ln{width:1%;min-width:3.5em;text-align:right;color:var(--muted);user-select:none;white-space:nowrap}
+table.diff tr.add td{background:#e6f4e6}table.diff tr.del td{background:#fbe9e9}
+table.diff tr.hunk td{background:var(--bg);color:var(--muted)}table.diff tr.note td{color:var(--muted)}
+table.diff .sign{display:inline-block;width:1.2em;color:var(--muted);user-select:none}
+@media (prefers-color-scheme:dark){.diff-add{color:#4fd14f}.diff-del{color:#f07a7a}
+table.diff tr.add td{background:#16351a}table.diff tr.del td{background:#3d1a1a}}
+ol.steps li{margin:6px 0}ol.steps pre.code{margin:4px 0}ul.checks{padding-left:18px}ul.checks li{margin:6px 0}
 """
 
 # The only script: the "Copy prompt" button of the migration assistant (progressive enhancement; without it the
@@ -778,7 +854,7 @@ def make_handler(connect, admin=None):
 
         def _send(self, status: int, body: str, ctype: str = "text/html; charset=utf-8", head: bool = False,
                   extra: list | None = None, forms: bool = False):
-            data = body.encode()
+            data = body if isinstance(body, bytes) else body.encode()
             self.send_response(status)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
@@ -935,7 +1011,11 @@ def make_handler(connect, admin=None):
                             if app is None:
                                 return self._send(404, page("Not found", "<h1>Application not found</h1><p><a href='/'>Back</a></p>"),
                                                   head=head)
-                            return self._send(200, render_application(app, nav), head=head, forms=bool(nav))
+                            ctx = {"signin": bool(admin)}
+                            s = admin.session(self.headers) if admin else None
+                            if s and (s.admin or s.operator):      # may order a refactoring patch
+                                ctx["csrf"] = admin._csrf(s)
+                            return self._send(200, render_application(app, nav, ctx), head=head, forms=bool(nav))
                         bu = parse_qs(u.query).get("bu", [None])[0]
                         if bu is not None and not re.fullmatch(r"\d{1,9}|none", bu):
                             bu = None

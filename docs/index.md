@@ -106,6 +106,15 @@ running and deploying them in its own sandbox cluster.
 
     [:octicons-arrow-right-24: Migration assistant](overview.md#migration-assistant)
 
+-   :material-source-pull:{ .lg .middle } **Refactoring patches, verified**
+
+    ---
+
+    For a B-rated application the LLM makes the targeted code changes, one file at a time. The patch is
+    applied to the assessed commit, checked with the rules, built and run before you download it.
+
+    [:octicons-arrow-right-24: Refactoring patches](refactoring.md)
+
 -   :material-server-security:{ .lg .middle } **Runs in your network**
 
     ---

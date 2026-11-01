@@ -346,6 +346,12 @@ def cmd_llm_queue(args) -> int:
     return build(args)
 
 
+def cmd_refactor(args) -> int:
+    from .refactor import cli
+
+    return cli(args)
+
+
 def _job_queue(args, folder):
     """--ai-queue: the LLM queue in SQL Server (--sql or CONTAINERIZER_SQL), else a JSON file in `folder`.
     None without --ai-queue; raises SystemExit with a message when it cannot be used."""
@@ -847,6 +853,22 @@ def main(argv=None) -> int:
     s.add_argument("--no-metrics", action="store_true")
     s.add_argument("--once", action="store_true", help="answer what may be answered now, then exit")
     s.set_defaults(fn=cmd_llm_queue)
+
+    s = sub.add_parser("refactor", help="refactoring patch for a B-rated application: the LLM changes the code for its "
+                       "refactor findings, the patch is applied, built and run (docs/refactoring.md)")
+    s.add_argument("path", help="the application's folder (a git checkout: the patch is made for its HEAD commit)")
+    s.add_argument("--component", help="only this component (name or project path; default: every component that "
+                   "needs changes)")
+    s.add_argument("--out", help="where the .patch and its summary (.json) go (default: the current folder); with "
+                   "--queue and no SQL Server, where llm-queue.json is")
+    s.add_argument("--queue", action="store_true", help="queue the order for `containerizer llm-queue` instead of "
+                   "running it now: in SQL Server when --sql or CONTAINERIZER_SQL is set, else in llm-queue.json")
+    s.add_argument("--include-config", action="store_true", help="also have code changed for configuration findings "
+                   "(default: refactor findings, and configuration findings in the same files)")
+    s.add_argument("--max-calls", type=int, default=8, help="at most this many LLM calls (one per file; default 8)")
+    s.add_argument("--no-verify", action="store_true", help="do not build and run the patched components")
+    s.add_argument("--sql", help="with --queue: connection string of the results database (default CONTAINERIZER_SQL)")
+    s.set_defaults(fn=cmd_refactor)
 
     s = sub.add_parser("credentials", help="key pair that seals the source control tokens registered on the admin pages")
     csub = s.add_subparsers(dest="ccmd", required=True)

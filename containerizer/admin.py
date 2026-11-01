@@ -213,7 +213,7 @@ class Admin:
         kind = parts[0]
         if kind not in {k for k, _ in tabs}:
             known = kind in ("applications", "products", "business-units", "audit", "access", "scans", "repositories",
-                             "llm-queue",
+                             "llm-queue", "refactoring",
                              "dev-databases", "system", "firewall", "source-control", "lab-services",
                              "sandbox-https")
             return Response(403 if known else 404, self._shell(s, a, "Not allowed" if known else "Not found", "",
@@ -223,6 +223,9 @@ class Admin:
         if kind == "llm-queue":                      # administrators and operators (see _tabs)
             from . import admin_llmqueue
             return admin_llmqueue.route(self, conn, s, a, method, parts, q, form, q.get("msg", [""])[0][:300])
+        if kind == "refactoring":                    # administrators and operators (see _tabs)
+            from . import admin_refactor
+            return admin_refactor.route(self, conn, s, a, method, parts, q, form, q.get("msg", [""])[0][:300])
         if kind == "rules":
             from . import admin_rules
             return admin_rules.route(self, conn, s, a, method, parts, q, form, q.get("msg", [""])[0][:300])
@@ -277,7 +280,8 @@ class Admin:
         if a.admin:
             tabs += [("business-units", "Business units")]
         if (a.admin or a.operator) and hasattr(self, "route_scans"):     # scheduled organization scans
-            tabs += [("scans", "Organization scans"), ("repositories", "Repositories"), ("llm-queue", "LLM queue")]
+            tabs += [("scans", "Organization scans"), ("repositories", "Repositories"), ("llm-queue", "LLM queue"),
+                     ("refactoring", "Refactoring")]
         if a.admin and hasattr(self, "route_scans"):                     # tokens of the organizations (admin_credentials.py)
             tabs += [("source-control", "Source control & LLM")]
         if self.devdb is not None and (a.admin or a.operator):           # dev database backups (admin_devdb.py)

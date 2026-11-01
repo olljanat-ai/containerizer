@@ -7,7 +7,26 @@ qcow2 and VHD images as release assets.
 
 ## Unreleased
 
-Results database schema version 19 (`containerizer db init` upgrades it; the appliance does at start).
+Results database schema version 20 (`containerizer db init` upgrades it; the appliance does at start).
+
+### Refactoring patches
+- Refactoring patches for B-rated applications: an operator or administrator orders one on the
+  application's results page (**Refactoring** box: all components that need changes, or one; optionally
+  configuration findings too). The order is a `refactor` job in the LLM queue. The runner asks the LLM once
+  per affected file, with the rule's fix, the evidence and the file, for structured edits (not a diff),
+  applies them deterministically (each search text exactly once; one retry with the errors), and makes a
+  `git format-patch` commit. The patch is then applied to a clean copy at the assessed commit
+  (`git apply --check`, `git am`), the rules run again on it (which findings are gone, which remain, any
+  new ones), and the changed components are built and run with the verify step: the patch is **verified**,
+  **applies only** (with the build or run log tail) or **failed** (never offered). **Admin → Refactoring**
+  lists the orders; each has the findings fixed and not fixed, the verification, a coloured diff per file,
+  **Download .patch** and how to apply it with `git am`. Download only: nothing is written to the
+  repositories. Product owners and viewers see an order's status on the results page, not the patch.
+  Command line: `containerizer refactor <app> [--component] [--out] [--queue]`. Schema 20 adds the kind to
+  `CK_LlmJob_Kind` and the view `vRefactorOrder`. See [refactoring patches](docs/refactoring.md)
+- Appliance: the LLM queue runner is now in the docker group (to build and run the patches, as the scan
+  worker does), reads the scan worker's clones and writes only its answer cache and
+  `/var/lib/containerizer/refactor`
 
 ### Organization scans
 - Queued LLM reviews, for a slow self-hosted LLM: with **LLM reviews: Queued** on a scan, the scan asks

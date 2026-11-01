@@ -11,7 +11,7 @@ image, and upgraded from the admin pages. To install it, see [Getting started](a
 | --- | --- | --- |
 | Web UI and API (results, admin pages, System, Firewall and Sandbox HTTPS pages) | systemd service, user `cz-web`, no privileges | `https://<appliance>/` |
 | Scan worker ([organization scans](scheduled-scans.md)) | systemd service, user `containerizer` + Docker | - |
-| LLM queue runner ([queued LLM reviews](scheduled-scans.md#the-llm-queue)) | systemd service `containerizer-llm-queue`, user `containerizer`, no Docker | Admin → LLM queue |
+| LLM queue runner ([queued LLM reviews](scheduled-scans.md#the-llm-queue), [refactoring patches](refactoring.md)) | systemd service `containerizer-llm-queue`, user `containerizer` + Docker (to build and run refactoring patches), reads the scan worker's clones, writes only its answer cache and `/var/lib/containerizer/refactor` | Admin → LLM queue, Admin → Refactoring |
 | SQL Server 2025 (results database), or your own SQL Server ([external database](#external-database)) | container, non-root, data on the persistent partition | `127.0.0.1:1433` only |
 | Sandbox cluster: k3s (single node) with Flux and Traefik | systemd service | `kubectl` on the appliance; apps at `https://<component>-<app>.<domain>/` with [Sandbox HTTPS](sandbox-https.md) |
 | [Lab services](lab-services.md) for the sandboxed apps: SQL Server, PostgreSQL, MySQL, MongoDB, Redis, RabbitMQ, Kafka, S3, Azure Blob storage, SFTP (each optional) | k3s, namespace `containerizer-lab`, data on the persistent partition | Admin → Lab services; inside the cluster only |

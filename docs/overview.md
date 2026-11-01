@@ -179,6 +179,13 @@ Copilot, ...): the findings with their evidence, the replacements in order, cons
 changes, no secrets in code, non-root and read-only file system) and how to verify. The web UI shows
 it on the component's migration assistant with a copy button.
 
+For a **B-rated** application Containerizer can also make the changes: a
+[refactoring patch](refactoring.md) has the LLM change the code for its refactor findings, one file
+at a time with structured edits, then applies the patch to the assessed commit, runs the rules on it
+again and builds and runs the changed components. The patch is offered for download as *verified*
+(applies, builds and runs) or *applies only*, with how to apply it with `git am`; one that does not
+apply cleanly is never offered.
+
 ### Self-learning loop
 
 For each component that can be containerized the scan:

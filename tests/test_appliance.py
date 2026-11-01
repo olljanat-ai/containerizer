@@ -570,14 +570,25 @@ def test_llm_queue_runner_unit():
     assert cache in q["Environment"] and cache in w["Environment"]
     assert set(q["LoadCredential"]) == {"sql-scanner:/etc/containerizer/secrets/cz-scanner",
                                         "credential-key:/etc/containerizer/secrets/credential-key"}
-    assert q["ExecStart"] == ["/usr/lib/containerizer/bin/cz-llm-queue"] and "SupplementaryGroups" not in q
-    assert q["ProtectSystem"] == ["strict"] and q["ReadWritePaths"] == ["/var/lib/containerizer/worker/ai-cache"]
+    assert q["ExecStart"] == ["/usr/lib/containerizer/bin/cz-llm-queue"]
+    # refactoring patches: Docker to build and run them (as the scan worker), the worker's clones read only,
+    # writes only to the answer cache and the refactoring scratch space
+    assert q["SupplementaryGroups"] == w["SupplementaryGroups"] == ["docker"]
+    assert "docker.service" in q["Wants"] and "docker.service" in q["After"][0].split()
+    assert q["ProtectSystem"] == ["strict"]
+    assert q["ReadWritePaths"] == ["/var/lib/containerizer/worker/ai-cache /var/lib/containerizer/refactor"]
+    for env in ("CONTAINERIZER_REFACTOR_SOURCES=/var/lib/containerizer/worker",
+                "CONTAINERIZER_REFACTOR_WORK=/var/lib/containerizer/refactor",
+                "CONTAINERIZER_WORK=/var/lib/containerizer/refactor/work",
+                "DOCKER_CONFIG=/var/lib/containerizer/refactor/.docker"):
+        assert env in q["Environment"]
     assert q["NoNewPrivileges"] == ["yes"] and q["WantedBy"] == ["multi-user.target"]
     script = (APPLIANCE / "rootfs/usr/lib/containerizer/bin/cz-llm-queue").read_text()
     assert "-m containerizer llm-queue --metrics-host 127.0.0.1 --metrics-port 9465" in script
     assert 'CONTAINERIZER_CREDENTIAL_KEY_FILE="$CREDENTIALS_DIRECTORY/credential-key"' in script
     firstboot = (APPLIANCE / "rootfs/usr/lib/containerizer/bin/cz-firstboot").read_text()
     assert 'install -d -m 0700 -o containerizer -g containerizer "$D/worker/ai-cache"' in firstboot
+    assert 'install -d -m 0700 -o containerizer -g containerizer "$D/refactor"' in firstboot
     docker = (APPLIANCE / "Dockerfile").read_text()
     assert "containerizer-llm-queue.service" in docker.split("systemctl enable", 1)[1].split("\n\n", 1)[0]
     prom = (APPLIANCE / "rootfs/usr/lib/containerizer/prometheus/prometheus.yml").read_text()

@@ -49,6 +49,7 @@ nav:
   - Using it:
       - Organization scans: scheduled-scans.md
       - Platform migrations: platform-migration.md
+      - Refactoring patches: refactoring.md
       - SBOMs, licences and CVEs: sbom.md
       - Rule review: rule-review.md
   - Administration:
