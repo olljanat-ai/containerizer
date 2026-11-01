@@ -20,7 +20,7 @@ image, and upgraded from the admin pages. To install it, see [Getting started](a
 | Firewall and DNS filter: every outgoing connection is blocked unless an allow-list rule covers it | nftables + dnsmasq | Admin → Firewall |
 
 ```
-                 443 (HTTPS)                                  22 (SSH, key only)
+                 443 (HTTPS)                                  22 (SSH, root)    
                      │                                              │
  ┌───────────────────┼──────────────────────────────────────────────┼─────────────────────────────────┐
  │ Caddy ──► web UI + API ──(status, requests)──► system agent (root): upgrade, roll back, firewall    │
@@ -39,6 +39,23 @@ Everything that has to survive a restart or an upgrade is on the persistent part
 learned rules, logs. An upgrade writes the new version as a new snapshot next to the running one; if it
 does not start properly, the appliance goes back to the previous snapshot by itself.
 
+## Root password and SSH
+
+`root` is the only administrator account on the OS. It signs in on the console or over SSH with its
+password, or over SSH with a key in `/root/.ssh/authorized_keys`. The password is `containerizer` and
+expired on a new appliance, so the first sign-in, on the console or over SSH, asks for a new one (until
+then PAM may refuse an SSH key as well). `/etc` is rebuilt at every boot, so the appliance keeps root's
+password entry in `/etc/containerizer/secrets/root-shadow` (persistent partition) and puts it back at every
+start; changes with `passwd` are saved there by themselves (`containerizer-root-password.path`).
+
+- **Keys only**: after adding your key, `passwd -l root` locks the password: password sign-in stops
+  working on SSH and the console, keys keep working. `passwd -u root` unlocks it.
+- **Forgotten password**: start the recovery system from the GRUB menu (it always starts with the default
+  password, expired), mount the persistent partition (label `COS_PERSISTENT`) and delete
+  `root-shadow` from the `secrets` folder of `/etc/containerizer` there; the next start of the
+  appliance goes back to the default password.
+- The recovery system does not keep a changed password: each start asks for a new one again.
+
 ## Unattended installs
 
 Pass an Elemental cloud-config with the key, e.g.
@@ -52,6 +69,8 @@ stages:
         root:
           - "ssh-ed25519 AAAA... you@example.com"
 ```
+
+The root password is the default (`containerizer`) and expired on unattended installs too.
 
 ## Configuration files
 
@@ -70,7 +89,7 @@ The first boot creates `/etc/containerizer/` (mode 700) with:
 
 ## Firewall
 
-**Inbound**: only TCP 22 (SSH, keys only) and 443 (HTTPS). The k3s API, SQL Server, the registry,
+**Inbound**: only TCP 22 (SSH) and 443 (HTTPS). The k3s API, SQL Server, the registry,
 Prometheus and Grafana listen on the loopback interface or are not reachable from outside; NodePorts of
 the sandbox cluster are blocked too (use `ssh -L` to reach anything else).
 
@@ -170,7 +189,7 @@ and `/etc/containerizer` (configuration and secrets). Everything else is rebuilt
 ## Security notes
 
 - OS: read-only, signed upgrades only, no package manager in use, kernel and network hardening sysctls,
-  SSH with keys only, no service but SSH and HTTPS reachable, outbound allow-list for everything.
+  root's default password must be changed at the first sign-in (`passwd -l root` for SSH keys only), no service but SSH and HTTPS reachable, outbound allow-list for everything.
 - Web UI: no privileges (systemd sandbox: read-only system, no capabilities, system call filter); its
   database passwords come as systemd credentials. It cannot change the OS: upgrades, roll backs and the
   firewall go through the system agent, which checks every request again.

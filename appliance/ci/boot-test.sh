@@ -32,10 +32,17 @@ wait_ssh() {  # seconds
     sleep 10
   done
 }
+# root's password is "containerizer" and expired until changed: the first sign-in (console or SSH) asks for
+# a new one, and until then PAM may refuse the key too. Sign in with the password and change it.
+NEWPW="Cz-$(openssl rand -hex 12)"
+change_password() {
+  "$HERE/password-ssh.exp" change containerizer "$NEWPW" >>"$OUT/password-change.log" 2>&1
+}
 wait_active() {  # seconds: SSH answers in the active system (not the recovery system that deploys it)
   local end=$((SECONDS + $1))
   until "${SSH[@]}" test -f /run/elemental/active_mode 2>/dev/null; do
     [ $SECONDS -lt $end ] || { echo "not in the active system after $1 s" >&2; tail -100 "$OUT"/serial-*.log >&2; return 1; }
+    change_password || true   # the recovery system asks too (it always starts with the default password)
     sleep 10
   done
 }
@@ -65,6 +72,16 @@ start_vm 1
 # an expandable image boots the recovery system first, which deploys the active system to the whole disk
 # (elemental reset) and restarts; SSH already answers in the recovery system, so wait for the active one
 wait_active 1800
+
+echo "=== root's password: the default asks for a new one, then only the new one signs in"
+if "${SSH[@]}" 'chage -l root' | grep -qi "must be changed"; then
+  change_password || { cat "$OUT/password-change.log"; exit 1; }
+fi
+"$HERE/password-ssh.exp" run "$NEWPW" 'chage -l root' | tee "$OUT/password-check.log"
+if grep -qi "must be changed" "$OUT/password-check.log"; then echo "root's password is still expired" >&2; exit 1; fi
+if "$HERE/password-ssh.exp" run containerizer true >/dev/null; then echo "the default password still signs in" >&2; exit 1; fi
+"${SSH[@]}" 'systemctl start containerizer-root-password-save.service'  # the path unit saves it too; do not race it
+
 "${SSH[@]}" 'bash -s' < "$HERE/vm-checks.sh"
 
 echo "=== from outside: only HTTPS and SSH are forwarded; HTTPS answers"
@@ -74,6 +91,9 @@ echo "=== roll back"
 "${SSH[@]}" 'bash -s prepare' < "$HERE/rollback-checks.sh"
 "${SSH[@]}" 'systemctl reboot' || true
 wait_reboot
+echo "=== root's new password survives a restart"
+"$HERE/password-ssh.exp" run "$NEWPW" 'chage -l root' | tee "$OUT/password-check.log"
+if grep -qi "must be changed" "$OUT/password-check.log"; then echo "root's password was reset by the restart" >&2; exit 1; fi
 "${SSH[@]}" 'bash -s rollback' < "$HERE/rollback-checks.sh"
 wait_reboot
 "${SSH[@]}" 'for i in $(seq 60); do test -s /run/containerizer/system/status.json && break; sleep 5; done; bash -s verify' \

@@ -458,3 +458,21 @@ def test_sbom_attach_tool_is_in_the_image():
     docker = (APPLIANCE / "Dockerfile").read_text()
     assert "oras-project/oras/releases/download/" in docker and "-C /usr/bin --no-same-owner oras" in docker
     assert docker.count("--checksum=sha256:") >= 4        # every download is pinned
+
+
+def test_root_password_default_is_expired_and_kept_and_ssh_takes_it():
+    script = (APPLIANCE / "rootfs" / "usr" / "lib" / "containerizer" / "bin" / "cz-root-password").read_text()
+    assert "echo 'root:containerizer' | chpasswd" in script and "chage -d 0 root" in script
+    assert "F=/etc/containerizer/secrets/root-shadow" in script   # persistent partition: /etc itself is a tmpfs
+    restore, path = _unit("containerizer-root-password.service"), _unit("containerizer-root-password.path")
+    assert "ssh.service" in restore["Before"][0] and "systemd-user-sessions.service" in restore["Before"][0]
+    assert "containerizer-firstboot.service" in restore["After"][0]           # secrets/ exists by then
+    assert path["PathChanged"] == ["/etc/shadow"]
+    docker = (APPLIANCE / "Dockerfile").read_text()
+    assert "containerizer-root-password.service containerizer-root-password.path" in docker
+    sshd = dict(line.split(None, 1) for line in (APPLIANCE / "rootfs" / "etc" / "ssh" / "sshd_config.d" /
+                                                 "10-containerizer.conf").read_text().splitlines()
+                if line.strip() and not line.startswith("#"))
+    assert sshd["PermitRootLogin"] == "yes" and sshd["PasswordAuthentication"] == "yes"
+    assert sshd["KbdInteractiveAuthentication"] == "yes" and sshd["UsePAM"] == "yes"
+    assert "AuthenticationMethods" not in sshd
