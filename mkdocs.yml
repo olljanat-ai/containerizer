@@ -46,7 +46,8 @@ nav:
   - Home: index.md
   - How it works: overview.md
   - Appliance:
-      - Install and first boot: appliance.md
+      - Getting started: appliance.md
+      - Running the appliance: appliance-admin.md
       - Sign-in and roles: sign-in.md
       - Source control tokens and the LLM: source-control.md
   - Scans:

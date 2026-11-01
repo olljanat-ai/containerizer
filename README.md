@@ -23,7 +23,7 @@ It was built for the [onek8s containerization challenge](https://github.com/onek
 
 - **Documentation:** [containerizer.eu](https://containerizer.eu), with
   [how it works](https://containerizer.eu/overview/) and
-  [install and first boot](https://containerizer.eu/appliance/).
+  [getting started](https://containerizer.eu/appliance/).
 - **Downloads:** the appliance ISO, qcow2 and VHD images with signed checksums are on the
   [releases](https://github.com/olljanat-ai/containerizer/releases) page, and the appliance OS image is
   `ghcr.io/olljanat-ai/containerizer-appliance`. See the [changelog](CHANGELOG.md) for what changed.

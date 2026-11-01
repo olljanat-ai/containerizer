@@ -8,7 +8,7 @@ description: How Containerizer assesses applications, learns from failed builds,
 Containerizer tells you whether an application can run as a Linux container on Kubernetes, explains why,
 and generates hardened container builds and Kubernetes manifests for the parts that can. This page
 explains how the assessment works and what it generates. To install and use it, start with
-[Install and first boot](appliance.md).
+[Getting started](appliance.md).
 
 ## Design principles
 
