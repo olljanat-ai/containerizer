@@ -598,3 +598,69 @@ def test_disallowed_clone_host_is_an_error(tmp_path, monkeypatch):
                    token="t", work_dir=str(tmp_path / "w"), cache_dir=str(tmp_path / "c"), allowed_hosts={"github.com"})
     [r] = run_org(o, log=lambda *a, **k: None)
     assert r.status == "error" and "outside the organization acme" in r.reason
+
+
+def test_github_last_commit_on_the_default_branch(api):
+    def commits(path, base):
+        assert "sha=dev" in path and "per_page=1" in path
+        return 200, [{"commit": {"committer": {"date": "2025-12-24T18:00:00Z"}}}], {}
+    a = api([("/repos/acme/svc/commits", commits)])
+    p = provider("github", "acme", "tok", a.url)
+    r = SourceRepo("github", "acme", NO_PROJECT, "svc", "https://github.com/acme/svc.git", default_branch="dev",
+                   extra={"full_name": "acme/svc"})
+    assert p.last_commit(r) == datetime(2025, 12, 24, 18, 0, tzinfo=timezone.utc)
+
+
+def test_discover_org_lists_without_cloning(monkeypatch, tmp_path):
+    """Discovery: every repository with its latest commit from the API and the skips the API alone shows;
+    nothing is cloned, the output repository is not touched, an administrator's decisions are kept."""
+    def repo(proj, n, **kw):
+        return SourceRepo("azure-devops", "contoso", proj, n, f"https://dev.azure.com/contoso/{proj}/_git/{n}",
+                          default_branch="main", **kw)
+    repos = [repo("A", "fresh"), repo("A", "old"), repo("A", "gone", archived=True), repo("A", "blank", empty=True),
+             repo("B", "fork", fork=True), repo("B", "sandbox"), repo("C", "off"), repo("A", "broken")]
+    dates = {"A/fresh": datetime(2026, 10, 1, tzinfo=timezone.utc), "A/old": datetime(2020, 1, 1, tzinfo=timezone.utc)}
+
+    class Prov(_FakeProvider):
+        asked = []
+
+        def last_commit(self, r):
+            self.asked.append(r.key)
+            if r.name == "broken":
+                raise orgsource.SourceError("HTTP 500")
+            return dates.get(r.key)
+    prov = Prov(repos)
+    monkeypatch.setattr(orgmod, "provider", lambda *a, **k: prov)
+    monkeypatch.setattr(orgmod, "update_clone", lambda *a, **k: pytest.fail("discovery must not clone"))
+    monkeypatch.setattr(orgmod, "clone", lambda *a, **k: pytest.fail("discovery must not clone"))
+
+    class State:
+        seen = []
+
+        def sync(self, listed, names):
+            return {"C/off": "project-disabled"}
+
+        def discovered(self, d):
+            self.seen.append(d)
+    st = State()
+    o = OrgOptions(provider="azure-devops", org="contoso", registry="r.example/x", token="t", skip_forks=True,
+                   exclude="sandbox", state=st, now=datetime(2026, 11, 1, tzinfo=timezone.utc),
+                   work_dir=str(tmp_path / "work"))
+    found = {d.repo.key: d for d in orgmod.discover_org(o, log=lambda m: None)}
+    assert len(st.seen) == len(repos) and not (tmp_path / "work").exists()
+    assert found["A/fresh"].skip is None and found["A/fresh"].last_commit == dates["A/fresh"]
+    assert found["A/old"].skip == ("skipped-stale", "last commit 2020-01-01")
+    assert found["A/gone"].skip[0] == "skipped-archived" and found["A/blank"].skip[0] == "skipped-empty"
+    assert found["B/fork"].skip[0] == "skipped-fork" and found["B/sandbox"].skip[0] == "skipped-filter"
+    assert found["A/broken"].error and found["A/broken"].skip is None
+    assert "C/off" not in prov.asked and "A/blank" not in prov.asked     # disabled and empty: no API call
+
+    class Stop:
+        def start(self, n):
+            self.n = n
+
+        def should_stop(self):
+            return True
+    o.hooks = Stop()
+    st.seen.clear()
+    assert orgmod.discover_org(o, log=lambda m: None) == [] and st.seen == []

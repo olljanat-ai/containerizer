@@ -272,11 +272,23 @@ class GitHub(Provider):
                     clone_url=d["clone_url"], default_branch=d.get("default_branch") or "",
                     web_url=d.get("html_url") or "", last_activity=parse_time(d.get("pushed_at")),
                     archived=bool(d.get("archived") or d.get("disabled")), empty=d.get("size") == 0,
-                    fork=bool(d.get("fork")), id=str(d.get("id", "")))
+                    fork=bool(d.get("fork")), id=str(d.get("id", "")),
+                    extra={"full_name": d.get("full_name") or f"{self.org}/{d['name']}"})
             nxt = _next_link(h)
             if not nxt:
                 return
             data, h = self.get(nxt)
+
+    def last_commit(self, r: SourceRepo) -> datetime | None:
+        full = "/".join(urllib.parse.quote(x, safe="") for x in (r.extra.get("full_name") or f"{self.org}/{r.name}").split("/", 1))
+        url = f"{self.api}/repos/{full}/commits?per_page=1"
+        if r.default_branch:
+            url += "&sha=" + urllib.parse.quote(r.default_branch, safe="")
+        data, _ = self.get(url)
+        if not data:
+            return None
+        c = (data[0] or {}).get("commit") or {}
+        return parse_time((c.get("committer") or {}).get("date") or (c.get("author") or {}).get("date"))
 
 
 class GitLab(Provider):

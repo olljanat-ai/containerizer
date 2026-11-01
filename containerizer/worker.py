@@ -4,7 +4,7 @@ Administrators define organization scans on the admin pages (admin_scans.py): wh
 where the generated files and images go, and on which days and at what time (UTC) to run. The worker
 is a separate, long-running process on a build machine with Docker. It
 
-- queues a run when a scan is due (or an administrator pressed "Run now"), claims it, and runs
+- queues a run when a scan is due (or an administrator pressed "Run full scan" or "Discover"), claims it, and runs
   `containerizer org` for it (org.run_org) with the repository list kept in SQL Server;
 - keeps every repository's clone in its data folder and only fetches the newest commit on later runs;
 - adds repositories the organization did not have before, marks the ones it no longer lists, records
@@ -148,11 +148,41 @@ class SqlRepoStore:
         self.conn, self.scan_id, self.run_id = conn, scan_id, run_id
         self.new: list[str] = []
         self.listed = 0
+        self.projects = 0
+
+    def sync_projects(self, listed) -> set[str]:
+        """Add the projects the organization lists, mark the ones it no longer lists as removed. Returns
+        the names of the projects an administrator disabled."""
+        from .orgsource import NO_PROJECT
+        cur = self.conn.cursor(as_dict=True)
+        cur.execute("SELECT ProjectId, Name, AdminState, RemovedAt FROM cz.OrgProject WHERE ScanId = %s", (self.scan_id,))
+        rows = {r["Name"]: r for r in cur.fetchall()}
+        names = {_cut(r.project, 200) for r in listed if r.project != NO_PROJECT}
+        c = self.conn.cursor()
+        for n in sorted(names):
+            if n in rows:
+                c.execute("UPDATE cz.OrgProject SET LastSeenAt = SYSUTCDATETIME(), RemovedAt = NULL WHERE ProjectId = %s",
+                          (rows[n]["ProjectId"],))
+            else:
+                c.execute("INSERT cz.OrgProject (ScanId, Name) VALUES (%s, %s)", (self.scan_id, n))
+        gone = [r["ProjectId"] for n, r in rows.items() if n not in names and r["RemovedAt"] is None]
+        for i in range(0, len(gone), 500):
+            part = gone[i:i + 500]
+            c.execute(f"UPDATE cz.OrgProject SET RemovedAt = SYSUTCDATETIME() WHERE ProjectId IN "
+                      f"({', '.join(['%s'] * len(part))})", tuple(part))
+        self.projects = len(names)
+        return {n for n, r in rows.items() if n in names and r["AdminState"] == "disabled"}
 
     def sync(self, listed, names: dict) -> dict:
-        """Add new repositories, update the known ones (renames follow the provider's id), mark the ones
-        no longer listed as removed. Returns key -> AdminState for the listed ones."""
+        """Add new projects and repositories, update the known ones (renames follow the provider's id),
+        mark the ones no longer listed as removed. Returns key -> the administrator's decision for the
+        listed ones: "enabled", "disabled", "project-disabled" (its project is disabled) or None."""
         from .sqlstore import clean_remote
+        try:
+            off = self.sync_projects(listed)
+        except Exception:
+            self.conn.rollback()
+            raise
         cur = self.conn.cursor(as_dict=True)
         cur.execute("SELECT RepositoryId, ProjectName, Name, ExternalId, AdminState FROM cz.OrgRepository WHERE ScanId = %s",
                     (self.scan_id,))
@@ -190,7 +220,26 @@ class SqlRepoStore:
             self.conn.rollback()
             raise
         self.listed = len(listed)
+        for r in listed:
+            if _cut(r.project, 200) in off:
+                admin[r.key] = "project-disabled"
         return admin
+
+    def discovered(self, d) -> None:
+        """What a discovery run learned about one repository: its latest commit, and the automatic skips
+        the provider's API alone shows (archived, empty, fork, stale, filter). Skips that need the clone
+        (Dockerfile, no application code) and the latest result of the full scan stay as they are."""
+        from .org import META_SKIPS
+        skip = d.skip if d.skip and d.skip[0] in META_SKIPS else (None, None)
+        marks = ", ".join(["%s"] * len(META_SKIPS))
+        cur = self.conn.cursor()
+        cur.execute("UPDATE cz.OrgRepository SET LastCommitAt = COALESCE(%s, LastCommitAt), "
+                    f"SkipStatus = CASE WHEN %s IS NOT NULL THEN %s WHEN SkipStatus IN ({marks}) THEN NULL ELSE SkipStatus END, "
+                    f"SkipReason = CASE WHEN %s IS NOT NULL THEN %s WHEN SkipStatus IN ({marks}) THEN NULL ELSE SkipReason END "
+                    "WHERE ScanId = %s AND ProjectName = %s AND Name = %s",
+                    (naive(d.last_commit), skip[0], skip[0], *META_SKIPS, skip[0], _cut(skip[1], 1000), *META_SKIPS,
+                     self.scan_id, _cut(d.repo.project, 200), _cut(d.repo.name, 200)))
+        self.conn.commit()
 
     def record(self, r, res) -> None:
         """The outcome of one repository: last result, and the automatic skip (if any) that decides
@@ -270,13 +319,10 @@ class ScanMetrics:
         names = {s["ScanId"]: s["Name"] for s in scans}
         self.scan_info.replace({(s["Name"], s["Provider"], s["Organization"], "1" if s["Enabled"] else "0"): 1 for s in scans})
         self.next.replace({(s["Name"],): aware(s["NextRunAt"]).timestamp() for s in scans if s["NextRunAt"] and s["Enabled"]})
-        cur.execute("""SELECT ScanId, CASE WHEN RemovedAt IS NOT NULL THEN 'removed'
-                                           WHEN AdminState = N'disabled' THEN 'disabled_admin'
-                                           WHEN Enabled = 0 THEN 'disabled_automatic' ELSE 'enabled' END AS State,
-                              COUNT(*) AS N
-                       FROM cz.OrgRepository GROUP BY ScanId, CASE WHEN RemovedAt IS NOT NULL THEN 'removed'
-                                           WHEN AdminState = N'disabled' THEN 'disabled_admin'
-                                           WHEN Enabled = 0 THEN 'disabled_automatic' ELSE 'enabled' END""")
+        state = """CASE WHEN RemovedAt IS NOT NULL THEN 'removed'
+                        WHEN AdminState = N'disabled' OR ProjectState = N'disabled' THEN 'disabled_admin'
+                        WHEN Enabled = 0 THEN 'disabled_automatic' ELSE 'enabled' END"""
+        cur.execute(f"SELECT ScanId, {state} AS State, COUNT(*) AS N FROM cz.vOrgRepository GROUP BY ScanId, {state}")
         rows = {}
         for s in scans:
             for st in ("enabled", "disabled_automatic", "disabled_admin", "removed"):
@@ -315,6 +361,16 @@ class RunHooks:
             m.new.inc(len(self.store.new), scan=self.scan)
         self._update(ReposListed=self.store.listed, ReposTotal=total, ReposDone=0, ReposNew=len(self.store.new),
                      ReposDeployed=0, ReposSkipped=0, ReposErrors=0)
+
+    def discovered(self, i: int, d) -> None:
+        self.counts["done"] = i
+        if d.skip:
+            self.counts["skipped"] += 1
+        if d.error:
+            self.counts["errors"] += 1
+        self.w.metrics.done.set(i, scan=self.scan)
+        if i % 25 == 0 or i == self.total:          # many quick repositories: do not write a row for each
+            self._update(ReposDone=i, ReposSkipped=self.counts["skipped"], ReposErrors=self.counts["errors"])
 
     def repo_start(self, i: int, r) -> None:
         self._update(CurrentRepo=_cut(f"{r.project}/{r.name}" if r.project != "_" else r.name, 400))
@@ -486,7 +542,7 @@ class Worker:
         try:
             cur = conn.cursor(as_dict=True)
             # one transaction: lock the oldest queued run (skipping ones another worker holds), then take it
-            cur.execute("SELECT TOP (1) RunId, ScanId, TriggeredBy, RequestedBy FROM cz.OrgScanRun "
+            cur.execute("SELECT TOP (1) RunId, ScanId, TriggeredBy, RequestedBy, Kind, Scope FROM cz.OrgScanRun "
                         "WITH (UPDLOCK, READPAST, ROWLOCK) WHERE Status = N'queued' ORDER BY RunId")
             run = cur.fetchone()
             if run:
@@ -569,7 +625,8 @@ class Worker:
         tag = default_tag(utcnow())
         store = SqlRepoStore(conn, scan["ScanId"], run_id)
         hooks = RunHooks(self, conn, run_id, name, store)
-        self.log(f"{name}: run #{run_id} started ({run['TriggeredBy']}"
+        discovery = run.get("Kind") == "discovery"
+        self.log(f"{name}: {'discovery' if discovery else 'run'} #{run_id} started ({run['TriggeredBy']}"
                  + (f" by {run['RequestedBy']}" if run.get("RequestedBy") else "") + ")")
         read = write = None
         try:
@@ -583,6 +640,11 @@ class Worker:
             if problems:
                 raise SourceError("; ".join(problems))
             read = creds.read_for(scan["Provider"], scan["ApiUrl"], scan["Organization"])
+            if discovery:                   # only the organization's read-only token: nothing is pushed
+                if read and read.token:
+                    REDACT.add(read.token, read.username)
+                status, message = self.discover(scan, store, hooks, creds, read, name)
+                return status
             write = creds.write_for(scan["OutputRepo"])
             llm = creds.llm() if scan["UseAi"] else None
             for c in (read, write, llm):
@@ -592,6 +654,10 @@ class Worker:
             hooks._update(ImageTag=tag)
             o = self.options(scan, store, hooks, creds)
             o.tag = tag
+            if run.get("Scope"):                # "Scan now" of chosen projects and repositories
+                scope = json.loads(run["Scope"])
+                o.only_projects = set(scope.get("projects") or [])
+                o.only_repos = set(scope.get("repositories") or [])
             o.on_listed = lambda prov, n: self._listed(read, prov, n)
             (self.data / f"scan-{int(scan['ScanId'])}").mkdir(parents=True, exist_ok=True)
             from .org import run_org
@@ -637,6 +703,24 @@ class Worker:
             self.log(f"{name}: run #{run_id} {status}: {message}")
         return status
 
+
+    def discover(self, scan: dict, store, hooks, creds, read, name: str) -> tuple[str, str]:
+        """A discovery run: projects, repositories and their latest commits, nothing cloned."""
+        from .org import discover_org
+        o = self.options(scan, store, hooks, creds)
+        o.on_listed = lambda prov, n: self._listed(read, prov, n)
+        found = discover_org(o, log=lambda msg: self.log(f"{name}: {msg}"))
+        c = hooks.counts
+        hooks._update(ReposDone=len(found), ReposSkipped=c["skipped"], ReposErrors=c["errors"])
+        projects = f" in {store.projects} projects" if store.projects else ""
+        if len(found) < hooks.total:
+            return "cancelled", (("cancelled by an administrator" if self.cancel.is_set() else "the worker was stopped")
+                                 + f" after {len(found)} of {hooks.total} repositories")
+        return "succeeded", (f"discovery: {hooks.total} repositories{projects}"
+                             + (f", {len(store.new)} new" if store.new else "")
+                             + f"; {c['skipped']} would be skipped (archived, empty, fork, stale or filtered)"
+                             + (f"; latest commit not available for {c['errors']}" if c["errors"] else "")
+                             + "; nothing cloned")
 
     def _listed(self, cred, prov, n: int) -> None:
         """The organization's token worked: record it, with any sign that it can do more than read."""

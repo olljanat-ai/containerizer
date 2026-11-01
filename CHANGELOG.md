@@ -7,6 +7,21 @@ qcow2 and VHD images as release assets.
 
 ## Unreleased
 
+Results database schema version 17 (`containerizer db init` upgrades it; the appliance does at start).
+
+### Organization scans
+- Discovery first: **Discover** on a scan's page lists the projects, repositories and each repository's
+  latest commit through the provider's API, without cloning or assessing anything, so administrators can
+  disable deprecated projects and repositories before the full scan. **Run now** is now **Run full scan**,
+  and the runs show which kind they were
+- Projects (Azure DevOps projects, GitLab subgroups) on **Admin → Repositories → Projects**: disabling one
+  leaves all its repositories out of the full scan; changes are in the change history
+- **Scan now** on projects and repositories (their pages, or the selected ones in the lists): a full scan
+  of only those, outside the schedule
+- The repository list shows the latest commit, with **No commit for a year** and **Oldest commit first**
+- Disabled repositories and projects are hidden from the results pages (overview, trends, SBOM,
+  application pages); the admin pages still show them
+
 ### Appliance
 - `root` signs in with the password `containerizer` on the console and over SSH, and the first sign-in
   asks for a new one. The changed password is kept on the persistent partition, so it survives restarts,

@@ -189,8 +189,10 @@ of each fix and each newly learned rule.
 
 ### Scans that run themselves
 
-Define organization scans on the admin pages, by day and time or "Run now". Every repository shows
-its last result, and skipped ones are listed with the reason, such as "no source code".
+Define organization scans on the admin pages, by day and time or on demand. **Discover** first lists
+the projects, repositories and latest commits without cloning anything, so deprecated ones can be
+disabled before the full scan. Every repository shows its last result, and skipped ones are listed with
+the reason, such as "no source code".
 
 [Organization scans :octicons-arrow-right-24:](scheduled-scans.md)
 
