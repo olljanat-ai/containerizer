@@ -112,20 +112,24 @@ def load_application(conn, app_id: int) -> dict | None:
 
 
 def load_refactor_orders(conn, app_id: int) -> list[dict]:
-    """The application's refactoring orders, newest first (empty before `db init` added them: schema 20)."""
-    try:
-        return _rows(conn, "SELECT TOP (20) JobId, Component, ProjectPath, Status, Summary, SourceCommit, QueuedAt, "
-                           "FinishedAt, VerifyStatus, InputChars, EstInputTokens, InputTokens, OutputTokens, Seconds, Goal "
-                           "FROM cz.vRefactorOrder WHERE ApplicationId = %s ORDER BY JobId DESC", (app_id,))
-    except Exception:
+    """The application's refactoring orders, newest first (empty before `db init` added them: schema 20; without
+    the estimates and goal before schema 22, the sandbox variant before schema 23)."""
+    base = "JobId, Component, ProjectPath, Status, Summary, SourceCommit, QueuedAt, FinishedAt, VerifyStatus"
+    est = ", InputChars, EstInputTokens, InputTokens, OutputTokens, Seconds, Goal"
+    for cols in (base + est + ", RatingAfter, SandboxStatus, SandboxUrl", base + est, base):
         try:
-            conn.rollback()
+            return _rows(conn, f"SELECT TOP (20) {cols} FROM cz.vRefactorOrder WHERE ApplicationId = %s ORDER BY JobId DESC",
+                         (app_id,))
         except Exception:
-            pass
-        return []
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+    return []
 
 
-REFACTOR_STATUS_CSS = {"approval": "st-wait", "queued": "st-run", "generating": "st-run", "verifying": "st-run", "verified": "st-ok",
+REFACTOR_STATUS_CSS = {"approval": "st-wait", "queued": "st-run", "generating": "st-run", "verifying": "st-run",
+                       "deploying": "st-run", "verified": "st-ok",
                        "applies-only": "st-warn", "failed": "st-bad", "cancelled": "st-off"}
 
 
@@ -137,6 +141,10 @@ REFACTOR_NOTICES = {
     "exists": ("info", "The same refactoring is already requested: its status shows below."),
     "approval": ("info", "Refactoring patch requested: {files} file(s) to change. It waits for an administrator to "
                          "approve it (Admin → LLM queue); its status shows below."),
+    "ordered-a": ("ok", "\"Make it A\" requested: {files} file(s) to change first. It waits in the LLM queue; its "
+                        "progress shows below, and a copy that rates A and runs appears in the sandbox beside this one."),
+    "approval-a": ("info", "\"Make it A\" requested: {files} file(s) to change first. It waits for an administrator "
+                           "to approve it (Admin → LLM queue); its status shows below."),
     "not-b": ("bad", "Refactoring patches are for applications rated B."),
     "no-component": ("bad", "That component is not part of this application."),
     "no-commit": ("bad", "The assessment recorded no commit: scan the repository again, then request the patch."),
@@ -218,6 +226,11 @@ def refactor_estimates(admin, app: dict) -> dict:
         return out
     finally:
         conn.close()
+    try:
+        pl = rf.build_payload(doc, {"type": "none"}, None, goal="rating-a")
+        out[(None, "rating-a")] = speed.job({"Kind": rf.KIND, "InputChars": rf.order_chars(pl), "Model": None})
+    except rf.RefactorError:
+        pass
     targets = [(None, None)] + [(int(c["ComponentId"]), c["ProjectPath"]) for c in app.get("components") or []]
     for cid, path in targets:
         for goal in ("fix", "stateless"):
@@ -310,6 +323,29 @@ def order_button(app_id, comp_id, goal: str, csrf: str, label: str, est: dict | 
             + (f" <span class='muted small'>{e(tip)}</span>" if tip else "") + "</form>")
 
 
+VARIANT_CSS = {"deploying": "st-run", "running": "st-ok", "failing": "st-bad", "deployed": "st-warn",
+               "removed": "st-off", "expired": "st-off", "error": "st-bad"}
+VARIANT_URL_RE = re.compile(r"https://[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::\d{1,5})?/[A-Za-z0-9._~/-]{0,200}")
+
+
+def _variant_days() -> int:
+    from .variant import expiry_days
+    return expiry_days()
+
+
+def _variant_chip(o: dict) -> str:
+    """The sandbox state of a "Make it A" order (vRefactorOrder.SandboxStatus) and its URL (open ↗)."""
+    from .variant import STATUS_TEXT
+    st = o.get("SandboxStatus")
+    if not st or st == "skipped":
+        return ""
+    out = f" <span class='st {VARIANT_CSS.get(st, '')}'>{e(STATUS_TEXT.get(st, st))}</span>"
+    u = o.get("SandboxUrl")
+    if st in ("running", "failing", "deployed") and isinstance(u, str) and VARIANT_URL_RE.fullmatch(u):
+        out += f" <a href='{e(u)}' target='_blank' rel='noopener noreferrer'>open ↗</a>"
+    return out
+
+
 def refactor_notice(q: dict) -> str:
     code = (q.get("refactor") or [""])[0]
     if code not in REFACTOR_NOTICES:
@@ -340,8 +376,10 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
         from .refactor import status_label
         label, why = status_label(st, [o.get("VerifyStatus")])
         tip = f" title='{e(why)}'" if why else ""
+        if o.get("Goal") == "rating-a":
+            what = what.replace("All components", "Make it A")
         rows.append(f"<tr><td>{what}</td><td><span class='st {REFACTOR_STATUS_CSS.get(st, '')}'{tip}>"
-                    f"{e(label)}</span></td><td class='small'>{e(o.get('Summary') or '')}"
+                    f"{e(label)}</span>{_variant_chip(o)}</td><td class='small'>{e(o.get('Summary') or '')}"
                     + (f"<div class='muted'>{e(eff)}</div>" if (eff := order_effort({**o, 'Status': st}, app.get('llm_speed'))) else "")
                     + (f"<div class='muted'>{e(why)}</div>" if why else "") + "</td>"
                     f"<td class='small nowrap'>{when}</td></tr>")
@@ -356,13 +394,27 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
     _, stateful, refactor = rating_why(app)
     if staff and app.get("Rating") == "B":
         hidden = (f"{ctx['csrf']}<input type='hidden' name='ApplicationId' value='{int(app['ApplicationId'])}'>")
+        if refactor or stateful:
+            est = (ctx.get("estimates") or {}).get((None, "rating-a"))
+            out.append("<h3>Make it A</h3><p class='muted small'>One order for everything that keeps this application "
+                       "from A: the LLM changes the code for every finding (and moves the data of the components that "
+                       "keep their own), the patch is verified and repaired when it does not build, and the patched copy "
+                       "is assessed again, with one more pass on what remains. A copy that rates A and runs is deployed "
+                       "to the sandbox beside this one, in a namespace of its own, for "
+                       f"{_variant_days()} days.</p>"
+                       + (f"<div class='note offer'>{existing_offer(have_a, ctx, app['ApplicationId'], None, 'rating-a', ctx.get('speed'))}</div>"
+                          if (have_a := existing_order(ctx.get("orders"), None, "rating-a")) else
+                          order_button(app["ApplicationId"], None, "rating-a", ctx["csrf"], "Make it A", est)
+                          + (" <span class='muted small'>(first pass; repair rounds and a second pass add more)</span>"
+                             if est else "")))
         if refactor:
             opts = "".join(f"<option value='{int(c['ComponentId'])}'>{e(c['ComponentName'])}</option>" for c in refactor)
             have = existing_order(ctx.get("orders"), None, "fix")
             out.append("<h3>Targeted code changes</h3>" + (
                 f"<div class='note offer'>{existing_offer(have, ctx, app['ApplicationId'], None, 'fix', ctx.get('speed'))}</div>"
                 if have else ""))
-            out.append(f"<form method='post' action='/admin/refactoring/new' class='formrow'>"
+            if not have:                     # an order is there already: its patch, and "Request a new one"
+                out.append(f"<form method='post' action='/admin/refactoring/new' class='formrow'>"
                        f"{hidden}<input type='hidden' name='Goal' value='fix'>"
                        f"<select name='Component' aria-label='Component'><option value=''>All components that need changes"
                        f"</option>{opts}</select><label class='check'><input type='checkbox' name='IncludeConfig' value='1'> "
@@ -375,7 +427,8 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
             out.append("<h3>Make it stateless: move the data to SQL Server</h3>" + (
                 f"<div class='note offer'>{existing_offer(have, ctx, app['ApplicationId'], None, 'stateless', ctx.get('speed'))}</div>"
                 if have else ""))
-            out.append(""
+            if not have:
+                out.append(""
                        "<p class='muted small'>The LLM changes the database library and its configuration (for example "
                        "SQLite to SQL Server with Entity Framework Core, the connection string from configuration, logs to "
                        "the console) and says in the notes how to move the existing data. Without code changes the "

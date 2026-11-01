@@ -195,8 +195,10 @@ again afterwards to apply the answers.
 | --- | --- | --- | --- |
 | Component review (`review`) | a scan with queued LLM reviews | as above | the LLM's verdict, applied by the next scan |
 | Refactoring (`refactor`) | a person, on a B-rated application's results page, or `containerizer refactor --queue` | 1800: before the automatic reviews (move it like any job) | a [refactoring patch](refactoring.md), verified by building and running it |
+| Make it A (`refactor`, goal `rating-a`) | a person, on a B-rated application's results page, or an administrator for every B app (**Make all B apps A**) | 1800, as a refactoring | one patch for every finding, repaired and assessed again in a loop; a [sandbox variant](refactoring.md#the-sandbox-variant) when the patched copy rates A |
 
 A refactoring asks the LLM once per file it changes (at most 8), so it is a long job; its estimate is
 made from the size of what it will send, and the output tokens are learned per kind like the reviews'.
-While it runs, the queue page says how far it is (generating, verifying), and the job links to its
-patch page (Admin → Refactoring).
+While it runs, the queue page says how far it is (generating, verifying, deploying; for Make it A also the
+pass and the repair round), and the job links to its patch page (Admin → Refactoring). A Make it A order
+makes up to 16 LLM calls.

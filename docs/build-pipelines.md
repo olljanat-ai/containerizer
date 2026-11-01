@@ -12,6 +12,9 @@ with `git am`, and open the pull request yourself.
 
 ## Where to get it
 
+![The Build pipeline box on an application's results page: the provider, the files it adds, Download .patch and how to apply it](images/results-build-pipeline.png#only-light){ .cz-shot }
+![The Build pipeline box on an application's results page: the provider, the files it adds, Download .patch and how to apply it](images/results-build-pipeline-dark.png#only-dark){ .cz-shot }
+
 - **The results page**: the application's **Build pipeline** box. Administrators, operators and the
   application's product owners see where the code lives, the files the pipeline adds, **Download .patch**,
   the same files as a `.tar.gz`, how to apply it and the files themselves as a diff. Choose another provider

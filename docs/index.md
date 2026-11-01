@@ -188,6 +188,25 @@ Windows" instead of being forced.
 
 <div markdown>
 
+### Make it A
+
+One order has the LLM fix everything that keeps a B application from A, verifies and repairs the patch,
+assesses it again and deploys the patched copy to the sandbox beside the original. Every order shows its
+tokens and time, and needs an administrator's approval until you trust it.
+
+[Refactoring patches :octicons-arrow-right-24:](refactoring.md#make-it-a)
+
+</div>
+
+![The Refactoring box with Make it A and its estimate](images/results-make-it-a.png#only-light){ .cz-shot }
+![The Refactoring box with Make it A and its estimate](images/results-make-it-a-dark.png#only-dark){ .cz-shot }
+
+</div>
+
+<div class="cz-feature" markdown>
+
+<div markdown>
+
 ### Watch the portfolio move
 
 Trends show how ratings change over time per business unit and product, so you can see the effect

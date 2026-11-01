@@ -13,6 +13,39 @@ set -euo pipefail
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 k() { /usr/bin/k3s kubectl "$@"; }
 . /usr/lib/containerizer/lib/secret-store.sh
+
+# Read-only access for the LLM queue runner, which checks the health of "Make it A" variants
+# (docs/refactoring.md#the-sandbox-variant): the verifier ServiceAccount of sandbox/verify-rbac.yaml with its
+# Role in every namespace containerizer generated (get/list workloads, pods, logs, events and the namespace's
+# Flux Kustomization; no Secrets, nothing cluster-wide), and a kubeconfig with a short-lived token of it in
+# /run/containerizer/sandbox-verifier.kubeconfig (root:containerizer 0640; renewed every 12 hours).
+VERIFIER_KUBECONFIG=/run/containerizer/sandbox-verifier.kubeconfig
+verifier_access() {
+  local nss token server ca tmp
+  nss=$(k get namespaces -l app.kubernetes.io/managed-by=containerizer -o jsonpath='{.items[*].metadata.name}')
+  # shellcheck disable=SC2086 # one argument per namespace
+  /usr/lib/containerizer/venv/bin/python -I -c 'import sys, yaml
+from containerizer.sandbox import verify_rbac
+print("---\n".join(yaml.safe_dump(d, sort_keys=False) for d in verify_rbac(sys.argv[1:], argocd_apps=[])))' $nss \
+    | k apply -f - >/dev/null
+  if [ -s "$VERIFIER_KUBECONFIG" ] && [ -z "$(find "$VERIFIER_KUBECONFIG" -mmin +720)" ]; then return 0; fi
+  token=$(k -n containerizer-verify create token containerizer-verifier --duration=24h)
+  server=$(k config view --raw -o jsonpath='{.clusters[0].cluster.server}')
+  ca=$(k config view --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')
+  install -d -m 0755 /run/containerizer
+  tmp=$(mktemp "$VERIFIER_KUBECONFIG.XXXXXX")
+  cat > "$tmp" <<KUBECONFIG
+apiVersion: v1
+kind: Config
+clusters: [{name: sandbox, cluster: {server: "$server", certificate-authority-data: "$ca"}}]
+users: [{name: containerizer-verifier, user: {token: "$token"}}]
+contexts: [{name: sandbox, context: {cluster: sandbox, user: containerizer-verifier}}]
+current-context: sandbox
+KUBECONFIG
+  chown root:containerizer "$tmp" && chmod 0640 "$tmp" && mv -f "$tmp" "$VERIFIER_KUBECONFIG"
+}
+verifier_access || echo "containerizer: the read-only sandbox access for the LLM queue runner is not ready yet; retrying in 2 minutes" >&2
+
 if cz_store_ready; then cz_store_setup; fi
 # Sandbox HTTPS (Admin -> Sandbox HTTPS): the wildcard certificate as Traefik's default, or none when it is off.
 # After the store is set up, so the certificate goes through it; before sandbox.env, which it does not need.

@@ -865,7 +865,12 @@ def main(argv=None) -> int:
                    "running it now: in SQL Server when --sql or CONTAINERIZER_SQL is set, else in llm-queue.json")
     s.add_argument("--include-config", action="store_true", help="also have code changed for configuration findings "
                    "(default: refactor findings, and configuration findings in the same files)")
-    s.add_argument("--max-calls", type=int, default=8, help="at most this many LLM calls (one per file; default 8)")
+    s.add_argument("--goal", choices=["fix", "stateless", "rating-a"], default="fix",
+                   help="fix: the refactor findings; stateless: move the components' own data to SQL Server; rating-a: "
+                   "\"Make it A\", every finding and the state move, verified, repaired and assessed again in a loop "
+                   "until the patched copy rates A or a limit is reached (docs/refactoring.md#make-it-a)")
+    s.add_argument("--max-calls", type=int, default=None, help="at most this many LLM calls (one per file; default 8, "
+                   "16 with --goal rating-a, where retries and repair rounds count too)")
     s.add_argument("--no-verify", action="store_true", help="do not build and run the patched components")
     s.add_argument("--sql", help="with --queue: connection string of the results database (default CONTAINERIZER_SQL)")
     s.set_defaults(fn=cmd_refactor)

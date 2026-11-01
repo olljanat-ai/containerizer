@@ -574,7 +574,11 @@ def test_llm_queue_runner_unit():
     # refactoring patches: Docker to build and run them (as the scan worker), the worker's clones read only,
     # writes only to the answer cache and the refactoring scratch space
     assert q["SupplementaryGroups"] == w["SupplementaryGroups"] == ["docker"]
-    assert "docker.service" in q["Wants"] and "docker.service" in q["After"][0].split()
+    assert "docker.service" in q["Wants"][0].split() and "docker.service" in q["After"][0].split()
+    # "Make it A" variants: images to the appliance's registry, the lab services, read-only cluster access
+    assert "containerizer-registry.service" in q["Wants"][0].split()
+    assert "CONTAINERIZER_LAB_SERVICES=/var/lib/containerizer/system/lab-services.json" in q["Environment"]
+    assert "CONTAINERIZER_SANDBOX_KUBECONFIG=/run/containerizer/sandbox-verifier.kubeconfig" in q["Environment"]
     assert q["ProtectSystem"] == ["strict"]
     assert q["ReadWritePaths"] == ["/var/lib/containerizer/worker/ai-cache /var/lib/containerizer/refactor"]
     for env in ("CONTAINERIZER_REFACTOR_SOURCES=/var/lib/containerizer/worker",
@@ -593,3 +597,21 @@ def test_llm_queue_runner_unit():
     assert "containerizer-llm-queue.service" in docker.split("systemctl enable", 1)[1].split("\n\n", 1)[0]
     prom = (APPLIANCE / "rootfs/usr/lib/containerizer/prometheus/prometheus.yml").read_text()
     assert '"127.0.0.1:9465"' in prom and "job_name: containerizer-llm-queue" in prom
+
+
+def test_sandbox_writes_the_read_only_verifier_kubeconfig_for_the_llm_queue():
+    """cz-sandbox (root, every 2 minutes) grants the verifier ServiceAccount its read-only Role in each generated
+    namespace (sandbox.verify_rbac: no Secrets, nothing cluster-wide, no Argo CD here) and writes a kubeconfig
+    with a 24-hour token of it, readable by the containerizer group only, where the LLM queue unit reads it."""
+    script = (APPLIANCE / "rootfs/usr/lib/containerizer/bin/cz-sandbox").read_text()
+    q = _unit("containerizer-llm-queue.service")
+    path = next(e.split("=", 1)[1] for e in q["Environment"] if e.startswith("CONTAINERIZER_SANDBOX_KUBECONFIG="))
+    assert f"VERIFIER_KUBECONFIG={path}" in script and path.startswith("/run/containerizer/")
+    assert "verify_rbac(sys.argv[1:], argocd_apps=[])" in script
+    assert "-l app.kubernetes.io/managed-by=containerizer" in script
+    assert "create token containerizer-verifier --duration=24h" in script
+    assert 'chown root:containerizer "$tmp" && chmod 0640 "$tmp"' in script
+    # before the steps that need the secret store or the output repository: it works without them
+    assert script.index("verifier_access ||") < script.index("cz_store_ready || exit 0")
+    from containerizer.sandbox import VERIFIER, VERIFIER_NS
+    assert (VERIFIER, VERIFIER_NS) == ("containerizer-verifier", "containerizer-verify")

@@ -7,6 +7,8 @@ qcow2 and VHD images as release assets.
 
 ## Unreleased
 
+Results database schema version 23 (`containerizer db init` upgrades it; the appliance does at start).
+
 ### Build pipelines
 - Container image build pipelines for the application's own repository (docs/build-pipelines.md), for the
   provider its code lives on: GitHub Actions (`.github/workflows/containerizer-images.yml`), GitLab CI/CD
@@ -29,6 +31,37 @@ qcow2 and VHD images as release assets.
   the files, Download .patch for `git am`, a `.tar.gz`, how to apply and what to set up; everyone else sees
   that it exists), and `containerizer pipeline <app-path> [--provider] [--registry] [--sign] [--out]
   [--patch]`. Assessments record what the pipeline is made from (assessment.json `build_pipeline`).
+
+### Make it A
+- **Make it A** for B-rated applications (docs/refactoring.md#make-it-a): one refactoring order (goal
+  `rating-a`) for every refactor finding, the configuration findings with a file and the move of a stateful
+  component's data, that loops in the queue runner: generate, apply, verify, an automatic repair round when
+  the build or run fails (at most 2 a pass), the patched copy assessed again with every rule, and one more
+  pass on what remains while it is still B (at most 2 passes, 16 LLM calls in all). The result says the
+  rating before and after (`B → A: Rating A reached`, or what still keeps it B), with one combined patch,
+  the result per finding and the verification. On the results page (with the queue's estimate) and, for
+  administrators, **Make all B apps A** on Admin → Refactoring: a confirmation page with every B app's
+  estimate, the total and how many will wait for approval, then one order per app. `containerizer refactor
+  --goal rating-a` on the command line.
+- **Sandbox variants** (docs/refactoring.md#the-sandbox-variant): a Make it A order whose patched copy rates
+  A and runs is deployed to the sandbox **beside** the original, in its own namespace `<app>-refactor-<job>`
+  (its own images, Ingress hosts, IdP clients and a new, empty lab database), through the output
+  repository of the organization scan that assessed it (`<Org>/<Project>/<Repo>-refactor-<job>/`). Its
+  health is read back for its namespace only (`CONTAINERIZER_SANDBOX_KUBECONFIG`) and kept in the order, so
+  the original's sandbox results stay as they are; it expires after 7 days
+  (`CONTAINERIZER_SANDBOX_VARIANT_DAYS`) and **Remove from the sandbox** takes it out sooner (administrators,
+  operators, the app's product owners; the queue runner removes it). The orders show the variant's state
+  (deploying, running in the sandbox, failing in the sandbox, removed, expired) and its URL.
+- The organization scan and the variants deploy with the same code (`org.deploy_app`); the scan's
+  behaviour is unchanged.
+- The clean copy a refactoring is verified in is named after the order (`<app>-refactor-<job>`), so the
+  verify step's image tags of orders that run in parallel no longer collide.
+- **Local images**: with *Push images* off and `CONTAINERIZER_LOCAL_IMAGES=1` (a sandbox cluster that shares
+  the builder's Docker image store, such as k3s with `--docker`), the scan and the variants tag each image
+  with its deploy reference instead of pushing it; the manifests pull with `IfNotPresent`.
+- Appliance: the LLM queue runner gets the lab services and the read-only verifier kubeconfig that
+  `cz-sandbox` now writes (`/run/containerizer/sandbox-verifier.kubeconfig`: the verifier's Role in every
+  generated namespace, a 24-hour token).
 
 ### Web UI
 - API keys for the JSON API: administrators make them on **Admin → API** (read only or full, optional

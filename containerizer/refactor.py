@@ -53,8 +53,9 @@ MAX_NEW_FILE = 100_000
 # Output cap of an edit answer (OpenAI-compatible backend; CONTAINERIZER_LLM_MAX_TOKENS still caps it): edits
 # repeat only the lines they change, so a few thousand tokens; a runaway answer must not hold a CPU slot for an hour
 ANSWER_TOKENS_MIN, ANSWER_TOKENS_MAX = 4096, 8192
-STATUSES = ("queued", "generating", "verifying", "verified", "applies-only", "failed", "cancelled")
-STATUS_TEXT = {"approval": "Waiting for approval", "queued": "Queued", "generating": "Generating", "verifying": "Verifying", "verified": "Verified",
+STATUSES = ("queued", "generating", "verifying", "deploying", "verified", "applies-only", "failed", "cancelled")
+STATUS_TEXT = {"approval": "Waiting for approval", "queued": "Queued", "generating": "Generating", "verifying": "Verifying",
+               "deploying": "Deploying to the sandbox", "verified": "Verified",
                "applies-only": "Applies only", "failed": "Failed", "cancelled": "Cancelled"}
 AUTHOR = ("Containerizer", "containerizer@localhost")
 SOURCES_ENV = "CONTAINERIZER_REFACTOR_SOURCES"   # the scan worker's data folder (its clone cache)
@@ -185,7 +186,12 @@ def eligible_components(doc: dict) -> list[dict]:
     return out
 
 
-GOALS = ("fix", "stateless", "repair")
+GOALS = ("fix", "stateless", "repair", "rating-a")
+# "Make it A" (goal rating-a, docs/refactoring.md#make-it-a): one order that loops generate, apply, verify, repair
+# and re-assess until the patched copy rates A or a limit is reached
+MAX_CALLS_A = 16                        # LLM calls of a whole "Make it A" order (every pass and repair round)
+MAX_PASSES_A = 2                        # passes over the findings: the first, and one on what still remains
+MAX_REPAIRS_A = 2                       # repair rounds per pass when the patched copy does not build or run
 
 # A compiler error in a build log: /src/<path>(line,col): error CODE: message [project]
 BUILD_ERROR_RE = re.compile(r"(?:^|\s)/src/(?P<file>[^\s(:]+\.(?:cs|vb|fs|cshtml|razor|csproj|vbproj|fsproj))"
@@ -253,9 +259,21 @@ def stateful_components(doc: dict) -> list[dict]:
             and c.get("tier") in ("server", "platform", None) and c.get("verdict") in ("info", "config", "refactor")]
 
 
+def rating_a_components(doc: dict) -> list[dict]:
+    """What keeps a B-rated application from A, by component: those with refactor or config findings to change
+    in code, and the server components that keep their own data (in assessment.json order, once each)."""
+    seen, out = set(), []
+    for c in [*eligible_components(doc), *stateful_components(doc)]:
+        if c.get("name") not in seen:
+            seen.add(c.get("name"))
+            out.append(c)
+    order = [c.get("name") for c in doc.get("components") or []]
+    return sorted(out, key=lambda c: order.index(c.get("name")) if c.get("name") in order else len(order))
+
+
 def build_payload(doc: dict, source: dict, commit: str | None, component: str | None = None,
                   include_config: bool = False, application_id: int | None = None, assessment_id: int | None = None,
-                  source_key: str | None = None, verify: bool = True, max_calls: int = MAX_CALLS,
+                  source_key: str | None = None, verify: bool = True, max_calls: int | None = None,
                   goal: str = "fix") -> dict:
     """The job's payload from an assessment.json entry: what the runner needs and nothing it must look up.
     `component` is a component name or project path (None: every component that needs changes).
@@ -263,7 +281,16 @@ def build_payload(doc: dict, source: dict, commit: str | None, component: str | 
     state findings and configuration ones; the runner also adds the files that use the embedded database)."""
     if goal not in GOALS:
         raise RefactorError(f"unknown goal {goal!r}")
+    if max_calls is None:
+        max_calls = MAX_CALLS_A if goal == "rating-a" else MAX_CALLS
     comps = [c for c in doc.get("components") or [] if c.get("verdict") in ELIGIBLE]
+    if goal == "rating-a":
+        # every refactor finding, the configuration ones with a file, and the state move of stateful components
+        include_config = True
+        comps = rating_a_components(doc)
+        if not comps:
+            raise RefactorError("nothing to change: no finding of this application can be fixed in code and no "
+                                "component keeps its own data")
     if goal == "stateless":
         include_config = True
         comps = stateful_components(doc)
@@ -275,7 +302,9 @@ def build_payload(doc: dict, source: dict, commit: str | None, component: str | 
             raise RefactorError(f"no component {component!r} in {doc.get('name')}"
                                 + (" that keeps its own data" if goal == "stateless" else ""))
     tasks, skipped = plan_tasks(comps, include_config)
-    if not tasks and goal != "stateless":
+    if not tasks and goal == "rating-a" and not any(c.get("stateless") is False for c in comps):
+        raise RefactorError("nothing to change: no finding of this application can be fixed in code")
+    if not tasks and goal not in ("stateless", "rating-a"):
         raise RefactorError("nothing to change: no refactor finding (or configuration finding with a file) "
                             "to send to the LLM" + (" in " + component if component else ""))
     return {"version": 1, "app": doc.get("name"), "rating": doc.get("rating"), "application_id": application_id,
@@ -289,7 +318,8 @@ def build_payload(doc: dict, source: dict, commit: str | None, component: str | 
             "tasks": tasks, "skipped": skipped, "include_config": bool(include_config), "verify": bool(verify),
             "max_calls": int(max_calls), "goal": goal,
             "state": [{"component": c.get("name"), "state": [s.get("title") for s in c.get("state") or []]}
-                      for c in comps if c.get("stateless") is False]}
+                      for c in comps if c.get("stateless") is False],
+            **({"max_passes": MAX_PASSES_A, "max_repairs": MAX_REPAIRS_A, "deploy": True} if goal == "rating-a" else {})}
 
 
 def dedupe_key(payload: dict) -> str:
@@ -488,7 +518,9 @@ def task_prompt(payload: dict, task: dict, app_root: Path) -> tuple[str, list[st
         head.append(f"   Fix: {f['fix']}")
         for e in f["evidence"]:
             head.append(f"   Evidence: line {e['line']}: {e['text']}" if e["line"] else f"   Evidence: {e['text'] or e['file']}")
-    if payload.get("goal") == "stateless":
+    if payload.get("goal") == "stateless" or (payload.get("goal") == "rating-a" and (
+            any(f["rule"] == "move-state-out" for f in task["findings"])
+            or any(x.get("component") == task["component"] for x in payload.get("state") or []))):
         head += ["", STATE_GUIDANCE]
     if payload.get("goal") == "repair":
         diff = str(payload.get("base_patch") or "")
@@ -538,6 +570,13 @@ def estimate_chars(payload: dict, app_root: Path | None = None) -> int:
                                                  for f in t["findings"]) + DEFAULT_FILE_CHARS
         total += fixed + min(size, MAX_PROMPT_CHARS)
     return total
+
+
+def order_chars(payload: dict, app_root: Path | None = None) -> int:
+    """estimate_chars, with the files that move a component's data out (state_tasks: found when the order runs,
+    a typical file each) for the goals that move it: what the queue's estimate of the order is made from."""
+    extra = 6000 * len(payload.get("state") or []) if payload.get("goal") in ("stateless", "rating-a") else 0
+    return estimate_chars(payload, app_root) + extra
 
 
 # --------------------------------------------------------------------------- applying the answer
@@ -966,7 +1005,8 @@ def order_status(job_status: str, summary: str | None = None, patch_status: str 
     if job_status in ("queued", "approval"):
         return job_status
     if job_status == "running":
-        return "verifying" if str(summary or "").startswith("verifying") else "generating"
+        text = str(summary or "")
+        return "verifying" if text.startswith("verifying") else "deploying" if text.startswith("deploying") else "generating"
     if job_status == "answered":
         return patch_status if patch_status in ("verified", "applies-only", "failed") else "failed"
     if job_status == "skipped":
@@ -1008,13 +1048,16 @@ def rules_after(payload: dict, app_root: Path) -> tuple[dict, list[dict]]:
     return out, new
 
 
-def verify_components(payload: dict, app_root: Path, work: Path, timeout: int = 900) -> list[dict]:
-    """Build and run each changed component of the patched copy (verify.verify_component)."""
+def verify_components(payload: dict, app_root: Path, work: Path, timeout: int = 900, name: str | None = None) -> list[dict]:
+    """Build and run each changed component of the patched copy (verify.verify_component). `name`: the
+    application's name for the image tags (variant_name; default the folder's name)."""
     from .assess import assess
     from .generate import buildable
     from .rules import load_rules
     from . import verify as vf
     a = assess(app_root)
+    if name:
+        a.repo.name = name
     by_project = {c.project.rel: c for c in a.components}
     rules = load_rules()
     try:
@@ -1054,56 +1097,35 @@ def verify_components(payload: dict, app_root: Path, work: Path, timeout: int = 
     return out
 
 
-def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool | None = None, log=None) -> dict:
-    """Carry out one order: generate, patch, apply to a clean copy, rules again, build and run.
-    `ask(prompt, schema)` asks the LLM (default ai.ask_json with this module's system prompt).
-    Returns the job's result (JSON-ready)."""
-    from . import ai
-    ask = ask or (lambda prompt, schema: ai.ask_json(prompt, schema, feature=FEATURE, system=SYSTEM,
-                                                     max_tokens=answer_tokens(prompt)))
-    progress = progress or (lambda text: None)
-    log = log or (lambda text: None)
-    verify = payload.get("verify", True) if verify is None else verify
-    work.mkdir(parents=True, exist_ok=True)
-    progress("generating: preparing the source")
-    repo, app_root = checkout(payload["source"], payload.get("commit"), work / "edit")
-    try:
-        model = ai.model_name()
-    except Exception:  # noqa: BLE001
-        model = None
+def generate(payload: dict, tasks: list[dict], app_root: Path, ask, limit: int, progress, log,
+             label: str = "", budget: int | None = None) -> tuple[list[dict], int, list[dict], list[str]]:
+    """Ask the LLM about each task's file (the first `limit` files; with `budget`, also at most that many calls,
+    retries included: the rest are not attempted) and apply its answers to the edit copy. Returns (a row per
+    finding and file, LLM calls made, changes, notes)."""
     findings: list[dict] = []
     notes: list[str] = []
     changes_all: list[dict] = []
-    tasks = list(payload["tasks"])
-    if payload.get("goal") == "stateless":
-        tasks += state_tasks(payload, app_root)
-    if payload.get("goal") == "repair":
-        ok, alog = apply_patch(repo, str(payload.get("base_patch") or "").encode("utf-8"))
-        if not ok:
-            raise RefactorError("the earlier patch no longer applies to the commit: " + alog[-400:])
-        changed = [d["file"] for d in diffstat(str(payload.get("base_patch") or ""))]
-        tasks += repair_tasks(payload, app_root, changed)
-    if not tasks:
-        raise RefactorError("nothing to change: no file of the component uses an embedded database or names a finding")
-    limit = int(MAX_CALLS if payload.get("max_calls") is None else payload["max_calls"])
     calls = 0
     for n, t in enumerate(tasks, 1):
         rows = [{"rule": f["rule"], "title": f["title"], "severity": f["severity"], "component": f["component"],
                  "file": t["file"], "status": "not-fixed", "reason": ""} for f in t["findings"]]
         findings += rows
-        if n > limit:
+        if n > limit or (budget is not None and calls >= budget):
+            cap = limit if n > limit else (payload.get("max_calls") or budget)
             for r in rows:
-                r.update(status="skipped", reason=f"not attempted: an order makes at most {limit} LLM calls")
+                r.update(status="skipped", reason=f"not attempted: an order makes at most {cap} LLM calls")
             continue
         if not (app_root / t["file"]).is_file():
             for r in rows:
                 r["reason"] = f"{t['file']} is not in the source at this commit"
             continue
-        progress(f"generating: file {n} of {min(len(tasks), limit)}: {t['file']}")
+        progress(f"generating: {label}file {n} of {min(len(tasks), limit)}: {t['file']}")
         log(f"asking about {t['file']} ({', '.join(f['rule'] for f in t['findings'])})")
         prompt, shown = task_prompt(payload, t, app_root)
         answer, errors, changes = None, [], []
         for attempt in (1, 2):
+            if attempt == 2 and budget is not None and calls >= budget:
+                break                                   # no call left for the retry: the errors stand
             q = prompt if attempt == 1 else retry_prompt(prompt, answer, errors)
             try:
                 calls += 1
@@ -1138,6 +1160,57 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
     for c in changes_all:
         if c["kind"] == "package-manual":
             notes.append(f"package change to make by hand in {c['file'] or 'the project'}: {c['detail']}")
+    return findings, calls, changes_all, notes
+
+
+def variant_name(app: str | None, job) -> str:
+    """The folder of an order's patched copy, and so the name of its application: `<app>-refactor-<job>`, a
+    DNS label (at most 63 characters). The verify step's image tags, and a "Make it A" variant's namespace,
+    image paths, Ingress hosts and lab services derive from it, so parallel orders and the original app never
+    share any of them."""
+    from .org import _dns
+    suffix = "-refactor-" + (re.sub(r"[^a-z0-9]+", "", str(job).lower())[:12] or "0")
+    base = re.sub(r"-{2,}", "-", _dns(str(app or ""))).strip("-") or "app"
+    return (base[:63 - len(suffix)].rstrip("-") or "app") + suffix
+
+
+def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool | None = None, log=None,
+              name: str = "check") -> dict:
+    """Carry out one order: generate, patch, apply to a clean copy, rules again, build and run.
+    `ask(prompt, schema)` asks the LLM (default ai.ask_json with this module's system prompt). `name` is the
+    folder of the clean copy (variant_name: the verify step's image tags are made from it).
+    Returns the job's result (JSON-ready)."""
+    if payload.get("goal") == "rating-a":
+        return run_rating_a(payload, work, ask, progress, verify, log, name)
+    from . import ai
+    ask = ask or (lambda prompt, schema: ai.ask_json(prompt, schema, feature=FEATURE, system=SYSTEM,
+                                                     max_tokens=answer_tokens(prompt)))
+    progress = progress or (lambda text: None)
+    log = log or (lambda text: None)
+    verify = payload.get("verify", True) if verify is None else verify
+    work.mkdir(parents=True, exist_ok=True)
+    progress("generating: preparing the source")
+    repo, app_root = checkout(payload["source"], payload.get("commit"), work / "edit")
+    try:
+        model = ai.model_name()
+    except Exception:  # noqa: BLE001
+        model = None
+    findings: list[dict] = []
+    notes: list[str] = []
+    changes_all: list[dict] = []
+    tasks = list(payload["tasks"])
+    if payload.get("goal") == "stateless":
+        tasks += state_tasks(payload, app_root)
+    if payload.get("goal") == "repair":
+        ok, alog = apply_patch(repo, str(payload.get("base_patch") or "").encode("utf-8"))
+        if not ok:
+            raise RefactorError("the earlier patch no longer applies to the commit: " + alog[-400:])
+        changed = [d["file"] for d in diffstat(str(payload.get("base_patch") or ""))]
+        tasks += repair_tasks(payload, app_root, changed)
+    if not tasks:
+        raise RefactorError("nothing to change: no file of the component uses an embedded database or names a finding")
+    limit = int(MAX_CALLS if payload.get("max_calls") is None else payload["max_calls"])
+    findings, calls, changes_all, notes = generate(payload, tasks, app_root, ask, limit, progress, log)
     # The rules are the better judge than the LLM's own list: a finding the edits removed from a file they changed
     # is fixed even when the answer did not name it (and the commit message lists it too).
     changed = {c["file"] for c in changes_all if c["kind"] != "package-manual"}
@@ -1180,7 +1253,7 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
     if text.encode("utf-8") != patch:
         result["patch_b64"] = base64.b64encode(patch).decode()
     progress("verifying: applying the patch to a clean copy")
-    check_repo, check_app = checkout(payload["source"], payload.get("commit"), work / "check")
+    check_repo, check_app = checkout(payload["source"], payload.get("commit"), work / name)
     ok, alog = apply_patch(check_repo, patch)
     result["apply_log"] = _tail(alog, 40)
     if not ok:
@@ -1198,7 +1271,7 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
         notes.append(f"the rules could not run on the patched copy: {type(ex).__name__}: {ex}"[:400])
     if verify:
         progress("verifying: building and running the changed components")
-        result["verification"] = verify_components(payload, check_app, work / "verify-work")
+        result["verification"] = verify_components(payload, check_app, work / "verify-work", name=name)
     result["status"] = verification_status(True, len(changes_all), result["verification"] if verify else None)
     if not verify:
         result["reason"] = "verification was off: the patch applies, it was not built"
@@ -1209,6 +1282,258 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
     return result
 
 
+# --------------------------------------------------------------------------- "Make it A": the loop
+
+def _component_of(components: list[dict], rel: str) -> dict:
+    """The component whose project folder holds a file (the deepest one), else the first."""
+    best, depth = None, -1
+    for c in components:
+        d = Path(str(c.get("project") or "")).parent.as_posix()
+        d = "" if d == "." else d
+        if (not d or rel.startswith(d + "/")) and len(d) > depth:
+            best, depth = c, len(d)
+    return best or (components[0] if components else {})
+
+
+def _stateful_only(payload: dict) -> dict:
+    """The payload with only the components that keep their own data (what state_tasks looks through)."""
+    names = {x.get("component") for x in payload.get("state") or []}
+    return {**payload, "components": [c for c in payload.get("components") or [] if c.get("name") in names]}
+
+
+def _broken(verification: list[dict]) -> list[dict]:
+    """The components of a verification that did not build or run (what a repair round fixes)."""
+    return [v for v in verification or [] if v.get("status") in ("build-failed", "run-failed")]
+
+
+def still_stateful(doc: dict) -> list[dict]:
+    """[{"component", "state": [titles]}] of the components of an assessment that still keep their own data."""
+    return [{"component": c.get("name"), "state": [s.get("title") for s in c.get("state") or []]}
+            for c in stateful_components(doc)]
+
+
+def remaining_findings(doc: dict) -> list[dict]:
+    """What a refactoring could still change in an assessment: (component, rule, title, severity) of the findings
+    a 'rating-a' order would send."""
+    tasks, _ = plan_tasks(rating_a_components(doc), include_config=True)
+    seen, out = set(), []
+    for t in tasks:
+        for f in t["findings"]:
+            if (f["component"], f["rule"]) not in seen:
+                seen.add((f["component"], f["rule"]))
+                out.append({"component": f["component"], "rule": f["rule"], "title": f["title"],
+                            "severity": f["severity"]})
+    return out
+
+
+def _combined_patch(repo: Path, base: str, payload: dict, findings: list[dict], notes: list[str],
+                    model: str | None) -> bytes | None:
+    """Everything changed so far as one commit on the assessed commit (as a repair does)."""
+    git(["reset", "--soft", base], cwd=repo)
+    fixed = [r for r in findings if r["status"] == "fixed"]
+    rule_ids = sorted({r["rule"] for r in fixed})
+    subject = f"Containerizer: {payload.get('app')}: make it A" + (f" ({', '.join(rule_ids)})" if rule_ids else "")
+    if len(subject) > 120:
+        subject = subject[:117] + "..."
+    body = ("Code changes generated by Containerizer (LLM: " + (model or "unknown") + ") so that the application\n"
+            "rates A (container-ready, stateless), for the assessment of commit " + str(payload.get("commit") or "?")[:12]
+            + ". Review them before you merge.\n\n"
+            + "\n".join(f"- {r['rule']} in {r['file']} ({r['component']}): {r['title']}" for r in fixed)
+            + ("\n\nNotes:\n" + "\n".join(f"- {x}" for x in notes) if notes else "") + "\n")
+    return make_patch(repo, subject, body)
+
+
+def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: bool | None = None, log=None,
+                 name: str = "check") -> dict:
+    """"Make it A" (goal rating-a): one job that loops until the patched copy rates A or a limit is reached.
+
+    Each pass asks the LLM about every file with findings (refactor, configuration with a file, and the state
+    move of stateful components), applies the answers to the edit copy and makes one combined patch for the
+    assessed commit. The patch is applied to a clean copy (`work/<name>`), the rules run on it, and the changed
+    components are built and run; when a build or run fails, a repair round (the errors, the files they are in
+    and the patch: repair_tasks) changes the edit copy again and the combined patch is verified again (at most
+    `max_repairs` rounds a pass). Then the patched copy is assessed again with every rule: its rating is the
+    result. Still B with findings left and calls left: one more pass on what remains (at most `max_passes`).
+    Every LLM call of the job counts against `max_calls`."""
+    from . import ai
+    from .assess import assess
+    ask = ask or (lambda prompt, schema: ai.ask_json(prompt, schema, feature=FEATURE, system=SYSTEM,
+                                                     max_tokens=answer_tokens(prompt)))
+    progress = progress or (lambda text: None)
+    log = log or (lambda text: None)
+    verify = payload.get("verify", True) if verify is None else verify
+    budget = int(payload.get("max_calls") or MAX_CALLS_A)
+    passes = max(1, int(payload.get("max_passes") or MAX_PASSES_A))
+    repairs = max(0, int(MAX_REPAIRS_A if payload.get("max_repairs") is None else payload["max_repairs"]))
+    work.mkdir(parents=True, exist_ok=True)
+    progress("generating: preparing the source")
+    repo, app_root = checkout(payload["source"], payload.get("commit"), work / "edit")
+    base = git(["rev-parse", "HEAD"], cwd=repo).stdout.decode().strip()
+    try:
+        model = ai.model_name()
+    except Exception:  # noqa: BLE001
+        model = None
+    comps = list(payload.get("components") or [])
+    rows: dict[tuple, dict] = {}                  # (component, rule, file) -> the latest attempt
+    repair_rows: list[dict] = []
+    notes: list[str] = []
+    changes_all: list[dict] = []
+    attempted: list[dict] = []                    # every task sent, for the rules and the build
+    loop: list[dict] = []
+    calls = 0
+    verification: list[dict] = []
+    patch = None
+    check_app = None
+    doc_after: dict = {}
+    alog = ""
+    new_findings: list[dict] = []
+    apply_failed = False
+    current = {**payload}
+    tasks = list(payload.get("tasks") or []) + state_tasks(_stateful_only(payload), app_root)
+    if not tasks:
+        raise RefactorError("nothing to change: no file names a finding or uses an embedded database")
+    p = 0
+    for p in range(1, passes + 1):
+        found, n, changes, nt = generate(current, tasks, app_root, ask, len(tasks), progress, log,
+                                         label=f"pass {p}: ", budget=budget - calls)
+        calls += n
+        for r in found:
+            key = (r["component"], r["rule"], r["file"])
+            if r["status"] == "skipped" and key in rows:
+                continue                          # not attempted again: the earlier attempt stands
+            rows[key] = {**r, "pass": p}
+        attempted += tasks
+        changes_all += changes
+        notes += nt
+        loop.append({"pass": p, "round": 0, "kind": "generate", "files": len(tasks), "calls": n,
+                     "changes": len(changes)})
+        if not changes_all or (p > 1 and not changes):
+            break                                 # nothing changed in this pass: the last verification stands
+        all_payload = {**payload, "components": comps, "tasks": attempted}
+        for rnd in range(1, repairs + 2):
+            patch = _combined_patch(repo, base, payload, list(rows.values()), notes, model)
+            if patch is None:
+                break
+            progress(f"verifying: pass {p}, round {rnd}: applying the patch to a clean copy")
+            check_repo, check_app = checkout(payload["source"], payload.get("commit"), work / name)
+            ok, alog = apply_patch(check_repo, patch)
+            if not ok:
+                patch, apply_failed = None, True
+                break
+            verification = []
+            if verify:
+                progress(f"verifying: pass {p}, round {rnd}: building and running the changed components")
+                verification = verify_components(all_payload, check_app, work / "verify-work", name=name)
+            loop[-1]["verification"] = [{"component": v.get("component"), "status": v.get("status")}
+                                        for v in verification]
+            broken = _broken(verification)
+            if not broken or rnd > repairs or calls >= budget:
+                break
+            # a repair round, in this job: the errors of the build or the run, the files they are in, the patch
+            text = patch.decode("utf-8", errors="replace")
+            logs = "\n".join(str(v.get("log_tail") or v.get("detail") or "") for v in broken)
+            rp = {**payload, "goal": "repair", "base_patch": text, "errors": build_errors(logs),
+                  "log_tail": logs[-4000:], "components": comps}
+            rtasks = repair_tasks(rp, app_root, [d["file"] for d in diffstat(text)])
+            for t in rtasks:
+                c = _component_of(comps, t["file"])
+                t.update(component=c.get("name"), project=c.get("project"))
+                for f in t["findings"]:
+                    f["component"] = c.get("name")
+            log(f"pass {p}: repair round {rnd}: {len(rtasks)} file(s) with errors")
+            found, n, changes, nt = generate(rp, rtasks, app_root, ask, len(rtasks), progress, log,
+                                             label=f"pass {p}, repair {rnd}: ", budget=budget - calls)
+            calls += n
+            repair_rows += [{**r, "pass": p, "round": rnd} for r in found]
+            notes += nt
+            changes_all += changes
+            loop.append({"pass": p, "round": rnd, "kind": "repair", "files": len(rtasks), "calls": n,
+                         "changes": len(changes)})
+            if not changes:
+                break
+        if patch is None or check_app is None:
+            break
+        progress(f"verifying: pass {p}: assessing the patched copy again")
+        try:
+            doc_after = assess(check_app).to_dict()
+        except Exception as ex:  # noqa: BLE001
+            notes.append(f"the patched copy could not be assessed again: {type(ex).__name__}: {ex}"[:400])
+            doc_after = {}
+            break
+        loop[-1]["rating"] = doc_after.get("rating")
+        if doc_after.get("rating") == "A" or p == passes or calls >= budget or _broken(verification):
+            break
+        # still B: one more pass on what remains (the findings still found, the state still kept)
+        try:
+            nxt = build_payload(doc_after, payload["source"], payload.get("commit"), goal="rating-a",
+                                max_calls=budget)
+        except RefactorError:
+            break
+        known = {c.get("name") for c in comps}
+        comps += [c for c in nxt["components"] if c.get("name") not in known]
+        current = {**payload, "components": comps, "state": nxt["state"]}
+        tasks = list(nxt["tasks"]) + state_tasks(_stateful_only(nxt), app_root)
+        if not tasks:
+            break
+        log(f"pass {p}: rated {doc_after.get('rating')}; {len(tasks)} file(s) for pass {p + 1}")
+    findings = list(rows.values())
+    result = {"status": "failed", "goal": "rating-a", "app": payload.get("app"), "component": None,
+              "commit": payload.get("commit"), "model": model, "calls": calls, "findings": findings,
+              "repairs": repair_rows, "skipped": payload.get("skipped") or [], "notes": notes,
+              "filename": patch_filename(payload.get("app"), "make-it-a"), "patch": None, "files": [],
+              "apply_log": _tail(alog, 40), "verification": verification, "new_findings": [], "verify": bool(verify),
+              "rating_before": payload.get("rating") or "B", "rating_after": doc_after.get("rating"),
+              "rating_reached": doc_after.get("rating") == "A", "passes": p, "loop": loop,
+              "still_state": still_stateful(doc_after) if doc_after else [],
+              "remaining": remaining_findings(doc_after) if doc_after else [],
+              "limits": {"max_calls": budget, "max_passes": passes, "max_repairs": repairs}}
+    if not changes_all or patch is None:
+        result["rating_reached"] = False
+        result["reason"] = ("the patch does not apply cleanly to the commit" if apply_failed else
+                            "no usable edits: the changes cancel out" if changes_all else
+                            "no usable edits: " + ("; ".join(f"{r['rule']}: {r['reason']}" for r in findings
+                                                             if r["reason"])[:800] or "the LLM changed nothing"))
+        return result
+    # the rules on the final patched copy: per finding, and the LLM's claims upgraded where the rules agree
+    changed = {c["file"] for c in changes_all if c["kind"] != "package-manual"}
+    try:
+        states, new_findings = rules_after({**payload, "components": comps, "tasks": attempted}, check_app)
+        gone = {c.get("name") for c in (doc_after.get("components") or []) if c.get("stateless") is not False}
+        for r in findings:
+            st = states.get(f"{r['component']}|{r['rule']}|{r['file']}")
+            if r["rule"] == "move-state-out":
+                st = "resolved" if r["component"] in gone else "still found"
+            r["rules_after"] = st
+            if st == "resolved" and r["status"] not in ("fixed", "skipped") and r["file"] in changed:
+                r.update(status="fixed", reason="", confirmed_by="rules")
+    except Exception as ex:  # noqa: BLE001
+        notes.append(f"the rules could not run on the patched copy: {type(ex).__name__}: {ex}"[:400])
+    text = patch.decode("utf-8", errors="replace")
+    result.update(patch=text, files=diffstat(text), new_findings=new_findings)
+    if text.encode("utf-8") != patch:
+        result["patch_b64"] = base64.b64encode(patch).decode()
+    result["status"] = verification_status(True, len(changes_all), verification if verify else None)
+    # A is reached when the rules rate the patched copy A and it builds and runs (or verification was off)
+    result["rating_reached"] = doc_after.get("rating") == "A" and (result["status"] == "verified" or not verify)
+    if not verify:
+        result["reason"] = "verification was off: the patch applies, it was not built"
+    elif result["status"] != "verified":
+        bad = [v for v in verification if v.get("status") not in ("ok", "ok-external")]
+        result["reason"] = "; ".join(f"{v['component']}: {v['status']}" + (f" ({v['detail']})" if v.get("detail") else "")
+                                     for v in bad)[:600] or "no component could be built"
+    return result
+
+
+def rating_text(result: dict) -> str:
+    """"B → A: Rating A reached" or "B → B" (and what keeps it there: the data it still keeps)."""
+    before, after = result.get("rating_before") or "B", result.get("rating_after") or "?"
+    if result.get("rating_reached"):
+        return f"{before} → A: Rating A reached"
+    if after == "A":
+        return f"{before} → A by the rules, but not verified"
+    return f"{before} → {after}"
+
+
 def summary(result: dict) -> str:
     fx = [f for f in result.get("findings") or [] if f.get("status") == "fixed"]
     n = len([f for f in result.get("findings") or [] if f.get("status") != "skipped"])
@@ -1217,6 +1542,19 @@ def summary(result: dict) -> str:
     if result.get("status") == "failed":
         return f"{st}: {result.get('reason') or 'no patch'}"[:400]
     files = len(result.get("files") or [])
+    if result.get("goal") == "rating-a":
+        out = (f"{st}: {rating_text(result)}; {len(fx)} of {n} fixed, {files} file{'s' if files != 1 else ''} changed"
+               + (f" ({left} not attempted: call limit)" if left else ""))
+        if not result.get("rating_reached") and result.get("still_state"):
+            out += "; still keeps data in " + ", ".join(
+                f"{x['component']}" + (f" ({', '.join(x['state'])})" if x.get("state") else "") for x in result["still_state"])
+        elif not result.get("rating_reached") and result.get("remaining"):
+            out += f"; {len(result['remaining'])} finding(s) still found"
+        sb = result.get("sandbox") or {}
+        if sb.get("status"):
+            from .variant import STATUS_TEXT as SANDBOX_TEXT
+            out += "; " + SANDBOX_TEXT.get(sb["status"], sb["status"]).lower()
+        return out[:400]
     return (f"{st}: {len(fx)} of {n} finding{'s' if n != 1 else ''} fixed, {files} file{'s' if files != 1 else ''} changed"
             + (f" ({left} not attempted: call limit)" if left else ""))
 
@@ -1228,8 +1566,13 @@ def handler(job: dict) -> dict:
     base.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix=f"refactor-{int(job.get('JobId') or 0)}-", dir=base))
     progress = job.get("_progress") or (lambda text: None)
+    name = variant_name(pl.get("app"), int(job.get("JobId") or 0))
     try:
-        result = run_order(pl, work, progress=progress)
+        result = run_order(pl, work, progress=progress, name=name)
+        if pl.get("goal") == "rating-a":
+            # a patched copy that rates A and verifies runs in the sandbox beside the original (variant.py)
+            from . import variant
+            result["sandbox"] = variant.after_order(job, pl, result, work, name, progress)
     finally:
         if not os.environ.get("CONTAINERIZER_KEEP_REFACTOR_WORK"):
             shutil.rmtree(work, ignore_errors=True)
@@ -1278,7 +1621,8 @@ def cli(args) -> int:
     try:
         payload = build_payload(doc, source, info.get("commit"), component=args.component,
                                 include_config=args.include_config, source_key=info.get("key"),
-                                verify=not args.no_verify, max_calls=args.max_calls)
+                                verify=not args.no_verify, max_calls=args.max_calls,
+                                goal=getattr(args, "goal", None) or "fix")
     except RefactorError as ex:
         print(f"error: {ex}", file=sys.stderr)
         return 2
@@ -1287,7 +1631,7 @@ def cli(args) -> int:
         if dirty:
             print(f"note: {top} has uncommitted changes; the patch is made for commit {info['commit'][:12]}",
                   file=sys.stderr)
-    chars = estimate_chars(payload, path)
+    chars = order_chars(payload, path)
     n = min(len(payload["tasks"]), payload["max_calls"])
     print(f"{a.name}: {n} LLM call{'s' if n != 1 else ''} ({sum(len(t['findings']) for t in payload['tasks'])} findings in "
           f"{len(payload['tasks'])} file{'s' if len(payload['tasks']) != 1 else ''}), "
@@ -1318,7 +1662,8 @@ def cli(args) -> int:
     work = Path(tempfile.mkdtemp(prefix="refactor-", dir=os.environ.get(WORK_ENV) or None))
     try:
         result = run_order(payload, work, progress=lambda t: print(t, file=sys.stderr, flush=True),
-                           log=lambda t: print("  " + t, file=sys.stderr, flush=True))
+                           log=lambda t: print("  " + t, file=sys.stderr, flush=True),
+                           name=variant_name(payload.get("app"), f"cli{os.getpid()}"))
     finally:
         if not os.environ.get("CONTAINERIZER_KEEP_REFACTOR_WORK"):
             shutil.rmtree(work, ignore_errors=True)

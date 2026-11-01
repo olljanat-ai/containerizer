@@ -9,6 +9,13 @@
 - /admin/refactoring/<id>: one order: what was fixed and what not, the verification (with the build and run
   log tail), the patch as a coloured diff per file, Download .patch and how to apply it.
 - /admin/refactoring/<id>.patch: the patch (`git am` applies it).
+- "Make it A" (goal rating-a, docs/refactoring.md#make-it-a): the order page shows the loop (passes, repair
+  rounds), the rating before and after, and the sandbox variant (variant.py) with its URL and
+  POST /admin/refactoring/<id>/remove ("Remove from the sandbox": administrators, operators and the
+  application's product owners; the queue runner removes it).
+- /admin/refactoring/make-all-a (administrators): "Make all B apps A": a confirmation page with every B-rated
+  application, its estimate and the total, and how many orders will wait for approval; POST queues one order
+  per application.
 
 Same conventions as admin.py: plain HTML forms with the session's CSRF token, no JavaScript, everything
 escaped. Patches contain source code: they are shown to administrators and operators only; the results
@@ -27,8 +34,21 @@ from .admin_scans import _back, _nf
 from . import refactor as rf
 
 BASE = "/admin/refactoring"
-STATUS_CSS = {"queued": "st-run", "generating": "st-run", "verifying": "st-run", "verified": "st-ok",
-              "applies-only": "st-warn", "failed": "st-bad", "cancelled": "st-off"}
+STATUS_CSS = {"queued": "st-run", "generating": "st-run", "verifying": "st-run", "deploying": "st-run",
+              "verified": "st-ok", "applies-only": "st-warn", "failed": "st-bad", "cancelled": "st-off",
+              "approval": "st-wait"}
+SANDBOX_CSS = {"deploying": "st-run", "running": "st-ok", "failing": "st-bad", "deployed": "st-warn",
+               "skipped": "st-off", "error": "st-bad", "removed": "st-off", "expired": "st-off"}
+URL_RE = re.compile(r"https://[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::\d{1,5})?/[A-Za-z0-9._~/-]{0,200}")
+# what the order page says after an action: fixed texts chosen by a code in the URL
+ORDER_NOTICES = {"remove-requested": "Removal requested: the LLM queue runner takes the variant out of the sandbox "
+                                     "within a few minutes (its folder is deleted from the output repository).",
+                 "remove-not-active": "This order has nothing running in the sandbox.",
+                 "remove-unavailable": "Removal needs the database schema of this version: run `containerizer db init`."}
+# what the Refactoring list says after "Make all B apps A": {q}, {w}, {x}, {n} are numbers
+BULK_NOTICES = {"queued": "\"Make it A\" requested for {q} application(s): {w} wait for an administrator's approval; "
+                          "{x} already had one waiting; {n} could not be ordered.",
+                "none": "No B-rated application could be ordered."}
 FINDING_TEXT = {"fixed": "Fixed", "not-fixed": "Not fixed", "llm-error": "LLM error", "skipped": "Not attempted"}
 FINDING_CSS = {"fixed": "st-ok", "not-fixed": "st-off", "llm-error": "st-bad", "skipped": "st-off"}
 AFTER_TEXT = {"resolved": "gone from this file", "partly": "fewer places", "still found": "still found"}
@@ -54,18 +74,28 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict, flash:
     if not (a.admin or a.operator or a.owner):      # product owners: their products' applications only
         return Response(403, adm._shell(s, a, "Not allowed", "", "<p>Your role does not include this page.</p>"))
     if len(parts) == 1 and method == "GET":
-        return show_list(adm, conn, s, a, flash)
+        return show_list(adm, conn, s, a, bulk_notice(q) or flash)
     if len(parts) == 2 and parts[1] == "new" and method == "POST":
         return order(adm, conn, s, a, form)
+    if len(parts) == 2 and parts[1] == "make-all-a":
+        if not a.admin:
+            return Response(403, adm._shell(s, a, "Not allowed", "", "<p>Only administrators order \"Make it A\" for every "
+                                                                      "application.</p>"))
+        return make_all_a(adm, conn, s, a) if method == "GET" else make_all_a_post(adm, conn, s, a) \
+            if method == "POST" else _nf()
     m = re.fullmatch(r"(\d{1,9})(\.patch)?", parts[1]) if len(parts) >= 2 else None
     if m:
         r = load_order(conn, int(m[1]))
         if r is None or not allowed_app(a, conn, r.get("ApplicationId")):
             return _nf()
         if len(parts) == 2 and method == "GET":
-            return download(conn, int(m[1])) if m[2] else show_order(adm, conn, s, a, int(m[1]), flash)
+            code = (q.get("notice") or [""])[0]
+            return download(conn, int(m[1])) if m[2] else show_order(adm, conn, s, a, int(m[1]),
+                                                                     ORDER_NOTICES.get(code, flash))
         if len(parts) == 3 and parts[2] == "repair" and method == "POST" and not m[2]:
             return repair(adm, conn, s, a, r)
+        if len(parts) == 3 and parts[2] == "remove" and method == "POST" and not m[2]:
+            return remove_variant(adm, conn, s, a, r)
     return _nf()
 
 
@@ -94,6 +124,40 @@ def repair(adm, conn, s, a, r: dict) -> Response:
     wait = st and st[0]["Status"] == "approval"
     return _back(f"{BASE}/{jid}", "Fix requested: " + ("it waits for an administrator's approval."
                                                        if wait else "it waits in the LLM queue."))
+
+
+def remove_variant(adm, conn, s, a, r: dict) -> Response:
+    """"Remove from the sandbox": the request is recorded (RemoveRequestedAt); the queue runner, which holds the
+    output repository's write token, removes the variant (variant.housekeep)."""
+    from .variant import ACTIVE
+    jid = int(r["JobId"])
+    sb = (_json(r.get("Result")).get("sandbox") or {})
+    if sb.get("status") not in ACTIVE or sb.get("removed_at"):
+        return redirect(f"{BASE}/{jid}?notice=remove-not-active")
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE cz.LlmJob SET RemoveRequestedAt = SYSUTCDATETIME(), RemoveRequestedBy = %s "
+                    "WHERE JobId = %s AND Kind = N'refactor' AND RemoveRequestedAt IS NULL", (s.user, jid))
+        conn.commit()
+    except Exception as ex:  # noqa: BLE001 - a database from before schema 23
+        print(f"refactoring #{jid}: removal not recorded: {type(ex).__name__}: {ex}", file=sys.stderr)
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return redirect(f"{BASE}/{jid}?notice=remove-unavailable")
+    return redirect(f"{BASE}/{jid}?notice=remove-requested")
+
+
+def bulk_notice(q: dict) -> str:
+    code = (q.get("bulk") or [""])[0]
+    if code not in BULK_NOTICES:
+        return ""
+    text = BULK_NOTICES[code]
+    for k in ("q", "w", "x", "n"):
+        v = (q.get(k) or [""])[0]
+        text = text.replace("{" + k + "}", str(int(v)) if re.fullmatch(r"\d{1,6}", v or "") else "0")
+    return text
 
 
 # --------------------------------------------------------------------------- helpers
@@ -193,23 +257,45 @@ def how_to_apply(commit: str | None, filename: str) -> str:
 
 # --------------------------------------------------------------------------- pages
 
+def sandbox_chip(sb: dict | None, requested: bool = False) -> str:
+    """The sandbox variant's state as a chip (fixed texts)."""
+    from .variant import STATUS_TEXT
+    if not sb or not sb.get("status"):
+        return ""
+    st = sb["status"]
+    label = STATUS_TEXT.get(st, st)
+    if requested and st in ("running", "failing", "deployed"):
+        label += " (removal requested)"
+    return f"<span class='st {SANDBOX_CSS.get(st, '')}'>{e(label)}</span>"
+
+
+def safe_url(u) -> str | None:
+    return u if isinstance(u, str) and URL_RE.fullmatch(u) else None
+
+
 def show_list(adm, conn, s, a, flash: str) -> Response:
-    rows = _rows(conn, f"SELECT TOP (200) {COLS}, JSON_VALUE(Result, '$.status') AS PatchStatus FROM cz.LlmJob "
-                       "WHERE Kind = N'refactor' ORDER BY JobId DESC")
+    rows = _rows(conn, f"SELECT TOP (200) {COLS}, JSON_VALUE(Result, '$.status') AS PatchStatus, "
+                       "JSON_VALUE(Payload, '$.goal') AS Goal, JSON_VALUE(Result, '$.sandbox.status') AS SandboxStatus "
+                       "FROM cz.LlmJob WHERE Kind = N'refactor' ORDER BY JobId DESC")
     if not (a.admin or a.operator):
         rows = [r for r in rows if allowed_app(a, conn, r.get("ApplicationId"))]
     out = []
     for r in rows:
         st = status_of(r)
         target = " / ".join(x for x in (r.get("App"), r.get("Component") or "all components") if x)
+        if r.get("Goal") == "rating-a":
+            target = f"{r.get('App') or ''}: Make it A"
         when = _d(r["FinishedAt"]) if r.get("FinishedAt") else f"queued {_d(r['QueuedAt'])}"
         dl = (f"<a href='{BASE}/{int(r['JobId'])}.patch'>.patch</a>"
               if st in ("verified", "applies-only") else "")
         out.append(f"<tr><td class='num'>{int(r['JobId'])}</td><td><a href='{BASE}/{int(r['JobId'])}'>{e(target)}</a></td>"
-                   f"<td>{chip(st, verify_of(r))}</td><td class='small'>{e(r.get('Summary') or r.get('Error') or '')}</td>"
+                   f"<td>{chip(st, verify_of(r))} {sandbox_chip({'status': r.get('SandboxStatus')})}</td>"
+                   f"<td class='small'>{e(r.get('Summary') or r.get('Error') or '')}</td>"
                    f"<td class='small'>{e(r.get('RequestedBy') or '')}</td><td class='small nowrap'>{when}</td>"
                    f"<td>{dl}</td></tr>")
-    body = ("<p class='muted'>Refactoring patches for B-rated applications: the LLM changes the code for the findings "
+    bulk = (f"<p><a class='button' href='{BASE}/make-all-a'>Make all B apps A…</a> <span class='muted small'>A "
+            f"confirmation page lists every B-rated application with its estimate first.</span></p>" if a.admin else "")
+    body = (bulk + "<p class='muted'>Refactoring patches for B-rated applications: the LLM changes the code for the findings "
             "that need targeted code changes, and the patch is applied, checked with the rules and built and run "
             "before it is offered. Order one on the application's results page (<b>Refactoring</b>). Orders wait in "
             "the <a href='/admin/llm-queue?kind=refactor'>LLM queue</a>.</p>"
@@ -264,6 +350,86 @@ def _verification(res: dict, st: str) -> str:
     return "".join(parts)
 
 
+KIND_TEXT = {"generate": "Changes for the findings", "repair": "Repair of the build or run"}
+
+
+def _make_it_a(res: dict, pl: dict, st: str) -> str:
+    """The "Make it A" loop: the rating before and after, each pass and repair round, and what is left."""
+    from .webui import badge
+    before = res.get("rating_before") or pl.get("rating") or "B"
+    after = res.get("rating_after")
+    out = ["<h2>Make it A</h2>"]
+    if res:
+        reached = bool(res.get("rating_reached"))
+        out.append(f"<p class='rating-change'>{badge(before)} → {badge(after) if after else '<span class=muted>?</span>'} "
+                   + ("<b>Rating A reached.</b>" if reached else
+                      "<b>Still " + e(after) + ".</b>" if after else "<b>Not assessed again.</b>") + "</p>")
+        lim = res.get("limits") or {}
+        rows = "".join(
+            f"<tr><td class='num'>{int(x.get('pass') or 0)}</td><td class='num'>{int(x.get('round') or 0)}</td>"
+            f"<td>{e(KIND_TEXT.get(x.get('kind'), x.get('kind') or ''))}</td><td class='num'>{int(x.get('files') or 0)}</td>"
+            f"<td class='num'>{int(x.get('calls') or 0)}</td><td class='num'>{int(x.get('changes') or 0)}</td>"
+            f"<td class='small'>{e(', '.join(str(v.get('component')) + ': ' + VERIFY_TEXT.get(v.get('status'), str(v.get('status'))) for v in x.get('verification') or []))}</td>"
+            f"<td>{badge(x['rating']) if x.get('rating') else ''}</td></tr>" for x in res.get("loop") or [])
+        if rows:
+            out.append("<table><thead><tr><th class='num'>Pass</th><th class='num'>Round</th><th>Step</th>"
+                       "<th class='num'>Files</th><th class='num'>LLM calls</th><th class='num'>Changes</th>"
+                       "<th>Build and run</th><th>Rating</th></tr></thead><tbody>" + rows + "</tbody></table>")
+        if lim:
+            out.append(f"<p class='muted small'>Limits: {int(lim.get('max_calls') or 0)} LLM calls, "
+                       f"{int(lim.get('max_passes') or 0)} passes, {int(lim.get('max_repairs') or 0)} repair rounds a pass; "
+                       f"{int(res.get('calls') or 0)} calls made.</p>")
+        if not reached and res.get("still_state"):
+            out.append("<p class='note'><b>Still keeps its own data:</b> " + "; ".join(
+                f"{e(x.get('component'))} ({e(', '.join(x.get('state') or []))})" for x in res["still_state"]) + "</p>")
+        if not reached and res.get("remaining"):
+            out.append("<p class='note'><b>Still found:</b> " + ", ".join(
+                f"{e(x.get('component'))}: <code>{e(x.get('rule'))}</code>" for x in res["remaining"][:30]) + "</p>")
+    else:
+        lim = f"at most {int(pl.get('max_calls') or rf.MAX_CALLS_A)} LLM calls, {int(pl.get('max_passes') or rf.MAX_PASSES_A)} passes"
+        out.append(f"<p class='muted'>The LLM changes the code for every finding that keeps the application from A and "
+                   f"moves the data of the components that keep their own; the patch is verified and repaired, and the "
+                   f"patched copy assessed again ({e(lim)}). A copy that rates A and runs is deployed to the sandbox "
+                   f"beside the original.</p>")
+    return "".join(out)
+
+
+def _sandbox_section(adm, s, ident: int, sb: dict, requested) -> str:
+    """The sandbox variant: its state, namespace, URL (opens in a new tab), expiry and Remove."""
+    from .variant import ACTIVE, STATUS_TEXT
+    if not sb:
+        return ""
+    st = sb.get("status") or ""
+    out = [f"<h2>Sandbox</h2><div class='meta'><div><span class='label'>State</span> {sandbox_chip(sb, bool(requested))}</div>"]
+    for label, key in (("Namespace", "namespace"), ("Folder", "folder"), ("Beside", "of"), ("Image tag", "tag")):
+        if sb.get(key):
+            out.append(f"<div><span class='label'>{label}</span> <code>{e(sb[key])}</code></div>")
+    url = safe_url(sb.get("url"))
+    if url and st in ACTIVE:
+        out.append(f"<div><span class='label'>URL</span> <a href='{e(url)}' target='_blank' rel='noopener noreferrer'>"
+                   f"{e(url)} ↗</a></div>")
+    for label, key in (("Deployed", "deployed_at"), ("Checked", "checked_at"), ("Expires", "expires_at"),
+                       ("Removed", "removed_at")):
+        if sb.get(key):
+            out.append(f"<div><span class='label'>{label}</span> {e(str(sb[key]).replace('T', ' ')[:16])} UTC</div>")
+    out.append("</div>")
+    if sb.get("reason"):
+        out.append(f"<p class='small'>{e(sb['reason'])}</p>")
+    if sb.get("url_check"):
+        out.append(f"<p class='muted small'>URL check: {e(sb['url_check'])}</p>")
+    if sb.get("local_images"):
+        out.append("<p class='muted small'>The images were not pushed: the sandbox cluster runs them from the "
+                   "builder's own image store.</p>")
+    if st in ACTIVE and not sb.get("removed_at"):
+        if requested:
+            out.append("<p class='note'>Removal requested: the LLM queue runner takes it out within a few minutes.</p>")
+        else:
+            out.append(f"<form method='post' action='{BASE}/{ident}/remove' class='inline'>{adm._csrf(s)}"
+                       f"<button>Remove from the sandbox</button></form> <span class='muted small'>Deletes its folder from "
+                       f"the output repository; the cluster removes the namespace. The original application stays.</span>")
+    return "".join(out)
+
+
 def show_order(adm, conn, s, a, ident: int, flash: str) -> Response:
     r = load_order(conn, ident)
     if r is None:
@@ -302,10 +468,22 @@ def show_order(adm, conn, s, a, ident: int, flash: str) -> Response:
                     f"the files they are in and this patch, and the result is one patch with both changes, verified again."
                     f"<form method='post' action='{BASE}/{ident}/repair' class='inline'>{adm._csrf(s)}"
                     f"<button>Fix it with the LLM</button></form></div>")
+    if pl.get("goal") == "rating-a":
+        body.append(_make_it_a(res, pl, st))
+        requested = None
+        try:
+            rq = _rows(conn, "SELECT RemoveRequestedAt FROM cz.LlmJob WHERE JobId = %s", (ident,))
+            requested = rq[0]["RemoveRequestedAt"] if rq else None
+        except Exception:  # noqa: BLE001 - a database from before schema 23
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+        body.append(_sandbox_section(adm, s, ident, res.get("sandbox") or {}, requested))
     if pl.get("goal") == "repair" and pl.get("base_job"):
         body.append(f"<p class='muted small'>Repairs the patch of order <a href='{BASE}/{int(pl['base_job'])}'>"
                     f"#{int(pl['base_job'])}</a>.</p>")
-    if st in ("queued", "generating", "verifying"):
+    if st in ("queued", "generating", "verifying", "deploying"):
         body.append(f"<p class='note'><b>{e(rf.STATUS_TEXT[st])}.</b> "
                     + (e(r.get("Summary") or "") if st != "queued" else
                        "The queue runner takes it when the LLM queue's settings let it (Admin → LLM queue). A CPU-only "
@@ -345,7 +523,8 @@ def show_order(adm, conn, s, a, ident: int, flash: str) -> Response:
             f"<li class='small'><b>{e(x.get('rule'))}</b> ({e(x.get('component'))}): {e(x.get('reason'))}</li>" for x in skipped)
             + "</ul></details>")
     body.append(f"<h2>History</h2>{adm._history(conn, 'LlmJob', ident)}")
-    title = f"Refactoring #{ident}: {r.get('App') or ''}" + (f" / {r['Component']}" if r.get("Component") else "")
+    title = (f"Make it A #{ident}: {r.get('App') or ''}" if pl.get("goal") == "rating-a" else
+             f"Refactoring #{ident}: {r.get('App') or ''}" + (f" / {r['Component']}" if r.get("Component") else ""))
     return Response(200, adm._shell(s, a, title, "refactoring", "".join(body), flash))
 
 
@@ -383,15 +562,53 @@ def _to_app(app_id: int, code: str, **extra) -> Response:
     return redirect(f"/app/{int(app_id)}?{q}#refactoring")
 
 
-def order(adm, conn, s, a, form: dict) -> Response:
+APP_COLS = ("ApplicationId, ApplicationName, ScanName, AssessmentId, Rating, SourceCommit, RepositoryUrl, SourcePath")
+
+
+def make_payload(adm, conn, app: dict, goal: str = "fix", component: str | None = None,
+                 include_config: bool = False) -> tuple[dict | None, str]:
+    """The order of one application (a vApplicationLatest row): (payload, "") or (None, the notice code)."""
+    if app["Rating"] != "B":
+        return None, "not-b"
+    if not app.get("SourceCommit"):
+        return None, "no-commit"
+    source = order_source(conn, app)
+    url = app.get("RepositoryUrl") or ""
+    if source is None and adm.dev and url.startswith("https://"):
+        # development mode (a lab): the runner clones the repository itself if it is allowed to (rf.CLONE_ENV)
+        source = {"type": "git-url", "url": url, "subdir": app.get("SourcePath") or "."}
+    if source is None:
+        return None, "no-source"
+    rep = _rows(conn, "SELECT ReportJson FROM cz.ApplicationAssessment WHERE AssessmentId = %s", (app["AssessmentId"],))
+    doc = _json(rep[0]["ReportJson"]) if rep else {}
+    key = _rows(conn, "SELECT SourceKey FROM cz.Application WHERE ApplicationId = %s", (int(app["ApplicationId"]),))
+    try:
+        payload = rf.build_payload(doc, source, app["SourceCommit"], component=component, include_config=include_config,
+                                   application_id=int(app["ApplicationId"]), goal=goal,
+                                   assessment_id=int(app["AssessmentId"]),
+                                   source_key=key[0]["SourceKey"] if key else None)
+    except rf.RefactorError as ex:
+        print(f"refactoring order for application {app['ApplicationId']} refused: {ex}", file=sys.stderr)
+        return None, "nothing" if "nothing" in str(ex).lower() else "failed"
+    payload["app"] = app.get("ScanName") or payload.get("app")
+    return payload, ""
+
+
+def queue_order(conn, app: dict, payload: dict) -> tuple[int, dict]:
+    """(job id or 0 when the same order already waits, the job)."""
     from .llmqueue import SqlJobQueue
+    job = rf.queue_job(payload, rf.order_chars(payload), requested_by=None)     # None: the signed-in person
+    job["Repository"] = app["ApplicationName"]
+    return SqlJobQueue(None).add_with(conn, job), job
+
+
+def order(adm, conn, s, a, form: dict) -> Response:
     app_id = adm._id(form, "ApplicationId")
     if app_id is None:
         return _back(BASE, "No application selected.")
     if not allowed_app(a, conn, app_id):
         return _to_app(app_id, "not-yours")
-    rows = _rows(conn, "SELECT ApplicationId, ApplicationName, ScanName, AssessmentId, Rating, SourceCommit, RepositoryUrl, "
-                       "SourcePath FROM cz.vApplicationLatest WHERE ApplicationId = %s", (app_id,))
+    rows = _rows(conn, f"SELECT {APP_COLS} FROM cz.vApplicationLatest WHERE ApplicationId = %s", (app_id,))
     if not rows:
         return _back(BASE, "No such application.")
     app = rows[0]
@@ -407,35 +624,106 @@ def order(adm, conn, s, a, form: dict) -> Response:
         if not c:
             return _to_app(app_id, "no-component")
         component = c[0]["ProjectPath"]
-    if not app.get("SourceCommit"):
-        return _to_app(app_id, "no-commit")
-    source = order_source(conn, app)
-    url = app.get("RepositoryUrl") or ""
-    if source is None and adm.dev and url.startswith("https://"):
-        # development mode (a lab): the runner clones the repository itself if it is allowed to (rf.CLONE_ENV)
-        source = {"type": "git-url", "url": url, "subdir": app.get("SourcePath") or "."}
-    if source is None:
-        return _to_app(app_id, "no-source")
-    rep = _rows(conn, "SELECT ReportJson FROM cz.ApplicationAssessment WHERE AssessmentId = %s", (app["AssessmentId"],))
-    doc = _json(rep[0]["ReportJson"]) if rep else {}
-    key = _rows(conn, "SELECT SourceKey FROM cz.Application WHERE ApplicationId = %s", (app_id,))
-    try:
-        payload = rf.build_payload(doc, source, app["SourceCommit"], component=component,
-                                   include_config=form.get("IncludeConfig", [""])[0] == "1", application_id=app_id,
-                                   goal=form.get("Goal", ["fix"])[0] if form.get("Goal", ["fix"])[0] in rf.GOALS else "fix",
-                                   assessment_id=int(app["AssessmentId"]),
-                                   source_key=key[0]["SourceKey"] if key else None)
-    except rf.RefactorError as ex:
-        print(f"refactoring order for application {app_id} refused: {ex}", file=sys.stderr)
-        return _to_app(app_id, "nothing" if "nothing" in str(ex).lower() else "failed")
-    payload["app"] = app.get("ScanName") or payload.get("app")
-    job = rf.queue_job(payload, rf.estimate_chars(payload), requested_by=None)     # None: the signed-in person
-    job["Repository"] = app["ApplicationName"]
-    jid = SqlJobQueue(None).add_with(conn, job)
+    goal = form.get("Goal", ["fix"])[0] if form.get("Goal", ["fix"])[0] in rf.GOALS else "fix"
+    if goal == "repair":
+        goal = "fix"                                       # a repair is ordered from the earlier order's page
+    payload, code = make_payload(adm, conn, app, goal, component, form.get("IncludeConfig", [""])[0] == "1")
+    if payload is None:
+        return _to_app(app_id, code)
+    jid, job = queue_order(conn, app, payload)
     if not jid:
         same = _rows(conn, "SELECT TOP (1) JobId FROM cz.LlmJob WHERE Kind = N'refactor' AND DedupeKey = %s "
-                           "AND Status IN (N'queued', N'running') ORDER BY JobId DESC", (job["DedupeKey"],))
+                           "AND Status IN (N'approval', N'queued', N'running') ORDER BY JobId DESC", (job["DedupeKey"],))
         return _to_app(app_id, "exists", **({"job": int(same[0]["JobId"])} if same else {}))
     n = min(len(payload["tasks"]), payload["max_calls"])
     st = _rows(conn, "SELECT Status FROM cz.LlmJob WHERE JobId = %s", (jid,))
-    return _to_app(app_id, "approval" if st and st[0]["Status"] == "approval" else "ordered", job=int(jid), files=n)
+    wait = st and st[0]["Status"] == "approval"
+    if goal == "rating-a":
+        return _to_app(app_id, "approval-a" if wait else "ordered-a", job=int(jid), files=n)
+    return _to_app(app_id, "approval" if wait else "ordered", job=int(jid), files=n)
+
+
+# --------------------------------------------------------------------------- "Make all B apps A"
+
+def bulk_plan(adm, conn) -> dict:
+    """Every B-rated application with its "Make it A" order (or why there is none), the queue's estimate of
+    each and of all, and how many will wait for approval under the current policy."""
+    from .llmqueue import estimate_tokens, load_settings, load_speed
+    speed = load_speed(conn)
+    try:
+        settings = load_settings(conn)
+    except Exception:  # noqa: BLE001
+        settings = {}
+    kinds = {k.strip() for k in str(settings.get("ApproveKinds") or "").split(",") if k.strip()}
+    least = int(settings.get("ApproveMinTokens") or 0)
+    apps = _rows(conn, f"SELECT {APP_COLS} FROM cz.vApplicationLatest WHERE Rating = 'B' ORDER BY ApplicationName")
+    items, jobs = [], []
+    for app in apps:
+        payload, code = make_payload(adm, conn, app, "rating-a")
+        item = {"app": app, "payload": payload, "code": code}
+        if payload is not None:
+            chars = rf.order_chars(payload)
+            job = {"Kind": rf.KIND, "InputChars": chars, "Model": None}
+            item["est"] = speed.job(job)
+            item["approval"] = rf.KIND in kinds and estimate_tokens("x" * chars) >= least
+            jobs.append(job)
+        items.append(item)
+    total = speed.queue(jobs, int(settings.get("Parallel") or 1)) if jobs else None
+    return {"items": items, "total": total, "approval": sum(1 for x in items if x.get("approval")),
+            "policy": bool(rf.KIND in kinds)}
+
+
+SKIP_TEXT = {"no-commit": "the assessment recorded no commit", "no-source": "its source is not kept on this machine",
+             "nothing": "nothing to change in code", "failed": "the order could not be made (see the web UI's log)",
+             "not-b": "not rated B"}
+
+
+def make_all_a(adm, conn, s, a) -> Response:
+    from .webui import est_text
+    plan = bulk_plan(adm, conn)
+    rows = []
+    for x in plan["items"]:
+        app = x["app"]
+        name = f"<a href='/app/{int(app['ApplicationId'])}'>{e(app['ApplicationName'])}</a>"
+        if x["payload"] is None:
+            rows.append(f"<tr><td>{name}</td><td class='muted small' colspan=3>not ordered: "
+                        f"{e(SKIP_TEXT.get(x['code'], x['code']))}</td></tr>")
+            continue
+        pl = x["payload"]
+        what = f"{len(pl['tasks'])} file(s)" + (f", data of {len(pl.get('state') or [])} component(s) to move"
+                                                if pl.get("state") else "")
+        rows.append(f"<tr><td>{name}</td><td class='small'>{e(what)}</td><td class='small nowrap'>{e(est_text(x['est']))}</td>"
+                    f"<td class='small'>{'waits for approval' if x.get('approval') else 'queued'}</td></tr>")
+    n = sum(1 for x in plan["items"] if x["payload"] is not None)
+    total = plan["total"]
+    tot = (f"<p><b>{n} order(s)</b>: {e(est_text(total))} for the first pass of all of them at the speed the queue "
+           f"learned (repair rounds and a second pass can take up to {rf.MAX_CALLS_A} LLM calls per order); "
+           f"<b>{int(plan['approval'])}</b> will wait for an administrator's approval under the current policy.</p>"
+           if total else "<p>No B-rated application can be ordered.</p>")
+    form = (f"<form method='post' action='{BASE}/make-all-a' class='formrow'>{adm._csrf(s)}"
+            f"<button>Queue {n} \"Make it A\" order(s)</button> <a href='{BASE}'>Cancel</a></form>" if n else "")
+    body = (f"<p><a href='{BASE}'>← Refactoring</a></p>"
+            "<p class='muted'>One \"Make it A\" order per B-rated application: the LLM changes the code for every "
+            "finding that keeps it from A (and moves the data of components that keep their own), the patch is "
+            "verified and repaired, the patched copy assessed again; one that rates A and runs is deployed to the "
+            "sandbox beside the original. Orders run one after another in the LLM queue.</p>" + tot + form
+            + "<table><thead><tr><th>Application</th><th>What changes</th><th>Estimate</th><th>Approval</th></tr></thead>"
+            f"<tbody>{''.join(rows) or '<tr><td colspan=4 class=muted>No B-rated applications.</td></tr>'}</tbody></table>")
+    return Response(200, adm._shell(s, a, "Make all B apps A", "refactoring", body))
+
+
+def make_all_a_post(adm, conn, s, a) -> Response:
+    queued = waiting = exists = skipped = 0
+    for x in bulk_plan(adm, conn)["items"]:
+        if x["payload"] is None:
+            skipped += 1
+            continue
+        jid, _ = queue_order(conn, x["app"], x["payload"])
+        if not jid:
+            exists += 1
+            continue
+        queued += 1
+        st = _rows(conn, "SELECT Status FROM cz.LlmJob WHERE JobId = %s", (jid,))
+        waiting += 1 if st and st[0]["Status"] == "approval" else 0
+    code = "queued" if queued or exists else "none"
+    return redirect(f"{BASE}?" + urlencode({"bulk": code, "q": queued, "w": waiting, "x": exists, "n": skipped}))
