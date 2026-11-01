@@ -115,7 +115,7 @@ def load_refactor_orders(conn, app_id: int) -> list[dict]:
     """The application's refactoring orders, newest first (empty before `db init` added them: schema 20)."""
     try:
         return _rows(conn, "SELECT TOP (20) JobId, Component, ProjectPath, Status, Summary, SourceCommit, QueuedAt, "
-                           "FinishedAt, VerifyStatus, InputChars, EstInputTokens, InputTokens, OutputTokens, Seconds "
+                           "FinishedAt, VerifyStatus, InputChars, EstInputTokens, InputTokens, OutputTokens, Seconds, Goal "
                            "FROM cz.vRefactorOrder WHERE ApplicationId = %s ORDER BY JobId DESC", (app_id,))
     except Exception:
         try:
@@ -265,6 +265,40 @@ def est_text(est: dict | None) -> str:
     return f"~{int(est['in'] + est['out']):,} tokens · {mins}"
 
 
+def existing_order(orders: list, project_path: str | None, goal: str) -> dict | None:
+    """The newest order of this component (None: all components) and goal that is waiting, running or has a
+    patch (a repair counts for the goal it repairs). Failed or cancelled ones do not count."""
+    for o in orders or []:                       # newest first
+        same = (o.get("ProjectPath") or None) == (project_path or None)
+        if same and o.get("Goal") in (goal, "repair") and o.get("Status") not in ("failed", "cancelled"):
+            return o
+    return None
+
+
+def existing_offer(o: dict, ctx: dict, app_id, comp_id, goal: str, speed=None) -> str:
+    """Instead of the request button: the order there already is, its status and its patch."""
+    from .refactor import status_label
+    st = o.get("Status") or "queued"
+    label, why = status_label(st, [o.get("VerifyStatus")])
+    chip = (f"<span class='st {REFACTOR_STATUS_CSS.get(st, '')}'" + (f" title='{e(why)}'" if why else "")
+            + f">{e(label)}</span>")
+    jid = int(o["JobId"])
+    staff = bool(ctx.get("csrf"))
+    eff = order_effort(o, speed)
+    if st in ("verified", "applies-only"):
+        head = "A patch is ready" if st == "verified" else "A patch was made"
+        links = (f" <a href='/admin/refactoring/{jid}'>Open the patch</a> · "
+                 f"<a href='/admin/refactoring/{jid}.patch'>Download .patch</a>") if staff else ""
+        again = (" " + order_button(app_id, comp_id, goal, ctx["csrf"], "Request a new one", None, small=True)
+                 if staff else "")
+        return (f"<b>{head}:</b> {chip} <span class='small'>{e(o.get('Summary') or '')}</span>"
+                + (f" <span class='muted small'>{e(eff)}</span>" if eff else "") + links
+                + f"<div class='muted small'>Made for commit {e(str(o.get('SourceCommit') or '')[:12])}; request a new "
+                  f"one when the code has changed.{again}</div>")
+    link = f" <a href='/admin/refactoring/{jid}'>Follow it</a>" if staff else ""
+    return (f"<b>Already requested:</b> {chip}" + (f" <span class='muted small'>{e(eff)}</span>" if eff else "") + link)
+
+
 def order_button(app_id, comp_id, goal: str, csrf: str, label: str, est: dict | None, small: bool = False) -> str:
     """One-click refactoring order (POST to the admin pages, like the Refactoring box's forms)."""
     comp = f"<input type='hidden' name='Component' value='{int(comp_id)}'>" if comp_id else ""
@@ -324,7 +358,11 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
         hidden = (f"{ctx['csrf']}<input type='hidden' name='ApplicationId' value='{int(app['ApplicationId'])}'>")
         if refactor:
             opts = "".join(f"<option value='{int(c['ComponentId'])}'>{e(c['ComponentName'])}</option>" for c in refactor)
-            out.append(f"<h3>Targeted code changes</h3><form method='post' action='/admin/refactoring/new' class='formrow'>"
+            have = existing_order(ctx.get("orders"), None, "fix")
+            out.append("<h3>Targeted code changes</h3>" + (
+                f"<div class='note offer'>{existing_offer(have, ctx, app['ApplicationId'], None, 'fix', ctx.get('speed'))}</div>"
+                if have else ""))
+            out.append(f"<form method='post' action='/admin/refactoring/new' class='formrow'>"
                        f"{hidden}<input type='hidden' name='Goal' value='fix'>"
                        f"<select name='Component' aria-label='Component'><option value=''>All components that need changes"
                        f"</option>{opts}</select><label class='check'><input type='checkbox' name='IncludeConfig' value='1'> "
@@ -333,7 +371,11 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
                           if (ctx.get('estimates') or {}).get((None, 'fix')) else "") + "</form>")
         if stateful:
             opts = "".join(f"<option value='{int(c['ComponentId'])}'>{e(c['ComponentName'])}</option>" for c in stateful)
-            out.append("<h3>Make it stateless: move the data to SQL Server</h3>"
+            have = existing_order(ctx.get("orders"), None, "stateless")
+            out.append("<h3>Make it stateless: move the data to SQL Server</h3>" + (
+                f"<div class='note offer'>{existing_offer(have, ctx, app['ApplicationId'], None, 'stateless', ctx.get('speed'))}</div>"
+                if have else ""))
+            out.append(""
                        "<p class='muted small'>The LLM changes the database library and its configuration (for example "
                        "SQLite to SQL Server with Entity Framework Core, the connection string from configuration, logs to "
                        "the console) and says in the notes how to move the existing data. Without code changes the "
@@ -619,6 +661,9 @@ def _info_link(url) -> str:
 
 def render_application(app: dict, nav: str = "", refactor: dict | None = None) -> str:
     r = app["Rating"]
+    refactor = dict(refactor or {})
+    refactor.update(orders=app.get("refactors") or [], speed=app.get("llm_speed"),
+                    paths={int(c["ComponentId"]): c.get("ProjectPath") for c in app.get("components") or []})
     crumbs = (f"<a href='/'>All</a> › <a href='{e(_bu_href(app['BusinessUnitId']))}'>"
               f"{e(app['BusinessUnitName'] or UNASSIGNED)}</a> › {e(app['ProductName'] or UNASSIGNED)}"
               f"{_info_link(app.get('ProductInfoUrl'))}")
@@ -758,7 +803,10 @@ def _migration(app_id, m: dict | None, ctx: dict | None = None) -> str:
     ctx = ctx or {}
     est = ctx.get("estimates") or {}
     goal = "fix" if (cid, "fix") in est else "stateless" if (cid, "stateless") in est else None
-    if goal and ctx.get("csrf"):
+    have = existing_order(ctx.get("orders"), (ctx.get("paths") or {}).get(cid), goal) if goal else None
+    if have:
+        out.append("<div class='note offer'>" + existing_offer(have, ctx, app_id, cid, goal, ctx.get("speed")) + "</div>")
+    elif goal and ctx.get("csrf"):
         out.append("<div class='note offer'><b>Or let Containerizer make the change:</b> the LLM writes the patch, "
                    "Containerizer applies it, checks it with the rules and builds and runs it, and you download "
                    "a verified patch. "

@@ -1701,7 +1701,8 @@ SELECT j.JobId, COALESCE(j.ApplicationId, a.ApplicationId) AS ApplicationId, j.A
             ELSE N'failed' END AS Status,
        j.Summary, JSON_VALUE(j.Payload, '$$.commit') AS SourceCommit, j.QueuedAt, j.StartedAt, j.FinishedAt,
        JSON_VALUE(j.Result, '$$.verification[0].status') AS VerifyStatus,
-       j.InputChars, j.EstInputTokens, j.InputTokens, j.OutputTokens, j.Seconds
+       j.InputChars, j.EstInputTokens, j.InputTokens, j.OutputTokens, j.Seconds,
+       COALESCE(JSON_VALUE(j.Payload, '$$.goal'), N'fix') AS Goal
 FROM [${schema}].LlmJob j
 LEFT JOIN [${schema}].Application a ON a.SourceKey = j.SourceKey
 WHERE j.Kind = N'refactor';
