@@ -498,7 +498,9 @@ def source_sboms(a) -> dict:
 
 def assessment_doc(a) -> dict:
     """The assessment.json entry of an AppAssessment (with build-and-run results when there are any)."""
-    return {**a.to_dict(), **({"verification": a.verification} if getattr(a, "verification", None) else {})}
+    return {**a.to_dict(), **({"verification": a.verification} if getattr(a, "verification", None) else {}),
+            # what the results page makes the application's image build pipeline from (pipelines.py)
+            **({"build_pipeline": a.build_pipeline} if getattr(a, "build_pipeline", None) else {})}
 
 
 def store_results(cs: str | None, results: list, paths: list[Path], password: str | None = None) -> list[int]:

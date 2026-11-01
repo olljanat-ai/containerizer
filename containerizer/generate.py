@@ -10,6 +10,7 @@ import copy
 import json
 import os
 import re
+import sys
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
@@ -752,7 +753,28 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
     (out / "MIGRATION.md").write_text(migration_markdown(a))
     written.append(out / "MIGRATION.md")
     written += write_agent_prompts(a, out)
+    written += _build_pipeline(a, out, registry)
     return written
+
+
+def _build_pipeline(a: AppAssessment, out: Path, registry: str) -> list[Path]:
+    """The image build pipeline for the application's own repository (pipelines.py): `pipeline/` in the
+    output, and its spec on the assessment (assessment.json `build_pipeline`, the results page's patch).
+    A failure here never fails the generation."""
+    from . import pipelines
+    try:
+        sp = pipelines.spec(a, out, registry)
+        a.build_pipeline = sp
+        if not sp:
+            return []
+        if pipelines.OUTPUT_DIR in {k8s_name(c.name) for c in a.components}:
+            print(f"warning: {a.name}: build pipeline not written to {pipelines.OUTPUT_DIR}/, a component's folder",
+                  file=sys.stderr)
+            return []
+        return pipelines.write_output(out, sp)
+    except Exception as ex:  # noqa: BLE001
+        print(f"warning: {a.name}: no build pipeline: {type(ex).__name__}: {ex}", file=sys.stderr)
+        return []
 
 
 def app_files(a, out: Path, all_k8s: list[dict], comp_docs: dict[str, list[dict]], images: list[tuple[str, str]],

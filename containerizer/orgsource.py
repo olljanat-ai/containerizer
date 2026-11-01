@@ -534,14 +534,28 @@ DOCKERFILE_RE = re.compile(r"^(dockerfile|containerfile)(\..+)?$|.+\.(dockerfile
 SKIP_DIRS = {".git", "node_modules"}
 
 
+def _build_pipeline_copy(d: Path, f: str) -> bool:
+    """A Dockerfile the build pipeline added (pipelines.py: containerizer/<component>/Dockerfile with its
+    marked Dockerfile.dockerignore): the repository is not containerized by itself, the scan goes on."""
+    from .pipelines import ALT_FOLDER, FOLDER, PIPELINE_MARK
+    if f != "Dockerfile" or d.parent.name not in (FOLDER, ALT_FOLDER):
+        return False
+    try:
+        return PIPELINE_MARK in (d / "Dockerfile.dockerignore").read_text(errors="replace")
+    except OSError:
+        return False
+
+
 def existing_dockerfiles(root: Path, limit: int = 10) -> list[str]:
     """Dockerfiles already in the repository (Dockerfile, Dockerfile.prod, api.Dockerfile, Containerfile);
-    third-party folders such as node_modules are not counted."""
+    third-party folders such as node_modules, and the copies a Containerizer build pipeline added, are not
+    counted."""
     found = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for f in filenames:
-            if DOCKERFILE_RE.match(f) and not f.lower().endswith(".dockerignore"):
+            if DOCKERFILE_RE.match(f) and not f.lower().endswith(".dockerignore") \
+                    and not _build_pipeline_copy(Path(dirpath), f):
                 found.append(Path(dirpath, f).relative_to(root).as_posix())
                 if len(found) >= limit:
                     return sorted(found)
