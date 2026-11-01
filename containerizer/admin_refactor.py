@@ -335,6 +335,10 @@ def order(adm, conn, s, a, form: dict) -> Response:
     if not app.get("SourceCommit"):
         return _to_app(app_id, "no-commit")
     source = order_source(conn, app)
+    url = app.get("RepositoryUrl") or ""
+    if source is None and adm.dev and url.startswith("https://"):
+        # development mode (a lab): the runner clones the repository itself if it is allowed to (rf.CLONE_ENV)
+        source = {"type": "git-url", "url": url, "subdir": app.get("SourcePath") or "."}
     if source is None:
         return _to_app(app_id, "no-source")
     rep = _rows(conn, "SELECT ReportJson FROM cz.ApplicationAssessment WHERE AssessmentId = %s", (app["AssessmentId"],))
@@ -343,6 +347,7 @@ def order(adm, conn, s, a, form: dict) -> Response:
     try:
         payload = rf.build_payload(doc, source, app["SourceCommit"], component=component,
                                    include_config=form.get("IncludeConfig", [""])[0] == "1", application_id=app_id,
+                                   goal=form.get("Goal", ["fix"])[0] if form.get("Goal", ["fix"])[0] in rf.GOALS else "fix",
                                    assessment_id=int(app["AssessmentId"]),
                                    source_key=key[0]["SourceKey"] if key else None)
     except rf.RefactorError as ex:

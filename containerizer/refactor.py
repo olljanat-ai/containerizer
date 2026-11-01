@@ -60,6 +60,9 @@ AUTHOR = ("Containerizer", "containerizer@localhost")
 SOURCES_ENV = "CONTAINERIZER_REFACTOR_SOURCES"   # the scan worker's data folder (its clone cache)
 WORK_ENV = "CONTAINERIZER_REFACTOR_WORK"         # where the runner makes its scratch copies
 DEFAULT_SOURCES = "/var/lib/containerizer/worker"
+# Lab only: the runner may clone a public https repository itself (orders made in development mode, for apps no
+# organization scan here holds). Never set on the appliance: a job in the database must not make it fetch URLs.
+CLONE_ENV = "CONTAINERIZER_REFACTOR_CLONE"
 CLONE_DIR_RE = re.compile(r"scan-\d{1,9}/repos/[A-Za-z0-9][A-Za-z0-9._-]{0,199}")
 EVIDENCE_RE = re.compile(r"^(?P<file>[^\n]+?)(?::(?P<line>\d+))?(?:: (?P<text>.*))?$", re.S)
 # a fix that only says to keep the component on Windows: nothing to change in code ("..., or keep it on
@@ -182,18 +185,39 @@ def eligible_components(doc: dict) -> list[dict]:
     return out
 
 
+GOALS = ("fix", "stateless")
+
+
+def stateful_components(doc: dict) -> list[dict]:
+    """Server components that keep their own data (assessment.json `stateless: false`): what keeps an otherwise
+    ready application from rating A."""
+    return [c for c in doc.get("components") or [] if c.get("stateless") is False
+            and c.get("tier") in ("server", "platform", None) and c.get("verdict") in ("info", "config", "refactor")]
+
+
 def build_payload(doc: dict, source: dict, commit: str | None, component: str | None = None,
                   include_config: bool = False, application_id: int | None = None, assessment_id: int | None = None,
-                  source_key: str | None = None, verify: bool = True, max_calls: int = MAX_CALLS) -> dict:
+                  source_key: str | None = None, verify: bool = True, max_calls: int = MAX_CALLS,
+                  goal: str = "fix") -> dict:
     """The job's payload from an assessment.json entry: what the runner needs and nothing it must look up.
-    `component` is a component name or project path (None: every component that needs changes)."""
+    `component` is a component name or project path (None: every component that needs changes).
+    `goal`: 'fix' (the refactor findings) or 'stateless' (move the components' own data out, to SQL Server: the
+    state findings and configuration ones; the runner also adds the files that use the embedded database)."""
+    if goal not in GOALS:
+        raise RefactorError(f"unknown goal {goal!r}")
     comps = [c for c in doc.get("components") or [] if c.get("verdict") in ELIGIBLE]
-    if component:
-        comps = [c for c in doc.get("components") or [] if component in (c.get("name"), c.get("project"))]
+    if goal == "stateless":
+        include_config = True
+        comps = stateful_components(doc)
         if not comps:
-            raise RefactorError(f"no component {component!r} in {doc.get('name')}")
+            raise RefactorError("nothing to change: no component keeps its own data")
+    if component:
+        comps = [c for c in comps if component in (c.get("name"), c.get("project"))]
+        if not comps:
+            raise RefactorError(f"no component {component!r} in {doc.get('name')}"
+                                + (" that keeps its own data" if goal == "stateless" else ""))
     tasks, skipped = plan_tasks(comps, include_config)
-    if not tasks:
+    if not tasks and goal != "stateless":
         raise RefactorError("nothing to change: no refactor finding (or configuration finding with a file) "
                             "to send to the LLM" + (" in " + component if component else ""))
     return {"version": 1, "app": doc.get("name"), "rating": doc.get("rating"), "application_id": application_id,
@@ -205,13 +229,16 @@ def build_payload(doc: dict, source: dict, commit: str | None, component: str | 
                             "rules": sorted({f.get("id") for f in c.get("findings") or [] if not f.get("dormant")})}
                            for c in comps],
             "tasks": tasks, "skipped": skipped, "include_config": bool(include_config), "verify": bool(verify),
-            "max_calls": int(max_calls)}
+            "max_calls": int(max_calls), "goal": goal,
+            "state": [{"component": c.get("name"), "state": [s.get("title") for s in c.get("state") or []]}
+                      for c in comps if c.get("stateless") is False]}
 
 
 def dedupe_key(payload: dict) -> str:
     """One waiting order per application, commit, components and findings."""
     basis = json.dumps([payload.get("source_key") or payload.get("app"), payload.get("commit"),
                         sorted(c["project"] or "" for c in payload["components"]), payload.get("include_config"),
+                        payload.get("goal", "fix"),
                         [(t["file"], [f["rule"] for f in t["findings"]]) for t in payload["tasks"]]], sort_keys=True)
     return hashlib.sha256(basis.encode()).hexdigest()
 
@@ -323,6 +350,61 @@ def window(text: str, lines: list[int], budget: int) -> tuple[str, int, int]:
     return part[:budget], lo, hi                       # evidence lines far apart, or one huge line: cut
 
 
+STATE_CODE_RE = re.compile(r"UseSqlite|SqliteConnection|Microsoft\.Data\.Sqlite|System\.Data\.SQLite|LiteDatabase|"
+                           r"LiteDB|UseInMemoryDatabase|Data Source=[^;\"]*\.(db|sqlite3?|litedb)", re.I)
+STATE_GUIDANCE = """The goal of this change: make the component stateless, so it can run as several replicas
+that can be replaced at any time. Its data must live in an external database, not in a file inside the container.
+- Move the embedded database (SQLite or LiteDB) to Microsoft SQL Server. With Entity Framework Core: replace the
+  package Microsoft.EntityFrameworkCore.Sqlite with Microsoft.EntityFrameworkCore.SqlServer (the same version as
+  the other EF Core packages; use package_changes), UseSqlite(...) with UseSqlServer(...), SqliteConnection with
+  SqlConnection (package Microsoft.Data.SqlClient). Keep EnsureCreated or Migrate as it is.
+- The connection string comes from configuration (ConnectionStrings in appsettings.json, overridden by the
+  environment variable ConnectionStrings__<Name>), never a file path. In appsettings.json put a placeholder such as
+  "Server=sqlserver;Database=<App>;User Id=<user>;Password=<from a secret>;TrustServerCertificate=True" with no real
+  password.
+- Code that creates the database file or its folder is no longer needed: remove it.
+- EF Core migrations generated for SQLite must be generated again for SQL Server: do not edit them; say so in notes.
+- Log to the console (stdout) instead of files. Files the application must keep (uploads, exports) go to a
+  configurable folder; say in notes that it must be a shared volume or object storage.
+- In notes, also say how to move the existing data (export from the SQLite file, import into SQL Server).
+"""
+
+
+def state_tasks(payload: dict, app_root: Path, limit: int = 6) -> list[dict]:
+    """The goal 'stateless': files of the stateful components that use the embedded database (the findings name
+    only the project file), as tasks with one finding that carries the goal."""
+    have = {t["file"] for t in payload.get("tasks") or []}
+    out: list[dict] = []
+    for c in payload.get("components") or []:
+        proj = app_root / (c.get("project") or "")
+        folder = proj.parent if proj.suffix else proj
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.rglob("*")):
+            if len(out) >= limit:
+                return out
+            if path.is_symlink() or not path.is_file() or path.suffix.lower() not in (".cs", ".vb", ".fs", ".json") \
+                    or any(part in ("bin", "obj", "node_modules", ".git", "Migrations") for part in path.parts) \
+                    or path.stat().st_size > 400_000:
+                continue
+            rel = path.relative_to(app_root).as_posix()
+            if rel in have or (path.suffix.lower() == ".json" and not path.name.lower().startswith("appsettings")):
+                continue
+            text, _ = _read_text(path)
+            hits = [(i, line.strip()) for i, line in enumerate(text.splitlines(), 1) if STATE_CODE_RE.search(line)]
+            if not hits:
+                continue
+            out.append({"file": rel, "component": c["name"], "project": c.get("project"), "findings": [{
+                "rule": "move-state-out", "severity": "config",
+                "title": "Move the embedded database to SQL Server",
+                "why": "The component keeps its data in a file inside the container: it cannot run as several "
+                       "replicas, and the data is lost when the container is replaced.",
+                "fix": "Use SQL Server with the connection string from configuration (see the goal above).",
+                "component": c["name"],
+                "evidence": [{"file": rel, "line": i, "text": t[:200]} for i, t in hits[:6]]}]})
+    return out
+
+
 def task_prompt(payload: dict, task: dict, app_root: Path) -> tuple[str, list[str]]:
     """The question for one file, and the files it shows (the ones the answer may edit)."""
     comp = next((c for c in payload["components"] if c["name"] == task["component"]), payload["components"][0])
@@ -338,6 +420,8 @@ def task_prompt(payload: dict, task: dict, app_root: Path) -> tuple[str, list[st
         head.append(f"   Fix: {f['fix']}")
         for e in f["evidence"]:
             head.append(f"   Evidence: line {e['line']}: {e['text']}" if e["line"] else f"   Evidence: {e['text'] or e['file']}")
+    if payload.get("goal") == "stateless":
+        head += ["", STATE_GUIDANCE]
     head += ["", INSTRUCTIONS, ""]
     shown = [task["file"]]
     parts = []
@@ -609,6 +693,20 @@ def resolve_source(source: dict) -> tuple[Path, str, bool]:
     subdir = source.get("subdir") or "."
     if subdir != "." and safe_rel(subdir) is None:
         raise RefactorError(f"bad application folder {subdir!r}")
+    if kind == "git-url":
+        url = str(source.get("url") or "")
+        if os.environ.get(CLONE_ENV) != "1":
+            raise RefactorError(f"this runner does not clone repositories ({CLONE_ENV}=1 allows it in a lab): "
+                                "scan the repository with an organization scan on this machine instead")
+        if not re.fullmatch(r"https://[A-Za-z0-9.-]+(:\d+)?/[A-Za-z0-9._~/-]+", url) or ".." in url:
+            raise RefactorError(f"not an https repository URL: {url!r}")
+        cache = Path(os.environ.get(WORK_ENV) or tempfile.gettempdir()) / "clones" / hashlib.sha256(url.encode()).hexdigest()[:16]
+        if (cache / ".git").exists():
+            git(["fetch", "--quiet", "origin"], cwd=cache, safe_dir=cache)
+        else:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            git(["clone", "--quiet", "--no-checkout", url, str(cache)])
+        return cache, subdir, True
     if kind == "org-clone":
         base = Path(os.environ.get(SOURCES_ENV) or DEFAULT_SOURCES).resolve()
         d = str(source.get("dir") or "")
@@ -885,7 +983,11 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
     findings: list[dict] = []
     notes: list[str] = []
     changes_all: list[dict] = []
-    tasks = payload["tasks"]
+    tasks = list(payload["tasks"])
+    if payload.get("goal") == "stateless":
+        tasks += state_tasks(payload, app_root)
+    if not tasks:
+        raise RefactorError("nothing to change: no file of the component uses an embedded database or names a finding")
     limit = int(MAX_CALLS if payload.get("max_calls") is None else payload["max_calls"])
     calls = 0
     for n, t in enumerate(tasks, 1):

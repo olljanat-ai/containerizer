@@ -139,6 +139,56 @@ REFACTOR_NOTICES = {
 }
 
 
+_STATE_RULES: dict | None = None
+
+
+def state_rules() -> dict:
+    """Rule id -> its state ('local' or 'memory'): the rules that say a component keeps its own data."""
+    global _STATE_RULES
+    if _STATE_RULES is None:
+        from .rules import load_rules
+        try:
+            _STATE_RULES = {r.id: r.state for r in load_rules() if r.state}
+        except Exception:  # noqa: BLE001 - only the explanation is missing
+            _STATE_RULES = {}
+    return _STATE_RULES
+
+
+def rating_why(app: dict) -> tuple[str, list[dict], list[dict]]:
+    """Why the application has its rating, in a sentence; and its stateful and refactor components.
+    A needs every server component to run with configuration only and to keep no data of its own."""
+    comps = [c for c in app.get("components") or [] if (c.get("Tier") or "server") in ("server", "platform")]
+    by = lambda v: [c for c in comps if c.get("Verdict") == v]     # noqa: E731
+    rules = state_rules()
+    state: dict[str, list[str]] = {}
+    for f in app.get("findings") or []:
+        if f.get("RuleId") in rules and not f.get("OnlyCommands"):
+            state.setdefault(f.get("ComponentName") or "", [])
+            if f.get("Title") not in state[f["ComponentName"]]:
+                state[f["ComponentName"]].append(f.get("Title"))
+    stateful = [c for c in comps if c.get("ComponentName") in state and c.get("Verdict") in ("info", "config", "refactor")]
+    refactor = by("refactor")
+    names = lambda cs: ", ".join(c["ComponentName"] for c in cs)   # noqa: E731
+    r = app.get("Rating")
+    parts = []
+    if r in ("D", "E") and by("blocker"):
+        parts.append(f"{names(by('blocker'))} cannot run in Linux containers (blockers).")
+    if r in ("C", "D", "E") and by("rewrite"):
+        parts.append(f"{names(by('rewrite'))} need a port or rewrite.")
+    if refactor:
+        parts.append(f"{names(refactor)} need targeted code changes.")
+    if stateful and r in ("A", "B"):
+        parts.append("Not stateless: " + "; ".join(f"{c['ComponentName']} keeps its own data "
+                                                   f"({', '.join(state[c['ComponentName']])})" for c in stateful)
+                     + ". A needs every server component to keep its data in external services, so that replicas can "
+                       "come and go." + ("" if refactor else " Everything else needs configuration only."))
+    if r == "A":
+        parts = ["Every server component runs in Linux containers with configuration only and keeps no data of its own."]
+    if not parts:
+        return "", stateful, refactor
+    return f"<p class='why-rating'><b>Why {e(r)}:</b> {e(' '.join(parts))}</p>", stateful, refactor
+
+
 def refactor_notice(q: dict) -> str:
     code = (q.get("refactor") or [""])[0]
     if code not in REFACTOR_NOTICES:
@@ -177,15 +227,29 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
     if rows:
         out.append("<table><thead><tr><th>Component</th><th>Status</th><th>Result</th><th>When</th></tr></thead>"
                    f"<tbody>{''.join(rows)}</tbody></table>")
+    _, stateful, refactor = rating_why(app)
     if staff and app.get("Rating") == "B":
-        comps = [c for c in app.get("components") or [] if c.get("Verdict") in ("refactor", "config")]
-        opts = "".join(f"<option value='{int(c['ComponentId'])}'>{e(c['ComponentName'])} "
-                       f"({e(VERDICT_LABEL.get(c['Verdict'], c['Verdict']))})</option>" for c in comps)
-        out.append(f"<form method='post' action='/admin/refactoring/new' class='formrow'>{ctx['csrf']}"
-                   f"<input type='hidden' name='ApplicationId' value='{int(app['ApplicationId'])}'>"
-                   f"<select name='Component' aria-label='Component'><option value=''>All components that need changes"
-                   f"</option>{opts}</select><label class='check'><input type='checkbox' name='IncludeConfig' value='1'> "
-                   f"also change code for configuration findings</label><button>Request a refactoring patch</button></form>")
+        hidden = (f"{ctx['csrf']}<input type='hidden' name='ApplicationId' value='{int(app['ApplicationId'])}'>")
+        if refactor:
+            opts = "".join(f"<option value='{int(c['ComponentId'])}'>{e(c['ComponentName'])}</option>" for c in refactor)
+            out.append(f"<h3>Targeted code changes</h3><form method='post' action='/admin/refactoring/new' class='formrow'>"
+                       f"{hidden}<input type='hidden' name='Goal' value='fix'>"
+                       f"<select name='Component' aria-label='Component'><option value=''>All components that need changes"
+                       f"</option>{opts}</select><label class='check'><input type='checkbox' name='IncludeConfig' value='1'> "
+                       f"also change code for configuration findings</label><button>Request a refactoring patch</button></form>")
+        if stateful:
+            opts = "".join(f"<option value='{int(c['ComponentId'])}'>{e(c['ComponentName'])}</option>" for c in stateful)
+            out.append("<h3>Make it stateless: move the data to SQL Server</h3>"
+                       "<p class='muted small'>The LLM changes the database library and its configuration (for example "
+                       "SQLite to SQL Server with Entity Framework Core, the connection string from configuration, logs to "
+                       "the console) and says in the notes how to move the existing data. Without code changes the "
+                       "component already runs as a single replica with its data file on a volume.</p>"
+                       f"<form method='post' action='/admin/refactoring/new' class='formrow'>{hidden}"
+                       f"<input type='hidden' name='Goal' value='stateless'>"
+                       f"<select name='Component' aria-label='Component'><option value=''>All components that keep data"
+                       f"</option>{opts}</select><button>Request a stateless patch</button></form>")
+        if not refactor and not stateful:
+            out.append("<p class='muted small'>No finding of this application can be fixed in code.</p>")
     elif ctx.get("signin") and app.get("Rating") == "B":
         out.append("<p class='muted small'>Operators and administrators can request a refactoring patch (sign in).</p>")
     return "".join(out) + "</section>"
@@ -523,7 +587,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 <p class='crumbs'>{crumbs}</p>
 <header class='app'>{badge(r, True)}<div><h1>{e(app['ApplicationName'])}</h1>
 <p class='lead'><b>{e(RATING_TITLE.get(r, ''))}</b>: {e(RATING_TEXT.get(r, ''))}</p>
-{f"<p>{e(app['Description'])}</p>" if app.get('Description') else ''}<p>{e(app['Summary'])}</p></div></header>
+{f"<p>{e(app['Description'])}</p>" if app.get('Description') else ''}<p>{e(app['Summary'])}</p>{rating_why(app)[0]}</div></header>
 <div class='tiles'>
 <div class='tile'><div class='label'>Readiness</div><div class='value'>{int(app['Score'])}<span class='unit'>/100</span></div></div>
 <div class='tile'><div class='label'>Confidence</div><div class='value'>{_confidence(app['Confidence'])}</div>
@@ -720,6 +784,8 @@ def page(title: str, body: str, script: bool = False) -> str:
 
 
 CSS = """
+.newkey{border:2px solid #2e7d32;border-radius:8px;padding:10px 14px;margin:12px 0}.newkey pre{margin:8px 0 0;user-select:all}
+.why-rating{background:var(--card);border-left:4px solid #e0a800;padding:8px 12px;margin:10px 0}section.refactor h3{font-size:16px;margin:16px 0 4px}
 .notice{padding:10px 14px;border-radius:8px;margin:10px 0;border:1px solid}.notice-ok{background:#e8f5e9;border-color:#2e7d32;color:#1b5e20}.notice-info{background:#e3f2fd;border-color:#1565c0;color:#0d47a1}.notice-bad{background:#fdecea;border-color:#c62828;color:#8e1c1c}@media (prefers-color-scheme:dark){.notice-ok{background:#16301a;color:#b9f6ca}.notice-info{background:#132a40;color:#bbdefb}.notice-bad{background:#3a1715;color:#ffcdd2}}
 .devmode{background:#b3261e;color:#fff;padding:8px 16px;text-align:center;font-size:14px}.devmode b{color:#fff}
 :root{--bg:#f9f9f7;--card:#fff;--fg:#0b0b0b;--muted:#5f5e58;--line:#e1e0d9;--link:#1f5fbf;
