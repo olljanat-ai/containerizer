@@ -939,6 +939,18 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
     for c in changes_all:
         if c["kind"] == "package-manual":
             notes.append(f"package change to make by hand in {c['file'] or 'the project'}: {c['detail']}")
+    # The rules are the better judge than the LLM's own list: a finding the edits removed from a file they changed
+    # is fixed even when the answer did not name it (and the commit message lists it too).
+    changed = {c["file"] for c in changes_all if c["kind"] != "package-manual"}
+    if changed and any(r["status"] != "fixed" and r["file"] in changed for r in findings):
+        try:
+            states, _ = rules_after(payload, app_root)
+            for r in findings:
+                if r["status"] not in ("fixed", "skipped") and r["file"] in changed \
+                        and states.get(f"{r['component']}|{r['rule']}|{r['file']}") == "resolved":
+                    r.update(status="fixed", reason="", confirmed_by="rules")
+        except Exception as ex:  # noqa: BLE001 - only an upgrade of the LLM's own claims
+            notes.append(f"the rules could not run on the edited copy: {type(ex).__name__}: {ex}"[:400])
     fixed = [r for r in findings if r["status"] == "fixed"]
     # the component in the file name only for an order of one component ("all" otherwise)
     comp_name = payload["components"][0]["name"] if payload.get("component") and payload["components"] else None

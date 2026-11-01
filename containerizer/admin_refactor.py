@@ -174,7 +174,9 @@ def _findings_table(res: dict) -> str:
                     f"<div class='small'>{e(f.get('title') or '')}</div></td>"
                     f"<td class='small'><code>{e(f.get('file') or '')}</code><div class='muted'>{e(f.get('component') or '')}</div></td>"
                     f"<td class='small'>{e(after) or '<span class=muted>-</span>'}</td>"
-                    f"<td class='small'>{e(f.get('reason') or '')}</td></tr>")
+                    f"<td class='small'>{e(f.get('reason') or '')}"
+                    + ("<span class='muted'>the LLM did not name it; the rules confirm it is gone</span>"
+                       if f.get("confirmed_by") == "rules" else "") + "</td></tr>")
     if not rows:
         return ""
     return ("<h2>Findings</h2><table><thead><tr><th>Result</th><th>Finding</th><th>File</th><th>Rules on the patched "

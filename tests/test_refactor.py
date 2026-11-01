@@ -756,3 +756,24 @@ def test_git_am_is_what_the_guidance_says():
     html = admin_refactor.how_to_apply("b" * 40, "x.patch")
     assert "git checkout -b containerizer-refactor bbbbbbbbbbbb" in html and "git am --keep-cr &lt; x.patch" in html
     assert subprocess.run(["git", "am", "-h"], capture_output=True).returncode in (0, 129)
+
+
+def test_the_rules_confirm_a_fix_the_llm_did_not_name(shop, tmp_path):
+    """Seen with Qwen3-Coder: it changed the drive path but listed only the other rule as fixed; the rules on
+    the edited copy show the finding is gone from that file, so it is fixed (and named in the commit)."""
+    (shop / "src/Shop.Api/Options.cs").write_text(
+        'public class Options\n{\n    public string Folder { get; set; } = @"D:\\Shop\\Options";\n}\n')
+    _git(shop, "add", "-A")
+    _git(shop, "commit", "--quiet", "-m", "path")
+    pl = _payload(shop, verify=False, include_config=True)
+
+    def ask(prompt, schema):
+        if "File src/Shop.Api/Options.cs" in prompt:
+            return {"edits": [{"file": "src/Shop.Api/Options.cs", "search": '@"D:\\Shop\\Options"',
+                               "replace": '"/data/options"'}], "new_files": [], "package_changes": [],
+                    "fixed": ["some-other-rule"], "not_fixed": [], "notes": ""}
+        return good_answer()
+    res = rf.run_order(pl, tmp_path / "w", ask=ask)
+    f = next(x for x in res["findings"] if x["file"].endswith("Options.cs"))
+    assert (f["status"], f["rules_after"], f["reason"], f.get("confirmed_by")) == ("fixed", "resolved", "", "rules")
+    assert "os-drive-path-default" in res["patch"].split("\n\n")[0]          # in the commit subject
