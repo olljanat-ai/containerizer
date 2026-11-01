@@ -756,24 +756,22 @@ class Runner:
     # -- the LLM ---------------------------------------------------------------------------------
 
     def llm_settings(self, conn) -> dict | None:
-        """The LLM registered under Admin → Source control & LLM, opened with the worker's credential key
-        (as the scan worker does), else None: the environment's settings."""
-        from .credentials import CredentialError, PRIVATE_KEY_ENV, load, private_key_from_env
+        """The LLM a scan would use (credentials.llm_for_run): the one registered under Admin → Source control &
+        LLM, opened with the worker's credential key, else the appliance's built-in LLM while it is on and
+        healthy, else None: the environment's settings."""
+        from .credentials import CredentialError, PRIVATE_KEY_ENV, llm_for_run, load, private_key_from_env
         from .orgsource import REDACT
+        llm = None
         try:
-            if self.key is None:
-                if not os.environ.get(PRIVATE_KEY_ENV):
-                    return None
+            if self.key is None and os.environ.get(PRIVATE_KEY_ENV):
                 self.key = private_key_from_env()
-            llm = load(conn, self.key).llm()
+            if self.key is not None:
+                llm = load(conn, self.key).llm()
         except CredentialError as ex:
-            self.log(f"the registered LLM cannot be opened ({ex}); using the environment's LLM settings")
-            return None
-        if llm is None:
-            return None
-        if llm.token:
+            self.log(f"the registered LLM cannot be opened ({ex}); using the built-in or the environment's LLM")
+        if llm is not None and llm.token:
             REDACT.add(llm.token, llm.username)
-        return llm.ai_settings()
+        return llm_for_run(llm).settings
 
     # -- the queue -------------------------------------------------------------------------------
 

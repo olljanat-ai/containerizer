@@ -644,3 +644,22 @@ def test_queue_in_sql_server(tmp_path, llm):
     cur.execute("SELECT * FROM cz.LlmSpeed")
     assert {x["Kind"] for x in cur.fetchall()} == {"*", "review"}
     c.close()
+
+
+def test_runner_uses_the_built_in_llm_when_none_is_registered(tmp_path, monkeypatch):
+    import json as _json
+    from pathlib import Path as _Path
+    from containerizer import credentials, local_llm
+    status = tmp_path / "local-llm-status.json"
+    status.write_text(_json.dumps({"enabled": True, "state": "running"}))
+    monkeypatch.setenv(local_llm.STATUS_ENV, str(status))
+    monkeypatch.delenv(credentials.PRIVATE_KEY_ENV, raising=False)
+    runner = object.__new__(lq.Runner)
+    runner.key, runner.log = None, lambda msg: None
+    s = lq.Runner.llm_settings(runner, conn=None)
+    assert s["CONTAINERIZER_LLM_BASE_URL"] == local_llm.BASE_URL and s["CONTAINERIZER_MODEL"] == local_llm.MODEL.alias
+    status.write_text(_json.dumps({"enabled": False, "state": "off"}))
+    assert lq.Runner.llm_settings(runner, conn=None) is None          # the environment's
+    unit = (_Path(__file__).resolve().parent.parent / "appliance/rootfs/usr/lib/systemd/system/"
+            "containerizer-llm-queue.service").read_text()
+    assert "CONTAINERIZER_LOCAL_LLM=/run/containerizer/system/local-llm-status.json" in unit

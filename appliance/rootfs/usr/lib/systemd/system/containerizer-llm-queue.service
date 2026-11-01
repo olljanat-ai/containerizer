@@ -11,6 +11,8 @@ Group=containerizer
 # the scan worker's settings: a self-hosted LLM set in the environment (CONTAINERIZER_LLM_*) applies here too
 EnvironmentFile=/etc/containerizer/worker.env
 EnvironmentFile=-/run/containerizer/llm.env
+# the built-in LLM (Admin -> Source control & LLM): used while it is on and no LLM is registered
+Environment=CONTAINERIZER_LOCAL_LLM=/run/containerizer/system/local-llm-status.json
 # the scan worker's answer cache: an answer the runner gets is found by the next scan
 Environment=CONTAINERIZER_AI_CACHE=/var/lib/containerizer/worker/ai-cache
 # results database (CZ_SQL_SCANNER_CS): the appliance's own or CZ_SQL_SERVER (cz-firstboot)
