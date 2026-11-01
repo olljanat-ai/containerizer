@@ -178,7 +178,13 @@ Why the options:
   comes from the model file's metadata and is harmless.
 
 `--threads N` limits the CPU it takes (the default is about one thread per core). `--cpu-shares 256`
-gives the test suite's builds the CPU first when both want it. Then point Containerizer at it. Raise
+gives the test suite's builds the CPU first when both want it. For several scans at once (one shard
+of apps per process, or an organization scan with several workers), `--parallel N` with
+`--ctx-size` N times as large decodes N answers together for about the cost of one, since speed follows
+memory bandwidth; keep the context per slot (`n_ctx_slot` in the log) above about 20,000 tokens, use a
+multiple of 256 per slot to avoid a rounding warning (`--parallel 3 --ctx-size 66048`), and raise
+`--memory` by about 3 GB per extra slot. Restarting the container while a scan runs is safe: requests
+are retried while the model loads. Then point Containerizer at it. Raise
 the timeout, because the default of 15 minutes per call is tight on a CPU:
 
 ```sh
