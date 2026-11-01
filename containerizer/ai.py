@@ -25,6 +25,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -235,8 +236,11 @@ def ask_json(prompt: str, schema: dict, model: str | None = None, effort: str = 
         usage["cost_usd"] = round((usage.get("input_tokens", 0) * pin + usage.get("output_tokens", 0) * pout) / 1e6, 5)
         usage["cost_known"] = price is not None
     record_usage({**usage, **tags})
-    CACHE.mkdir(parents=True, exist_ok=True)
-    cf.write_text(json.dumps({"data": data, "usage": usage}))
+    try:            # the answer is paid for: a cache that cannot be written must not lose it
+        CACHE.mkdir(parents=True, exist_ok=True)
+        cf.write_text(json.dumps({"data": data, "usage": usage}))
+    except OSError as e:
+        print(f"[ai] cannot cache the answer in {CACHE} (set CONTAINERIZER_AI_CACHE): {e}", file=sys.stderr)
     return data
 
 

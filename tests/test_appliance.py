@@ -550,3 +550,10 @@ def test_local_sql_server_only_without_an_external_one():
     assert "touch /run/containerizer/sql-external" in firstboot and "sysagent sql-env" in firstboot
     defaults = sysagent.read_env(APPLIANCE / "rootfs/usr/lib/containerizer/defaults/appliance.env")
     assert sysagent.sql_settings(defaults)["CZ_SQL_LOCAL"] == "yes"
+
+
+def test_llm_answer_cache_is_on_the_persistent_partition():
+    # the default cache, next to the code, is the read-only OS image on the appliance
+    worker = _unit("containerizer-worker.service")
+    assert "CONTAINERIZER_AI_CACHE=/var/lib/containerizer/worker/ai-cache" in worker["Environment"]
+    assert worker["WorkingDirectory"] == ["/var/lib/containerizer/worker"]

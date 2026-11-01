@@ -37,6 +37,13 @@ Results database schema version 18 (`containerizer db init` upgrades it; the app
   console of a disk image is gone, and SSH accepts passwords as well as keys (`passwd -l root` for keys
   only). An appliance upgraded from 0.1.0 starts with the default password too: sign in and change it
   right after the upgrade. See [Running the appliance](docs/appliance-admin.md#root-password-and-ssh).
+- Fix: the scan worker kept its LLM answer cache next to the code, on the read-only OS image, so every
+  answer was paid for and then lost when it could not be saved. It is now in
+  `/var/lib/containerizer/worker/ai-cache`, and an answer that cannot be cached is still used
+- Backup: the documentation lists everything that scans do not rebuild (dev database uploads, Sandbox
+  HTTPS certificate, firewall and Sandbox HTTPS change history, learned rules, the appliance's CA), with a
+  backup and restore procedure. `db init` links the database users of a database restored on another
+  server to that server's logins again
 
 ### Scans
 - Platform migrations: a repository with a Dockerfile that an administrator enables is moved to
