@@ -502,6 +502,8 @@ def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False, sys
     if isinstance(t, dict) and t.get("prompt_ms") and t.get("predicted_ms"):
         usage.update(prompt_seconds=round(float(t["prompt_ms"]) / 1000, 2),
                      generate_seconds=round(float(t["predicted_ms"]) / 1000, 2))
+        if t.get("prompt_n") is not None:            # the prompt tokens it really read (a cached prefix is reused)
+            usage["prompt_read_tokens"] = int(t["prompt_n"])
     return data, usage
 
 

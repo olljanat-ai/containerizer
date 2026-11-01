@@ -19,8 +19,10 @@ from __future__ import annotations
 import base64
 import json
 import re
+import sys
+from urllib.parse import urlencode
 
-from .admin import Response, _d, e
+from .admin import Response, _d, e, redirect
 from .admin_scans import _back, _nf
 from . import refactor as rf
 
@@ -34,28 +36,79 @@ VERIFY_TEXT = {"ok": "Builds and runs", "ok-external": "Builds and runs (without
                "build-failed": "Build failed", "run-failed": "Run failed", "finding": "Runs into a finding",
                "not-built": "Not built", "error": "Could not verify", "failed": "Failed"}
 COLS = ("JobId, Status, Summary, Error, Note, App, Repository, Component, ProjectPath, ApplicationId, AssessmentId, "
-        "SourceKey, RequestedBy, Model, Endpoint, InputTokens, OutputTokens, EstInputTokens, Seconds, Attempts, "
-        "QueuedAt, StartedAt, FinishedAt")
+        "SourceKey, RequestedBy, Model, Endpoint, InputChars, InputTokens, OutputTokens, EstInputTokens, Seconds, Attempts, "
+        "QueuedAt, StartedAt, FinishedAt, JSON_VALUE(Result, '$.verification[0].status') AS VerifyStatus")
+
+
+def allowed_app(a, conn, app_id) -> bool:
+    """Administrators and operators: every application; product owners: the ones of their products."""
+    if a.admin or a.operator:
+        return True
+    if not a.owner or app_id is None:
+        return False
+    r = _rows(conn, "SELECT ProductId FROM cz.Application WHERE ApplicationId = %s", (int(app_id),))
+    return bool(r) and r[0]["ProductId"] in a.products
 
 
 def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict, flash: str) -> Response:
-    if not (a.admin or a.operator):                 # the tab is theirs only; checked here too
+    if not (a.admin or a.operator or a.owner):      # product owners: their products' applications only
         return Response(403, adm._shell(s, a, "Not allowed", "", "<p>Your role does not include this page.</p>"))
     if len(parts) == 1 and method == "GET":
         return show_list(adm, conn, s, a, flash)
     if len(parts) == 2 and parts[1] == "new" and method == "POST":
         return order(adm, conn, s, a, form)
-    if len(parts) == 2 and method == "GET":
-        m = re.fullmatch(r"(\d{1,9})(\.patch)?", parts[1])
-        if m:
+    m = re.fullmatch(r"(\d{1,9})(\.patch)?", parts[1]) if len(parts) >= 2 else None
+    if m:
+        r = load_order(conn, int(m[1]))
+        if r is None or not allowed_app(a, conn, r.get("ApplicationId")):
+            return _nf()
+        if len(parts) == 2 and method == "GET":
             return download(conn, int(m[1])) if m[2] else show_order(adm, conn, s, a, int(m[1]), flash)
+        if len(parts) == 3 and parts[2] == "repair" and method == "POST" and not m[2]:
+            return repair(adm, conn, s, a, r)
     return _nf()
+
+
+def repairable(st: str, res: dict) -> bool:
+    """A patch that applies but did not build or run: the LLM can be asked to fix it."""
+    return st == "applies-only" and bool(res.get("patch")) and any(
+        v.get("status") in ("build-failed", "run-failed") for v in res.get("verification") or [])
+
+
+def repair(adm, conn, s, a, r: dict) -> Response:
+    from .llmqueue import SqlJobQueue
+    pl, res = _json(r.get("Payload")), _json(r.get("Result"))
+    if not repairable(status_of(r, res), res):
+        return _back(f"{BASE}/{int(r['JobId'])}", "Only a patch that applies but does not build or run can be fixed.")
+    try:
+        payload = rf.repair_payload(pl, res, int(r["JobId"]))
+    except rf.RefactorError as ex:
+        return _back(f"{BASE}/{int(r['JobId'])}", str(ex))
+    chars = len(payload["base_patch"]) + 6000 * max(1, len({x["file"] for x in payload["errors"]}))
+    job = rf.queue_job(payload, chars, requested_by=None)
+    job["Repository"] = r.get("Repository") or r.get("App")
+    jid = SqlJobQueue(None).add_with(conn, job)
+    if not jid:
+        return _back(f"{BASE}/{int(r['JobId'])}", "A fix of this patch is already requested.")
+    st = _rows(conn, "SELECT Status FROM cz.LlmJob WHERE JobId = %s", (jid,))
+    wait = st and st[0]["Status"] == "approval"
+    return _back(f"{BASE}/{jid}", "Fix requested: " + ("it waits for an administrator's approval."
+                                                       if wait else "it waits in the LLM queue."))
 
 
 # --------------------------------------------------------------------------- helpers
 
-def chip(status: str) -> str:
-    return f"<span class='st {STATUS_CSS.get(status, '')}'>{e(rf.STATUS_TEXT.get(status, status))}</span>"
+def chip(status: str, verify=()) -> str:
+    """The status chip; a patch that applies but is not verified says why, with the explanation as a tooltip."""
+    label, why = rf.status_label(status, verify)
+    tip = f" title='{e(why)}'" if why else ""
+    return f"<span class='st {STATUS_CSS.get(status, '')}'{tip}>{e(label)}</span>"
+
+
+def verify_of(r: dict, res: dict | None = None) -> list:
+    if res and res.get("verification"):
+        return [v.get("status") for v in res["verification"]]
+    return [r.get("VerifyStatus")] if r.get("VerifyStatus") else []
 
 
 def _rows(conn, sql: str, params: tuple = ()) -> list[dict]:
@@ -143,6 +196,8 @@ def how_to_apply(commit: str | None, filename: str) -> str:
 def show_list(adm, conn, s, a, flash: str) -> Response:
     rows = _rows(conn, f"SELECT TOP (200) {COLS}, JSON_VALUE(Result, '$.status') AS PatchStatus FROM cz.LlmJob "
                        "WHERE Kind = N'refactor' ORDER BY JobId DESC")
+    if not (a.admin or a.operator):
+        rows = [r for r in rows if allowed_app(a, conn, r.get("ApplicationId"))]
     out = []
     for r in rows:
         st = status_of(r)
@@ -151,7 +206,7 @@ def show_list(adm, conn, s, a, flash: str) -> Response:
         dl = (f"<a href='{BASE}/{int(r['JobId'])}.patch'>.patch</a>"
               if st in ("verified", "applies-only") else "")
         out.append(f"<tr><td class='num'>{int(r['JobId'])}</td><td><a href='{BASE}/{int(r['JobId'])}'>{e(target)}</a></td>"
-                   f"<td>{chip(st)}</td><td class='small'>{e(r.get('Summary') or r.get('Error') or '')}</td>"
+                   f"<td>{chip(st, verify_of(r))}</td><td class='small'>{e(r.get('Summary') or r.get('Error') or '')}</td>"
                    f"<td class='small'>{e(r.get('RequestedBy') or '')}</td><td class='small nowrap'>{when}</td>"
                    f"<td>{dl}</td></tr>")
     body = ("<p class='muted'>Refactoring patches for B-rated applications: the LLM changes the code for the findings "
@@ -216,20 +271,40 @@ def show_order(adm, conn, s, a, ident: int, flash: str) -> Response:
     pl, res = _json(r.get("Payload")), _json(r.get("Result"))
     st = status_of(r, res)
     took = f"{float(r['Seconds']) / 60:.0f} min" if r.get("Seconds") else None
+    from .llmqueue import load_speed
+    from .webui import est_text, order_effort
+    try:
+        est = load_speed(conn).job({"Kind": rf.KIND, "InputChars": r.get("InputChars"),
+                                    "EstInputTokens": r.get("EstInputTokens"), "Model": None})
+    except Exception:  # noqa: BLE001
+        est = None
     tokens = (f"{int(r['InputTokens'] or 0):,} in / {int(r['OutputTokens'] or 0):,} out"
-              if r.get("InputTokens") is not None or r.get("OutputTokens") is not None else
-              (f"~{int(r['EstInputTokens']):,} in (estimated)" if r.get("EstInputTokens") else None))
+              if r.get("InputTokens") is not None or r.get("OutputTokens") is not None else None)
     app = (f"<a href='/app/{int(r['ApplicationId'])}'>{e(r.get('App') or '')}</a>" if r.get("ApplicationId")
            else e(r.get("App") or ""))
     meta = [("Application", app), ("Component", e(r.get("Component") or "all components that need changes")),
             ("Commit", f"<code>{e(str(pl.get('commit') or '')[:12])}</code>" if pl.get("commit") else None),
-            ("Status", chip(st)), ("Requested by", e(r.get("RequestedBy") or "")),
+            ("Status", chip(st, verify_of(r, res)) + (f" <span class='small'>{e(rf.status_label(st, verify_of(r, res))[1])}</span>"
+                                                      if st == "applies-only" else "")),
+            ("Requested by", e(r.get("RequestedBy") or "")),
             ("LLM", e(res.get("model") or r.get("Endpoint") or "")), ("LLM calls", e(str(res.get("calls"))) if res else None),
+            ("Estimate", e(est_text(est)) if est else None),
+            ("Time left", e(left.split(" · about ")[-1].removesuffix(" left")) if " · about " in (left := (
+                order_effort({**r, "Status": st}, load_speed(conn)) if st == "generating" else "")) else None),
             ("Tokens", e(tokens) if tokens else None), ("Time", e(took) if took else None),
             ("Queued", _d(r["QueuedAt"])), ("Finished", _d(r["FinishedAt"]) if r.get("FinishedAt") else None),
             ("Queue job", f"<a href='/admin/llm-queue/{ident}'>#{ident}</a>")]
     head = "".join(f"<div><span class='label'>{e(k)}</span> {v}</div>" for k, v in meta if v)
     body = [f"<p><a href='{BASE}'>← Refactoring</a></p><div class='meta'>{head}</div>"]
+    if repairable(st, res):
+        fails = "build" if any(v.get("status") == "build-failed" for v in res.get("verification") or []) else "run"
+        body.append(f"<div class='note'><b>The patch applies but does not {fails}.</b> The LLM can fix it: it gets the errors below, "
+                    f"the files they are in and this patch, and the result is one patch with both changes, verified again."
+                    f"<form method='post' action='{BASE}/{ident}/repair' class='inline'>{adm._csrf(s)}"
+                    f"<button>Fix it with the LLM</button></form></div>")
+    if pl.get("goal") == "repair" and pl.get("base_job"):
+        body.append(f"<p class='muted small'>Repairs the patch of order <a href='{BASE}/{int(pl['base_job'])}'>"
+                    f"#{int(pl['base_job'])}</a>.</p>")
     if st in ("queued", "generating", "verifying"):
         body.append(f"<p class='note'><b>{e(rf.STATUS_TEXT[st])}.</b> "
                     + (e(r.get("Summary") or "") if st != "queued" else
@@ -301,46 +376,58 @@ def order_source(conn, app: dict) -> dict | None:
             "subdir": app.get("SourcePath") or "."}
 
 
+def _to_app(app_id: int, code: str, **extra) -> Response:
+    """Back to the application's results page, where the order was placed: a status code, which the page turns
+    into one of its own fixed messages (webui.REFACTOR_NOTICES), so a link cannot make it show any text."""
+    q = urlencode({"refactor": code, **{k: int(v) for k, v in extra.items()}})
+    return redirect(f"/app/{int(app_id)}?{q}#refactoring")
+
+
 def order(adm, conn, s, a, form: dict) -> Response:
     from .llmqueue import SqlJobQueue
     app_id = adm._id(form, "ApplicationId")
     if app_id is None:
         return _back(BASE, "No application selected.")
-    back = BASE                                     # the list page shows the message
+    if not allowed_app(a, conn, app_id):
+        return _to_app(app_id, "not-yours")
     rows = _rows(conn, "SELECT ApplicationId, ApplicationName, ScanName, AssessmentId, Rating, SourceCommit, RepositoryUrl, "
                        "SourcePath FROM cz.vApplicationLatest WHERE ApplicationId = %s", (app_id,))
     if not rows:
         return _back(BASE, "No such application.")
     app = rows[0]
     if app["Rating"] != "B":
-        return _back(back, f"Refactoring patches are for B-rated applications; {app['ApplicationName']} is rated "
-                           f"{app['Rating']}.")
+        return _to_app(app_id, "not-b")
     comp_raw = form.get("Component", [""])[0]
     component = None
     if comp_raw:
         if not re.fullmatch(r"\d{1,9}", comp_raw):
-            return _back(back, "No such component.")
-        c = _rows(conn, "SELECT ProjectPath FROM cz.Component WHERE ComponentId = %s AND ApplicationId = %s",
+            return _to_app(app_id, "no-component")
+        c = _rows(conn, "SELECT ProjectPath FROM cz.vComponentLatest WHERE ComponentId = %s AND ApplicationId = %s",
                   (int(comp_raw), app_id))
         if not c:
-            return _back(back, "No such component.")
+            return _to_app(app_id, "no-component")
         component = c[0]["ProjectPath"]
     if not app.get("SourceCommit"):
-        return _back(back, "The assessment recorded no commit: scan the repository again.")
+        return _to_app(app_id, "no-commit")
     source = order_source(conn, app)
+    url = app.get("RepositoryUrl") or ""
+    if source is None and adm.dev and url.startswith("https://"):
+        # development mode (a lab): the runner clones the repository itself if it is allowed to (rf.CLONE_ENV)
+        source = {"type": "git-url", "url": url, "subdir": app.get("SourcePath") or "."}
     if source is None:
-        return _back(back, f"The source of {app['ApplicationName']} is not kept on this machine (no organization scan "
-                           "here has its repository): run `containerizer refactor` on a checkout instead.")
+        return _to_app(app_id, "no-source")
     rep = _rows(conn, "SELECT ReportJson FROM cz.ApplicationAssessment WHERE AssessmentId = %s", (app["AssessmentId"],))
     doc = _json(rep[0]["ReportJson"]) if rep else {}
     key = _rows(conn, "SELECT SourceKey FROM cz.Application WHERE ApplicationId = %s", (app_id,))
     try:
         payload = rf.build_payload(doc, source, app["SourceCommit"], component=component,
                                    include_config=form.get("IncludeConfig", [""])[0] == "1", application_id=app_id,
+                                   goal=form.get("Goal", ["fix"])[0] if form.get("Goal", ["fix"])[0] in rf.GOALS else "fix",
                                    assessment_id=int(app["AssessmentId"]),
                                    source_key=key[0]["SourceKey"] if key else None)
     except rf.RefactorError as ex:
-        return _back(back, str(ex))
+        print(f"refactoring order for application {app_id} refused: {ex}", file=sys.stderr)
+        return _to_app(app_id, "nothing" if "nothing" in str(ex).lower() else "failed")
     payload["app"] = app.get("ScanName") or payload.get("app")
     job = rf.queue_job(payload, rf.estimate_chars(payload), requested_by=None)     # None: the signed-in person
     job["Repository"] = app["ApplicationName"]
@@ -348,8 +435,7 @@ def order(adm, conn, s, a, form: dict) -> Response:
     if not jid:
         same = _rows(conn, "SELECT TOP (1) JobId FROM cz.LlmJob WHERE Kind = N'refactor' AND DedupeKey = %s "
                            "AND Status IN (N'queued', N'running') ORDER BY JobId DESC", (job["DedupeKey"],))
-        if same:
-            return _back(f"{BASE}/{int(same[0]['JobId'])}", "The same refactoring is already ordered.")
-        return _back(back, "The same refactoring is already ordered.")
+        return _to_app(app_id, "exists", **({"job": int(same[0]["JobId"])} if same else {}))
     n = min(len(payload["tasks"]), payload["max_calls"])
-    return _back(f"{BASE}/{jid}", f"Ordered: {n} file{'s' if n != 1 else ''} to change; it waits in the LLM queue.")
+    st = _rows(conn, "SELECT Status FROM cz.LlmJob WHERE JobId = %s", (jid,))
+    return _to_app(app_id, "approval" if st and st[0]["Status"] == "approval" else "ordered", job=int(jid), files=n)

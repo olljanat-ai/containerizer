@@ -236,11 +236,13 @@ def list_page(adm, conn, s, a, flash: str) -> Response:
                     "<code>containerizer credentials keygen --private worker-key.pem --public worker-key.pub</code>, give "
                     f"the worker <code>{cr.PRIVATE_KEY_ENV}</code> and the web UI <code>{cr.PUBLIC_KEY_ENV}</code> "
                     "(docs/source-control.md). The appliance does this by itself.</p>")
-        forms = ""
+        read_form = write_form = llm_form = ""
     else:
         key_note = (f"<p class='muted small'>Tokens are sealed for the scan worker's key <code>{e(kid)}</code> as soon as "
                     "you save them: this page cannot show them again, only replace them.</p>")
-        forms = f"""<h2>Add a read-only token for an organization</h2>
+        read_form = f"""<h3>Add a read-only token for an organization</h3>
+<p class='muted'>First make the token at your provider, with the least privileges below, then enter it here.</p>
+{guidance('read')}
 <form method='post' action='/admin/source-control/read' class='edit'>{adm._csrf(s)}
 <label for='Provider-github'>Provider</label>{_provider_select()}
 <label for='rOrganization'>Organization <span class='muted'>(Azure DevOps organization or collection, GitHub
@@ -249,20 +251,23 @@ organization, GitLab group path)</span></label><input id='rOrganization' name='O
 https://tfs.example.com/tfs; empty: github.com, gitlab.com, dev.azure.com)</span></label>
 <input id='rApiUrl' name='ApiUrl' type='url' maxlength='400' placeholder='https://'>
 {_token_input('rToken')}{_common_inputs('r')}
-<div><button>Add</button></div></form>{guidance('read')}
-<h2>Add a write token for an output repository</h2>
+<div><button>Add</button></div></form>"""
+        write_form = f"""<h3>Add a write token for an output repository</h3>
 <p class='muted'>The repository the generated Dockerfiles, manifests and GitOps files are pushed to. Its token is used
 for nothing else, even when the repository is in an organization that is scanned, and the repository itself is never scanned.
 The internal rules repository of the <a href='/admin/rules#repository'>rule review</a> gets its write token here too.</p>
+{guidance('write')}
 <form method='post' action='/admin/source-control/write' class='edit'>{adm._csrf(s)}
 <label for='Provider-gitlab'>Provider</label>{_provider_select(selected='gitlab')}
 <label for='wScope'>Repository URL <span class='muted'>(https, as on the scan's Output repository)</span></label>
 <input id='wScope' name='Scope' type='url' required maxlength='400' placeholder='https://github.com/contoso/sandbox-deployments.git'>
 {_token_input('wToken')}{_common_inputs('w')}
-<div><button>Add</button></div></form>{guidance('write')}"""
+<div><button>Add</button></div></form>"""
+        llm_form = ""
         if not any(r["Purpose"] == "llm" for r in rows):
             from .ai import CLAUDE_DEFAULT_MODEL
-            forms += f"""<h2>Set the LLM</h2>
+            llm_form = f"""<h3>Set the LLM</h3>
+{guidance('llm')}
 <form method='post' action='/admin/source-control/llm' class='edit'>{adm._csrf(s)}
 <label for='lProvider'>Kind</label><select id='lProvider' name='Provider'>{''.join(
     f"<option value='{k}'>{t}</option>" for k, t in cr.LLM_PROVIDERS.items())}</select>
@@ -270,7 +275,7 @@ The internal rules repository of the <a href='/admin/rules#repository'>rule revi
 and including /v1)</span></label><input id='lApiUrl' name='ApiUrl' type='url' maxlength='400' placeholder='https://llm.example.internal/v1'>
 <label for='lModel'>Model</label><input id='lModel' name='Model' required maxlength='200' value='{e(CLAUDE_DEFAULT_MODEL)}'>
 {_token_input('lToken', 'API key', required=False)}{_common_inputs('l')}
-<div><button>Save</button></div></form>{guidance('llm')}"""
+<div><button>Save</button></div></form>"""
     llm = next((r for r in rows if r["Purpose"] == "llm"), None)
     if llm:
         used = _used_by(cr.Credential.from_row(llm), scans)
@@ -290,8 +295,9 @@ and including /v1)</span></label><input id='lApiUrl' name='ApiUrl' type='url' ma
     body = (f"<p class='muted'>Organization scans only read organizations that have a read-only token here: there is no "
             f"anonymous access, and each token is only sent with its own organization's or repository's URLs. On the "
             f"appliance, the hosts must also be on the Firewall page.</p>{key_note}"
-            f"<h2>Organizations (read-only)</h2>{table('read')}<h2>Output repositories (write)</h2>{table('write')}"
-            f"<h2>LLM</h2>{llm_html}{forms}{admin_local_llm.section(adm, s, a, registered=llm is not None)}")
+            f"<h2>Organizations (read-only)</h2>{table('read')}{read_form}"
+            f"<h2>Output repositories (write)</h2>{table('write')}{write_form}"
+            f"<h2>LLM</h2>{llm_html}{llm_form}{admin_local_llm.section(adm, s, a, registered=llm is not None)}")
     return Response(200, adm._shell(s, a, "Source control and LLM", "source-control", body, flash))
 
 

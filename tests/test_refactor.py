@@ -401,7 +401,7 @@ def test_queue_handler_result_shape(shop, tmp_path, monkeypatch):
     pl = _payload(shop, verify=False)
     out = lq.JOB_KINDS["refactor"].handler({"JobId": 5, "Payload": pl, "_progress": progress.append})
     assert set(out) == {"result", "summary", "note"} and calls == [rf.SYSTEM]
-    assert out["summary"] == "applies only: 2 of 2 findings fixed, 1 file changed"
+    assert out["summary"] == "not built: 2 of 2 findings fixed, 1 file changed"     # applies; Docker was not there
     assert out["note"].startswith("the patch applies; verification was off")
     assert out["result"]["status"] == "applies-only" and out["result"]["patch"].startswith("From ")
     json.dumps(out["result"])                                                          # stored as JSON
@@ -527,7 +527,7 @@ def test_ordering_needs_an_operator_or_admin_and_the_csrf_token(adm, shop):
     op = adm.sessions.create("o@example.com", "O", False, True, True, [])
     assert _post(adm, op, "/admin/refactoring/new", csrf="wrong", ApplicationId="7").status == 403
     r = _post(adm, op, "/admin/refactoring/new", ApplicationId="7", Component="", IncludeConfig="1")
-    assert r.status == 303 and _loc(r).startswith("/admin/refactoring/42?msg=Ordered")
+    assert r.status == 303 and _loc(r) == "/app/7?refactor=ordered&job=42&files=1#refactoring"   # back where it was ordered
     (sql, params), = adm.conn.sql("EXEC cz.QueueLlmJob")
     assert params[0] == "refactor" and params[6] == "shop" and params[17] is None      # RequestedBy: the session's
     pl = json.loads(params[-1])
@@ -535,7 +535,7 @@ def test_ordering_needs_an_operator_or_admin_and_the_csrf_token(adm, shop):
     assert pl["commit"] == "a" * 40 and pl["include_config"] is True and pl["application_id"] == 7
     assert [t["file"] for t in pl["tasks"]][0] == "src/Shop.Api/Bank.cs" and params[19] > 0   # estimated tokens
     # one component, by its id
-    adm.conn.answers[r"SELECT ProjectPath FROM cz.Component"] = [{"ProjectPath": "src/Shop.Api/Shop.Api.csproj"}]
+    adm.conn.answers[r"SELECT ProjectPath FROM cz.vComponentLatest"] = [{"ProjectPath": "src/Shop.Api/Shop.Api.csproj"}]
     _post(adm, op, "/admin/refactoring/new", ApplicationId="7", Component="11")
     params = adm.conn.sql("EXEC cz.QueueLlmJob")[-1][1]
     assert params[10] == "Shop.Api" and params[11] == "src/Shop.Api/Shop.Api.csproj"
@@ -544,21 +544,21 @@ def test_ordering_needs_an_operator_or_admin_and_the_csrf_token(adm, shop):
     adm.conn.answers[r"EXEC cz.QueueLlmJob"] = [{"JobId": 0}]
     adm.conn.answers[r"SELECT TOP \(1\) JobId FROM cz.LlmJob"] = [{"JobId": 41}]
     r = _post(adm, op, "/admin/refactoring/new", ApplicationId="7")
-    assert _loc(r).startswith("/admin/refactoring/41?msg=The+same")
+    assert _loc(r) == "/app/7?refactor=exists&job=41#refactoring"
 
 
 def test_ordering_is_refused_when_it_cannot_work(adm, shop):
     a = adm.sessions.create("a@example.com", "A", True)
     adm.conn.answers = {r"FROM cz.vApplicationLatest WHERE ApplicationId": [{**APP, "Rating": "C"}]}
-    assert "rated+C" in _loc(_post(adm, a, "/admin/refactoring/new", ApplicationId="7"))
+    assert "refactor=not-b" in _loc(_post(adm, a, "/admin/refactoring/new", ApplicationId="7"))
     adm.conn.answers = {r"FROM cz.vApplicationLatest WHERE ApplicationId": [APP]}
-    assert "not+kept+on+this+machine" in _loc(_post(adm, a, "/admin/refactoring/new", ApplicationId="7"))
+    assert "refactor=no-source" in _loc(_post(adm, a, "/admin/refactoring/new", ApplicationId="7"))
     adm.conn.answers = {r"FROM cz.vApplicationLatest WHERE ApplicationId": [{**APP, "SourceCommit": None}]}
-    assert "no+commit" in _loc(_post(adm, a, "/admin/refactoring/new", ApplicationId="7"))
+    assert "refactor=no-commit" in _loc(_post(adm, a, "/admin/refactoring/new", ApplicationId="7"))
     adm.conn.answers = {r"FROM cz.vApplicationLatest WHERE ApplicationId": [APP],
                         r"FROM cz.OrgRepository WHERE RepositoryUrl": [{"ScanId": 3, "AppName": "../../etc"}]}
-    assert "not+kept" in _loc(_post(adm, a, "/admin/refactoring/new", ApplicationId="7"))
-    assert "No+such+component" in _loc(_post(adm, a, "/admin/refactoring/new", ApplicationId="7", Component="x"))
+    assert "refactor=no-source" in _loc(_post(adm, a, "/admin/refactoring/new", ApplicationId="7"))
+    assert "refactor=no-component" in _loc(_post(adm, a, "/admin/refactoring/new", ApplicationId="7", Component="x"))
     assert not adm.conn.sql("EXEC cz.QueueLlmJob")
 
 
@@ -661,7 +661,7 @@ def test_cli_runs_and_writes_the_patch_and_summary(shop, tmp_path, monkeypatch, 
     summary = json.loads((out / "shop-all-containerizer.json").read_text())
     assert summary["status"] == "applies-only" and summary["payload"]["tasks"][0]["file"] == "src/Shop.Api/Bank.cs"
     text = capsys.readouterr().out
-    assert "applies only: 2 of 2 findings fixed" in text and "git am --keep-cr" in text
+    assert "not built: 2 of 2 findings fixed" in text and "git am --keep-cr" in text
     # --queue without SQL Server: a queue file `containerizer llm-queue --file` works through
     monkeypatch.delenv("CONTAINERIZER_SQL", raising=False)
     assert cli.main(["refactor", str(shop), "--component", "Shop.Api", "--queue", "--out", str(out), "--no-verify"]) == 0
@@ -704,7 +704,7 @@ def test_schema_20_refactor_kind_and_view():
     sqlstore.init_schema(conn)
     cur = conn.cursor()
     cur.execute("SELECT MAX(Version) FROM cz.SchemaVersion")
-    assert cur.fetchone()[0] == 20
+    assert cur.fetchone()[0] == 22
     cur.execute("SELECT definition FROM sys.check_constraints WHERE name = N'CK_LlmJob_Kind'")
     assert "refactor" in cur.fetchone()[0]
     cur.execute("INSERT cz.Application (SourceKey, Name) VALUES (N'k', N'shop')")
@@ -777,3 +777,16 @@ def test_the_rules_confirm_a_fix_the_llm_did_not_name(shop, tmp_path):
     f = next(x for x in res["findings"] if x["file"].endswith("Options.cs"))
     assert (f["status"], f["rules_after"], f["reason"], f.get("confirmed_by")) == ("fixed", "resolved", "", "rules")
     assert "os-drive-path-default" in res["patch"].split("\n\n")[0]          # in the commit subject
+
+
+def test_the_results_page_says_what_happened_with_fixed_texts_only():
+    from urllib.parse import parse_qs
+    from containerizer import webui
+    html = webui.refactor_notice(parse_qs("refactor=ordered&job=42&files=3"))
+    assert "notice-ok" in html and "Refactoring patch requested: 3 file(s) to change" in html
+    assert "already requested" in webui.refactor_notice(parse_qs("refactor=exists&job=42"))
+    # nothing from the URL is shown: unknown codes show nothing, numbers must be numbers
+    assert webui.refactor_notice(parse_qs("refactor=%3Cscript%3Ealert(1)%3C/script%3E")) == ""
+    assert "<script" not in webui.refactor_notice(parse_qs("refactor=ordered&files=%3Cscript%3E"))
+    assert "some file(s)" in webui.refactor_notice(parse_qs("refactor=ordered&files=%3Cscript%3E"))
+    assert webui.refactor_notice({}) == ""

@@ -5,6 +5,20 @@ by hand on `main` with the version, and it tags the commit and releases from the
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHD images as release assets.
 
+## Unreleased
+
+### Web UI
+- API keys for the JSON API: administrators make them on **Admin → API** (read only or full, optional
+  expiry), shown once and stored as SHA-256 only, revocable, last use recorded; the page explains the API
+  with examples for the server. The API is on whenever the admin pages are; OpenID access tokens still
+  work when `CONTAINERIZER_API_AUDIENCE` is set. Results database schema version 21.
+- Development mode for the admin pages: `CONTAINERIZER_DEV_NO_AUTH=1` signs everyone in as a configured
+  person (default John Doe, administrator; `CONTAINERIZER_DEV_USER`, `_NAME`, `_ROLES`), for development and
+  labs without an identity provider. It is refused on the appliance and next to a configured sign-in; a red
+  banner shows on every page, the JSON API takes API keys (not access tokens), and CSRF tokens, roles and the
+  change history work as
+  with sign-in (docs/local-dev-server.md).
+
 ## 0.2.0 (2026-11-01)
 
 Results database schema version 20 (`containerizer db init` upgrades it; the appliance does at start).

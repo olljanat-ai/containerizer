@@ -58,7 +58,7 @@ SECOND_OPINION = ("blocker", "rewrite")
 # goes against rules that were sure, so it must be as sure as they were.
 OVERRIDE_CONFIDENCE = {"uncertain": 0.6, "second-opinion": 0.85}
 DEFAULTS = {"Paused": False, "WindowDays": 0, "WindowStart": None, "WindowEnd": None, "OnlyWhenIdle": True,
-            "MaxLoadPerCpu": 0.5, "Parallel": 1}
+            "MaxLoadPerCpu": 0.5, "Parallel": 1, "ApproveKinds": "refactor,review", "ApproveMinTokens": 0}
 
 
 def utcnow() -> datetime:
@@ -87,7 +87,8 @@ def ewma(old: float | None, new: float, alpha: float = ALPHA) -> float:
 
 def observe(endpoint_row: dict | None, kind_row: dict | None, chars: int | None, input_tokens: int | None,
             output_tokens: int | None, seconds: float, prompt_seconds: float | None = None,
-            generate_seconds: float | None = None, parallel: int = 1) -> tuple[dict, dict]:
+            generate_seconds: float | None = None, parallel: int = 1,
+            prompt_read: int | None = None) -> tuple[dict, dict]:
     """What one answered job teaches, folded into the endpoint's figures (characters per input token, prompt
     and generation speed, or overall tokens per second when the server reports no timings) and its kind's
     (output tokens). Rows are LlmSpeed columns; returns the new (endpoint row, kind row). Speeds are as
@@ -97,7 +98,7 @@ def observe(endpoint_row: dict | None, kind_row: dict | None, chars: int | None,
     if chars and tin:
         e["CharsPerToken"] = ewma(e.get("CharsPerToken"), chars / tin)
     if prompt_seconds and generate_seconds and tin and tout:
-        e["PromptTokensPerSecond"] = ewma(e.get("PromptTokensPerSecond"), tin / prompt_seconds)
+        e["PromptTokensPerSecond"] = ewma(e.get("PromptTokensPerSecond"), (prompt_read or tin) / prompt_seconds)
         e["GenTokensPerSecond"] = ewma(e.get("GenTokensPerSecond"), tout / generate_seconds)
     if seconds and (tin or tout):
         e["TokensPerSecond"] = ewma(e.get("TokensPerSecond"), (tin + tout) / seconds)
@@ -749,6 +750,17 @@ class _usage:
             return None, None
         return sum(float(u["prompt_seconds"]) for u in done), sum(float(u["generate_seconds"]) for u in done)
 
+    def prompt_read(self) -> int | None:
+        """The prompt tokens the server really read (llama.cpp reuses a cached prefix: its prompt time covers only
+        the rest), when it said so for every answered call."""
+        done = [u for u in self.entries if not u.get("cached") and not u.get("error")]
+        if not done or not all(u.get("prompt_read_tokens") is not None for u in done):
+            return None
+        return sum(int(u["prompt_read_tokens"]) for u in done)
+
+    def partly_cached(self) -> bool:
+        return any(u.get("cached") for u in self.entries)
+
 
 class Runner:
     """`containerizer llm-queue`: works through cz.LlmJob when the settings let it."""
@@ -873,6 +885,8 @@ class Runner:
         tin, tout = used.tokens()
         if not tin and not tout or not row.get("_endpoint"):
             return
+        if used.partly_cached():                # the job's size counts answers that cost nothing now: no lesson
+            return
         ps, gs = used.timings()
         try:
             conn = self.connect()
@@ -880,6 +894,7 @@ class Runner:
                 save_speed(conn, row["_endpoint"], row.get("Model") or "", row["Kind"],
                            {"chars": row.get("InputChars"), "input_tokens": tin, "output_tokens": tout,
                             "seconds": seconds, "prompt_seconds": ps, "generate_seconds": gs,
+                            "prompt_read": used.prompt_read(),
                             "parallel": row.get("_parallel") or 1})
             finally:
                 conn.close()

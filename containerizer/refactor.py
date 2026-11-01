@@ -54,12 +54,15 @@ MAX_NEW_FILE = 100_000
 # repeat only the lines they change, so a few thousand tokens; a runaway answer must not hold a CPU slot for an hour
 ANSWER_TOKENS_MIN, ANSWER_TOKENS_MAX = 4096, 8192
 STATUSES = ("queued", "generating", "verifying", "verified", "applies-only", "failed", "cancelled")
-STATUS_TEXT = {"queued": "Queued", "generating": "Generating", "verifying": "Verifying", "verified": "Verified",
+STATUS_TEXT = {"approval": "Waiting for approval", "queued": "Queued", "generating": "Generating", "verifying": "Verifying", "verified": "Verified",
                "applies-only": "Applies only", "failed": "Failed", "cancelled": "Cancelled"}
 AUTHOR = ("Containerizer", "containerizer@localhost")
 SOURCES_ENV = "CONTAINERIZER_REFACTOR_SOURCES"   # the scan worker's data folder (its clone cache)
 WORK_ENV = "CONTAINERIZER_REFACTOR_WORK"         # where the runner makes its scratch copies
 DEFAULT_SOURCES = "/var/lib/containerizer/worker"
+# Lab only: the runner may clone a public https repository itself (orders made in development mode, for apps no
+# organization scan here holds). Never set on the appliance: a job in the database must not make it fetch URLs.
+CLONE_ENV = "CONTAINERIZER_REFACTOR_CLONE"
 CLONE_DIR_RE = re.compile(r"scan-\d{1,9}/repos/[A-Za-z0-9][A-Za-z0-9._-]{0,199}")
 EVIDENCE_RE = re.compile(r"^(?P<file>[^\n]+?)(?::(?P<line>\d+))?(?:: (?P<text>.*))?$", re.S)
 # a fix that only says to keep the component on Windows: nothing to change in code ("..., or keep it on
@@ -182,18 +185,97 @@ def eligible_components(doc: dict) -> list[dict]:
     return out
 
 
+GOALS = ("fix", "stateless", "repair")
+
+# A compiler error in a build log: /src/<path>(line,col): error CODE: message [project]
+BUILD_ERROR_RE = re.compile(r"(?:^|\s)/src/(?P<file>[^\s(:]+\.(?:cs|vb|fs|cshtml|razor|csproj|vbproj|fsproj))"
+                            r"\((?P<line>\d+)(?:,\d+)?\): error (?P<code>[A-Z]+\d+): (?P<msg>[^\[\n]+)")
+REPAIR_GUIDANCE = """An earlier change (the patch below) was made to fix the findings, but the result does not build
+(or does not run). Fix the errors listed for this file so that the code builds and runs, and keep the intent of
+the earlier change. Often another file of the patch changed something this file uses (a constructor, a method, a
+setting): adapt this file to it, do not undo the earlier change."""
+
+
+def build_errors(log: str) -> list[dict]:
+    """The compiler errors of a build log, one per file and line (the build context's /src is the app's root)."""
+    seen, out = set(), []
+    for m in BUILD_ERROR_RE.finditer(log or ""):
+        rel = safe_rel(m["file"])
+        key = (rel, m["line"], m["code"])
+        if rel and key not in seen:
+            seen.add(key)
+            out.append({"file": rel, "line": int(m["line"]), "code": m["code"], "text": " ".join(m["msg"].split())[:300]})
+    return out[:40]
+
+
+def repair_payload(payload: dict, result: dict, base_job: int) -> dict:
+    """An order that repairs the patch of an earlier one whose build or run failed: the same source and
+    commit, the earlier patch applied first, and the errors of its verification."""
+    if not result.get("patch"):
+        raise RefactorError("the earlier order has no patch to repair")
+    logs = "\n".join(str(v.get("log_tail") or v.get("detail") or "") for v in result.get("verification") or [])
+    errors = build_errors(logs)
+    keep = ("version", "app", "rating", "application_id", "assessment_id", "source_key", "commit", "source",
+            "component", "components", "verify")
+    return {**{k: payload.get(k) for k in keep}, "goal": "repair", "base_job": int(base_job),
+            "base_patch": result["patch"], "base_status": result.get("status"),
+            "base_subject": next((l[len("Subject: [PATCH] "):] for l in result["patch"].splitlines()
+                                  if l.startswith("Subject: [PATCH] ")), ""),
+            "errors": errors, "log_tail": logs[-4000:], "tasks": [], "skipped": [], "include_config": False,
+            "max_calls": max(4, len({e["file"] for e in errors}) or 4)}
+
+
+def repair_tasks(payload: dict, app_root: Path, changed: list[str]) -> list[dict]:
+    """One task per file with compiler errors; without any (it built, but did not run), the patch's files."""
+    comp = (payload.get("components") or [{}])[0]
+    by_file: dict[str, list[dict]] = {}
+    for err in payload.get("errors") or []:
+        if (app_root / err["file"]).is_file():
+            by_file.setdefault(err["file"], []).append(err)
+    if not by_file:
+        tail = " ".join(str(payload.get("log_tail") or "").split())[-600:]
+        by_file = {f: [{"file": f, "line": 0, "code": "run", "text": "the patched component does not run: " + tail}]
+                   for f in changed if (app_root / f).is_file()}
+    return [{"file": f, "component": comp.get("name"), "project": comp.get("project"), "findings": [{
+        "rule": "build-error", "severity": "refactor",
+        "title": "; ".join(f"{x['code']}: {x['text']}" for x in errs)[:300],
+        "why": "The patched code does not build (or run).", "fix": "Fix these errors; keep the earlier change.",
+        "component": comp.get("name"),
+        "evidence": [{"file": f, "line": x["line"] or None, "text": f"{x['code']}: {x['text']}"} for x in errs[:6]]}]}
+        for f, errs in by_file.items()]
+
+
+
+def stateful_components(doc: dict) -> list[dict]:
+    """Server components that keep their own data (assessment.json `stateless: false`): what keeps an otherwise
+    ready application from rating A."""
+    return [c for c in doc.get("components") or [] if c.get("stateless") is False
+            and c.get("tier") in ("server", "platform", None) and c.get("verdict") in ("info", "config", "refactor")]
+
+
 def build_payload(doc: dict, source: dict, commit: str | None, component: str | None = None,
                   include_config: bool = False, application_id: int | None = None, assessment_id: int | None = None,
-                  source_key: str | None = None, verify: bool = True, max_calls: int = MAX_CALLS) -> dict:
+                  source_key: str | None = None, verify: bool = True, max_calls: int = MAX_CALLS,
+                  goal: str = "fix") -> dict:
     """The job's payload from an assessment.json entry: what the runner needs and nothing it must look up.
-    `component` is a component name or project path (None: every component that needs changes)."""
+    `component` is a component name or project path (None: every component that needs changes).
+    `goal`: 'fix' (the refactor findings) or 'stateless' (move the components' own data out, to SQL Server: the
+    state findings and configuration ones; the runner also adds the files that use the embedded database)."""
+    if goal not in GOALS:
+        raise RefactorError(f"unknown goal {goal!r}")
     comps = [c for c in doc.get("components") or [] if c.get("verdict") in ELIGIBLE]
-    if component:
-        comps = [c for c in doc.get("components") or [] if component in (c.get("name"), c.get("project"))]
+    if goal == "stateless":
+        include_config = True
+        comps = stateful_components(doc)
         if not comps:
-            raise RefactorError(f"no component {component!r} in {doc.get('name')}")
+            raise RefactorError("nothing to change: no component keeps its own data")
+    if component:
+        comps = [c for c in comps if component in (c.get("name"), c.get("project"))]
+        if not comps:
+            raise RefactorError(f"no component {component!r} in {doc.get('name')}"
+                                + (" that keeps its own data" if goal == "stateless" else ""))
     tasks, skipped = plan_tasks(comps, include_config)
-    if not tasks:
+    if not tasks and goal != "stateless":
         raise RefactorError("nothing to change: no refactor finding (or configuration finding with a file) "
                             "to send to the LLM" + (" in " + component if component else ""))
     return {"version": 1, "app": doc.get("name"), "rating": doc.get("rating"), "application_id": application_id,
@@ -205,13 +287,16 @@ def build_payload(doc: dict, source: dict, commit: str | None, component: str | 
                             "rules": sorted({f.get("id") for f in c.get("findings") or [] if not f.get("dormant")})}
                            for c in comps],
             "tasks": tasks, "skipped": skipped, "include_config": bool(include_config), "verify": bool(verify),
-            "max_calls": int(max_calls)}
+            "max_calls": int(max_calls), "goal": goal,
+            "state": [{"component": c.get("name"), "state": [s.get("title") for s in c.get("state") or []]}
+                      for c in comps if c.get("stateless") is False]}
 
 
 def dedupe_key(payload: dict) -> str:
     """One waiting order per application, commit, components and findings."""
     basis = json.dumps([payload.get("source_key") or payload.get("app"), payload.get("commit"),
                         sorted(c["project"] or "" for c in payload["components"]), payload.get("include_config"),
+                        payload.get("goal", "fix"),
                         [(t["file"], [f["rule"] for f in t["findings"]]) for t in payload["tasks"]]], sort_keys=True)
     return hashlib.sha256(basis.encode()).hexdigest()
 
@@ -227,7 +312,8 @@ def patch_filename(app: str | None, component: str | None) -> str:
 # --------------------------------------------------------------------------- the prompt
 
 SYSTEM = """You are a senior software engineer who makes the smallest safe code change that lets an application
-run in a Linux container on Kubernetes. You are called by a migration tool once per source file, with the
+run in a Linux container on Kubernetes while it keeps working on Windows, where it runs today: the same code
+must run on both. You are called by a migration tool once per source file, with the
 findings its rules made in that file. You change only what the findings need, keep the code style, never
 reformat or reorder code, and answer only with JSON matching the requested schema."""
 
@@ -255,9 +341,18 @@ INSTRUCTIONS = """Rules for your answer:
 - "edits": each "search" is text copied EXACTLY from a file shown below (same spaces, indentation and
   punctuation), whole lines, long enough to occur exactly once in that file (usually 1 to 6 lines);
   "replace" is the new text for those lines. Do not repeat the whole file. Only edit the files shown.
-- Prefer settings over hard-coded values: read paths, certificates and credentials from configuration
-  (appsettings.json / environment variables) with Linux defaults (for example /data/...), and keep the
-  setting names the code already uses.
+- The code must keep working on Windows AND run on Linux: never replace something Windows-only with
+  something Linux-only (for example a hard-coded C:\\ path with a hard-coded /data path). Make it portable:
+  - Paths, certificates, URLs and credentials come from configuration (appsettings.json, overridden by
+    environment variables such as Section__Key), keeping the setting names the code already uses. Move a
+    hard-coded value into appsettings.json with today's value, so Windows keeps working unchanged; a
+    container sets its own value through an environment variable (say which in notes). Where the code needs
+    a default, use one that works on both systems: Path.Combine(AppContext.BaseDirectory, ...),
+    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), Path.GetTempPath().
+  - Build paths with Path.Combine, never by joining with "\\" or "/"; file names are case-sensitive on Linux.
+  - A Windows-only API: use a cross-platform equivalent (for example ILogger to the console instead of the
+    Event Log, a certificate file instead of the certificate store) when it behaves the same; otherwise keep
+    the Windows code behind OperatingSystem.IsWindows() and add the cross-platform path next to it.
 - "new_files": only when a new file is really needed (path relative to the application folder, next to the
   project); otherwise an empty list.
 - "package_changes": NuGet/Maven/npm packages to add or remove for the component's project, with a version
@@ -323,6 +418,61 @@ def window(text: str, lines: list[int], budget: int) -> tuple[str, int, int]:
     return part[:budget], lo, hi                       # evidence lines far apart, or one huge line: cut
 
 
+STATE_CODE_RE = re.compile(r"UseSqlite|SqliteConnection|Microsoft\.Data\.Sqlite|System\.Data\.SQLite|LiteDatabase|"
+                           r"LiteDB|UseInMemoryDatabase|Data Source=[^;\"]*\.(db|sqlite3?|litedb)", re.I)
+STATE_GUIDANCE = """The goal of this change: make the component stateless, so it can run as several replicas
+that can be replaced at any time. Its data must live in an external database, not in a file inside the container.
+- Move the embedded database (SQLite or LiteDB) to Microsoft SQL Server. With Entity Framework Core: replace the
+  package Microsoft.EntityFrameworkCore.Sqlite with Microsoft.EntityFrameworkCore.SqlServer (the same version as
+  the other EF Core packages; use package_changes), UseSqlite(...) with UseSqlServer(...), SqliteConnection with
+  SqlConnection (package Microsoft.Data.SqlClient). Keep EnsureCreated or Migrate as it is.
+- The connection string comes from configuration (ConnectionStrings in appsettings.json, overridden by the
+  environment variable ConnectionStrings__<Name>), never a file path. In appsettings.json put a placeholder such as
+  "Server=sqlserver;Database=<App>;User Id=<user>;Password=<from a secret>;TrustServerCertificate=True" with no real
+  password.
+- Code that creates the database file or its folder is no longer needed: remove it.
+- EF Core migrations generated for SQLite must be generated again for SQL Server: do not edit them; say so in notes.
+- Log to the console (stdout) instead of files. Files the application must keep (uploads, exports) go to a
+  configurable folder; say in notes that it must be a shared volume or object storage.
+- In notes, also say how to move the existing data (export from the SQLite file, import into SQL Server).
+"""
+
+
+def state_tasks(payload: dict, app_root: Path, limit: int = 6) -> list[dict]:
+    """The goal 'stateless': files of the stateful components that use the embedded database (the findings name
+    only the project file), as tasks with one finding that carries the goal."""
+    have = {t["file"] for t in payload.get("tasks") or []}
+    out: list[dict] = []
+    for c in payload.get("components") or []:
+        proj = app_root / (c.get("project") or "")
+        folder = proj.parent if proj.suffix else proj
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.rglob("*")):
+            if len(out) >= limit:
+                return out
+            if path.is_symlink() or not path.is_file() or path.suffix.lower() not in (".cs", ".vb", ".fs", ".json") \
+                    or any(part in ("bin", "obj", "node_modules", ".git", "Migrations") for part in path.parts) \
+                    or path.stat().st_size > 400_000:
+                continue
+            rel = path.relative_to(app_root).as_posix()
+            if rel in have or (path.suffix.lower() == ".json" and not path.name.lower().startswith("appsettings")):
+                continue
+            text, _ = _read_text(path)
+            hits = [(i, line.strip()) for i, line in enumerate(text.splitlines(), 1) if STATE_CODE_RE.search(line)]
+            if not hits:
+                continue
+            out.append({"file": rel, "component": c["name"], "project": c.get("project"), "findings": [{
+                "rule": "move-state-out", "severity": "config",
+                "title": "Move the embedded database to SQL Server",
+                "why": "The component keeps its data in a file inside the container: it cannot run as several "
+                       "replicas, and the data is lost when the container is replaced.",
+                "fix": "Use SQL Server with the connection string from configuration (see the goal above).",
+                "component": c["name"],
+                "evidence": [{"file": rel, "line": i, "text": t[:200]} for i, t in hits[:6]]}]})
+    return out
+
+
 def task_prompt(payload: dict, task: dict, app_root: Path) -> tuple[str, list[str]]:
     """The question for one file, and the files it shows (the ones the answer may edit)."""
     comp = next((c for c in payload["components"] if c["name"] == task["component"]), payload["components"][0])
@@ -338,6 +488,13 @@ def task_prompt(payload: dict, task: dict, app_root: Path) -> tuple[str, list[st
         head.append(f"   Fix: {f['fix']}")
         for e in f["evidence"]:
             head.append(f"   Evidence: line {e['line']}: {e['text']}" if e["line"] else f"   Evidence: {e['text'] or e['file']}")
+    if payload.get("goal") == "stateless":
+        head += ["", STATE_GUIDANCE]
+    if payload.get("goal") == "repair":
+        diff = str(payload.get("base_patch") or "")
+        diff = diff[diff.find("diff --git"):] if "diff --git" in diff else diff
+        head += ["", REPAIR_GUIDANCE, "", "The earlier patch (already applied to the file below):",
+                 "```diff", diff[:12000] + ("\n... (cut)" if len(diff) > 12000 else ""), "```"]
     head += ["", INSTRUCTIONS, ""]
     shown = [task["file"]]
     parts = []
@@ -609,6 +766,20 @@ def resolve_source(source: dict) -> tuple[Path, str, bool]:
     subdir = source.get("subdir") or "."
     if subdir != "." and safe_rel(subdir) is None:
         raise RefactorError(f"bad application folder {subdir!r}")
+    if kind == "git-url":
+        url = str(source.get("url") or "")
+        if os.environ.get(CLONE_ENV) != "1":
+            raise RefactorError(f"this runner does not clone repositories ({CLONE_ENV}=1 allows it in a lab): "
+                                "scan the repository with an organization scan on this machine instead")
+        if not re.fullmatch(r"https://[A-Za-z0-9.-]+(:\d+)?/[A-Za-z0-9._~/-]+", url) or ".." in url:
+            raise RefactorError(f"not an https repository URL: {url!r}")
+        cache = Path(os.environ.get(WORK_ENV) or tempfile.gettempdir()) / "clones" / hashlib.sha256(url.encode()).hexdigest()[:16]
+        if (cache / ".git").exists():
+            git(["fetch", "--quiet", "origin"], cwd=cache, safe_dir=cache)
+        else:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            git(["clone", "--quiet", "--no-checkout", url, str(cache)])
+        return cache, subdir, True
     if kind == "org-clone":
         base = Path(os.environ.get(SOURCES_ENV) or DEFAULT_SOURCES).resolve()
         d = str(source.get("dir") or "")
@@ -771,11 +942,29 @@ def verification_status(applies: bool, changes: int, verify: list[dict] | None) 
     return "applies-only"
 
 
+# What a patch that applies but is not verified needs, by its verification (what the pages show)
+APPLIES_TEXT = {"build": ("Does not build", "The patch applies to the commit, but the component does not compile "
+                          "with it: the errors are under Verification. Fix it with the LLM, or by hand."),
+                "run": ("Does not start", "The patch applies and the component builds, but its container does not "
+                        "start or answer: the log is under Verification. Fix it with the LLM, or by hand."),
+                "none": ("Not built", "The patch applies to the commit, but it was not built and run (verification "
+                         "was off, or Docker was not available): build and test it yourself.")}
+
+
+def status_label(status: str, verify_statuses=()) -> tuple[str, str]:
+    """(label, explanation) of an order's status; 'applies-only' says what went wrong."""
+    if status != "applies-only":
+        return STATUS_TEXT.get(status, status), ""
+    vs = [v for v in verify_statuses if v]
+    kind = "build" if "build-failed" in vs else "run" if "run-failed" in vs else "none"
+    return APPLIES_TEXT[kind]
+
+
 def order_status(job_status: str, summary: str | None = None, patch_status: str | None = None) -> str:
     """The status of an order from its LLM queue job: queued, generating, verifying, verified, applies-only,
     failed, cancelled."""
-    if job_status == "queued":
-        return "queued"
+    if job_status in ("queued", "approval"):
+        return job_status
     if job_status == "running":
         return "verifying" if str(summary or "").startswith("verifying") else "generating"
     if job_status == "answered":
@@ -885,7 +1074,17 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
     findings: list[dict] = []
     notes: list[str] = []
     changes_all: list[dict] = []
-    tasks = payload["tasks"]
+    tasks = list(payload["tasks"])
+    if payload.get("goal") == "stateless":
+        tasks += state_tasks(payload, app_root)
+    if payload.get("goal") == "repair":
+        ok, alog = apply_patch(repo, str(payload.get("base_patch") or "").encode("utf-8"))
+        if not ok:
+            raise RefactorError("the earlier patch no longer applies to the commit: " + alog[-400:])
+        changed = [d["file"] for d in diffstat(str(payload.get("base_patch") or ""))]
+        tasks += repair_tasks(payload, app_root, changed)
+    if not tasks:
+        raise RefactorError("nothing to change: no file of the component uses an embedded database or names a finding")
     limit = int(MAX_CALLS if payload.get("max_calls") is None else payload["max_calls"])
     calls = 0
     for n, t in enumerate(tasks, 1):
@@ -966,6 +1165,11 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
             "assessment of commit " + str(payload.get("commit") or "?")[:12] + ". Review them before you merge.\n\n"
             + "\n".join(f"- {r['rule']} in {r['file']} ({r['component']}): {r['title']}" for r in fixed)
             + ("\n\nNotes:\n" + "\n".join(f"- {x}" for x in notes) if notes else "") + "\n")
+    if payload.get("goal") == "repair" and changes_all:
+        # one patch with the earlier change and its repair, for the assessed commit
+        subject = (payload.get("base_subject") or subject.replace("build-error", "refactoring")).strip() + " (repaired)"
+        body = body.replace("Code changes generated", f"Repairs order #{payload.get('base_job')}: code changes generated", 1)
+        git(["reset", "--soft", str(payload.get("commit"))], cwd=repo)
     patch = make_patch(repo, subject, body) if fixed or changes_all else None
     if patch is None:
         result["reason"] = "no usable edits: " + ("; ".join(f"{r['rule']}: {r['reason']}" for r in findings if r["reason"])[:800]
@@ -1009,7 +1213,7 @@ def summary(result: dict) -> str:
     fx = [f for f in result.get("findings") or [] if f.get("status") == "fixed"]
     n = len([f for f in result.get("findings") or [] if f.get("status") != "skipped"])
     left = len(result.get("findings") or []) - n
-    st = STATUS_TEXT.get(result.get("status"), result.get("status") or "?").lower()
+    st = status_label(result.get("status") or "?", [v.get("status") for v in result.get("verification") or []])[0].lower()
     if result.get("status") == "failed":
         return f"{st}: {result.get('reason') or 'no patch'}"[:400]
     files = len(result.get("files") or [])

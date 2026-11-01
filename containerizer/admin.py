@@ -14,6 +14,7 @@ import re
 import secrets
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
@@ -29,7 +30,7 @@ LINK_RE = re.compile(r"(https://[A-Za-z0-9.-]+|http://(localhost|127\.0\.0\.1|\[
 TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Application": "Application",
               "OrgScan": "Organization scan", "OrgRepository": "Repository", "OrgProject": "Project",
               "DevDatabase": "Dev database", "RuleCandidate": "Learned rule",
-              "SourceCredential": "Source control token", "LabService": "Lab service",
+              "SourceCredential": "Source control token", "LabService": "Lab service", "ApiKey": "API key",
               "RulesRepository": "Internal rules repository", "LlmJob": "LLM queue job",
               "LlmQueueSettings": "LLM queue settings"}
 FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
@@ -89,6 +90,7 @@ class Admin:
         self.credential_key = None                  # the scan worker's public key: seals source control tokens
         self.grafana_url = ""                       # CONTAINERIZER_GRAFANA_URL: link on the admin pages
         self.system = None                          # appliance.SystemPage on the appliance (System, Firewall)
+        self.dev: DevIdentity | None = None         # development mode: no sign-in (CONTAINERIZER_DEV_NO_AUTH)
         from .rulereview import ApplyConfig
         self.rule_apply = ApplyConfig()             # where approved rules go (CONTAINERIZER_RULES_*)
         self.rule_apply_error = ""                  # why approving is unavailable, shown on the rule review pages
@@ -112,6 +114,16 @@ class Admin:
 
     def session(self, headers) -> Session | None:
         return self.sessions.get(self._cookies(headers.get("Cookie")).get(self.cookie))
+
+    def dev_session(self, headers) -> tuple[Session | None, list]:
+        """The session, and in development mode one made at once when there is none (sessions live in memory, so
+        a restart of the web UI ends them): (session, headers to send). Outside development mode: no new one."""
+        s = self.session(headers)
+        if s or not self.dev:
+            return s, []
+        d = self.dev
+        sid = self.sessions.create(d.user, d.name, d.admin, d.viewer, d.operator, [])
+        return self.sessions.get(sid), [self._set_cookie(self.cookie, sid, 8 * 3600)]
 
     @staticmethod
     def may_review_rules(s: Session | None) -> bool:
@@ -198,7 +210,8 @@ class Admin:
             return Response(405, "", [("Allow", "GET, HEAD, POST")])
         conn = self.connect_admin()
         try:
-            conn.set_user(s.user, s.name, role=role_label(s.admin, s.operator, s.scopes))
+            conn.set_user(s.user, f"{s.name} (development mode, no sign-in)" if self.dev else s.name,
+                          role=role_label(s.admin, s.operator, s.scopes))
             return self.route(conn, s, method, path, parse_qs(query), form)
         finally:
             conn.close()
@@ -213,7 +226,7 @@ class Admin:
         kind = parts[0]
         if kind not in {k for k, _ in tabs}:
             known = kind in ("applications", "products", "business-units", "audit", "access", "scans", "repositories",
-                             "llm-queue", "refactoring",
+                             "llm-queue", "refactoring", "api",
                              "dev-databases", "system", "firewall", "source-control", "lab-services",
                              "sandbox-https")
             return Response(403 if known else 404, self._shell(s, a, "Not allowed" if known else "Not found", "",
@@ -233,6 +246,9 @@ class Admin:
             status, body, location = self.system.handle(
                 s, method, parts, q, form, lambda title, active, b, f: self._shell(s, a, title, active, b, f))
             return redirect(location) if location else Response(status, body)
+        if kind == "api":                            # administrators only (see _tabs)
+            from . import admin_apikeys
+            return admin_apikeys.route(self, conn, s, a, method, parts, q, form)
         if kind == "source-control":                 # administrators only (see _tabs)
             from . import admin_credentials
             return admin_credentials.route(self, conn, s, a, method, parts, q, form)
@@ -282,6 +298,8 @@ class Admin:
         if (a.admin or a.operator) and hasattr(self, "route_scans"):     # scheduled organization scans
             tabs += [("scans", "Organization scans"), ("repositories", "Repositories"), ("llm-queue", "LLM queue"),
                      ("refactoring", "Refactoring")]
+        elif a.owner and hasattr(self, "route_scans"):                  # product owners: their applications' patches
+            tabs += [("refactoring", "Refactoring")]
         if a.admin and hasattr(self, "route_scans"):                     # tokens of the organizations (admin_credentials.py)
             tabs += [("source-control", "Source control & LLM")]
         if self.devdb is not None and (a.admin or a.operator):           # dev database backups (admin_devdb.py)
@@ -290,6 +308,8 @@ class Admin:
             tabs += [("lab-services", "Lab services")]
         if self.may_review_rules(s):                                     # learned rules waiting for review
             tabs += [("rules", "Rule review")]
+        if a.admin and getattr(self, "api", None) is not None:          # API keys and how to use the API
+            tabs += [("api", "API")]
         tabs += [("audit", "Change history")]
         if a.admin and self.cfg.view_audit:
             tabs += [("access", "Access log")]
@@ -324,6 +344,11 @@ class Admin:
     def login(self, next_url: str) -> Response:
         if not next_url.startswith("/") or next_url.startswith("//") or "\\" in next_url:
             next_url = "/admin"
+        if self.dev:                                # development mode: no provider, a new session as the dev identity
+            d = self.dev
+            self.log_access(d.user, d.name, "sign-in (development mode, no sign-in)")
+            sid = self.sessions.create(d.user, d.name, d.admin, d.viewer, d.operator, [])
+            return redirect(next_url, [self._set_cookie(self.cookie, sid, 8 * 3600)])
         try:
             key, p = self.sessions.begin(next_url)
             url = self.provider.authorize_url(p["state"], p["nonce"], p["verifier"])
@@ -882,12 +907,56 @@ def page(title: str, body: str) -> str:
     return _page(title, body)
 
 
+DEV_ENV = "CONTAINERIZER_DEV_NO_AUTH"
+DEV_ROLES = ("admin", "operator", "viewer")
+
+
+@dataclass
+class DevIdentity:
+    """Development mode (CONTAINERIZER_DEV_NO_AUTH=1): the admin pages without sign-in, as this person."""
+    user: str
+    name: str
+    admin: bool
+    operator: bool
+    viewer: bool
+
+
+def dev_identity(env) -> DevIdentity | None:
+    """The development-mode identity, or None. Refused on the appliance and next to a configured sign-in:
+    it is for a developer's own machine or lab, where anyone who reaches the page is that person."""
+    flag = (env.get(DEV_ENV) or "").strip().lower()
+    if flag in ("", "0", "false", "no", "off"):
+        return None
+    if flag not in ("1", "true", "yes", "on"):
+        raise OidcError(f"{DEV_ENV} must be 1 (or unset), not {flag!r}")
+    from .appliance import SystemPage
+    if SystemPage.detect(env) or Path("/usr/lib/containerizer/appliance.conf").exists() \
+            or (env.get("CONTAINERIZER_APPLIANCE") or "").strip() == "1":
+        raise OidcError(f"{DEV_ENV} is refused on the appliance: set up sign-in (docs/sign-in.md)")
+    if (env.get("CONTAINERIZER_OIDC_ISSUER") or "").strip():
+        raise OidcError(f"{DEV_ENV} and sign-in (CONTAINERIZER_OIDC_ISSUER) cannot both be set")
+    roles = [r.strip().lower() for r in (env.get("CONTAINERIZER_DEV_ROLES") or "admin").split(",") if r.strip()]
+    bad = [r for r in roles if r not in DEV_ROLES]
+    if bad or not roles:
+        raise OidcError(f"CONTAINERIZER_DEV_ROLES: one or more of {', '.join(DEV_ROLES)}, not {', '.join(bad) or 'nothing'}")
+    user = (env.get("CONTAINERIZER_DEV_USER") or "john.doe@example.com").strip()
+    name = (env.get("CONTAINERIZER_DEV_NAME") or "John Doe").strip()
+    return DevIdentity(user=user, name=name, admin="admin" in roles, operator="operator" in roles,
+                       viewer=True)
+
+
 def build(env=None) -> Admin | None:
     """The admin pages when sign-in is configured (CONTAINERIZER_OIDC_*), else None."""
     import os
     from .sqlstore import connect
     env = os.environ if env is None else env
+    dev = dev_identity(env)
     cfg = OidcConfig.from_env(env)
+    if dev:
+        public = (env.get("CONTAINERIZER_PUBLIC_URL") or "http://127.0.0.1:8080").strip().rstrip("/")
+        if not re.fullmatch(r"https?://[^/\s]+", public):
+            raise OidcError(f"CONTAINERIZER_PUBLIC_URL must be http(s)://host[:port], not {public!r}")
+        cfg = OidcConfig(issuer="", client_id="", client_secret=None, public_url=public, admins=[])
     if cfg is None:
         return None
     cs = env.get("CONTAINERIZER_ADMIN_SQL")
@@ -900,7 +969,12 @@ def build(env=None) -> Admin | None:
         raise OidcError("CONTAINERIZER_GRAFANA_URL must be an https:// link (http:// only to localhost)")
     from . import api
     from .rulereview import ApplyConfig, ReviewError
-    adm = Admin(cfg, lambda: connect(cs, pw))
+    adm = Admin(cfg, lambda: connect(cs, pw), provider=object() if dev else None)
+    adm.dev = dev
+    if dev:
+        print(f"WARNING: {DEV_ENV}: development mode, NO SIGN-IN: everyone who reaches {cfg.public_url} uses the admin "
+              f"pages as {dev.name} <{dev.user}> ({role_label(dev.admin, dev.operator, []) or 'viewer'}). Never on a "
+              "shared or public network.", file=sys.stderr)
     adm.rule_apply = ApplyConfig.from_env(env)
     try:
         adm.rule_apply.check()
@@ -913,7 +987,7 @@ def build(env=None) -> Admin | None:
         adm.credential_key = public_key_from_env(env)
     except CredentialError as ex:
         raise OidcError(str(ex)) from None
-    adm.api = api.build(env, adm.provider, adm.connect_admin, cfg)
+    adm.api = api.build(env, adm.provider, adm.connect_admin, cfg)     # API keys work in development mode too
     from .appliance import SystemPage
     adm.system = SystemPage.detect(env)
     from . import devdb

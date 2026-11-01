@@ -103,6 +103,11 @@ def load_application(conn, app_id: int) -> dict | None:
     app["idp"] = load_idp_clients(conn, app_id)
     app["llm_reviews"] = load_llm_reviews(conn, app_id)
     app["refactors"] = load_refactor_orders(conn, app_id)
+    try:
+        from .llmqueue import load_speed
+        app["llm_speed"] = load_speed(conn) if app["refactors"] else None
+    except Exception:  # noqa: BLE001 - no estimates before the schema allows the read
+        app["llm_speed"] = None
     return app
 
 
@@ -110,7 +115,8 @@ def load_refactor_orders(conn, app_id: int) -> list[dict]:
     """The application's refactoring orders, newest first (empty before `db init` added them: schema 20)."""
     try:
         return _rows(conn, "SELECT TOP (20) JobId, Component, ProjectPath, Status, Summary, SourceCommit, QueuedAt, "
-                           "FinishedAt FROM cz.vRefactorOrder WHERE ApplicationId = %s ORDER BY JobId DESC", (app_id,))
+                           "FinishedAt, VerifyStatus, InputChars, EstInputTokens, InputTokens, OutputTokens, Seconds, Goal "
+                           "FROM cz.vRefactorOrder WHERE ApplicationId = %s ORDER BY JobId DESC", (app_id,))
     except Exception:
         try:
             conn.rollback()
@@ -119,8 +125,199 @@ def load_refactor_orders(conn, app_id: int) -> list[dict]:
         return []
 
 
-REFACTOR_STATUS_CSS = {"queued": "st-run", "generating": "st-run", "verifying": "st-run", "verified": "st-ok",
+REFACTOR_STATUS_CSS = {"approval": "st-wait", "queued": "st-run", "generating": "st-run", "verifying": "st-run", "verified": "st-ok",
                        "applies-only": "st-warn", "failed": "st-bad", "cancelled": "st-off"}
+
+
+# What the Refactoring box says after an order (admin_refactor._to_app): fixed texts only, chosen by a code in
+# the URL, so a link cannot make the page show any text. (kind, text); {files} and {job} are numbers.
+REFACTOR_NOTICES = {
+    "ordered": ("ok", "Refactoring patch requested: {files} file(s) to change. It waits in the LLM queue; its status "
+                      "shows below, and the patch appears here when it is ready."),
+    "exists": ("info", "The same refactoring is already requested: its status shows below."),
+    "approval": ("info", "Refactoring patch requested: {files} file(s) to change. It waits for an administrator to "
+                         "approve it (Admin → LLM queue); its status shows below."),
+    "not-b": ("bad", "Refactoring patches are for applications rated B."),
+    "no-component": ("bad", "That component is not part of this application."),
+    "no-commit": ("bad", "The assessment recorded no commit: scan the repository again, then request the patch."),
+    "no-source": ("bad", "The source of this application is not kept on this machine (no organization scan here has "
+                         "its repository). Run `containerizer refactor` on a checkout instead."),
+    "not-yours": ("bad", "Product owners can request patches for the applications of their own products only."),
+    "nothing": ("info", "Nothing to change: no finding of this application (or component) can be fixed in code."),
+    "failed": ("bad", "The refactoring could not be requested. The reason is in the web UI's log."),
+}
+
+
+_STATE_RULES: dict | None = None
+
+
+def state_rules() -> dict:
+    """Rule id -> its state ('local' or 'memory'): the rules that say a component keeps its own data."""
+    global _STATE_RULES
+    if _STATE_RULES is None:
+        from .rules import load_rules
+        try:
+            _STATE_RULES = {r.id: r.state for r in load_rules() if r.state}
+        except Exception:  # noqa: BLE001 - only the explanation is missing
+            _STATE_RULES = {}
+    return _STATE_RULES
+
+
+def rating_why(app: dict) -> tuple[str, list[dict], list[dict]]:
+    """Why the application has its rating, in a sentence; and its stateful and refactor components.
+    A needs every server component to run with configuration only and to keep no data of its own."""
+    comps = [c for c in app.get("components") or [] if (c.get("Tier") or "server") in ("server", "platform")]
+    by = lambda v: [c for c in comps if c.get("Verdict") == v]     # noqa: E731
+    rules = state_rules()
+    state: dict[str, list[str]] = {}
+    for f in app.get("findings") or []:
+        if f.get("RuleId") in rules and not f.get("OnlyCommands"):
+            state.setdefault(f.get("ComponentName") or "", [])
+            if f.get("Title") not in state[f["ComponentName"]]:
+                state[f["ComponentName"]].append(f.get("Title"))
+    stateful = [c for c in comps if c.get("ComponentName") in state and c.get("Verdict") in ("info", "config", "refactor")]
+    refactor = by("refactor")
+    names = lambda cs: ", ".join(c["ComponentName"] for c in cs)   # noqa: E731
+    r = app.get("Rating")
+    parts = []
+    if r in ("D", "E") and by("blocker"):
+        parts.append(f"{names(by('blocker'))} cannot run in Linux containers (blockers).")
+    if r in ("C", "D", "E") and by("rewrite"):
+        parts.append(f"{names(by('rewrite'))} need a port or rewrite.")
+    if refactor:
+        parts.append(f"{names(refactor)} need targeted code changes.")
+    if stateful and r in ("A", "B"):
+        parts.append("Not stateless: " + "; ".join(f"{c['ComponentName']} keeps its own data "
+                                                   f"({', '.join(state[c['ComponentName']])})" for c in stateful)
+                     + ". A needs every server component to keep its data in external services, so that replicas can "
+                       "come and go." + ("" if refactor else " Everything else needs configuration only."))
+    if r == "A":
+        parts = ["Every server component runs in Linux containers with configuration only and keeps no data of its own."]
+    if not parts:
+        return "", stateful, refactor
+    return f"<p class='why-rating'><b>Why {e(r)}:</b> {e(' '.join(parts))}</p>", stateful, refactor
+
+
+def refactor_estimates(admin, app: dict) -> dict:
+    """What each refactoring order of the application would cost, as the LLM queue estimates it (the order
+    built as when it is placed; the speed learned from earlier answers). Key (component id or None, goal).
+    Reads the assessment's report with the admin login, so only for people who may order."""
+    from . import refactor as rf
+    from .llmqueue import load_speed
+    out = {}
+    try:
+        conn = admin.connect_admin()
+    except Exception:  # noqa: BLE001 - no estimates, the buttons still work
+        return out
+    try:
+        rows = _rows(conn, "SELECT ReportJson FROM cz.ApplicationAssessment WHERE AssessmentId = %s",
+                     (app["AssessmentId"],))
+        doc = json.loads(rows[0]["ReportJson"]) if rows and rows[0].get("ReportJson") else {}
+        speed = load_speed(conn)
+    except Exception:  # noqa: BLE001
+        return out
+    finally:
+        conn.close()
+    targets = [(None, None)] + [(int(c["ComponentId"]), c["ProjectPath"]) for c in app.get("components") or []]
+    for cid, path in targets:
+        for goal in ("fix", "stateless"):
+            try:
+                pl = rf.build_payload(doc, {"type": "none"}, None, component=path, goal=goal)
+            except rf.RefactorError:
+                continue
+            chars = rf.estimate_chars(pl) + (6000 * len(pl.get("state") or []) if goal == "stateless" else 0)
+            out[(cid, goal)] = speed.job({"Kind": rf.KIND, "InputChars": chars, "Model": None})
+    return out
+
+
+def _mins(seconds) -> str:
+    return f"{max(1, round(seconds / 60))} min" if seconds < 5400 else f"{seconds / 3600:.1f} h"
+
+
+PROGRESS_RE = re.compile(r"file (\d+) of (\d+)")
+
+
+def order_effort(o: dict, speed) -> str:
+    """Tokens and time of an order: the queue's estimate while it waits or runs (with the time left while it
+    generates), what it took once it is done."""
+    if o.get("FinishedAt") and (o.get("InputTokens") is not None or o.get("Seconds")):
+        tok = int(o.get("InputTokens") or 0) + int(o.get("OutputTokens") or 0)
+        took = f" · {_mins(float(o['Seconds']))}" if o.get("Seconds") else ""
+        return f"{tok:,} tokens{took}" if tok else took.strip(" ·")
+    if o.get("FinishedAt") or speed is None:
+        return ""
+    from .refactor import KIND
+    est = speed.job({"Kind": KIND, "InputChars": o.get("InputChars"), "EstInputTokens": o.get("EstInputTokens"),
+                     "Model": None})
+    text = est_text(est)
+    m = PROGRESS_RE.search(o.get("Summary") or "")
+    if m and est.get("seconds") is not None and o.get("Status") == "generating":
+        done, total = int(m[1]) - 1, max(1, int(m[2]))
+        text += f" · about {_mins(est['seconds'] * (total - done) / total)} left"
+    return text
+
+
+def est_text(est: dict | None) -> str:
+    if not est:
+        return ""
+    mins = "time: learning" if est.get("seconds") is None else \
+        (f"~{max(1, round(est['seconds'] / 60))} min" if est["seconds"] < 5400 else f"~{est['seconds'] / 3600:.1f} h")
+    return f"~{int(est['in'] + est['out']):,} tokens · {mins}"
+
+
+def existing_order(orders: list, project_path: str | None, goal: str) -> dict | None:
+    """The newest order of this component (None: all components) and goal that is waiting, running or has a
+    patch (a repair counts for the goal it repairs). Failed or cancelled ones do not count."""
+    for o in orders or []:                       # newest first
+        same = (o.get("ProjectPath") or None) == (project_path or None)
+        if same and o.get("Goal") in (goal, "repair") and o.get("Status") not in ("failed", "cancelled"):
+            return o
+    return None
+
+
+def existing_offer(o: dict, ctx: dict, app_id, comp_id, goal: str, speed=None) -> str:
+    """Instead of the request button: the order there already is, its status and its patch."""
+    from .refactor import status_label
+    st = o.get("Status") or "queued"
+    label, why = status_label(st, [o.get("VerifyStatus")])
+    chip = (f"<span class='st {REFACTOR_STATUS_CSS.get(st, '')}'" + (f" title='{e(why)}'" if why else "")
+            + f">{e(label)}</span>")
+    jid = int(o["JobId"])
+    staff = bool(ctx.get("csrf"))
+    eff = order_effort(o, speed)
+    if st in ("verified", "applies-only"):
+        head = "A patch is ready" if st == "verified" else "A patch was made"
+        links = (f" <a href='/admin/refactoring/{jid}'>Open the patch</a> · "
+                 f"<a href='/admin/refactoring/{jid}.patch'>Download .patch</a>") if staff else ""
+        again = (" " + order_button(app_id, comp_id, goal, ctx["csrf"], "Request a new one", None, small=True)
+                 if staff else "")
+        return (f"<b>{head}:</b> {chip} <span class='small'>{e(o.get('Summary') or '')}</span>"
+                + (f" <span class='muted small'>{e(eff)}</span>" if eff else "") + links
+                + f"<div class='muted small'>Made for commit {e(str(o.get('SourceCommit') or '')[:12])}; request a new "
+                  f"one when the code has changed.{again}</div>")
+    link = f" <a href='/admin/refactoring/{jid}'>Follow it</a>" if staff else ""
+    return (f"<b>Already requested:</b> {chip}" + (f" <span class='muted small'>{e(eff)}</span>" if eff else "") + link)
+
+
+def order_button(app_id, comp_id, goal: str, csrf: str, label: str, est: dict | None, small: bool = False) -> str:
+    """One-click refactoring order (POST to the admin pages, like the Refactoring box's forms)."""
+    comp = f"<input type='hidden' name='Component' value='{int(comp_id)}'>" if comp_id else ""
+    tip = est_text(est)
+    return (f"<form method='post' action='/admin/refactoring/new' class='inline order'>{csrf}"
+            f"<input type='hidden' name='ApplicationId' value='{int(app_id)}'>{comp}"
+            f"<input type='hidden' name='Goal' value='{e(goal)}'>"
+            f"<button class='{'link' if small else ''}'>{e(label)}</button>"
+            + (f" <span class='muted small'>{e(tip)}</span>" if tip else "") + "</form>")
+
+
+def refactor_notice(q: dict) -> str:
+    code = (q.get("refactor") or [""])[0]
+    if code not in REFACTOR_NOTICES:
+        return ""
+    kind, text = REFACTOR_NOTICES[code]
+    nums = {k: int(v) for k in ("files", "job") for v in [(q.get(k) or [""])[0]] if re.fullmatch(r"\d{1,6}", v or "")}
+    text = text.replace("{files}", str(nums.get("files", "some")))
+    return f"<div class='notice notice-{kind}' role='status'>{e(text)}</div>"
 
 
 def _refactoring(app: dict, ctx: dict | None) -> str:
@@ -140,10 +337,15 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
         if staff:
             what = f"<a href='/admin/refactoring/{int(o['JobId'])}'>{what}</a>"
         when = _date(o.get("FinishedAt") or o.get("QueuedAt"))
-        rows.append(f"<tr><td>{what}</td><td><span class='st {REFACTOR_STATUS_CSS.get(st, '')}'>"
-                    f"{e(STATUS_TEXT.get(st, st))}</span></td><td class='small'>{e(o.get('Summary') or '')}</td>"
+        from .refactor import status_label
+        label, why = status_label(st, [o.get("VerifyStatus")])
+        tip = f" title='{e(why)}'" if why else ""
+        rows.append(f"<tr><td>{what}</td><td><span class='st {REFACTOR_STATUS_CSS.get(st, '')}'{tip}>"
+                    f"{e(label)}</span></td><td class='small'>{e(o.get('Summary') or '')}"
+                    + (f"<div class='muted'>{e(eff)}</div>" if (eff := order_effort({**o, 'Status': st}, app.get('llm_speed'))) else "")
+                    + (f"<div class='muted'>{e(why)}</div>" if why else "") + "</td>"
                     f"<td class='small nowrap'>{when}</td></tr>")
-    out = ["<section class='card refactor' id='refactoring'><h2>Refactoring</h2>"
+    out = ["<section class='card refactor' id='refactoring'><h2>Refactoring</h2>" + (ctx or {}).get("notice", "") +
            "<p class='muted small'>A refactoring patch has the LLM make the targeted code changes this application needs "
            "(its refactor findings), then applies the patch to the assessed commit, runs the rules on it again and builds "
            "and runs the changed components. The patch is a download with how to apply it: nothing is written to the "
@@ -151,15 +353,41 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
     if rows:
         out.append("<table><thead><tr><th>Component</th><th>Status</th><th>Result</th><th>When</th></tr></thead>"
                    f"<tbody>{''.join(rows)}</tbody></table>")
+    _, stateful, refactor = rating_why(app)
     if staff and app.get("Rating") == "B":
-        comps = [c for c in app.get("components") or [] if c.get("Verdict") in ("refactor", "config")]
-        opts = "".join(f"<option value='{int(c['ComponentId'])}'>{e(c['ComponentName'])} "
-                       f"({e(VERDICT_LABEL.get(c['Verdict'], c['Verdict']))})</option>" for c in comps)
-        out.append(f"<form method='post' action='/admin/refactoring/new' class='formrow'>{ctx['csrf']}"
-                   f"<input type='hidden' name='ApplicationId' value='{int(app['ApplicationId'])}'>"
-                   f"<select name='Component' aria-label='Component'><option value=''>All components that need changes"
-                   f"</option>{opts}</select><label class='check'><input type='checkbox' name='IncludeConfig' value='1'> "
-                   f"also change code for configuration findings</label><button>Request a refactoring patch</button></form>")
+        hidden = (f"{ctx['csrf']}<input type='hidden' name='ApplicationId' value='{int(app['ApplicationId'])}'>")
+        if refactor:
+            opts = "".join(f"<option value='{int(c['ComponentId'])}'>{e(c['ComponentName'])}</option>" for c in refactor)
+            have = existing_order(ctx.get("orders"), None, "fix")
+            out.append("<h3>Targeted code changes</h3>" + (
+                f"<div class='note offer'>{existing_offer(have, ctx, app['ApplicationId'], None, 'fix', ctx.get('speed'))}</div>"
+                if have else ""))
+            out.append(f"<form method='post' action='/admin/refactoring/new' class='formrow'>"
+                       f"{hidden}<input type='hidden' name='Goal' value='fix'>"
+                       f"<select name='Component' aria-label='Component'><option value=''>All components that need changes"
+                       f"</option>{opts}</select><label class='check'><input type='checkbox' name='IncludeConfig' value='1'> "
+                       f"also change code for configuration findings</label><button>Request a refactoring patch</button>"
+                       + (f" <span class='muted small'>{e(est_text((ctx.get('estimates') or {}).get((None, 'fix'))))} for all</span>"
+                          if (ctx.get('estimates') or {}).get((None, 'fix')) else "") + "</form>")
+        if stateful:
+            opts = "".join(f"<option value='{int(c['ComponentId'])}'>{e(c['ComponentName'])}</option>" for c in stateful)
+            have = existing_order(ctx.get("orders"), None, "stateless")
+            out.append("<h3>Make it stateless: move the data to SQL Server</h3>" + (
+                f"<div class='note offer'>{existing_offer(have, ctx, app['ApplicationId'], None, 'stateless', ctx.get('speed'))}</div>"
+                if have else ""))
+            out.append(""
+                       "<p class='muted small'>The LLM changes the database library and its configuration (for example "
+                       "SQLite to SQL Server with Entity Framework Core, the connection string from configuration, logs to "
+                       "the console) and says in the notes how to move the existing data. Without code changes the "
+                       "component already runs as a single replica with its data file on a volume.</p>"
+                       f"<form method='post' action='/admin/refactoring/new' class='formrow'>{hidden}"
+                       f"<input type='hidden' name='Goal' value='stateless'>"
+                       f"<select name='Component' aria-label='Component'><option value=''>All components that keep data"
+                       f"</option>{opts}</select><button>Request a stateless patch</button>"
+                       + (f" <span class='muted small'>{e(est_text((ctx.get('estimates') or {}).get((None, 'stateless'))))} for all</span>"
+                          if (ctx.get('estimates') or {}).get((None, 'stateless')) else "") + "</form>")
+        if not refactor and not stateful:
+            out.append("<p class='muted small'>No finding of this application can be fixed in code.</p>")
     elif ctx.get("signin") and app.get("Rating") == "B":
         out.append("<p class='muted small'>Operators and administrators can request a refactoring patch (sign in).</p>")
     return "".join(out) + "</section>"
@@ -433,6 +661,9 @@ def _info_link(url) -> str:
 
 def render_application(app: dict, nav: str = "", refactor: dict | None = None) -> str:
     r = app["Rating"]
+    refactor = dict(refactor or {})
+    refactor.update(orders=app.get("refactors") or [], speed=app.get("llm_speed"),
+                    paths={int(c["ComponentId"]): c.get("ProjectPath") for c in app.get("components") or []})
     crumbs = (f"<a href='/'>All</a> › <a href='{e(_bu_href(app['BusinessUnitId']))}'>"
               f"{e(app['BusinessUnitName'] or UNASSIGNED)}</a> › {e(app['ProductName'] or UNASSIGNED)}"
               f"{_info_link(app.get('ProductInfoUrl'))}")
@@ -461,7 +692,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
         f"<td><span class='sev s-{e(c['Verdict'])}'>{e(VERDICT_LABEL.get(c['Verdict'], c['Verdict']))}</span></td>"
         f"<td>{_verify(c)}</td>"
         + (f"<td>{_sandbox(sandbox.get(c['ComponentId']))}</td>" if sandbox else "")
-        + f"<td>{_plan_cell(app['ApplicationId'], c, migs.get(c['ComponentId']))}</td>"
+        + f"<td>{_plan_cell(app['ApplicationId'], c, migs.get(c['ComponentId']), refactor)}</td>"
         + (f"<td>{_sbom_cell(app['ApplicationId'], c['ComponentId'], sboms.get(c['ComponentId']))}</td>" if sboms else "")
         + "</tr>"
         for c in app["components"])
@@ -477,7 +708,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
                        f"{'; targets ' + e(c['TargetFramework']) if c['TargetFramework'] else ''}</div>"
                        f"{_llm_review(reviews.get(c['ComponentId']), app.get('AssessedAt'))}"
                        f"{_sandbox_detail(sandbox.get(c['ComponentId']))}{items}"
-                       f"{_migration(app['ApplicationId'], migs.get(c['ComponentId']))}</details>")
+                       f"{_migration(app['ApplicationId'], migs.get(c['ComponentId']), refactor)}</details>")
     repo = by_comp.get(None, [])
     if repo:
         details.append("<details><summary><b>Repository</b></summary>" + "".join(_finding(f) for f in repo) + "</details>")
@@ -497,7 +728,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 <p class='crumbs'>{crumbs}</p>
 <header class='app'>{badge(r, True)}<div><h1>{e(app['ApplicationName'])}</h1>
 <p class='lead'><b>{e(RATING_TITLE.get(r, ''))}</b>: {e(RATING_TEXT.get(r, ''))}</p>
-{f"<p>{e(app['Description'])}</p>" if app.get('Description') else ''}<p>{e(app['Summary'])}</p></div></header>
+{f"<p>{e(app['Description'])}</p>" if app.get('Description') else ''}<p>{e(app['Summary'])}</p>{rating_why(app)[0]}</div></header>
 <div class='tiles'>
 <div class='tile'><div class='label'>Readiness</div><div class='value'>{int(app['Score'])}<span class='unit'>/100</span></div></div>
 <div class='tile'><div class='label'>Confidence</div><div class='value'>{_confidence(app['Confidence'])}</div>
@@ -527,17 +758,18 @@ def _prompt_href(app_id, comp_id) -> str:
     return f"/app/{int(app_id)}/component/{int(comp_id)}/agent-prompt.md"
 
 
-def _plan_cell(app_id, c: dict, m: dict | None) -> str:
-    if not m:
-        return "<span class='muted'>-</span>"
+def _plan_cell(app_id, c: dict, m: dict | None, ctx: dict | None = None) -> str:
+    """One link per component: to its migration section (the steps, the AI agent prompt and the patch the LLM can
+    make, with its estimate), or to the Refactoring box when only a patch is possible."""
     cid = int(c["ComponentId"])
-    out = f"<a href='#m{cid}'>{int(m['ItemCount'])} step{'s' if m['ItemCount'] != 1 else ''}</a>"
-    if m.get("AgentPrompt"):
-        out += f" · <a href='#p{cid}'>AI agent prompt</a>"
-    return out
+    est = (ctx or {}).get("estimates") or {}
+    if m:
+        return f"<a href='#m{cid}'>How to fix ↓</a>"
+    if (cid, "fix") in est or (cid, "stateless") in est:
+        return "<a href='#refactoring'>How to fix ↓</a>"
+    return "<span class='muted'>-</span>"
 
-
-def _migration(app_id, m: dict | None) -> str:
+def _migration(app_id, m: dict | None, ctx: dict | None = None) -> str:
     """Migration assistant of one component: suggested replacements and the AI coding agent prompt."""
     if not m:
         return ""
@@ -568,6 +800,18 @@ def _migration(app_id, m: dict | None) -> str:
     if rows:
         out.append("<table><thead><tr><th>Action</th><th>Replace</th><th>With</th>"
                    "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>")
+    ctx = ctx or {}
+    est = ctx.get("estimates") or {}
+    goal = "fix" if (cid, "fix") in est else "stateless" if (cid, "stateless") in est else None
+    have = existing_order(ctx.get("orders"), (ctx.get("paths") or {}).get(cid), goal) if goal else None
+    if have:
+        out.append("<div class='note offer'>" + existing_offer(have, ctx, app_id, cid, goal, ctx.get("speed")) + "</div>")
+    elif goal and ctx.get("csrf"):
+        out.append("<div class='note offer'><b>Or let Containerizer make the change:</b> the LLM writes the patch, "
+                   "Containerizer applies it, checks it with the rules and builds and runs it, and you download "
+                   "a verified patch. "
+                   + order_button(app_id, cid, goal, ctx["csrf"], "Request a refactoring patch", est[(cid, goal)])
+                   + "</div>")
     if m.get("AgentPrompt"):
         out.append(f"<div class='prompt' id='p{cid}'><div class='prompt-head'><b>Prompt for an AI coding agent</b>"
                    f"<span><button type='button' class='copy' data-copy='pt{cid}'>Copy prompt</button> "
@@ -680,16 +924,48 @@ def _ws(s) -> str:
 
 
 SCRIPT_TAG = "<script src='/static/app.js'></script>"
+# The icon: a container, and the green check of a container-ready application (also docs/images/favicon.svg).
+FAVICON = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Containerizer</title>
+  <rect width="64" height="64" rx="14" fill="#1f4e9a"/>
+  <rect x="8" y="22" width="40" height="30" rx="3" fill="#fff"/>
+  <path d="M16 27v20M24 27v20M32 27v20M40 27v20" stroke="#1f4e9a" stroke-width="3.5" stroke-linecap="round"/>
+  <circle cx="47" cy="19" r="13" fill="#2e9e47" stroke="#1f4e9a" stroke-width="3"/>
+  <path d="M40.5 19.5l4.5 4.5 8.5-9" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>"""
+
+
+EXTERNAL_A = re.compile(r"<a\b(?P<pre>[^>]*?)\bhref=(?P<q>['\"])(?P<url>https?://[^'\"]*)(?P=q)(?P<post>[^>]*)>", re.I)
+
+
+def external_links(html: str) -> str:
+    """Every link to another site opens in a new tab or window, without access back to this page (noopener)."""
+    def add(m):
+        attrs = m["pre"] + m["post"]
+        if re.search(r"\btarget=", attrs, re.I):
+            return m[0]
+        return f"<a{m['pre']}href={m['q']}{m['url']}{m['q']}{m['post']} target='_blank' rel='noopener noreferrer'>"
+    return EXTERNAL_A.sub(add, html)
+
+
+# Set by serve() in development mode (CONTAINERIZER_DEV_NO_AUTH): shown at the top of every page.
+DEV_BANNER = ""
 
 
 def page(title: str, body: str, script: bool = False) -> str:
     return (f"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'><title>{e(title)}</title>"
-            f"<link rel='stylesheet' href='/static/app.css'><link rel='icon' href='data:,'></head>"
-            f"<body><main>{body}</main>{SCRIPT_TAG if script else ''}</body></html>")
+            f"<link rel='stylesheet' href='/static/app.css'><link rel='icon' href='/static/favicon.svg' type='image/svg+xml'></head>"
+            f"<body>{DEV_BANNER}<main>{external_links(body)}</main>{SCRIPT_TAG if script else ''}</body></html>")
 
 
 CSS = """
+.offer{margin:8px 0}.offer form.order{margin-top:6px}form.inline.order{display:inline}
+.st-wait{color:#8a5a00;border-color:#c98a00}@media (prefers-color-scheme:dark){.st-wait{color:#ffc857;border-color:#ffc857}}
+.newkey{border:2px solid #2e7d32;border-radius:8px;padding:10px 14px;margin:12px 0}.newkey pre{margin:8px 0 0;user-select:all}
+.why-rating{background:var(--card);border-left:4px solid #e0a800;padding:8px 12px;margin:10px 0}section.refactor h3{font-size:16px;margin:16px 0 4px}
+.notice{padding:10px 14px;border-radius:8px;margin:10px 0;border:1px solid}.notice-ok{background:#e8f5e9;border-color:#2e7d32;color:#1b5e20}.notice-info{background:#e3f2fd;border-color:#1565c0;color:#0d47a1}.notice-bad{background:#fdecea;border-color:#c62828;color:#8e1c1c}@media (prefers-color-scheme:dark){.notice-ok{background:#16301a;color:#b9f6ca}.notice-info{background:#132a40;color:#bbdefb}.notice-bad{background:#3a1715;color:#ffcdd2}}
+.devmode{background:#b3261e;color:#fff;padding:8px 16px;text-align:center;font-size:14px}.devmode b{color:#fff}
 :root{--bg:#f9f9f7;--card:#fff;--fg:#0b0b0b;--muted:#5f5e58;--line:#e1e0d9;--link:#1f5fbf;
 --rA:#0ca30c;--rB:#74c476;--rC:#fab219;--rD:#ec835a;--rE:#d03b3b}
 @media (prefers-color-scheme:dark){:root{--bg:#1a1a19;--card:#232321;--fg:#f0efe9;--muted:#a8a69c;--line:#383835;--link:#7fb0ff}}
@@ -942,6 +1218,8 @@ def make_handler(connect, admin=None):
                     return self._send(200, CSS + SBOM_CSS, "text/css; charset=utf-8", head)
                 if u.path == "/static/app.js":
                     return self._send(200, JS, "text/javascript; charset=utf-8", head)
+                if u.path in ("/static/favicon.svg", "/favicon.ico"):
+                    return self._send(200, FAVICON, "image/svg+xml", head)
                 if u.path == "/healthz":
                     return self._send(200, "ok", "text/plain; charset=utf-8", head)
                 if admin and admin.api and admin.api.handles(u.path):
@@ -1011,11 +1289,14 @@ def make_handler(connect, admin=None):
                             if app is None:
                                 return self._send(404, page("Not found", "<h1>Application not found</h1><p><a href='/'>Back</a></p>"),
                                                   head=head)
-                            ctx = {"signin": bool(admin)}
-                            s = admin.session(self.headers) if admin else None
-                            if s and (s.admin or s.operator):      # may order a refactoring patch
+                            ctx = {"signin": bool(admin), "notice": refactor_notice(parse_qs(u.query))}
+                            s, cookie = admin.dev_session(self.headers) if admin else (None, [])
+                            if s and (s.admin or s.operator or s.scopes):   # may order (product owners: their products)
                                 ctx["csrf"] = admin._csrf(s)
-                            return self._send(200, render_application(app, nav, ctx), head=head, forms=bool(nav))
+                                if app.get("Rating") == "B":
+                                    ctx["estimates"] = refactor_estimates(admin, app)
+                            return self._send(200, render_application(app, nav, ctx), head=head, forms=bool(nav),
+                                              extra=cookie or None)
                         bu = parse_qs(u.query).get("bu", [None])[0]
                         if bu is not None and not re.fullmatch(r"\d{1,9}|none", bu):
                             bu = None
@@ -1050,12 +1331,18 @@ def make_handler(connect, admin=None):
 
 
 def serve(cs: str | None, host: str = "127.0.0.1", port: int = 8080) -> int:
+    global DEV_BANNER
     from .admin import build
     from .oidc import OidcError
+    from .roles import role_label
     from .sqlstore import SqlError, connect
     try:
         connect(cs).close()           # fail fast on a bad connection string or credentials
         admin = build()
+        if admin and admin.dev:
+            DEV_BANNER = (f"<div class='devmode' role='alert'><b>Development mode: no sign-in.</b> Everyone who can reach "
+                          f"this page uses it as {e(admin.dev.name)} ({e(role_label(admin.dev.admin, admin.dev.operator, []) or 'viewer')}). "
+                          f"Never on the appliance or a shared network.</div>")
         if admin:
             admin.connect_admin().close()
     except (SqlError, OidcError) as ex:
@@ -1065,7 +1352,8 @@ def serve(cs: str | None, host: str = "127.0.0.1", port: int = 8080) -> int:
     print(f"containerizer results UI on http://{host}:{port}/ ("
           + ("results behind sign-in" + (", access logged" if admin.cfg.view_audit else "") if admin and admin.viewers_required
              else "results read-only without sign-in") + "; "
-          + (f"admin pages behind sign-in at {admin.cfg.public_url}/admin" if admin else "admin pages off: no sign-in configured")
+          + (f"admin pages WITHOUT sign-in (development mode) at {admin.cfg.public_url}/admin" if admin and admin.dev
+             else f"admin pages behind sign-in at {admin.cfg.public_url}/admin" if admin else "admin pages off: no sign-in configured")
           + ("; JSON API at /api/v1)" if admin and admin.api else ")"))
     try:
         httpd.serve_forever()

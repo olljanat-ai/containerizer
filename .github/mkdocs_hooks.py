@@ -34,9 +34,23 @@ def on_page_markdown(markdown, page, config, files):
 HEADER_NAME = re.compile(r'(<div class="md-header__topic">\s*<span class="md-ellipsis">)\s*([^<]+?)\s*(</span>)')
 
 
+EXTERNAL_A = re.compile(r'<a\b(?P<pre>[^>]*?)\bhref="(?P<url>https?://[^"]*)"(?P<post>[^>]*)>', re.I)
+
+
+def _external_links(html, site):
+    """Links to other sites open in a new tab or window (noopener); links to this site stay in it."""
+    def add(m):
+        if (site and m["url"].startswith(site)) or re.search(r"\btarget=", m["pre"] + m["post"], re.I):
+            return m[0]
+        rel = "" if re.search(r"\brel=", m["pre"] + m["post"], re.I) else ' rel="noopener noreferrer"'
+        return f'<a{m["pre"]}href="{m["url"]}"{m["post"]} target="_blank"{rel}>'
+    return EXTERNAL_A.sub(add, html)
+
+
 def on_post_page(output, page, config):
     # Material shows the site name in the header as plain text; make it a link to the front page.
     home = page.url.count("/") * "../" or "./"
+    output = _external_links(output, (config.get("site_url") or "").rstrip("/"))
     return HEADER_NAME.sub(lambda m: f'{m.group(1)}<a href="{home}" class="cz-home-link">{m.group(2)}</a>{m.group(3)}',
                            output, count=1)
 

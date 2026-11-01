@@ -1,12 +1,34 @@
 # API
 
 Scripts and other tools can read the results and maintain the business units, products and
-application mapping through a JSON API under `/api/v1`. It uses the same identity provider as the
-[sign-in](sign-in.md), with OAuth access tokens instead of cookies.
+application mapping through a JSON API under `/api/v1`. Callers authenticate with an **API key**, or with
+an OAuth access token from the same identity provider as the [sign-in](sign-in.md). Cookies are never
+used.
 
-## Turn it on
+The API is on whenever the admin pages are (with [sign-in](sign-in.md), or in
+[development mode](local-dev-server.md#admin-pages-without-sign-in)).
 
-Add two settings to `/etc/containerizer/web.env` next to the sign-in ones and restart the web UI:
+## API keys
+
+Administrators make keys on **Admin → API**, which also shows how to call the API from this server with
+`curl` and Python. A key (`czk_…`) has a name, a role and an optional expiry:
+
+| Role | May |
+| --- | --- |
+| Read only | GET everything the API offers |
+| Full | also add, change and remove business units and products, and map applications |
+
+The key is shown once, when it is made: only its SHA-256 is stored. The page lists every key with its
+status, who made it and when, when it expires and when it was last used, and revokes keys. Making and
+revoking keys, and every change made with a key (as `api-key:<prefix>`), are in the change history.
+
+```sh
+curl -s -H "Authorization: Bearer $CZ_API_KEY" https://containerizer.example.com/api/v1/applications
+```
+
+## Access tokens (OpenID Connect)
+
+To let automation use access tokens from your identity provider instead, add two settings to `/etc/containerizer/web.env` next to the sign-in ones and restart the web UI:
 
 | Variable | Meaning |
 | --- | --- |
@@ -20,8 +42,8 @@ member type Applications), grant it to the client app, and set
 
 ## Authentication and authorization
 
-Callers send `Authorization: Bearer <access token>`: the client-credentials flow for automation, or a
-user's token. Signature, issuer, audience and expiry are checked; an ID token is refused (its audience is
+Callers send `Authorization: Bearer <API key or access token>`. For access tokens: the client-credentials
+flow for automation, or a user's token. Signature, issuer, audience and expiry are checked; an ID token is refused (its audience is
 the web app). Cookies are ignored, so there is no CSRF surface.
 
 The roles apply to tokens too: admins and API clients can change everything, product owners only their
