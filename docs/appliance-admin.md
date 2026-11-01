@@ -91,8 +91,8 @@ The first boot creates `/etc/containerizer/` (mode 700) with:
 
 By default the results database runs on the appliance, and you back it up ([Backup](#backup)). To keep it
 on a SQL Server you already run and back up (SQL Server 2019 or later, or Azure SQL Managed Instance), point
-the appliance at it in `appliance.env`. SQL Server then does not run on the appliance, and the appliance
-holds nothing that needs a database backup.
+the appliance at it in `appliance.env`. SQL Server then does not run on the appliance, and the database is
+backed up with your server; the appliance's files still need their backup ([Backup](#backup)).
 
 1. On your server, create the database and a login that owns it (`db_owner`). With
    `CZ_SQL_LOGINS=create` (the default) the login also needs `ALTER ANY LOGIN` (e.g. `securityadmin`): it
@@ -229,8 +229,8 @@ On the console: `python -m containerizer.sysagent upgrade vX.Y.Z` or `... rollba
 
 ## Backup
 
-With an [external database](#external-database) the database is backed up on your server: skip the
-database step below and back up only `/etc/containerizer`.
+With an [external database](#external-database) the database is backed up with your SQL Server: skip
+the database step below. The files on the appliance are still needed.
 
 Back up the database (from the appliance):
 

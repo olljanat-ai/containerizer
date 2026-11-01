@@ -25,7 +25,7 @@ Results database schema version 18 (`containerizer db init` upgrades it; the app
 ### Appliance
 - External results database: `CZ_SQL_SERVER`, `CZ_SQL_DATABASE`, `CZ_SQL_USER` (password in
   `secrets/sql-owner`) and `CZ_SQL_LOGINS` in `appliance.env` point the appliance at a SQL Server you run and
-  back up, so the appliance needs no database backup. SQL Server then does not run on the appliance, the
+  back up, so the appliance needs no database backup of its own (its files still do). SQL Server then does not run on the appliance, the
   schema is created and upgraded on that server at every start, the firewall allows it by itself, and the
   connection is encrypted with the certificate checked (`CZ_SQL_CA` for a private CA). The logins
   `cz_scanner`, `cz_web` and `cz_admin` are created by the owner login, or by your DBA
