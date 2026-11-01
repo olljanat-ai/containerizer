@@ -362,4 +362,5 @@ def order(adm, conn, s, a, form: dict) -> Response:
                            "AND Status IN (N'queued', N'running') ORDER BY JobId DESC", (job["DedupeKey"],))
         return _to_app(app_id, "exists", **({"job": int(same[0]["JobId"])} if same else {}))
     n = min(len(payload["tasks"]), payload["max_calls"])
-    return _to_app(app_id, "ordered", job=int(jid), files=n)
+    st = _rows(conn, "SELECT Status FROM cz.LlmJob WHERE JobId = %s", (jid,))
+    return _to_app(app_id, "approval" if st and st[0]["Status"] == "approval" else "ordered", job=int(jid), files=n)

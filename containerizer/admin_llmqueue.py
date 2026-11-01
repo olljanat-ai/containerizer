@@ -22,8 +22,8 @@ from .admin_scans import TIME_RE, _back, _nf
 from . import llmqueue as lq
 
 BASE = "/admin/llm-queue"
-STATUS_TEXT = {"queued": "Queued", "running": "Asking", "answered": "Answered", "failed": "Failed", "skipped": "Skipped"}
-STATUS_CSS = {"queued": "st-run", "running": "st-run", "answered": "st-ok", "failed": "st-bad", "skipped": "st-off"}
+STATUS_TEXT = {"approval": "Waiting for approval", "queued": "Queued", "running": "Asking", "answered": "Answered", "failed": "Failed", "skipped": "Skipped"}
+STATUS_CSS = {"approval": "st-wait", "queued": "st-run", "running": "st-run", "answered": "st-ok", "failed": "st-bad", "skipped": "st-off"}
 JOB_COLS = ("JobId, Kind, Reason, Status, Priority, AdminRank, ScanId, RepositoryId, Repository, App, Component, ProjectPath, "
             "RuleVerdict, Confidence, Model, RequestedBy, InputChars, EstInputTokens, InputTokens, OutputTokens, Endpoint, "
             "Parallel, Summary, Error, Note, Attempts, NotBefore, QueuedAt, StartedAt, FinishedAt, Runner, Seconds")
@@ -47,6 +47,10 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict, flash:
             return skip(conn, ident)
         if parts[2] == "requeue":
             return requeue(conn, ident)
+        if parts[2] in ("approve", "reject"):
+            if not a.admin:
+                return _back(BASE, "Only administrators approve LLM jobs.")
+            return approve(conn, ident, s.user) if parts[2] == "approve" else reject(conn, ident, s.user)
     return _nf()
 
 
@@ -170,8 +174,8 @@ def show(adm, conn, s, a, q: dict, flash: str) -> Response:
     where, params = ("", ()) if not kind else (" AND Kind = %s", (kind,))
     settings = lq.load_settings(conn)
     speed = lq.load_speed(conn)
-    active = _rows(conn, f"SELECT {JOB_COLS} FROM cz.LlmJob WHERE Status IN (N'queued', N'running'){where} "
-                         f"ORDER BY CASE WHEN Status = N'running' THEN 0 ELSE 1 END, {ORDER}", params)
+    active = _rows(conn, f"SELECT {JOB_COLS} FROM cz.LlmJob WHERE Status IN (N'approval', N'queued', N'running'){where} "
+                         f"ORDER BY CASE Status WHEN N'running' THEN 0 WHEN N'approval' THEN 1 ELSE 2 END, {ORDER}", params)
     done = _rows(conn, f"SELECT TOP (50) {JOB_COLS} FROM cz.LlmJob WHERE Status IN (N'answered', N'failed', N'skipped')"
                        f"{where} ORDER BY COALESCE(FinishedAt, QueuedAt) DESC, JobId DESC", params)
     queued = [r for r in active if r["Status"] == "queued"]
@@ -179,6 +183,9 @@ def show(adm, conn, s, a, q: dict, flash: str) -> Response:
     now = lq.utcnow()
     ok, why = lq.gate(settings, now, lq.scans_running(conn), lq.load_per_cpu())
     state = "<span class='st st-ok'>Open</span>" if ok else f"<span class='st st-off'>Waiting</span> {e(why)}"
+    waiting = sum(1 for r in active if r["Status"] == "approval")
+    if waiting:
+        state += f" · <span class='st st-wait'>{waiting} waiting for approval</span>"
 
     rows = []
     for i, r in enumerate(active):
@@ -191,6 +198,11 @@ def show(adm, conn, s, a, q: dict, flash: str) -> Response:
             abs(float(r["AdminRank"]) - float(r["Priority"])) >= 0.01 else ""
         acts = _buttons(adm, s, r, r is queued[0] if queued else True, r is queued[-1] if queued else True) \
             if r["Status"] == "queued" and not kind else (_buttons(adm, s, r, True, True) if r["Status"] == "queued" else "")
+        if r["Status"] == "approval":
+            acts = (f"<form method='post' action='{BASE}/{int(r['JobId'])}/approve' class='inline'>{adm._csrf(s)}"
+                    f"<button>Approve</button></form> <form method='post' action='{BASE}/{int(r['JobId'])}/reject' "
+                    f"class='inline'>{adm._csrf(s)}<button class='secondary'>Reject</button></form>") if a.admin \
+                else "<span class='muted small'>an administrator approves it</span>"
         err = f"<div class='muted small'>last try: {e(r['Error'])}</div>" if r.get("Error") else ""
         rows.append(f"<tr><td class='num'>{i + 1}</td><td>{chip(r['Status'])}</td><td>{what(r)}{err}</td>"
                     f"<td class='num'>{int(r['Priority'])}{moved}</td><td class='small'>{estimate(est)}</td>"
@@ -309,6 +321,24 @@ def skip(conn, ident: int) -> Response:
     return _back(BASE, f"Job #{ident} skipped." if n else f"Job #{ident} is not queued (the runner may have taken it).")
 
 
+def approve(conn, ident: int, user: str) -> Response:
+    cur = conn.cursor()
+    cur.execute("UPDATE cz.LlmJob SET Status = N'queued', ApprovedBy = %s, ApprovedAt = SYSUTCDATETIME() "
+                "WHERE JobId = %s AND Status = N'approval'", (user, ident))
+    n = cur.rowcount
+    conn.commit()
+    return _back(BASE, f"Job #{ident} approved: it is queued." if n else f"Job #{ident} does not wait for approval.")
+
+
+def reject(conn, ident: int, user: str) -> Response:
+    cur = conn.cursor()
+    cur.execute("UPDATE cz.LlmJob SET Status = N'skipped', FinishedAt = SYSUTCDATETIME(), Note = %s "
+                "WHERE JobId = %s AND Status = N'approval'", (f"rejected by {user}"[:400], ident))
+    n = cur.rowcount
+    conn.commit()
+    return _back(BASE, f"Job #{ident} rejected." if n else f"Job #{ident} does not wait for approval.")
+
+
 def requeue(conn, ident: int) -> Response:
     cur = conn.cursor()
     cur.execute("UPDATE cz.LlmJob SET Status = N'queued', Attempts = 0, NotBefore = NULL, Error = NULL, Note = NULL, "
@@ -352,6 +382,14 @@ value='{float(v['MaxLoadPerCpu'] or 0):.2f}'>
 <label for='Parallel'>Parallel requests <span class='muted'>(as many as the LLM server answers at once, e.g. its
 slots; 1 for a CPU server)</span></label><input id='Parallel' name='Parallel' type='number' min='1' max='16'
 value='{int(v['Parallel'] or 1)}'>
+<h3>Approval</h3>
+<p class='muted small'>Jobs of the kinds ticked here wait for an administrator to approve them before the runner
+takes them, from the size given (estimated tokens the LLM must read; 0: all of them).</p>
+<label class='check'><input type='checkbox' name='ApproveKind' value='refactor'{' checked' if 'refactor' in (v.get('ApproveKinds') or '') else ''}> Refactoring orders</label>
+<label class='check'><input type='checkbox' name='ApproveKind' value='review'{' checked' if 'review' in (v.get('ApproveKinds') or '') else ''}> Component reviews from scans</label>
+<label for='ApproveMinTokens'>From <span class='muted'>(estimated input tokens; 0: every job of those kinds)</span></label>
+<input id='ApproveMinTokens' name='ApproveMinTokens' type='number' min='0' max='10000000' step='1000'
+value='{int(v.get('ApproveMinTokens') or 0)}'>
 <div><button>Save</button></div></form>"""
 
 
@@ -385,10 +423,18 @@ def validate_settings(form: dict) -> tuple[dict, list[str]]:
         errors.append("Parallel requests: 1 to 16")
         p = "1"
     v["Parallel"] = int(p)
+    kinds = sorted({k for k in form.get("ApproveKind", []) if k in ("refactor", "review")})
+    v["ApproveKinds"] = ",".join(kinds) or None
+    m = form.get("ApproveMinTokens", ["0"])[0].strip() or "0"
+    if not re.fullmatch(r"\d{1,8}", m) or int(m) > 10_000_000:
+        errors.append("Approval from: a number of tokens, 0 to 10,000,000")
+        m = "0"
+    v["ApproveMinTokens"] = int(m)
     return v, errors
 
 
-SETTING_COLS = ("Paused", "WindowDays", "WindowStart", "WindowEnd", "OnlyWhenIdle", "MaxLoadPerCpu", "Parallel")
+SETTING_COLS = ("Paused", "WindowDays", "WindowStart", "WindowEnd", "OnlyWhenIdle", "MaxLoadPerCpu", "Parallel",
+                "ApproveKinds", "ApproveMinTokens")
 
 
 def save_settings(conn, form: dict) -> Response:

@@ -1603,3 +1603,104 @@ GO
 -- 21: API keys
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 21) INSERT [${schema}].SchemaVersion (Version) VALUES (21);
 GO
+
+-- 22: approval of LLM jobs. An administrator decides which jobs wait for approval before the runner takes
+-- them (ApproveKinds: 'refactor', 'review' or both; ApproveMinTokens: only jobs estimated to read at least
+-- this many tokens, 0: all of those kinds). Such a job is queued with Status 'approval'; approving it makes
+-- it 'queued' (ApprovedBy, ApprovedAt), rejecting it 'skipped'.
+IF COL_LENGTH(N'[${schema}].LlmQueueSettings', N'ApproveKinds') IS NULL
+    ALTER TABLE [${schema}].LlmQueueSettings ADD ApproveKinds nvarchar(40) NULL,
+        ApproveMinTokens int NOT NULL CONSTRAINT DF_LlmQueueSettings_ApproveMin DEFAULT 0
+        CONSTRAINT CK_LlmQueueSettings_ApproveMin CHECK (ApproveMinTokens BETWEEN 0 AND 10000000);
+GO
+IF COL_LENGTH(N'[${schema}].LlmJob', N'ApprovedBy') IS NULL
+    ALTER TABLE [${schema}].LlmJob ADD ApprovedBy nvarchar(256) NULL, ApprovedAt datetime2(0) NULL;
+GO
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_LlmJob_Status'
+           AND parent_object_id = OBJECT_ID(N'[${schema}].LlmJob') AND definition NOT LIKE N'%approval%')
+    ALTER TABLE [${schema}].LlmJob DROP CONSTRAINT CK_LlmJob_Status;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_LlmJob_Status'
+               AND parent_object_id = OBJECT_ID(N'[${schema}].LlmJob'))
+    ALTER TABLE [${schema}].LlmJob ADD CONSTRAINT CK_LlmJob_Status
+        CHECK (Status IN (N'approval', N'queued', N'running', N'answered', N'failed', N'skipped'));
+GO
+CREATE OR ALTER PROCEDURE [${schema}].QueueLlmJob @Kind nvarchar(20), @Reason nvarchar(40) = NULL, @ScanId int = NULL,
+    @ProjectName nvarchar(200) = NULL, @RepoName nvarchar(200) = NULL, @Repository nvarchar(400) = NULL,
+    @App nvarchar(200) = NULL, @SourceKey nvarchar(400) = NULL, @ApplicationId int = NULL, @AssessmentId int = NULL,
+    @Component nvarchar(200) = NULL, @ProjectPath nvarchar(400) = NULL, @RuleVerdict nvarchar(20) = NULL,
+    @Confidence decimal(4,2) = NULL, @Priority int, @DedupeKey nvarchar(64), @Model nvarchar(200) = NULL,
+    @RequestedBy nvarchar(256) = NULL, @InputChars int = NULL, @EstInputTokens int = NULL, @Payload nvarchar(max)
+AS
+BEGIN
+    SET NOCOUNT ON; SET XACT_ABORT ON;
+    DECLARE @id int = 0, @status nvarchar(20) = N'queued';
+    -- the approval policy (LlmQueueSettings): this kind, and at least that many estimated input tokens
+    IF EXISTS (SELECT 1 FROM [${schema}].LlmQueueSettings s
+               WHERE s.ApproveKinds IS NOT NULL
+                 AND CHARINDEX(N',' + @Kind + N',', N',' + REPLACE(s.ApproveKinds, N' ', N'') + N',') > 0
+                 AND COALESCE(@EstInputTokens, 0) >= s.ApproveMinTokens)
+        SET @status = N'approval';
+    BEGIN TRANSACTION;
+    IF NOT EXISTS (SELECT 1 FROM [${schema}].LlmJob WITH (UPDLOCK, HOLDLOCK)
+                   WHERE Kind = @Kind AND DedupeKey = @DedupeKey AND Status IN (N'approval', N'queued', N'running'))
+    BEGIN
+        IF @SourceKey IS NOT NULL AND @ProjectPath IS NOT NULL
+            UPDATE [${schema}].LlmJob SET Status = N'skipped', Note = N'superseded by a newer scan', FinishedAt = SYSUTCDATETIME()
+            WHERE Status IN (N'approval', N'queued') AND Kind = @Kind AND SourceKey = @SourceKey AND ProjectPath = @ProjectPath;
+        INSERT [${schema}].LlmJob (Kind, Reason, Priority, ScanId, RepositoryId, Repository, App, SourceKey, ApplicationId,
+                                   AssessmentId, Component, ProjectPath, RuleVerdict, Confidence, DedupeKey, Model,
+                                   RequestedBy, InputChars, EstInputTokens, Payload, Status)
+        SELECT @Kind, @Reason, @Priority, @ScanId,
+               (SELECT r.RepositoryId FROM [${schema}].OrgRepository r
+                WHERE r.ScanId = @ScanId AND r.ProjectName = @ProjectName AND r.Name = @RepoName),
+               @Repository, @App, @SourceKey,
+               COALESCE(@ApplicationId, (SELECT a.ApplicationId FROM [${schema}].Application a WHERE a.SourceKey = @SourceKey)),
+               @AssessmentId, @Component, @ProjectPath, @RuleVerdict, @Confidence, @DedupeKey, @Model,
+               COALESCE(@RequestedBy, w.ChangedBy), @InputChars, @EstInputTokens, @Payload, @status
+        FROM [${schema}].fnAuditWho() w;
+        SET @id = SCOPE_IDENTITY();
+    END
+    COMMIT;
+    SELECT @id AS JobId;
+END;
+GO
+CREATE OR ALTER TRIGGER [${schema}].trLlmQueueSettingsAudit ON [${schema}].LlmQueueSettings
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'LlmQueueSettings', COALESCE(i.SettingsId, d.SettingsId), N'LLM queue',
+           CASE WHEN d.SettingsId IS NULL THEN N'insert' WHEN i.SettingsId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.SettingsId IS NOT NULL THEN (SELECT d.Paused, d.WindowDays, d.WindowStart, d.WindowEnd, d.OnlyWhenIdle,
+                d.MaxLoadPerCpu, d.Parallel, d.ApproveKinds, d.ApproveMinTokens FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.SettingsId IS NOT NULL THEN (SELECT i.Paused, i.WindowDays, i.WindowStart, i.WindowEnd, i.OnlyWhenIdle,
+                i.MaxLoadPerCpu, i.Parallel, i.ApproveKinds, i.ApproveMinTokens FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.SettingsId = i.SettingsId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.SettingsId IS NULL OR i.SettingsId IS NULL
+       OR EXISTS (SELECT i.Paused, i.WindowDays, i.WindowStart, i.WindowEnd, i.OnlyWhenIdle, i.MaxLoadPerCpu, i.Parallel,
+                         i.ApproveKinds, i.ApproveMinTokens
+                  EXCEPT SELECT d.Paused, d.WindowDays, d.WindowStart, d.WindowEnd, d.OnlyWhenIdle, d.MaxLoadPerCpu, d.Parallel,
+                         d.ApproveKinds, d.ApproveMinTokens);
+END;
+GO
+GRANT UPDATE ON [${schema}].LlmJob (ApprovedBy, ApprovedAt) TO [${schema}_admin];
+GO
+-- orders waiting for approval show as such on the results pages
+CREATE OR ALTER VIEW [${schema}].vRefactorOrder AS
+SELECT j.JobId, COALESCE(j.ApplicationId, a.ApplicationId) AS ApplicationId, j.AssessmentId, j.Component, j.ProjectPath,
+       CASE WHEN j.Status = N'approval' THEN N'approval'
+            WHEN j.Status = N'queued' THEN N'queued'
+            WHEN j.Status = N'running' THEN CASE WHEN j.Summary LIKE N'verifying%' THEN N'verifying' ELSE N'generating' END
+            WHEN j.Status = N'answered' AND JSON_VALUE(j.Result, '$$.status') IN (N'verified', N'applies-only', N'failed')
+                 THEN JSON_VALUE(j.Result, '$$.status')
+            WHEN j.Status = N'skipped' THEN N'cancelled'
+            ELSE N'failed' END AS Status,
+       j.Summary, JSON_VALUE(j.Payload, '$$.commit') AS SourceCommit, j.QueuedAt, j.StartedAt, j.FinishedAt
+FROM [${schema}].LlmJob j
+LEFT JOIN [${schema}].Application a ON a.SourceKey = j.SourceKey
+WHERE j.Kind = N'refactor';
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 22) INSERT [${schema}].SchemaVersion (Version) VALUES (22);
+GO

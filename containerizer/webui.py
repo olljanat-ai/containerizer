@@ -119,7 +119,7 @@ def load_refactor_orders(conn, app_id: int) -> list[dict]:
         return []
 
 
-REFACTOR_STATUS_CSS = {"queued": "st-run", "generating": "st-run", "verifying": "st-run", "verified": "st-ok",
+REFACTOR_STATUS_CSS = {"approval": "st-wait", "queued": "st-run", "generating": "st-run", "verifying": "st-run", "verified": "st-ok",
                        "applies-only": "st-warn", "failed": "st-bad", "cancelled": "st-off"}
 
 
@@ -129,6 +129,8 @@ REFACTOR_NOTICES = {
     "ordered": ("ok", "Refactoring patch requested: {files} file(s) to change. It waits in the LLM queue; its status "
                       "shows below, and the patch appears here when it is ready."),
     "exists": ("info", "The same refactoring is already requested: its status shows below."),
+    "approval": ("info", "Refactoring patch requested: {files} file(s) to change. It waits for an administrator to "
+                         "approve it (Admin → LLM queue); its status shows below."),
     "not-b": ("bad", "Refactoring patches are for applications rated B."),
     "no-component": ("bad", "That component is not part of this application."),
     "no-commit": ("bad", "The assessment recorded no commit: scan the repository again, then request the patch."),
@@ -784,6 +786,7 @@ def page(title: str, body: str, script: bool = False) -> str:
 
 
 CSS = """
+.st-wait{color:#8a5a00;border-color:#c98a00}@media (prefers-color-scheme:dark){.st-wait{color:#ffc857;border-color:#ffc857}}
 .newkey{border:2px solid #2e7d32;border-radius:8px;padding:10px 14px;margin:12px 0}.newkey pre{margin:8px 0 0;user-select:all}
 .why-rating{background:var(--card);border-left:4px solid #e0a800;padding:8px 12px;margin:10px 0}section.refactor h3{font-size:16px;margin:16px 0 4px}
 .notice{padding:10px 14px;border-radius:8px;margin:10px 0;border:1px solid}.notice-ok{background:#e8f5e9;border-color:#2e7d32;color:#1b5e20}.notice-info{background:#e3f2fd;border-color:#1565c0;color:#0d47a1}.notice-bad{background:#fdecea;border-color:#c62828;color:#8e1c1c}@media (prefers-color-scheme:dark){.notice-ok{background:#16301a;color:#b9f6ca}.notice-info{background:#132a40;color:#bbdefb}.notice-bad{background:#3a1715;color:#ffcdd2}}

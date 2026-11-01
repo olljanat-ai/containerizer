@@ -54,7 +54,7 @@ MAX_NEW_FILE = 100_000
 # repeat only the lines they change, so a few thousand tokens; a runaway answer must not hold a CPU slot for an hour
 ANSWER_TOKENS_MIN, ANSWER_TOKENS_MAX = 4096, 8192
 STATUSES = ("queued", "generating", "verifying", "verified", "applies-only", "failed", "cancelled")
-STATUS_TEXT = {"queued": "Queued", "generating": "Generating", "verifying": "Verifying", "verified": "Verified",
+STATUS_TEXT = {"approval": "Waiting for approval", "queued": "Queued", "generating": "Generating", "verifying": "Verifying", "verified": "Verified",
                "applies-only": "Applies only", "failed": "Failed", "cancelled": "Cancelled"}
 AUTHOR = ("Containerizer", "containerizer@localhost")
 SOURCES_ENV = "CONTAINERIZER_REFACTOR_SOURCES"   # the scan worker's data folder (its clone cache)
@@ -872,8 +872,8 @@ def verification_status(applies: bool, changes: int, verify: list[dict] | None) 
 def order_status(job_status: str, summary: str | None = None, patch_status: str | None = None) -> str:
     """The status of an order from its LLM queue job: queued, generating, verifying, verified, applies-only,
     failed, cancelled."""
-    if job_status == "queued":
-        return "queued"
+    if job_status in ("queued", "approval"):
+        return job_status
     if job_status == "running":
         return "verifying" if str(summary or "").startswith("verifying") else "generating"
     if job_status == "answered":
