@@ -192,6 +192,57 @@ def rating_why(app: dict) -> tuple[str, list[dict], list[dict]]:
     return f"<p class='why-rating'><b>Why {e(r)}:</b> {e(' '.join(parts))}</p>", stateful, refactor
 
 
+def refactor_estimates(admin, app: dict) -> dict:
+    """What each refactoring order of the application would cost, as the LLM queue estimates it (the order
+    built as when it is placed; the speed learned from earlier answers). Key (component id or None, goal).
+    Reads the assessment's report with the admin login, so only for people who may order."""
+    from . import refactor as rf
+    from .llmqueue import load_speed
+    out = {}
+    try:
+        conn = admin.connect_admin()
+    except Exception:  # noqa: BLE001 - no estimates, the buttons still work
+        return out
+    try:
+        rows = _rows(conn, "SELECT ReportJson FROM cz.ApplicationAssessment WHERE AssessmentId = %s",
+                     (app["AssessmentId"],))
+        doc = json.loads(rows[0]["ReportJson"]) if rows and rows[0].get("ReportJson") else {}
+        speed = load_speed(conn)
+    except Exception:  # noqa: BLE001
+        return out
+    finally:
+        conn.close()
+    targets = [(None, None)] + [(int(c["ComponentId"]), c["ProjectPath"]) for c in app.get("components") or []]
+    for cid, path in targets:
+        for goal in ("fix", "stateless"):
+            try:
+                pl = rf.build_payload(doc, {"type": "none"}, None, component=path, goal=goal)
+            except rf.RefactorError:
+                continue
+            chars = rf.estimate_chars(pl) + (6000 * len(pl.get("state") or []) if goal == "stateless" else 0)
+            out[(cid, goal)] = speed.job({"Kind": rf.KIND, "InputChars": chars, "Model": None})
+    return out
+
+
+def est_text(est: dict | None) -> str:
+    if not est:
+        return ""
+    mins = "time: learning" if est.get("seconds") is None else \
+        (f"~{max(1, round(est['seconds'] / 60))} min" if est["seconds"] < 5400 else f"~{est['seconds'] / 3600:.1f} h")
+    return f"~{int(est['in'] + est['out']):,} tokens · {mins}"
+
+
+def order_button(app_id, comp_id, goal: str, csrf: str, label: str, est: dict | None, small: bool = False) -> str:
+    """One-click refactoring order (POST to the admin pages, like the Refactoring box's forms)."""
+    comp = f"<input type='hidden' name='Component' value='{int(comp_id)}'>" if comp_id else ""
+    tip = est_text(est)
+    return (f"<form method='post' action='/admin/refactoring/new' class='inline order'>{csrf}"
+            f"<input type='hidden' name='ApplicationId' value='{int(app_id)}'>{comp}"
+            f"<input type='hidden' name='Goal' value='{e(goal)}'>"
+            f"<button class='{'link' if small else ''}'>{e(label)}</button>"
+            + (f" <span class='muted small'>{e(tip)}</span>" if tip else "") + "</form>")
+
+
 def refactor_notice(q: dict) -> str:
     code = (q.get("refactor") or [""])[0]
     if code not in REFACTOR_NOTICES:
@@ -243,7 +294,9 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
                        f"{hidden}<input type='hidden' name='Goal' value='fix'>"
                        f"<select name='Component' aria-label='Component'><option value=''>All components that need changes"
                        f"</option>{opts}</select><label class='check'><input type='checkbox' name='IncludeConfig' value='1'> "
-                       f"also change code for configuration findings</label><button>Request a refactoring patch</button></form>")
+                       f"also change code for configuration findings</label><button>Request a refactoring patch</button>"
+                       + (f" <span class='muted small'>{e(est_text((ctx.get('estimates') or {}).get((None, 'fix'))))} for all</span>"
+                          if (ctx.get('estimates') or {}).get((None, 'fix')) else "") + "</form>")
         if stateful:
             opts = "".join(f"<option value='{int(c['ComponentId'])}'>{e(c['ComponentName'])}</option>" for c in stateful)
             out.append("<h3>Make it stateless: move the data to SQL Server</h3>"
@@ -254,7 +307,9 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
                        f"<form method='post' action='/admin/refactoring/new' class='formrow'>{hidden}"
                        f"<input type='hidden' name='Goal' value='stateless'>"
                        f"<select name='Component' aria-label='Component'><option value=''>All components that keep data"
-                       f"</option>{opts}</select><button>Request a stateless patch</button></form>")
+                       f"</option>{opts}</select><button>Request a stateless patch</button>"
+                       + (f" <span class='muted small'>{e(est_text((ctx.get('estimates') or {}).get((None, 'stateless'))))} for all</span>"
+                          if (ctx.get('estimates') or {}).get((None, 'stateless')) else "") + "</form>")
         if not refactor and not stateful:
             out.append("<p class='muted small'>No finding of this application can be fixed in code.</p>")
     elif ctx.get("signin") and app.get("Rating") == "B":
@@ -558,7 +613,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
         f"<td><span class='sev s-{e(c['Verdict'])}'>{e(VERDICT_LABEL.get(c['Verdict'], c['Verdict']))}</span></td>"
         f"<td>{_verify(c)}</td>"
         + (f"<td>{_sandbox(sandbox.get(c['ComponentId']))}</td>" if sandbox else "")
-        + f"<td>{_plan_cell(app['ApplicationId'], c, migs.get(c['ComponentId']))}</td>"
+        + f"<td>{_plan_cell(app['ApplicationId'], c, migs.get(c['ComponentId']), refactor)}</td>"
         + (f"<td>{_sbom_cell(app['ApplicationId'], c['ComponentId'], sboms.get(c['ComponentId']))}</td>" if sboms else "")
         + "</tr>"
         for c in app["components"])
@@ -574,7 +629,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
                        f"{'; targets ' + e(c['TargetFramework']) if c['TargetFramework'] else ''}</div>"
                        f"{_llm_review(reviews.get(c['ComponentId']), app.get('AssessedAt'))}"
                        f"{_sandbox_detail(sandbox.get(c['ComponentId']))}{items}"
-                       f"{_migration(app['ApplicationId'], migs.get(c['ComponentId']))}</details>")
+                       f"{_migration(app['ApplicationId'], migs.get(c['ComponentId']), refactor)}</details>")
     repo = by_comp.get(None, [])
     if repo:
         details.append("<details><summary><b>Repository</b></summary>" + "".join(_finding(f) for f in repo) + "</details>")
@@ -624,17 +679,22 @@ def _prompt_href(app_id, comp_id) -> str:
     return f"/app/{int(app_id)}/component/{int(comp_id)}/agent-prompt.md"
 
 
-def _plan_cell(app_id, c: dict, m: dict | None) -> str:
-    if not m:
-        return "<span class='muted'>-</span>"
+def _plan_cell(app_id, c: dict, m: dict | None, ctx: dict | None = None) -> str:
     cid = int(c["ComponentId"])
+    ctx = ctx or {}
+    est = ctx.get("estimates") or {}
+    goal = "fix" if (cid, "fix") in est else "stateless" if (cid, "stateless") in est else None
+    order = (f"<div>{order_button(app_id, cid, goal, ctx['csrf'], 'Patch with LLM', est[(cid, goal)], small=True)}</div>"
+             if goal and ctx.get("csrf") else "")
+    if not m:
+        return order or "<span class='muted'>-</span>"
     out = f"<a href='#m{cid}'>{int(m['ItemCount'])} step{'s' if m['ItemCount'] != 1 else ''}</a>"
     if m.get("AgentPrompt"):
         out += f" · <a href='#p{cid}'>AI agent prompt</a>"
-    return out
+    return out + order
 
 
-def _migration(app_id, m: dict | None) -> str:
+def _migration(app_id, m: dict | None, ctx: dict | None = None) -> str:
     """Migration assistant of one component: suggested replacements and the AI coding agent prompt."""
     if not m:
         return ""
@@ -665,6 +725,15 @@ def _migration(app_id, m: dict | None) -> str:
     if rows:
         out.append("<table><thead><tr><th>Action</th><th>Replace</th><th>With</th>"
                    "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>")
+    ctx = ctx or {}
+    est = ctx.get("estimates") or {}
+    goal = "fix" if (cid, "fix") in est else "stateless" if (cid, "stateless") in est else None
+    if goal and ctx.get("csrf"):
+        out.append("<div class='note offer'><b>Or let Containerizer make the change:</b> the LLM writes the patch, "
+                   "Containerizer applies it, checks it with the rules and builds and runs it, and you download "
+                   "a verified patch. "
+                   + order_button(app_id, cid, goal, ctx["csrf"], "Request a refactoring patch", est[(cid, goal)])
+                   + "</div>")
     if m.get("AgentPrompt"):
         out.append(f"<div class='prompt' id='p{cid}'><div class='prompt-head'><b>Prompt for an AI coding agent</b>"
                    f"<span><button type='button' class='copy' data-copy='pt{cid}'>Copy prompt</button> "
@@ -804,6 +873,7 @@ def page(title: str, body: str, script: bool = False) -> str:
 
 
 CSS = """
+.offer{margin:8px 0}.offer form.order{margin-top:6px}form.inline.order{display:inline}
 .st-wait{color:#8a5a00;border-color:#c98a00}@media (prefers-color-scheme:dark){.st-wait{color:#ffc857;border-color:#ffc857}}
 .newkey{border:2px solid #2e7d32;border-radius:8px;padding:10px 14px;margin:12px 0}.newkey pre{margin:8px 0 0;user-select:all}
 .why-rating{background:var(--card);border-left:4px solid #e0a800;padding:8px 12px;margin:10px 0}section.refactor h3{font-size:16px;margin:16px 0 4px}
@@ -1134,6 +1204,8 @@ def make_handler(connect, admin=None):
                             s = admin.session(self.headers) if admin else None
                             if s and (s.admin or s.operator or s.scopes):   # may order (product owners: their products)
                                 ctx["csrf"] = admin._csrf(s)
+                                if app.get("Rating") == "B":
+                                    ctx["estimates"] = refactor_estimates(admin, app)
                             return self._send(200, render_application(app, nav, ctx), head=head, forms=bool(nav))
                         bu = parse_qs(u.query).get("bu", [None])[0]
                         if bu is not None and not re.fullmatch(r"\d{1,9}|none", bu):
