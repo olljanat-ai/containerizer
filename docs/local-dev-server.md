@@ -24,7 +24,7 @@ Derived from the workflows themselves, so the local run matches CI:
 | `ci.yml` sql | Docker, `mcr.microsoft.com/mssql/server:2025-latest`, `requirements-sql.txt` (pymssql) | `sql` |
 | `ci.yml` sandbox | Docker, kind, kubectl | `sandbox` |
 | `ci.yml` assess-oneshot | Docker with BuildKit (builds and runs every generated container), a lot of disk | `assess` |
-| `release.yml` appliance | Docker + buildx, KVM, `qemu-system-x86`, `qemu-utils`, `ovmf`, `zstd`; the Elemental toolkit is built inside `appliance/Dockerfile`, so it needs no install | `appliance` |
+| `release.yml` appliance | Docker + buildx, KVM, `qemu-system-x86`, `qemu-utils`, `ovmf`, `zstd`, `expect` (the boot test changes the expired root password over SSH); the Elemental toolkit is built inside `appliance/Dockerfile`, so it needs no install | `appliance` |
 
 Not needed: Node.js (the repository has no JavaScript build), Syft as a binary (it runs as the
 `anchore/syft` container), and cosign / oras unless you test `sbom attach` or release signing by hand.
@@ -60,7 +60,7 @@ cp ~/.ssh/authorized_keys /home/dev/.ssh/ && chown dev:dev /home/dev/.ssh/author
 
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates curl git jq make openssh-client \
-  qemu-system-x86 qemu-utils ovmf zstd nftables unattended-upgrades
+  qemu-system-x86 qemu-utils ovmf zstd expect nftables unattended-upgrades
 
 # Docker Engine with BuildKit / buildx, from Docker's repository (Debian's docker.io has no buildx plugin)
 install -m 0755 -d /etc/apt/keyrings

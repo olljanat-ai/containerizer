@@ -236,7 +236,7 @@ job_assess() {
 }
 
 job_appliance() {
-  docker_ok && need qemu-system-x86_64 qemu-img ssh-keygen ssh curl || return 1
+  docker_ok && need qemu-system-x86_64 qemu-img ssh-keygen ssh curl expect || return 1
   [ -r /usr/share/OVMF/OVMF_CODE_4M.fd ] || die "missing /usr/share/OVMF/OVMF_CODE_4M.fd: apt install ovmf" || return 1
   [ -w /dev/kvm ] || die "/dev/kvm is not writable: add this user to the kvm group (and enable nested virtualization in a VM)" || return 1
   docker buildx version >/dev/null 2>&1 || die "docker buildx is missing: apt install docker-buildx-plugin" || return 1
