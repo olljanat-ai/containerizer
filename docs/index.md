@@ -217,6 +217,25 @@ the reason, such as "no source code".
 
 <div markdown>
 
+### A slow LLM never holds up a scan
+
+With a CPU-only or busy LLM, scans can leave the LLM reviews to a queue: uncertain components first,
+then a second opinion on blockers. Reorder it, limit it to quiet hours or an idle machine, and see how
+many tokens and hours are left, estimated from the speed it has measured on your LLM.
+
+[The LLM queue :octicons-arrow-right-24:](source-control.md#queued-llm-reviews)
+
+</div>
+
+![The LLM queue with token and time estimates learned from earlier answers](images/admin-llm-queue.png#only-light){ .cz-shot }
+![The LLM queue with token and time estimates learned from earlier answers](images/admin-llm-queue-dark.png#only-dark){ .cz-shot }
+
+</div>
+
+<div class="cz-feature cz-reverse" markdown>
+
+<div markdown>
+
 ### A person approves what the AI learns
 
 Fixes the learning loop discovers arrive as rule proposals with their evidence. Approve, edit or
@@ -231,7 +250,7 @@ reject them; approved rules make the next run faster and AI-free.
 
 </div>
 
-<div class="cz-feature cz-reverse" markdown>
+<div class="cz-feature" markdown>
 
 <div markdown>
 
@@ -249,7 +268,7 @@ across the whole portfolio.
 
 </div>
 
-<div class="cz-feature" markdown>
+<div class="cz-feature cz-reverse" markdown>
 
 <div markdown>
 

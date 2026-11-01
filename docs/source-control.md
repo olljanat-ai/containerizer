@@ -145,8 +145,17 @@ while it runs: the rules decide, and the questions go to the **LLM queue** inste
 (Admin → LLM queue, [organization scans](scheduled-scans.md#the-llm-queue)). The queue runner answers
 them when the queue's settings let it, for example at night or only while no scan runs.
 
+![The LLM queue: totals with token and time estimates learned from earlier answers, then the jobs in order](images/admin-llm-queue.png#only-light){ .cz-shot }
+![The LLM queue: totals with token and time estimates learned from earlier answers, then the jobs in order](images/admin-llm-queue-dark.png#only-dark){ .cz-shot }
+
 In queued mode the scan does not ask the LLM about build or run failures, dev databases, platform
 migrations or the sandbox tester either, so **LLM-heavy mode** needs inline reviews.
+
+Each job's page shows the question sent, the answer with its reasoning per finding, and the actual tokens
+and time against the estimate:
+
+![An answered job: the LLM's verdict and reasoning, actual tokens and time against the estimate](images/admin-llm-queue-job.png#only-light){ .cz-shot }
+![An answered job: the LLM's verdict and reasoning, actual tokens and time against the estimate](images/admin-llm-queue-job-dark.png#only-dark){ .cz-shot }
 
 **What is queued.** The components an inline scan would ask about (server and platform components the
 rules are less than 85 % sure of) are queued as *uncertain*. Server and platform components the rules

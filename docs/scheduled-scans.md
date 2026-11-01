@@ -160,6 +160,9 @@ With **Ask the LLM** on, **LLM reviews** chooses when the LLM is asked:
   ([queued LLM reviews](source-control.md#queued-llm-reviews): what is queued, in what order, and how an
   answer takes effect). Use it with a slow self-hosted LLM. LLM-heavy mode needs inline reviews.
 
+![Organization scan settings: Ask the LLM with queued LLM reviews](images/admin-scan-llm-mode.png#only-light){ .cz-shot }
+![Organization scan settings: Ask the LLM with queued LLM reviews](images/admin-scan-llm-mode-dark.png#only-dark){ .cz-shot }
+
 **Admin → LLM queue** (administrators and operators) shows:
 
 - the jobs waiting, in the order the runner takes them: the repository and component, why it is queued
