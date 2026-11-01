@@ -18,6 +18,7 @@ PY_VERSION=${CI_LOCAL_PYTHON:-3.12}              # actions/setup-python in every
 CHALLENGE_REPO=${CHALLENGE_REPO:-https://github.com/onek8s/containerization-challenge}
 SQL_PASSWORD='Ci-Only-Passw0rd!'                 # the same throwaway password as ci.yml; bound to 127.0.0.1 only
 SQL_IMAGE=mcr.microsoft.com/mssql/server:2025-latest
+SQL_PORT=${CI_LOCAL_SQL_PORT:-11433}            # CI uses 1433, which results/compose.yaml takes on this server
 KIND_NAME=cz-sandbox
 KEEP=${KEEP:-0}
 
@@ -44,6 +45,12 @@ need() { for t in "$@"; do command -v "$t" >/dev/null || die "missing tool: $t (
 
 # ------------------------------------------------------------------ python environment
 venv() {
+  # a venv made before uv was installed has the system Python (3.13 on Debian 13): rebuild it with uv
+  if [ -x "$VENV/bin/python" ] && command -v uv >/dev/null &&
+     ! "$VENV/bin/python" -c "import sys; sys.exit(f'{sys.version_info[0]}.{sys.version_info[1]}' != '$PY_VERSION')"; then
+    say "$VENV has $("$VENV/bin/python" --version), CI uses $PY_VERSION: recreating it with uv"
+    rm -rf "$VENV"
+  fi
   if [ ! -x "$VENV/bin/python" ]; then
     if command -v uv >/dev/null; then
       say "creating $VENV with uv (Python $PY_VERSION)"
@@ -110,8 +117,8 @@ job_security() {
 
 sql_up() {
   docker rm -f cz-ci-mssql >/dev/null 2>&1
-  say "starting SQL Server ($SQL_IMAGE) on 127.0.0.1:1433"
-  docker run -d --name cz-ci-mssql -p 127.0.0.1:1433:1433 \
+  say "starting SQL Server ($SQL_IMAGE) on 127.0.0.1:$SQL_PORT"
+  docker run -d --name cz-ci-mssql -p 127.0.0.1:$SQL_PORT:1433 \
     -e ACCEPT_EULA=Y -e MSSQL_PID=Developer -e MSSQL_SA_PASSWORD="$SQL_PASSWORD" \
     --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P '$SQL_PASSWORD' -Q 'SELECT 1' -b -o /dev/null" \
     --health-interval 10s --health-timeout 5s --health-retries 20 --health-start-period 20s \
@@ -131,7 +138,7 @@ job_sql() {
   sql_up || return 1
   cd "$ROOT"
   local rc=0
-  CONTAINERIZER_TEST_SQL="Server=127.0.0.1,1433;Database=master;User Id=sa;TrustServerCertificate=yes" \
+  CONTAINERIZER_TEST_SQL="Server=127.0.0.1,$SQL_PORT;Database=master;User Id=sa;TrustServerCertificate=yes" \
   CONTAINERIZER_SQL_PASSWORD="$SQL_PASSWORD" \
     python -m pytest -q tests/test_sqlstore.py tests/test_admin.py tests/test_roles.py tests/test_trends.py \
       tests/test_sandbox.py tests/test_worker.py tests/test_sbom.py tests/test_devdb.py tests/test_rule_review.py -rs || rc=1
@@ -140,14 +147,14 @@ job_sql() {
     (
       set -e
       docker build -q -f results/Dockerfile -t containerizer-results . >/dev/null
-      export CONTAINERIZER_SQL="Server=127.0.0.1,1433;Database=Containerizer;User Id=sa;TrustServerCertificate=yes"
+      export CONTAINERIZER_SQL="Server=127.0.0.1,$SQL_PORT;Database=Containerizer;User Id=sa;TrustServerCertificate=yes"
       export CONTAINERIZER_SQL_PASSWORD="$SQL_PASSWORD" CZ_CZ_WEB_PASSWORD='Ci-Web-Passw0rd!'
       python -m containerizer db init --create-database --login cz_web:reader
       python -m containerizer assess -q examples/ci-demo
       docker rm -f cz-ci-web >/dev/null 2>&1 || true
       # CI uses port 8080; 18080 here so it does not clash with anything you run yourself
       docker run -d --name cz-ci-web --network host -e CONTAINERIZER_SQL_PASSWORD="$CZ_CZ_WEB_PASSWORD" \
-        -e CONTAINERIZER_SQL="Server=127.0.0.1,1433;Database=Containerizer;User Id=cz_web;TrustServerCertificate=yes" \
+        -e CONTAINERIZER_SQL="Server=127.0.0.1,$SQL_PORT;Database=Containerizer;User Id=cz_web;TrustServerCertificate=yes" \
         --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp \
         containerizer-results web --host 127.0.0.1 --port 18080 >/dev/null
       for _ in $(seq 30); do curl -fsS http://127.0.0.1:18080/healthz >/dev/null && break; sleep 1; done
