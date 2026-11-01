@@ -149,3 +149,53 @@ def test_schema_validator():
     del bad["packages"]
     errs = _schema_errors(bad, REVIEW_SCHEMA)
     assert len(errs) == 3
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    slept = []
+    monkeypatch.setattr(ai.time, "sleep", slept.append)
+    return slept
+
+
+def test_loading_model_is_retried_with_backoff(server, no_sleep):
+    loading = {"error": {"code": 503, "message": "Loading model", "type": "unavailable_error"}}
+    server.replies += [(503, loading), (503, loading)]
+    server.answer('{"verdict": "blocker", "confidence": 0.9}')
+    assert ai.ask_json("p-retry", SCHEMA)["verdict"] == "blocker"
+    assert len(server.requests) == 3
+    assert no_sleep == [5.0, 10.0]
+
+
+def test_server_errors_that_are_not_transient_are_not_retried(server, no_sleep):
+    server.replies.append((500, {"error": "boom"}))
+    with pytest.raises(RuntimeError, match="answered HTTP 500"):
+        ai.ask_json("p-500", SCHEMA)
+    assert len(server.requests) == 1 and no_sleep == []
+
+
+def test_unreachable_server_gives_up_after_the_retry_budget(server, no_sleep, monkeypatch):
+    port = server.httpd.server_port
+    server.httpd.shutdown()
+    server.httpd.server_close()             # nothing listens: connection refused
+    monkeypatch.setenv("CONTAINERIZER_LLM_BASE_URL", f"http://127.0.0.1:{port}/v1")
+    monkeypatch.setenv("CONTAINERIZER_LLM_RETRY_SECONDS", "0")
+    with pytest.raises(RuntimeError, match="cannot reach LLM server"):
+        ai.ask_json("p-down", SCHEMA)
+    assert no_sleep == []
+    # with a budget it keeps trying, with growing waits capped at 30 s
+    clock = iter(range(0, 10_000, 1))
+    monkeypatch.setattr(ai.time, "monotonic", lambda: next(clock))
+    monkeypatch.setenv("CONTAINERIZER_LLM_RETRY_SECONDS", "100")
+    with pytest.raises(RuntimeError, match="cannot reach LLM server"):
+        ai.ask_json("p-down2", SCHEMA)
+    assert no_sleep[:4] == [5.0, 10.0, 20.0, 30.0] and set(no_sleep[3:]) == {30.0}
+
+
+def test_timeouts_are_not_retried(server, no_sleep, monkeypatch):
+    def timeout(*a, **k):
+        raise TimeoutError("timed out")
+    monkeypatch.setattr(ai, "_post_json", timeout)
+    with pytest.raises(RuntimeError, match="cannot reach LLM server"):
+        ai.ask_json("p-slow", SCHEMA)
+    assert no_sleep == []

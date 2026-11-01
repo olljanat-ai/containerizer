@@ -363,6 +363,33 @@ def _post_json(url: str, body: dict, headers: dict, timeout: float) -> dict:
         return json.loads(r.read().decode("utf-8", "replace"))
 
 
+# A server that is restarting or still loading its model (llama.cpp and vLLM answer 503 until it is in
+# memory, Ollama is briefly not listening) is retried with backoff, for up to CONTAINERIZER_LLM_RETRY_SECONDS
+# in all; without this one restart fails every remaining question of a scan. Timeouts are not retried.
+RETRY_HTTP = (429, 502, 503, 504)
+
+
+def _post_json_retrying(url: str, body: dict, headers: dict, timeout: float) -> dict:
+    end = time.monotonic() + float(_env("CONTAINERIZER_LLM_RETRY_SECONDS", "600"))
+    delay = 5.0
+    while True:
+        try:
+            return _post_json(url, body, headers, timeout)
+        except urllib.error.HTTPError as e:
+            if e.code not in RETRY_HTTP or time.monotonic() + delay > end:
+                raise
+            e.close()
+            why = f"HTTP {e.code}"
+        except (urllib.error.URLError, OSError) as e:
+            reason = getattr(e, "reason", e)
+            if isinstance(e, TimeoutError) or isinstance(reason, TimeoutError) or time.monotonic() + delay > end:
+                raise
+            why = str(reason)
+        print(f"[ai] LLM server not ready ({why}): retrying in {delay:.0f} s", file=sys.stderr, flush=True)
+        time.sleep(delay)
+        delay = min(delay * 2, 30.0)
+
+
 # Structured output modes, strongest first. Servers differ in what they support; on a 400/422 the next
 # one is tried. The schema is always in the prompt too, and every answer is validated here.
 JSON_MODES = ("json_schema", "json_object", "none")
@@ -396,7 +423,7 @@ def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False, sys
         elif m == "json_object":
             b["response_format"] = {"type": "json_object"}
         try:
-            resp = _post_json(base + "/chat/completions", b, headers, timeout)
+            resp = _post_json_retrying(base + "/chat/completions", b, headers, timeout)
             break
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:300]

@@ -118,6 +118,10 @@ were learned from, and an administrator still reviews every learned rule ([rule 
 - Every answer is checked against the schema. An invalid answer is retried once with the errors
   listed; a second one is an error, and the component keeps the rules' verdict. `<think>` blocks of
   reasoning models are ignored.
+- A self-hosted server that is restarting or still loading its model (connection refused or reset,
+  HTTP 429, 502, 503 or 504) is retried with growing waits, for up to 10 minutes in all
+  (`CONTAINERIZER_LLM_RETRY_SECONDS`), so a restart does not cost the scan its answers. Timeouts and
+  other errors are not retried: the component keeps the rules' verdict.
 - Requests use `temperature: 0` and answers are cached by prompt, model and server, so runs repeat.
 - The LLM never runs commands or edits the application: it returns JSON, and build-plan patches are
   limited to an allow-list of plan keys. What it proposes is recorded with `source: ai` and the model.
