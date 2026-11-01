@@ -141,7 +141,8 @@ to change, why, and where to read more. Everything links back to the rule that d
 
 </div>
 
-![Application page with components, findings, fixes and references](images/results-application.png){ .cz-shot }
+![Application page with components, findings, fixes and references](images/results-application.png#only-light){ .cz-shot }
+![Application page with components, findings, fixes and references](images/results-application-dark.png#only-dark){ .cz-shot }
 
 </div>
 
@@ -159,7 +160,8 @@ Windows" instead of being forced.
 
 </div>
 
-![Migration assistant with replacements and steps](images/results-migration-assistant.png){ .cz-shot }
+![Migration assistant with replacements and steps](images/results-migration-assistant.png#only-light){ .cz-shot }
+![Migration assistant with replacements and steps](images/results-migration-assistant-dark.png#only-dark){ .cz-shot }
 
 </div>
 
@@ -194,7 +196,8 @@ its last result, and skipped ones are listed with the reason, such as "no source
 
 </div>
 
-![Repositories of an organization scan, skipped ones disabled with the reason](images/admin-repositories-disabled.png){ .cz-shot }
+![Repositories of an organization scan, skipped ones disabled with the reason](images/admin-repositories-disabled.png#only-light){ .cz-shot }
+![Repositories of an organization scan, skipped ones disabled with the reason](images/admin-repositories-disabled-dark.png#only-dark){ .cz-shot }
 
 </div>
 
@@ -211,7 +214,8 @@ reject them; approved rules make the next run faster and AI-free.
 
 </div>
 
-![Rule review with a proposed rule and its evidence](images/rule-review-detail.png){ .cz-shot }
+![Rule review with a proposed rule and its evidence](images/rule-review-detail.png#only-light){ .cz-shot }
+![Rule review with a proposed rule and its evidence](images/rule-review-detail-dark.png#only-dark){ .cz-shot }
 
 </div>
 
@@ -228,7 +232,8 @@ across the whole portfolio.
 
 </div>
 
-![SBOM portfolio with licences and CVEs](images/sbom-portfolio.png){ .cz-shot }
+![SBOM portfolio with licences and CVEs](images/sbom-portfolio.png#only-light){ .cz-shot }
+![SBOM portfolio with licences and CVEs](images/sbom-portfolio-dark.png#only-dark){ .cz-shot }
 
 </div>
 
@@ -245,7 +250,8 @@ dashboard included in the appliance.
 
 </div>
 
-![Grafana dashboard of the scans](images/grafana-scans-dashboard.png){ .cz-shot }
+![Grafana dashboard of the scans](images/grafana-scans-dashboard.png#only-light){ .cz-shot }
+![Grafana dashboard of the scans](images/grafana-scans-dashboard-dark.png#only-dark){ .cz-shot }
 
 </div>
 
