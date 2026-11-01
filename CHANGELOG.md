@@ -5,6 +5,16 @@ by hand on `main` with the version, and it tags the commit and releases from the
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHD images as release assets.
 
+## Unreleased
+
+### Appliance
+- `root` signs in with the password `containerizer` on the console and over SSH, and the first sign-in
+  asks for a new one. The changed password is kept on the persistent partition, so it survives restarts,
+  upgrades and roll backs. The SSH key is now optional in the installer, the first-time key prompt on the
+  console of a disk image is gone, and SSH accepts passwords as well as keys (`passwd -l root` for keys
+  only). An appliance upgraded from 0.1.0 starts with the default password too: sign in and change it
+  right after the upgrade. See [Running the appliance](docs/appliance-admin.md#root-password-and-ssh).
+
 ## 0.1.0 (2026-10-31)
 
 The first release: the assessor, the GitHub Action and Azure DevOps gate, the results database with its web

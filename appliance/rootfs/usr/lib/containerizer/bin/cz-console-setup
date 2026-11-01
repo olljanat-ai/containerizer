@@ -1,18 +1,17 @@
 #!/bin/bash
-# On the live ISO: the installer. Installed: first-time setup, shown only while root has no SSH key:
-# the SSH public key to sign in with, and optionally the name of the appliance. Whoever has the console
-# owns the machine anyway; afterwards the console asks for a normal login (root has no password unless
-# you set one here).
+# On the live ISO: the installer (the disk, an optional SSH key for root and the host name). Installed:
+# nothing, the console shows the normal login prompt.
 set -uo pipefail
-K=/root/.ssh/authorized_keys
 TTY="${1:-tty1}"
 
-ask_key() {
-  echo "  Sign-in is with an SSH key only. Paste the public key to sign in as root with"
-  echo "  (one line: ssh-ed25519, ecdsa-sha2-* or ssh-rsa):"
+ask_key() {  # optional: root signs in with the password too
+  echo "  SSH public key to sign in as root with (one line: ssh-ed25519, ecdsa-sha2-* or ssh-rsa;"
+  echo "  empty: none, sign in with the password \"containerizer\" and change it at the first sign-in):"
   echo
+  : > /run/cz-key.pub
   while :; do
     read -r -p "  key> " key || exit 0
+    [ -n "$key" ] || return 0
     printf '%s\n' "$key" > /run/cz-key.pub
     if ssh-keygen -l -f /run/cz-key.pub >/dev/null 2>&1; then break; fi
     echo "  That is not an SSH public key. Try again."
@@ -46,11 +45,13 @@ if grep -qw cdroot /proc/cmdline; then
     echo "  initramfs:"
     echo "    - name: host name"
     echo "      hostname: \"${name:-containerizer}\""
-    echo "  fs:"
-    echo "    - name: SSH key of the administrator"
-    echo "      authorized_keys:"
-    echo "        root:"
-    echo "        - \"$(cat /run/cz-key.pub)\""
+    if [ -s /run/cz-key.pub ]; then
+      echo "  fs:"
+      echo "    - name: SSH key of the administrator"
+      echo "      authorized_keys:"
+      echo "        root:"
+      echo "        - \"$(cat /run/cz-key.pub)\""
+    fi
   } > /run/cz-install.yaml
   echo
   read -r -p "  Erase $disk and install? Type yes: " ok
@@ -65,36 +66,6 @@ if grep -qw cdroot /proc/cmdline; then
   exit 0
 fi
 
-# ----------------------------------------------------------------------------- installed: first-time key
-[ -s "$K" ] && exit 0
-exec </dev/"$TTY" >/dev/"$TTY" 2>&1
-clear 2>/dev/null || true
-cat <<TXT
-
-  containerizer appliance $(. /etc/os-release; echo "$IMAGE_TAG") - first-time setup
-
-TXT
-ask_key
-install -d -m 0700 /root/.ssh
-install -m 0600 /run/cz-key.pub "$K"
-rm -f /run/cz-key.pub
-echo
-read -r -p "  Name of the appliance (DNS name for HTTPS, empty: $(hostname)): " name
-if [ -n "$name" ]; then
-  if [[ "$name" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]]; then
-    sed -i "s/^CZ_HOSTNAME=.*/CZ_HOSTNAME=$name/" /etc/containerizer/appliance.env
-  else
-    echo "  Not a host name; keeping $(hostname). Set CZ_HOSTNAME in /etc/containerizer/appliance.env later."
-  fi
-fi
-read -r -p "  Also set a root password for this console (not for SSH)? [y/N] " yn
-case "$yn" in [yY]*) passwd root ;; esac
-cat <<TXT
-
-  Done. Sign in with:  ssh root@<address>   (addresses: $(hostname -I))
-  Then follow the first-boot steps in docs/appliance.md: sign-in for the web UI (/etc/containerizer/web.env),
-  tokens for the scan worker, the firewall allow-list. The appliance restarts now to apply the name.
-
-TXT
-sleep 5
-systemctl reboot
+# ----------------------------------------------------------------------------- installed: the normal login
+# prompt (root's password is "containerizer" until changed; login asks for a new one, see cz-root-password)
+exit 0
