@@ -314,12 +314,20 @@ touches the assessment or the appliance). Use .venv-ci/bin/python for ad hoc tes
       ct state established,related accept
       ip protocol icmp accept
       ip6 nexthdr icmpv6 accept
+      udp dport 68 accept     # DHCP client (offers and acknowledgements can be broadcasts)
+      udp dport 546 accept    # DHCPv6 client
       tcp dport 22 accept
     }
   }
   EOF
   systemctl enable --now nftables && systemctl restart docker   # Docker re-adds its own tables
   ```
+
+  The DHCP lines matter on a server that gets its address by DHCP: renewals are answered as established
+  traffic, but a new lease (after a reboot or a lost lease) can arrive as a broadcast that conntrack does
+  not match, and the server would lose its address. Restarting Docker restarts the containers that have a
+  restart policy; give long-running ones you started by hand one (`docker update --restart unless-stopped
+  <name>`), or they stay stopped. A kind cluster does not survive it: the `sandbox` job creates it again.
 
 - **SSH**: key login only. In `/etc/ssh/sshd_config.d/hardening.conf` set `PasswordAuthentication no`
   and `PermitRootLogin no`, then `systemctl reload ssh`.
