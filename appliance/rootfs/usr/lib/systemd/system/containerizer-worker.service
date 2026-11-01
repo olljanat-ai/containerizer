@@ -17,6 +17,8 @@ EnvironmentFile=-/run/containerizer/llm.env
 Environment=CONTAINERIZER_LAB_SERVICES=/var/lib/containerizer/system/lab-services.json
 # dev database backups the web UI stored (read through the group of the folder)
 Environment=CONTAINERIZER_DEV_DB_DIR=/var/lib/containerizer/devdb
+# LLM answers, so a repeated question costs nothing (the default, next to the code, is the read-only OS image)
+Environment=CONTAINERIZER_AI_CACHE=/var/lib/containerizer/worker/ai-cache
 Environment="CONTAINERIZER_SQL=Server=127.0.0.1,1433;Database=Containerizer;User Id=cz_scanner;TrustServerCertificate=yes"
 LoadCredential=sql-scanner:/etc/containerizer/secrets/cz-scanner
 LoadCredential=credential-key:/etc/containerizer/secrets/credential-key

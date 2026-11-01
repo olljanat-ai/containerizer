@@ -84,7 +84,7 @@ The first boot creates `/etc/containerizer/` (mode 700) with:
 | `sandbox.env` | The output repository the sandbox cluster deploys from ([the sandbox cluster](scheduled-scans.md#the-sandbox-cluster)) |
 | `grafana.env` | Optional Grafana settings, e.g. sign-in with your identity provider |
 | `egress.json` | The egress allow-list: change it on the Firewall page, not here |
-| `secrets/` | Generated passwords (SQL Server logins, Grafana `admin`) and the key pair that seals source control tokens (`credential-key` for the worker only, `credential-key.pub` for the web UI): root-only, never shown in the web UI. Keep `credential-key` when restoring a backup: the registered tokens open only with it |
+| `secrets/` | Generated passwords (SQL Server logins, Grafana `admin`), the root password (`root-shadow`) and the key pair that seals source control tokens (`credential-key` for the worker only, `credential-key.pub` for the web UI): root-only, never shown in the web UI. Keep `credential-key` when restoring a backup: the registered tokens open only with it |
 | `network/` | Optional `systemd-networkd` `.network` files for static addresses (default: DHCP on every NIC) |
 
 ## Firewall
@@ -176,6 +176,22 @@ On the console: `python -m containerizer.sysagent upgrade vX.Y.Z` or `... rollba
 
 ## Backup
 
+The OS is rebuilt from the image; what has to be backed up is on the persistent partition. Scans rebuild
+the clones, images in the local registry and the sandbox apps, but not the rest:
+
+| What | Where | Why it matters |
+| --- | --- | --- |
+| Results database | SQL Server, `/var/lib/containerizer/mssql` (back it up with `BACKUP DATABASE`, below) | Results, history, mapping, scan settings, sealed tokens, rule review |
+| Configuration and secrets | `/etc/containerizer` | `.env` files, firewall allow-list, SQL Server and Grafana passwords, the root password, and `secrets/credential-key`: the tokens in the database open only with it |
+| Dev database uploads | `/var/lib/containerizer/devdb` | The uploaded backups. The database keeps only their name and SHA-256, so without the files the next scan of those apps has no backup to restore |
+| Appliance settings and their history | `/var/lib/containerizer/system` | Sandbox HTTPS certificate, key and settings, the lab service switches, and the change history of the firewall and Sandbox HTTPS (these two are files here, not in the database) |
+| Learned rules | `/var/lib/containerizer/learned` | Rules the learning loop added on this appliance. Rules approved in the rule review are in your rules repository |
+| HTTPS certificate authority | `/var/lib/caddy` | Without `CZ_ACME_EMAIL`, the appliance's own CA: a new one means every browser has to trust a new root |
+| Metrics (optional) | `/var/lib/containerizer/prometheus`, `/var/lib/containerizer/grafana` | 90 days of scan and LLM usage metrics, and changes made in Grafana |
+
+Lab service data and restored dev databases in the sandbox cluster (`/var/lib/rancher`) are test data:
+a new cluster starts them empty, or restores the uploaded backups again, and creates new credentials.
+
 Back up the database (from the appliance):
 
 ```sh
@@ -184,7 +200,29 @@ docker exec cz-mssql /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$(c
 # the file is /var/lib/containerizer/mssql/backup/containerizer.bak
 ```
 
-and `/etc/containerizer` (configuration and secrets). Everything else is rebuilt by the next scans.
+and the folders (the database backup above included):
+
+```sh
+tar -C / -czf /root/containerizer-backup.tgz etc/containerizer var/lib/containerizer/mssql/backup \
+  var/lib/containerizer/devdb var/lib/containerizer/system var/lib/containerizer/learned var/lib/caddy
+```
+
+Copy the archive off the appliance (`scp root@<appliance>:/root/containerizer-backup.tgz .`): it holds
+every secret of the appliance, so keep it like one.
+
+To restore on a new appliance, after its first start (with its own `sa` password, which you keep):
+
+```sh
+systemctl stop containerizer-web containerizer-worker
+tar -C / -xzf /root/containerizer-backup.tgz \
+  --exclude=etc/containerizer/secrets/mssql-sa --exclude=etc/containerizer/secrets/mssql.env
+docker exec cz-mssql /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$(cat /etc/containerizer/secrets/mssql-sa)" \
+  -Q "RESTORE DATABASE Containerizer FROM DISK = N'/var/opt/mssql/backup/containerizer.bak' WITH REPLACE"
+systemctl reboot
+```
+
+At the next start the schema is upgraded if the backup is older, and the logins of the web UI and the
+scan worker get the passwords of the backup and are linked to their users in the restored database again.
 
 ## Security notes
 
