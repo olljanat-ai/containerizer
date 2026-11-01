@@ -7,6 +7,9 @@ they are in `/etc/containerizer/web.env` on the appliance (mode 600), because th
 the admin pages in the first place. Restart the web UI after a change
 (`systemctl restart containerizer-web`).
 
+For development without an identity provider (never on the appliance, where it is refused), see
+[admin pages without sign-in](local-dev-server.md#admin-pages-without-sign-in).
+
 ## Register the app at your identity provider
 
 The redirect URI is `https://<CZ_HOSTNAME>/auth/callback`, where `CZ_HOSTNAME` is the name set in

@@ -5,6 +5,15 @@ by hand on `main` with the version, and it tags the commit and releases from the
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHD images as release assets.
 
+## Unreleased
+
+### Web UI
+- Development mode for the admin pages: `CONTAINERIZER_DEV_NO_AUTH=1` signs everyone in as a configured
+  person (default John Doe, administrator; `CONTAINERIZER_DEV_USER`, `_NAME`, `_ROLES`), for development and
+  labs without an identity provider. It is refused on the appliance and next to a configured sign-in; a red
+  banner shows on every page, the JSON API stays off, and CSRF tokens, roles and the change history work as
+  with sign-in (docs/local-dev-server.md).
+
 ## 0.2.0 (2026-11-01)
 
 Results database schema version 20 (`containerizer db init` upgrades it; the appliance does at start).

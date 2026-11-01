@@ -682,14 +682,19 @@ def _ws(s) -> str:
 SCRIPT_TAG = "<script src='/static/app.js'></script>"
 
 
+# Set by serve() in development mode (CONTAINERIZER_DEV_NO_AUTH): shown at the top of every page.
+DEV_BANNER = ""
+
+
 def page(title: str, body: str, script: bool = False) -> str:
     return (f"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'><title>{e(title)}</title>"
             f"<link rel='stylesheet' href='/static/app.css'><link rel='icon' href='data:,'></head>"
-            f"<body><main>{body}</main>{SCRIPT_TAG if script else ''}</body></html>")
+            f"<body>{DEV_BANNER}<main>{body}</main>{SCRIPT_TAG if script else ''}</body></html>")
 
 
 CSS = """
+.devmode{background:#b3261e;color:#fff;padding:8px 16px;text-align:center;font-size:14px}.devmode b{color:#fff}
 :root{--bg:#f9f9f7;--card:#fff;--fg:#0b0b0b;--muted:#5f5e58;--line:#e1e0d9;--link:#1f5fbf;
 --rA:#0ca30c;--rB:#74c476;--rC:#fab219;--rD:#ec835a;--rE:#d03b3b}
 @media (prefers-color-scheme:dark){:root{--bg:#1a1a19;--card:#232321;--fg:#f0efe9;--muted:#a8a69c;--line:#383835;--link:#7fb0ff}}
@@ -1050,12 +1055,18 @@ def make_handler(connect, admin=None):
 
 
 def serve(cs: str | None, host: str = "127.0.0.1", port: int = 8080) -> int:
+    global DEV_BANNER
     from .admin import build
     from .oidc import OidcError
+    from .roles import role_label
     from .sqlstore import SqlError, connect
     try:
         connect(cs).close()           # fail fast on a bad connection string or credentials
         admin = build()
+        if admin and admin.dev:
+            DEV_BANNER = (f"<div class='devmode' role='alert'><b>Development mode: no sign-in.</b> Everyone who can reach "
+                          f"this page uses it as {e(admin.dev.name)} ({e(role_label(admin.dev.admin, admin.dev.operator, []) or 'viewer')}). "
+                          f"Never on the appliance or a shared network.</div>")
         if admin:
             admin.connect_admin().close()
     except (SqlError, OidcError) as ex:
@@ -1065,7 +1076,8 @@ def serve(cs: str | None, host: str = "127.0.0.1", port: int = 8080) -> int:
     print(f"containerizer results UI on http://{host}:{port}/ ("
           + ("results behind sign-in" + (", access logged" if admin.cfg.view_audit else "") if admin and admin.viewers_required
              else "results read-only without sign-in") + "; "
-          + (f"admin pages behind sign-in at {admin.cfg.public_url}/admin" if admin else "admin pages off: no sign-in configured")
+          + (f"admin pages WITHOUT sign-in (development mode) at {admin.cfg.public_url}/admin" if admin and admin.dev
+             else f"admin pages behind sign-in at {admin.cfg.public_url}/admin" if admin else "admin pages off: no sign-in configured")
           + ("; JSON API at /api/v1)" if admin and admin.api else ")"))
     try:
         httpd.serve_forever()

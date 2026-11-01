@@ -80,6 +80,11 @@ services:
       CONTAINERIZER_API_AUDIENCE: ${CONTAINERIZER_API_AUDIENCE:-}
       CONTAINERIZER_API_CLIENTS: ${CONTAINERIZER_API_CLIENTS:-}
       CONTAINERIZER_GRAFANA_URL: ${CONTAINERIZER_GRAFANA_URL:-}
+      # development only: the admin pages without sign-in (docs/local-dev-server.md#admin-pages-without-sign-in)
+      CONTAINERIZER_DEV_NO_AUTH: ${CONTAINERIZER_DEV_NO_AUTH:-}
+      CONTAINERIZER_DEV_USER: ${CONTAINERIZER_DEV_USER:-}
+      CONTAINERIZER_DEV_NAME: ${CONTAINERIZER_DEV_NAME:-}
+      CONTAINERIZER_DEV_ROLES: ${CONTAINERIZER_DEV_ROLES:-}
       # dev database backups operators upload (docs/dev-databases.md); the scan worker needs the same folder
       CONTAINERIZER_DEV_DB_DIR: /var/lib/containerizer/dev-databases
       CONTAINERIZER_DEV_DB_MAX_MB: ${CONTAINERIZER_DEV_DB_MAX_MB:-2048}

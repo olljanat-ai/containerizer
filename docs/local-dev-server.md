@@ -358,6 +358,30 @@ docker compose -f results/compose.yaml up -d --build
 docker compose -f results/compose.yaml run --rm -v "$PWD/../my-app:/apps/my-app:ro" scan assess /apps/my-app
 ```
 
+### Admin pages without sign-in
+
+The admin pages need [sign-in](sign-in.md) through an OpenID Connect provider. For development, a lab or
+your own machine, **development mode** skips it: set in `results/.env`
+
+```sh
+CONTAINERIZER_DEV_NO_AUTH=1
+CONTAINERIZER_PUBLIC_URL=http://127.0.0.1:8080   # the address you open in the browser (forms check it)
+# optional: who you are and your roles (admin, operator, viewer); default John Doe, admin
+CONTAINERIZER_DEV_USER=john.doe@example.com
+CONTAINERIZER_DEV_NAME=John Doe
+CONTAINERIZER_DEV_ROLES=admin
+```
+
+and restart the web UI (`docker compose -f results/compose.yaml up -d`). Opening `/admin` then signs you in
+as that person at once. Everything else works as with sign-in: the roles decide what you see, every form
+needs its CSRF token, and the change history records the changes as made by that person in development
+mode. A red banner on every page says so, and the JSON API stays off.
+
+!!! danger "Never on a shared network"
+    Everyone who reaches the web UI is an administrator. The web UI refuses to start in development mode
+    on the appliance, and when sign-in (`CONTAINERIZER_OIDC_ISSUER`) is set as well. Keep it on 127.0.0.1,
+    or limit who reaches it with the firewall, as for the rest of this server.
+
 ## Building the appliance image
 
 ```sh
