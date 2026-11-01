@@ -46,7 +46,7 @@ SCAN_COLS = ("Name", "Provider", "Organization", "ApiUrl", "Registry", "OutputRe
              "Gate", "PushImages", "UseAi", "LlmMode", "LlmHeavy", "ScheduleDays", "ScheduleMinute", "Enabled")
 FLAGS = ("SkipForks", "Verify", "Gate", "PushImages", "UseAi", "LlmHeavy", "Enabled")
 LLM_MODES = {"inline": "Inline: ask during the scan",
-             "queued": "Queued: rules only during the scan; the LLM queue answers later and the next scan applies it"}
+             "queued": "Queued: later, in the LLM queue (rules only during the scan)"}
 NEW_DAYS = 7
 PAUSED = " <span class='st st-off'>Paused</span>"
 NEW_CHIP = " <span class='st st-run'>New</span>"
