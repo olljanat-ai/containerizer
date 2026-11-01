@@ -124,3 +124,9 @@ UI and admin pages, and the appliance. Results database schema version 16.
   the DNS filter watches for the DHCP DNS servers from early boot
 - Lab services: MySQL is provisioned over TCP inside its pod; the lab cluster test runs on ubuntu-22.04
   because MongoDB 8.0 does not start on Linux 6.19 and newer
+
+### Development
+- The local development server guide shows how to run Qwen3-Coder 30B-A3B on CPU only (ByteShape's
+  CPU builds with llama.cpp's server, pinned by digest and SHA-256) as the self-hosted LLM for testing,
+  with the memory it needs and how slow it is. Real environments use an external LLM
+
