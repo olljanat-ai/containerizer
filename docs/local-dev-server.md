@@ -36,7 +36,7 @@ x86_64 only: the SQL Server image, OVMF and the appliance are amd64.
 | | Fast set | Everything (`all`) | With Ollama |
 | --- | --- | --- | --- |
 | CPU | 4 cores | 8+ cores | 8+ cores, or a GPU |
-| RAM | 16 GB | 32 GB | 64 GB on CPU, or a 24 GB GPU for a 30B model |
+| RAM | 16 GB | 32 GB | 64 GB on CPU, or a 24 GB GPU for a 30B model ([Qwen3-Coder 30B-A3B on CPU](#optional-qwen3-coder-30b-a3b-on-cpu-only-no-gpu): + 20 GB) |
 | Disk (SSD/NVMe) | 100 GB | 250 GB | + 20-40 GB per model |
 
 The appliance boot test gives its VM all CPUs and the free memory less 1 GiB (at most 11 GiB, at least
@@ -115,6 +115,65 @@ export CONTAINERIZER_LLM_BASE_URL=http://localhost:11434/v1
 export CONTAINERIZER_MODEL=qwen3:32b
 .venv-ci/bin/python -m containerizer assess examples/ci-demo --ai
 ```
+
+### Optional: Qwen3-Coder 30B-A3B on CPU only (no GPU)
+
+For a lab server without a GPU. This is for development and testing only: real environments use an
+external LLM. [ByteShape](https://byteshape.com/blogs/Devstral-Small-2-24B-Instruct-2512/) publishes
+quantized builds of Qwen3-Coder 30B-A3B tuned for CPUs (Apache 2.0). The model is a mixture of experts
+with only 3B of its 30B parameters active per token, so it is several times faster on a CPU than a dense
+model of similar quality. Their dense Devstral Small 2 24B builds stay under 10 tokens/s on CPUs.
+
+| Build (file) | Size | Quality (vs. baseline) | Intel Core i7 | Memory with a 32K context |
+| --- | --- | --- | --- | --- |
+| `Qwen3-Coder-30B-A3B-Instruct-IQ4_XS-4.20bpw.gguf` | 16 GB | 99.0% | 15.9 tokens/s | about 20 GB |
+| `Qwen3-Coder-30B-A3B-Instruct-Q3_K_M-3.31bpw.gguf` | 12.7 GB | 97.5% | 18.3 tokens/s | about 16 GB |
+
+The quality and speed figures are ByteShape's. Generation speed follows memory bandwidth, so a
+dual-channel desktop is slower than a many-channel server. Reading the prompt is slower too: the
+evidence packs are 5,000 to 15,000 tokens, so expect up to a few minutes per answer. LLM-heavy mode makes
+many calls and turns a scan into hours. Use the 4.20 bpw build when the memory is there, and stay above
+about 3 bpw.
+
+Run llama.cpp's server on loopback, as an unprivileged container. The model file is read-only:
+
+```sh
+sudo install -d -m 0755 /srv/llm
+cd /srv/llm
+f=Qwen3-Coder-30B-A3B-Instruct-IQ4_XS-4.20bpw.gguf
+sudo curl -fL -C - -o $f \
+  https://huggingface.co/byteshape/Qwen3-Coder-30B-A3B-Instruct-GGUF/resolve/0436a5b1e12e051e8a8568d56a1526734d3ed572/$f
+echo "618f0a45a5a85f099106c80e44e0eb8ce9ee094b6268395b84e8b5b729f865dd  $f" | sha256sum -c -
+sudo chmod 0644 $f
+
+docker run -d --name llm --restart unless-stopped --network host \
+  --volume /srv/llm:/models:ro --memory 24g --cpu-shares 256 \
+  --user 65534:65534 --read-only --tmpfs /tmp:size=64m --cap-drop ALL --security-opt no-new-privileges \
+  ghcr.io/ggml-org/llama.cpp:server-b12030@sha256:e67d88af487390098c76d7982b1761484339fa147b7e41d3c64ae1318759f78b \
+  --host 127.0.0.1 --port 8081 --model /models/$f --alias qwen3-coder-30b-a3b \
+  --ctx-size 32768 --parallel 1 --jinja
+curl -fsS http://127.0.0.1:8081/health                 # {"status":"ok"} once the model is loaded
+```
+
+`--threads N` limits the CPU it takes (the default is about one thread per core). `--cpu-shares 256`
+gives the test suite's builds the CPU first when both want it. Then point Containerizer at it. Raise
+the timeout, because the default of 15 minutes per call is tight on a CPU:
+
+```sh
+export CONTAINERIZER_LLM_BASE_URL=http://localhost:8081/v1
+export CONTAINERIZER_MODEL=qwen3-coder-30b-a3b
+export CONTAINERIZER_LLM_TIMEOUT=3600
+.venv-ci/bin/python -m containerizer assess examples/ci-demo --ai
+```
+
+To test it from an appliance VM on the same server, enter the same server URL (the server's address
+instead of `localhost`, with `--host` set to match) and model on **Admin → Source control**, and allow
+the address on **Admin → Firewall**. Plain http is accepted only when there is no API key: put TLS and
+a key (llama.cpp `--api-key`, behind a reverse proxy) in front of it otherwise.
+
+With Ollama instead of llama.cpp, run
+`ollama pull hf.co/byteshape/Qwen3-Coder-30B-A3B-Instruct-GGUF:Qwen3-Coder-30B-A3B-Instruct-IQ4_XS-4.20bpw.gguf`
+and use that name as the model, with the base URL `http://localhost:11434/v1`.
 
 ## Claude Code
 
@@ -219,7 +278,7 @@ touches the assessment or the appliance). Use .venv-ci/bin/python for ad hoc tes
 
 - **SSH**: key login only. In `/etc/ssh/sshd_config.d/hardening.conf` set `PasswordAuthentication no`
   and `PermitRootLogin no`, then `systemctl reload ssh`.
-- **Ollama** listens on `127.0.0.1:11434` only; leave `OLLAMA_HOST` unset unless you put TLS and a key in
+- **Ollama** listens on `127.0.0.1:11434` only, and the llama.cpp container on `127.0.0.1:8081`; leave `OLLAMA_HOST` unset unless you put TLS and a key in
   front of it.
 - **GitHub**: give the server a fine-grained token (or deploy key) scoped to this repository only, with
   no admin or workflow permissions, so a mistake on the server cannot change other repositories or
