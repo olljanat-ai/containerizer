@@ -81,3 +81,10 @@ def test_store_grant_names_exact_keys(tmp_path):
     gen = eso.store_access("kube-system", ["containerizer-sandbox-tls", "other"])
     assert (gen[0]["metadata"]["name"], gen[0]["rules"]) == (role["metadata"]["name"], role["rules"])
     assert rb["subjects"] == gen[1]["subjects"]
+
+
+def test_store_put_keys_that_look_like_yaml_booleans_stay_strings():
+    p = _run("cz_store_put shop--web n=1 yes=2 on=3 off=4")
+    assert p.returncode == 0, p.stderr
+    doc = yaml.safe_load(p.stdout.split("\n", 1)[1].split("---END")[0])
+    assert sorted(doc["data"]) == ["n", "off", "on", "yes"]          # unquoted, YAML read them as true/false

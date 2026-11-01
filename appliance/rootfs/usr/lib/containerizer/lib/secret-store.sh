@@ -64,7 +64,7 @@ cz_store_put() {
          k=${kv%%=*}; v=${kv#*=}
          [[ "$k" =~ ^[-._a-zA-Z0-9]+$ ]] || { echo "cz_store_put: bad key name" >&2; return 1; }
          if [ "${v:0:1}" = @ ]; then v=$(base64 -w0 < "${v:1}"); else v=$(printf %s "$v" | base64 -w0); fi
-         data+="  ${k}: ${v}"$'\n';;
+         data+="  \"${k}\": ${v}"$'\n';;   # quoted: a key such as n, y, on or no would be a YAML boolean
     esac
   done
   [ -n "$data" ] || { echo "cz_store_put: no keys" >&2; return 1; }

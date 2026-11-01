@@ -400,3 +400,128 @@ A fork that publishes its own images sets `--build-arg IMAGE=ghcr.io/<owner>/con
 --build-arg SIGNER_REPO=<owner>/<repo>`, so its appliances accept only its own signed releases.
 `.github/workflows/release.yml` builds, boot-tests (QEMU: firewall, DNS filter, services, sandbox cluster,
 registry, roll back) and, on a `vX.Y.Z` tag, pushes, signs and publishes.
+
+## Lab sandbox (k3s, Flux, Git server)
+
+A persistent copy of the appliance's sandbox deployment path on this server, for testing features that
+deploy applications to the sandbox through GitOps end to end: the same k3s, Flux and External Secrets
+versions and settings as the appliance, a Git server for the output repository, and what the appliance's
+`cz-sandbox` timer does. It is not the `sandbox` job of `ci/local.sh` (a throwaway kind cluster
+`cz-sandbox`): the two run side by side. The scripts are in [`ci/lab-sandbox/`](../ci/lab-sandbox/); its
+state lives in `LAB_DIR` (default `/home/dev/lab-sandbox`):
+
+```sh
+mkdir -p ~/lab-sandbox && cp -r ci/lab-sandbox/. ~/lab-sandbox/   # the timer runs sync.sh from where up.sh ran
+~/lab-sandbox/up.sh        # install or start everything; idempotent, needs sudo; about 3 minutes the first time
+~/lab-sandbox/status.sh
+~/lab-sandbox/smoke.sh     # the end-to-end test below
+~/lab-sandbox/down.sh      # stop, data kept (--purge: remove the cluster, Gitea and all state)
+```
+
+### What runs where
+
+| What | How | Reached at |
+| --- | --- | --- |
+| k3s v1.37.1+k3s1, the appliance's binary and checksum, single node `lab` | systemd `k3s-lab`, config `/etc/rancher/k3s-lab/config.yaml` | API `https://127.0.0.1:6443`; admin kubeconfig `$LAB_DIR/kubeconfig` (mode 600) |
+| Flux v2.10.0 (the appliance's `install.yaml` and checksum, images pinned by digest in `lib.sh`) | k3s, `flux-system` | |
+| External Secrets Operator 2.14.0 (the appliance's chart digest and values), ClusterSecretStore `app-secrets` over namespace `containerizer-secrets` | k3s; the store is made by the appliance's own `lib/secret-store.sh` | `secret.sh <remote-key> <json-or-literal>` |
+| Gitea 28.3 (rootless, pinned by digest), HTTPS with a certificate from the lab CA | container `lab-git`, runs as `dev`, data in `$LAB_DIR/state/gitea` | `https://lab-git:3001/`: published on 127.0.0.1:3001 and on the Docker bridge address 172.17.0.1:3001 |
+| Output repository | Gitea organization `lab`, private | `https://lab-git:3001/lab/sandbox-deployments.git` |
+| Traefik (k3s's, as on the appliance) | NodePorts 30080 / 30443 on loopback only, default certificate `*.sandbox.lab.test` from the lab CA | `https://<component>-<app>.sandbox.lab.test` through `127.0.0.1:30443` |
+| The `cz-sandbox` equivalent (`sync.sh`) | systemd `lab-sandbox-sync.timer`, every 2 minutes, as `dev` | `systemctl status lab-sandbox-sync.timer`; `sudo systemctl stop lab-sandbox-sync.timer` to pause it |
+| Read-only verifier for `containerizer sandbox verify` | ServiceAccount from the output repository's `sandbox/verify-rbac.yaml` | `$LAB_DIR/verifier.kubeconfig` (24-hour token, renewed every 12 hours) |
+
+`$LAB_DIR/secrets.env` (mode 600) holds the Gitea administrator `lab-admin`'s generated password, a
+write token for the output repository (`write:repository`) and a read-only token
+(`read:repository`, `read:organization`) that Flux uses.
+
+The Git URL is the same everywhere because the GitOps files name it: `/etc/hosts` maps `lab-git` to the
+Docker bridge address, CoreDNS in k3s does the same (ConfigMap `coredns-custom`), and Gitea is published
+on that address. git on the host trusts the lab CA for this one URL (`http.https://lab-git:3001/.sslCAInfo`
+in `~/.gitconfig`); Flux gets it as `ca.crt` next to the token in `<namespace>--cz-git` (on the appliance
+the Git servers have public certificates). The appliance's `cz-sandbox` accepts only https URLs, so the
+lab uses HTTPS too.
+
+### Differences from the appliance
+
+- **Images come from Docker's image store, not a registry.** k3s runs with `docker: true` (its embedded
+  cri-dockerd), so a pod can run any image `docker build` made on this host, and the manifests
+  containerizer generates use `imagePullPolicy: IfNotPresent`: nothing is pushed or pulled. The kubelet's
+  image garbage collection is off, because the store is shared with the builds and `ci/local.sh`. Pods
+  show up in `docker ps` as `k8s_*` containers. The appliance still pushes to its registry at
+  `localhost:5000/<path>`.
+- The appliance's k3s settings are kept (`servicelb` off, secrets encryption, no anonymous API access),
+  except `resolv-conf`, the audit log and `protect-kernel-defaults`, which depend on the appliance's OS.
+- Traefik is on loopback NodePorts instead of behind Caddy on 443, without the HTTP-to-HTTPS redirect.
+- Flux runs only; there is no Argo CD, so `sync.sh` leaves the Argo CD part out of `verify-rbac.yaml`.
+- The k3s system images (pause, CoreDNS, Traefik, metrics-server, local-path, klipper-helm) are pinned
+  by the k3s release's tags, as on the appliance, not by digest.
+
+### Firewall
+
+k3s runs on the host network. Its pods reach the host (the API server, Gitea through the Docker bridge)
+through `cni0`, so the input chain of `/etc/nftables.conf` gets two accept rules, which `up.sh` adds
+to the file and to the running rule set (with `nft add rule`, not by loading the file again: its `flush
+ruleset` would also remove Docker's and k3s's tables):
+
+```
+    iifname { "cni0", "flannel.1" } accept
+    ip saddr { 10.42.0.0/16, 10.43.0.0/16 } accept
+```
+
+The API server (6443) and the kubelet (10250) listen on every address and are kept off the network by
+the input chain's drop policy. NodePorts answer on loopback only (`nodeport-addresses=127.0.0.1/32`):
+Docker-style DNAT traffic to them would pass the forward chain, which accepts by default. Reach Traefik
+or Gitea from another machine with SSH port forwarding, e.g. `ssh -L 30443:127.0.0.1:30443 -L
+3001:127.0.0.1:3001 dev@<server>`.
+
+To open the sandbox's HTTPS entry to your own subnet instead, limit it in the forward chain first, then let
+k3s answer on the server's address too:
+
+```sh
+# /etc/nftables.conf, forward chain (and the same with `sudo nft add rule inet filter forward ...` to apply it now,
+# without reloading the file: that would drop Docker's tables)
+iifname "eth0" ct original proto-dst 30443 ip saddr != $LAB drop
+iifname "eth0" ct original proto-dst 30443 meta nfproto ipv6 drop
+# /etc/rancher/k3s-lab/config.yaml, then: sudo systemctl restart k3s-lab
+kube-proxy-arg:
+  - "nodeport-addresses=127.0.0.1/32,<server address>/32"
+```
+
+### Pointing a scan or a runner at it
+
+```sh
+. ~/lab-sandbox/env.sh
+```
+
+| Setting | Value |
+| --- | --- |
+| Registry (image prefix) | `localhost/lab` (`$LAB_REGISTRY`): images `localhost/lab/<app>/<component>:<tag>`, built and tagged locally, not pushed |
+| Output repository | `--output-repo $LAB_OUTPUT_REPO --output-username lab-admin`, write token in `OUTPUT_GIT_TOKEN` |
+| `sandbox.env` equivalents | `CZ_SANDBOX_GIT_URL`, `CZ_SANDBOX_GIT_USERNAME`, `CZ_SANDBOX_GIT_TOKEN` (read-only); `sync.sh` puts them in the store |
+| Sandbox verification | `--verify-sandbox --kubeconfig $LAB_VERIFIER_KUBECONFIG` (or `containerizer sandbox verify --kubeconfig ...`) |
+| Ingress | `--ingress-domain sandbox.lab.test`; verify with `--ingress-address 127.0.0.1:30443 --ingress-ca $LAB_CA` |
+| Secrets the apps need | `secret.sh <namespace>--<name> '{"key": "value"}'` |
+
+Two things the lab does not cover yet: `containerizer org` has no Gitea provider (scan sources from
+GitHub, GitLab or Azure DevOps and write the output to the lab), and `--no-push-images` does not tag the
+gate's image as `<registry>/<app>/<component>:<tag>`, so for local images that tag has to be added
+(`docker tag`) by whatever replaces the push.
+
+### The smoke test
+
+`smoke.sh` checks the whole path without a scan: it builds `localhost/lab/smoke:1` (nginx answering 200
+on 8080) with `docker build`, writes an app `smoke` into a clone of the output repository in the layout
+`containerizer org` writes, generated by containerizer from `examples/ci-demo` with that image
+(`smoke_app.py`: `lab/_/smoke/`, its `gitops/flux` tenant, ExternalSecret, GitRepository and
+Kustomization, `containerizer.json`, and `sandbox/` from `write_sandbox`), and pushes it. Then Flux syncs
+the root Kustomization, `sync.sh` puts `smoke--cz-git` in the store, the app's own Kustomization
+deploys it as `smoke-reconciler`, the pods become Ready with no `Pulling` event, and `containerizer
+sandbox verify` reads the result back as the verifier:
+
+```
+smoke/Demo.Web: healthy - 2/2 ready
+sandbox health: healthy=1
+```
+
+`smoke.sh --remove` takes the app out of the repository again, and Flux prunes it.
