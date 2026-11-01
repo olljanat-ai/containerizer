@@ -1409,6 +1409,9 @@ CREATE TABLE [${schema}].LlmQueueSettings (
                                                  OR (WindowStart IS NOT NULL AND WindowEnd IS NOT NULL))
 );
 GO
+-- the one settings row, seeded before its audit trigger exists: a default is not a change anyone made
+IF NOT EXISTS (SELECT 1 FROM [${schema}].LlmQueueSettings) INSERT [${schema}].LlmQueueSettings (SettingsId) VALUES (1);
+GO
 
 -- Queue a job, unless one of the same Kind and DedupeKey is already queued or running. Returns the JobId
 -- (0: one is waiting). A newer job about the same component replaces a queued older one (its code or the
@@ -1486,8 +1489,6 @@ BEGIN
        OR EXISTS (SELECT i.Paused, i.WindowDays, i.WindowStart, i.WindowEnd, i.OnlyWhenIdle, i.MaxLoadPerCpu, i.Parallel
                   EXCEPT SELECT d.Paused, d.WindowDays, d.WindowStart, d.WindowEnd, d.OnlyWhenIdle, d.MaxLoadPerCpu, d.Parallel);
 END;
-GO
-IF NOT EXISTS (SELECT 1 FROM [${schema}].LlmQueueSettings) INSERT [${schema}].LlmQueueSettings (SettingsId) VALUES (1);
 GO
 
 -- The latest component review of every component (not the superseded or skipped ones), for the results pages.
