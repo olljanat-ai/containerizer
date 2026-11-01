@@ -43,7 +43,8 @@ def test_identity_and_roles():
 
 def test_build_has_no_provider_and_no_api(capsys):
     adm = adminmod.build({**BASE, "CONTAINERIZER_PUBLIC_URL": "http://192.168.8.139:8080"})
-    assert adm.dev and adm.api is None and adm.cfg.public_url == "http://192.168.8.139:8080"
+    assert adm.dev and adm.cfg.public_url == "http://192.168.8.139:8080"
+    assert adm.api is not None and not adm.api.audience          # API keys only (Admin → API): no access tokens
     assert not adm.cfg.secure and adm.cookie == "cz_session"            # plain http: no Secure / __Host- cookie
     assert "NO SIGN-IN" in capsys.readouterr().err
     with pytest.raises(OidcError, match="PUBLIC_URL"):
