@@ -5,7 +5,7 @@ by hand on `main` with the version, and it tags the commit and releases from the
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHD images as release assets.
 
-## Unreleased
+## 0.2.0 (2026-11-01)
 
 Results database schema version 20 (`containerizer db init` upgrades it; the appliance does at start).
 
