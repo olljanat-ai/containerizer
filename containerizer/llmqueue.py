@@ -58,7 +58,7 @@ SECOND_OPINION = ("blocker", "rewrite")
 # goes against rules that were sure, so it must be as sure as they were.
 OVERRIDE_CONFIDENCE = {"uncertain": 0.6, "second-opinion": 0.85}
 DEFAULTS = {"Paused": False, "WindowDays": 0, "WindowStart": None, "WindowEnd": None, "OnlyWhenIdle": True,
-            "MaxLoadPerCpu": 0.5, "Parallel": 1, "ApproveKinds": None, "ApproveMinTokens": 0}
+            "MaxLoadPerCpu": 0.5, "Parallel": 1, "ApproveKinds": "refactor,review", "ApproveMinTokens": 0}
 
 
 def utcnow() -> datetime:

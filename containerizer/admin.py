@@ -308,7 +308,7 @@ class Admin:
             tabs += [("lab-services", "Lab services")]
         if self.may_review_rules(s):                                     # learned rules waiting for review
             tabs += [("rules", "Rule review")]
-        if a.admin and self.api is not None:                             # API keys and how to use the API
+        if a.admin and getattr(self, "api", None) is not None:          # API keys and how to use the API
             tabs += [("api", "API")]
         tabs += [("audit", "Change history")]
         if a.admin and self.cfg.view_audit:

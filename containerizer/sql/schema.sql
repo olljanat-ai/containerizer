@@ -1604,12 +1604,14 @@ GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 21) INSERT [${schema}].SchemaVersion (Version) VALUES (21);
 GO
 
--- 22: approval of LLM jobs. An administrator decides which jobs wait for approval before the runner takes
+-- 22: approval of LLM jobs, on for every job by default (an administrator gives the LLM more room as the
+-- results earn trust). An administrator decides which jobs wait for approval before the runner takes
 -- them (ApproveKinds: 'refactor', 'review' or both; ApproveMinTokens: only jobs estimated to read at least
 -- this many tokens, 0: all of those kinds). Such a job is queued with Status 'approval'; approving it makes
 -- it 'queued' (ApprovedBy, ApprovedAt), rejecting it 'skipped'.
 IF COL_LENGTH(N'[${schema}].LlmQueueSettings', N'ApproveKinds') IS NULL
-    ALTER TABLE [${schema}].LlmQueueSettings ADD ApproveKinds nvarchar(40) NULL,
+    ALTER TABLE [${schema}].LlmQueueSettings ADD ApproveKinds nvarchar(40) NULL
+        CONSTRAINT DF_LlmQueueSettings_ApproveKinds DEFAULT N'refactor,review' WITH VALUES,
         ApproveMinTokens int NOT NULL CONSTRAINT DF_LlmQueueSettings_ApproveMin DEFAULT 0
         CONSTRAINT CK_LlmQueueSettings_ApproveMin CHECK (ApproveMinTokens BETWEEN 0 AND 10000000);
 GO

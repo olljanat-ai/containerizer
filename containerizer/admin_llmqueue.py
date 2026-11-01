@@ -38,6 +38,15 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict, flash:
         return save_settings(conn, form)
     if len(parts) == 2 and parts[1] == "rescan" and method == "POST":
         return rescan(conn, form)
+    if len(parts) == 2 and parts[1] == "approve-all" and method == "POST":
+        if not a.admin:
+            return _back(BASE, "Only administrators approve LLM jobs.")
+        cur = conn.cursor()
+        cur.execute("UPDATE cz.LlmJob SET Status = N'queued', ApprovedBy = %s, ApprovedAt = SYSUTCDATETIME() "
+                    "WHERE Status = N'approval'", (s.user,))
+        n = cur.rowcount
+        conn.commit()
+        return _back(BASE, f"{n} job{'s' if n != 1 else ''} approved: queued.")
     if ident is not None and len(parts) == 2 and method == "GET":
         return show_job(adm, conn, s, a, ident, flash)
     if ident is not None and len(parts) == 3 and method == "POST":
@@ -186,6 +195,12 @@ def show(adm, conn, s, a, q: dict, flash: str) -> Response:
     waiting = sum(1 for r in active if r["Status"] == "approval")
     if waiting:
         state += f" · <span class='st st-wait'>{waiting} waiting for approval</span>"
+        if a.admin:
+            tot = speed.queue([r for r in active if r["Status"] == "approval"], 1)
+            mins = "" if tot.get("seconds") is None else f", ~{max(1, round(tot['seconds'] / 60)):,} min"
+            state += (f" <form method='post' action='{BASE}/approve-all' class='inline'>{adm._csrf(s)}"
+                      f"<button>Approve all {waiting}</button> <span class='muted small'>~{int(tot['in'] + tot['out']):,} "
+                      f"tokens{mins}</span></form>")
 
     rows = []
     for i, r in enumerate(active):
@@ -398,7 +413,9 @@ value='{int(v['Parallel'] or 1)}'>
 <h3>Approval</h3>
 <p class='note'>{e(approval_text(v))}</p>
 <p class='muted small'>A job of a kind ticked here waits for an administrator's approval when its estimate is at
-least the number of tokens below; smaller jobs, and every job of a kind not ticked, start by themselves.</p>
+least the number of tokens below; smaller jobs, and every job of a kind not ticked, start by themselves. By default
+every job waits: as the results earn your trust, untick a kind or set a size so that smaller jobs start by
+themselves.</p>
 <label class='check'><input type='checkbox' name='ApproveKind' value='refactor'{' checked' if 'refactor' in (v.get('ApproveKinds') or '') else ''}> Refactoring orders</label>
 <label class='check'><input type='checkbox' name='ApproveKind' value='review'{' checked' if 'review' in (v.get('ApproveKinds') or '') else ''}> Component reviews from scans</label>
 <label for='ApproveMinTokens'>Needs approval from <span class='muted'>(estimated input tokens the LLM must read; 0: every

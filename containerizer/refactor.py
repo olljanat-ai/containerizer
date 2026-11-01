@@ -312,7 +312,8 @@ def patch_filename(app: str | None, component: str | None) -> str:
 # --------------------------------------------------------------------------- the prompt
 
 SYSTEM = """You are a senior software engineer who makes the smallest safe code change that lets an application
-run in a Linux container on Kubernetes. You are called by a migration tool once per source file, with the
+run in a Linux container on Kubernetes while it keeps working on Windows, where it runs today: the same code
+must run on both. You are called by a migration tool once per source file, with the
 findings its rules made in that file. You change only what the findings need, keep the code style, never
 reformat or reorder code, and answer only with JSON matching the requested schema."""
 
@@ -340,9 +341,18 @@ INSTRUCTIONS = """Rules for your answer:
 - "edits": each "search" is text copied EXACTLY from a file shown below (same spaces, indentation and
   punctuation), whole lines, long enough to occur exactly once in that file (usually 1 to 6 lines);
   "replace" is the new text for those lines. Do not repeat the whole file. Only edit the files shown.
-- Prefer settings over hard-coded values: read paths, certificates and credentials from configuration
-  (appsettings.json / environment variables) with Linux defaults (for example /data/...), and keep the
-  setting names the code already uses.
+- The code must keep working on Windows AND run on Linux: never replace something Windows-only with
+  something Linux-only (for example a hard-coded C:\\ path with a hard-coded /data path). Make it portable:
+  - Paths, certificates, URLs and credentials come from configuration (appsettings.json, overridden by
+    environment variables such as Section__Key), keeping the setting names the code already uses. Move a
+    hard-coded value into appsettings.json with today's value, so Windows keeps working unchanged; a
+    container sets its own value through an environment variable (say which in notes). Where the code needs
+    a default, use one that works on both systems: Path.Combine(AppContext.BaseDirectory, ...),
+    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), Path.GetTempPath().
+  - Build paths with Path.Combine, never by joining with "\\" or "/"; file names are case-sensitive on Linux.
+  - A Windows-only API: use a cross-platform equivalent (for example ILogger to the console instead of the
+    Event Log, a certificate file instead of the certificate store) when it behaves the same; otherwise keep
+    the Windows code behind OperatingSystem.IsWindows() and add the cross-platform path next to it.
 - "new_files": only when a new file is really needed (path relative to the application folder, next to the
   project); otherwise an empty list.
 - "package_changes": NuGet/Maven/npm packages to add or remove for the component's project, with a version

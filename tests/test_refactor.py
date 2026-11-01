@@ -401,7 +401,7 @@ def test_queue_handler_result_shape(shop, tmp_path, monkeypatch):
     pl = _payload(shop, verify=False)
     out = lq.JOB_KINDS["refactor"].handler({"JobId": 5, "Payload": pl, "_progress": progress.append})
     assert set(out) == {"result", "summary", "note"} and calls == [rf.SYSTEM]
-    assert out["summary"] == "applies only: 2 of 2 findings fixed, 1 file changed"
+    assert out["summary"] == "not built: 2 of 2 findings fixed, 1 file changed"     # applies; Docker was not there
     assert out["note"].startswith("the patch applies; verification was off")
     assert out["result"]["status"] == "applies-only" and out["result"]["patch"].startswith("From ")
     json.dumps(out["result"])                                                          # stored as JSON
@@ -535,7 +535,7 @@ def test_ordering_needs_an_operator_or_admin_and_the_csrf_token(adm, shop):
     assert pl["commit"] == "a" * 40 and pl["include_config"] is True and pl["application_id"] == 7
     assert [t["file"] for t in pl["tasks"]][0] == "src/Shop.Api/Bank.cs" and params[19] > 0   # estimated tokens
     # one component, by its id
-    adm.conn.answers[r"SELECT ProjectPath FROM cz.Component"] = [{"ProjectPath": "src/Shop.Api/Shop.Api.csproj"}]
+    adm.conn.answers[r"SELECT ProjectPath FROM cz.vComponentLatest"] = [{"ProjectPath": "src/Shop.Api/Shop.Api.csproj"}]
     _post(adm, op, "/admin/refactoring/new", ApplicationId="7", Component="11")
     params = adm.conn.sql("EXEC cz.QueueLlmJob")[-1][1]
     assert params[10] == "Shop.Api" and params[11] == "src/Shop.Api/Shop.Api.csproj"
@@ -661,7 +661,7 @@ def test_cli_runs_and_writes_the_patch_and_summary(shop, tmp_path, monkeypatch, 
     summary = json.loads((out / "shop-all-containerizer.json").read_text())
     assert summary["status"] == "applies-only" and summary["payload"]["tasks"][0]["file"] == "src/Shop.Api/Bank.cs"
     text = capsys.readouterr().out
-    assert "applies only: 2 of 2 findings fixed" in text and "git am --keep-cr" in text
+    assert "not built: 2 of 2 findings fixed" in text and "git am --keep-cr" in text
     # --queue without SQL Server: a queue file `containerizer llm-queue --file` works through
     monkeypatch.delenv("CONTAINERIZER_SQL", raising=False)
     assert cli.main(["refactor", str(shop), "--component", "Shop.Api", "--queue", "--out", str(out), "--no-verify"]) == 0

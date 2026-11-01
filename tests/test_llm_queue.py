@@ -370,7 +370,7 @@ def test_settings_validation():
     v, errors = admin_llmqueue.validate_settings({"day": ["0", "4"], "From": ["22:00"], "To": ["06:00"],
                                                   "OnlyWhenIdle": ["1"], "MaxLoadPerCpu": ["0.75"], "Parallel": ["2"]})
     assert errors == [] and v == {"Paused": False, "OnlyWhenIdle": True, "WindowDays": 1 | 16, "WindowStart": 1320,
-                                  "WindowEnd": 360, "MaxLoadPerCpu": 0.75, "Parallel": 2}
+                                  "WindowEnd": 360, "MaxLoadPerCpu": 0.75, "Parallel": 2, "ApproveKinds": None, "ApproveMinTokens": 0}
     v, errors = admin_llmqueue.validate_settings({"From": [""], "To": [""]})
     assert errors == [] and v["WindowStart"] is None and v["WindowEnd"] is None and v["Parallel"] == 1
     for bad, msg in (({"From": ["22:00"]}, "both"), ({"From": ["25:00"], "To": ["01:00"]}, "HH:MM"),
@@ -528,8 +528,8 @@ def test_admin_page_gate_and_listing(adm):
     adm.conn.answers = {r"FROM cz.LlmQueueSettings": [dict(lq.DEFAULTS)],
                         r"FROM cz.LlmSpeed": [],
                         r"COUNT\(\*\) FROM cz.OrgScanRun": [{"N": 0}],
-                        r"Status IN \(N'queued', N'running'\)\s+ORDER BY": QUEUED,
-                        r"FROM cz.LlmJob WHERE Status IN \(N'queued', N'running'\)": QUEUED,
+                        r"Status IN \(N'approval', N'queued', N'running'\)\s+ORDER BY": QUEUED,
+                        r"FROM cz.LlmJob WHERE Status IN \(N'approval', N'queued', N'running'\)": QUEUED,
                         r"Status IN \(N'answered', N'failed', N'skipped'\)": ANSWERED,
                         r"JOIN cz.OrgRepository r": [{"RepositoryId": 9, "Repository": "Billing/old", "Answered": 1,
                                                       "LastAnswer": datetime(2026, 11, 1, 3, 0), "LastScannedAt": None}]}
@@ -575,7 +575,7 @@ def test_admin_page_actions(adm):
               MaxLoadPerCpu="0.5", Parallel="2")
     assert "Saved" in dict(r.headers)["Location"]
     (sql, params), = adm.conn.sql(r"UPDATE cz.LlmQueueSettings")
-    assert params == (False, 96, 1320, 360, True, 0.5, 2)
+    assert params == (False, 96, 1320, 360, True, 0.5, 2, None, 0)     # no approval
     r = _post(adm, a, "/admin/llm-queue/settings", From="22:00")
     assert "both" in dict(r.headers)["Location"] and len(adm.conn.sql(r"UPDATE cz.LlmQueueSettings")) == 1
     # the form needs the session's CSRF token

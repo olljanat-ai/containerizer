@@ -227,3 +227,16 @@ def test_the_approval_policy_in_a_sentence():
         "Now: all refactoring orders wait for approval."
     assert "10,000 input tokens or more wait" in admin_llmqueue.approval_text(
         {"ApproveKinds": "refactor,review", "ApproveMinTokens": 10000})
+
+
+def test_approval_is_on_by_default_and_approve_all(adm):  # noqa: F811
+    from containerizer import llmqueue
+    assert llmqueue.DEFAULTS["ApproveKinds"] == "refactor,review" and llmqueue.DEFAULTS["ApproveMinTokens"] == 0
+    assert "all refactoring orders and component reviews wait" in admin_llmqueue.approval_text(llmqueue.DEFAULTS)
+    adm.route_scans = lambda *a: None
+    admin = adm.sessions.create("alice@example.com", "Alice", True)
+    assert "approved" in _loc(_post(adm, admin, "/admin/llm-queue/approve-all"))
+    (sql, params), = adm.conn.sql(r"WHERE Status = N'approval'$")
+    assert params == ("alice@example.com",)
+    op = adm.sessions.create("bob@example.com", "Bob", False, True, True)
+    assert "Only+administrators" in _loc(_post(adm, op, "/admin/llm-queue/approve-all"))
