@@ -10,6 +10,9 @@ and builds and runs the changed components before it offers the patch as a downl
 Containerizer never writes to your repository: no branches, no pull requests, and the source control
 credentials stay read only. You review the patch, apply it yourself and open the pull request.
 
+![A verified refactoring patch: the order, Download .patch and the result per finding, as the rules see the patched copy](images/admin-refactoring-patch.png#only-light){ .cz-shot }
+![A verified refactoring patch: the order, Download .patch and the result per finding, as the rules see the patched copy](images/admin-refactoring-patch-dark.png#only-dark){ .cz-shot }
+
 ## Who can order one
 
 | Role | On the application's results page | Admin → Refactoring |
@@ -27,6 +30,9 @@ whether to **also change code for configuration findings** (below). The order ne
 commit and the repository's clone on this machine: it works for applications that an
 [organization scan](scheduled-scans.md) assessed here. For anything else, use the command line on a
 checkout.
+
+![The Refactoring box on a B-rated application's results page: the orders and Request a refactoring patch](images/results-refactoring-box.png#only-light){ .cz-shot }
+![The Refactoring box on a B-rated application's results page: the orders and Request a refactoring patch](images/results-refactoring-box-dark.png#only-dark){ .cz-shot }
 
 ## What is sent to the LLM
 
@@ -97,6 +103,12 @@ again up to three times (the LLM queue page shows the error), then the order fai
 longer in the clone (the repository moved on, and the scan worker keeps shallow clones) fails with a
 message: scan the repository again and order a new refactoring.
 
+The page shows every change as a coloured diff per file, here a real patch the dev server's CPU LLM wrote
+for the challenge app `expense-claims`:
+
+![The coloured diff of a refactoring patch: the certificate loaded from a mounted file instead of the Windows store](images/admin-refactoring-diff.png#only-light){ .cz-shot }
+![The coloured diff of a refactoring patch: the certificate loaded from a mounted file instead of the Windows store](images/admin-refactoring-diff-dark.png#only-dark){ .cz-shot }
+
 ## How to apply it
 
 The order's page has **Download .patch** (`<app>-<component>-containerizer.patch`, or `-all-` for every
@@ -113,6 +125,9 @@ git apply --3way expense-claims-ExpenseClaims.Jobs-containerizer.patch
 patch does not apply). Then review every change, build and run your tests, set the configuration the notes
 mention (paths, certificates, credentials as Kubernetes Secrets), push the branch and open a pull request
 yourself.
+
+![How to apply a refactoring patch: git checkout, git am, review, test and open the pull request yourself](images/admin-refactoring-apply.png#only-light){ .cz-shot }
+![How to apply a refactoring patch: git checkout, git am, review, test and open the pull request yourself](images/admin-refactoring-apply-dark.png#only-dark){ .cz-shot }
 
 ## The command line
 
