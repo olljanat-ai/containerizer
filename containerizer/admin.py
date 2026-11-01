@@ -30,7 +30,8 @@ TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Applicatio
               "OrgScan": "Organization scan", "OrgRepository": "Repository", "OrgProject": "Project",
               "DevDatabase": "Dev database", "RuleCandidate": "Learned rule",
               "SourceCredential": "Source control token", "LabService": "Lab service",
-              "RulesRepository": "Internal rules repository"}
+              "RulesRepository": "Internal rules repository", "LlmJob": "LLM queue job",
+              "LlmQueueSettings": "LLM queue settings"}
 FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
               "Retired": "Hidden", "Product": "Product", "BusinessUnit": "Business unit", "InfoUrl": "Product page link",
               # the internal rules repository (rule review)
@@ -41,7 +42,7 @@ FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Des
               "OutputTokenEnv": "Output token variable", "ImagePullSecret": "Image pull secret",
               "IncludeRegex": "Only repositories matching", "ExcludeRegex": "Leave out repositories matching",
               "SkipForks": "Skip forks", "StaleDays": "Skip when not updated for (days)", "Verify": "Build and run",
-              "Gate": "Security gate", "PushImages": "Push images", "UseAi": "Ask the LLM", "LlmHeavy": "LLM-heavy mode", "ScheduleDays": "Days",
+              "Gate": "Security gate", "PushImages": "Push images", "UseAi": "Ask the LLM", "LlmMode": "LLM reviews", "LlmHeavy": "LLM-heavy mode", "ScheduleDays": "Days",
               "ScheduleMinute": "Time (UTC)", "Enabled": "Enabled",
               # repositories
               "Setting": "Setting", "Note": "Note", "Skipped": "Skipped by the scan", "Removed": "Removed from the organization",
@@ -54,7 +55,12 @@ FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Des
               "PullRequestUrl": "Pull request", "Edited": "Edited by the reviewer",
               # source control tokens (the token itself is never recorded)
               "Purpose": "Access", "Host": "Host", "Scope": "Organization or repository", "ExpiresOn": "Expires on",
-              "TokenSetAt": "Token saved", "Model": "Model"}
+              "TokenSetAt": "Token saved", "Model": "Model",
+              # the LLM queue
+              "Reason": "Why queued", "Priority": "Priority", "AdminRank": "Position set by a person", "Summary": "Answer",
+              "Error": "Error", "RequestedBy": "Requested by", "Paused": "Paused", "WindowDays": "Days",
+              "WindowStart": "From (UTC)", "WindowEnd": "To (UTC)", "OnlyWhenIdle": "Only when idle",
+              "MaxLoadPerCpu": "Load per CPU below", "Parallel": "Parallel requests"}
 # Who may use the rule review pages: Session attributes, any of which lets a signed-in user in.
 RULE_REVIEW_ROLES = ("admin", "operator")
 UPLOAD_RE = re.compile(r"/admin/dev-databases/(\d{1,9})/upload")
@@ -207,12 +213,16 @@ class Admin:
         kind = parts[0]
         if kind not in {k for k, _ in tabs}:
             known = kind in ("applications", "products", "business-units", "audit", "access", "scans", "repositories",
+                             "llm-queue",
                              "dev-databases", "system", "firewall", "source-control", "lab-services",
                              "sandbox-https")
             return Response(403 if known else 404, self._shell(s, a, "Not allowed" if known else "Not found", "",
                             "<p>Your role does not include this page.</p>" if known else ""))
         if kind in ("scans", "repositories"):
             return self.route_scans(conn, s, a, method, path, q, form)
+        if kind == "llm-queue":                      # administrators and operators (see _tabs)
+            from . import admin_llmqueue
+            return admin_llmqueue.route(self, conn, s, a, method, parts, q, form, q.get("msg", [""])[0][:300])
         if kind == "rules":
             from . import admin_rules
             return admin_rules.route(self, conn, s, a, method, parts, q, form, q.get("msg", [""])[0][:300])
@@ -267,7 +277,7 @@ class Admin:
         if a.admin:
             tabs += [("business-units", "Business units")]
         if (a.admin or a.operator) and hasattr(self, "route_scans"):     # scheduled organization scans
-            tabs += [("scans", "Organization scans"), ("repositories", "Repositories")]
+            tabs += [("scans", "Organization scans"), ("repositories", "Repositories"), ("llm-queue", "LLM queue")]
         if a.admin and hasattr(self, "route_scans"):                     # tokens of the organizations (admin_credentials.py)
             tabs += [("source-control", "Source control & LLM")]
         if self.devdb is not None and (a.admin or a.operator):           # dev database backups (admin_devdb.py)
@@ -736,7 +746,8 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
                                       ("OrgProject", "Projects"), ("OrgRepository", "Repositories"),
                                       ("SourceCredential", "Source control"),
                                       ("DevDatabase", "Dev databases"), ("LabService", "Lab services"),
-                                      ("RuleCandidate", "Rule review"), ("RulesRepository", "Rules repository")))
+                                      ("RuleCandidate", "Rule review"), ("RulesRepository", "Rules repository"),
+                                      ("LlmJob", "LLM queue"), ("LlmQueueSettings", "LLM queue settings")))
         body = (f"<p class='muted'>Every change to business units, products, the application mapping, organization scans, "
                 f"projects and repositories (found by a scan, enabled or disabled, skipped), source control tokens (added, replaced or removed; "
                 f"never the token itself), dev database uploads, lab services turned on or off and the rule review "

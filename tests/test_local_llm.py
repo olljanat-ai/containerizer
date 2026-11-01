@@ -374,8 +374,9 @@ def test_prometheus_scrapes_it_and_grafana_shows_it():
     assert len(ids) == len(set(ids))
     mine = [p for p in d["panels"] if p["id"] >= 200]
     assert mine[0]["type"] == "row" and mine[0]["title"].startswith("Built-in LLM")
-    bottom = max(p["gridPos"]["y"] + p["gridPos"]["h"] for p in d["panels"] if p["id"] < 200)
-    assert min(p["gridPos"]["y"] for p in mine) >= bottom
+    # right after the LLM queue row (overlaps are checked for every panel in test_replatform.py)
+    queue_end = max(p["gridPos"]["y"] + p["gridPos"]["h"] for p in d["panels"] if 38 <= p["id"] <= 46)
+    assert min(p["gridPos"]["y"] for p in mine) == queue_end
     exprs = " ".join(t["expr"] for p in mine for t in p.get("targets") or [])
     assert "rate(llamacpp:n_decode_total" in exprs and "llamacpp:n_busy_slots_per_decode" in exprs
     assert "llamacpp:requests_processing" in exprs and "llamacpp:requests_deferred" in exprs

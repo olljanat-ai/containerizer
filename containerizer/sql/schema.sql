@@ -584,6 +584,12 @@ GO
 IF COL_LENGTH(N'[${schema}].OrgScan', N'LlmHeavy') IS NULL
 ALTER TABLE [${schema}].OrgScan ADD LlmHeavy bit NOT NULL CONSTRAINT DF_OrgScan_LlmHeavy DEFAULT 0;
 GO
+-- 19: how the scan asks the LLM: 'inline' (during the scan) or 'queued' (rules only during the scan; the
+-- component reviews wait in the LLM queue, LlmJob, and their answers apply at the next scan)
+IF COL_LENGTH(N'[${schema}].OrgScan', N'LlmMode') IS NULL
+ALTER TABLE [${schema}].OrgScan ADD LlmMode nvarchar(10) NOT NULL CONSTRAINT DF_OrgScan_LlmMode DEFAULT N'inline'
+    CONSTRAINT CK_OrgScan_LlmMode CHECK (LlmMode IN (N'inline', N'queued'));
+GO
 
 -- One row per run of an organization scan: queued on schedule or with "Run now", claimed by a worker.
 IF OBJECT_ID(N'[${schema}].OrgScanRun', N'U') IS NULL
@@ -869,21 +875,21 @@ BEGIN
            CASE WHEN d.ScanId IS NULL THEN N'insert' WHEN i.ScanId IS NULL THEN N'delete' ELSE N'update' END,
            CASE WHEN d.ScanId IS NOT NULL THEN (SELECT d.Name, d.Provider, d.Organization, d.ApiUrl, d.TokenEnv, d.Registry,
                 d.OutputRepo, d.OutputBranch, d.OutputTokenEnv, d.ImagePullSecret, d.IncludeRegex, d.ExcludeRegex, d.SkipForks,
-                d.StaleDays, d.Verify, d.Gate, d.PushImages, d.UseAi, d.LlmHeavy, d.ScheduleDays, d.ScheduleMinute, d.Enabled
+                d.StaleDays, d.Verify, d.Gate, d.PushImages, d.UseAi, d.LlmHeavy, d.LlmMode, d.ScheduleDays, d.ScheduleMinute, d.Enabled
                 FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
            CASE WHEN i.ScanId IS NOT NULL THEN (SELECT i.Name, i.Provider, i.Organization, i.ApiUrl, i.TokenEnv, i.Registry,
                 i.OutputRepo, i.OutputBranch, i.OutputTokenEnv, i.ImagePullSecret, i.IncludeRegex, i.ExcludeRegex, i.SkipForks,
-                i.StaleDays, i.Verify, i.Gate, i.PushImages, i.UseAi, i.LlmHeavy, i.ScheduleDays, i.ScheduleMinute, i.Enabled
+                i.StaleDays, i.Verify, i.Gate, i.PushImages, i.UseAi, i.LlmHeavy, i.LlmMode, i.ScheduleDays, i.ScheduleMinute, i.Enabled
                 FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
     FROM inserted i FULL OUTER JOIN deleted d ON d.ScanId = i.ScanId
     CROSS JOIN [${schema}].fnAuditWho() w
     WHERE d.ScanId IS NULL OR i.ScanId IS NULL
        OR EXISTS (SELECT i.Name, i.Provider, i.Organization, i.ApiUrl, i.TokenEnv, i.Registry, i.OutputRepo, i.OutputBranch,
                          i.OutputTokenEnv, i.ImagePullSecret, i.IncludeRegex, i.ExcludeRegex, i.SkipForks, i.StaleDays,
-                         i.Verify, i.Gate, i.PushImages, i.UseAi, i.LlmHeavy, i.ScheduleDays, i.ScheduleMinute, i.Enabled
+                         i.Verify, i.Gate, i.PushImages, i.UseAi, i.LlmHeavy, i.LlmMode, i.ScheduleDays, i.ScheduleMinute, i.Enabled
                   EXCEPT SELECT d.Name, d.Provider, d.Organization, d.ApiUrl, d.TokenEnv, d.Registry, d.OutputRepo, d.OutputBranch,
                          d.OutputTokenEnv, d.ImagePullSecret, d.IncludeRegex, d.ExcludeRegex, d.SkipForks, d.StaleDays,
-                         d.Verify, d.Gate, d.PushImages, d.UseAi, d.LlmHeavy, d.ScheduleDays, d.ScheduleMinute, d.Enabled);
+                         d.Verify, d.Gate, d.PushImages, d.UseAi, d.LlmHeavy, d.LlmMode, d.ScheduleDays, d.ScheduleMinute, d.Enabled);
 END;
 GO
 
@@ -1295,4 +1301,224 @@ IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 17) INSER
 GO
 -- 18: LLM-heavy mode of organization scans (OrgScan.LlmHeavy)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 18) INSERT [${schema}].SchemaVersion (Version) VALUES (18);
+GO
+
+-- 19: the LLM queue (llmqueue.py, docs/source-control.md#queued-llm-reviews). LLM jobs that do not hold up
+-- the scans: the queue runner (`containerizer llm-queue`) asks them when Admin -> LLM queue lets it. Kind is
+-- the kind of job ('review': a component review a scan with queued LLM reviews did not ask); Payload is
+-- what the kind's handler needs (for a review: the exact prompt, model and answer cache key), Result its
+-- answer (JSON) and Summary one line of it. Reason, RuleVerdict and Confidence are the component review's,
+-- for the queue page. The order is COALESCE(AdminRank, Priority), highest first: administrators move jobs
+-- by setting AdminRank. One job per Kind and DedupeKey waits at a time (QueueLlmJob). EstInputTokens is
+-- estimated from the prompt when queued (llmqueue.estimate_tokens); InputTokens, OutputTokens and Seconds
+-- are what the answer really took, with the Endpoint that gave it.
+IF OBJECT_ID(N'[${schema}].LlmJob', N'U') IS NULL
+CREATE TABLE [${schema}].LlmJob (
+    JobId          int IDENTITY(1,1) NOT NULL CONSTRAINT PK_LlmJob PRIMARY KEY,
+    Kind           nvarchar(20)   NOT NULL CONSTRAINT CK_LlmJob_Kind CHECK (Kind IN (N'review')),
+    Reason         nvarchar(40)   NULL,              -- review: uncertain, second-opinion
+    Status         nvarchar(20)   NOT NULL CONSTRAINT DF_LlmJob_Status DEFAULT N'queued'
+                   CONSTRAINT CK_LlmJob_Status CHECK (Status IN (N'queued', N'running', N'answered', N'failed', N'skipped')),
+    Priority       int            NOT NULL,          -- computed by the side that queued it (llmqueue.priority)
+    AdminRank      float          NULL,              -- set by people: replaces Priority in the order
+    ScanId         int            NULL CONSTRAINT FK_LlmJob_Scan REFERENCES [${schema}].OrgScan (ScanId),
+    RepositoryId   int            NULL CONSTRAINT FK_LlmJob_Repository REFERENCES [${schema}].OrgRepository (RepositoryId),
+    Repository     nvarchar(400)  NULL,              -- project/repository (organization scans) or the app name
+    App            nvarchar(200)  NULL,
+    SourceKey      nvarchar(400)  NULL,              -- as Application.SourceKey
+    ApplicationId  int            NULL CONSTRAINT FK_LlmJob_Application REFERENCES [${schema}].Application (ApplicationId),
+    AssessmentId   int            NULL,              -- the assessment a job is about, when there is one
+    Component      nvarchar(200)  NULL,
+    ProjectPath    nvarchar(400)  NULL,              -- as Component.ProjectPath
+    RuleVerdict    nvarchar(20)   NULL,
+    Confidence     decimal(4,2)   NULL,              -- the rules' confidence
+    DedupeKey      nvarchar(64)   NOT NULL,          -- review: the answer cache key
+    Model          nvarchar(200)  NULL,
+    RequestedBy    nvarchar(256)  NULL,              -- "scan <name>", "command line" or the person who ordered it
+    Payload        nvarchar(max)  NOT NULL CONSTRAINT CK_LlmJob_Payload CHECK (ISJSON(Payload) = 1),
+    Result         nvarchar(max)  NULL CONSTRAINT CK_LlmJob_Result CHECK (Result IS NULL OR ISJSON(Result) = 1),
+    Summary        nvarchar(400)  NULL,
+    Error          nvarchar(1000) NULL,
+    Note           nvarchar(400)  NULL,
+    InputChars     int            NULL,              -- characters of everything sent to the LLM (system, prompt, schema)
+    EstInputTokens int            NULL,              -- InputChars / 3.5 when queued; the queue page uses the learned ratio
+    InputTokens    int            NULL,              -- what the answer took
+    OutputTokens   int            NULL,
+    Endpoint       nvarchar(400)  NULL,              -- the LLM that answered: backend, server URL, model
+    Parallel       tinyint        NULL,              -- jobs the runner was asking at the same time
+    Attempts       int            NOT NULL CONSTRAINT DF_LlmJob_Attempts DEFAULT 0,
+    NotBefore      datetime2(0)   NULL,              -- a failed attempt is tried again after this
+    QueuedAt       datetime2(0)   NOT NULL CONSTRAINT DF_LlmJob_QueuedAt DEFAULT SYSUTCDATETIME(),
+    StartedAt      datetime2(0)   NULL,
+    HeartbeatAt    datetime2(0)   NULL,
+    FinishedAt     datetime2(0)   NULL,
+    Runner         nvarchar(256)  NULL,
+    Seconds        decimal(9,1)   NULL
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_LlmJob_Status' AND object_id = OBJECT_ID(N'[${schema}].LlmJob'))
+CREATE INDEX IX_LlmJob_Status ON [${schema}].LlmJob (Status, Kind) INCLUDE (Priority, AdminRank, NotBefore, QueuedAt);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_LlmJob_Dedupe' AND object_id = OBJECT_ID(N'[${schema}].LlmJob'))
+CREATE INDEX IX_LlmJob_Dedupe ON [${schema}].LlmJob (DedupeKey, Kind) INCLUDE (Status, FinishedAt);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_LlmJob_Source' AND object_id = OBJECT_ID(N'[${schema}].LlmJob'))
+CREATE INDEX IX_LlmJob_Source ON [${schema}].LlmJob (SourceKey, ProjectPath) INCLUDE (Kind, Status);
+GO
+
+-- What the queue runner learned about each LLM endpoint (backend, server URL and model), for the estimates on
+-- the queue page: Kind '*' holds the endpoint's characters per input token and speed (prompt and generated
+-- tokens per second when the server reports timings, else tokens per second overall, as observed with
+-- Parallel jobs at once), the other rows the output tokens per job kind. Each figure is a moving average
+-- that weighs the newest answer by 0.2 (llmqueue.ALPHA). Not audited: statistics only.
+IF OBJECT_ID(N'[${schema}].LlmSpeed', N'U') IS NULL
+CREATE TABLE [${schema}].LlmSpeed (
+    Endpoint              nvarchar(400) NOT NULL,
+    Kind                  nvarchar(20)  NOT NULL,
+    Model                 nvarchar(200) NULL,
+    CharsPerToken         float NULL,
+    PromptTokensPerSecond float NULL,
+    GenTokensPerSecond    float NULL,
+    TokensPerSecond       float NULL,
+    OutputTokens          float NULL,
+    Parallel              tinyint NULL,
+    Samples               int NOT NULL CONSTRAINT DF_LlmSpeed_Samples DEFAULT 0,
+    UpdatedAt             datetime2(0) NOT NULL CONSTRAINT DF_LlmSpeed_UpdatedAt DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT PK_LlmSpeed PRIMARY KEY (Endpoint, Kind)
+);
+GO
+
+-- When the queue runner may start jobs (one row, Admin -> LLM queue). WindowDays: Mon=1 ... Sun=64, 0 every
+-- day; WindowStart/WindowEnd: minutes after midnight UTC, both NULL for all day; a window ending before it
+-- starts wraps midnight. OnlyWhenIdle: no scan running and the 1-minute load per CPU below MaxLoadPerCpu.
+IF OBJECT_ID(N'[${schema}].LlmQueueSettings', N'U') IS NULL
+CREATE TABLE [${schema}].LlmQueueSettings (
+    SettingsId     int NOT NULL CONSTRAINT PK_LlmQueueSettings PRIMARY KEY CONSTRAINT CK_LlmQueueSettings_One CHECK (SettingsId = 1),
+    Paused         bit NOT NULL CONSTRAINT DF_LlmQueueSettings_Paused DEFAULT 0,
+    WindowDays     tinyint NOT NULL CONSTRAINT DF_LlmQueueSettings_Days DEFAULT 0
+                   CONSTRAINT CK_LlmQueueSettings_Days CHECK (WindowDays BETWEEN 0 AND 127),
+    WindowStart    smallint NULL CONSTRAINT CK_LlmQueueSettings_Start CHECK (WindowStart BETWEEN 0 AND 1439),
+    WindowEnd      smallint NULL CONSTRAINT CK_LlmQueueSettings_End CHECK (WindowEnd BETWEEN 0 AND 1439),
+    OnlyWhenIdle   bit NOT NULL CONSTRAINT DF_LlmQueueSettings_Idle DEFAULT 1,
+    MaxLoadPerCpu  decimal(4,2) NOT NULL CONSTRAINT DF_LlmQueueSettings_Load DEFAULT 0.5
+                   CONSTRAINT CK_LlmQueueSettings_Load CHECK (MaxLoadPerCpu BETWEEN 0 AND 16),
+    Parallel       tinyint NOT NULL CONSTRAINT DF_LlmQueueSettings_Parallel DEFAULT 1
+                   CONSTRAINT CK_LlmQueueSettings_Parallel CHECK (Parallel BETWEEN 1 AND 16),
+    ChangedAt      datetime2(0) NOT NULL CONSTRAINT DF_LlmQueueSettings_ChangedAt DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT CK_LlmQueueSettings_Window CHECK ((WindowStart IS NULL AND WindowEnd IS NULL)
+                                                 OR (WindowStart IS NOT NULL AND WindowEnd IS NOT NULL))
+);
+GO
+-- the one settings row, seeded before its audit trigger exists: a default is not a change anyone made
+IF NOT EXISTS (SELECT 1 FROM [${schema}].LlmQueueSettings) INSERT [${schema}].LlmQueueSettings (SettingsId) VALUES (1);
+GO
+
+-- Queue a job, unless one of the same Kind and DedupeKey is already queued or running. Returns the JobId
+-- (0: one is waiting). A newer job about the same component replaces a queued older one (its code or the
+-- rules changed since): that one is skipped as superseded.
+CREATE OR ALTER PROCEDURE [${schema}].QueueLlmJob @Kind nvarchar(20), @Reason nvarchar(40) = NULL, @ScanId int = NULL,
+    @ProjectName nvarchar(200) = NULL, @RepoName nvarchar(200) = NULL, @Repository nvarchar(400) = NULL,
+    @App nvarchar(200) = NULL, @SourceKey nvarchar(400) = NULL, @ApplicationId int = NULL, @AssessmentId int = NULL,
+    @Component nvarchar(200) = NULL, @ProjectPath nvarchar(400) = NULL, @RuleVerdict nvarchar(20) = NULL,
+    @Confidence decimal(4,2) = NULL, @Priority int, @DedupeKey nvarchar(64), @Model nvarchar(200) = NULL,
+    @RequestedBy nvarchar(256) = NULL, @InputChars int = NULL, @EstInputTokens int = NULL, @Payload nvarchar(max)
+AS
+BEGIN
+    SET NOCOUNT ON; SET XACT_ABORT ON;
+    DECLARE @id int = 0;
+    BEGIN TRANSACTION;
+    IF NOT EXISTS (SELECT 1 FROM [${schema}].LlmJob WITH (UPDLOCK, HOLDLOCK)
+                   WHERE Kind = @Kind AND DedupeKey = @DedupeKey AND Status IN (N'queued', N'running'))
+    BEGIN
+        IF @SourceKey IS NOT NULL AND @ProjectPath IS NOT NULL
+            UPDATE [${schema}].LlmJob SET Status = N'skipped', Note = N'superseded by a newer scan', FinishedAt = SYSUTCDATETIME()
+            WHERE Status = N'queued' AND Kind = @Kind AND SourceKey = @SourceKey AND ProjectPath = @ProjectPath;
+        INSERT [${schema}].LlmJob (Kind, Reason, Priority, ScanId, RepositoryId, Repository, App, SourceKey, ApplicationId,
+                                   AssessmentId, Component, ProjectPath, RuleVerdict, Confidence, DedupeKey, Model,
+                                   RequestedBy, InputChars, EstInputTokens, Payload)
+        SELECT @Kind, @Reason, @Priority, @ScanId,
+               (SELECT r.RepositoryId FROM [${schema}].OrgRepository r
+                WHERE r.ScanId = @ScanId AND r.ProjectName = @ProjectName AND r.Name = @RepoName),
+               @Repository, @App, @SourceKey,
+               COALESCE(@ApplicationId, (SELECT a.ApplicationId FROM [${schema}].Application a WHERE a.SourceKey = @SourceKey)),
+               @AssessmentId, @Component, @ProjectPath, @RuleVerdict, @Confidence, @DedupeKey, @Model,
+               COALESCE(@RequestedBy, w.ChangedBy), @InputChars, @EstInputTokens, @Payload
+        FROM [${schema}].fnAuditWho() w;
+        SET @id = SCOPE_IDENTITY();
+    END
+    COMMIT;
+    SELECT @id AS JobId;
+END;
+GO
+
+-- Jobs queued, moved, skipped, queued again, answered or failed (not the runner taking one, nor its heartbeats).
+CREATE OR ALTER TRIGGER [${schema}].trLlmJobAudit ON [${schema}].LlmJob
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'LlmJob', COALESCE(i.JobId, d.JobId),
+           LEFT(COALESCE(i.Repository, d.Repository, i.App, d.App, i.Kind, d.Kind)
+                + COALESCE(N' / ' + COALESCE(i.Component, d.Component), N''), 200),
+           CASE WHEN d.JobId IS NULL THEN N'insert' WHEN i.JobId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.JobId IS NOT NULL THEN (SELECT d.Kind, d.Reason, d.Status, d.Priority, d.AdminRank, d.Summary, d.Error,
+                d.RequestedBy FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.JobId IS NOT NULL THEN (SELECT i.Kind, i.Reason, i.Status, i.Priority, i.AdminRank, i.Summary, i.Error,
+                i.RequestedBy FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.JobId = i.JobId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.JobId IS NULL OR i.JobId IS NULL
+       OR (i.Status <> N'running' AND EXISTS (SELECT i.Status, i.AdminRank EXCEPT SELECT d.Status, d.AdminRank));
+END;
+GO
+
+CREATE OR ALTER TRIGGER [${schema}].trLlmQueueSettingsAudit ON [${schema}].LlmQueueSettings
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'LlmQueueSettings', COALESCE(i.SettingsId, d.SettingsId), N'LLM queue',
+           CASE WHEN d.SettingsId IS NULL THEN N'insert' WHEN i.SettingsId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.SettingsId IS NOT NULL THEN (SELECT d.Paused, d.WindowDays, d.WindowStart, d.WindowEnd, d.OnlyWhenIdle,
+                d.MaxLoadPerCpu, d.Parallel FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.SettingsId IS NOT NULL THEN (SELECT i.Paused, i.WindowDays, i.WindowStart, i.WindowEnd, i.OnlyWhenIdle,
+                i.MaxLoadPerCpu, i.Parallel FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.SettingsId = i.SettingsId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.SettingsId IS NULL OR i.SettingsId IS NULL
+       OR EXISTS (SELECT i.Paused, i.WindowDays, i.WindowStart, i.WindowEnd, i.OnlyWhenIdle, i.MaxLoadPerCpu, i.Parallel
+                  EXCEPT SELECT d.Paused, d.WindowDays, d.WindowStart, d.WindowEnd, d.OnlyWhenIdle, d.MaxLoadPerCpu, d.Parallel);
+END;
+GO
+
+-- The latest component review of every component (not the superseded or skipped ones), for the results pages.
+CREATE OR ALTER VIEW [${schema}].vLlmReviewLatest AS
+SELECT x.ApplicationId, c.ComponentId, x.JobId, x.Reason, x.Status, x.QueuedAt, x.FinishedAt, x.Model,
+       r.verdict AS Verdict, TRY_CAST(r.confidence AS decimal(4,2)) AS LlmConfidence, r.reasoning AS Reasoning
+FROM (SELECT j.JobId, j.Reason, j.Status, j.QueuedAt, j.FinishedAt, j.Model, j.Result, j.ProjectPath, a.ApplicationId,
+             ROW_NUMBER() OVER (PARTITION BY j.SourceKey, j.ProjectPath ORDER BY j.JobId DESC) AS N
+      FROM [${schema}].LlmJob j
+      JOIN [${schema}].Application a ON a.SourceKey = j.SourceKey
+      WHERE j.Kind = N'review' AND j.Status <> N'skipped') x
+JOIN [${schema}].Component c ON c.ApplicationId = x.ApplicationId AND c.ProjectPath = x.ProjectPath
+OUTER APPLY OPENJSON(x.Result) WITH (verdict nvarchar(20), confidence float, reasoning nvarchar(max)) r
+WHERE x.N = 1;
+GO
+
+GRANT SELECT ON [${schema}].LlmJob TO [${schema}_writer];
+GRANT UPDATE ON [${schema}].LlmJob (Status, Runner, StartedAt, HeartbeatAt, FinishedAt, Attempts, NotBefore, Result, Summary,
+    Error, Note, Seconds, InputTokens, OutputTokens, Endpoint, Parallel) TO [${schema}_writer];
+GRANT SELECT, INSERT, UPDATE ON [${schema}].LlmSpeed TO [${schema}_writer];
+GRANT SELECT ON [${schema}].LlmSpeed TO [${schema}_admin];
+GRANT EXECUTE ON [${schema}].QueueLlmJob TO [${schema}_writer];
+GRANT SELECT ON [${schema}].LlmQueueSettings TO [${schema}_writer];
+GRANT SELECT ON [${schema}].LlmJob TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].LlmJob (AdminRank, Status, Attempts, NotBefore, Error, Note, FinishedAt) TO [${schema}_admin];
+GRANT EXECUTE ON [${schema}].QueueLlmJob TO [${schema}_admin];
+GRANT SELECT, UPDATE ON [${schema}].LlmQueueSettings TO [${schema}_admin];
+GRANT SELECT ON [${schema}].vLlmReviewLatest TO [${schema}_reader];
+GO
+-- 19: the LLM queue (LlmJob, LlmSpeed, LlmQueueSettings, vLlmReviewLatest) and queued LLM reviews of organization scans
+-- (OrgScan.LlmMode)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 19) INSERT [${schema}].SchemaVersion (Version) VALUES (19);
 GO

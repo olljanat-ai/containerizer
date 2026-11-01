@@ -101,6 +101,9 @@ class OrgOptions:
                                         # an administrator enables them one by one)
     llm_heavy: bool = False             # platform migrations and the sandbox tester ask the LLM as often as they need
                                         # (replatform.py); the worker sets it only when the appliance allows it
+    review_queue: object = None         # with ai: queued LLM reviews (llmqueue.ReviewQueue): the scan asks the LLM
+                                        # nothing, component reviews wait in the LLM review queue (no LLM-heavy mode,
+                                        # no failure diagnosis or dev database questions either)
 
 
 @dataclass
@@ -851,8 +854,9 @@ def _process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, wor
         if scratch.exists():
             shutil.rmtree(scratch)
         rules_reset()
+        queue = o.review_queue.for_repo(r.project, r.name, repo_label(r)) if o.ai and o.review_queue is not None else None
         a = analyze_app(src, scratch, ai=o.ai, model=o.model, verify=o.verify, registry=o.registry, pin=o.pin,
-                        timeout=o.timeout, gitops=gitops, sql=o.sql)
+                        timeout=o.timeout, gitops=gitops, sql=o.sql, review_queue=queue)
         res.rating = a.rating
         from .sqlstore import source_info
         res.source_key = source_info(src, a.name)["key"]
@@ -1015,7 +1019,7 @@ def _dev_database(o: OrgOptions, res: RepoResult, a, comps: list, work: Path, re
     info = {"engine": row["Engine"], "database": row["DatabaseName"], "file": row["FileName"], "sha256": row["Sha256"],
             "image": image}
     try:
-        db = devdb.prepare(row, a, comps, settings, image, local, work, ai=o.ai, model=o.model,
+        db = devdb.prepare(row, a, comps, settings, image, local, work, ai=o.ai and o.review_queue is None, model=o.model,
                            timeout=max(o.timeout, 1800))
         if o.push_images and reg:
             info["digest"] = reg.push(local, image, [f"{image.rsplit(':', 1)[0]}:sha-{row['Sha256'][:12]}"])
@@ -1033,6 +1037,9 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
     now = o.now or datetime.now(timezone.utc)
     tag = o.tag or default_tag(now)
     cutoff = now - timedelta(days=o.stale_days) if o.stale_days else None
+    if o.review_queue is not None and o.llm_heavy:
+        log("LLM-heavy mode is off: this scan queues its LLM reviews and asks the LLM nothing while it runs")
+        o.llm_heavy = False
     token = o.token if o.token is not None else read_token(o.provider, o.token_env)
     if not token:
         from .orgsource import TOKEN_ENVS

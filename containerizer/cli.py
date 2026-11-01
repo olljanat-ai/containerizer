@@ -28,11 +28,12 @@ def cmd_assess(args) -> int:
     rules = load_rules()
     results = []
     apps = _apps(args.paths)
+    queue = _job_queue(args, args.out)
     for app in apps:
         a = assess(app, rules)
         if args.ai:
             from .assess import apply_ai
-            apply_ai(a, args.model)
+            apply_ai(a, args.model, queue=queue)
         results.append(a)
         if not args.quiet:
             print(f"{a.name:24s} {a.rating} score={a.score:3d} conf={a.confidence:.2f}  {a.summary()}")
@@ -242,10 +243,11 @@ def cmd_analyze(args) -> int:
     out = Path(args.out)
     results = []
     apps = _apps(args.paths)
+    queue = _job_queue(args, out)
     for app in apps:
         a = analyze_app(app, out, ai=args.ai, model=args.model, verify=not args.no_verify,
                         registry=args.registry, pin=args.pin_digests, timeout=args.timeout, gitops=_gitops(args),
-                        sql=args.sql)
+                        sql=args.sql, review_queue=queue)
         ver = a.verification
         results.append(a)
         print(f"{a.name:24s} {a.rating} score={a.score:3d}  verified: "
@@ -279,6 +281,10 @@ def cmd_org(args) -> int:
     if args.llm_heavy and not args.ai:
         print("error: --llm-heavy needs --ai (docs/platform-migration.md)", file=sys.stderr)
         return 2
+    if args.llm_heavy and args.ai_queue:
+        print("error: --llm-heavy needs the LLM during the run: leave out --ai-queue", file=sys.stderr)
+        return 2
+    o.review_queue = _job_queue(args, args.work_dir)
     try:
         results = run_org(o)
     except SourceError as e:
@@ -332,6 +338,35 @@ def cmd_worker(args) -> int:
     from .worker import build
 
     return build(args)
+
+
+def cmd_llm_queue(args) -> int:
+    from .llmqueue import build
+
+    return build(args)
+
+
+def _job_queue(args, folder):
+    """--ai-queue: the LLM queue in SQL Server (--sql or CONTAINERIZER_SQL), else a JSON file in `folder`.
+    None without --ai-queue; raises SystemExit with a message when it cannot be used."""
+    import os
+    if not getattr(args, "ai_queue", False):
+        return None
+    if not args.ai:
+        print("error: --ai-queue needs --ai", file=sys.stderr)
+        raise SystemExit(2)
+    from .llmqueue import FileJobQueue, SqlJobQueue
+    cs = args.sql or os.environ.get("CONTAINERIZER_SQL")
+    if cs:
+        from .sqlstore import connect
+        return SqlJobQueue(lambda: connect(cs))
+    if not folder:
+        print("error: --ai-queue without SQL Server keeps the queue in the output folder: give --out", file=sys.stderr)
+        raise SystemExit(2)
+    q = FileJobQueue(Path(folder) / "llm-queue.json")
+    print(f"LLM reviews are queued in {q.path}: answer them with `containerizer llm-queue --file {q.path}`, then run "
+          "again", file=sys.stderr)
+    return q
 
 
 def cmd_sandbox(args) -> int:
@@ -528,6 +563,9 @@ def main(argv=None) -> int:
     s.add_argument("--out", help="write reports to this folder")
     s.add_argument("--format", default="md,html,json")
     s.add_argument("--ai", action="store_true", help="ask the LLM (Claude or self-hosted) about low-confidence components")
+    s.add_argument("--ai-queue", action="store_true", help="queue the LLM reviews instead of asking during the run (needs --ai): answers apply at the next run; "
+                   "in SQL Server when --sql or CONTAINERIZER_SQL is set, else in llm-queue.json in the output folder; "
+                   "`containerizer llm-queue` answers them")
     s.add_argument("--model", default=None, help="LLM model (default CONTAINERIZER_MODEL, else claude-opus-5-5)")
     s.add_argument("--sql", help="also write the results to SQL Server: an ADO.NET-style connection string "
                    "(default CONTAINERIZER_SQL; password in CONTAINERIZER_SQL_PASSWORD)")
@@ -555,6 +593,9 @@ def main(argv=None) -> int:
     s.add_argument("paths", nargs="+")
     s.add_argument("--out", default="containerizer-out")
     s.add_argument("--ai", action="store_true", help="ask the LLM about uncertain components and unexplained failures")
+    s.add_argument("--ai-queue", action="store_true", help="queue the LLM reviews instead of asking during the run (needs --ai): answers apply at the next run; "
+                   "in SQL Server when --sql or CONTAINERIZER_SQL is set, else in llm-queue.json in the output folder; "
+                   "`containerizer llm-queue` answers them")
     s.add_argument("--model", default=None, help="LLM model (default CONTAINERIZER_MODEL, else claude-opus-5-5)")
     s.add_argument("--no-verify", action="store_true", help="skip building and running (static analysis only)")
     s.add_argument("--registry", default="registry.local")
@@ -704,6 +745,9 @@ def main(argv=None) -> int:
                    help="skip repositories with no commit for this many days (default 183, about 6 months; 0: off)")
     s.add_argument("--max-repos", type=int, default=0)
     s.add_argument("--ai", action="store_true", help="ask the LLM about uncertain components and unexplained failures")
+    s.add_argument("--ai-queue", action="store_true", help="queue the LLM reviews instead of asking during the run (needs --ai): answers apply at the next run; "
+                   "in SQL Server when --sql or CONTAINERIZER_SQL is set, else in llm-queue.json in the output folder; "
+                   "`containerizer llm-queue` answers them")
     s.add_argument("--model", default=None)
     s.add_argument("--no-verify", action="store_true", help="do not build and run before rating (less accurate)")
     s.add_argument("--no-gate", action="store_true", help="skip the security gate (lint, image scan, hardened run)")
@@ -790,6 +834,19 @@ def main(argv=None) -> int:
     s.add_argument("--no-metrics", action="store_true")
     s.add_argument("--once", action="store_true", help="run what is due or queued, then exit")
     s.set_defaults(fn=cmd_worker)
+
+    s = sub.add_parser("llm-queue", help="answer the LLM queue (queued LLM reviews) when Admin -> LLM queue lets it; "
+                       "serves Prometheus metrics")
+    s.add_argument("--sql", help="connection string of a writer login (default CONTAINERIZER_SQL; password in "
+                   "CONTAINERIZER_SQL_PASSWORD)")
+    s.add_argument("--file", help="answer a queue file written by --ai-queue without SQL Server, then exit")
+    s.add_argument("--poll", type=int, default=30, help="seconds between looks at the queue")
+    s.add_argument("--name", help="runner name shown on the jobs (default: <host name>-llm-queue)")
+    s.add_argument("--metrics-host", default="127.0.0.1", help="listen address of the metrics endpoint")
+    s.add_argument("--metrics-port", type=int, default=9465)
+    s.add_argument("--no-metrics", action="store_true")
+    s.add_argument("--once", action="store_true", help="answer what may be answered now, then exit")
+    s.set_defaults(fn=cmd_llm_queue)
 
     s = sub.add_parser("credentials", help="key pair that seals the source control tokens registered on the admin pages")
     csub = s.add_subparsers(dest="ccmd", required=True)

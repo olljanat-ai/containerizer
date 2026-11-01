@@ -194,21 +194,73 @@ def model_name(model: str | None = None) -> str:
 CACHE = Path(os.environ.get("CONTAINERIZER_AI_CACHE", Path(__file__).resolve().parent.parent / ".work" / "ai-cache"))
 
 
-def ask_json(prompt: str, schema: dict, model: str | None = None, effort: str = "medium", feature: str | None = None,
-             system: str | None = None) -> dict:
-    """One structured LLM call. Every call (answered, cached or failed) is recorded with its feature and
-    repository (usage_scope) in USAGE_LOG and sent to LISTENERS."""
+def cache_key(prompt: str, schema: dict, model: str | None = None, effort: str = "medium",
+              system: str | None = None) -> str:
+    """The answer cache key of a question: the system prompt, prompt, schema, model and effort, and for a
+    self-hosted server its URL (the same model name on another server is another model). Uses the LLM
+    settings in effect (ai.configured or the environment)."""
     import hashlib
+    parts = [system or SYSTEM, prompt, schema, model_name(model), effort]
+    if _backend() == "openai":
+        parts.append(_llm_base_url())
+    return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
 
-    system = system or SYSTEM
+
+def endpoint(model: str | None = None) -> str:
+    """Which LLM answers, for speed statistics: backend, server URL and model (settings in effect)."""
+    b = _backend()
+    url = _llm_base_url() if b == "openai" else (_env("ANTHROPIC_BASE_URL") or "") if b == "api" else ""
+    return f"{b} {url} {model_name(model)}".replace("  ", " ")[:400]
+
+
+def _tags(feature: str | None) -> dict:
     scope = {**_SCOPE.get(), **({"feature": feature} if feature else {})}
     tags = {"feature": scope.get("feature") or "other", "repo": scope.get("repo") or ""}
+    if scope.get("scan"):
+        tags["scan"] = scope["scan"]
+    return tags
+
+
+def cached_answer(prompt: str, schema: dict, model: str | None = None, effort: str = "medium",
+                  feature: str | None = None, system: str | None = None) -> dict | None:
+    """The cached answer to exactly this question, or None; never calls the LLM. A hit is recorded like
+    a cached ask_json call. Queued LLM reviews (llmqueue.py) look here first."""
+    cf = CACHE / f"{cache_key(prompt, schema, model, effort, system)}.json"
+    try:
+        cached = json.loads(cf.read_text())
+    except (OSError, ValueError):
+        return None
+    record_usage({**cached.get("usage", {}), **_tags(feature), "cached": True})
+    return cached["data"]
+
+
+def store_answer(key: str, data: dict, usage: dict | None = None) -> bool:
+    """Put an answer in the cache under `key` (cache_key). False when the cache cannot be written."""
+    try:
+        CACHE.mkdir(parents=True, exist_ok=True)
+        (CACHE / f"{key}.json").write_text(json.dumps({"data": data, "usage": usage or {}}))
+        return True
+    except OSError as e:
+        print(f"[ai] cannot cache the answer in {CACHE} (set CONTAINERIZER_AI_CACHE): {e}", file=sys.stderr)
+        return False
+
+
+# Output cap for answers that are a small JSON object (a review, a failure diagnosis: about 1,000-2,000 tokens).
+# Self-hosted models sometimes ramble or loop; on a CPU LLM an uncapped answer holds a slot for half an hour
+# (CONTAINERIZER_LLM_MAX_TOKENS, 16000, still caps everything). Only the OpenAI-compatible backend applies it:
+# Claude's thinking counts towards max_tokens.
+SHORT_ANSWER_TOKENS = 4096
+
+
+def ask_json(prompt: str, schema: dict, model: str | None = None, effort: str = "medium", feature: str | None = None,
+             system: str | None = None, max_tokens: int | None = None) -> dict:
+    """One structured LLM call. Every call (answered, cached or failed) is recorded with its feature and
+    repository (usage_scope) in USAGE_LOG and sent to LISTENERS."""
+    system = system or SYSTEM
+    tags = _tags(feature)
     model = model_name(model)
     backend = _backend()
-    parts = [system, prompt, schema, model, effort]
-    if backend == "openai":
-        parts.append(_llm_base_url())     # same model name on another server is another model
-    key = hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
+    key = cache_key(prompt, schema, model, effort, system)
     cf = CACHE / f"{key}.json"
     if cf.exists():
         cached = json.loads(cf.read_text())
@@ -221,7 +273,7 @@ def ask_json(prompt: str, schema: dict, model: str | None = None, effort: str = 
         elif backend == "cli":
             data, usage = _ask_cli(prompt, schema, model, system=system)
         elif backend == "openai":
-            data, usage = _ask_openai(prompt, schema, model, system=system)
+            data, usage = _ask_openai(prompt, schema, model, system=system, max_tokens=max_tokens)
         else:
             raise RuntimeError("No LLM backend available (install `anthropic` and set credentials, install the claude "
                                "CLI, or set CONTAINERIZER_LLM_BASE_URL to a self-hosted OpenAI-compatible server)")
@@ -236,11 +288,7 @@ def ask_json(prompt: str, schema: dict, model: str | None = None, effort: str = 
         usage["cost_usd"] = round((usage.get("input_tokens", 0) * pin + usage.get("output_tokens", 0) * pout) / 1e6, 5)
         usage["cost_known"] = price is not None
     record_usage({**usage, **tags})
-    try:            # the answer is paid for: a cache that cannot be written must not lose it
-        CACHE.mkdir(parents=True, exist_ok=True)
-        cf.write_text(json.dumps({"data": data, "usage": usage}))
-    except OSError as e:
-        print(f"[ai] cannot cache the answer in {CACHE} (set CONTAINERIZER_AI_CACHE): {e}", file=sys.stderr)
+    store_answer(key, data, usage)      # the answer is paid for: a cache that cannot be written must not lose it
     return data
 
 
@@ -395,7 +443,8 @@ def _post_json_retrying(url: str, body: dict, headers: dict, timeout: float) -> 
 JSON_MODES = ("json_schema", "json_object", "none")
 
 
-def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False, system: str = SYSTEM):
+def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False, system: str = SYSTEM,
+                max_tokens: int | None = None):
     """A self-hosted LLM behind an OpenAI-compatible /chat/completions endpoint."""
     base = _llm_base_url()
     key = _env("CONTAINERIZER_LLM_API_KEY", "")
@@ -412,7 +461,7 @@ def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False, sys
     user = (f"{prompt}\n\nRespond with ONLY a JSON object (no prose, no code fences) that validates "
             f"against this JSON schema:\n{json.dumps(schema)}")
     body = {"model": model, "temperature": 0, "stream": False,
-            "max_tokens": int(_env("CONTAINERIZER_LLM_MAX_TOKENS", "16000")),
+            "max_tokens": min(int(_env("CONTAINERIZER_LLM_MAX_TOKENS", "16000")), max_tokens or 10 ** 9),
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
     resp = None
     for m in JSON_MODES[JSON_MODES.index(mode):]:
@@ -443,11 +492,17 @@ def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False, sys
         if not _retry:
             return _ask_openai(prompt + "\n\nYour previous answer did not match the schema (" + "; ".join(errs[:5])
                                + "). Answer with the JSON object only.", schema, model, _retry=True,
-                               system=system)
-        hint = " (answer cut off: raise CONTAINERIZER_LLM_MAX_TOKENS)" if choice.get("finish_reason") == "length" else ""
+                               system=system, max_tokens=max_tokens)
+        hint = (f" (answer cut off at {body['max_tokens']} tokens: the model rambled, or raise CONTAINERIZER_LLM_MAX_TOKENS)"
+                if choice.get("finish_reason") == "length" else "")
         raise RuntimeError(f"no valid JSON in answer{hint}: {'; '.join(errs[:3])}: {text[:300]}")
     u = resp.get("usage") or {}
-    return data, {"input_tokens": u.get("prompt_tokens") or 0, "output_tokens": u.get("completion_tokens") or 0}
+    usage = {"input_tokens": u.get("prompt_tokens") or 0, "output_tokens": u.get("completion_tokens") or 0}
+    t = resp.get("timings") or {}           # llama.cpp llama-server: time spent on the prompt and on generating
+    if isinstance(t, dict) and t.get("prompt_ms") and t.get("predicted_ms"):
+        usage.update(prompt_seconds=round(float(t["prompt_ms"]) / 1000, 2),
+                     generate_seconds=round(float(t["predicted_ms"]) / 1000, 2))
+    return data, usage
 
 
 # --------------------------------------------------------------------------- evidence packs
@@ -549,13 +604,17 @@ REVIEW_SCHEMA = {
 }
 
 
+def review_prompt(a, c) -> str:
+    """The question of a component review (needs the checkout: the evidence pack quotes its code)."""
+    return (evidence_pack(a, c) + "\n\nTask: decide whether this component can run in a Linux container on Kubernetes. "
+            "Check each rule finding (is it real? is the code actually used on the component's main path, or only in an "
+            "optional/legacy command?), classify every package listed as unknown, and add findings the rules missed. "
+            f"For new findings give a regex over {LANG.get(c.project.kind_hint, 'source')} source that would detect the "
+            "same issue elsewhere (or empty).")
+
+
 def ai_review_component(a, c, model: str | None = None) -> dict:
-    prompt = (evidence_pack(a, c) + "\n\nTask: decide whether this component can run in a Linux container on Kubernetes. "
-              "Check each rule finding (is it real? is the code actually used on the component's main path, or only in an "
-              "optional/legacy command?), classify every package listed as unknown, and add findings the rules missed. "
-              f"For new findings give a regex over {LANG.get(c.project.kind_hint, 'source')} source that would detect the "
-              "same issue elsewhere (or empty).")
-    res = ask_json(prompt, REVIEW_SCHEMA, model=model, feature="assessment")
+    res = ask_json(review_prompt(a, c), REVIEW_SCHEMA, model=model, feature="assessment", max_tokens=SHORT_ANSWER_TOKENS)
     res["model"] = model_name(model)
     return res
 
@@ -677,7 +736,7 @@ def diagnose_failure(a, c, plan: dict, stage: str, log_tail: str, model: str | N
               "external if the container itself is fine and only an external service/config is missing, platform if "
               "a Windows-only API/library is needed, code if the application code must change.")
     try:
-        r = ask_json(prompt, DIAG_SCHEMA, model=model, feature="build-diagnosis")
+        r = ask_json(prompt, DIAG_SCHEMA, model=model, feature="build-diagnosis", max_tokens=SHORT_ANSWER_TOKENS)
         fix = json.loads(r.get("fix_json") or "{}")
         if not isinstance(fix, dict):
             fix = {}

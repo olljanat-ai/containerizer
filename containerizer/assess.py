@@ -431,8 +431,24 @@ def assess(path: str | Path, rules: list[Rule] | None = None, repo: Repo | None 
     )
 
 
-def apply_ai(a: AppAssessment, model: str | None = None, threshold: float = 0.85, learn: bool = False) -> list[dict]:
-    """Hybrid mode: ask the LLM about the components the rules are unsure of."""
+def apply_review(c: Component, r: dict, min_confidence: float = 0.6) -> None:
+    """An LLM review's answer on the component: c.ai, and the verdict when the LLM is confident enough
+    and disagrees with the rules."""
+    c.ai = {k: r[k] for k in ("verdict", "confidence", "reasoning", "model") if k in r}
+    if r.get("confidence", 0) >= min_confidence and r["verdict"] != c.rule_verdict:
+        c.override = r["verdict"]
+
+
+def apply_ai(a: AppAssessment, model: str | None = None, threshold: float = 0.85, learn: bool = False,
+             queue=None, enqueue: bool = True) -> list[dict]:
+    """Hybrid mode: ask the LLM about the components the rules are unsure of.
+
+    With `queue` (llmqueue.ReviewQueue) nothing asks the LLM: answers already in the answer cache (or
+    answered in the queue) apply at once, the other questions go to the LLM review queue (only when
+    `enqueue`), and their answers apply at the next scan (llmqueue.queue_reviews)."""
+    if queue is not None:
+        from .llmqueue import queue_reviews
+        return queue_reviews(a, queue, model=model, threshold=threshold, learn=learn, enqueue=enqueue)
     from .ai import ai_review_component, learn_from_review
 
     usage = []
@@ -444,9 +460,7 @@ def apply_ai(a: AppAssessment, model: str | None = None, threshold: float = 0.85
         except Exception as e:  # noqa: BLE001
             c.ai = {"error": str(e)}
             continue
-        c.ai = {k: r[k] for k in ("verdict", "confidence", "reasoning", "model")}
-        if r.get("confidence", 0) >= 0.6 and r["verdict"] != c.rule_verdict:
-            c.override = r["verdict"]
+        apply_review(c, r)
         if learn:
             learn_from_review(a, c, r)
         usage.append(r)

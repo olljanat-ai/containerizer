@@ -150,6 +150,66 @@ Connect, SAML 2.0 or WS-Federation are pointed at the [sandbox identity provider
 the result. To deploy the same output repository to another cluster, follow `sandbox/README.md` in it
 (Argo CD or Flux).
 
+## The LLM queue
+
+With **Ask the LLM** on, **LLM reviews** chooses when the LLM is asked:
+
+- **Inline** (the default): during the scan, as before.
+- **Queued**: the scan asks the LLM nothing and the rules decide; the component reviews wait in the
+  LLM queue and their answers are used by the next scan of each repository
+  ([queued LLM reviews](source-control.md#queued-llm-reviews): what is queued, in what order, and how an
+  answer takes effect). Use it with a slow self-hosted LLM. LLM-heavy mode needs inline reviews.
+
+![Organization scan settings: Ask the LLM with queued LLM reviews](images/admin-scan-llm-mode.png#only-light){ .cz-shot }
+![Organization scan settings: Ask the LLM with queued LLM reviews](images/admin-scan-llm-mode-dark.png#only-dark){ .cz-shot }
+
+**Admin → LLM queue** (administrators and operators) shows:
+
+- the jobs waiting, in the order the runner takes them: the repository and component, why it is queued
+  (uncertain, or a second opinion on the rules' blocker or rewrite verdict) and the estimated tokens and
+  time. **Top**, **Up**, **Down** and **Bottom** move a job; new jobs still go in by their priority.
+  **Skip** takes one out of the queue;
+- at the top, the totals: jobs waiting and being asked, by kind (uncertain, second opinion); their
+  estimated tokens in and out; the LLM time they need at the measured speed with the parallel requests
+  set, for example *~7 h 20 min of LLM time (3 in parallel)*, and when they would all be done if the
+  queue ran without a pause; what the estimate is learned from; and, outside the hours, when they next
+  start;
+- the finished jobs: each answer (verdict and confidence, the reasoning and the question on the job's
+  page), with the tokens and time it really took, failures (a job is tried three times, five minutes
+  apart and more, before it fails) and skipped jobs. **Requeue** puts a failed or skipped one back;
+- repositories whose reviews are all answered since their last scan, with **Re-scan now**: a full scan of
+  only that repository, so the answers apply without waiting for the schedule;
+- the settings: **Paused**; the days and hours (UTC) the runner may start jobs (no day selected: every
+  day; From and To empty: all day; 22:00 to 06:00 runs past midnight, and the night belongs to the day it
+  started); **Only when idle**: no organization scan running and the machine's 1-minute load average per
+  CPU below the limit (0: the load is not looked at); and **Parallel requests**, as many as the LLM
+  server answers at once (1 for a CPU server). The runner looks at them before each job; a job it has
+  started finishes.
+
+Every change to a job (queued, moved, skipped, requeued, answered, failed) and to the settings is in
+**Admin → Change history**.
+
+**Estimates.** Each queued job's input tokens are estimated from the length of its question (3.5
+characters a token to begin with) and its output from the answers before it (1,500 tokens to begin
+with). From every answer the runner learns, separately for each LLM (server and model): the characters
+per token of its tokenizer, the answer length of each kind of job, and its speed (prompt and generation
+tokens per second when the server reports its timings, as llama.cpp does, otherwise tokens per second
+from the time each answer took). Each figure is a moving average that gives the newest answer a weight
+of 0.2. The queue's time is the sum of the jobs' times divided by the parallel requests; the speeds are
+as measured with the parallel requests of the time, so this is a rough estimate. It does not include
+waiting for the hours or for the machine to be idle. Until an LLM has answered once, the page says
+*time: learning*.
+
+**The runner** is `containerizer llm-queue`, a process of its own next to the scan worker
+(`containerizer-llm-queue` on the appliance). It uses the worker's database login, opens the LLM
+registered under Source control & LLM with the worker's key (or uses the worker's environment
+settings), writes into the worker's answer cache, and serves its metrics on port 9465: the jobs by
+status, kind and reason, the oldest waiting job, the estimated tokens and LLM time waiting, jobs finished, and the
+LLM usage of its answers (feature `assessment-queued`). On another machine, give it the worker's
+settings and the same `CONTAINERIZER_AI_CACHE` (shared), or rely on the next scan finding the answer in
+the queue; [`monitoring/systemd/containerizer-llm-queue.service`](../monitoring/systemd/containerizer-llm-queue.service)
+is a unit for it. A job it is asking when it stops goes back to the queue.
+
 ## Security
 
 - Each token is only sent where it belongs: the read-only token to its own server's API and its own
@@ -171,7 +231,8 @@ dashboard of them: scans running and waiting, time since the last successful run
 current run, repositories by state (`disabled_admin` counts repositories disabled directly or through
 their project) and latest result, time per repository, clones and pulls, pushed images, LLM usage
 (calls, tokens and estimated cost by repository and feature, [platform migrations](platform-migration.md#llm-usage)),
-and the machine's CPU, memory, disk and network.
+the [LLM queue](#the-llm-queue) (jobs waiting, the oldest one, the runner open or waiting, jobs answered
+and failed), and the machine's CPU, memory, disk and network.
 
 ![Grafana dashboard: scans, the machine running the worker, and the worker process](images/grafana-scans-dashboard.png#only-light)
 ![Grafana dashboard: scans, the machine running the worker, and the worker process](images/grafana-scans-dashboard-dark.png#only-dark)

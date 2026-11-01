@@ -1,0 +1,9 @@
+#!/bin/sh
+# connection string from /run/containerizer/sql.env (cz-firstboot, from appliance.env); worker.env may set its own
+export CONTAINERIZER_SQL="${CONTAINERIZER_SQL:-$CZ_SQL_SCANNER_CS}"
+CONTAINERIZER_SQL_PASSWORD="$(cat "$CREDENTIALS_DIRECTORY/sql-scanner")"
+export CONTAINERIZER_SQL_PASSWORD
+# opens the LLM administrators register on the admin pages
+export CONTAINERIZER_CREDENTIAL_KEY_FILE="$CREDENTIALS_DIRECTORY/credential-key"
+export HOME=/var/lib/containerizer/worker
+exec /usr/lib/containerizer/venv/bin/python -m containerizer llm-queue --metrics-host 127.0.0.1 --metrics-port 9465
