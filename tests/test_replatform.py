@@ -465,3 +465,12 @@ def test_sandbox_tester_llm_diagnosis_and_what_is_published(monkeypatch):
     assert pub["llm"] == {"outcome": "fixable", "diagnosis": d["diagnosis"]} and "log_tail" not in pub
     monkeypatch.setattr(ai, "ask_json", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no LLM")))
     assert replatform.llm_sandbox_diagnosis(r, "") is None
+
+
+def test_an_answer_that_cannot_be_cached_is_not_lost(monkeypatch, tmp_path):
+    ro = tmp_path / "read-only"
+    ro.write_text("")                      # a file where the cache folder should be: mkdir fails
+    monkeypatch.setattr(ai, "CACHE", ro / "ai-cache")
+    monkeypatch.setattr(ai, "_backend", lambda: "api")
+    monkeypatch.setattr(ai, "_ask_api", lambda *a, **k: ({"ok": True}, {"input_tokens": 10, "output_tokens": 2}))
+    assert ai.ask_json("q", {"type": "object"}, model="claude-opus-5-5") == {"ok": True}

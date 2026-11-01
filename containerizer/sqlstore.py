@@ -603,7 +603,9 @@ def create_login(conn, login: str, password: str, role: str) -> None:
     pw = password.replace("'", "''")
     cur.execute(f"IF SUSER_ID(N'{login}') IS NULL CREATE LOGIN [{login}] WITH PASSWORD = N'{pw}', CHECK_POLICY = ON "
                 f"ELSE ALTER LOGIN [{login}] WITH PASSWORD = N'{pw}'")
-    cur.execute(f"IF DATABASE_PRINCIPAL_ID(N'{login}') IS NULL CREATE USER [{login}] FOR LOGIN [{login}]")
+    # ELSE: a database restored on another server has the user with the old server's login SID (orphaned)
+    cur.execute(f"IF DATABASE_PRINCIPAL_ID(N'{login}') IS NULL CREATE USER [{login}] FOR LOGIN [{login}] "
+                f"ELSE ALTER USER [{login}] WITH LOGIN = [{login}]")
     cur.execute(f"ALTER ROLE [{role}] ADD MEMBER [{login}]")
     conn.commit()
 

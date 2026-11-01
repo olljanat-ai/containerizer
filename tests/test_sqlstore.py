@@ -374,3 +374,21 @@ def test_import_json(db, tmp_path):
     assert migs[0]["AgentPrompt"].startswith("# Task: make `Web`")
     assert "Prompt for an AI coding agent" in webui.render_application(webui.load_application(rd, app_id))
     rd.close()
+
+
+@needs_sql
+def test_create_login_relinks_the_user_of_a_restored_database(db):
+    """A database restored on another server keeps its users with the old server's login SIDs: db init
+    (create_login) links them to the logins of this server again, so the web UI and the worker can sign in."""
+    conn = sqlstore.connect(db)
+    sqlstore.create_login(conn, "cz_t_moved", "Test-Passw0rd!x", "reader")
+    m = sqlstore.connect(re.sub(r"Database=\w+", "Database=master", db), autocommit=True)
+    m.cursor().execute("DROP LOGIN [cz_t_moved]")        # the user stays: orphaned, as after a restore elsewhere
+    m.close()
+    sqlstore.create_login(conn, "cz_t_moved", "Test-Passw0rd!x", "reader")
+    conn.close()
+    r = sqlstore.connect(_as(db, "cz_t_moved"), password="Test-Passw0rd!x")
+    cur = r.cursor()
+    cur.execute("SELECT COUNT(*) FROM cz.vApplicationLatest")   # signed in, and the database's grants apply
+    assert cur.fetchone()[0] >= 0
+    r.close()

@@ -476,3 +476,10 @@ def test_root_password_default_is_expired_and_kept_and_ssh_takes_it():
     assert sshd["PermitRootLogin"] == "yes" and sshd["PasswordAuthentication"] == "yes"
     assert sshd["KbdInteractiveAuthentication"] == "yes" and sshd["UsePAM"] == "yes"
     assert "AuthenticationMethods" not in sshd
+
+
+def test_llm_answer_cache_is_on_the_persistent_partition():
+    # the default cache, next to the code, is the read-only OS image on the appliance
+    worker = _unit("containerizer-worker.service")
+    assert "CONTAINERIZER_AI_CACHE=/var/lib/containerizer/worker/ai-cache" in worker["Environment"]
+    assert worker["WorkingDirectory"] == ["/var/lib/containerizer/worker"]
