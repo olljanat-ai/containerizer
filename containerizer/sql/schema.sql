@@ -1561,3 +1561,45 @@ GO
 -- 20: refactoring patches (LlmJob Kind 'refactor', vRefactorOrder)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 20) INSERT [${schema}].SchemaVersion (Version) VALUES (20);
 GO
+
+-- API keys for the JSON API (admin_apikeys.py): the key itself is shown once and never stored, only its
+-- SHA-256. Revoked or expired keys are refused. The change history records creating and revoking a key,
+-- not every use (LastUsedAt).
+IF OBJECT_ID(N'[${schema}].ApiKey', N'U') IS NULL
+CREATE TABLE [${schema}].ApiKey (
+    ApiKeyId    int IDENTITY(1,1) NOT NULL CONSTRAINT PK_ApiKey PRIMARY KEY,
+    Name        nvarchar(100)  NOT NULL,
+    Prefix      char(8)        NOT NULL CONSTRAINT UQ_ApiKey_Prefix UNIQUE,
+    KeyHash     binary(32)     NOT NULL,
+    Role        nvarchar(10)   NOT NULL CONSTRAINT CK_ApiKey_Role CHECK (Role IN (N'read', N'full')),
+    CreatedBy   nvarchar(256)  NOT NULL,
+    CreatedAt   datetime2(0)   NOT NULL CONSTRAINT DF_ApiKey_CreatedAt DEFAULT SYSUTCDATETIME(),
+    ExpiresAt   datetime2(0)   NULL,
+    LastUsedAt  datetime2(0)   NULL,
+    RevokedAt   datetime2(0)   NULL,
+    RevokedBy   nvarchar(256)  NULL
+);
+GO
+CREATE OR ALTER TRIGGER [${schema}].trApiKeyAudit ON [${schema}].ApiKey
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'ApiKey', COALESCE(i.ApiKeyId, d.ApiKeyId), COALESCE(i.Name, d.Name),
+           CASE WHEN d.ApiKeyId IS NULL THEN N'insert' WHEN i.ApiKeyId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.ApiKeyId IS NOT NULL THEN (SELECT d.Name, d.Prefix, d.Role, d.ExpiresAt, d.RevokedAt, d.RevokedBy
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.ApiKeyId IS NOT NULL THEN (SELECT i.Name, i.Prefix, i.Role, i.ExpiresAt, i.RevokedAt, i.RevokedBy
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.ApiKeyId = i.ApiKeyId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.ApiKeyId IS NULL OR i.ApiKeyId IS NULL
+       OR EXISTS (SELECT i.Name, i.Role, i.ExpiresAt, i.RevokedAt EXCEPT SELECT d.Name, d.Role, d.ExpiresAt, d.RevokedAt);
+END;
+GO
+GRANT SELECT, INSERT ON [${schema}].ApiKey TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].ApiKey (LastUsedAt, RevokedAt, RevokedBy) TO [${schema}_admin];
+GO
+-- 21: API keys
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 21) INSERT [${schema}].SchemaVersion (Version) VALUES (21);
+GO

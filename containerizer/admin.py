@@ -30,7 +30,7 @@ LINK_RE = re.compile(r"(https://[A-Za-z0-9.-]+|http://(localhost|127\.0\.0\.1|\[
 TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Application": "Application",
               "OrgScan": "Organization scan", "OrgRepository": "Repository", "OrgProject": "Project",
               "DevDatabase": "Dev database", "RuleCandidate": "Learned rule",
-              "SourceCredential": "Source control token", "LabService": "Lab service",
+              "SourceCredential": "Source control token", "LabService": "Lab service", "ApiKey": "API key",
               "RulesRepository": "Internal rules repository", "LlmJob": "LLM queue job",
               "LlmQueueSettings": "LLM queue settings"}
 FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
@@ -216,7 +216,7 @@ class Admin:
         kind = parts[0]
         if kind not in {k for k, _ in tabs}:
             known = kind in ("applications", "products", "business-units", "audit", "access", "scans", "repositories",
-                             "llm-queue", "refactoring",
+                             "llm-queue", "refactoring", "api",
                              "dev-databases", "system", "firewall", "source-control", "lab-services",
                              "sandbox-https")
             return Response(403 if known else 404, self._shell(s, a, "Not allowed" if known else "Not found", "",
@@ -236,6 +236,9 @@ class Admin:
             status, body, location = self.system.handle(
                 s, method, parts, q, form, lambda title, active, b, f: self._shell(s, a, title, active, b, f))
             return redirect(location) if location else Response(status, body)
+        if kind == "api":                            # administrators only (see _tabs)
+            from . import admin_apikeys
+            return admin_apikeys.route(self, conn, s, a, method, parts, q, form)
         if kind == "source-control":                 # administrators only (see _tabs)
             from . import admin_credentials
             return admin_credentials.route(self, conn, s, a, method, parts, q, form)
@@ -293,6 +296,8 @@ class Admin:
             tabs += [("lab-services", "Lab services")]
         if self.may_review_rules(s):                                     # learned rules waiting for review
             tabs += [("rules", "Rule review")]
+        if a.admin and self.api is not None:                             # API keys and how to use the API
+            tabs += [("api", "API")]
         tabs += [("audit", "Change history")]
         if a.admin and self.cfg.view_audit:
             tabs += [("access", "Access log")]
@@ -970,7 +975,7 @@ def build(env=None) -> Admin | None:
         adm.credential_key = public_key_from_env(env)
     except CredentialError as ex:
         raise OidcError(str(ex)) from None
-    adm.api = None if dev else api.build(env, adm.provider, adm.connect_admin, cfg)
+    adm.api = api.build(env, adm.provider, adm.connect_admin, cfg)     # API keys work in development mode too
     from .appliance import SystemPage
     adm.system = SystemPage.detect(env)
     from . import devdb

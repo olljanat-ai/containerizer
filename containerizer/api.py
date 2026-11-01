@@ -69,6 +69,8 @@ class Api:
 
     def roles(self, claims: dict) -> tuple[bool, bool, list[str], str]:
         """(admin, operator, product owner scopes, role label) of an access token's caller."""
+        if claims.get("_api_key"):                  # an API key (admin_apikeys.py): full access or read only
+            return (True, False, [], "API key") if claims["_role"] == "full" else (False, True, [], "API key (read)")
         if allowed_client(claims, self.clients):
             return True, False, [], "API client"
         if self.admins and allowed(claims, self.admins):
@@ -105,7 +107,7 @@ class Api:
             try:
                 user = str(claims.get("email") or claims.get("preferred_username") or claims.get("upn") or "")
                 client = str(claims.get("azp") or claims.get("appid") or claims.get("client_id") or claims["sub"])
-                who = user or f"client:{client}"
+                who = f"api-key:{claims['_prefix']}" if claims.get("_api_key") else (user or f"client:{client}")
                 conn.set_user(who, str(claims.get("name") or claims.get("app_displayname") or who), via="API", role=role)
                 return self.route(conn, method, path, query, data, Access.resolve(conn, admin, operator, scopes))
             finally:
@@ -119,7 +121,16 @@ class Api:
     def _authenticate(self, headers) -> dict:
         auth = headers.get("Authorization") or ""
         if not auth.lower().startswith("bearer ") or not auth[7:].strip():
-            raise ApiError(401, "invalid_request", "send Authorization: Bearer <access token>")
+            raise ApiError(401, "invalid_request", "send Authorization: Bearer <API key or access token>")
+        token = auth[7:].strip()
+        if token.startswith("czk_"):
+            from .admin_apikeys import check_key
+            claims = check_key(self.connect_admin, token)
+            if claims is None:
+                raise ApiError(401, "invalid_token", "the API key is not valid (unknown, revoked or expired)")
+            return claims
+        if not self.audience:
+            raise ApiError(401, "invalid_token", "send an API key (Admin → API); access tokens are not set up here")
         try:
             claims = self.provider.validate_access(auth[7:].strip(), self.audience)
         except OidcError as e:
@@ -351,11 +362,10 @@ def _int(v: str, name: str) -> int:
 
 
 def build(env, provider: Provider, connect_admin, cfg=None) -> Api | None:
-    """The API when CONTAINERIZER_API_AUDIENCE is set (needs the sign-in settings too)."""
+    """The API, whenever the admin pages are on: API keys (Admin → API) always; OpenID access tokens too when
+    CONTAINERIZER_API_AUDIENCE is set."""
     from .oidc import check_rules
-    audience = env.get("CONTAINERIZER_API_AUDIENCE")
-    if not audience:
-        return None
+    audience = env.get("CONTAINERIZER_API_AUDIENCE") or ""
     clients = [r.strip() for r in (env.get("CONTAINERIZER_API_CLIENTS") or "").split(",") if r.strip()]
     if clients or not cfg:           # with sign-in configured, the admin / owner / operator rules are enough
         check_rules(clients, ("client", "email", "domain", "group", "role", "sub"), "CONTAINERIZER_API_CLIENTS")
