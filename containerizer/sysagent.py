@@ -18,10 +18,12 @@ request again before acting on it:
             again here, sandbox_https.py): Caddy answers for *.<domain> with it and passes the requests to
             Traefik in k3s, whose default certificate becomes the same one. The key is written for root
             and Caddy only and is never published; the web UI cannot read it back.
+- local-llm: the built-in LLM on or off (local_llm.py checks the RAM and the disk again); while its model
+            downloads, huggingface.co and hf.co are on the egress allow-list.
 
 Commands (also for an administrator on the console or over SSH):
 
-    status                     publish status.json
+    status                     publish status.json (and start or stop the built-in LLM as set)
     process                    handle the queued requests
     upgrade vX.Y.Z             verify, install and restart
     rollback <snapshot id>     install a copy of a snapshot and restart
@@ -45,6 +47,9 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+from . import local_llm
+from .local_llm import LocalLlmError
 
 VERSION_RE = re.compile(r"v\d{1,4}\.\d{1,4}\.\d{1,4}")
 DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
@@ -392,8 +397,10 @@ def load_rules(path: Path, system: bool = False) -> dict:
 
 def system_rules() -> dict:
     """The rules of the OS image, plus the external results database of appliance.env (CZ_SQL_SERVER): the
-    appliance cannot start its web UI without it, so it cannot wait for a rule on the Firewall page."""
+    appliance cannot start its web UI without it, so it cannot wait for a rule on the Firewall page. And
+    Hugging Face while the built-in LLM's model downloads (local_llm.egress_rules), never otherwise."""
     rules = load_rules(P.system_rules, system=True)
+    rules["rules"] += validate_rules({"rules": local_llm.egress_rules()})["rules"]
     try:
         db = external_sql(read_env(P.appliance_env))
     except RuleError as ex:
@@ -975,16 +982,18 @@ def process() -> int:
                 from .labagent import apply_request
                 apply_request(req)
                 run(["systemctl", "start", "--no-block", "containerizer-lab.service"], timeout=60)
+            elif action == "local-llm":         # Admin -> Source control & LLM: the built-in LLM
+                local_llm.apply_request(req)
             elif action == "sandbox-https":
                 save_sandbox_https(req, user, name)
                 publish(https_state=sandbox_https_status())
             else:
                 log(f"unknown action {action!r} ignored")
-        except (AgentError, RuleError, OSError, subprocess.TimeoutExpired, ValueError) as ex:
+        except (AgentError, RuleError, LocalLlmError, OSError, subprocess.TimeoutExpired, ValueError) as ex:
             rc = 1
             log(f"{action} failed: {ex}")
-            if action == "lab":
-                continue                        # the Lab services page shows the agent's status
+            if action in ("lab", "local-llm"):
+                continue                        # their pages show their own status
             if action in ("upgrade", "rollback"):
                 task.update(state="failed", finished=now(), message=str(ex)[-1000:])
                 publish(task)
@@ -1046,6 +1055,10 @@ def main(argv=None) -> int:
     try:
         if cmd == "status":
             publish(egress_state=egress_status())
+            try:
+                local_llm.reconcile()
+            except (AgentError, LocalLlmError, OSError, subprocess.TimeoutExpired) as ex:
+                log(f"built-in LLM: {ex}")
             return 0
         if cmd == "process":
             return process()

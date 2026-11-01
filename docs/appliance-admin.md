@@ -19,6 +19,7 @@ image, and upgraded from the admin pages. To install it, see [Getting started](a
 | Prometheus and Grafana, with the scan worker's metrics, alerts and dashboard | containers | `https://<appliance>/grafana/` |
 | HTTPS (Caddy), SSH | systemd services | ports 443 and 22: the only open ports |
 | Firewall and DNS filter: every outgoing connection is blocked unless an allow-list rule covers it | nftables + dnsmasq | Admin → Firewall |
+| [Built-in LLM](#built-in-llm) (optional, off by default): llama.cpp with Qwen3-Coder 30B-A3B on the CPU | container, non-root, read-only model | `127.0.0.1:8082` only; Admin → Source control & LLM |
 
 ```
                  443 (HTTPS)                                  22 (SSH, root)    
@@ -167,7 +168,8 @@ dropped and logged.
 - **Log only mode** lets everything out but still lists what would have been refused, to build the list.
   Turn blocking back on when you are done.
 - **Always allowed**: what the appliance needs itself (GHCR and Sigstore for upgrades and their signatures,
-  Docker Hub and the Microsoft registry for its own service images). Part of the OS image.
+  Docker Hub and the Microsoft registry for its own service images). Part of the OS image. While the
+  [built-in LLM](#built-in-llm)'s model downloads, `huggingface.co` and `hf.co` are listed here too.
 - **Change history**: who changed what, kept on the persistent partition.
 
 The web UI does not change the firewall itself: it asks the system agent (root), which checks the rules
@@ -228,6 +230,69 @@ On the console: `python -m containerizer.sysagent upgrade vX.Y.Z` or `... rollba
 `/usr/lib/containerizer/venv/bin/python`). The appliance checks GHCR anonymously, so the
 `containerizer-appliance` package must be public.
 
+## Built-in LLM
+
+For sites without an LLM server of their own (a GPU server, or the Claude API), the appliance can run
+one itself, on its CPU. It is off by default and is turned on under **Admin → Source control & LLM**
+(administrators only). Scans with **Ask the LLM** use it when no LLM is set on that page; an LLM set
+there always wins. See [the LLM](source-control.md#the-llm) for what it is asked.
+
+![Built-in LLM running: the model checked on the disk, the machine's memory and the sizing](images/admin-built-in-llm-running.png#only-light){ .cz-shot }
+![Built-in LLM running: the model checked on the disk, the machine's memory and the sizing](images/admin-built-in-llm-running-dark.png#only-dark){ .cz-shot }
+
+| | |
+| --- | --- |
+| Model | Qwen3-Coder 30B-A3B Instruct, ByteShape's `IQ4_XS-4.20bpw` GGUF build (16 GB, Apache 2.0), served as `qwen3-coder-30b-a3b` |
+| Server | llama.cpp `llama-server` (image `CZ_IMAGE_LLAMA_CPP` in `images.env`, pinned by digest), `containerizer-local-llm.service`, container `cz-llm` |
+| Listens on | `127.0.0.1:8082` only; metrics for Prometheus on the same port |
+| Memory | at least 40 GB on the machine. The model (15.6 GB) is locked in RAM, so builds cannot push it out; each answer slot adds about 2 GB |
+| Disk | about 20 GB free on the persistent partition for the download (16 GB plus 4 GB to spare) |
+| Speed | about 7 to 12 tokens per second on a 22-core server; reading a 5,000 to 15,000 token evidence pack takes 1.5 to 5 minutes, so an answer takes about 5 minutes. Calls may take up to an hour (`CONTAINERIZER_LLM_TIMEOUT=3600` is set for it) |
+
+**Turning it on.** The system agent checks the memory and the free space again (the page shows both), then
+downloads the model once from Hugging Face, from a fixed commit of the repository, resuming a partial
+download, and checks its size and SHA-256 before it is used. `huggingface.co` and `hf.co` (which covers
+the download servers it redirects to) are on the allow-list only while the download runs, as system rules
+on the Firewall page; then they are removed again. If the download is refused anyway, the refused names are
+listed on **Admin → Firewall**. The page shows the progress; after the download the server loads the model,
+which takes a minute or two, and the state turns to **Running**. A failed download (network, checksum) is
+not retried by itself: **Try again** resumes it. A file that fails the checksum is deleted.
+
+![Built-in LLM downloading its model, with the progress](images/admin-built-in-llm-downloading.png#only-light){ .cz-shot }
+![Built-in LLM downloading its model, with the progress](images/admin-built-in-llm-downloading-dark.png#only-dark){ .cz-shot }
+
+**Sizing.** The answer slots (requests answered together, for about the cost of one, since speed follows
+memory bandwidth) and the container's memory limit follow the machine's memory:
+
+| Memory | Slots | Context per slot | Memory limit of `cz-llm` |
+| --- | --- | --- | --- |
+| 40 to 47 GB | 1 | 22,016 tokens | 24 GB |
+| 48 to 63 GB | 2 | 22,016 tokens | 27 GB |
+| 64 GB or more | 3 | 22,016 tokens | 30 GB |
+
+It gets a quarter of the CPU's weight (`--cpu-shares 256`), so the scans' builds go first when both want
+the CPU. Use the queued LLM mode for organization scans where it is offered, and leave LLM-heavy mode off:
+it makes many calls, and on a CPU that turns a scan into hours or days.
+
+**Turning it off** stops the server (or the download) at once; the model file stays, so turning it on
+again starts the server without a new download. **Remove** next to **Turn on** deletes the model file to
+free its 16 GB.
+
+Files:
+
+| What | Where |
+| --- | --- |
+| On or off, the download's state and the change history | `/var/lib/containerizer/system/local-llm.json` |
+| The model file (re-downloadable) | `/var/lib/containerizer/llm/` |
+| What the page and the scan worker read | `/run/containerizer/system/local-llm-status.json` |
+| The server's settings while it is on (slots, context, memory) | `/run/containerizer/local-llm.env` |
+
+On the console: `systemctl status containerizer-local-llm containerizer-local-llm-download`,
+`docker logs cz-llm`, and `curl -s http://127.0.0.1:8082/health`. It is not part of the start-up check of an
+upgrade: a missing or slow model never makes the appliance go back to the previous snapshot. The
+Grafana dashboard has a **Built-in LLM** row: whether it is up, requests in progress and waiting, and
+the tokens per second it generates.
+
 ## Backup
 
 The OS is rebuilt from the image; what has to be backed up is on the persistent partition. Scans rebuild
@@ -242,6 +307,9 @@ the clones, images in the local registry and the sandbox apps, but not the rest:
 | Learned rules | `/var/lib/containerizer/learned` | Rules the learning loop added on this appliance. Rules approved in the rule review are in your rules repository |
 | HTTPS certificate authority | `/var/lib/caddy` | Without `CZ_ACME_EMAIL`, the appliance's own CA: a new one means every browser has to trust a new root |
 | Metrics (optional) | `/var/lib/containerizer/prometheus`, `/var/lib/containerizer/grafana` | 90 days of scan and LLM usage metrics, and changes made in Grafana |
+
+The [built-in LLM](#built-in-llm)'s model file (`/var/lib/containerizer/llm`, 16 GB) can be downloaded
+again: leave it out of backups (the archive below does). Its on/off setting is in `/var/lib/containerizer/system`.
 
 Lab service data and restored dev databases in the sandbox cluster (`/var/lib/rancher`) are test data:
 a new cluster starts them empty, or restores the uploaded backups again, and creates new credentials.

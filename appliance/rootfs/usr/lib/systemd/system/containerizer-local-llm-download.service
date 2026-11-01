@@ -1,0 +1,24 @@
+[Unit]
+Description=containerizer appliance: download and check the built-in LLM's model (Hugging Face, pinned by sha256)
+After=network-online.target containerizer-firewall.service containerizer-dns.service
+Wants=network-online.target
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+
+[Service]
+# Not enabled: the system agent starts it when an administrator turns the built-in LLM on and the model is
+# not on the disk yet; huggingface.co and hf.co are on the egress allow-list only while it runs. Resumes a
+# partial download (<file>.part), checks the size and sha256, then renames it into /var/lib/containerizer/llm.
+# Failures are shown on Admin -> Source control & LLM; the unit itself does not fail for them.
+Type=oneshot
+ExecStart=/usr/lib/containerizer/venv/bin/python -m containerizer.local_llm download
+# turned off while it runs: stopped with SIGTERM, cleans up and exits 143
+SuccessExitStatus=143
+# 16 GB over a slow line
+TimeoutStartSec=12h
+Nice=10
+IOSchedulingClass=idle
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+UMask=0022

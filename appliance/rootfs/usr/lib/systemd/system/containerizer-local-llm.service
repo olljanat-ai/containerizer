@@ -1,0 +1,36 @@
+[Unit]
+Description=containerizer appliance: built-in LLM, llama.cpp on 127.0.0.1:8082 (Admin -> Source control & LLM)
+After=docker.service containerizer-firstboot.service containerizer-dns.service
+Requires=docker.service
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+# Off by default and not enabled: the system agent writes this file and starts the unit only while an
+# administrator has turned the built-in LLM on and its model file is verified (containerizer/local_llm.py);
+# without it a start is skipped, not failed.
+ConditionPathExists=/run/containerizer/local-llm.env
+
+[Service]
+EnvironmentFile=/usr/lib/containerizer/images.env
+EnvironmentFile=/run/containerizer/local-llm.env
+ExecStartPre=-/usr/bin/docker rm -f cz-llm
+# The model file is memory-mapped and locked in RAM (mmap+mlock, IPC_LOCK, unlimited memlock), so the scan
+# worker's builds cannot push it out of the page cache; this llama.cpp build has no --mlock. The image's own
+# health check probes port 8080: --health-cmd replaces it. CPU shares: the scans' builds go first.
+# --cache-ram: llama.cpp keeps up to 8 GiB of earlier prompts in RAM by default; every review prompt differs,
+# and the model pages count against --memory here, so the default would push the server towards its limit.
+ExecStart=/usr/bin/docker run --rm --name cz-llm --network host \
+  --volume /var/lib/containerizer/llm:/models:ro \
+  --memory ${CZ_LLM_MEMORY} --cpu-shares 256 --pids-limit 1024 \
+  --user 65534:65534 --read-only --tmpfs /tmp:size=64m \
+  --cap-drop ALL --cap-add IPC_LOCK --ulimit memlock=-1:-1 --security-opt no-new-privileges \
+  --env LLAMA_ARG_HOST=127.0.0.1 --env LLAMA_ARG_PORT=${CZ_LLM_PORT} \
+  --health-cmd "curl -fsS http://127.0.0.1:${CZ_LLM_PORT}/health" --health-start-period 5m \
+  ${CZ_IMAGE_LLAMA_CPP} \
+  --model /models/${CZ_LLM_MODEL_FILE} --alias ${CZ_LLM_ALIAS} \
+  --ctx-size ${CZ_LLM_CTX} --parallel ${CZ_LLM_SLOTS} --jinja --load-mode mmap+mlock --lazy-mode off \
+  --cors-origins localhost --no-cors-credentials --metrics --cache-ram 1024
+ExecStop=/usr/bin/docker stop cz-llm
+Restart=always
+RestartSec=30
+# the first start pulls the image from ghcr.io
+TimeoutStartSec=30min

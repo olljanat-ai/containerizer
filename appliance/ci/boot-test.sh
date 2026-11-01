@@ -61,7 +61,8 @@ diag() {  # the key facts first, then the units' journals; stdout gets the head 
     echo "## warnings"; journalctl -b --no-pager -p warning | grep -v dnsmasq | tail -60
     for u in elemental-boot-assessment elemental-setup-initramfs elemental-setup-rootfs elemental-setup-network \
       elemental-setup-boot containerizer-firstboot containerizer-firewall containerizer-dns containerizer-mssql \
-      containerizer-db-init containerizer-web containerizer-worker containerizer-registry caddy k3s containerizer-sysagent; do
+      containerizer-db-init containerizer-web containerizer-worker containerizer-registry caddy k3s containerizer-sysagent \
+      containerizer-local-llm containerizer-local-llm-download; do
       echo "--- $u"; journalctl -a -b -u $u --no-pager | grep -Ev "dnsmasq.*(query|reply|forwarded|cached|config)" | tail -15
     done' > "$OUT/diagnostics.txt" 2>&1 || true
   head -c 14000 "$OUT/diagnostics.txt"; echo; echo "[...]"; tail -c 10000 "$OUT/diagnostics.txt"

@@ -39,6 +39,14 @@ Results database schema version 19 (`containerizer db init` upgrades it; the app
   application pages); the admin pages still show them
 
 ### Appliance
+- Built-in LLM, off by default, for sites without an LLM server of their own: **Admin → Source control & LLM
+  → Built-in LLM** runs Qwen3-Coder 30B-A3B (ByteShape's 16 GB `IQ4_XS` build) with llama.cpp on the
+  appliance's CPU, on `127.0.0.1:8082`. Scans with **Ask the LLM** use it when no LLM is set on that page.
+  Turning it on checks the memory (40 GB or more) and the free disk (about 20 GB), downloads the model
+  once from Hugging Face, pinned by commit and SHA-256 (`huggingface.co` and `hf.co` are allowed only while
+  it downloads), and sizes the server from the memory (one to three answer slots). It is slow, a few minutes
+  per answer, so use the queued LLM mode where it is offered. Its metrics are on the Grafana dashboard
+  ([built-in LLM](docs/appliance-admin.md#built-in-llm))
 - External results database: `CZ_SQL_SERVER`, `CZ_SQL_DATABASE`, `CZ_SQL_USER` (password in
   `secrets/sql-owner`) and `CZ_SQL_LOGINS` in `appliance.env` point the appliance at a SQL Server you run and
   back up, so the appliance needs no database backup of its own (its files still do). SQL Server then does not run on the appliance, the

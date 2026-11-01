@@ -103,6 +103,14 @@ without re-entering it, while a different server means removing it and adding it
 hands the setting to the AI code for the run only, never through its environment, so the git and
 docker processes a scan starts never see the key. Allow the server's host on **Admin → Firewall**.
 
+**The appliance's built-in LLM.** Without an LLM server of your own, the appliance can run one on its
+CPU: Qwen3-Coder 30B-A3B with llama.cpp, turned on under **Admin → Source control & LLM** (off by
+default; it needs a machine with at least 40 GB of memory, see
+[Running the appliance](appliance-admin.md#built-in-llm)). Scans with **Ask the LLM** use it when no LLM is
+set on that page; an LLM set there is always used instead. Expect about 7 to 12 tokens per second and a few
+minutes per answer: fine for the components the rules are unsure of, too slow for LLM-heavy mode. Use the
+queued LLM mode for organization scans where it is offered, so the scans do not wait for each answer.
+
 **Choosing a model.** The quality of the fallback follows the quality of the model. With a self-hosted
 server, use the largest instruction-tuned model your hardware serves comfortably, ideally one that
 knows .NET well (a 30B+ Qwen, Llama, Mistral or DeepSeek model). Smaller models propose more wrong

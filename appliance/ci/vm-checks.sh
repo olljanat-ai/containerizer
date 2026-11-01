@@ -172,6 +172,48 @@ wait_for 60 "not-allowed.example.org reported" refused || {
   exit 1
 }
 
+step "built-in LLM: off by default, nothing runs, Hugging Face is not reachable"
+fail() { echo "$*" >&2; exit 1; }
+if [ "$(systemctl is-enabled containerizer-local-llm.service 2>/dev/null)" = enabled ]; then fail "containerizer-local-llm must not be enabled"; fi
+for u in containerizer-local-llm.service containerizer-local-llm-download.service; do
+  if systemctl is-active --quiet "$u"; then fail "$u must not run while the built-in LLM is off"; fi
+done
+test -z "$(docker ps -aq --filter name='^cz-llm$')" || fail "no cz-llm container while the built-in LLM is off"
+if curl -sS -o /dev/null --max-time 5 http://127.0.0.1:8082/health; then fail "nothing may listen on 127.0.0.1:8082"; fi
+if getent ahostsv4 huggingface.co; then fail "huggingface.co must not resolve while no model download runs"; fi
+worker_env() { tr '\0' '\n' < "/proc/$(systemctl show -p MainPID --value containerizer-worker.service)/environ"; }
+worker_env | grep -qx CONTAINERIZER_LOCAL_LLM=/run/containerizer/system/local-llm-status.json
+if worker_env | grep -q '^CONTAINERIZER_LLM_BASE_URL='; then fail "the worker must not get an LLM URL from its environment"; fi
+$PY -m containerizer.sysagent status
+$PY -c "
+import json, os
+from containerizer import local_llm
+s = json.load(open('/run/containerizer/system/local-llm-status.json'))
+assert s['enabled'] is False and s['state'] == 'off', s
+assert local_llm.worker_settings({'CONTAINERIZER_LOCAL_LLM': '/run/containerizer/system/local-llm-status.json'}) is None"
+test ! -e /run/containerizer/local-llm.env
+# a start while it is off is skipped by its condition, not failed
+systemctl start containerizer-local-llm.service
+test "$(systemctl show -p ConditionResult --value containerizer-local-llm.service)" = no
+if systemctl is-failed --quiet containerizer-local-llm.service; then fail "a skipped start must not fail the unit"; fi
+step "built-in LLM: turning it on here is refused by the RAM check (this VM is far below 40 GiB)"
+$PY - <<'PY'
+import json, time, pathlib
+d = pathlib.Path("/run/containerizer/system/requests")
+(d / ".ci-llm.tmp").write_text(json.dumps({"action": "local-llm", "do": "enable", "requested_by": "ci", "requested_by_name": "CI"}))
+(d / ".ci-llm.tmp").rename(d / f"{int(time.time()*1000)}-ci-llm.json")
+PY
+llm_refused() {
+  $PY -c "import json; s=json.load(open('/run/containerizer/system/local-llm-status.json')); assert s['state'] == 'refused' and 'RAM' in s['message'] and not s['enabled'], s"
+}
+wait_for 120 "enable request refused" llm_refused
+test ! -e /run/containerizer/local-llm.env
+test ! -e /var/lib/containerizer/llm/Qwen3-Coder-30B-A3B-Instruct-IQ4_XS-4.20bpw.gguf.part
+for u in containerizer-local-llm.service containerizer-local-llm-download.service; do
+  if systemctl is-active --quiet "$u"; then fail "$u started although the request was refused"; fi
+done
+if getent ahostsv4 huggingface.co; then fail "huggingface.co must stay refused after a refused request"; fi
+
 step "boot assessment"
 systemctl status elemental-boot-assessment.service --no-pager || true
 $PY -m containerizer.sysagent health

@@ -111,7 +111,8 @@ running and deploying them in its own sandbox cluster.
     ---
 
     One immutable appliance with signed upgrades and roll back, only SSH and HTTPS in, and outgoing
-    traffic blocked except for hosts an admin allows. Use Claude or your own self-hosted LLM.
+    traffic blocked except for hosts an admin allows. Use Claude, your own self-hosted LLM, or the
+    appliance's [built-in CPU LLM](appliance-admin.md#built-in-llm) when you have no GPU.
 
     [:octicons-arrow-right-24: Appliance](appliance.md) · [The LLM](source-control.md#the-llm)
 
