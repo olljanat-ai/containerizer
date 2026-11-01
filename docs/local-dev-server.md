@@ -158,7 +158,7 @@ docker run -d --name llm --restart unless-stopped --network host \
   ghcr.io/ggml-org/llama.cpp:server-b12030@sha256:e67d88af487390098c76d7982b1761484339fa147b7e41d3c64ae1318759f78b \
   --model /models/$f --alias qwen3-coder-30b-a3b \
   --ctx-size 32768 --parallel 1 --jinja --load-mode mmap+mlock --lazy-mode off \
-  --cors-origins localhost --no-cors-credentials
+  --cors-origins localhost --no-cors-credentials --cache-ram 1024
 curl -fsS http://127.0.0.1:8081/health                 # {"status":"ok"} once the model is loaded
 sudo grep VmLck /proc/$(docker inspect llm --format '{{.State.Pid}}')/status   # about 15 GB: the model is pinned
 ```
@@ -173,6 +173,8 @@ Why the options:
 - The image sets `LLAMA_ARG_HOST=0.0.0.0` and `LLAMA_ARG_PORT=8080`. Setting the variables, instead of
   `--host` and `--port`, avoids a warning that they are overridden, and `--health-cmd` replaces the
   image's health check, which probes port 8080 and would mark the container `unhealthy`.
+- `--cache-ram 1024`: llama.cpp keeps up to 8 GiB of earlier prompts in RAM by default (its RSS grows
+  from about 6 to 11 GiB and more over a scan). Review prompts rarely repeat, so a small cache is enough.
 - `--cors-origins localhost --no-cors-credentials`: by default any web page can call the server
   (the `no API key is set and CORS allows all origins` warning). Containerizer is not a browser, so it
   is not affected. The remaining warning, `control-looking token: 128247 '</s>' was not control-type`,

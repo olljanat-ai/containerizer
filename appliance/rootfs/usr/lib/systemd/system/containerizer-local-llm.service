@@ -16,6 +16,8 @@ ExecStartPre=-/usr/bin/docker rm -f cz-llm
 # The model file is memory-mapped and locked in RAM (mmap+mlock, IPC_LOCK, unlimited memlock), so the scan
 # worker's builds cannot push it out of the page cache; this llama.cpp build has no --mlock. The image's own
 # health check probes port 8080: --health-cmd replaces it. CPU shares: the scans' builds go first.
+# --cache-ram: llama.cpp keeps up to 8 GiB of earlier prompts in RAM by default; every review prompt differs,
+# and the model pages count against --memory here, so the default would push the server towards its limit.
 ExecStart=/usr/bin/docker run --rm --name cz-llm --network host \
   --volume /var/lib/containerizer/llm:/models:ro \
   --memory ${CZ_LLM_MEMORY} --cpu-shares 256 --pids-limit 1024 \
@@ -26,7 +28,7 @@ ExecStart=/usr/bin/docker run --rm --name cz-llm --network host \
   ${CZ_IMAGE_LLAMA_CPP} \
   --model /models/${CZ_LLM_MODEL_FILE} --alias ${CZ_LLM_ALIAS} \
   --ctx-size ${CZ_LLM_CTX} --parallel ${CZ_LLM_SLOTS} --jinja --load-mode mmap+mlock --lazy-mode off \
-  --cors-origins localhost --no-cors-credentials --metrics
+  --cors-origins localhost --no-cors-credentials --metrics --cache-ram 1024
 ExecStop=/usr/bin/docker stop cz-llm
 Restart=always
 RestartSec=30

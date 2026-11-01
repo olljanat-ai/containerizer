@@ -254,12 +254,25 @@ def server_health(timeout: float = 2.0) -> bool:
         return False
 
 
-def status(cfg: dict | None = None, paths: Paths | None = None, unit_state=None, health=None, **extra) -> dict:
+def _restarts(unit: str) -> int:
+    """Automatic restarts since the unit was last started on purpose (Restart=always hides a crash loop)."""
+    try:
+        return int(_run(["systemctl", "show", "-p", "NRestarts", "--value", unit], timeout=30, check=False).strip() or 0)
+    except (OSError, subprocess.TimeoutExpired, ValueError, Exception):   # noqa: BLE001 - status only
+        return 0
+
+
+CRASH_LOOP_RESTARTS = 3
+
+
+def status(cfg: dict | None = None, paths: Paths | None = None, unit_state=None, health=None, restarts=None,
+           **extra) -> dict:
     """The status the web UI and the scan worker read."""
     paths = paths or P
     cfg = load_config(paths) if cfg is None else cfg
     unit_state = unit_state or _unit_state
     health = health or server_health
+    restarts = restarts or _restarts
     req = requirements(cfg, paths)
     on = bool(cfg.get("enabled"))
     phase = cfg.get("phase")
@@ -278,7 +291,13 @@ def status(cfg: dict | None = None, paths: Paths | None = None, unit_state=None,
     else:
         u = unit_state(UNIT)
         if u in ("active", "activating", "reloading"):
-            state = "running" if health() else "starting"
+            if health():
+                state = "running"
+            elif (n := restarts(UNIT)) >= CRASH_LOOP_RESTARTS:
+                state, message = "error", (f"the server keeps restarting ({n} restarts, e.g. not enough memory to "
+                                           f"lock the model): see journalctl -u {UNIT}")
+            else:
+                state = "starting"
         elif u == "failed":
             state, message = "error", f"{UNIT} failed: see journalctl -u {UNIT}"
         else:

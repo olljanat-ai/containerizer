@@ -505,3 +505,27 @@ def test_source_control_page_has_the_section_on_the_appliance_only(adm):
     # the route
     r = admin_credentials.route(adm, conn, ADMIN, A_ADMIN, "POST", ["source-control", "local-llm"], {}, {"do": ["enable"]})
     assert r.status == 303 and reqs(adm)[0]["action"] == "local-llm"
+
+
+def test_a_crash_looping_server_is_an_error_not_starting(llm, monkeypatch):
+    monkeypatch.setattr(local_llm, "model_ready", lambda cfg, paths: True)
+    cfg = {"enabled": True, "phase": "ready"}
+
+    def st(restarts, healthy=False):
+        return local_llm.status(cfg, llm, unit_state=lambda u: "active", health=lambda: healthy,
+                                restarts=lambda u: restarts)
+    assert st(0)["state"] == "starting"                  # loading the model
+    assert st(2)["state"] == "starting"
+    s = st(3)
+    assert s["state"] == "error" and "keeps restarting (3 restarts" in s["message"]
+    assert st(7, healthy=True)["state"] == "running"     # it recovered
+    # the worker does not use a server in error
+    llm.status.parent.mkdir(parents=True, exist_ok=True)
+    llm.status.write_text(json.dumps(s))
+    assert not local_llm.worker_settings({local_llm.STATUS_ENV: str(llm.status)})
+
+
+def test_server_unit_caps_the_prompt_cache():
+    unit = (Path(__file__).resolve().parent.parent / "appliance" / "rootfs" / "usr" / "lib" / "systemd" / "system"
+            / "containerizer-local-llm.service").read_text()
+    assert "--cache-ram 1024" in unit

@@ -408,7 +408,7 @@ def llm_for_run(llm: Credential | None, env=None) -> RunLlm:
     return RunLlm(None, None, "environment")
 
 
-SELECT_COLS = ("CredentialId,Purpose, Provider, ApiUrl, Host, Scope, Model, Note, Enabled, ExpiresOn, KeyId, TokenSetAt, "
+SELECT_COLS = ("CredentialId, Purpose, Provider, ApiUrl, Host, Scope, Model, Note, Enabled, ExpiresOn, KeyId, TokenSetAt, "
                "TokenSetBy, CreatedAt, LastUsedAt, LastResult")
 
 
