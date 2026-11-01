@@ -199,3 +199,30 @@ def test_timeouts_are_not_retried(server, no_sleep, monkeypatch):
     with pytest.raises(RuntimeError, match="cannot reach LLM server"):
         ai.ask_json("p-slow", SCHEMA)
     assert no_sleep == []
+
+
+def test_short_answers_are_capped_and_a_ramble_is_reported(server, monkeypatch):
+    server.answer('{"verdict": "blocker", "confidence": 0.9}')
+    ai.ask_json("p-cap", SCHEMA, max_tokens=ai.SHORT_ANSWER_TOKENS)
+    assert server.requests[-1]["body"]["max_tokens"] == ai.SHORT_ANSWER_TOKENS
+    server.answer('{"verdict": "info", "confidence": 1}')
+    ai.ask_json("p-nocap", SCHEMA)
+    assert server.requests[-1]["body"]["max_tokens"] == 16000
+    monkeypatch.setenv("CONTAINERIZER_LLM_MAX_TOKENS", "2000")         # the environment's cap still wins
+    server.answer('{"verdict": "info", "confidence": 1}')
+    ai.ask_json("p-env", SCHEMA, max_tokens=ai.SHORT_ANSWER_TOKENS)
+    assert server.requests[-1]["body"]["max_tokens"] == 2000
+    # cut off twice (the retry keeps the cap): a clear error, the component keeps the rules' verdict
+    server.answer('{"verdict": "info", "reasoning": "and so on and so on', finish="length")
+    server.answer('{"verdict": "info", "reasoning": "and so on and so on', finish="length")
+    with pytest.raises(RuntimeError, match="cut off at 2000 tokens: the model rambled"):
+        ai.ask_json("p-ramble", SCHEMA, max_tokens=ai.SHORT_ANSWER_TOKENS)
+    assert server.requests[-1]["body"]["max_tokens"] == 2000
+
+
+def test_reviews_ask_for_a_short_answer(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(ai, "ask_json", lambda *a, **k: seen.update(k) or {"verdict": "info", "confidence": 1})
+    monkeypatch.setattr(ai, "review_prompt", lambda a, c: "p")
+    ai.ai_review_component(object(), object())
+    assert seen["max_tokens"] == ai.SHORT_ANSWER_TOKENS

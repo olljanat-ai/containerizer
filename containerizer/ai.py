@@ -245,8 +245,15 @@ def store_answer(key: str, data: dict, usage: dict | None = None) -> bool:
         return False
 
 
+# Output cap for answers that are a small JSON object (a review, a failure diagnosis: about 1,000-2,000 tokens).
+# Self-hosted models sometimes ramble or loop; on a CPU LLM an uncapped answer holds a slot for half an hour
+# (CONTAINERIZER_LLM_MAX_TOKENS, 16000, still caps everything). Only the OpenAI-compatible backend applies it:
+# Claude's thinking counts towards max_tokens.
+SHORT_ANSWER_TOKENS = 4096
+
+
 def ask_json(prompt: str, schema: dict, model: str | None = None, effort: str = "medium", feature: str | None = None,
-             system: str | None = None) -> dict:
+             system: str | None = None, max_tokens: int | None = None) -> dict:
     """One structured LLM call. Every call (answered, cached or failed) is recorded with its feature and
     repository (usage_scope) in USAGE_LOG and sent to LISTENERS."""
     system = system or SYSTEM
@@ -266,7 +273,7 @@ def ask_json(prompt: str, schema: dict, model: str | None = None, effort: str = 
         elif backend == "cli":
             data, usage = _ask_cli(prompt, schema, model, system=system)
         elif backend == "openai":
-            data, usage = _ask_openai(prompt, schema, model, system=system)
+            data, usage = _ask_openai(prompt, schema, model, system=system, max_tokens=max_tokens)
         else:
             raise RuntimeError("No LLM backend available (install `anthropic` and set credentials, install the claude "
                                "CLI, or set CONTAINERIZER_LLM_BASE_URL to a self-hosted OpenAI-compatible server)")
@@ -436,7 +443,8 @@ def _post_json_retrying(url: str, body: dict, headers: dict, timeout: float) -> 
 JSON_MODES = ("json_schema", "json_object", "none")
 
 
-def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False, system: str = SYSTEM):
+def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False, system: str = SYSTEM,
+                max_tokens: int | None = None):
     """A self-hosted LLM behind an OpenAI-compatible /chat/completions endpoint."""
     base = _llm_base_url()
     key = _env("CONTAINERIZER_LLM_API_KEY", "")
@@ -453,7 +461,7 @@ def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False, sys
     user = (f"{prompt}\n\nRespond with ONLY a JSON object (no prose, no code fences) that validates "
             f"against this JSON schema:\n{json.dumps(schema)}")
     body = {"model": model, "temperature": 0, "stream": False,
-            "max_tokens": int(_env("CONTAINERIZER_LLM_MAX_TOKENS", "16000")),
+            "max_tokens": min(int(_env("CONTAINERIZER_LLM_MAX_TOKENS", "16000")), max_tokens or 10 ** 9),
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
     resp = None
     for m in JSON_MODES[JSON_MODES.index(mode):]:
@@ -484,8 +492,9 @@ def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False, sys
         if not _retry:
             return _ask_openai(prompt + "\n\nYour previous answer did not match the schema (" + "; ".join(errs[:5])
                                + "). Answer with the JSON object only.", schema, model, _retry=True,
-                               system=system)
-        hint = " (answer cut off: raise CONTAINERIZER_LLM_MAX_TOKENS)" if choice.get("finish_reason") == "length" else ""
+                               system=system, max_tokens=max_tokens)
+        hint = (f" (answer cut off at {body['max_tokens']} tokens: the model rambled, or raise CONTAINERIZER_LLM_MAX_TOKENS)"
+                if choice.get("finish_reason") == "length" else "")
         raise RuntimeError(f"no valid JSON in answer{hint}: {'; '.join(errs[:3])}: {text[:300]}")
     u = resp.get("usage") or {}
     usage = {"input_tokens": u.get("prompt_tokens") or 0, "output_tokens": u.get("completion_tokens") or 0}
@@ -605,7 +614,7 @@ def review_prompt(a, c) -> str:
 
 
 def ai_review_component(a, c, model: str | None = None) -> dict:
-    res = ask_json(review_prompt(a, c), REVIEW_SCHEMA, model=model, feature="assessment")
+    res = ask_json(review_prompt(a, c), REVIEW_SCHEMA, model=model, feature="assessment", max_tokens=SHORT_ANSWER_TOKENS)
     res["model"] = model_name(model)
     return res
 
@@ -727,7 +736,7 @@ def diagnose_failure(a, c, plan: dict, stage: str, log_tail: str, model: str | N
               "external if the container itself is fine and only an external service/config is missing, platform if "
               "a Windows-only API/library is needed, code if the application code must change.")
     try:
-        r = ask_json(prompt, DIAG_SCHEMA, model=model, feature="build-diagnosis")
+        r = ask_json(prompt, DIAG_SCHEMA, model=model, feature="build-diagnosis", max_tokens=SHORT_ANSWER_TOKENS)
         fix = json.loads(r.get("fix_json") or "{}")
         if not isinstance(fix, dict):
             fix = {}
