@@ -381,6 +381,33 @@ class Credentials:
         return out
 
 
+@dataclass
+class RunLlm:
+    """The LLM a run asks (llm_for_run): settings for ai.configured() (None: the worker's environment) and the
+    model to name, and where they came from (registered, built-in, environment)."""
+    settings: dict | None
+    model: str | None
+    source: str
+
+
+def llm_for_run(llm: Credential | None, env=None) -> RunLlm:
+    """The one place that decides which LLM a scan run (or the LLM review queue) uses:
+
+    1. the LLM registered on Admin → Source control & LLM (`llm`, with its token opened), else
+    2. the appliance's built-in LLM when an administrator turned it on and it is starting or running
+       (local_llm.worker_settings: CONTAINERIZER_LOCAL_LLM names its status file), else
+    3. the worker's own environment (CONTAINERIZER_LLM_BASE_URL, ANTHROPIC_API_KEY, ...), if any.
+
+    Use as `with ai.configured(choice.settings):`. The caller still decides whether to ask at all (Ask the LLM)."""
+    if llm is not None:
+        return RunLlm(llm.ai_settings(), llm.model or None, "registered")
+    from .local_llm import worker_settings
+    local = worker_settings(env)
+    if local:
+        return RunLlm(local, local["CONTAINERIZER_MODEL"], "built-in")
+    return RunLlm(None, None, "environment")
+
+
 SELECT_COLS = ("CredentialId, Purpose, Provider, ApiUrl, Host, Scope, Model, Note, Enabled, ExpiresOn, KeyId, TokenSetAt, "
                "TokenSetBy, CreatedAt, LastUsedAt, LastResult")
 

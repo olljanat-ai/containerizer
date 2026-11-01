@@ -13,6 +13,8 @@ SupplementaryGroups=docker
 EnvironmentFile=/etc/containerizer/worker.env
 # LLM-heavy mode from appliance.env (cz-firstboot), off by default
 EnvironmentFile=-/run/containerizer/llm.env
+# the built-in LLM (Admin -> Source control & LLM): used while it is on and no LLM is registered
+Environment=CONTAINERIZER_LOCAL_LLM=/run/containerizer/system/local-llm-status.json
 # lab services that are on (Admin -> Lab services): the scans point the apps at them
 Environment=CONTAINERIZER_LAB_SERVICES=/var/lib/containerizer/system/lab-services.json
 # dev database backups the web UI stored (read through the group of the folder)
