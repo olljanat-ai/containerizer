@@ -527,7 +527,7 @@ def test_ordering_needs_an_operator_or_admin_and_the_csrf_token(adm, shop):
     op = adm.sessions.create("o@example.com", "O", False, True, True, [])
     assert _post(adm, op, "/admin/refactoring/new", csrf="wrong", ApplicationId="7").status == 403
     r = _post(adm, op, "/admin/refactoring/new", ApplicationId="7", Component="", IncludeConfig="1")
-    assert r.status == 303 and _loc(r).startswith("/admin/refactoring/42?msg=Ordered")
+    assert r.status == 303 and _loc(r) == "/app/7?refactor=ordered&job=42&files=1#refactoring"   # back where it was ordered
     (sql, params), = adm.conn.sql("EXEC cz.QueueLlmJob")
     assert params[0] == "refactor" and params[6] == "shop" and params[17] is None      # RequestedBy: the session's
     pl = json.loads(params[-1])
@@ -544,21 +544,21 @@ def test_ordering_needs_an_operator_or_admin_and_the_csrf_token(adm, shop):
     adm.conn.answers[r"EXEC cz.QueueLlmJob"] = [{"JobId": 0}]
     adm.conn.answers[r"SELECT TOP \(1\) JobId FROM cz.LlmJob"] = [{"JobId": 41}]
     r = _post(adm, op, "/admin/refactoring/new", ApplicationId="7")
-    assert _loc(r).startswith("/admin/refactoring/41?msg=The+same")
+    assert _loc(r) == "/app/7?refactor=exists&job=41#refactoring"
 
 
 def test_ordering_is_refused_when_it_cannot_work(adm, shop):
     a = adm.sessions.create("a@example.com", "A", True)
     adm.conn.answers = {r"FROM cz.vApplicationLatest WHERE ApplicationId": [{**APP, "Rating": "C"}]}
-    assert "rated+C" in _loc(_post(adm, a, "/admin/refactoring/new", ApplicationId="7"))
+    assert "refactor=not-b" in _loc(_post(adm, a, "/admin/refactoring/new", ApplicationId="7"))
     adm.conn.answers = {r"FROM cz.vApplicationLatest WHERE ApplicationId": [APP]}
-    assert "not+kept+on+this+machine" in _loc(_post(adm, a, "/admin/refactoring/new", ApplicationId="7"))
+    assert "refactor=no-source" in _loc(_post(adm, a, "/admin/refactoring/new", ApplicationId="7"))
     adm.conn.answers = {r"FROM cz.vApplicationLatest WHERE ApplicationId": [{**APP, "SourceCommit": None}]}
-    assert "no+commit" in _loc(_post(adm, a, "/admin/refactoring/new", ApplicationId="7"))
+    assert "refactor=no-commit" in _loc(_post(adm, a, "/admin/refactoring/new", ApplicationId="7"))
     adm.conn.answers = {r"FROM cz.vApplicationLatest WHERE ApplicationId": [APP],
                         r"FROM cz.OrgRepository WHERE RepositoryUrl": [{"ScanId": 3, "AppName": "../../etc"}]}
-    assert "not+kept" in _loc(_post(adm, a, "/admin/refactoring/new", ApplicationId="7"))
-    assert "No+such+component" in _loc(_post(adm, a, "/admin/refactoring/new", ApplicationId="7", Component="x"))
+    assert "refactor=no-source" in _loc(_post(adm, a, "/admin/refactoring/new", ApplicationId="7"))
+    assert "refactor=no-component" in _loc(_post(adm, a, "/admin/refactoring/new", ApplicationId="7", Component="x"))
     assert not adm.conn.sql("EXEC cz.QueueLlmJob")
 
 
@@ -777,3 +777,16 @@ def test_the_rules_confirm_a_fix_the_llm_did_not_name(shop, tmp_path):
     f = next(x for x in res["findings"] if x["file"].endswith("Options.cs"))
     assert (f["status"], f["rules_after"], f["reason"], f.get("confirmed_by")) == ("fixed", "resolved", "", "rules")
     assert "os-drive-path-default" in res["patch"].split("\n\n")[0]          # in the commit subject
+
+
+def test_the_results_page_says_what_happened_with_fixed_texts_only():
+    from urllib.parse import parse_qs
+    from containerizer import webui
+    html = webui.refactor_notice(parse_qs("refactor=ordered&job=42&files=3"))
+    assert "notice-ok" in html and "Refactoring patch requested: 3 file(s) to change" in html
+    assert "already requested" in webui.refactor_notice(parse_qs("refactor=exists&job=42"))
+    # nothing from the URL is shown: unknown codes show nothing, numbers must be numbers
+    assert webui.refactor_notice(parse_qs("refactor=%3Cscript%3Ealert(1)%3C/script%3E")) == ""
+    assert "<script" not in webui.refactor_notice(parse_qs("refactor=ordered&files=%3Cscript%3E"))
+    assert "some file(s)" in webui.refactor_notice(parse_qs("refactor=ordered&files=%3Cscript%3E"))
+    assert webui.refactor_notice({}) == ""

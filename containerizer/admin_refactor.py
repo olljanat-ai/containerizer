@@ -19,8 +19,10 @@ from __future__ import annotations
 import base64
 import json
 import re
+import sys
+from urllib.parse import urlencode
 
-from .admin import Response, _d, e
+from .admin import Response, _d, e, redirect
 from .admin_scans import _back, _nf
 from . import refactor as rf
 
@@ -301,36 +303,40 @@ def order_source(conn, app: dict) -> dict | None:
             "subdir": app.get("SourcePath") or "."}
 
 
+def _to_app(app_id: int, code: str, **extra) -> Response:
+    """Back to the application's results page, where the order was placed: a status code, which the page turns
+    into one of its own fixed messages (webui.REFACTOR_NOTICES), so a link cannot make it show any text."""
+    q = urlencode({"refactor": code, **{k: int(v) for k, v in extra.items()}})
+    return redirect(f"/app/{int(app_id)}?{q}#refactoring")
+
+
 def order(adm, conn, s, a, form: dict) -> Response:
     from .llmqueue import SqlJobQueue
     app_id = adm._id(form, "ApplicationId")
     if app_id is None:
         return _back(BASE, "No application selected.")
-    back = BASE                                     # the list page shows the message
     rows = _rows(conn, "SELECT ApplicationId, ApplicationName, ScanName, AssessmentId, Rating, SourceCommit, RepositoryUrl, "
                        "SourcePath FROM cz.vApplicationLatest WHERE ApplicationId = %s", (app_id,))
     if not rows:
         return _back(BASE, "No such application.")
     app = rows[0]
     if app["Rating"] != "B":
-        return _back(back, f"Refactoring patches are for B-rated applications; {app['ApplicationName']} is rated "
-                           f"{app['Rating']}.")
+        return _to_app(app_id, "not-b")
     comp_raw = form.get("Component", [""])[0]
     component = None
     if comp_raw:
         if not re.fullmatch(r"\d{1,9}", comp_raw):
-            return _back(back, "No such component.")
+            return _to_app(app_id, "no-component")
         c = _rows(conn, "SELECT ProjectPath FROM cz.Component WHERE ComponentId = %s AND ApplicationId = %s",
                   (int(comp_raw), app_id))
         if not c:
-            return _back(back, "No such component.")
+            return _to_app(app_id, "no-component")
         component = c[0]["ProjectPath"]
     if not app.get("SourceCommit"):
-        return _back(back, "The assessment recorded no commit: scan the repository again.")
+        return _to_app(app_id, "no-commit")
     source = order_source(conn, app)
     if source is None:
-        return _back(back, f"The source of {app['ApplicationName']} is not kept on this machine (no organization scan "
-                           "here has its repository): run `containerizer refactor` on a checkout instead.")
+        return _to_app(app_id, "no-source")
     rep = _rows(conn, "SELECT ReportJson FROM cz.ApplicationAssessment WHERE AssessmentId = %s", (app["AssessmentId"],))
     doc = _json(rep[0]["ReportJson"]) if rep else {}
     key = _rows(conn, "SELECT SourceKey FROM cz.Application WHERE ApplicationId = %s", (app_id,))
@@ -340,7 +346,8 @@ def order(adm, conn, s, a, form: dict) -> Response:
                                    assessment_id=int(app["AssessmentId"]),
                                    source_key=key[0]["SourceKey"] if key else None)
     except rf.RefactorError as ex:
-        return _back(back, str(ex))
+        print(f"refactoring order for application {app_id} refused: {ex}", file=sys.stderr)
+        return _to_app(app_id, "nothing" if "nothing" in str(ex).lower() else "failed")
     payload["app"] = app.get("ScanName") or payload.get("app")
     job = rf.queue_job(payload, rf.estimate_chars(payload), requested_by=None)     # None: the signed-in person
     job["Repository"] = app["ApplicationName"]
@@ -348,8 +355,6 @@ def order(adm, conn, s, a, form: dict) -> Response:
     if not jid:
         same = _rows(conn, "SELECT TOP (1) JobId FROM cz.LlmJob WHERE Kind = N'refactor' AND DedupeKey = %s "
                            "AND Status IN (N'queued', N'running') ORDER BY JobId DESC", (job["DedupeKey"],))
-        if same:
-            return _back(f"{BASE}/{int(same[0]['JobId'])}", "The same refactoring is already ordered.")
-        return _back(back, "The same refactoring is already ordered.")
+        return _to_app(app_id, "exists", **({"job": int(same[0]["JobId"])} if same else {}))
     n = min(len(payload["tasks"]), payload["max_calls"])
-    return _back(f"{BASE}/{jid}", f"Ordered: {n} file{'s' if n != 1 else ''} to change; it waits in the LLM queue.")
+    return _to_app(app_id, "ordered", job=int(jid), files=n)

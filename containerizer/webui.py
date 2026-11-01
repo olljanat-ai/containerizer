@@ -123,6 +123,32 @@ REFACTOR_STATUS_CSS = {"queued": "st-run", "generating": "st-run", "verifying": 
                        "applies-only": "st-warn", "failed": "st-bad", "cancelled": "st-off"}
 
 
+# What the Refactoring box says after an order (admin_refactor._to_app): fixed texts only, chosen by a code in
+# the URL, so a link cannot make the page show any text. (kind, text); {files} and {job} are numbers.
+REFACTOR_NOTICES = {
+    "ordered": ("ok", "Refactoring patch requested: {files} file(s) to change. It waits in the LLM queue; its status "
+                      "shows below, and the patch appears here when it is ready."),
+    "exists": ("info", "The same refactoring is already requested: its status shows below."),
+    "not-b": ("bad", "Refactoring patches are for applications rated B."),
+    "no-component": ("bad", "That component is not part of this application."),
+    "no-commit": ("bad", "The assessment recorded no commit: scan the repository again, then request the patch."),
+    "no-source": ("bad", "The source of this application is not kept on this machine (no organization scan here has "
+                         "its repository). Run `containerizer refactor` on a checkout instead."),
+    "nothing": ("info", "Nothing to change: no finding of this application (or component) can be fixed in code."),
+    "failed": ("bad", "The refactoring could not be requested. The reason is in the web UI's log."),
+}
+
+
+def refactor_notice(q: dict) -> str:
+    code = (q.get("refactor") or [""])[0]
+    if code not in REFACTOR_NOTICES:
+        return ""
+    kind, text = REFACTOR_NOTICES[code]
+    nums = {k: int(v) for k in ("files", "job") for v in [(q.get(k) or [""])[0]] if re.fullmatch(r"\d{1,6}", v or "")}
+    text = text.replace("{files}", str(nums.get("files", "some")))
+    return f"<div class='notice notice-{kind}' role='status'>{e(text)}</div>"
+
+
 def _refactoring(app: dict, ctx: dict | None) -> str:
     """The Refactoring box of a B-rated application: its orders (everyone sees their status) and, for signed-in
     operators and administrators, the form that orders one (POST to the admin pages, with the CSRF token).
@@ -143,7 +169,7 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
         rows.append(f"<tr><td>{what}</td><td><span class='st {REFACTOR_STATUS_CSS.get(st, '')}'>"
                     f"{e(STATUS_TEXT.get(st, st))}</span></td><td class='small'>{e(o.get('Summary') or '')}</td>"
                     f"<td class='small nowrap'>{when}</td></tr>")
-    out = ["<section class='card refactor' id='refactoring'><h2>Refactoring</h2>"
+    out = ["<section class='card refactor' id='refactoring'><h2>Refactoring</h2>" + (ctx or {}).get("notice", "") +
            "<p class='muted small'>A refactoring patch has the LLM make the targeted code changes this application needs "
            "(its refactor findings), then applies the patch to the assessed commit, runs the rules on it again and builds "
            "and runs the changed components. The patch is a download with how to apply it: nothing is written to the "
@@ -694,6 +720,7 @@ def page(title: str, body: str, script: bool = False) -> str:
 
 
 CSS = """
+.notice{padding:10px 14px;border-radius:8px;margin:10px 0;border:1px solid}.notice-ok{background:#e8f5e9;border-color:#2e7d32;color:#1b5e20}.notice-info{background:#e3f2fd;border-color:#1565c0;color:#0d47a1}.notice-bad{background:#fdecea;border-color:#c62828;color:#8e1c1c}@media (prefers-color-scheme:dark){.notice-ok{background:#16301a;color:#b9f6ca}.notice-info{background:#132a40;color:#bbdefb}.notice-bad{background:#3a1715;color:#ffcdd2}}
 .devmode{background:#b3261e;color:#fff;padding:8px 16px;text-align:center;font-size:14px}.devmode b{color:#fff}
 :root{--bg:#f9f9f7;--card:#fff;--fg:#0b0b0b;--muted:#5f5e58;--line:#e1e0d9;--link:#1f5fbf;
 --rA:#0ca30c;--rB:#74c476;--rC:#fab219;--rD:#ec835a;--rE:#d03b3b}
@@ -1016,7 +1043,7 @@ def make_handler(connect, admin=None):
                             if app is None:
                                 return self._send(404, page("Not found", "<h1>Application not found</h1><p><a href='/'>Back</a></p>"),
                                                   head=head)
-                            ctx = {"signin": bool(admin)}
+                            ctx = {"signin": bool(admin), "notice": refactor_notice(parse_qs(u.query))}
                             s = admin.session(self.headers) if admin else None
                             if s and (s.admin or s.operator):      # may order a refactoring patch
                                 ctx["csrf"] = admin._csrf(s)
