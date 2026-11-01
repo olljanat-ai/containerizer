@@ -47,10 +47,14 @@ wait_for 900 "Grafana" curl -fsS http://127.0.0.1:3000/grafana/api/health
 wait_for 300 "Caddy" curl -fsSk "https://$(hostname)/healthz" --resolve "$(hostname):443:127.0.0.1"
 systemctl is-active containerizer-db-init.service containerizer-web.service containerizer-mssql.service \
   containerizer-registry.service containerizer-prometheus.service containerizer-grafana.service caddy.service \
-  docker.service k3s.service ssh.service
+  docker.service k3s.service ssh.service containerizer-root-password.service containerizer-root-password.path
 
 step "web UI runs as its own user without privileges"
 test "$(ps -o user= -p "$(systemctl show -p MainPID --value containerizer-web.service)")" = cz-web
+step "root's password was changed at the first sign-in and is kept on the persistent partition"
+if chage -l root | grep -qi "must be changed"; then echo "root's password is still expired" >&2; exit 1; fi
+grep -q '^root:[^!*:]' /etc/containerizer/secrets/root-shadow
+test "$(stat -c %a /etc/containerizer/secrets/root-shadow)" = 600
 step "secrets are root-only"
 test "$(stat -c %a /etc/containerizer/secrets)" = 700
 

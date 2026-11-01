@@ -1,3 +1,4 @@
 containerizer appliance \n (\l)
-Web UI: https://\4/   SSH: root@\4 (key only)
+Web UI: https://\4/   SSH: root@\4
+Sign in as root; the password is "containerizer" until you change it at the first sign-in.
 

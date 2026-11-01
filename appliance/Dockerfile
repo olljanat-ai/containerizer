@@ -98,7 +98,8 @@ RUN chmod 0755 /usr/lib/containerizer/bin/* /usr/libexec/elemental-checker/conta
  && systemd-sysusers \
  && test "$(id -u containerizer)" = 900 && test "$(id -u cz-web)" = 901 \
  && systemctl enable systemd-networkd.service systemd-resolved.service ssh.service docker.service caddy.service \
-      containerizer-firstboot.service containerizer-firewall.service containerizer-dns.service \
+      containerizer-firstboot.service containerizer-root-password.service containerizer-root-password.path \
+      containerizer-firewall.service containerizer-dns.service \
       containerizer-dns-upstream.path containerizer-addresses.service \
       containerizer-sysagent.path containerizer-sysagent-status.service containerizer-sysagent-status.timer \
       containerizer-mssql.service containerizer-db-init.service containerizer-web.service \

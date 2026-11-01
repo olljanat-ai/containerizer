@@ -20,7 +20,7 @@ Every [release](https://github.com/olljanat-ai/containerizer/releases) has:
 
 | File | For |
 | --- | --- |
-| `containerizer-vX.Y.Z.iso` | Installer: boot it, answer three questions on the console. |
+| `containerizer-vX.Y.Z.iso` | Installer: boot it, answer the questions on the console. |
 | `containerizer-vX.Y.Z.qcow2` | KVM, Proxmox, OpenStack: resize the disk to 64 GB or more first (`qemu-img resize`). |
 | `containerizer-vX.Y.Z.vhd.zst` | Hyper-V (generation 2): `zstd -d`, then expand the disk to 64 GB or more. |
 | `SHA256SUMS`, `SHA256SUMS.sigstore.json` | Check the downloads (command in the release notes). |
@@ -35,16 +35,22 @@ sha256sum -c SHA256SUMS --ignore-missing
 ```
 
 **From the ISO**: the console (screen or serial) shows the installer: the disk to install to (it is
-erased), the SSH public key for `root`, and a host name. It installs and restarts; remove the ISO.
+erased), an SSH public key for `root` (optional), and a host name. It installs and restarts; remove the ISO.
 
 **From a disk image**: the first start installs the system to the whole disk (it takes a few minutes and
-restarts once). Then the console asks for the SSH public key for `root` and, optionally, a host name.
+restarts once), then shows the login prompt.
 
 For unattended installs, see [Running the appliance](appliance-admin.md#unattended-installs).
 
 ## First boot
 
-Sign in with `ssh root@<appliance>`. The first boot created `/etc/containerizer/` with the configuration
+Sign in as `root` with the password **`containerizer`**, over SSH (`ssh root@<appliance>`) or on the
+console. The first sign-in asks for the current password once more and then a new one; SSH closes the
+connection after the change if the login did not continue, so sign in again with the new password. Until
+the password is changed, an SSH key alone may be refused too. The new password is kept on the persistent
+partition, so it survives restarts, upgrades and roll backs.
+
+The first boot created `/etc/containerizer/` with the configuration
 files ([configuration files](appliance-admin.md#configuration-files)). Then:
 
 1. Set `CZ_HOSTNAME` in `appliance.env` to the DNS name users will open, and register
