@@ -5,7 +5,7 @@ by hand on `main` with the version, and it tags the commit and releases from the
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHD images as release assets.
 
-## Unreleased
+## 0.3.0 (2026-11-02)
 
 Results database schema version 23 (`containerizer db init` upgrades it; the appliance does at start).
 
@@ -63,17 +63,44 @@ Results database schema version 23 (`containerizer db init` upgrades it; the app
   `cz-sandbox` now writes (`/run/containerizer/sandbox-verifier.kubeconfig`: the verifier's Role in every
   generated namespace, a 24-hour token).
 
+### LLM queue and refactoring
+- **Approval**: every LLM job waits for an administrator by default (Admin → LLM queue → Settings:
+  `ApproveKinds`, `ApproveMinTokens`), with Approve, Reject and **Approve all** with the total estimate. Give
+  the queue more freedom once you trust it. Results database schema version 22.
+- Refactoring goals: **targeted code changes**, **make it stateless** (move a component's own data to SQL
+  Server: the database library and its configuration, with notes on moving the data) and **repair** (feed the
+  build errors of a patch back to the LLM: **Fix it with the LLM** on the order page).
+- The guidance keeps patched code working on both Windows and Linux (no hard-coded Linux paths, portable
+  defaults, `Path.Combine`, `OperatingSystem.IsWindows` guards).
+- Clearer order statuses (Waiting for approval, Does not build, Does not start, Not built) with an
+  explanation; operators and the application's product owners may order refactorings for their products.
+- Tokens and time on the orders: the queue's estimate while an order waits or runs (with the time left while
+  it generates), what it took once done. The learned LLM speed ignores jobs with cached answers and counts
+  only the prompt tokens the server really read (llama.cpp reuses a cached prefix): estimates were too low.
+- The results page offers an order that already exists (its status, the patch, the commit it was made for)
+  instead of a new one, with **Request a new one** for changed code.
+
 ### Web UI
 - API keys for the JSON API: administrators make them on **Admin → API** (read only or full, optional
   expiry), shown once and stored as SHA-256 only, revocable, last use recorded; the page explains the API
   with examples for the server. The API is on whenever the admin pages are; OpenID access tokens still
   work when `CONTAINERIZER_API_AUDIENCE` is set. Results database schema version 21.
+- Why an application is rated B, in one line on its page; a single **How to fix** link per mitigation.
+- External links open in a new tab; a favicon; the source control page shows how to make a token before
+  asking for it.
 - Development mode for the admin pages: `CONTAINERIZER_DEV_NO_AUTH=1` signs everyone in as a configured
   person (default John Doe, administrator; `CONTAINERIZER_DEV_USER`, `_NAME`, `_ROLES`), for development and
   labs without an identity provider. It is refused on the appliance and next to a configured sign-in; a red
   banner shows on every page, the JSON API takes API keys (not access tokens), and CSRF tokens, roles and the
   change history work as
   with sign-in (docs/local-dev-server.md).
+
+### Lab and appliance
+- A lab sandbox on the dev server (docs/local-dev-server.md, `ci/lab-sandbox/`): the appliance's k3s with
+  Docker as its runtime (pods run the images `docker build` made, no registry), Flux, External Secrets and a
+  Gitea output repository, with a smoke test.
+- Appliance: `cz_store_put` quotes secret key names, so keys such as `n`, `yes` or `on` no longer become
+  YAML booleans.
 
 ## 0.2.0 (2026-11-01)
 
