@@ -103,6 +103,11 @@ def load_application(conn, app_id: int) -> dict | None:
     app["idp"] = load_idp_clients(conn, app_id)
     app["llm_reviews"] = load_llm_reviews(conn, app_id)
     app["refactors"] = load_refactor_orders(conn, app_id)
+    try:
+        from .llmqueue import load_speed
+        app["llm_speed"] = load_speed(conn) if app["refactors"] else None
+    except Exception:  # noqa: BLE001 - no estimates before the schema allows the read
+        app["llm_speed"] = None
     return app
 
 
@@ -110,7 +115,8 @@ def load_refactor_orders(conn, app_id: int) -> list[dict]:
     """The application's refactoring orders, newest first (empty before `db init` added them: schema 20)."""
     try:
         return _rows(conn, "SELECT TOP (20) JobId, Component, ProjectPath, Status, Summary, SourceCommit, QueuedAt, "
-                           "FinishedAt, VerifyStatus FROM cz.vRefactorOrder WHERE ApplicationId = %s ORDER BY JobId DESC", (app_id,))
+                           "FinishedAt, VerifyStatus, InputChars, EstInputTokens, InputTokens, OutputTokens, Seconds "
+                           "FROM cz.vRefactorOrder WHERE ApplicationId = %s ORDER BY JobId DESC", (app_id,))
     except Exception:
         try:
             conn.rollback()
@@ -224,6 +230,33 @@ def refactor_estimates(admin, app: dict) -> dict:
     return out
 
 
+def _mins(seconds) -> str:
+    return f"{max(1, round(seconds / 60))} min" if seconds < 5400 else f"{seconds / 3600:.1f} h"
+
+
+PROGRESS_RE = re.compile(r"file (\d+) of (\d+)")
+
+
+def order_effort(o: dict, speed) -> str:
+    """Tokens and time of an order: the queue's estimate while it waits or runs (with the time left while it
+    generates), what it took once it is done."""
+    if o.get("FinishedAt") and (o.get("InputTokens") is not None or o.get("Seconds")):
+        tok = int(o.get("InputTokens") or 0) + int(o.get("OutputTokens") or 0)
+        took = f" · {_mins(float(o['Seconds']))}" if o.get("Seconds") else ""
+        return f"{tok:,} tokens{took}" if tok else took.strip(" ·")
+    if o.get("FinishedAt") or speed is None:
+        return ""
+    from .refactor import KIND
+    est = speed.job({"Kind": KIND, "InputChars": o.get("InputChars"), "EstInputTokens": o.get("EstInputTokens"),
+                     "Model": None})
+    text = est_text(est)
+    m = PROGRESS_RE.search(o.get("Summary") or "")
+    if m and est.get("seconds") is not None and o.get("Status") == "generating":
+        done, total = int(m[1]) - 1, max(1, int(m[2]))
+        text += f" · about {_mins(est['seconds'] * (total - done) / total)} left"
+    return text
+
+
 def est_text(est: dict | None) -> str:
     if not est:
         return ""
@@ -275,6 +308,7 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
         tip = f" title='{e(why)}'" if why else ""
         rows.append(f"<tr><td>{what}</td><td><span class='st {REFACTOR_STATUS_CSS.get(st, '')}'{tip}>"
                     f"{e(label)}</span></td><td class='small'>{e(o.get('Summary') or '')}"
+                    + (f"<div class='muted'>{e(eff)}</div>" if (eff := order_effort({**o, 'Status': st}, app.get('llm_speed'))) else "")
                     + (f"<div class='muted'>{e(why)}</div>" if why else "") + "</td>"
                     f"<td class='small nowrap'>{when}</td></tr>")
     out = ["<section class='card refactor' id='refactoring'><h2>Refactoring</h2>" + (ctx or {}).get("notice", "") +

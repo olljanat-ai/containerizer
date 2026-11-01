@@ -36,7 +36,7 @@ VERIFY_TEXT = {"ok": "Builds and runs", "ok-external": "Builds and runs (without
                "build-failed": "Build failed", "run-failed": "Run failed", "finding": "Runs into a finding",
                "not-built": "Not built", "error": "Could not verify", "failed": "Failed"}
 COLS = ("JobId, Status, Summary, Error, Note, App, Repository, Component, ProjectPath, ApplicationId, AssessmentId, "
-        "SourceKey, RequestedBy, Model, Endpoint, InputTokens, OutputTokens, EstInputTokens, Seconds, Attempts, "
+        "SourceKey, RequestedBy, Model, Endpoint, InputChars, InputTokens, OutputTokens, EstInputTokens, Seconds, Attempts, "
         "QueuedAt, StartedAt, FinishedAt, JSON_VALUE(Result, '$.verification[0].status') AS VerifyStatus")
 
 
@@ -271,9 +271,15 @@ def show_order(adm, conn, s, a, ident: int, flash: str) -> Response:
     pl, res = _json(r.get("Payload")), _json(r.get("Result"))
     st = status_of(r, res)
     took = f"{float(r['Seconds']) / 60:.0f} min" if r.get("Seconds") else None
+    from .llmqueue import load_speed
+    from .webui import est_text, order_effort
+    try:
+        est = load_speed(conn).job({"Kind": rf.KIND, "InputChars": r.get("InputChars"),
+                                    "EstInputTokens": r.get("EstInputTokens"), "Model": None})
+    except Exception:  # noqa: BLE001
+        est = None
     tokens = (f"{int(r['InputTokens'] or 0):,} in / {int(r['OutputTokens'] or 0):,} out"
-              if r.get("InputTokens") is not None or r.get("OutputTokens") is not None else
-              (f"~{int(r['EstInputTokens']):,} in (estimated)" if r.get("EstInputTokens") else None))
+              if r.get("InputTokens") is not None or r.get("OutputTokens") is not None else None)
     app = (f"<a href='/app/{int(r['ApplicationId'])}'>{e(r.get('App') or '')}</a>" if r.get("ApplicationId")
            else e(r.get("App") or ""))
     meta = [("Application", app), ("Component", e(r.get("Component") or "all components that need changes")),
@@ -282,6 +288,9 @@ def show_order(adm, conn, s, a, ident: int, flash: str) -> Response:
                                                       if st == "applies-only" else "")),
             ("Requested by", e(r.get("RequestedBy") or "")),
             ("LLM", e(res.get("model") or r.get("Endpoint") or "")), ("LLM calls", e(str(res.get("calls"))) if res else None),
+            ("Estimate", e(est_text(est)) if est else None),
+            ("Time left", e(left.split(" · about ")[-1].removesuffix(" left")) if " · about " in (left := (
+                order_effort({**r, "Status": st}, load_speed(conn)) if st == "generating" else "")) else None),
             ("Tokens", e(tokens) if tokens else None), ("Time", e(took) if took else None),
             ("Queued", _d(r["QueuedAt"])), ("Finished", _d(r["FinishedAt"]) if r.get("FinishedAt") else None),
             ("Queue job", f"<a href='/admin/llm-queue/{ident}'>#{ident}</a>")]

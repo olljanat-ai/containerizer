@@ -240,3 +240,30 @@ def test_approval_is_on_by_default_and_approve_all(adm):  # noqa: F811
     assert params == ("alice@example.com",)
     op = adm.sessions.create("bob@example.com", "Bob", False, True, True)
     assert "Only+administrators" in _loc(_post(adm, op, "/admin/llm-queue/approve-all"))
+
+
+def test_speed_is_learned_from_fresh_answers_and_the_tokens_really_read():
+    from containerizer import llmqueue
+    used = llmqueue._usage()
+    used.entries = [{"input_tokens": 5000, "output_tokens": 500, "prompt_seconds": 10, "generate_seconds": 50,
+                     "prompt_read_tokens": 1000}]
+    assert used.prompt_read() == 1000 and not used.partly_cached()
+    e, _ = llmqueue.observe(None, None, 17500, 5000, 500, 60, 10, 50, prompt_read=1000)
+    assert e["PromptTokensPerSecond"] == 100            # 1,000 read in 10 s, not 5,000 (a cached prefix)
+    used.entries.append({"cached": True, "input_tokens": 4000, "output_tokens": 400})
+    assert used.partly_cached()
+    learned = []
+    r = object.__new__(llmqueue.Runner)
+    r.connect = lambda: learned.append("connected") or FakeConn()
+    r.log = lambda msg: None
+    r.learn({"_endpoint": "openai x m", "Kind": "refactor", "InputChars": 30000}, used, 120)
+    assert learned == []                                  # a partly cached job teaches nothing
+
+
+def test_order_effort():
+    est = SimpleNamespace(job=lambda j: {"in": 20000, "out": 709, "seconds": 900})
+    assert webui.order_effort({"Status": "queued", "InputChars": 70000}, est) == "~20,709 tokens · ~15 min"
+    assert webui.order_effort({"Status": "generating", "Summary": "generating: file 3 of 6: x"}, est).endswith(
+        "about 10 min left")
+    assert webui.order_effort({"FinishedAt": 1, "InputTokens": 4000, "OutputTokens": 1088, "Seconds": 180}, est) == \
+        "5,088 tokens · 3 min"

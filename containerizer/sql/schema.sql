@@ -1700,10 +1700,14 @@ SELECT j.JobId, COALESCE(j.ApplicationId, a.ApplicationId) AS ApplicationId, j.A
             WHEN j.Status = N'skipped' THEN N'cancelled'
             ELSE N'failed' END AS Status,
        j.Summary, JSON_VALUE(j.Payload, '$$.commit') AS SourceCommit, j.QueuedAt, j.StartedAt, j.FinishedAt,
-       JSON_VALUE(j.Result, '$$.verification[0].status') AS VerifyStatus
+       JSON_VALUE(j.Result, '$$.verification[0].status') AS VerifyStatus,
+       j.InputChars, j.EstInputTokens, j.InputTokens, j.OutputTokens, j.Seconds
 FROM [${schema}].LlmJob j
 LEFT JOIN [${schema}].Application a ON a.SourceKey = j.SourceKey
 WHERE j.Kind = N'refactor';
+GO
+-- the learned LLM speed (tokens per second, no content): the results pages estimate how long orders take
+GRANT SELECT ON [${schema}].LlmSpeed TO [${schema}_reader];
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 22) INSERT [${schema}].SchemaVersion (Version) VALUES (22);
 GO
