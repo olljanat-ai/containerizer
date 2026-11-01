@@ -115,6 +115,16 @@ class Admin:
     def session(self, headers) -> Session | None:
         return self.sessions.get(self._cookies(headers.get("Cookie")).get(self.cookie))
 
+    def dev_session(self, headers) -> tuple[Session | None, list]:
+        """The session, and in development mode one made at once when there is none (sessions live in memory, so
+        a restart of the web UI ends them): (session, headers to send). Outside development mode: no new one."""
+        s = self.session(headers)
+        if s or not self.dev:
+            return s, []
+        d = self.dev
+        sid = self.sessions.create(d.user, d.name, d.admin, d.viewer, d.operator, [])
+        return self.sessions.get(sid), [self._set_cookie(self.cookie, sid, 8 * 3600)]
+
     @staticmethod
     def may_review_rules(s: Session | None) -> bool:
         """The single gate of the rule review pages (RULE_REVIEW_ROLES)."""

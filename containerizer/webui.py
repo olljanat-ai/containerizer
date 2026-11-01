@@ -1212,12 +1212,13 @@ def make_handler(connect, admin=None):
                                 return self._send(404, page("Not found", "<h1>Application not found</h1><p><a href='/'>Back</a></p>"),
                                                   head=head)
                             ctx = {"signin": bool(admin), "notice": refactor_notice(parse_qs(u.query))}
-                            s = admin.session(self.headers) if admin else None
+                            s, cookie = admin.dev_session(self.headers) if admin else (None, [])
                             if s and (s.admin or s.operator or s.scopes):   # may order (product owners: their products)
                                 ctx["csrf"] = admin._csrf(s)
                                 if app.get("Rating") == "B":
                                     ctx["estimates"] = refactor_estimates(admin, app)
-                            return self._send(200, render_application(app, nav, ctx), head=head, forms=bool(nav))
+                            return self._send(200, render_application(app, nav, ctx), head=head, forms=bool(nav),
+                                              extra=cookie or None)
                         bu = parse_qs(u.query).get("bu", [None])[0]
                         if bu is not None and not re.fullmatch(r"\d{1,9}|none", bu):
                             bu = None
