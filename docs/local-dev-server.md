@@ -450,6 +450,19 @@ Docker-style DNAT traffic to them would pass the forward chain, which accepts by
 or Gitea from another machine with SSH port forwarding, e.g. `ssh -L 30443:127.0.0.1:30443 -L
 3001:127.0.0.1:3001 dev@<server>`.
 
+To open the sandbox's HTTPS entry to your own subnet instead, limit it in the forward chain first, then let
+k3s answer on the server's address too:
+
+```sh
+# /etc/nftables.conf, forward chain (and the same with `sudo nft add rule inet filter forward ...` to apply it now,
+# without reloading the file: that would drop Docker's tables)
+iifname "eth0" ct original proto-dst 30443 ip saddr != $LAB drop
+iifname "eth0" ct original proto-dst 30443 meta nfproto ipv6 drop
+# /etc/rancher/k3s-lab/config.yaml, then: sudo systemctl restart k3s-lab
+kube-proxy-arg:
+  - "nodeport-addresses=127.0.0.1/32,<server address>/32"
+```
+
 ### Pointing a scan or a runner at it
 
 ```sh
