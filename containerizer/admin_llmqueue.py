@@ -388,7 +388,7 @@ takes them, from the size given (estimated tokens the LLM must read; 0: all of t
 <label class='check'><input type='checkbox' name='ApproveKind' value='refactor'{' checked' if 'refactor' in (v.get('ApproveKinds') or '') else ''}> Refactoring orders</label>
 <label class='check'><input type='checkbox' name='ApproveKind' value='review'{' checked' if 'review' in (v.get('ApproveKinds') or '') else ''}> Component reviews from scans</label>
 <label for='ApproveMinTokens'>From <span class='muted'>(estimated input tokens; 0: every job of those kinds)</span></label>
-<input id='ApproveMinTokens' name='ApproveMinTokens' type='number' min='0' max='10000000' step='1000'
+<input id='ApproveMinTokens' name='ApproveMinTokens' type='number' min='0' max='10000000' step='1'
 value='{int(v.get('ApproveMinTokens') or 0)}'>
 <div><button>Save</button></div></form>"""
 
