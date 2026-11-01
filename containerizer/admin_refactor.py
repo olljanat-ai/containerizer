@@ -393,7 +393,7 @@ def order(adm, conn, s, a, form: dict) -> Response:
     if comp_raw:
         if not re.fullmatch(r"\d{1,9}", comp_raw):
             return _to_app(app_id, "no-component")
-        c = _rows(conn, "SELECT ProjectPath FROM cz.Component WHERE ComponentId = %s AND ApplicationId = %s",
+        c = _rows(conn, "SELECT ProjectPath FROM cz.vComponentLatest WHERE ComponentId = %s AND ApplicationId = %s",
                   (int(comp_raw), app_id))
         if not c:
             return _to_app(app_id, "no-component")
