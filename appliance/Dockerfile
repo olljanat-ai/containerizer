@@ -103,7 +103,7 @@ RUN chmod 0755 /usr/lib/containerizer/bin/* /usr/libexec/elemental-checker/conta
       containerizer-dns-upstream.path containerizer-addresses.service \
       containerizer-sysagent.path containerizer-sysagent-status.service containerizer-sysagent-status.timer \
       containerizer-mssql.service containerizer-db-init.service containerizer-web.service \
-      containerizer-worker.service containerizer-registry.service \
+      containerizer-worker.service containerizer-llm-queue.service containerizer-registry.service \
       containerizer-prometheus.service containerizer-grafana.service \
       k3s.service containerizer-sandbox.timer containerizer-lab.timer
 

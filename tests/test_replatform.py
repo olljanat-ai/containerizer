@@ -347,6 +347,31 @@ def test_grafana_dashboard_shows_llm_usage():
         assert metric in exprs
     ids = [p["id"] for p in d["panels"]]
     assert len(ids) == len(set(ids))
+    for p in d["panels"]:
+        refs = [t.get("refId") for t in p.get("targets") or []]
+        assert len(refs) == len(set(refs)), p["title"]
+        if p["type"] == "timeseries":
+            assert not any(t.get("instant") for t in p.get("targets") or []), p["title"]
+
+
+def test_grafana_dashboard_shows_the_llm_queue():
+    root = Path(__file__).resolve().parent.parent
+    d = json.loads((root / "monitoring" / "grafana" / "containerizer-scans.json").read_text())
+    titles = {p.get("title") for p in d["panels"]}
+    assert {"LLM queue", "Jobs waiting", "Oldest waiting", "Waiting jobs by kind", "Jobs finished by result"} <= titles
+    exprs = " ".join(t.get("expr", "") for p in d["panels"] for t in p.get("targets") or [])
+    for metric in ("containerizer_llm_queue_jobs{", "containerizer_llm_queue_oldest_waiting_seconds",
+                   "containerizer_llm_queue_jobs_finished_total", "containerizer_llm_queue_estimated_tokens"):
+        assert metric in exprs
+    cells = set()                           # panels do not overlap
+    for p in d["panels"]:
+        g = p["gridPos"]
+        for x in range(g["x"], g["x"] + g["w"]):
+            for y in range(g["y"], g["y"] + g["h"]):
+                assert (x, y) not in cells, p["title"]
+                cells.add((x, y))
+    scrape = (root / "monitoring" / "prometheus" / "scrape.yml").read_text()
+    assert "job_name: containerizer-llm-queue" in scrape and ":9465" in scrape
 
 
 def test_sandbox_tester_llm_fix_is_applied_and_kept(tmp_path, monkeypatch):

@@ -557,3 +557,28 @@ def test_llm_answer_cache_is_on_the_persistent_partition():
     worker = _unit("containerizer-worker.service")
     assert "CONTAINERIZER_AI_CACHE=/var/lib/containerizer/worker/ai-cache" in worker["Environment"]
     assert worker["WorkingDirectory"] == ["/var/lib/containerizer/worker"]
+
+
+def test_llm_queue_runner_unit():
+    """The LLM queue runner runs like the scan worker (same user, settings, database login, credential key)
+    and writes its answers into the worker's answer cache, so the next scan finds them."""
+    q, w = _unit("containerizer-llm-queue.service"), _unit("containerizer-worker.service")
+    assert q["User"] == w["User"] == ["containerizer"]
+    for f in ("/etc/containerizer/worker.env", "-/run/containerizer/llm.env", "/run/containerizer/sql.env"):
+        assert f in q["EnvironmentFile"] and f in w["EnvironmentFile"]
+    cache = "CONTAINERIZER_AI_CACHE=/var/lib/containerizer/worker/ai-cache"
+    assert cache in q["Environment"] and cache in w["Environment"]
+    assert set(q["LoadCredential"]) == {"sql-scanner:/etc/containerizer/secrets/cz-scanner",
+                                        "credential-key:/etc/containerizer/secrets/credential-key"}
+    assert q["ExecStart"] == ["/usr/lib/containerizer/bin/cz-llm-queue"] and "SupplementaryGroups" not in q
+    assert q["ProtectSystem"] == ["strict"] and q["ReadWritePaths"] == ["/var/lib/containerizer/worker/ai-cache"]
+    assert q["NoNewPrivileges"] == ["yes"] and q["WantedBy"] == ["multi-user.target"]
+    script = (APPLIANCE / "rootfs/usr/lib/containerizer/bin/cz-llm-queue").read_text()
+    assert "-m containerizer llm-queue --metrics-host 127.0.0.1 --metrics-port 9465" in script
+    assert 'CONTAINERIZER_CREDENTIAL_KEY_FILE="$CREDENTIALS_DIRECTORY/credential-key"' in script
+    firstboot = (APPLIANCE / "rootfs/usr/lib/containerizer/bin/cz-firstboot").read_text()
+    assert 'install -d -m 0700 -o containerizer -g containerizer "$D/worker/ai-cache"' in firstboot
+    docker = (APPLIANCE / "Dockerfile").read_text()
+    assert "containerizer-llm-queue.service" in docker.split("systemctl enable", 1)[1].split("\n\n", 1)[0]
+    prom = (APPLIANCE / "rootfs/usr/lib/containerizer/prometheus/prometheus.yml").read_text()
+    assert '"127.0.0.1:9465"' in prom and "job_name: containerizer-llm-queue" in prom

@@ -43,8 +43,10 @@ SECRET_RE = re.compile(r"[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?")
 ORG_RE = re.compile(r"[\w .\-/]{1,200}")
 TIME_RE = re.compile(r"([01]\d|2[0-3]):([0-5]\d)")
 SCAN_COLS = ("Name", "Provider", "Organization", "ApiUrl", "Registry", "OutputRepo", "OutputBranch", "ImagePullSecret", "IncludeRegex", "ExcludeRegex", "SkipForks", "StaleDays", "Verify",
-             "Gate", "PushImages", "UseAi", "LlmHeavy", "ScheduleDays", "ScheduleMinute", "Enabled")
+             "Gate", "PushImages", "UseAi", "LlmMode", "LlmHeavy", "ScheduleDays", "ScheduleMinute", "Enabled")
 FLAGS = ("SkipForks", "Verify", "Gate", "PushImages", "UseAi", "LlmHeavy", "Enabled")
+LLM_MODES = {"inline": "Inline: ask during the scan",
+             "queued": "Queued: rules only during the scan; the LLM queue answers later and the next scan applies it"}
 NEW_DAYS = 7
 PAUSED = " <span class='st st-off'>Paused</span>"
 NEW_CHIP = " <span class='st st-run'>New</span>"
@@ -236,6 +238,8 @@ def _scan_form(adm, s, scan: dict, ident) -> str:
     def chk(name, label):
         return f"<label class='check'><input type='checkbox' name='{name}' value='1'{' checked' if v[name] else ''}> {label}</label>"
     prov = "".join(f"<option value='{k}'{' selected' if v['Provider'] == k else ''}>{t}</option>" for k, t in PROVIDERS.items())
+    modes = "".join(f"<option value='{k}'{' selected' if (v['LlmMode'] or 'inline') == k else ''}>{e(t)}</option>"
+                    for k, t in LLM_MODES.items())
     days = "".join(f"<label class='check day'><input type='checkbox' name='day' value='{i}'"
                    f"{' checked' if int(v['ScheduleDays'] or 0) & (1 << i) else ''}> {d}</label>" for i, d in enumerate(DAYS))
     minute = int(v["ScheduleMinute"] if v["ScheduleMinute"] != "" else 120)
@@ -263,8 +267,13 @@ organization's read-only token. The output repository is never scanned.</p>
 {chk('Verify', 'Build and run every component before rating it (recommended)')}
 {chk('Gate', 'Security gate: lint, image vulnerability scan, hardened run (recommended)')}
 {chk('UseAi', 'Ask the LLM about uncertain components and unexplained failures')}
+<label for='LlmMode'>LLM reviews</label><select id='LlmMode' name='LlmMode'>{modes}</select>
+<p class='muted small'>Queued: the scan asks the LLM nothing, so a slow self-hosted LLM does not hold it up. The
+component reviews wait in the <a href='/admin/llm-queue'>LLM queue</a> (uncertain components first, then a second
+opinion on blockers and rewrites); each answer is used by the next scan of its repository. Failures are not diagnosed
+by the LLM in this mode.</p>
 {chk('LlmHeavy', 'LLM-heavy mode: platform migrations and the sandbox tester ask the LLM as often as they need')}
-<p class='muted small'>LLM-heavy mode needs the option above and is used only when the appliance allows it
+<p class='muted small'>LLM-heavy mode needs "Ask the LLM" with inline reviews and is used only when the appliance allows it
 ({_heavy_state()}). It makes many more LLM calls; their tokens and estimated cost are on the Grafana dashboard.
 Repositories with a Dockerfile are migrated from Docker Swarm, Nomad, Azure Container Apps or ECS when you enable them
 under <a href='/admin/repositories'>Repositories</a>.</p>
@@ -280,7 +289,7 @@ def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
     from .worker import check_scan, schedule_text
     if ident is None:
         scan = {"Provider": "github", "OutputBranch": "main", "SkipForks": True, "StaleDays": 183, "Verify": True,
-                "Gate": True, "PushImages": True, "UseAi": False, "LlmHeavy": False, "ScheduleDays": 32, "ScheduleMinute": 120, "Enabled": True}
+                "Gate": True, "PushImages": True, "UseAi": False, "LlmMode": "inline", "LlmHeavy": False, "ScheduleDays": 32, "ScheduleMinute": 120, "Enabled": True}
         return Response(200, adm._shell(s, a, "New organization scan", "scans", _scan_form(adm, s, scan, None), flash))
     cur = conn.cursor(as_dict=True)
     cur.execute("SELECT * FROM cz.OrgScan WHERE ScanId = %s", (ident,))
@@ -396,6 +405,12 @@ def validate_scan(form: dict) -> tuple[dict, list[str]]:
         v[k] = form.get(k, [""])[0] == "1"
     if v["LlmHeavy"] and not v["UseAi"]:
         errors.append("LLM-heavy mode needs \"Ask the LLM\" too")
+    v["LlmMode"] = form.get("LlmMode", ["inline"])[0] or "inline"
+    if v["LlmMode"] not in LLM_MODES:
+        errors.append("LLM reviews: inline or queued")
+        v["LlmMode"] = "inline"
+    if v["LlmHeavy"] and v["LlmMode"] != "inline":
+        errors.append("LLM-heavy mode needs inline LLM reviews: it asks the LLM during the scan")
     v["ScheduleDays"] = sum(1 << int(d) for d in set(form.get("day", [])) if re.fullmatch(r"[0-6]", d))
     m = TIME_RE.fullmatch(form.get("At", ["02:00"])[0].strip())
     if not m:

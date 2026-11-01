@@ -1,0 +1,44 @@
+[Unit]
+Description=containerizer appliance: LLM queue runner (queued LLM reviews, Admin -> LLM queue)
+After=containerizer-db-init.service containerizer-dns.service
+Requires=containerizer-db-init.service
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+
+[Service]
+User=containerizer
+Group=containerizer
+# the scan worker's settings: a self-hosted LLM set in the environment (CONTAINERIZER_LLM_*) applies here too
+EnvironmentFile=/etc/containerizer/worker.env
+EnvironmentFile=-/run/containerizer/llm.env
+# the scan worker's answer cache: an answer the runner gets is found by the next scan
+Environment=CONTAINERIZER_AI_CACHE=/var/lib/containerizer/worker/ai-cache
+# results database (CZ_SQL_SCANNER_CS): the appliance's own or CZ_SQL_SERVER (cz-firstboot)
+EnvironmentFile=/run/containerizer/sql.env
+LoadCredential=sql-scanner:/etc/containerizer/secrets/cz-scanner
+# opens the LLM registered under Admin -> Source control & LLM, as the scan worker does
+LoadCredential=credential-key:/etc/containerizer/secrets/credential-key
+WorkingDirectory=/var/lib/containerizer/worker
+ExecStart=/usr/lib/containerizer/bin/cz-llm-queue
+# the job it is asking goes back to the queue
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=30
+# no Docker: it only talks to the database and the LLM
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/containerizer/worker/ai-cache
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -128,3 +128,46 @@ were learned from, and an administrator still reviews every learned rule ([rule 
 
 **What it sees.** Evidence packs contain source code excerpts, project files and the README of the
 assessed application. A self-hosted server keeps them inside your network.
+
+### Queued LLM reviews
+
+A self-hosted LLM on CPUs can take five minutes or more per answer, which would hold up every scan. Set
+**LLM reviews** on the scan (Admin → Organization scans) to **Queued** and the scan asks the LLM nothing
+while it runs: the rules decide, and the questions go to the **LLM queue** instead
+(Admin → LLM queue, [organization scans](scheduled-scans.md#the-llm-queue)). The queue runner answers
+them when the queue's settings let it, for example at night or only while no scan runs.
+
+In queued mode the scan does not ask the LLM about build or run failures, dev databases, platform
+migrations or the sandbox tester either, so **LLM-heavy mode** needs inline reviews.
+
+**What is queued.** The components an inline scan would ask about (server and platform components the
+rules are less than 85 % sure of) are queued as *uncertain*. Server and platform components the rules
+rate *blocker* or *rewrite* with confidence are queued too, as a *second opinion*. Each gets a
+priority; the runner takes the highest first, and administrators can move any job:
+
+| | Priority |
+| --- | --- |
+| Uncertain | 1000 + 400 × (1 − the rules' confidence) |
+| Second opinion | 0 + 400 × (1 − the rules' confidence) |
+| Both: the component keeps no state and only its verdict keeps it from rating A | + 300 |
+| Both: a server component (not a Windows platform product) | + 100 |
+
+So every uncertain review comes before every second opinion, the less sure the rules the sooner, and
+a review whose answer can get a component deployed comes first.
+
+**How an answer takes effect.** The queue keeps the exact question the scan would have asked. The
+runner asks it with the same model, so the answer is stored in the answer cache under the same key as
+an inline answer. The answer shows on the queue page at once, and on the component in the results
+pages. The next scan of the repository asks the same question, finds the answer (in the cache, or in
+the queue) without calling the LLM, and applies it as an inline scan would: the component's verdict
+changes when the LLM is at least 0.6 sure and disagrees with the rules (0.85 for a second opinion, as it
+goes against rules that were sure). Assessments already stored never change. **Re-scan now** on the queue
+page scans a repository whose reviews are all answered, without waiting for the schedule. When the
+code or the rules change before the answer, the next scan asks a new question and the old one is
+skipped as superseded. Changing the LLM (another server or model) means new questions too.
+
+The command line does the same with `--ai-queue` (with `--ai`, on `assess`, `analyze` and `org`): with
+`--sql` or `CONTAINERIZER_SQL` the jobs go to the same queue; without SQL Server they are written to
+`llm-queue.json` in the output folder (`--work-dir` for `org`), and
+`containerizer llm-queue --file <that file>` answers them once each, in queue order. Run the command
+again afterwards to apply the answers.

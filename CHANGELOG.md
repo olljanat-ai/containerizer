@@ -7,9 +7,25 @@ qcow2 and VHD images as release assets.
 
 ## Unreleased
 
-Results database schema version 18 (`containerizer db init` upgrades it; the appliance does at start).
+Results database schema version 19 (`containerizer db init` upgrades it; the appliance does at start).
 
 ### Organization scans
+- Queued LLM reviews, for a slow self-hosted LLM: with **LLM reviews: Queued** on a scan, the scan asks
+  the LLM nothing (no component reviews, failure diagnosis, dev database questions or LLM-heavy mode) and
+  the rules decide. The component reviews go to the new **LLM queue**: uncertain components first, then a
+  second opinion on the rules' blocker and rewrite verdicts, by a documented priority. The queue runner
+  (`containerizer llm-queue`, a service of its own on the appliance) answers them on the days and hours
+  set on **Admin → LLM queue**, optionally only while no scan runs and the machine is idle, with as many
+  parallel requests as the LLM serves. Administrators and operators reorder, skip and requeue jobs there.
+  Each answer shows at once on the queue page and on the component's results page, and the next scan of
+  the repository applies it from the answer cache; **Re-scan now** scans a repository whose reviews are
+  answered. The page estimates the tokens and time of the waiting jobs from what the runner learned on
+  each LLM. The queue takes other kinds of LLM jobs later without a schema change. The command line has
+  `--ai-queue` on `assess`, `analyze` and `org` (a queue file without SQL Server). Metrics and an
+  **LLM queue** row on the Grafana dashboard. See
+  [queued LLM reviews](docs/source-control.md#queued-llm-reviews)
+- Fix: the Grafana panel **LLM tokens by feature** had two queries with the same id, and its output
+  tokens were an instant query, so they did not show over time
 - Discovery first: **Discover** on a scan's page lists the projects, repositories and each repository's
   latest commit through the provider's API, without cloning or assessing anything, so administrators can
   disable deprecated projects and repositories before the full scan. **Run now** is now **Run full scan**,
@@ -61,7 +77,8 @@ Results database schema version 18 (`containerizer db init` upgrades it; the app
 - LLM usage statistics: calls, tokens in and out and estimated cost by scan, repository, feature and
   model as Prometheus metrics, an **LLM usage** row on the Grafana dashboard, and per repository on its
   admin page. `CONTAINERIZER_LLM_PRICE_INPUT`/`_OUTPUT` price a self-hosted LLM.
-- Schema version 18 adds `OrgScan.LlmHeavy`.
+- Schema version 18 adds `OrgScan.LlmHeavy`; version 19 adds `OrgScan.LlmMode` and the LLM queue
+  (`LlmJob`, `LlmSpeed`, `LlmQueueSettings`, `vLlmReviewLatest`).
 
 ## 0.1.0 (2026-10-31)
 

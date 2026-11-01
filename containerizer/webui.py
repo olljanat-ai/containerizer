@@ -101,7 +101,31 @@ def load_application(conn, app_id: int) -> dict | None:
     from .sbomui import load_app_sboms
     app["sboms"] = load_app_sboms(conn, app_id)
     app["idp"] = load_idp_clients(conn, app_id)
+    app["llm_reviews"] = load_llm_reviews(conn, app_id)
     return app
+
+
+def load_llm_reviews(conn, app_id: int) -> list[dict]:
+    """The latest queued LLM review of each component (empty before `db init` added the LLM queue)."""
+    try:
+        return _rows(conn, "SELECT ComponentId, Reason, Status, QueuedAt, FinishedAt, Model, Verdict, LlmConfidence, "
+                           "Reasoning FROM cz.vLlmReviewLatest WHERE ApplicationId = %s", (app_id,))
+    except Exception:
+        return []
+
+
+def _llm_review(r: dict | None, assessed_at) -> str:
+    """"LLM review queued" or "LLM review answered: <verdict> (<confidence>)" for a component."""
+    if not r or r.get("Status") not in ("queued", "running", "answered"):
+        return ""
+    if r["Status"] != "answered":
+        return ("<p class='small'><b>LLM review queued</b> <span class='muted'>(the LLM is asked when the queue runs; "
+                "the next scan uses the answer)</span></p>")
+    later = r.get("FinishedAt") and assessed_at and r["FinishedAt"] > assessed_at
+    conf = f" ({float(r['LlmConfidence']):.2f})" if r.get("LlmConfidence") is not None else ""
+    return (f"<p class='small'><b>LLM review answered: {e(VERDICT_LABEL.get(r.get('Verdict'), r.get('Verdict') or '?'))}"
+            f"{conf}</b> <span class='muted'>{'after this assessment: the next scan applies it' if later else ''}</span>"
+            f"<br><span class='muted'>{e(_ws(r.get('Reasoning'))[:1500])}</span></p>")
 
 
 def load_idp_clients(conn, app_id: int) -> list[dict]:
@@ -368,6 +392,7 @@ def render_application(app: dict, nav: str = "") -> str:
                        for t, o in obs)
 
     migs = {m["ComponentId"]: m for m in app.get("migrations") or []}
+    reviews = {r["ComponentId"]: r for r in app.get("llm_reviews") or []}
     sboms = app.get("sboms") or {}
     comp_rows = "".join(
         f"<tr><td><a href='#c{int(c['ComponentId'])}'>{e(c['ComponentName'])}</a>"
@@ -390,6 +415,7 @@ def render_application(app: dict, nav: str = "") -> str:
                        f" <span class='muted'>({len(fs)} item{'s' if len(fs) != 1 else ''})</span></summary>"
                        f"<div class='muted small'>{e(c['VerdictText'])}{'; a Windows container is a workable stop-gap' if c['WindowsContainerOk'] and c['Verdict'] in ('rewrite', 'blocker') else ''}"
                        f"{'; targets ' + e(c['TargetFramework']) if c['TargetFramework'] else ''}</div>"
+                       f"{_llm_review(reviews.get(c['ComponentId']), app.get('AssessedAt'))}"
                        f"{_sandbox_detail(sandbox.get(c['ComponentId']))}{items}"
                        f"{_migration(app['ApplicationId'], migs.get(c['ComponentId']))}</details>")
     repo = by_comp.get(None, [])

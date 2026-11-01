@@ -1,0 +1,30 @@
+# systemd unit for the containerizer LLM queue runner (docs/scheduled-scans.md#the-llm-queue), next to the scan
+# worker. It uses the worker's settings (worker.env: database, credential key, LLM) and must use the same
+# answer cache (CONTAINERIZER_AI_CACHE), so the next scan finds its answers.
+# Install: copy to /etc/systemd/system/, then: systemctl daemon-reload && systemctl enable --now containerizer-llm-queue
+[Unit]
+Description=containerizer LLM queue runner (queued LLM reviews)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=containerizer
+WorkingDirectory=/opt/containerizer
+EnvironmentFile=/etc/containerizer/worker.env
+ExecStart=/opt/containerizer/.venv/bin/python -m containerizer llm-queue --metrics-host 127.0.0.1 --metrics-port 9465
+# the job it is asking goes back to the queue
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
