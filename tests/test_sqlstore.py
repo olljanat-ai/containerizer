@@ -377,6 +377,41 @@ def test_import_json(db, tmp_path):
 
 
 @needs_sql
+def test_member_puts_a_login_the_dba_made_in_its_role(db):
+    """External database with CZ_SQL_LOGINS=existing: the owner only adds the logins to the roles (idempotent)."""
+    login = "cz_t_dba_" + uuid.uuid4().hex[:6]
+    m = sqlstore.connect(re.sub(r"Database=\w+", "Database=master", db), autocommit=True)
+    m.cursor().execute(f"CREATE LOGIN [{login}] WITH PASSWORD = N'Dba-Passw0rd!x'")
+    m.close()
+    try:
+        conn = sqlstore.connect(db)
+        sqlstore.add_member(conn, login, "reader")
+        sqlstore.add_member(conn, login, "reader")
+        with pytest.raises(SqlError):
+            sqlstore.add_member(conn, login, "owner")
+        conn.close()
+        rd = sqlstore.connect(_as(db, login), password="Dba-Passw0rd!x")
+        try:
+            assert isinstance(webui.load_overview(rd), dict)
+            with pytest.raises(Exception):
+                rd.cursor().execute("INSERT cz.BusinessUnit (Name) VALUES (N'x')")
+        finally:
+            rd.close()
+        # the database moved to another server (a restored backup): the login there has another SID
+        m = sqlstore.connect(re.sub(r"Database=\w+", "Database=master", db), autocommit=True)
+        m.cursor().execute(f"DROP LOGIN [{login}]; CREATE LOGIN [{login}] WITH PASSWORD = N'Dba-Passw0rd!y'")
+        m.close()
+        conn = sqlstore.connect(db)
+        sqlstore.add_member(conn, login, "reader")
+        conn.close()
+        sqlstore.connect(_as(db, login), password="Dba-Passw0rd!y").close()
+    finally:
+        m = sqlstore.connect(re.sub(r"Database=\w+", "Database=master", db), autocommit=True)
+        m.cursor().execute(f"DROP LOGIN [{login}]")
+        m.close()
+
+
+@needs_sql
 def test_create_login_relinks_the_user_of_a_restored_database(db):
     """A database restored on another server keeps its users with the old server's login SIDs: db init
     (create_login) links them to the logins of this server again, so the web UI and the worker can sign in."""

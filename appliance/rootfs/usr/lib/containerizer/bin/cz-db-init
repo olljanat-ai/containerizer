@@ -1,23 +1,55 @@
 #!/bin/sh
 # Waits for SQL Server, then runs `containerizer db init` (idempotent: creates or upgrades the schema, its
 # roles and audit triggers, and the three logins). Runs at every start, so an OS upgrade upgrades the schema.
+# The server is the appliance's own, or the external one of CZ_SQL_SERVER in appliance.env: cz-firstboot
+# writes the connection strings to /run/containerizer/sql.env (no passwords; those are in secrets/).
 set -eu
 S=/etc/containerizer/secrets
-export CONTAINERIZER_SQL="Server=127.0.0.1,1433;Database=Containerizer;User Id=sa;TrustServerCertificate=yes"
-CONTAINERIZER_SQL_PASSWORD="$(cat $S/mssql-sa)"
+[ -s /run/containerizer/sql.env ] || {
+  echo "no /run/containerizer/sql.env: the results database settings in /etc/containerizer/appliance.env are" \
+    "not valid (journalctl -b -u containerizer-firstboot); fix them and reboot" >&2
+  exit 1
+}
+. /run/containerizer/sql.env
+PY=/usr/lib/containerizer/venv/bin/python
+i=0
+# external database: the password of CZ_SQL_USER is written by the administrator (docs/appliance-admin.md)
+until [ -s "$S/$CZ_SQL_OWNER_SECRET" ]; do
+  [ $i -gt 0 ] || echo "waiting for $S/$CZ_SQL_OWNER_SECRET (the password of CZ_SQL_USER)" >&2
+  i=$((i + 1))
+  sleep 10
+done
+CONTAINERIZER_SQL_PASSWORD="$(cat "$S/$CZ_SQL_OWNER_SECRET")"
 CZ_CZ_SCANNER_PASSWORD="$(cat $S/cz-scanner)"
 CZ_CZ_WEB_PASSWORD="$(cat $S/cz-web)"
 CZ_CZ_ADMIN_PASSWORD="$(cat $S/cz-admin)"
 export CONTAINERIZER_SQL_PASSWORD CZ_CZ_SCANNER_PASSWORD CZ_CZ_WEB_PASSWORD CZ_CZ_ADMIN_PASSWORD
-PY=/usr/lib/containerizer/venv/bin/python
 i=0
-until $PY -c "
-import os, pymssql
-pymssql.connect(server='127.0.0.1', port=1433, user='sa', password=os.environ['CONTAINERIZER_SQL_PASSWORD'], login_timeout=5).close()
-" 2>/dev/null; do
+until err=$(CZ_PROBE="$CZ_SQL_PROBE_CS" $PY -c "
+import os
+from containerizer.sqlstore import connect
+connect(os.environ['CZ_PROBE']).close()
+" 2>&1); do
+  err=$(printf '%s\n' "$err" | tail -n 1)
   i=$((i + 1))
-  [ $i -lt 240 ] || { echo "SQL Server did not accept connections in 40 minutes" >&2; exit 1; }
+  if [ $i -ge 240 ]; then
+    echo "SQL Server did not accept connections in 40 minutes: $err" >&2
+    [ "$CZ_SQL_LOCAL" = yes ] || echo "check CZ_SQL_* in /etc/containerizer/appliance.env, $S/$CZ_SQL_OWNER_SECRET" \
+      "and the DNS filter (journalctl -u containerizer-dns | grep REFUSED)" >&2
+    exit 1
+  fi
+  [ $((i % 30)) -ne 1 ] || [ "$CZ_SQL_LOCAL" = yes ] || echo "waiting for SQL Server: $err" >&2
   sleep 10
 done
-exec $PY -m containerizer db init --create-database \
-  --login cz_scanner:writer --login cz_web:reader --login cz_admin:admin
+export CONTAINERIZER_SQL="$CZ_SQL_OWNER_CS"
+if [ "$CZ_SQL_LOCAL" = yes ]; then
+  # the appliance's own server: sa creates the database and the logins
+  exec $PY -m containerizer db init --create-database \
+    --login cz_scanner:writer --login cz_web:reader --login cz_admin:admin
+elif [ "$CZ_SQL_LOGINS" = existing ]; then
+  # the DBA created the database and the logins (their passwords are in secrets/cz-*): only the role memberships
+  exec $PY -m containerizer db init --member cz_scanner:writer --member cz_web:reader --member cz_admin:admin
+else
+  # CZ_SQL_USER owns the database and may create logins (ALTER ANY LOGIN): it sets their generated passwords
+  exec $PY -m containerizer db init --login cz_scanner:writer --login cz_web:reader --login cz_admin:admin
+fi

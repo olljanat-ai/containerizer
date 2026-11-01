@@ -478,6 +478,80 @@ def test_root_password_default_is_expired_and_kept_and_ssh_takes_it():
     assert "AuthenticationMethods" not in sshd
 
 
+# ------------------------------------------------------------------------------- external results database
+
+def test_sql_env_local_by_default(paths, tmp_path, monkeypatch):
+    monkeypatch.setattr(sysagent.P, "sql_env", tmp_path / "run" / "sql.env")
+    p = sysagent.P
+    p.appliance_env.write_text("CZ_SQL_SERVER=\nCZ_SQL_DATABASE=Containerizer\n")
+    out = sysagent.write_sql_env()
+    assert out["CZ_SQL_LOCAL"] == "yes" and out["CZ_SQL_OWNER_SECRET"] == "mssql-sa"
+    assert out["CZ_SQL_WEB_CS"] == "Server=127.0.0.1,1433;Database=Containerizer;TrustServerCertificate=yes;User Id=cz_web"
+    assert "Database=master" in out["CZ_SQL_PROBE_CS"]
+    assert 'CZ_SQL_SCANNER_CS="Server=127.0.0.1,1433;' in p.sql_env.read_text()
+    assert [r["host"] for r in sysagent.system_rules()["rules"]] == ["ghcr.io", "pkg-containers.githubusercontent.com"]
+
+
+def test_sql_env_external_server_and_its_firewall_rule(paths, tmp_path, monkeypatch):
+    monkeypatch.setattr(sysagent.P, "sql_env", tmp_path / "run" / "sql.env")
+    monkeypatch.setattr(sysagent.P, "sql_ca", tmp_path / "run" / "sql-ca.pem")
+    p = sysagent.P
+    (tmp_path / "ca.pem").write_text("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n")
+    p.appliance_env.write_text(f'CZ_SQL_SERVER=SQL01.corp.example.com,14330\nCZ_SQL_DATABASE=Cz\nCZ_SQL_USER=cz_owner\n'
+                               f'CZ_SQL_LOGINS=existing\nCZ_SQL_OPTIONS="Schema=cz2;Encrypt=yes"\nCZ_SQL_CA={tmp_path / "ca.pem"}\n')
+    out = sysagent.write_sql_env()
+    base = f"Server=tcp:sql01.corp.example.com,14330;Database=Cz;Schema=cz2;Encrypt=yes;CaFile={p.sql_ca}"
+    assert out["CZ_SQL_LOCAL"] == "no" and out["CZ_SQL_LOGINS"] == "existing"
+    assert out["CZ_SQL_OWNER_CS"] == out["CZ_SQL_PROBE_CS"] == base + ";User Id=cz_owner"
+    assert out["CZ_SQL_ADMIN_CS"] == base + ";User Id=cz_admin" and out["CZ_SQL_OWNER_SECRET"] == "sql-owner"
+    assert "BEGIN CERTIFICATE" in p.sql_ca.read_text()
+    from containerizer.sqlstore import connect_args
+    a = connect_args(out["CZ_SQL_WEB_CS"], password="x")
+    assert (a["server"], a["port"], a["database"], a["user"], a["_ca"], a["_schema"]) == \
+        ("sql01.corp.example.com", "14330", "Cz", "cz_web", str(p.sql_ca), "cz2")
+    rule = sysagent.system_rules()["rules"][-1]
+    assert rule["host"] == "sql01.corp.example.com" and rule["ports"] == ["tcp/14330"]
+    nft, dns = render(sysagent.system_rules(), {"mode": "enforce", "rules": []}, upstreams=["10.0.0.2"])
+    assert "server=/sql01.corp.example.com/10.0.0.2" in dns and "tcp dport { 14330 }" in nft
+
+    p.appliance_env.write_text("CZ_SQL_SERVER=10.20.30.40\nCZ_SQL_USER=cz_owner\n")
+    assert sysagent.sql_settings(sysagent.read_env(p.appliance_env))["CZ_SQL_WEB_CS"] == \
+        "Server=tcp:10.20.30.40,1433;Database=Containerizer;User Id=cz_web"
+    assert sysagent.system_rules()["rules"][-1] == {"cidr": "10.20.30.40/32", "ports": ["tcp/1433"],
+                                                     "note": "results database (CZ_SQL_SERVER in appliance.env)"}
+
+
+@pytest.mark.parametrize("env, msg", [
+    ({"CZ_SQL_SERVER": "sql01.example.com"}, "CZ_SQL_USER"),
+    ({"CZ_SQL_SERVER": "sql01\\inst", "CZ_SQL_USER": "o"}, "named instances"),
+    ({"CZ_SQL_SERVER": "sql01.example.com,99999", "CZ_SQL_USER": "o"}, "port"),
+    ({"CZ_SQL_SERVER": "sql01.example.com", "CZ_SQL_USER": "o", "CZ_SQL_DATABASE": "a;b"}, "CZ_SQL_DATABASE"),
+    ({"CZ_SQL_SERVER": "sql01.example.com", "CZ_SQL_USER": "o", "CZ_SQL_LOGINS": "maybe"}, "CZ_SQL_LOGINS"),
+    ({"CZ_SQL_SERVER": "sql01.example.com", "CZ_SQL_USER": "o", "CZ_SQL_OPTIONS": "Password=x"}, "must not set"),
+    ({"CZ_SQL_SERVER": "sql01.example.com", "CZ_SQL_USER": "o", "CZ_SQL_OPTIONS": "App=$(id)"}, "quotes"),
+])
+def test_sql_env_rejects_bad_settings(paths, env, msg):
+    with pytest.raises(RuleError, match=msg.replace("(", r"\(")):
+        sysagent.sql_settings(env)
+
+
+def test_bad_database_setting_does_not_break_the_firewall(paths):
+    sysagent.P.appliance_env.write_text("CZ_SQL_SERVER=not a host\nCZ_SQL_USER=o\n")
+    assert len(sysagent.system_rules()["rules"]) == 2
+
+
+def test_local_sql_server_only_without_an_external_one():
+    unit = (APPLIANCE / "rootfs/usr/lib/systemd/system/containerizer-mssql.service").read_text()
+    assert "ConditionPathExists=!/run/containerizer/sql-external" in unit
+    for svc in ("web", "worker"):
+        u = (APPLIANCE / f"rootfs/usr/lib/systemd/system/containerizer-{svc}.service").read_text()
+        assert "EnvironmentFile=/run/containerizer/sql.env" in u and "127.0.0.1,1433" not in u
+    firstboot = (APPLIANCE / "rootfs/usr/lib/containerizer/bin/cz-firstboot").read_text()
+    assert "touch /run/containerizer/sql-external" in firstboot and "sysagent sql-env" in firstboot
+    defaults = sysagent.read_env(APPLIANCE / "rootfs/usr/lib/containerizer/defaults/appliance.env")
+    assert sysagent.sql_settings(defaults)["CZ_SQL_LOCAL"] == "yes"
+
+
 def test_llm_answer_cache_is_on_the_persistent_partition():
     # the default cache, next to the code, is the read-only OS image on the appliance
     worker = _unit("containerizer-worker.service")

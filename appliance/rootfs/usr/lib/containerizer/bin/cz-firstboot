@@ -76,6 +76,13 @@ echo "CONTAINERIZER_GRAFANA_URL=https://$host/grafana/d/containerizer-scans" >> 
 # worker only uses it for scans that have it ticked too
 case "${CZ_LLM_HEAVY:-false}" in true|yes|1|on) llm_heavy=true;; *) llm_heavy=false;; esac
 echo "CONTAINERIZER_LLM_HEAVY=$llm_heavy" > /run/containerizer/llm.env
+# Results database: SQL Server on the appliance, or the external one of CZ_SQL_SERVER (the local one does not
+# start then). /run/containerizer/sql.env has the connection strings of cz-db-init, the web UI and the worker.
+rm -f /run/containerizer/sql-external /run/containerizer/sql.env /run/containerizer/sql-ca.pem
+[ -z "${CZ_SQL_SERVER:-}" ] || touch /run/containerizer/sql-external
+/usr/lib/containerizer/venv/bin/python -m containerizer.sysagent sql-env ||
+  echo "containerizer: the results database settings (CZ_SQL_*) in $C/appliance.env are not valid;" \
+    "the web UI and the scan worker do not start until they are fixed and the appliance restarted" >&2
 chmod 0644 /run/containerizer/caddy.env /run/containerizer/web-url.env /run/containerizer/grafana-url.env \
   /run/containerizer/llm.env
 

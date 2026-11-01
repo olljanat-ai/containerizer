@@ -19,7 +19,8 @@ Environment=CONTAINERIZER_LAB_SERVICES=/var/lib/containerizer/system/lab-service
 Environment=CONTAINERIZER_DEV_DB_DIR=/var/lib/containerizer/devdb
 # LLM answers, so a repeated question costs nothing (the default, next to the code, is the read-only OS image)
 Environment=CONTAINERIZER_AI_CACHE=/var/lib/containerizer/worker/ai-cache
-Environment="CONTAINERIZER_SQL=Server=127.0.0.1,1433;Database=Containerizer;User Id=cz_scanner;TrustServerCertificate=yes"
+# results database (CZ_SQL_SCANNER_CS): the appliance's own or CZ_SQL_SERVER (cz-firstboot)
+EnvironmentFile=/run/containerizer/sql.env
 LoadCredential=sql-scanner:/etc/containerizer/secrets/cz-scanner
 LoadCredential=credential-key:/etc/containerizer/secrets/credential-key
 WorkingDirectory=/var/lib/containerizer/worker

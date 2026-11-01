@@ -29,6 +29,7 @@ Commands (also for an administrator on the console or over SSH):
     firewall show              print what `apply` would load
     sandbox-https sync         install the sandbox certificate in k3s (containerizer-sandbox runs it)
     health                     boot-assessment check (exit 1 when the appliance is not up)
+    sql-env                    write the results database settings from appliance.env (cz-firstboot)
 """
 from __future__ import annotations
 
@@ -80,6 +81,8 @@ class Paths:
     caddy_env: Path = Path("/run/containerizer/caddy.env")
     web_env: Path = Path("/etc/containerizer/web.env")
     kubeconfig: Path = Path("/etc/rancher/k3s/k3s.yaml")
+    sql_env: Path = Path("/run/containerizer/sql.env")
+    sql_ca: Path = Path("/run/containerizer/sql-ca.pem")
 
     def https(self, ext: str) -> Path:
         return self.https_dir / f"sandbox-https{ext}"
@@ -387,6 +390,25 @@ def load_rules(path: Path, system: bool = False) -> dict:
         return {"mode": "enforce", "rules": []}
 
 
+def system_rules() -> dict:
+    """The rules of the OS image, plus the external results database of appliance.env (CZ_SQL_SERVER): the
+    appliance cannot start its web UI without it, so it cannot wait for a rule on the Firewall page."""
+    rules = load_rules(P.system_rules, system=True)
+    try:
+        db = external_sql(read_env(P.appliance_env))
+    except RuleError as ex:
+        log(f"CZ_SQL_SERVER in {P.appliance_env} ignored by the firewall: {ex}")
+        db = None
+    if db:
+        host, port = db
+        try:
+            entry = {"cidr": str(ipaddress.ip_network(host)), "ports": [f"tcp/{port}"]}
+        except ValueError:
+            entry = {"host": normalize_host(host), "ports": [f"tcp/{port}"]}
+        rules["rules"].append(dict(entry, note="results database (CZ_SQL_SERVER in appliance.env)"))
+    return rules
+
+
 def port_key(ports: list[str]) -> str:
     return "_".join(p.replace("/", "") for p in ports)
 
@@ -521,7 +543,7 @@ table inet {TABLE} {{
 
 def apply_firewall(reload_dns: bool = True) -> dict:
     """Load the ruleset (checked first; one transaction) and the DNS allow-list."""
-    system = load_rules(P.system_rules, system=True)
+    system = system_rules()
     admin = load_rules(P.rules)
     nft, dns = render(system, admin)
     atomic_write(P.nft, nft, 0o600)
@@ -598,12 +620,97 @@ def egress_status(journal: str | None = None, history_lines: int = 50) -> dict:
         pass
     top = lambda d: [{"name": k, "count": v} for k, v in sorted(d.items(), key=lambda kv: (-kv[1], kv[0]))[:50]]
     try:
-        system = load_rules(P.system_rules, system=True)["rules"]
+        system = system_rules()["rules"]
     except (OSError, ValueError):
         system = []
     admin = load_rules(P.rules)
     return {"mode": admin["mode"], "rules": admin["rules"], "system_rules": system,
             "denied_names": top(names), "dropped": top(drops), "history": hist[::-1], "updated": now()}
+
+
+# =============================================================================== results database
+
+SQL_LOGINS = (("cz_scanner", "writer", "SCANNER"), ("cz_web", "reader", "WEB"), ("cz_admin", "admin", "ADMIN"))
+_SQL_SET = ("server", "datasource", "address", "addr", "networkaddress", "database", "initialcatalog",
+            "userid", "uid", "user", "username", "password", "pwd", "cafile", "servercertificate")
+_SQL_SAFE = re.compile(r'[^"$`\\\n\r]*')
+
+
+def external_sql(env: dict) -> tuple[str, int] | None:
+    """(host, port) of CZ_SQL_SERVER (host, host,port or tcp:host,port), None for the appliance's own."""
+    server = (env.get("CZ_SQL_SERVER") or "").strip()
+    if not server:
+        return None
+    host, _, port = re.sub(r"^tcp:", "", server, flags=re.I).partition(",")
+    host, port = host.strip().strip("[]"), (port.strip() or "1433")
+    if "\\" in host:
+        raise RuleError("named instances (host\\instance) are not supported: give the port, e.g. sql01,1433")
+    if not port.isdigit() or not 1 <= int(port) <= 65535:
+        raise RuleError(f"CZ_SQL_SERVER: not a port: {port!r}")
+    try:
+        host = str(ipaddress.ip_address(host))
+    except ValueError:
+        host = normalize_host(host)
+    return host, int(port)
+
+
+def sql_settings(env: dict) -> dict:
+    """The connection strings of cz-db-init, the web UI and the scan worker (written to /run/containerizer/sql.env
+    as CZ_SQL_*). Passwords are never in them: the services read them from /etc/containerizer/secrets."""
+    from .sqlstore import SqlError, parse_connection_string
+    db = external_sql(env)
+    if not db:
+        base = "Server=127.0.0.1,1433;Database=Containerizer;TrustServerCertificate=yes"
+        out = {"CZ_SQL_LOCAL": "yes", "CZ_SQL_LOGINS": "create", "CZ_SQL_OWNER_SECRET": "mssql-sa",
+               "CZ_SQL_OWNER_CS": base + ";User Id=sa",
+               "CZ_SQL_PROBE_CS": base.replace("Database=Containerizer", "Database=master") + ";User Id=sa"}
+    else:
+        host, port = db
+        database = (env.get("CZ_SQL_DATABASE") or "Containerizer").strip()
+        user = (env.get("CZ_SQL_USER") or "").strip()
+        logins = (env.get("CZ_SQL_LOGINS") or "create").strip().lower()
+        options = (env.get("CZ_SQL_OPTIONS") or "").strip().strip(";")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", database):
+            raise RuleError(f"CZ_SQL_DATABASE must be a plain identifier: {database!r}")
+        if not re.fullmatch(r"[^;={}\s]{1,128}", user):
+            raise RuleError("CZ_SQL_USER: the login that owns the database (db_owner) is required with CZ_SQL_SERVER")
+        if logins not in ("create", "existing"):
+            raise RuleError(f"CZ_SQL_LOGINS is create or existing: {logins!r}")
+        try:
+            keys = set(parse_connection_string(options))
+        except SqlError as ex:
+            raise RuleError(f"CZ_SQL_OPTIONS: {ex}") from None
+        if keys & set(_SQL_SET):
+            raise RuleError("CZ_SQL_OPTIONS must not set the server, database, user, password or CA file: "
+                            "use CZ_SQL_SERVER, CZ_SQL_DATABASE, CZ_SQL_USER, secrets/sql-owner and CZ_SQL_CA")
+        if env.get("CZ_SQL_CA"):
+            options += (";" if options else "") + f"CaFile={P.sql_ca}"
+        h = f"[{host}]" if ":" in host else host
+        base = f"Server=tcp:{h},{port};Database={database}" + (f";{options}" if options else "")
+        out = {"CZ_SQL_LOCAL": "no", "CZ_SQL_LOGINS": logins, "CZ_SQL_OWNER_SECRET": "sql-owner",
+               "CZ_SQL_OWNER_CS": f"{base};User Id={user}", "CZ_SQL_PROBE_CS": f"{base};User Id={user}"}
+    for login, _, name in SQL_LOGINS:
+        out[f"CZ_SQL_{name}_CS"] = f"{base};User Id={login}"
+    for k, v in out.items():
+        if not _SQL_SAFE.fullmatch(v):
+            raise RuleError(f"{k}: the database settings must not contain quotes, $, ` or backslashes")
+    return out
+
+
+def write_sql_env() -> dict:
+    """/run/containerizer/sql.env (and the CA file of CZ_SQL_CA, readable by the services) from appliance.env."""
+    env = read_env(P.appliance_env)
+    out = sql_settings(env)
+    if env.get("CZ_SQL_CA"):
+        try:
+            ca = Path(env["CZ_SQL_CA"]).read_text()
+        except OSError as ex:
+            raise RuleError(f"CZ_SQL_CA: {ex}") from None
+        if "-----BEGIN CERTIFICATE-----" not in ca:
+            raise RuleError(f"CZ_SQL_CA: {env['CZ_SQL_CA']} is not a PEM certificate")
+        atomic_write(P.sql_ca, ca, 0o644)
+    atomic_write(P.sql_env, "".join(f'{k}="{v}"\n' for k, v in out.items()), 0o644)
+    return out
 
 
 # =============================================================================== sandbox HTTPS
@@ -953,12 +1060,15 @@ def main(argv=None) -> int:
             apply_firewall(reload_dns="--no-dns-reload" not in argv)
             return 0
         if cmd == "firewall" and argv[1:2] == ["show"]:
-            nft, dns = render(load_rules(P.system_rules, system=True), load_rules(P.rules))
+            nft, dns = render(system_rules(), load_rules(P.rules))
             print(nft)
             print(dns)
             return 0
         if cmd == "health":
             return health()
+        if cmd == "sql-env":
+            write_sql_env()
+            return 0
         if cmd == "sandbox-https" and argv[1:2] == ["sync"]:
             print(sync_sandbox_https())
             return 0

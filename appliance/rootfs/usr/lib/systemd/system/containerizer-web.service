@@ -13,8 +13,8 @@ EnvironmentFile=-/run/containerizer/web-url.env
 EnvironmentFile=/etc/containerizer/web.env
 # LLM-heavy mode from appliance.env (cz-firstboot), off by default
 EnvironmentFile=-/run/containerizer/llm.env
-Environment="CONTAINERIZER_SQL=Server=127.0.0.1,1433;Database=Containerizer;User Id=cz_web;TrustServerCertificate=yes"
-Environment="CONTAINERIZER_ADMIN_SQL=Server=127.0.0.1,1433;Database=Containerizer;User Id=cz_admin;TrustServerCertificate=yes"
+# results database (CZ_SQL_WEB_CS, CZ_SQL_ADMIN_CS): the appliance's own or CZ_SQL_SERVER (cz-firstboot)
+EnvironmentFile=/run/containerizer/sql.env
 Environment=CONTAINERIZER_SYSTEM_DIR=/run/containerizer/system
 # dev database backups (Admin -> Dev databases), read by the scan worker
 Environment=CONTAINERIZER_DEV_DB_DIR=/var/lib/containerizer/devdb

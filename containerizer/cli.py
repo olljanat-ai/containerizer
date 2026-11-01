@@ -68,7 +68,7 @@ def _store(args, results, apps) -> int:
 
 def cmd_db(args) -> int:
     import os
-    from .sqlstore import SqlError, connect, create_database, create_login, import_json, init_schema
+    from .sqlstore import SqlError, add_member, connect, create_database, create_login, import_json, init_schema
     try:
         if args.db_cmd == "init":
             if args.create_database:
@@ -82,6 +82,9 @@ def cmd_db(args) -> int:
                     if not os.environ.get(env):
                         raise SqlError(f"--login {spec}: set the password in {env}")
                     create_login(conn, login, os.environ[env], role or "reader")
+                for spec in args.member or []:
+                    login, _, role = spec.partition(":")
+                    add_member(conn, login, role or "reader")
             finally:
                 conn.close()
             print("schema is up to date")
@@ -570,6 +573,9 @@ def main(argv=None) -> int:
     d.add_argument("--login", action="append", metavar="LOGIN:ROLE",
                    help="development only: create a SQL login in role writer, reader or admin; "
                         "password from CZ_<LOGIN>_PASSWORD")
+    d.add_argument("--member", action="append", metavar="LOGIN:ROLE",
+                   help="put an existing login (or contained user) in role writer, reader or admin; "
+                        "creates its database user when missing")
     d.set_defaults(fn=cmd_db)
     d = dsub.add_parser("import", help="load assessment.json files written by assess --out, analyze or the Action")
     d.add_argument("files", nargs="+")
