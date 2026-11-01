@@ -846,6 +846,15 @@ def _ws(s) -> str:
 
 
 SCRIPT_TAG = "<script src='/static/app.js'></script>"
+# The icon: a container, and the green check of a container-ready application (also docs/images/favicon.svg).
+FAVICON = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Containerizer</title>
+  <rect width="64" height="64" rx="14" fill="#1f4e9a"/>
+  <rect x="8" y="22" width="40" height="30" rx="3" fill="#fff"/>
+  <path d="M16 27v20M24 27v20M32 27v20M40 27v20" stroke="#1f4e9a" stroke-width="3.5" stroke-linecap="round"/>
+  <circle cx="47" cy="19" r="13" fill="#2e9e47" stroke="#1f4e9a" stroke-width="3"/>
+  <path d="M40.5 19.5l4.5 4.5 8.5-9" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>"""
 
 
 EXTERNAL_A = re.compile(r"<a\b(?P<pre>[^>]*?)\bhref=(?P<q>['\"])(?P<url>https?://[^'\"]*)(?P=q)(?P<post>[^>]*)>", re.I)
@@ -868,7 +877,7 @@ DEV_BANNER = ""
 def page(title: str, body: str, script: bool = False) -> str:
     return (f"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'><title>{e(title)}</title>"
-            f"<link rel='stylesheet' href='/static/app.css'><link rel='icon' href='data:,'></head>"
+            f"<link rel='stylesheet' href='/static/app.css'><link rel='icon' href='/static/favicon.svg' type='image/svg+xml'></head>"
             f"<body>{DEV_BANNER}<main>{external_links(body)}</main>{SCRIPT_TAG if script else ''}</body></html>")
 
 
@@ -1131,6 +1140,8 @@ def make_handler(connect, admin=None):
                     return self._send(200, CSS + SBOM_CSS, "text/css; charset=utf-8", head)
                 if u.path == "/static/app.js":
                     return self._send(200, JS, "text/javascript; charset=utf-8", head)
+                if u.path in ("/static/favicon.svg", "/favicon.ico"):
+                    return self._send(200, FAVICON, "image/svg+xml", head)
                 if u.path == "/healthz":
                     return self._send(200, "ok", "text/plain; charset=utf-8", head)
                 if admin and admin.api and admin.api.handles(u.path):

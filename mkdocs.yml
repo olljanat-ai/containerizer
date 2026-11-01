@@ -10,6 +10,8 @@ hooks:
 
 theme:
   name: material
+  favicon: images/favicon.svg
+  logo: images/favicon.svg
   features:
     - navigation.sections
     - navigation.tabs
