@@ -870,6 +870,21 @@ def main(argv=None) -> int:
     s.add_argument("--sql", help="with --queue: connection string of the results database (default CONTAINERIZER_SQL)")
     s.set_defaults(fn=cmd_refactor)
 
+    s = sub.add_parser("pipeline", help="container image build pipeline for the application's own repository: "
+                       "GitHub Actions, GitLab CI/CD or Azure Pipelines (docs/build-pipelines.md)")
+    s.add_argument("path", help="the application's folder (a git checkout: the provider comes from its remote, the "
+                   "patch is made for its HEAD commit)")
+    s.add_argument("--provider", choices=["github", "gitlab", "azure-devops"],
+                   help="where the code lives (default: from the git remote; not known: all three)")
+    s.add_argument("--registry", help="registry and path the images go to, as for the generated manifests "
+                   "(default: GitHub Container Registry, the GitLab project's registry, or a placeholder on Azure)")
+    s.add_argument("--sign", choices=["none", "keyless", "key"], default="none",
+                   help="sign the pushed images with cosign: keyless (GitHub/GitLab OIDC) or with a key (default none)")
+    s.add_argument("--out", help="where the files (pipeline/<provider>/...) or the .patch go (default: the current folder)")
+    s.add_argument("--patch", action="store_true", help="write a `git am` patch for the repository instead of the files, "
+                   "checked by applying it to a clean copy of the HEAD commit")
+    s.set_defaults(fn=lambda a: __import__("containerizer.pipelines", fromlist=["cli"]).cli(a))
+
     s = sub.add_parser("credentials", help="key pair that seals the source control tokens registered on the admin pages")
     csub = s.add_subparsers(dest="ccmd", required=True)
     c = csub.add_parser("keygen", help="make the worker's private key and the web UI's public key (docs/source-control.md)")

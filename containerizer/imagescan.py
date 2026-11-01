@@ -723,6 +723,8 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
               "lint": summarize(lint_all), "components": comps, "notes": notes}
     (out / "security.json").write_text(json.dumps(result, indent=2, default=str))
     (out / "SECURITY.md").write_text(security_markdown(result))
+    from .pipelines import refresh_dockerfiles
+    refresh_dockerfiles(out)            # the build pipeline's copies follow the gate's Dockerfile changes
     return result
 
 

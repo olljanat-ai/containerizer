@@ -115,6 +115,15 @@ running and deploying them in its own sandbox cluster.
 
     [:octicons-arrow-right-24: Refactoring patches](refactoring.md)
 
+-   :material-pipe:{ .lg .middle } **Build pipelines for your CI**
+
+    ---
+
+    GitHub Actions, GitLab CI/CD or Azure Pipelines, for where the code lives: build every component,
+    SBOM and scan it on pull requests, push and sign from the default branch, as a patch to `git am`.
+
+    [:octicons-arrow-right-24: Build pipelines](build-pipelines.md)
+
 -   :material-server-security:{ .lg .middle } **Runs in your network**
 
     ---

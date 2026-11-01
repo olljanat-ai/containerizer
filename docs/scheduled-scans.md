@@ -119,6 +119,7 @@ note in the change history. A disabled project overrides the settings of its rep
     gitops/argocd/           AppProject + Application for this app
     gitops/flux/             tenant.yaml, git/sync.yaml, oci/, image automation
     <component>/             Dockerfile, Dockerfile.dockerignore, k8s.yaml, plan.json, sbom.cdx.json
+    pipeline/<provider>/     the image build pipeline for the application's own repository (build-pipelines.md)
 sandbox/
   README.md namespaces.txt
   argocd/bootstrap.yaml      app-of-apps

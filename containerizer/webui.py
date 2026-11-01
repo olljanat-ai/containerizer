@@ -743,9 +743,15 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 {_idp_section(app.get("idp") or [])}
 {_refactoring(app, refactor)}
 <h2>What needs to change, and why</h2>{''.join(details)}
+{_build_pipeline(app, refactor)}
 <h2>History</h2><p class='muted small'><a href='/trends'>Trends of all applications</a></p><table class='narrow'><thead><tr><th>Assessed</th><th>Rating</th><th class='num'>Readiness</th>
 </tr></thead><tbody>{hist}</tbody></table>
 <footer>{legend()}</footer>""", script=any(m.get("AgentPrompt") for m in migs.values()))
+
+
+def _build_pipeline(app: dict, ctx: dict | None) -> str:
+    from .pipelineui import section
+    return section(app, ctx)
 
 
 PLAN_OUTCOME_TEXT = {"linux-container": "Can move to a Linux container",
@@ -1295,6 +1301,8 @@ def make_handler(connect, admin=None):
                                 ctx["csrf"] = admin._csrf(s)
                                 if app.get("Rating") == "B":
                                     ctx["estimates"] = refactor_estimates(admin, app)
+                            from . import pipelineui     # the Build pipeline box: its files for who may download
+                            ctx["pipeline"] = pipelineui.page_data(admin, s, app, parse_qs(u.query))
                             return self._send(200, render_application(app, nav, ctx), head=head, forms=bool(nav),
                                               extra=cookie or None)
                         bu = parse_qs(u.query).get("bu", [None])[0]

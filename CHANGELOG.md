@@ -7,6 +7,29 @@ qcow2 and VHD images as release assets.
 
 ## Unreleased
 
+### Build pipelines
+- Container image build pipelines for the application's own repository (docs/build-pipelines.md), for the
+  provider its code lives on: GitHub Actions (`.github/workflows/containerizer-images.yml`), GitLab CI/CD
+  (`.gitlab-ci.yml`, or `containerizer.gitlab-ci.yml` to include when the repository has one) or Azure
+  Pipelines (`azure-pipelines.containerizer.yml`), with the generated Dockerfiles under
+  `containerizer/<component>/` (and `Dockerfile.dockerignore`, the context filter BuildKit reads next to
+  them). The provider comes from the organization scan (also GitHub Enterprise, GitLab self-managed and
+  Azure DevOps Server) or the repository URL; when neither tells, all three are offered. Deterministic, no
+  LLM.
+- Pull/merge requests build each changed component (monorepos: one job per component, rebuilt when its
+  project folder, referenced projects, shared build files or Dockerfile change), make an SBOM (Syft) and
+  scan it (Trivy, failing on the security gate's severities), and push nothing. The default branch also
+  pushes `<registry>/<app>/<component>` tagged `1.<yyyymmdd>.<hhmm>` (the scans' semver scheme, which the
+  generated Flux / Argo CD image automation follows into the sandbox) and `sha-<commit>`, optionally signed
+  with cosign (keyless with GitHub/GitLab OIDC, or with a key) with the SBOM attested. Least privilege:
+  per-job GitHub `permissions`, protected-branch-only pushes on GitLab, a service connection on Azure; the
+  scanners pinned by version and digest, GitHub actions by commit SHA, cosign by checksum.
+- Delivery: `pipeline/<provider>/` in the generated output (organization scans: the output repository), the
+  results page's **Build pipeline** box (administrators, operators and the application's product owners:
+  the files, Download .patch for `git am`, a `.tar.gz`, how to apply and what to set up; everyone else sees
+  that it exists), and `containerizer pipeline <app-path> [--provider] [--registry] [--sign] [--out]
+  [--patch]`. Assessments record what the pipeline is made from (assessment.json `build_pipeline`).
+
 ### Web UI
 - API keys for the JSON API: administrators make them on **Admin → API** (read only or full, optional
   expiry), shown once and stored as SHA-256 only, revocable, last use recorded; the page explains the API

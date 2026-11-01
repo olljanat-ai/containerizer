@@ -52,6 +52,7 @@ nav:
       - Organization scans: scheduled-scans.md
       - Platform migrations: platform-migration.md
       - Refactoring patches: refactoring.md
+      - Build pipelines: build-pipelines.md
       - SBOMs, licences and CVEs: sbom.md
       - Rule review: rule-review.md
   - Administration:

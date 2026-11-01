@@ -224,6 +224,9 @@ class Admin:
         if not parts:
             return redirect(f"/admin/{tabs[0][0]}")
         kind = parts[0]
+        if kind == "build-pipeline":                 # the results page's Build pipeline downloads: no tab of its own
+            from . import pipelineui
+            return pipelineui.route(self, conn, s, a, method, parts, q)
         if kind not in {k for k, _ in tabs}:
             known = kind in ("applications", "products", "business-units", "audit", "access", "scans", "repositories",
                              "llm-queue", "refactoring", "api",
