@@ -1697,7 +1697,8 @@ SELECT j.JobId, COALESCE(j.ApplicationId, a.ApplicationId) AS ApplicationId, j.A
                  THEN JSON_VALUE(j.Result, '$$.status')
             WHEN j.Status = N'skipped' THEN N'cancelled'
             ELSE N'failed' END AS Status,
-       j.Summary, JSON_VALUE(j.Payload, '$$.commit') AS SourceCommit, j.QueuedAt, j.StartedAt, j.FinishedAt
+       j.Summary, JSON_VALUE(j.Payload, '$$.commit') AS SourceCommit, j.QueuedAt, j.StartedAt, j.FinishedAt,
+       JSON_VALUE(j.Result, '$$.verification[0].status') AS VerifyStatus
 FROM [${schema}].LlmJob j
 LEFT JOIN [${schema}].Application a ON a.SourceKey = j.SourceKey
 WHERE j.Kind = N'refactor';

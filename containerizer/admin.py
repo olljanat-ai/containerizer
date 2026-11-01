@@ -288,6 +288,8 @@ class Admin:
         if (a.admin or a.operator) and hasattr(self, "route_scans"):     # scheduled organization scans
             tabs += [("scans", "Organization scans"), ("repositories", "Repositories"), ("llm-queue", "LLM queue"),
                      ("refactoring", "Refactoring")]
+        elif a.owner and hasattr(self, "route_scans"):                  # product owners: their applications' patches
+            tabs += [("refactoring", "Refactoring")]
         if a.admin and hasattr(self, "route_scans"):                     # tokens of the organizations (admin_credentials.py)
             tabs += [("source-control", "Source control & LLM")]
         if self.devdb is not None and (a.admin or a.operator):           # dev database backups (admin_devdb.py)

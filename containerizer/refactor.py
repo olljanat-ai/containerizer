@@ -185,7 +185,65 @@ def eligible_components(doc: dict) -> list[dict]:
     return out
 
 
-GOALS = ("fix", "stateless")
+GOALS = ("fix", "stateless", "repair")
+
+# A compiler error in a build log: /src/<path>(line,col): error CODE: message [project]
+BUILD_ERROR_RE = re.compile(r"(?:^|\s)/src/(?P<file>[^\s(:]+\.(?:cs|vb|fs|cshtml|razor|csproj|vbproj|fsproj))"
+                            r"\((?P<line>\d+)(?:,\d+)?\): error (?P<code>[A-Z]+\d+): (?P<msg>[^\[\n]+)")
+REPAIR_GUIDANCE = """An earlier change (the patch below) was made to fix the findings, but the result does not build
+(or does not run). Fix the errors listed for this file so that the code builds and runs, and keep the intent of
+the earlier change. Often another file of the patch changed something this file uses (a constructor, a method, a
+setting): adapt this file to it, do not undo the earlier change."""
+
+
+def build_errors(log: str) -> list[dict]:
+    """The compiler errors of a build log, one per file and line (the build context's /src is the app's root)."""
+    seen, out = set(), []
+    for m in BUILD_ERROR_RE.finditer(log or ""):
+        rel = safe_rel(m["file"])
+        key = (rel, m["line"], m["code"])
+        if rel and key not in seen:
+            seen.add(key)
+            out.append({"file": rel, "line": int(m["line"]), "code": m["code"], "text": " ".join(m["msg"].split())[:300]})
+    return out[:40]
+
+
+def repair_payload(payload: dict, result: dict, base_job: int) -> dict:
+    """An order that repairs the patch of an earlier one whose build or run failed: the same source and
+    commit, the earlier patch applied first, and the errors of its verification."""
+    if not result.get("patch"):
+        raise RefactorError("the earlier order has no patch to repair")
+    logs = "\n".join(str(v.get("log_tail") or v.get("detail") or "") for v in result.get("verification") or [])
+    errors = build_errors(logs)
+    keep = ("version", "app", "rating", "application_id", "assessment_id", "source_key", "commit", "source",
+            "component", "components", "verify")
+    return {**{k: payload.get(k) for k in keep}, "goal": "repair", "base_job": int(base_job),
+            "base_patch": result["patch"], "base_status": result.get("status"),
+            "base_subject": next((l[len("Subject: [PATCH] "):] for l in result["patch"].splitlines()
+                                  if l.startswith("Subject: [PATCH] ")), ""),
+            "errors": errors, "log_tail": logs[-4000:], "tasks": [], "skipped": [], "include_config": False,
+            "max_calls": max(4, len({e["file"] for e in errors}) or 4)}
+
+
+def repair_tasks(payload: dict, app_root: Path, changed: list[str]) -> list[dict]:
+    """One task per file with compiler errors; without any (it built, but did not run), the patch's files."""
+    comp = (payload.get("components") or [{}])[0]
+    by_file: dict[str, list[dict]] = {}
+    for err in payload.get("errors") or []:
+        if (app_root / err["file"]).is_file():
+            by_file.setdefault(err["file"], []).append(err)
+    if not by_file:
+        tail = " ".join(str(payload.get("log_tail") or "").split())[-600:]
+        by_file = {f: [{"file": f, "line": 0, "code": "run", "text": "the patched component does not run: " + tail}]
+                   for f in changed if (app_root / f).is_file()}
+    return [{"file": f, "component": comp.get("name"), "project": comp.get("project"), "findings": [{
+        "rule": "build-error", "severity": "refactor",
+        "title": "; ".join(f"{x['code']}: {x['text']}" for x in errs)[:300],
+        "why": "The patched code does not build (or run).", "fix": "Fix these errors; keep the earlier change.",
+        "component": comp.get("name"),
+        "evidence": [{"file": f, "line": x["line"] or None, "text": f"{x['code']}: {x['text']}"} for x in errs[:6]]}]}
+        for f, errs in by_file.items()]
+
 
 
 def stateful_components(doc: dict) -> list[dict]:
@@ -422,6 +480,11 @@ def task_prompt(payload: dict, task: dict, app_root: Path) -> tuple[str, list[st
             head.append(f"   Evidence: line {e['line']}: {e['text']}" if e["line"] else f"   Evidence: {e['text'] or e['file']}")
     if payload.get("goal") == "stateless":
         head += ["", STATE_GUIDANCE]
+    if payload.get("goal") == "repair":
+        diff = str(payload.get("base_patch") or "")
+        diff = diff[diff.find("diff --git"):] if "diff --git" in diff else diff
+        head += ["", REPAIR_GUIDANCE, "", "The earlier patch (already applied to the file below):",
+                 "```diff", diff[:12000] + ("\n... (cut)" if len(diff) > 12000 else ""), "```"]
     head += ["", INSTRUCTIONS, ""]
     shown = [task["file"]]
     parts = []
@@ -869,6 +932,24 @@ def verification_status(applies: bool, changes: int, verify: list[dict] | None) 
     return "applies-only"
 
 
+# What a patch that applies but is not verified needs, by its verification (what the pages show)
+APPLIES_TEXT = {"build": ("Does not build", "The patch applies to the commit, but the component does not compile "
+                          "with it: the errors are under Verification. Fix it with the LLM, or by hand."),
+                "run": ("Does not start", "The patch applies and the component builds, but its container does not "
+                        "start or answer: the log is under Verification. Fix it with the LLM, or by hand."),
+                "none": ("Not built", "The patch applies to the commit, but it was not built and run (verification "
+                         "was off, or Docker was not available): build and test it yourself.")}
+
+
+def status_label(status: str, verify_statuses=()) -> tuple[str, str]:
+    """(label, explanation) of an order's status; 'applies-only' says what went wrong."""
+    if status != "applies-only":
+        return STATUS_TEXT.get(status, status), ""
+    vs = [v for v in verify_statuses if v]
+    kind = "build" if "build-failed" in vs else "run" if "run-failed" in vs else "none"
+    return APPLIES_TEXT[kind]
+
+
 def order_status(job_status: str, summary: str | None = None, patch_status: str | None = None) -> str:
     """The status of an order from its LLM queue job: queued, generating, verifying, verified, applies-only,
     failed, cancelled."""
@@ -986,6 +1067,12 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
     tasks = list(payload["tasks"])
     if payload.get("goal") == "stateless":
         tasks += state_tasks(payload, app_root)
+    if payload.get("goal") == "repair":
+        ok, alog = apply_patch(repo, str(payload.get("base_patch") or "").encode("utf-8"))
+        if not ok:
+            raise RefactorError("the earlier patch no longer applies to the commit: " + alog[-400:])
+        changed = [d["file"] for d in diffstat(str(payload.get("base_patch") or ""))]
+        tasks += repair_tasks(payload, app_root, changed)
     if not tasks:
         raise RefactorError("nothing to change: no file of the component uses an embedded database or names a finding")
     limit = int(MAX_CALLS if payload.get("max_calls") is None else payload["max_calls"])
@@ -1068,6 +1155,11 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
             "assessment of commit " + str(payload.get("commit") or "?")[:12] + ". Review them before you merge.\n\n"
             + "\n".join(f"- {r['rule']} in {r['file']} ({r['component']}): {r['title']}" for r in fixed)
             + ("\n\nNotes:\n" + "\n".join(f"- {x}" for x in notes) if notes else "") + "\n")
+    if payload.get("goal") == "repair" and changes_all:
+        # one patch with the earlier change and its repair, for the assessed commit
+        subject = (payload.get("base_subject") or subject.replace("build-error", "refactoring")).strip() + " (repaired)"
+        body = body.replace("Code changes generated", f"Repairs order #{payload.get('base_job')}: code changes generated", 1)
+        git(["reset", "--soft", str(payload.get("commit"))], cwd=repo)
     patch = make_patch(repo, subject, body) if fixed or changes_all else None
     if patch is None:
         result["reason"] = "no usable edits: " + ("; ".join(f"{r['rule']}: {r['reason']}" for r in findings if r["reason"])[:800]
@@ -1111,7 +1203,7 @@ def summary(result: dict) -> str:
     fx = [f for f in result.get("findings") or [] if f.get("status") == "fixed"]
     n = len([f for f in result.get("findings") or [] if f.get("status") != "skipped"])
     left = len(result.get("findings") or []) - n
-    st = STATUS_TEXT.get(result.get("status"), result.get("status") or "?").lower()
+    st = status_label(result.get("status") or "?", [v.get("status") for v in result.get("verification") or []])[0].lower()
     if result.get("status") == "failed":
         return f"{st}: {result.get('reason') or 'no patch'}"[:400]
     files = len(result.get("files") or [])

@@ -110,7 +110,7 @@ def load_refactor_orders(conn, app_id: int) -> list[dict]:
     """The application's refactoring orders, newest first (empty before `db init` added them: schema 20)."""
     try:
         return _rows(conn, "SELECT TOP (20) JobId, Component, ProjectPath, Status, Summary, SourceCommit, QueuedAt, "
-                           "FinishedAt FROM cz.vRefactorOrder WHERE ApplicationId = %s ORDER BY JobId DESC", (app_id,))
+                           "FinishedAt, VerifyStatus FROM cz.vRefactorOrder WHERE ApplicationId = %s ORDER BY JobId DESC", (app_id,))
     except Exception:
         try:
             conn.rollback()
@@ -136,6 +136,7 @@ REFACTOR_NOTICES = {
     "no-commit": ("bad", "The assessment recorded no commit: scan the repository again, then request the patch."),
     "no-source": ("bad", "The source of this application is not kept on this machine (no organization scan here has "
                          "its repository). Run `containerizer refactor` on a checkout instead."),
+    "not-yours": ("bad", "Product owners can request patches for the applications of their own products only."),
     "nothing": ("info", "Nothing to change: no finding of this application (or component) can be fixed in code."),
     "failed": ("bad", "The refactoring could not be requested. The reason is in the web UI's log."),
 }
@@ -218,8 +219,12 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
         if staff:
             what = f"<a href='/admin/refactoring/{int(o['JobId'])}'>{what}</a>"
         when = _date(o.get("FinishedAt") or o.get("QueuedAt"))
-        rows.append(f"<tr><td>{what}</td><td><span class='st {REFACTOR_STATUS_CSS.get(st, '')}'>"
-                    f"{e(STATUS_TEXT.get(st, st))}</span></td><td class='small'>{e(o.get('Summary') or '')}</td>"
+        from .refactor import status_label
+        label, why = status_label(st, [o.get("VerifyStatus")])
+        tip = f" title='{e(why)}'" if why else ""
+        rows.append(f"<tr><td>{what}</td><td><span class='st {REFACTOR_STATUS_CSS.get(st, '')}'{tip}>"
+                    f"{e(label)}</span></td><td class='small'>{e(o.get('Summary') or '')}"
+                    + (f"<div class='muted'>{e(why)}</div>" if why else "") + "</td>"
                     f"<td class='small nowrap'>{when}</td></tr>")
     out = ["<section class='card refactor' id='refactoring'><h2>Refactoring</h2>" + (ctx or {}).get("notice", "") +
            "<p class='muted small'>A refactoring patch has the LLM make the targeted code changes this application needs "
@@ -1114,7 +1119,7 @@ def make_handler(connect, admin=None):
                                                   head=head)
                             ctx = {"signin": bool(admin), "notice": refactor_notice(parse_qs(u.query))}
                             s = admin.session(self.headers) if admin else None
-                            if s and (s.admin or s.operator):      # may order a refactoring patch
+                            if s and (s.admin or s.operator or s.scopes):   # may order (product owners: their products)
                                 ctx["csrf"] = admin._csrf(s)
                             return self._send(200, render_application(app, nav, ctx), head=head, forms=bool(nav))
                         bu = parse_qs(u.query).get("bu", [None])[0]
