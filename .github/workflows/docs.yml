@@ -1,6 +1,6 @@
 name: docs
 
-# Builds the documentation site (README + docs/) with MkDocs Material. Pull requests only check that it
+# Builds the documentation site (docs/) with MkDocs Material. Pull requests only check that it
 # builds; pushes to main publish it to the gh-pages branch, which GitHub Pages serves.
 on:
   pull_request:

@@ -81,7 +81,7 @@ of the SPDX License List.
 
 ## CVEs per package
 
-The gate's image scan (Trivy and Grype, merged; see [Security gate](../README.md#security-gate))
+The gate's image scan (Trivy and Grype, merged; see [Security gate](overview.md#security-gate))
 reports each finding with its package URL. Findings are matched to SBOM packages by package URL
 (ignoring qualifiers such as `distro=`), else by name and version. A vulnerable package the SBOM does
 not list is added as its own row (*found by the vulnerability scan*), so no CVE is dropped. The SBOM
