@@ -176,11 +176,14 @@ def _rev_of(s: str | None) -> str:
     return m.group(0) if m else ""
 
 
-def deployed_apps(root: Path) -> list[dict]:
-    """Every app in the output repository with its components and their workloads (from k8s.yaml)."""
+def deployed_apps(root: Path, only: set | list | None = None) -> list[dict]:
+    """Every app in the output repository with its components and their workloads (from k8s.yaml); with
+    `only`, the apps of those namespaces (containerizer.json "app")."""
     from .org import _apps_in
     apps = []
     for rel, d, doc in _apps_in(root):
+        if only is not None and doc.get("app") not in only:
+            continue
         comps = []
         for c in doc.get("components") or []:
             folder = d / (c.get("folder") or "")
@@ -586,6 +589,9 @@ class SandboxOptions:
     ingress_address: str = ""         # host:port to open the public URLs at (default: their DNS name)
     ingress_ca: str = ""              # extra CA file for the URL check
     url_attempts: int = 3             # a new Ingress takes a moment to be routed
+    apps: list | None = None          # only these namespaces (a "Make it A" variant); None: every deployed app
+    wait_forbidden: bool = False      # access not granted yet counts as waiting (the appliance grants the read-only
+                                      # verifier its Role in a new namespace within minutes: cz-sandbox)
     llm: bool = False                 # LLM-heavy mode: the LLM diagnoses what the rules could not, and proposes
     model: str | None = None          # a manifest fix (replatform.llm_sandbox_diagnosis); off by default
 
@@ -614,7 +620,7 @@ def verify_sandbox(root: Path, o: SandboxOptions | None = None, kube: Kube | Non
         o.ingress_address, o.ingress_ca = st.get("edge") or "", st.get("cert_file") or ""
     root = Path(root)
     kube = kube or Kube(o.kube)
-    apps = deployed_apps(root)
+    apps = deployed_apps(root, o.apps)
     ours = o.revision
     if not ours and (root / ".git").exists():
         ours = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
@@ -645,8 +651,9 @@ def verify_sandbox(root: Path, o: SandboxOptions | None = None, kube: Kube | Non
             except KubeError as e:
                 if e.kind == "unreachable":
                     state[a["app"]] = ("", "error", f"cluster unreachable: {e}")
-                elif e.kind == "not-found":                 # maybe not created yet: keep waiting
-                    state[a["app"]] = ("", "waiting", f"no Argo CD Application or Flux Kustomization named {a['app']} yet")
+                elif e.kind == "not-found" or (e.kind == "forbidden" and o.wait_forbidden):   # not there yet: wait
+                    state[a["app"]] = ("", "waiting", f"no Argo CD Application or Flux Kustomization named {a['app']} yet"
+                                       if e.kind == "not-found" else f"{e} yet")
                 else:
                     state[a["app"]] = ("", "error", str(e))
         if all(s[1] != "waiting" for s in state.values()) or clock() >= deadline:

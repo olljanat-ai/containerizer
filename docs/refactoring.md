@@ -129,6 +129,87 @@ yourself.
 ![How to apply a refactoring patch: git checkout, git am, review, test and open the pull request yourself](images/admin-refactoring-apply.png#only-light){ .cz-shot }
 ![How to apply a refactoring patch: git checkout, git am, review, test and open the pull request yourself](images/admin-refactoring-apply-dark.png#only-dark){ .cz-shot }
 
+## Make it A
+
+**Make it A** is one order for everything that keeps a B-rated application from A: its refactor findings,
+its configuration findings that name a file, and, for the server components that keep their own data, the
+move of that data to SQL Server (the same guidance as **Make it stateless**). It runs on request only:
+**Make it A** in the Refactoring box of the results page (operators, administrators and the application's
+product owners, with the queue's estimate), or **Make all B apps A** for administrators (below). A scan
+never orders one by itself.
+
+The order is one `refactor` job (goal `rating-a`) that loops in the queue runner:
+
+1. **Generate.** The LLM is asked about every file with findings, as for a refactoring patch; the files of
+   a stateful component that open its embedded database get the stateless guidance.
+2. **Apply and verify.** Everything changed so far becomes one commit for the assessed commit; it is applied
+   to a clean copy, and the changed components are built and run.
+3. **Repair.** When a build or run fails, a repair round in the same job gives the LLM the compiler errors
+   (or the run log), the files they are in and the patch, and the combined patch is verified again: at most
+   **2 repair rounds** a pass.
+4. **Assess again.** The patched copy is assessed with every rule. A is reached when it rates A and builds
+   and runs.
+5. **Second pass.** Still B with findings left (still found by the rules, or a component that still keeps
+   its data) and LLM calls left: one more pass on what remains, then steps 2 to 4 again. At most **2 passes**.
+
+Every LLM call of the job, retries and repair rounds included, counts against its limit of **16 calls**;
+files beyond it are *not attempted*. The order page shows each pass and round (files, calls, changes, the
+build and run, the rating), the rating before and after (`B → A: Rating A reached`, or `B → B: 4 of 6 fixed;
+still keeps data in Api (Embedded file database)`), the result per finding as the rules see the final patched
+copy, and the one patch to download, as for any refactoring patch. Its statuses are the same (verified,
+does not build, does not start, ...).
+
+**Estimates.** The button and the bulk page show the queue's estimate of the first pass (the size of what
+it sends, a typical file for each stateful component, at the speed the queue learned); repair rounds and a
+second pass, when needed, take more, up to the limit of 16 calls.
+
+**Make all B apps A** (Admin → Refactoring, administrators): a confirmation page lists every B-rated
+application with what changes, its estimate, and whether it will wait for approval under the
+LLM queue's approval policy (Admin → LLM queue), with the total; **Queue** places one order per
+application (an application that already has the same order waiting is left alone). Nothing is queued by
+opening the page.
+
+## The sandbox variant
+
+A Make it A order whose patched copy rates A and is verified is **deployed to the sandbox beside the
+original**, never in its place, the way an [organization scan](scheduled-scans.md) deploys (the same code):
+
+- **Its own name.** The patched copy's folder is `<app>-refactor-<job>` (a DNS label of at most 63
+  characters), and everything that an organization scan derives from an application's name derives from it:
+  the **namespace** `<app>-refactor-<job>`, the images `<registry>/<app>-refactor-<job>/<component>`, the
+  Ingress hosts, the sandbox IdP clients and the lab services, so the variant shares nothing with the
+  original or with another order. The image tag is `1.<yyyymmdd>.<hhmm>-refactor.<job>`, a semver pre-release
+  that the original's image automation never picks up.
+- **Where.** A sibling folder of the original in the output repository of the organization scan that
+  assessed the application, `<Organization>/<Project>/<Repository>-refactor-<job>/`, with `sandbox/`
+  regenerated, in one commit; Flux (or Argo CD) deploys it from there. The registry, output repository and
+  branch, image pull secret, security gate and *Push images* are that scan's; the output repository's write
+  token is its registered credential. An application that no organization scan with an output repository
+  assessed here is not deployed, and the order page says so (`no output repository: ...`).
+- **Data.** Only the components that rate A are deployed, with no uploaded dev database: the variant gets
+  a **new, empty lab database** of its own (when the [lab services](lab-services.md) are on), as a new
+  application would.
+- **Health.** The runner reads the variant's namespace back with a read-only kubeconfig
+  (`CONTAINERIZER_SANDBOX_KUBECONFIG`, optional `CONTAINERIZER_SANDBOX_CONTEXT`; on the appliance the
+  verifier account of `sandbox/verify-rbac.yaml`, below) and records it in the order: **running in the
+  sandbox**, **failing in the sandbox**, or *deployed, health not checked* without a kubeconfig. The
+  original's sandbox results on its results page stay as they are: the variant is not a sandbox check of the
+  application and teaches the learning loop nothing.
+- **Expiry and removal.** A variant expires after **7 days** (`CONTAINERIZER_SANDBOX_VARIANT_DAYS`). **Remove
+  from the sandbox** on the order page (administrators, operators, the application's product owners) asks for
+  its removal; the queue runner takes expired and requested variants out of the output repository within a few
+  minutes (the folder deleted, `sandbox/` regenerated, one commit: the cluster removes the namespace) and records
+  it: **removed** or **expired**. The patch stays available.
+
+The results page shows the variant's state next to the order, with its URL (**open ↗**) while it runs.
+
+**Images without a registry.** When the organization scan's *Push images* is off and the sandbox cluster
+shares the image builder's Docker image store (a lab: k3s with `--docker` on the machine that builds), set
+`CONTAINERIZER_LOCAL_IMAGES=1` for the scan worker and the LLM queue runner: each image is then tagged with its
+deploy reference (`docker tag`, no push) and the manifests run it with `imagePullPolicy: IfNotPresent`. Such
+images have no digest, signature or SBOM attestation (they need a registry). Without the setting, nothing
+changes: with *Push images* on the images are pushed (the appliance pushes to its own registry).
+
 ## The command line
 
 ```sh
@@ -144,6 +225,10 @@ to `--out`. The application folder must be a git checkout for `git am` to work: 
 `git apply -p1` in that folder. With `--queue` the order goes to the LLM queue in SQL Server (`--sql` or
 `CONTAINERIZER_SQL`), or to `llm-queue.json` in `--out`, which `containerizer llm-queue --file` works through.
 
+`--goal rating-a` runs [Make it A](#make-it-a) on the checkout (the loop, the repair rounds and the second
+pass; `--max-calls` is then the limit of the whole order, 16 by default); the command line never deploys a
+sandbox variant.
+
 ## On the appliance
 
 The LLM queue runner (`containerizer-llm-queue`) carries out the orders. For them it
@@ -157,6 +242,15 @@ The LLM queue runner (`containerizer-llm-queue`) carries out the orders. For the
   group is root-equivalent: the runner builds the same repositories' code in the same hardened containers
   as the scan worker, which is why the appliance is a dedicated machine with an egress allow-list
   ([appliance](appliance.md)). Without Docker the patches are *applies only*.
+- for [sandbox variants](#the-sandbox-variant): clones the scan's output repository into its scratch space
+  with the registered write token, pushes the variant's images to the appliance's registry, reads the lab
+  services that are on, and reads the variant's health with the kubeconfig of the read-only verifier
+  account, `/run/containerizer/sandbox-verifier.kubeconfig`. `cz-sandbox` (root, every 2 minutes) gives that
+  account its Role in every namespace Containerizer generated (`sandbox/verify-rbac.yaml`: workloads, pods,
+  their logs and events, the namespace's Flux Kustomization; no Secrets, nothing cluster-wide) and writes the
+  kubeconfig with a 24-hour token (`root:containerizer`, 0640). A new variant's namespace gets its Role at the
+  next run of `cz-sandbox`; the runner waits for it within its health check (15 minutes,
+  `CONTAINERIZER_SANDBOX_VARIANT_TIMEOUT`).
 
 ## Limits
 
@@ -164,8 +258,8 @@ The LLM queue runner (`containerizer-llm-queue`) carries out the orders. For the
   start-up probe do not run your tests. Review every change.
 - **APIs the component cannot use.** Models suggest APIs of newer frameworks than the component targets
   (on a `net6.0` component, Qwen3-Coder used `X509CertificateLoader`, which is .NET 9 and later). The build
-  catches it: such a patch is *applies only*, with the compiler error in the log tail. Containerizer does
-  not ask the LLM again with the build error.
+  catches it: such a patch is *applies only*, with the compiler error in the log tail. **Fix it with the
+  LLM** on the order page asks again with the errors; Make it A does so by itself (at most 2 rounds a pass).
 - **Speed.** On the built-in CPU LLM each file takes five minutes or more, and the verification build takes
   minutes too; an order of a few files takes most of an hour. The queue runs it when its settings allow.
 - **Small context.** The LLM sees one file (or part of a large one) and the component's settings, not the
@@ -174,3 +268,8 @@ The LLM queue runner (`containerizer-llm-queue`) carries out the orders. For the
 - **What is verified** is the component's container as Containerizer generates it, with the
   production services it needs missing (a smoke test in Development mode when they are), not the
   application in its real environment.
+- **Make it A** stops at its limits (16 LLM calls, 2 passes, 2 repair rounds a pass): an application whose
+  findings need more stays B, and the order says what is left. The rating after is the rules' rating of the
+  patched copy and the build and run of its components, not a test of the application.
+- **A sandbox variant** runs the patched code with a new, empty lab database: it shows that the application
+  starts and answers as a stateless container, not that its data or its integrations work.

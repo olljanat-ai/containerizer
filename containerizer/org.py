@@ -94,6 +94,7 @@ class OrgOptions:
     kube_context: str | None = None
     gitops: str = "auto"                # auto | argocd | flux
     sandbox_timeout: int = 900
+    local_images: bool | None = None    # the cluster shares the builder's image store (local_images); None: the env
     lab: set | None = None              # lab services that are on (labservices.py); None: from CONTAINERIZER_LAB_SERVICES
     only_projects: set | None = None    # "Scan now" on the admin pages: only these projects ...
     only_repos: set | None = None       # ... and these repositories (project/name); None: every repository
@@ -218,7 +219,7 @@ def sbom_entry(g: dict | None, folder: str, cdir: Path, local: str, c, o: OrgOpt
         sb = next((x.get("sbom") for x in g["components"] if x["component"] == folder), None)
         return sb if sb and not sb.get("error") else None
     from .sbom import component_sbom, config
-    if not o.push_images or not config().get("enabled", True):
+    if not (o.push_images or local_images(o)) or not config().get("enabled", True):
         return None
     sb = component_sbom(local, cdir, [], (c.name, c.project.name))
     return None if sb.get("error") else sb
@@ -864,114 +865,162 @@ def _process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, wor
         if o.sql or os.environ.get("CONTAINERIZER_SQL"):
             from .sqlstore import store_results
             assessment_id = store_results(o.sql, [a], [src])[0]
-        keep, res.excluded = select_components(a, o.verify)
-        lab = _lab_services(o)
-        lab_report: dict = {}
-        dd, dd_row = (_dev_database(o, res, a, keep, work, reg, tag, lab) if keep else (None, None))
-        gen = work / "gen" / app
-        names = {k8s_name(c.name): c for c in keep}
-        g = None
-        while keep:
-            if gen.exists():
-                shutil.rmtree(gen)
-            fa = dataclasses.replace(a, components=keep)
-            if not o.gate:
-                generate_app(fa, gen, registry=o.registry, pin=o.pin, gitops=gitops, tag=tag, devdb=dd, lab=lab,
-                             lab_report=lab_report)
-                break
-            from .harden import security
-            from .imagescan import gate_app
-            g = gate_app(fa, gen, build=True, scan=True, run=True, registry=o.registry, pin=o.pin, gitops=gitops,
-                         tag=tag, scanner=o.scanner or security()["scan"].get("default_scanner", "auto"),
-                         fail_on=o.fail_on, devdb=dd, lab=lab, lab_report=lab_report)
-            failed = {c["component"]: gate_failure(c) for c in g["components"] if gate_failure(c)}
-            if not failed:
-                break
-            for cname, why in failed.items():
-                res.excluded.append({"component": names[cname].name if cname in names else cname,
-                                     "reason": f"security gate: {why}"})
-            keep = [c for c in keep if k8s_name(c.name) not in failed]
-        if not keep:
-            return stop("no-a-components", f"none of {len(res.excluded)} server components qualifies" if res.excluded
-                        else "no server component")
-
-        # images: built by the gate (or here), pushed under <registry>/<app>/<component>:<tag>
-        from .imagescan import build_image
-        comps, sboms = [], []
-        for c in keep:
-            cn = k8s_name(c.name)
-            cdir = gen / cn
-            local = f"containerizer/{k8s_name(a.name)}-{cn}:gate"
-            if not o.gate and o.push_images:
-                ok, tail = build_image(src, cdir, local, timeout=o.timeout)
-                if not ok:
-                    raise SourceError(f"{c.name}: image build failed: {tail[-300:]}")
-            ref = f"{o.registry.rstrip('/')}/{k8s_name(a.name)}/{cn}:{tag}"
-            entry = {"component": c.name, "folder": cn, "image": ref, "rating": "A", "verdict": c.verdict,
-                     "role": c.role, "project": c.project.rel,
-                     "project_name": c.project.name,
-                     "verification": next((v.get("status") for v in getattr(a, "verification", None) or [] if v.get("component") == c.name),
-                                          "not run")}
-            sb = sbom_entry(g, cn, cdir, local, c, o)
-            if o.push_images and reg:
-                entry["digest"] = reg.push(local, ref, [f"{ref.rsplit(':', 1)[0]}:git-{res.commit[:12]}"]
-                                           if res.commit else [])
-                if o.cosign_key and entry["digest"]:
-                    entry["signature"] = reg.sign(ref, entry["digest"], o.cosign_key)
-                if sb and entry["digest"]:
-                    from .sbom import attach
-                    sb["attestation"] = attach(ref, entry["digest"], cdir / "sbom.cdx.json", o.cosign_key, reg.config)
-            if sb:
-                entry["sbom"] = {k: sb.get(k) for k in ("file", "format", "tool", "attestation")} | {
-                    "summary": {k: v for k, v in sb["summary"].items() if k not in ("warn", "denied")}}
-                sboms.append({"project": c.project.rel, "document": json.loads((cdir / "sbom.cdx.json").read_text()),
-                              "packages": sb["packages"], "tool": sb.get("tool"), "os": sb.get("os"), "image": ref,
-                              "digest": entry.get("digest"), "attestation": sb.get("attestation")})
-            comps.append(entry)
-        res.components = comps
-        idp_rows = idp_entries(gen, keep)
-        if assessment_id and idp_rows:
-            from .sqlstore import connect, store_idp_clients
-            try:
-                conn = connect(o.sql)
-                try:
-                    store_idp_clients(conn, assessment_id, idp_rows)
-                finally:
-                    conn.close()
-            except Exception as e:
-                print(f"warning: sandbox IdP registrations not written to SQL Server: {type(e).__name__}: "
-                      f"{REDACT(str(e))[:300]}", file=sys.stderr)
-        if assessment_id and sboms:
-            from .sqlstore import connect, store_image_sboms
-            try:                              # the images are pushed already: a database error must not undo that
-                conn = connect(o.sql)
-                try:
-                    store_image_sboms(conn, assessment_id, sboms)
-                finally:
-                    conn.close()
-            except Exception as e:
-                print(f"warning: SBOMs not written to SQL Server: {type(e).__name__}: {REDACT(str(e))[:300]}",
-                      file=sys.stderr)
-
-        if lab is not None:
-            res.lab_services = lab_report
-        if dd is not None and (gen / "devdb").is_dir():
-            from .devdb import readme
-            (gen / "devdb" / "README.md").write_text(readme(k8s_name(a.name), dd, dd_row))
-        _clean_generated(gen)
-        if o.image_pull_secret and (gen / "kustomization.yaml").exists():
-            add_pull_secret(gen / "kustomization.yaml", o.image_pull_secret)
-        gitops_kustomizations(gen)
-        res.status, res.path = "deployed", rel
-        if dest.exists():
-            shutil.rmtree(dest)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(gen, dest)
-        (dest / "containerizer.json").write_text(json.dumps(res.to_dict(), indent=2, default=str) + "\n")
-        return res
+        return deploy_app(a, src, rel, o, out, reg, tag, gitops, res, work, app, assessment_id=assessment_id)
     finally:
         if not o.keep_work and not cached:
             shutil.rmtree(src, ignore_errors=True)
+
+
+LOCAL_IMAGES_ENV = "CONTAINERIZER_LOCAL_IMAGES"
+
+
+def local_images(o: "OrgOptions") -> bool:
+    """The sandbox cluster shares the image builder's Docker image store (a lab: k3s with `--docker` on the
+    machine that builds): with Push images off, each image is tagged with its deploy reference and nothing is
+    pushed or pulled (the manifests pull with IfNotPresent). OrgOptions.local_images, else
+    CONTAINERIZER_LOCAL_IMAGES=1. Never with Push images on."""
+    if o.push_images:
+        return False
+    if o.local_images is not None:
+        return bool(o.local_images)
+    return os.environ.get(LOCAL_IMAGES_ENV) == "1"
+
+
+def tag_local(local: str, ref: str) -> None:
+    """`docker tag` the built image with its deploy reference (local images: no push)."""
+    p = subprocess.run(["docker", "tag", local, ref], capture_output=True, text=True, errors="replace")
+    if p.returncode != 0:
+        raise SourceError(f"docker tag {local} {ref}: {(p.stderr or p.stdout).strip()[-300:]}")
+
+
+def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Registry | None", tag: str, gitops,
+               res: RepoResult, work: Path, app: str, assessment_id: int | None = None,
+               dev_database: bool = True) -> RepoResult:
+    """Deploy an assessed application to the sandbox through the output repository: the components rated A
+    (buildable, verified when verification is on) through the security gate (or generated without it), their
+    images built and pushed under <registry>/<namespace>/<component>:<tag> (or tagged locally: local_images),
+    the generated files copied to <output>/<rel> with containerizer.json (RepoResult.to_dict). The namespace,
+    image paths, Ingress hosts and IdP clients derive from k8s_name(a.name), the source folder's name.
+    The organization scan calls it for each repository (with its assessment id: IdP clients and SBOMs go to
+    the results database); the refactoring runner for a patched copy ("Make it A": no assessment id, no
+    uploaded dev database). The caller commits. Returns `res` (status deployed or no-a-components)."""
+    from .generate import generate_app, k8s_name
+    dest = out.root / rel
+    local_mode = local_images(o)
+    keep, res.excluded = select_components(a, o.verify)
+    lab = _lab_services(o)
+    lab_report: dict = {}
+    dd, dd_row = (_dev_database(o, res, a, keep, work, reg, tag, lab) if keep and dev_database else (None, None))
+    gen = work / "gen" / app
+    names = {k8s_name(c.name): c for c in keep}
+    g = None
+    while keep:
+        if gen.exists():
+            shutil.rmtree(gen)
+        fa = dataclasses.replace(a, components=keep)
+        if not o.gate:
+            generate_app(fa, gen, registry=o.registry, pin=o.pin, gitops=gitops, tag=tag, devdb=dd, lab=lab,
+                         lab_report=lab_report)
+            break
+        from .harden import security
+        from .imagescan import gate_app
+        g = gate_app(fa, gen, build=True, scan=True, run=True, registry=o.registry, pin=o.pin, gitops=gitops,
+                     tag=tag, scanner=o.scanner or security()["scan"].get("default_scanner", "auto"),
+                     fail_on=o.fail_on, devdb=dd, lab=lab, lab_report=lab_report)
+        failed = {c["component"]: gate_failure(c) for c in g["components"] if gate_failure(c)}
+        if not failed:
+            break
+        for cname, why in failed.items():
+            res.excluded.append({"component": names[cname].name if cname in names else cname,
+                                 "reason": f"security gate: {why}"})
+        keep = [c for c in keep if k8s_name(c.name) not in failed]
+    if not keep:
+        res.status = "no-a-components"
+        res.reason = (f"none of {len(res.excluded)} server components qualifies" if res.excluded
+                      else "no server component")
+        if dest.exists():                                      # it no longer qualifies: stop deploying it
+            shutil.rmtree(dest)
+        return res
+
+    # images: built by the gate (or here), pushed under <registry>/<app>/<component>:<tag>
+    from .imagescan import build_image
+    comps, sboms = [], []
+    for c in keep:
+        cn = k8s_name(c.name)
+        cdir = gen / cn
+        local = f"containerizer/{k8s_name(a.name)}-{cn}:gate"
+        if not o.gate and (o.push_images or local_mode):
+            ok, tail = build_image(src, cdir, local, timeout=o.timeout)
+            if not ok:
+                raise SourceError(f"{c.name}: image build failed: {tail[-300:]}")
+        ref = f"{o.registry.rstrip('/')}/{k8s_name(a.name)}/{cn}:{tag}"
+        entry = {"component": c.name, "folder": cn, "image": ref, "rating": "A", "verdict": c.verdict,
+                 "role": c.role, "project": c.project.rel,
+                 "project_name": c.project.name,
+                 "verification": next((v.get("status") for v in getattr(a, "verification", None) or [] if v.get("component") == c.name),
+                                      "not run")}
+        sb = sbom_entry(g, cn, cdir, local, c, o)
+        if o.push_images and reg:
+            entry["digest"] = reg.push(local, ref, [f"{ref.rsplit(':', 1)[0]}:git-{res.commit[:12]}"]
+                                       if res.commit else [])
+            if o.cosign_key and entry["digest"]:
+                entry["signature"] = reg.sign(ref, entry["digest"], o.cosign_key)
+            if sb and entry["digest"]:
+                from .sbom import attach
+                sb["attestation"] = attach(ref, entry["digest"], cdir / "sbom.cdx.json", o.cosign_key, reg.config)
+        elif local_mode:
+            # the cluster runs the builder's own image: no registry, so no digest, signature or SBOM attestation
+            tag_local(local, ref)
+            entry["image_source"] = "local"
+            entry["note"] = "local image (shared Docker image store): not pushed, so no digest, signature or attestation"
+        if sb:
+            entry["sbom"] = {k: sb.get(k) for k in ("file", "format", "tool", "attestation")} | {
+                "summary": {k: v for k, v in sb["summary"].items() if k not in ("warn", "denied")}}
+            sboms.append({"project": c.project.rel, "document": json.loads((cdir / "sbom.cdx.json").read_text()),
+                          "packages": sb["packages"], "tool": sb.get("tool"), "os": sb.get("os"), "image": ref,
+                          "digest": entry.get("digest"), "attestation": sb.get("attestation")})
+        comps.append(entry)
+    res.components = comps
+    idp_rows = idp_entries(gen, keep)
+    if assessment_id and idp_rows:
+        from .sqlstore import connect, store_idp_clients
+        try:
+            conn = connect(o.sql)
+            try:
+                store_idp_clients(conn, assessment_id, idp_rows)
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"warning: sandbox IdP registrations not written to SQL Server: {type(e).__name__}: "
+                  f"{REDACT(str(e))[:300]}", file=sys.stderr)
+    if assessment_id and sboms:
+        from .sqlstore import connect, store_image_sboms
+        try:                              # the images are pushed already: a database error must not undo that
+            conn = connect(o.sql)
+            try:
+                store_image_sboms(conn, assessment_id, sboms)
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"warning: SBOMs not written to SQL Server: {type(e).__name__}: {REDACT(str(e))[:300]}",
+                  file=sys.stderr)
+
+    if lab is not None:
+        res.lab_services = lab_report
+    if dd is not None and (gen / "devdb").is_dir():
+        from .devdb import readme
+        (gen / "devdb" / "README.md").write_text(readme(k8s_name(a.name), dd, dd_row))
+    _clean_generated(gen)
+    if o.image_pull_secret and (gen / "kustomization.yaml").exists():
+        add_pull_secret(gen / "kustomization.yaml", o.image_pull_secret)
+    gitops_kustomizations(gen)
+    res.status, res.path = "deployed", rel
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(gen, dest)
+    (dest / "containerizer.json").write_text(json.dumps(res.to_dict(), indent=2, default=str) + "\n")
+    return res
 
 
 # --------------------------------------------------------------------------- the run
@@ -1023,6 +1072,8 @@ def _dev_database(o: OrgOptions, res: RepoResult, a, comps: list, work: Path, re
                            timeout=max(o.timeout, 1800))
         if o.push_images and reg:
             info["digest"] = reg.push(local, image, [f"{image.rsplit(':', 1)[0]}:sha-{row['Sha256'][:12]}"])
+        elif local_images(o):
+            tag_local(local, image)
     except (devdb.DevDbError, SourceError, OSError, ValueError) as ex:
         res.dev_database = {**info, "status": "error", "reason": str(ex)[:500]}
         return None, None

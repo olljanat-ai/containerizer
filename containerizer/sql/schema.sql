@@ -1712,3 +1712,40 @@ GRANT SELECT ON [${schema}].LlmSpeed TO [${schema}_reader];
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 22) INSERT [${schema}].SchemaVersion (Version) VALUES (22);
 GO
+
+-- 23: "Make it A" (refactoring goal rating-a, refactor.py) and its sandbox variant (variant.py). The variant's
+-- deployment and health are in the order's Result (sandbox): not in SandboxCheck, so the original
+-- application's sandbox results stay as they are. "Remove from the sandbox" records the request
+-- (RemoveRequestedAt/By, admin login); the queue runner (writer login), which holds the output repository's
+-- write token, removes the variant and records it in Result. The view gains the order's goal, the rating of
+-- the patched copy, the variant's state and URL, and the status 'deploying'.
+IF COL_LENGTH(N'[${schema}].LlmJob', N'RemoveRequestedAt') IS NULL
+    ALTER TABLE [${schema}].LlmJob ADD RemoveRequestedAt datetime2(0) NULL, RemoveRequestedBy nvarchar(256) NULL;
+GO
+GRANT UPDATE ON [${schema}].LlmJob (RemoveRequestedAt, RemoveRequestedBy) TO [${schema}_admin];
+GO
+CREATE OR ALTER VIEW [${schema}].vRefactorOrder AS
+SELECT j.JobId, COALESCE(j.ApplicationId, a.ApplicationId) AS ApplicationId, j.AssessmentId, j.Component, j.ProjectPath,
+       CASE WHEN j.Status = N'approval' THEN N'approval'
+            WHEN j.Status = N'queued' THEN N'queued'
+            WHEN j.Status = N'running' THEN CASE WHEN j.Summary LIKE N'verifying%' THEN N'verifying'
+                                                 WHEN j.Summary LIKE N'deploying%' THEN N'deploying'
+                                                 ELSE N'generating' END
+            WHEN j.Status = N'answered' AND JSON_VALUE(j.Result, '$$.status') IN (N'verified', N'applies-only', N'failed')
+                 THEN JSON_VALUE(j.Result, '$$.status')
+            WHEN j.Status = N'skipped' THEN N'cancelled'
+            ELSE N'failed' END AS Status,
+       j.Summary, JSON_VALUE(j.Payload, '$$.commit') AS SourceCommit, j.QueuedAt, j.StartedAt, j.FinishedAt,
+       JSON_VALUE(j.Result, '$$.verification[0].status') AS VerifyStatus,
+       j.InputChars, j.EstInputTokens, j.InputTokens, j.OutputTokens, j.Seconds,
+       COALESCE(JSON_VALUE(j.Payload, '$$.goal'), N'fix') AS Goal,
+       JSON_VALUE(j.Result, '$$.rating_after') AS RatingAfter,
+       CASE WHEN j.Status = N'running' AND j.Summary LIKE N'deploying%' THEN N'deploying'
+            ELSE JSON_VALUE(j.Result, '$$.sandbox.status') END AS SandboxStatus,
+       JSON_VALUE(j.Result, '$$.sandbox.url') AS SandboxUrl
+FROM [${schema}].LlmJob j
+LEFT JOIN [${schema}].Application a ON a.SourceKey = j.SourceKey
+WHERE j.Kind = N'refactor';
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 23) INSERT [${schema}].SchemaVersion (Version) VALUES (23);
+GO

@@ -1,9 +1,10 @@
 [Unit]
 Description=containerizer appliance: LLM queue runner (queued LLM reviews, refactoring patches; Admin -> LLM queue)
-After=containerizer-db-init.service containerizer-dns.service docker.service
+After=containerizer-db-init.service containerizer-dns.service docker.service containerizer-registry.service
 Requires=containerizer-db-init.service
-# refactoring patches are built and run before they are offered; without Docker they are "applies only"
-Wants=docker.service
+# refactoring patches are built and run before they are offered; without Docker they are "applies only".
+# "Make it A" variants push their images to the appliance's registry, as the scan worker does.
+Wants=docker.service containerizer-registry.service
 ConditionKernelCommandLine=!cdroot
 ConditionPathExists=!/run/elemental/recovery_mode
 
@@ -27,6 +28,14 @@ Environment=CONTAINERIZER_REFACTOR_SOURCES=/var/lib/containerizer/worker
 Environment=CONTAINERIZER_REFACTOR_WORK=/var/lib/containerizer/refactor
 Environment=CONTAINERIZER_WORK=/var/lib/containerizer/refactor/work
 Environment=DOCKER_CONFIG=/var/lib/containerizer/refactor/.docker
+# "Make it A": a patched copy that rates A and runs is deployed to the sandbox beside the original
+# (docs/refactoring.md#the-sandbox-variant): its files are committed to the scan's output repository from a
+# clone under the scratch space (the write token: the registered credential, opened with the credential key);
+# the lab services that are on give it its own, empty lab database; its health is read back with the
+# read-only verifier kubeconfig cz-sandbox writes (containerizer-sandbox.timer); variants expire after
+# CONTAINERIZER_SANDBOX_VARIANT_DAYS days (default 7: set it in worker.env)
+Environment=CONTAINERIZER_LAB_SERVICES=/var/lib/containerizer/system/lab-services.json
+Environment=CONTAINERIZER_SANDBOX_KUBECONFIG=/run/containerizer/sandbox-verifier.kubeconfig
 # results database (CZ_SQL_SCANNER_CS): the appliance's own or CZ_SQL_SERVER (cz-firstboot)
 EnvironmentFile=/run/containerizer/sql.env
 LoadCredential=sql-scanner:/etc/containerizer/secrets/cz-scanner

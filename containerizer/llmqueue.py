@@ -779,6 +779,7 @@ class Runner:
         self.lock = threading.Lock()
         self._ctx = None                    # ai.configured() of the jobs being asked
         self.status = None
+        self._housekept = None              # when expired or removed sandbox variants were last looked for
 
     # -- the LLM ---------------------------------------------------------------------------------
 
@@ -850,7 +851,10 @@ class Runner:
         try:
             with ai.usage_scope(feature=kind.feature, repo=row.get("Repository") or row.get("App"),
                                 scan=row.get("ScanName")), _usage() as used:
-                out = kind.handler({**row, "Payload": _payload(row), "_progress": lambda text: self.progress(row, text)})
+                # a refactoring that deploys a sandbox variant reads its organization scan's settings and opens the
+                # output repository's write token (variant.py): the runner's connection and credential key
+                out = kind.handler({**row, "Payload": _payload(row), "_progress": lambda text: self.progress(row, text),
+                                    "_connect": self.connect, "_key": self.key})
         except Exception as ex:  # noqa: BLE001
             result = self.failed(row, REDACT(f"{type(ex).__name__}: {ex}")[:1000])
         else:
@@ -968,6 +972,24 @@ class Runner:
             except Exception as ex:
                 self.log(f"heartbeat: {type(ex).__name__}: {ex}")
 
+    def housekeep(self, force: bool = False) -> int:
+        """Sandbox variants of "Make it A" orders that expired or that someone asked to remove (variant.py):
+        taken out of the output repository. At most every minute; independent of the queue's window."""
+        if not force and self._housekept is not None and _time.monotonic() - self._housekept < 60:
+            return 0
+        self._housekept = _time.monotonic()
+        import tempfile
+        from . import refactor, variant
+        try:
+            if self.key is None and os.environ.get("CONTAINERIZER_CREDENTIAL_KEY_FILE"):
+                from .credentials import private_key_from_env
+                self.key = private_key_from_env()
+            base = Path(os.environ.get(refactor.WORK_ENV) or tempfile.gettempdir()) / "variants"
+            return variant.housekeep(self.connect, self.key, base, log=self.log)
+        except Exception as ex:             # a database from before schema 23, the output repository away: next time
+            self.log(f"sandbox variants: {type(ex).__name__}: {ex}"[:400])
+            return 0
+
     # -- the loop --------------------------------------------------------------------------------
 
     def _enter_llm(self, conn) -> None:
@@ -1040,6 +1062,7 @@ class Runner:
                 started = []
                 try:
                     self.recover()
+                    self.housekeep()
                     started = self.fill(pool)
                 except Exception as ex:          # the database may be away for a while: keep trying
                     self.metrics.poll_errors.inc()
