@@ -779,6 +779,19 @@ def _ws(s) -> str:
 SCRIPT_TAG = "<script src='/static/app.js'></script>"
 
 
+EXTERNAL_A = re.compile(r"<a\b(?P<pre>[^>]*?)\bhref=(?P<q>['\"])(?P<url>https?://[^'\"]*)(?P=q)(?P<post>[^>]*)>", re.I)
+
+
+def external_links(html: str) -> str:
+    """Every link to another site opens in a new tab or window, without access back to this page (noopener)."""
+    def add(m):
+        attrs = m["pre"] + m["post"]
+        if re.search(r"\btarget=", attrs, re.I):
+            return m[0]
+        return f"<a{m['pre']}href={m['q']}{m['url']}{m['q']}{m['post']} target='_blank' rel='noopener noreferrer'>"
+    return EXTERNAL_A.sub(add, html)
+
+
 # Set by serve() in development mode (CONTAINERIZER_DEV_NO_AUTH): shown at the top of every page.
 DEV_BANNER = ""
 
@@ -787,7 +800,7 @@ def page(title: str, body: str, script: bool = False) -> str:
     return (f"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
             f"<meta name='viewport' content='width=device-width,initial-scale=1'><title>{e(title)}</title>"
             f"<link rel='stylesheet' href='/static/app.css'><link rel='icon' href='data:,'></head>"
-            f"<body>{DEV_BANNER}<main>{body}</main>{SCRIPT_TAG if script else ''}</body></html>")
+            f"<body>{DEV_BANNER}<main>{external_links(body)}</main>{SCRIPT_TAG if script else ''}</body></html>")
 
 
 CSS = """
