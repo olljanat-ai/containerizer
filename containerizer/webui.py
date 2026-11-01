@@ -765,7 +765,7 @@ font-size:11px;font-weight:700;border-radius:4px;color:#fff}.cell.rB,.cell.rC{co
 .st-ok{color:#0a7d0a}.st-bad{color:#b42727}.st-off{color:var(--muted)}.st-run{color:#1f5fbf}
 @media (prefers-color-scheme:dark){.st-ok{color:#4fd14f}.st-bad{color:#f07a7a}.st-run{color:#7fb0ff}}
 form.edit h3{margin:14px 0 0;font-size:15px;border-top:1px solid var(--line);padding-top:12px}.days{display:flex;flex-wrap:wrap;gap:4px 14px}
-button.secondary{background:var(--card);color:var(--fg)}.formrow input{width:auto;min-width:240px}
+button.secondary{background:var(--card);color:var(--fg)}.formrow input:not([type=checkbox]):not([type=radio]){width:auto;min-width:240px}
 .migration{border-top:1px solid var(--line);margin-top:12px;padding-top:4px}.migration table{margin:6px 0}
 .prompt{margin-top:12px}.prompt-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
 .prompt p{margin:4px 0}.prompt textarea{font:12.5px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;
@@ -782,7 +782,7 @@ pre.diff .add{color:#0a7d0a}pre.diff .del{color:#b42727}pre.diff .hunk{color:var
 form.edit.wide{max-width:none;margin:12px 0}nav.chips+div.meta{margin-top:16px}
 .st-warn{color:#8a6100}@media (prefers-color-scheme:dark){.st-warn{color:#fac35a}}
 a.button{display:inline-block;border:1px solid var(--fg);background:var(--fg);color:var(--bg);border-radius:6px;
-padding:6px 14px;text-decoration:none}section.refactor .formrow select{min-width:220px}
+padding:6px 14px;text-decoration:none}section.refactor .formrow select{min-width:220px}section.refactor label.check{display:inline-flex;gap:6px;align-items:center;margin:0}
 section.diff{margin:14px 0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--card)}
 .diff-file{padding:6px 10px;border-bottom:1px solid var(--line);font:13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .diff-stat{float:right}.diff-add{color:#0a7d0a}.diff-del{color:#b42727}
