@@ -748,45 +748,56 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
         all_k8s += docs
         comp_docs["lab"] = docs
     if all_k8s:
-        from . import eso
-        ns = k8s_name(a.name)
-        extra: list[str] = []
-        if gitops is not None and gitops.image_pull_secret:
-            # the pull secret the workloads reference (org --image-pull-secret): from the store, never Git
-            pull = [eso.external_secret(gitops.image_pull_secret, ns, eso.remote_key(ns, eso.REGISTRY),
-                                        labels={"app.kubernetes.io/part-of": ns}, secret_type=eso.DOCKERCONFIG,
-                                        comment="image pull credential (.dockerconfigjson) from the secret store")]
-            (out / "pull-secret.yaml").write_text(_yaml_docs(pull))
-            written.append(out / "pull-secret.yaml")
-            all_k8s += pull
-            extra.append("pull-secret.yaml")
-        ns_doc = namespace_manifest(k8s_name(a.name))
-        (out / "namespace.yaml").write_text(_yaml_docs([ns_doc]))
-        # namespace-level security (default deny, quota, limits), HARDENING.md and the cluster/ kit
-        sec, sec_docs = write_app_security(out, k8s_name(a.name), comp_docs, registry, _yaml_docs)
-        (out / "kustomization.yaml").write_text(yaml.safe_dump(
-            {"apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization",
-             "namespace": k8s_name(a.name),
-             "resources": ["namespace.yaml"] + sec + extra
-                          + sorted(f"{d.name}/k8s.yaml" for d in out.iterdir() if (d / "k8s.yaml").exists())},
-            sort_keys=False) + image_setters(k8s_name(a.name), images))
-        written += [out / "namespace.yaml", out / "kustomization.yaml", out / "HARDENING.md"] + [out / r for r in sec]
-        kinds = sorted({(d["apiVersion"], d["kind"]) for d in all_k8s + sec_docs if isinstance(d, dict) and d.get("kind")})
-        app_keys = eso.remote_keys(all_k8s)
-        g_docs = gitops_manifests(a, kinds, images, ns_doc, gitops, registry, secret_keys=app_keys)
-        for rel, docs in g_docs.items():
-            f = out / "gitops" / rel
-            f.parent.mkdir(parents=True, exist_ok=True)
-            f.write_text(_yaml_docs(docs))
-            written.append(f)
-        # the store and this namespace's read access to its keys, for the cluster operator
-        keys = sorted(set(app_keys) | set(eso.remote_keys([d for docs in g_docs.values() for d in docs])))
-        (out / "cluster" / "secret-store.yaml").write_text(_yaml_docs(
-            eso.secret_store() + eso.store_access(ns, keys, {"app.kubernetes.io/part-of": ns})))
-        written.append(out / "cluster" / "secret-store.yaml")
-        (out / "gitops" / "README.md").write_text(readme(a, gitops))
-        written.append(out / "gitops" / "README.md")
+        written += app_files(a, out, all_k8s, comp_docs, images, registry, gitops)
     (out / "MIGRATION.md").write_text(migration_markdown(a))
     written.append(out / "MIGRATION.md")
     written += write_agent_prompts(a, out)
+    return written
+
+
+def app_files(a, out: Path, all_k8s: list[dict], comp_docs: dict[str, list[dict]], images: list[tuple[str, str]],
+              registry: str, gitops=None) -> list[Path]:
+    """The application-level files around the components' manifests: namespace, namespace security, the
+    kustomization with its image setters, the GitOps files, the secret store kit and the GitOps README.
+    `a` needs only a `name` (platform migrations, replatform.py, call this too)."""
+    from .gitops import gitops_manifests, image_setters, readme
+    written: list[Path] = []
+    from . import eso
+    ns = k8s_name(a.name)
+    extra: list[str] = []
+    if gitops is not None and gitops.image_pull_secret:
+        # the pull secret the workloads reference (org --image-pull-secret): from the store, never Git
+        pull = [eso.external_secret(gitops.image_pull_secret, ns, eso.remote_key(ns, eso.REGISTRY),
+                                    labels={"app.kubernetes.io/part-of": ns}, secret_type=eso.DOCKERCONFIG,
+                                    comment="image pull credential (.dockerconfigjson) from the secret store")]
+        (out / "pull-secret.yaml").write_text(_yaml_docs(pull))
+        written.append(out / "pull-secret.yaml")
+        all_k8s += pull
+        extra.append("pull-secret.yaml")
+    ns_doc = namespace_manifest(k8s_name(a.name))
+    (out / "namespace.yaml").write_text(_yaml_docs([ns_doc]))
+    # namespace-level security (default deny, quota, limits), HARDENING.md and the cluster/ kit
+    sec, sec_docs = write_app_security(out, k8s_name(a.name), comp_docs, registry, _yaml_docs)
+    (out / "kustomization.yaml").write_text(yaml.safe_dump(
+        {"apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization",
+         "namespace": k8s_name(a.name),
+         "resources": ["namespace.yaml"] + sec + extra
+                      + sorted(f"{d.name}/k8s.yaml" for d in out.iterdir() if (d / "k8s.yaml").exists())},
+        sort_keys=False) + image_setters(k8s_name(a.name), images))
+    written += [out / "namespace.yaml", out / "kustomization.yaml", out / "HARDENING.md"] + [out / r for r in sec]
+    kinds = sorted({(d["apiVersion"], d["kind"]) for d in all_k8s + sec_docs if isinstance(d, dict) and d.get("kind")})
+    app_keys = eso.remote_keys(all_k8s)
+    g_docs = gitops_manifests(a, kinds, images, ns_doc, gitops, registry, secret_keys=app_keys)
+    for rel, docs in g_docs.items():
+        f = out / "gitops" / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(_yaml_docs(docs))
+        written.append(f)
+    # the store and this namespace's read access to its keys, for the cluster operator
+    keys = sorted(set(app_keys) | set(eso.remote_keys([d for docs in g_docs.values() for d in docs])))
+    (out / "cluster" / "secret-store.yaml").write_text(_yaml_docs(
+        eso.secret_store() + eso.store_access(ns, keys, {"app.kubernetes.io/part-of": ns})))
+    written.append(out / "cluster" / "secret-store.yaml")
+    (out / "gitops" / "README.md").write_text(readme(a, gitops))
+    written.append(out / "gitops" / "README.md")
     return written

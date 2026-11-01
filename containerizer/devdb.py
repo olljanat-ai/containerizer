@@ -540,7 +540,9 @@ def ai_env(a, comps: list, engine: str, database: str, prompt: str, model: str |
          f"database out. A typical connection string: {CONNECTION[engine]}\n\n"
          f"Instructions from the operator who uploaded the backup (follow them unless they ask for something unsafe):\n"
          f"<<<\n{prompt[:PROMPT_MAX]}\n>>>")
-    ans = ask_json(q, AI_SCHEMA, model=model)
+    from .ai import usage_scope
+    with usage_scope(feature="dev-database"):
+        ans = ask_json(q, AI_SCHEMA, model=model)
     known = {c.name for c in comps}
     out: dict = {}
     notes = [str(n)[:300] for n in (ans.get("notes") or [])][:10]

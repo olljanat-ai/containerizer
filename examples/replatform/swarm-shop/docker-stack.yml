@@ -1,0 +1,43 @@
+version: "3.8"
+services:
+  api:
+    image: registry.example.com/shop/api:1.4.2
+    build:
+      context: ./api
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Shop: "Server=sql;Database=shop;User Id=app;Password=${DB_PASSWORD}"
+      OpenIdConnect__Authority: https://login.example.com
+      OpenIdConnect__ClientId: shop-api
+      OpenIdConnect__ClientSecret: ${OIDC_SECRET}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "80:8080"
+    secrets:
+      - source: shop_cert
+        target: cert.pfx
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
+    deploy:
+      replicas: 3
+      resources:
+        limits: {cpus: "0.5", memory: 512M}
+      placement:
+        constraints: [node.role == worker]
+    volumes:
+      - uploads:/app/uploads
+    depends_on: [db]
+  worker:
+    image: registry.example.com/shop/worker:1.4.2
+    command: ["dotnet", "Worker.dll", "--queue", "orders"]
+    environment:
+      - RABBIT_URL=amqp://guest:guest@mq:5672/
+  db:
+    image: postgres:16
+    volumes: [pgdata:/var/lib/postgresql/data]
+volumes:
+  uploads: {}
+  pgdata: {}
+secrets:
+  shop_cert:
+    external: true

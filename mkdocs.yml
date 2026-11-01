@@ -48,6 +48,7 @@ nav:
   - How it works: overview.md
   - Using it:
       - Organization scans: scheduled-scans.md
+      - Platform migrations: platform-migration.md
       - SBOMs, licences and CVEs: sbom.md
       - Rule review: rule-review.md
   - Administration:

@@ -7,7 +7,7 @@ qcow2 and VHD images as release assets.
 
 ## Unreleased
 
-Results database schema version 17 (`containerizer db init` upgrades it; the appliance does at start).
+Results database schema version 18 (`containerizer db init` upgrades it; the appliance does at start).
 
 ### Organization scans
 - Discovery first: **Discover** on a scan's page lists the projects, repositories and each repository's
@@ -29,6 +29,24 @@ Results database schema version 17 (`containerizer db init` upgrades it; the app
   console of a disk image is gone, and SSH accepts passwords as well as keys (`passwd -l root` for keys
   only). An appliance upgraded from 0.1.0 starts with the default password too: sign in and change it
   right after the upgrade. See [Running the appliance](docs/appliance-admin.md#root-password-and-ssh).
+
+### Scans
+- Platform migrations: a repository with a Dockerfile that an administrator enables is moved to
+  Kubernetes from Docker Swarm, Docker Compose, HashiCorp Nomad (HCL and JSON jobs), Azure Container Apps
+  (YAML, ARM and Bicep) or Amazon ECS instead of being skipped. The app's own image (built from its
+  Dockerfile or mirrored) goes through the security gate; the generated output is the same as for
+  containerized apps: hardened manifests, External Secrets, HTTPS Ingress, sandbox IdP registration,
+  GitOps files, and `MIGRATION.md` with what was and was not carried over. `containerizer replatform`
+  does the same for one checkout, `containerizer org --migrate-containerized` for a whole organization.
+  See [docs/platform-migration.md](docs/platform-migration.md).
+- LLM-heavy mode, off by default (`CZ_LLM_HEAVY` in `appliance.env` and **LLM-heavy mode** on the scan):
+  the LLM translates descriptors the rules cannot read (Fly.io, Cloud Foundry, App Engine, ...), reviews
+  migrated services, fixes containers that fail the hardened run, and the sandbox tester diagnoses and
+  fixes failing components.
+- LLM usage statistics: calls, tokens in and out and estimated cost by scan, repository, feature and
+  model as Prometheus metrics, an **LLM usage** row on the Grafana dashboard, and per repository on its
+  admin page. `CONTAINERIZER_LLM_PRICE_INPUT`/`_OUTPUT` price a self-hosted LLM.
+- Schema version 18 adds `OrgScan.LlmHeavy`.
 
 ## 0.1.0 (2026-10-31)
 

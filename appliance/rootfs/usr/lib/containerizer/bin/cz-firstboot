@@ -72,7 +72,12 @@ install -d -m 0755 /run/containerizer
 echo "CONTAINERIZER_PUBLIC_URL=https://$host" > /run/containerizer/web-url.env
 echo "GF_SERVER_ROOT_URL=https://$host/grafana/" > /run/containerizer/grafana-url.env
 echo "CONTAINERIZER_GRAFANA_URL=https://$host/grafana/d/containerizer-scans" >> /run/containerizer/web-url.env
-chmod 0644 /run/containerizer/caddy.env /run/containerizer/web-url.env /run/containerizer/grafana-url.env
+# LLM-heavy mode (docs/platform-migration.md): off unless appliance.env turns it on; the web UI shows it, the
+# worker only uses it for scans that have it ticked too
+case "${CZ_LLM_HEAVY:-false}" in true|yes|1|on) llm_heavy=true;; *) llm_heavy=false;; esac
+echo "CONTAINERIZER_LLM_HEAVY=$llm_heavy" > /run/containerizer/llm.env
+chmod 0644 /run/containerizer/caddy.env /run/containerizer/web-url.env /run/containerizer/grafana-url.env \
+  /run/containerizer/llm.env
 
 # Learned rules: the code reads and writes rules/learned/, which on the appliance is a link to the
 # persistent partition. The OS image ships the project's learned rules in learned-seed/. A file nobody

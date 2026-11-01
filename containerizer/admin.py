@@ -41,7 +41,7 @@ FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Des
               "OutputTokenEnv": "Output token variable", "ImagePullSecret": "Image pull secret",
               "IncludeRegex": "Only repositories matching", "ExcludeRegex": "Leave out repositories matching",
               "SkipForks": "Skip forks", "StaleDays": "Skip when not updated for (days)", "Verify": "Build and run",
-              "Gate": "Security gate", "PushImages": "Push images", "UseAi": "Ask the LLM", "ScheduleDays": "Days",
+              "Gate": "Security gate", "PushImages": "Push images", "UseAi": "Ask the LLM", "LlmHeavy": "LLM-heavy mode", "ScheduleDays": "Days",
               "ScheduleMinute": "Time (UTC)", "Enabled": "Enabled",
               # repositories
               "Setting": "Setting", "Note": "Note", "Skipped": "Skipped by the scan", "Removed": "Removed from the organization",

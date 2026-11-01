@@ -78,7 +78,7 @@ The first boot creates `/etc/containerizer/` (mode 700) with:
 
 | File | What to set |
 | --- | --- |
-| `appliance.env` | `CZ_HOSTNAME` (the name in the HTTPS certificate and the sign-in redirect), `CZ_ACME_EMAIL` (Let's Encrypt instead of the appliance's own CA), `CZ_DNS_SERVERS`, `CZ_MSSQL_EDITION`, `CZ_MSSQL_MEMORY` |
+| `appliance.env` | `CZ_HOSTNAME` (the name in the HTTPS certificate and the sign-in redirect), `CZ_ACME_EMAIL` (Let's Encrypt instead of the appliance's own CA), `CZ_DNS_SERVERS`, `CZ_MSSQL_EDITION`, `CZ_MSSQL_MEMORY`, `CZ_LLM_HEAVY` ([LLM-heavy mode](platform-migration.md#llm-heavy-mode), off by default) |
 | `web.env` | Sign-in for the web UI: `CONTAINERIZER_OIDC_*`, `CONTAINERIZER_ADMINS`, roles, viewers, API ([sign-in and roles](sign-in.md)) |
 | `worker.env` | Push credentials for an external image registry, and extra registry hosts the worker may push to. Scans that push to the appliance's own registry need none; source control tokens are registered on the admin pages ([source-control.md](source-control.md)) |
 | `sandbox.env` | The output repository the sandbox cluster deploys from ([the sandbox cluster](scheduled-scans.md#the-sandbox-cluster)) |

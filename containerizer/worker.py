@@ -127,6 +127,13 @@ def check_scan(scan: dict, hosts: set[str] | None = None, creds=None, key_id: st
     return problems
 
 
+def llm_heavy(scan: dict, env=None) -> bool:
+    """LLM-heavy mode for a run: the scan's setting, its "Ask the LLM" setting and the worker's
+    CONTAINERIZER_LLM_HEAVY (appliance.env CZ_LLM_HEAVY) must all be on."""
+    from .ai import heavy_allowed
+    return bool(scan.get("LlmHeavy")) and bool(scan.get("UseAi")) and heavy_allowed(env)
+
+
 # --------------------------------------------------------------------------- repository list in SQL
 
 def _cut(s, n: int):
@@ -252,7 +259,9 @@ class SqlRepoStore:
         else:
             skip = None                     # disabled by an administrator, or an error: not re-evaluated
         detail = json.dumps({"app": res.app, "path": res.path, "components": res.components, "excluded": res.excluded,
-                             "overridden": res.overridden, "lab_services": getattr(res, "lab_services", None) or {}},
+                             "overridden": res.overridden, "lab_services": getattr(res, "lab_services", None) or {},
+                             "migration": getattr(res, "migration", None) or {},
+                             "llm_usage": getattr(res, "llm_usage", None) or {}},
                             default=str)
         sets = ("LastStatus = %s, LastReason = %s, LastCommit = COALESCE(%s, LastCommit), "
                 "LastCommitAt = COALESCE(%s, LastCommitAt), LastRating = COALESCE(%s, LastRating), "
@@ -307,16 +316,53 @@ class ScanMetrics:
         self.queued = r.gauge("containerizer_scan_queued_runs", "Runs waiting for a worker.")
         self.scan_info = r.gauge("containerizer_scan_info", "Organization scans defined on the admin pages.",
                                  ("scan", "provider", "organization", "enabled"))
+        # LLM usage (ai.ask_json): every call of a scan, by repository and feature; cached answers cost nothing
+        LL = ("scan", "repository", "feature", "model")
+        self.llm_calls = r.counter("containerizer_llm_calls_total", "LLM calls by result: answered, cached (no tokens "
+                                   "used) or failed.", ("scan", "repository", "feature", "backend", "model", "result"))
+        self.llm_in = r.counter("containerizer_llm_input_tokens_total", "Prompt tokens sent to the LLM.", LL)
+        self.llm_out = r.counter("containerizer_llm_output_tokens_total", "Tokens the LLM answered with.", LL)
+        self.llm_cost = r.counter("containerizer_llm_cost_usd_total", "Estimated LLM cost in US dollars (list price of "
+                                  "the Claude models, or CONTAINERIZER_LLM_PRICE_INPUT/_OUTPUT for a self-hosted LLM).", LL)
+        self.llm_seconds = r.counter("containerizer_llm_seconds_total", "Time spent waiting for the LLM.",
+                                     ("scan", "feature", "model"))
+        self.llm_heavy = r.gauge("containerizer_llm_heavy_mode", "1 when LLM-heavy mode is on for the scan (its setting, "
+                                 "Ask the LLM, and the appliance's CZ_LLM_HEAVY).", L)
+        self.llm_heavy_allowed = r.gauge("containerizer_llm_heavy_allowed", "1 when this worker allows LLM-heavy mode "
+                                         "(CONTAINERIZER_LLM_HEAVY).")
+        self.scan_name = ""                 # the scan the worker runs now (labels LLM calls)
+        from .ai import LISTENERS, heavy_allowed
+        self.llm_heavy_allowed.set(1 if heavy_allowed() else 0)
+        LISTENERS.append(self.llm)
         from .sqlstore import tool_version
         self.info.set(1, worker=worker, version=tool_version() or "unknown")
         r.collectors += [m.process_metrics, lambda: m.host_metrics(paths)]
 
+    def llm(self, u: dict) -> None:
+        """One LLM call (ai.record_usage)."""
+        scan, repo = self.scan_name or "none", u.get("repo") or ""
+        feature, model = u.get("feature") or "other", u.get("model") or "unknown"
+        result = "failed" if u.get("error") else "cached" if u.get("cached") else "answered"
+        self.llm_calls.inc(scan=scan, repository=repo, feature=feature, backend=u.get("backend") or "unknown",
+                           model=model, result=result)
+        if result != "answered":
+            return
+        labels = {"scan": scan, "repository": repo, "feature": feature, "model": model}
+        self.llm_in.inc(int(u.get("input_tokens") or 0), **labels)
+        self.llm_out.inc(int(u.get("output_tokens") or 0), **labels)
+        self.llm_cost.inc(float(u.get("cost_usd") or 0), **labels)
+        self.llm_seconds.inc(float(u.get("seconds") or 0), scan=scan, feature=feature, model=model)
+
     def refresh(self, conn) -> None:
         """Gauges that come from the database: repository states, schedules, the queue."""
         cur = conn.cursor(as_dict=True)
-        cur.execute("SELECT ScanId, Name, Provider, Organization, Enabled, NextRunAt FROM cz.OrgScan")
+        cur.execute("SELECT ScanId, Name, Provider, Organization, Enabled, NextRunAt, UseAi, LlmHeavy FROM cz.OrgScan")
         scans = cur.fetchall()
         names = {s["ScanId"]: s["Name"] for s in scans}
+        from .ai import heavy_allowed
+        allowed = heavy_allowed()
+        self.llm_heavy_allowed.set(1 if allowed else 0)
+        self.llm_heavy.replace({(s["Name"],): 1 if allowed and s.get("UseAi") and s.get("LlmHeavy") else 0 for s in scans})
         self.scan_info.replace({(s["Name"], s["Provider"], s["Organization"], "1" if s["Enabled"] else "0"): 1 for s in scans})
         self.next.replace({(s["Name"],): aware(s["NextRunAt"]).timestamp() for s in scans if s["NextRunAt"] and s["Enabled"]})
         state = """CASE WHEN RemovedAt IS NOT NULL THEN 'removed'
@@ -600,6 +646,7 @@ class Worker:
             image_pull_secret=scan["ImagePullSecret"], include=scan["IncludeRegex"], exclude=scan["ExcludeRegex"],
             skip_forks=bool(scan["SkipForks"]), stale_days=int(scan["StaleDays"]), ai=bool(scan["UseAi"]),
             verify=bool(scan["Verify"]), gate=bool(scan["Gate"]), sql=self.sql, work_dir=str(base / "work"),
+            llm_heavy=llm_heavy(scan),
             cache_dir=str(base / "repos"), state=store, hooks=hooks,
             allowed_hosts=self.hosts | (creds.hosts() if creds else set()))
 
@@ -616,6 +663,7 @@ class Worker:
         self.cancel.clear()
         t0 = _time.time()
         m.busy.set(1)
+        m.scan_name = name
         m.running.set(1, scan=name)
         m.started.set(t0, scan=name)
         done = threading.Event()
@@ -694,6 +742,7 @@ class Worker:
             conn.close()
             end = _time.time()
             m.busy.set(0)
+            m.scan_name = ""
             m.running.set(0, scan=name)
             m.ended.set(end, scan=name)
             m.duration.set(round(end - t0, 1), scan=name)

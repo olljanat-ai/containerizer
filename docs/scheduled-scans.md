@@ -91,7 +91,7 @@ it is on. A scan that has run cannot be deleted (its history is kept): pause it.
 
 | Automatic skip | Reason shown, for example |
 | --- | --- |
-| Has a Dockerfile | `found src/Api/Dockerfile`: the team already containerizes it |
+| Has a Dockerfile | `found src/Api/Dockerfile`: the team already containerizes it. Enabled, it is moved from Docker Swarm, Compose, Nomad, Azure Container Apps or ECS to Kubernetes ([platform migrations](platform-migration.md)) |
 | No application code | `14 files (.md 9, .yml 3, .json 2), no source code`: documentation, configuration, pipelines, SQL or scripts |
 | Language not supported | `Ruby (32 files), but no project the tool can build (...)` |
 | Nothing to deploy | `only library, test: 3 projects, nothing that runs on its own` |
@@ -169,8 +169,9 @@ The worker exports Prometheus metrics about the scans, the worker process and th
 appliance's Grafana (`https://<appliance>/grafana/`, linked as **Grafana ↗** on the admin pages) has a
 dashboard of them: scans running and waiting, time since the last successful run, progress of the
 current run, repositories by state (`disabled_admin` counts repositories disabled directly or through
-their project) and latest result, time per repository, clones and pulls, pushed
-images, and the machine's CPU, memory, disk and network.
+their project) and latest result, time per repository, clones and pulls, pushed images, LLM usage
+(calls, tokens and estimated cost by repository and feature, [platform migrations](platform-migration.md#llm-usage)),
+and the machine's CPU, memory, disk and network.
 
 ![Grafana dashboard: scans, the machine running the worker, and the worker process](images/grafana-scans-dashboard.png#only-light)
 ![Grafana dashboard: scans, the machine running the worker, and the worker process](images/grafana-scans-dashboard-dark.png#only-dark)

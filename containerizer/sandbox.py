@@ -586,6 +586,8 @@ class SandboxOptions:
     ingress_address: str = ""         # host:port to open the public URLs at (default: their DNS name)
     ingress_ca: str = ""              # extra CA file for the URL check
     url_attempts: int = 3             # a new Ingress takes a moment to be routed
+    llm: bool = False                 # LLM-heavy mode: the LLM diagnoses what the rules could not, and proposes
+    model: str | None = None          # a manifest fix (replatform.llm_sandbox_diagnosis); off by default
 
 
 def _now() -> str:
@@ -726,6 +728,18 @@ def verify_sandbox(root: Path, o: SandboxOptions | None = None, kube: Kube | Non
                 r["diagnosis"] = d
                 r["reason"] = f"{r['reason']} - {d['diagnosis']}" if r["reason"] else d["diagnosis"]
         r["log_tail"] = ob.log            # redacted; kept out of the output repository (see write_health)
+        if o.llm and r["status"] in (FAILING, PENDING):
+            from .replatform import llm_sandbox_diagnosis
+            k8s = root / a["rel"] / (c.get("folder") or "") / "k8s.yaml"
+            from .ai import usage_scope
+            dd = a["doc"]
+            label = dd.get("repo", "") if dd.get("project") in (None, "", "_") else f"{dd.get('project')}/{dd.get('repo', '')}"
+            with usage_scope(repo=label or a["app"]):
+                ld = llm_sandbox_diagnosis(r, k8s.read_text() if k8s.is_file() else "", o.model)
+            if ld:
+                r["llm"] = ld
+                if not r.get("diagnosis"):
+                    r["reason"] = f"{r['reason']} - LLM: {ld['diagnosis'][:300]}" if r["reason"] else f"LLM: {ld['diagnosis']}"
         results[(app_name, comp)] = r
     doc["components"] = [results[(a["app"], c["component"])] for a in apps for c in a["components"]]
     if o.learn:
@@ -795,7 +809,7 @@ def learn_from_cluster(results: list[dict], learned_dir: Path | None = None) -> 
 # --------------------------------------------------------------------------- report
 
 PUBLIC = ("app", "folder", "component", "project", "image", "workloads", "url", "url_check", "status", "status_text",
-          "reason", "checked_at", "gitops", "ready", "restarts", "states", "events", "diagnosis")
+          "reason", "checked_at", "gitops", "ready", "restarts", "states", "events", "diagnosis", "llm")
 
 
 def public(r: dict) -> dict:
@@ -803,6 +817,8 @@ def public(r: dict) -> dict:
     out = {k: r[k] for k in PUBLIC if k in r and r[k] not in (None, "", [])}
     if "diagnosis" in out:
         out["diagnosis"] = {k: v for k, v in out["diagnosis"].items() if k in ("rule", "outcome", "stage", "diagnosis", "refs")}
+    if "llm" in out:
+        out["llm"] = {k: v for k, v in out["llm"].items() if k in ("outcome", "diagnosis")}
     return out
 
 

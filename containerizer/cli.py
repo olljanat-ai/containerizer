@@ -271,7 +271,11 @@ def cmd_org(args) -> int:
         work_dir=args.work_dir, keep_work=args.keep_work, cache_dir=args.cache_dir,
         skip_no_code=not args.include_no_code, dry_run=args.dry_run,
         verify_sandbox=args.verify_sandbox, kubeconfig=args.kubeconfig, kube_context=args.kube_context,
-        gitops=args.gitops, sandbox_timeout=args.sandbox_timeout)
+        gitops=args.gitops, sandbox_timeout=args.sandbox_timeout, llm_heavy=args.llm_heavy,
+        migrate_containerized=args.migrate_containerized)
+    if args.llm_heavy and not args.ai:
+        print("error: --llm-heavy needs --ai (docs/platform-migration.md)", file=sys.stderr)
+        return 2
     try:
         results = run_org(o)
     except SourceError as e:
@@ -282,6 +286,43 @@ def cmd_org(args) -> int:
         by[r.status] = by.get(r.status, 0) + 1
     print(" ".join(f"{k}={v}" for k, v in sorted(by.items())))
     return 1 if by.get("error") else 0
+
+
+def cmd_replatform(args) -> int:
+    """Move one already containerized application (a local checkout) to Kubernetes: replatform.py."""
+    from .generate import k8s_name
+    from .gitops import GitOpsOptions
+    from .org import OrgOptions, RepoResult
+    from .orgsource import existing_dockerfiles
+    from .replatform import migrate_repo
+    src = Path(args.path).resolve()
+    out = Path(args.out).resolve()
+    if out == src or src in out.parents:
+        print("error: --out must be outside the application folder", file=sys.stderr)
+        return 2
+    app = k8s_name(args.name or src.name)
+    o = OrgOptions(provider="local", org="local", registry=args.registry, gate=args.build, push_images=False,
+                   ai=args.llm_heavy, model=args.model, llm_heavy=args.llm_heavy, timeout=args.timeout)
+    res = RepoResult(provider="local", org="local", project="_", repo=src.name, status="error", app=app)
+    gitops = GitOpsOptions(git_url=args.git_url, branch="main", path=".", ingress_domain=args.ingress_domain or "",
+                           sandbox_idp=bool(args.ingress_domain))
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="cz-replatform-") as tmp:
+        r = migrate_repo(src, o, res, app, ".", out, Path(tmp) / "gen", None, args.tag, gitops,
+                         existing_dockerfiles(src, limit=200))
+    if r is None:
+        print(f"{src}: no Docker Swarm, Compose, Nomad, Azure Container Apps or ECS descriptor with a container found",
+              file=sys.stderr)
+        return 1
+    for c in r.components:
+        print(f"{c['component']}: {c['image']}")
+    for x in r.excluded:
+        print(f"{x['component']}: not migrated: {x['reason']}")
+    if r.status != "deployed":
+        print(f"{r.status}: {r.reason}", file=sys.stderr)
+        return 1
+    print(f"written to {out} (MIGRATION.md lists what was carried over)")
+    return 0
 
 
 def cmd_worker(args) -> int:
@@ -677,6 +718,10 @@ def main(argv=None) -> int:
     s.add_argument("--include-no-code", action="store_true", help="do not skip repositories without application "
                    "code (only documentation, configuration, scripts, or only libraries and tests)")
     s.add_argument("--dry-run", action="store_true", help="list the repositories and the API-level skips only")
+    s.add_argument("--migrate-containerized", action="store_true", help="repositories with a Dockerfile: move them "
+                   "from Docker Swarm, Compose, Nomad, Azure Container Apps or ECS to Kubernetes instead of skipping them")
+    s.add_argument("--llm-heavy", action="store_true", help="platform migrations and the sandbox tester ask the LLM as "
+                   "often as they need (needs --ai; many more calls)")
     g = s.add_argument_group("sandbox verification (read back pod health after Argo CD / Flux synced the push)")
     g.add_argument("--verify-sandbox", action="store_true", help="at the end, wait for the sandbox cluster to sync "
                    "the pushed commit and record per component: deployed and healthy / deployed but failing (reason); "
@@ -684,6 +729,22 @@ def main(argv=None) -> int:
     _kube_args(g)
     g.add_argument("--sandbox-timeout", type=int, default=900, help="seconds to wait for sync and rollout (default 900)")
     s.set_defaults(fn=cmd_org)
+
+    s = sub.add_parser("replatform", help="move an already containerized app (Docker Swarm, Compose, Nomad, Azure "
+                       "Container Apps, ECS) to Kubernetes: hardened manifests, External Secrets, GitOps files")
+    s.add_argument("path", help="checkout of the application repository")
+    s.add_argument("--out", required=True, help="folder for the generated files (outside the repository)")
+    s.add_argument("--name", help="application (namespace) name; default: the folder name")
+    s.add_argument("--registry", default="registry.local", help="registry and path the images are pushed to later")
+    s.add_argument("--tag", default="latest")
+    s.add_argument("--git-url", default="https://git.example.com/platform/sandbox-deployments.git",
+                   help="Git repository the GitOps files point at")
+    s.add_argument("--ingress-domain", help="wildcard domain for HTTPS Ingresses of the public components")
+    s.add_argument("--build", action="store_true", help="build (or pull) the images and run the security gate")
+    s.add_argument("--llm-heavy", action="store_true", help="let the LLM translate, review and fix (docs/platform-migration.md)")
+    s.add_argument("--model", default=None)
+    s.add_argument("--timeout", type=int, default=1800)
+    s.set_defaults(fn=cmd_replatform)
 
     s = sub.add_parser("sandbox", help="sandbox cluster deployed by `org`: read back health of every component")
     ssub = s.add_subparsers(dest="sandbox_cmd", required=True)
