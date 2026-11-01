@@ -6,7 +6,10 @@ every application from **A** (container-ready: a modern stack that runs in conta
 only) to **E** (not feasible: stays on Windows), and proves its output by building, running and deploying
 it in its own sandbox cluster.
 
-![Containerization readiness overview: business units, products and applications with their ratings](docs/images/results-overview.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/results-overview-dark.png">
+  <img alt="Containerization readiness overview: business units, products and applications with their ratings" src="docs/images/results-overview.png">
+</picture>
 
 - **Rules first, AI last.** Classification is done by a data-driven rule set (`rules/*.yaml`), and every
   finding comes with an explanation, a fix and references. An LLM is consulted only when the rules are

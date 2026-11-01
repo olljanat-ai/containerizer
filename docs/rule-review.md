@@ -14,7 +14,8 @@ enters the ruleset until an administrator approves it under **Admin → Rule rev
 4. **Approved rules go into your internal rules repository**, never into this tool's public `rules/`
    folder: what your applications taught the tool stays inside your organization.
 
-![One learned rule: the proposed rule, the diff, the evidence and the decision](images/rule-review-detail.png)
+![One learned rule: the proposed rule, the diff, the evidence and the decision](images/rule-review-detail.png#only-light)
+![One learned rule: the proposed rule, the diff, the evidence and the decision](images/rule-review-detail-dark.png#only-dark)
 
 ## What a candidate shows
 
