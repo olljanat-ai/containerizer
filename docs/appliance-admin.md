@@ -236,6 +236,9 @@ one itself, on its CPU. It is off by default and is turned on under **Admin → 
 (administrators only). Scans with **Ask the LLM** use it when no LLM is set on that page; an LLM set
 there always wins. See [the LLM](source-control.md#the-llm) for what it is asked.
 
+![Built-in LLM running: the model checked on the disk, the machine's memory and the sizing](images/admin-built-in-llm-running.png#only-light){ .cz-shot }
+![Built-in LLM running: the model checked on the disk, the machine's memory and the sizing](images/admin-built-in-llm-running-dark.png#only-dark){ .cz-shot }
+
 | | |
 | --- | --- |
 | Model | Qwen3-Coder 30B-A3B Instruct, ByteShape's `IQ4_XS-4.20bpw` GGUF build (16 GB, Apache 2.0), served as `qwen3-coder-30b-a3b` |
@@ -253,6 +256,9 @@ on the Firewall page; then they are removed again. If the download is refused an
 listed on **Admin → Firewall**. The page shows the progress; after the download the server loads the model,
 which takes a minute or two, and the state turns to **Running**. A failed download (network, checksum) is
 not retried by itself: **Try again** resumes it. A file that fails the checksum is deleted.
+
+![Built-in LLM downloading its model, with the progress](images/admin-built-in-llm-downloading.png#only-light){ .cz-shot }
+![Built-in LLM downloading its model, with the progress](images/admin-built-in-llm-downloading-dark.png#only-dark){ .cz-shot }
 
 **Sizing.** The answer slots (requests answered together, for about the cost of one, since speed follows
 memory bandwidth) and the container's memory limit follow the machine's memory:
