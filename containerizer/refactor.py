@@ -50,6 +50,9 @@ MAX_PROMPT_CHARS = 36000                # with the system prompt and the schema:
 DEFAULT_FILE_CHARS = 9000               # estimate of a file not readable when the order is made
 EXTRA_FILE_CHARS = 6000                 # the component's appsettings.json is shown when it is at most this long
 MAX_NEW_FILE = 100_000
+# Output cap of an edit answer (OpenAI-compatible backend; CONTAINERIZER_LLM_MAX_TOKENS still caps it): edits
+# repeat only the lines they change, so a few thousand tokens; a runaway answer must not hold a CPU slot for an hour
+ANSWER_TOKENS_MIN, ANSWER_TOKENS_MAX = 4096, 8192
 STATUSES = ("queued", "generating", "verifying", "verified", "applies-only", "failed", "cancelled")
 STATUS_TEXT = {"queued": "Queued", "generating": "Generating", "verifying": "Verifying", "verified": "Verified",
                "applies-only": "Applies only", "failed": "Failed", "cancelled": "Cancelled"}
@@ -262,6 +265,8 @@ INSTRUCTIONS = """Rules for your answer:
 - "fixed": the rule ids your edits fix. "not_fixed": the ones you did not fix, each with the reason (for
   example: nothing to change in code, it is a deployment setting; or it cannot be fixed safely here).
 - "notes": one or two sentences for the reviewer (what to configure, what to test).
+- Use only APIs that exist in the component's target framework and packages (for example no .NET 9 API in a
+  net6.0 project, even when the Fix names one: then use the older equivalent).
 - Never remove functionality, never disable security checks, never add secrets or passwords to code.
 - If unsure, change less and explain in not_fixed."""
 
@@ -418,6 +423,43 @@ def _csproj_change(text: str, action: str, package: str, version: str) -> tuple[
     return text[:i] + f"  <ItemGroup>\n    {line}\n  </ItemGroup>\n" + text[i:], None
 
 
+def _backslash_match(text: str, search: str, replace: str) -> str | None:
+    """LLMs often get backslashes wrong when they write code into JSON (`"LocalMachine\\\\My"` in C# comes
+    back as `LocalMachine\\My`). When the search text matches exactly once with every run of backslashes
+    `k` times as long as in the file (the same k everywhere), the edit applies with the replacement's
+    backslash runs scaled the same way. Returns the new text, or None."""
+    if "\\" not in search:
+        return None
+    parts = re.split(r"(\\+)", search)
+    rx = "".join(r"(\\+)" if p.startswith("\\") else re.escape(p) for p in parts if p)
+    found = list(re.finditer(rx, text))
+    if len(found) != 1:
+        return None
+    m = found[0]
+    runs = [p for p in parts if p.startswith("\\")]
+    factors = {len(g) / len(r) for g, r in zip(m.groups(), runs)}
+    if len(factors) != 1:
+        return None
+    k = factors.pop()
+    if k != int(k) or k < 1:
+        return None
+    new = re.sub(r"\\+", lambda r: "\\" * (len(r[0]) * int(k)), replace)
+    return text[:m.start()] + new + text[m.end():]
+
+
+def _first_mismatch(text: str, search: str) -> str:
+    """Where a search text that was not found goes wrong: its first line that is not in the file, and the
+    file's closest line, so the retry can copy it exactly."""
+    import difflib
+    lines = text.split("\n")
+    for n, ln in enumerate(search.split("\n"), 1):
+        if ln.strip() and ln not in text:
+            close = difflib.get_close_matches(ln, lines, n=1, cutoff=0.6)
+            return (f"line {n} of the search text is not in the file: {ln.strip()[:120]!r}"
+                    + (f"; the file has {close[0].strip()[:160]!r}" if close else ""))
+    return f"its lines are in the file, but not one after the other as given (it starts with {search.strip()[:80]!r})"
+
+
 def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | None) -> tuple[list[dict], list[str]]:
     """Apply one answer: every edit's search text must occur exactly once (in the file as changed by the
     edits before it). All or nothing: on any error nothing is written. Returns (changes, errors)."""
@@ -451,8 +493,13 @@ def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | 
             continue
         n = text.count(search)
         if n == 0:
+            fixed = _backslash_match(text, search, replace)
+            if fixed is not None:                  # the same text but for JSON-escaped backslashes
+                files[rel] = (fixed, how)
+                changes.append({"file": rel, "kind": "edit", "detail": "backslashes as in the file"})
+                continue
             errors.append(f"edit {i} ({rel}): the search text was not found in the file; copy it exactly from the "
-                          f"file shown (it starts with {search.strip().splitlines()[0][:80]!r})")
+                          f"file shown ({_first_mismatch(text, search)})")
             continue
         if n > 1:
             errors.append(f"edit {i} ({rel}): the search text occurs {n} times; include more of the surrounding lines "
@@ -506,6 +553,23 @@ def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | 
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text(content)
     return changes, []
+
+
+def _names(rule: str, number: int, said: list[str]) -> bool:
+    """Whether the LLM's list names the finding: its rule id, the id with a prefix it made up
+    ("config-os-drive-path-default"), or its number in the prompt."""
+    for s in said:
+        s = s.strip().strip("[]").strip()
+        if s == rule or s.endswith("-" + rule) or s.endswith(" " + rule) or s == str(number):
+            return True
+    return False
+
+
+def answer_tokens(prompt: str) -> int:
+    """The output cap of one edit answer: 4096 tokens plus half the prompt's (a larger file may need larger
+    edits), at most 8192."""
+    from .llmqueue import estimate_tokens
+    return max(ANSWER_TOKENS_MIN, min(ANSWER_TOKENS_MAX, ANSWER_TOKENS_MIN + estimate_tokens(prompt) // 2))
 
 
 def retry_prompt(prompt: str, answer: dict, errors: list[str]) -> str:
@@ -749,7 +813,7 @@ def rules_after(payload: dict, app_root: Path) -> tuple[dict, list[dict]]:
                 now = {(e["file"], e["text"]) for e in map(parse_evidence, found.get(f["rule"], [])) if e["file"] == t["file"]}
                 before = {(e["file"], e["text"]) for e in f["evidence"]}
                 state = "resolved" if not now else ("partly" if len(now) < len(before) else "still found")
-                out[f"{comp['name']}|{f['rule']}"] = state
+                out[f"{comp['name']}|{f['rule']}|{t['file']}"] = state
         for rid in sorted(set(found) - set(comp.get("rules") or [])):
             new.append({"component": comp["name"], "rule": rid})
     return out, new
@@ -806,7 +870,8 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
     `ask(prompt, schema)` asks the LLM (default ai.ask_json with this module's system prompt).
     Returns the job's result (JSON-ready)."""
     from . import ai
-    ask = ask or (lambda prompt, schema: ai.ask_json(prompt, schema, feature=FEATURE, system=SYSTEM))
+    ask = ask or (lambda prompt, schema: ai.ask_json(prompt, schema, feature=FEATURE, system=SYSTEM,
+                                                     max_tokens=answer_tokens(prompt)))
     progress = progress or (lambda text: None)
     log = log or (lambda text: None)
     verify = payload.get("verify", True) if verify is None else verify
@@ -861,15 +926,16 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
         changes_all += changes
         if answer.get("notes"):
             notes.append(f"{t['file']}: {' '.join(str(answer['notes']).split())[:600]}")
-        said_fixed = {str(x) for x in answer.get("fixed") or []}
+        said_fixed = [str(x) for x in answer.get("fixed") or []]
         reasons = {str(x.get("rule")): str(x.get("reason") or "") for x in answer.get("not_fixed") or [] if isinstance(x, dict)}
         code_changes = [c for c in changes if c["kind"] != "package-manual"]
-        for r in rows:
-            if code_changes and (r["rule"] in said_fixed or (not said_fixed and r["rule"] not in reasons)):
+        for k, r in enumerate(rows, 1):
+            said = _names(r["rule"], k, said_fixed)
+            why = next((v for s, v in reasons.items() if _names(r["rule"], k, [s])), None)
+            if code_changes and (said or (not said_fixed and why is None)):
                 r.update(status="fixed", reason="")
             else:
-                r["reason"] = reasons.get(r["rule"]) or ("no change made" if not code_changes else
-                                                         "the LLM did not say this one is fixed")
+                r["reason"] = why or ("no change made" if not code_changes else "the LLM did not say this one is fixed")
     for c in changes_all:
         if c["kind"] == "package-manual":
             notes.append(f"package change to make by hand in {c['file'] or 'the project'}: {c['detail']}")
@@ -910,7 +976,7 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
     try:
         states, new = rules_after(payload, check_app)
         for r in findings:
-            r["rules_after"] = states.get(f"{r['component']}|{r['rule']}")
+            r["rules_after"] = states.get(f"{r['component']}|{r['rule']}|{r['file']}")
         result["new_findings"] = new
     except Exception as ex:  # noqa: BLE001
         notes.append(f"the rules could not run on the patched copy: {type(ex).__name__}: {ex}"[:400])
@@ -929,12 +995,14 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
 
 def summary(result: dict) -> str:
     fx = [f for f in result.get("findings") or [] if f.get("status") == "fixed"]
-    n = len(result.get("findings") or [])
+    n = len([f for f in result.get("findings") or [] if f.get("status") != "skipped"])
+    left = len(result.get("findings") or []) - n
     st = STATUS_TEXT.get(result.get("status"), result.get("status") or "?").lower()
     if result.get("status") == "failed":
         return f"{st}: {result.get('reason') or 'no patch'}"[:400]
     files = len(result.get("files") or [])
-    return f"{st}: {len(fx)} of {n} finding{'s' if n != 1 else ''} fixed, {files} file{'s' if files != 1 else ''} changed"
+    return (f"{st}: {len(fx)} of {n} finding{'s' if n != 1 else ''} fixed, {files} file{'s' if files != 1 else ''} changed"
+            + (f" ({left} not attempted: call limit)" if left else ""))
 
 
 def handler(job: dict) -> dict:

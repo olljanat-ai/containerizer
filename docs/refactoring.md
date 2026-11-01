@@ -58,7 +58,12 @@ The LLM answers with **structured edits**, not with a diff (diffs written by LLM
 Containerizer applies the edits itself: each search text must occur **exactly once** in the file, and only
 the files shown may be edited (new files stay inside the application folder). An answer that does not apply
 is sent back once with the errors ("not found", "occurs 3 times: include more lines"); if it still does not
-apply, that file is left unchanged and its findings are *not fixed*. Line endings, the byte order mark and
+apply, that file is left unchanged and its findings are *not fixed*. The errors name the first line of the
+search text that is not in the file and the file's closest line. One slip is forgiven: models often get
+backslashes wrong when they write code into JSON (`"LocalMachine\\My"` in C# comes back with one
+backslash), so a search text that matches exactly once with every run of backslashes scaled the same way
+applies, with the replacement's backslashes scaled alike. Each answer may be at most 4,096 tokens plus
+half of the question's (8,192 at most), so a model that rambles cannot hold a CPU slot for an hour. Line endings, the byte order mark and
 the encoding of each file are kept. Package changes go into the component's `.csproj`; for other project
 types they are listed in the notes to make by hand.
 
@@ -142,6 +147,10 @@ The LLM queue runner (`containerizer-llm-queue`) carries out the orders. For the
 
 - **The LLM can be wrong.** A patch that builds and runs is not a patch that is correct: the build and a
   start-up probe do not run your tests. Review every change.
+- **APIs the component cannot use.** Models suggest APIs of newer frameworks than the component targets
+  (on a `net6.0` component, Qwen3-Coder used `X509CertificateLoader`, which is .NET 9 and later). The build
+  catches it: such a patch is *applies only*, with the compiler error in the log tail. Containerizer does
+  not ask the LLM again with the build error.
 - **Speed.** On the built-in CPU LLM each file takes five minutes or more, and the verification build takes
   minutes too; an order of a few files takes most of an hour. The queue runs it when its settings allow.
 - **Small context.** The LLM sees one file (or part of a large one) and the component's settings, not the

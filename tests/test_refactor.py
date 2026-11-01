@@ -205,6 +205,23 @@ def test_edits_need_exactly_one_match(tmp_path):
     assert "already exists" in err[0]
 
 
+def test_json_escaped_backslashes_and_the_retry_hint(tmp_path):
+    """Seen with qwen3-coder on a CPU: C# `"LocalMachine\\\\My"` came back as `LocalMachine\\My` in the search
+    text. The same text with every backslash run scaled the same way still applies; anything else is an error
+    that points at the line that differs."""
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "A.cs").write_text('throw new X($"not found in LocalMachine\\\\My.");\nvar p = "C:\\\\x";\n')
+    ch, err = rf.apply_answer(root, {"edits": [{"file": "A.cs", "search": 'throw new X($"not found in LocalMachine\\My.");',
+                                               "replace": 'throw new X($"not found in {path}\\n");'}]}, ["A.cs"], None)
+    assert err == [] and ch[0]["detail"] == "backslashes as in the file"
+    assert (root / "A.cs").read_text().startswith('throw new X($"not found in {path}\\\\n");')
+    _, err = rf.apply_answer(root, {"edits": [{"file": "A.cs", "search": 'var p = "D:\\\\x";', "replace": "y"}]}, ["A.cs"], None)
+    assert "line 1 of the search text is not in the file" in err[0] and "the file has 'var p = \"C:\\\\\\\\x\";'" in err[0]
+    assert rf._names("os-drive-path-default", 1, ["config-os-drive-path-default"])
+    assert rf._names("cert-store", 2, ["2"]) and not rf._names("cert-store", 1, ["cert-store-localmachine-code"])
+
+
 def test_package_changes_go_into_the_project_file(tmp_path):
     root = tmp_path / "app"
     (root / "Api").mkdir(parents=True)
@@ -270,6 +287,30 @@ def test_an_answer_that_does_not_apply_is_asked_again_with_the_errors(shop, tmp_
     # the LLM fails: an LLM error for the finding, no patch
     res = rf.run_order(pl, tmp_path / "w3", ask=lambda p, s: (_ for _ in ()).throw(RuntimeError("timed out")))
     assert res["status"] == "failed" and res["findings"][0]["status"] == "llm-error" and "timed out" in res["findings"][0]["reason"]
+
+
+def test_rules_after_are_per_file(shop, tmp_path):
+    """The same rule in two files: fixing one shows as gone from that file, still found in the other."""
+    for name in ("Options", "Other"):
+        (shop / f"src/Shop.Api/{name}.cs").write_text(
+            f'public class {name}\n{{\n    public string Folder {{ get; set; }} = @"D:\\Shop\\{name}";\n}}\n')
+    _git(shop, "add", "-A")
+    _git(shop, "commit", "--quiet", "-m", "paths")
+    pl = _payload(shop, verify=False, include_config=True)
+
+    def ask(prompt, schema):
+        if "File src/Shop.Api/Options.cs" in prompt:
+            return {"edits": [{"file": "src/Shop.Api/Options.cs", "search": '@"D:\\Shop\\Options"',
+                               "replace": '"/data/options"'}], "new_files": [], "package_changes": [],
+                    "fixed": ["os-drive-path-default"], "not_fixed": [], "notes": ""}
+        if "File src/Shop.Api/Other.cs" in prompt:
+            return {"edits": [], "new_files": [], "package_changes": [], "fixed": [],
+                    "not_fixed": [{"rule": "os-drive-path-default", "reason": "a deployment setting"}], "notes": ""}
+        return good_answer()
+    res = rf.run_order(pl, tmp_path / "w", ask=ask)
+    got = {(f["file"].split("/")[-1], f["rule"]): (f["status"], f["rules_after"], f["reason"]) for f in res["findings"]}
+    assert got[("Options.cs", "os-drive-path-default")] == ("fixed", "resolved", "")
+    assert got[("Other.cs", "os-drive-path-default")] == ("not-fixed", "still found", "a deployment setting")
 
 
 def test_the_call_limit(shop, tmp_path):
@@ -367,6 +408,18 @@ def test_queue_handler_result_shape(shop, tmp_path, monkeypatch):
     assert progress[0].startswith("generating") and any(p.startswith("verifying") for p in progress)
     assert list((tmp_path / "scratch").iterdir()) == []                               # scratch copies removed
     assert lq.kind_title("refactor") == "Refactoring" and lq.JOB_KINDS["refactor"].feature == "refactor-queued"
+
+
+def test_edit_answers_are_capped(shop, tmp_path, monkeypatch):
+    """A runaway answer of a self-hosted model must not hold a CPU slot for an hour: each edit request asks for
+    at most 4096 tokens plus half the prompt's, never more than 8192."""
+    assert rf.answer_tokens("") == 4096
+    assert rf.answer_tokens("x" * 14000) == 4096 + 2000
+    assert rf.answer_tokens("x" * 200000) == 8192
+    caps = []
+    monkeypatch.setattr(ai, "ask_json", lambda prompt, schema, **kw: caps.append(kw["max_tokens"]) or good_answer())
+    rf.run_order(_payload(shop, verify=False), tmp_path / "w")
+    assert len(caps) == 1 and rf.ANSWER_TOKENS_MIN <= caps[0] <= rf.ANSWER_TOKENS_MAX
 
 
 def test_runner_records_progress(monkeypatch):
