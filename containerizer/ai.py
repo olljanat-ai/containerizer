@@ -18,6 +18,7 @@ to rules/learned/ with `source: ai` and the model name, so it can be reviewed.
 """
 from __future__ import annotations
 
+import contextvars
 import ipaddress
 import json
 import os
@@ -42,6 +43,76 @@ PRICING = {"claude-fable-5-1": (10.0, 50.0), "claude-opus-5-5": (4.0, 20.0),
            "claude-sonnet-5-5": (2.0, 10.0), "claude-haiku-5-5": (0.10, 0.50)}
 LEARNED = RULES_DIR / "learned"
 USAGE_LOG: list[dict] = []
+# called with every usage entry (worker.ScanMetrics exports them as Prometheus metrics)
+LISTENERS: list = []
+# what an LLM call is for: feature (assessment, build-diagnosis, dev-database, platform-migration,
+# sandbox-tester, ...) and the repository being scanned; set with `with usage_scope(...)`
+_SCOPE: contextvars.ContextVar = contextvars.ContextVar("containerizer_llm_scope", default={})
+HEAVY_ENV = "CONTAINERIZER_LLM_HEAVY"
+
+
+class usage_scope:
+    """`with usage_scope(feature="platform-migration", repo="team/api"):` tags the LLM calls inside it."""
+
+    def __init__(self, **tags):
+        self.tags = {k: v for k, v in tags.items() if v is not None}
+
+    def __enter__(self):
+        self.token = _SCOPE.set({**_SCOPE.get(), **self.tags})
+        return self
+
+    def __exit__(self, *exc):
+        _SCOPE.reset(self.token)
+
+
+def heavy_allowed(env=None) -> bool:
+    """LLM-heavy mode (platform migrations and the sandbox tester ask the LLM as often as they need) is
+    off unless the appliance or the environment turns it on: CONTAINERIZER_LLM_HEAVY=true. A scan also
+    needs its own "LLM-heavy" setting (Admin → Organization scans), so both must say yes."""
+    env = os.environ if env is None else env
+    return str(env.get(HEAVY_ENV, "")).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _price(model: str, backend: str) -> tuple[float, float] | None:
+    """$ per 1M tokens (input, output): the Claude list price, or for a self-hosted server what the
+    operator set (CONTAINERIZER_LLM_PRICE_INPUT / _OUTPUT); None when not known."""
+    if model in PRICING and backend in ("api", "cli"):
+        return PRICING[model]
+    pin, pout = _env("CONTAINERIZER_LLM_PRICE_INPUT"), _env("CONTAINERIZER_LLM_PRICE_OUTPUT")
+    try:
+        return (float(pin or 0), float(pout or 0)) if (pin or pout) else None
+    except ValueError:
+        return None
+
+
+USAGE_LOG_MAX = 20000           # a long-running worker keeps only the newest entries (metrics count them all)
+
+
+def record_usage(entry: dict) -> None:
+    USAGE_LOG.append(entry)
+    if len(USAGE_LOG) > USAGE_LOG_MAX:
+        del USAGE_LOG[:len(USAGE_LOG) - USAGE_LOG_MAX // 2]
+    for fn in list(LISTENERS):
+        try:
+            fn(entry)
+        except Exception:                   # metrics must never break a scan
+            pass
+
+
+def usage_summary(entries: list[dict]) -> dict:
+    """Totals of usage entries by feature: {feature: {calls, cached, errors, input_tokens, output_tokens, cost_usd}}."""
+    out: dict[str, dict] = {}
+    for u in entries:
+        f = out.setdefault(u.get("feature") or "other", {"calls": 0, "cached": 0, "errors": 0, "input_tokens": 0,
+                                                          "output_tokens": 0, "cost_usd": 0.0})
+        f["calls"] += 1
+        f["cached"] += 1 if u.get("cached") else 0
+        f["errors"] += 1 if u.get("error") else 0
+        if not u.get("cached"):
+            f["input_tokens"] += int(u.get("input_tokens") or 0)
+            f["output_tokens"] += int(u.get("output_tokens") or 0)
+            f["cost_usd"] = round(f["cost_usd"] + float(u.get("cost_usd") or 0), 5)
+    return out
 
 SYSTEM = """You are a senior platform engineer who moves Windows-hosted applications (.NET, Java, Node.js) to Linux
 containers on Kubernetes.
@@ -122,46 +193,59 @@ def model_name(model: str | None = None) -> str:
 CACHE = Path(os.environ.get("CONTAINERIZER_AI_CACHE", Path(__file__).resolve().parent.parent / ".work" / "ai-cache"))
 
 
-def ask_json(prompt: str, schema: dict, model: str | None = None, effort: str = "medium") -> dict:
+def ask_json(prompt: str, schema: dict, model: str | None = None, effort: str = "medium", feature: str | None = None,
+             system: str | None = None) -> dict:
+    """One structured LLM call. Every call (answered, cached or failed) is recorded with its feature and
+    repository (usage_scope) in USAGE_LOG and sent to LISTENERS."""
     import hashlib
 
+    system = system or SYSTEM
+    scope = {**_SCOPE.get(), **({"feature": feature} if feature else {})}
+    tags = {"feature": scope.get("feature") or "other", "repo": scope.get("repo") or ""}
     model = model_name(model)
     backend = _backend()
-    parts = [SYSTEM, prompt, schema, model, effort]
+    parts = [system, prompt, schema, model, effort]
     if backend == "openai":
         parts.append(_llm_base_url())     # same model name on another server is another model
     key = hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
     cf = CACHE / f"{key}.json"
     if cf.exists():
         cached = json.loads(cf.read_text())
-        USAGE_LOG.append({**cached["usage"], "cached": True})
+        record_usage({**cached["usage"], **tags, "cached": True})
         return cached["data"]
     t0 = time.time()
-    if backend == "api":
-        data, usage = _ask_api(prompt, schema, model, effort)
-    elif backend == "cli":
-        data, usage = _ask_cli(prompt, schema, model)
-    elif backend == "openai":
-        data, usage = _ask_openai(prompt, schema, model)
-    else:
-        raise RuntimeError("No LLM backend available (install `anthropic` and set credentials, install the claude CLI, "
-                           "or set CONTAINERIZER_LLM_BASE_URL to a self-hosted OpenAI-compatible server)")
+    try:
+        if backend == "api":
+            data, usage = _ask_api(prompt, schema, model, effort, system)
+        elif backend == "cli":
+            data, usage = _ask_cli(prompt, schema, model, system=system)
+        elif backend == "openai":
+            data, usage = _ask_openai(prompt, schema, model, system=system)
+        else:
+            raise RuntimeError("No LLM backend available (install `anthropic` and set credentials, install the claude "
+                               "CLI, or set CONTAINERIZER_LLM_BASE_URL to a self-hosted OpenAI-compatible server)")
+    except Exception:
+        record_usage({"model": model, "backend": backend, "seconds": round(time.time() - t0, 1), "input_tokens": 0,
+                      "output_tokens": 0, "cost_usd": 0.0, **tags, "error": True})
+        raise
     usage.update({"model": model, "backend": backend, "seconds": round(time.time() - t0, 1)})
-    pin, pout = PRICING.get(model, (0, 0))
+    price = _price(model, backend)
     if usage.get("cost_usd") is None:
+        pin, pout = price or (0, 0)
         usage["cost_usd"] = round((usage.get("input_tokens", 0) * pin + usage.get("output_tokens", 0) * pout) / 1e6, 5)
-    USAGE_LOG.append(usage)
+        usage["cost_known"] = price is not None
+    record_usage({**usage, **tags})
     CACHE.mkdir(parents=True, exist_ok=True)
     cf.write_text(json.dumps({"data": data, "usage": usage}))
     return data
 
 
-def _ask_api(prompt: str, schema: dict, model: str, effort: str):
+def _ask_api(prompt: str, schema: dict, model: str, effort: str, system: str = SYSTEM):
     import anthropic
 
     client = anthropic.Anthropic(api_key=_env("ANTHROPIC_API_KEY") or None, base_url=_env("ANTHROPIC_BASE_URL") or None) \
         if _OVERRIDE else anthropic.Anthropic()
-    kwargs = dict(model=model, max_tokens=16000, system=SYSTEM,
+    kwargs = dict(model=model, max_tokens=16000, system=system,
                   messages=[{"role": "user", "content": prompt}],
                   output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}})
     if model != "claude-haiku-5-5":
@@ -190,8 +274,8 @@ def _first_json(text: str):
     return None
 
 
-def _ask_cli(prompt: str, schema: dict, model: str, _retry: bool = False):
-    full = (f"{SYSTEM}\n\n{prompt}\n\nRespond with ONLY a JSON object (no prose, no code fences) that validates "
+def _ask_cli(prompt: str, schema: dict, model: str, _retry: bool = False, system: str = SYSTEM):
+    full = (f"{system}\n\n{prompt}\n\nRespond with ONLY a JSON object (no prose, no code fences) that validates "
             f"against this JSON schema:\n{json.dumps(schema)}")
     p = subprocess.run(["claude", "-p", "--model", model, "--output-format", "json", "--max-turns", "1",
                         "--disallowedTools", "Bash,Edit,Write,Read,Glob,Grep,WebFetch,WebSearch,Agent"],
@@ -207,7 +291,7 @@ def _ask_cli(prompt: str, schema: dict, model: str, _retry: bool = False):
     if data is None:
         if not _retry:
             return _ask_cli(prompt + "\n\nYour previous answer was not valid JSON. Answer with the JSON object only.",
-                            schema, model, _retry=True)
+                            schema, model, _retry=True, system=system)
         raise RuntimeError(f"no valid JSON in answer: {text[:300]}")
     u = env.get("usage") or {}
     return data, {"input_tokens": (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
@@ -280,7 +364,7 @@ def _post_json(url: str, body: dict, headers: dict, timeout: float) -> dict:
 JSON_MODES = ("json_schema", "json_object", "none")
 
 
-def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False):
+def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False, system: str = SYSTEM):
     """A self-hosted LLM behind an OpenAI-compatible /chat/completions endpoint."""
     base = _llm_base_url()
     key = _env("CONTAINERIZER_LLM_API_KEY", "")
@@ -298,7 +382,7 @@ def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False):
             f"against this JSON schema:\n{json.dumps(schema)}")
     body = {"model": model, "temperature": 0, "stream": False,
             "max_tokens": int(_env("CONTAINERIZER_LLM_MAX_TOKENS", "16000")),
-            "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]}
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
     resp = None
     for m in JSON_MODES[JSON_MODES.index(mode):]:
         b = dict(body)
@@ -327,7 +411,8 @@ def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False):
     if errs:
         if not _retry:
             return _ask_openai(prompt + "\n\nYour previous answer did not match the schema (" + "; ".join(errs[:5])
-                               + "). Answer with the JSON object only.", schema, model, _retry=True)
+                               + "). Answer with the JSON object only.", schema, model, _retry=True,
+                               system=system)
         hint = " (answer cut off: raise CONTAINERIZER_LLM_MAX_TOKENS)" if choice.get("finish_reason") == "length" else ""
         raise RuntimeError(f"no valid JSON in answer{hint}: {'; '.join(errs[:3])}: {text[:300]}")
     u = resp.get("usage") or {}
@@ -439,7 +524,7 @@ def ai_review_component(a, c, model: str | None = None) -> dict:
               "optional/legacy command?), classify every package listed as unknown, and add findings the rules missed. "
               f"For new findings give a regex over {LANG.get(c.project.kind_hint, 'source')} source that would detect the "
               "same issue elsewhere (or empty).")
-    res = ask_json(prompt, REVIEW_SCHEMA, model=model)
+    res = ask_json(prompt, REVIEW_SCHEMA, model=model, feature="assessment")
     res["model"] = model_name(model)
     return res
 
@@ -561,7 +646,7 @@ def diagnose_failure(a, c, plan: dict, stage: str, log_tail: str, model: str | N
               "external if the container itself is fine and only an external service/config is missing, platform if "
               "a Windows-only API/library is needed, code if the application code must change.")
     try:
-        r = ask_json(prompt, DIAG_SCHEMA, model=model)
+        r = ask_json(prompt, DIAG_SCHEMA, model=model, feature="build-diagnosis")
         fix = json.loads(r.get("fix_json") or "{}")
         if not isinstance(fix, dict):
             fix = {}
@@ -621,6 +706,6 @@ def ai_only_assess(a, model: str | None = None, with_rules: bool = False) -> dic
     prompt = (app_inventory(a, with_rules) + "\n\n" + RATING_HELP +
               "\n\nTask: rate this application and give a verdict for every deployable server component "
               "(use the project names above).")
-    r = ask_json(prompt, APP_SCHEMA, model=model)
+    r = ask_json(prompt, APP_SCHEMA, model=model, feature="assessment")
     r["usage"] = USAGE_LOG[-1]
     return r

@@ -43,8 +43,8 @@ SECRET_RE = re.compile(r"[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?")
 ORG_RE = re.compile(r"[\w .\-/]{1,200}")
 TIME_RE = re.compile(r"([01]\d|2[0-3]):([0-5]\d)")
 SCAN_COLS = ("Name", "Provider", "Organization", "ApiUrl", "Registry", "OutputRepo", "OutputBranch", "ImagePullSecret", "IncludeRegex", "ExcludeRegex", "SkipForks", "StaleDays", "Verify",
-             "Gate", "PushImages", "UseAi", "ScheduleDays", "ScheduleMinute", "Enabled")
-FLAGS = ("SkipForks", "Verify", "Gate", "PushImages", "UseAi", "Enabled")
+             "Gate", "PushImages", "UseAi", "LlmHeavy", "ScheduleDays", "ScheduleMinute", "Enabled")
+FLAGS = ("SkipForks", "Verify", "Gate", "PushImages", "UseAi", "LlmHeavy", "Enabled")
 NEW_DAYS = 7
 PAUSED = " <span class='st st-off'>Paused</span>"
 NEW_CHIP = " <span class='st st-run'>New</span>"
@@ -148,6 +148,12 @@ def route(adm, conn, s, a, method: str, kind: str, parts: list, q: dict, form: d
         if len(parts) == 1 and method == "GET":
             return list_repos(adm, conn, s, a, q, flash)
     return _nf()
+
+
+def _heavy_state() -> str:
+    from .ai import heavy_allowed
+    return ("allowed on this appliance" if heavy_allowed() else
+            "off on this appliance: set CZ_LLM_HEAVY=true in /etc/containerizer/appliance.env and reboot")
 
 
 def _grafana(adm) -> str:
@@ -257,6 +263,11 @@ organization's read-only token. The output repository is never scanned.</p>
 {chk('Verify', 'Build and run every component before rating it (recommended)')}
 {chk('Gate', 'Security gate: lint, image vulnerability scan, hardened run (recommended)')}
 {chk('UseAi', 'Ask the LLM about uncertain components and unexplained failures')}
+{chk('LlmHeavy', 'LLM-heavy mode: platform migrations and the sandbox tester ask the LLM as often as they need')}
+<p class='muted small'>LLM-heavy mode needs the option above and is used only when the appliance allows it
+({_heavy_state()}). It makes many more LLM calls; their tokens and estimated cost are on the Grafana dashboard.
+Repositories with a Dockerfile are migrated from Docker Swarm, Nomad, Azure Container Apps or ECS when you enable them
+under <a href='/admin/repositories'>Repositories</a>.</p>
 <h3>Schedule</h3>
 <div class='days'>{days}</div>
 <label for='At'>At <span class='muted'>(UTC; no day selected: only on demand)</span></label>
@@ -269,7 +280,7 @@ def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
     from .worker import check_scan, schedule_text
     if ident is None:
         scan = {"Provider": "github", "OutputBranch": "main", "SkipForks": True, "StaleDays": 183, "Verify": True,
-                "Gate": True, "PushImages": True, "UseAi": False, "ScheduleDays": 32, "ScheduleMinute": 120, "Enabled": True}
+                "Gate": True, "PushImages": True, "UseAi": False, "LlmHeavy": False, "ScheduleDays": 32, "ScheduleMinute": 120, "Enabled": True}
         return Response(200, adm._shell(s, a, "New organization scan", "scans", _scan_form(adm, s, scan, None), flash))
     cur = conn.cursor(as_dict=True)
     cur.execute("SELECT * FROM cz.OrgScan WHERE ScanId = %s", (ident,))
@@ -383,6 +394,8 @@ def validate_scan(form: dict) -> tuple[dict, list[str]]:
     v["StaleDays"] = int(sd)
     for k in FLAGS:
         v[k] = form.get(k, [""])[0] == "1"
+    if v["LlmHeavy"] and not v["UseAi"]:
+        errors.append("LLM-heavy mode needs \"Ask the LLM\" too")
     v["ScheduleDays"] = sum(1 << int(d) for d in set(form.get("day", [])) if re.fullmatch(r"[0-6]", d))
     m = TIME_RE.fullmatch(form.get("At", ["02:00"])[0].strip())
     if not m:
@@ -612,7 +625,8 @@ def edit_repo(adm, conn, s, a, ident: int, flash: str) -> Response:
     comps = "".join(f"<li><b>{e(c.get('component', ''))}</b> <span class='muted small'>{e(c.get('image', ''))}</span></li>"
                     for c in detail.get("components") or [])
     excl = "".join(f"<li>{e(x.get('component', ''))}: {e(x.get('reason', ''))}</li>" for x in detail.get("excluded") or [])
-    lab = _lab_section(detail.get("lab_services") or {})
+    lab = _lab_section(detail.get("lab_services") or {}) + _migration_section(detail.get("migration") or {}) + \
+        _llm_section(detail.get("llm_usage") or {})
     link = (f"<a href='{e(r['WebUrl'])}' rel='noopener noreferrer' target='_blank'>{e(r['WebUrl'])}</a>"
             if r["WebUrl"] and URL_RE.fullmatch(r["WebUrl"]) else e(r["CloneUrl"]))
     facts = [("Scan", f"<a href='/admin/scans/{int(r['ScanId'])}'>{e(r['ScanName'])}</a>"), ("Repository", link),
@@ -635,7 +649,9 @@ def edit_repo(adm, conn, s, a, ident: int, flash: str) -> Response:
     opts = "".join(f"<label class='check'><input type='radio' name='Setting' value='{k}'{' checked' if k == cur_setting else ''}> "
                    f"{t}</label>" for k, t in (("auto", "Automatic: the scan decides (skips repositories with a Dockerfile, "
                                                          "without application code, not updated recently, ...)"),
-                                              ("enabled", "Enabled: always process it, even when the scan would skip it"),
+                                              ("enabled", "Enabled: always process it, even when the scan would skip it"
+                                                          " (a repository with a Dockerfile is moved from Docker Swarm, "
+                                                          "Compose, Nomad, Azure Container Apps or ECS to Kubernetes)"),
                                               ("disabled", "Disabled: never process it (stops deploying it to the sandbox, "
                                                            "hides its results from the results pages)")))
     form = (f"<form method='post' action='/admin/repositories/{ident}' class='edit'>{adm._csrf(s)}{opts}"
@@ -672,6 +688,30 @@ def _lab_section(lab: dict) -> str:
             "administrator turns the service on under Lab services and the repository is scanned again.</p>"
             if lab.get("missing") else "")
     return f"<h2>Lab services</h2>{hint}<ul>{''.join(items)}</ul>"
+
+
+def _migration_section(m: dict) -> str:
+    """Moved from another platform (replatform.py): which, from which files, with or without LLM-heavy mode."""
+    from .platforms import PLATFORM_TEXT
+    if not m:
+        return ""
+    plats = ", ".join(PLATFORM_TEXT.get(p, p) for p in m.get("platforms") or []) or "unknown"
+    files = "".join(f"<li><code>{e(f)}</code></li>" for f in (m.get("descriptors") or [])[:20])
+    return (f"<h2>Platform migration</h2><p>Already containerized: moved to Kubernetes from {e(plats)}"
+            f"{' with LLM-heavy mode' if m.get('llm_heavy') else ''}. MIGRATION.md in the output repository lists "
+            f"what was carried over.</p>" + (f"<ul>{files}</ul>" if files else ""))
+
+
+def _llm_section(u: dict) -> str:
+    """LLM calls of the latest scan of the repository, by feature (ai.usage_summary)."""
+    if not u:
+        return ""
+    rows = "".join(f"<tr><td>{e(f)}</td><td class='num'>{int(x.get('calls', 0))}</td>"
+                   f"<td class='num'>{int(x.get('cached', 0))}</td><td class='num'>{int(x.get('errors', 0))}</td>"
+                   f"<td class='num'>{int(x.get('input_tokens', 0)):,}</td><td class='num'>{int(x.get('output_tokens', 0)):,}</td>"
+                   f"<td class='num'>${float(x.get('cost_usd', 0)):.4f}</td></tr>" for f, x in sorted(u.items()))
+    return ("<h2>LLM usage (latest scan)</h2><table><tr><th>Feature</th><th>Calls</th><th>Cached</th><th>Failed</th>"
+            f"<th>Tokens in</th><th>Tokens out</th><th>Estimated cost</th></tr>{rows}</table>")
 
 
 def save_repo(conn, ident: int, form: dict) -> Response:

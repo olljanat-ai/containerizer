@@ -1,0 +1,25 @@
+location: westeurope
+name: orders
+type: Microsoft.App/containerApps
+properties:
+  configuration:
+    ingress:
+      external: true
+      targetPort: 5000
+    secrets:
+      - name: db-conn
+        keyVaultUrl: https://kv.vault.azure.net/secrets/db
+  template:
+    containers:
+      - name: orders
+        image: myacr.azurecr.io/orders:3
+        env:
+          - name: DB
+            secretRef: db-conn
+          - name: FEATURE_X
+            value: "on"
+        resources: {cpu: 0.5, memory: 1Gi}
+        probes:
+          - type: Readiness
+            httpGet: {path: /ready, port: 5000}
+    scale: {minReplicas: 2, maxReplicas: 10, rules: [{name: http, http: {metadata: {concurrentRequests: "50"}}}]}

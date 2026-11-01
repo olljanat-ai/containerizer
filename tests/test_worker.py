@@ -108,6 +108,12 @@ def test_scan_form_validation():
                      ({"Provider": "svn"}, "provider"), ({"Name": ""}, "Name is required")]:
         _, errors = admin_scans.validate_scan(_form(**bad))
         assert any(msg.lower() in x.lower() for x in errors), (bad, errors)
+    # LLM-heavy mode: off unless ticked, and only together with "Ask the LLM"
+    assert v["LlmHeavy"] is False
+    _, errors = admin_scans.validate_scan(_form(LlmHeavy="1"))
+    assert any("LLM-heavy mode needs" in x for x in errors)
+    v, errors = admin_scans.validate_scan(_form(LlmHeavy="1", UseAi="1"))
+    assert errors == [] and v["LlmHeavy"] is True and v["UseAi"] is True
 
 
 def test_repo_state_texts():
@@ -263,6 +269,7 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
         csrf = b.csrf(body)
         s, h, body = b.follow("/admin/scans/new", {"csrf": csrf, **_form(Name="Acme GitHub", Gate="", day=["5"])})
         assert s == 200 and "Saved." in body and "Sat at 02:30 UTC" in body
+        assert "name='LlmHeavy' value='1'>" in body and "off on this appliance" in body    # off by default
         # no read-only token for the organization: the scan cannot run, and says why
         assert "no read-only token is registered for GitHub organization acme" in body and "/run'" not in body
         scan_id = int(re.search(r"/admin/repositories\?scan=(\d+)", body)[1])

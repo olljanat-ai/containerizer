@@ -579,6 +579,11 @@ CREATE TABLE [${schema}].OrgScan (
     CreatedAt       datetime2(0) NOT NULL CONSTRAINT DF_OrgScan_CreatedAt DEFAULT SYSUTCDATETIME()
 );
 GO
+-- LLM-heavy mode (platform migrations and the sandbox tester ask the LLM as often as they need); also needs
+-- UseAi and CONTAINERIZER_LLM_HEAVY on the worker (appliance.env CZ_LLM_HEAVY), off by default
+IF COL_LENGTH(N'[${schema}].OrgScan', N'LlmHeavy') IS NULL
+ALTER TABLE [${schema}].OrgScan ADD LlmHeavy bit NOT NULL CONSTRAINT DF_OrgScan_LlmHeavy DEFAULT 0;
+GO
 
 -- One row per run of an organization scan: queued on schedule or with "Run now", claimed by a worker.
 IF OBJECT_ID(N'[${schema}].OrgScanRun', N'U') IS NULL
@@ -864,21 +869,21 @@ BEGIN
            CASE WHEN d.ScanId IS NULL THEN N'insert' WHEN i.ScanId IS NULL THEN N'delete' ELSE N'update' END,
            CASE WHEN d.ScanId IS NOT NULL THEN (SELECT d.Name, d.Provider, d.Organization, d.ApiUrl, d.TokenEnv, d.Registry,
                 d.OutputRepo, d.OutputBranch, d.OutputTokenEnv, d.ImagePullSecret, d.IncludeRegex, d.ExcludeRegex, d.SkipForks,
-                d.StaleDays, d.Verify, d.Gate, d.PushImages, d.UseAi, d.ScheduleDays, d.ScheduleMinute, d.Enabled
+                d.StaleDays, d.Verify, d.Gate, d.PushImages, d.UseAi, d.LlmHeavy, d.ScheduleDays, d.ScheduleMinute, d.Enabled
                 FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
            CASE WHEN i.ScanId IS NOT NULL THEN (SELECT i.Name, i.Provider, i.Organization, i.ApiUrl, i.TokenEnv, i.Registry,
                 i.OutputRepo, i.OutputBranch, i.OutputTokenEnv, i.ImagePullSecret, i.IncludeRegex, i.ExcludeRegex, i.SkipForks,
-                i.StaleDays, i.Verify, i.Gate, i.PushImages, i.UseAi, i.ScheduleDays, i.ScheduleMinute, i.Enabled
+                i.StaleDays, i.Verify, i.Gate, i.PushImages, i.UseAi, i.LlmHeavy, i.ScheduleDays, i.ScheduleMinute, i.Enabled
                 FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
     FROM inserted i FULL OUTER JOIN deleted d ON d.ScanId = i.ScanId
     CROSS JOIN [${schema}].fnAuditWho() w
     WHERE d.ScanId IS NULL OR i.ScanId IS NULL
        OR EXISTS (SELECT i.Name, i.Provider, i.Organization, i.ApiUrl, i.TokenEnv, i.Registry, i.OutputRepo, i.OutputBranch,
                          i.OutputTokenEnv, i.ImagePullSecret, i.IncludeRegex, i.ExcludeRegex, i.SkipForks, i.StaleDays,
-                         i.Verify, i.Gate, i.PushImages, i.UseAi, i.ScheduleDays, i.ScheduleMinute, i.Enabled
+                         i.Verify, i.Gate, i.PushImages, i.UseAi, i.LlmHeavy, i.ScheduleDays, i.ScheduleMinute, i.Enabled
                   EXCEPT SELECT d.Name, d.Provider, d.Organization, d.ApiUrl, d.TokenEnv, d.Registry, d.OutputRepo, d.OutputBranch,
                          d.OutputTokenEnv, d.ImagePullSecret, d.IncludeRegex, d.ExcludeRegex, d.SkipForks, d.StaleDays,
-                         d.Verify, d.Gate, d.PushImages, d.UseAi, d.ScheduleDays, d.ScheduleMinute, d.Enabled);
+                         d.Verify, d.Gate, d.PushImages, d.UseAi, d.LlmHeavy, d.ScheduleDays, d.ScheduleMinute, d.Enabled);
 END;
 GO
 
@@ -1287,4 +1292,7 @@ GO
 -- 17: discovery runs and projects of organization scans (OrgScanRun.Kind, OrgProject); disabled repositories
 -- and projects left out of the results views
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 17) INSERT [${schema}].SchemaVersion (Version) VALUES (17);
+GO
+-- 18: LLM-heavy mode of organization scans (OrgScan.LlmHeavy)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 18) INSERT [${schema}].SchemaVersion (Version) VALUES (18);
 GO

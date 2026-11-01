@@ -11,6 +11,8 @@ Group=cz-web
 # CONTAINERIZER_PUBLIC_URL from CZ_HOSTNAME (cz-firstboot); web.env may override it
 EnvironmentFile=-/run/containerizer/web-url.env
 EnvironmentFile=/etc/containerizer/web.env
+# LLM-heavy mode from appliance.env (cz-firstboot), off by default
+EnvironmentFile=-/run/containerizer/llm.env
 Environment="CONTAINERIZER_SQL=Server=127.0.0.1,1433;Database=Containerizer;User Id=cz_web;TrustServerCertificate=yes"
 Environment="CONTAINERIZER_ADMIN_SQL=Server=127.0.0.1,1433;Database=Containerizer;User Id=cz_admin;TrustServerCertificate=yes"
 Environment=CONTAINERIZER_SYSTEM_DIR=/run/containerizer/system

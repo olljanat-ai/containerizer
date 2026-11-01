@@ -97,6 +97,10 @@ class OrgOptions:
     lab: set | None = None              # lab services that are on (labservices.py); None: from CONTAINERIZER_LAB_SERVICES
     only_projects: set | None = None    # "Scan now" on the admin pages: only these projects ...
     only_repos: set | None = None       # ... and these repositories (project/name); None: every repository
+    migrate_containerized: bool = False # CLI: repositories with a Dockerfile are migrated, not skipped (the worker:
+                                        # an administrator enables them one by one)
+    llm_heavy: bool = False             # platform migrations and the sandbox tester ask the LLM as often as they need
+                                        # (replatform.py); the worker sets it only when the appliance allows it
 
 
 @dataclass
@@ -123,6 +127,8 @@ class RepoResult:
     source_key: str = ""              # Application.SourceKey in the results database
     dev_database: dict = field(default_factory=dict)   # the uploaded dev database restored next to it, if any
     lab_services: dict = field(default_factory=dict)   # lab services needed, provided and turned off (labservices.py)
+    migration: dict = field(default_factory=dict)      # moved from another platform (replatform.py): platforms, files
+    llm_usage: dict = field(default_factory=dict)      # LLM calls for this repository, by feature (ai.usage_summary)
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -694,12 +700,34 @@ def no_code_reason(src: Path) -> tuple[str, str]:
     return "", ""
 
 
+def repo_label(r: SourceRepo) -> str:
+    return r.name if r.project in ("", NO_PROJECT) else f"{r.project}/{r.name}"
+
+
 def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work: Path, reg: Registry | None,
                  tag: str, cutoff: datetime | None, rules_reset, admin: str | None = None) -> RepoResult:
+    """One repository (_process_repo), with the LLM calls made for it tagged with its name and summed up
+    in RepoResult.llm_usage."""
+    from .ai import LISTENERS, usage_scope, usage_summary
+    used: list[dict] = []
+    LISTENERS.append(used.append)
+    try:
+        with usage_scope(repo=repo_label(r)):
+            res = _process_repo(r, prov, o, app, out, work, reg, tag, cutoff, rules_reset, admin)
+    finally:
+        LISTENERS.remove(used.append)
+    res.llm_usage = usage_summary(used) if used else {}
+    return res
+
+
+def _process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work: Path, reg: Registry | None,
+                  tag: str, cutoff: datetime | None, rules_reset, admin: str | None = None) -> RepoResult:
     """One repository. `admin` is an administrator's decision from the worker's repository list:
     "disabled" (never processed, stops deploying), "project-disabled" (the same, for every repository
     of a project an administrator disabled), "enabled" (processed even when an automatic skip
-    applies: stale, fork, Dockerfile, no application code) or None (automatic)."""
+    applies: stale, fork, Dockerfile, no application code) or None (automatic). An enabled repository
+    with a Dockerfile and a deployment descriptor (Swarm, Compose, Nomad, Azure Container Apps, ECS) is
+    moved from that platform to Kubernetes (replatform.py) instead of being containerized again."""
     from .analyze import analyze_app
     from .generate import generate_app, k8s_name
     from .gitops import GitOpsOptions
@@ -789,9 +817,25 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
                 (x := skip("skipped-stale", f"last commit on {r.default_branch or 'default branch'} {when:%Y-%m-%d}")):
             return x
         dockerfiles = existing_dockerfiles(src)
-        if dockerfiles and (x := skip("skipped-dockerfile", "found " + ", ".join(dockerfiles[:3])
+        if dockerfiles and not o.migrate_containerized and (x := skip("skipped-dockerfile", "found " + ", ".join(dockerfiles[:3])
                                       + (" ..." if len(dockerfiles) > 3 else ""))):
             return x
+        if dockerfiles:
+            # already containerized and enabled by an administrator: move it from its current platform
+            from .replatform import migrate_repo
+            from .sandbox_https import configured_domain, normalize_domain
+            domain = normalize_domain(o.ingress_domain) if o.ingress_domain else configured_domain()
+            gitops = GitOpsOptions(git_url=out.url, branch=o.output_branch, path=rel, verify_commits=o.verify_commits,
+                                   image_pull_secret=o.image_pull_secret or "", ingress_domain=domain,
+                                   sandbox_idp=o.sandbox_idp)
+            from .sqlstore import source_info
+            res.source_key = source_info(src, app)["key"]
+            mres = migrate_repo(src, o, res, app, rel, dest, work / "gen" / app, reg, tag, gitops,
+                                existing_dockerfiles(src, limit=200))
+            if mres is not None:
+                if mres.status == "deployed":
+                    (dest / "containerizer.json").write_text(json.dumps(mres.to_dict(), indent=2, default=str) + "\n")
+                return mres
         if o.skip_no_code:
             rules_reset()
             status, why = no_code_reason(src)
@@ -1196,7 +1240,7 @@ def sandbox_step(o: OrgOptions, out: "Output", log=print) -> dict:
     sandbox/HEALTH.md + health.json in the output repository, the results database, the learning loop."""
     from .sandbox import KubeOptions, SandboxOptions, summary, verify_sandbox, write_health
     so = SandboxOptions(kube=KubeOptions(kubeconfig=o.kubeconfig, context=o.kube_context), gitops=o.gitops,
-                        timeout=o.sandbox_timeout)
+                        timeout=o.sandbox_timeout, llm=o.llm_heavy, model=o.model)
     if out.git and not out.push:
         doc = {"checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "revision": "",
                "gitops": o.gitops, "cluster": "", "components": [],
@@ -1204,6 +1248,16 @@ def sandbox_step(o: OrgOptions, out: "Output", log=print) -> dict:
         log(f"sandbox verification skipped: {doc['skipped']}")
     else:
         doc = verify_sandbox(out.root, so, log=log)
+        if o.llm_heavy and not doc.get("skipped"):
+            # LLM-heavy sandbox tester: the LLM's fixes for failing migrated apps, applied and checked again
+            from .replatform import apply_sandbox_fixes, heavy_rounds
+            for i in range(heavy_rounds()):
+                changed = apply_sandbox_fixes(out.root, doc, log=log)
+                if not changed or not out.commit(f"containerizer: sandbox tester fixes for {', '.join(changed)}"):
+                    break
+                so.revision = ""
+                log(f"sandbox tester round {i + 1}: {len(changed)} app(s) changed, checking again")
+                doc = verify_sandbox(out.root, so, log=log)
     write_health(out.root, doc)
     log(f"sandbox health: {summary(doc)}" + (f" (skipped: {doc['skipped']})" if doc.get("skipped") else ""))
     if doc.get("learned"):

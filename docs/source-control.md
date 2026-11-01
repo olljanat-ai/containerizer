@@ -89,7 +89,9 @@ Enter the repository's https URL exactly as on the scan's *Output repository* (w
 ## The LLM
 
 Scans with **Ask the LLM** on consult an LLM about the components the rules are unsure of and the
-build or run failures no failure rule explains. Set it once on the same page:
+build or run failures no failure rule explains. Scans with **LLM-heavy mode** also let it translate,
+review and fix [platform migrations](platform-migration.md#llm-heavy-mode); every call is counted on the
+Grafana dashboard. Set it once on the same page:
 
 | Kind | Server | Model | API key |
 | --- | --- | --- | --- |
