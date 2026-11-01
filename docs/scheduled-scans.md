@@ -27,9 +27,11 @@ A scan runs in two phases, so time is not spent on repositories nobody uses any 
      with their number of repositories and latest commit. Disabling a project disables all its
      repositories, including ones added to it later. GitHub organizations have no project level:
      disable the repositories, or pause the scan.
-   ![Repositories after discovery, oldest commit first: a disabled project and a disabled repository](images/admin-repositories-discovered.png)
+   ![Repositories after discovery, oldest commit first: a disabled project and a disabled repository](images/admin-repositories-discovered.png#only-light)
+   ![Repositories after discovery, oldest commit first: a disabled project and a disabled repository](images/admin-repositories-discovered-dark.png#only-dark)
 
-   ![Projects of an Azure DevOps organization with their latest commits, one disabled](images/admin-projects.png)
+   ![Projects of an Azure DevOps organization with their latest commits, one disabled](images/admin-projects.png#only-light)
+   ![Projects of an Azure DevOps organization with their latest commits, one disabled](images/admin-projects-dark.png#only-dark)
 
 3. **Run full scan** (or the schedule) then processes only the enabled repositories. Disabled ones are
    never cloned, and one that was deployed before leaves the sandbox at that run.
