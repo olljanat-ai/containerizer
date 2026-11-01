@@ -219,3 +219,11 @@ def test_external_links_open_in_a_new_tab():
 def test_favicon():
     assert webui.FAVICON.startswith("<svg") and "<script" not in webui.FAVICON
     assert "<link rel='icon' href='/static/favicon.svg'" in webui.page("t", "")
+
+
+def test_the_approval_policy_in_a_sentence():
+    assert "no job needs approval" in admin_llmqueue.approval_text({"ApproveKinds": None, "ApproveMinTokens": 1})
+    assert admin_llmqueue.approval_text({"ApproveKinds": "refactor", "ApproveMinTokens": 0}) == \
+        "Now: all refactoring orders wait for approval."
+    assert "10,000 input tokens or more wait" in admin_llmqueue.approval_text(
+        {"ApproveKinds": "refactor,review", "ApproveMinTokens": 10000})

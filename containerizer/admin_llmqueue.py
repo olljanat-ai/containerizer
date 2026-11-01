@@ -358,6 +358,19 @@ def rescan(conn, form: dict) -> Response:
 
 # --------------------------------------------------------------------------- settings
 
+def approval_text(v: dict) -> str:
+    """The approval policy in a sentence."""
+    kinds = [k for k in (v.get("ApproveKinds") or "").split(",") if k]
+    if not kinds:
+        return "Now: no job needs approval (no kind is ticked); every job starts by itself."
+    names = " and ".join({"refactor": "refactoring orders", "review": "component reviews"}.get(k, k) for k in kinds)
+    n = int(v.get("ApproveMinTokens") or 0)
+    if n <= 1:
+        return f"Now: all {names} wait for approval."
+    return (f"Now: {names} estimated at {n:,} input tokens or more wait for approval; smaller ones start by "
+            f"themselves.")
+
+
 def settings_form(adm, s, v: dict) -> str:
     from .worker import DAYS
     days = "".join(f"<label class='check day'><input type='checkbox' name='day' value='{i}'"
@@ -383,11 +396,13 @@ value='{float(v['MaxLoadPerCpu'] or 0):.2f}'>
 slots; 1 for a CPU server)</span></label><input id='Parallel' name='Parallel' type='number' min='1' max='16'
 value='{int(v['Parallel'] or 1)}'>
 <h3>Approval</h3>
-<p class='muted small'>Jobs of the kinds ticked here wait for an administrator to approve them before the runner
-takes them, from the size given (estimated tokens the LLM must read; 0: all of them).</p>
+<p class='note'>{e(approval_text(v))}</p>
+<p class='muted small'>A job of a kind ticked here waits for an administrator's approval when its estimate is at
+least the number of tokens below; smaller jobs, and every job of a kind not ticked, start by themselves.</p>
 <label class='check'><input type='checkbox' name='ApproveKind' value='refactor'{' checked' if 'refactor' in (v.get('ApproveKinds') or '') else ''}> Refactoring orders</label>
 <label class='check'><input type='checkbox' name='ApproveKind' value='review'{' checked' if 'review' in (v.get('ApproveKinds') or '') else ''}> Component reviews from scans</label>
-<label for='ApproveMinTokens'>From <span class='muted'>(estimated input tokens; 0: every job of those kinds)</span></label>
+<label for='ApproveMinTokens'>Needs approval from <span class='muted'>(estimated input tokens the LLM must read; 0: every
+job of the ticked kinds)</span></label>
 <input id='ApproveMinTokens' name='ApproveMinTokens' type='number' min='0' max='10000000' step='1'
 value='{int(v.get('ApproveMinTokens') or 0)}'>
 <div><button>Save</button></div></form>"""
