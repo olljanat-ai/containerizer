@@ -89,8 +89,10 @@ uv python install 3.12
 docker run --rm hello-world && ls -l /dev/kvm        # both must work without sudo
 ```
 
-Without uv the script falls back to `python3 -m venv` with Debian's 3.13, which works for development
-but is not exactly what CI runs.
+Without uv the script falls back to `python3 -m venv` with Debian's 3.13 (install `python3-venv` for
+it), which works for development
+but is not exactly what CI runs. If `.venv-ci/` was created that way and uv is installed later, the next
+`ci/local.sh` run notices the version and recreates it with 3.12.
 
 ### Optional: cosign
 
@@ -148,12 +150,32 @@ sudo chmod 0644 $f
 
 docker run -d --name llm --restart unless-stopped --network host \
   --volume /srv/llm:/models:ro --memory 24g --cpu-shares 256 \
-  --user 65534:65534 --read-only --tmpfs /tmp:size=64m --cap-drop ALL --security-opt no-new-privileges \
+  --user 65534:65534 --read-only --tmpfs /tmp:size=64m --cap-drop ALL --cap-add IPC_LOCK --ulimit memlock=-1:-1 \
+  --security-opt no-new-privileges \
+  -e LLAMA_ARG_HOST=127.0.0.1 -e LLAMA_ARG_PORT=8081 \
+  --health-cmd 'curl -fsS http://127.0.0.1:8081/health' --health-start-period 5m \
   ghcr.io/ggml-org/llama.cpp:server-b12030@sha256:e67d88af487390098c76d7982b1761484339fa147b7e41d3c64ae1318759f78b \
-  --host 127.0.0.1 --port 8081 --model /models/$f --alias qwen3-coder-30b-a3b \
-  --ctx-size 32768 --parallel 1 --jinja
+  --model /models/$f --alias qwen3-coder-30b-a3b \
+  --ctx-size 32768 --parallel 1 --jinja --load-mode mmap+mlock --lazy-mode off \
+  --cors-origins localhost --no-cors-credentials
 curl -fsS http://127.0.0.1:8081/health                 # {"status":"ok"} once the model is loaded
+sudo grep VmLck /proc/$(docker inspect llm --format '{{.State.Pid}}')/status   # about 15 GB: the model is pinned
 ```
+
+Why the options:
+
+- `--load-mode mmap+mlock` with `IPC_LOCK` and an unlimited `memlock` keeps the model in RAM. The file
+  is memory-mapped, so its 16 GB is page cache, not container memory (`docker stats` shows only the
+  3 GB or so of context buffers), and without the lock the kernel drops it when the test suite's builds
+  fill the cache, so the next answer first reads the model from disk again. `--lazy-mode off` keeps
+  large tensors resident too. This build has no `--mlock`: it fails with `invalid argument`.
+- The image sets `LLAMA_ARG_HOST=0.0.0.0` and `LLAMA_ARG_PORT=8080`. Setting the variables, instead of
+  `--host` and `--port`, avoids a warning that they are overridden, and `--health-cmd` replaces the
+  image's health check, which probes port 8080 and would mark the container `unhealthy`.
+- `--cors-origins localhost --no-cors-credentials`: by default any web page can call the server
+  (the `no API key is set and CORS allows all origins` warning). Containerizer is not a browser, so it
+  is not affected. The remaining warning, `control-looking token: 128247 '</s>' was not control-type`,
+  comes from the model file's metadata and is harmless.
 
 `--threads N` limits the CPU it takes (the default is about one thread per core). `--cpu-shares 256`
 gives the test suite's builds the CPU first when both want it. Then point Containerizer at it. Raise
@@ -166,8 +188,21 @@ export CONTAINERIZER_LLM_TIMEOUT=3600
 .venv-ci/bin/python -m containerizer assess examples/ci-demo --ai
 ```
 
+`--ai` asks the LLM only about server and platform components with a confidence below 0.85, and
+`examples/ci-demo` has none, so the command above checks the configuration but never calls the model.
+To see a real answer, scan a challenge scenario with a low-confidence component, for example
+`freight-rates` (after `ci/local.sh selftest` or `assess` has cloned the challenge repository):
+
+```sh
+cp -r .work/ci-local/challenge/scenarios/freight-rates /tmp/freight-rates
+.venv-ci/bin/python -m containerizer assess /tmp/freight-rates --ai -v
+```
+
+Answers are cached in `.work/ai-cache/` (`CONTAINERIZER_AI_CACHE`), so delete the entry, or point the
+variable at an empty folder, to make the model answer again.
+
 To test it from an appliance VM on the same server, enter the same server URL (the server's address
-instead of `localhost`, with `--host` set to match) and model on **Admin → Source control**, and allow
+instead of `localhost`, with `LLAMA_ARG_HOST` set to match) and model on **Admin → Source control**, and allow
 the address on **Admin → Firewall**. Plain http is accepted only when there is no API key: put TLS and
 a key (llama.cpp `--api-key`, behind a reverse proxy) in front of it otherwise.
 
@@ -223,8 +258,9 @@ reports, SARIF files, the kind kubeconfig and the appliance images in `.work/ci-
 
 Differences from the GitHub runners, on purpose:
 
-- SQL Server is published on `127.0.0.1:1433` only, and the web UI smoke test uses port 18080 instead
-  of 8080, so nothing on the server's network can reach them.
+- SQL Server is published on `127.0.0.1:11433` only (`CI_LOCAL_SQL_PORT`), and the web UI smoke test
+  uses port 18080 instead of 8080, so nothing on the server's network can reach them, and the `sql` job
+  runs while [the web UI without an appliance](#the-web-ui-without-an-appliance) holds 1433 and 8080.
 - The kind cluster is called `cz-sandbox`, as in CI; it is deleted after the test unless it already
   existed or `KEEP=1` is set. Keep one running between runs to save a minute or two.
 - The appliance job builds, boots and tests the image but never pushes, signs or publishes it. It
