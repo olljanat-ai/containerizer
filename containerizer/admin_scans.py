@@ -1,13 +1,18 @@
 """Admin pages for scheduled organization scans and their repositories (docs/scheduled-scans.md).
 
 - Organization scans: what to scan (provider, organization), where the results go (registry, output
-  repository), the filters, and the schedule (days and time, UTC); "Run now", cancel, and the runs with
-  their progress. Tokens are not entered here: the scan uses the read-only token registered for its
+  repository), the filters, and the schedule (days and time, UTC); "Discover", "Run full scan", cancel,
+  and the runs with their progress. Tokens are not entered here: the scan uses the read-only token registered for its
   organization and the write token registered for its output repository (Source control,
   admin_credentials.py), and does not run without them.
+- Discovery: a cheap first run that only lists the projects, the repositories and each one's latest
+  commit (the provider's API; nothing is cloned or assessed), so administrators can disable deprecated
+  projects and repositories before the first full scan.
 - Repositories: every repository the scans have found, enabled or disabled, with the reason when a
-  scan skipped it (Dockerfile, no application code, stale, ...). Administrators enable or disable them
-  one by one or in bulk; "Automatic" hands the decision back to the scan.
+  scan skipped it (Dockerfile, no application code, stale, ...) and its latest commit. Administrators
+  enable or disable them one by one or in bulk; "Automatic" hands the decision back to the scan.
+- Projects (Azure DevOps projects, GitLab subgroups): disabling one leaves all its repositories out
+  of the full scan. A disabled repository or project is also hidden from the results pages.
 
 The worker (worker.py) does the scanning. Same conventions as admin.py: plain HTML forms with the
 session's CSRF token, everything escaped, changes audited by triggers.
@@ -30,6 +35,7 @@ LAST_TEXT = {"deployed": "Deployed to the sandbox", "no-a-components": "Assessed
              "error": "Failed", "disabled": "Not processed (disabled)", **{k: "Skipped" for k in SKIP_TEXT}}
 RUN_TEXT = {"queued": "Queued", "running": "Running", "succeeded": "Finished", "failed": "Failed",
             "cancelled": "Cancelled"}
+KIND_TEXT = {"full": "Full scan", "discovery": "Discovery"}
 REGISTRY_RE = re.compile(r"[A-Za-z0-9.-]+(:\d{1,5})?(/[a-z0-9._/-]+)?")
 BRANCH_RE = re.compile(r"(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}")
 SECRET_RE = re.compile(r"[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?")
@@ -51,6 +57,10 @@ def _back(url: str, msg: str) -> Response:
     return redirect(url + ("&" if "?" in url else "?") + urlencode({"msg": msg}))
 
 
+def _project_name(name: str) -> str:
+    return "(no project)" if name == "_" else name
+
+
 def _repo_name(r: dict) -> str:
     return r["Name"] if r["ProjectName"] == "_" else f"{r['ProjectName']}/{r['Name']}"
 
@@ -69,6 +79,9 @@ def repo_state(r: dict) -> tuple[str, str, str]:
     if r.get("RemovedAt"):
         return "Removed", "", f"no longer in the organization (since {_d(r['RemovedAt'])})"
     note = f" ({r['AdminNote']})" if r.get("AdminNote") else ""
+    if r.get("ProjectState") == "disabled":
+        pnote = f" ({r['ProjectNote']})" if r.get("ProjectNote") else ""
+        return "Disabled", "administrator", f"project {r['ProjectName']} disabled by an administrator" + pnote
     if r.get("AdminState") == "disabled":
         return "Disabled", "administrator", "disabled by an administrator" + note
     if r.get("AdminState") == "enabled":
@@ -78,7 +91,7 @@ def repo_state(r: dict) -> tuple[str, str, str]:
     if r.get("SkipStatus"):
         return "Disabled", "automatic", f"{SKIP_TEXT.get(r['SkipStatus'], r['SkipStatus'])}: {r.get('SkipReason') or ''}"
     if not r.get("LastStatus"):
-        return "Enabled", "automatic", "new: not scanned yet"
+        return "Enabled", "automatic", "new: not scanned yet" if not r.get("LatestCommitAt") else "discovered: not scanned yet"
     return "Enabled", "automatic", ""
 
 
@@ -103,8 +116,8 @@ def route(adm, conn, s, a, method: str, kind: str, parts: list, q: dict, form: d
         if ident is None:
             return list_scans(adm, conn, s, a, flash) if method == "GET" and len(parts) == 1 else _nf()
         if method == "POST":
-            if action == "run":
-                return run_now(conn, ident)
+            if action in ("run", "discover"):
+                return run_now(conn, ident, "discovery" if action == "discover" else "full")
             if action == "cancel":
                 return cancel_run(conn, ident, form)
             if action == "delete":
@@ -114,6 +127,15 @@ def route(adm, conn, s, a, method: str, kind: str, parts: list, q: dict, form: d
             return _nf()
         return edit_scan(adm, conn, s, a, ident, flash, q) if not action else _nf()
     if kind == "repositories":
+        if len(parts) > 1 and parts[1] == "projects":
+            pid = int(parts[2]) if len(parts) > 2 and re.fullmatch(r"\d{1,9}", parts[2]) else None
+            if len(parts) == 2 and method == "GET":
+                return list_projects(adm, conn, s, a, q, flash)
+            if len(parts) == 3 and parts[2] == "bulk" and method == "POST":
+                return bulk_projects(conn, form)
+            if len(parts) == 3 and pid is not None:
+                return save_project(conn, pid, form) if method == "POST" else edit_project(adm, conn, s, a, pid, flash)
+            return _nf()
         if method == "POST" and len(parts) > 1 and parts[1] == "bulk":
             return bulk_repos(conn, form)
         if ident is not None and not action:
@@ -139,8 +161,9 @@ def _scans(conn) -> list[dict]:
     cur = conn.cursor(as_dict=True)
     cur.execute("""SELECT s.*, x.RunId, x.Status AS RunStatus, x.StartedAt, x.FinishedAt, x.RequestedAt, x.Message,
                           x.ReposDone, x.ReposTotal,
-                          (SELECT COUNT(*) FROM cz.OrgRepository r WHERE r.ScanId = s.ScanId AND r.RemovedAt IS NULL AND r.Enabled = 1) AS ReposOn,
-                          (SELECT COUNT(*) FROM cz.OrgRepository r WHERE r.ScanId = s.ScanId AND r.RemovedAt IS NULL AND r.Enabled = 0) AS ReposOff
+                          x.Kind,
+                          (SELECT COUNT(*) FROM cz.vOrgRepository r WHERE r.ScanId = s.ScanId AND r.RemovedAt IS NULL AND r.Active = 1) AS ReposOn,
+                          (SELECT COUNT(*) FROM cz.vOrgRepository r WHERE r.ScanId = s.ScanId AND r.RemovedAt IS NULL AND r.Active = 0) AS ReposOff
                    FROM cz.OrgScan s
                    OUTER APPLY (SELECT TOP (1) * FROM cz.OrgScanRun r WHERE r.ScanId = s.ScanId ORDER BY r.RunId DESC) x
                    ORDER BY s.Name""")
@@ -167,7 +190,8 @@ def list_scans(adm, conn, s, a, flash: str) -> Response:
         if r["RunId"]:
             when = r["FinishedAt"] or r["StartedAt"] or r["RequestedAt"]
             prog = f" {int(r['ReposDone'] or 0)}/{int(r['ReposTotal'] or 0)}" if r["RunStatus"] == "running" else ""
-            last = f"{run_chip(r['RunStatus'])}{e(prog)} <span class='muted small'>{_d(when)}</span>" \
+            kind = " <span class='muted small'>discovery</span>" if r["Kind"] == "discovery" else ""
+            last = f"{run_chip(r['RunStatus'])}{kind}{e(prog)} <span class='muted small'>{_d(when)}</span>" \
                    f"<div class='muted small'>{e(r['Message'] or '')}</div>"
         rows.append(
             f"<tr><td><a href='/admin/scans/{int(r['ScanId'])}'>{e(r['Name'])}</a>{'' if r['Enabled'] else PAUSED}{missing}</td>"
@@ -179,7 +203,9 @@ def list_scans(adm, conn, s, a, flash: str) -> Response:
             f"<a href='/admin/repositories?scan={int(r['ScanId'])}&amp;show=disabled'>{int(r['ReposOff'])}</a></td></tr>")
     body = (f"<p class='muted'>Organization scans run <code>containerizer org</code> on every repository of an Azure DevOps "
             f"organization, GitHub organization or GitLab group, on the days and at the time you choose. The scan worker "
-            f"(<code>containerizer worker</code>) runs them and keeps the repositories' clones between runs.{_grafana(adm)}</p>"
+            f"(<code>containerizer worker</code>) runs them and keeps the repositories' clones between runs. Start a new "
+            f"scan with <b>Discover</b>: it only lists the projects, repositories and latest commits, so you can disable "
+            f"deprecated ones before the first full scan.{_grafana(adm)}</p>"
             f"<p><a class='chip' href='/admin/scans/new'>+ Add an organization scan</a></p>"
             f"<table><thead><tr><th>Scan</th><th>Organization</th><th>Schedule</th><th>Latest run</th>"
             f"<th class='num'>Repositories<div class='small'>enabled / disabled</div></th></tr></thead>"
@@ -228,7 +254,7 @@ organization's read-only token. The output repository is never scanned.</p>
 {chk('UseAi', 'Ask the LLM about uncertain components and unexplained failures')}
 <h3>Schedule</h3>
 <div class='days'>{days}</div>
-<label for='At'>At <span class='muted'>(UTC; no day selected: only with Run now)</span></label>
+<label for='At'>At <span class='muted'>(UTC; no day selected: only on demand)</span></label>
 <input id='At' name='At' type='time' value='{minute // 60:02d}:{minute % 60:02d}'>
 {chk('Enabled', 'Enabled (unchecked: paused, no runs)')}
 <div><button>{'Save' if ident else 'Add'}</button> <a href='/admin/scans'>Cancel</a></div></form>"""
@@ -278,20 +304,30 @@ def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
         elif r["CancelRequested"] and r["Status"] == "running":
             cancel = "<div class='muted small'>cancelling after the current repository</div>"
         current = f"<div class='muted small'>now: {e(r['CurrentRepo'])}</div>" if r["Status"] == "running" and r["CurrentRepo"] else ""
-        rows.append(f"<tr><td class='num'>{int(r['RunId'])}</td><td>{run_chip(r['Status'])}{current}{cancel}</td>"
+        kind = KIND_TEXT.get(r.get("Kind") or "full", r.get("Kind"))
+        rows.append(f"<tr><td class='num'>{int(r['RunId'])}</td><td>{run_chip(r['Status'])}"
+                    f"<div class='muted small'>{e(kind)}</div>{current}{cancel}</td>"
                     f"<td class='nowrap'>{_d(r['StartedAt'] or r['RequestedAt'])}<div class='muted small'>{e(who)}"
                     f"{' · ' + e(r['Worker']) if r['Worker'] else ''}</div></td><td class='num'>{took}</td>"
                     f"<td>{counts}</td><td class='small'>{e(r['Message'] or '')}</td></tr>")
     runbtn = ""
     if scan["Enabled"] and not active and not problems:
-        runbtn = (f"<form method='post' action='/admin/scans/{ident}/run' class='inline'>{adm._csrf(s)}"
-                  f"<button>Run now</button></form>")
+        runbtn = (f"<form method='post' action='/admin/scans/{ident}/discover' class='inline'>{adm._csrf(s)}"
+                  f"<button class='secondary' title='List the projects, repositories and latest commits only: nothing is "
+                  f"cloned or assessed'>Discover</button></form> "
+                  f"<form method='post' action='/admin/scans/{ident}/run' class='inline'>{adm._csrf(s)}"
+                  f"<button>Run full scan</button></form>")
+    if not any(r.get("Kind") == "discovery" for r in runs) and not any(r["Status"] == "succeeded" for r in runs):
+        notes.append("Not scanned yet: press Discover first. It lists the projects, repositories and their latest "
+                     "commits without cloning anything, so you can disable deprecated ones (Repositories, Projects) "
+                     "before the first full scan.")
     delete = (f"<form method='post' action='/admin/scans/{ident}/delete' class='danger'>{adm._csrf(s)}"
               f"<button>Delete {e(scan['Name'])}</button></form>" if not runs else
               "<p class='muted small'>A scan that has run is kept with its history: pause it instead (uncheck Enabled).</p>")
     body = (f"{''.join(f'<p class=note>{e(n)}</p>' for n in notes)}"
-            f"<div class='formrow'>{runbtn}<span>{e(schedule_text(scan['ScheduleDays'], scan['ScheduleMinute']))} · "
-            f"{e(_next(scan))}</span> · <a href='/admin/repositories?scan={ident}'>Repositories</a></div>"
+            f"<div class='formrow'>{runbtn}<span>{e(schedule_text(scan['ScheduleDays'], scan['ScheduleMinute']))}"
+            f"{' · ' + e(_next(scan)) if _next(scan) else ''}</span> · <a href='/admin/repositories?scan={ident}'>Repositories</a> · "
+            f"<a href='/admin/repositories/projects?scan={ident}'>Projects</a></div>"
             f"{scan_tokens(conn, scan)}"
             f"<h2>Runs</h2><table><thead><tr><th class='num'>#</th><th>Status</th><th>Started</th><th class='num'>Took</th>"
             f"<th>Repositories</th><th>Result</th></tr></thead>"
@@ -375,13 +411,16 @@ def save_scan(conn, ident, form: dict) -> Response:
     return _back(f"/admin/scans/{ident}", "Saved. The worker picks up the new settings at the next run.")
 
 
-def run_now(conn, ident: int) -> Response:
+def run_now(conn, ident: int, kind: str = "full") -> Response:
     cur = conn.cursor()
-    cur.execute("EXEC cz.QueueOrgScanRun @ScanId = %s, @TriggeredBy = N'manual'", (ident,))
+    cur.execute("EXEC cz.QueueOrgScanRun @ScanId = %s, @TriggeredBy = N'manual', @Kind = %s", (ident, kind))
     rid = cur.fetchone()[0]
     conn.commit()
     if not rid:
         return _back(f"/admin/scans/{ident}", "Not queued: the scan is paused, or a run is already queued or running.")
+    if kind == "discovery":
+        return _back(f"/admin/scans/{ident}", f"Discovery #{rid} queued. The worker lists the projects and repositories "
+                                              "within a minute; then disable the ones the full scan should leave out.")
     return _back(f"/admin/scans/{ident}", f"Run #{rid} queued. The worker starts it within a minute.")
 
 
@@ -414,10 +453,11 @@ def delete_scan(conn, ident: int) -> Response:
 
 # --------------------------------------------------------------------------- repositories
 
-REPO_SHOW = {"all": ("All", "r.RemovedAt IS NULL"), "enabled": ("Enabled", "r.RemovedAt IS NULL AND r.Enabled = 1"),
-             "disabled": ("Disabled", "r.RemovedAt IS NULL AND r.Enabled = 0"),
+REPO_SHOW = {"all": ("All", "r.RemovedAt IS NULL"), "enabled": ("Enabled", "r.RemovedAt IS NULL AND r.Active = 1"),
+             "disabled": ("Disabled", "r.RemovedAt IS NULL AND r.Active = 0"),
              "new": ("New", f"r.RemovedAt IS NULL AND r.FirstSeenAt > DATEADD(day, -{NEW_DAYS}, SYSUTCDATETIME())"),
              "failed": ("Failed", "r.RemovedAt IS NULL AND r.LastStatus = N'error'"),
+             "inactive": ("No commit for a year", "r.RemovedAt IS NULL AND r.LatestCommitAt < DATEADD(year, -1, SYSUTCDATETIME())"),
              "removed": ("Removed", "r.RemovedAt IS NOT NULL")}
 
 
@@ -427,6 +467,8 @@ def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
     scan = _q(q, "scan")
     scan_id = int(scan) if re.fullmatch(r"\d{1,9}", scan) else None
     text = " ".join(_q(q, "q").split())
+    project = _q(q, "project")
+    order = "r.LatestCommitAt, s.Name, r.ProjectName, r.Name" if _q(q, "sort") == "commit" else "s.Name, r.ProjectName, r.Name"
     cur = conn.cursor(as_dict=True)
     cur.execute("SELECT ScanId, Name FROM cz.OrgScan ORDER BY Name")
     scans = cur.fetchall()
@@ -438,12 +480,19 @@ def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
         where.append("(r.Name LIKE %s ESCAPE '\\' OR r.ProjectName LIKE %s ESCAPE '\\')")
         like = "%" + re.sub(r"([%_\[\\])", r"\\\1", text) + "%"
         params += [like, like]
-    cur.execute(f"""SELECT TOP (2000) r.*, s.Name AS ScanName FROM cz.OrgRepository r JOIN cz.OrgScan s ON s.ScanId = r.ScanId
-                    WHERE {' AND '.join(where)} ORDER BY s.Name, r.ProjectName, r.Name""", tuple(params) or None)
+    if project:
+        where.append("r.ProjectName = %s")
+        params.append(project)
+    cur.execute(f"""SELECT TOP (2000) r.*, s.Name AS ScanName FROM cz.vOrgRepository r JOIN cz.OrgScan s ON s.ScanId = r.ScanId
+                    WHERE {' AND '.join(where)} ORDER BY {order}""", tuple(params) or None)
     repos = cur.fetchall()
     base = {"scan": scan_id} if scan_id is not None else {}
     if text:
         base["q"] = text
+    if project:
+        base["project"] = project
+    if _q(q, "sort") == "commit":
+        base["sort"] = "commit"
     chips = " ".join(f"<a class='chip{' on' if k == show else ''}' href='/admin/repositories?"
                      f"{e(urlencode({**base, 'show': k}))}'>{t}</a>" for k, (t, _) in REPO_SHOW.items())
     scan_opts = "<option value=''>All scans</option>" + "".join(
@@ -451,6 +500,8 @@ def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
         for x in scans)
     search = (f"<form method='get' action='/admin/repositories' class='formrow'><select name='scan' aria-label='Scan'>"
               f"{scan_opts}</select><input type='hidden' name='show' value='{e(show)}'>"
+              + (f"<input type='hidden' name='project' value='{e(project)}'>" if project else "")
+              + (f"<input type='hidden' name='sort' value='commit'>" if base.get("sort") else "") +
               f"<input name='q' value='{e(text)}' placeholder='Repository or project' aria-label='Search'>"
               f"<button>Filter</button></form>")
     now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -468,24 +519,40 @@ def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
             if r["LastStatus"] == "error":
                 last += f"<div class='small'>{e((r['LastReason'] or '')[:300])}</div>"
         rid = int(r["RepositoryId"])
+        proj = (f" · <a href='/admin/repositories/projects/{int(r['ProjectId'])}'>{e(r['ProjectName'])}</a>"
+                if r["ProjectName"] != "_" and r.get("ProjectId") else
+                (" · " + e(r["ProjectName"]) if r["ProjectName"] != "_" else ""))
+        commit = _d(r["LatestCommitAt"]) if r.get("LatestCommitAt") else "<span class='muted'>unknown</span>"
         rows.append(
             f"<tr><td><input type='checkbox' name='repo' value='{rid}' aria-label='Select {e(_repo_name(r))}'></td>"
             f"<td><a href='/admin/repositories/{rid}'>{e(r['Name'])}</a>{NEW_CHIP if new else ''}"
-            f"{link}<div class='muted small'>{e(r['ScanName'])}{' · ' + e(r['ProjectName']) if r['ProjectName'] != '_' else ''}</div></td>"
+            f"{link}<div class='muted small'>{e(r['ScanName'])}{proj}</div></td>"
+            f"<td class='nowrap small'>{commit}</td>"
             f"<td>{state_chip(state, who)}</td><td class='small'>{e(reason)}</td><td>{last}</td></tr>")
     actions = ("<div class='formrow'><span>With the selected:</span>"
                "<button name='action' value='enable'>Enable</button>"
                "<button name='action' value='disable'>Disable</button>"
                "<button name='action' value='auto' class='secondary'>Automatic</button>"
                "<input name='Note' maxlength='400' placeholder='Note (optional), e.g. why' aria-label='Note'></div>")
-    body = (f"<p class='muted'>Every repository the organization scans have found. A scan skips repositories that "
+    sort = {k: v for k, v in base.items() if k != "sort"}
+    sort_link = (f"<a class='chip' href='/admin/repositories?{e(urlencode({**sort, 'show': show}))}'>Sort by name</a>"
+                 if base.get("sort") else
+                 f"<a class='chip' href='/admin/repositories?{e(urlencode({**base, 'show': show, 'sort': 'commit'}))}'>"
+                 f"Oldest commit first</a>")
+    scoped = f" in project <b>{e(project)}</b> (<a href='/admin/repositories?{e(urlencode({'show': show}))}'>all</a>)" \
+        if project else ""
+    body = (f"<p class='muted'>Every repository the organization scans have found{scoped}. A scan skips repositories that "
             f"already have a Dockerfile, have no application code, have not been updated recently, are archived, empty "
             f"or forks: they show as <b>disabled</b> with the reason, and are checked again at every run. Enable one to "
-            f"process it anyway, disable one to leave it out, or set it back to automatic.</p>{search}"
-            f"<nav class='chips'>{chips}</nav>"
+            f"process it anyway, disable one to leave it out, or set it back to automatic. A disabled repository is not "
+            f"cloned by the full scan and its results are hidden from the results pages. Whole projects are disabled "
+            f"under <a href='/admin/repositories/projects'>Projects</a>. <b>Discover</b> on the scan's page fills this "
+            f"list with the latest commits without a full scan.</p>{search}"
+            f"<nav class='chips'>{chips} {sort_link}</nav>"
             f"<form method='post' action='/admin/repositories/bulk'>{adm._csrf(s)}{actions}"
-            f"<table><thead><tr><th></th><th>Repository</th><th>State</th><th>Reason</th><th>Latest result</th></tr></thead>"
-            f"<tbody>{''.join(rows) or '<tr><td colspan=5 class=muted>Nothing here.</td></tr>'}</tbody></table></form>"
+            f"<table><thead><tr><th></th><th>Repository</th><th>Latest commit</th><th>State</th><th>Reason</th>"
+            f"<th>Latest result</th></tr></thead>"
+            f"<tbody>{''.join(rows) or '<tr><td colspan=6 class=muted>Nothing here.</td></tr>'}</tbody></table></form>"
             + ("<p class='muted small'>Showing the first 2000.</p>" if len(repos) == 2000 else ""))
     return Response(200, adm._shell(s, a, "Repositories", "repositories", body, flash))
 
@@ -515,7 +582,7 @@ def bulk_repos(conn, form: dict) -> Response:
 
 def edit_repo(adm, conn, s, a, ident: int, flash: str) -> Response:
     cur = conn.cursor(as_dict=True)
-    cur.execute("SELECT r.*, s.Name AS ScanName FROM cz.OrgRepository r JOIN cz.OrgScan s ON s.ScanId = r.ScanId "
+    cur.execute("SELECT r.*, s.Name AS ScanName FROM cz.vOrgRepository r JOIN cz.OrgScan s ON s.ScanId = r.ScanId "
                 "WHERE r.RepositoryId = %s", (ident,))
     r = cur.fetchone()
     if not r:
@@ -539,7 +606,10 @@ def edit_repo(adm, conn, s, a, ident: int, flash: str) -> Response:
             if r["WebUrl"] and URL_RE.fullmatch(r["WebUrl"]) else e(r["CloneUrl"]))
     facts = [("Scan", f"<a href='/admin/scans/{int(r['ScanId'])}'>{e(r['ScanName'])}</a>"), ("Repository", link),
              ("Default branch", e(r["DefaultBranch"] or "")), ("Sandbox app", e(r["AppName"] or "")),
-             ("First seen", _d(r["FirstSeenAt"])), ("Last activity", _d(r["LastActivityAt"]) if r["LastActivityAt"] else "")]
+             ("Project", f"<a href='/admin/repositories/projects/{int(r['ProjectId'])}'>{e(r['ProjectName'])}</a>"
+              if r.get("ProjectId") and r["ProjectName"] != "_" else ""),
+             ("First seen", _d(r["FirstSeenAt"])), ("Last activity", _d(r["LastActivityAt"]) if r["LastActivityAt"] else ""),
+             ("Latest commit", _d(r["LastCommitAt"]) if r.get("LastCommitAt") else "")]
     if r["LastStatus"]:
         facts += [("Latest result", f"{e(LAST_TEXT.get(r['LastStatus'], r['LastStatus']))}"
                    f"{' · rated ' + e(r['LastRating']) if r['LastRating'] else ''} · {_d(r['LastScannedAt'])}"
@@ -555,11 +625,16 @@ def edit_repo(adm, conn, s, a, ident: int, flash: str) -> Response:
                    f"{t}</label>" for k, t in (("auto", "Automatic: the scan decides (skips repositories with a Dockerfile, "
                                                          "without application code, not updated recently, ...)"),
                                               ("enabled", "Enabled: always process it, even when the scan would skip it"),
-                                              ("disabled", "Disabled: never process it (stops deploying it to the sandbox)")))
+                                              ("disabled", "Disabled: never process it (stops deploying it to the sandbox, "
+                                                           "hides its results from the results pages)")))
     form = (f"<form method='post' action='/admin/repositories/{ident}' class='edit'>{adm._csrf(s)}{opts}"
             f"<label for='Note'>Note <span class='muted'>(why; shown in the list)</span></label>"
             f"<input id='Note' name='Note' maxlength='400' value='{e(r['AdminNote'] or '')}'>"
             f"<div><button>Save</button> <a href='/admin/repositories?scan={int(r['ScanId'])}'>Back</a></div></form>")
+    if r.get("ProjectState") == "disabled":
+        form = (f"<p class='note'>Its project {e(r['ProjectName'])} is disabled: the full scan leaves every repository of "
+                f"the project out, whatever is set here. <a href='/admin/repositories/projects/{int(r['ProjectId'])}'>"
+                f"Enable the project</a> to let this setting decide again.</p>" + form)
     body = (f"<div class='formrow'>{state_chip(state, who)}<span>{e(reason)}</span></div><div class='meta'>{meta}</div>"
             + (f"<h2>Deployed components</h2><ul>{comps}</ul>" if comps else "")
             + (f"<h2>Not deployed</h2><ul>{excl}</ul>" if excl else "") + lab
@@ -598,3 +673,156 @@ def save_repo(conn, ident: int, form: dict) -> Response:
     if not n:
         return _nf()
     return _back(f"/admin/repositories/{ident}", "Saved. The next run follows it.")
+
+
+# --------------------------------------------------------------------------- projects
+
+PROJECT_SHOW = {"all": ("All", "p.RemovedAt IS NULL"), "enabled": ("Enabled", "p.RemovedAt IS NULL AND p.AdminState IS NULL"),
+                "disabled": ("Disabled", "p.RemovedAt IS NULL AND p.AdminState = N'disabled'"),
+                "removed": ("Removed", "p.RemovedAt IS NOT NULL")}
+PROJECT_STATS = """(SELECT COUNT(*) FROM cz.OrgRepository r WHERE r.ScanId = p.ScanId AND r.ProjectName = p.Name
+                     AND r.RemovedAt IS NULL) AS Repos,
+                   (SELECT COUNT(*) FROM cz.vOrgRepository r WHERE r.ScanId = p.ScanId AND r.ProjectName = p.Name
+                     AND r.RemovedAt IS NULL AND r.Active = 1) AS ReposOn,
+                   (SELECT MAX(r.LatestCommitAt) FROM cz.vOrgRepository r WHERE r.ScanId = p.ScanId AND r.ProjectName = p.Name
+                     AND r.RemovedAt IS NULL) AS LatestCommitAt"""
+
+
+def project_state(p: dict) -> tuple[str, str]:
+    if p.get("RemovedAt"):
+        return "Removed", f"no longer in the organization (since {_d(p['RemovedAt'])})"
+    note = f" ({p['AdminNote']})" if p.get("AdminNote") else ""
+    if p.get("AdminState") == "disabled":
+        return "Disabled", "disabled by an administrator: none of its repositories is scanned" + note
+    return "Enabled", "each repository's own setting decides" + note
+
+
+def list_projects(adm, conn, s, a, q: dict, flash: str) -> Response:
+    show = _q(q, "show", "all")
+    show = show if show in PROJECT_SHOW else "all"
+    scan = _q(q, "scan")
+    scan_id = int(scan) if re.fullmatch(r"\d{1,9}", scan) else None
+    order = "LatestCommitAt, s.Name, p.Name" if _q(q, "sort") == "commit" else "s.Name, p.Name"
+    cur = conn.cursor(as_dict=True)
+    cur.execute("SELECT ScanId, Name FROM cz.OrgScan ORDER BY Name")
+    scans = cur.fetchall()
+    where, params = [PROJECT_SHOW[show][1]], []
+    if scan_id is not None:
+        where.append("p.ScanId = %s")
+        params.append(scan_id)
+    cur.execute(f"SELECT TOP (2000) p.*, s.Name AS ScanName, {PROJECT_STATS} FROM cz.OrgProject p "
+                f"JOIN cz.OrgScan s ON s.ScanId = p.ScanId WHERE {' AND '.join(where)} ORDER BY {order}",
+                tuple(params) or None)
+    projects = cur.fetchall()
+    base = {"scan": scan_id} if scan_id is not None else {}
+    if _q(q, "sort") == "commit":
+        base["sort"] = "commit"
+    chips = " ".join(f"<a class='chip{' on' if k == show else ''}' href='/admin/repositories/projects?"
+                     f"{e(urlencode({**base, 'show': k}))}'>{t}</a>" for k, (t, _) in PROJECT_SHOW.items())
+    nosort = {k: v for k, v in base.items() if k != "sort"}
+    chips += (f" <a class='chip' href='/admin/repositories/projects?{e(urlencode({**nosort, 'show': show}))}'>Sort by name</a>"
+              if base.get("sort") else
+              f" <a class='chip' href='/admin/repositories/projects?{e(urlencode({**base, 'show': show, 'sort': 'commit'}))}'>"
+              f"Oldest commit first</a>")
+    scan_opts = "<option value=''>All scans</option>" + "".join(
+        f"<option value='{int(x['ScanId'])}'{' selected' if x['ScanId'] == scan_id else ''}>{e(x['Name'])}</option>"
+        for x in scans)
+    search = (f"<form method='get' action='/admin/repositories/projects' class='formrow'><select name='scan' aria-label='Scan'>"
+              f"{scan_opts}</select><input type='hidden' name='show' value='{e(show)}'><button>Filter</button></form>")
+    rows = []
+    for p in projects:
+        state, reason = project_state(p)
+        pid = int(p["ProjectId"])
+        repos = (f"<a href='/admin/repositories?{e(urlencode({'scan': int(p['ScanId']), 'project': p['Name']}))}'>"
+                 f"{int(p['Repos'])}</a>")
+        commit = _d(p["LatestCommitAt"]) if p["LatestCommitAt"] else "<span class='muted'>unknown</span>"
+        rows.append(f"<tr><td><input type='checkbox' name='project' value='{pid}' aria-label='Select {e(p['Name'])}'></td>"
+                    f"<td><a href='/admin/repositories/projects/{pid}'>{e(p['Name'])}</a>"
+                    f"<div class='muted small'>{e(p['ScanName'])}</div></td>"
+                    f"<td class='num'>{repos}<div class='muted small'>{int(p['ReposOn'])} scanned</div></td>"
+                    f"<td class='nowrap small'>{commit}</td><td>{state_chip(state, 'administrator' if state == 'Disabled' else '')}</td>"
+                    f"<td class='small'>{e(reason)}</td></tr>")
+    actions = ("<div class='formrow'><span>With the selected:</span>"
+               "<button name='action' value='disable'>Disable</button>"
+               "<button name='action' value='enable' class='secondary'>Enable</button>"
+               "<input name='Note' maxlength='400' placeholder='Note (optional), e.g. why' aria-label='Note'></div>")
+    body = (f"<p class='muted'>The projects of the organization scans: Azure DevOps projects and GitLab subgroups "
+            f"(GitHub organizations have none: pause the scan instead). Disable a deprecated project and the full scan "
+            f"leaves all its repositories out (nothing is cloned) and their results are hidden from the results pages. "
+            f"<b>Discover</b> on the scan's page lists them with their latest commits without a full scan. "
+            f"<a href='/admin/repositories'>Repositories</a></p>{search}<nav class='chips'>{chips}</nav>"
+            f"<form method='post' action='/admin/repositories/projects/bulk'>{adm._csrf(s)}{actions}"
+            f"<table><thead><tr><th></th><th>Project</th><th class='num'>Repositories</th><th>Latest commit</th>"
+            f"<th>State</th><th>Reason</th></tr></thead>"
+            f"<tbody>{''.join(rows) or '<tr><td colspan=6 class=muted>No projects. Run Discover on an organization scan.</td></tr>'}"
+            f"</tbody></table></form>" + ("<p class='muted small'>Showing the first 2000.</p>" if len(projects) == 2000 else ""))
+    return Response(200, adm._shell(s, a, "Projects", "repositories", body, flash))
+
+
+PROJECT_ACTIONS = {"disable": "disabled", "enable": None}
+
+
+def bulk_projects(conn, form: dict) -> Response:
+    ids = [int(x) for x in form.get("project", []) if re.fullmatch(r"\d{1,9}", x)][:2000]
+    action = form.get("action", [""])[0]
+    back = "/admin/repositories/projects"
+    if action not in PROJECT_ACTIONS:
+        return _back(back, "Choose Disable or Enable.")
+    if not ids:
+        return _back(back, "Select at least one project.")
+    note = " ".join(form.get("Note", [""])[0].split())[:400] or None
+    cur = conn.cursor()
+    n = 0
+    for i in range(0, len(ids), 500):
+        part = ids[i:i + 500]
+        cur.execute(f"UPDATE cz.OrgProject SET AdminState = %s, AdminNote = %s WHERE ProjectId IN "
+                    f"({', '.join(['%s'] * len(part))})", (PROJECT_ACTIONS[action], note, *part))
+        n += cur.rowcount
+    conn.commit()
+    return _back(back, f"{n} project{'' if n == 1 else 's'} {'disabled' if action == 'disable' else 'enabled'}. "
+                       "The next full scan follows it.")
+
+
+def edit_project(adm, conn, s, a, ident: int, flash: str) -> Response:
+    cur = conn.cursor(as_dict=True)
+    cur.execute(f"SELECT p.*, s.Name AS ScanName, {PROJECT_STATS} FROM cz.OrgProject p JOIN cz.OrgScan s "
+                f"ON s.ScanId = p.ScanId WHERE p.ProjectId = %s", (ident,))
+    p = cur.fetchone()
+    if not p:
+        return _nf()
+    state, reason = project_state(p)
+    repos = f"/admin/repositories?{urlencode({'scan': int(p['ScanId']), 'project': p['Name']})}"
+    facts = [("Scan", f"<a href='/admin/scans/{int(p['ScanId'])}'>{e(p['ScanName'])}</a>"),
+             ("Repositories", f"<a href='{e(repos)}'>{int(p['Repos'])}</a> ({int(p['ReposOn'])} scanned by the full scan)"),
+             ("Latest commit", _d(p["LatestCommitAt"]) if p["LatestCommitAt"] else "unknown"),
+             ("First seen", _d(p["FirstSeenAt"]))]
+    meta = "".join(f"<div><span class='label'>{k}</span> {v}</div>" for k, v in facts if v)
+    cur_setting = "disabled" if p["AdminState"] == "disabled" else "enabled"
+    opts = "".join(f"<label class='check'><input type='radio' name='Setting' value='{k}'{' checked' if k == cur_setting else ''}> "
+                   f"{t}</label>" for k, t in (("enabled", "Enabled: each repository's own setting decides"),
+                                              ("disabled", "Disabled: none of its repositories is scanned, they stop "
+                                                           "deploying to the sandbox, and their results are hidden from "
+                                                           "the results pages")))
+    form = (f"<form method='post' action='/admin/repositories/projects/{ident}' class='edit'>{adm._csrf(s)}{opts}"
+            f"<label for='Note'>Note <span class='muted'>(why; shown in the lists)</span></label>"
+            f"<input id='Note' name='Note' maxlength='400' value='{e(p['AdminNote'] or '')}'>"
+            f"<div><button>Save</button> <a href='/admin/repositories/projects?scan={int(p['ScanId'])}'>Back</a></div></form>")
+    body = (f"<div class='formrow'>{state_chip(state, 'administrator' if state == 'Disabled' else '')}<span>{e(reason)}</span>"
+            f"</div><div class='meta'>{meta}</div><h2>Enabled or disabled</h2>{form}"
+            f"<h2>Changes</h2>{adm._history(conn, 'OrgProject', ident)}")
+    return Response(200, adm._shell(s, a, f"Project {p['Name']}", "repositories", body, flash))
+
+
+def save_project(conn, ident: int, form: dict) -> Response:
+    setting = form.get("Setting", [""])[0]
+    if setting not in ("enabled", "disabled"):
+        return _back(f"/admin/repositories/projects/{ident}", "Choose enabled or disabled.")
+    note = " ".join(form.get("Note", [""])[0].split())[:400] or None
+    cur = conn.cursor()
+    cur.execute("UPDATE cz.OrgProject SET AdminState = %s, AdminNote = %s WHERE ProjectId = %s",
+                ("disabled" if setting == "disabled" else None, note, ident))
+    n = cur.rowcount
+    conn.commit()
+    if not n:
+        return _nf()
+    return _back(f"/admin/repositories/projects/{ident}", "Saved. The next full scan follows it.")

@@ -286,7 +286,7 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
         assert secret not in b.follow("/admin/source-control")[2]
         assert secret not in b.follow("/admin/audit?table=SourceCredential")[2]
         s, _, body = b.follow(f"/admin/scans/{scan_id}")
-        assert "Run now" in body and "Read-only token" in body and f"/admin/source-control/{cred_id}" in body
+        assert "Run full scan" in body and "Read-only token" in body and f"/admin/source-control/{cred_id}" in body
         # the LLM on the same page: set once, key never shown, model can change, a second one is refused
         llm_key = "sk-llm-secret-0123456789"
         s, _, body = b.follow("/admin/source-control/llm", {"csrf": csrf, "Provider": "openai", "ApiUrl": "https://llm.example/v1",
@@ -468,6 +468,214 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
         with pytest.raises(Exception, match="(?i)permission"):
             r.cursor().execute("SELECT * FROM cz.OrgScan")
         r.close()
+    finally:
+        idp.claims = {}
+        httpd.shutdown()
+        idp.httpd.shutdown()
+        m = sqlstore.connect(re.sub(r"Database=\w+", "Database=master", cs), sa_pw, autocommit=True)
+        m.cursor().execute(f"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]")
+        m.close()
+
+
+class _AzureProvider(_Provider):
+    """An Azure DevOps organization with projects; counts the latest-commit API calls."""
+
+    def __init__(self, repos, commits):
+        super().__init__(repos)
+        self.commits = commits
+        self.asked = []
+
+    def last_commit(self, r):
+        self.asked.append(r.key)
+        return self.commits.get(r.key)
+
+
+@needs_sql
+def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
+    """Discover lists projects, repositories and latest commits without cloning; an administrator disables
+    a deprecated project and a repository (audited); the full scan leaves them out, and their results
+    disappear from the results pages."""
+    from test_admin import Browser, MockIdP, cfg, free_port
+    import uuid
+    sa_pw = os.environ["CONTAINERIZER_SQL_PASSWORD"]
+    name = "czdisc_" + uuid.uuid4().hex[:8]
+    cs = re.sub(r"(?i)(database|initial\s*catalog)\s*=[^;]*", f"Database={name}", ADMIN_SQL)
+    sqlstore.create_database(cs, sa_pw)
+    conn = sqlstore.connect(cs, sa_pw)
+    sqlstore.init_schema(conn)
+    for login, role in (("cz_d_reader", "reader"), ("cz_d_writer", "writer"), ("cz_d_admin", "admin")):
+        sqlstore.create_login(conn, login, PW, role)
+    conn.close()
+
+    def as_(login):
+        return re.sub(r"(?i)(user\s*id|uid)\s*=[^;]*", f"User Id={login}", cs)
+    writer, reader = as_("cz_d_writer"), as_("cz_d_reader")
+
+    sources = {}
+    for key in ("Billing/api", "Billing/web", "Legacy/old-app"):
+        d = tmp_path / "src" / key.replace("/", "--")
+        shutil.copytree(DEMO, d)
+        _commit(d)
+        sources[key] = d
+
+    def repo(key, i):
+        proj, n = key.split("/")
+        return SourceRepo("azure-devops", "contoso", proj, n, f"https://dev.azure.com/contoso/{proj}/_git/{n}",
+                          default_branch="main", web_url=f"https://dev.azure.com/contoso/{proj}/_git/{n}", id=f"id{i}")
+    keys = ("Billing/api", "Billing/web", "Legacy/old-app")
+    prov = _AzureProvider([repo(k, i) for i, k in enumerate(keys)],
+                          {"Billing/api": datetime(2026, 10, 20, 8, 0, tzinfo=UTC),
+                           "Billing/web": datetime(2026, 9, 1, 12, 0, tzinfo=UTC),
+                           "Legacy/old-app": datetime(2019, 5, 4, 3, 2, tzinfo=UTC)})
+    monkeypatch.setattr(orgmod, "provider", lambda *a, **k: prov)
+    fetched = []
+
+    def fake_update(url, dest, branch="", header=""):
+        proj, n = url.split("/contoso/")[1].split("/_git/")
+        fetched.append(f"{proj}/{n}")
+        if dest.exists():
+            return "pulled"
+        shutil.copytree(sources[f"{proj}/{n}"], dest)
+        subprocess.run(["git", "remote", "add", "origin", url], cwd=dest, check=True)
+        return "cloned"
+    monkeypatch.setattr(orgmod, "update_clone", fake_update)
+    monkeypatch.setenv("CONTAINERIZER_SQL_PASSWORD", PW)
+
+    idp = MockIdP()
+    port = free_port()
+    base = f"http://127.0.0.1:{port}"
+    from containerizer import credentials as cr
+    cr.keygen(tmp_path / "worker.key", tmp_path / "worker.pub")
+    adm = adminmod.Admin(cfg(idp, base), lambda: sqlstore.connect(as_("cz_d_admin"), PW))
+    adm.credential_key = cr.load_public(tmp_path / "worker.pub")
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), webui.make_handler(lambda: sqlstore.connect(reader, PW), adm))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    idp.claims = {"email": "jane@example.com", "name": "Jane Doe", "groups": ["cz-admins"]}
+    logs = []
+    w = worker.Worker(lambda: sqlstore.connect(writer, PW), tmp_path / "data", sql=writer, poll=1, name="test-worker",
+                      hosts=worker.allowed_hosts({}), log=logs.append, key=cr.load_private(tmp_path / "worker.key"))
+    real_options = w.options
+
+    def options(scan, store, hooks, creds=None):
+        o = real_options(scan, store, hooks, creds)
+        o.verify, o.gate, o.push_images = False, False, False
+        return o
+    w.options = options
+
+    def visible():
+        c = sqlstore.connect(reader, PW)
+        cur = c.cursor(as_dict=True)
+        cur.execute("SELECT ApplicationId, RepositoryUrl FROM cz.vApplicationLatest")
+        apps = {r["RepositoryUrl"].rsplit("/", 1)[1]: r["ApplicationId"] for r in cur.fetchall()}
+        cur.execute("SELECT COUNT(DISTINCT ApplicationId) AS N FROM cz.vAssessmentHistory")
+        hist = cur.fetchone()["N"]
+        c.close()
+        return apps, hist
+
+    try:
+        b = Browser(base, idp)
+        body = b.follow("/admin/scans")[2]
+        csrf = b.csrf(body)
+        s, _, body = b.follow("/admin/scans/new", {"csrf": csrf, **_form(Name="Contoso", Provider="azure-devops",
+                                                                         Organization="contoso", Gate="", day=[])})
+        scan_id = int(re.search(r"/admin/repositories\?scan=(\d+)", body)[1])
+        b.follow("/admin/source-control/read", {"csrf": csrf, "Provider": "azure-devops", "Organization": "contoso",
+                                                "ApiUrl": "", "Token": "ado_readonly_pat_0123456789abcdef"})
+        body = b.follow(f"/admin/scans/{scan_id}")[2]
+        assert "Discover" in body and "Run full scan" in body and "press Discover first" in body
+
+        # phase one: discovery lists projects, repositories and latest commits; nothing is cloned
+        s, _, body = b.follow(f"/admin/scans/{scan_id}/discover", {"csrf": csrf})
+        assert "Discovery #" in body and "queued" in body
+        assert w.tick() is True, logs
+        assert fetched == [] and sorted(prov.asked) == sorted(keys), logs
+        assert not (tmp_path / "data" / f"scan-{scan_id}" / "repos").exists()
+        body = b.follow(f"/admin/scans/{scan_id}")[2]
+        assert "Finished" in body and "Discovery" in body and "3 repositories in 2 projects" in body, body
+        assert "nothing cloned" in body and "1 would be skipped" in body and "press Discover first" not in body
+        body = b.follow(f"/admin/repositories?scan={scan_id}")[2]
+        rows = dict(re.findall(r"aria-label='Select ([^']+)'>(.*?)</tr>", body, re.S))
+        assert set(rows) == set(keys)
+        assert "2026-10-20 08:00 UTC" in rows["Billing/api"] and "discovered: not scanned yet" in rows["Billing/api"]
+        assert "2019-05-04 03:02 UTC" in rows["Legacy/old-app"] and "Not updated recently" in rows["Legacy/old-app"]
+        body = b.follow(f"/admin/repositories?scan={scan_id}&show=inactive")[2]
+        assert "old-app" in body and ">api<" not in body
+        body = b.follow(f"/admin/repositories?scan={scan_id}&sort=commit")[2]
+        assert body.index("old-app") < body.index(">web<") < body.index(">api<")
+        body = b.follow(f"/admin/repositories/projects?scan={scan_id}")[2]
+        projects = dict((n, int(i)) for i, n in re.findall(r"name='project' value='(\d+)' aria-label='Select ([^']+)'", body))
+        assert set(projects) == {"Billing", "Legacy"} and "2026-10-20 08:00 UTC" in body
+
+        # the full scan with everything enabled (the stale one too) puts all three on the results pages
+        b.follow(f"/admin/repositories/{int(re.search(r'/admin/repositories/(\d+)', rows['Legacy/old-app'])[1])}",
+                 {"csrf": csrf, "Setting": "enabled", "Note": "still in use"})
+        b.follow(f"/admin/scans/{scan_id}/run", {"csrf": csrf})
+        assert w.tick() is True
+        assert sorted(fetched) == sorted(keys), logs
+        apps, hist = visible()
+        assert set(apps) == {"api", "web", "old-app"} and hist == 3
+
+        # phase two: the administrator disables the deprecated project and one repository
+        s, _, body = b.follow("/admin/repositories/projects/bulk", {"csrf": csrf, "project": [str(projects["Legacy"])],
+                                                                    "action": "disable", "Note": "deprecated"})
+        assert "1 project disabled" in body and "deprecated" in body
+        web_id = int(re.search(r"/admin/repositories/(\d+)", rows["Billing/web"])[1])
+        s, _, body = b.follow(f"/admin/repositories/{web_id}", {"csrf": csrf, "Setting": "disabled", "Note": "retired"})
+        assert "Saved." in body and "hides its results" in body
+        body = b.follow(f"/admin/repositories/projects/{projects['Legacy']}")[2]
+        assert "Jane Doe" in body and "<del>enabled</del> → <ins>disabled</ins>" in body and "deprecated" in body
+        body = b.follow("/admin/audit?table=OrgProject")[2]
+        assert "Legacy" in body and "Found by a scan" in body and "Jane Doe" in body
+        body = b.follow(f"/admin/repositories?scan={scan_id}&show=disabled")[2]
+        assert "project Legacy disabled by an administrator (deprecated)" in body and "retired" in body
+        assert ">api<" not in body
+        body = b.follow(f"/admin/repositories/{int(re.search(r'/admin/repositories/(\d+)', rows['Legacy/old-app'])[1])}")[2]
+        assert "Its project Legacy is disabled" in body
+
+        # hidden from the results pages (the views the reader login reads), still on the admin pages
+        apps, hist = visible()
+        assert set(apps) == {"api"} and hist == 1
+        overview = b.follow("/")[2]
+        assert f"/app/{apps['api']}'" in overview or f'/app/{apps["api"]}"' in overview
+        r = sqlstore.connect(cs, sa_pw)
+        cur = r.cursor()
+        cur.execute("SELECT ApplicationId FROM cz.Application WHERE RepositoryUrl LIKE N'%/web'")
+        web_app = cur.fetchone()[0]
+        r.close()
+        assert f"/app/{web_app}'" not in overview and f'/app/{web_app}"' not in overview
+        assert b.go(f"/app/{web_app}")[0] == 404
+        assert b.go(f"/app/{apps['api']}")[0] == 200
+
+        # the next full scan only fetches what is enabled
+        fetched.clear()
+        b.follow(f"/admin/scans/{scan_id}/run", {"csrf": csrf})
+        assert w.tick() is True
+        assert fetched == ["Billing/api"], logs
+        body = b.follow(f"/admin/repositories?scan={scan_id}")[2]
+        rows = dict(re.findall(r"aria-label='Select ([^']+)'>(.*?)</tr>", body, re.S))
+        assert "Not processed (disabled)" in rows["Legacy/old-app"] and "Not processed (disabled)" in rows["Billing/web"]
+        out = tmp_path / "data" / f"scan-{scan_id}" / "output" / "contoso"
+        assert (out / "Billing" / "api").is_dir() and not (out / "Legacy" / "old-app").exists() and not (out / "Billing" / "web").exists()
+        body = b.follow("/admin/scans")[2]
+        assert f"show=enabled'>1</a>" in body and f"show=disabled'>2</a>" in body
+        c = sqlstore.connect(writer, PW)
+        w.metrics.refresh(c)
+        c.close()
+        text = w.metrics.registry.render()
+        assert 'containerizer_scan_repositories{scan="Contoso",state="disabled_admin"} 2' in text
+
+        # enabling the project again brings its results back; only administrators may change projects
+        b.follow(f"/admin/repositories/projects/{projects['Legacy']}", {"csrf": csrf, "Setting": "enabled", "Note": ""})
+        apps, _ = visible()
+        assert set(apps) == {"api", "old-app"}
+        wr = sqlstore.connect(writer, PW)
+        with pytest.raises(Exception, match="(?i)permission"):
+            wr.cursor().execute("UPDATE cz.OrgProject SET AdminState = N'disabled'")
+        wr.close()
+        rd = sqlstore.connect(reader, PW)
+        with pytest.raises(Exception, match="(?i)permission"):
+            rd.cursor().execute("SELECT * FROM cz.OrgProject")
+        rd.close()
     finally:
         idp.claims = {}
         httpd.shutdown()

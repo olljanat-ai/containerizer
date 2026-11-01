@@ -11,7 +11,7 @@
 --   Application 1-* SandboxCheck                                              (sandbox cluster health)
 --   AuditLog: every change to BusinessUnit, Product and the mapping of Application, with who made it
 --   AccessLog: who signed in to the web UI and what they looked at (optional)
---   OrgScan 1-* OrgScanRun, OrgRepository                                    (scheduled organization scans)
+--   OrgScan 1-* OrgScanRun, OrgProject, OrgRepository                        (scheduled organization scans)
 --   Application 0-1 DevDatabase                                              (dev database backup for the sandbox)
 --   RuleCandidate 1-* RuleEvidence: rules the learning loop learned, waiting for review (rule review)
 --   SourceCredential: read-only tokens of the organizations scans may read, write tokens of output repositories
@@ -257,104 +257,6 @@ IF COL_LENGTH(N'[${schema}].Finding', N'EffortDays') IS NOT NULL
     ALTER TABLE [${schema}].Finding DROP COLUMN EffortDays;
 IF COL_LENGTH(N'[${schema}].ComponentMigration', N'EffortDays') IS NOT NULL
     ALTER TABLE [${schema}].ComponentMigration DROP COLUMN EffortDays;
-GO
-
--- Latest assessment of every application, with its product and business unit ("(not assigned)" when
--- nobody has mapped it yet). This is what the web UI reads.
-CREATE OR ALTER VIEW [${schema}].vApplicationLatest AS
-SELECT a.ApplicationId,
-       COALESCE(a.DisplayName, a.Name) AS ApplicationName,
-       a.Name AS ScanName, a.Description, a.Owner, a.RepositoryUrl, a.SourcePath,
-       p.ProductId, p.Name AS ProductName, p.Owner AS ProductOwner, p.InfoUrl AS ProductInfoUrl,
-       bu.BusinessUnitId, bu.Name AS BusinessUnitName, bu.Owner AS BusinessUnitOwner,
-       x.AssessmentId, x.AssessedAt, x.Rating, r.Title AS RatingTitle, r.Description AS RatingDescription,
-       x.Score, x.Confidence, x.Summary, x.Verified, x.SourceCommit, x.SourceBranch
-FROM [${schema}].Application a
-CROSS APPLY (SELECT TOP (1) * FROM [${schema}].ApplicationAssessment aa
-             WHERE aa.ApplicationId = a.ApplicationId
-             ORDER BY aa.AssessedAt DESC, aa.AssessmentId DESC) x
-JOIN [${schema}].Rating r ON r.Rating = x.Rating
-LEFT JOIN [${schema}].Product p ON p.ProductId = a.ProductId
-LEFT JOIN [${schema}].BusinessUnit bu ON bu.BusinessUnitId = p.BusinessUnitId
-WHERE a.Retired = 0;
-GO
-
-CREATE OR ALTER VIEW [${schema}].vComponentLatest AS
-SELECT l.ApplicationId, l.ApplicationName, l.ProductName, l.BusinessUnitName, l.AssessmentId,
-       c.ComponentId, c.Name AS ComponentName, c.ProjectPath,
-       ca.Role, ca.Tier, ca.TargetFramework, ca.Verdict, ca.VerdictText, ca.Score,
-       ca.Confidence, ca.WindowsContainerOk, ca.VerifyStatus, ca.VerifyDetail
-FROM [${schema}].vApplicationLatest l
-JOIN [${schema}].ComponentAssessment ca ON ca.AssessmentId = l.AssessmentId
-JOIN [${schema}].Component c ON c.ComponentId = ca.ComponentId;
-GO
-
-CREATE OR ALTER VIEW [${schema}].vFindingLatest AS
-SELECT l.ApplicationId, l.ApplicationName, l.AssessmentId, f.ComponentId, c.Name AS ComponentName,
-       f.FindingId, f.RuleId, f.Severity, f.RuleSeverity, f.Category, f.Title, f.Why, f.Fix,
-       f.Via, f.OnlyCommands, f.Evidence, f.Refs, f.Source
-FROM [${schema}].vApplicationLatest l
-JOIN [${schema}].Finding f ON f.AssessmentId = l.AssessmentId
-LEFT JOIN [${schema}].Component c ON c.ComponentId = f.ComponentId;
-GO
-
--- Every scan of every application (not only the latest), with the application's current product and
--- business unit and how many distinct obstacles that scan found. The trends page of the web UI reads it.
-CREATE OR ALTER VIEW [${schema}].vAssessmentHistory AS
-SELECT aa.AssessmentId, aa.ApplicationId, COALESCE(a.DisplayName, a.Name) AS ApplicationName,
-       p.ProductId, p.Name AS ProductName, bu.BusinessUnitId, bu.Name AS BusinessUnitName,
-       aa.AssessedAt, aa.Rating, aa.Score, aa.Verified,
-       COALESCE(f.Blockers, 0) AS Blockers, COALESCE(f.Rewrites, 0) AS Rewrites
-FROM [${schema}].ApplicationAssessment aa
-JOIN [${schema}].Application a ON a.ApplicationId = aa.ApplicationId
-LEFT JOIN [${schema}].Product p ON p.ProductId = a.ProductId
-LEFT JOIN [${schema}].BusinessUnit bu ON bu.BusinessUnitId = p.BusinessUnitId
-OUTER APPLY (SELECT COUNT(DISTINCT CASE WHEN x.Severity = 'blocker' THEN x.RuleId END) AS Blockers,
-                    COUNT(DISTINCT CASE WHEN x.Severity = 'rewrite' THEN x.RuleId END) AS Rewrites
-             FROM [${schema}].Finding x
-             WHERE x.AssessmentId = aa.AssessmentId AND x.Severity IN ('blocker', 'rewrite')) f
-WHERE a.Retired = 0;
-GO
-
-CREATE OR ALTER VIEW [${schema}].vComponentMigrationLatest AS
-SELECT l.ApplicationId, l.ApplicationName, l.AssessmentId, m.ComponentId, c.Name AS ComponentName, c.ProjectPath,
-       m.Outcome, m.ItemCount, m.PlanJson, m.AgentPrompt
-FROM [${schema}].vApplicationLatest l
-JOIN [${schema}].ComponentMigration m ON m.AssessmentId = l.AssessmentId
-JOIN [${schema}].Component c ON c.ComponentId = m.ComponentId;
-GO
-
--- The latest sandbox check of every application (one row per component it had deployed then; the
--- rows of one check share CheckedAt), without the log tail. The application page reads it.
--- Sandbox IdP registrations of the latest assessment (with any) of each application. The application page reads it.
-CREATE OR ALTER VIEW [${schema}].vSandboxIdpLatest AS
-SELECT aa.ApplicationId, x.ComponentId, c.Name AS ComponentName, x.WrittenAt, x.Protocol, x.IdpUrl, x.AppUrl,
-       x.Identifier, x.MetadataUrl, x.Settings, x.Notes
-FROM [${schema}].SandboxIdpClient x
-JOIN [${schema}].ApplicationAssessment aa ON aa.AssessmentId = x.AssessmentId
-JOIN [${schema}].Component c ON c.ComponentId = x.ComponentId
-WHERE x.AssessmentId = (SELECT MAX(y.AssessmentId) FROM [${schema}].SandboxIdpClient y
-                        JOIN [${schema}].ApplicationAssessment ya ON ya.AssessmentId = y.AssessmentId
-                        WHERE ya.ApplicationId = aa.ApplicationId);
-GO
-CREATE OR ALTER VIEW [${schema}].vSandboxLatest AS
-SELECT x.ApplicationId, x.ComponentId, c.Name AS ComponentName, x.CheckedAt, x.Status, x.Reason, x.GitOps,
-       x.Namespace, x.Workloads, x.ImageRef, x.Revision, x.Ready, x.Restarts, x.RuleId, x.Outcome, x.Diagnosis, x.Events,
-       x.Url, x.UrlCheck
-FROM (SELECT s.*, MAX(s.CheckedAt) OVER (PARTITION BY s.ApplicationId) AS LastCheck,
-             ROW_NUMBER() OVER (PARTITION BY s.ApplicationId, s.ComponentId, s.CheckedAt ORDER BY s.CheckId DESC) AS n
-      FROM [${schema}].SandboxCheck s) x
-JOIN [${schema}].Application a ON a.ApplicationId = x.ApplicationId
-LEFT JOIN [${schema}].Component c ON c.ComponentId = x.ComponentId
-WHERE x.CheckedAt = x.LastCheck AND x.n = 1 AND a.Retired = 0;
-GO
-
--- Applications nobody has mapped to a product yet, and products without a business unit.
-CREATE OR ALTER VIEW [${schema}].vUnmapped AS
-SELECT N'Application' AS Kind, a.ApplicationId AS Id, COALESCE(a.DisplayName, a.Name) AS Name, a.RepositoryUrl AS Detail
-FROM [${schema}].Application a WHERE a.ProductId IS NULL AND a.Retired = 0
-UNION ALL
-SELECT N'Product', p.ProductId, p.Name, NULL FROM [${schema}].Product p WHERE p.BusinessUnitId IS NULL;
 GO
 
 -- Rule review (docs/rule-review.md): what the learning loop learns waits here until a person approves or
@@ -753,9 +655,166 @@ CREATE TABLE [${schema}].OrgRepository (
 );
 GO
 
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_OrgRepository_Url' AND object_id = OBJECT_ID(N'[${schema}].OrgRepository'))
+CREATE INDEX IX_OrgRepository_Url ON [${schema}].OrgRepository (RepositoryUrl) INCLUDE (AdminState, RemovedAt, ScanId, ProjectName);
+GO
+
+-- 17: the projects of an organization scan (Azure DevOps projects, GitLab subgroups; GitHub has none).
+-- The scan adds the ones it lists and marks the ones it no longer lists. People set AdminState:
+-- 'disabled' leaves every repository of the project out of the full scan and hides its results from
+-- the results pages; NULL lets each repository's own setting decide.
+IF OBJECT_ID(N'[${schema}].OrgProject', N'U') IS NULL
+CREATE TABLE [${schema}].OrgProject (
+    ProjectId       int IDENTITY(1,1) NOT NULL CONSTRAINT PK_OrgProject PRIMARY KEY,
+    ScanId          int NOT NULL CONSTRAINT FK_OrgProject_Scan REFERENCES [${schema}].OrgScan (ScanId),
+    Name            nvarchar(200) NOT NULL,             -- as OrgRepository.ProjectName
+    FirstSeenAt     datetime2(0)  NOT NULL CONSTRAINT DF_OrgProject_FirstSeenAt DEFAULT SYSUTCDATETIME(),
+    LastSeenAt      datetime2(0)  NOT NULL CONSTRAINT DF_OrgProject_LastSeenAt DEFAULT SYSUTCDATETIME(),
+    RemovedAt       datetime2(0)  NULL,
+    AdminState      nvarchar(10)  NULL CONSTRAINT CK_OrgProject_AdminState CHECK (AdminState IN (N'disabled')),
+    AdminNote       nvarchar(400) NULL,
+    CONSTRAINT UQ_OrgProject_Name UNIQUE (ScanId, Name)
+);
+GO
+
+-- 17: discovery runs list the projects, repositories and latest commits only (no clone, no assessment)
+IF COL_LENGTH(N'[${schema}].OrgScanRun', N'Kind') IS NULL
+ALTER TABLE [${schema}].OrgScanRun ADD Kind nvarchar(20) NOT NULL CONSTRAINT DF_OrgScanRun_Kind DEFAULT N'full'
+    CONSTRAINT CK_OrgScanRun_Kind CHECK (Kind IN (N'full', N'discovery'));
+GO
+
+-- Every repository with its project's setting and whether the full scan processes it (Active): not removed,
+-- not disabled by an administrator (itself or its project) and not skipped automatically, unless an
+-- administrator enabled it. The admin pages read it.
+CREATE OR ALTER VIEW [${schema}].vOrgRepository AS
+SELECT r.RepositoryId, r.ScanId, r.ProjectName, r.Name, r.ExternalId, r.CloneUrl, r.WebUrl, r.RepositoryUrl,
+       r.DefaultBranch, r.AppName, r.LastActivityAt, r.FirstSeenAt, r.FirstRunId, r.LastSeenAt, r.RemovedAt,
+       r.AdminState, r.AdminNote, r.SkipStatus, r.SkipReason, r.LastStatus, r.LastReason, r.LastCommit, r.LastCommitAt,
+       r.LastRating, r.LastScannedAt, r.LastRunId, r.LastSeconds, r.LastDetail, r.Enabled,
+       p.ProjectId, p.AdminState AS ProjectState, p.AdminNote AS ProjectNote,
+       COALESCE(r.LastCommitAt, r.LastActivityAt) AS LatestCommitAt,
+       CAST(CASE WHEN r.RemovedAt IS NULL AND r.Enabled = 1 AND p.AdminState IS NULL THEN 1 ELSE 0 END AS bit) AS Active
+FROM [${schema}].OrgRepository r
+LEFT JOIN [${schema}].OrgProject p ON p.ScanId = r.ScanId AND p.Name = r.ProjectName;
+GO
+
+-- Repositories an administrator disabled, by themselves or through their project. Their applications
+-- are left out of the results pages (the views below); the admin pages still show them.
+CREATE OR ALTER VIEW [${schema}].vDisabledRepositoryUrl AS
+SELECT DISTINCT r.RepositoryUrl
+FROM [${schema}].OrgRepository r
+LEFT JOIN [${schema}].OrgProject p ON p.ScanId = r.ScanId AND p.Name = r.ProjectName
+WHERE r.RemovedAt IS NULL AND r.RepositoryUrl IS NOT NULL
+  AND (r.AdminState = N'disabled' OR p.AdminState = N'disabled');
+GO
+
+-- Latest assessment of every application, with its product and business unit ("(not assigned)" when
+-- nobody has mapped it yet). This is what the web UI reads. Applications people hid (Retired) and the
+-- ones whose repository or project an administrator disabled for the organization scans are left out.
+CREATE OR ALTER VIEW [${schema}].vApplicationLatest AS
+SELECT a.ApplicationId,
+       COALESCE(a.DisplayName, a.Name) AS ApplicationName,
+       a.Name AS ScanName, a.Description, a.Owner, a.RepositoryUrl, a.SourcePath,
+       p.ProductId, p.Name AS ProductName, p.Owner AS ProductOwner, p.InfoUrl AS ProductInfoUrl,
+       bu.BusinessUnitId, bu.Name AS BusinessUnitName, bu.Owner AS BusinessUnitOwner,
+       x.AssessmentId, x.AssessedAt, x.Rating, r.Title AS RatingTitle, r.Description AS RatingDescription,
+       x.Score, x.Confidence, x.Summary, x.Verified, x.SourceCommit, x.SourceBranch
+FROM [${schema}].Application a
+CROSS APPLY (SELECT TOP (1) * FROM [${schema}].ApplicationAssessment aa
+             WHERE aa.ApplicationId = a.ApplicationId
+             ORDER BY aa.AssessedAt DESC, aa.AssessmentId DESC) x
+JOIN [${schema}].Rating r ON r.Rating = x.Rating
+LEFT JOIN [${schema}].Product p ON p.ProductId = a.ProductId
+LEFT JOIN [${schema}].BusinessUnit bu ON bu.BusinessUnitId = p.BusinessUnitId
+WHERE a.Retired = 0
+  AND NOT EXISTS (SELECT 1 FROM [${schema}].vDisabledRepositoryUrl h WHERE h.RepositoryUrl = a.RepositoryUrl);
+GO
+
+CREATE OR ALTER VIEW [${schema}].vComponentLatest AS
+SELECT l.ApplicationId, l.ApplicationName, l.ProductName, l.BusinessUnitName, l.AssessmentId,
+       c.ComponentId, c.Name AS ComponentName, c.ProjectPath,
+       ca.Role, ca.Tier, ca.TargetFramework, ca.Verdict, ca.VerdictText, ca.Score,
+       ca.Confidence, ca.WindowsContainerOk, ca.VerifyStatus, ca.VerifyDetail
+FROM [${schema}].vApplicationLatest l
+JOIN [${schema}].ComponentAssessment ca ON ca.AssessmentId = l.AssessmentId
+JOIN [${schema}].Component c ON c.ComponentId = ca.ComponentId;
+GO
+
+CREATE OR ALTER VIEW [${schema}].vFindingLatest AS
+SELECT l.ApplicationId, l.ApplicationName, l.AssessmentId, f.ComponentId, c.Name AS ComponentName,
+       f.FindingId, f.RuleId, f.Severity, f.RuleSeverity, f.Category, f.Title, f.Why, f.Fix,
+       f.Via, f.OnlyCommands, f.Evidence, f.Refs, f.Source
+FROM [${schema}].vApplicationLatest l
+JOIN [${schema}].Finding f ON f.AssessmentId = l.AssessmentId
+LEFT JOIN [${schema}].Component c ON c.ComponentId = f.ComponentId;
+GO
+
+-- Every scan of every application (not only the latest), with the application's current product and
+-- business unit and how many distinct obstacles that scan found. The trends page of the web UI reads it.
+CREATE OR ALTER VIEW [${schema}].vAssessmentHistory AS
+SELECT aa.AssessmentId, aa.ApplicationId, COALESCE(a.DisplayName, a.Name) AS ApplicationName,
+       p.ProductId, p.Name AS ProductName, bu.BusinessUnitId, bu.Name AS BusinessUnitName,
+       aa.AssessedAt, aa.Rating, aa.Score, aa.Verified,
+       COALESCE(f.Blockers, 0) AS Blockers, COALESCE(f.Rewrites, 0) AS Rewrites
+FROM [${schema}].ApplicationAssessment aa
+JOIN [${schema}].Application a ON a.ApplicationId = aa.ApplicationId
+LEFT JOIN [${schema}].Product p ON p.ProductId = a.ProductId
+LEFT JOIN [${schema}].BusinessUnit bu ON bu.BusinessUnitId = p.BusinessUnitId
+OUTER APPLY (SELECT COUNT(DISTINCT CASE WHEN x.Severity = 'blocker' THEN x.RuleId END) AS Blockers,
+                    COUNT(DISTINCT CASE WHEN x.Severity = 'rewrite' THEN x.RuleId END) AS Rewrites
+             FROM [${schema}].Finding x
+             WHERE x.AssessmentId = aa.AssessmentId AND x.Severity IN ('blocker', 'rewrite')) f
+WHERE a.Retired = 0
+  AND NOT EXISTS (SELECT 1 FROM [${schema}].vDisabledRepositoryUrl h WHERE h.RepositoryUrl = a.RepositoryUrl);
+GO
+
+CREATE OR ALTER VIEW [${schema}].vComponentMigrationLatest AS
+SELECT l.ApplicationId, l.ApplicationName, l.AssessmentId, m.ComponentId, c.Name AS ComponentName, c.ProjectPath,
+       m.Outcome, m.ItemCount, m.PlanJson, m.AgentPrompt
+FROM [${schema}].vApplicationLatest l
+JOIN [${schema}].ComponentMigration m ON m.AssessmentId = l.AssessmentId
+JOIN [${schema}].Component c ON c.ComponentId = m.ComponentId;
+GO
+
+-- The latest sandbox check of every application (one row per component it had deployed then; the
+-- rows of one check share CheckedAt), without the log tail. The application page reads it.
+-- Sandbox IdP registrations of the latest assessment (with any) of each application. The application page reads it.
+CREATE OR ALTER VIEW [${schema}].vSandboxIdpLatest AS
+SELECT aa.ApplicationId, x.ComponentId, c.Name AS ComponentName, x.WrittenAt, x.Protocol, x.IdpUrl, x.AppUrl,
+       x.Identifier, x.MetadataUrl, x.Settings, x.Notes
+FROM [${schema}].SandboxIdpClient x
+JOIN [${schema}].ApplicationAssessment aa ON aa.AssessmentId = x.AssessmentId
+JOIN [${schema}].Component c ON c.ComponentId = x.ComponentId
+WHERE x.AssessmentId = (SELECT MAX(y.AssessmentId) FROM [${schema}].SandboxIdpClient y
+                        JOIN [${schema}].ApplicationAssessment ya ON ya.AssessmentId = y.AssessmentId
+                        WHERE ya.ApplicationId = aa.ApplicationId);
+GO
+CREATE OR ALTER VIEW [${schema}].vSandboxLatest AS
+SELECT x.ApplicationId, x.ComponentId, c.Name AS ComponentName, x.CheckedAt, x.Status, x.Reason, x.GitOps,
+       x.Namespace, x.Workloads, x.ImageRef, x.Revision, x.Ready, x.Restarts, x.RuleId, x.Outcome, x.Diagnosis, x.Events,
+       x.Url, x.UrlCheck
+FROM (SELECT s.*, MAX(s.CheckedAt) OVER (PARTITION BY s.ApplicationId) AS LastCheck,
+             ROW_NUMBER() OVER (PARTITION BY s.ApplicationId, s.ComponentId, s.CheckedAt ORDER BY s.CheckId DESC) AS n
+      FROM [${schema}].SandboxCheck s) x
+JOIN [${schema}].Application a ON a.ApplicationId = x.ApplicationId
+LEFT JOIN [${schema}].Component c ON c.ComponentId = x.ComponentId
+WHERE x.CheckedAt = x.LastCheck AND x.n = 1 AND a.Retired = 0
+  AND NOT EXISTS (SELECT 1 FROM [${schema}].vDisabledRepositoryUrl h WHERE h.RepositoryUrl = a.RepositoryUrl);
+GO
+
+-- Applications nobody has mapped to a product yet, and products without a business unit.
+CREATE OR ALTER VIEW [${schema}].vUnmapped AS
+SELECT N'Application' AS Kind, a.ApplicationId AS Id, COALESCE(a.DisplayName, a.Name) AS Name, a.RepositoryUrl AS Detail
+FROM [${schema}].Application a WHERE a.ProductId IS NULL AND a.Retired = 0
+  AND NOT EXISTS (SELECT 1 FROM [${schema}].vDisabledRepositoryUrl h WHERE h.RepositoryUrl = a.RepositoryUrl)
+UNION ALL
+SELECT N'Product', p.ProductId, p.Name, NULL FROM [${schema}].Product p WHERE p.BusinessUnitId IS NULL;
+GO
+
 -- Queue a run of an organization scan, unless one is already queued or running. Returns the RunId
--- (0 when the scan is disabled or busy). The admin pages call it for "Run now", the worker on schedule.
-CREATE OR ALTER PROCEDURE [${schema}].QueueOrgScanRun @ScanId int, @TriggeredBy nvarchar(20)
+-- (0 when the scan is disabled or busy). The admin pages call it for "Run now" and "Discover", the
+-- worker on schedule (always a full scan). @Kind: 'full' or 'discovery'.
+CREATE OR ALTER PROCEDURE [${schema}].QueueOrgScanRun @ScanId int, @TriggeredBy nvarchar(20), @Kind nvarchar(20) = N'full'
 AS
 BEGIN
     SET NOCOUNT ON; SET XACT_ABORT ON;
@@ -765,8 +824,8 @@ BEGIN
        AND NOT EXISTS (SELECT 1 FROM [${schema}].OrgScanRun WITH (UPDLOCK, HOLDLOCK)
                        WHERE ScanId = @ScanId AND Status IN (N'queued', N'running'))
     BEGIN
-        INSERT [${schema}].OrgScanRun (ScanId, TriggeredBy, RequestedBy)
-        SELECT @ScanId, @TriggeredBy, CASE WHEN @TriggeredBy = N'manual' THEN w.ChangedBy END
+        INSERT [${schema}].OrgScanRun (ScanId, TriggeredBy, RequestedBy, Kind)
+        SELECT @ScanId, @TriggeredBy, CASE WHEN @TriggeredBy = N'manual' THEN w.ChangedBy END, @Kind
         FROM [${schema}].fnAuditWho() w;
         SET @id = SCOPE_IDENTITY();
     END
@@ -843,6 +902,30 @@ BEGIN
                          i.ProjectName, i.Name
                   EXCEPT SELECT d.AdminState, d.AdminNote, d.SkipStatus, d.SkipReason, CASE WHEN d.RemovedAt IS NULL THEN 0 ELSE 1 END,
                          d.ProjectName, d.Name);
+END;
+GO
+
+-- Projects: found by a scan, disabled or enabled again by people, and leaving the organization.
+CREATE OR ALTER TRIGGER [${schema}].trOrgProjectAudit ON [${schema}].OrgProject
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'OrgProject', COALESCE(i.ProjectId, d.ProjectId), COALESCE(i.Name, d.Name),
+           CASE WHEN d.ProjectId IS NULL THEN N'insert' WHEN i.ProjectId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.ProjectId IS NOT NULL THEN (SELECT COALESCE(d.AdminState, N'enabled') AS Setting, d.AdminNote AS Note,
+                CAST(CASE WHEN d.RemovedAt IS NULL THEN 0 ELSE 1 END AS bit) AS Removed,
+                (SELECT s.Name FROM [${schema}].OrgScan s WHERE s.ScanId = d.ScanId) AS OrgScan
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.ProjectId IS NOT NULL THEN (SELECT COALESCE(i.AdminState, N'enabled') AS Setting, i.AdminNote AS Note,
+                CAST(CASE WHEN i.RemovedAt IS NULL THEN 0 ELSE 1 END AS bit) AS Removed,
+                (SELECT s.Name FROM [${schema}].OrgScan s WHERE s.ScanId = i.ScanId) AS OrgScan
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.ProjectId = i.ProjectId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.ProjectId IS NULL OR i.ProjectId IS NULL
+       OR EXISTS (SELECT i.AdminState, i.AdminNote, CASE WHEN i.RemovedAt IS NULL THEN 0 ELSE 1 END
+                  EXCEPT SELECT d.AdminState, d.AdminNote, CASE WHEN d.RemovedAt IS NULL THEN 0 ELSE 1 END);
 END;
 GO
 
@@ -996,6 +1079,9 @@ GRANT UPDATE ON [${schema}].OrgRepository (ProjectName, Name, ExternalId, CloneU
     LastActivityAt, LastSeenAt, RemovedAt, SkipStatus, SkipReason, LastStatus, LastReason, LastCommit, LastCommitAt,
     LastRating, LastScannedAt, LastRunId, LastSeconds, LastDetail) TO [${schema}_writer];
 GRANT EXECUTE ON [${schema}].QueueOrgScanRun TO [${schema}_writer];
+GRANT SELECT, INSERT ON [${schema}].OrgProject TO [${schema}_writer];
+GRANT UPDATE ON [${schema}].OrgProject (LastSeenAt, RemovedAt) TO [${schema}_writer];
+GRANT SELECT ON [${schema}].vOrgRepository TO [${schema}_writer];
 GRANT SELECT, INSERT ON [${schema}].SandboxCheck TO [${schema}_writer];
 GRANT SELECT, INSERT ON [${schema}].SandboxIdpClient TO [${schema}_writer];
 GRANT EXECUTE ON [${schema}].ProposeRuleCandidate TO [${schema}_writer];
@@ -1025,6 +1111,9 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].OrgScan TO [${schema}_admin]
 GRANT SELECT ON [${schema}].OrgScanRun TO [${schema}_admin];
 GRANT SELECT ON [${schema}].OrgRepository TO [${schema}_admin];
 GRANT UPDATE ON [${schema}].OrgRepository (AdminState, AdminNote) TO [${schema}_admin];
+GRANT SELECT ON [${schema}].OrgProject TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].OrgProject (AdminState, AdminNote) TO [${schema}_admin];
+GRANT SELECT ON [${schema}].vOrgRepository TO [${schema}_admin];
 GRANT EXECUTE ON [${schema}].QueueOrgScanRun TO [${schema}_admin];
 GRANT EXECUTE ON [${schema}].CancelOrgScanRun TO [${schema}_admin];
 GRANT SELECT ON [${schema}].RuleCandidate TO [${schema}_admin];
@@ -1188,4 +1277,8 @@ IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 15) INSER
 GO
 -- 16: work estimates removed (EffortDays dropped from the assessment tables and views)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 16) INSERT [${schema}].SchemaVersion (Version) VALUES (16);
+GO
+-- 17: discovery runs and projects of organization scans (OrgScanRun.Kind, OrgProject); disabled repositories
+-- and projects left out of the results views
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 17) INSERT [${schema}].SchemaVersion (Version) VALUES (17);
 GO

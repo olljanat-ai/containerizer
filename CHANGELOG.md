@@ -5,6 +5,21 @@ by hand on `main` with the version, and it tags the commit and releases from the
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHD images as release assets.
 
+## Unreleased
+
+Results database schema version 17 (`containerizer db init` upgrades it; the appliance does at start).
+
+### Organization scans
+- Discovery first: **Discover** on a scan's page lists the projects, repositories and each repository's
+  latest commit through the provider's API, without cloning or assessing anything, so administrators can
+  disable deprecated projects and repositories before the full scan. **Run now** is now **Run full scan**,
+  and the runs show which kind they were
+- Projects (Azure DevOps projects, GitLab subgroups) on **Admin → Repositories → Projects**: disabling one
+  leaves all its repositories out of the full scan; changes are in the change history
+- The repository list shows the latest commit, with **No commit for a year** and **Oldest commit first**
+- Disabled repositories and projects are hidden from the results pages (overview, trends, SBOM,
+  application pages); the admin pages still show them
+
 ## 0.1.0 (2026-10-31)
 
 The first release: the assessor, the GitHub Action and Azure DevOps gate, the results database with its web

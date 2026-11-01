@@ -695,7 +695,8 @@ def no_code_reason(src: Path) -> tuple[str, str]:
 def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work: Path, reg: Registry | None,
                  tag: str, cutoff: datetime | None, rules_reset, admin: str | None = None) -> RepoResult:
     """One repository. `admin` is an administrator's decision from the worker's repository list:
-    "disabled" (never processed, stops deploying), "enabled" (processed even when an automatic skip
+    "disabled" (never processed, stops deploying), "project-disabled" (the same, for every repository
+    of a project an administrator disabled), "enabled" (processed even when an automatic skip
     applies: stale, fork, Dockerfile, no application code) or None (automatic)."""
     from .analyze import analyze_app
     from .generate import generate_app, k8s_name
@@ -731,6 +732,8 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
         return res
     if admin == "disabled":
         return stop("disabled", "disabled by an administrator")
+    if admin == "project-disabled":
+        return stop("disabled", f"project {r.project} disabled by an administrator")
     if r.archived:
         return stop("skipped-archived", "archived or disabled")
     if r.empty:
@@ -1072,6 +1075,83 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
     if o.verify_sandbox and out:
         sandbox_step(o, out, log)
     return results
+
+
+# automatic skips that only need the provider's API (discovery records them); the others need the clone
+META_SKIPS = ("skipped-archived", "skipped-empty", "skipped-fork", "skipped-stale", "skipped-filter", "skipped-output")
+
+
+@dataclass
+class Discovered:
+    """One repository as a discovery run saw it: the latest commit on its default branch (from the
+    provider's API) and the automatic skip the API alone shows (archived, empty, fork, stale, filter)."""
+    repo: SourceRepo
+    last_commit: datetime | None = None
+    skip: tuple[str, str] | None = None
+    error: str = ""
+
+
+def discover_org(o: OrgOptions, log=print, workers: int = 8) -> list[Discovered]:
+    """The cheap first phase of an organization scan: list the projects and repositories and ask the
+    provider's API for each repository's latest commit. Nothing is cloned, analyzed, built or pushed,
+    and the output repository is not touched, so an administrator can disable deprecated projects and
+    repositories before the full scan. The repository list (`o.state`) gets the new and removed ones."""
+    from concurrent.futures import ThreadPoolExecutor
+    now = o.now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=o.stale_days) if o.stale_days else None
+    token = o.token if o.token is not None else read_token(o.provider, o.token_env)
+    if not token:
+        raise SourceError(f"no read-only token for the {o.provider} organization {o.org}; organizations are never "
+                          "read anonymously")
+    prov = provider(o.provider, o.org, token, o.api_url)
+    listed = list(prov.repos())
+    if o.on_listed:
+        o.on_listed(prov, len(listed))
+    names = unique_names(listed)
+    inc = re.compile(o.include) if o.include else None
+    exc = re.compile(o.exclude) if o.exclude else None
+    admin = o.state.sync(listed, names) if o.state else {}
+    projects = {r.project for r in listed if r.project != NO_PROJECT}
+    log(f"{o.org}: {len(listed)} repositories" + (f" in {len(projects)} projects" if projects else ""))
+    hooks = o.hooks
+    if hooks and hasattr(hooks, "start"):
+        hooks.start(len(listed))
+
+    def latest(r: SourceRepo) -> tuple[datetime | None, str]:
+        if r.empty or admin.get(r.key) in ("disabled", "project-disabled"):
+            return r.last_activity, ""
+        try:
+            return prov.last_commit(r) or r.last_activity, ""
+        except SourceError as e:            # keep going: the API's activity date is the next best thing
+            return r.last_activity, str(e)[:300]
+
+    out: list[Discovered] = []
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        for i, (r, (when, err)) in enumerate(zip(listed, pool.map(latest, listed)), 1):
+            if hooks and hasattr(hooks, "should_stop") and hooks.should_stop():
+                log(f"stopped: {len(out)} of {len(listed)} repositories discovered")
+                pool.shutdown(wait=False, cancel_futures=True)
+                break
+            d = Discovered(r, when, None, err)
+            if (inc and not inc.search(r.key)) or (exc and exc.search(r.key)) or \
+                    (o.output_repo and same_repo(r.clone_url, o.output_repo)):
+                d.skip = ("skipped-filter", "left out by the scan's include/exclude filter")
+                if o.output_repo and same_repo(r.clone_url, o.output_repo):
+                    d.skip = ("skipped-output", "the output repository of this scan (generated files)")
+            elif r.archived:
+                d.skip = ("skipped-archived", "archived or disabled")
+            elif r.empty:
+                d.skip = ("skipped-empty", "empty repository")
+            elif o.skip_forks and r.fork:
+                d.skip = ("skipped-fork", "forked from another repository")
+            elif cutoff and when and when < cutoff:
+                d.skip = ("skipped-stale", f"last commit {when:%Y-%m-%d}")
+            out.append(d)
+            if o.state and hasattr(o.state, "discovered"):
+                o.state.discovered(d)
+            if hooks and hasattr(hooks, "discovered"):
+                hooks.discovered(i, d)
+    return out
 
 
 CACHE_MARK = ".containerizer-org-cache"

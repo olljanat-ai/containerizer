@@ -4,17 +4,53 @@ An organization scan reads every Git repository of one Azure DevOps organization
 Server collection), GitHub organization or GitLab group, assesses them, and deploys the ones that are
 ready to the sandbox cluster. Administrators and operators define scans under
 **Admin → Organization scans**: the organization, filters, where images and generated files go, and the
-days and time (UTC) to run, or **Run now**. The scan worker on the appliance runs them. Before the first
+days and time (UTC) to run, or **Run full scan**. The scan worker on the appliance runs them. Before the first
 scan, an administrator registers a read-only token for the organization and a write token for the output
 repository ([source control tokens](source-control.md)), and allows the hosts on **Admin → Firewall**.
 
 ![An organization scan: runs, settings and change history](images/admin-scan-edit.png)
 
+## Discover first, then scan
+
+A scan runs in two phases, so time is not spent on repositories nobody uses any more:
+
+1. **Discover** (on the scan's page) lists the projects, every Git repository in them and each
+   repository's latest commit on its default branch, through the provider's API only. Nothing is cloned,
+   assessed, built or pushed, and the output repository is not touched, so even a large organization is
+   listed in minutes. Discovery also marks the [automatic skips](#automatic-skips) the API alone shows
+   (archived, empty, fork, not updated recently, left out by the filter).
+2. An administrator or operator reviews the result and **disables** what is deprecated:
+   - **Admin → Repositories** shows each repository's latest commit. **No commit for a year** and
+     **Oldest commit first** bring the old ones to the top; select them and **Disable**, with a note.
+   - **Admin → Repositories → Projects** lists the projects (Azure DevOps projects, GitLab subgroups)
+     with their number of repositories and latest commit. Disabling a project disables all its
+     repositories, including ones added to it later. GitHub organizations have no project level:
+     disable the repositories, or pause the scan.
+   ![Repositories after discovery, oldest commit first: a disabled project and a disabled repository](images/admin-repositories-discovered.png)
+
+   ![Projects of an Azure DevOps organization with their latest commits, one disabled](images/admin-projects.png)
+
+3. **Run full scan** (or the schedule) then processes only the enabled repositories. Disabled ones are
+   never cloned, and one that was deployed before leaves the sandbox at that run.
+
+Disabled repositories and projects are also **hidden from the results pages**: the overview, the
+trends, the SBOM pages and the application pages leave out the applications that come from them (they
+stay on the admin pages). Enabling them again brings their results back at once. Repositories the scan
+skips automatically are not hidden. Every change to a project or repository, with who made it and the
+note, is in **Admin → Change history** (Projects, Repositories) and on the project's or repository's own
+page.
+
+Discovery can be run again at any time, for example before a scheduled run, to see the new projects and
+repositories first. Scheduled runs are always full scans; new repositories found by them are processed
+in that run unless their project is disabled.
+
 ## What happens to each repository
 
 1. **Listed** through the provider's API, including private and internal repositories the token can
-   read. Every run lists the organization again: new repositories are added and processed in that run,
-   renamed ones are followed by the provider's id, and ones that are gone are marked **removed**.
+   read. Every run (discovery or full) lists the organization again: new projects and repositories are
+   added (a full run processes the new repositories in that run), renamed ones are followed by the
+   provider's id, and ones that are gone are marked **removed**. Repositories an administrator disabled,
+   or whose project is disabled, stop here.
 2. **Skipped automatically** when there is nothing to do, with the reason shown on **Admin →
    Repositories** ([automatic skips](#automatic-skips)).
 3. **Cloned** shallow (default branch only, no tags, submodules, symlinks or LFS objects). Clones are
@@ -59,7 +95,8 @@ Automatic skips are checked again at every run, so a repository that gets new co
 Dockerfile is processed again by itself. Archived, empty, filtered and stale repositories are decided
 from the provider's API without fetching anything. An administrator can **Enable** a repository
 (process it even though a skip applies), **Disable** it (never fetch it; it also leaves the sandbox at
-the next run) or set it back to **Automatic**, with a note in the change history.
+the next run and its results are hidden from the results pages) or set it back to **Automatic**, with a
+note in the change history. A disabled project overrides the settings of its repositories.
 
 ## Output repository layout
 
@@ -123,7 +160,8 @@ the result. To deploy the same output repository to another cluster, follow `san
 The worker exports Prometheus metrics about the scans, the worker process and the machine, and the
 appliance's Grafana (`https://<appliance>/grafana/`, linked as **Grafana ↗** on the admin pages) has a
 dashboard of them: scans running and waiting, time since the last successful run, progress of the
-current run, repositories by state and latest result, time per repository, clones and pulls, pushed
+current run, repositories by state (`disabled_admin` counts repositories disabled directly or through
+their project) and latest result, time per repository, clones and pulls, pushed
 images, and the machine's CPU, memory, disk and network.
 
 ![Grafana dashboard: scans, the machine running the worker, and the worker process](images/grafana-scans-dashboard.png)

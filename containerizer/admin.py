@@ -27,7 +27,7 @@ URL_RE = re.compile(r"https://[A-Za-z0-9.-]+(:\d{1,5})?(/[^\s<>\"'`]*)?")
 # a Grafana link from the environment: https, or plain http to this machine only (a local demo)
 LINK_RE = re.compile(r"(https://[A-Za-z0-9.-]+|http://(localhost|127\.0\.0\.1|\[::1\]))(:\d{1,5})?(/[^\s<>\"'`]*)?")
 TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Application": "Application",
-              "OrgScan": "Organization scan", "OrgRepository": "Repository",
+              "OrgScan": "Organization scan", "OrgRepository": "Repository", "OrgProject": "Project",
               "DevDatabase": "Dev database", "RuleCandidate": "Learned rule",
               "SourceCredential": "Source control token", "LabService": "Lab service",
               "RulesRepository": "Internal rules repository"}
@@ -733,11 +733,12 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
         chips = " ".join(f"<a class='chip{' on' if (k or None) == table else ''}' href='/admin/audit{('?table=' + k) if k else ''}'>{t}</a>"
                          for k, t in (("", "All"), ("Application", "Applications"), ("Product", "Products"),
                                       ("BusinessUnit", "Business units"), ("OrgScan", "Organization scans"),
-                                      ("OrgRepository", "Repositories"), ("SourceCredential", "Source control"),
+                                      ("OrgProject", "Projects"), ("OrgRepository", "Repositories"),
+                                      ("SourceCredential", "Source control"),
                                       ("DevDatabase", "Dev databases"), ("LabService", "Lab services"),
                                       ("RuleCandidate", "Rule review"), ("RulesRepository", "Rules repository")))
         body = (f"<p class='muted'>Every change to business units, products, the application mapping, organization scans, "
-                f"repositories (found by a scan, enabled or disabled, skipped), source control tokens (added, replaced or removed; "
+                f"projects and repositories (found by a scan, enabled or disabled, skipped), source control tokens (added, replaced or removed; "
                 f"never the token itself), dev database uploads, lab services turned on or off and the rule review "
                 f"(learned rules proposed, approved or rejected): who made it, when, "
                 f"and what changed. Changes made directly in the database are recorded too, under the database login. "
