@@ -6,7 +6,8 @@ scan found in it. The SBOM is written next to the component's generated files in
 (`sbom.cdx.json`), stored with the results, and shown in
 the web UI and the [API](api.md). A denied licence fails the gate, so the component is not deployed.
 
-![Dependencies and licences](images/sbom-portfolio.png)
+![Dependencies and licences](images/sbom-portfolio.png#only-light)
+![Dependencies and licences](images/sbom-portfolio-dark.png#only-dark)
 
 The web UI shows a *Packages* column per component on the application page, every package with its
 licence, policy status and CVEs on the component page (with *Download CycloneDX JSON*), and licences and

@@ -8,7 +8,8 @@ days and time (UTC) to run, or **Run full scan**. The scan worker on the applian
 scan, an administrator registers a read-only token for the organization and a write token for the output
 repository ([source control tokens](source-control.md)), and allows the hosts on **Admin → Firewall**.
 
-![An organization scan: runs, settings and change history](images/admin-scan-edit.png)
+![An organization scan: runs, settings and change history](images/admin-scan-edit.png#only-light)
+![An organization scan: runs, settings and change history](images/admin-scan-edit-dark.png#only-dark)
 
 ## Discover first, then scan
 
@@ -169,7 +170,8 @@ current run, repositories by state (`disabled_admin` counts repositories disable
 their project) and latest result, time per repository, clones and pulls, pushed
 images, and the machine's CPU, memory, disk and network.
 
-![Grafana dashboard: scans, the machine running the worker, and the worker process](images/grafana-scans-dashboard.png)
+![Grafana dashboard: scans, the machine running the worker, and the worker process](images/grafana-scans-dashboard.png#only-light)
+![Grafana dashboard: scans, the machine running the worker, and the worker process](images/grafana-scans-dashboard-dark.png#only-dark)
 
 Alert rules are included ([`monitoring/prometheus/containerizer-alerts.yml`](../monitoring/prometheus/containerizer-alerts.yml)):
 worker down, run failed, no successful run for 8 days, runs not starting, repositories failing, disk
