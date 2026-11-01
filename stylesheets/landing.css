@@ -1,0 +1,104 @@
+/* Landing page (docs/index.md) */
+.cz-hero {
+  text-align: center;
+  padding: 2.5rem 1rem 1rem;
+}
+.cz-hero h1 {
+  font-size: 2.6rem;
+  font-weight: 700;
+  line-height: 1.15;
+  margin: 0 auto 1rem;
+  max-width: 22ch;
+  color: var(--md-default-fg-color);
+}
+.cz-hero p {
+  font-size: 1.05rem;
+  max-width: 46rem;
+  margin: 0 auto 1.5rem;
+  color: var(--md-default-fg-color--light);
+}
+.cz-hero .md-button { margin: 0.25rem; }
+@media screen and (max-width: 44.9375em) {
+  .cz-hero h1 { font-size: 1.8rem; }
+  .cz-hero p { font-size: 0.9rem; }
+}
+
+.cz-shot {
+  border-radius: 0.5rem;
+  box-shadow: 0 0.4rem 1.6rem rgba(0, 0, 0, 0.18);
+  border: 1px solid var(--md-default-fg-color--lightest);
+}
+/* no display: here, Material hides the #only-light / #only-dark variant with display: none */
+.md-typeset img.cz-hero-shot { margin: 1.5rem 0 2rem; }
+
+.cz-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: 1rem;
+  margin: 1rem 0 2.5rem;
+  text-align: center;
+}
+.cz-stats > div {
+  padding: 1rem 0.5rem;
+  border-radius: 0.4rem;
+  background: var(--md-code-bg-color);
+}
+.cz-stats strong {
+  display: block;
+  font-size: 1.8rem;
+  color: var(--md-primary-fg-color);
+}
+[data-md-color-scheme="slate"] .cz-stats strong { color: var(--md-accent-fg-color); }
+.cz-stats span {
+  font-size: 0.8rem;
+  color: var(--md-default-fg-color--light);
+}
+
+.cz-feature {
+  display: grid;
+  grid-template-columns: 2fr 3fr;
+  gap: 2rem;
+  align-items: center;
+  margin: 2.5rem 0;
+}
+.cz-feature.cz-reverse { grid-template-columns: 3fr 2fr; }
+.cz-feature.cz-reverse > div { order: 2; }
+.cz-feature h3 { margin-top: 0; }
+@media screen and (max-width: 60em) {
+  .cz-feature, .cz-feature.cz-reverse { grid-template-columns: 1fr; }
+  .cz-feature.cz-reverse > div { order: 0; }
+}
+
+.cz-cta {
+  text-align: center;
+  padding: 2rem 1rem;
+  border-radius: 0.5rem;
+  background: var(--md-code-bg-color);
+  margin-bottom: 2rem;
+}
+.cz-cta .md-button { margin: 0.25rem; }
+
+/* Keep long screenshots to a preview: the top of the page is what matters. */
+.md-typeset img.cz-hero-shot {
+  width: 100%;
+  max-height: 36rem;
+  object-fit: cover;
+  object-position: top;
+}
+.md-typeset .cz-feature img.cz-shot {
+  width: 100%;
+  max-height: 24rem;
+  object-fit: cover;
+  object-position: top left;
+}
+.md-typeset .cz-feature p:has(> img) { margin: 0; }
+
+/* Eight highlights: four per row on wide screens. */
+@media screen and (min-width: 76.25em) {
+  .md-content:has(.cz-hero) .md-typeset .grid.cards { grid-template-columns: repeat(4, 1fr); }
+}
+.md-content:has(.cz-hero) .md-typeset h2 { text-align: center; font-weight: 600; margin-top: 3rem; }
+
+/* Site name in the header: a link to the front page that looks like the title. */
+.md-header__topic .cz-home-link { color: inherit; }
+.md-header__topic .cz-home-link:hover { opacity: .7; }

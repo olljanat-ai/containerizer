@@ -1,0 +1,1996 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Can this application run as a Linux container on Kubernetes? Assessment, hardened builds and manifests.">
+      
+      
+      
+        <link rel="canonical" href="https://containerizer.eu/build-pipelines/">
+      
+      
+        <link rel="prev" href="../refactoring/">
+      
+      
+        <link rel="next" href="../sbom/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../images/favicon.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>Build pipelines - Containerizer</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/landing.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#build-pipelines" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Containerizer" class="md-header__button md-logo" aria-label="Containerizer" data-md-component="logo">
+      
+  <img src="../images/favicon.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis"><a href="../" class="cz-home-link">Containerizer</a></span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Build pipelines
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/olljanat-ai/containerizer" title="Go to repository" class="md-source" data-md-component="source" target="_blank" rel="noopener noreferrer">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    olljanat-ai/containerizer
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../appliance/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../overview/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  How it works
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../scheduled-scans/" class="md-tabs__link">
+          
+  
+  
+  Using it
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../sign-in/" class="md-tabs__link">
+          
+  
+  
+  Administration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../sandbox-https/" class="md-tabs__link">
+          
+  
+  
+  Sandbox
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../java-node/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Containerizer" class="md-nav__button md-logo" aria-label="Containerizer" data-md-component="logo">
+      
+  <img src="../images/favicon.svg" alt="logo">
+
+    </a>
+    Containerizer
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/olljanat-ai/containerizer" title="Go to repository" class="md-source" data-md-component="source" target="_blank" rel="noopener noreferrer">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    olljanat-ai/containerizer
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../appliance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using it
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Using it
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scheduled-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Organization scans
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platform-migration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform migrations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../refactoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Refactoring patches
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build pipelines
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build pipelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#where-to-get-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where to get it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#which-provider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Which provider
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-adds-to-the-repository" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it adds to the repository
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-pipeline-does" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the pipeline does
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#permissions-and-secrets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Permissions and secrets
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Permissions and secrets">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#github-actions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GitHub Actions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gitlab-cicd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GitLab CI/CD
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#azure-pipelines" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Azure Pipelines
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#signing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Signing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-sandbox-and-gitops" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The sandbox and GitOps
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pins-and-updates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pins and updates
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-the-patch-is-made" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How the patch is made
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-does-not-do" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it does not do
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sbom/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SBOMs, licences and CVEs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rule-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rule review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Administration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Administration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sign-in/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sign-in and roles
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../source-control/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Source control tokens and the LLM
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../appliance-admin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Running the appliance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sandbox
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-https/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox HTTPS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../lab-services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lab services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-idp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox identity provider
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dev-databases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dev databases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../external-secrets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Secrets (External Secrets)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../java-node/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Java and Node.js
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../local-dev-server/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local dev server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#where-to-get-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where to get it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#which-provider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Which provider
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-adds-to-the-repository" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it adds to the repository
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-pipeline-does" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the pipeline does
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#permissions-and-secrets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Permissions and secrets
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Permissions and secrets">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#github-actions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GitHub Actions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gitlab-cicd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GitLab CI/CD
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#azure-pipelines" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Azure Pipelines
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#signing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Signing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-sandbox-and-gitops" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The sandbox and GitOps
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pins-and-updates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pins and updates
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-the-patch-is-made" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How the patch is made
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-does-not-do" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it does not do
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="build-pipelines">Build pipelines<a class="headerlink" href="#build-pipelines" title="Permanent link">&para;</a></h1>
+<p>Containerizer generates the Dockerfiles that build an application's components, and builds them itself
+during a scan. For the application team to build the images themselves, from their own repository, it also
+generates a <strong>container image build pipeline</strong> for the CI system the code lives on: <strong>GitHub Actions</strong>,
+<strong>GitLab CI/CD</strong> or <strong>Azure Pipelines</strong>.</p>
+<p>The pipeline is made without an LLM, from what the assessment generated: the same Dockerfiles, the same
+image names as the generated Kubernetes manifests, and the same tag scheme the sandbox's GitOps image
+automation follows. Containerizer never writes to the repository: you get the files, or a patch to apply
+with <code>git am</code>, and open the pull request yourself.</p>
+<h2 id="where-to-get-it">Where to get it<a class="headerlink" href="#where-to-get-it" title="Permanent link">&para;</a></h2>
+<p><img alt="The Build pipeline box on an application's results page: the provider, the files it adds, Download .patch and how to apply it" class="cz-shot" src="../images/results-build-pipeline.png#only-light" />
+<img alt="The Build pipeline box on an application's results page: the provider, the files it adds, Download .patch and how to apply it" class="cz-shot" src="../images/results-build-pipeline-dark.png#only-dark" /></p>
+<ul>
+<li><strong>The results page</strong>: the application's <strong>Build pipeline</strong> box. Administrators, operators and the
+  application's product owners see where the code lives, the files the pipeline adds, <strong>Download .patch</strong>,
+  the same files as a <code>.tar.gz</code>, how to apply it and the files themselves as a diff. Choose another provider
+  or signing there. Everyone else sees that the pipeline exists.</li>
+<li><strong>The output repository</strong> of an organization scan: <code>&lt;organization&gt;/&lt;project&gt;/&lt;repository&gt;/pipeline/</code>, next
+  to the generated manifests. <code>pipeline/&lt;provider&gt;/</code> mirrors the application's repository: copy its contents
+  to the repository root. <code>pipeline/README.md</code> says what to do.</li>
+<li><strong>The command line</strong>, on a checkout:</li>
+</ul>
+<div class="highlight"><pre><span></span><code>containerizer<span class="w"> </span>pipeline<span class="w"> </span>&lt;app-path&gt;<span class="w"> </span><span class="o">[</span>--provider<span class="w"> </span>github<span class="p">|</span>gitlab<span class="p">|</span>azure-devops<span class="o">]</span><span class="w"> </span><span class="o">[</span>--registry<span class="w"> </span>R<span class="o">]</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span><span class="o">[</span>--sign<span class="w"> </span>none<span class="p">|</span>keyless<span class="p">|</span>key<span class="o">]</span><span class="w"> </span><span class="o">[</span>--out<span class="w"> </span>DIR<span class="o">]</span><span class="w"> </span><span class="o">[</span>--patch<span class="o">]</span>
+</code></pre></div>
+<p>Without <code>--patch</code> it writes <code>DIR/pipeline/&lt;provider&gt;/...</code>; with <code>--patch</code> a <code>git am</code> patch made on a
+  scratch copy of the checkout's HEAD commit and checked by applying it to another clean copy.</p>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>The Build pipeline box</th>
+<th>Downloads (<code>/admin/build-pipeline/&lt;id&gt;.patch</code>, <code>.tar.gz</code>)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Admin, Operator</td>
+<td>Everything</td>
+<td>Every application</td>
+</tr>
+<tr>
+<td>Product owner</td>
+<td>Everything, for the applications of their products</td>
+<td>Those applications</td>
+</tr>
+<tr>
+<td>Viewer, anyone without sign-in</td>
+<td>That it exists (and for which provider, from the repository URL)</td>
+<td>No access</td>
+</tr>
+</tbody>
+</table>
+<h2 id="which-provider">Which provider<a class="headerlink" href="#which-provider" title="Permanent link">&para;</a></h2>
+<p>The provider comes from, in this order: the organization scan that has the repository (its <strong>Provider</strong>:
+GitHub, GitLab or Azure DevOps, also self-hosted ones through its API URL: GitHub Enterprise Server, GitLab
+self-managed, Azure DevOps Server / TFS); then the repository URL: <code>github.com</code>, <code>*.ghe.com</code> or a host named
+<code>github</code>/<code>ghe</code>; <code>gitlab.com</code> or a host named <code>gitlab</code>; <code>dev.azure.com</code>, <code>*.visualstudio.com</code>, or a URL with
+<code>/_git/</code> or <code>/tfs/</code>. When neither tells, all three are offered (the output repository gets all three folders,
+the results page a download per provider). <code>--provider</code> or the box's provider list overrides it.</p>
+<h2 id="what-it-adds-to-the-repository">What it adds to the repository<a class="headerlink" href="#what-it-adds-to-the-repository" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>containerizer/&lt;component&gt;/Dockerfile</code></td>
+<td>The generated Dockerfile, as the scan built it</td>
+</tr>
+<tr>
+<td><code>containerizer/&lt;component&gt;/Dockerfile.dockerignore</code></td>
+<td>The generated context filter, plus <code>containerizer/</code></td>
+</tr>
+<tr>
+<td><code>containerizer/README.md</code></td>
+<td>The components, images, what to set up first, the pins</td>
+</tr>
+<tr>
+<td><code>.github/workflows/containerizer-images.yml</code></td>
+<td>GitHub Actions</td>
+</tr>
+<tr>
+<td><code>.gitlab-ci.yml</code>, or <code>containerizer.gitlab-ci.yml</code></td>
+<td>GitLab CI/CD: when the repository has a <code>.gitlab-ci.yml</code>, a file to <code>include:</code> from it (add <code>include: [{local: containerizer.gitlab-ci.yml}]</code>, and the stage <code>build</code> if your <code>stages:</code> list lacks it)</td>
+</tr>
+<tr>
+<td><code>azure-pipelines.containerizer.yml</code></td>
+<td>Azure Pipelines</td>
+</tr>
+</tbody>
+</table>
+<p>For an application in a subfolder of its repository, the <code>containerizer/</code> folder is in that subfolder; the
+CI file is at the repository root. If the application already has an entry called <code>containerizer</code>, the
+folder is <code>containerizer-build/</code>.</p>
+<p><strong>The build context</strong> is the application's folder, as in the scans (<code>docker build -f
+&lt;generated&gt;/&lt;component&gt;/Dockerfile &lt;application folder&gt;</code>): the generated Dockerfiles copy paths relative to
+it. <code>Dockerfile.dockerignore</code> next to the Dockerfile is the context filter: BuildKit (the default builder of
+current Docker, and of all three pipelines) reads <code>&lt;Dockerfile&gt;.dockerignore</code> instead of the context's
+<code>.dockerignore</code>. It leaves out <code>bin/</code>, <code>obj/</code>, <code>node_modules/</code>, secrets files and the pipeline's own
+<code>containerizer/</code> folder. Build locally the same way:</p>
+<div class="highlight"><pre><span></span><code><span class="nv">DOCKER_BUILDKIT</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>docker<span class="w"> </span>build<span class="w"> </span>-f<span class="w"> </span>containerizer/&lt;component&gt;/Dockerfile<span class="w"> </span>.
+</code></pre></div>
+<h2 id="what-the-pipeline-does">What the pipeline does<a class="headerlink" href="#what-the-pipeline-does" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Pull / merge requests</th>
+<th>The default branch</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Build</td>
+<td>Yes, each changed component</td>
+<td>Yes, each changed component</td>
+</tr>
+<tr>
+<td>SBOM (Syft, CycloneDX JSON)</td>
+<td>Kept as a pipeline artifact</td>
+<td>Kept as an artifact (and attested to the image when signing)</td>
+</tr>
+<tr>
+<td>Vulnerability scan (Trivy)</td>
+<td>Fails the job on the gate's severities</td>
+<td>Fails the job before anything is pushed</td>
+</tr>
+<tr>
+<td>Push</td>
+<td>No</td>
+<td><code>1.&lt;yyyymmdd&gt;.&lt;hhmm&gt;</code> and <code>sha-&lt;commit&gt;</code> (and <code>latest</code> when asked)</td>
+</tr>
+<tr>
+<td>Sign (cosign)</td>
+<td>No</td>
+<td>Optional: keyless or with a key</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Monorepos</strong>: one job per component. A component is rebuilt when its project folder, the folders of the
+  projects it references, the application folder's shared build files (<code>Directory.Build.props</code>,
+  <code>global.json</code>, <code>NuGet.config</code>, root <code>package.json</code>, ...) or its own <code>containerizer/&lt;component&gt;/</code> files
+  change. GitHub: a first job compares the push or pull request with its base and starts the components that
+  changed (a change to the workflow, a new branch or a manual run builds all). GitLab: <code>rules: changes:</code> per
+  job. Azure Pipelines has no per-job path filters: the trigger's path filter is the union, and every
+  component is built.</li>
+<li><strong>Scanning</strong> uses the security gate's settings (<a href="https://github.com/olljanat-ai/containerizer/blob/main/rules/60-security.yaml" target="_blank" rel="noopener noreferrer">rules/60-security.yaml</a>
+  <code>scan</code>): it fails on <code>fail_on</code> and above (default <code>CRITICAL</code>), only for vulnerabilities with a fix
+  (<code>ignore_unfixed</code>). Change it per repository without editing the file: GitHub repository variables
+  <code>CONTAINERIZER_TRIVY_SEVERITY</code> and <code>CONTAINERIZER_TRIVY_IGNORE_UNFIXED</code>, GitLab CI/CD variables or Azure
+  pipeline variables <code>TRIVY_SEVERITY</code> and <code>TRIVY_IGNORE_UNFIXED</code>. Trivy and Syft run as containers that read
+  the image from the job's Docker daemon (on GitLab: from the Docker-in-Docker service), so nothing is
+  installed on the runner.</li>
+<li><strong>The image</strong> is <code>&lt;registry&gt;/&lt;app&gt;/&lt;component&gt;</code>, the name in the generated manifests. The registry is the
+  organization scan's <strong>Registry</strong> setting when it has one; otherwise GitHub Container Registry
+  (<code>ghcr.io/&lt;owner&gt;</code>), the GitLab project's registry (<code>$CI_REGISTRY_IMAGE</code>), or on Azure a placeholder
+  (<code>REPLACE-ME.azurecr.io</code>) that fails the push job with a message until you set it. The variable
+  <code>CONTAINERIZER_REGISTRY</code> overrides it in each provider.</li>
+<li><strong>Tags</strong>: <code>1.&lt;yyyymmdd&gt;.&lt;hhmm&gt;</code> (UTC, when the pipeline started) is the same semver scheme as the scans'
+  own images, and <code>sha-&lt;first 12 characters of the commit&gt;</code>. <code>latest</code> is off by default
+  (<code>CONTAINERIZER_PUSH_LATEST=true</code>).</li>
+</ul>
+<h2 id="permissions-and-secrets">Permissions and secrets<a class="headerlink" href="#permissions-and-secrets" title="Permanent link">&para;</a></h2>
+<h3 id="github-actions">GitHub Actions<a class="headerlink" href="#github-actions" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>permissions: {}</code> for the workflow, and per job only what it needs: <code>contents: read</code> for the change
+  detection and the pull request builds; the push job adds <code>packages: write</code> (only when the registry is
+  GitHub Container Registry) and <code>id-token: write</code> (only with keyless signing). Pull requests from forks get
+  no secrets, and the pull request job uses none.</li>
+<li>GitHub Container Registry: nothing to set up, the job's <code>GITHUB_TOKEN</code> pushes. After the first push, link
+  each package to the repository (package settings) and make it public, or give the cluster a pull secret.</li>
+<li>Another registry: repository secrets <code>CONTAINERIZER_REGISTRY_USERNAME</code> and
+  <code>CONTAINERIZER_REGISTRY_PASSWORD</code>; the repository variable <code>CONTAINERIZER_REGISTRY</code> for another registry or
+  path.</li>
+<li>Key-based signing: secrets <code>COSIGN_PRIVATE_KEY</code> (the contents of <code>cosign.key</code>) and <code>COSIGN_PASSWORD</code>.</li>
+<li>Actions are pinned by full commit SHA with the version in a comment (<code>actions/checkout</code>,
+  <code>actions/upload-artifact</code>; the rest is plain <code>docker</code>). Checkouts do not keep the token
+  (<code>persist-credentials: false</code>). Protect the default branch so that only reviewed changes publish images.</li>
+</ul>
+<h3 id="gitlab-cicd">GitLab CI/CD<a class="headerlink" href="#gitlab-cicd" title="Permanent link">&para;</a></h3>
+<ul>
+<li>The jobs run <code>docker:&lt;version&gt;-cli</code> with a <code>docker:&lt;version&gt;-dind</code> service (both pinned by digest): the
+  runner needs a privileged Docker executor (GitLab.com's hosted runners have one).</li>
+<li>The project's registry: nothing to set up, the job token (<code>CI_REGISTRY_USER</code>, <code>CI_REGISTRY_PASSWORD</code>)
+  pushes. Another registry: CI/CD variables <code>CONTAINERIZER_REGISTRY_USER</code> and
+  <code>CONTAINERIZER_REGISTRY_PASSWORD</code>, <strong>protected</strong> and <strong>masked</strong>, and <code>CONTAINERIZER_REGISTRY</code>.</li>
+<li>Push jobs run only for the default branch when it is <strong>protected</strong> (<code>$CI_COMMIT_REF_PROTECTED</code>); merge
+  request jobs never push, and protected variables do not reach them.</li>
+<li>Keyless signing: the push jobs get an <code>id_tokens: SIGSTORE_ID_TOKEN</code> (audience <code>sigstore</code>); the merge
+  request jobs do not. Key-based: a protected <em>File</em> variable <code>COSIGN_PRIVATE_KEY</code> and a masked
+  <code>COSIGN_PASSWORD</code>.</li>
+<li>The template jobs set their variables on the jobs only, so an including <code>.gitlab-ci.yml</code> is not changed.</li>
+</ul>
+<h3 id="azure-pipelines">Azure Pipelines<a class="headerlink" href="#azure-pipelines" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Push with a <strong>Docker Registry service connection</strong> named <code>containerizer-registry</code> (Project settings →
+  Service connections; change the name in the <code>registryConnection</code> variable): <code>Docker@2</code> logs in with it, so
+  no password or PAT is in the YAML or the variables. Allow the pipeline to use it.</li>
+<li>Create the pipeline from <code>azure-pipelines.containerizer.yml</code> (Pipelines → New pipeline → Existing Azure
+  Pipelines YAML file). Azure Repos pull requests: add it as a <strong>build validation</strong> policy of the default
+  branch (the <code>pr:</code> trigger applies to GitHub and Bitbucket repositories only).</li>
+<li>Signing is key-based only (Azure Pipelines has no OIDC token Sigstore accepts): upload <code>cosign.key</code> as the
+  secure file <code>cosign.key</code> (Pipelines → Library) and set the secret variable <code>COSIGN_PASSWORD</code>.</li>
+<li><code>pool: vmImage: ubuntu-latest</code>. <strong>Self-hosted agents</strong>: replace it with <code>pool: name: &lt;your pool&gt;</code>; the
+  agent needs Linux, bash and Docker. Tasks are pinned to their major version (<code>Docker@2</code>,
+  <code>DownloadSecureFile@1</code>): Azure Pipelines cannot pin a task by digest.</li>
+</ul>
+<h2 id="signing">Signing<a class="headerlink" href="#signing" title="Permanent link">&para;</a></h2>
+<p><code>--sign</code> on the command line, <strong>Signing</strong> in the box:</p>
+<ul>
+<li><code>none</code> (default): no signature.</li>
+<li><code>keyless</code>: cosign signs with the pipeline's OIDC identity (GitHub <code>id-token: write</code>, GitLab <code>id_tokens</code>);
+  Fulcio issues a short-lived certificate and the signature is recorded in the public Rekor transparency
+  log. Verify with, for example, <code>cosign verify --certificate-identity-regexp
+  '^https://github.com/&lt;owner&gt;/&lt;repo&gt;/' --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  &lt;image&gt;</code>. Not for images whose names must not appear in a public log.</li>
+<li><code>key</code>: cosign signs with your key (<code>cosign generate-key-pair</code>). The signature is recorded in Rekor unless
+  <code>sbom.cosign_tlog_upload</code> in <code>rules/60-security.yaml</code> is <code>false</code> (then <code>--tlog-upload=false</code>). This is the
+  same key the generated <code>cluster/verify-images.yaml</code> (Kyverno) can enforce.</li>
+</ul>
+<p>When signing, the SBOM is also attached to the image as a signed CycloneDX attestation
+(<code>cosign attest --type cyclonedx</code>). cosign is the release binary, checked against the release's SHA-256.</p>
+<h2 id="the-sandbox-and-gitops">The sandbox and GitOps<a class="headerlink" href="#the-sandbox-and-gitops" title="Permanent link">&para;</a></h2>
+<p>The generated GitOps files follow new images by tag: Flux's <code>gitops/flux/git/image-automation.yaml</code>
+(an <code>ImageRepository</code> and an <code>ImagePolicy</code> per component, semver range <code>&gt;=1.0.0</code>, and an
+<code>ImageUpdateAutomation</code> that writes the new tag to the <code>kustomization.yaml</code> setters of the output
+repository), and the Argo CD Image Updater annotations (semver tags <code>^v?\d+\.\d+\.\d+$</code>). The pipeline's
+version tag <code>1.&lt;yyyymmdd&gt;.&lt;hhmm&gt;</code> is that scheme, the same as the scans' own pushes (<code>org.default_tag</code>), so:</p>
+<ol>
+<li>a merge to the default branch pushes <code>&lt;registry&gt;/&lt;app&gt;/&lt;component&gt;:1.20261101.1530</code>;</li>
+<li>Flux sees it within the <code>ImageRepository</code> interval (10 minutes) and commits the tag to the output
+   repository within the automation interval (30 minutes); the sandbox then rolls it out.</li>
+</ol>
+<p>This needs the pipeline and the generated manifests to use the same registry: the organization scan's
+Registry setting, which is the pipeline's default. The <code>sha-&lt;commit&gt;</code> tag does not match the policy and is
+never rolled out by itself: it is for finding the image of a commit. No pipeline step writes to the output
+repository.</p>
+<h2 id="pins-and-updates">Pins and updates<a class="headerlink" href="#pins-and-updates" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>What</th>
+<th>Pinned to</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Trivy</td>
+<td><code>aquasec/trivy:0.67.2@sha256:e2b22eac59c02003d8749f5b8d9bd073b62e30fefaef5b7c8371204e0a4b0c08</code> (the security gate's version)</td>
+</tr>
+<tr>
+<td>Syft</td>
+<td><code>anchore/syft:v1.33.0@sha256:f94e5d9fce1f2278491a8e3a63bd5f6ddb81fdfdbb8bf7a1637565c1d5344357</code> (the SBOM generator's version)</td>
+</tr>
+<tr>
+<td>Docker CLI and Docker-in-Docker (GitLab)</td>
+<td><code>docker:29.9.2-cli@sha256:5e6baf67…</code>, <code>docker:29.9.2-dind@sha256:9e79b879…</code></td>
+</tr>
+<tr>
+<td><code>actions/checkout</code></td>
+<td><code>3d3c42e5aac5ba805825da76410c181273ba90b1</code> (v7.0.1)</td>
+</tr>
+<tr>
+<td><code>actions/upload-artifact</code></td>
+<td><code>cf430e030ddbb5b0abf93d22962f4752f3646cd9</code> (v7.0.2)</td>
+</tr>
+<tr>
+<td>cosign</td>
+<td>v2.6.1, <code>cosign-linux-amd64</code> SHA-256 <code>064954c5d8c7e3b2…</code></td>
+</tr>
+</tbody>
+</table>
+<p>Digests are of the multi-architecture index. To update: generate the pipeline again with a newer
+Containerizer, or by hand: <code>docker buildx imagetools inspect &lt;image&gt;:&lt;tag&gt;</code> for an image's digest,
+<code>git ls-remote https://github.com/&lt;action&gt; refs/tags/&lt;tag&gt;</code> for an action's commit (a Dependabot or Renovate
+configuration keeps both current). In Containerizer itself the pins are in <code>containerizer/pipelines.py</code>;
+the Trivy and Syft versions come from <code>rules/60-security.yaml</code>, and a test fails when a version there has no
+digest in the code.</p>
+<h2 id="how-the-patch-is-made">How the patch is made<a class="headerlink" href="#how-the-patch-is-made" title="Permanent link">&para;</a></h2>
+<p>The results page makes the patch from what the scan recorded with the assessment (the generated
+Dockerfiles, the components' folders, which of the files the repository already has, the default branch):
+nothing is cloned and no LLM is asked. The patch only <strong>adds</strong> files, so it is made on an empty commit and
+<code>git am</code> applies it on the assessed commit and on later commits that do not have these files (the box
+warns when the scan found one of them already). If one exists, use the <code>.tar.gz</code> and merge by hand.
+<code>containerizer pipeline --patch</code> makes it on the checkout's HEAD commit and checks it with <code>git am</code> on a
+clean copy.</p>
+<p>An assessment made before this feature, or by <code>containerizer assess</code> (which generates nothing), has no
+build pipeline: scan the repository again, or run <code>containerizer pipeline</code> on a checkout.</p>
+<h2 id="what-it-does-not-do">What it does not do<a class="headerlink" href="#what-it-does-not-do" title="Permanent link">&para;</a></h2>
+<ul>
+<li>It does not run on Windows runners: Windows containers (<code>Dockerfile.windows</code>) are not included.</li>
+<li>It does not include the scan's last-minute changes that are not in the generated Dockerfile at
+  assessment time (the security gate's OS package upgrades); the output repository's
+  <code>pipeline/</code> copy does have them. The pipeline's own scan catches what they fixed.</li>
+<li>It is not tested on GitHub, GitLab or Azure DevOps by Containerizer's CI: the files are checked against
+  the providers' schemas and linters, and the build, SBOM, scan, push and key-based signing steps are run
+  locally with Docker (docs: the tests in <code>tests/test_pipelines.py</code>).</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../refactoring/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Refactoring patches">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Refactoring patches
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../sbom/" class="md-footer__link md-footer__link--next" aria-label="Next: SBOMs, licences and CVEs">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                SBOMs, licences and CVEs
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.tabs", "navigation.top", "navigation.footer", "search.highlight", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>

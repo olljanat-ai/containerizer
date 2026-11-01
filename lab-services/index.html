@@ -1,0 +1,1910 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Can this application run as a Linux container on Kubernetes? Assessment, hardened builds and manifests.">
+      
+      
+      
+        <link rel="canonical" href="https://containerizer.eu/lab-services/">
+      
+      
+        <link rel="prev" href="../sandbox-https/">
+      
+      
+        <link rel="next" href="../sandbox-idp/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../images/favicon.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>Lab services - Containerizer</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/landing.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#lab-services" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Containerizer" class="md-header__button md-logo" aria-label="Containerizer" data-md-component="logo">
+      
+  <img src="../images/favicon.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis"><a href="../" class="cz-home-link">Containerizer</a></span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Lab services
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/olljanat-ai/containerizer" title="Go to repository" class="md-source" data-md-component="source" target="_blank" rel="noopener noreferrer">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    olljanat-ai/containerizer
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../appliance/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../overview/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  How it works
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../scheduled-scans/" class="md-tabs__link">
+          
+  
+  
+  Using it
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../sign-in/" class="md-tabs__link">
+          
+  
+  
+  Administration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../sandbox-https/" class="md-tabs__link">
+          
+  
+  
+  Sandbox
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../java-node/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Containerizer" class="md-nav__button md-logo" aria-label="Containerizer" data-md-component="logo">
+      
+  <img src="../images/favicon.svg" alt="logo">
+
+    </a>
+    Containerizer
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/olljanat-ai/containerizer" title="Go to repository" class="md-source" data-md-component="source" target="_blank" rel="noopener noreferrer">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    olljanat-ai/containerizer
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../appliance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using it
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Using it
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scheduled-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Organization scans
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platform-migration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform migrations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../refactoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Refactoring patches
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../build-pipelines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build pipelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sbom/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SBOMs, licences and CVEs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rule-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rule review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Administration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Administration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sign-in/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sign-in and roles
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../source-control/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Source control tokens and the LLM
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../appliance-admin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Running the appliance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sandbox
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-https/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox HTTPS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lab services
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lab services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#turn-a-service-on-or-off" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Turn a service on or off
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-scan-changes-in-an-app" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the scan changes in an app
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What the scan changes in an app">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#things-the-scan-cannot-see" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Things the scan cannot see
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-it-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How it works
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hardening" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hardening
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#storage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Storage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#resources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resources
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#licences" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Licences
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-idp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox identity provider
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dev-databases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dev databases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../external-secrets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Secrets (External Secrets)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../java-node/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Java and Node.js
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../local-dev-server/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local dev server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#turn-a-service-on-or-off" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Turn a service on or off
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-scan-changes-in-an-app" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the scan changes in an app
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What the scan changes in an app">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#things-the-scan-cannot-see" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Things the scan cannot see
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-it-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How it works
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hardening" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hardening
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#storage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Storage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#resources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resources
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#licences" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Licences
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="lab-services">Lab services<a class="headerlink" href="#lab-services" title="Permanent link">&para;</a></h1>
+<p>Many applications need a database, a cache, a message broker, object storage or a file server before they start. On the
+<a href="../appliance/">appliance</a>, administrators can turn on <strong>lab services</strong>: backing services that run in
+the sandbox cluster next to the apps that the <a href="../scheduled-scans/">organization scans</a> deploy. When an
+app depends on a service that is on, the generated manifests point the app at it. The app's code does
+not change: only its configuration, through environment variables.</p>
+<table>
+<thead>
+<tr>
+<th>Service</th>
+<th>What runs</th>
+<th>What each app gets</th>
+<th>On by default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SQL Server</td>
+<td>SQL Server 2025, Developer edition (the appliance's own pinned image)</td>
+<td>Its own database and login, owner of that database only</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>PostgreSQL</td>
+<td>PostgreSQL 18</td>
+<td>Its own database and role, owner of that database only</td>
+<td>no</td>
+</tr>
+<tr>
+<td>Redis</td>
+<td>Redis 8.8</td>
+<td>Its own instance and password</td>
+<td>no</td>
+</tr>
+<tr>
+<td>S3 object storage</td>
+<td><a href="https://github.com/versity/versitygw" target="_blank" rel="noopener noreferrer">Versity S3 Gateway</a> (Apache 2.0)</td>
+<td>Its own S3 endpoint and access key</td>
+<td>no</td>
+</tr>
+<tr>
+<td>Azure Blob storage</td>
+<td><a href="https://github.com/Azure/Azurite" target="_blank" rel="noopener noreferrer">Azurite</a>, blob service</td>
+<td>Its own Azurite endpoint and account key</td>
+<td>no</td>
+</tr>
+<tr>
+<td>MySQL</td>
+<td>MySQL 8.4 LTS</td>
+<td>Its own database and user, with all rights on that database only</td>
+<td>no</td>
+</tr>
+<tr>
+<td>MongoDB</td>
+<td>MongoDB 8.0 Community</td>
+<td>Its own database and user, <code>dbOwner</code> of that database only</td>
+<td>no</td>
+</tr>
+<tr>
+<td>RabbitMQ</td>
+<td>RabbitMQ 4.4</td>
+<td>Its own virtual host and user, with rights on that virtual host only</td>
+<td>no</td>
+</tr>
+<tr>
+<td>Kafka</td>
+<td>Apache Kafka 4.4, one node (KRaft)</td>
+<td>Its own broker</td>
+<td>no</td>
+</tr>
+<tr>
+<td>SFTP</td>
+<td><a href="https://github.com/drakkan/sftpgo" target="_blank" rel="noopener noreferrer">SFTPGo</a>, SFTP only</td>
+<td>Its own SFTP server, user and password, on port 22</td>
+<td>no</td>
+</tr>
+</tbody>
+</table>
+<p>MongoDB 8.0 does not start on Linux 6.19 and newer (a tcmalloc bug, SERVER-121912). The appliance runs
+Debian 13's kernel, so this only matters on a self-built cluster with a newer kernel.</p>
+<p>SQL Server is on by default because the appliance already ran SQL Server for
+<a href="../dev-databases/">dev database restores</a>. An app with an uploaded backup (SQL Server, PostgreSQL or MySQL)
+still gets that backup restored next to it, and the lab's server for that engine is not used for it.
+Turning the engine off stops those restores too.</p>
+<h2 id="turn-a-service-on-or-off">Turn a service on or off<a class="headerlink" href="#turn-a-service-on-or-off" title="Permanent link">&para;</a></h2>
+<p>Administrators turn each service on or off under <strong>Admin → Lab services</strong>, with a note for the change
+history. A service that is on starts only when the first app asks for it, so a service nobody uses costs
+nothing. Turning off a service that apps use takes it from them at once (the page asks first), and the
+next scan generates them without it. <strong>Needed but off</strong> lists the apps whose latest scan found that they
+need a service that is off, and the repository's page shows the same warning: turn the service on, then
+scan again.</p>
+<h2 id="what-the-scan-changes-in-an-app">What the scan changes in an app<a class="headerlink" href="#what-the-scan-changes-in-an-app" title="Permanent link">&para;</a></h2>
+<p>The scan decides, for each component, which services the component needs:</p>
+<ul>
+<li><strong>Packages</strong>, the component's own or those of the projects it references (<code>rules/lab-services.yaml</code>):<ul>
+<li>SQL Server: <code>Microsoft.Data.SqlClient</code>, <code>System.Data.SqlClient</code>, <code>Microsoft.EntityFrameworkCore.SqlServer</code>, <code>Hangfire.SqlServer</code>, <code>dbup-sqlserver</code></li>
+<li>PostgreSQL: <code>Npgsql*</code>, <code>Hangfire.PostgreSql</code>, <code>dbup-postgresql</code></li>
+<li>Redis: <code>StackExchange.Redis</code>, <code>Microsoft.Extensions.Caching.StackExchangeRedis</code>, the SignalR and Data Protection Redis packages</li>
+<li>S3: <code>AWSSDK.S3</code>, <code>Minio</code></li>
+<li>Azure Blob storage: <code>Azure.Storage.Blobs</code>, <code>Microsoft.Azure.Storage.Blob</code>, <code>WindowsAzure.Storage</code></li>
+<li>MySQL: <code>MySqlConnector</code>, <code>MySql.Data</code>, <code>Pomelo.EntityFrameworkCore.MySql</code>, <code>MySql.EntityFrameworkCore</code>, <code>Hangfire.MySqlStorage</code>, <code>dbup-mysql</code></li>
+<li>MongoDB: <code>MongoDB.Driver*</code>, <code>MongoDB.Entities</code>, <code>MongoDB.EntityFrameworkCore</code>, <code>Hangfire.Mongo</code></li>
+<li>RabbitMQ: <code>RabbitMQ.Client</code>, <code>MassTransit.RabbitMQ</code>, <code>EasyNetQ*</code>, <code>NServiceBus.RabbitMQ</code>, <code>RawRabbit*</code>, <code>Rebus.RabbitMq</code></li>
+<li>Kafka: <code>Confluent.Kafka</code>, <code>MassTransit.Kafka</code>, <code>KafkaFlow*</code>, <code>Silverback.Integration.Kafka</code>, <code>Rebus.Kafka</code></li>
+<li>SFTP: <code>SSH.NET</code>, <code>Renci.SshNet*</code>, <code>WinSCP</code></li>
+</ul>
+</li>
+</ul>
+<p>The Aspire client packages for these services count too.
+- <strong>Settings in <code>appsettings.json</code></strong> (with <code>appsettings.Production.json</code> on top). Each connection string
+  and setting is classified by its value:
+    - <code>Initial Catalog=</code> or <code>Server=host,1433</code> means SQL Server;
+    - <code>Host=...;Username=</code> means PostgreSQL;
+    - <code>host:6379,abortConnect=false</code> means Redis;
+    - <code>UseDevelopmentStorage=true</code> or <code>AccountName=...;AccountKey=</code> means Azure Storage;
+    - <code>ServiceURL</code>, <code>AccessKey</code> and similar keys under an <code>AWS</code>, <code>S3</code> or <code>Minio</code> section mean S3;
+    - <code>Server=...;Uid=</code> or <code>Port=3306</code> means MySQL;
+    - <code>mongodb://</code> means MongoDB, and <code>DatabaseName</code> under a <code>Mongo...</code> section is its database;
+    - <code>amqp://</code>, or <code>host=</code> under a key that names RabbitMQ or EasyNetQ, means RabbitMQ. So do <code>HostName</code>,
+      <code>UserName</code>, <code>Password</code>, <code>Port</code> and <code>VirtualHost</code> under a <code>RabbitMQ</code> section;
+    - <code>BootstrapServers</code> (or <code>bootstrap.servers</code>) means Kafka;
+    - <code>Host</code>, <code>Port</code>, <code>Username</code> and <code>Password</code> under an <code>Sftp</code> or <code>Ssh</code> section mean SFTP.</p>
+<p>For each service that the component needs and that is on, the scan writes the following.</p>
+<ul>
+<li><strong>Environment variables</strong> that override the component's configuration:</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Service</th>
+<th>Settings that are overridden</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SQL Server, PostgreSQL, MySQL</td>
+<td>Each connection string of that engine, from the Secret <code>lab-&lt;service&gt;</code> (key <code>connection-string</code>). If no connection string says which engine it is and the component needs only this database, the unclassified ones are used. If there are no connection strings at all, <code>ConnectionStrings__DefaultConnection</code> is set.</td>
+</tr>
+<tr>
+<td>Redis</td>
+<td>Each Redis connection string or setting (<code>Redis:Configuration</code>, <code>ConnectionStrings:Cache</code>, ...). If none is found, <code>ConnectionStrings__Redis</code> is set.</td>
+</tr>
+<tr>
+<td>S3</td>
+<td><code>AWS_ACCESS_KEY_ID</code>, <code>AWS_SECRET_ACCESS_KEY</code>, <code>AWS_REGION</code>, and <code>AWS_ENDPOINT_URL_S3</code>, which AWSSDK.S3 3.7.300 and later read. The <code>ServiceURL</code>, access key, secret key and region settings that were found are overridden too.</td>
+</tr>
+<tr>
+<td>Azure Blob storage</td>
+<td>Each Azure Storage connection string, from the Secret (key <code>connection-string</code>).</td>
+</tr>
+<tr>
+<td>MongoDB</td>
+<td>Each MongoDB connection string (key <code>connection-string</code>) and each database name setting (key <code>database</code>). The database name has to change too: the app's user may use only its own database.</td>
+</tr>
+<tr>
+<td>RabbitMQ</td>
+<td>Each AMQP URI or EasyNetQ connection string (key <code>connection-string</code>), and each host, port, user name, password and virtual host setting (keys <code>host</code>, <code>port</code>, <code>username</code>, <code>password</code>, <code>vhost</code>).</td>
+</tr>
+<tr>
+<td>Kafka</td>
+<td>Each bootstrap servers setting (key <code>bootstrap-servers</code>). A <code>SecurityProtocol</code> setting becomes <code>Plaintext</code>.</td>
+</tr>
+<tr>
+<td>SFTP</td>
+<td>Each host, port, user name and password setting (keys <code>host</code>, <code>port</code>, <code>username</code>, <code>password</code>).</td>
+</tr>
+</tbody>
+</table>
+<p>The whole connection string, or each part of it, comes from the Secret, so no password appears in a
+  manifest. When no setting is found for a service the component needs, <code>lab/README.md</code> names the Secret
+  and its keys. Entries with the
+  same name that the generator made before (references to the component's own secrets) are replaced.
+- <strong><code>lab/k8s.yaml</code></strong>: an <code>ExternalSecret lab-&lt;service&gt;</code> for each service. It reads remote key
+  <code>&lt;namespace&gt;--cz-lab-&lt;service&gt;</code> from the store <code>app-secrets</code> (<a href="../external-secrets/">External Secrets</a>).
+  The namespace's reader Role grants exactly these keys, like every other key of the app.
+- <strong>NetworkPolicy egress</strong> from the component to the service's port. Only the service's pods are allowed
+  (for a per-app service, only the app's own instance), in namespace <code>containerizer-lab</code>.
+- <strong><code>lab/README.md</code></strong> lists the host names, the Secrets, which settings were overridden, and the services
+  that were needed but off. The scan result has the same, as <code>lab_services</code> in <code>containerizer.json</code>.</p>
+<h3 id="things-the-scan-cannot-see">Things the scan cannot see<a class="headerlink" href="#things-the-scan-cannot-see" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Settings made in code.</strong> A RabbitMQ <code>ConnectionFactory</code> without a user name in the configuration uses
+  <code>guest</code>, which the lab does not allow, and a Kafka client that sets SASL in code cannot log in to the lab
+  broker, which has no logins. An S3 client built with <code>new AmazonS3Client(new AmazonS3Config { ServiceURL = "..." })</code>
+  uses the URL in the code. The AWS SDK reads <code>AWS_ENDPOINT_URL_S3</code> only when the code does not set an
+  endpoint. The same is true for Azure clients created from a <code>serviceUri</code> with managed identity: the lab
+  gives each app a connection string, not an identity. <code>lab/README.md</code> says when no setting was found.</li>
+<li><strong>Database schema.</strong> The databases start empty. Run the app's migrations at start-up, as most EF Core
+  apps do, or upload a <a href="../dev-databases/">dev database backup</a> for SQL Server, PostgreSQL or MySQL.</li>
+</ul>
+<h2 id="how-it-works">How it works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>Admin -&gt; Lab services --(cz.LabService, audited)--&gt; system agent --&gt; lab-services.json
+                                                                      │            │
+           scan worker: needs + overrides + ExternalSecret &lt;──────────┘            │
+                                                                                   ▼
+app namespace: ExternalSecret lab-&lt;service&gt; ──ESO──&gt; containerizer-secrets/&lt;ns&gt;--cz-lab-&lt;service&gt;
+                                                                                   ▲
+lab agent (root, every 2 min) ──finds the ExternalSecrets──&gt; creates database/login or instance,
+                                                             writes the credentials ─┘
+containerizer-lab: sqlserver, postgres, mysql, mongodb, rabbitmq (shared)
+                   redis-&lt;ns&gt;, s3-&lt;ns&gt;, azure-blob-&lt;ns&gt;, kafka-&lt;ns&gt;, sftp-&lt;ns&gt; (per app)
+</code></pre></div>
+<p>The lab agent (<code>python -m containerizer.labagent reconcile</code>, <code>containerizer-lab.timer</code>) runs as root with
+the k3s admin kubeconfig. Each time it runs, it does the following.</p>
+<ol>
+<li>It applies namespace <code>containerizer-lab</code> with Pod Security <code>restricted</code>, a default-deny NetworkPolicy, a
+   LimitRange and a ServiceAccount without a token.</li>
+<li>It finds the apps that asked for a service: every ExternalSecret labelled <code>containerizer.io/lab-service</code>.
+   It accepts one only if it reads its own namespace's key, <code>&lt;namespace&gt;--cz-lab-&lt;service&gt;</code>. A namespace
+   therefore can never ask for another app's credentials, and system namespaces cannot ask at all.</li>
+<li>
+<p>For each service that is on and asked for:</p>
+<ul>
+<li><strong>Shared server</strong> (SQL Server, PostgreSQL, MySQL, MongoDB, RabbitMQ). It runs one Deployment with a
+  data volume. The admin password (not for RabbitMQ, which <code>rabbitmqctl</code> manages through its Erlang
+  cookie) is created once, in the Secret <code>&lt;service&gt;-admin</code> in <code>containerizer-lab</code>. For each app, it
+  creates the app's credentials once and stores them in the secret store. Then it runs the
+  provisioning script in the server's container (<code>kubectl exec</code>, script on stdin). The script is
+  idempotent:<ul>
+<li><strong>SQL Server</strong>: login <code>&lt;ns&gt;</code> (hyphens become underscores) with <code>CHECK_POLICY = ON</code>, database
+  <code>&lt;ns&gt;</code> owned by that login, <code>DENY VIEW ANY DATABASE</code> and <code>DENY VIEW SERVER STATE</code>.</li>
+<li><strong>PostgreSQL</strong>: role <code>&lt;ns&gt;</code> with <code>NOSUPERUSER NOCREATEDB NOCREATEROLE</code>, database <code>&lt;ns&gt;</code> owned by
+  it, <code>CONNECT</code> revoked from <code>PUBLIC</code> on every database (including <code>postgres</code> and <code>template1</code>),
+  and schema <code>public</code> owned by the app.</li>
+<li><strong>MySQL</strong>: user <code>'&lt;ns&gt;'@'%'</code> with all privileges on database <code>&lt;ns&gt;</code> only. <code>root</code> can log in
+  only from inside the server's container.</li>
+<li><strong>MongoDB</strong>: user <code>&lt;ns&gt;</code> in database <code>&lt;ns&gt;</code> with role <code>dbOwner</code> on that database only. <code>mongod</code>
+  runs with authentication on.</li>
+<li><strong>RabbitMQ</strong>: virtual host <code>&lt;ns&gt;</code> and user <code>&lt;ns&gt;</code> with configure, write and read rights on it
+  only. The <code>guest</code> user is deleted, and the lab's configuration replaces the image's, which lets
+  <code>guest</code> log in from anywhere. The node name is fixed (<code>rabbit@localhost</code>), so the data survives a
+  new pod.</li>
+</ul>
+</li>
+</ul>
+<p>The script runs again only when the server's pod or the password changes.
+- <strong>Per-app instance</strong> (Redis, S3, Azure Blob, Kafka, SFTP). It runs a Deployment, a Service and a data volume
+  named <code>&lt;service&gt;-&lt;ns&gt;</code>. Their config Secret is built from the app's credentials:
+    - <strong>Redis</strong> keeps only the SHA-256 of the password in its ACL. Commands in <code>@admin</code> are denied,
+      and the append-only file is on.
+    - <strong>Azurite</strong>'s <code>AZURITE_ACCOUNTS</code> holds only the app's account, so the emulator's well-known
+      <code>devstoreaccount1</code> key does not work. Telemetry is off.
+    - <strong>Versity S3 Gateway</strong> runs with the app's root key. Objects are under <code>/data/buckets</code>, and their
+      metadata is in a sidecar folder.
+    - <strong>Kafka</strong> is one node that is both broker and controller. The controller listens on
+      <code>localhost</code> only, and the broker advertises the instance's Service name. Clients connect without
+      a login: an app reaches only its own broker, so the NetworkPolicy is the access control.
+    - <strong>SFTPGo</strong> serves SFTP only. The web admin, REST API, FTP, WebDAV and telemetry listeners are off,
+      and the brute-force defender is on. Its user store is the app's one user, read from the config
+      Secret. The Service listens on port 22, so a client that uses the default port works. The host
+      keys are on the data volume, so they stay the same.
+- A <strong>NetworkPolicy per app</strong> lets in only that app's pods (<code>app.kubernetes.io/part-of: &lt;ns&gt;</code> in
+  namespace <code>&lt;ns&gt;</code>), on the service's port.
+- When the store gets new credentials, the agent annotates the app's ExternalSecret, so ESO syncs it
+  straight away.
+4. For each service that is off, it deletes the Deployments, Services, NetworkPolicies and config Secrets.
+   It keeps the volumes, the admin passwords and the apps' credentials in the store. Turning the service on
+   again brings back the same data with the same passwords. Instances of apps that no longer ask are
+   stopped the same way.
+5. It writes <code>/run/containerizer/system/lab-status.json</code> for the page. The file holds no secrets.</p>
+</li>
+</ol>
+<p>Secret values never appear on a command line. They reach kubectl on stdin, the provisioning scripts reach
+the server's own client on stdin, and the admin passwords stay in the servers' environment
+(<code>SQLCMDPASSWORD</code> for <code>sqlcmd</code>, <code>MYSQL_PWD</code> for <code>mysql</code>, and <code>mongosh</code> reads it from the environment).
+<code>psql</code> connects over the local socket with peer authentication. For RabbitMQ, the shell's <code>printf</code>
+builtin pipes the app's password to <code>rabbitmqctl</code>.</p>
+<h2 id="hardening">Hardening<a class="headerlink" href="#hardening" title="Permanent link">&para;</a></h2>
+<p>The lab follows the same baseline as the generated apps (NSA/CISA Kubernetes Hardening Guide,
+<code>rules/60-security.yaml</code>):</p>
+<ul>
+<li><strong>Pods.</strong> They run as non-root users: SQL Server as <code>10001</code>, PostgreSQL as <code>70</code>, MySQL, MongoDB and
+  Redis as <code>999</code>, RabbitMQ as <code>100</code>, Azurite, Kafka and SFTPGo as <code>1000</code>, the S3 gateway as <code>10001</code>. The root file system is read-only, with <code>emptyDir</code> folders (size
+  limited) where the server needs to write. All capabilities are dropped, privilege escalation is off,
+  seccomp and AppArmor use <code>RuntimeDefault</code>, no service account token is mounted, and service links are
+  off. There are memory requests and limits and ephemeral-storage limits. SQL Server keeps
+  <code>NET_BIND_SERVICE</code> in its bounding set, the only capability Pod Security <code>restricted</code> allows, because
+  its binary carries that file capability. With <code>no_new_privs</code> the capability is never raised.</li>
+<li><strong>Network.</strong> Default deny, in and out. Each app gets an ingress rule to its own service, and lab pods
+  make no outgoing connections. The apps' own NetworkPolicies allow only the service's pods and port.</li>
+<li><strong>Secrets.</strong> Credentials are in the secret store only, read by each namespace's own reader. The store
+  namespace runs no pods. The admin passwords are in <code>containerizer-lab</code> Secrets. k3s encrypts Secrets at
+  rest (<code>secrets-encryption: true</code>).</li>
+<li><strong>Images.</strong> They are pinned by digest in <code>/usr/lib/containerizer/images.env</code>, and an OS upgrade brings
+  new pins. SQL Server uses the same pinned image as the results database.</li>
+<li><strong>Least privilege in the data.</strong> Each app is the owner of its own database only, and on SQL Server
+  cannot even list the others. An app cannot reach another app's Redis, S3 or Azurite instance on the
+  network, and the same goes for Kafka and SFTP.</li>
+</ul>
+<p><strong>Encryption in transit.</strong> SQL Server connections are encrypted (<code>Encrypt=True</code>) with the server's own
+certificate (<code>TrustServerCertificate=True</code>, as for the dev databases). MySQL connections are encrypted
+too (<code>SslMode=Required</code>, with the certificate MySQL makes at first start). SFTP is SSH. PostgreSQL,
+MongoDB, RabbitMQ, Kafka, Redis, S3 and Azurite use plain connections. The sandbox is a single-node cluster, so lab traffic never leaves the appliance:
+it stays on the node's pod network, and the NetworkPolicies limit who can open a connection.</p>
+<h2 id="storage">Storage<a class="headerlink" href="#storage" title="Permanent link">&para;</a></h2>
+<p>Each service keeps its data on a PersistentVolumeClaim of the default StorageClass. On the appliance, this
+is k3s <code>local-path</code>, under <code>/var/lib/rancher/k3s/storage</code> on the persistent partition, so the data survives
+restarts and OS upgrades. The requested sizes are 20 GiB for SQL Server, 10 GiB each for PostgreSQL,
+MySQL and MongoDB, 5 GiB for RabbitMQ, 1 GiB for each Redis and 5 GiB for each S3, Azurite, Kafka or SFTP
+instance. <code>local-path</code> does not enforce these sizes: the
+appliance's disk is the limit.</p>
+<p>To delete an app's data for good, delete its volume and its credentials:</p>
+<div class="highlight"><pre><span></span><code>k3s<span class="w"> </span>kubectl<span class="w"> </span>-n<span class="w"> </span>containerizer-lab<span class="w"> </span>delete<span class="w"> </span>pvc<span class="w"> </span>-l<span class="w"> </span>containerizer.io/lab-app<span class="o">=</span>&lt;namespace&gt;
+k3s<span class="w"> </span>kubectl<span class="w"> </span>-n<span class="w"> </span>containerizer-secrets<span class="w"> </span>delete<span class="w"> </span>secret<span class="w"> </span>-l<span class="w"> </span>containerizer.io/lab-app<span class="o">=</span>&lt;namespace&gt;
+</code></pre></div>
+<p>On a shared server, drop the app's database and login with the server's tools.</p>
+<h2 id="resources">Resources<a class="headerlink" href="#resources" title="Permanent link">&para;</a></h2>
+<p>When it is in use, SQL Server takes 2 to 3 GiB of memory, on top of the appliance's own SQL Server.
+PostgreSQL, MySQL and MongoDB take up to 1 GiB each, and RabbitMQ up to 768 MiB. Each Kafka instance takes
+512 MiB to 1 GiB. Each Redis, S3, Azurite or SFTP instance takes 32 to 512 MiB. Size the VM for the
+services you turn on.</p>
+<h2 id="licences">Licences<a class="headerlink" href="#licences" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>SQL Server Developer edition</strong> is free for development and test, and not licensed for production.
+  The lab is a sandbox.</li>
+<li><strong>PostgreSQL</strong>: PostgreSQL License.</li>
+<li><strong>Redis 8</strong>: AGPLv3, RSALv2 or SSPLv1, at your choice. It runs unmodified as a service.</li>
+<li><strong>Versity S3 Gateway</strong>: Apache 2.0.</li>
+<li><strong>Azurite</strong>: MIT.</li>
+<li><strong>MySQL Community Server</strong>: GPLv2.</li>
+<li><strong>MongoDB Community Server</strong>: SSPL. It runs unmodified as a service for the lab's own apps.</li>
+<li><strong>RabbitMQ</strong>: MPL 2.0.</li>
+<li><strong>Apache Kafka</strong>: Apache 2.0.</li>
+<li><strong>SFTPGo</strong>: AGPLv3. It runs unmodified.</li>
+</ul>
+<p>The appliance downloads each image from its publisher when the service is first used. Nothing is
+redistributed in the OS image.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../sandbox-https/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Sandbox HTTPS">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Sandbox HTTPS
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../sandbox-idp/" class="md-footer__link md-footer__link--next" aria-label="Next: Sandbox identity provider">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Sandbox identity provider
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.tabs", "navigation.top", "navigation.footer", "search.highlight", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>

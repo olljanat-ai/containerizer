@@ -1,0 +1,2190 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Can this application run as a Linux container on Kubernetes? Assessment, hardened builds and manifests.">
+      
+      
+      
+        <link rel="canonical" href="https://containerizer.eu/appliance-admin/">
+      
+      
+        <link rel="prev" href="../source-control/">
+      
+      
+        <link rel="next" href="../sandbox-https/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../images/favicon.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>Running the appliance - Containerizer</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/landing.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#running-the-appliance" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Containerizer" class="md-header__button md-logo" aria-label="Containerizer" data-md-component="logo">
+      
+  <img src="../images/favicon.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis"><a href="../" class="cz-home-link">Containerizer</a></span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Running the appliance
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/olljanat-ai/containerizer" title="Go to repository" class="md-source" data-md-component="source" target="_blank" rel="noopener noreferrer">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    olljanat-ai/containerizer
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../appliance/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../overview/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  How it works
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../scheduled-scans/" class="md-tabs__link">
+          
+  
+  
+  Using it
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../sign-in/" class="md-tabs__link">
+          
+  
+  
+  Administration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../sandbox-https/" class="md-tabs__link">
+          
+  
+  
+  Sandbox
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../java-node/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Containerizer" class="md-nav__button md-logo" aria-label="Containerizer" data-md-component="logo">
+      
+  <img src="../images/favicon.svg" alt="logo">
+
+    </a>
+    Containerizer
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/olljanat-ai/containerizer" title="Go to repository" class="md-source" data-md-component="source" target="_blank" rel="noopener noreferrer">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    olljanat-ai/containerizer
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../appliance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using it
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Using it
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scheduled-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Organization scans
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platform-migration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform migrations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../refactoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Refactoring patches
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../build-pipelines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build pipelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sbom/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SBOMs, licences and CVEs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rule-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rule review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Administration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Administration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sign-in/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sign-in and roles
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../source-control/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Source control tokens and the LLM
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Running the appliance
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Running the appliance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it runs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#root-password-and-ssh" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Root password and SSH
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#unattended-installs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unattended installs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration files
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#external-database" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        External database
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#firewall" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Firewall
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#local-registry-and-the-sandbox-cluster" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local registry and the sandbox cluster
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#upgrade-and-roll-back" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Upgrade and roll back
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#built-in-llm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Built-in LLM
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#backup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backup
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#security-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Security notes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sandbox
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-https/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox HTTPS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../lab-services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lab services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-idp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox identity provider
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dev-databases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dev databases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../external-secrets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Secrets (External Secrets)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../java-node/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Java and Node.js
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../local-dev-server/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local dev server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it runs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#root-password-and-ssh" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Root password and SSH
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#unattended-installs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unattended installs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration files
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#external-database" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        External database
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#firewall" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Firewall
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#local-registry-and-the-sandbox-cluster" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local registry and the sandbox cluster
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#upgrade-and-roll-back" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Upgrade and roll back
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#built-in-llm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Built-in LLM
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#backup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backup
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#security-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Security notes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="running-the-appliance">Running the appliance<a class="headerlink" href="#running-the-appliance" title="Permanent link">&para;</a></h1>
+<p>The appliance is an immutable OS image built with the
+<a href="https://github.com/rancher/elemental-toolkit" target="_blank" rel="noopener noreferrer">Elemental toolkit</a> (as in
+<a href="https://github.com/olljanat-ai/Firewall4AI" target="_blank" rel="noopener noreferrer">Firewall4AI</a>), installed from an ISO or started from a disk
+image, and upgraded from the admin pages. To install it, see <a href="../appliance/">Getting started</a>.</p>
+<h2 id="what-it-runs">What it runs<a class="headerlink" href="#what-it-runs" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Part</th>
+<th>How</th>
+<th>Reached at</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Web UI and API (results, admin pages, System, Firewall and Sandbox HTTPS pages)</td>
+<td>systemd service, user <code>cz-web</code>, no privileges</td>
+<td><code>https://&lt;appliance&gt;/</code></td>
+</tr>
+<tr>
+<td>Scan worker (<a href="../scheduled-scans/">organization scans</a>)</td>
+<td>systemd service, user <code>containerizer</code> + Docker</td>
+<td>-</td>
+</tr>
+<tr>
+<td>LLM queue runner (<a href="../scheduled-scans/#the-llm-queue">queued LLM reviews</a>, <a href="../refactoring/">refactoring patches</a>)</td>
+<td>systemd service <code>containerizer-llm-queue</code>, user <code>containerizer</code> + Docker (to build and run refactoring patches), reads the scan worker's clones, writes only its answer cache and <code>/var/lib/containerizer/refactor</code></td>
+<td>Admin → LLM queue, Admin → Refactoring</td>
+</tr>
+<tr>
+<td>SQL Server 2025 (results database), or your own SQL Server (<a href="#external-database">external database</a>)</td>
+<td>container, non-root, data on the persistent partition</td>
+<td><code>127.0.0.1:1433</code> only</td>
+</tr>
+<tr>
+<td>Sandbox cluster: k3s (single node) with Flux and Traefik</td>
+<td>systemd service</td>
+<td><code>kubectl</code> on the appliance; apps at <code>https://&lt;component&gt;-&lt;app&gt;.&lt;domain&gt;/</code> with <a href="../sandbox-https/">Sandbox HTTPS</a></td>
+</tr>
+<tr>
+<td><a href="../lab-services/">Lab services</a> for the sandboxed apps: SQL Server, PostgreSQL, MySQL, MongoDB, Redis, RabbitMQ, Kafka, S3, Azure Blob storage, SFTP (each optional)</td>
+<td>k3s, namespace <code>containerizer-lab</code>, data on the persistent partition</td>
+<td>Admin → Lab services; inside the cluster only</td>
+</tr>
+<tr>
+<td>Local container registry</td>
+<td>container</td>
+<td><code>127.0.0.1:5000</code> only (Docker and k3s)</td>
+</tr>
+<tr>
+<td>Prometheus and Grafana, with the scan worker's metrics, alerts and dashboard</td>
+<td>containers</td>
+<td><code>https://&lt;appliance&gt;/grafana/</code></td>
+</tr>
+<tr>
+<td>HTTPS (Caddy), SSH</td>
+<td>systemd services</td>
+<td>ports 443 and 22: the only open ports</td>
+</tr>
+<tr>
+<td>Firewall and DNS filter: every outgoing connection is blocked unless an allow-list rule covers it</td>
+<td>nftables + dnsmasq</td>
+<td>Admin → Firewall</td>
+</tr>
+<tr>
+<td><a href="#built-in-llm">Built-in LLM</a> (optional, off by default): llama.cpp with Qwen3-Coder 30B-A3B on the CPU</td>
+<td>container, non-root, read-only model</td>
+<td><code>127.0.0.1:8082</code> only; Admin → Source control &amp; LLM</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code>                 443 (HTTPS)                                  22 (SSH, root)    
+                     │                                              │
+ ┌───────────────────┼──────────────────────────────────────────────┼─────────────────────────────────┐
+ │ Caddy ──► web UI + API ──(status, requests)──► system agent (root): upgrade, roll back, firewall    │
+ │   │        │                                                                                       │
+ │   │        └──► SQL Server ◄── scan worker ──► Docker (builds, scans) ──push──► registry :5000      │
+ │   └──► Grafana ──► Prometheus ──scrape──┘                                           │ pull         │
+ │                                                         k3s + Flux ◄── output repo ─┘              │
+ │ nftables: in 22/443 only · out: only to addresses of allowed names (dnsmasq fills the sets)        │
+ └────────────────────────────────────────────────────────────────────────────────────────────────────┘
+   OS: read-only btrfs snapshot (A/B with fallback)      data: COS_PERSISTENT partition (rest of the disk)
+</code></pre></div>
+<p>The OS is a read-only snapshot of the container image <code>ghcr.io/olljanat-ai/containerizer-appliance</code>.
+Everything that has to survive a restart or an upgrade is on the persistent partition: the database,
+<code>/etc/containerizer</code> (configuration and generated secrets), Docker and k3s data, the registry, clones,
+learned rules, logs. An upgrade writes the new version as a new snapshot next to the running one; if it
+does not start properly, the appliance goes back to the previous snapshot by itself.</p>
+<h2 id="root-password-and-ssh">Root password and SSH<a class="headerlink" href="#root-password-and-ssh" title="Permanent link">&para;</a></h2>
+<p><code>root</code> is the only administrator account on the OS. It signs in on the console or over SSH with its
+password, or over SSH with a key in <code>/root/.ssh/authorized_keys</code>. The password is <code>containerizer</code> and
+expired on a new appliance, so the first sign-in, on the console or over SSH, asks for a new one (until
+then PAM may refuse an SSH key as well). <code>/etc</code> is rebuilt at every boot, so the appliance keeps root's
+password entry in <code>/etc/containerizer/secrets/root-shadow</code> (persistent partition) and puts it back at every
+start; changes with <code>passwd</code> are saved there by themselves (<code>containerizer-root-password.path</code>).</p>
+<ul>
+<li><strong>Keys only</strong>: after adding your key, <code>passwd -l root</code> locks the password: password sign-in stops
+  working on SSH and the console, keys keep working. <code>passwd -u root</code> unlocks it.</li>
+<li><strong>Forgotten password</strong>: start the recovery system from the GRUB menu (it always starts with the default
+  password, expired), mount the persistent partition (label <code>COS_PERSISTENT</code>) and delete
+  <code>root-shadow</code> from the <code>secrets</code> folder of <code>/etc/containerizer</code> there; the next start of the
+  appliance goes back to the default password.</li>
+<li>The recovery system does not keep a changed password: each start asks for a new one again.</li>
+</ul>
+<h2 id="unattended-installs">Unattended installs<a class="headerlink" href="#unattended-installs" title="Permanent link">&para;</a></h2>
+<p>Pass an Elemental cloud-config with the key, e.g.
+<code>elemental install --cloud-init my.yaml /dev/sda</code> from the ISO, or put the file into the OEM partition:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">stages</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">fs</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">"SSH</span><span class="nv"> </span><span class="s">key</span><span class="nv"> </span><span class="s">of</span><span class="nv"> </span><span class="s">the</span><span class="nv"> </span><span class="s">administrator"</span>
+<span class="w">      </span><span class="nt">authorized_keys</span><span class="p">:</span>
+<span class="w">        </span><span class="nt">root</span><span class="p">:</span>
+<span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"ssh-ed25519</span><span class="nv"> </span><span class="s">AAAA...</span><span class="nv"> </span><span class="s">you@example.com"</span>
+</code></pre></div>
+<p>The root password is the default (<code>containerizer</code>) and expired on unattended installs too.</p>
+<h2 id="configuration-files">Configuration files<a class="headerlink" href="#configuration-files" title="Permanent link">&para;</a></h2>
+<p>The first boot creates <code>/etc/containerizer/</code> (mode 700) with:</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>What to set</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>appliance.env</code></td>
+<td><code>CZ_HOSTNAME</code> (the name in the HTTPS certificate and the sign-in redirect), <code>CZ_ACME_EMAIL</code> (Let's Encrypt instead of the appliance's own CA), <code>CZ_DNS_SERVERS</code>, <code>CZ_MSSQL_EDITION</code>, <code>CZ_MSSQL_MEMORY</code>, <code>CZ_SQL_*</code> (<a href="#external-database">external database</a>), <code>CZ_LLM_HEAVY</code> (<a href="../platform-migration/#llm-heavy-mode">LLM-heavy mode</a>, off by default)</td>
+</tr>
+<tr>
+<td><code>web.env</code></td>
+<td>Sign-in for the web UI: <code>CONTAINERIZER_OIDC_*</code>, <code>CONTAINERIZER_ADMINS</code>, roles, viewers, API (<a href="../sign-in/">sign-in and roles</a>)</td>
+</tr>
+<tr>
+<td><code>worker.env</code></td>
+<td>Push credentials for an external image registry, and extra registry hosts the worker may push to. Scans that push to the appliance's own registry need none; source control tokens are registered on the admin pages (<a href="../source-control/">source-control.md</a>)</td>
+</tr>
+<tr>
+<td><code>sandbox.env</code></td>
+<td>The output repository the sandbox cluster deploys from (<a href="../scheduled-scans/#the-sandbox-cluster">the sandbox cluster</a>)</td>
+</tr>
+<tr>
+<td><code>grafana.env</code></td>
+<td>Optional Grafana settings, e.g. sign-in with your identity provider</td>
+</tr>
+<tr>
+<td><code>egress.json</code></td>
+<td>The egress allow-list: change it on the Firewall page, not here</td>
+</tr>
+<tr>
+<td><code>secrets/</code></td>
+<td>Generated passwords (SQL Server logins, Grafana <code>admin</code>), the root password (<code>root-shadow</code>), <code>sql-owner</code> for an <a href="#external-database">external database</a> and the key pair that seals source control tokens (<code>credential-key</code> for the worker only, <code>credential-key.pub</code> for the web UI): root-only, never shown in the web UI. Keep <code>credential-key</code> when restoring a backup: the registered tokens open only with it</td>
+</tr>
+<tr>
+<td><code>network/</code></td>
+<td>Optional <code>systemd-networkd</code> <code>.network</code> files for static addresses (default: DHCP on every NIC)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="external-database">External database<a class="headerlink" href="#external-database" title="Permanent link">&para;</a></h2>
+<p>By default the results database runs on the appliance, and you back it up (<a href="#backup">Backup</a>). To keep it
+on a SQL Server you already run and back up (SQL Server 2019 or later, or Azure SQL Managed Instance), point
+the appliance at it in <code>appliance.env</code>. SQL Server then does not run on the appliance, and the database is
+backed up with your server; the appliance's files still need their backup (<a href="#backup">Backup</a>).</p>
+<ol>
+<li>On your server, create the database and a login that owns it (<code>db_owner</code>). With
+   <code>CZ_SQL_LOGINS=create</code> (the default) the login also needs <code>ALTER ANY LOGIN</code> (e.g. <code>securityadmin</code>): it
+   creates the logins <code>cz_scanner</code>, <code>cz_web</code> and <code>cz_admin</code> with generated passwords. If your DBA creates
+   logins instead, create those three yourself and set <code>CZ_SQL_LOGINS=existing</code>.</li>
+<li>
+<p>In <code>/etc/containerizer/appliance.env</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="nv">CZ_SQL_SERVER</span><span class="o">=</span>sql01.example.com,1433
+<span class="nv">CZ_SQL_DATABASE</span><span class="o">=</span>Containerizer
+<span class="nv">CZ_SQL_USER</span><span class="o">=</span>containerizer_owner
+<span class="nv">CZ_SQL_LOGINS</span><span class="o">=</span>create
+<span class="c1"># optional: more connection string options, in quotes</span>
+<span class="nv">CZ_SQL_OPTIONS</span><span class="o">=</span><span class="s2">"Schema=containerizer"</span>
+<span class="c1"># optional: the CA of the server's certificate when the system CAs do not cover it</span>
+<span class="nv">CZ_SQL_CA</span><span class="o">=</span>/etc/containerizer/sql-ca.pem
+</code></pre></div>
+</li>
+<li>
+<p>Put the passwords in place (root only):</p>
+<div class="highlight"><pre><span></span><code>install<span class="w"> </span>-m<span class="w"> </span><span class="m">0400</span><span class="w"> </span>/dev/stdin<span class="w"> </span>/etc/containerizer/secrets/sql-owner<span class="w">      </span><span class="c1"># the password of CZ_SQL_USER, then Ctrl-D</span>
+<span class="c1"># only with CZ_SQL_LOGINS=existing: the three logins' passwords, the same way, into</span>
+<span class="c1"># secrets/cz-scanner, secrets/cz-web and secrets/cz-admin</span>
+</code></pre></div>
+</li>
+<li>
+<p>Reboot.</p>
+</li>
+</ol>
+<p>At every start <code>containerizer-db-init</code> creates or upgrades the schema on that server as <code>CZ_SQL_USER</code>
+(the same as on the appliance's own SQL Server), so an upgrade of the appliance upgrades the database.
+The connection is encrypted and the server certificate is checked (the system CAs, or <code>CZ_SQL_CA</code>);
+<code>TrustServerCertificate=yes</code> in <code>CZ_SQL_OPTIONS</code> turns the check off, for test servers only. The firewall
+allows the server and port by itself (Firewall page → Always allowed); a DNS name must resolve through the
+appliance's DNS servers (<code>CZ_DNS_SERVERS</code>). Named instances (<code>host\instance</code>) are not supported: give the
+port. The login names are fixed, so one SQL Server instance serves one appliance with
+<code>CZ_SQL_LOGINS=create</code>.</p>
+<p>To move the data of an appliance that already ran scans: back up its database (<a href="#backup">Backup</a>), restore
+the <code>.bak</code> on your server, then set it up as above: the restored database users <code>cz_scanner</code>, <code>cz_web</code> and
+<code>cz_admin</code> are mapped to the logins of that server by themselves. The appliance no longer uses
+<code>/var/lib/containerizer/mssql</code>; keep it until a scan has written to the external database, then delete it. To go
+back to the appliance's own SQL Server, empty <code>CZ_SQL_SERVER</code> and reboot (it starts with what that folder
+holds).</p>
+<p>If the settings are not valid, the web UI and the scan worker do not start:
+<code>journalctl -b -u containerizer-firstboot -u containerizer-db-init</code> says why.</p>
+<h2 id="firewall">Firewall<a class="headerlink" href="#firewall" title="Permanent link">&para;</a></h2>
+<p><strong>Inbound</strong>: only TCP 22 (SSH) and 443 (HTTPS). The k3s API, SQL Server, the registry,
+Prometheus and Grafana listen on the loopback interface or are not reachable from outside; NodePorts of
+the sandbox cluster are blocked too (use <code>ssh -L</code> to reach anything else).</p>
+<p><strong>Outbound</strong>: blocked, except to the names and networks on the allow-list. This holds for the appliance
+itself, the scan worker, every container Docker builds or runs, and every pod in the sandbox cluster.</p>
+<p>How it works: the host, Docker and k3s resolve names only through the appliance's DNS filter (dnsmasq on
+169.254.53.53). It answers only names an allow-list rule covers (anything else gets REFUSED), and puts the
+addresses of the answer into nftables sets of that rule's ports. The firewall lets connections out only
+to addresses in those sets (and to the networks of network rules), on the rule's ports. A connection to an
+address nobody resolved through the filter, an address of a name that is not allowed, or another port is
+dropped and logged.</p>
+<p><strong>Admin → Firewall</strong> (administrators only):</p>
+<ul>
+<li><strong>Allow</strong> a name (it covers its subdomains: <code>nuget.org</code> also allows <code>api.nuget.org</code>) or a network
+  (<code>10.20.0.0/16</code>), with ports (<code>443</code>, <code>80,443</code>, <code>udp/123</code>) and a note.</li>
+<li><strong>Refused names, last 24 hours</strong>: what something on the appliance tried to resolve and was refused,
+  with an <strong>Allow</strong> button. Run a scan, then allow what it needs.</li>
+<li><strong>Blocked connections</strong>: addresses and ports the firewall dropped.</li>
+<li><strong>Log only mode</strong> lets everything out but still lists what would have been refused, to build the list.
+  Turn blocking back on when you are done.</li>
+<li><strong>Always allowed</strong>: what the appliance needs itself (GHCR and Sigstore for upgrades and their signatures,
+  Docker Hub and the Microsoft registry for its own service images). Part of the OS image. While the
+  <a href="#built-in-llm">built-in LLM</a>'s model downloads, <code>huggingface.co</code> and <code>hf.co</code> are listed here too.</li>
+<li><strong>Change history</strong>: who changed what, kept on the persistent partition.</li>
+</ul>
+<p>The web UI does not change the firewall itself: it asks the system agent (root), which checks the rules
+again, loads the new ruleset in one transaction (checked with <code>nft -c</code> first, and the previous ruleset is
+kept if the new one does not load) and restarts the DNS filter. On the console:
+<code>/usr/lib/containerizer/venv/bin/python -m containerizer.sysagent firewall show</code>.</p>
+<h2 id="local-registry-and-the-sandbox-cluster">Local registry and the sandbox cluster<a class="headerlink" href="#local-registry-and-the-sandbox-cluster" title="Permanent link">&para;</a></h2>
+<p>The registry at <code>localhost:5000</code> is for images of the sandbox: in an organization scan, set the registry
+to <code>localhost:5000/&lt;path&gt;</code> and turn pushing on; the scan worker pushes there without credentials, and k3s
+pulls from it (<code>/etc/rancher/k3s/registries.yaml</code>) without pull secrets. It is not reachable from outside
+the appliance. Deleted tags free their space after a garbage collection:
+<code>docker exec cz-registry registry garbage-collect --delete-untagged /etc/distribution/config.yml</code>
+(stop the worker first).</p>
+<p>k3s also runs External Secrets Operator, and the generated configurations get every secret through it
+(<a href="../external-secrets/#the-appliance-sandbox">external-secrets.md</a>). The values live in namespace
+<code>containerizer-secrets</code>, which runs no pods, and each namespace can read only its own keys.</p>
+<p>To deploy what the scans generate, set <code>sandbox.env</code> (output repository URL, branch, read-only token).
+Every 2 minutes <code>cz-sandbox</code> puts the read-only token in the secret store for Flux's root sync and for
+every app namespace, and creates the root <code>GitRepository</code> + <code>Kustomization</code> of the output repository's
+<code>sandbox/flux/</code>. Each app reconciles as its own ServiceAccount with its own copy of the token
+(<a href="../scheduled-scans/#the-sandbox-cluster">the sandbox cluster</a>). Allow the Git server on
+the Firewall page. <code>kubectl</code> (as root on the appliance) shows the result. Argo CD is not installed; Flux
+is the supported path on the appliance.</p>
+<p>To reach the deployed apps over HTTPS, set up a wildcard domain and certificate on <strong>Admin → Sandbox
+HTTPS</strong>: Caddy answers for <code>*.&lt;domain&gt;</code> on the same port 443 and passes the requests to Traefik in k3s,
+and every web component gets <code>https://&lt;component&gt;-&lt;app&gt;.&lt;domain&gt;/</code> (<a href="../sandbox-https/">sandbox-https.md</a>).</p>
+<p>Components that sign users in get the sandbox identity provider, WSO2 Identity Server at
+<code>https://containerizer-idp.&lt;sandbox domain&gt;/</code> (<a href="../sandbox-idp/">sandbox-idp.md</a>). <code>cz-sandbox</code> creates its
+passwords and client secrets in the secret store once Flux has deployed it.
+<code>containerizer idp users</code> (as root) prints the test users and their passwords. Its images come from
+Docker Hub, which the default firewall rules allow.</p>
+<h2 id="upgrade-and-roll-back">Upgrade and roll back<a class="headerlink" href="#upgrade-and-roll-back" title="Permanent link">&para;</a></h2>
+<p><strong>Admin → System</strong> (administrators only) shows the running version, the snapshots on the disk and the
+last upgrade or roll back with its outcome, and checks GHCR for newer releases.</p>
+<ul>
+<li><strong>Upgrade</strong>: pick a newer release and confirm. The system agent checks with cosign that the image was
+  signed by this repository's release workflow (keyless signature, GitHub's OIDC identity of
+  <code>.github/workflows/release.yml</code> on a <code>vX.Y.Z</code> tag), then installs exactly the verified digest as a new
+  snapshot and restarts. Only release tags of the appliance's own image repository are accepted, whatever
+  the web UI sends.</li>
+<li><strong>Automatic fallback</strong>: after an upgrade the boot assessment checks that the firewall is loaded and
+  the DNS filter, Docker and k3s run and the application starts. If that fails 5 times, the appliance
+  restarts into the previous snapshot, and the System page shows the upgrade as failed.</li>
+<li><strong>Roll back</strong>: pick an earlier snapshot. It is installed as a new active snapshot (no download) and the
+  appliance restarts. Data on the persistent partition is not rolled back: the database keeps its schema
+  (newer versions only add to it, and older code reads it).</li>
+<li>The GRUB menu at start-up also lists the snapshots, and a recovery system.</li>
+</ul>
+<p>On the console: <code>python -m containerizer.sysagent upgrade vX.Y.Z</code> or <code>... rollback &lt;snapshot&gt;</code> (with
+<code>/usr/lib/containerizer/venv/bin/python</code>). The appliance checks GHCR anonymously, so the
+<code>containerizer-appliance</code> package must be public.</p>
+<h2 id="built-in-llm">Built-in LLM<a class="headerlink" href="#built-in-llm" title="Permanent link">&para;</a></h2>
+<p>For sites without an LLM server of their own (a GPU server, or the Claude API), the appliance can run
+one itself, on its CPU. It is off by default and is turned on under <strong>Admin → Source control &amp; LLM</strong>
+(administrators only). Scans with <strong>Ask the LLM</strong> use it when no LLM is set on that page; an LLM set
+there always wins. See <a href="../source-control/#the-llm">the LLM</a> for what it is asked.</p>
+<p><img alt="Built-in LLM running: the model checked on the disk, the machine's memory and the sizing" class="cz-shot" src="../images/admin-built-in-llm-running.png#only-light" />
+<img alt="Built-in LLM running: the model checked on the disk, the machine's memory and the sizing" class="cz-shot" src="../images/admin-built-in-llm-running-dark.png#only-dark" /></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Model</td>
+<td>Qwen3-Coder 30B-A3B Instruct, ByteShape's <code>IQ4_XS-4.20bpw</code> GGUF build (16 GB, Apache 2.0), served as <code>qwen3-coder-30b-a3b</code></td>
+</tr>
+<tr>
+<td>Server</td>
+<td>llama.cpp <code>llama-server</code> (image <code>CZ_IMAGE_LLAMA_CPP</code> in <code>images.env</code>, pinned by digest), <code>containerizer-local-llm.service</code>, container <code>cz-llm</code></td>
+</tr>
+<tr>
+<td>Listens on</td>
+<td><code>127.0.0.1:8082</code> only; metrics for Prometheus on the same port</td>
+</tr>
+<tr>
+<td>Memory</td>
+<td>at least 40 GB on the machine. The model (15.6 GB) is locked in RAM, so builds cannot push it out; each answer slot adds about 2 GB</td>
+</tr>
+<tr>
+<td>Disk</td>
+<td>about 20 GB free on the persistent partition for the download (16 GB plus 4 GB to spare)</td>
+</tr>
+<tr>
+<td>Speed</td>
+<td>about 7 to 12 tokens per second on a 22-core server; reading a 5,000 to 15,000 token evidence pack takes 1.5 to 5 minutes, so an answer takes about 5 minutes. Calls may take up to an hour (<code>CONTAINERIZER_LLM_TIMEOUT=3600</code> is set for it)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Turning it on.</strong> The system agent checks the memory and the free space again (the page shows both), then
+downloads the model once from Hugging Face, from a fixed commit of the repository, resuming a partial
+download, and checks its size and SHA-256 before it is used. <code>huggingface.co</code> and <code>hf.co</code> (which covers
+the download servers it redirects to) are on the allow-list only while the download runs, as system rules
+on the Firewall page; then they are removed again. If the download is refused anyway, the refused names are
+listed on <strong>Admin → Firewall</strong>. The page shows the progress; after the download the server loads the model,
+which takes a minute or two, and the state turns to <strong>Running</strong>. A failed download (network, checksum) is
+not retried by itself: <strong>Try again</strong> resumes it. A file that fails the checksum is deleted.</p>
+<p><img alt="Built-in LLM downloading its model, with the progress" class="cz-shot" src="../images/admin-built-in-llm-downloading.png#only-light" />
+<img alt="Built-in LLM downloading its model, with the progress" class="cz-shot" src="../images/admin-built-in-llm-downloading-dark.png#only-dark" /></p>
+<p><strong>Sizing.</strong> The answer slots (requests answered together, for about the cost of one, since speed follows
+memory bandwidth) and the container's memory limit follow the machine's memory:</p>
+<table>
+<thead>
+<tr>
+<th>Memory</th>
+<th>Slots</th>
+<th>Context per slot</th>
+<th>Memory limit of <code>cz-llm</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>40 to 47 GB</td>
+<td>1</td>
+<td>22,016 tokens</td>
+<td>24 GB</td>
+</tr>
+<tr>
+<td>48 to 63 GB</td>
+<td>2</td>
+<td>22,016 tokens</td>
+<td>27 GB</td>
+</tr>
+<tr>
+<td>64 GB or more</td>
+<td>3</td>
+<td>22,016 tokens</td>
+<td>30 GB</td>
+</tr>
+</tbody>
+</table>
+<p>It gets a quarter of the CPU's weight (<code>--cpu-shares 256</code>), so the scans' builds go first when both want
+the CPU. Use the queued LLM mode for organization scans where it is offered, and leave LLM-heavy mode off:
+it makes many calls, and on a CPU that turns a scan into hours or days.</p>
+<p><strong>Turning it off</strong> stops the server (or the download) at once; the model file stays, so turning it on
+again starts the server without a new download. <strong>Remove</strong> next to <strong>Turn on</strong> deletes the model file to
+free its 16 GB.</p>
+<p>Files:</p>
+<table>
+<thead>
+<tr>
+<th>What</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>On or off, the download's state and the change history</td>
+<td><code>/var/lib/containerizer/system/local-llm.json</code></td>
+</tr>
+<tr>
+<td>The model file (re-downloadable)</td>
+<td><code>/var/lib/containerizer/llm/</code></td>
+</tr>
+<tr>
+<td>What the page and the scan worker read</td>
+<td><code>/run/containerizer/system/local-llm-status.json</code></td>
+</tr>
+<tr>
+<td>The server's settings while it is on (slots, context, memory)</td>
+<td><code>/run/containerizer/local-llm.env</code></td>
+</tr>
+</tbody>
+</table>
+<p>On the console: <code>systemctl status containerizer-local-llm containerizer-local-llm-download</code>,
+<code>docker logs cz-llm</code>, and <code>curl -s http://127.0.0.1:8082/health</code>. It is not part of the start-up check of an
+upgrade: a missing or slow model never makes the appliance go back to the previous snapshot. The
+Grafana dashboard has a <strong>Built-in LLM</strong> row: whether it is up, requests in progress and waiting, and
+the tokens per second it generates.</p>
+<h2 id="backup">Backup<a class="headerlink" href="#backup" title="Permanent link">&para;</a></h2>
+<p>The OS is rebuilt from the image; what has to be backed up is on the persistent partition. Scans rebuild
+the clones, images in the local registry and the sandbox apps, but not the rest:</p>
+<table>
+<thead>
+<tr>
+<th>What</th>
+<th>Where</th>
+<th>Why it matters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Results database</td>
+<td>SQL Server, <code>/var/lib/containerizer/mssql</code> (back it up with <code>BACKUP DATABASE</code>, below)</td>
+<td>Results, history, mapping, scan settings, sealed tokens, rule review</td>
+</tr>
+<tr>
+<td>Configuration and secrets</td>
+<td><code>/etc/containerizer</code></td>
+<td><code>.env</code> files, firewall allow-list, SQL Server and Grafana passwords, the root password, and <code>secrets/credential-key</code>: the tokens in the database open only with it</td>
+</tr>
+<tr>
+<td>Dev database uploads</td>
+<td><code>/var/lib/containerizer/devdb</code></td>
+<td>The uploaded backups. The database keeps only their name and SHA-256, so without the files the next scan of those apps has no backup to restore</td>
+</tr>
+<tr>
+<td>Appliance settings and their history</td>
+<td><code>/var/lib/containerizer/system</code></td>
+<td>Sandbox HTTPS certificate, key and settings, the lab service switches, and the change history of the firewall and Sandbox HTTPS (these two are files here, not in the database)</td>
+</tr>
+<tr>
+<td>Learned rules</td>
+<td><code>/var/lib/containerizer/learned</code></td>
+<td>Rules the learning loop added on this appliance. Rules approved in the rule review are in your rules repository</td>
+</tr>
+<tr>
+<td>HTTPS certificate authority</td>
+<td><code>/var/lib/caddy</code></td>
+<td>Without <code>CZ_ACME_EMAIL</code>, the appliance's own CA: a new one means every browser has to trust a new root</td>
+</tr>
+<tr>
+<td>Metrics (optional)</td>
+<td><code>/var/lib/containerizer/prometheus</code>, <code>/var/lib/containerizer/grafana</code></td>
+<td>90 days of scan and LLM usage metrics, and changes made in Grafana</td>
+</tr>
+</tbody>
+</table>
+<p>The <a href="#built-in-llm">built-in LLM</a>'s model file (<code>/var/lib/containerizer/llm</code>, 16 GB) can be downloaded
+again: leave it out of backups (the archive below does). Its on/off setting is in <code>/var/lib/containerizer/system</code>.</p>
+<p>Lab service data and restored dev databases in the sandbox cluster (<code>/var/lib/rancher</code>) are test data:
+a new cluster starts them empty, or restores the uploaded backups again, and creates new credentials.</p>
+<p>With an <a href="#external-database">external database</a> the results database is backed up with your SQL Server:
+skip its row and the <code>BACKUP DATABASE</code> step below. The files are still needed.</p>
+<p>Back up the database (from the appliance):</p>
+<div class="highlight"><pre><span></span><code>docker<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>cz-mssql<span class="w"> </span>/opt/mssql-tools18/bin/sqlcmd<span class="w"> </span>-C<span class="w"> </span>-S<span class="w"> </span>localhost<span class="w"> </span>-U<span class="w"> </span>sa<span class="w"> </span>-P<span class="w"> </span><span class="s2">"</span><span class="k">$(</span>cat<span class="w"> </span>/etc/containerizer/secrets/mssql-sa<span class="k">)</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-Q<span class="w"> </span><span class="s2">"BACKUP DATABASE Containerizer TO DISK = N'/var/opt/mssql/backup/containerizer.bak' WITH COMPRESSION, INIT"</span>
+<span class="c1"># the file is /var/lib/containerizer/mssql/backup/containerizer.bak</span>
+</code></pre></div>
+<p>and the folders (the database backup above included):</p>
+<div class="highlight"><pre><span></span><code>tar<span class="w"> </span>-C<span class="w"> </span>/<span class="w"> </span>-czf<span class="w"> </span>/root/containerizer-backup.tgz<span class="w"> </span>etc/containerizer<span class="w"> </span>var/lib/containerizer/mssql/backup<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>var/lib/containerizer/devdb<span class="w"> </span>var/lib/containerizer/system<span class="w"> </span>var/lib/containerizer/learned<span class="w"> </span>var/lib/caddy
+</code></pre></div>
+<p>Copy the archive off the appliance (<code>scp root@&lt;appliance&gt;:/root/containerizer-backup.tgz .</code>): it holds
+every secret of the appliance, so keep it like one.</p>
+<p>To restore on a new appliance, after its first start (with its own <code>sa</code> password, which you keep):</p>
+<div class="highlight"><pre><span></span><code>systemctl<span class="w"> </span>stop<span class="w"> </span>containerizer-web<span class="w"> </span>containerizer-worker
+tar<span class="w"> </span>-C<span class="w"> </span>/<span class="w"> </span>-xzf<span class="w"> </span>/root/containerizer-backup.tgz<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--exclude<span class="o">=</span>etc/containerizer/secrets/mssql-sa<span class="w"> </span>--exclude<span class="o">=</span>etc/containerizer/secrets/mssql.env
+docker<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>cz-mssql<span class="w"> </span>/opt/mssql-tools18/bin/sqlcmd<span class="w"> </span>-C<span class="w"> </span>-S<span class="w"> </span>localhost<span class="w"> </span>-U<span class="w"> </span>sa<span class="w"> </span>-P<span class="w"> </span><span class="s2">"</span><span class="k">$(</span>cat<span class="w"> </span>/etc/containerizer/secrets/mssql-sa<span class="k">)</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-Q<span class="w"> </span><span class="s2">"RESTORE DATABASE Containerizer FROM DISK = N'/var/opt/mssql/backup/containerizer.bak' WITH REPLACE"</span>
+systemctl<span class="w"> </span>reboot
+</code></pre></div>
+<p>At the next start the schema is upgraded if the backup is older, and the logins of the web UI and the
+scan worker get the passwords of the backup and are linked to their users in the restored database again.</p>
+<h2 id="security-notes">Security notes<a class="headerlink" href="#security-notes" title="Permanent link">&para;</a></h2>
+<ul>
+<li>OS: read-only, signed upgrades only, no package manager in use, kernel and network hardening sysctls,
+  root's default password must be changed at the first sign-in (<code>passwd -l root</code> for SSH keys only), no service but SSH and HTTPS reachable, outbound allow-list for everything.</li>
+<li>Web UI: no privileges (systemd sandbox: read-only system, no capabilities, system call filter); its
+  database passwords come as systemd credentials. It cannot change the OS: upgrades, roll backs and the
+  firewall go through the system agent, which checks every request again.</li>
+<li>SQL Server: non-root, every capability dropped except binding its port, loopback only. An external
+  database is reached encrypted, with the server certificate checked, and with the same three logins.
+  Edition: Express by default (free, 10 GB per database); Developer is not licensed for production.</li>
+<li>The scan worker is in the <code>docker</code> group, which is equivalent to root: it builds and runs the scanned
+  repositories' images. That is why the appliance is a dedicated machine, and why the egress allow-list
+  applies to every build. Give it no credentials beyond the scans' tokens.</li>
+<li>k3s: secrets encrypted at rest, delivered by External Secrets Operator from a namespace without pods, audit log (<code>/var/lib/rancher/k3s/server/logs/audit.log</code>), kernel
+  defaults protected, API reachable only from the appliance and its pods. Each app's namespace runs
+  under Pod Security "restricted".</li>
+<li>Containers of the appliance's own services are pinned by digest in the OS image
+  (<code>/usr/lib/containerizer/images.env</code>); each release has an SPDX SBOM attested to the image with cosign.</li>
+</ul>
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Something does not start</td>
+<td><code>systemctl --failed</code>, <code>journalctl -b -u &lt;unit&gt;</code>; units are <code>containerizer-*</code>, <code>k3s</code>, <code>caddy</code>, <code>docker</code></td>
+</tr>
+<tr>
+<td>A scan cannot reach a host</td>
+<td>Admin → Firewall → Refused names; or <code>journalctl -u containerizer-dns \| grep REFUSED</code></td>
+</tr>
+<tr>
+<td>The firewall did not load</td>
+<td>the SSH-only fallback ruleset is active; <code>systemctl status containerizer-firewall</code> shows why</td>
+</tr>
+<tr>
+<td>Status of the system agent</td>
+<td><code>/run/containerizer/system/status.json</code>, <code>journalctl -u containerizer-sysagent</code></td>
+</tr>
+<tr>
+<td>Locked out of SSH</td>
+<td>the console of the VM: GRUB menu → recovery, or a previous snapshot</td>
+</tr>
+</tbody>
+</table>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../source-control/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Source control tokens and the LLM">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Source control tokens and the LLM
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../sandbox-https/" class="md-footer__link md-footer__link--next" aria-label="Next: Sandbox HTTPS">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Sandbox HTTPS
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.tabs", "navigation.top", "navigation.footer", "search.highlight", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>

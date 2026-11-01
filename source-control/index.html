@@ -1,0 +1,1858 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Can this application run as a Linux container on Kubernetes? Assessment, hardened builds and manifests.">
+      
+      
+      
+        <link rel="canonical" href="https://containerizer.eu/source-control/">
+      
+      
+        <link rel="prev" href="../sign-in/">
+      
+      
+        <link rel="next" href="../appliance-admin/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../images/favicon.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>Source control tokens and the LLM - Containerizer</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/landing.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#source-control-tokens-and-the-llm" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Containerizer" class="md-header__button md-logo" aria-label="Containerizer" data-md-component="logo">
+      
+  <img src="../images/favicon.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis"><a href="../" class="cz-home-link">Containerizer</a></span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Source control tokens and the LLM
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/olljanat-ai/containerizer" title="Go to repository" class="md-source" data-md-component="source" target="_blank" rel="noopener noreferrer">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    olljanat-ai/containerizer
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../appliance/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../overview/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  How it works
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../scheduled-scans/" class="md-tabs__link">
+          
+  
+  
+  Using it
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../sign-in/" class="md-tabs__link">
+          
+  
+  
+  Administration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../sandbox-https/" class="md-tabs__link">
+          
+  
+  
+  Sandbox
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../java-node/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Containerizer" class="md-nav__button md-logo" aria-label="Containerizer" data-md-component="logo">
+      
+  <img src="../images/favicon.svg" alt="logo">
+
+    </a>
+    Containerizer
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/olljanat-ai/containerizer" title="Go to repository" class="md-source" data-md-component="source" target="_blank" rel="noopener noreferrer">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    olljanat-ai/containerizer
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../appliance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using it
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Using it
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scheduled-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Organization scans
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platform-migration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform migrations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../refactoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Refactoring patches
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../build-pipelines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build pipelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sbom/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SBOMs, licences and CVEs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rule-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rule review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Administration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Administration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sign-in/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sign-in and roles
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Source control tokens and the LLM
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Source control tokens and the LLM
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#how-the-tokens-are-protected" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How the tokens are protected
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-sealing-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The sealing key
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#making-the-tokens" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Making the tokens
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Making the tokens">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#read-only-token-for-an-organization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read-only token for an organization
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#write-token-for-an-output-repository" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write token for an output repository
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-llm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The LLM
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The LLM">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#queued-llm-reviews" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Queued LLM reviews
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../appliance-admin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Running the appliance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sandbox
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-https/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox HTTPS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../lab-services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lab services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-idp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox identity provider
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dev-databases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dev databases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../external-secrets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Secrets (External Secrets)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../java-node/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Java and Node.js
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../local-dev-server/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local dev server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#how-the-tokens-are-protected" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How the tokens are protected
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-sealing-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The sealing key
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#making-the-tokens" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Making the tokens
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Making the tokens">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#read-only-token-for-an-organization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read-only token for an organization
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#write-token-for-an-output-repository" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write token for an output repository
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-llm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The LLM
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The LLM">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#queued-llm-reviews" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Queued LLM reviews
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="source-control-tokens-and-the-llm">Source control tokens and the LLM<a class="headerlink" href="#source-control-tokens-and-the-llm" title="Permanent link">&para;</a></h1>
+<p>Organization scans (<a href="../scheduled-scans/">scheduled-scans.md</a>) read Azure DevOps, GitHub and GitLab
+organizations and push the generated files to an output Git repository. The tokens for both are
+registered by administrators under <strong>Admin → Source control &amp; LLM</strong>, together with the LLM the scans
+ask (see <a href="#the-llm">The LLM</a> below):</p>
+<ul>
+<li><strong>Organizations (read-only)</strong>: one token for each Azure DevOps organization (or Azure DevOps Server
+  collection), GitHub organization or GitLab group the scans may read, on the cloud service or a
+  self-hosted server. <strong>This is the allow-list</strong>: a scan of an organization without a registered,
+  enabled token does not run, and nothing is ever read anonymously.</li>
+<li><strong>Output repositories (write)</strong>: one token for each repository the generated Dockerfiles, manifests
+  and GitOps files are pushed to, matched by the repository's URL. The internal rules repository of
+  the <a href="../rule-review/#setting-up-the-internal-rules-repository">rule review</a> gets its write token here
+  too.</li>
+</ul>
+<h2 id="how-the-tokens-are-protected">How the tokens are protected<a class="headerlink" href="#how-the-tokens-are-protected" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Sealed for the worker.</strong> The moment a token is saved, the web UI seals it for the scan worker's
+  public key (X25519 key agreement, HKDF-SHA256, AES-256-GCM). The web UI has only the public key, so
+  it cannot open what it stored; only the worker, with the private key, opens a token, just before a
+  run. The sealed token is bound to its purpose, provider, server and organization or repository: it
+  does not open if it is moved to another row or another purpose in the database.</li>
+<li><strong>Never shown again.</strong> The page has a password field to enter a token and a button to replace it,
+  nothing that shows it. The admin database role may write the sealed token but is not granted
+  <code>SELECT</code> on it.</li>
+<li><strong>Audited, without the token.</strong> Adding, replacing (<em>Token saved</em> changes), enabling, disabling and
+  removing a token are in the change history with who did it. The token itself is never copied there.</li>
+<li><strong>Only sent where it belongs.</strong></li>
+<li>The read-only token goes to its own server's API, and with the clone URLs of its own organization
+    only (<code>https://github.com/&lt;org&gt;/…</code>, <code>https://gitlab.com/&lt;group&gt;/…</code>, <code>https://dev.azure.com/&lt;org&gt;/…</code>
+    or <code>https://&lt;org&gt;.visualstudio.com/…</code>, or the self-hosted server's equivalent). A repository whose
+    clone URL is elsewhere is refused. An API redirect or pagination link to another host does not get
+    the token, and https is never followed down to http.</li>
+<li>The write token is chosen by the output repository's URL, never by host or organization, and is only
+    used to clone and push that repository. The output repository can therefore be in a scanned
+    organization: it is never scanned itself, and the read-only token is never used to push.</li>
+<li>Git gets each token as an <code>http.&lt;repository URL&gt;.extraHeader</code> in its environment, so it is valid for
+    that one repository URL only, is not written to disk or the process list, and no credential helper
+    sees it. Errors and logs are redacted.</li>
+<li><strong>Least privilege is checked where the provider allows it.</strong> The worker records on the page when a
+  token last worked, and warns when a GitHub classic token has scopes that can write or a GitLab token
+  has more than <code>read_api</code> / <code>read_repository</code>. Registering the same token as both an organization's
+  read-only token and its output repository's write token is refused.</li>
+<li><strong>Admins only.</strong> The Source control page is for administrators; operators can schedule scans, but
+  only of organizations an administrator registered.</li>
+</ul>
+<h2 id="the-sealing-key">The sealing key<a class="headerlink" href="#the-sealing-key" title="Permanent link">&para;</a></h2>
+<p>The appliance makes the key pair at first boot: <code>/etc/containerizer/secrets/credential-key</code> for the
+worker and <code>credential-key.pub</code> for the web UI. Back up <code>credential-key</code> with the database: the
+registered tokens open only with it. A new key pair means entering every token again (the page marks
+tokens sealed for another key). Also allow each Git server's host on <strong>Admin → Firewall</strong>.</p>
+<h2 id="making-the-tokens">Making the tokens<a class="headerlink" href="#making-the-tokens" title="Permanent link">&para;</a></h2>
+<p>Give every token an expiration date and enter the same date on the page: it warns 14 days before, and
+an expired token stops its scans with a clear message. Revoke a token where it was made when you
+replace or remove it here.</p>
+<h3 id="read-only-token-for-an-organization">Read-only token for an organization<a class="headerlink" href="#read-only-token-for-an-organization" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Provider</th>
+<th>Token</th>
+<th>Permissions</th>
+<th>Server (self-hosted)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GitHub</td>
+<td><a href="https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token" target="_blank" rel="noopener noreferrer">Fine-grained personal access token</a>: resource owner the organization, repository access <em>All repositories</em></td>
+<td><strong>Contents: Read-only</strong> and <strong>Metadata: Read-only</strong>, nothing else</td>
+<td><code>https://ghe.example.com/api/v3</code></td>
+</tr>
+<tr>
+<td>GitLab</td>
+<td><a href="https://docs.gitlab.com/user/group/settings/group_access_tokens/" target="_blank" rel="noopener noreferrer">Group access token</a> on the group, role <strong>Reporter</strong> (on GitLab.com group tokens need Premium or Ultimate; otherwise a <a href="https://docs.gitlab.com/user/profile/personal_access_tokens/" target="_blank" rel="noopener noreferrer">personal access token</a> of a Reporter in the group)</td>
+<td>scopes <strong>read_api</strong> and <strong>read_repository</strong></td>
+<td><code>https://gitlab.example.com</code></td>
+</tr>
+<tr>
+<td>Azure DevOps</td>
+<td><a href="https://learn.microsoft.com/en-us/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate" target="_blank" rel="noopener noreferrer">Personal access token</a> for <strong>this organization only</strong></td>
+<td>Custom defined: <strong>Code: Read</strong> and <strong>Project and Team: Read</strong> (<a href="https://learn.microsoft.com/en-us/azure/devops/integrate/get-started/authentication/oauth#scopes" target="_blank" rel="noopener noreferrer">scopes</a>)</td>
+<td><code>https://tfs.example.com/tfs</code>, the collection as the organization</td>
+</tr>
+</tbody>
+</table>
+<p>Notes:</p>
+<ul>
+<li>GitHub organizations can require approval of fine-grained tokens, or forbid them
+  (<a href="https://docs.github.com/en/organizations/managing-programmatic-access-to-your-organization/setting-a-personal-access-token-policy-for-your-organization" target="_blank" rel="noopener noreferrer">token policy</a>).
+  A classic token needs the <code>repo</code> scope for private repositories, which can also write: avoid it.</li>
+<li>GitLab: the organization is the group path; subgroups are included (<code>acme</code> covers <code>acme/platform/*</code>),
+  or register a subgroup alone (<code>acme/platform</code>).</li>
+<li>Azure DevOps is retiring PATs for <em>All accessible organizations</em>: make one per organization. Use a
+  dedicated account that can read the repositories but not change them.</li>
+</ul>
+<h3 id="write-token-for-an-output-repository">Write token for an output repository<a class="headerlink" href="#write-token-for-an-output-repository" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Provider</th>
+<th>Token</th>
+<th>Permissions</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GitHub</td>
+<td>A separate fine-grained personal access token with repository access <em>Only select repositories</em>: the output repository alone</td>
+<td><strong>Contents: Read and write</strong></td>
+</tr>
+<tr>
+<td>GitLab</td>
+<td><a href="https://docs.gitlab.com/user/project/settings/project_access_tokens/" target="_blank" rel="noopener noreferrer">Project access token</a> on the output project, role <strong>Developer</strong> (Maintainer if Developers may not push to the branch)</td>
+<td>scopes <strong>read_repository</strong> and <strong>write_repository</strong></td>
+</tr>
+<tr>
+<td>Azure DevOps</td>
+<td>Personal access token of a dedicated account whose only <strong>Contribute</strong> permission is on the output repository (<a href="https://learn.microsoft.com/en-us/azure/devops/repos/git/set-git-repository-permissions" target="_blank" rel="noopener noreferrer">repository permissions</a>)</td>
+<td><strong>Code: Read &amp; write</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Enter the repository's https URL exactly as on the scan's <em>Output repository</em> (with or without <code>.git</code>).</p>
+<h2 id="the-llm">The LLM<a class="headerlink" href="#the-llm" title="Permanent link">&para;</a></h2>
+<p>Scans with <strong>Ask the LLM</strong> on consult an LLM about the components the rules are unsure of and the
+build or run failures no failure rule explains. Scans with <strong>LLM-heavy mode</strong> also let it translate,
+review and fix <a href="../platform-migration/#llm-heavy-mode">platform migrations</a>; every call is counted on the
+Grafana dashboard. Set it once on the same page:</p>
+<table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Server</th>
+<th>Model</th>
+<th>API key</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Claude API</td>
+<td>empty, or the https URL of a gateway in front of it</td>
+<td>e.g. <code>claude-sonnet-5-5</code></td>
+<td>required: a key from the Claude Console, in a workspace only for Containerizer, with a spend limit</td>
+</tr>
+<tr>
+<td>OpenAI-compatible server (Ollama, vLLM, LM Studio, llama.cpp <code>llama-server</code>, LocalAI, TGI, ...)</td>
+<td>the URL up to and including <code>/v1</code></td>
+<td>the name the server knows</td>
+<td>optional; only sent over https, or plain http to the appliance itself</td>
+</tr>
+</tbody>
+</table>
+<p>The key is sealed for the worker like the tokens and never shown again; the model can be changed
+without re-entering it, while a different server means removing it and adding it again. The worker
+hands the setting to the AI code for the run only, never through its environment, so the git and
+docker processes a scan starts never see the key. Allow the server's host on <strong>Admin → Firewall</strong>.</p>
+<p><strong>The appliance's built-in LLM.</strong> Without an LLM server of your own, the appliance can run one on its
+CPU: Qwen3-Coder 30B-A3B with llama.cpp, turned on under <strong>Admin → Source control &amp; LLM</strong> (off by
+default; it needs a machine with at least 40 GB of memory, see
+<a href="../appliance-admin/#built-in-llm">Running the appliance</a>). Scans with <strong>Ask the LLM</strong> use it when no LLM is
+set on that page; an LLM set there is always used instead. Expect about 7 to 12 tokens per second and a few
+minutes per answer: fine for the components the rules are unsure of, too slow for LLM-heavy mode. Use the
+queued LLM mode for organization scans where it is offered, so the scans do not wait for each answer.</p>
+<p><strong>Choosing a model.</strong> The quality of the fallback follows the quality of the model. With a self-hosted
+server, use the largest instruction-tuned model your hardware serves comfortably, ideally one that
+knows .NET well (a 30B+ Qwen, Llama, Mistral or DeepSeek model). Smaller models propose more wrong
+regexes; the scan keeps only ones that compile, do not match trivial code and fire on the code they
+were learned from, and an administrator still reviews every learned rule (<a href="../rule-review/">rule review</a>).</p>
+<p><strong>How answers are kept reliable.</strong></p>
+<ul>
+<li>The rules stay first: the LLM never decides alone what the rules are sure of.</li>
+<li>Every request carries the JSON schema of the answer, as <code>response_format</code> (which Ollama, vLLM, LM
+  Studio and llama.cpp enforce with constrained decoding) and in the prompt. A server that refuses
+  <code>json_schema</code> gets <code>json_object</code>, then plain text.</li>
+<li>Every answer is checked against the schema. An invalid answer is retried once with the errors
+  listed; a second one is an error, and the component keeps the rules' verdict. <code>&lt;think&gt;</code> blocks of
+  reasoning models are ignored.</li>
+<li>A self-hosted server that is restarting or still loading its model (connection refused or reset,
+  HTTP 429, 502, 503 or 504) is retried with growing waits, for up to 10 minutes in all
+  (<code>CONTAINERIZER_LLM_RETRY_SECONDS</code>), so a restart does not cost the scan its answers. Timeouts and
+  other errors are not retried: the component keeps the rules' verdict.</li>
+<li>Requests use <code>temperature: 0</code> and answers are cached by prompt, model and server, so runs repeat.</li>
+<li>The LLM never runs commands or edits the application: it returns JSON, and build-plan patches are
+  limited to an allow-list of plan keys. What it proposes is recorded with <code>source: ai</code> and the model.</li>
+</ul>
+<p><strong>What it sees.</strong> Evidence packs contain source code excerpts, project files and the README of the
+assessed application. A self-hosted server keeps them inside your network.</p>
+<h3 id="queued-llm-reviews">Queued LLM reviews<a class="headerlink" href="#queued-llm-reviews" title="Permanent link">&para;</a></h3>
+<p>A self-hosted LLM on CPUs can take five minutes or more per answer, which would hold up every scan. Set
+<strong>LLM reviews</strong> on the scan (Admin → Organization scans) to <strong>Queued</strong> and the scan asks the LLM nothing
+while it runs: the rules decide, and the questions go to the <strong>LLM queue</strong> instead
+(Admin → LLM queue, <a href="../scheduled-scans/#the-llm-queue">organization scans</a>). The queue runner answers
+them when the queue's settings let it, for example at night or only while no scan runs.</p>
+<p><img alt="The LLM queue: totals with token and time estimates learned from earlier answers, then the jobs in order" class="cz-shot" src="../images/admin-llm-queue.png#only-light" />
+<img alt="The LLM queue: totals with token and time estimates learned from earlier answers, then the jobs in order" class="cz-shot" src="../images/admin-llm-queue-dark.png#only-dark" /></p>
+<p>In queued mode the scan does not ask the LLM about build or run failures, dev databases, platform
+migrations or the sandbox tester either, so <strong>LLM-heavy mode</strong> needs inline reviews.</p>
+<p>Each job's page shows the question sent, the answer with its reasoning per finding, and the actual tokens
+and time against the estimate:</p>
+<p><img alt="An answered job: the LLM's verdict and reasoning, actual tokens and time against the estimate" class="cz-shot" src="../images/admin-llm-queue-job.png#only-light" />
+<img alt="An answered job: the LLM's verdict and reasoning, actual tokens and time against the estimate" class="cz-shot" src="../images/admin-llm-queue-job-dark.png#only-dark" /></p>
+<p><strong>What is queued.</strong> The components an inline scan would ask about (server and platform components the
+rules are less than 85 % sure of) are queued as <em>uncertain</em>. Server and platform components the rules
+rate <em>blocker</em> or <em>rewrite</em> with confidence are queued too, as a <em>second opinion</em>. Each gets a
+priority; the runner takes the highest first, and administrators can move any job:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Priority</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Uncertain</td>
+<td>1000 + 400 × (1 − the rules' confidence)</td>
+</tr>
+<tr>
+<td>Second opinion</td>
+<td>0 + 400 × (1 − the rules' confidence)</td>
+</tr>
+<tr>
+<td>Both: the component keeps no state and only its verdict keeps it from rating A</td>
+<td>+ 300</td>
+</tr>
+<tr>
+<td>Both: a server component (not a Windows platform product)</td>
+<td>+ 100</td>
+</tr>
+</tbody>
+</table>
+<p>So every uncertain review comes before every second opinion, the less sure the rules the sooner, and
+a review whose answer can get a component deployed comes first.</p>
+<p><strong>How an answer takes effect.</strong> The queue keeps the exact question the scan would have asked. The
+runner asks it with the same model, so the answer is stored in the answer cache under the same key as
+an inline answer. The answer shows on the queue page at once, and on the component in the results
+pages. The next scan of the repository asks the same question, finds the answer (in the cache, or in
+the queue) without calling the LLM, and applies it as an inline scan would: the component's verdict
+changes when the LLM is at least 0.6 sure and disagrees with the rules (0.85 for a second opinion, as it
+goes against rules that were sure). Assessments already stored never change. <strong>Re-scan now</strong> on the queue
+page scans a repository whose reviews are all answered, without waiting for the schedule. When the
+code or the rules change before the answer, the next scan asks a new question and the old one is
+skipped as superseded. Changing the LLM (another server or model) means new questions too.</p>
+<p>The command line does the same with <code>--ai-queue</code> (with <code>--ai</code>, on <code>assess</code>, <code>analyze</code> and <code>org</code>): with
+<code>--sql</code> or <code>CONTAINERIZER_SQL</code> the jobs go to the same queue; without SQL Server they are written to
+<code>llm-queue.json</code> in the output folder (<code>--work-dir</code> for <code>org</code>), and
+<code>containerizer llm-queue --file &lt;that file&gt;</code> answers them once each, in queue order. Run the command
+again afterwards to apply the answers.</p>
+<p><strong>Kinds of jobs.</strong> The queue holds every kind of LLM job; the page filters by kind:</p>
+<table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Queued by</th>
+<th>Priority</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Component review (<code>review</code>)</td>
+<td>a scan with queued LLM reviews</td>
+<td>as above</td>
+<td>the LLM's verdict, applied by the next scan</td>
+</tr>
+<tr>
+<td>Refactoring (<code>refactor</code>)</td>
+<td>a person, on a B-rated application's results page, or <code>containerizer refactor --queue</code></td>
+<td>1800: before the automatic reviews (move it like any job)</td>
+<td>a <a href="../refactoring/">refactoring patch</a>, verified by building and running it</td>
+</tr>
+<tr>
+<td>Make it A (<code>refactor</code>, goal <code>rating-a</code>)</td>
+<td>a person, on a B-rated application's results page, or an administrator for every B app (<strong>Make all B apps A</strong>)</td>
+<td>1800, as a refactoring</td>
+<td>one patch for every finding, repaired and assessed again in a loop; a <a href="../refactoring/#the-sandbox-variant">sandbox variant</a> when the patched copy rates A</td>
+</tr>
+</tbody>
+</table>
+<p>A refactoring asks the LLM once per file it changes (at most 8), so it is a long job; its estimate is
+made from the size of what it will send, and the output tokens are learned per kind like the reviews'.
+While it runs, the queue page says how far it is (generating, verifying, deploying; for Make it A also the
+pass and the repair round), and the job links to its patch page (Admin → Refactoring). A Make it A order
+makes up to 16 LLM calls.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../sign-in/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Sign-in and roles">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Sign-in and roles
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../appliance-admin/" class="md-footer__link md-footer__link--next" aria-label="Next: Running the appliance">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Running the appliance
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.tabs", "navigation.top", "navigation.footer", "search.highlight", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>

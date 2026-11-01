@@ -1,0 +1,1881 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Can this application run as a Linux container on Kubernetes? Assessment, hardened builds and manifests.">
+      
+      
+      
+        <link rel="canonical" href="https://containerizer.eu/refactoring/">
+      
+      
+        <link rel="prev" href="../platform-migration/">
+      
+      
+        <link rel="next" href="../build-pipelines/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../images/favicon.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>Refactoring patches - Containerizer</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/landing.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#refactoring-patches" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Containerizer" class="md-header__button md-logo" aria-label="Containerizer" data-md-component="logo">
+      
+  <img src="../images/favicon.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis"><a href="../" class="cz-home-link">Containerizer</a></span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Refactoring patches
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/olljanat-ai/containerizer" title="Go to repository" class="md-source" data-md-component="source" target="_blank" rel="noopener noreferrer">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    olljanat-ai/containerizer
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../appliance/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../overview/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  How it works
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../scheduled-scans/" class="md-tabs__link">
+          
+  
+  
+  Using it
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../sign-in/" class="md-tabs__link">
+          
+  
+  
+  Administration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../sandbox-https/" class="md-tabs__link">
+          
+  
+  
+  Sandbox
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../java-node/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Containerizer" class="md-nav__button md-logo" aria-label="Containerizer" data-md-component="logo">
+      
+  <img src="../images/favicon.svg" alt="logo">
+
+    </a>
+    Containerizer
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/olljanat-ai/containerizer" title="Go to repository" class="md-source" data-md-component="source" target="_blank" rel="noopener noreferrer">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    olljanat-ai/containerizer
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../appliance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using it
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Using it
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scheduled-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Organization scans
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platform-migration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform migrations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Refactoring patches
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Refactoring patches
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#who-can-order-one" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Who can order one
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-is-sent-to-the-llm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is sent to the LLM
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-it-is-verified" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How it is verified
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-to-apply-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How to apply it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#make-it-a" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Make it A
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-sandbox-variant" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The sandbox variant
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-command-line" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The command line
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#on-the-appliance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        On the appliance
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limits
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../build-pipelines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build pipelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sbom/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SBOMs, licences and CVEs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rule-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rule review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Administration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Administration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sign-in/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sign-in and roles
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../source-control/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Source control tokens and the LLM
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../appliance-admin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Running the appliance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sandbox
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-https/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox HTTPS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../lab-services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lab services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-idp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox identity provider
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dev-databases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dev databases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../external-secrets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Secrets (External Secrets)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../java-node/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Java and Node.js
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../local-dev-server/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local dev server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#who-can-order-one" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Who can order one
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-is-sent-to-the-llm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is sent to the LLM
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-it-is-verified" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How it is verified
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-to-apply-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How to apply it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#make-it-a" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Make it A
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-sandbox-variant" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The sandbox variant
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-command-line" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The command line
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#on-the-appliance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        On the appliance
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limits
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="refactoring-patches">Refactoring patches<a class="headerlink" href="#refactoring-patches" title="Permanent link">&para;</a></h1>
+<p>An application rated <strong>B</strong> needs <em>targeted code changes</em>: findings of severity <strong>refactor</strong> such as a
+certificate read from the Windows certificate store, Windows authentication, the Event Log, Win32 calls or
+hard-coded Windows paths. Every such rule says in plain text how to fix it (its <code>fix:</code>), and the
+<a href="../overview/#migration-assistant">migration assistant</a> turns that into guidance. A <strong>refactoring patch</strong> goes
+one step further: the LLM makes the changes, and Containerizer applies the patch, checks it with the rules
+and builds and runs the changed components before it offers the patch as a download, with how to apply it.</p>
+<p>Containerizer never writes to your repository: no branches, no pull requests, and the source control
+credentials stay read only. You review the patch, apply it yourself and open the pull request.</p>
+<p><img alt="A verified refactoring patch: the order, Download .patch and the result per finding, as the rules see the patched copy" class="cz-shot" src="../images/admin-refactoring-patch.png#only-light" />
+<img alt="A verified refactoring patch: the order, Download .patch and the result per finding, as the rules see the patched copy" class="cz-shot" src="../images/admin-refactoring-patch-dark.png#only-dark" /></p>
+<h2 id="who-can-order-one">Who can order one<a class="headerlink" href="#who-can-order-one" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>On the application's results page</th>
+<th>Admin → Refactoring</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Admin, Operator</td>
+<td>The <strong>Refactoring</strong> box: the orders and their status, and <strong>Request a refactoring patch</strong></td>
+<td>Every order: the patch, the coloured diff, Download .patch</td>
+</tr>
+<tr>
+<td>Product owner, Viewer, anyone without sign-in</td>
+<td>The orders and their status only</td>
+<td>No access</td>
+</tr>
+</tbody>
+</table>
+<p>Patches contain the application's source code, so only operators and administrators see them, like the
+other pages that act on the source (organization scans, the LLM queue). The order button posts to the admin
+pages (<code>/admin/refactoring/new</code>), which check the role and the form's CSRF token; on a results page served
+without sign-in the button does not show.</p>
+<p>The box shows on applications rated <strong>B</strong>. Choose <strong>All components that need changes</strong> or one component, and
+whether to <strong>also change code for configuration findings</strong> (below). The order needs the assessment's
+commit and the repository's clone on this machine: it works for applications that an
+<a href="../scheduled-scans/">organization scan</a> assessed here. For anything else, use the command line on a
+checkout.</p>
+<p><img alt="The Refactoring box on a B-rated application's results page: the orders and Request a refactoring patch" class="cz-shot" src="../images/results-refactoring-box.png#only-light" />
+<img alt="The Refactoring box on a B-rated application's results page: the orders and Request a refactoring patch" class="cz-shot" src="../images/results-refactoring-box-dark.png#only-dark" /></p>
+<h2 id="what-is-sent-to-the-llm">What is sent to the LLM<a class="headerlink" href="#what-is-sent-to-the-llm" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Refactor findings</strong> of the chosen components, and <strong>configuration findings in the same files</strong> (they
+  often go with them: the LocalMachine store finding and the certificate store finding are one change).
+  With <em>also change code for configuration findings</em>, configuration findings in other files too (drive
+  paths as defaults, credentials, local folders): many of these are better solved in the deployment, and
+  the LLM may say so instead of changing code.</li>
+<li>Never <em>blocker</em> or <em>rewrite</em> findings (a port, or a part that stays on Windows), findings whose fix is to
+  keep the part on Windows, findings in library code the component never reaches, and findings whose
+  evidence names no file. The order's page lists them under <em>Findings not sent to the LLM</em>.</li>
+<li><strong>One LLM call per file</strong>, with every finding in that file, never the whole application, and at most 8
+  calls per order (<code>--max-calls</code> on the command line). A call has the rules' <em>why</em> and <em>fix</em>, the evidence
+  lines, the file (or, when it is large, the part around the evidence lines), the component's
+  <code>appsettings.json</code>, its target framework and packages, and strict instructions. Each call is kept under
+  about 12,000 tokens so that it fits a slot of the <a href="../appliance-admin/#built-in-llm">built-in CPU LLM</a>.</li>
+</ul>
+<p>The LLM answers with <strong>structured edits</strong>, not with a diff (diffs written by LLMs are often malformed):</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span><span class="nt">"edits"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">"file"</span><span class="p">:</span><span class="w"> </span><span class="s2">"src/Jobs/Bank/BankGatewayClient.cs"</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"search"</span><span class="p">:</span><span class="w"> </span><span class="s2">"using var store = new X509Store(StoreName.My, StoreLocation.LocalMachine);"</span><span class="p">,</span>
+<span class="w">            </span><span class="nt">"replace"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">}],</span>
+<span class="w"> </span><span class="nt">"new_files"</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span><span class="w"> </span><span class="nt">"package_changes"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">"action"</span><span class="p">:</span><span class="w"> </span><span class="s2">"add"</span><span class="p">,</span><span class="w"> </span><span class="nt">"package"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span><span class="w"> </span><span class="nt">"version"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">}],</span>
+<span class="w"> </span><span class="nt">"fixed"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"cert-store-localmachine-code"</span><span class="p">],</span><span class="w"> </span><span class="nt">"not_fixed"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">"rule"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span><span class="w"> </span><span class="nt">"reason"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">}],</span>
+<span class="w"> </span><span class="nt">"notes"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Mount the certificate from a Secret and set Bank__CertificatePath."</span><span class="p">}</span>
+</code></pre></div>
+<p>Containerizer applies the edits itself: each search text must occur <strong>exactly once</strong> in the file, and only
+the files shown may be edited (new files stay inside the application folder). An answer that does not apply
+is sent back once with the errors ("not found", "occurs 3 times: include more lines"); if it still does not
+apply, that file is left unchanged and its findings are <em>not fixed</em>. The errors name the first line of the
+search text that is not in the file and the file's closest line. One slip is forgiven: models often get
+backslashes wrong when they write code into JSON (<code>"LocalMachine\\My"</code> in C# comes back with one
+backslash), so a search text that matches exactly once with every run of backslashes scaled the same way
+applies, with the replacement's backslashes scaled alike. Each answer may be at most 4,096 tokens plus
+half of the question's (8,192 at most), so a model that rambles cannot hold a CPU slot for an hour. Line endings, the byte order mark and
+the encoding of each file are kept. Package changes go into the component's <code>.csproj</code>; for other project
+types they are listed in the notes to make by hand.</p>
+<p>The changes become one commit in a scratch copy ("Containerizer: &lt;app&gt;: &lt;findings fixed&gt;", author
+<code>Containerizer &lt;containerizer@localhost&gt;</code>), and the patch is <code>git format-patch</code> of it, so <code>git am</code> applies it
+as a commit with that message.</p>
+<h2 id="how-it-is-verified">How it is verified<a class="headerlink" href="#how-it-is-verified" title="Permanent link">&para;</a></h2>
+<p>The patch is applied to a second, <strong>clean copy at the assessed commit</strong>: <code>git apply --check</code>, then
+<code>git am</code>. Then:</p>
+<ol>
+<li><strong>The rules run again</strong> on the patched copy. Each finding shows whether it is <em>gone from this file</em>, in
+   <em>fewer places</em> or <em>still found</em>, and any new finding of the changed components is listed: check whether
+   the patch caused it.</li>
+<li><strong>Each changed component is built and run</strong> with the same build-and-run step as the scans
+   (<a href="../overview/#self-learning-loop">verify</a>): the generated Dockerfile, a hardened container, an HTTP probe.</li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>Status</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Queued</td>
+<td>Waiting in the <a href="../scheduled-scans/#the-llm-queue">LLM queue</a></td>
+</tr>
+<tr>
+<td>Generating</td>
+<td>The LLM is writing the changes (the page says which file)</td>
+</tr>
+<tr>
+<td>Verifying</td>
+<td>Applying the patch, running the rules, building and running</td>
+</tr>
+<tr>
+<td><strong>Verified</strong></td>
+<td>The patch applies cleanly, and every changed component builds and runs</td>
+</tr>
+<tr>
+<td><strong>Applies only</strong></td>
+<td>The patch applies cleanly, but a build or a run failed, or could not be done (no Docker, a component that is not built in a Linux container as it is): the log tail says why</td>
+</tr>
+<tr>
+<td><strong>Failed</strong></td>
+<td>No patch: the LLM made no usable edits, or the patch did not apply cleanly (never offered)</td>
+</tr>
+<tr>
+<td>Cancelled</td>
+<td>Skipped on the LLM queue page</td>
+</tr>
+</tbody>
+</table>
+<p>A failure to reach the LLM, or a source that is gone, is a failed attempt of the queue job: it is tried
+again up to three times (the LLM queue page shows the error), then the order fails. A commit that is no
+longer in the clone (the repository moved on, and the scan worker keeps shallow clones) fails with a
+message: scan the repository again and order a new refactoring.</p>
+<p>The page shows every change as a coloured diff per file, here a real patch the dev server's CPU LLM wrote
+for the challenge app <code>expense-claims</code>:</p>
+<p><img alt="The coloured diff of a refactoring patch: the certificate loaded from a mounted file instead of the Windows store" class="cz-shot" src="../images/admin-refactoring-diff.png#only-light" />
+<img alt="The coloured diff of a refactoring patch: the certificate loaded from a mounted file instead of the Windows store" class="cz-shot" src="../images/admin-refactoring-diff-dark.png#only-dark" /></p>
+<h2 id="how-to-apply-it">How to apply it<a class="headerlink" href="#how-to-apply-it" title="Permanent link">&para;</a></h2>
+<p>The order's page has <strong>Download .patch</strong> (<code>&lt;app&gt;-&lt;component&gt;-containerizer.patch</code>, or <code>-all-</code> for every
+component) and the steps:</p>
+<div class="highlight"><pre><span></span><code>git<span class="w"> </span>checkout<span class="w"> </span>-b<span class="w"> </span>containerizer-refactor<span class="w"> </span>&lt;assessed<span class="w"> </span>commit&gt;
+git<span class="w"> </span>am<span class="w"> </span>--keep-cr<span class="w"> </span>&lt;<span class="w"> </span>expense-claims-ExpenseClaims.Jobs-containerizer.patch
+<span class="c1"># or, if your branch has moved on since the assessed commit:</span>
+git<span class="w"> </span>apply<span class="w"> </span>--3way<span class="w"> </span>expense-claims-ExpenseClaims.Jobs-containerizer.patch
+</code></pre></div>
+<p><code>--keep-cr</code> keeps Windows line endings in files that have them (without it <code>git am</code> drops them and the
+patch does not apply). Then review every change, build and run your tests, set the configuration the notes
+mention (paths, certificates, credentials as Kubernetes Secrets), push the branch and open a pull request
+yourself.</p>
+<p><img alt="How to apply a refactoring patch: git checkout, git am, review, test and open the pull request yourself" class="cz-shot" src="../images/admin-refactoring-apply.png#only-light" />
+<img alt="How to apply a refactoring patch: git checkout, git am, review, test and open the pull request yourself" class="cz-shot" src="../images/admin-refactoring-apply-dark.png#only-dark" /></p>
+<h2 id="make-it-a">Make it A<a class="headerlink" href="#make-it-a" title="Permanent link">&para;</a></h2>
+<p><strong>Make it A</strong> is one order for everything that keeps a B-rated application from A: its refactor findings,
+its configuration findings that name a file, and, for the server components that keep their own data, the
+move of that data to SQL Server (the same guidance as <strong>Make it stateless</strong>). It runs on request only:
+<strong>Make it A</strong> in the Refactoring box of the results page (operators, administrators and the application's
+product owners, with the queue's estimate), or <strong>Make all B apps A</strong> for administrators (below). A scan
+never orders one by itself.</p>
+<p><img alt="The Refactoring box: an order with its tokens and time, Make it A with its estimate, and a stateless patch that was already made offered instead of a new order" class="cz-shot" src="../images/results-make-it-a.png#only-light" />
+<img alt="The Refactoring box: an order with its tokens and time, Make it A with its estimate, and a stateless patch that was already made offered instead of a new order" class="cz-shot" src="../images/results-make-it-a-dark.png#only-dark" /></p>
+<p>Where an order of the same kind is already waiting, running or has a patch, the box offers that order (its
+status, <strong>Open the patch</strong>, <strong>Download .patch</strong> and the commit it was made for) instead of a new one;
+<strong>Request a new one</strong> is for code that has changed since.</p>
+<p>The order is one <code>refactor</code> job (goal <code>rating-a</code>) that loops in the queue runner:</p>
+<ol>
+<li><strong>Generate.</strong> The LLM is asked about every file with findings, as for a refactoring patch; the files of
+   a stateful component that open its embedded database get the stateless guidance.</li>
+<li><strong>Apply and verify.</strong> Everything changed so far becomes one commit for the assessed commit; it is applied
+   to a clean copy, and the changed components are built and run.</li>
+<li><strong>Repair.</strong> When a build or run fails, a repair round in the same job gives the LLM the compiler errors
+   (or the run log), the files they are in and the patch, and the combined patch is verified again: at most
+   <strong>2 repair rounds</strong> a pass.</li>
+<li><strong>Assess again.</strong> The patched copy is assessed with every rule. A is reached when it rates A and builds
+   and runs.</li>
+<li><strong>Second pass.</strong> Still B with findings left (still found by the rules, or a component that still keeps
+   its data) and LLM calls left: one more pass on what remains, then steps 2 to 4 again. At most <strong>2 passes</strong>.</li>
+</ol>
+<p>Every LLM call of the job, retries and repair rounds included, counts against its limit of <strong>16 calls</strong>;
+files beyond it are <em>not attempted</em>. The order page shows each pass and round (files, calls, changes, the
+build and run, the rating), the rating before and after (<code>B → A: Rating A reached</code>, or <code>B → B: 4 of 6 fixed;
+still keeps data in Api (Embedded file database)</code>), the result per finding as the rules see the final patched
+copy, and the one patch to download, as for any refactoring patch. Its statuses are the same (verified,
+does not build, does not start, ...).</p>
+<p><strong>Estimates.</strong> The button and the bulk page show the queue's estimate of the first pass (the size of what
+it sends, a typical file for each stateful component, at the speed the queue learned); repair rounds and a
+second pass, when needed, take more, up to the limit of 16 calls.</p>
+<p><strong>Make all B apps A</strong> (Admin → Refactoring, administrators): a confirmation page lists every B-rated
+application with what changes, its estimate, and whether it will wait for approval under the
+LLM queue's approval policy (Admin → LLM queue), with the total; <strong>Queue</strong> places one order per
+application (an application that already has the same order waiting is left alone). Nothing is queued by
+opening the page.</p>
+<h2 id="the-sandbox-variant">The sandbox variant<a class="headerlink" href="#the-sandbox-variant" title="Permanent link">&para;</a></h2>
+<p>A Make it A order whose patched copy rates A and is verified is <strong>deployed to the sandbox beside the
+original</strong>, never in its place, the way an <a href="../scheduled-scans/">organization scan</a> deploys (the same code):</p>
+<ul>
+<li><strong>Its own name.</strong> The patched copy's folder is <code>&lt;app&gt;-refactor-&lt;job&gt;</code> (a DNS label of at most 63
+  characters), and everything that an organization scan derives from an application's name derives from it:
+  the <strong>namespace</strong> <code>&lt;app&gt;-refactor-&lt;job&gt;</code>, the images <code>&lt;registry&gt;/&lt;app&gt;-refactor-&lt;job&gt;/&lt;component&gt;</code>, the
+  Ingress hosts, the sandbox IdP clients and the lab services, so the variant shares nothing with the
+  original or with another order. The image tag is <code>1.&lt;yyyymmdd&gt;.&lt;hhmm&gt;-refactor.&lt;job&gt;</code>, a semver pre-release
+  that the original's image automation never picks up.</li>
+<li><strong>Where.</strong> A sibling folder of the original in the output repository of the organization scan that
+  assessed the application, <code>&lt;Organization&gt;/&lt;Project&gt;/&lt;Repository&gt;-refactor-&lt;job&gt;/</code>, with <code>sandbox/</code>
+  regenerated, in one commit; Flux (or Argo CD) deploys it from there. The registry, output repository and
+  branch, image pull secret, security gate and <em>Push images</em> are that scan's; the output repository's write
+  token is its registered credential. An application that no organization scan with an output repository
+  assessed here is not deployed, and the order page says so (<code>no output repository: ...</code>).</li>
+<li><strong>Data.</strong> Only the components that rate A are deployed, with no uploaded dev database: the variant gets
+  a <strong>new, empty lab database</strong> of its own (when the <a href="../lab-services/">lab services</a> are on), as a new
+  application would.</li>
+<li><strong>Health.</strong> The runner reads the variant's namespace back with a read-only kubeconfig
+  (<code>CONTAINERIZER_SANDBOX_KUBECONFIG</code>, optional <code>CONTAINERIZER_SANDBOX_CONTEXT</code>; on the appliance the
+  verifier account of <code>sandbox/verify-rbac.yaml</code>, below) and records it in the order: <strong>running in the
+  sandbox</strong>, <strong>failing in the sandbox</strong>, or <em>deployed, health not checked</em> without a kubeconfig. The
+  original's sandbox results on its results page stay as they are: the variant is not a sandbox check of the
+  application and teaches the learning loop nothing.</li>
+<li><strong>Expiry and removal.</strong> A variant expires after <strong>7 days</strong> (<code>CONTAINERIZER_SANDBOX_VARIANT_DAYS</code>). <strong>Remove
+  from the sandbox</strong> on the order page (administrators, operators, the application's product owners) asks for
+  its removal; the queue runner takes expired and requested variants out of the output repository within a few
+  minutes (the folder deleted, <code>sandbox/</code> regenerated, one commit: the cluster removes the namespace) and records
+  it: <strong>removed</strong> or <strong>expired</strong>. The patch stays available.</li>
+</ul>
+<p>The results page shows the variant's state next to the order, with its URL (<strong>open ↗</strong>) while it runs.</p>
+<p><strong>Images without a registry.</strong> When the organization scan's <em>Push images</em> is off and the sandbox cluster
+shares the image builder's Docker image store (a lab: k3s with <code>--docker</code> on the machine that builds), set
+<code>CONTAINERIZER_LOCAL_IMAGES=1</code> for the scan worker and the LLM queue runner: each image is then tagged with its
+deploy reference (<code>docker tag</code>, no push) and the manifests run it with <code>imagePullPolicy: IfNotPresent</code>. Such
+images have no digest, signature or SBOM attestation (they need a registry). Without the setting, nothing
+changes: with <em>Push images</em> on the images are pushed (the appliance pushes to its own registry).</p>
+<h2 id="the-command-line">The command line<a class="headerlink" href="#the-command-line" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>containerizer<span class="w"> </span>refactor<span class="w"> </span>path/to/app<span class="w"> </span><span class="o">[</span>--component<span class="w"> </span>NAME<span class="o">]</span><span class="w"> </span><span class="o">[</span>--out<span class="w"> </span>DIR<span class="o">]</span><span class="w"> </span><span class="o">[</span>--include-config<span class="o">]</span><span class="w"> </span><span class="o">[</span>--max-calls<span class="w"> </span><span class="m">8</span><span class="o">]</span><span class="w"> </span><span class="o">[</span>--no-verify<span class="o">]</span>
+containerizer<span class="w"> </span>refactor<span class="w"> </span>path/to/app<span class="w"> </span>--queue<span class="w"> </span><span class="o">[</span>--sql<span class="w"> </span>...<span class="o">]</span>
+</code></pre></div>
+<p>Without <code>--queue</code> it runs at once with the LLM of the environment (<code>CONTAINERIZER_LLM_BASE_URL</code> and
+<code>CONTAINERIZER_MODEL</code> for a self-hosted one; <a href="../source-control/#the-llm">the LLM</a>), and writes the patch and
+a summary (<code>&lt;app&gt;-&lt;component&gt;-containerizer.json</code>: every finding's result, the verification, the payload)
+to <code>--out</code>. The application folder must be a git checkout for <code>git am</code> to work: the patch is made for its
+<code>HEAD</code> commit, and uncommitted changes are not in it. A folder without git gets a patch for
+<code>git apply -p1</code> in that folder. With <code>--queue</code> the order goes to the LLM queue in SQL Server (<code>--sql</code> or
+<code>CONTAINERIZER_SQL</code>), or to <code>llm-queue.json</code> in <code>--out</code>, which <code>containerizer llm-queue --file</code> works through.</p>
+<p><code>--goal rating-a</code> runs <a href="#make-it-a">Make it A</a> on the checkout (the loop, the repair rounds and the second
+pass; <code>--max-calls</code> is then the limit of the whole order, 16 by default); the command line never deploys a
+sandbox variant.</p>
+<h2 id="on-the-appliance">On the appliance<a class="headerlink" href="#on-the-appliance" title="Permanent link">&para;</a></h2>
+<p>The LLM queue runner (<code>containerizer-llm-queue</code>) carries out the orders. For them it</p>
+<ul>
+<li>reads the scan worker's clones (<code>/var/lib/containerizer/worker/scan-&lt;id&gt;/repos/&lt;app&gt;</code>) read only, and makes
+  its scratch copies with <code>git clone --shared</code> in <code>/var/lib/containerizer/refactor</code>, the only folder it may
+  write to besides the LLM answer cache. It reads no other folder: a job that names another source is
+  refused (<code>CONTAINERIZER_REFACTOR_SOURCES</code>), so a row in the database cannot make it read the machine's
+  files;</li>
+<li>is in the <strong>docker</strong> group, like the scan worker, to build and run the patched components. The docker
+  group is root-equivalent: the runner builds the same repositories' code in the same hardened containers
+  as the scan worker, which is why the appliance is a dedicated machine with an egress allow-list
+  (<a href="../appliance/">appliance</a>). Without Docker the patches are <em>applies only</em>.</li>
+<li>for <a href="#the-sandbox-variant">sandbox variants</a>: clones the scan's output repository into its scratch space
+  with the registered write token, pushes the variant's images to the appliance's registry, reads the lab
+  services that are on, and reads the variant's health with the kubeconfig of the read-only verifier
+  account, <code>/run/containerizer/sandbox-verifier.kubeconfig</code>. <code>cz-sandbox</code> (root, every 2 minutes) gives that
+  account its Role in every namespace Containerizer generated (<code>sandbox/verify-rbac.yaml</code>: workloads, pods,
+  their logs and events, the namespace's Flux Kustomization; no Secrets, nothing cluster-wide) and writes the
+  kubeconfig with a 24-hour token (<code>root:containerizer</code>, 0640). A new variant's namespace gets its Role at the
+  next run of <code>cz-sandbox</code>; the runner waits for it within its health check (15 minutes,
+  <code>CONTAINERIZER_SANDBOX_VARIANT_TIMEOUT</code>).</li>
+</ul>
+<h2 id="limits">Limits<a class="headerlink" href="#limits" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>The LLM can be wrong.</strong> A patch that builds and runs is not a patch that is correct: the build and a
+  start-up probe do not run your tests. Review every change.</li>
+<li><strong>APIs the component cannot use.</strong> Models suggest APIs of newer frameworks than the component targets
+  (on a <code>net6.0</code> component, Qwen3-Coder used <code>X509CertificateLoader</code>, which is .NET 9 and later). The build
+  catches it: such a patch is <em>applies only</em>, with the compiler error in the log tail. <strong>Fix it with the
+  LLM</strong> on the order page asks again with the errors; Make it A does so by itself (at most 2 rounds a pass).</li>
+<li><strong>Speed.</strong> On the built-in CPU LLM each file takes five minutes or more, and the verification build takes
+  minutes too; an order of a few files takes most of an hour. The queue runs it when its settings allow.</li>
+<li><strong>Small context.</strong> The LLM sees one file (or part of a large one) and the component's settings, not the
+  whole application: changes that span several files (a new option class wired up in <code>Program.cs</code>) may be
+  left as <em>not fixed</em> with a reason, or made in one file only.</li>
+<li><strong>What is verified</strong> is the component's container as Containerizer generates it, with the
+  production services it needs missing (a smoke test in Development mode when they are), not the
+  application in its real environment.</li>
+<li><strong>Make it A</strong> stops at its limits (16 LLM calls, 2 passes, 2 repair rounds a pass): an application whose
+  findings need more stays B, and the order says what is left. The rating after is the rules' rating of the
+  patched copy and the build and run of its components, not a test of the application.</li>
+<li><strong>A sandbox variant</strong> runs the patched code with a new, empty lab database: it shows that the application
+  starts and answers as a stateless container, not that its data or its integrations work.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../platform-migration/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Platform migrations">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Platform migrations
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../build-pipelines/" class="md-footer__link md-footer__link--next" aria-label="Next: Build pipelines">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Build pipelines
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.tabs", "navigation.top", "navigation.footer", "search.highlight", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,2042 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="How Containerizer assesses applications, learns from failed builds, and generates hardened container builds and Kubernetes manifests.">
+      
+      
+      
+        <link rel="canonical" href="https://containerizer.eu/overview/">
+      
+      
+        <link rel="prev" href="../appliance/">
+      
+      
+        <link rel="next" href="../scheduled-scans/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../images/favicon.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>How it works - Containerizer</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/landing.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#how-containerizer-works" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Containerizer" class="md-header__button md-logo" aria-label="Containerizer" data-md-component="logo">
+      
+  <img src="../images/favicon.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis"><a href="../" class="cz-home-link">Containerizer</a></span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              How it works
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/olljanat-ai/containerizer" title="Go to repository" class="md-source" data-md-component="source" target="_blank" rel="noopener noreferrer">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    olljanat-ai/containerizer
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../appliance/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
+        
+  
+  
+    
+  
+  How it works
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../scheduled-scans/" class="md-tabs__link">
+          
+  
+  
+  Using it
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../sign-in/" class="md-tabs__link">
+          
+  
+  
+  Administration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../sandbox-https/" class="md-tabs__link">
+          
+  
+  
+  Sandbox
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../java-node/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Containerizer" class="md-nav__button md-logo" aria-label="Containerizer" data-md-component="logo">
+      
+  <img src="../images/favicon.svg" alt="logo">
+
+    </a>
+    Containerizer
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/olljanat-ai/containerizer" title="Go to repository" class="md-source" data-md-component="source" target="_blank" rel="noopener noreferrer">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    olljanat-ai/containerizer
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../appliance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#design-principles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design principles
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-it-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How it works
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="How it works">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rules-are-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rules are data
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#migration-assistant" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migration assistant
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#self-learning-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Self-learning loop
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ai-fallback-claude-or-a-self-hosted-llm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AI fallback (Claude or a self-hosted LLM)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#generated-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Generated output
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#security-gate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Security gate
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Security gate">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#nsacisa-hardening" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        NSA/CISA hardening
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#results-on-the-challenge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results on the challenge
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using it
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Using it
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scheduled-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Organization scans
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platform-migration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform migrations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../refactoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Refactoring patches
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../build-pipelines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build pipelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sbom/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SBOMs, licences and CVEs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rule-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rule review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Administration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Administration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sign-in/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sign-in and roles
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../source-control/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Source control tokens and the LLM
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../appliance-admin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Running the appliance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sandbox
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-https/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox HTTPS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../lab-services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lab services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-idp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox identity provider
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dev-databases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dev databases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../external-secrets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Secrets (External Secrets)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../java-node/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Java and Node.js
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../local-dev-server/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local dev server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#design-principles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design principles
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-it-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How it works
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="How it works">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rules-are-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rules are data
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#migration-assistant" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migration assistant
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#self-learning-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Self-learning loop
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ai-fallback-claude-or-a-self-hosted-llm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AI fallback (Claude or a self-hosted LLM)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#generated-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Generated output
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#security-gate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Security gate
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Security gate">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#nsacisa-hardening" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        NSA/CISA hardening
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#results-on-the-challenge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results on the challenge
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="how-containerizer-works">How Containerizer works<a class="headerlink" href="#how-containerizer-works" title="Permanent link">&para;</a></h1>
+<p>Containerizer tells you whether an application can run as a Linux container on Kubernetes, explains why,
+and generates hardened container builds and Kubernetes manifests for the parts that can. This page
+explains how the assessment works and what it generates. To install and use it, start with
+<a href="../appliance/">Getting started</a>.</p>
+<h2 id="design-principles">Design principles<a class="headerlink" href="#design-principles" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Rules first, AI last.</strong> Classification is done by a data-driven rule set (<code>rules/*.yaml</code>). An LLM
+  is consulted only for components the rules are unsure about, and what it says is validated before
+  it is used or learned.</li>
+<li><strong>Learns by doing.</strong> When unsure, the tool builds and runs the generated container, matches failures
+  against failure rules, patches the build plan and retries. Fixes that work are proposed as rules
+  with their evidence; once a person approves them (<a href="../rule-review/">rule review</a>), the next run
+  needs no retries and no AI.</li>
+<li><strong>No application changes.</strong> Dockerfiles use the application folder as build context with their own
+  <code>Dockerfile.dockerignore</code>; configuration is overridden with environment variables and volumes.</li>
+<li><strong>Secure by default.</strong> Multi-stage builds, chiseled (distroless) .NET images, non-root user,
+  read-only application files, read-only root filesystem, all capabilities dropped, seccomp,
+  secrets only as Kubernetes Secret references, base images pinned to a version line.</li>
+</ul>
+<h2 id="how-it-works">How it works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code> scan ──► roles ──► facts ──► findings ──► reachability ──► confidence ──► rating
+  │        rules     rules     rules        (type graph)      unknowns         │
+  │                                                              │ low          ▼
+  │                                                     verify (build+run) ──► report / generate
+  │                                                              │ unexplained
+  │                                                     Claude (validated) ──► rules/learned/
+</code></pre></div>
+<ol>
+<li><strong>Scan</strong> reads project files (.csproj/.vbproj incl. old-style and imported
+   <code>.props</code>, package.json, requirements.txt/pyproject, go.mod, pom.xml/gradle, BizTalk/SQL/SSIS
+   projects, ASP.NET Web Site projects listed in a .sln), source and configuration. Nothing from the scanned repository is executed.
+   Java and Node.js have their own parsers (see <a href="../java-node/">Java and Node.js</a>): Maven parents,
+   profiles and modules, Gradle version catalogs and <code>subprojects {}</code>, npm/yarn/pnpm workspaces, and
+   the lockfile's Windows-only and native packages.</li>
+<li><strong>Role rules</strong> (<code>rules/00-roles.yaml</code>) decide what each project is: web, worker, console, spa,
+   desktop, library, test, tool, BizTalk, SharePoint, Sitecore XP, SQL CLR, SSIS.</li>
+<li><strong>Fact rules</strong> (<code>rules/05-facts.yaml</code>) extract ports, health endpoints, run-once arguments,
+   connection strings, folders the app writes to, Kestrel endpoints.</li>
+<li><strong>Finding rules</strong> (<code>rules/10-runtime.yaml</code>, <code>20-platform.yaml</code>, <code>30-integration.yaml</code>) detect
+   blockers and work items with a severity:
+   <code>info &lt; config &lt; refactor &lt; rewrite &lt; blocker</code>, an explanation, a fix, and
+   whether a Windows container would be a workable stop-gap.</li>
+<li><strong>Reachability</strong>: findings in shared libraries only count for components whose code actually
+   reaches the offending types (a type/extension-method mention graph) and that it compiles for its
+   target framework, and Windows-only calls guarded by <code>OperatingSystem.IsWindows()</code> (directly, through
+   a helper, or at every caller) are ignored.</li>
+<li><strong>Confidence</strong>: packages and references unknown to <code>rules/packages*.yaml</code>, and uncertain rules,
+   lower a component's confidence. Low confidence triggers verification and, optionally, Claude.</li>
+<li><strong>Rating</strong> per application: <strong>A</strong> container-ready (built on a modern stack and libraries, runs in
+   containers with configuration only, no code changes), <strong>B</strong> minor refactoring, <strong>C</strong> major refactoring
+   (framework port), <strong>D</strong> partial (some components must stay on Windows), <strong>E</strong> not feasible.
+   <strong>A</strong> also requires every server component to be <strong>stateless</strong>: persistent data may live in
+   services that are available as managed cloud services (SQL Server, PostgreSQL, MySQL, MongoDB,
+   Redis, blob storage, queues), but not on the component's own disk or in its process memory. Rules
+   that find such data carry <code>state: local</code> or <code>state: memory</code> (<code>rules/36-state.yaml</code>, <code>sqlite-local</code>,
+   <code>lucene-local-index</code>): a local SQLite/LiteDB file with no server database wired up, a local
+   Lucene/Examine index, uploads or data files written under the content root or App_Data,
+   ASP.NET Core session without a distributed cache, and Hangfire in-memory storage. An app that is
+   otherwise ready but keeps such data is rated <strong>B</strong>, and the report lists what keeps it stateful.
+   Not counted: SQLite next to a server database provider (<code>sqlite-optional</code>), a read-only SQLite
+   file shipped with the app, Lucene used only for text analysis, temp files and logs, and the
+   ASP.NET Core Data Protection key ring (one <code>PersistKeysTo*</code> line; reported separately).</li>
+</ol>
+<h3 id="rules-are-data">Rules are data<a class="headerlink" href="#rules-are-data" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">com-office-automation</span>
+<span class="w">  </span><span class="nt">when</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">any</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">code</span><span class="p">:</span><span class="w"> </span><span class="s">'GetTypeFromProgID\("(Word|Excel|Outlook)\.Application'</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">reference</span><span class="p">:</span><span class="w"> </span><span class="s">'Microsoft\.Office\.Interop\..*'</span>
+<span class="w">  </span><span class="nt">severity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">blocker</span>
+<span class="w">  </span><span class="nt">category</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">com</span>
+<span class="w">  </span><span class="nt">windows_container</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+<span class="w">  </span><span class="nt">title</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Microsoft Office automation (COM)</span>
+<span class="w">  </span><span class="nt">why</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Drives Word/Excel through COM ...</span>
+<span class="w">  </span><span class="nt">fix</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Replace with a document library (OpenXML SDK, ClosedXML, ...)</span>
+<span class="w">  </span><span class="nt">refs</span><span class="p">:</span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">https://learn.microsoft.com/en-us/dotnet/core/porting/</span>
+</code></pre></div>
+<p>Every finding is explained without AI: <code>why</code> says what breaks in a Linux container, <code>fix</code> what to
+do, and <code>refs</code> link to the documentation or upstream issue behind it. All three are shown with the
+finding in the web UI and in the generated <code>MIGRATION.md</code>. Findings
+observed at run time carry the explanation and links of the failure rule that recognised them, and
+every non-default build decision (a plan rule, a config override, a fix learned while verifying) is
+listed with its reason and links at the top of the generated <code>Dockerfile</code> and in <code>plan.json</code>.</p>
+<p>Condition primitives: <code>sdk</code>, <code>tfm</code>, <code>package</code>, <code>reference</code>, <code>framework_ref</code>, <code>property</code>,
+<code>output_type</code>, <code>kind</code>, <code>role</code>, <code>name</code>, <code>path</code> (regex on the project file's path relative to the
+repository root), <code>file</code> (glob), <code>code</code> / <code>config</code> / <code>text</code> (regex with optional <code>in:</code> glob and
+<code>unguarded</code>), <code>readme</code>, <code>closure</code> (a condition that holds for the project or any project it
+references, e.g. a file-system class elsewhere in the solution), <code>references</code> (a condition that holds
+for a project this one references directly), combined with <code>any</code> / <code>all</code> / <code>not</code>.
+<code>unguarded: true</code> skips Windows-only hits the code already keeps off Linux: a few lines after an
+<code>OperatingSystem.IsWindows()</code>/<code>IsOSPlatform(...)</code> check or after a call of a project helper whose body is
+one (<code>bool IsWindows { get; } = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)</code>,
+<code>static bool IsModuleLoaded() =&gt; OperatingSystem.IsWindows() &amp;&amp; ...</code>, also from referenced projects),
+inside <code>if (&lt;OS check&gt; &amp;&amp; ...) { }</code> or the <code>else</code> of <code>if (!&lt;OS check&gt;)</code>, after
+<code>if (!&lt;OS check&gt;) return/throw</code>, inside a method/type marked <code>[SupportedOSPlatform("windows")]</code>, or in a
+member/type whose every caller is guarded. Callers are searched in the project and the projects that
+reference it (test projects excluded), two levels deep: calls of a static member or a P/Invoke,
+constructions (<code>new T(...)</code>) and static accesses of the type for instance members. A virtual/override
+member, a method group, a type created through <code>typeof</code>/a generic method argument (DI) or subclassed
+has callers that cannot be followed, so the hit counts. <code>unguarded: callers</code> applies only the caller
+check (for an annotation on the type itself, as <code>supported-os-windows</code> does). <code>same_file: true</code> next to
+an <code>all</code> requires its <code>code</code>/<code>config</code>/<code>text</code> conditions to match in the same file (e.g. an assembly
+loader <em>and</em> an install path probe, not two unrelated files).</p>
+<p>The scanner evaluates the target-framework part of MSBuild conditions: an item under
+<code>Condition="'$(TargetFramework)' == 'net472'"</code> (also <code>TargetFrameworkIdentifier</code>,
+<code>GetTargetPlatformIdentifier(...)</code>, <code>$(TargetFramework.StartsWith(...))</code>, properties whose value is a TFM
+such as <code>$(SAMPLES_TFM)</code>) is dropped when no TFM of the project gets it, and recorded per TFM otherwise;
+conditions on anything else (Configuration, <code>Exists()</code>, OS) count as possibly true. The same holds for
+<code>&lt;Compile Remove/Include&gt;</code> in SDK-style projects. A consumer follows a multi-targeted library along the
+TFM it compiles against (NuGet's nearest framework), so a net8.0 app does not inherit the net472-only
+references, project references or source files of a <code>net472;net8.0</code> library. C# <code>#if</code> branches that none
+of the project's TFMs compile are blanked before code rules run (<code>NETFRAMEWORK</code>, <code>NETCOREAPP</code>,
+<code>NETSTANDARD</code>, <code>NETx_y[_OR_GREATER]</code>, <code>NET4xx</code>, platform symbols such as <code>WINDOWS</code>, and legacy platforms
+<code>NETCF</code>, <code>MONO</code>, <code>SSCLI</code>, <code>SILVERLIGHT</code> that no current SDK defines); symbols the project defines in any
+configuration (<code>DefineConstants</code>), <code>#define</code>d in the file, or unknown stay possibly active.</p>
+<p>Properties the scanner sets on projects (usable with <code>property:</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>RunByBuild</code></td>
+<td>an MSBuild <code>&lt;Exec&gt;</code> elsewhere in the repository runs this executable (<code>dotnet Name.dll</code>, <code>Name.exe</code>, <code>dotnet run --project ...</code>): a build-time helper; the value is that build file</td>
+</tr>
+<tr>
+<td><code>RunFromSourceBy</code></td>
+<td>a repository script starts it with <code>dotnet run</code> (compiled from the checkout): a developer utility; the value is the script</td>
+</tr>
+<tr>
+<td><code>ReferencedBy</code></td>
+<td>the first project that references this one (<code>ProjectReference</code>): it is compiled into something else</td>
+</tr>
+<tr>
+<td><code>HostedBy</code></td>
+<td>a front-end (Node) or Blazor WebAssembly project served by a .NET project: nested in its folder, referenced by it, or writing its bundles into its folder (webpack <code>output.path: "../Web/Scripts"</code>, <code>"destination": "../Web/Styles"</code>, a <code>copyfiles ... ../Web/...</code> script; Visual Studio <code>.esproj</code> projects)</td>
+</tr>
+<tr>
+<td><code>SpaRoot</code></td>
+<td>on the .NET host: the folder of the nested front-end project</td>
+</tr>
+<tr>
+<td><code>WebSiteProject</code></td>
+<td>an ASP.NET Web Site project (no project file) found in this solution</td>
+</tr>
+</tbody>
+</table>
+<p>ASP.NET <strong>Web Site projects</strong> (Visual Studio "New Web Site", solution entries with project type
+<code>{E24C65DC-7377-472B-9ABA-BC803B73C61A}</code> and no .csproj) are read from the <code>.sln</code>: the folder becomes a
+.NET project named after the entry, with the target framework from <code>TargetFrameworkMoniker</code> and the
+solution's <code>ProjectReferences</code>/<code>ProjectDependencies</code> of the entry as project references. Its project
+path is shown as <code>&lt;folder&gt;/&lt;name&gt;.website</code> (there is no such file).</p>
+<p>Next to <code>title</code> / <code>why</code> / <code>fix</code>, a finding rule takes <code>refs:</code>, a
+list of verified https links (docs page, upstream issue, vendor statement) shown with each finding;
+<code>tests/test_rule_docs.py</code> enforces that every refactor/rewrite/blocker rule has one or is on its
+commented allowlist.
+Later files override earlier rules with the same id; <code>rules/learned/</code> is loaded last.</p>
+<h3 id="migration-assistant">Migration assistant<a class="headerlink" href="#migration-assistant" title="Permanent link">&para;</a></h3>
+<p>For every component that is not ready (verdict refactor, rewrite or blocker), each blocking finding is
+mapped to a concrete Linux-compatible replacement from <a href="https://github.com/olljanat-ai/containerizer/blob/main/rules/migrations.yaml" target="_blank" rel="noopener noreferrer"><code>rules/migrations.yaml</code></a>:
+System.Drawing → SkiaSharp/ImageSharp, WCF → CoreWCF, Windows Service → worker service, Office
+automation → Open XML SDK/ClosedXML, registry → configuration, Event Log → ILogger, MSMQ → a broker,
+and so on, with packages to add and remove, steps, checks and references. Parts
+with no Linux replacement (desktop UI, hardware, vendor COM SDKs, BizTalk) are marked "keep on Windows"
+instead of being forced into a code change.</p>
+<div class="highlight"><pre><span></span><code><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">replace-system-drawing</span>
+<span class="w">  </span><span class="nt">for</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">system-drawing-core</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">pkg-mschart</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">pkg-qrcoder-gdi</span><span class="p p-Indicator">]</span>
+<span class="w">  </span><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">replace</span><span class="w">                    </span><span class="c1"># replace | port | externalize | isolate</span>
+<span class="w">  </span><span class="nt">replace</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">System.Drawing (GDI+)</span>
+<span class="w">  </span><span class="nt">with</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">SkiaSharp or ImageSharp for images, QuestPDF for documents</span>
+<span class="w">  </span><span class="nt">packages</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">add</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">SkiaSharp</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">SkiaSharp.NativeAssets.Linux.NoDependencies</span><span class="p p-Indicator">],</span><span class="nt"> remove</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">System.Drawing.Common</span><span class="p p-Indicator">]}</span>
+<span class="w">  </span><span class="nt">steps</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">...</span><span class="p p-Indicator">]</span>
+<span class="w">  </span><span class="nt">verify</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">...</span><span class="p p-Indicator">]</span>
+</code></pre></div>
+<p>The plan is also rendered as a self-contained <strong>prompt for AI coding agents</strong> (Claude Code, GitHub
+Copilot, ...): the findings with their evidence, the replacements in order, constraints (minimal
+changes, no secrets in code, non-root and read-only file system) and how to verify. The web UI shows
+it on the component's migration assistant with a copy button.</p>
+<p>For a <strong>B-rated</strong> application Containerizer can also make the changes: a
+<a href="../refactoring/">refactoring patch</a> has the LLM change the code for its refactor findings, one file
+at a time with structured edits, then applies the patch to the assessed commit, runs the rules on it
+again and builds and runs the changed components. The patch is offered for download as <em>verified</em>
+(applies, builds and runs) or <em>applies only</em>, with how to apply it with <code>git am</code>; one that does not
+apply cleanly is never offered.</p>
+<h3 id="self-learning-loop">Self-learning loop<a class="headerlink" href="#self-learning-loop" title="Permanent link">&para;</a></h3>
+<p>For each component that can be containerized the scan:</p>
+<ol>
+<li>builds the generated Dockerfile (application folder as context);</li>
+<li>runs it hardened (read-only root filesystem, all capabilities dropped, no new privileges, non-root,
+   only the writable folders mounted) and probes the health endpoint. Writable folders are host
+   directories during the test, so apps that log only to files can still be diagnosed;</li>
+<li>matches the log against <code>rules/50-failures.yaml</code>:</li>
+<li><code>retry</code>: patch the build plan (e.g. remove a pinned <code>global.json</code>, retarget an out-of-support
+     TFM to net10.0, add Kerberos libraries, make a folder writable) and try again;</li>
+<li><code>external</code>: the container works, it only lacks a database/broker/directory/identity provider —
+     then the tool retries in a dependency-free smoke mode (<code>Development</code> environment, which many apps
+     map to SQLite and simulators) to prove the app actually serves requests. For the smoke run only,
+     <code>appsettings.Development.json</code> is mounted read-only (the image never contains it), relative
+     SQLite paths are made absolute and writable, and sample input files are mounted from the repo.
+     An app that never answers HTTP gets the same smoke retry;</li>
+<li><code>platform</code> / <code>code</code>: a runtime finding the static rules missed;</li>
+<li>if nothing matches and the scan has <strong>Ask the LLM</strong> on, the LLM proposes a diagnosis, a regex and a
+   plan patch; it is applied only if the regex matches the log and the patch uses whitelisted plan keys;</li>
+<li>learns what worked: plan patches → plan rules, confirmed AI failure rules → failure rules, runtime
+   findings → finding rules, and packages of components that ran → Linux-safe packages (raising
+   confidence next time). The run uses them right away; for everything else they wait as candidates
+   with their evidence until an administrator approves or rejects them under <strong>Admin → Rule review</strong>.
+   Approved rules go to your internal (private) rules repository, never into this public one
+   (<a href="../rule-review/">rule review</a>).</li>
+</ol>
+<h3 id="ai-fallback-claude-or-a-self-hosted-llm">AI fallback (Claude or a self-hosted LLM)<a class="headerlink" href="#ai-fallback-claude-or-a-self-hosted-llm" title="Permanent link">&para;</a></h3>
+<p>The LLM is set once under <strong>Admin → Source control &amp; LLM</strong>
+(<a href="../source-control/#the-llm">the LLM</a>): the Claude API, or any self-hosted OpenAI-compatible
+server such as Ollama, vLLM, LM Studio or llama.cpp. It is asked only about components the rules are
+unsure of and failures no failure rule explains. Every answer is validated against its schema before
+it is used or learned, responses are cached, and usage and cost are tracked.</p>
+<h2 id="generated-output">Generated output<a class="headerlink" href="#generated-output" title="Permanent link">&para;</a></h2>
+<p>Per component: <code>Dockerfile</code> (+ <code>Dockerfile.dockerignore</code>), <code>k8s.yaml</code> (Deployment or CronJob,
+Service, NetworkPolicy, PVCs where state must persist, ExternalSecrets for every credential),
+<code>plan.json</code> (the build plan). For .NET Framework components that could work in Windows Server
+containers, a <code>Dockerfile.windows</code> stop-gap. Per app: <code>kustomization.yaml</code> and <code>MIGRATION.md</code>.
+Java (Maven/Gradle; Spring Boot, Quarkus, plain JVM programs, WARs on Tomcat) and Node.js
+(npm/pnpm/yarn; Express, NestJS, Next.js and others) components get distroless, non-root images
+built on the runtime line they declare; see <a href="../java-node/#containers">Java and Node.js</a>.</p>
+<p>GitOps: every app also gets <code>gitops/</code> with Argo CD and Flux configuration built from the same data:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Argo CD</th>
+<th>Flux</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Scope</td>
+<td><code>AppProject</code> pinned to the repo, the app namespace and the generated kinds</td>
+<td><code>tenant.yaml</code>: namespace, ServiceAccount, <code>admin</code> RoleBinding in that namespace only; <code>Kustomization</code> applies as that ServiceAccount</td>
+</tr>
+<tr>
+<td>Namespace</td>
+<td><code>CreateNamespace</code> with the Pod Security "restricted" labels</td>
+<td>created by <code>tenant.yaml</code> with the same labels</td>
+</tr>
+<tr>
+<td>Sync</td>
+<td>automated, prune, self-heal, server-side apply, retries</td>
+<td><code>GitRepository</code> (read-only key, optional signed-commit check) or cosign-verified <code>OCIRepository</code>; prune, wait</td>
+</tr>
+<tr>
+<td>Image updates</td>
+<td>Argo CD Image Updater annotations (semver, Git write-back)</td>
+<td><code>ImageRepository</code>, <code>ImagePolicy</code>, <code>ImageUpdateAutomation</code> with <code>$imagepolicy</code> markers in <code>kustomization.yaml</code></td>
+</tr>
+</tbody>
+</table>
+<p>Techniques used to avoid application changes:</p>
+<ul>
+<li>out-of-support .NET (Core 3.1, 5, 6, 7): build with the .NET 10 SDK and run on the supported .NET 10
+  runtime with <code>DOTNET_ROLL_FORWARD=Major</code>; if the old target can't be built, retarget with
+  <code>net10.0</code> in the build stage's copy of the entry project (its netstandard libraries keep their targets);</li>
+<li><code>global.json</code> SDK pins are removed inside the build stage only;</li>
+<li>Kestrel endpoints from <code>appsettings.json</code> are re-pointed with <code>Kestrel__Endpoints__X__Url</code>;</li>
+<li>connection strings and secret settings become <code>ConnectionStrings__X</code> env vars from a Secret;</li>
+<li>folders the app writes to (logs, App_Data, Data Protection keys) become volumes;</li>
+<li>Windows paths in configuration (<code>D:\\Archive</code>, <code>\\\\fs01\\share</code>) are re-pointed to <code>/data/...</code> volumes
+  with <code>Section__Key</code> env vars; key and certificate files go to <code>/secrets</code> from a Kubernetes Secret;</li>
+<li>Serilog file-only sinks are switched to the console (logs to stdout) with <code>Serilog__WriteTo__N__Name</code>;</li>
+<li>custom listen-address settings (<code>"WebhookUrls": "http://*:8085"</code>) are re-pointed to port 8080;</li>
+<li>NLog folders from <code>${configsetting:...}</code> / <code>${environment:...}</code> with Windows defaults are re-pointed
+  by env var, and <code>${basedir}/logs</code> becomes a writable folder;</li>
+<li>installed Windows tools (<code>C:\\Program Files\\wkhtmltopdf\\bin\\wkhtmltopdf.exe</code>) map to the Linux binary on PATH;</li>
+<li>console tools with sub-commands (usage text, verb arrays, <code>case "x":</code>) get one CronJob per command;</li>
+<li>workers that use the ASP.NET Core shared framework get the aspnet base image;</li>
+<li>old netstandard1.x packages that break a linux-x64 restore (NU1605) get a portable publish;</li>
+<li>corporate TLS-inspecting proxies: an optional <code>ca</code> build secret is honoured.</li>
+</ul>
+<h2 id="security-gate">Security gate<a class="headerlink" href="#security-gate" title="Permanent link">&para;</a></h2>
+<p>Everything here is data in <a href="https://github.com/olljanat-ai/containerizer/blob/main/rules/60-security.yaml" target="_blank" rel="noopener noreferrer"><code>rules/60-security.yaml</code></a>.</p>
+<p><strong>Hardened manifests.</strong> Every generated pod gets the baseline: runs as the image's own non-root UID
+(<code>runAsUser</code>/<code>runAsGroup</code>/<code>fsGroup</code>: 1654 for .NET, 101 for nginx), read-only root filesystem, all
+capabilities dropped, no privilege escalation, seccomp <code>RuntimeDefault</code>, no service account token, no
+service links, CPU/memory/ephemeral-storage requests and limits, and a <code>sizeLimit</code> on every <code>emptyDir</code>.
+<code>namespace.yaml</code> enforces Pod Security <code>restricted</code> for the whole app.</p>
+<p><strong>Exceptions only when the app needs them</strong>, decided by rule conditions and recorded on the pod as
+<code>containerizer.io/exception.&lt;id&gt;</code> annotations with the reason:</p>
+<table>
+<thead>
+<tr>
+<th>Exception</th>
+<th>When</th>
+<th>What changes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>nginx-writable-dirs</code></td>
+<td>single-page app</td>
+<td><code>/tmp</code> and <code>/var/cache/nginx</code> writable</td>
+</tr>
+<tr>
+<td><code>kerberos-keytab</code></td>
+<td>Negotiate (Windows) authentication</td>
+<td>keytab from a Secret at <code>/etc/krb5/keytab</code>, credential cache in <code>/tmp</code></td>
+</tr>
+<tr>
+<td><code>native-rendering-memory</code></td>
+<td>PDF/image libraries (DinkToPdf, QuestPDF, ImageSharp, ...) in the component or a library it references</td>
+<td>1 GiB memory limit, writable font cache</td>
+</tr>
+<tr>
+<td><code>file-uploads</code></td>
+<td><code>IFormFile</code> / <code>MultipartReader</code></td>
+<td>1 GiB <code>/tmp</code>, 2 GiB ephemeral storage</td>
+</tr>
+<tr>
+<td><code>icmp-ping</code></td>
+<td><code>System.Net.NetworkInformation.Ping</code></td>
+<td><code>net.ipv4.ping_group_range</code> sysctl (no <code>NET_RAW</code>)</td>
+</tr>
+<tr>
+<td><code>kubernetes-api-client</code></td>
+<td>KubernetesClient and similar</td>
+<td>service account token mounted, <code>sa-token</code> check waived</td>
+</tr>
+<tr>
+<td><code>privileged-port</code></td>
+<td>plan port below 1024</td>
+<td><code>NET_BIND_SERVICE</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Lint.</strong> The gate checks the manifests against Pod Security <code>restricted</code> (host namespaces, privileged,
+capabilities, volume types, host ports, privilege escalation, non-root, seccomp, sysctls) plus read-only
+root FS, resources, secret literals (in env, <code>ENV</code> and Secrets), the service account token, <code>emptyDir</code>
+limits, image tags and NetworkPolicies, and the Dockerfiles for a non-root final stage, tagged base
+images, <code>ADD &lt;url&gt;</code>/<code>curl | sh</code> and base image end of support. Errors fail the gate. A pod annotation
+<code>containerizer.io/waives: "check,check"</code> relaxes named checks for hand-made exceptions.</p>
+<p>The gate favours accuracy over speed: it builds every image, scans it with every available scanner and merges the
+results, and starts it with the docker equivalent of its pod spec (user, read-only root, dropped
+capabilities, sysctls, <code>emptyDir</code> mounts) to prove the exceptions are enough; read-only or permission
+errors in the log fail the gate. A lock older than 14 days is refreshed first.</p>
+<p><strong>Vulnerability scan.</strong> The gate scans the final base image of every component and the built image;
+findings missing from the base are attributed to the application's own packages (upgrade them) rather
+than the base (bump it). It fails on vulnerabilities at or above <code>scan.fail_on</code> (default <code>CRITICAL</code>)
+that have a fix; accepted risks go in <code>scan.allowlist</code> with a reason and an expiry date. Trivy and
+Grype both scan, and their results are merged. When even the newest base tag still ships a vulnerable
+OS package with a fix, the gate upgrades just that package in the final stage (<code>apk upgrade</code> /
+<code>apt-get --only-upgrade</code>; chiseled images have no package manager and need a newer tag). Results go to
+<code>SECURITY.md</code> and <code>security.json</code> next to the generated files.</p>
+<p><strong>SBOM and licences.</strong> Every built image gets a CycloneDX SBOM from Syft, with NuGet licences looked
+up from the feed, each package checked against the licence policy (deny fails the gate, warn is
+reported; GPL/AGPL warn by default) and the scan's CVEs attached to the package they are in. The SBOM
+is stored with the results and committed next to the generated files; the web UI shows the packages of each
+component and a portfolio page of licences and CVEs. See <a href="../sbom/">SBOMs, licences and CVEs</a>.</p>
+<h3 id="nsacisa-hardening">NSA/CISA hardening<a class="headerlink" href="#nsacisa-hardening" title="Permanent link">&para;</a></h3>
+<p>The manifests follow the <a href="https://media.defense.gov/2022/Aug/29/2003066362/-1/-1/0/CTR_KUBERNETES_HARDENING_GUIDANCE_1.2_20220829.PDF" target="_blank" rel="noopener noreferrer">NSA/CISA Kubernetes Hardening Guide</a>
+and CIS Kubernetes Benchmark section 5 as far as an application repository can. Every generated app
+gets a <code>HARDENING.md</code> that lists each control as applied, applied with an exception, not applicable,
+or an action for the cluster operator, with the guide section and CIS number.</p>
+<ul>
+<li><strong>Pods</strong>: on top of the baseline above, AppArmor <code>RuntimeDefault</code> and a ServiceAccount per component
+  (token not mounted). A component that needs the API gets an empty <code>Role</code> + <code>RoleBinding</code> to fill in
+  with least privilege.</li>
+<li><strong>Network</strong>: <code>security.yaml</code> holds a default-deny policy for the namespace. Each component has its own
+  policy: ingress only on its port, egress to DNS, sibling components, and the external ports the
+  code needs. Those ports are inferred from packages, code and configuration, for example SQL Server
+  1433, SMTP, LDAP/Kerberos, message brokers, or a port in a connection string. Cloud metadata
+  endpoints are always blocked, and single-page apps get no external egress. The inferred list is
+  recorded in a <code>containerizer.io/egress</code> annotation and in the report.</li>
+<li><strong>Namespace</strong>: a <code>LimitRange</code> (defaults without a CPU limit, so pods are not throttled) and a
+  <code>ResourceQuota</code> sized from the workloads with 50 % headroom.</li>
+<li><strong>Secrets</strong>: no generated file is a <code>Secret</code> or holds a value. Component settings, Flux source and
+  registry credentials and the sandbox's Git token are <a href="https://external-secrets.io" target="_blank" rel="noopener noreferrer">External Secrets</a>
+  <code>ExternalSecret</code>s from the <code>ClusterSecretStore</code> <code>app-secrets</code> (remote keys <code>&lt;namespace&gt;--&lt;name&gt;</code>). Each
+  namespace reads the store as its own ServiceAccount and only gets its own keys. <code>cluster/secret-store.yaml</code>
+  defines the store (kubernetes provider by default; Vault, Azure Key Vault or AWS Secrets Manager by
+  setting), and the gate fails on any plain Secret or Secret reference that no ExternalSecret produces. See
+  <a href="../external-secrets/">Secrets (External Secrets)</a>.</li>
+<li><strong>Cluster kit</strong> (<code>cluster/</code>): an API server audit policy (metadata only for Secrets, full requests and
+  responses for RBAC, every write and every exec) and a Kyverno <code>verifyImages</code> policy that only admits images signed with your cosign
+  key. These are for the cluster operator to apply. The report also lists the cluster controls the
+  generator can't set, such as etcd encryption, kubelet authentication and control plane TLS.</li>
+<li><strong>GitOps</strong>: Argo CD's <code>AppProject</code> allows only the <code>Namespace</code> cluster kind, no plain Secrets and no
+  other source namespaces, and warns on orphaned resources. Applications sync with
+  <code>ServerSideApply</code>, <code>PruneLast</code> and <code>FailOnSharedResource</code>. On Flux, the quota, LimitRange and
+  default-deny policy move into the platform-owned <code>flux/tenant.yaml</code>. The synced Kustomization
+  deletes them from its set with <code>$patch: delete</code> and doesn't <code>force</code>, so the app repository can't
+  loosen them under the tenant's impersonated ServiceAccount.</li>
+</ul>
+<p><strong>Patched base images.</strong> <code>rules/images.yaml</code> lists the base image lines and
+<code>rules/images.lock.yaml</code> the newest patch tag of each line that passed the vulnerability policy, with
+its digest; the generator uses the exact tag. The bump policy is per image: patch releases of the same
+line by default, newer stable lines for nginx, and the successor line for toolchains past end of
+support (node, golang). .NET majors are never moved automatically. A lock older than 14 days is
+refreshed before the gate runs.</p>
+<h2 id="results-on-the-challenge">Results on the challenge<a class="headerlink" href="#results-on-the-challenge" title="Permanent link">&para;</a></h2>
+<p>See <a href="https://github.com/olljanat-ai/containerizer/blob/main/bench/RESULTS.md" target="_blank" rel="noopener noreferrer"><code>bench/RESULTS.md</code></a> for the current numbers (rule accuracy, verification
+results and the model comparison). The labels used for scoring are in
+<a href="https://github.com/olljanat-ai/containerizer/blob/main/bench/labels.yaml" target="_blank" rel="noopener noreferrer"><code>bench/labels.yaml</code></a>, written from each scenario's README and code.</p>
+
+
+
+
+
+
+
+  
+  
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../appliance/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Getting started">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Getting started
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../scheduled-scans/" class="md-footer__link md-footer__link--next" aria-label="Next: Organization scans">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Organization scans
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.tabs", "navigation.top", "navigation.footer", "search.highlight", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>
