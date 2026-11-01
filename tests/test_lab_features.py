@@ -267,3 +267,21 @@ def test_order_effort():
         "about 10 min left")
     assert webui.order_effort({"FinishedAt": 1, "InputTokens": 4000, "OutputTokens": 1088, "Seconds": 180}, est) == \
         "5,088 tokens · 3 min"
+
+
+def test_an_existing_order_is_offered_instead_of_a_new_one():
+    orders = [{"JobId": 9, "ProjectPath": None, "Goal": "stateless", "Status": "applies-only", "VerifyStatus": "build-failed",
+               "Summary": "applies only: 3 of 4 findings fixed", "SourceCommit": "805d5fc80057aa", "FinishedAt": 1,
+               "InputTokens": 8000, "OutputTokens": 160, "Seconds": 240},
+              {"JobId": 8, "ProjectPath": "src/Api/Api.csproj", "Goal": "fix", "Status": "failed"},
+              {"JobId": 7, "ProjectPath": "src/Api/Api.csproj", "Goal": "fix", "Status": "queued"}]
+    assert webui.existing_order(orders, None, "stateless")["JobId"] == 9
+    assert webui.existing_order(orders, None, "fix") is None                    # another component's, or failed
+    assert webui.existing_order(orders, "src/Api/Api.csproj", "fix")["JobId"] == 7  # the failed one is skipped
+    ctx = {"csrf": "<input name='csrf'>"}
+    html = webui.existing_offer(orders[0], ctx, 7, None, "stateless")
+    assert "A patch was made" in html and "/admin/refactoring/9.patch" in html and "Request a new one" in html
+    assert "8,160 tokens · 4 min" in html and "805d5fc80057" in html
+    html = webui.existing_offer(orders[2], ctx, 7, 3, "fix")
+    assert "Already requested" in html and "/admin/refactoring/7" in html and "Request a new one" not in html
+    assert "/admin/" not in webui.existing_offer(orders[0], {}, 7, None, "stateless")   # readers: no admin links

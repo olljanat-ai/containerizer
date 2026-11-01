@@ -413,7 +413,8 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
             out.append("<h3>Targeted code changes</h3>" + (
                 f"<div class='note offer'>{existing_offer(have, ctx, app['ApplicationId'], None, 'fix', ctx.get('speed'))}</div>"
                 if have else ""))
-            out.append(f"<form method='post' action='/admin/refactoring/new' class='formrow'>"
+            if not have:                     # an order is there already: its patch, and "Request a new one"
+                out.append(f"<form method='post' action='/admin/refactoring/new' class='formrow'>"
                        f"{hidden}<input type='hidden' name='Goal' value='fix'>"
                        f"<select name='Component' aria-label='Component'><option value=''>All components that need changes"
                        f"</option>{opts}</select><label class='check'><input type='checkbox' name='IncludeConfig' value='1'> "
@@ -426,7 +427,8 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
             out.append("<h3>Make it stateless: move the data to SQL Server</h3>" + (
                 f"<div class='note offer'>{existing_offer(have, ctx, app['ApplicationId'], None, 'stateless', ctx.get('speed'))}</div>"
                 if have else ""))
-            out.append(""
+            if not have:
+                out.append(""
                        "<p class='muted small'>The LLM changes the database library and its configuration (for example "
                        "SQLite to SQL Server with Entity Framework Core, the connection string from configuration, logs to "
                        "the console) and says in the notes how to move the existing data. Without code changes the "

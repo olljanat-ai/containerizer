@@ -138,6 +138,13 @@ move of that data to SQL Server (the same guidance as **Make it stateless**). It
 product owners, with the queue's estimate), or **Make all B apps A** for administrators (below). A scan
 never orders one by itself.
 
+![The Refactoring box: an order with its tokens and time, Make it A with its estimate, and a stateless patch that was already made offered instead of a new order](images/results-make-it-a.png#only-light){ .cz-shot }
+![The Refactoring box: an order with its tokens and time, Make it A with its estimate, and a stateless patch that was already made offered instead of a new order](images/results-make-it-a-dark.png#only-dark){ .cz-shot }
+
+Where an order of the same kind is already waiting, running or has a patch, the box offers that order (its
+status, **Open the patch**, **Download .patch** and the commit it was made for) instead of a new one;
+**Request a new one** is for code that has changed since.
+
 The order is one `refactor` job (goal `rating-a`) that loops in the queue runner:
 
 1. **Generate.** The LLM is asked about every file with findings, as for a refactoring patch; the files of
