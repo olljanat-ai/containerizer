@@ -6,6 +6,12 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+### Web UI
+- Admin → LLM queue: the jobs waiting for approval are listed after the queued ones (the order the runner takes them:
+  asking now, queued, then waiting for approval), not between the running and the queued ones.
+
 ## 0.3.12 (2026-11-02)
 
 ### Appliance

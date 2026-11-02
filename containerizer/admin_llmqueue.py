@@ -177,6 +177,11 @@ def _buttons(adm, s, r: dict, first: bool, last: bool) -> str:
     return " ".join(out)
 
 
+# the queue in the order the runner takes it: what it is asking now, then what it asks next, and last the jobs that
+# wait for an administrator's approval (they start only once approved)
+ACTIVE_ORDER = "CASE Status WHEN N'running' THEN 0 WHEN N'queued' THEN 1 ELSE 2 END"
+
+
 def show(adm, conn, s, a, q: dict, flash: str) -> Response:
     kind = q.get("kind", [""])[0]
     kind = kind if kind in lq.JOB_KINDS else ""
@@ -184,7 +189,7 @@ def show(adm, conn, s, a, q: dict, flash: str) -> Response:
     settings = lq.load_settings(conn)
     speed = lq.load_speed(conn)
     active = _rows(conn, f"SELECT {JOB_COLS} FROM cz.LlmJob WHERE Status IN (N'approval', N'queued', N'running'){where} "
-                         f"ORDER BY CASE Status WHEN N'running' THEN 0 WHEN N'approval' THEN 1 ELSE 2 END, {ORDER}", params)
+                         f"ORDER BY {ACTIVE_ORDER}, {ORDER}", params)
     done = _rows(conn, f"SELECT TOP (50) {JOB_COLS} FROM cz.LlmJob WHERE Status IN (N'answered', N'failed', N'skipped')"
                        f"{where} ORDER BY COALESCE(FinishedAt, QueuedAt) DESC, JobId DESC", params)
     queued = [r for r in active if r["Status"] == "queued"]
