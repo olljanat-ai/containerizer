@@ -32,7 +32,7 @@ RUN apt-get update \
     dracut-core dracut-live dracut-network dracut-squash \
     grub2-common grub-efi-amd64-signed shim-signed \
     btrfs-progs btrfsmaintenance dosfstools e2fsprogs fdisk gdisk parted lvm2 dmsetup mtools squashfs-tools xorriso \
-    rsync findutils kmod kbd tzdata less vim-tiny bash-completion \
+    rsync findutils kmod kbd tzdata less vim bash-completion \
     ca-certificates curl gpg iproute2 iputils-ping nftables iptables conntrack dnsmasq-base \
     openssh-server openssh-client \
     apparmor docker.io docker-cli docker-buildx git caddy \

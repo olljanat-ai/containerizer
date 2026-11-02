@@ -10,6 +10,8 @@ qcow2 and VHDX images as release assets.
 
 ### Appliance
 - The firewall answers ping from outside: ICMP and ICMPv6 echo requests are allowed in (at most 20 a second).
+- Full `vim` in place of `vim-tiny`, with the mouse off and paste mode on (`/etc/vim/vimrc.local`; a `~/.vimrc`
+  of root's own wins and is kept).
 
 ## 0.3.4 (2026-11-02)
 
