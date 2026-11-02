@@ -221,6 +221,29 @@ def test_favicon():
     assert "<link rel='icon' href='/static/favicon.svg'" in webui.page("t", "")
 
 
+def test_every_kind_can_need_approval_and_the_queue_limit():
+    from containerizer import llmqueue
+    v, errors = admin_llmqueue.validate_settings({"ApproveKind": ["link", "egress", "bogus"], "ApproveMinTokens": ["2000"],
+                                                  "ApproveMaxQueued": ["5"]})
+    assert errors == [] and v["ApproveKinds"] == "egress,link" and v["ApproveMaxQueued"] == 5
+    for bad in ("-1", "x", "1000001"):
+        assert any("Queued or running" in x for x in admin_llmqueue.validate_settings({"ApproveMaxQueued": [bad]})[1])
+
+    class _Adm:
+        @staticmethod
+        def _csrf(s):
+            return ""
+    html = admin_llmqueue.settings_form(_Adm(), None, dict(llmqueue.DEFAULTS))
+    for k in llmqueue.JOB_KINDS:
+        assert f"name='ApproveKind' value='{k}' checked" in html
+    assert "name='ApproveMaxQueued'" in html and "name='RejectAfterHours'" in html
+    v, errors = admin_llmqueue.validate_settings({"RejectAfterHours": ["48"]})
+    assert errors == [] and v["RejectAfterHours"] == 48
+    assert any("a year" in x for x in admin_llmqueue.validate_settings({"RejectAfterHours": ["9000"]})[1])
+    assert "more than 48 hours are rejected automatically" in admin_llmqueue.reject_text({"RejectAfterHours": 48})
+    assert admin_llmqueue.reject_text({"RejectAfterHours": 0}) == ""
+
+
 def test_queue_lists_running_then_queued_then_waiting_for_approval():
     o = admin_llmqueue.ACTIVE_ORDER
     assert o.index("'running' THEN 0") < o.index("'queued' THEN 1") and o.endswith("ELSE 2 END")
@@ -230,14 +253,21 @@ def test_the_approval_policy_in_a_sentence():
     assert "no job needs approval" in admin_llmqueue.approval_text({"ApproveKinds": None, "ApproveMinTokens": 1})
     assert admin_llmqueue.approval_text({"ApproveKinds": "refactor", "ApproveMinTokens": 0}) == \
         "Now: all refactoring orders wait for approval."
-    assert "10,000 input tokens or more wait" in admin_llmqueue.approval_text(
+    assert "estimated under 10,000 input tokens start by themselves; bigger ones wait" in admin_llmqueue.approval_text(
         {"ApproveKinds": "refactor,review", "ApproveMinTokens": 10000})
+    text = admin_llmqueue.approval_text({"ApproveKinds": "egress,link,refactor,review", "ApproveMinTokens": 5000,
+                                         "ApproveMaxQueued": 3})
+    assert "egress reviews, link reviews, refactoring orders and component reviews" in text
+    assert "while fewer than 3 jobs are queued or running" in text and "as the queue gets shorter" in text
 
 
 def test_approval_is_on_by_default_and_approve_all(adm):  # noqa: F811
     from containerizer import llmqueue
-    assert llmqueue.DEFAULTS["ApproveKinds"] == "refactor,review" and llmqueue.DEFAULTS["ApproveMinTokens"] == 0
-    assert "all refactoring orders and component reviews wait" in admin_llmqueue.approval_text(llmqueue.DEFAULTS)
+    # every kind waits by default, link and egress reviews too (they started by themselves before)
+    assert llmqueue.DEFAULTS["ApproveKinds"] == "egress,link,refactor,review" and llmqueue.DEFAULTS["ApproveMinTokens"] == 0
+    assert set(llmqueue.DEFAULTS["ApproveKinds"].split(",")) == set(llmqueue.JOB_KINDS)
+    assert "all egress reviews, link reviews, refactoring orders and component reviews wait" in \
+        admin_llmqueue.approval_text(llmqueue.DEFAULTS)
     adm.route_scans = lambda *a: None
     admin = adm.sessions.create("alice@example.com", "Alice", True)
     assert "approved" in _loc(_post(adm, admin, "/admin/llm-queue/approve-all"))

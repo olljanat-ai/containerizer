@@ -9,6 +9,16 @@ qcow2 and VHDX images as release assets.
 ## Unreleased
 
 ### Web UI
+- Admin → LLM queue, approval: link reviews and egress reviews can wait for approval too (they always started by
+  themselves, because the policy only knew component reviews and refactoring orders). Settings still at the old
+  default (every job waits) now cover them as well.
+- Admin → LLM queue, automatic approval by size and queue length: jobs estimated under a number of tokens start by
+  themselves only while fewer than a number of jobs are queued or running; the others wait and are approved by
+  themselves, highest priority first, as the queue gets shorter. Big jobs always wait for an administrator.
+- Admin → LLM queue: **Reject automatically after** a number of hours: jobs that waited that long for approval or in
+  the queue are skipped, with the reason. Requeue starts the wait again.
+- Admin → LLM queue: after a button on a job (skip, move, approve, reject, requeue) the page opens at that job, or at the
+  one taking its place, instead of jumping back to the top.
 - Admin → LLM queue: the jobs waiting for approval are listed after the queued ones (the order the runner takes them:
   asking now, queued, then waiting for approval), not between the running and the queued ones.
 

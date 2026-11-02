@@ -1627,7 +1627,7 @@ GO
 -- it 'queued' (ApprovedBy, ApprovedAt), rejecting it 'skipped'.
 IF COL_LENGTH(N'[${schema}].LlmQueueSettings', N'ApproveKinds') IS NULL
     ALTER TABLE [${schema}].LlmQueueSettings ADD ApproveKinds nvarchar(40) NULL
-        CONSTRAINT DF_LlmQueueSettings_ApproveKinds DEFAULT N'refactor,review' WITH VALUES,
+        CONSTRAINT DF_LlmQueueSettings_ApproveKinds DEFAULT N'egress,link,refactor,review' WITH VALUES,
         ApproveMinTokens int NOT NULL CONSTRAINT DF_LlmQueueSettings_ApproveMin DEFAULT 0
         CONSTRAINT CK_LlmQueueSettings_ApproveMin CHECK (ApproveMinTokens BETWEEN 0 AND 10000000);
 GO
@@ -1643,6 +1643,22 @@ IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_LlmJob_Stat
     ALTER TABLE [${schema}].LlmJob ADD CONSTRAINT CK_LlmJob_Status
         CHECK (Status IN (N'approval', N'queued', N'running', N'answered', N'failed', N'skipped'));
 GO
+-- 29: automatic approval also by the length of the queue: a job of a kind that needs approval and is estimated under
+-- ApproveMinTokens starts by itself only while fewer than ApproveMaxQueued jobs are queued or running (0: any length);
+-- AutoApproveLlmJobs approves the waiting ones as the queue gets shorter. Every kind can need approval (link and
+-- egress reviews could not before).
+IF COL_LENGTH(N'[${schema}].LlmQueueSettings', N'ApproveMaxQueued') IS NULL
+    ALTER TABLE [${schema}].LlmQueueSettings ADD ApproveMaxQueued int NOT NULL
+        CONSTRAINT DF_LlmQueueSettings_ApproveMaxQueued DEFAULT 0
+        CONSTRAINT CK_LlmQueueSettings_ApproveMaxQueued CHECK (ApproveMaxQueued BETWEEN 0 AND 100000);
+GO
+-- 29: jobs that wait too long are rejected automatically: waiting for approval or queued for more than
+-- RejectAfterHours (0: never), counted from the approval when there was one (AutoRejectLlmJobs)
+IF COL_LENGTH(N'[${schema}].LlmQueueSettings', N'RejectAfterHours') IS NULL
+    ALTER TABLE [${schema}].LlmQueueSettings ADD RejectAfterHours int NOT NULL
+        CONSTRAINT DF_LlmQueueSettings_RejectAfterHours DEFAULT 0
+        CONSTRAINT CK_LlmQueueSettings_RejectAfterHours CHECK (RejectAfterHours BETWEEN 0 AND 8760);
+GO
 CREATE OR ALTER PROCEDURE [${schema}].QueueLlmJob @Kind nvarchar(20), @Reason nvarchar(40) = NULL, @ScanId int = NULL,
     @ProjectName nvarchar(200) = NULL, @RepoName nvarchar(200) = NULL, @Repository nvarchar(400) = NULL,
     @App nvarchar(200) = NULL, @SourceKey nvarchar(400) = NULL, @ApplicationId int = NULL, @AssessmentId int = NULL,
@@ -1657,7 +1673,10 @@ BEGIN
     IF EXISTS (SELECT 1 FROM [${schema}].LlmQueueSettings s
                WHERE s.ApproveKinds IS NOT NULL
                  AND CHARINDEX(N',' + @Kind + N',', N',' + REPLACE(s.ApproveKinds, N' ', N'') + N',') > 0
-                 AND COALESCE(@EstInputTokens, 0) >= s.ApproveMinTokens)
+                 AND (COALESCE(@EstInputTokens, 0) >= s.ApproveMinTokens
+                      OR (s.ApproveMaxQueued > 0
+                          AND (SELECT COUNT(*) FROM [${schema}].LlmJob q WHERE q.Status IN (N'queued', N'running'))
+                              >= s.ApproveMaxQueued)))
         SET @status = N'approval';
     BEGIN TRANSACTION;
     IF NOT EXISTS (SELECT 1 FROM [${schema}].LlmJob WITH (UPDLOCK, HOLDLOCK)
@@ -1691,17 +1710,92 @@ BEGIN
     SELECT w.ChangedBy, w.ChangedByName, w.Via, N'LlmQueueSettings', COALESCE(i.SettingsId, d.SettingsId), N'LLM queue',
            CASE WHEN d.SettingsId IS NULL THEN N'insert' WHEN i.SettingsId IS NULL THEN N'delete' ELSE N'update' END,
            CASE WHEN d.SettingsId IS NOT NULL THEN (SELECT d.Paused, d.WindowDays, d.WindowStart, d.WindowEnd, d.OnlyWhenIdle,
-                d.MaxLoadPerCpu, d.Parallel, d.ApproveKinds, d.ApproveMinTokens FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+                d.MaxLoadPerCpu, d.Parallel, d.ApproveKinds, d.ApproveMinTokens, d.ApproveMaxQueued, d.RejectAfterHours FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
            CASE WHEN i.SettingsId IS NOT NULL THEN (SELECT i.Paused, i.WindowDays, i.WindowStart, i.WindowEnd, i.OnlyWhenIdle,
-                i.MaxLoadPerCpu, i.Parallel, i.ApproveKinds, i.ApproveMinTokens FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+                i.MaxLoadPerCpu, i.Parallel, i.ApproveKinds, i.ApproveMinTokens, i.ApproveMaxQueued, i.RejectAfterHours FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
     FROM inserted i FULL OUTER JOIN deleted d ON d.SettingsId = i.SettingsId
     CROSS JOIN [${schema}].fnAuditWho() w
     WHERE d.SettingsId IS NULL OR i.SettingsId IS NULL
        OR EXISTS (SELECT i.Paused, i.WindowDays, i.WindowStart, i.WindowEnd, i.OnlyWhenIdle, i.MaxLoadPerCpu, i.Parallel,
-                         i.ApproveKinds, i.ApproveMinTokens
+                         i.ApproveKinds, i.ApproveMinTokens, i.ApproveMaxQueued, i.RejectAfterHours
                   EXCEPT SELECT d.Paused, d.WindowDays, d.WindowStart, d.WindowEnd, d.OnlyWhenIdle, d.MaxLoadPerCpu, d.Parallel,
-                         d.ApproveKinds, d.ApproveMinTokens);
+                         d.ApproveKinds, d.ApproveMinTokens, d.ApproveMaxQueued, d.RejectAfterHours);
 END;
+GO
+-- 29: every kind of job can wait for approval; settings still at the old default (refactoring orders and component
+-- reviews) get the kinds added since then, so that "by default every job waits" holds for link and egress reviews too
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 29)
+    UPDATE [${schema}].LlmQueueSettings SET ApproveKinds = N'egress,link,refactor,review'
+    WHERE ApproveKinds = N'refactor,review';
+GO
+-- Approve by the rules (LlmQueueSettings): jobs of a kind that needs no approval (any longer), and jobs estimated under
+-- ApproveMinTokens while the queue has room (fewer than ApproveMaxQueued queued or running; 0: no limit), highest
+-- priority first. The queue runner calls it before it takes jobs, the admin pages after a change. Returns how many.
+CREATE OR ALTER PROCEDURE [${schema}].AutoApproveLlmJobs
+AS
+BEGIN
+    SET NOCOUNT ON; SET XACT_ABORT ON;
+    DECLARE @kinds nvarchar(200), @min int, @maxq int, @n int = 0, @free int;
+    SELECT @kinds = N',' + REPLACE(COALESCE(ApproveKinds, N''), N' ', N'') + N',', @min = ApproveMinTokens,
+           @maxq = ApproveMaxQueued
+    FROM [${schema}].LlmQueueSettings WHERE SettingsId = 1;
+    IF @kinds IS NULL
+    BEGIN
+        SELECT 0 AS Approved;
+        RETURN;
+    END;
+    BEGIN TRANSACTION;
+    UPDATE [${schema}].LlmJob WITH (UPDLOCK, HOLDLOCK)
+    SET Status = N'queued', ApprovedBy = N'automatic: its kind needs no approval', ApprovedAt = SYSUTCDATETIME()
+    WHERE Status = N'approval' AND CHARINDEX(N',' + Kind + N',', @kinds) = 0;
+    SET @n = @@ROWCOUNT;
+    IF @min > 0
+    BEGIN
+        SET @free = CASE WHEN @maxq > 0
+                         THEN @maxq - (SELECT COUNT(*) FROM [${schema}].LlmJob WITH (UPDLOCK, HOLDLOCK)
+                                       WHERE Status IN (N'queued', N'running'))
+                         ELSE 2147483647 END;
+        IF @free > 0
+        BEGIN
+            WITH c AS (SELECT TOP (@free) Status, ApprovedBy, ApprovedAt FROM [${schema}].LlmJob WITH (UPDLOCK, HOLDLOCK)
+                       WHERE Status = N'approval' AND COALESCE(EstInputTokens, 0) < @min
+                       ORDER BY COALESCE(AdminRank, CAST(Priority AS float)) DESC, JobId)
+            UPDATE c SET Status = N'queued', ApprovedAt = SYSUTCDATETIME(),
+                         ApprovedBy = N'automatic: estimated under ' + FORMAT(@min, N'N0') + N' tokens'
+                                      + CASE WHEN @maxq > 0 THEN N' and the queue had room' ELSE N'' END;
+            SET @n += @@ROWCOUNT;
+        END;
+    END;
+    COMMIT;
+    SELECT @n AS Approved;
+END;
+GO
+GRANT EXECUTE ON [${schema}].AutoApproveLlmJobs TO [${schema}_writer];
+GRANT EXECUTE ON [${schema}].AutoApproveLlmJobs TO [${schema}_admin];
+GO
+-- Reject what waited too long (LlmQueueSettings.RejectAfterHours): waiting for approval or queued (never running)
+-- for longer than that since it was queued, or approved. Called with AutoApproveLlmJobs, before it. Returns how many.
+CREATE OR ALTER PROCEDURE [${schema}].AutoRejectLlmJobs
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @hours int = (SELECT RejectAfterHours FROM [${schema}].LlmQueueSettings WHERE SettingsId = 1), @n int = 0;
+    IF COALESCE(@hours, 0) > 0
+    BEGIN
+        UPDATE [${schema}].LlmJob
+        SET Status = N'skipped', FinishedAt = SYSUTCDATETIME(),
+            Note = N'rejected automatically: waited more than ' + CAST(@hours AS nvarchar(10)) + N' hours'
+        WHERE Status IN (N'approval', N'queued')
+          AND COALESCE(ApprovedAt, QueuedAt) < DATEADD(hour, -@hours, SYSUTCDATETIME());
+        SET @n = @@ROWCOUNT;
+    END;
+    SELECT @n AS Rejected;
+END;
+GO
+GRANT EXECUTE ON [${schema}].AutoRejectLlmJobs TO [${schema}_writer];
+GRANT EXECUTE ON [${schema}].AutoRejectLlmJobs TO [${schema}_admin];
+-- requeueing a job starts its wait again (RejectAfterHours counts from QueuedAt)
+GRANT UPDATE ON [${schema}].LlmJob (QueuedAt) TO [${schema}_admin];
 GO
 GRANT UPDATE ON [${schema}].LlmJob (ApprovedBy, ApprovedAt) TO [${schema}_admin];
 GO
@@ -2037,4 +2131,8 @@ IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 27) INSER
 GO
 -- 28: applications per folder of a repository (OrgRepository.SplitPath)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 28) INSERT [${schema}].SchemaVersion (Version) VALUES (28);
+GO
+-- 29: automatic approval by the length of the LLM queue, approval for every kind, automatic rejection after a wait
+-- (AutoApproveLlmJobs, AutoRejectLlmJobs)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 29) INSERT [${schema}].SchemaVersion (Version) VALUES (29);
 GO
