@@ -6,6 +6,13 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+### Appliance
+- Organization scans and the LLM queue failed with "credential key /run/credentials/...: readable by others": systemd
+  hands the services their key as `0440` in their private credentials directory, which the check refused. Group
+  read is accepted there now (nowhere else; others still never).
+
 ## 0.3.7 (2026-11-02)
 
 0.3.6 was tagged but not released (its run was stopped); its changes are in 0.3.7.

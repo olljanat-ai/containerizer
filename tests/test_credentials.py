@@ -35,6 +35,30 @@ def test_keygen_private_key_is_private_and_never_overwritten(tmp_path, keys):
     os.chmod(tmp_path / "k", 0o644)
     with pytest.raises(cr.CredentialError, match="readable by others"):
         cr.load_private(tmp_path / "k")
+
+
+def test_private_key_from_systemd_credentials(tmp_path, keys, monkeypatch):
+    """systemd's LoadCredential= copy is root:root 0440 in $CREDENTIALS_DIRECTORY (only the service sees it):
+    accepted there; group read elsewhere, and anything for others, still refused."""
+    creds = tmp_path / "credentials" / "containerizer-worker.service"
+    creds.mkdir(parents=True)
+    key = creds / "credential-key"
+    key.write_bytes((tmp_path / "k").read_bytes())
+    os.chmod(key, 0o440)
+    monkeypatch.delenv("CREDENTIALS_DIRECTORY", raising=False)
+    with pytest.raises(cr.CredentialError, match="readable by others"):
+        cr.load_private(key)                                    # not the service's credentials directory
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(creds))
+    assert cr.key_id(cr.load_private(key).public_key()) == keys[2]
+    for bad in (0o444, 0o460, 0o470):                           # others, group write or execute: never
+        os.chmod(key, bad)
+        with pytest.raises(cr.CredentialError, match="readable by others"):
+            cr.load_private(key)
+    other = tmp_path / "elsewhere"
+    other.write_bytes((tmp_path / "k").read_bytes())
+    os.chmod(other, 0o440)
+    with pytest.raises(cr.CredentialError, match="readable by others"):
+        cr.load_private(other)                                  # outside it, the old rule
     with pytest.raises(cr.CredentialError, match="not a PEM"):
         (tmp_path / "bad").write_text("nope")
         os.chmod(tmp_path / "bad", 0o600)
