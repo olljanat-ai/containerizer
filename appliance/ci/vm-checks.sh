@@ -51,7 +51,7 @@ systemctl is-active containerizer-db-init.service containerizer-web.service cont
 
 step "web UI runs as its own user without privileges"
 test "$(ps -o user= -p "$(systemctl show -p MainPID --value containerizer-web.service)")" = cz-web
-step "root's password was changed at the first sign-in and is kept on the persistent partition"
+step "root's password was changed and is kept on the persistent partition"
 if chage -l root | grep -qi "must be changed"; then echo "root's password is still expired" >&2; exit 1; fi
 grep -q '^root:[^!*:]' /etc/containerizer/secrets/root-shadow
 test "$(stat -c %a /etc/containerizer/secrets/root-shadow)" = 600

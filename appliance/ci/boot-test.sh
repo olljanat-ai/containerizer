@@ -74,9 +74,11 @@ start_vm 1
 # (elemental reset) and restarts; SSH already answers in the recovery system, so wait for the active one
 wait_active 1800
 
-echo "=== root's password: the default asks for a new one, then only the new one signs in"
+echo "=== root's password: changed from the default (asked for at the first sign-in when it is expired), then only the new one signs in"
 if "${SSH[@]}" 'chage -l root' | grep -qi "must be changed"; then
   change_password || { cat "$OUT/password-change.log"; exit 1; }
+else
+  "${SSH[@]}" "echo 'root:$NEWPW' | chpasswd"
 fi
 "$HERE/password-ssh.exp" run "$NEWPW" 'chage -l root' | tee "$OUT/password-check.log"
 if grep -qi "must be changed" "$OUT/password-check.log"; then echo "root's password is still expired" >&2; exit 1; fi

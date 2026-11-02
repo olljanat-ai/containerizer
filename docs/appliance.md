@@ -53,7 +53,8 @@ For unattended installs, see [Running the appliance](appliance-admin.md#unattend
 ## First boot
 
 Sign in as `root` with the password **`containerizer`**, over SSH (`ssh root@<appliance>`) or on the
-console. The first sign-in asks for the current password once more and then a new one; SSH closes the
+console. In 0.3.3 the default password is not expired, so change it yourself with `passwd` after the
+first sign-in (it is kept like any change). Otherwise, the first sign-in asks for the current password once more and then a new one; SSH closes the
 connection after the change if the login did not continue, so sign in again with the new password. Until
 the password is changed, an SSH key alone may be refused too. The new password is kept on the persistent
 partition, so it survives restarts, upgrades and roll backs.

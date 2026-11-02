@@ -6,7 +6,7 @@ TTY="${1:-tty1}"
 
 ask_key() {  # optional: root signs in with the password too
   echo "  SSH public key to sign in as root with (one line: ssh-ed25519, ecdsa-sha2-* or ssh-rsa;"
-  echo "  empty: none, sign in with the password \"containerizer\" and change it at the first sign-in):"
+  echo "  empty: none, sign in with the password \"containerizer\" and change it with passwd):"
   echo
   : > /run/cz-key.pub
   while :; do
