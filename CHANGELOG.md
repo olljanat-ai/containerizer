@@ -6,7 +6,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.3.11 (2026-11-02)
 
 ### Organization scans
 - **Applications in this repository** (Admin → Repositories → the repository): a mono-repo can be assessed as one
