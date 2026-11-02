@@ -1,7 +1,8 @@
 # Changelog
 
 Releases are tagged `vX.Y.Z`: bump `containerizer/__init__.py` and this file, then run the **release** workflow
-by hand on `main` with the version, and it tags the commit and releases from the tag. Each release publishes the appliance OS image to
+by hand on `main` with the version, and it tags the commit and releases from the tag (or push the tag `vX.Y.Z` on `main`
+yourself: a tag push starts the release too). Each release publishes the appliance OS image to
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
