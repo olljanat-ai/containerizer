@@ -9,6 +9,13 @@ qcow2 and VHDX images as release assets.
 ## Unreleased
 
 ### Appliance
+- Admin → System: **planned restart**. A restart (new **Restart** form), an upgrade and a roll back run now or at a
+  set time (UTC), and wait for the work in progress: from that time on no new scan run or LLM job starts, and the
+  appliance restarts once nothing runs any more or after the longest wait chosen (not at all, 30 minutes to 8 hours,
+  or until done; 2 hours by default). The page shows the plan and what it waits for, and can cancel it. The upgrade
+  and roll back forms use it too (they restarted at once, cutting off running scans). Roll back is one form with a
+  snapshot list. The system agent keeps the plan on the persistent partition and checks it every minute
+  (`containerizer-restart.timer`).
 - Grafana's k3s and Flux dashboards were partly empty since 0.3.11: kube-state-metrics was pulled from registry.k8s.io,
   which is not on the egress allow-list (it redirects to regional hosts the list cannot name), so the pod never
   started. It now comes from Rancher's mirror on Docker Hub (v2.17.0, pinned by digest), like k3s's own images; a test

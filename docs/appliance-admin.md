@@ -260,11 +260,20 @@ listed; node and API server metrics), whose token `containerizer-prometheus-k8s.
 `/run/containerizer/prometheus-k8s` with the cluster's CA when k3s is up; the TLS certificates are verified. Until
 then, and while k3s is down, those targets are down (`up{job=~"k3s-apiserver|kubelet.*|flux|kube-state-metrics"}`).
 
-## Upgrade and roll back
+## Upgrade, roll back and restart
 
 **Admin → System** (administrators only) shows the running version, the snapshots on the disk and the
 last upgrade or roll back with its outcome, and checks GHCR for newer releases.
 
+- **Planned restart**: a restart, an upgrade and a roll back are planned the same way: **now** or **at** a time (UTC,
+  within 30 days), and how long to **wait for running scans and LLM jobs** (not at all, at most 30 minutes to 8 hours,
+  or until they are done; 2 hours by default). From the planned time on, the scan worker starts no new scan run
+  and the LLM queue runner no new job (its page says why); queued runs and jobs keep their place. The appliance
+  restarts, or upgrades or rolls back and then restarts, as soon as nothing runs any more, or when the wait is over:
+  a scan cut off then is marked failed and the next run processes every repository again, an LLM job cut off goes
+  back to the queue. The page shows the plan, how much work it still waits for and when it restarts at the latest;
+  **Cancel the planned restart** lets everything go on. One plan at a time; it survives an unplanned restart
+  (`containerizer-restart.timer` checks it every minute, as root).
 - **Upgrade**: pick a newer release and confirm. The system agent checks with cosign that the image was
   signed by this repository's release workflow (keyless signature, GitHub's OIDC identity of
   `.github/workflows/release.yml` on a `vX.Y.Z` tag), then installs exactly the verified digest as a new
@@ -278,8 +287,11 @@ last upgrade or roll back with its outcome, and checks GHCR for newer releases.
   (newer versions only add to it, and older code reads it).
 - The GRUB menu at start-up also lists the snapshots, and a recovery system.
 
+![Admin → System: a planned upgrade waiting for the scan runs and LLM jobs in progress, the Restart and Upgrade forms](images/admin-system-restart.png#only-light){ .cz-shot }
+![Admin → System: a planned upgrade waiting for the scan runs and LLM jobs in progress, the Restart and Upgrade forms](images/admin-system-restart-dark.png#only-dark){ .cz-shot }
+
 On the console: `python -m containerizer.sysagent upgrade vX.Y.Z` or `... rollback <snapshot>` (with
-`/usr/lib/containerizer/venv/bin/python`). The appliance checks GHCR anonymously, so the
+`/usr/lib/containerizer/venv/bin/python`) do it at once, without waiting for the work in progress. The appliance checks GHCR anonymously, so the
 `containerizer-appliance` package must be public.
 
 ## Built-in LLM
@@ -438,4 +450,5 @@ scan worker get the passwords of the backup and are linked to their users in the
 | A scan cannot reach a host | Admin → Firewall → Refused names; or `journalctl -u containerizer-dns \| grep REFUSED` |
 | The firewall did not load | the SSH-only fallback ruleset is active; `systemctl status containerizer-firewall` shows why |
 | Status of the system agent | `/run/containerizer/system/status.json`, `journalctl -u containerizer-sysagent` |
+| Planned restart (Admin → System) | `/var/lib/containerizer/system/restart-plan.json`, `journalctl -u containerizer-restart` |
 | Locked out of SSH | the console of the VM: GRUB menu → recovery, or a previous snapshot |

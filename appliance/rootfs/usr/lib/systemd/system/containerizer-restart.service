@@ -1,0 +1,15 @@
+[Unit]
+Description=containerizer appliance: planned restart, upgrade or roll back (Admin -> System)
+After=containerizer-firstboot.service containerizer-db-init.service
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+# nothing to do while no restart is planned
+ConditionPathExists=/var/lib/containerizer/system/restart-plan.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/containerizer/venv/bin/python -m containerizer.sysagent restart-check
+# a planned upgrade downloads and unpacks the OS image
+TimeoutStartSec=3h
+ProtectHome=yes
+PrivateTmp=yes

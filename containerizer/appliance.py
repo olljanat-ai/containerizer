@@ -23,9 +23,11 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
+
+from . import restartplan as rp
 
 e = html.escape
 
@@ -107,7 +109,8 @@ class SystemPage:
         return out
 
     def busy(self, st: dict) -> bool:
-        return bool(self.pending()) or (st.get("task") or {}).get("state") in ("queued", "running", "rebooting")
+        return bool(self.pending()) or bool(st.get("restart")) or \
+            (st.get("task") or {}).get("state") in ("queued", "running", "rebooting")
 
     def available(self, image: str | None, current: str | None, force: bool = False) -> tuple[list[str], str | None, float | None]:
         """(newer release tags, error, when checked); cached for CHECK_TTL seconds."""
@@ -153,27 +156,43 @@ class SystemPage:
         if method == "POST":
             what = parts[1] if len(parts) > 1 else ""
             back = "/admin/system?"
+            if what == "cancel-restart":
+                if not st.get("restart"):
+                    return 303, "", back + urlencode({"msg": "No restart is planned."})
+                self.request("plan-cancel", s.user, s.name)
+                return 303, "", back + urlencode({"msg": "Planned restart cancelled. Scans and the LLM queue go on."})
+            if what not in ("upgrade", "rollback", "restart"):
+                return 404, shell("Not found", kind, "", ""), None
             if form.get("confirm", [""])[0] != "yes":
                 return 303, "", back + urlencode({"msg": "Tick the box to confirm: the appliance restarts."})
             if self.busy(st):
-                return 303, "", back + urlencode({"msg": "An upgrade, roll back or firewall change is already in progress."})
+                return 303, "", back + urlencode({"msg": "A restart is already planned, or an upgrade, roll back or "
+                                                         "firewall change is in progress."})
+            try:
+                at, wait = plan_time(form)
+            except ValueError as ex:
+                return 303, "", back + urlencode({"msg": str(ex)})
+            args = {"at": at, "max_wait_minutes": wait}
             if what == "upgrade":
                 v = form.get("version", [""])[0]
                 newer, err, _ = self.available(st.get("image"), st.get("version"))
                 if v not in newer:
                     return 303, "", back + urlencode({"msg": f"{v or 'That version'} is not a newer release."})
-                self.request("upgrade", s.user, s.name, version=v)
-                return 303, "", back + urlencode({"msg": f"Upgrade to {v} requested. The appliance verifies the "
-                                                         "image signature, installs it and restarts."})
-            if what == "rollback":
+                args.update(then="upgrade", version=v)
+            elif what == "rollback":
                 sid = form.get("snapshot", [""])[0]
                 ok = {str(x.get("id")) for x in st.get("snapshots") or [] if not x.get("active")}
                 if not re.fullmatch(r"\d{1,6}", sid) or sid not in ok:
                     return 303, "", back + urlencode({"msg": "Pick one of the earlier snapshots."})
-                self.request("rollback", s.user, s.name, snapshot=int(sid))
-                return 303, "", back + urlencode({"msg": f"Roll back to snapshot {sid} requested. The appliance "
-                                                         "installs it as the new active system and restarts."})
-            return 404, shell("Not found", kind, "", ""), None
+                args.update(then="rollback", snapshot=int(sid))
+            else:
+                args.update(then="reboot")
+            self.request("plan", s.user, s.name, **args)
+            plan = {"action": args["then"], **args}
+            when = f"at {_when(at)}" if at else "now"
+            return 303, "", back + urlencode({"msg": f"{rp.describe(plan).capitalize()} planned {when}: from then on no "
+                                                     f"new scan or LLM job starts, and the appliance restarts "
+                                                     f"{rp.wait_text(wait)}."})
         flash = q.get("msg", [""])[0][:300]
         force = q.get("check", [""])[0] == "1"
         return 200, shell("System", kind, self.render(st, s, force), flash), None
@@ -413,18 +432,26 @@ certificate and key from the appliance</label> <button{dis}>Turn off</button></f
         if task:
             state = task.get("state", "")
             what = {"upgrade": f"Upgrade to {task.get('version', '')}",
-                    "rollback": f"Roll back to snapshot {task.get('snapshot', '')}"}.get(task.get("action"), task.get("action", ""))
+                    "rollback": f"Roll back to snapshot {task.get('snapshot', '')}", "reboot": "Restart",
+                    "plan": "Plan a restart", "plan-cancel": "Cancel the planned restart"}.get(task.get("action"), task.get("action", ""))
             out.append(f"<h2>Last change</h2><table><tbody><tr><td>{e(what)}</td><td><b>{e(state)}</b></td>"
                        f"<td>{e(task.get('requested_by_name') or task.get('requested_by') or '')}</td>"
                        f"<td class='nowrap'>{e(_when(task.get('finished') or task.get('started')))}</td></tr>"
                        + (f"<tr><td colspan=4 class='muted small'>{e(task.get('message', ''))}</td></tr>" if task.get("message") else "")
                        + "</tbody></table>")
+        plan = st.get("restart")
+        if plan:
+            out.append(self.render_plan(plan, s))
         for p in self.pending():
             out.append(f"<p class='note'>Waiting for the system agent: {e(p.get('action', ''))} requested by "
                        f"{e(p.get('requested_by_name') or p.get('requested_by') or '')}.</p>")
         confirm = ("<label class='small'><input type='checkbox' name='confirm' value='yes' required> "
                    "I understand that the appliance restarts and is unavailable for a few minutes</label>")
         csrf = f"<input type='hidden' name='csrf' value='{e(s.csrf)}'>"
+        dis = " disabled" if busy else ""
+        out.append(f"""<h2>Restart</h2><form method='post' action='/admin/system/restart'>{csrf}
+{plan_fields("restart")}<button{dis}>Plan the restart</button>
+{confirm}</form>""")
         newer, err, checked = self.available(st.get("image"), st.get("version"), force)
         out.append("<h2>Upgrade</h2>")
         if err:
@@ -433,10 +460,10 @@ certificate and key from the appliance</label> <button{dis}>Turn off</button></f
             out.append(f"<p>{e(version)} is the newest release.</p>")
         else:
             opts = "".join(f"<option value='{e(v)}'>{e(v)}</option>" for v in newer)
-            dis = " disabled" if busy else ""
             out.append(f"""<form method='post' action='/admin/system/upgrade'>{csrf}
-<div class='formrow'><label for='version'>New release</label><select name='version' id='version'>{opts}</select>
-<button{dis}>Upgrade</button></div>{confirm}</form>
+<div class='formrow'><label for='version'>New release</label><select name='version' id='version'>{opts}</select></div>
+{plan_fields("upgrade")}<button{dis}>Upgrade</button>
+{confirm}</form>
 <p class='muted small'>The appliance checks that the image was signed by the release workflow of
 <code>{e(st.get('signer') or '')}</code>, writes it as a new snapshot next to the running one and restarts into it.
 If the new version does not pass its start-up check, the appliance goes back to the previous snapshot by itself.</p>""")
@@ -446,20 +473,83 @@ If the new version does not pass its start-up check, the appliance goes back to 
         for x in snaps:
             sid = str(x.get("id", ""))
             act = "<b>running</b>" if x.get("active") else ""
-            btn = "" if x.get("active") else (
-                f"<form method='post' action='/admin/system/rollback' class='inline'>{csrf}"
-                f"<input type='hidden' name='snapshot' value='{e(sid)}'>"
-                f"<label class='small'><input type='checkbox' name='confirm' value='yes' required> confirm</label> "
-                f"<button{' disabled' if busy else ''}>Roll back</button></form>")
             rows.append(f"<tr><td>{e(sid)}</td><td>{e(x.get('version') or '-')}</td><td class='nowrap'>{e(_when(x.get('date')))}</td>"
-                        f"<td class='small muted'>{e(x.get('source') or '')}</td><td>{act}{btn}</td></tr>")
+                        f"<td class='small muted'>{e(x.get('source') or '')}</td><td>{act}</td></tr>")
+        earlier = [x for x in snaps if not x.get("active")]
         out.append("<h2>Snapshots</h2><p class='muted small'>Each upgrade keeps the previous systems as snapshots. Rolling "
                    "back installs the chosen snapshot as a new active system (no download) and restarts. Data on the "
                    "persistent partition (database, configuration, clones) is not touched; the database schema is not "
                    "downgraded.</p>"
                    "<table><thead><tr><th>Snapshot</th><th>Version</th><th>Installed</th><th>Source</th><th></th></tr></thead>"
                    f"<tbody>{''.join(rows) or '<tr><td colspan=5 class=muted>No snapshots reported.</td></tr>'}</tbody></table>")
+        if earlier:
+            opts = "".join(f"<option value='{e(str(x.get('id', '')))}'>{e(str(x.get('id', '')))}: "
+                           f"{e(x.get('version') or 'unknown version')}</option>" for x in earlier)
+            out.append(f"""<form method='post' action='/admin/system/rollback'>{csrf}
+<div class='formrow'><label for='snapshot'>Roll back to</label><select name='snapshot' id='snapshot'>{opts}</select></div>
+{plan_fields("rollback")}<button{dis}>Roll back</button>
+{confirm}</form>""")
         return "".join(out)
+
+    @staticmethod
+    def render_plan(plan: dict, s) -> str:
+        at = rp.starts(plan)
+        holding = at is not None and datetime.now(timezone.utc) >= at
+        running = plan.get("running")
+        if not holding:
+            state = f"Scheduled for <b>{e(_when(plan.get('at')))}</b>. Until then scans and the LLM queue run as usual."
+        elif running is None and not plan.get("checked"):
+            state = "Due: no new scan or LLM job starts. Checking the work in progress..."
+        elif running is None:
+            state = "Due: no new scan or LLM job starts. The work in progress could not be counted (database not reachable)."
+        else:
+            state = (f"Due since {e(_when(plan.get('at')))}: no new scan or LLM job starts. Waiting for "
+                     f"<b>{int(running)}</b> scan run(s) and LLM job(s) in progress "
+                     f"<span class='muted small'>(checked {e(_when(plan.get('checked')))})</span>.")
+        wait = plan.get("max_wait_minutes")
+        limit = "" if wait is None or at is None else \
+            f" The appliance restarts at the latest at {e(_when((at + timedelta(minutes=int(wait))).isoformat()))}."
+        return (f"<h2>Planned restart</h2><p class='note'><b>{e(rp.describe(plan).capitalize())}</b>, "
+                f"{e(rp.wait_text(wait))}, planned by {e(plan.get('requested_by_name') or plan.get('requested_by') or '')}."
+                f"<br>{state}{limit}</p><form method='post' action='/admin/system/cancel-restart'>"
+                f"<input type='hidden' name='csrf' value='{e(s.csrf)}'><button>Cancel the planned restart</button></form>")
+
+
+WAIT_LABELS = {0: "Don't wait", 30: "At most 30 minutes", 60: "At most 1 hour", 120: "At most 2 hours",
+               240: "At most 4 hours", 480: "At most 8 hours"}
+
+
+def plan_fields(prefix: str) -> str:
+    """When and how long to wait for the work in progress: the fields of the restart, upgrade and roll back forms."""
+    waits = "".join(f"<option value='{m}'{' selected' if m == rp.DEFAULT_WAIT else ''}>{e(t)}</option>"
+                    for m, t in WAIT_LABELS.items()) + "<option value='done'>Until the work is done</option>"
+    return f"""<div class='formrow'><label for='{prefix}-when'>When</label><select name='when' id='{prefix}-when'>
+<option value='now'>Now</option><option value='at'>At the time below</option></select>
+<input type='datetime-local' name='at' id='{prefix}-at' aria-label='Time (UTC)'> <span class='muted small'>UTC</span></div>
+<div class='formrow'><label for='{prefix}-wait'>Wait for running scans and LLM jobs</label><select name='wait' id='{prefix}-wait'>
+{waits}</select></div>"""
+
+
+def plan_time(form: dict) -> tuple[str | None, int | None]:
+    """(when: an ISO time in UTC, None for now; minutes to wait at most, None for until the work is done)."""
+    at = None
+    if form.get("when", ["now"])[0] == "at":
+        raw = form.get("at", [""])[0].strip()
+        try:
+            d = datetime.fromisoformat(raw).replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise ValueError("Give the time of the restart (UTC).") from None
+        nowt = datetime.now(timezone.utc)
+        if d > nowt + rp.MAX_AHEAD:
+            raise ValueError(f"Plan the restart within {rp.MAX_AHEAD.days} days.")
+        if d > nowt:
+            at = d.isoformat(timespec="seconds")
+    w = form.get("wait", [str(rp.DEFAULT_WAIT)])[0]
+    if w == "done":
+        return at, None
+    if not w.isdigit() or int(w) not in rp.WAITS:
+        raise ValueError("Pick how long to wait for the work in progress.")
+    return at, int(w)
 
 
 def _when(v) -> str:

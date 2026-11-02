@@ -41,6 +41,8 @@ import urllib.parse
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
+from . import restartplan
+
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 DEFAULT_HOSTS = {"api.github.com", "github.com", "gitlab.com", "dev.azure.com", "*.visualstudio.com"}
 HEARTBEAT = 30              # seconds between heartbeats of a running run
@@ -526,6 +528,13 @@ class Worker:
         finally:
             conn.close()
         self.metrics.poll.set(_time.time())
+        hold = restartplan.holding()        # a planned restart is due: the queued runs wait for after it
+        if hold != getattr(self, "_hold", None):
+            self._hold = hold
+            if hold:
+                self.log(hold)
+        if hold:
+            return False
         run = self.claim()
         if not run:
             return False

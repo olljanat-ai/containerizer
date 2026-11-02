@@ -45,6 +45,8 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import restartplan
+
 REASONS = ("uncertain", "second-opinion")          # why a component review is queued
 REASON_TEXT = {"uncertain": "Uncertain", "second-opinion": "Second opinion"}
 STATUSES = ("queued", "running", "answered", "failed", "skipped")
@@ -607,9 +609,11 @@ def load_per_cpu() -> float:
         return 0.0
 
 
-def gate(settings: dict, now: datetime, scans_running: int, load: float) -> tuple[bool, str]:
-    """(may start a job now, why not)."""
+def gate(settings: dict, now: datetime, scans_running: int, load: float, hold: str | None = None) -> tuple[bool, str]:
+    """(may start a job now, why not). `hold`: why a planned restart of the appliance holds new work."""
     s = {**DEFAULTS, **(settings or {})}
+    if hold:
+        return False, hold
     if s["Paused"]:
         return False, "paused"
     if not window_open(int(s["WindowDays"] or 0), s["WindowStart"], s["WindowEnd"], now):
@@ -1094,7 +1098,8 @@ class Runner:
             with self.lock:
                 busy = len(self.active)
             # "only when idle" is checked before the first request: the runner's own requests load the machine
-            ok, why = gate(settings, utcnow(), scans_running(conn), self.load() if not busy else 0.0)
+            ok, why = gate(settings, utcnow(), scans_running(conn), self.load() if not busy else 0.0,
+                            restartplan.holding())
             self.metrics.open.set(1 if ok else 0)
             if why != self.status:
                 self.log(why or "open: taking jobs")
