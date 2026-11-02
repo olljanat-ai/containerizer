@@ -1,0 +1,8 @@
+" containerizer appliance: vim settings for root (the only user). Here rather than /root/.vimrc: /root is on
+" the persistent partition and Elemental copies what the OS image has there over it at every boot, so a
+" ~/.vimrc of your own wins over this file and is kept.
+" Without a ~/.vimrc, vim loads defaults.vim after this file and turns the mouse back on: load it first.
+source $VIMRUNTIME/defaults.vim
+let g:skip_defaults_vim = 1
+set mouse-=a
+set paste
