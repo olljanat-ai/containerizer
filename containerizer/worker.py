@@ -157,8 +157,12 @@ def _parse_time(s: str) -> datetime | None:
 class SqlRepoStore:
     """org.run_org's view of the repository list in cz.OrgRepository (see OrgOptions.state)."""
 
-    def __init__(self, conn, scan_id: int, run_id: int):
+    # AdminNote of a repository inserted disabled because its scan's new repositories start disabled
+    NEW_OFF_NOTE = "new repository: disabled by default (scan setting)"
+
+    def __init__(self, conn, scan_id: int, run_id: int, new_enabled: bool = True):
         self.conn, self.scan_id, self.run_id = conn, scan_id, run_id
+        self.new_enabled = new_enabled
         self.new: list[str] = []
         self.listed = 0
         self.projects = 0
@@ -218,11 +222,14 @@ class SqlRepoStore:
                     seen.add(row["RepositoryId"])
                     admin[r.key] = row["AdminState"]
                 else:
+                    state = None if self.new_enabled else "disabled"
                     c.execute("INSERT cz.OrgRepository (ScanId, ProjectName, Name, ExternalId, CloneUrl, WebUrl, RepositoryUrl, "
-                              "DefaultBranch, AppName, LastActivityAt, FirstRunId) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                              (self.scan_id, _cut(r.project, 200), _cut(r.name, 200), *vals, self.run_id))
+                              "DefaultBranch, AppName, LastActivityAt, FirstRunId, AdminState, AdminNote) "
+                              "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                              (self.scan_id, _cut(r.project, 200), _cut(r.name, 200), *vals, self.run_id, state,
+                               state and self.NEW_OFF_NOTE))
                     self.new.append(r.key)
-                    admin[r.key] = None
+                    admin[r.key] = state
             gone = [r["RepositoryId"] for r in rows if r["RepositoryId"] not in seen]
             for i in range(0, len(gone), 500):
                 part = gone[i:i + 500]
@@ -698,7 +705,7 @@ class Worker:
         beat.start()
         status, message = "failed", ""
         tag = default_tag(utcnow())
-        store = SqlRepoStore(conn, scan["ScanId"], run_id)
+        store = SqlRepoStore(conn, scan["ScanId"], run_id, bool(scan.get("NewReposEnabled", True)))
         hooks = RunHooks(self, conn, run_id, name, store)
         discovery = run.get("Kind") == "discovery"
         self.log(f"{name}: {'discovery' if discovery else 'run'} #{run_id} started ({run['TriggeredBy']}"

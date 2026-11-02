@@ -590,6 +590,11 @@ IF COL_LENGTH(N'[${schema}].OrgScan', N'LlmMode') IS NULL
 ALTER TABLE [${schema}].OrgScan ADD LlmMode nvarchar(10) NOT NULL CONSTRAINT DF_OrgScan_LlmMode DEFAULT N'inline'
     CONSTRAINT CK_OrgScan_LlmMode CHECK (LlmMode IN (N'inline', N'queued'));
 GO
+-- 26: whether repositories the scan finds for the first time start enabled (1: automatic, the scan decides) or
+-- disabled (0: inserted with AdminState 'disabled' until an administrator enables them)
+IF COL_LENGTH(N'[${schema}].OrgScan', N'NewReposEnabled') IS NULL
+ALTER TABLE [${schema}].OrgScan ADD NewReposEnabled bit NOT NULL CONSTRAINT DF_OrgScan_NewReposEnabled DEFAULT 1;
+GO
 
 -- One row per run of an organization scan: queued on schedule or with "Run now", claimed by a worker.
 IF OBJECT_ID(N'[${schema}].OrgScanRun', N'U') IS NULL
@@ -875,21 +880,21 @@ BEGIN
            CASE WHEN d.ScanId IS NULL THEN N'insert' WHEN i.ScanId IS NULL THEN N'delete' ELSE N'update' END,
            CASE WHEN d.ScanId IS NOT NULL THEN (SELECT d.Name, d.Provider, d.Organization, d.ApiUrl, d.TokenEnv, d.Registry,
                 d.OutputRepo, d.OutputBranch, d.OutputTokenEnv, d.ImagePullSecret, d.IncludeRegex, d.ExcludeRegex, d.SkipForks,
-                d.StaleDays, d.Verify, d.Gate, d.PushImages, d.UseAi, d.LlmHeavy, d.LlmMode, d.ScheduleDays, d.ScheduleMinute, d.Enabled
+                d.StaleDays, d.Verify, d.Gate, d.PushImages, d.UseAi, d.LlmHeavy, d.LlmMode, d.ScheduleDays, d.ScheduleMinute, d.Enabled, d.NewReposEnabled
                 FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
            CASE WHEN i.ScanId IS NOT NULL THEN (SELECT i.Name, i.Provider, i.Organization, i.ApiUrl, i.TokenEnv, i.Registry,
                 i.OutputRepo, i.OutputBranch, i.OutputTokenEnv, i.ImagePullSecret, i.IncludeRegex, i.ExcludeRegex, i.SkipForks,
-                i.StaleDays, i.Verify, i.Gate, i.PushImages, i.UseAi, i.LlmHeavy, i.LlmMode, i.ScheduleDays, i.ScheduleMinute, i.Enabled
+                i.StaleDays, i.Verify, i.Gate, i.PushImages, i.UseAi, i.LlmHeavy, i.LlmMode, i.ScheduleDays, i.ScheduleMinute, i.Enabled, i.NewReposEnabled
                 FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
     FROM inserted i FULL OUTER JOIN deleted d ON d.ScanId = i.ScanId
     CROSS JOIN [${schema}].fnAuditWho() w
     WHERE d.ScanId IS NULL OR i.ScanId IS NULL
        OR EXISTS (SELECT i.Name, i.Provider, i.Organization, i.ApiUrl, i.TokenEnv, i.Registry, i.OutputRepo, i.OutputBranch,
                          i.OutputTokenEnv, i.ImagePullSecret, i.IncludeRegex, i.ExcludeRegex, i.SkipForks, i.StaleDays,
-                         i.Verify, i.Gate, i.PushImages, i.UseAi, i.LlmHeavy, i.LlmMode, i.ScheduleDays, i.ScheduleMinute, i.Enabled
+                         i.Verify, i.Gate, i.PushImages, i.UseAi, i.LlmHeavy, i.LlmMode, i.ScheduleDays, i.ScheduleMinute, i.Enabled, i.NewReposEnabled
                   EXCEPT SELECT d.Name, d.Provider, d.Organization, d.ApiUrl, d.TokenEnv, d.Registry, d.OutputRepo, d.OutputBranch,
                          d.OutputTokenEnv, d.ImagePullSecret, d.IncludeRegex, d.ExcludeRegex, d.SkipForks, d.StaleDays,
-                         d.Verify, d.Gate, d.PushImages, d.UseAi, d.LlmHeavy, d.LlmMode, d.ScheduleDays, d.ScheduleMinute, d.Enabled);
+                         d.Verify, d.Gate, d.PushImages, d.UseAi, d.LlmHeavy, d.LlmMode, d.ScheduleDays, d.ScheduleMinute, d.Enabled, d.NewReposEnabled);
 END;
 GO
 
@@ -2012,4 +2017,7 @@ GRANT UPDATE ON [${schema}].ComponentLink (ToApplicationId, ToComponent, Method,
                                            DecidedAt, CommittedAt) TO [${schema}_admin];
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 25) INSERT [${schema}].SchemaVersion (Version) VALUES (25);
+GO
+-- 26: new repositories enabled or disabled by default (OrgScan.NewReposEnabled)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 26) INSERT [${schema}].SchemaVersion (Version) VALUES (26);
 GO

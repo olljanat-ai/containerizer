@@ -46,12 +46,15 @@ SECRET_RE = re.compile(r"[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?")
 ORG_RE = re.compile(r"[\w .\-/]{1,200}")
 TIME_RE = re.compile(r"([01]\d|2[0-3]):([0-5]\d)")
 SCAN_COLS = ("Name", "Provider", "Organization", "ApiUrl", "Registry", "OutputRepo", "OutputBranch", "ImagePullSecret", "IncludeRegex", "ExcludeRegex", "SkipForks", "StaleDays", "Verify",
-             "Gate", "PushImages", "UseAi", "LlmMode", "LlmHeavy", "ScheduleDays", "ScheduleMinute", "Enabled")
+             "Gate", "PushImages", "UseAi", "LlmMode", "LlmHeavy", "ScheduleDays", "ScheduleMinute", "Enabled",
+             "NewReposEnabled")
 FLAGS = ("SkipForks", "Verify", "Gate", "PushImages", "UseAi", "LlmHeavy", "Enabled")
 LLM_MODES = {"inline": "Inline: ask during the scan",
              "queued": "Queued: later, in the LLM queue (rules only during the scan)"}
 NEW_DAYS = 7
 PAUSED = " <span class='st st-off'>Paused</span>"
+# header checkbox of a bulk list (app.js): checks or clears every row of the list
+SELECT_ALL = "<input type='checkbox' data-select-all='{name}' aria-label='Select all {what}' title='Select all'>"
 NEW_CHIP = " <span class='st st-run'>New</span>"
 
 
@@ -281,6 +284,10 @@ def _scan_form(adm, s, scan: dict, ident, repos: list[str] | None = None) -> str
     days = "".join(f"<label class='check day'><input type='checkbox' name='day' value='{i}'"
                    f"{' checked' if int(v['ScheduleDays'] or 0) & (1 << i) else ''}> {d}</label>" for i, d in enumerate(DAYS))
     minute = int(v["ScheduleMinute"] if v["ScheduleMinute"] != "" else 120)
+    new_on = v.get("NewReposEnabled", True) not in (False, 0, "0")
+    new_opts = "".join(f"<option value='{k}'{' selected' if (k == '1') == new_on else ''}>{t}</option>"
+                       for k, t in (("1", "Enabled by default: the scan decides (automatic)"),
+                                    ("0", "Disabled by default: an administrator enables them")))
     action = f"/admin/scans/{ident}" if ident else "/admin/scans/new"
     return f"""<form method='post' action='{action}' class='edit'>{adm._csrf(s)}
 <label for='Name'>Name</label><input id='Name' name='Name' required maxlength='200' value='{e(str(v['Name']))}'>
@@ -294,6 +301,10 @@ def _scan_form(adm, s, scan: dict, ident, repos: list[str] | None = None) -> str
 {inp('ExcludeRegex', 'Leave out repositories matching', 'regular expression on project/repository', ph='(^|/)(sandbox|playground)')}
 {chk('SkipForks', 'Skip forks')}
 {inp('StaleDays', 'Skip repositories not updated for', 'days; 0 keeps all', maxlen=4, typ='number')}
+<label for='NewReposEnabled'>New repositories</label><select id='NewReposEnabled' name='NewReposEnabled'>{new_opts}</select>
+<p class='muted small'>Disabled: every repository the scan finds from now on (the first discovery too) starts disabled, and
+the full scan leaves it out until you enable it under <a href='/admin/repositories'>Repositories</a>. Repositories
+already found keep their setting.</p>
 <h3>Results</h3>
 {registry}
 {chk('PushImages', 'Push images')}
@@ -327,7 +338,8 @@ def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
     from .worker import check_scan, schedule_text
     if ident is None:
         scan = {"Provider": "github", "OutputBranch": "main", "Registry": _local(adm) or "", "SkipForks": True, "StaleDays": 183, "Verify": True,
-                "Gate": True, "PushImages": True, "UseAi": False, "LlmMode": "inline", "LlmHeavy": False, "ScheduleDays": 32, "ScheduleMinute": 120, "Enabled": True}
+                "Gate": True, "PushImages": True, "UseAi": False, "LlmMode": "inline", "LlmHeavy": False, "ScheduleDays": 32, "ScheduleMinute": 120, "Enabled": True,
+                "NewReposEnabled": True}
         return Response(200, adm._shell(s, a, "New organization scan", "scans", _scan_form(adm, s, scan, None, _output_repos(conn)), flash))
     cur = conn.cursor(as_dict=True)
     cur.execute("SELECT * FROM cz.OrgScan WHERE ScanId = %s", (ident,))
@@ -443,6 +455,7 @@ def validate_scan(form: dict, local_registry: str | None = None) -> tuple[dict, 
     v["StaleDays"] = int(sd)
     for k in FLAGS:
         v[k] = form.get(k, [""])[0] == "1"
+    v["NewReposEnabled"] = form.get("NewReposEnabled", ["1"])[0] != "0"
     if v["LlmHeavy"] and not v["UseAi"]:
         errors.append("LLM-heavy mode needs \"Ask the LLM\" too")
     v["LlmMode"] = form.get("LlmMode", ["inline"])[0] or "inline"
@@ -626,7 +639,7 @@ def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
             f"list with the latest commits without a full scan.</p>{search}"
             f"<nav class='chips'>{chips} {sort_link}</nav>"
             f"<form method='post' action='/admin/repositories/bulk'>{adm._csrf(s)}{actions}"
-            f"<table><thead><tr><th></th><th>Repository</th><th>Latest commit</th><th>State</th><th>Reason</th>"
+            f"<table><thead><tr><th>{SELECT_ALL.format(name='repo', what='repositories')}</th><th>Repository</th><th>Latest commit</th><th>State</th><th>Reason</th>"
             f"<th>Latest result</th></tr></thead>"
             f"<tbody>{''.join(rows) or '<tr><td colspan=6 class=muted>Nothing here.</td></tr>'}</tbody></table></form>"
             + ("<p class='muted small'>Showing the first 2000.</p>" if len(repos) == 2000 else ""))
@@ -863,7 +876,7 @@ def list_projects(adm, conn, s, a, q: dict, flash: str) -> Response:
             f"<b>Discover</b> on the scan's page lists them with their latest commits without a full scan. "
             f"<a href='/admin/repositories'>Repositories</a></p>{search}<nav class='chips'>{chips}</nav>"
             f"<form method='post' action='/admin/repositories/projects/bulk'>{adm._csrf(s)}{actions}"
-            f"<table><thead><tr><th></th><th>Project</th><th class='num'>Repositories</th><th>Latest commit</th>"
+            f"<table><thead><tr><th>{SELECT_ALL.format(name='project', what='projects')}</th><th>Project</th><th class='num'>Repositories</th><th>Latest commit</th>"
             f"<th>State</th><th>Reason</th></tr></thead>"
             f"<tbody>{''.join(rows) or '<tr><td colspan=6 class=muted>No projects. Run Discover on an organization scan.</td></tr>'}"
             f"</tbody></table></form>" + ("<p class='muted small'>Showing the first 2000.</p>" if len(projects) == 2000 else ""))
