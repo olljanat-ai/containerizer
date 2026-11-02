@@ -6,6 +6,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+### Appliance
+- Grafana's k3s and Flux dashboards were partly empty since 0.3.11: kube-state-metrics was pulled from registry.k8s.io,
+  which is not on the egress allow-list (it redirects to regional hosts the list cannot name), so the pod never
+  started. It now comes from Rancher's mirror on Docker Hub (v2.17.0, pinned by digest), like k3s's own images; a test
+  checks that every monitoring image is on an allowed registry.
+
 ## 0.4.0 (2026-11-02)
 
 0.3.13 was tagged but not released (signing failed at Sigstore's transparency log, a 502); its changes are listed

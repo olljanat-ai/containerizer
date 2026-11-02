@@ -641,7 +641,7 @@ def test_k3s_and_flux_metrics_and_dashboards():
     ns = by[("Namespace", "cz-monitoring")]
     assert ns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "restricted"
     image = by[("Deployment", "kube-state-metrics")]["spec"]["template"]["spec"]["containers"][0]["image"]
-    assert re.fullmatch(r"registry\.k8s\.io/kube-state-metrics/kube-state-metrics:v[\d.]+@sha256:[0-9a-f]{64}", image)
+    assert re.fullmatch(r"docker\.io/rancher/mirrored-kube-state-metrics-kube-state-metrics:v[\d.]+@sha256:[0-9a-f]{64}", image)
     for role in ("cz-prometheus", "cz-kube-state-metrics"):
         verbs = {v for r in by[("ClusterRole", role)]["rules"] for v in r["verbs"]}
         assert verbs <= {"get", "list", "watch"}, role                 # read-only
@@ -704,3 +704,17 @@ def test_scratch_space_is_never_the_read_only_code(monkeypatch, tmp_path):
     assert paths.work_dir({"XDG_CACHE_HOME": str(tmp_path)}) == tmp_path / "containerizer" / "work"
     monkeypatch.setattr(paths.os, "access", lambda p, mode: True)         # a checkout
     assert paths.work_dir({}) == Path(paths.__file__).resolve().parent.parent / ".work"
+
+
+def test_sandbox_monitoring_images_come_from_allowed_registries():
+    """Every image of the k3s monitoring manifest is pulled from a registry on the egress allow-list (registry.k8s.io
+    is not: it redirects to regional hosts), pinned by digest."""
+    import yaml
+    allowed = {r["host"] for r in json.loads((APPLIANCE / "rootfs/usr/lib/containerizer/egress-system.json").read_text())["rules"]
+               if r.get("host")}
+    text = (APPLIANCE / "rootfs/var/lib/rancher/k3s/server/manifests/containerizer-monitoring.yaml").read_text()
+    images = re.findall(r"^\s*image:\s*([a-z0-9.-]+\.[a-z]+/\S+)", text, re.M)
+    assert images
+    for img in images:
+        host = img.split("/")[0]
+        assert {"docker.io": "registry-1.docker.io"}.get(host, host) in allowed and "@sha256:" in img, img
