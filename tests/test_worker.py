@@ -757,6 +757,23 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         apps, _ = visible()
         assert set(apps) == {"api", "old-app"}
 
+        # applications per folder: set on the repository's page, audited, used by the next scan of it
+        s, _, body = b.follow(f"/admin/repositories/{api_id}", {"csrf": csrf, "Setting": "auto", "Note": "",
+                                                                "SplitMode": "split", "SplitPath": "../etc/*"})
+        assert "Folder pattern:" in body
+        s, _, body = b.follow(f"/admin/repositories/{api_id}", {"csrf": csrf, "Setting": "auto", "Note": "",
+                                                                "SplitMode": "split", "SplitPath": "services/*"})
+        assert "Saved." in body and "one per folder matching <code>services/*</code>" in body
+        assert "value='split' checked" in body
+        assert "<ins>services/*</ins>" in b.follow("/admin/audit?table=OrgRepository")[2]
+        fetched.clear()
+        b.follow("/admin/repositories/bulk", {"csrf": csrf, "repo": [str(api_id)], "action": "scan"})
+        assert w.tick() is True
+        body = b.follow(f"/admin/repositories/{api_id}")[2]
+        assert "no folder matches &#x27;services/*&#x27;" in body or "no folder matches 'services/*'" in body, body
+        b.follow(f"/admin/repositories/{api_id}", {"csrf": csrf, "Setting": "auto", "Note": "", "SplitMode": "whole"})
+        assert "value='whole' checked" in b.follow(f"/admin/repositories/{api_id}")[2]
+
         # new repositories disabled by default: the next discovery adds a new one disabled, the known ones keep theirs
         body = b.follow(f"/admin/scans/{scan_id}")[2]
         assert "<option value='1' selected>Enabled by default" in body

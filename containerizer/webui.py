@@ -1083,7 +1083,7 @@ form.inline{display:inline}button{font:inherit;border:1px solid var(--fg);backgr
 padding:6px 14px;cursor:pointer}button.link{border:0;background:none;color:var(--link);padding:0;text-decoration:underline}
 form.edit{display:grid;gap:6px;max-width:640px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px}
 form.edit label{font-weight:600;font-size:14px;margin-top:6px}form.edit label.check{font-weight:400}
-input:not([type=checkbox]),select,textarea{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;
+input:not([type=checkbox]):not([type=radio]),select,textarea{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;
 background:var(--bg);color:var(--fg);width:100%}.formrow{display:flex;gap:10px;align-items:center;margin:12px 0;flex-wrap:wrap}
 .formrow select{width:auto;min-width:260px}form.danger button{background:#b42727;border-color:#b42727;color:#fff;margin-top:12px}
 ul.changes{margin:2px 0;padding-left:18px}del{color:var(--muted)}ins{text-decoration:none;font-weight:600}.nowrap{white-space:nowrap}

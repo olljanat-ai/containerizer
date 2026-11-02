@@ -163,6 +163,7 @@ class SqlRepoStore:
     def __init__(self, conn, scan_id: int, run_id: int, new_enabled: bool = True):
         self.conn, self.scan_id, self.run_id = conn, scan_id, run_id
         self.new_enabled = new_enabled
+        self.splits: dict[str, str] = {}        # key -> OrgRepository.SplitPath (one application per folder)
         self.new: list[str] = []
         self.listed = 0
         self.projects = 0
@@ -201,8 +202,8 @@ class SqlRepoStore:
             self.conn.rollback()
             raise
         cur = self.conn.cursor(as_dict=True)
-        cur.execute("SELECT RepositoryId, ProjectName, Name, ExternalId, AdminState FROM cz.OrgRepository WHERE ScanId = %s",
-                    (self.scan_id,))
+        cur.execute("SELECT RepositoryId, ProjectName, Name, ExternalId, AdminState, SplitPath FROM cz.OrgRepository "
+                    "WHERE ScanId = %s", (self.scan_id,))
         rows = cur.fetchall()
         by_name = {(r["ProjectName"], r["Name"]): r for r in rows}
         by_id = {r["ExternalId"]: r for r in rows if r["ExternalId"]}
@@ -221,6 +222,8 @@ class SqlRepoStore:
                               (_cut(r.project, 200), _cut(r.name, 200), *vals, row["RepositoryId"]))
                     seen.add(row["RepositoryId"])
                     admin[r.key] = row["AdminState"]
+                    if row["SplitPath"]:
+                        self.splits[r.key] = row["SplitPath"]
                 else:
                     state = None if self.new_enabled else "disabled"
                     c.execute("INSERT cz.OrgRepository (ScanId, ProjectName, Name, ExternalId, CloneUrl, WebUrl, RepositoryUrl, "
@@ -274,7 +277,9 @@ class SqlRepoStore:
         detail = json.dumps({"app": res.app, "path": res.path, "components": res.components, "excluded": res.excluded,
                              "overridden": res.overridden, "lab_services": getattr(res, "lab_services", None) or {},
                              "migration": getattr(res, "migration", None) or {},
-                             "llm_usage": getattr(res, "llm_usage", None) or {}},
+                             "llm_usage": getattr(res, "llm_usage", None) or {},
+                             "apps": getattr(res, "apps", None) or [],
+                             "split_hint": getattr(res, "split_hint", None) or {}},
                             default=str)
         sets = ("LastStatus = %s, LastReason = %s, LastCommit = COALESCE(%s, LastCommit), "
                 "LastCommitAt = COALESCE(%s, LastCommitAt), LastRating = COALESCE(%s, LastRating), "

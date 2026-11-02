@@ -722,3 +722,82 @@ def test_discover_org_lists_without_cloning(monkeypatch, tmp_path):
     o.hooks = Stop()
     st.seen.clear()
     assert orgmod.discover_org(o, log=lambda m: None) == [] and st.seen == []
+
+
+def test_split_helpers(tmp_path):
+    for d in ("scenarios/billing/src", "scenarios/claims", "scenarios/crm", "docs", ".git/x"):
+        (tmp_path / d).mkdir(parents=True)
+    for d in ("scenarios/billing", "scenarios/claims", "scenarios/crm"):
+        (tmp_path / d / "App.sln").write_text("")
+    (tmp_path / "scenarios/billing/src/Api.csproj").write_text("")
+    assert orgmod.suggest_split(tmp_path) == {"pattern": "scenarios/*", "count": 3}
+    assert orgmod.split_folders(tmp_path, "scenarios/*") == ["scenarios/billing", "scenarios/claims", "scenarios/crm"]
+    assert orgmod.split_folders(tmp_path, "*") == ["docs", "scenarios"]                 # hidden folders never
+    for bad in ("../x", "a/../b", "/etc/*", "", "x" * 201, "a;b"):
+        assert not orgmod.valid_split(bad) and orgmod.split_folders(tmp_path, bad) == []
+    # one application with several projects: one root, no hint
+    single = tmp_path / "single"
+    for d in ("src/Api", "src/Web", "src/Worker"):
+        (single / d).mkdir(parents=True)
+        (single / d / "x.csproj").write_text("")
+    (single / "App.sln").write_text("")
+    assert orgmod.suggest_split(single) == {}
+    assert orgmod.folder_segments(["a/x", "b/x", "c/y"]) == {"a/x": "a--x", "b/x": "b--x", "c/y": "y"}
+    assert orgmod.split_app_name("challenge", "account-statements") == "challenge-account-statements"
+    assert len(orgmod.split_app_name("a" * 60, "b" * 30)) <= 63
+
+
+@pytest.mark.parametrize("parallel", [1, 2])
+def test_run_org_split_repository(tmp_path, monkeypatch, parallel):
+    """A mono-repo split into applications: each folder is assessed and deployed as its own application (its own
+    output folder <repo>@<folder>, namespace <app>-<folder>, results), the repository's result sums them up, and
+    going back to the whole repository removes the per-folder folders."""
+    mono = tmp_path / "src" / "mono"
+    for n in ("orders", "billing"):
+        shutil.copytree(DEMO, mono / "apps" / n)
+    (mono / "apps" / "handbook").mkdir(parents=True)
+    (mono / "apps" / "handbook" / "README.md").write_text("# no code\n")
+    _commit(mono)
+    repos = [SourceRepo("github", "acme", NO_PROJECT, "mono", "https://github.com/acme/mono.git", default_branch="main",
+                        id="1"), SourceRepo("github", "acme", NO_PROJECT, "solo", "https://github.com/acme/solo.git",
+                                            default_branch="main", id="2")]
+    solo = tmp_path / "src" / "solo"
+    shutil.copytree(DEMO, solo)
+    _commit(solo)
+    sources = {"mono": mono, "solo": solo}
+    monkeypatch.setattr(orgmod, "provider", lambda *a, **k: _FakeProvider(repos))
+
+    def fake_update(url, dest, branch="", header=""):
+        name = url.rsplit("/", 1)[1].removesuffix(".git")
+        if dest.exists():
+            return "pulled"
+        shutil.copytree(sources[name], dest)
+        return "cloned"
+    monkeypatch.setattr(orgmod, "update_clone", fake_update)
+    out = tmp_path / "out"
+    o = OrgOptions(provider="github", org="acme", registry="reg.example/sb", output_dir=str(out), token="t",
+                   verify=False, gate=False, push_images=False, tag="1.0.0", work_dir=str(tmp_path / "work"),
+                   cache_dir=str(tmp_path / "cache"), splits={"_/mono": "apps/*"}, parallel=parallel,
+                   allowed_hosts={"github.com"}, now=datetime(2026, 10, 31, tzinfo=timezone.utc))
+    res = {r.repo: r for r in run_org(o, log=lambda *a, **k: None)}
+    mono_res = res["mono"]
+    assert mono_res.status == "deployed" and mono_res.rating == "A", mono_res
+    apps = {x["folder"]: x for x in mono_res.apps}
+    assert set(apps) == {"apps/billing", "apps/handbook", "apps/orders"}
+    assert apps["apps/orders"]["status"] == "deployed" and apps["apps/orders"]["path"] == "acme/_/mono@orders"
+    assert apps["apps/handbook"]["status"].startswith("skipped-")
+    assert "3 applications (apps/*): 2 deployed" in mono_res.reason
+    assert {c["application"] for c in mono_res.components} == {"apps/billing", "apps/orders"}
+    for n in ("orders", "billing"):
+        meta = json.loads((out / "acme" / "_" / f"mono@{n}" / "containerizer.json").read_text())
+        assert meta["app"] == f"mono-{n}"
+    assert not (out / "acme" / "_" / "mono").exists() and not (out / "acme" / "_" / "mono@handbook").exists()
+    assert "../../../acme/_/mono@orders/gitops/argocd" in (out / "sandbox" / "argocd" / "apps" / "kustomization.yaml").read_text()
+    assert res["solo"].status == "deployed" and not res["solo"].apps and (out / "acme" / "_" / "solo").is_dir()
+    # back to one application: the per-folder folders go, the hint says what it looks like
+    o.splits = None
+    res = {r.repo: r for r in run_org(o, log=lambda *a, **k: None)}
+    assert res["mono"].status in ("deployed", "no-a-components") and not res["mono"].apps
+    assert not list((out / "acme" / "_").glob("mono@*")) and (out / "acme" / "_" / "mono").is_dir() == \
+        (res["mono"].status == "deployed")
+    assert res["solo"].split_hint == {}
