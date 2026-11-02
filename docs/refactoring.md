@@ -135,7 +135,7 @@ yourself.
 its configuration findings that name a file, and, for the server components that keep their own data, the
 move of that data to SQL Server (the same guidance as **Make it stateless**). It runs on request only:
 **Make it A** in the Refactoring box of the results page (operators, administrators and the application's
-product owners, with the queue's estimate), or **Make all B apps A** for administrators (below). A scan
+product owners, with the queue's estimate), or **Make it A: every B application** for administrators (below). A scan
 never orders one by itself.
 
 ![The Refactoring box: an order with its tokens and time, Make it A with its estimate, and a stateless patch that was already made offered instead of a new order](images/results-make-it-a.png#only-light){ .cz-shot }
@@ -170,11 +170,14 @@ does not build, does not start, ...).
 it sends, a typical file for each stateful component, at the speed the queue learned); repair rounds and a
 second pass, when needed, take more, up to the limit of 16 calls.
 
-**Make all B apps A** (Admin → Refactoring, administrators): a confirmation page lists every B-rated
-application with what changes, its estimate, and whether it will wait for approval under the
-LLM queue's approval policy (Admin → LLM queue), with the total; **Queue** places one order per
-application (an application that already has the same order waiting is left alone). Nothing is queued by
-opening the page.
+**Make it A: every B application** (Admin → Refactoring, administrators) lists every B-rated application with what
+changes and its order's estimate (tokens and LLM time), **smallest first**, with the running total of the LLM time
+up to each row, so the LLM's time goes to the cheapest wins first; a local LLM gets the most applications to A for
+its hours. Applications with an order in the queue already say so and link to it; the ones that cannot be ordered
+(no commit recorded, source not kept on this machine) are at the bottom with the reason. **Orders under** a number
+of tokens each (20,000 to begin with) marks the ones that fit, and **Queue … approved** places one order for each of
+them, approved by you at once: they do not wait for approval, whatever the LLM queue's approval policy says, and
+run by the queue's settings (hours, idle, parallel requests). Nothing is queued by opening the page.
 
 ## The sandbox variant
 

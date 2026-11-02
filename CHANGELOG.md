@@ -9,6 +9,10 @@ qcow2 and VHDX images as release assets.
 ## Unreleased
 
 ### Web UI
+- Admin → Refactoring → **Make it A: every B application** (was "Make all B apps A"): the orders sorted by their
+  estimated tokens, smallest first, with the running total of LLM time; **Queue every order under N tokens** places
+  those, approved at once (they do not wait for approval). Applications with an order in the queue already are
+  shown and not ordered again.
 - Admin → LLM queue, approval: link reviews and egress reviews can wait for approval too (they always started by
   themselves, because the policy only knew component reviews and refactoring orders). Settings still at the old
   default (every job waits) now cover them as well.

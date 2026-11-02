@@ -685,8 +685,17 @@ def test_remove_needs_the_csrf_token_and_the_application(adm):
     assert _loc(_post(adm, op, "/admin/refactoring/42/remove")).endswith("notice=remove-not-active")
 
 
-def test_make_all_b_apps_a(adm, stateful):
+def test_make_it_a_for_every_b_app_smallest_first(adm, stateful, monkeypatch):
+    """Admin -> Refactoring -> Make it A: every B application: the orders by their estimated tokens, smallest first,
+    with the running total; queueing the ones under a number of tokens queues them approved."""
+    from containerizer import admin_refactor
+    big = {**APP, "ApplicationId": 9, "ApplicationName": "Big"}
     adm.conn.answers = _answers(_doc(stateful))
+    adm.conn.answers[r"FROM cz.vApplicationLatest WHERE Rating = 'B'"] = [
+        big, APP, {**APP, "ApplicationId": 8, "ApplicationName": "Old", "SourceCommit": None}]
+    real = rf.order_chars
+    monkeypatch.setattr(admin_refactor.rf, "order_chars",
+                        lambda pl: 900_000 if pl.get("application_id") == 9 else real(pl))
     op = adm.sessions.create("o@example.com", "O", False, True, True, [])
     assert _get(adm, op, "/admin/refactoring/make-all-a").status == 403          # administrators only
     assert _post(adm, op, "/admin/refactoring/make-all-a").status == 403
@@ -696,19 +705,29 @@ def test_make_all_b_apps_a(adm, stateful):
     r = _get(adm, ad, "/admin/refactoring/make-all-a")
     assert r.status == 200 and not adm.conn.sql("EXEC cz.QueueLlmJob")             # a GET orders nothing
     b = r.body
-    assert "<b>1 order(s)</b>" in b and "tokens" in b and "<b>1</b> will wait for an administrator's approval" in b
-    assert "not ordered: the assessment recorded no commit" in b and "waits for approval" in b
-    assert "Queue 1 \"Make it A\" order(s)" in b and "name='csrf'" in b
+    assert b.index(">Shop<") < b.index(">Big<") < b.index(">Old<")                 # smallest first, unorderable last
+    assert "<b>2 order(s)</b> can be queued" in b and "up to here:" in b
+    assert "not ordered: the assessment recorded no commit" in b
+    assert "Queue 1 order(s) under 20,000 tokens, approved" in b and "name='Limit' value='20000'" in b
+    assert "style=" not in b                                                         # the CSP allows no inline style
+    b = _getq(adm, ad, "/admin/refactoring/make-all-a", "limit=99999999").body
+    assert "Queue 2 order(s) under 99,999,999 tokens, approved" in b
     assert _post(adm, ad, "/admin/refactoring/make-all-a", csrf="wrong").status == 403
     assert not adm.conn.sql("EXEC cz.QueueLlmJob")
-    adm.conn.answers[r"SELECT Status FROM cz.LlmJob WHERE JobId"] = [{"Status": "approval"}]
-    r = _post(adm, ad, "/admin/refactoring/make-all-a")
-    assert _loc(r) == "/admin/refactoring?bulk=queued&q=1&w=1&x=0&n=1"
+    r = _post(adm, ad, "/admin/refactoring/make-all-a", Limit="20000")
+    assert _loc(r) == "/admin/refactoring?bulk=queued&q=1&w=0&x=0&n=2"
     (sql, params), = adm.conn.sql("EXEC cz.QueueLlmJob")
-    assert json.loads(params[-1])["goal"] == "rating-a"
-    b = _getq(adm, ad, "/admin/refactoring", "bulk=queued&q=1&w=1&x=0&n=1").body
-    assert "requested for 1 application(s): 1 wait for an administrator" in b and "1 could not be ordered" in b
+    assert json.loads(params[-1])["goal"] == "rating-a" and json.loads(params[-1])["application_id"] == 7
+    (sql, params), = adm.conn.sql(r"SET Status = N'queued', ApprovedBy")             # approved at once
+    assert params == ("a@example.com", 42)
+    b = _getq(adm, ad, "/admin/refactoring", "bulk=queued&q=1&w=0&x=0&n=2").body
+    assert "queued and approved for 1 application(s)" in b and "2 left out" in b
     assert "evil" not in _getq(adm, ad, "/admin/refactoring", "bulk=queued&q=%3Cevil%3E").body
+    # an application with an order in the queue already is shown, not ordered again
+    adm.conn.answers[r"FROM cz.LlmJob WHERE Kind = N'refactor'\s+AND Status IN"] = [
+        {"ApplicationId": 7, "JobId": 42, "Status": "queued"}]
+    b = _get(adm, ad, "/admin/refactoring/make-all-a").body
+    assert "href='/admin/refactoring/42'>in the queue</a>" in b and "<b>1 order(s)</b> can be queued" in b
 
 
 # --------------------------------------------------------------------------- SQL Server
