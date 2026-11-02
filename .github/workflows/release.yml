@@ -23,6 +23,11 @@ on:
         description: "Release version, e.g. 0.1.0 (empty: build and test only)"
         required: false
         default: ""
+      boot_test:
+        description: "Boot the disk image in QEMU and test it (optional; a tag push skips it)"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -63,7 +68,7 @@ jobs:
           git tag -a "v$v" -m "containerizer $v" "$GITHUB_SHA"
           git push origin "refs/tags/v$v"
           # a tag pushed with this token starts no workflow; a dispatch does
-          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "v$v"
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "v$v" -f boot_test=${{ inputs.boot_test }}
           echo "Tagged v$v at $GITHUB_SHA; the release runs on the tag: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/release.yml" >> "$GITHUB_STEP_SUMMARY"
 
   appliance:
@@ -137,25 +142,28 @@ jobs:
           # whole disk (the persistent partition takes what the OS snapshots leave)
           run_elemental build-disk --expandable --local --system containerizer-appliance:build \
             -n "containerizer-$V" -o /build
-          run_elemental build-disk --expandable --local --system containerizer-appliance:build \
-            --cloud-init /build/test-login.yaml -n test -o /build/test
+          if [ "${{ inputs.boot_test }}" = true ]; then
+            run_elemental build-disk --expandable --local --system containerizer-appliance:build \
+              --cloud-init /build/test-login.yaml -n test -o /build/test
+          fi
           run_elemental build-iso --local --bootloader-in-rootfs --extra-cmdline "console=tty1 console=ttyS0" \
             -n "containerizer-$V" -o /build containerizer-appliance:build
           sudo chown -R "$USER" build
           ls -la build build/test
 
       - name: Boot test
+        if: inputs.boot_test
         run: OUT=$PWD/build/boot appliance/ci/boot-test.sh build/test/test.raw build/ci_key
 
       - name: Boot test logs
-        if: always()
+        if: always() && inputs.boot_test
         uses: actions/upload-artifact@v4
         with:
           name: boot-test-logs
           path: build/boot/*.log
           if-no-files-found: ignore
       - name: Boot test diagnostics
-        if: always()
+        if: always() && inputs.boot_test
         uses: actions/upload-artifact@v4
         with:
           name: boot-test-diagnostics
