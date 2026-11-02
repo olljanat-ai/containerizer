@@ -674,6 +674,7 @@ class Worker:
             output_username=write.username if write else "x-access-token", push_images=bool(scan["PushImages"]),
             image_pull_secret=scan["ImagePullSecret"], include=scan["IncludeRegex"], exclude=scan["ExcludeRegex"],
             skip_forks=bool(scan["SkipForks"]), stale_days=int(scan["StaleDays"]), ai=bool(scan["UseAi"]),
+            parallel=int(scan.get("Parallel") or 1),
             verify=bool(scan["Verify"]), gate=bool(scan["Gate"]), sql=self.sql, work_dir=str(base / "work"),
             llm_heavy=llm_heavy(scan), review_queue=self.review_queue(scan) if llm_queued(scan) else None,
             cache_dir=str(base / "repos"), state=store, hooks=hooks,

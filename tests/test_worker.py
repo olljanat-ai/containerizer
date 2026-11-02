@@ -121,6 +121,11 @@ def test_new_repositories_enabled_or_disabled_by_default():
     assert errors == [] and v["NewReposEnabled"] is True                  # an old form without the field: enabled
     v, errors = admin_scans.validate_scan(_form(NewReposEnabled="0"))
     assert errors == [] and v["NewReposEnabled"] is False
+    assert v["Parallel"] == 1                                              # one at a time unless chosen
+    v, errors = admin_scans.validate_scan(_form(Parallel="4"))
+    assert errors == [] and v["Parallel"] == 4 and "Parallel" in admin_scans.SCAN_COLS
+    for bad in ("0", "9", "x"):
+        assert any("1 to 8" in x for x in admin_scans.validate_scan(_form(Parallel=bad))[1])
     assert "NewReposEnabled" in admin_scans.SCAN_COLS
     assert "data-select-all='repo'" in admin_scans.SELECT_ALL.format(name="repo", what="repositories")
     assert "data-select-all" in webui.JS
@@ -522,6 +527,33 @@ class _AzureProvider(_Provider):
         return self.commits.get(r.key)
 
 
+class _SharedList:
+    """A list the forked processes of a parallel scan can append to (a file)."""
+
+    def __init__(self, path):
+        self.path = path
+        path.write_text("")
+
+    def append(self, x):
+        with open(self.path, "a") as f:
+            f.write(x + "\n")
+
+    def clear(self):
+        self.path.write_text("")
+
+    def items(self) -> list:
+        return self.path.read_text().splitlines()
+
+    def __iter__(self):
+        return iter(self.items())
+
+    def __eq__(self, other):
+        return self.items() == list(other)
+
+    def __repr__(self):
+        return repr(self.items())
+
+
 @needs_sql
 def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
     """Discover lists projects, repositories and latest commits without cloning; an administrator disables
@@ -560,7 +592,7 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
                            "Billing/web": datetime(2026, 9, 1, 12, 0, tzinfo=UTC),
                            "Legacy/old-app": datetime(2019, 5, 4, 3, 2, tzinfo=UTC)})
     monkeypatch.setattr(orgmod, "provider", lambda *a, **k: prov)
-    fetched = []
+    fetched = _SharedList(tmp_path / "fetched.log")    # appended to by the scan's processes (Parallel=2)
 
     def fake_update(url, dest, branch="", header=""):
         proj, n = url.split("/contoso/")[1].split("/_git/")
@@ -609,7 +641,8 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         body = b.follow("/admin/scans")[2]
         csrf = b.csrf(body)
         s, _, body = b.follow("/admin/scans/new", {"csrf": csrf, **_form(Name="Contoso", Provider="azure-devops",
-                                                                         Organization="contoso", Gate="", day=[])})
+                                                                         Organization="contoso", Gate="", day=[],
+                                                                         Parallel="2")})
         scan_id = int(re.search(r"/admin/repositories\?scan=(\d+)", body)[1])
         b.follow("/admin/source-control/read", {"csrf": csrf, "Provider": "azure-devops", "Organization": "contoso",
                                                 "ApiUrl": "", "Token": "ado_readonly_pat_0123456789abcdef"})
@@ -728,7 +761,7 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         body = b.follow(f"/admin/scans/{scan_id}")[2]
         assert "<option value='1' selected>Enabled by default" in body
         s, _, body = b.follow(f"/admin/scans/{scan_id}", {"csrf": csrf, **_form(
-            Name="Contoso", Provider="azure-devops", Organization="contoso", Gate="", day=[], NewReposEnabled="0")})
+            Name="Contoso", Provider="azure-devops", Organization="contoso", Gate="", day=[], NewReposEnabled="0", Parallel="2")})
         assert "Saved." in body and "<option value='0' selected>Disabled by default" in body
         prov.list.append(repo("Billing/new-app", 9))
         b.follow(f"/admin/scans/{scan_id}/discover", {"csrf": csrf})

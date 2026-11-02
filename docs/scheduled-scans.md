@@ -92,8 +92,18 @@ A repository that is skipped or has no A component loses its folder in the outpu
 sandbox stops deploying it. A repository that fails keeps its previous folder and is reported as failed.
 
 A scan runs at most once at a time, and a paused scan does not run at all. If the worker was down at the
-scheduled time, the scan runs once when it is back. **Cancel** stops a running scan after the repository
-it is on. A scan that has run cannot be deleted (its history is kept): pause it.
+scheduled time, the scan runs once when it is back. **Cancel** stops a running scan: no further repository
+is started, its LLM calls stop at once (the connection to the LLM server is closed, so a self-hosted LLM stops
+generating), and the repositories in progress end after the step they are on. A scan that has run cannot be
+deleted (its history is kept): pause it.
+
+**Repositories in parallel** (the scan's settings, 1 to 8, default 1): how many repositories a full scan or
+**Scan now** processes at the same time. The assessment is CPU-bound, so each repository gets its own process
+and the scan uses that many CPU cores. Results are committed to the output repository one at a time, in the
+order the repositories finish. Each one also needs its own memory (about 1 GB, more with **Build and run**)
+and disk space, and with **Ask the LLM** each asks the LLM on its own, so a self-hosted LLM gets up to that
+many requests at once (give llama.cpp that many slots, `--parallel`). Start with the number of CPU cores minus
+one, and lower it if the machine runs short of memory.
 
 ## Automatic skips
 

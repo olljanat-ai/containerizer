@@ -6,6 +6,13 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+### Organization scans
+- **Repositories in parallel** (the scan's settings, 1 to 8, default 1; `containerizer org --parallel N`): a full scan
+  processes that many repositories at the same time, each in its own process, so it uses that many CPU cores
+  (the assessment is CPU-bound Python, so threads would not help). Results are committed one at a time.
+
 ## 0.3.10 (2026-11-02)
 
 ### Appliance

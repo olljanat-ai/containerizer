@@ -595,6 +595,11 @@ GO
 IF COL_LENGTH(N'[${schema}].OrgScan', N'NewReposEnabled') IS NULL
 ALTER TABLE [${schema}].OrgScan ADD NewReposEnabled bit NOT NULL CONSTRAINT DF_OrgScan_NewReposEnabled DEFAULT 1;
 GO
+-- 27: how many repositories a full scan processes at the same time, each in its own process (org.py _run_parallel)
+IF COL_LENGTH(N'[${schema}].OrgScan', N'Parallel') IS NULL
+ALTER TABLE [${schema}].OrgScan ADD Parallel tinyint NOT NULL CONSTRAINT DF_OrgScan_Parallel DEFAULT 1
+    CONSTRAINT CK_OrgScan_Parallel CHECK (Parallel BETWEEN 1 AND 8);
+GO
 
 -- One row per run of an organization scan: queued on schedule or with "Run now", claimed by a worker.
 IF OBJECT_ID(N'[${schema}].OrgScanRun', N'U') IS NULL
@@ -880,21 +885,21 @@ BEGIN
            CASE WHEN d.ScanId IS NULL THEN N'insert' WHEN i.ScanId IS NULL THEN N'delete' ELSE N'update' END,
            CASE WHEN d.ScanId IS NOT NULL THEN (SELECT d.Name, d.Provider, d.Organization, d.ApiUrl, d.TokenEnv, d.Registry,
                 d.OutputRepo, d.OutputBranch, d.OutputTokenEnv, d.ImagePullSecret, d.IncludeRegex, d.ExcludeRegex, d.SkipForks,
-                d.StaleDays, d.Verify, d.Gate, d.PushImages, d.UseAi, d.LlmHeavy, d.LlmMode, d.ScheduleDays, d.ScheduleMinute, d.Enabled, d.NewReposEnabled
+                d.StaleDays, d.Verify, d.Gate, d.PushImages, d.UseAi, d.LlmHeavy, d.LlmMode, d.ScheduleDays, d.ScheduleMinute, d.Enabled, d.NewReposEnabled, d.Parallel
                 FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
            CASE WHEN i.ScanId IS NOT NULL THEN (SELECT i.Name, i.Provider, i.Organization, i.ApiUrl, i.TokenEnv, i.Registry,
                 i.OutputRepo, i.OutputBranch, i.OutputTokenEnv, i.ImagePullSecret, i.IncludeRegex, i.ExcludeRegex, i.SkipForks,
-                i.StaleDays, i.Verify, i.Gate, i.PushImages, i.UseAi, i.LlmHeavy, i.LlmMode, i.ScheduleDays, i.ScheduleMinute, i.Enabled, i.NewReposEnabled
+                i.StaleDays, i.Verify, i.Gate, i.PushImages, i.UseAi, i.LlmHeavy, i.LlmMode, i.ScheduleDays, i.ScheduleMinute, i.Enabled, i.NewReposEnabled, i.Parallel
                 FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
     FROM inserted i FULL OUTER JOIN deleted d ON d.ScanId = i.ScanId
     CROSS JOIN [${schema}].fnAuditWho() w
     WHERE d.ScanId IS NULL OR i.ScanId IS NULL
        OR EXISTS (SELECT i.Name, i.Provider, i.Organization, i.ApiUrl, i.TokenEnv, i.Registry, i.OutputRepo, i.OutputBranch,
                          i.OutputTokenEnv, i.ImagePullSecret, i.IncludeRegex, i.ExcludeRegex, i.SkipForks, i.StaleDays,
-                         i.Verify, i.Gate, i.PushImages, i.UseAi, i.LlmHeavy, i.LlmMode, i.ScheduleDays, i.ScheduleMinute, i.Enabled, i.NewReposEnabled
+                         i.Verify, i.Gate, i.PushImages, i.UseAi, i.LlmHeavy, i.LlmMode, i.ScheduleDays, i.ScheduleMinute, i.Enabled, i.NewReposEnabled, i.Parallel
                   EXCEPT SELECT d.Name, d.Provider, d.Organization, d.ApiUrl, d.TokenEnv, d.Registry, d.OutputRepo, d.OutputBranch,
                          d.OutputTokenEnv, d.ImagePullSecret, d.IncludeRegex, d.ExcludeRegex, d.SkipForks, d.StaleDays,
-                         d.Verify, d.Gate, d.PushImages, d.UseAi, d.LlmHeavy, d.LlmMode, d.ScheduleDays, d.ScheduleMinute, d.Enabled, d.NewReposEnabled);
+                         d.Verify, d.Gate, d.PushImages, d.UseAi, d.LlmHeavy, d.LlmMode, d.ScheduleDays, d.ScheduleMinute, d.Enabled, d.NewReposEnabled, d.Parallel);
 END;
 GO
 
@@ -2020,4 +2025,7 @@ IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 25) INSER
 GO
 -- 26: new repositories enabled or disabled by default (OrgScan.NewReposEnabled)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 26) INSERT [${schema}].SchemaVersion (Version) VALUES (26);
+GO
+-- 27: repositories processed in parallel by a full scan (OrgScan.Parallel)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 27) INSERT [${schema}].SchemaVersion (Version) VALUES (27);
 GO

@@ -592,6 +592,62 @@ def test_run_org_with_cache_state_and_overrides(tmp_path, monkeypatch):
     assert len(out) == 1
 
 
+def test_run_org_in_parallel_processes(tmp_path, monkeypatch):
+    """Several repositories at a time, each in its own process: the same results as one at a time, the output
+    folders in place, the git operations and LLM usage reported back to the run, and a stop request honoured."""
+    sources = {}
+    for name in ("web", "api", "docs", "shop", "off"):
+        d = tmp_path / "src" / name
+        if name == "docs":
+            d.mkdir(parents=True)
+            (d / "README.md").write_text("# docs only\n")
+        else:
+            shutil.copytree(DEMO, d)
+        _commit(d)
+        sources[name] = d
+    repos = [SourceRepo("github", "acme", NO_PROJECT, n, f"https://github.com/acme/{n}.git", default_branch="main",
+                        id=str(i)) for i, n in enumerate(sources)]
+    monkeypatch.setattr(orgmod, "provider", lambda *a, **k: _FakeProvider(repos))
+
+    def fake_update(url, dest, branch="", header=""):
+        name = url.rsplit("/", 1)[1].removesuffix(".git")
+        if dest.exists():
+            return "pulled"
+        shutil.copytree(sources[name], dest)
+        return "cloned"
+    monkeypatch.setattr(orgmod, "update_clone", fake_update)
+    state, hooks = _State({"_/off": "disabled"}), _Hooks()
+    out = tmp_path / "out"
+    o = OrgOptions(provider="github", org="acme", registry="reg.example/sb", output_dir=str(out), token="t",
+                   verify=False, gate=False, push_images=False, tag="1.0.0", work_dir=str(tmp_path / "work"),
+                   cache_dir=str(tmp_path / "cache"), state=state, hooks=hooks, parallel=3,
+                   allowed_hosts={"github.com"}, now=datetime(2026, 10, 31, tzinfo=timezone.utc))
+    logs = []
+    res = {r.repo: r for r in run_org(o, log=logs.append)}
+    assert "acme: 3 repositories at a time" in logs
+    assert {k: v.status for k, v in res.items()} == {"web": "deployed", "api": "deployed", "shop": "deployed",
+                                                    "docs": "skipped-no-code"}
+    assert set(state.recorded) == {"web", "api", "shop", "docs", "off"} and res["web"].seconds > 0
+    for n in ("web", "api", "shop"):
+        assert (out / "acme" / "_" / n / "containerizer.json").is_file()
+    assert not (out / "acme" / "_" / "docs").exists()
+    assert sorted(e[1] for e in hooks.events if e[0] == "done") == ["api", "docs", "shop", "web"]
+    assert sum(e == ("git", "clone", True) for e in hooks.events) == 4        # reported back from the processes
+    assert not (tmp_path / "work" / "parallel").exists() or not any((tmp_path / "work" / "parallel").iterdir())
+    index = json.loads((out / "acme" / "index.json").read_text()) if (out / "acme" / "index.json").exists() else None
+    if index is not None:
+        assert len(index.get("repositories", index.get("results", []))) == 4
+    # the second run updates the folders in place (the staged copy starts from them)
+    (out / "acme" / "_" / "web" / "keep.txt").write_text("x")
+    res = {r.repo: r for r in run_org(o, log=lambda *a, **k: None)}
+    assert res["web"].status == "deployed" and (out / "acme" / "_" / "web" / "containerizer.json").is_file()
+    # a stop request: nothing more starts, the ones running finish
+    o.hooks = _Hooks(stop_after=1)
+    o.parallel = 2
+    done = run_org(o, log=lambda *a, **k: None)
+    assert 1 <= len(done) <= 3 and len(done) < 4
+
+
 def test_disallowed_clone_host_is_an_error(tmp_path, monkeypatch):
     repos = [SourceRepo("github", "acme", NO_PROJECT, "x", "https://evil.example/acme/x.git", default_branch="main")]
     monkeypatch.setattr(orgmod, "provider", lambda *a, **k: _FakeProvider(repos))
