@@ -26,11 +26,20 @@ The redirect URI is `https://<CZ_HOSTNAME>/auth/callback`, where `CZ_HOSTNAME` i
 Allow the identity provider's host on **Admin → Firewall** (or in `egress.json` before the first
 sign-in, e.g. `login.microsoftonline.com`): the web UI fetches its signing keys.
 
-**Microsoft Entra ID**: register a web application with the redirect URI above and add a client secret.
-Create one app role per role below (for example `Containerizer.Admin`, `Containerizer.Operator`,
-`Containerizer.Read`, and one per owned business unit such as `Finance.Owner`) and assign them to groups
-under Enterprise applications. Entra ID does not send `email_verified`, so use `role:` or `group:` rules
-there, not `email:` or `domain:`.
+**Microsoft Entra ID**: register a web application (App registrations) with the redirect URI above and add a
+client secret. Roles can come from groups, app roles or both:
+
+- **Groups**: under Token configuration, add a groups claim (security groups, or only the groups assigned to
+  the application) for the ID token. The claim holds the groups' object IDs, so the rules are
+  `group:<object id>`. For a user in more than 200 groups Entra ID leaves the claim out of the token (it points
+  to Microsoft Graph instead, which the web UI does not query), so such a user matches no `group:` rule;
+  "Groups assigned to the application" avoids that.
+- **App roles**: create app roles (for example `Containerizer.Admin`, `Containerizer.Operator`,
+  `Containerizer.Read`, `Finance.Owner`) and assign users or groups to them under Enterprise applications. The
+  rules are `role:<value>`: readable names instead of IDs, and no group limit.
+
+Assigning groups to an application (for app roles, or "Groups assigned to the application") needs Entra ID P1
+or P2. Entra ID does not send `email_verified`, so `email:` and `domain:` rules never match there.
 
 ## Roles
 
