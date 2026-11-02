@@ -6,7 +6,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.4.0 (2026-11-02)
 
 0.3.13 was tagged but not released (signing failed at Sigstore's transparency log, a 502); its changes are listed
 under 0.3.13 below and are in this release.
