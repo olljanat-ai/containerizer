@@ -7,6 +7,7 @@ import stat
 import threading
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -564,3 +565,26 @@ def test_agent_uses_external_secrets_when_installed(agent, good):
                               "verbs": ["get"]}]
     sa = next(x for x in items if x["kind"] == "ServiceAccount")
     assert sa["automountServiceAccountToken"] is False and sa["metadata"]["namespace"] == "kube-system"
+
+
+def test_caddy_validate_gets_a_writable_scratch_data_dir(tmp_path, monkeypatch):
+    """The system agent has no HOME (ProtectHome=yes): Caddy would put the internal CA it provisions while
+    validating in ./caddy on the read-only root ("mkdir caddy: read-only file system"). It gets a throwaway
+    directory, never Caddy's own data, and the real restart only after a check that passed."""
+    monkeypatch.setattr(sysagent, "P", sysagent.Paths(appliance_env=tmp_path / "appliance.env",
+                                                      caddy_env=tmp_path / "caddy.env"))
+    monkeypatch.delenv("HOME", raising=False)
+    seen, restarts = {}, []
+
+    def fake_run(cmd, **kw):
+        env, cwd = kw["env"], kw["cwd"]
+        seen.update(cmd=cmd, cwd=cwd, home=env["HOME"], data=env["XDG_DATA_HOME"], config=env["XDG_CONFIG_HOME"])
+        (Path(env["XDG_DATA_HOME"]) / "caddy" / "pki").mkdir(parents=True)     # what Caddy does: it must work
+        return SimpleNamespace(returncode=0, stdout="Valid configuration", stderr="")
+    monkeypatch.setattr(sysagent.subprocess, "run", fake_run)
+    monkeypatch.setattr(sysagent, "run", lambda cmd, **kw: restarts.append(cmd))
+    sysagent._caddy(check_only=False)
+    assert seen["cmd"][:2] == ["caddy", "validate"]
+    assert seen["home"] == seen["data"] == seen["config"] == seen["cwd"]
+    assert "cz-caddy-validate-" in seen["home"] and not Path(seen["home"]).exists()   # thrown away afterwards
+    assert restarts == [["systemctl", "restart", "caddy.service"]]

@@ -759,9 +759,15 @@ def _write_key(path: Path, text: str) -> None:
 
 def _caddy(check_only: bool) -> None:
     """Check the Caddyfile with the imported site; then restart Caddy (its admin API is off, so no reload)."""
-    env = {**os.environ, **read_env(P.appliance_env), **read_env(P.caddy_env)}
-    p = subprocess.run(["caddy", "validate", "--config", str(P.caddyfile), "--adapter", "caddyfile"],
-                       capture_output=True, text=True, timeout=120, env=env, errors="replace")
+    import tempfile
+    # Caddy keeps its data (the internal CA) under $XDG_DATA_HOME or $HOME/.local/share; this service has no
+    # HOME, so it would use ./caddy on the read-only root. Validation provisions the internal CA too: give it a
+    # throwaway directory, never Caddy's own (/var/lib/caddy, owned by the caddy user).
+    with tempfile.TemporaryDirectory(prefix="cz-caddy-validate-") as scratch:
+        env = {**os.environ, **read_env(P.appliance_env), **read_env(P.caddy_env),
+               "HOME": scratch, "XDG_DATA_HOME": scratch, "XDG_CONFIG_HOME": scratch}
+        p = subprocess.run(["caddy", "validate", "--config", str(P.caddyfile), "--adapter", "caddyfile"],
+                           capture_output=True, text=True, timeout=120, env=env, errors="replace", cwd=scratch)
     if p.returncode:
         raise AgentError("Caddy does not accept the configuration: " + (p.stderr or p.stdout).strip()[-600:])
     if not check_only:

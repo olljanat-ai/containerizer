@@ -6,6 +6,13 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+### Appliance
+- **Admin → Sandbox HTTPS** changes were refused with "Caddy does not accept the configuration: ... mkdir caddy:
+  read-only file system": the system agent's check of the Caddy configuration ran without a home directory, so Caddy
+  tried to create its internal CA on the read-only root. The check now gets a throwaway directory.
+
 ## 0.3.5 (2026-11-02)
 
 ### Appliance
