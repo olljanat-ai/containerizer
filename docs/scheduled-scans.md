@@ -22,7 +22,8 @@ A scan runs in two phases, so time is not spent on repositories nobody uses any 
    (archived, empty, fork, not updated recently, left out by the filter).
 2. An administrator or operator reviews the result and **disables** what is deprecated:
    - **Admin → Repositories** shows each repository's latest commit. **No commit for a year** and
-     **Oldest commit first** bring the old ones to the top; select them and **Disable**, with a note.
+     **Oldest commit first** bring the old ones to the top; select them (the box in the header selects every
+     repository listed) and **Disable**, with a note.
    - **Admin → Repositories → Projects** lists the projects (Azure DevOps projects, GitLab subgroups)
      with their number of repositories and latest commit. Disabling a project disables all its
      repositories, including ones added to it later. GitHub organizations have no project level:
@@ -33,6 +34,10 @@ A scan runs in two phases, so time is not spent on repositories nobody uses any 
    ![Projects of an Azure DevOps organization with their latest commits, one disabled](images/admin-projects.png#only-light)
    ![Projects of an Azure DevOps organization with their latest commits, one disabled](images/admin-projects-dark.png#only-dark)
 
+   Or work the other way round: set the scan's **New repositories** to **Disabled by default** before the first
+   discovery. Every repository it finds then starts disabled (note *new repository: disabled by default*), and you
+   enable only the ones to process. The setting also applies to repositories added to the organization later;
+   repositories already found keep theirs.
 3. **Run full scan** (or the schedule) then processes only the enabled repositories. Disabled ones are
    never cloned, and one that was deployed before leaves the sandbox at that run.
 

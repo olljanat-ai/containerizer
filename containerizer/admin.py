@@ -443,7 +443,7 @@ class Admin:
         scope = f": {e(', '.join(s.scopes))}" if s.scopes and not s.admin else ""
         return page(title, f"""<div class='topnav'><a href='/'>← Results</a><span>Signed in as <b>{e(s.name)}</b>
 <span class='muted'>({e(s.user)}) · {e(role)}{scope}</span> {self._logout_form(s)}</span></div>
-<header><h1>{e(title)}</h1></header><nav class='chips'>{tabs}</nav>{msg}{body}""")
+<header><h1>{e(title)}</h1></header><nav class='chips'>{tabs}</nav>{msg}{body}""", script=True)
 
     # -- applications ---------------------------------------------------------------------------
 
@@ -911,9 +911,9 @@ def render_audit(rows: list[dict], show_target: bool = True) -> str:
     return f"<table class='audit'><thead><tr>{head}</tr></thead><tbody>{''.join(out)}</tbody></table>"
 
 
-def page(title: str, body: str) -> str:
+def page(title: str, body: str, script: bool = False) -> str:
     from .webui import page as _page
-    return _page(title, body)
+    return _page(title, body, script)
 
 
 DEV_ENV = "CONTAINERIZER_DEV_NO_AUTH"

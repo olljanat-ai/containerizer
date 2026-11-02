@@ -1159,6 +1159,14 @@ JS = """document.addEventListener('click', function (ev) {
     try { if (document.execCommand('copy')) done(); } catch (e) { /* selected for manual copy */ }
   }
 });
+// a header checkbox with data-select-all='<name>' checks or clears every checkbox of that name in its form
+document.addEventListener('change', function (ev) {
+  var all = ev.target;
+  var name = all.getAttribute && all.getAttribute('data-select-all');
+  if (!name || !all.form) return;
+  var boxes = all.form.querySelectorAll('input[type=checkbox]');
+  for (var i = 0; i < boxes.length; i++) if (boxes[i].name === name) boxes[i].checked = all.checked;
+});
 """
 
 HEADERS = {

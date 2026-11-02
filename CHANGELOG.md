@@ -6,6 +6,13 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+### Web UI
+- Admin → Repositories and Projects: a box in the list header selects every row listed, for the bulk actions.
+- Organization scans: **New repositories** enabled by default (the scan decides, as before) or disabled by default
+  (every repository found from then on, the first discovery too, starts disabled until an administrator enables it).
+
 ## 0.3.8 (2026-11-02)
 
 ### Appliance

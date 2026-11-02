@@ -116,6 +116,16 @@ def test_scan_form_validation():
     assert errors == [] and v["LlmHeavy"] is True and v["UseAi"] is True
 
 
+def test_new_repositories_enabled_or_disabled_by_default():
+    v, errors = admin_scans.validate_scan(_form())
+    assert errors == [] and v["NewReposEnabled"] is True                  # an old form without the field: enabled
+    v, errors = admin_scans.validate_scan(_form(NewReposEnabled="0"))
+    assert errors == [] and v["NewReposEnabled"] is False
+    assert "NewReposEnabled" in admin_scans.SCAN_COLS
+    assert "data-select-all='repo'" in admin_scans.SELECT_ALL.format(name="repo", what="repositories")
+    assert "data-select-all" in webui.JS
+
+
 def test_scan_registry_defaults_to_the_local_registry_on_the_appliance():
     from types import SimpleNamespace
     local = admin_scans.LOCAL_REGISTRY
@@ -713,6 +723,20 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         b.follow(f"/admin/repositories/projects/{projects['Legacy']}", {"csrf": csrf, "Setting": "enabled", "Note": ""})
         apps, _ = visible()
         assert set(apps) == {"api", "old-app"}
+
+        # new repositories disabled by default: the next discovery adds a new one disabled, the known ones keep theirs
+        body = b.follow(f"/admin/scans/{scan_id}")[2]
+        assert "<option value='1' selected>Enabled by default" in body
+        s, _, body = b.follow(f"/admin/scans/{scan_id}", {"csrf": csrf, **_form(
+            Name="Contoso", Provider="azure-devops", Organization="contoso", Gate="", day=[], NewReposEnabled="0")})
+        assert "Saved." in body and "<option value='0' selected>Disabled by default" in body
+        prov.list.append(repo("Billing/new-app", 9))
+        b.follow(f"/admin/scans/{scan_id}/discover", {"csrf": csrf})
+        assert w.tick() is True, logs
+        body = b.follow(f"/admin/repositories?scan={scan_id}")[2]
+        rows = dict(re.findall(r"aria-label='Select ([^']+)'>(.*?)</tr>", body, re.S))
+        assert "Disabled" in rows["Billing/new-app"] and "disabled by default (scan setting)" in rows["Billing/new-app"]
+        assert "Enabled" in rows["Billing/api"] and "data-select-all='repo'" in body
         wr = sqlstore.connect(writer, PW)
         with pytest.raises(Exception, match="(?i)permission"):
             wr.cursor().execute("UPDATE cz.OrgProject SET AdminState = N'disabled'")
