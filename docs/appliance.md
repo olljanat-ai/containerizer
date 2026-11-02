@@ -62,7 +62,7 @@ partition, so it survives restarts, upgrades and roll backs.
 The first boot created `/etc/containerizer/` with the configuration
 files ([configuration files](appliance-admin.md#configuration-files)). Then:
 
-1. Set `CZ_HOSTNAME` in `appliance.env` to the DNS name users will open, and register
+1. Set `CZ_HOSTNAME` in `appliance.env` to the DNS name users will open (usually the FQDN), and register
    `https://<CZ_HOSTNAME>/auth/callback` as the redirect URI of an app registration at your identity
    provider (Entra ID, Okta, Keycloak, ...).
 2. Fill in `web.env` (issuer, client id and secret, `CONTAINERIZER_ADMINS`; [sign-in and roles](sign-in.md)). Allow the identity
