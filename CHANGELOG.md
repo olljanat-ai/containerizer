@@ -6,6 +6,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+### Web UI
+- Organization scans: the output repository is chosen from the repositories with a write token under **Source
+  control** (or none), not typed in. A saved URL without a token stays selectable, marked.
+- On the appliance, a scan's image registry may stay empty: it is then the appliance's own registry,
+  `localhost:5000/sandbox` (no credentials; the sandbox cluster pulls from it). New scans start with it.
+
 ## 0.3.6 (2026-11-02)
 
 ### Appliance
