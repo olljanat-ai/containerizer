@@ -263,10 +263,9 @@ The internal rules repository of the <a href='/admin/rules#repository'>rule revi
 <input id='wScope' name='Scope' type='url' required maxlength='400' placeholder='https://github.com/contoso/sandbox-deployments.git'>
 {_token_input('wToken')}{_common_inputs('w')}
 <div><button>Add</button></div></form>"""
-        llm_form = ""
-        if not any(r["Purpose"] == "llm" for r in rows):
-            from .ai import CLAUDE_DEFAULT_MODEL
-            llm_form = f"""<h3>Set the LLM</h3>
+        from .ai import CLAUDE_DEFAULT_MODEL
+        first = not any(r["Purpose"] == "llm" for r in rows)
+        llm_form = f"""<h3>{'Set the LLM' if first else 'Add another LLM'}</h3>
 {guidance('llm')}
 <form method='post' action='/admin/source-control/llm' class='edit'>{adm._csrf(s)}
 <label for='lProvider'>Kind</label><select id='lProvider' name='Provider'>{''.join(
@@ -274,15 +273,23 @@ The internal rules repository of the <a href='/admin/rules#repository'>rule revi
 <label for='lApiUrl'>Server <span class='muted'>(Claude API: empty, or a gateway's https URL; OpenAI-compatible: the URL up to
 and including /v1)</span></label><input id='lApiUrl' name='ApiUrl' type='url' maxlength='400' placeholder='https://llm.example.internal/v1'>
 <label for='lModel'>Model</label><input id='lModel' name='Model' required maxlength='200' value='{e(CLAUDE_DEFAULT_MODEL)}'>
-{_token_input('lToken', 'API key', required=False)}{_common_inputs('l')}
+{_token_input('lToken', 'API key', required=False)}{_llm_route_inputs('l', {"LlmOrder": next_order(rows)})}{_common_inputs('l')}
 <div><button>Save</button></div></form>"""
-    llm = next((r for r in rows if r["Purpose"] == "llm"), None)
-    if llm:
+    llms = sorted((r for r in rows if r["Purpose"] == "llm"), key=lambda r: (_order(r), r["CredentialId"]))
+    llm = llms[0] if llms else None
+    if llms:
         used = _used_by(cr.Credential.from_row(llm), scans)
-        llm_html = (f"<div class='meta'><div><span class='label'>LLM</span> <a href='/admin/source-control/"
-                    f"{int(llm['CredentialId'])}'>{e(cr.LLM_PROVIDERS.get(llm['Provider'], llm['Provider']))}: "
-                    f"{e(llm['Model'] or '')}</a> <span class='muted small'>{e(llm['ApiUrl'] or llm['Host'])}</span> "
-                    f"{_chips(status(llm, kid, today))}</div><div><span class='label'>Used by</span> "
+        trs = "".join(
+            f"<tr><td>{_order(r)}</td><td><a href='/admin/source-control/{int(r['CredentialId'])}'>"
+            f"{e(cr.LLM_PROVIDERS.get(r['Provider'], r['Provider']))}: {e(r['Model'] or '')}</a>"
+            f"<div class='muted small'>{e(r['ApiUrl'] or r['Host'])}</div></td>"
+            f"<td>{e(_size_text(r.get('LlmMaxTokens')))}</td><td>{int(r.get('LlmParallel') or 1)}</td>"
+            f"<td>{_chips(status(r, kid, today))}</td></tr>" for r in llms)
+        llm_html = ("<p class='muted'>The LLM queue gives each job to the first LLM in this order that takes its size and "
+                    "has a free request, so several LLMs (a GPU server, a CPU server, the built-in LLM) answer at once. "
+                    "Scans that ask directly use the first one.</p><table><thead><tr><th>Order</th><th>LLM</th>"
+                    "<th>Jobs up to</th><th>At once</th><th>Key</th></tr></thead><tbody>" + trs + "</tbody></table>"
+                    "<div class='meta'><div><span class='label'>Used by</span> "
                     + (", ".join(f"<a href='/admin/scans/{int(x['ScanId'])}'>{e(x['Name'])}</a>" for x in used)
                        or "<span class='muted'>no scan asks the LLM</span>") + "</div></div>")
     elif getattr(adm, "system", None):
@@ -340,8 +347,50 @@ def _llm_url_error(provider: str, url: str | None, token: str) -> str | None:
     return None
 
 
+def _order(r: dict) -> int:
+    return int(r["LlmOrder"]) if r.get("LlmOrder") is not None else 10
+
+
+def next_order(rows: list[dict]) -> int:
+    """The order of a new LLM: after the last one."""
+    return min(1000, max([_order(r) for r in rows if r["Purpose"] == "llm"], default=0) + 10)
+
+
+def _size_text(n) -> str:
+    return "any size" if not n else f"{int(n):,} tokens"
+
+
+def _llm_route_inputs(prefix: str, r: dict | None = None) -> str:
+    """The LLM queue's use of an LLM: its place in the order, the biggest job, requests at once."""
+    r = r or {}
+    return (f"<label for='{prefix}LlmOrder'>Order <span class='muted'>(the LLM queue tries the LLMs from the lowest number "
+            f"up)</span></label><input id='{prefix}LlmOrder' name='LlmOrder' type='number' min='0' max='1000' "
+            f"value='{_order(r)}'>"
+            f"<label for='{prefix}LlmMaxTokens'>Jobs up to <span class='muted'>(estimated input tokens; bigger jobs go to "
+            f"the next LLM in the order; 0: any size)</span></label><input id='{prefix}LlmMaxTokens' name='LlmMaxTokens' "
+            f"type='number' min='0' max='10000000' value='{int(r.get('LlmMaxTokens') or 0)}'>"
+            f"<label for='{prefix}LlmParallel'>Requests at once <span class='muted'>(as many as the server answers "
+            f"together, e.g. its slots; 1 for a CPU server)</span></label><input id='{prefix}LlmParallel' "
+            f"name='LlmParallel' type='number' min='1' max='64' value='{int(r.get('LlmParallel') or 1)}'>")
+
+
+def validate_route(form: dict) -> tuple[dict, list[str]]:
+    errors, v = [], {}
+    for k, label, lo, hi, default in (("LlmOrder", "Order", 0, 1000, 10), ("LlmMaxTokens", "Jobs up to", 0, 10_000_000, 0),
+                                      ("LlmParallel", "Requests at once", 1, 64, 1)):
+        raw = form.get(k, [str(default)])[0].strip() or str(default)
+        if not re.fullmatch(r"\d{1,8}", raw) or not lo <= int(raw) <= hi:
+            errors.append(f"{label}: {lo} to {hi:,}")
+            raw = str(default)
+        v[k] = int(raw)
+    return v, errors
+
+
 def validate_llm(form: dict) -> tuple[dict, list[str]]:
     v, errors = _common(form)
+    route, more = validate_route(form)
+    v.update(route)
+    errors += more
     prov = form.get("Provider", [""])[0]
     if prov not in cr.LLM_PROVIDERS:
         errors.append("Choose the kind of LLM")
@@ -417,25 +466,23 @@ def add(adm, conn, s, purpose: str, form: dict) -> Response:
     sealed = cr.seal(pub, v.pop("Token"), cr.binding(purpose, v["Provider"], v["ApiUrl"], v["Scope"]))
     cur = conn.cursor()
     try:
-        if purpose == "llm":
-            # one LLM: the check and the insert in one transaction, so two admins cannot add two
-            cur.execute("SELECT COUNT(*) FROM cz.SourceCredential WITH (UPDLOCK, HOLDLOCK) WHERE Purpose = N'llm'")
-            if cur.fetchone()[0]:
-                conn.rollback()
-                return _back("/admin/source-control", "An LLM is already set: open it to change it, or remove it first.")
         cur.execute("INSERT cz.SourceCredential (Purpose, Provider, ApiUrl, Host, Scope, Model, Note, ExpiresOn, TokenSealed, "
-                    "KeyId, TokenSetBy) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s); SELECT CAST(SCOPE_IDENTITY() AS int)",
+                    "KeyId, TokenSetBy, LlmOrder, LlmMaxTokens, LlmParallel) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                    "%s, %s, %s, %s); SELECT CAST(SCOPE_IDENTITY() AS int)",
                     (purpose, v["Provider"], v["ApiUrl"], v["Host"], v["Scope"], v.get("Model"), v["Note"], v["ExpiresOn"],
-                     sealed, kid, s.user[:256]))
+                     sealed, kid, s.user[:256], v.get("LlmOrder", 10), v.get("LlmMaxTokens", 0), v.get("LlmParallel", 1)))
         ident = cur.fetchone()[0]
         conn.commit()
     except Exception as ex:
         conn.rollback()
         if _code(ex) in (2601, 2627):
+            if purpose == "llm":
+                return _back("/admin/source-control", f"An LLM on {v['Host']} is already registered: open it to change it.")
             return _back("/admin/source-control", f"{v['Scope']} already has a token: open it to replace the token.")
         raise
     if purpose == "llm":
-        return _back(f"/admin/source-control/{ident}", "LLM saved. Scans with Ask the LLM use it from their next run.")
+        return _back(f"/admin/source-control/{ident}", "LLM saved. The LLM queue uses it from its next job; scans with Ask "
+                                                       "the LLM use it from their next run when it is first in the order.")
     what = "Read-only token" if purpose == "read" else "Write token"
     return _back(f"/admin/source-control/{ident}", f"{what} saved for {v['Scope']}. The next run of its scans uses it.")
 
@@ -461,6 +508,8 @@ def edit_page(adm, conn, s, a, ident: int, flash: str) -> Response:
                          "llm": "the evidence of uncertain components is sent to this server"}[c.purpose]),
              ("Provider", e((cr.LLM_PROVIDERS if llm else cr.PROVIDER_TEXT).get(c.provider, c.provider))),
              ("Model", e(c.model) if llm else ""), ("Host", e(r["Host"])),
+             ("LLM queue", f"order {_order(r)}, jobs up to {e(_size_text(r.get('LlmMaxTokens')))}, "
+                           f"{int(r.get('LlmParallel') or 1)} at once" if llm else ""),
              ("Server", e(r["ApiUrl"] or "")), ("Token", f"{_chips(status(r, kid))} saved {_d(r['TokenSetAt'])} by "
                                                         f"{e(r['TokenSetBy'])}"),
              ("Used by", ", ".join(f"<a href='/admin/scans/{int(x['ScanId'])}'>{e(x['Name'])}</a>" for x in used)
@@ -473,7 +522,7 @@ def edit_page(adm, conn, s, a, ident: int, flash: str) -> Response:
                f"<input id='tExpiresOn' name='ExpiresOn' type='date'><div><button>Replace the token</button></div></form>"
                if pub is not None else "<p class='muted'>The web UI has no worker public key: tokens cannot be replaced.</p>")
     model_in = (f"<label for='sModel'>Model</label><input id='sModel' name='Model' required maxlength='200' "
-                f"value='{e(c.model)}'>") if llm else ""
+                f"value='{e(c.model)}'>{_llm_route_inputs('s', r)}") if llm else ""
     settings = (f"<form method='post' action='/admin/source-control/{ident}' class='edit'>{adm._csrf(s)}"
                 f"{model_in}{_common_inputs('s', r)}<label class='check'><input type='checkbox' name='Enabled' value='1'"
                 f"{' checked' if r['Enabled'] else ''}> Enabled (unchecked: scans that need it do not run)</label>"
@@ -524,14 +573,20 @@ def save_settings(adm, conn, s, ident: int, form: dict) -> Response:
     if not r:
         return Response(404, page("Not found", "<h1>Not found</h1>"))
     model = form.get("Model", [""])[0].strip() if r["Purpose"] == "llm" else None
-    if r["Purpose"] == "llm" and not MODEL_RE.fullmatch(model):
-        errors.append("Model: the model's name (letters, digits and . : / @ + - _)")
+    route = {}
+    if r["Purpose"] == "llm":
+        if not MODEL_RE.fullmatch(model):
+            errors.append("Model: the model's name (letters, digits and . : / @ + - _)")
+        route, more = validate_route(form)
+        errors += more
     if errors:
         return _back(back, "Not saved: " + "; ".join(errors))
     cur = conn.cursor()
-    cur.execute("UPDATE cz.SourceCredential SET Note = %s, ExpiresOn = %s, Enabled = %s"
-                + (", Model = %s" if model is not None else "") + " WHERE CredentialId = %s",
-                (v["Note"], v["ExpiresOn"], form.get("Enabled", [""])[0] == "1", *([model] if model is not None else []), ident))
+    extra = ", Model = %s, LlmOrder = %s, LlmMaxTokens = %s, LlmParallel = %s" if model is not None else ""
+    cur.execute("UPDATE cz.SourceCredential SET Note = %s, ExpiresOn = %s, Enabled = %s" + extra + " WHERE CredentialId = %s",
+                (v["Note"], v["ExpiresOn"], form.get("Enabled", [""])[0] == "1",
+                 *([model, route["LlmOrder"], route["LlmMaxTokens"], route["LlmParallel"]] if model is not None else []),
+                 ident))
     n = cur.rowcount
     conn.commit()
     if not n:

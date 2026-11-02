@@ -103,6 +103,45 @@ def actual(r: dict, est: dict | None = None) -> str:
     return out
 
 
+def lanes(conn, settings: dict) -> list[dict]:
+    """The LLMs the runner asks at once, in order (llmqueue.plan_lanes), as the page sees them: the registered LLMs
+    without their keys, and the appliance's built-in LLM from its status file."""
+    from . import credentials as cr, local_llm
+    try:
+        regs = cr.load(conn).llms()
+    except Exception:                   # noqa: BLE001 - an older schema: the estimate only
+        regs = []
+    builtin = local_llm.worker_settings({local_llm.STATUS_ENV: str(local_llm.P.status)})
+    return lq.plan_lanes(regs, builtin, settings)
+
+
+def _size(n) -> str:
+    return "any size" if not n else f"{int(n):,} tokens"
+
+
+def lanes_html(ls: list[dict]) -> str:
+    """The LLMs in their order, and a warning when no LLM takes the biggest jobs."""
+    if len(ls) <= 1 and ls and not ls[0]["max_tokens"]:
+        return ""
+    def link(ln):
+        if ln["name"].startswith("llm-"):
+            return f"<a href='/admin/source-control/{int(ln['name'][4:])}'>{e(ln['label'])}</a>"
+        if ln["name"] == "built-in":
+            return f"<a href='/admin/source-control#built-in-llm'>{e(ln['label'])}</a>"
+        return e(ln["label"])
+    trs = "".join(f"<tr><td class='num'>{int(ln['order'])}</td><td>{link(ln)}</td>"
+                  f"<td>{_size(ln['max_tokens'])}</td>"
+                  f"<td class='num'>{int(ln['parallel'])}</td></tr>" for ln in ls)
+    warn = ""
+    if ls and all(ln["max_tokens"] for ln in ls):
+        warn = (f"<p class='note'>Jobs over {max(ln['max_tokens'] for ln in ls):,} estimated tokens wait: no LLM takes them. "
+                f"Set the last LLM in the order to any size (0).</p>")
+    return ("<h2>LLMs</h2><p class='muted small'>Each job goes to the first LLM in this order that takes its size and has a "
+            "free request; they answer at the same time. Registered LLMs are set under Admin → Source control & LLM, the "
+            "built-in LLM's place below.</p><table><thead><tr><th class='num'>Order</th><th>LLM</th><th>Jobs up to</th>"
+            f"<th class='num'>At once</th></tr></thead><tbody>{trs}</tbody></table>{warn}")
+
+
 def totals(active: list[dict], speed, settings: dict, now) -> dict:
     """The queue's summary: jobs waiting and running by kind (reviews by reason), the estimated tokens and
     LLM time of everything waiting at the learned speed and the parallel requests set, when it would all be
@@ -210,6 +249,10 @@ def show(adm, conn, s, a, q: dict, flash: str) -> Response:
     done = _rows(conn, f"SELECT TOP (50) {JOB_COLS} FROM cz.LlmJob WHERE Status IN (N'answered', N'failed', N'skipped')"
                        f"{where} ORDER BY COALESCE(FinishedAt, QueuedAt) DESC, JobId DESC", params)
     queued = [r for r in active if r["Status"] == "queued"]
+    stored = settings
+    ls = lanes(conn, settings)
+    # the estimates: every LLM's requests at once together
+    settings = {**settings, "Parallel": max(1, sum(int(ln["parallel"]) for ln in ls))}
     parallel = int(settings["Parallel"] or 1)
     now = lq.utcnow()
     ok, why = lq.gate(settings, now, lq.scans_running(conn), lq.load_per_cpu(), restartplan.holding())
@@ -275,7 +318,7 @@ def show(adm, conn, s, a, q: dict, flash: str) -> Response:
             f"repository; <b>Re-scan now</b> scans it without waiting for the schedule. Assessments already stored do not "
             f"change.</p>"
             f"<div class='formrow'><span>{state}</span> · <span>{e(lq.settings_text(settings))}</span></div>"
-            f"{summary_html(totals(active, speed, settings, now), now)}"
+            f"{summary_html(totals(active, speed, settings, now), now)}{lanes_html(ls)}"
             f"<nav class='chips'>{chips}</nav>"
             f"<h2 id='queue'>Queue</h2><table><thead><tr><th class='num'>#</th><th>Status</th><th>Job</th><th class='num'>Priority</th>"
             f"<th>Estimate</th><th>Queued</th><th>Order</th></tr></thead>"
@@ -286,7 +329,7 @@ def show(adm, conn, s, a, q: dict, flash: str) -> Response:
                f"<th>Last scan</th><th></th></tr></thead><tbody>{''.join(ready)}</tbody></table>" if ready else "")
             + f"<h2>Finished</h2><table><thead><tr><th>Status</th><th>Job</th><th>Result</th><th>When</th><th></th></tr>"
               f"</thead><tbody>{''.join(finished) or '<tr><td colspan=5 class=muted>None yet.</td></tr>'}</tbody></table>"
-            + f"<h2>Settings</h2>{settings_form(adm, s, settings)}"
+            + f"<h2>Settings</h2>{settings_form(adm, s, stored)}"
             + f"<h2>Changes</h2>{adm._history(conn, 'LlmQueueSettings', 1)}")
     return Response(200, adm._shell(s, a, "LLM queue", "llm-queue", body, flash))
 
@@ -456,9 +499,16 @@ midnight, e.g. 22:00 to 06:00)</span></label><input id='From' name='From' type='
 <label for='MaxLoadPerCpu'>Busy above <span class='muted'>(1-minute load average per CPU; 0: do not look at the
 load)</span></label><input id='MaxLoadPerCpu' name='MaxLoadPerCpu' type='number' min='0' max='16' step='0.05'
 value='{float(v['MaxLoadPerCpu'] or 0):.2f}'>
-<label for='Parallel'>Parallel requests <span class='muted'>(as many as the LLM server answers at once, e.g. its
-slots; 1 for a CPU server)</span></label><input id='Parallel' name='Parallel' type='number' min='1' max='16'
-value='{int(v['Parallel'] or 1)}'>
+<label for='Parallel'>Parallel requests <span class='muted'>(the worker's own LLM settings, and the built-in LLM when
+no LLM is registered, which always gets at least one per server, one per NUMA node; a registered LLM has its own
+setting under Admin → Source control & LLM)</span></label><input id='Parallel' name='Parallel' type='number' min='1'
+max='16' value='{int(v['Parallel'] or 1)}'>
+<label for='LocalOrder'>Built-in LLM beside the registered LLMs: its order <span class='muted'>(the appliance only;
+empty: only when no LLM is registered)</span></label><input id='LocalOrder' name='LocalOrder' type='number' min='0'
+max='1000' value='{"" if v.get('LocalOrder') is None else int(v['LocalOrder'])}'>
+<label for='LocalMaxTokens'>Built-in LLM: jobs up to <span class='muted'>(estimated input tokens, when beside the
+registered LLMs; bigger jobs go to the next LLM in the order; 0: any size)</span></label><input id='LocalMaxTokens'
+name='LocalMaxTokens' type='number' min='0' max='10000000' value='{int(v.get('LocalMaxTokens') or 0)}'>
 <h3>Approval</h3>
 <p class='note'>{e(approval_text(v) + reject_text(v))}</p>
 <p class='muted small'>A job of a kind ticked here waits for an administrator's approval, unless the rules below
@@ -529,11 +579,21 @@ def validate_settings(form: dict) -> tuple[dict, list[str]]:
         errors.append("Reject automatically after: hours, 0 to 8,760 (a year)")
         h = "0"
     v["RejectAfterHours"] = int(h)
+    o = form.get("LocalOrder", [""])[0].strip()
+    if o and (not re.fullmatch(r"\d{1,4}", o) or int(o) > 1000):
+        errors.append("Built-in LLM order: 0 to 1,000, or empty")
+        o = ""
+    v["LocalOrder"] = int(o) if o else None
+    t = form.get("LocalMaxTokens", ["0"])[0].strip() or "0"
+    if not re.fullmatch(r"\d{1,8}", t) or int(t) > 10_000_000:
+        errors.append("Built-in LLM jobs up to: a number of tokens, 0 to 10,000,000")
+        t = "0"
+    v["LocalMaxTokens"] = int(t)
     return v, errors
 
 
 SETTING_COLS = ("Paused", "WindowDays", "WindowStart", "WindowEnd", "OnlyWhenIdle", "MaxLoadPerCpu", "Parallel",
-                "ApproveKinds", "ApproveMinTokens", "ApproveMaxQueued", "RejectAfterHours")
+                "ApproveKinds", "ApproveMinTokens", "ApproveMaxQueued", "RejectAfterHours", "LocalOrder", "LocalMaxTokens")
 
 
 def save_settings(conn, form: dict) -> Response:

@@ -277,6 +277,9 @@ class Credential:
     key_id: str = ""
     note: str = ""
     model: str = ""                  # llm: the model name
+    llm_order: int = 10              # llm: the LLM queue tries the LLMs in this order (lowest first)
+    llm_max_tokens: int = 0          # llm: the biggest job it takes (estimated input tokens; 0: any)
+    llm_parallel: int = 1            # llm: requests the LLM queue sends it at once
     sealed: str = field(default="", repr=False)
     token: str | None = field(default=None, repr=False)     # opened by the worker; None elsewhere
     error: str = ""                                          # why it did not open
@@ -307,6 +310,8 @@ class Credential:
         return cls(id=int(r["CredentialId"]), purpose=r["Purpose"], provider=r["Provider"], api_url=r.get("ApiUrl"),
                    scope=r["Scope"], enabled=bool(r.get("Enabled", True)), expires_on=r.get("ExpiresOn"),
                    key_id=(r.get("KeyId") or "").strip(), note=r.get("Note") or "", model=r.get("Model") or "",
+                   llm_order=int(r.get("LlmOrder") if r.get("LlmOrder") is not None else 10),
+                   llm_max_tokens=int(r.get("LlmMaxTokens") or 0), llm_parallel=max(1, int(r.get("LlmParallel") or 1)),
                    sealed=r.get("TokenSealed") or "")
 
     def ai_settings(self) -> dict:
@@ -341,8 +346,13 @@ class Credentials:
                 return c
         return None
 
+    def llms(self) -> list[Credential]:
+        """The enabled LLMs in their order (the LLM queue's list)."""
+        return sorted((c for c in self.items if c.purpose == "llm" and c.enabled), key=lambda c: (c.llm_order, c.id))
+
     def llm(self) -> Credential | None:
-        return next((c for c in self.items if c.purpose == "llm" and c.enabled), None)
+        """The first LLM in the order: the one scans ask directly."""
+        return next(iter(self.llms()), None)
 
     def hosts(self) -> set[str]:
         """Source control hosts (not the LLM's): registered servers may receive their own tokens."""
@@ -414,7 +424,7 @@ def llm_for_run(llm: Credential | None, env=None) -> RunLlm:
 
 
 SELECT_COLS = ("CredentialId, Purpose, Provider, ApiUrl, Host, Scope, Model, Note, Enabled, ExpiresOn, KeyId, TokenSetAt, "
-               "TokenSetBy, CreatedAt, LastUsedAt, LastResult")
+               "TokenSetBy, CreatedAt, LastUsedAt, LastResult, LlmOrder, LlmMaxTokens, LlmParallel")
 
 
 def load(conn, private_key=None, include_disabled: bool = False) -> Credentials:

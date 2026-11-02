@@ -1040,6 +1040,27 @@ CREATE TABLE [${schema}].SourceCredential (
     CONSTRAINT UQ_SourceCredential UNIQUE (Purpose, Provider, Host, Scope)
 );
 GO
+-- 30: several LLMs at once (Purpose llm): the LLM queue gives each job to the first LLM in LlmOrder that takes its
+-- size (estimated input tokens up to LlmMaxTokens; 0: any) and has a free request (LlmParallel at once); the scans
+-- that ask directly use the first one
+IF COL_LENGTH(N'[${schema}].SourceCredential', N'LlmOrder') IS NULL
+    ALTER TABLE [${schema}].SourceCredential ADD LlmOrder int NOT NULL CONSTRAINT DF_SourceCredential_LlmOrder DEFAULT 10
+        CONSTRAINT CK_SourceCredential_LlmOrder CHECK (LlmOrder BETWEEN 0 AND 1000);
+GO
+IF COL_LENGTH(N'[${schema}].SourceCredential', N'LlmMaxTokens') IS NULL
+    ALTER TABLE [${schema}].SourceCredential ADD LlmMaxTokens int NOT NULL CONSTRAINT DF_SourceCredential_LlmMaxTokens DEFAULT 0
+        CONSTRAINT CK_SourceCredential_LlmMaxTokens CHECK (LlmMaxTokens BETWEEN 0 AND 10000000);
+GO
+IF COL_LENGTH(N'[${schema}].SourceCredential', N'LlmParallel') IS NULL
+BEGIN
+    ALTER TABLE [${schema}].SourceCredential ADD LlmParallel int NOT NULL CONSTRAINT DF_SourceCredential_LlmParallel DEFAULT 1
+        CONSTRAINT CK_SourceCredential_LlmParallel CHECK (LlmParallel BETWEEN 1 AND 64);
+    -- the registered LLM keeps the parallel requests the LLM queue was set to
+    IF OBJECT_ID(N'[${schema}].LlmQueueSettings', N'U') IS NOT NULL
+        EXEC (N'UPDATE c SET LlmParallel = s.Parallel FROM [${schema}].SourceCredential c
+                CROSS JOIN [${schema}].LlmQueueSettings s WHERE c.Purpose = N''llm'' AND s.SettingsId = 1');
+END;
+GO
 
 CREATE OR ALTER TRIGGER [${schema}].trSourceCredentialAudit ON [${schema}].SourceCredential
 AFTER INSERT, UPDATE, DELETE AS
@@ -1050,14 +1071,16 @@ BEGIN
            LEFT(COALESCE(i.Purpose, d.Purpose) + N': ' + COALESCE(i.Scope, d.Scope), 200),
            CASE WHEN d.CredentialId IS NULL THEN N'insert' WHEN i.CredentialId IS NULL THEN N'delete' ELSE N'update' END,
            CASE WHEN d.CredentialId IS NOT NULL THEN (SELECT d.Purpose, d.Provider, d.ApiUrl, d.Host, d.Scope, d.Model, d.Note, d.Enabled,
-                d.ExpiresOn, d.TokenSetAt FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+                d.ExpiresOn, d.TokenSetAt, d.LlmOrder, d.LlmMaxTokens, d.LlmParallel FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
            CASE WHEN i.CredentialId IS NOT NULL THEN (SELECT i.Purpose, i.Provider, i.ApiUrl, i.Host, i.Scope, i.Model, i.Note, i.Enabled,
-                i.ExpiresOn, i.TokenSetAt FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+                i.ExpiresOn, i.TokenSetAt, i.LlmOrder, i.LlmMaxTokens, i.LlmParallel FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
     FROM inserted i FULL OUTER JOIN deleted d ON d.CredentialId = i.CredentialId
     CROSS JOIN [${schema}].fnAuditWho() w
     WHERE d.CredentialId IS NULL OR i.CredentialId IS NULL
-       OR EXISTS (SELECT i.Purpose, i.Provider, i.ApiUrl, i.Host, i.Scope, i.Model, i.Note, i.Enabled, i.ExpiresOn, i.TokenSetAt, i.KeyId
-                  EXCEPT SELECT d.Purpose, d.Provider, d.ApiUrl, d.Host, d.Scope, d.Model, d.Note, d.Enabled, d.ExpiresOn, d.TokenSetAt, d.KeyId);
+       OR EXISTS (SELECT i.Purpose, i.Provider, i.ApiUrl, i.Host, i.Scope, i.Model, i.Note, i.Enabled, i.ExpiresOn, i.TokenSetAt, i.KeyId,
+                         i.LlmOrder, i.LlmMaxTokens, i.LlmParallel
+                  EXCEPT SELECT d.Purpose, d.Provider, d.ApiUrl, d.Host, d.Scope, d.Model, d.Note, d.Enabled, d.ExpiresOn, d.TokenSetAt, d.KeyId,
+                         d.LlmOrder, d.LlmMaxTokens, d.LlmParallel);
 END;
 GO
 
@@ -1156,9 +1179,10 @@ GRANT SELECT ON [${schema}].RuleEvidence TO [${schema}_admin];
 -- source control tokens: the admin pages add, replace and remove them but cannot read the sealed token back;
 -- the worker reads them and records their use
 GRANT SELECT ON [${schema}].SourceCredential (CredentialId, Purpose, Provider, ApiUrl, Host, Scope, Model, Note, Enabled, ExpiresOn, KeyId,
-    TokenSetAt, TokenSetBy, CreatedAt, LastUsedAt, LastResult) TO [${schema}_admin];
+    TokenSetAt, TokenSetBy, CreatedAt, LastUsedAt, LastResult, LlmOrder, LlmMaxTokens, LlmParallel) TO [${schema}_admin];
 GRANT INSERT, DELETE ON [${schema}].SourceCredential TO [${schema}_admin];
-GRANT UPDATE ON [${schema}].SourceCredential (Model, Note, Enabled, ExpiresOn, TokenSealed, KeyId, TokenSetAt, TokenSetBy) TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].SourceCredential (Model, Note, Enabled, ExpiresOn, TokenSealed, KeyId, TokenSetAt, TokenSetBy,
+    LlmOrder, LlmMaxTokens, LlmParallel) TO [${schema}_admin];
 GRANT SELECT ON [${schema}].SourceCredential TO [${schema}_writer];
 GRANT UPDATE ON [${schema}].SourceCredential (LastUsedAt, LastResult) TO [${schema}_writer];
 -- lab services: administrators turn them on or off; the system agent applies it
@@ -1659,6 +1683,17 @@ IF COL_LENGTH(N'[${schema}].LlmQueueSettings', N'RejectAfterHours') IS NULL
         CONSTRAINT DF_LlmQueueSettings_RejectAfterHours DEFAULT 0
         CONSTRAINT CK_LlmQueueSettings_RejectAfterHours CHECK (RejectAfterHours BETWEEN 0 AND 8760);
 GO
+-- 30: the appliance's built-in LLM beside the registered LLMs in the LLM queue: its place in their order (LocalOrder;
+-- NULL: only when no LLM is registered, as before) and the biggest job it takes (LocalMaxTokens; 0: any)
+IF COL_LENGTH(N'[${schema}].LlmQueueSettings', N'LocalOrder') IS NULL
+    ALTER TABLE [${schema}].LlmQueueSettings ADD LocalOrder int NULL
+        CONSTRAINT CK_LlmQueueSettings_LocalOrder CHECK (LocalOrder BETWEEN 0 AND 1000);
+GO
+IF COL_LENGTH(N'[${schema}].LlmQueueSettings', N'LocalMaxTokens') IS NULL
+    ALTER TABLE [${schema}].LlmQueueSettings ADD LocalMaxTokens int NOT NULL
+        CONSTRAINT DF_LlmQueueSettings_LocalMaxTokens DEFAULT 0
+        CONSTRAINT CK_LlmQueueSettings_LocalMaxTokens CHECK (LocalMaxTokens BETWEEN 0 AND 10000000);
+GO
 CREATE OR ALTER PROCEDURE [${schema}].QueueLlmJob @Kind nvarchar(20), @Reason nvarchar(40) = NULL, @ScanId int = NULL,
     @ProjectName nvarchar(200) = NULL, @RepoName nvarchar(200) = NULL, @Repository nvarchar(400) = NULL,
     @App nvarchar(200) = NULL, @SourceKey nvarchar(400) = NULL, @ApplicationId int = NULL, @AssessmentId int = NULL,
@@ -1710,16 +1745,18 @@ BEGIN
     SELECT w.ChangedBy, w.ChangedByName, w.Via, N'LlmQueueSettings', COALESCE(i.SettingsId, d.SettingsId), N'LLM queue',
            CASE WHEN d.SettingsId IS NULL THEN N'insert' WHEN i.SettingsId IS NULL THEN N'delete' ELSE N'update' END,
            CASE WHEN d.SettingsId IS NOT NULL THEN (SELECT d.Paused, d.WindowDays, d.WindowStart, d.WindowEnd, d.OnlyWhenIdle,
-                d.MaxLoadPerCpu, d.Parallel, d.ApproveKinds, d.ApproveMinTokens, d.ApproveMaxQueued, d.RejectAfterHours FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+                d.MaxLoadPerCpu, d.Parallel, d.ApproveKinds, d.ApproveMinTokens, d.ApproveMaxQueued, d.RejectAfterHours,
+                d.LocalOrder, d.LocalMaxTokens FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
            CASE WHEN i.SettingsId IS NOT NULL THEN (SELECT i.Paused, i.WindowDays, i.WindowStart, i.WindowEnd, i.OnlyWhenIdle,
-                i.MaxLoadPerCpu, i.Parallel, i.ApproveKinds, i.ApproveMinTokens, i.ApproveMaxQueued, i.RejectAfterHours FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+                i.MaxLoadPerCpu, i.Parallel, i.ApproveKinds, i.ApproveMinTokens, i.ApproveMaxQueued, i.RejectAfterHours,
+                i.LocalOrder, i.LocalMaxTokens FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
     FROM inserted i FULL OUTER JOIN deleted d ON d.SettingsId = i.SettingsId
     CROSS JOIN [${schema}].fnAuditWho() w
     WHERE d.SettingsId IS NULL OR i.SettingsId IS NULL
        OR EXISTS (SELECT i.Paused, i.WindowDays, i.WindowStart, i.WindowEnd, i.OnlyWhenIdle, i.MaxLoadPerCpu, i.Parallel,
-                         i.ApproveKinds, i.ApproveMinTokens, i.ApproveMaxQueued, i.RejectAfterHours
+                         i.ApproveKinds, i.ApproveMinTokens, i.ApproveMaxQueued, i.RejectAfterHours, i.LocalOrder, i.LocalMaxTokens
                   EXCEPT SELECT d.Paused, d.WindowDays, d.WindowStart, d.WindowEnd, d.OnlyWhenIdle, d.MaxLoadPerCpu, d.Parallel,
-                         d.ApproveKinds, d.ApproveMinTokens, d.ApproveMaxQueued, d.RejectAfterHours);
+                         d.ApproveKinds, d.ApproveMinTokens, d.ApproveMaxQueued, d.RejectAfterHours, d.LocalOrder, d.LocalMaxTokens);
 END;
 GO
 -- 29: every kind of job can wait for approval; settings still at the old default (refactoring orders and component
@@ -2135,4 +2172,8 @@ GO
 -- 29: automatic approval by the length of the LLM queue, approval for every kind, automatic rejection after a wait
 -- (AutoApproveLlmJobs, AutoRejectLlmJobs)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 29) INSERT [${schema}].SchemaVersion (Version) VALUES (29);
+GO
+-- 30: several LLMs at once in the LLM queue, by order and job size (SourceCredential.LlmOrder, LlmMaxTokens,
+-- LlmParallel; LlmQueueSettings.LocalOrder, LocalMaxTokens for the built-in LLM)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 30) INSERT [${schema}].SchemaVersion (Version) VALUES (30);
 GO
