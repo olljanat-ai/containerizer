@@ -18,6 +18,7 @@ that deploy every generated app to a sandbox cluster through the per-app GitOps 
 from __future__ import annotations
 
 import dataclasses
+import fnmatch
 import hashlib
 import json
 import os
@@ -102,6 +103,8 @@ class OrgOptions:
                                         # an administrator enables them one by one)
     llm_heavy: bool = False             # platform migrations and the sandbox tester ask the LLM as often as they need
                                         # (replatform.py); the worker sets it only when the appliance allows it
+    splits: dict | None = None          # project/repository -> folder pattern ("scenarios/*"): one application per
+                                        # folder (the worker: OrgRepository.SplitPath from the state's sync)
     parallel: int = 1                   # repositories processed at the same time, each in its own process (1..MAX_PARALLEL)
     review_queue: object = None         # with ai: queued LLM reviews (llmqueue.ReviewQueue): the scan asks the LLM
                                         # nothing, component reviews wait in the LLM review queue (no LLM-heavy mode,
@@ -134,6 +137,9 @@ class RepoResult:
     lab_services: dict = field(default_factory=dict)   # lab services needed, provided and turned off (labservices.py)
     migration: dict = field(default_factory=dict)      # moved from another platform (replatform.py): platforms, files
     llm_usage: dict = field(default_factory=dict)      # LLM calls for this repository, by feature (ai.usage_summary)
+    apps: list = field(default_factory=list)           # a repository split into applications (OrgRepository.SplitPath):
+                                                       # one entry per folder (folder, app, status, rating, ...)
+    split_hint: dict = field(default_factory=dict)     # a whole repository that looks like several applications
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -709,8 +715,134 @@ def repo_label(r: SourceRepo) -> str:
     return r.name if r.project in ("", NO_PROJECT) else f"{r.project}/{r.name}"
 
 
+# --------------------------------------------------------------------------- repositories with several applications
+
+SPLIT_RE = re.compile(r"(?!/)(?!.*(^|/)\.\.?(/|$))[\w .\-/*?\[\]]{1,200}")
+SPLIT_MAX = 200
+# what makes a folder an application of its own: a solution, or a top-level Node, Java, Go or Python project
+APP_MARKERS = ("*.sln", "package.json", "pom.xml", "build.gradle", "build.gradle.kts", "go.mod", "pyproject.toml")
+SKIP_DIRS = {".git", "node_modules", "bin", "obj", "target", "dist", "build", "vendor", "packages", ".vs", ".idea"}
+
+
+def valid_split(pattern: str) -> bool:
+    """A folder pattern relative to the repository: no absolute paths, no `..`, at most 200 characters."""
+    return bool(pattern) and bool(SPLIT_RE.fullmatch(pattern)) and not pattern.startswith("/")
+
+
+def split_folders(src: Path, pattern: str) -> list[str]:
+    """The folders (relative, posix) the pattern matches in the clone: real folders inside it, not symlinks or
+    hidden ones, at most SPLIT_MAX."""
+    if not valid_split(pattern):
+        return []
+    root = src.resolve()
+    found = []
+    for d in sorted(src.glob(pattern.rstrip("/"))):
+        rel = d.relative_to(src)
+        if not d.is_dir() or d.is_symlink() or any(p.startswith(".") for p in rel.parts) or rel.parts == ():
+            continue
+        try:
+            d.resolve().relative_to(root)
+        except ValueError:
+            continue
+        found.append(rel.as_posix())
+        if len(found) >= SPLIT_MAX:
+            break
+    return found
+
+
+def folder_segments(folders: list[str]) -> dict[str, str]:
+    """folder -> the name of its output folder suffix and application: its last part, or the whole path when two
+    folders share the last part."""
+    leaf = {f: f.rsplit("/", 1)[-1] for f in folders}
+    dup = {n for n in leaf.values() if list(leaf.values()).count(n) > 1}
+    return {f: segment(f if leaf[f] in dup else leaf[f]) for f in folders}
+
+
+def split_app_name(app: str, seg: str) -> str:
+    """The application (namespace) of one folder of a split repository: <app>-<folder>, at most 63 characters."""
+    base = re.sub(r"-{2,}", "-", _dns(f"{app}-{seg}")) or app
+    if len(base) > 63:
+        h = hashlib.sha1(f"{app}/{seg}".encode()).hexdigest()[:8]
+        base = f"{base[:54].rstrip('-')}-{h}"
+    return base
+
+
+def split_dirs(root: Path, rel: str) -> list[Path]:
+    """The <repo>@<folder> folders of a repository split into applications, in the output repository."""
+    base = root / rel
+    if not base.parent.is_dir():
+        return []
+    return sorted(d for d in base.parent.iterdir() if d.name.startswith(base.name + "@") and d.is_dir())
+
+
+def repo_dirs(root: Path, rel: str) -> list[Path]:
+    """All of a repository's folders in the output repository: <repo> (whole) and <repo>@<folder> (split)."""
+    base = root / rel
+    return ([base] if base.exists() else []) + split_dirs(root, rel)
+
+
+def suggest_split(src: Path, limit: int = 20000) -> dict:
+    """A whole repository that looks like several applications: folders at the same level that each hold their
+    own application root (a solution, or a top-level package.json, pom.xml, ...), at least 3 of them and nearly
+    every root in the repository. {"pattern": "scenarios/*", "count": 33} or {} (one application)."""
+    roots: list[tuple[str, ...]] = []
+    seen = 0
+    for dirpath, dirnames, filenames in os.walk(src):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+        seen += 1
+        if seen > limit:
+            break
+        rel = Path(dirpath).relative_to(src).parts
+        if any(fnmatch.fnmatch(f, m) for f in filenames for m in APP_MARKERS):
+            if not any(rel[:len(x)] == x for x in roots):      # under another root: part of that application
+                roots.append(rel)
+    if len(roots) < 3:
+        return {}
+    best = {}
+    for depth in (1, 2, 3):
+        groups: dict[tuple, set] = {}
+        for x in roots:
+            if len(x) >= depth:
+                groups.setdefault(x[:depth - 1], set()).add(x[depth - 1])
+        for prefix, leaves in groups.items():
+            covered = sum(1 for x in roots if len(x) >= depth and x[:depth - 1] == prefix)
+            if len(leaves) >= 3 and covered >= 0.8 * len(roots) and len(leaves) > best.get("count", 0):
+                best = {"pattern": "/".join((*prefix, "*")), "count": len(leaves)}
+        if best:
+            break
+    return best
+
+
+def combine_split(res: RepoResult, subs: list, pattern: str) -> RepoResult:
+    """The repository's result from its applications: deployed when one is, the best rating, every component."""
+    order = "ABCDE"
+    res.apps = [{"folder": f, "app": s.app, "status": s.status, "reason": s.reason, "rating": s.rating,
+                 "path": s.path, "source_key": s.source_key, "components": [c["component"] for c in s.components]}
+                for f, s in subs]
+    res.components = [{**c, "application": f} for f, s in subs for c in s.components]
+    res.excluded = [{**x, "component": f"{f}: {x.get('component', '')}"} for f, s in subs for x in s.excluded]
+    statuses = [s.status for _, s in subs]
+    n = {k: sum(1 for x in statuses if x == k) for k in ("deployed", "no-a-components", "error")}
+    skipped = sum(1 for x in statuses if x.startswith("skipped-"))
+    if n["deployed"]:
+        res.status = "deployed"
+    elif n["no-a-components"]:
+        res.status = "no-a-components"
+    elif skipped and not n["error"]:
+        res.status = statuses[0] if len(set(statuses)) == 1 else "skipped-no-app"
+    else:
+        res.status = "error"
+    rated = [s.rating for _, s in subs if s.rating in order]
+    res.rating = min(rated, key=order.index) if rated else ""
+    res.reason = (f"{len(subs)} applications ({pattern}): {n['deployed']} deployed, {n['no-a-components']} not rated A, "
+                  f"{skipped} skipped, {n['error']} failed")
+    res.path = ""
+    return res
+
+
 def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work: Path, reg: Registry | None,
-                 tag: str, cutoff: datetime | None, rules_reset, admin: str | None = None) -> RepoResult:
+                 tag: str, cutoff: datetime | None, rules_reset, admin: str | None = None,
+                 split: str | None = None) -> RepoResult:
     """One repository (_process_repo), with the LLM calls made for it tagged with its name and summed up
     in RepoResult.llm_usage."""
     from .ai import LISTENERS, usage_scope, usage_summary
@@ -718,7 +850,7 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
     LISTENERS.append(used.append)
     try:
         with usage_scope(repo=repo_label(r)):
-            res = _process_repo(r, prov, o, app, out, work, reg, tag, cutoff, rules_reset, admin)
+            res = _process_repo(r, prov, o, app, out, work, reg, tag, cutoff, rules_reset, admin, split)
     finally:
         LISTENERS.remove(used.append)
     res.llm_usage = usage_summary(used) if used else {}
@@ -726,13 +858,17 @@ def process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work
 
 
 def _process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, work: Path, reg: Registry | None,
-                  tag: str, cutoff: datetime | None, rules_reset, admin: str | None = None) -> RepoResult:
+                  tag: str, cutoff: datetime | None, rules_reset, admin: str | None = None,
+                  split: str | None = None) -> RepoResult:
     """One repository. `admin` is an administrator's decision from the worker's repository list:
     "disabled" (never processed, stops deploying), "project-disabled" (the same, for every repository
     of a project an administrator disabled), "enabled" (processed even when an automatic skip
     applies: stale, fork, Dockerfile, no application code) or None (automatic). An enabled repository
     with a Dockerfile and a deployment descriptor (Swarm, Compose, Nomad, Azure Container Apps, ECS) is
-    moved from that platform to Kubernetes (replatform.py) instead of being containerized again."""
+    moved from that platform to Kubernetes (replatform.py) instead of being containerized again.
+
+    `split` (OrgRepository.SplitPath): a folder pattern; each folder it matches is assessed and deployed as its own
+    application (<app>-<folder>, output folder <repo>@<folder>), and the repository's result sums them up."""
     from .analyze import analyze_app
     from .generate import generate_app, k8s_name
     from .gitops import GitOpsOptions
@@ -747,8 +883,9 @@ def _process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, wor
 
     def stop(status: str, reason: str) -> RepoResult:
         res.status, res.reason = status, reason
-        if not o.dry_run and dest.exists():                        # it no longer qualifies: stop deploying it
-            shutil.rmtree(dest)
+        if not o.dry_run:                                          # it no longer qualifies: stop deploying it
+            for d in repo_dirs(out.root, rel):
+                shutil.rmtree(d)
         return res
 
     def skip(status: str, reason: str) -> RepoResult | None:
@@ -757,6 +894,64 @@ def _process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, wor
             res.overridden.append({"status": status, "reason": reason})
             return None
         return stop(status, reason)
+
+    def assess_tree(path: Path, name: str, trel: str, tdest: Path, tres: RepoResult, rename: bool) -> RepoResult:
+        """One application: the whole repository, or one folder of a split repository (rename: its name is
+        <app>-<folder>, not the folder's own)."""
+        def tstop(status: str, reason: str) -> RepoResult:
+            tres.status, tres.reason = status, reason
+            if tdest.exists():                                 # it no longer qualifies: stop deploying it
+                shutil.rmtree(tdest)
+            return tres
+
+        def tskip(status: str, reason: str) -> RepoResult | None:
+            if admin == "enabled":
+                tres.overridden.append({"status": status, "reason": reason})
+                return None
+            return tstop(status, reason)
+
+        dockerfiles = existing_dockerfiles(path)
+        if dockerfiles and not o.migrate_containerized and (x := tskip("skipped-dockerfile", "found " + ", ".join(dockerfiles[:3])
+                                      + (" ..." if len(dockerfiles) > 3 else ""))):
+            return x
+        from .sandbox_https import configured_domain, normalize_domain
+        domain = normalize_domain(o.ingress_domain) if o.ingress_domain else configured_domain()
+        gitops = GitOpsOptions(git_url=out.url, branch=o.output_branch, path=trel, verify_commits=o.verify_commits,
+                               image_pull_secret=o.image_pull_secret or "", ingress_domain=domain,
+                               sandbox_idp=o.sandbox_idp)
+        if dockerfiles:
+            # already containerized and enabled by an administrator: move it from its current platform
+            from .replatform import migrate_repo
+            from .sqlstore import source_info
+            tres.source_key = source_info(path, name)["key"]
+            mres = migrate_repo(path, o, tres, name, trel, tdest, work / "gen" / name, reg, tag, gitops,
+                                existing_dockerfiles(path, limit=200))
+            if mres is not None:
+                if mres.status == "deployed":
+                    (tdest / "containerizer.json").write_text(json.dumps(mres.to_dict(), indent=2, default=str) + "\n")
+                return mres
+        if o.skip_no_code:
+            rules_reset()
+            status, why = no_code_reason(path)
+            if status and (x := tskip(status, why)):
+                return x
+        scratch = work / "analyze"
+        if scratch.exists():
+            shutil.rmtree(scratch)
+        rules_reset()
+        queue = o.review_queue.for_repo(r.project, r.name, repo_label(r)) if o.ai and o.review_queue is not None else None
+        a = analyze_app(path, scratch, ai=o.ai, model=o.model, verify=o.verify, registry=o.registry, pin=o.pin,
+                        timeout=o.timeout, gitops=gitops, sql=o.sql, review_queue=queue)
+        if rename:
+            a.repo.name = name                                 # namespace, images and results: <app>-<folder>
+        tres.rating = a.rating
+        from .sqlstore import source_info
+        tres.source_key = source_info(path, a.name)["key"]
+        assessment_id = None
+        if o.sql or os.environ.get("CONTAINERIZER_SQL"):
+            from .sqlstore import store_results
+            assessment_id = store_results(o.sql, [a], [path])[0]
+        return deploy_app(a, path, trel, o, out, reg, tag, gitops, tres, work, name, assessment_id=assessment_id)
 
     if o.output_repo and same_repo(r.clone_url, o.output_repo):
         # the generated files live here: never scanned, and its write token is never used for scanning
@@ -821,52 +1016,40 @@ def _process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, wor
         if cutoff and when and when < cutoff and \
                 (x := skip("skipped-stale", f"last commit on {r.default_branch or 'default branch'} {when:%Y-%m-%d}")):
             return x
-        dockerfiles = existing_dockerfiles(src)
-        if dockerfiles and not o.migrate_containerized and (x := skip("skipped-dockerfile", "found " + ", ".join(dockerfiles[:3])
-                                      + (" ..." if len(dockerfiles) > 3 else ""))):
-            return x
-        if dockerfiles:
-            # already containerized and enabled by an administrator: move it from its current platform
-            from .replatform import migrate_repo
-            from .sandbox_https import configured_domain, normalize_domain
-            domain = normalize_domain(o.ingress_domain) if o.ingress_domain else configured_domain()
-            gitops = GitOpsOptions(git_url=out.url, branch=o.output_branch, path=rel, verify_commits=o.verify_commits,
-                                   image_pull_secret=o.image_pull_secret or "", ingress_domain=domain,
-                                   sandbox_idp=o.sandbox_idp)
-            from .sqlstore import source_info
-            res.source_key = source_info(src, app)["key"]
-            mres = migrate_repo(src, o, res, app, rel, dest, work / "gen" / app, reg, tag, gitops,
-                                existing_dockerfiles(src, limit=200))
-            if mres is not None:
-                if mres.status == "deployed":
-                    (dest / "containerizer.json").write_text(json.dumps(mres.to_dict(), indent=2, default=str) + "\n")
-                return mres
-        if o.skip_no_code:
-            rules_reset()
-            status, why = no_code_reason(src)
-            if status and (x := skip(status, why)):
-                return x
-
-        from .sandbox_https import configured_domain, normalize_domain
-        domain = normalize_domain(o.ingress_domain) if o.ingress_domain else configured_domain()
-        gitops = GitOpsOptions(git_url=out.url, branch=o.output_branch, path=rel, verify_commits=o.verify_commits,
-                               image_pull_secret=o.image_pull_secret or "", ingress_domain=domain,
-                               sandbox_idp=o.sandbox_idp)
-        scratch = work / "analyze"
-        if scratch.exists():
-            shutil.rmtree(scratch)
-        rules_reset()
-        queue = o.review_queue.for_repo(r.project, r.name, repo_label(r)) if o.ai and o.review_queue is not None else None
-        a = analyze_app(src, scratch, ai=o.ai, model=o.model, verify=o.verify, registry=o.registry, pin=o.pin,
-                        timeout=o.timeout, gitops=gitops, sql=o.sql, review_queue=queue)
-        res.rating = a.rating
-        from .sqlstore import source_info
-        res.source_key = source_info(src, a.name)["key"]
-        assessment_id = None
-        if o.sql or os.environ.get("CONTAINERIZER_SQL"):
-            from .sqlstore import store_results
-            assessment_id = store_results(o.sql, [a], [src])[0]
-        return deploy_app(a, src, rel, o, out, reg, tag, gitops, res, work, app, assessment_id=assessment_id)
+        if not split:
+            for d in split_dirs(out.root, rel):             # the applications it was split into before
+                shutil.rmtree(d)
+            try:
+                res.split_hint = suggest_split(src)
+            except OSError:
+                res.split_hint = {}
+            return assess_tree(src, app, rel, dest, res, rename=False)
+        folders = split_folders(src, split)
+        if not folders:
+            res.reason = (f"no folder matches {split!r} (Applications in this repository, Admin -> Repositories): "
+                          "nothing was assessed, and what was deployed before stays")
+            return res
+        if dest.exists():                                      # deployed as one application before
+            shutil.rmtree(dest)
+        segs = folder_segments(folders)
+        subs = []
+        for f in folders:
+            sub_app = split_app_name(app, segs[f])
+            sub_rel = f"{rel}@{segs[f]}"
+            sres = RepoResult(provider=r.provider, org=o.org, project=r.project, repo=r.name, status="error",
+                              web_url=r.web_url, clone_url=r.clone_url, branch=r.default_branch, app=sub_app,
+                              processed_at=res.processed_at, commit=res.commit, last_commit=res.last_commit)
+            try:
+                sub = assess_tree(src / f, sub_app, sub_rel, out.root / sub_rel, sres, rename=True)
+            except Exception as e:                             # one application must not stop the others
+                sres.status, sres.reason = "error", REDACT(f"{type(e).__name__}: {e}")[:500]
+                sub = sres
+            subs.append((f, sub))
+        keep = {f"{repo_seg}@{segs[f]}" for f in folders}
+        for d in split_dirs(out.root, rel):                 # folders that no longer match
+            if d.name not in keep:
+                shutil.rmtree(d)
+        return combine_split(res, subs, split)
     finally:
         if not o.keep_work and not cached:
             shutil.rmtree(src, ignore_errors=True)
@@ -1157,6 +1340,7 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
         repos = repos[:o.max_repos]
     log(f"{o.org}: {len(listed)} repositories" + (f", {len(repos)} selected by the filters" if len(repos) != len(listed) else ""))
     admin = o.state.sync(listed, names) if o.state else {}
+    splits = {**(o.splits or {}), **(getattr(o.state, "splits", None) or {})}
     if o.state:
         chosen = {r.key for r in repos}
         for r in listed:
@@ -1188,10 +1372,10 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
         removed = 0
         for r in off:
             if out:
-                dest = out.root / segment(o.org) / segment(r.project) / segment(r.name)
-                if dest.exists():
-                    shutil.rmtree(dest)
-                    removed += 1
+                dirs = repo_dirs(out.root, f"{segment(o.org)}/{segment(r.project)}/{segment(r.name)}")
+                for d in dirs:
+                    shutil.rmtree(d)
+                removed += 1 if dirs else 0
             if o.state and not o.dry_run:
                 why = (f"project {r.project} disabled by an administrator" if admin.get(r.key) == "project-disabled"
                        else "disabled by an administrator")
@@ -1229,7 +1413,7 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
         if parallel > 1 and len(repos) > 1:
             log(f"{o.org}: {parallel} repositories at a time")
             stopped = _run_parallel(repos, parallel, o, prov, out, work, reg, tag, cutoff, reset_cache, admin, names,
-                                    finish, log)
+                                    finish, log, splits)
         else:
             stopped = False
             for i, r in enumerate(repos, 1):
@@ -1241,7 +1425,8 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
                     hooks.repo_start(i, r)
                 t0 = _time.monotonic()
                 res = _repo_job(r, prov, o, names[r.key], _DryOut() if o.dry_run else out, work,
-                                None if o.dry_run else reg, tag, cutoff, reset_cache, admin.get(r.key))
+                                None if o.dry_run else reg, tag, cutoff, reset_cache, admin.get(r.key),
+                                splits.get(r.key))
                 res.seconds = round(_time.monotonic() - t0, 1)
                 finish(i, r, res)
         if not stopped and cache and o.only_projects is None and o.only_repos is None:
@@ -1260,10 +1445,10 @@ MAX_PARALLEL = 8
 
 
 def _repo_job(r: SourceRepo, prov, o: OrgOptions, app: str, out, work: Path, reg, tag: str, cutoff, rules_reset,
-              admin: str | None) -> RepoResult:
+              admin: str | None, split: str | None = None) -> RepoResult:
     """process_repo; an exception is that repository's error, never the run's."""
     try:
-        return process_repo(r, prov, o, app, out, work, reg, tag, cutoff, rules_reset, admin)
+        return process_repo(r, prov, o, app, out, work, reg, tag, cutoff, rules_reset, admin, split)
     except Exception as e:
         return RepoResult(provider=r.provider, org=o.org, project=r.project, repo=r.name, status="error",
                           reason=REDACT(f"{type(e).__name__}: {e}")[:500], web_url=r.web_url, app=app)
@@ -1280,7 +1465,7 @@ class _GitEvents:
 
 
 def _child(send, stop, r: SourceRepo, prov, o: OrgOptions, app: str, out, work: Path, reg, tag: str, cutoff,
-           rules_reset, admin: str | None) -> None:
+           rules_reset, admin: str | None, split: str | None = None) -> None:
     """One repository in its own process (forked from the run): the analysis is CPU-bound Python, so processes,
     not threads, use the other cores. It writes the output repository's files into its own staging folder
     (`out.root`) and sends back the result, its git operations and its LLM usage; the run commits."""
@@ -1296,7 +1481,7 @@ def _child(send, stop, r: SourceRepo, prov, o: OrgOptions, app: str, out, work: 
     work.mkdir(parents=True, exist_ok=True)
     t0 = _time.monotonic()
     with ai.cancel_when(stop.is_set):                   # a cancelled run stops this one's LLM calls too
-        res = _repo_job(r, prov, o, app, out, work, reg, tag, cutoff, rules_reset, admin)
+        res = _repo_job(r, prov, o, app, out, work, reg, tag, cutoff, rules_reset, admin, split)
     res.seconds = round(_time.monotonic() - t0, 1)
     try:
         send.send((res, git_events.events, usage))
@@ -1307,7 +1492,7 @@ def _child(send, stop, r: SourceRepo, prov, o: OrgOptions, app: str, out, work: 
 
 
 def _run_parallel(repos: list, n: int, o: OrgOptions, prov, out, work: Path, reg, tag: str, cutoff, rules_reset,
-                  admin: dict, names: dict, finish, log) -> bool:
+                  admin: dict, names: dict, finish, log, splits: dict | None = None) -> bool:
     """Up to n repositories at a time, each in its own forked process with its own work and staging folders.
     Results are handled in the order they finish: the staged files replace the repository's folder in the output
     repository, then `finish` records and commits it (one at a time, so a commit never holds another repository's
@@ -1336,12 +1521,14 @@ def _run_parallel(repos: list, n: int, o: OrgOptions, prov, out, work: Path, reg
         if stage.exists():
             shutil.rmtree(stage)
         (stage / "out").mkdir(parents=True)
-        if out and (out.root / rel).exists():          # the files it had: the scan reads and updates them
-            shutil.copytree(out.root / rel, stage / "out" / rel, symlinks=True)
+        if out:                                         # the files it had: the scan reads and updates them
+            for d in repo_dirs(out.root, rel.as_posix()):
+                shutil.copytree(d, stage / "out" / d.relative_to(out.root), symlinks=True)
         recv, send = ctx.Pipe(duplex=False)
         p = ctx.Process(target=_child, name=f"cz-repo-{app}",
                         args=(send, stop, r, prov, o, app, SimpleNamespace(root=stage / "out", url=out.url if out else ""),
-                              stage / "work", reg, tag, cutoff, rules_reset, admin.get(r.key)))
+                              stage / "work", reg, tag, cutoff, rules_reset, admin.get(r.key),
+                              (splits or {}).get(r.key)))
         if hooks and hasattr(hooks, "repo_start"):
             hooks.repo_start(started, r)
         with warnings.catch_warnings():                 # forking a process with threads (heartbeat, metrics)
@@ -1381,11 +1568,11 @@ def _run_parallel(repos: list, n: int, o: OrgOptions, prov, out, work: Path, reg
                     res = RepoResult(provider=r.provider, org=o.org, project=r.project, repo=r.name, status="error",
                                      reason=f"the process scanning it ended without a result (exit code {p.exitcode})",
                                      web_url=r.web_url, app=names[r.key])
-                elif out:                               # its files replace the folder it had
-                    dest, staged = out.root / rel, stage / "out" / rel
-                    if dest.exists():
-                        shutil.rmtree(dest)
-                    if staged.exists():
+                elif out:                               # its files replace the folders it had
+                    for d in repo_dirs(out.root, rel.as_posix()):
+                        shutil.rmtree(d)
+                    for staged in repo_dirs(stage / "out", rel.as_posix()):
+                        dest = out.root / staged.relative_to(stage / "out")
                         dest.parent.mkdir(parents=True, exist_ok=True)
                         shutil.move(str(staged), str(dest))
                 shutil.rmtree(stage, ignore_errors=True)

@@ -269,7 +269,7 @@ def cmd_org(args) -> int:
         output_token_env=args.output_token_env, output_username=args.output_username, push=not args.no_push,
         push_images=not args.no_push_images, tag=args.tag, image_pull_secret=args.image_pull_secret,
         cosign_key=args.cosign_key, include=args.include, exclude=args.exclude, skip_forks=args.skip_forks,
-        stale_days=args.stale_days, max_repos=args.max_repos, parallel=args.parallel, ai=args.ai, model=args.model,
+        stale_days=args.stale_days, max_repos=args.max_repos, parallel=args.parallel, splits=dict(x.split("=", 1) for x in args.split if "=" in x) or None, ai=args.ai, model=args.model,
         verify=not args.no_verify, gate=not args.no_gate, scanner=args.scanner, fail_on=args.fail_on,
         timeout=args.timeout, pin=args.pin_digests, verify_commits=args.verify_commits, sql=args.sql,
         ingress_domain=args.ingress_domain, sandbox_idp=not args.no_sandbox_idp,
@@ -756,6 +756,9 @@ def main(argv=None) -> int:
     s.add_argument("--stale-days", type=int, default=183,
                    help="skip repositories with no commit for this many days (default 183, about 6 months; 0: off)")
     s.add_argument("--max-repos", type=int, default=0)
+    s.add_argument("--split", action="append", default=[], metavar="REPO=PATTERN",
+                   help="assess each folder matching PATTERN (relative to the repository, e.g. scenarios/*) as its own "
+                        "application; REPO is <project>/<repository> (GitHub: _/<repository>); repeatable")
     s.add_argument("--parallel", type=int, default=1, metavar="N",
                    help="repositories processed at the same time, each in its own process (1 to 8; default 1)")
     s.add_argument("--ai", action="store_true", help="ask the LLM about uncertain components and unexplained failures")

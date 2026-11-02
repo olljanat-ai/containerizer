@@ -9,6 +9,12 @@ qcow2 and VHDX images as release assets.
 ## Unreleased
 
 ### Organization scans
+- **Applications in this repository** (Admin → Repositories → the repository): a mono-repo can be assessed as one
+  application per folder matching a pattern (`scenarios/*`), each with its own rating, results page, sandbox
+  namespace and output folder (`<repo>@<folder>`). A repository that looks like several applications (three or more
+  folders with their own solution or project root) gets a note with the pattern filled in; nothing is split
+  automatically. `containerizer org --split 'project/repo=pattern'`.
+- Admin pages: radio buttons sat on their own line above their label; they are beside it again.
 - **Repositories in parallel** (the scan's settings, 1 to 8, default 1; `containerizer org --parallel N`): a full scan
   processes that many repositories at the same time, each in its own process, so it uses that many CPU cores
   (the assessment is CPU-bound Python, so threads would not help). Results are committed one at a time.

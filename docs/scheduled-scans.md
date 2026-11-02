@@ -105,6 +105,41 @@ and disk space, and with **Ask the LLM** each asks the LLM on its own, so a self
 many requests at once (give llama.cpp that many slots, `--parallel`). Start with the number of CPU cores minus
 one, and lower it if the machine runs short of memory.
 
+## Repositories with several applications
+
+A scan assesses each repository as one application. A mono-repo that holds several applications, for example
+one folder per application under `apps/` or `scenarios/`, would then get one rating for all of them. On the
+repository's page (**Admin → Repositories → the repository**), **Applications in this repository** →
+**One application per folder matching** a folder pattern relative to the repository (`scenarios/*`,
+`services/*`, `teams/*/apps/*`) makes each matching folder its own application:
+
+- its own assessment, rating and results page (the application's source path is the folder), owner and
+  product mapping;
+- its own sandbox namespace `<repository app>-<folder>` and its own folder in the output repository,
+  `<Organization>/<Project>/<Repository>@<folder>`;
+- the repository's row sums them up: deployed when one of them is, the best rating, and a table of the
+  folders with their results on the repository's page.
+
+![A repository split into one application per folder: the folders with their results, and the setting](images/admin-repository-split.png#only-light)
+![A repository split into one application per folder: the folders with their results, and the setting](images/admin-repository-split-dark.png#only-dark)
+
+The repository is still cloned once, and enabling or disabling it applies to all its applications. Folders
+that stop matching leave the sandbox at the next scan, and switching back to **The whole repository is one
+application** removes the per-folder ones. The applications assessed before the change stay in the
+history: hide the old whole-repository one on its application page. Who changed the setting, and when, is in
+the change history.
+
+A repository assessed as one application that looks like several (at least three folders at the same level
+that each have their own solution, `package.json`, `pom.xml`, `build.gradle`, `go.mod` or `pyproject.toml`, and
+hold nearly all of the repository's) gets a note on its page with the pattern filled in. Nothing is split
+automatically: it changes the applications' identities in the results, so an administrator decides.
+
+![A repository that looks like 33 applications: the note, and the pattern filled in](images/admin-repository-split-hint.png#only-light)
+![A repository that looks like 33 applications: the note, and the pattern filled in](images/admin-repository-split-hint-dark.png#only-dark)
+
+The command line does the same with `containerizer org ... --split '<project>/<repository>=<pattern>'`
+(GitHub has no projects: `_/<repository>`).
+
 ## Automatic skips
 
 | Automatic skip | Reason shown, for example |

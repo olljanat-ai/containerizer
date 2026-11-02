@@ -722,6 +722,8 @@ def edit_repo(adm, conn, s, a, ident: int, flash: str) -> Response:
               if r.get("ProjectId") and r["ProjectName"] != "_" else ""),
              ("First seen", _d(r["FirstSeenAt"])), ("Last activity", _d(r["LastActivityAt"]) if r["LastActivityAt"] else ""),
              ("Latest commit", _d(r["LastCommitAt"]) if r.get("LastCommitAt") else "")]
+    if r.get("SplitPath"):
+        facts.append(("Applications", f"one per folder matching <code>{e(r['SplitPath'])}</code>"))
     if r["LastStatus"]:
         facts += [("Latest result", f"{e(LAST_TEXT.get(r['LastStatus'], r['LastStatus']))}"
                    f"{' · rated ' + e(r['LastRating']) if r['LastRating'] else ''} · {_d(r['LastScannedAt'])}"
@@ -741,16 +743,45 @@ def edit_repo(adm, conn, s, a, ident: int, flash: str) -> Response:
                                                           "Compose, Nomad, Azure Container Apps or ECS to Kubernetes)"),
                                               ("disabled", "Disabled: never process it (stops deploying it to the sandbox, "
                                                            "hides its results from the results pages)")))
+    split = r.get("SplitPath") or ""
+    hint = detail.get("split_hint") or {}
+    split_val = split or hint.get("pattern") or ""
+    split_opts = "".join(
+        f"<label class='check'><input type='radio' name='SplitMode' value='{k}'{' checked' if (k == 'split') == bool(split) else ''}> "
+        f"{t}</label>" for k, t in (("whole", "The whole repository is one application"),
+                                    ("split", "One application per folder matching the pattern below")))
     form = (f"<form method='post' action='/admin/repositories/{ident}' class='edit'>{adm._csrf(s)}{opts}"
             f"<label for='Note'>Note <span class='muted'>(why; shown in the list)</span></label>"
             f"<input id='Note' name='Note' maxlength='400' value='{e(r['AdminNote'] or '')}'>"
+            f"<h3 id='applications'>Applications in this repository</h3>{split_opts}"
+            f"<label for='SplitPath'>Folder pattern <span class='muted'>(relative to the repository, e.g. "
+            f"<code>scenarios/*</code> or <code>services/*</code>)</span></label>"
+            f"<input id='SplitPath' name='SplitPath' maxlength='200' value='{e(split_val)}' placeholder='apps/*'>"
+            f"<p class='muted small'>A repository with several applications (a mono-repo): each folder the pattern matches "
+            f"is assessed and deployed as its own application, with its own rating, results page and sandbox namespace. "
+            f"The applications assessed as the whole repository before stay in the history (hide them on the "
+            f"application page). The next scan of the repository uses it.</p>"
             f"<div><button>Save</button> <a href='/admin/repositories?scan={int(r['ScanId'])}'>Back</a></div></form>")
+    if hint and not split:
+        form = (f"<p class='note'>This repository looks like <b>{int(hint.get('count') or 0)} applications</b>, one in each "
+                f"folder matching <code>{e(hint.get('pattern') or '')}</code> (each has its own solution or project root), "
+                f"but it is assessed as one. <a href='#applications'>Assess each as its own application</a>: choose "
+                f"\"One application per folder\" below and save.</p>" + form)
     if r.get("ProjectState") == "disabled":
         form = (f"<p class='note'>Its project {e(r['ProjectName'])} is disabled: the full scan leaves every repository of "
                 f"the project out, whatever is set here. <a href='/admin/repositories/projects/{int(r['ProjectId'])}'>"
                 f"Enable the project</a> to let this setting decide again.</p>" + form)
+    apps_rows = "".join(
+        f"<tr><td><code>{e(x.get('folder', ''))}</code></td><td>{e(LAST_TEXT.get(x.get('status', ''), x.get('status', '')))}"
+        f"{'<div class=small>' + e((x.get('reason') or '')[:200]) + '</div>' if x.get('reason') else ''}</td>"
+        f"<td>{e(x.get('rating') or '')}</td><td class='small'>{e(', '.join(x.get('components') or []))}</td></tr>"
+        for x in detail.get("apps") or [])
+    apps_table = (f"<h2>Applications ({len(detail.get('apps') or [])})</h2><table><thead><tr><th>Folder</th><th>Result</th>"
+                  f"<th>Rating</th><th>Deployed components</th></tr></thead><tbody>{apps_rows}</tbody></table>"
+                  if apps_rows else "")
     body = (f"<div class='formrow'>{state_chip(state, who)}<span>{e(reason)}</span></div><div class='meta'>{meta}</div>"
-            + (f"<h2>Deployed components</h2><ul>{comps}</ul>" if comps else "")
+            + apps_table
+            + (f"<h2>Deployed components</h2><ul>{comps}</ul>" if comps and not apps_rows else "")
             + (f"<h2>Not deployed</h2><ul>{excl}</ul>" if excl else "") + lab
             + f"<h2>Enabled or disabled</h2>{form}<h2>Changes</h2>{adm._history(conn, 'OrgRepository', ident)}")
     if not r["RemovedAt"]:
@@ -802,13 +833,22 @@ def _llm_section(u: dict) -> str:
 
 
 def save_repo(conn, ident: int, form: dict) -> Response:
+    from .org import valid_split
     setting = form.get("Setting", [""])[0]
     if setting not in ("auto", "enabled", "disabled"):
         return _back(f"/admin/repositories/{ident}", "Choose automatic, enabled or disabled.")
     note = " ".join(form.get("Note", [""])[0].split())[:400] or None
+    sets, params = "AdminState = %s, AdminNote = %s", [None if setting == "auto" else setting, note]
+    mode = form.get("SplitMode", [""])[0]
+    if mode in ("whole", "split"):                         # the form has it; the list's bulk actions do not
+        pattern = form.get("SplitPath", [""])[0].strip().strip("/") if mode == "split" else ""
+        if mode == "split" and not valid_split(pattern):
+            return _back(f"/admin/repositories/{ident}", "Folder pattern: a path relative to the repository, such as "
+                                                         "scenarios/* (letters, digits, . _ - / * ? [ ]; no ..).")
+        sets += ", SplitPath = %s"
+        params.append(pattern or None)
     cur = conn.cursor()
-    cur.execute("UPDATE cz.OrgRepository SET AdminState = %s, AdminNote = %s WHERE RepositoryId = %s",
-                (None if setting == "auto" else setting, note, ident))
+    cur.execute(f"UPDATE cz.OrgRepository SET {sets} WHERE RepositoryId = %s", (*params, ident))
     n = cur.rowcount
     conn.commit()
     if not n:
