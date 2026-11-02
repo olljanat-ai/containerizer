@@ -6,6 +6,8 @@ LAB_DIR=${LAB_DIR:-/home/dev/lab-sandbox}           # state: kubeconfig, secrets
 STATE=$LAB_DIR/state
 CZ_REPO=${CZ_REPO:-$(cd "$LAB_SCRIPTS/../.." 2>/dev/null && [ -f containerizer/org.py ] && pwd || echo /home/dev/containerizer)}
 PY=${PY:-$CZ_REPO/.venv-ci/bin/python}
+# a git worktree of the repository has no .venv-ci of its own: the main checkout's
+[ -x "$PY" ] || PY=/home/dev/containerizer/.venv-ci/bin/python
 export PYTHONPATH=$CZ_REPO${PYTHONPATH:+:$PYTHONPATH}
 export KUBECONFIG=$LAB_DIR/kubeconfig
 

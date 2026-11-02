@@ -508,6 +508,19 @@ GitHub, GitLab or Azure DevOps and write the output to the lab), and `--no-push-
 gate's image as `<registry>/<app>/<component>:<tag>`, so for local images that tag has to be added
 (`docker tag`) by whatever replaces the push.
 
+### The egress observer
+
+`ci/lab-sandbox/egress-observer.sh install` runs the [egress observer](egress.md#the-egress-observer) for the lab, as
+the appliance does (but without the appliance firewall's signals: the lab has none): the systemd unit
+`lab-egress-observer` as this user with CAP_NET_ADMIN only, its own read-only
+ServiceAccount (`$LAB_DIR/egress-observer.kubeconfig`), the CoreDNS query log on (`log.override` in the lab's
+`coredns-custom` manifest), flows into the lab's results database with the scanner login of `results/.env`.
+`sync.sh` gives it the Roles of new namespaces; `egress-observer.sh remove` takes it all out again. For an egress
+review in the lab, a queue runner needs the output repository and, for apps not cloned by an organization scan,
+their checkouts: `CONTAINERIZER_EGRESS_OUTPUT_REPO=$LAB_OUTPUT_REPO`, `CONTAINERIZER_EGRESS_OUTPUT_USERNAME=lab-admin`,
+the write token in `OUTPUT_GIT_TOKEN` (env.sh) and `CONTAINERIZER_EGRESS_SOURCES=<folder of checkouts named after
+the applications>`; `containerizer llm-queue --kinds egress,link --name <own name>` runs one beside the lab's runner.
+
 ### The smoke test
 
 `smoke.sh` checks the whole path without a scan: it builds `localhost/lab/smoke:1` (nginx answering 200

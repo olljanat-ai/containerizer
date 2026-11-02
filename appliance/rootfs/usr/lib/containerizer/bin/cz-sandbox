@@ -46,6 +46,38 @@ KUBECONFIG
 }
 verifier_access || echo "containerizer: the read-only sandbox access for the LLM queue runner is not ready yet; retrying in 2 minutes" >&2
 
+# Read-only access for the egress observer (containerizer-egress-observer, docs/egress.md#the-egress-observer): its
+# own ServiceAccount with get/list pods and get pods/log in kube-system (the CoreDNS query log the
+# coredns-custom ConfigMap turns on) and get/list pods in every namespace containerizer generated (which pod a
+# source address is). No Secrets, no write verbs, nothing cluster-wide. Kubeconfig in
+# /run/containerizer/egress-observer.kubeconfig (root:containerizer 0640; a 24-hour token renewed every 12 hours).
+OBSERVER_KUBECONFIG=/run/containerizer/egress-observer.kubeconfig
+observer_access() {
+  local nss token server ca tmp
+  nss=$(k get namespaces -l app.kubernetes.io/managed-by=containerizer -o jsonpath='{.items[*].metadata.name}')
+  # shellcheck disable=SC2086 # one argument per namespace
+  /usr/lib/containerizer/venv/bin/python -I -c 'import sys, yaml
+from containerizer.egress import observer_rbac
+print("---\n".join(yaml.safe_dump(d, sort_keys=False) for d in observer_rbac(sys.argv[1:])))' $nss \
+    | k apply -f - >/dev/null
+  if [ -s "$OBSERVER_KUBECONFIG" ] && [ -z "$(find "$OBSERVER_KUBECONFIG" -mmin +720)" ]; then return 0; fi
+  token=$(k -n containerizer-verify create token containerizer-egress-observer --duration=24h)
+  server=$(k config view --raw -o jsonpath='{.clusters[0].cluster.server}')
+  ca=$(k config view --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')
+  install -d -m 0755 /run/containerizer
+  tmp=$(mktemp "$OBSERVER_KUBECONFIG.XXXXXX")
+  cat > "$tmp" <<KUBECONFIG
+apiVersion: v1
+kind: Config
+clusters: [{name: sandbox, cluster: {server: "$server", certificate-authority-data: "$ca"}}]
+users: [{name: containerizer-egress-observer, user: {token: "$token"}}]
+contexts: [{name: sandbox, context: {cluster: sandbox, user: containerizer-egress-observer}}]
+current-context: sandbox
+KUBECONFIG
+  chown root:containerizer "$tmp" && chmod 0640 "$tmp" && mv -f "$tmp" "$OBSERVER_KUBECONFIG"
+}
+observer_access || echo "containerizer: the egress observer's read-only sandbox access is not ready yet; retrying in 2 minutes" >&2
+
 if cz_store_ready; then cz_store_setup; fi
 # Sandbox HTTPS (Admin -> Sandbox HTTPS): the wildcard certificate as Traefik's default, or none when it is off.
 # After the store is set up, so the certificate goes through it; before sandbox.env, which it does not need.

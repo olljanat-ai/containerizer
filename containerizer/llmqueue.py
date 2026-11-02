@@ -4,8 +4,9 @@ A self-hosted LLM on CPUs can take minutes per answer. The queue (cz.LlmJob) hol
 and its runner (`containerizer llm-queue`, a process of its own) works through them when the settings let
 it (Admin → LLM queue: paused, days and hours in UTC, only when the machine is idle, parallel requests).
 
-Job kinds (JOB_KINDS, `register`): `review`, a component review, and `refactor`, a refactoring patch a
-person ordered for a B-rated application (refactor.py, docs/refactoring.md). A scan with queued LLM reviews
+Job kinds (JOB_KINDS, `register`): `review`, a component review, `refactor`, a refactoring patch a
+person ordered for a B-rated application (refactor.py, docs/refactoring.md), and `egress`, the review of the
+connections the sandbox blocked for an A-rated application (egress.py, docs/egress.md). A scan with queued LLM reviews
 (OrgScan.LlmMode 'queued', `--ai-queue` on the command line) asks the LLM nothing while it runs: the rules
 decide, and the component reviews the LLM would have been asked are queued with a priority instead
 (queue_reviews):
@@ -280,6 +281,26 @@ def refactor_handler(job: dict) -> dict:
 
 
 register(REFACTOR, "Refactoring", refactor_handler, "refactor-queued")
+EGRESS = "egress"
+
+
+def egress_handler(job: dict) -> dict:
+    """An egress review of the blocked connections of an application in the sandbox (egress.handler)."""
+    from .egress import handler
+    return handler(job)
+
+
+register(EGRESS, "Egress review", egress_handler, "egress-queued")
+LINK = "link"
+
+
+def link_handler(job: dict) -> dict:
+    """A link review: the component of another application an internal-looking destination is (links.handler)."""
+    from .links import handler
+    return handler(job)
+
+
+register(LINK, "Link review", link_handler, "link-queued")
 
 
 # --------------------------------------------------------------------------- component reviews: what, how urgent
@@ -766,8 +787,10 @@ class Runner:
     """`containerizer llm-queue`: works through cz.LlmJob when the settings let it."""
 
     def __init__(self, connect, name: str | None = None, poll: int = 30, metrics: QueueMetrics | None = None,
-                 log=None, key=None, load=load_per_cpu):
+                 log=None, key=None, load=load_per_cpu, kinds=None):
         self.connect = connect              # () -> sqlstore.Connection of a writer login
+        # the job kinds this runner takes (default: all); housekeeping follows them (variants: refactor, egress)
+        self.kinds = [k for k in (kinds or JOB_KINDS) if k in JOB_KINDS]
         self.name = (name or f"{socket.gethostname()}-llm-queue")[:256]
         self.poll = poll
         self.metrics = metrics or QueueMetrics(self.name)
@@ -823,7 +846,7 @@ class Runner:
     def claim(self, conn) -> dict | None:
         """Take the next queued job of a kind this runner knows (the page's order), skipping ones another
         runner holds."""
-        kinds = list(JOB_KINDS)
+        kinds = list(self.kinds)
         cur = conn.cursor(as_dict=True)
         cur.execute("SELECT TOP (1) j.*, s.Name AS ScanName FROM cz.LlmJob j WITH (UPDLOCK, READPAST, ROWLOCK) "
                     "LEFT JOIN cz.OrgScan s ON s.ScanId = j.ScanId "
@@ -980,15 +1003,29 @@ class Runner:
         self._housekept = _time.monotonic()
         import tempfile
         from . import refactor, variant
+        n = 0
         try:
             if self.key is None and os.environ.get("CONTAINERIZER_CREDENTIAL_KEY_FILE"):
                 from .credentials import private_key_from_env
                 self.key = private_key_from_env()
-            base = Path(os.environ.get(refactor.WORK_ENV) or tempfile.gettempdir()) / "variants"
-            return variant.housekeep(self.connect, self.key, base, log=self.log)
-        except Exception as ex:             # a database from before schema 23, the output repository away: next time
-            self.log(f"sandbox variants: {type(ex).__name__}: {ex}"[:400])
-            return 0
+        except Exception as ex:  # noqa: BLE001
+            self.log(f"credential key: {type(ex).__name__}: {ex}"[:400])
+        if REFACTOR in self.kinds:
+            try:
+                base = Path(os.environ.get(refactor.WORK_ENV) or tempfile.gettempdir()) / "variants"
+                n += variant.housekeep(self.connect, self.key, base, log=self.log)
+            except Exception as ex:             # a database from before schema 23, the output repository away: next time
+                self.log(f"sandbox variants: {type(ex).__name__}: {ex}"[:400])
+        if EGRESS in self.kinds or LINK in self.kinds:
+            # blocked connections: reviews queued for new ones; decisions written to the output repository
+            from . import egress
+            try:
+                base = Path(os.environ.get(refactor.WORK_ENV) or tempfile.gettempdir()) / "egress"
+                r = egress.housekeep(self.connect, self.key, base, log=self.log)
+                n += r.get("committed", 0)
+            except Exception as ex:             # a database from before schema 24: next time
+                self.log(f"egress: {type(ex).__name__}: {ex}"[:400])
+        return n
 
     # -- the loop --------------------------------------------------------------------------------
 
@@ -1148,7 +1185,12 @@ def build(args) -> int:
         print(f"error: {ex}", file=sys.stderr)
         return 3
     name = (args.name or f"{socket.gethostname()}-llm-queue")[:256]
-    r = Runner(lambda: connect(cs), name=name, poll=args.poll, metrics=QueueMetrics(name))
+    kinds = [k.strip() for k in (getattr(args, "kinds", None) or "").split(",") if k.strip()] or None
+    unknown = [k for k in kinds or [] if k not in JOB_KINDS]
+    if unknown:
+        print(f"error: unknown job kind(s) {', '.join(unknown)} (known: {', '.join(JOB_KINDS)})", file=sys.stderr)
+        return 2
+    r = Runner(lambda: connect(cs), name=name, poll=args.poll, metrics=QueueMetrics(name), kinds=kinds)
     if not args.no_metrics:
         token = os.environ.get("CONTAINERIZER_METRICS_TOKEN") or None
         mm.serve(r.metrics.registry, args.metrics_host, args.metrics_port, token)
@@ -1160,7 +1202,7 @@ def build(args) -> int:
         r.stopping.set()
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    r.log(f"{r.name}: looking at the LLM queue every {args.poll}s")
+    r.log(f"{r.name}: looking at the LLM queue every {args.poll}s (kinds: {', '.join(r.kinds)})")
     r.run(once=args.once)
     if r.stopping.is_set():
         # Stopped by a signal: unfinished jobs are back in the queue (run's finally), but their threads may still

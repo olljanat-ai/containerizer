@@ -530,7 +530,8 @@ def test_housekeep_records_the_removal(monkeypatch, tmp_path):
     def away():
         raise RuntimeError("db away")
     r = lq.Runner(away, name="r", log=logs.append, metrics=object.__new__(lq.QueueMetrics))
-    assert r.housekeep() == 0 and r.housekeep() == 0 and len(logs) == 1 and "db away" in logs[0]
+    # one line per step (sandbox variants, egress), once a minute
+    assert r.housekeep() == 0 and r.housekeep() == 0 and len(logs) == 2 and all("db away" in m for m in logs)
 
 
 # --------------------------------------------------------------------------- health: this namespace only
@@ -732,7 +733,7 @@ def test_schema_23_removal_request_and_the_view():
     sqlstore.init_schema(conn)
     cur = conn.cursor()
     cur.execute("SELECT MAX(Version) FROM cz.SchemaVersion")
-    assert cur.fetchone()[0] == 23
+    assert cur.fetchone()[0] >= 23
     cur.execute("INSERT cz.Application (SourceKey, Name) VALUES (N'k', N'shop')")
     cur.execute("SELECT ApplicationId FROM cz.Application WHERE SourceKey = N'k'")
     app_id = cur.fetchone()[0]

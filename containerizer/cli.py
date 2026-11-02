@@ -346,6 +346,12 @@ def cmd_llm_queue(args) -> int:
     return build(args)
 
 
+def cmd_egress_observe(args) -> int:
+    from .egress import observe
+
+    return observe(args)
+
+
 def cmd_refactor(args) -> int:
     from .refactor import cli
 
@@ -848,11 +854,33 @@ def main(argv=None) -> int:
     s.add_argument("--file", help="answer a queue file written by --ai-queue without SQL Server, then exit")
     s.add_argument("--poll", type=int, default=30, help="seconds between looks at the queue")
     s.add_argument("--name", help="runner name shown on the jobs (default: <host name>-llm-queue)")
+    s.add_argument("--kinds", help="only these job kinds, comma-separated (review, refactor, egress; default: all); "
+                   "the housekeeping follows them (sandbox variants: refactor; egress reviews and commits: egress)")
     s.add_argument("--metrics-host", default="127.0.0.1", help="listen address of the metrics endpoint")
     s.add_argument("--metrics-port", type=int, default=9465)
     s.add_argument("--no-metrics", action="store_true")
     s.add_argument("--once", action="store_true", help="answer what may be answered now, then exit")
     s.set_defaults(fn=cmd_llm_queue)
+
+    s = sub.add_parser("egress-observe", help="record the connections the sandbox's NetworkPolicies drop (NFLOG group "
+                       "100 of kube-router) with the FQDN a pod looked up (CoreDNS log), for the egress review "
+                       "(docs/egress.md); needs CAP_NET_ADMIN on the sandbox node")
+    s.add_argument("--sql", help="connection string of a writer login (default CONTAINERIZER_SQL; password in "
+                   "CONTAINERIZER_SQL_PASSWORD)")
+    s.add_argument("--kubeconfig", help="read-only kubeconfig: CoreDNS's logs, the pods of the app namespaces "
+                   "(default CONTAINERIZER_EGRESS_KUBECONFIG, then KUBECONFIG)")
+    s.add_argument("--context")
+    s.add_argument("--group", type=int, default=100, help="NFLOG group (kube-router: 100)")
+    s.add_argument("--dns-server", help="ask this DNS server what a name resolves to (the cluster's, e.g. 10.43.0.10); "
+                   "default: the host's resolver")
+    s.add_argument("--kernel-log", default="auto",
+                   help="where the appliance firewall's drops (cz-egress-drop) are read: kmsg (/dev/kmsg, needs CAP_SYSLOG "
+                        "with kernel.dmesg_restrict=1), journal (journalctl -k), a file, none, or auto (kmsg when readable)")
+    s.add_argument("--flush", type=int, default=60, help="seconds between writes to SQL Server")
+    s.add_argument("--name", help="observer name stored with the flows (default: <host name>-egress-observer)")
+    s.add_argument("--dry-run", action="store_true", help="print each dropped connection; store nothing")
+    s.add_argument("--seconds", type=int, default=0, help="stop after this many seconds (0: run until stopped)")
+    s.set_defaults(fn=cmd_egress_observe)
 
     s = sub.add_parser("refactor", help="refactoring patch for a B-rated application: the LLM changes the code for its "
                        "refactor findings, the patch is applied, built and run (docs/refactoring.md)")

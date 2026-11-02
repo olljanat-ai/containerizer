@@ -227,9 +227,12 @@ class Admin:
         if kind == "build-pipeline":                 # the results page's Build pipeline downloads: no tab of its own
             from . import pipelineui
             return pipelineui.route(self, conn, s, a, method, parts, q)
+        if kind == "links":                          # the results page's links between applications: no tab of its own
+            from . import admin_links
+            return admin_links.route(self, conn, s, a, method, parts, q, form)
         if kind not in {k for k, _ in tabs}:
             known = kind in ("applications", "products", "business-units", "audit", "access", "scans", "repositories",
-                             "llm-queue", "refactoring", "api",
+                             "llm-queue", "refactoring", "egress", "api",
                              "dev-databases", "system", "firewall", "source-control", "lab-services",
                              "sandbox-https")
             return Response(403 if known else 404, self._shell(s, a, "Not allowed" if known else "Not found", "",
@@ -242,6 +245,9 @@ class Admin:
         if kind == "refactoring":                    # administrators and operators (see _tabs)
             from . import admin_refactor
             return admin_refactor.route(self, conn, s, a, method, parts, q, form, q.get("msg", [""])[0][:300])
+        if kind == "egress":                         # administrators, operators, product owners (see _tabs)
+            from . import admin_egress
+            return admin_egress.route(self, conn, s, a, method, parts, q, form, q.get("msg", [""])[0][:300])
         if kind == "rules":
             from . import admin_rules
             return admin_rules.route(self, conn, s, a, method, parts, q, form, q.get("msg", [""])[0][:300])
@@ -300,9 +306,9 @@ class Admin:
             tabs += [("business-units", "Business units")]
         if (a.admin or a.operator) and hasattr(self, "route_scans"):     # scheduled organization scans
             tabs += [("scans", "Organization scans"), ("repositories", "Repositories"), ("llm-queue", "LLM queue"),
-                     ("refactoring", "Refactoring")]
+                     ("refactoring", "Refactoring"), ("egress", "Egress")]
         elif a.owner and hasattr(self, "route_scans"):                  # product owners: their applications' patches
-            tabs += [("refactoring", "Refactoring")]
+            tabs += [("refactoring", "Refactoring"), ("egress", "Egress")]
         if a.admin and hasattr(self, "route_scans"):                     # tokens of the organizations (admin_credentials.py)
             tabs += [("source-control", "Source control & LLM")]
         if self.devdb is not None and (a.admin or a.operator):           # dev database backups (admin_devdb.py)

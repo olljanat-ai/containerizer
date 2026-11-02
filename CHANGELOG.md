@@ -7,7 +7,56 @@ qcow2 and VHD images as release assets.
 
 ## 0.3.0 (2026-11-02)
 
-Results database schema version 23 (`containerizer db init` upgrades it; the appliance does at start).
+Results database schema version 25 (`containerizer db init` upgrades it; the appliance does at start).
+
+### Egress and network connectivity
+- The appliance's sandbox stays isolated: nothing leaves it but what an administrators' (or system) egress rule
+  allows (Admin → Firewall), whatever a NetworkPolicy says. Containerizer finds out and documents what applications
+  need from the network; approving documents a destination for the real environment and opens nothing.
+- **Egress observer** (docs/egress.md#the-egress-observer): `containerizer egress-observe` records what the sandbox
+  blocks at every layer: the packets its NetworkPolicies drop (kube-router's NFLOG group 100, a small netlink reader,
+  no packages), the appliance firewall's drops (`cz-egress-drop` in the kernel log, `/dev/kmsg`) and the names the
+  appliance's DNS filter refused (the CoreDNS query log; no port). It keeps the egress of application pods, names
+  each destination with the FQDN a pod of the namespace looked up just before (the CoreDNS query log,
+  `log.override` in `coredns-custom`) and adds the flows up per namespace, component, destination, port and
+  protocol, with the layer that blocked them, in `cz.EgressFlow`. On the appliance:
+  `containerizer-egress-observer.service`, the `containerizer` user with CAP_NET_ADMIN (NFLOG) and CAP_SYSLOG (the
+  kernel log) only and a read-only Kubernetes account of its own (pods, CoreDNS's log); in the lab:
+  `ci/lab-sandbox/egress-observer.sh`.
+- **Egress review** (LLM queue kind `egress`, with the approval policy): for applications rated A that run in the
+  sandbox (and "Make it A" variants), a deterministic pre-filter first (IP addresses without a name, metadata
+  endpoints and blocked ranges, wildcards, paste, file-sharing and tunnelling services, the platform's services and
+  namespaces: reported or suspicious, never proposed), then the LLM per destination: propose, report or suspicious,
+  with the file and line of the assessed commit that names it (checked against the source) and why.
+- **Approve / Reject** per destination (results page, Admin → Egress) for administrators, operators and the
+  application's product owners: approval documents the destination for the real environment. The LLM queue runner
+  commits it to the application's `connectivity.yaml` (FQDN, port, protocol, why, evidence, who approved); the
+  sandbox's NetworkPolicies and firewall stay as they are. Later scans keep the approved entries (the generator
+  reads the output repository's `connectivity.yaml`; sandbox variants take the original's).
+- **Sandbox status** of every outbound destination: whether the sandbox can reach it: its NetworkPolicy, and on the
+  appliance the egress rule that allows it, or the firewall or DNS filter that blocks it (read from the same rule
+  files as the firewall, read only), or "no appliance firewall (lab)".
+- **Network connectivity**: on every results page, a server-side SVG diagram (no script, light and dark) and a
+  table of what the application needs from the network, each entry marked by its source (configuration and code
+  with file and line, packages, the NetworkPolicy, lab services, observed in the sandbox, approved) and status
+  (allowed, approved (documented), proposed, blocked, not allowed, suspicious, rejected) and sandbox status, with the
+  findings *missing* (named by
+  the configuration, nothing allows it) and *unexplained* (open, but nothing names it). Applications not in the
+  sandbox show what was inferred. The same as `connectivity.yaml`, `CONNECTIVITY.md` and `connectivity.svg` next to
+  the manifests in the output repository, written by every scan and refreshed by the runner. Assessments record
+  the inferred network needs (assessment.json `network`).
+- **Links between applications** (docs/egress.md#links-between-applications): an outbound destination can be
+  another application's component (another repository or product). Links (`cz.ComponentLink`) are found by a
+  configured host matching the other component's service or Ingress host, by a blocked call to another
+  application's pod in the sandbox, by the LLM (queue kind `link`: a destination that looks internal, a shortlist of
+  candidate components, the best match with its confidence) or by hand; a person confirms them (Confirm, Reject,
+  Link manually on the results page). The runner writes a confirmed link to both applications' connectivity.yaml
+  (`type: component` with its target; the callee's `inbound` callers) and NetworkPolicies (the caller's egress to the
+  callee's pods, the callee's ingress from the caller), and later scans keep them. `/connectivity` shows how the
+  applications of a product, a business unit or all connect.
+- `containerizer llm-queue --kinds` (the job kinds a runner takes; its housekeeping follows them).
+- `examples/egress-demo` (an A-rated app that calls a configured API, another application and a hard-coded paste
+  site) and `examples/orders-demo` (the other application).
 
 ### Build pipelines
 - Container image build pipelines for the application's own repository (docs/build-pipelines.md), for the

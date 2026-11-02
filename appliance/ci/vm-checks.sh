@@ -218,6 +218,28 @@ step "boot assessment"
 systemctl status elemental-boot-assessment.service --no-pager || true
 $PY -m containerizer.sysagent health
 
+step "egress observer: not root, CAP_NET_ADMIN and CAP_SYSLOG only, reads NFLOG and the kernel log"
+observer_up() {
+  journalctl -b -u containerizer-egress-observer --no-pager -o cat | grep -q "reading NFLOG group 100"
+}
+if ! wait_for 900 "egress observer started" observer_up; then
+  systemctl status containerizer-egress-observer --no-pager || true
+  journalctl -b -u containerizer-egress-observer --no-pager | tail -30
+  exit 1
+fi
+pid=$(systemctl show -p MainPID --value containerizer-egress-observer)
+test "$pid" -gt 0
+test "$(stat -c %U "/proc/$pid")" = containerizer
+grep -E '^Cap(Eff|Prm):' "/proc/$pid/status"
+test "$(capsh --decode="$(awk '/^CapEff:/ {print $2}' "/proc/$pid/status")" 2>/dev/null | sed 's/.*=//')" = "cap_net_admin,cap_syslog" \
+  || test "$(awk '/^CapEff:/ {print $2}' "/proc/$pid/status")" = "0000000400001000"
+kmsg_open() { ls -l "/proc/$pid/fd" | grep -q /dev/kmsg; }
+wait_for 60 "the appliance firewall's drop log (/dev/kmsg) is open" kmsg_open
+if journalctl -b -u containerizer-egress-observer --no-pager -o cat | grep -E "kernel log .*(Error|denied)|not readable"; then
+  exit 1
+fi
+echo "ok: egress observer reads the kernel log"
+
 step "no failed units"
 systemctl --failed --no-legend
 test -z "$(systemctl --failed --no-legend)"

@@ -103,6 +103,8 @@ def load_application(conn, app_id: int) -> dict | None:
     app["idp"] = load_idp_clients(conn, app_id)
     app["llm_reviews"] = load_llm_reviews(conn, app_id)
     app["refactors"] = load_refactor_orders(conn, app_id)
+    from .connectivityui import load as load_connectivity
+    app["connectivity"] = load_connectivity(conn, app_id)
     try:
         from .llmqueue import load_speed
         app["llm_speed"] = load_speed(conn) if app["refactors"] else None
@@ -797,9 +799,19 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 {_refactoring(app, refactor)}
 <h2>What needs to change, and why</h2>{''.join(details)}
 {_build_pipeline(app, refactor)}
+{_connectivity(app, refactor)}
 <h2>History</h2><p class='muted small'><a href='/trends'>Trends of all applications</a></p><table class='narrow'><thead><tr><th>Assessed</th><th>Rating</th><th class='num'>Readiness</th>
 </tr></thead><tbody>{hist}</tbody></table>
 <footer>{legend()}</footer>""", script=any(m.get("AgentPrompt") for m in migs.values()))
+
+
+def _connectivity(app: dict, ctx: dict | None) -> str:
+    from .connectivityui import section
+    try:
+        return section(app, ctx)
+    except Exception as ex:  # noqa: BLE001 - one section must not take the page down
+        print(f"connectivity section of {app.get('ApplicationId')}: {type(ex).__name__}: {ex}", file=sys.stderr)
+        return ""
 
 
 def _build_pipeline(app: dict, ctx: dict | None) -> str:
@@ -1168,6 +1180,8 @@ def _keep_query(path: str, q: dict) -> str:
         from .trends import parse_query
         rng, bu, product = parse_query(q)
         return urlencode([(k, v) for k, v in (("range", rng), ("bu", bu), ("product", product)) if v is not None])
+    if path == "/connectivity":
+        return urlencode([(k, q[k][0]) for k in ("product", "bu") if re.fullmatch(r"\d{1,9}", (q.get(k) or [""])[0])])
     if path == "/sbom":
         from .sbomui import parse_query
         bu, product = parse_query(q)
@@ -1274,7 +1288,8 @@ def make_handler(connect, admin=None):
             try:
                 if u.path == "/static/app.css":
                     from .sbomui import CSS as SBOM_CSS
-                    return self._send(200, CSS + SBOM_CSS, "text/css; charset=utf-8", head)
+                    from .connectivityui import CSS as CONNECTIVITY_CSS
+                    return self._send(200, CSS + SBOM_CSS + CONNECTIVITY_CSS, "text/css; charset=utf-8", head)
                 if u.path == "/static/app.js":
                     return self._send(200, JS, "text/javascript; charset=utf-8", head)
                 if u.path in ("/static/favicon.svg", "/favicon.ico"):
@@ -1289,7 +1304,7 @@ def make_handler(connect, admin=None):
                 m = re.fullmatch(r"/app/(\d{1,9})", u.path)
                 pm = re.fullmatch(r"/app/(\d{1,9})/component/(\d{1,9})/agent-prompt\.md", u.path)
                 cm = re.fullmatch(r"/app/(\d{1,9})/component/(\d{1,9})(/sbom\.cdx\.json)?", u.path)
-                if admin and (u.path in ("/", "/trends", "/sbom") or m or pm or cm):    # sign-in first when CONTAINERIZER_VIEWERS is set
+                if admin and (u.path in ("/", "/trends", "/sbom", "/connectivity") or m or pm or cm):    # sign-in first when CONTAINERIZER_VIEWERS is set
                     keep = _keep_query(u.path, parse_qs(u.query))
                     stop, s = admin.gate(self.headers, u.path, keep)
                     if stop:
@@ -1329,6 +1344,20 @@ def make_handler(connect, admin=None):
                         return self._send(200, sbomui.render_component(comp, show, nav), head=head, forms=bool(nav))
                     finally:
                         conn.close()
+                if u.path == "/connectivity":      # how the applications connect (connectivityui.py)
+                    from . import connectivityui
+                    q = parse_qs(u.query)
+                    pr, bu = q.get("product", [""])[0], q.get("bu", [""])[0]
+                    pr = int(pr) if re.fullmatch(r"\d{1,9}", pr or "") else None
+                    bu = int(bu) if re.fullmatch(r"\d{1,9}", bu or "") else None
+                    conn = connect()
+                    try:
+                        data = connectivityui.load_portfolio(conn, pr, bu)
+                    finally:
+                        conn.close()
+                    name = next((a.get("ProductName") for a in data["apps"] if pr is not None and a.get("ProductId") == pr), None)
+                    title = f"Connectivity: {name}" if name else "Connectivity of all applications"
+                    return self._send(200, connectivityui.render_portfolio(data, title, nav), head=head, forms=bool(nav))
                 if u.path == "/trends":
                     from . import trends
                     rng, bu, product = trends.parse_query(parse_qs(u.query))
@@ -1348,7 +1377,10 @@ def make_handler(connect, admin=None):
                             if app is None:
                                 return self._send(404, page("Not found", "<h1>Application not found</h1><p><a href='/'>Back</a></p>"),
                                                   head=head)
-                            ctx = {"signin": bool(admin), "notice": refactor_notice(parse_qs(u.query))}
+                            from .connectivityui import notice_code
+                            ctx = {"signin": bool(admin), "notice": refactor_notice(parse_qs(u.query)),
+                                   "egress_notice": notice_code(parse_qs(u.query)),
+                                   "link_notice": notice_code(parse_qs(u.query), "link")}
                             s, cookie = admin.dev_session(self.headers) if admin else (None, [])
                             if s and (s.admin or s.operator or s.scopes):   # may order (product owners: their products)
                                 ctx["csrf"] = admin._csrf(s)

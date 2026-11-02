@@ -237,7 +237,9 @@ def deploy(connect, key, payload: dict, job: int, result: dict, work: Path, name
     progress("deploying: building the images and writing the GitOps files")
     reg = Registry(o.registry) if o.push_images else None
     try:
-        res = deploy_app(a, src, rel, o, out, reg, tag, gitops, res, work / "deploy", name, dev_database=False)
+        # the original's approved egress (connectivity.yaml) applies to the variant too
+        res = deploy_app(a, src, rel, o, out, reg, tag, gitops, res, work / "deploy", name, dev_database=False,
+                         connectivity_from=out.root / original)
     finally:
         if reg:
             reg.close()
