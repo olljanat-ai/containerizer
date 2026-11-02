@@ -689,3 +689,18 @@ def test_k3s_and_flux_metrics_and_dashboards():
                     ok = m == "up" or m.startswith(("kube_", "gotk_", "controller_runtime_", "workqueue_")) or \
                         any(k.fullmatch(m) for k in keep)
                     assert ok, (f, p["title"], m)
+
+
+def test_scratch_space_is_never_the_read_only_code(monkeypatch, tmp_path):
+    """A scan with the security gate or Build and run on failed on the appliance with "Read-only file system:
+    /usr/lib/containerizer/app/.work": the scratch space defaulted to the folder next to the code."""
+    from containerizer import paths
+    for unit in ("containerizer-worker.service", "containerizer-llm-queue.service"):
+        text = (APPLIANCE / "rootfs/usr/lib/systemd/system" / unit).read_text()
+        work = re.findall(r"^Environment=CONTAINERIZER_WORK=(\S+)$", text, re.M)
+        assert len(work) == 1 and work[0].startswith("/var/lib/containerizer/"), unit
+    assert paths.work_dir({"CONTAINERIZER_WORK": "/srv/w"}) == Path("/srv/w")
+    monkeypatch.setattr(paths.os, "access", lambda p, mode: False)        # an installed, read-only package
+    assert paths.work_dir({"XDG_CACHE_HOME": str(tmp_path)}) == tmp_path / "containerizer" / "work"
+    monkeypatch.setattr(paths.os, "access", lambda p, mode: True)         # a checkout
+    assert paths.work_dir({}) == Path(paths.__file__).resolve().parent.parent / ".work"

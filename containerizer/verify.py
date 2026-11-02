@@ -32,9 +32,10 @@ from .assess import AppAssessment, Component
 from .generate import (CONTAINER_PORT, DOCKERIGNORE, add_reason, _writable_abs, buildable, dockerfile_dotnet, dockerfile_for, dockerfile_spa,
                        images, k8s_name, make_plan, merge_plan)
 from .rules import RULES_DIR, load_rules
+from .paths import work_dir
 
 LEARNED = RULES_DIR / "learned"
-WORK = Path(os.environ.get("CONTAINERIZER_WORK", Path(__file__).resolve().parent.parent / ".work"))
+WORK = work_dir()  # CONTAINERIZER_WORK (the appliance's services set it); never the read-only code
 MAX_ATTEMPTS = 5
 
 

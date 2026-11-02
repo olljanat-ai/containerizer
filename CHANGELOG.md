@@ -6,6 +6,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+### Appliance
+- Organization scans with the security gate or **Build and run** failed with "Read-only file system:
+  '/usr/lib/containerizer/app/.work'": the scan worker's scratch space defaulted to the folder next to the code, which
+  is the read-only OS image. It is `/var/lib/containerizer/worker/work` now (`CONTAINERIZER_WORK`), and without the
+  variable the code no longer writes next to an installed, read-only package.
+
 ## 0.3.11 (2026-11-02)
 
 ### Organization scans
