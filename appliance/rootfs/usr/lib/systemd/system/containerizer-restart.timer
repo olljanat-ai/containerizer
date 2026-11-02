@@ -1,0 +1,10 @@
+[Unit]
+Description=containerizer appliance: check the planned restart every minute
+
+[Timer]
+# a calendar timer: it fires again even when the service was skipped (no plan)
+OnCalendar=minutely
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

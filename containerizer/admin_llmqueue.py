@@ -19,7 +19,7 @@ from datetime import timedelta
 
 from .admin import Response, _d, e
 from .admin_scans import TIME_RE, _back, _nf
-from . import llmqueue as lq
+from . import llmqueue as lq, restartplan
 
 BASE = "/admin/llm-queue"
 STATUS_TEXT = {"approval": "Waiting for approval", "queued": "Queued", "running": "Asking", "answered": "Answered", "failed": "Failed", "skipped": "Skipped"}
@@ -212,7 +212,7 @@ def show(adm, conn, s, a, q: dict, flash: str) -> Response:
     queued = [r for r in active if r["Status"] == "queued"]
     parallel = int(settings["Parallel"] or 1)
     now = lq.utcnow()
-    ok, why = lq.gate(settings, now, lq.scans_running(conn), lq.load_per_cpu())
+    ok, why = lq.gate(settings, now, lq.scans_running(conn), lq.load_per_cpu(), restartplan.holding())
     state = "<span class='st st-ok'>Open</span>" if ok else f"<span class='st st-off'>Waiting</span> {e(why)}"
     waiting = sum(1 for r in active if r["Status"] == "approval")
     if waiting:

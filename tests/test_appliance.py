@@ -34,7 +34,7 @@ state:
 def paths(tmp_path, monkeypatch):
     p = sysagent.Paths(conf=tmp_path / "appliance.conf", system_rules=tmp_path / "egress-system.json",
                        rules=tmp_path / "etc" / "egress.json", history=tmp_path / "var" / "history.jsonl",
-                       task=tmp_path / "var" / "last-task.json",
+                       task=tmp_path / "var" / "last-task.json", plan=tmp_path / "var" / "restart-plan.json",
                        run=tmp_path / "run", dnsmasq=tmp_path / "run" / "dnsmasq.conf", nft=tmp_path / "run" / "fw.nft",
                        os_release=tmp_path / "os-release", snapshots=tmp_path / "snapshots",
                        appliance_env=tmp_path / "appliance.env", resolved=tmp_path / "resolv.conf",
@@ -323,7 +323,7 @@ def test_system_page_shows_version_newer_release_and_snapshots(page):
     status, body, _ = page.handle(ADMIN, "GET", ["system"], {}, {}, shell)
     assert status == 200 and "v1.1.0" in body and "<option value='v1.2.0'>" in body
     assert "<option value='v1.0.0'>" not in body
-    assert "name='snapshot' value='1'" in body and "name='snapshot' value='2'" not in body
+    assert "<option value='1'>1: v1.0.0</option>" in body and "<option value='2'>" not in body
 
 
 def test_upgrade_request_needs_confirmation_and_a_newer_release(page):
@@ -333,9 +333,10 @@ def test_upgrade_request_needs_confirmation_and_a_newer_release(page):
     assert "not+a+newer+release" in loc and requests_in(page) == []
     st, _, loc = page.handle(ADMIN, "POST", ["system", "upgrade"], {}, {"version": ["v1.2.0"], "confirm": ["yes"]}, shell)
     assert st == 303 and requests_in(page)[0] | {"requested_at": None} == {
-        "action": "upgrade", "version": "v1.2.0", "requested_by": "alice@x", "requested_by_name": "Alice", "requested_at": None}
+        "action": "plan", "then": "upgrade", "version": "v1.2.0", "at": None, "max_wait_minutes": 120,
+        "requested_by": "alice@x", "requested_by_name": "Alice", "requested_at": None}
     st, _, loc = page.handle(ADMIN, "POST", ["system", "upgrade"], {}, {"version": ["v1.2.0"], "confirm": ["yes"]}, shell)
-    assert "already+in+progress" in loc and len(requests_in(page)) == 1
+    assert "in+progress" in loc and len(requests_in(page)) == 1
 
 
 def test_rollback_request_only_for_an_earlier_snapshot(page):
@@ -343,7 +344,9 @@ def test_rollback_request_only_for_an_earlier_snapshot(page):
         page.handle(ADMIN, "POST", ["system", "rollback"], {}, {"snapshot": [sid], "confirm": ["yes"]}, shell)
     assert requests_in(page) == []
     page.handle(ADMIN, "POST", ["system", "rollback"], {}, {"snapshot": ["1"], "confirm": ["yes"]}, shell)
-    assert requests_in(page)[0]["snapshot"] == 1
+    assert requests_in(page)[0] | {"requested_at": None} == {
+        "action": "plan", "then": "rollback", "snapshot": 1, "at": None, "max_wait_minutes": 120,
+        "requested_by": "alice@x", "requested_by_name": "Alice", "requested_at": None}
 
 
 def test_firewall_page_and_changes(page):
@@ -718,3 +721,120 @@ def test_sandbox_monitoring_images_come_from_allowed_registries():
     for img in images:
         host = img.split("/")[0]
         assert {"docker.io": "registry-1.docker.io"}.get(host, host) in allowed and "@sha256:" in img, img
+
+# ------------------------------------------------------------------------------- planned restart
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from containerizer import restartplan  # noqa: E402
+
+T0 = datetime(2026, 11, 2, 12, 0, tzinfo=timezone.utc)
+
+
+def plan_request(paths, **kw):
+    body = {"action": "plan", "then": "reboot", "requested_by": "alice@x", "requested_by_name": "Alice", **kw}
+    (paths.run / "requests" / f"{len(list((paths.run / 'requests').glob('*')))}.json").write_text(json.dumps(body))
+    return sysagent.process()
+
+
+def test_a_planned_restart_is_kept_and_published(paths, monkeypatch):
+    r = fake_run(monkeypatch)
+    at = (datetime.now(timezone.utc) + timedelta(hours=3)).isoformat(timespec="seconds")
+    assert plan_request(paths, at=at, max_wait_minutes=60) == 0
+    plan = json.loads(paths.plan.read_text())
+    assert plan["action"] == "reboot" and plan["at"] == at and plan["max_wait_minutes"] == 60
+    assert json.loads((paths.run / "status.json").read_text())["restart"] == plan
+    assert ["systemctl", "start", "--no-block", "containerizer-restart.service"] in r.calls
+    assert ["systemctl", "reboot"] not in r.calls
+    # one plan at a time; cancelling removes it
+    assert plan_request(paths, then="upgrade", version="v1.2.0") == 1
+    assert json.loads(paths.plan.read_text())["action"] == "reboot"
+    (paths.run / "requests" / "c.json").write_text(json.dumps({"action": "plan-cancel", "requested_by": "bob@x"}))
+    assert sysagent.process() == 0
+    assert not paths.plan.exists() and json.loads((paths.run / "status.json").read_text())["restart"] is None
+
+
+@pytest.mark.parametrize("bad", [{"then": "shutdown"}, {"then": "upgrade", "version": "latest"},
+                                 {"then": "rollback", "snapshot": 2}, {"then": "rollback", "snapshot": "1"},
+                                 {"at": "2099-01-01T00:00:00+00:00"}, {"at": "tomorrow"},
+                                 {"max_wait_minutes": -1}, {"max_wait_minutes": "60"}, {"max_wait_minutes": True}])
+def test_a_plan_is_checked_again_by_the_agent(paths, monkeypatch, bad):
+    fake_run(monkeypatch)
+    assert plan_request(paths, **bad) == 1
+    assert not paths.plan.exists()
+
+
+def test_the_restart_waits_for_the_work_in_progress(paths, monkeypatch):
+    r = fake_run(monkeypatch)
+    plan_request(paths, at=(datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(), max_wait_minutes=60)
+    at = restartplan.starts(json.loads(paths.plan.read_text()))
+    running = {"n": 2}
+    monkeypatch.setattr(sysagent, "running_work", lambda: running["n"])
+    assert sysagent.restart_check(at - timedelta(minutes=1)) == "scheduled"
+    assert sysagent.restart_check(at + timedelta(minutes=1)) == "waiting for the work in progress"
+    published = json.loads((paths.run / "status.json").read_text())["restart"]
+    assert published["running"] == 2 and published["holding_since"]
+    assert ["systemctl", "reboot"] not in r.calls
+    # the worker and the LLM runner see it as due from `at` on
+    assert restartplan.holding(at - timedelta(seconds=1), paths.run / "status.json") is None
+    assert "no new work starts" in restartplan.holding(at, paths.run / "status.json")
+    running["n"] = 0
+    assert sysagent.restart_check(at + timedelta(minutes=2)) == "done"
+    assert ["systemctl", "reboot"] in r.calls and not paths.plan.exists()
+    task = json.loads((paths.run / "status.json").read_text())["task"]
+    assert task["action"] == "reboot" and task["state"] == "rebooting" and task["requested_by"] == "alice@x"
+    assert sysagent.restart_check(at + timedelta(minutes=3)) == "nothing planned"   # never repeated
+
+
+def test_a_planned_upgrade_runs_when_the_wait_is_over(paths, monkeypatch):
+    r = fake_run(monkeypatch)
+    plan_request(paths, then="upgrade", version="v1.2.0", max_wait_minutes=30)
+    at = restartplan.starts(json.loads(paths.plan.read_text()))
+    monkeypatch.setattr(sysagent, "running_work", lambda: None)          # the database is away: counted as busy
+    assert sysagent.restart_check(at + timedelta(minutes=29)) == "waiting for the work in progress"
+    assert not [c for c in r.calls if c[:2] == ["elemental", "upgrade"]]
+    assert sysagent.restart_check(at + timedelta(minutes=31)) == "done"
+    assert [c for c in r.calls if c[:2] == ["elemental", "upgrade"]] and ["systemctl", "reboot"] in r.calls
+    task = json.loads((paths.run / "status.json").read_text())["task"]
+    assert task["action"] == "upgrade" and task["version"] == "v1.2.0" and "unknown work cut off" in task["planned"]
+
+
+def test_until_the_work_is_done_never_cuts_it_off():
+    plan = {"action": "reboot", "at": T0.isoformat(), "max_wait_minutes": None}
+    assert restartplan.due(plan, T0 + timedelta(days=3), 1) == (False, "waiting for the work in progress")
+    assert restartplan.due(plan, T0 + timedelta(days=3), 0)[0]
+    assert restartplan.due({**plan, "max_wait_minutes": 0}, T0, 5)[0]
+
+
+def test_the_system_page_plans_and_cancels_a_restart(page):
+    status, body, _ = page.handle(ADMIN, "GET", ["system"], {}, {}, shell)
+    assert "action='/admin/system/restart'" in body and "Planned restart" not in body
+    st, _, loc = page.handle(ADMIN, "POST", ["system", "restart"], {}, {"when": ["at"], "at": ["soon"],
+                                                                         "confirm": ["yes"]}, shell)
+    assert "time+of+the+restart" in loc and requests_in(page) == []
+    later = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M")
+    st, _, loc = page.handle(ADMIN, "POST", ["system", "restart"], {}, {"when": ["at"], "at": [later], "wait": ["done"],
+                                                                         "confirm": ["yes"]}, shell)
+    req = requests_in(page)[0]
+    assert req["action"] == "plan" and req["then"] == "reboot" and req["max_wait_minutes"] is None
+    assert req["at"].startswith(later) and req["at"].endswith("+00:00")
+    assert "until+the+work+in+progress+is+done" in loc
+    # the agent published it: the page shows it, refuses a second one and cancels it
+    for f in (page.status_dir / "requests").glob("*.json"):
+        f.unlink()
+    st = json.loads((page.status_dir / "status.json").read_text())
+    st["restart"] = {"action": "upgrade", "version": "v1.2.0", "at": req["at"], "max_wait_minutes": None,
+                     "requested_by": "alice@x", "requested_by_name": "Alice"}
+    (page.status_dir / "status.json").write_text(json.dumps(st))
+    status, body, _ = page.handle(ADMIN, "GET", ["system"], {}, {}, shell)
+    assert "Planned restart" in body and "Upgrade to v1.2.0" in body and "Scheduled for" in body
+    st_, _, loc = page.handle(ADMIN, "POST", ["system", "restart"], {}, {"confirm": ["yes"]}, shell)
+    assert "already+planned" in loc and requests_in(page) == []
+    page.handle(ADMIN, "POST", ["system", "cancel-restart"], {}, {}, shell)
+    assert requests_in(page)[0]["action"] == "plan-cancel"
+
+
+def test_new_work_waits_while_a_restart_is_due():
+    from containerizer import llmqueue
+    assert llmqueue.gate({}, T0, 0, 0.0, "waiting for the planned restart") == (False, "waiting for the planned restart")
+    assert llmqueue.gate({"OnlyWhenIdle": False}, T0, 0, 0.0, None)[0]

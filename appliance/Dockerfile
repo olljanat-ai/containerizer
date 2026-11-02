@@ -101,7 +101,7 @@ RUN chmod 0755 /usr/lib/containerizer/bin/* /usr/libexec/elemental-checker/conta
       containerizer-firstboot.service containerizer-root-password.service containerizer-root-password.path \
       containerizer-firewall.service containerizer-dns.service \
       containerizer-dns-upstream.path containerizer-addresses.service \
-      containerizer-sysagent.path containerizer-sysagent-status.service containerizer-sysagent-status.timer \
+      containerizer-sysagent.path containerizer-sysagent-status.service containerizer-sysagent-status.timer containerizer-restart.timer \
       containerizer-mssql.service containerizer-db-init.service containerizer-web.service \
       containerizer-worker.service containerizer-llm-queue.service containerizer-registry.service \
       containerizer-egress-observer.service \

@@ -18,6 +18,10 @@ request again before acting on it:
             again here, sandbox_https.py): Caddy answers for *.<domain> with it and passes the requests to
             Traefik in k3s, whose default certificate becomes the same one. The key is written for root
             and Caddy only and is never published; the web UI cannot read it back.
+- plan / plan-cancel: a planned restart (restartplan.py): a plain restart, an upgrade or a roll back, now or
+            at a set time; from then on no new scan run or LLM job starts, and `restart-check` restarts
+            once the work in progress is done or the longest wait allowed is over. Kept on the persistent
+            partition and published in status.json (`restart`), where the worker and the LLM runner read it.
 - local-llm: the built-in LLM on or off (local_llm.py checks the RAM and the disk again); while its model
             downloads, huggingface.co and hf.co are on the egress allow-list.
 
@@ -27,6 +31,7 @@ Commands (also for an administrator on the console or over SSH):
     process                    handle the queued requests
     upgrade vX.Y.Z             verify, install and restart
     rollback <snapshot id>     install a copy of a snapshot and restart
+    restart-check              carry out the planned restart when it is due (containerizer-restart.timer)
     firewall apply             (re)build the nftables ruleset and the dnsmasq allow-list
     firewall show              print what `apply` would load
     sandbox-https sync         install the sandbox certificate in k3s (containerizer-sandbox runs it)
@@ -48,7 +53,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import local_llm
+from . import local_llm, restartplan
 from .local_llm import LocalLlmError
 
 VERSION_RE = re.compile(r"v\d{1,4}\.\d{1,4}\.\d{1,4}")
@@ -73,6 +78,8 @@ class Paths:
     rules: Path = Path("/etc/containerizer/egress.json")
     history: Path = Path("/var/lib/containerizer/system/egress-history.jsonl")
     task: Path = Path("/var/lib/containerizer/system/last-task.json")
+    plan: Path = Path("/var/lib/containerizer/system/restart-plan.json")
+    sql_secret: Path = Path("/etc/containerizer/secrets/cz-scanner")
     run: Path = Path("/run/containerizer/system")
     dnsmasq: Path = Path("/run/containerizer/dnsmasq/egress.conf")
     nft: Path = Path("/run/containerizer/firewall.nft")
@@ -242,7 +249,7 @@ def publish(task: dict | None = None, egress_state: dict | None = None, https_st
     st = {"version": running_version(), "image": c["CZ_OS_IMAGE"], "signer": c["CZ_SIGNER_REPO"],
           "boot_mode": boot_mode(), "elemental": old.get("elemental") or elemental_version(),
           "hostname": socket.gethostname(), "snapshots": snapshots(), "updated": now(),
-          "task": task if task is not None else last_task(),
+          "task": task if task is not None else last_task(), "restart": load_plan(),
           "egress": egress_state if egress_state is not None else (old.get("egress") or egress_status()),
           "sandbox_https": https_state if https_state is not None else (old.get("sandbox_https") or sandbox_https_status())}
     atomic_write(P.run / "status.json", json.dumps(st, indent=1), 0o644)
@@ -310,6 +317,109 @@ def _finish(task: dict, msg: str, reboot: bool) -> None:
     publish(task)
     if reboot:
         run(["systemctl", "reboot"], timeout=60, check=False)
+
+
+# =============================================================================== planned restart
+
+def load_plan() -> dict | None:
+    try:
+        p = json.loads(P.plan.read_text())
+    except (OSError, ValueError):
+        return None
+    return p if isinstance(p, dict) and p.get("action") in restartplan.ACTIONS else None
+
+
+def save_plan(plan: dict | None) -> None:
+    if plan is None:
+        P.plan.unlink(missing_ok=True)
+    else:
+        atomic_write(P.plan, json.dumps(plan), 0o644)
+
+
+def validate_plan(req: dict, current: datetime | None = None) -> dict:
+    """The plan of a request from the web UI, checked again: what (a restart, a release tag, an earlier snapshot
+    on the disk), when (now or within MAX_AHEAD) and the longest wait for the work in progress."""
+    current = current or datetime.now(timezone.utc)
+    action = req.get("then")
+    plan = {"action": action, "requested_by": str(req.get("requested_by") or "?")[:256],
+            "requested_by_name": str(req.get("requested_by_name") or "")[:256],
+            "requested_at": str(req.get("requested_at") or "")[:40]}
+    if action == "upgrade":
+        if not VERSION_RE.fullmatch(str(req.get("version") or "")):
+            raise AgentError(f"not a release version: {req.get('version')!r}")
+        plan["version"] = req["version"]
+    elif action == "rollback":
+        sid = req.get("snapshot")
+        if not isinstance(sid, int) or isinstance(sid, bool) or sid not in {s["id"] for s in snapshots() if not s["active"]}:
+            raise AgentError(f"snapshot {sid!r} is not an earlier snapshot on this disk")
+        plan["snapshot"] = sid
+    elif action != "reboot":
+        raise AgentError(f"nothing to plan: {action!r}")
+    at = restartplan.parse_time(req.get("at")) if req.get("at") else current
+    if at is None or at > current + restartplan.MAX_AHEAD:
+        raise AgentError(f"not a time within {restartplan.MAX_AHEAD.days} days: {req.get('at')!r}")
+    plan["at"] = max(at, current).isoformat(timespec="seconds")
+    wait = req.get("max_wait_minutes")
+    if wait is not None and (not isinstance(wait, int) or isinstance(wait, bool) or not 0 <= wait <= 7 * 24 * 60):
+        raise AgentError(f"not a number of minutes to wait: {wait!r}")
+    plan["max_wait_minutes"] = wait
+    return plan
+
+
+def running_work() -> int | None:
+    """Scan runs and LLM jobs in progress, from the results database (the scan worker's login); None when it
+    cannot be asked."""
+    try:
+        from .sqlstore import connect
+        cs = read_env(P.sql_env).get("CZ_SQL_SCANNER_CS")
+        conn = connect(cs, P.sql_secret.read_text().strip())
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT (SELECT COUNT(*) FROM cz.OrgScanRun WHERE Status = N'running') + "
+                        "(SELECT COUNT(*) FROM cz.LlmJob WHERE Status = N'running')")
+            return int(cur.fetchone()[0])
+        finally:
+            conn.close()
+    except Exception as ex:                 # noqa: BLE001 - the database may be away: wait as if busy
+        log(f"restart: could not count the work in progress: {type(ex).__name__}: {ex}")
+        return None
+
+
+def restart_check(current: datetime | None = None) -> str:
+    """Carry out the planned restart when it is due; what happened."""
+    plan = load_plan()
+    if not plan:
+        return "nothing planned"
+    current = current or datetime.now(timezone.utc)
+    at = restartplan.starts(plan)
+    if at is not None and current < at:
+        return "scheduled"
+    running = running_work()
+    go, why = restartplan.due(plan, current, running)
+    if not go:
+        if plan.get("running") != running or not plan.get("holding_since"):
+            plan.update(running=running, holding_since=plan.get("holding_since") or now(), checked=now())
+            save_plan(plan)
+            publish()
+        return why
+    save_plan(None)                         # removed first: a restart is never repeated
+    task = {k: plan.get(k) for k in ("action", "version", "snapshot", "requested_by", "requested_by_name",
+                                     "requested_at") if plan.get(k) is not None}
+    task["planned"] = f"{plan.get('at')}, restarted {why}"
+    log(f"restart: {restartplan.describe(plan)} ({why})")
+    try:
+        if plan["action"] == "upgrade":
+            upgrade(plan["version"], task)
+        elif plan["action"] == "rollback":
+            rollback(int(plan["snapshot"]), task)
+        else:
+            task.update(started=now())
+            _finish(task, "Restart as planned", True)
+    except (AgentError, OSError, subprocess.TimeoutExpired, ValueError) as ex:
+        task.update(state="failed", finished=now(), message=str(ex)[-1000:])
+        publish(task)
+        raise
+    return "done"
 
 
 # =============================================================================== egress allow-list
@@ -984,6 +1094,17 @@ def process() -> int:
                     raise AgentError("snapshot must be a number")
                 task["snapshot"] = sid
                 rollback(sid, task)
+            elif action == "plan":              # Admin -> System: a planned restart, upgrade or roll back
+                if load_plan():
+                    raise AgentError("a restart is already planned: cancel it first")
+                save_plan(validate_plan(req))
+                publish()
+                run(["systemctl", "start", "--no-block", "containerizer-restart.service"], timeout=60, check=False)
+            elif action == "plan-cancel":
+                if load_plan():
+                    log(f"restart plan cancelled by {user}")
+                save_plan(None)
+                publish()
             elif action == "egress":
                 save_rules({"mode": req.get("mode"), "rules": req.get("rules")}, user, name)
                 publish(egress_state=egress_status())
@@ -1003,7 +1124,10 @@ def process() -> int:
             log(f"{action} failed: {ex}")
             if action in ("lab", "local-llm"):
                 continue                        # their pages show their own status
-            if action in ("upgrade", "rollback"):
+            if action in ("plan", "plan-cancel"):
+                task.update(state="failed", finished=now(), message=f"Not planned: {ex}"[:1000])
+                publish(task)
+            elif action in ("upgrade", "rollback"):
                 task.update(state="failed", finished=now(), message=str(ex)[-1000:])
                 publish(task)
             elif action == "sandbox-https":
@@ -1088,6 +1212,9 @@ def main(argv=None) -> int:
             return 0
         if cmd == "health":
             return health()
+        if cmd == "restart-check":
+            log(f"restart: {restart_check()}")
+            return 0
         if cmd == "sql-env":
             write_sql_env()
             return 0
