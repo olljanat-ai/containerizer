@@ -221,6 +221,11 @@ def test_favicon():
     assert "<link rel='icon' href='/static/favicon.svg'" in webui.page("t", "")
 
 
+def test_queue_lists_running_then_queued_then_waiting_for_approval():
+    o = admin_llmqueue.ACTIVE_ORDER
+    assert o.index("'running' THEN 0") < o.index("'queued' THEN 1") and o.endswith("ELSE 2 END")
+
+
 def test_the_approval_policy_in_a_sentence():
     assert "no job needs approval" in admin_llmqueue.approval_text({"ApproveKinds": None, "ApproveMinTokens": 1})
     assert admin_llmqueue.approval_text({"ApproveKinds": "refactor", "ApproveMinTokens": 0}) == \
