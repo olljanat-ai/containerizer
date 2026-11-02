@@ -239,6 +239,9 @@ if journalctl -b -u containerizer-egress-observer --no-pager -o cat | grep -E "k
   exit 1
 fi
 echo "ok: egress observer reads the kernel log"
+# the drop log (level info) stays off the console
+test "$(awk '{print $1}' /proc/sys/kernel/printk)" -le 4
+echo "ok: console log level $(cat /proc/sys/kernel/printk)"
 
 step "no failed units"
 systemctl --failed --no-legend

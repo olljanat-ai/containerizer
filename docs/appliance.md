@@ -25,9 +25,13 @@ Every [release](https://github.com/olljanat-ai/containerizer/releases) has:
 | File | For |
 | --- | --- |
 | `containerizer-vX.Y.Z.iso` | Installer: boot it, answer the questions on the console. |
-| `containerizer-vX.Y.Z.qcow2` | KVM, Proxmox, OpenStack: resize the disk to 64 GB or more first (`qemu-img resize`). |
-| `containerizer-vX.Y.Z.vhd.zst` | Hyper-V (generation 2): `zstd -d`, then expand the disk to 64 GB or more. |
+| `containerizer-vX.Y.Z.qcow2` | KVM, Proxmox, OpenStack: a 64 GB thin disk. For a larger one, grow it before the first boot (`qemu-img resize`). |
+| `containerizer-vX.Y.Z.vhdx` | Hyper-V generation 2: a 64 GB dynamic VHDX. Secure Boot template **Microsoft UEFI Certificate Authority**. For a larger disk, grow it before the first boot (`Resize-VHD`). |
 | `SHA256SUMS`, `SHA256SUMS.sigstore.json` | Check the downloads (command in the release notes). |
+
+On its first boot a disk image partitions the whole disk and installs itself, then restarts. If the disk was
+too small, it stops at a `recovery login:` prompt, and the next boot fails with `no such device: COS_STATE`.
+Start again from a fresh copy of the image on a disk of 64 GB or more.
 
 Check what you downloaded:
 

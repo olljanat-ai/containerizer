@@ -3,7 +3,17 @@
 Releases are tagged `vX.Y.Z`: bump `containerizer/__init__.py` and this file, then run the **release** workflow
 by hand on `main` with the version, and it tags the commit and releases from the tag. Each release publishes the appliance OS image to
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
-qcow2 and VHD images as release assets.
+qcow2 and VHDX images as release assets.
+
+## Unreleased
+
+### Appliance
+- Hyper-V: the release has a 64 GB dynamic VHDX (`containerizer-vX.Y.Z.vhdx`) in place of the fixed VHD
+  (`.vhd.zst`). Generation 2 VMs boot only VHDX. The qcow2 is 64 GB too. The 1 GB images had to be grown by hand
+  before the first boot; otherwise the install on first boot failed and the next boot stopped at
+  `no such device: COS_STATE`.
+- The firewall's drop log (`cz-in-drop`, `cz-egress-drop`) no longer floods the console: `kernel.printk` sends only
+  errors to tty1/ttyS0. The kernel log, and the egress observer that reads it, still get every line.
 
 ## 0.3.0 (2026-11-02)
 
