@@ -11,3 +11,9 @@ def _no_provider_tokens(monkeypatch):
         for n in names:
             monkeypatch.delenv(n, raising=False)
     monkeypatch.delenv("OUTPUT_GIT_TOKEN", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _own_refactor_share(monkeypatch, tmp_path):
+    """Each test has its own store of refactoring answers shared between orders (refactor.shared_dir)."""
+    monkeypatch.setenv("CONTAINERIZER_REFACTOR_SHARED", str(tmp_path / "refactor-shared"))
