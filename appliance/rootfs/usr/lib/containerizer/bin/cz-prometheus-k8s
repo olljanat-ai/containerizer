@@ -1,0 +1,25 @@
+#!/bin/sh
+# Prometheus's read-only identity in the k3s sandbox cluster (containerizer-monitoring.yaml: cz-monitoring/cz-prometheus):
+# its token and the cluster's CA, copied to /run/containerizer/prometheus-k8s for the Prometheus container (user 65534),
+# which reads them at every scrape. Waits for k3s to create the token (up to 15 minutes).
+set -eu
+D=/run/containerizer/prometheus-k8s
+CA=/var/lib/rancher/k3s/server/tls/server-ca.crt
+install -d -m 0750 -o root -g 65534 "$D"
+i=0
+while :; do
+  tok=$(/usr/bin/k3s kubectl -n cz-monitoring get secret cz-prometheus-token -o 'jsonpath={.data.token}' 2>/dev/null \
+        | base64 -d 2>/dev/null || true)
+  [ -n "$tok" ] && [ -s "$CA" ] && break
+  i=$((i + 1))
+  [ "$i" -lt 90 ] || { echo "k3s has not created the cz-prometheus token in 15 minutes" >&2; exit 1; }
+  sleep 10
+done
+umask 0027
+printf '%s' "$tok" > "$D/token.new"
+cp "$CA" "$D/ca.crt.new"
+chgrp 65534 "$D/token.new" "$D/ca.crt.new"
+chmod 0640 "$D/token.new" "$D/ca.crt.new"
+mv -f "$D/token.new" "$D/token"
+mv -f "$D/ca.crt.new" "$D/ca.crt"
+echo "Prometheus can read the k3s sandbox cluster"

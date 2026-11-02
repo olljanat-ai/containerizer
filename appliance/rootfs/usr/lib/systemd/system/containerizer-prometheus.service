@@ -1,5 +1,5 @@
 [Unit]
-Description=containerizer appliance: Prometheus (scan worker metrics)
+Description=containerizer appliance: Prometheus (scan worker, k3s and Flux metrics)
 After=docker.service containerizer-firstboot.service containerizer-dns.service
 Requires=docker.service
 ConditionKernelCommandLine=!cdroot
@@ -8,9 +8,12 @@ ConditionPathExists=!/run/elemental/recovery_mode
 [Service]
 EnvironmentFile=/usr/lib/containerizer/images.env
 ExecStartPre=-/usr/bin/docker rm -f cz-prometheus
+# the k3s token and CA (containerizer-prometheus-k8s.service writes them when k3s is up; read at every scrape)
+ExecStartPre=/usr/bin/install -d -m 0750 -o root -g 65534 /run/containerizer/prometheus-k8s
 ExecStart=/usr/bin/docker run --rm --name cz-prometheus --network host \
   --volume /usr/lib/containerizer/prometheus:/etc/prometheus:ro \
   --volume /var/lib/containerizer/prometheus:/prometheus \
+  --volume /run/containerizer/prometheus-k8s:/etc/prometheus-k8s:ro \
   --user 65534:65534 --read-only --cap-drop ALL --security-opt no-new-privileges \
   ${CZ_IMAGE_PROMETHEUS} \
   --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus \

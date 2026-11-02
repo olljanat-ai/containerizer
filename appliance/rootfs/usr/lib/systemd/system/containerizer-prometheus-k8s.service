@@ -1,0 +1,19 @@
+[Unit]
+Description=containerizer appliance: Prometheus's read-only token for the k3s sandbox cluster
+After=k3s.service
+Wants=k3s.service
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/containerizer/bin/cz-prometheus-k8s
+TimeoutStartSec=20min
+Restart=on-failure
+RestartSec=60
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

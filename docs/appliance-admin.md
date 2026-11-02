@@ -17,7 +17,7 @@ image, and upgraded from the admin pages. To install it, see [Getting started](a
 | Sandbox cluster: k3s (single node) with Flux and Traefik | systemd service | `kubectl` on the appliance; apps at `https://<component>-<app>.<domain>/` with [Sandbox HTTPS](sandbox-https.md) |
 | [Lab services](lab-services.md) for the sandboxed apps: SQL Server, PostgreSQL, MySQL, MongoDB, Redis, RabbitMQ, Kafka, S3, Azure Blob storage, SFTP (each optional) | k3s, namespace `containerizer-lab`, data on the persistent partition | Admin → Lab services; inside the cluster only |
 | Local container registry | container | `127.0.0.1:5000` only (Docker and k3s) |
-| Prometheus and Grafana, with the scan worker's metrics, alerts and dashboard | containers | `https://<appliance>/grafana/` |
+| Prometheus and Grafana, with the scan worker's, k3s' and Flux's metrics, alerts and dashboards ([metrics](#metrics)) | containers | `https://<appliance>/grafana/` |
 | HTTPS (Caddy), SSH | systemd services | ports 443 and 22: the only open ports |
 | Firewall and DNS filter: every outgoing connection is blocked unless an allow-list rule covers it | nftables + dnsmasq | Admin → Firewall |
 | [Built-in LLM](#built-in-llm) (optional, off by default): llama.cpp with Qwen3-Coder 30B-A3B on the CPU | container, non-root, read-only model | `127.0.0.1:8082` only; Admin → Source control & LLM |
@@ -227,6 +227,38 @@ Components that sign users in get the sandbox identity provider, WSO2 Identity S
 passwords and client secrets in the secret store once Flux has deployed it.
 `containerizer idp users` (as root) prints the test users and their passwords. Its images come from
 Docker Hub, which the default firewall rules allow.
+
+## Metrics
+
+Grafana (`https://<appliance>/grafana/`, **Grafana ↗** on the admin pages) has three dashboards, in the
+**containerizer** folder (the dashboard list at the top of each links to the others):
+
+| Dashboard | Shows |
+| --- | --- |
+| **Containerizer: organization scans** (the home page) | Scans, the scan worker, LLM usage, the LLM queue and the built-in LLM ([scheduled-scans.md](scheduled-scans.md#metrics-and-grafana)) |
+| **Containerizer: k3s sandbox cluster** | Whether the API server and kubelet answer, pods running and not running, containers waiting (CrashLoopBackOff, ImagePullBackOff, ...), restarts, deployments short of replicas, CPU, memory and network by namespace and the top pods, volume usage, and the API server's requests and latency |
+| **Containerizer: Flux** | Every Flux object (Kustomizations, Git, OCI and Helm sources, Helm releases, image automation) with its Ready state, reason, revision and suspend flag; the ones not ready first; the controllers' reconciliations, errors, reconcile time, work queues, CPU and memory |
+
+![Grafana: the k3s sandbox cluster dashboard](images/grafana-k3s-dashboard.png#only-light)
+![Grafana: the k3s sandbox cluster dashboard](images/grafana-k3s-dashboard-dark.png#only-dark)
+
+![Grafana: the Flux dashboard, every Flux object with its state](images/grafana-flux-dashboard.png#only-light)
+![Grafana: the Flux dashboard, every Flux object with its state](images/grafana-flux-dashboard-dark.png#only-dark)
+
+Prometheus keeps 90 days. What it reads from the sandbox cluster:
+
+- **kube-state-metrics** (namespace `cz-monitoring`, from `/var/lib/rancher/k3s/server/manifests/containerizer-monitoring.yaml`):
+  the state of the cluster's objects and, through its custom resource configuration, of Flux's objects
+  (`gotk_resource_info`).
+- **Flux's controllers** (namespace `flux-system`, their `http-prom` port) and kube-state-metrics, found through
+  the API server.
+- **The API server and the kubelet** (`127.0.0.1:6443`, `127.0.0.1:10250`; CPU and memory per pod from
+  cAdvisor), only the metrics the dashboards use.
+
+It reads them as the read-only ServiceAccount `cz-monitoring/cz-prometheus` (pods, nodes, endpoints and services
+listed; node and API server metrics), whose token `containerizer-prometheus-k8s.service` copies to
+`/run/containerizer/prometheus-k8s` with the cluster's CA when k3s is up; the TLS certificates are verified. Until
+then, and while k3s is down, those targets are down (`up{job=~"k3s-apiserver|kubelet.*|flux|kube-state-metrics"}`).
 
 ## Upgrade and roll back
 
