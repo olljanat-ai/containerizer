@@ -14,11 +14,12 @@ scrape_configs:
     static_configs:
       - targets: ["127.0.0.1:9465"]
         labels: {instance: appliance}
-  # the built-in LLM (llama.cpp --metrics, llamacpp:*); down while it is off (Admin -> Source control & LLM)
+  # the built-in LLM (llama.cpp --metrics, llamacpp:*): each of its servers (one per NUMA node, labels server and
+  # numa_node), listed by the system agent; none while it is off (Admin -> Source control & LLM)
   - job_name: local-llm
-    static_configs:
-      - targets: ["127.0.0.1:8082"]
-        labels: {instance: appliance}
+    file_sd_configs:
+      - files: [/etc/prometheus-sd/local-llm.json]
+        refresh_interval: 1m
   - job_name: prometheus
     static_configs:
       - targets: ["127.0.0.1:9090"]

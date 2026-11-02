@@ -103,6 +103,21 @@ def actual(r: dict, est: dict | None = None) -> str:
     return out
 
 
+def builtin_servers(conn) -> int:
+    """Servers of the appliance's built-in LLM (one per NUMA node) when it is the LLM in use (on, and no LLM
+    registered): the runner asks that many jobs at once, whatever Parallel says. 1 otherwise."""
+    from . import local_llm
+    n = local_llm.servers_in_use()
+    if n <= 1:
+        return 1
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM cz.SourceCredential WHERE Purpose = N'llm' AND Enabled = 1")
+        return 1 if cur.fetchone()[0] else n
+    except Exception:                   # noqa: BLE001 - the estimate only
+        return 1
+
+
 def totals(active: list[dict], speed, settings: dict, now) -> dict:
     """The queue's summary: jobs waiting and running by kind (reviews by reason), the estimated tokens and
     LLM time of everything waiting at the learned speed and the parallel requests set, when it would all be
@@ -210,6 +225,9 @@ def show(adm, conn, s, a, q: dict, flash: str) -> Response:
     done = _rows(conn, f"SELECT TOP (50) {JOB_COLS} FROM cz.LlmJob WHERE Status IN (N'answered', N'failed', N'skipped')"
                        f"{where} ORDER BY COALESCE(FinishedAt, QueuedAt) DESC, JobId DESC", params)
     queued = [r for r in active if r["Status"] == "queued"]
+    builtin = builtin_servers(conn)
+    if builtin > int(settings["Parallel"] or 1):     # the runner asks one job per server of the built-in LLM
+        settings = {**settings, "Parallel": builtin}
     parallel = int(settings["Parallel"] or 1)
     now = lq.utcnow()
     ok, why = lq.gate(settings, now, lq.scans_running(conn), lq.load_per_cpu(), restartplan.holding())
@@ -457,7 +475,8 @@ midnight, e.g. 22:00 to 06:00)</span></label><input id='From' name='From' type='
 load)</span></label><input id='MaxLoadPerCpu' name='MaxLoadPerCpu' type='number' min='0' max='16' step='0.05'
 value='{float(v['MaxLoadPerCpu'] or 0):.2f}'>
 <label for='Parallel'>Parallel requests <span class='muted'>(as many as the LLM server answers at once, e.g. its
-slots; 1 for a CPU server)</span></label><input id='Parallel' name='Parallel' type='number' min='1' max='16'
+slots; 1 for a CPU server; the appliance's built-in LLM always gets one per server it runs, one per NUMA
+node)</span></label><input id='Parallel' name='Parallel' type='number' min='1' max='16'
 value='{int(v['Parallel'] or 1)}'>
 <h3>Approval</h3>
 <p class='note'>{e(approval_text(v) + reject_text(v))}</p>

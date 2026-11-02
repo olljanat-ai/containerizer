@@ -20,6 +20,11 @@ qcow2 and VHDX images as release assets.
   which is not on the egress allow-list (it redirects to regional hosts the list cannot name), so the pod never
   started. It now comes from Rancher's mirror on Docker Hub (v2.17.0, pinned by digest), like k3s's own images; a test
   checks that every monitoring image is on an allowed registry.
+- Built-in LLM: NUMA aware. On a machine with several NUMA nodes (CPU sockets) and the RAM for a copy of the model on
+  each, one llama.cpp server runs per node, pinned to its CPUs and memory, behind a front on 127.0.0.1:8082 that
+  sends each request to the least busy server; the LLM queue asks one job per server at once. One node, or not
+  enough RAM: one server, as before. Prometheus reads each server (labels `server`, `numa_node`). The server unit is
+  now `containerizer-local-llm@<n>.service` (container `cz-llm-<n>`); `containerizer-local-llm.service` is the front.
 
 ## 0.4.0 (2026-11-02)
 

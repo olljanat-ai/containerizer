@@ -103,8 +103,23 @@ def section(adm, s, a, registered: bool) -> str:
                      f"{_gib(req.get('free_disk'))} free on the persistent partition"
                      + (f" (the download needs {_gib(req.get('need_disk'))})" if req.get("need_disk") else "") + "</div>")
     if plan:
-        lines.append(f"<div><span class='label'>Sized as</span> {int(plan.get('slots') or 1)} answer slot(s) of "
+        servers = plan.get("servers") or [{}]
+        nodes = int(plan.get("numa_nodes") or 1)
+        if len(servers) > 1:
+            how = (f"{len(servers)} servers, one per NUMA node (CPU socket), each pinned to its node's CPUs and memory "
+                   f"with its own copy of the model, and as many LLM queue jobs at once; each with ")
+        elif nodes > 1:
+            how = (f"one server on all {nodes} NUMA nodes (not enough RAM for a copy of the model on each: "
+                   f"{_gib(L.OS_RAM + nodes * L.SERVER_MIN_RAM)} needed); ")
+        else:
+            how = ""
+        lines.append(f"<div><span class='label'>Sized as</span> {e(how)}{int(plan.get('slots') or 1)} answer slot(s) of "
                      f"{L.CTX_PER_SLOT:,} tokens, memory limit {e(str(plan.get('memory') or ''))}</div>")
+        live = st.get("servers") or []
+        if len(live) > 1:
+            lines.append("<div><span class='label'>Servers</span> " + ", ".join(
+                f"node {e(str(x.get('node', x.get('index'))))}: {e(STATE_TEXT.get(x.get('state'), (x.get('state'), ''))[0])}"
+                for x in live) + "</div>")
     if on and registered:
         lines.append("<div class='note'>Not used while an LLM is set above: scans ask that one. Remove it to use the "
                      "built-in LLM.</div>")

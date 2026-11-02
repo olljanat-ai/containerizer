@@ -7,8 +7,13 @@ it again here before it changes anything:
 - enable: the machine must have the RAM for it (MIN_RAM) and, unless the model file is already on the disk
   and verified, the free space for the download. The model is downloaded once from Hugging Face, pinned by
   commit and sha256 (MODEL): containerizer-local-llm-download.service runs `download`, and huggingface.co
-  and hf.co are on the egress allow-list only while it runs (egress_rules). Then
-  containerizer-local-llm.service runs the server on 127.0.0.1:8082, sized from the RAM (plan).
+  and hf.co are on the egress allow-list only while it runs (egress_rules). Then one llama.cpp server runs per
+  NUMA node (containerizer-local-llm@<n>.service on 127.0.0.1:8090+n, pinned to that node's CPUs and memory)
+  when the machine has several nodes and the RAM for a copy of the model on each, else one server on the whole
+  machine; containerizer-local-llm.service answers on 127.0.0.1:8082 and sends each request to the least busy
+  server. The servers, their answer slots and memory are sized from the RAM and the NUMA nodes (plan). On a
+  machine with two CPU sockets (two NUMA nodes) two copies each read their own socket's memory: about twice the
+  answers per hour, where one copy on both sockets would read half its weights across the link between them.
 - disable: stops the server (or the download); the model file stays, so turning it on again is quick.
 - remove-model: deletes the model file (only while off) to free its 16 GB.
 
@@ -58,14 +63,19 @@ MODEL = Model(
     size=16_018_452_000,
     alias="qwen3-coder-30b-a3b",
 )
-PORT = 8082                         # 8081 is Caddy's http_port on the appliance
+PORT = 8082                         # the front (8081 is Caddy's http_port on the appliance)
+SERVER_PORT = 8090                  # + the server's index: the llama.cpp servers behind the front
+MAX_SERVERS = 8
+OS_RAM = 16 * GiB                   # what the rest of the appliance needs
+SERVER_MIN_RAM = 23 * GiB           # a copy of the model with one answer slot (MIN_RAM less OS_RAM)
 BASE_URL = f"http://127.0.0.1:{PORT}/v1"
 TIMEOUT = 3600                      # seconds per LLM call: prompts of 5-15K tokens take minutes on a CPU
 HF_HOSTS = ("huggingface.co", "hf.co")      # hf.co covers the CDN the resolve URL redirects to
 MIN_RAM = 39 * GiB                  # MemTotal of a 40 GiB machine (the kernel keeps some): OS 16 GiB + LLM
 DISK_MARGIN = 4 * GiB               # free space left on the persistent partition after the download
 CTX_PER_SLOT = 22016                # tokens per answer slot (a multiple of 256, above the 15K evidence packs)
-UNIT = "containerizer-local-llm.service"
+UNIT = "containerizer-local-llm.service"         # the front on PORT
+SERVER_UNIT = "containerizer-local-llm@{}.service"  # a llama.cpp server (its index)
 DOWNLOAD_UNIT = "containerizer-local-llm-download.service"
 ACTIONS = ("enable", "disable", "remove-model")
 STATES = ("off", "refused", "downloading", "verifying", "download-failed", "starting", "running", "error")
@@ -80,6 +90,11 @@ class Paths:
     env: Path = Path("/run/containerizer/local-llm.env")       # the server unit runs only while it exists
     models: Path = Path("/var/lib/containerizer/llm")
     meminfo: Path = Path("/proc/meminfo")
+    nodes: Path = Path("/sys/devices/system/node")
+    targets: Path = Path("/run/containerizer/prometheus-sd/local-llm.json")    # Prometheus file_sd of the servers
+
+    def server_env(self, i: int) -> Path:
+        return self.env.with_name(f"local-llm-{i}.env")
 
     @property
     def model(self) -> Path:
@@ -146,13 +161,74 @@ def free_disk(path: Path) -> int:
         return 0
 
 
-def plan(ram: int) -> dict:
-    """How the server is sized for the machine: answer slots (requests decoded together, for about the cost of
-    one) and the container's memory limit. The pinned model is 15.6 GB; each slot adds about 2 GB of context and
-    compute buffers. The rest of the appliance needs about 16 GiB."""
-    slots = 1 if ram < 47 * GiB else 2 if ram < 63 * GiB else 3
+def cpu_count(cpulist: str) -> int:
+    """CPUs in a kernel CPU list ("0-7,16-23" -> 16)."""
+    n = 0
+    for part in (cpulist or "").strip().split(","):
+        if not part:
+            continue
+        a, _, b = part.partition("-")
+        n += int(b) - int(a) + 1 if b else 1
+    return n
+
+
+def numa_nodes(paths: Paths | None = None) -> list[dict]:
+    """The NUMA nodes with CPUs: [{"node": 0, "cpus": "0-7", "ncpu": 8, "mem": bytes}, ...]; one node (or none
+    readable) on most machines. In a Hyper-V VM the guest sees the host's sockets only with Dynamic Memory off
+    and a VM larger than one node (docs/appliance-admin.md#built-in-llm)."""
+    out = []
+    root = (paths or P).nodes
+    try:
+        dirs = sorted((d for d in root.glob("node[0-9]*") if d.name[4:].isdigit()), key=lambda d: int(d.name[4:]))
+    except OSError:
+        return []
+    for d in dirs:
+        try:
+            cpus = (d / "cpulist").read_text().strip()
+            mem = 0
+            for line in (d / "meminfo").read_text().splitlines():
+                if "MemTotal:" in line:
+                    mem = int(line.split()[-2]) * 1024
+            n = cpu_count(cpus)
+        except (OSError, ValueError, IndexError):
+            continue
+        if n and mem:                       # memory-only nodes (no CPUs) run no server
+            out.append({"node": int(d.name[4:]), "cpus": cpus, "ncpu": n, "mem": mem})
+    return out
+
+
+def _slots(share: int) -> int:
+    return 1 if share < 31 * GiB else 2 if share < 47 * GiB else 3
+
+
+def plan(ram: int, nodes: list[dict] | None = None) -> dict:
+    """How the built-in LLM is sized for the machine: one server per NUMA node when there are several and each
+    has the RAM for a copy of the model (the RAM less the appliance's OS_RAM, shared out, at least SERVER_MIN_RAM
+    each, and the node's own memory at least the server's limit, as the server is held to it), else one server
+    on the whole machine. Per server: answer slots (requests decoded together, for about the cost of one) and the
+    container's memory limit. The pinned model is 15.6 GB; each slot adds about 2 GB of context and compute
+    buffers."""
+    nodes = nodes or []
+    budget = max(ram - OS_RAM, 0)
+    count = 1
+    for n in range(min(len(nodes), MAX_SERVERS), 1, -1):
+        share = budget // n
+        need = (21 + 3 * _slots(share)) * GiB
+        if share >= SERVER_MIN_RAM and all(x["mem"] >= need for x in nodes[:n]):
+            count = n
+            break
+    slots = _slots(budget // count)
     memory = 21 + 3 * slots                             # GiB: 24, 27, 30
-    return {"slots": slots, "ctx_size": CTX_PER_SLOT * slots, "memory": f"{memory}g", "memory_bytes": memory * GiB}
+    servers = [{"index": i, "port": SERVER_PORT + i,
+                **({"node": nodes[i]["node"], "cpus": nodes[i]["cpus"], "threads": nodes[i]["ncpu"]} if count > 1 else {})}
+               for i in range(count)]
+    return {"slots": slots, "ctx_size": CTX_PER_SLOT * slots, "memory": f"{memory}g", "memory_bytes": memory * GiB,
+            "servers": servers, "numa_nodes": len(nodes) or 1}
+
+
+def parallel(p: dict | None) -> int:
+    """Jobs the LLM queue runs at once on the built-in LLM: one per server (each answers at full speed)."""
+    return max(1, len((p or {}).get("servers") or [None]))
 
 
 def requirements(cfg: dict | None = None, paths: Paths | None = None) -> dict:
@@ -172,7 +248,7 @@ def requirements(cfg: dict | None = None, paths: Paths | None = None) -> dict:
         problems.append(f"{free / GiB:.1f} GiB free on the persistent partition; the model download needs "
                         f"{need_disk / GiB:.1f} GiB ({MODEL.size / 1e9:.1f} GB plus {DISK_MARGIN // GiB} GiB to spare)")
     return {"ram": ram, "min_ram": MIN_RAM, "free_disk": free, "need_disk": need_disk, "model_ready": ready,
-            "plan": plan(ram), "problems": problems}
+            "plan": plan(ram, numa_nodes(paths)), "problems": problems}
 
 
 # --------------------------------------------------------------------------- settings and status
@@ -245,10 +321,11 @@ def _unit_state(unit: str) -> str:
         return "unknown"
 
 
-def server_health(timeout: float = 2.0) -> bool:
-    """llama.cpp answers /health with 200 once the model is loaded (503 while it loads)."""
+def server_health(timeout: float = 2.0, port: int = PORT) -> bool:
+    """llama.cpp answers /health with 200 once the model is loaded (503 while it loads); the front passes it on
+    from a server that is up (502 while none is)."""
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/health", timeout=timeout) as r:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=timeout) as r:
             return r.status == 200
     except Exception:                       # noqa: BLE001 - not listening, loading, or anything else: not ready
         return False
@@ -266,13 +343,15 @@ CRASH_LOOP_RESTARTS = 3
 
 
 def status(cfg: dict | None = None, paths: Paths | None = None, unit_state=None, health=None, restarts=None,
-           **extra) -> dict:
-    """The status the web UI and the scan worker read."""
+           probe=None, **extra) -> dict:
+    """The status the web UI and the scan worker read. `health`: the front answers; `probe(port)`: a server does."""
     paths = paths or P
     cfg = load_config(paths) if cfg is None else cfg
     unit_state = unit_state or _unit_state
     health = health or server_health
     restarts = restarts or _restarts
+    probe = probe or (lambda port: server_health(port=port))
+    servers = []
     req = requirements(cfg, paths)
     on = bool(cfg.get("enabled"))
     phase = cfg.get("phase")
@@ -289,13 +368,29 @@ def status(cfg: dict | None = None, paths: Paths | None = None, unit_state=None,
     elif req["ram"] and req["ram"] < MIN_RAM:
         state, message = "refused", req["problems"][0]
     else:
+        p = cfg.get("plan") or req["plan"]
+        for sv in p.get("servers") or [{"index": 0, "port": SERVER_PORT}]:
+            unit = SERVER_UNIT.format(sv["index"])
+            su = unit_state(unit)
+            if su in ("active", "activating", "reloading"):
+                s_state = "running" if probe(sv["port"]) else \
+                    "error" if restarts(unit) >= CRASH_LOOP_RESTARTS else "starting"
+            else:
+                s_state = "error" if su == "failed" else "starting"
+            servers.append({**sv, "state": s_state, "unit": unit})
+        broken = [x for x in servers if x["state"] == "error"]
         u = unit_state(UNIT)
         if u in ("active", "activating", "reloading"):
             if health():
                 state = "running"
+                if broken:
+                    message = (f"{len(broken)} of {len(servers)} servers keep failing (e.g. not enough memory on "
+                               f"their NUMA node to lock the model): see journalctl -u {broken[0]['unit']}")
+            elif broken and len(broken) == len(servers):
+                state, message = "error", (f"the server keeps restarting (e.g. not enough memory to lock the "
+                                           f"model): see journalctl -u {broken[0]['unit']}")
             elif (n := restarts(UNIT)) >= CRASH_LOOP_RESTARTS:
-                state, message = "error", (f"the server keeps restarting ({n} restarts, e.g. not enough memory to "
-                                           f"lock the model): see journalctl -u {UNIT}")
+                state, message = "error", f"the front keeps restarting ({n} restarts): see journalctl -u {UNIT}"
             else:
                 state = "starting"
         elif u == "failed":
@@ -308,6 +403,7 @@ def status(cfg: dict | None = None, paths: Paths | None = None, unit_state=None,
           "download": {"bytes": _size(paths.part) if state in ("downloading", "verifying", "download-failed") else 0,
                        "total": MODEL.size},
           "requirements": req, "plan": cfg.get("plan") or req["plan"], "base_url": BASE_URL, "port": PORT,
+          "servers": servers,
           "changed_by": cfg.get("changed_by"), "changed_by_name": cfg.get("changed_by_name"),
           "changed_at": cfg.get("changed_at"), "history": cfg.get("history") or [], "updated": now()}
     st.update(extra)
@@ -343,27 +439,98 @@ def worker_settings(env=None) -> dict | None:
             "CONTAINERIZER_MODEL": MODEL.alias, "CONTAINERIZER_LLM_TIMEOUT": str(TIMEOUT)}
 
 
+def queue_parallel(settings: dict | None, env=None) -> int:
+    """Jobs the LLM queue runs at once when `settings` (credentials.llm_for_run) are the built-in LLM's: one per
+    server it runs (its status file), else 1."""
+    if not settings or settings.get("CONTAINERIZER_LLM_BASE_URL") != BASE_URL:
+        return 1
+    env = os.environ if env is None else env
+    try:
+        st = json.loads(Path(env.get(STATUS_ENV) or "").read_text())
+    except (OSError, ValueError):
+        return 1
+    return parallel(st.get("plan")) if isinstance(st, dict) else 1
+
+
+def servers_in_use(path: Path | None = None) -> int:
+    """Servers of the built-in LLM while it is on and usable (its status file), else 1 (the admin pages)."""
+    try:
+        st = json.loads((path or P.status).read_text())
+    except (OSError, ValueError):
+        return 1
+    if not isinstance(st, dict) or not st.get("enabled") or st.get("state") not in USABLE:
+        return 1
+    return parallel(st.get("plan"))
+
+
 # --------------------------------------------------------------------------- the system agent's side
 
-def server_env(p: dict) -> str:
-    return (f"CZ_LLM_MODEL_FILE={MODEL.file}\nCZ_LLM_ALIAS={MODEL.alias}\nCZ_LLM_PORT={PORT}\n"
-            f"CZ_LLM_SLOTS={int(p['slots'])}\nCZ_LLM_CTX={int(p['ctx_size'])}\nCZ_LLM_MEMORY={p['memory']}\n")
+def server_env(p: dict, sv: dict | None = None) -> str:
+    """The environment of one llama.cpp server unit: pinned to its NUMA node's CPUs and memory (docker --cpuset-*)
+    with as many threads as the node has CPUs when there are several servers, else the whole machine."""
+    sv = sv or {"index": 0, "port": SERVER_PORT}
+    pin = f"--cpuset-cpus {sv['cpus']} --cpuset-mems {int(sv['node'])}" if sv.get("cpus") else ""
+    threads = f"--threads {int(sv['threads'])} --threads-batch {int(sv['threads'])}" if sv.get("threads") else ""
+    return (f"CZ_LLM_MODEL_FILE={MODEL.file}\nCZ_LLM_ALIAS={MODEL.alias}\nCZ_LLM_PORT={int(sv['port'])}\n"
+            f"CZ_LLM_SLOTS={int(p['slots'])}\nCZ_LLM_CTX={int(p['ctx_size'])}\nCZ_LLM_MEMORY={p['memory']}\n"
+            f"CZ_LLM_PIN={pin}\nCZ_LLM_THREADS={threads}\n")
+
+
+def front_env(p: dict) -> str:
+    """The environment of the front (Caddy on PORT): the servers it sends the requests to."""
+    ups = " ".join(f"127.0.0.1:{int(sv['port'])}" for sv in p.get("servers") or [{"port": SERVER_PORT}])
+    return f"CZ_LLM_PORT={PORT}\nCZ_LLM_UPSTREAMS={ups}\n"
+
+
+def _targets(p: dict | None, paths: Paths) -> None:
+    """Prometheus scrapes each server's /metrics (file_sd): none while the built-in LLM is off."""
+    groups = [{"targets": [f"127.0.0.1:{int(sv['port'])}"],
+               "labels": {"instance": "appliance", "server": str(sv["index"]),
+                          **({"numa_node": str(sv["node"])} if "node" in sv else {})}}
+              for sv in (p or {}).get("servers") or []]
+    try:
+        _atomic(paths.targets, json.dumps(groups), 0o644)
+    except OSError as ex:
+        log(f"built-in LLM: Prometheus targets not written: {ex}")
+
+
+def _server_envs(paths: Paths) -> list[Path]:
+    return sorted(paths.env.parent.glob("local-llm-[0-9]*.env"))
 
 
 def _start_server(cfg: dict, paths: Paths) -> None:
-    p = plan(mem_total(paths))
+    p = plan(mem_total(paths), numa_nodes(paths))
     cfg["plan"] = p
-    text = server_env(p)
+    keep = set()
+    for sv in p["servers"]:
+        f = paths.server_env(sv["index"])
+        keep.add(f)
+        text = server_env(p, sv)
+        old = f.read_text() if f.exists() else None
+        _atomic(f, text, 0o644)
+        if old is not None and old != text:
+            _run(["systemctl", "try-restart", "--no-block", SERVER_UNIT.format(sv["index"])], timeout=60, check=False)
+    for f in _server_envs(paths):           # fewer servers than before (less RAM, fewer nodes): stop the others
+        if f not in keep:
+            f.unlink(missing_ok=True)
+            _run(["systemctl", "stop", "--no-block", SERVER_UNIT.format(f.stem.rsplit("-", 1)[1])], timeout=60,
+                 check=False)
+    text = front_env(p)
     old = paths.env.read_text() if paths.env.exists() else None
     _atomic(paths.env, text, 0o644)
     if old is not None and old != text:
         _run(["systemctl", "try-restart", "--no-block", UNIT], timeout=60, check=False)
-    _run(["systemctl", "start", "--no-block", UNIT], timeout=60)
+    _targets(p, paths)
+    _run(["systemctl", "start", "--no-block", UNIT, *(SERVER_UNIT.format(sv["index"]) for sv in p["servers"])],
+         timeout=60)
 
 
 def _stop_server(paths: Paths) -> None:
     paths.env.unlink(missing_ok=True)
-    _run(["systemctl", "stop", "--no-block", UNIT, DOWNLOAD_UNIT], timeout=60, check=False)
+    for f in _server_envs(paths):
+        f.unlink(missing_ok=True)
+    _targets(None, paths)
+    _run(["systemctl", "stop", "--no-block", UNIT, SERVER_UNIT.format("*"), DOWNLOAD_UNIT], timeout=60, check=False)
 
 
 def _firewall() -> None:
@@ -431,7 +598,7 @@ def reconcile(paths: Paths | None = None) -> dict:
     with locked(paths):
         cfg = load_config(paths)
         if not cfg.get("enabled"):
-            if paths.env.exists():
+            if paths.env.exists() or _server_envs(paths):
                 _stop_server(paths)
             return publish(status(cfg, paths), paths)
         if cfg.get("phase") == "download":

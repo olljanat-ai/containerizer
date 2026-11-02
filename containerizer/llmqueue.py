@@ -1068,6 +1068,15 @@ class Runner:
 
     # -- the loop --------------------------------------------------------------------------------
 
+    def builtin_parallel(self, conn) -> int:
+        """One job per server of the appliance's built-in LLM (one per NUMA node) when it is the LLM in use: two
+        servers answer two jobs at full speed each. 1 otherwise (Parallel on the page decides)."""
+        from . import local_llm
+        n = local_llm.queue_parallel(local_llm.worker_settings())
+        if n <= 1:
+            return 1
+        return local_llm.queue_parallel(self.llm_settings(conn))     # not when a registered LLM is in use
+
     def _enter_llm(self, conn) -> None:
         """The LLM settings for the jobs about to be asked; changed only when none is in progress
         (ai.configured is process-wide)."""
@@ -1094,7 +1103,7 @@ class Runner:
             self.metrics.queue.refresh(conn)
             settings = load_settings(conn)
             self.metrics.paused.set(1 if settings["Paused"] else 0)
-            parallel = max(1, int(settings["Parallel"] or 1))
+            parallel = max(1, int(settings["Parallel"] or 1), self.builtin_parallel(conn))
             with self.lock:
                 busy = len(self.active)
             # "only when idle" is checked before the first request: the runner's own requests load the machine
