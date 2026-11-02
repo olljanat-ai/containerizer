@@ -115,6 +115,10 @@ UNIT
     k -n "$SANS" delete sa "$SA" --ignore-not-found >/dev/null
     f=$K3S_MANIFESTS/lab-coredns.yaml
     sudo sed -i '/^  log.override: |$/,/^    log$/d' "$f" 2>/dev/null || true
+    # k3s re-applies the manifest but does not remove a key that is gone from it: take it out of the ConfigMap too
+    k -n kube-system get cm coredns-custom -o json 2>/dev/null \
+      | "$PY" -c 'import json, sys; d = json.load(sys.stdin); d.get("data", {}).pop("log.override", None); print(json.dumps(d))' \
+      | k replace -f - >/dev/null 2>&1 || true
     rm -f "$OKC" "$OENV"
     echo "removed $UNIT"
     ;;
