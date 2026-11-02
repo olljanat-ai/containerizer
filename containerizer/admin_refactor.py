@@ -13,9 +13,9 @@
   rounds), the rating before and after, and the sandbox variant (variant.py) with its URL and
   POST /admin/refactoring/<id>/remove ("Remove from the sandbox": administrators, operators and the
   application's product owners; the queue runner removes it).
-- /admin/refactoring/make-all-a (administrators): "Make all B apps A": a confirmation page with every B-rated
-  application, its estimate and the total, and how many orders will wait for approval; POST queues one order
-  per application.
+- /admin/refactoring/make-all-a (administrators): "Make it A: every B application": every B-rated application with
+  its order's estimate, smallest first, with the running total; POST queues the orders under a number of tokens
+  each (Limit; none: all), approved by the administrator at once.
 
 Same conventions as admin.py: plain HTML forms with the session's CSRF token, no JavaScript, everything
 escaped. Patches contain source code: they are shown to administrators and operators only; the results
@@ -45,9 +45,9 @@ ORDER_NOTICES = {"remove-requested": "Removal requested: the LLM queue runner ta
                                      "within a few minutes (its folder is deleted from the output repository).",
                  "remove-not-active": "This order has nothing running in the sandbox.",
                  "remove-unavailable": "Removal needs the database schema of this version: run `containerizer db init`."}
-# what the Refactoring list says after "Make all B apps A": {q}, {w}, {x}, {n} are numbers
-BULK_NOTICES = {"queued": "\"Make it A\" requested for {q} application(s): {w} wait for an administrator's approval; "
-                          "{x} already had one waiting; {n} could not be ordered.",
+# what the Refactoring list says after "Make it A: every B application": {q}, {w}, {x}, {n} are numbers
+BULK_NOTICES = {"queued": "\"Make it A\" queued and approved for {q} application(s); {x} already had one waiting; "
+                          "{n} left out (over the limit, in the queue already, or not orderable).",
                 "none": "No B-rated application could be ordered."}
 FINDING_TEXT = {"fixed": "Fixed", "not-fixed": "Not fixed", "llm-error": "LLM error", "skipped": "Not attempted"}
 FINDING_CSS = {"fixed": "st-ok", "not-fixed": "st-off", "llm-error": "st-bad", "skipped": "st-off"}
@@ -81,7 +81,7 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict, flash:
         if not a.admin:
             return Response(403, adm._shell(s, a, "Not allowed", "", "<p>Only administrators order \"Make it A\" for every "
                                                                       "application.</p>"))
-        return make_all_a(adm, conn, s, a) if method == "GET" else make_all_a_post(adm, conn, s, a) \
+        return make_all_a(adm, conn, s, a, q) if method == "GET" else make_all_a_post(adm, conn, s, a, form) \
             if method == "POST" else _nf()
     m = re.fullmatch(r"(\d{1,9})(\.patch)?", parts[1]) if len(parts) >= 2 else None
     if m:
@@ -293,8 +293,9 @@ def show_list(adm, conn, s, a, flash: str) -> Response:
                    f"<td class='small'>{e(r.get('Summary') or r.get('Error') or '')}</td>"
                    f"<td class='small'>{e(r.get('RequestedBy') or '')}</td><td class='small nowrap'>{when}</td>"
                    f"<td>{dl}</td></tr>")
-    bulk = (f"<p><a class='button' href='{BASE}/make-all-a'>Make all B apps A…</a> <span class='muted small'>A "
-            f"confirmation page lists every B-rated application with its estimate first.</span></p>" if a.admin else "")
+    bulk = (f"<p><a class='button' href='{BASE}/make-all-a'>Make it A: every B application…</a> <span class='muted small'>"
+            f"Every B-rated application with its estimate, smallest first; queue the ones under a number of tokens, "
+            f"approved.</span></p>" if a.admin else "")
     body = (bulk + "<p class='muted'>Refactoring patches for B-rated applications: the LLM changes the code for the findings "
             "that need targeted code changes, and the patch is applied, checked with the rules and built and run "
             "before it is offered. Order one on the application's results page (<b>Refactoring</b>). Orders wait in "
@@ -643,87 +644,130 @@ def order(adm, conn, s, a, form: dict) -> Response:
     return _to_app(app_id, "approval" if wait else "ordered", job=int(jid), files=n)
 
 
-# --------------------------------------------------------------------------- "Make all B apps A"
+# --------------------------------------------------------------------------- "Make it A" for every B app
+
+def _tokens(est: dict | None) -> int:
+    return int((est or {}).get("in", 0)) + int((est or {}).get("out", 0)) if est else 0
+
 
 def bulk_plan(adm, conn) -> dict:
-    """Every B-rated application with its "Make it A" order (or why there is none), the queue's estimate of
-    each and of all, and how many will wait for approval under the current policy."""
-    from .llmqueue import estimate_tokens, load_settings, load_speed
+    """Every B-rated application with its "Make it A" order (or why there is none) and the queue's estimate of it,
+    the smallest orders first, so the LLM's time goes to the cheapest wins; the ones with an order in the queue
+    already are marked."""
+    from .llmqueue import load_settings, load_speed
     speed = load_speed(conn)
     try:
         settings = load_settings(conn)
     except Exception:  # noqa: BLE001
         settings = {}
-    kinds = {k.strip() for k in str(settings.get("ApproveKinds") or "").split(",") if k.strip()}
-    least = int(settings.get("ApproveMinTokens") or 0)
     apps = _rows(conn, f"SELECT {APP_COLS} FROM cz.vApplicationLatest WHERE Rating = 'B' ORDER BY ApplicationName")
-    items, jobs = [], []
+    active = {int(r["ApplicationId"]): r for r in _rows(
+        conn, "SELECT ApplicationId, MAX(JobId) AS JobId, MAX(Status) AS Status FROM cz.LlmJob WHERE Kind = N'refactor' "
+              "AND Status IN (N'approval', N'queued', N'running') AND ApplicationId IS NOT NULL GROUP BY ApplicationId")}
+    items = []
     for app in apps:
         payload, code = make_payload(adm, conn, app, "rating-a")
-        item = {"app": app, "payload": payload, "code": code}
+        item = {"app": app, "payload": payload, "code": code, "active": active.get(int(app["ApplicationId"]))}
         if payload is not None:
-            chars = rf.order_chars(payload)
-            job = {"Kind": rf.KIND, "InputChars": chars, "Model": None}
-            item["est"] = speed.job(job)
-            item["approval"] = rf.KIND in kinds and estimate_tokens("x" * chars) >= least
-            jobs.append(job)
+            item["job"] = {"Kind": rf.KIND, "InputChars": rf.order_chars(payload), "Model": None}
+            item["est"] = speed.job(item["job"])
+            item["tokens"] = _tokens(item["est"])
         items.append(item)
-    total = speed.queue(jobs, int(settings.get("Parallel") or 1)) if jobs else None
-    return {"items": items, "total": total, "approval": sum(1 for x in items if x.get("approval")),
-            "policy": bool(rf.KIND in kinds)}
+    # smallest first; the ones that cannot be ordered last
+    items.sort(key=lambda x: (x["payload"] is None, x.get("tokens", 0), str(x["app"]["ApplicationName"]).lower()))
+    parallel = int(settings.get("Parallel") or 1)
+    return {"items": items, "parallel": parallel, "speed": speed,
+            "total": speed.queue([x["job"] for x in items if x.get("job")], parallel) if any(x.get("job") for x in items)
+            else None}
+
+
+def under(plan: dict, limit: int | None) -> list[dict]:
+    """The orders to queue: orderable, none in the queue already, and estimated under `limit` tokens (None: all)."""
+    return [x for x in plan["items"] if x["payload"] is not None and not x["active"]
+            and (limit is None or x["tokens"] < limit)]
 
 
 SKIP_TEXT = {"no-commit": "the assessment recorded no commit", "no-source": "its source is not kept on this machine",
              "nothing": "nothing to change in code", "failed": "the order could not be made (see the web UI's log)",
              "not-b": "not rated B"}
+LIMIT_DEFAULT = 20000
 
 
-def make_all_a(adm, conn, s, a) -> Response:
+def make_all_a(adm, conn, s, a, q: dict | None = None) -> Response:
     from .webui import est_text
     plan = bulk_plan(adm, conn)
-    rows = []
+    raw = ((q or {}).get("limit") or [""])[0]
+    limit = int(raw) if re.fullmatch(r"\d{1,9}", raw or "") else LIMIT_DEFAULT
+    rows, run_jobs = [], []
     for x in plan["items"]:
         app = x["app"]
         name = f"<a href='/app/{int(app['ApplicationId'])}'>{e(app['ApplicationName'])}</a>"
         if x["payload"] is None:
-            rows.append(f"<tr><td>{name}</td><td class='muted small' colspan=3>not ordered: "
+            rows.append(f"<tr><td>{name}</td><td class='muted small' colspan=4>not ordered: "
                         f"{e(SKIP_TEXT.get(x['code'], x['code']))}</td></tr>")
             continue
         pl = x["payload"]
         what = f"{len(pl['tasks'])} file(s)" + (f", data of {len(pl.get('state') or [])} component(s) to move"
                                                 if pl.get("state") else "")
-        rows.append(f"<tr><td>{name}</td><td class='small'>{e(what)}</td><td class='small nowrap'>{e(est_text(x['est']))}</td>"
-                    f"<td class='small'>{'waits for approval' if x.get('approval') else 'queued'}</td></tr>")
-    n = sum(1 for x in plan["items"] if x["payload"] is not None)
+        if x["active"]:
+            state = (f"<a href='{BASE}/{int(x['active']['JobId'])}'>in the queue</a> "
+                     f"<span class='muted'>({e(x['active']['Status'])})</span>")
+        else:
+            run_jobs.append(x["job"])
+            cum = plan["speed"].queue(run_jobs, plan["parallel"])
+            state = (f"<span class='muted'>up to here: {e(est_text(cum))}</span>")
+        mark = " class='under'" if not x["active"] and x["tokens"] < limit else ""
+        rows.append(f"<tr{mark}><td>{name}</td><td class='small'>{e(what)}</td>"
+                    f"<td class='num nowrap'>{x['tokens']:,}</td><td class='small nowrap'>{e(est_text(x['est']))}</td>"
+                    f"<td class='small'>{state}</td></tr>")
+    sel = under(plan, limit)
+    all_ = under(plan, None)
+    sel_tot = plan["speed"].queue([x["job"] for x in sel], plan["parallel"]) if sel else None
     total = plan["total"]
-    tot = (f"<p><b>{n} order(s)</b>: {e(est_text(total))} for the first pass of all of them at the speed the queue "
-           f"learned (repair rounds and a second pass can take up to {rf.MAX_CALLS_A} LLM calls per order); "
-           f"<b>{int(plan['approval'])}</b> will wait for an administrator's approval under the current policy.</p>"
-           if total else "<p>No B-rated application can be ordered.</p>")
+    tot = (f"<p><b>{len(all_)} order(s)</b> can be queued: {e(est_text(plan['speed'].queue([x['job'] for x in all_], plan['parallel'])))} "
+           f"for the first pass of all of them at the speed the queue learned (repair rounds and a second pass can take up "
+           f"to {rf.MAX_CALLS_A} LLM calls per order).</p>" if all_ else
+           ("<p>Every B-rated application that can be ordered has an order in the queue already.</p>" if total else
+            "<p>No B-rated application can be ordered.</p>"))
+    pick = (f"<form method='get' action='{BASE}/make-all-a' class='formrow'><label for='limit'>Orders under</label>"
+            f"<input id='limit' name='limit' type='number' min='1' max='100000000' value='{limit}'>"
+            f"<span>tokens each</span><button class='secondary'>Show</button></form>")
     form = (f"<form method='post' action='{BASE}/make-all-a' class='formrow'>{adm._csrf(s)}"
-            f"<button>Queue {n} \"Make it A\" order(s)</button> <a href='{BASE}'>Cancel</a></form>" if n else "")
+            f"<input type='hidden' name='Limit' value='{limit}'>"
+            f"<button>Queue {len(sel)} order(s) under {limit:,} tokens, approved</button>"
+            f"<span class='muted small'>{e(est_text(sel_tot))}</span></form>" if sel else
+            f"<p class='muted'>No order is estimated under {limit:,} tokens.</p>" if all_ else "")
     body = (f"<p><a href='{BASE}'>← Refactoring</a></p>"
-            "<p class='muted'>One \"Make it A\" order per B-rated application: the LLM changes the code for every "
-            "finding that keeps it from A (and moves the data of components that keep their own), the patch is "
-            "verified and repaired, the patched copy assessed again; one that rates A and runs is deployed to the "
-            "sandbox beside the original. Orders run one after another in the LLM queue.</p>" + tot + form
-            + "<table><thead><tr><th>Application</th><th>What changes</th><th>Estimate</th><th>Approval</th></tr></thead>"
-            f"<tbody>{''.join(rows) or '<tr><td colspan=4 class=muted>No B-rated applications.</td></tr>'}</tbody></table>")
-    return Response(200, adm._shell(s, a, "Make all B apps A", "refactoring", body))
+            "<p class='muted'>One \"Make it A\" order per B-rated application, <b>smallest first</b>: the LLM changes the "
+            "code for every finding that keeps it from A (and moves the data of components that keep their own), the "
+            "patch is verified and repaired, the patched copy assessed again; one that rates A and runs is deployed to "
+            "the sandbox beside the original. Start with the small ones to get the most applications to A for the "
+            "LLM's time. Orders queued from this page are <b>approved</b> by you at once (they do not wait for "
+            "approval); they run one after another in the LLM queue, by its settings.</p>"
+            + tot + pick + form
+            + "<table class='make-a'><thead><tr><th>Application</th><th>What changes</th><th class='num'>Tokens</th>"
+              "<th>Estimate</th><th>Queue</th></tr></thead>"
+            f"<tbody>{''.join(rows) or '<tr><td colspan=5 class=muted>No B-rated applications.</td></tr>'}</tbody></table>")
+    return Response(200, adm._shell(s, a, "Make it A: every B application", "refactoring", body))
 
 
-def make_all_a_post(adm, conn, s, a) -> Response:
-    queued = waiting = exists = skipped = 0
-    for x in bulk_plan(adm, conn)["items"]:
-        if x["payload"] is None:
-            skipped += 1
-            continue
+def make_all_a_post(adm, conn, s, a, form: dict | None = None) -> Response:
+    """Queue the orders under the limit (all without one), approved by the administrator who asked."""
+    raw = ((form or {}).get("Limit") or [""])[0]
+    limit = int(raw) if re.fullmatch(r"\d{1,9}", raw or "") else None
+    plan = bulk_plan(adm, conn)
+    chosen = under(plan, limit)
+    queued = exists = 0
+    for x in chosen:
         jid, _ = queue_order(conn, x["app"], x["payload"])
         if not jid:
             exists += 1
             continue
         queued += 1
-        st = _rows(conn, "SELECT Status FROM cz.LlmJob WHERE JobId = %s", (jid,))
-        waiting += 1 if st and st[0]["Status"] == "approval" else 0
+        cur = conn.cursor()
+        cur.execute("UPDATE cz.LlmJob SET Status = N'queued', ApprovedBy = %s, ApprovedAt = SYSUTCDATETIME() "
+                    "WHERE JobId = %s AND Status = N'approval'", (s.user, jid))
+        conn.commit()
+    left = sum(1 for x in plan["items"] if x not in chosen)
     code = "queued" if queued or exists else "none"
-    return redirect(f"{BASE}?" + urlencode({"bulk": code, "q": queued, "w": waiting, "x": exists, "n": skipped}))
+    return redirect(f"{BASE}?" + urlencode({"bulk": code, "q": queued, "w": 0, "x": exists, "n": left}))
