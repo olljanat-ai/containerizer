@@ -55,12 +55,9 @@ fi
 set -a
 . "$C/appliance.env"
 set +a
-host="${CZ_HOSTNAME:-}"
-if [ -n "$host" ]; then
-  hostnamectl hostname "$host" 2>/dev/null || hostname "$host"
-else
-  host="$(hostname)"
-fi
+# the web UI's name (a DNS name, e.g. an FQDN); it does not rename the machine: the host name (the installer's,
+# else "containerizer") is the sandbox cluster's node name too, and k3s would register a second node
+host="${CZ_HOSTNAME:-$(hostname)}"
 install -d -m 0755 /run/containerizer
 # Caddy: the certificate covers the name and the addresses (added by cz-addresses once DHCP is done)
 {

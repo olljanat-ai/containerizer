@@ -12,6 +12,9 @@ qcow2 and VHDX images as release assets.
 - The firewall answers ping from outside: ICMP and ICMPv6 echo requests are allowed in (at most 20 a second).
 - Full `vim` in place of `vim-tiny`, with the mouse off and paste mode on (`/etc/vim/vimrc.local`; a `~/.vimrc`
   of root's own wins and is kept).
+- `CZ_HOSTNAME` is only the web UI's name (usually the FQDN: the HTTPS certificate and the sign-in redirect). It no
+  longer renames the machine: the sandbox cluster's k3s node is named after the machine, and a rename made k3s
+  register a second node.
 
 ## 0.3.4 (2026-11-02)
 
