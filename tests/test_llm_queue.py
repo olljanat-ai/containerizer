@@ -371,7 +371,7 @@ def test_settings_validation():
                                                   "OnlyWhenIdle": ["1"], "MaxLoadPerCpu": ["0.75"], "Parallel": ["2"]})
     assert errors == [] and v == {"Paused": False, "OnlyWhenIdle": True, "WindowDays": 1 | 16, "WindowStart": 1320,
                                   "WindowEnd": 360, "MaxLoadPerCpu": 0.75, "Parallel": 2, "ApproveKinds": None, "ApproveMinTokens": 0,
-                                  "ApproveMaxQueued": 0, "RejectAfterHours": 0}
+                                  "ApproveMaxQueued": 0, "RejectAfterHours": 0, "LocalOrder": None, "LocalMaxTokens": 0}
     v, errors = admin_llmqueue.validate_settings({"From": [""], "To": [""]})
     assert errors == [] and v["WindowStart"] is None and v["WindowEnd"] is None and v["Parallel"] == 1
     for bad, msg in (({"From": ["22:00"]}, "both"), ({"From": ["25:00"], "To": ["01:00"]}, "HH:MM"),
@@ -582,7 +582,7 @@ def test_admin_page_actions(adm):
               MaxLoadPerCpu="0.5", Parallel="2")
     assert "Saved" in dict(r.headers)["Location"]
     (sql, params), = adm.conn.sql(r"UPDATE cz.LlmQueueSettings")
-    assert params == (False, 96, 1320, 360, True, 0.5, 2, None, 0, 0, 0)  # no approval
+    assert params == (False, 96, 1320, 360, True, 0.5, 2, None, 0, 0, 0, None, 0)  # no approval
     r = _post(adm, a, "/admin/llm-queue/settings", From="22:00")
     assert "both" in dict(r.headers)["Location"] and len(adm.conn.sql(r"UPDATE cz.LlmQueueSettings")) == 1
     # the form needs the session's CSRF token
@@ -771,3 +771,93 @@ def test_approval_rules_in_sql_server():
         m = sqlstore.connect(re.sub(r"(?i)Database=\w+", "Database=master", cs), sa_pw, autocommit=True)
         m.cursor().execute(f"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]")
         m.close()
+
+
+# --------------------------------------------------------------------------- several LLMs at once
+
+def _llm(cid, order, max_tokens=0, parallel=1, model="m"):
+    from containerizer.credentials import Credential
+    return Credential(id=cid, purpose="llm", provider="openai", api_url=f"http://llm{cid}.example.com/v1", scope="llm",
+                      model=model, llm_order=order, llm_max_tokens=max_tokens, llm_parallel=parallel, token="")
+
+
+BUILTIN = {"CONTAINERIZER_AI_BACKEND": "openai", "CONTAINERIZER_LLM_BASE_URL": "http://127.0.0.1:8082/v1",
+           "CONTAINERIZER_MODEL": "qwen3-coder-30b-a3b"}
+
+
+def test_lanes_follow_the_order_sizes_and_requests_at_once(monkeypatch):
+    from containerizer import local_llm
+    monkeypatch.setattr(local_llm, "queue_parallel", lambda settings, env=None: 2)       # two NUMA nodes
+    gpu, cpu = _llm(1, 30, 0, 4, "big"), _llm(2, 20, 15000, 1, "small")
+    lanes = lq.plan_lanes([cpu, gpu], BUILTIN, {"LocalOrder": 10, "LocalMaxTokens": 4000})
+    assert [(ln["name"], ln["max_tokens"], ln["parallel"]) for ln in lanes] == \
+        [("built-in", 4000, 2), ("llm-2", 15000, 1), ("llm-1", 0, 4)]
+    assert lanes[1]["settings"]["CONTAINERIZER_MODEL"] == "small"
+    # no place in the order: the built-in LLM is not used beside registered ones (as before)
+    assert [ln["name"] for ln in lq.plan_lanes([gpu], BUILTIN, {})] == ["llm-1"]
+    # alone, it takes every job, at least Parallel at once
+    assert [(ln["max_tokens"], ln["parallel"]) for ln in lq.plan_lanes([], BUILTIN, {"Parallel": 3})] == [(0, 3)]
+    assert lq.plan_lanes([], None, {"Parallel": 2})[0] | {"label": ""} == {
+        "name": "environment", "label": "", "settings": None, "max_tokens": 0, "parallel": 2, "order": 0}
+
+
+def test_fill_gives_each_job_to_the_first_llm_that_takes_it(monkeypatch):
+    jobs = [{"JobId": 1, "Kind": "review", "EstInputTokens": 20000}, {"JobId": 2, "Kind": "review", "EstInputTokens": 3000},
+            {"JobId": 3, "Kind": "review", "EstInputTokens": 9000}, {"JobId": 4, "Kind": "review", "EstInputTokens": 2000},
+            {"JobId": 5, "Kind": "review", "EstInputTokens": 50000}]
+    lanes = [{"name": "built-in", "settings": BUILTIN, "max_tokens": 4000, "parallel": 1, "order": 10},
+             {"name": "llm-2", "settings": {"CONTAINERIZER_MODEL": "small"}, "max_tokens": 15000, "parallel": 1, "order": 20},
+             {"name": "llm-1", "settings": {"CONTAINERIZER_MODEL": "big"}, "max_tokens": 0, "parallel": 2, "order": 30}]
+    conn = FakeConn()
+    r = lq.Runner(lambda: conn, name="r1", metrics=lq.QueueMetrics("r1"), log=lambda msg: None, load=lambda: 0.0)
+    try:
+        monkeypatch.setattr(lq, "apply_rules", lambda conn: (0, 0))
+        monkeypatch.setattr(lq, "load_settings", lambda conn: dict(lq.DEFAULTS, OnlyWhenIdle=False))
+        monkeypatch.setattr(lq, "scans_running", lambda conn: 0)
+        monkeypatch.setattr(r, "lanes", lambda conn, settings: lanes)
+        monkeypatch.setattr(r, "_enter_llm", lambda conn: None)
+
+        def claim(conn, max_tokens=None, min_tokens=None):
+            for j in jobs:
+                if max_tokens is None or j["EstInputTokens"] <= max_tokens:
+                    jobs.remove(j)
+                    return dict(j)
+            return None
+        monkeypatch.setattr(r, "claim", claim)
+        submitted = []
+        pool = SimpleNamespace(submit=lambda fn, row: submitted.append(row) or row)
+        r.fill(pool)
+        assert [(x["JobId"], x["_lane"]) for x in submitted] == [(2, "built-in"), (3, "llm-2"), (1, "llm-1"), (4, "llm-1")]
+        assert [x["JobId"] for x in jobs] == [5]                       # every LLM is busy: the big one waits
+        assert submitted[0]["_llm"] is BUILTIN and submitted[2]["_parallel"] == 1 and submitted[3]["_parallel"] == 2
+    finally:
+        ai.LISTENERS.remove(r.metrics.llm)
+
+
+def test_each_job_thread_asks_its_own_llm():
+    import threading
+    seen = {}
+    with ai.configured({"CONTAINERIZER_AI_BACKEND": "openai", "CONTAINERIZER_LLM_BASE_URL": "https://gpu.example.com/v1",
+                        "CONTAINERIZER_MODEL": "big"}):
+        def job():
+            with ai.configured(BUILTIN, local=True):
+                seen["thread"] = (ai._llm_base_url(), ai.model_name())
+        t = threading.Thread(target=job)
+        t.start()
+        t.join()
+        seen["main"] = (ai._llm_base_url(), ai.model_name())
+    assert seen["thread"] == ("http://127.0.0.1:8082/v1", "qwen3-coder-30b-a3b")
+    assert seen["main"] == ("https://gpu.example.com/v1", "big")
+
+
+def test_the_page_shows_the_llms_in_order_and_warns_when_none_takes_big_jobs():
+    ls = [{"name": "built-in", "label": "built-in LLM (qwen)", "settings": {}, "max_tokens": 4000, "parallel": 2, "order": 10},
+          {"name": "llm-7", "label": "OpenAI-compatible big (gpu)", "settings": {}, "max_tokens": 30000, "parallel": 4, "order": 20}]
+    html = admin_llmqueue.lanes_html(ls)
+    assert html.index("built-in LLM") < html.index("big (gpu)") and "/admin/source-control/7" in html
+    assert "4,000 tokens" in html and "Jobs over 30,000 estimated tokens wait" in html
+    assert "wait" not in admin_llmqueue.lanes_html([ls[0], {**ls[1], "max_tokens": 0}]).split("</table>")[1]
+    v, errors = admin_llmqueue.validate_settings({"LocalOrder": ["5"], "LocalMaxTokens": ["4000"]})
+    assert v["LocalOrder"] == 5 and v["LocalMaxTokens"] == 4000
+    v, errors = admin_llmqueue.validate_settings({"LocalOrder": ["x"]})
+    assert "Built-in LLM order: 0 to 1,000, or empty" in errors

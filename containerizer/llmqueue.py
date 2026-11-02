@@ -33,6 +33,7 @@ Without SQL Server the command line keeps the queue in a JSON file (FileJobQueue
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import os
@@ -62,7 +63,7 @@ SECOND_OPINION = ("blocker", "rewrite")
 OVERRIDE_CONFIDENCE = {"uncertain": 0.6, "second-opinion": 0.85}
 DEFAULTS = {"Paused": False, "WindowDays": 0, "WindowStart": None, "WindowEnd": None, "OnlyWhenIdle": True,
             "MaxLoadPerCpu": 0.5, "Parallel": 1, "ApproveKinds": "egress,link,refactor,review", "ApproveMinTokens": 0,
-            "ApproveMaxQueued": 0, "RejectAfterHours": 0}
+            "ApproveMaxQueued": 0, "RejectAfterHours": 0, "LocalOrder": None, "LocalMaxTokens": 0}
 
 
 def utcnow() -> datetime:
@@ -822,6 +823,28 @@ class _usage:
         return any(u.get("cached") for u in self.entries)
 
 
+def plan_lanes(registered: list, builtin: dict | None, settings: dict) -> list[dict]:
+    """The LLMs the queue runner asks at once, in their order: each registered LLM (credentials.Credential, key
+    opened) with its biggest job (LlmMaxTokens; 0: any) and requests at once (LlmParallel); the appliance's built-in
+    LLM, one request per server, beside them when it has a place in the order (LocalOrder, LocalMaxTokens) or alone
+    when none is registered; else the environment's LLM (settings None) with Parallel. A job goes to the first lane
+    with a free request that takes its size."""
+    from . import local_llm
+    s = {**DEFAULTS, **(settings or {})}
+    lanes = [{"name": f"llm-{c.id}", "label": c.label, "settings": c.ai_settings(), "max_tokens": int(c.llm_max_tokens or 0),
+              "parallel": max(1, int(c.llm_parallel or 1)), "order": int(c.llm_order)} for c in registered]
+    if builtin and (not lanes or s.get("LocalOrder") is not None):
+        alone = not lanes
+        lanes.append({"name": "built-in", "label": f"built-in LLM ({builtin.get('CONTAINERIZER_MODEL')})",
+                      "settings": builtin, "max_tokens": 0 if alone else int(s.get("LocalMaxTokens") or 0),
+                      "parallel": max(local_llm.queue_parallel(builtin), int(s["Parallel"] or 1) if alone else 1),
+                      "order": 0 if alone else int(s["LocalOrder"])})
+    if not lanes:
+        lanes.append({"name": "environment", "label": "the worker's own LLM settings", "settings": None,
+                      "max_tokens": 0, "parallel": max(1, int(s["Parallel"] or 1)), "order": 0})
+    return sorted(lanes, key=lambda ln: (ln["order"], ln["name"] != "built-in", ln["name"]))
+
+
 class Runner:
     """`containerizer llm-queue`: works through cz.LlmJob when the settings let it."""
 
@@ -882,16 +905,21 @@ class Runner:
         finally:
             conn.close()
 
-    def claim(self, conn) -> dict | None:
+    def claim(self, conn, max_tokens: int | None = None, min_tokens: int | None = None) -> dict | None:
         """Take the next queued job of a kind this runner knows (the page's order), skipping ones another
-        runner holds."""
+        runner holds; with max_tokens/min_tokens, only one of that estimated size (input tokens)."""
         kinds = list(self.kinds)
+        size, args = "", tuple(kinds)
+        if max_tokens is not None:
+            size, args = size + " AND COALESCE(j.EstInputTokens, 0) <= %s", args + (int(max_tokens),)
+        if min_tokens is not None:
+            size, args = size + " AND COALESCE(j.EstInputTokens, 0) >= %s", args + (int(min_tokens),)
         cur = conn.cursor(as_dict=True)
         cur.execute("SELECT TOP (1) j.*, s.Name AS ScanName FROM cz.LlmJob j WITH (UPDLOCK, READPAST, ROWLOCK) "
                     "LEFT JOIN cz.OrgScan s ON s.ScanId = j.ScanId "
                     "WHERE j.Status = N'queued' AND (j.NotBefore IS NULL OR j.NotBefore <= SYSUTCDATETIME()) "
-                    f"AND j.Kind IN ({', '.join(['%s'] * len(kinds))}) "
-                    "ORDER BY COALESCE(j.AdminRank, CAST(j.Priority AS float)) DESC, j.JobId", tuple(kinds))
+                    f"AND j.Kind IN ({', '.join(['%s'] * len(kinds))}){size} "
+                    "ORDER BY COALESCE(j.AdminRank, CAST(j.Priority AS float)) DESC, j.JobId", args)
         row = cur.fetchone()
         if row:
             cur.execute("UPDATE cz.LlmJob SET Status = N'running', Runner = %s, StartedAt = SYSUTCDATETIME(), "
@@ -1068,14 +1096,34 @@ class Runner:
 
     # -- the loop --------------------------------------------------------------------------------
 
-    def builtin_parallel(self, conn) -> int:
-        """One job per server of the appliance's built-in LLM (one per NUMA node) when it is the LLM in use: two
-        servers answer two jobs at full speed each. 1 otherwise (Parallel on the page decides)."""
+    def registered_llms(self, conn) -> list:
+        """The registered LLMs in their order, with their keys opened; looked up at most once a minute."""
+        now = _time.monotonic()
+        cached = getattr(self, "_llms", None)
+        if cached is not None and now - cached[0] <= 60:
+            return cached[1]
+        from .credentials import CredentialError, PRIVATE_KEY_ENV, load, private_key_from_env
+        from .orgsource import REDACT
+        out = []
+        try:
+            if self.key is None and os.environ.get(PRIVATE_KEY_ENV):
+                self.key = private_key_from_env()
+            if self.key is not None:
+                for c in load(conn, self.key).llms():
+                    if c.error:
+                        self.log(f"LLM {c.label} cannot be opened ({c.error}): not used")
+                        continue
+                    if c.token:
+                        REDACT.add(c.token, c.username)
+                    out.append(c)
+        except CredentialError as ex:
+            self.log(f"the registered LLMs cannot be opened ({ex}); using the built-in or the environment's LLM")
+        self._llms = (now, out)
+        return out
+
+    def lanes(self, conn, settings: dict) -> list[dict]:
         from . import local_llm
-        n = local_llm.queue_parallel(local_llm.worker_settings())
-        if n <= 1:
-            return 1
-        return local_llm.queue_parallel(self.llm_settings(conn))     # not when a registered LLM is in use
+        return plan_lanes(self.registered_llms(conn), local_llm.worker_settings(), settings)
 
     def _enter_llm(self, conn) -> None:
         """The LLM settings for the jobs about to be asked; changed only when none is in progress
@@ -1103,9 +1151,10 @@ class Runner:
             self.metrics.queue.refresh(conn)
             settings = load_settings(conn)
             self.metrics.paused.set(1 if settings["Paused"] else 0)
-            parallel = max(1, int(settings["Parallel"] or 1), self.builtin_parallel(conn))
+            lanes = self.lanes(conn, settings)      # each LLM in its order, with its size limit and requests at once
             with self.lock:
                 busy = len(self.active)
+                in_lane = {ln["name"]: sum(1 for r in self.active.values() if r.get("_lane") == ln["name"]) for ln in lanes}
             # "only when idle" is checked before the first request: the runner's own requests load the machine
             ok, why = gate(settings, utcnow(), scans_running(conn), self.load() if not busy else 0.0,
                             restartplan.holding())
@@ -1113,18 +1162,27 @@ class Runner:
             if why != self.status:
                 self.log(why or "open: taking jobs")
                 self.status = why
-            while ok and busy < parallel and not self.stopping.is_set():
-                row = self.claim(conn)
+            while ok and not self.stopping.is_set():
+                row = lane = None
+                for lane in lanes:              # the first LLM in the order that has a free request takes the
+                    if in_lane[lane["name"]] < lane["parallel"]:        # next job of a size it takes
+                        row = self.claim(conn, max_tokens=lane["max_tokens"] or None)
+                        if row:
+                            break
                 if not row:
                     break
+                name, llm = lane["name"], lane["settings"]
                 self._enter_llm(conn)
                 busy += 1
+                in_lane[name] += 1
+                row["_lane"], row["_llm"] = name, llm
                 try:
-                    from .ai import endpoint
-                    row["_endpoint"] = endpoint(row.get("Model") or None)
+                    from .ai import configured, endpoint
+                    with configured(llm, local=True) if llm else contextlib.nullcontext():
+                        row["_endpoint"] = endpoint(row.get("Model") if not llm else None)
                 except Exception:
                     row["_endpoint"] = None
-                row["_parallel"] = busy             # jobs sharing the server while this one is asked
+                row["_parallel"] = in_lane[name]    # jobs sharing the server while this one is asked
                 with self.lock:
                     self.active[row["JobId"]] = row
                 started.append(pool.submit(self._run, row))
@@ -1136,6 +1194,10 @@ class Runner:
 
     def _run(self, row: dict) -> str:
         try:
+            if row.get("_llm"):                 # the LLM of the job's lane, for this job's thread only
+                from .ai import configured
+                with configured(row["_llm"], local=True):
+                    return self.process({**row, "Model": None})
             return self.process(row)
         finally:
             with self.lock:

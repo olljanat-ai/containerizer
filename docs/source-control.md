@@ -103,11 +103,30 @@ without re-entering it, while a different server means removing it and adding it
 hands the setting to the AI code for the run only, never through its environment, so the git and
 docker processes a scan starts never see the key. Allow the server's host on **Admin → Firewall**.
 
+**Several LLMs at once.** More than one LLM can be registered: a GPU server, a CPU server, the Claude API.
+Each one has an **Order**, **Jobs up to** (estimated input tokens; 0: any size) and **Requests at once**.
+The [LLM queue](#queued-llm-reviews) gives each job to the first LLM in the order that takes its size and has
+a free request, and they all answer at the same time: put the small, cheap servers first with a size limit
+and a big one last with any size. A job no LLM takes waits (the LLM queue page warns about it). On the
+appliance the built-in LLM can join the list too (LLM queue → Settings: its order and the biggest job it
+takes), with one request per server it runs. Scans that ask the LLM directly, outside the queue, use the
+first LLM in the order. Two LLMs on the same server need different hosts (one registration per server).
+
+| Example | Order | Jobs up to | At once |
+| --- | --- | --- | --- |
+| Built-in LLM (CPU, two NUMA nodes) | 10 | 4,000 tokens | 2 (its servers) |
+| A CPU server with a bigger model | 20 | 15,000 tokens | 1 |
+| A GPU server | 30 | any size | 4 |
+
+![The LLM queue's LLMs in order: the built-in LLM for jobs up to 4,000 tokens, a CPU server up to 15,000, a GPU server for any size](images/admin-llm-queue-llms.png#only-light){ .cz-shot }
+![The LLM queue's LLMs in order: the built-in LLM for jobs up to 4,000 tokens, a CPU server up to 15,000, a GPU server for any size](images/admin-llm-queue-llms-dark.png#only-dark){ .cz-shot }
+
 **The appliance's built-in LLM.** Without an LLM server of your own, the appliance can run one on its
 CPU: Qwen3-Coder 30B-A3B with llama.cpp, turned on under **Admin → Source control & LLM** (off by
 default; it needs a machine with at least 40 GB of memory, see
 [Running the appliance](appliance-admin.md#built-in-llm)). Scans with **Ask the LLM** use it when no LLM is
-set on that page; an LLM set there is always used instead. Expect about 7 to 12 tokens per second and a few
+set on that page; an LLM set there is used instead, unless the built-in LLM has a place in the LLM queue's order
+(see *Several LLMs at once* above). Expect about 7 to 12 tokens per second and a few
 minutes per answer: fine for the components the rules are unsure of, too slow for LLM-heavy mode. Use the
 queued LLM mode for organization scans where it is offered, so the scans do not wait for each answer.
 
