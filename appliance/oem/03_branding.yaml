@@ -1,0 +1,47 @@
+# Replaces the Elemental default of the same name (hostname "elemental", an /etc/issue with "password: elemental").
+# The host name is "containerizer" (CZ_HOSTNAME in /etc/containerizer/appliance.env replaces it, cz-firstboot);
+# the active system keeps the image's /etc/issue; the other modes say what they are.
+name: "Branding"
+stages:
+  initramfs:
+    - name: "Branding"
+      if: '[ -f "/run/elemental/active_mode" ]'
+      hostname: "containerizer"
+    - name: "Branding passive"
+      if: '[ -f "/run/elemental/passive_mode" ]'
+      hostname: "containerizer"
+      files:
+        - path: /etc/issue
+          content: |
+            containerizer appliance \n (\l): PREVIOUS SNAPSHOT
+            The active system did not boot, so this is an earlier OS snapshot.
+            Web UI: https://\4/   SSH: root@\4
+
+          permissions: 0644
+          owner: 0
+          group: 0
+    - name: "Branding recovery"
+      if: '[ -f "/run/elemental/recovery_mode" ]'
+      hostname: "recovery"
+      files:
+        - path: /etc/issue
+          content: |
+            containerizer appliance \n (\l): RECOVERY
+            Sign in as root, password "containerizer" (you change it at the sign-in).
+            Reinstall the OS with "elemental reset" (the persistent partition is kept).
+
+          permissions: 0644
+          owner: 0
+          group: 0
+    - name: "Branding live CD"
+      if: '[ -f "/run/elemental/live_mode" ]'
+      hostname: "installer"
+      files:
+        - path: /etc/issue
+          content: |
+            containerizer appliance installer \n (\l)
+            Sign in as root, password "containerizer".
+
+          permissions: 0644
+          owner: 0
+          group: 0

@@ -6,6 +6,16 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## 0.3.2 (2026-11-02)
+
+### Appliance
+- The console no longer shows Elemental's branding (host name `elemental`, "Login with user: root, password:
+  elemental"): `/system/oem/03_branding.yaml` and `04_accounting.yaml` replace the Elemental defaults. The host
+  name is `containerizer` (CZ_HOSTNAME replaces it), the installed system shows its own `/etc/issue`, recovery,
+  the previous snapshot and the installer ISO say what they are, and root's password is `containerizer`
+  everywhere (the installer ISO included). The banner sent people to `elemental` as the current password at the
+  first sign-in's password change, which fails with "Authentication token manipulation error".
+
 ## 0.3.1 (2026-11-02)
 
 ### Appliance
