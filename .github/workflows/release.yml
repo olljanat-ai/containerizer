@@ -10,20 +10,6 @@
 name: release
 
 on:
-  push:
-    tags: ["v*.*.*"]
-    branches: [main]
-    # documentation-only pushes to main skip this (path filters never apply to tag pushes)
-    paths-ignore: ["README.md", "docs/**", "mkdocs.yml", ".github/mkdocs_hooks.py", ".github/workflows/docs.yml"]
-  # pull requests that change the appliance itself; everything else is covered by the push to main
-  pull_request:
-    paths:
-      - "appliance/**"
-      - "containerizer/appliance.py"
-      - "containerizer/sysagent.py"
-      - "monitoring/**"
-      - "requirements*.txt"
-      - ".github/workflows/release.yml"
   # Release: run this workflow by hand on main with a version (0.1.0 or v0.1.0). The tag job checks it
   # against containerizer/__init__.py, tags the commit vX.Y.Z and starts this workflow again on the tag,
   # so the image is signed with the tag identity above. Without a version it is a plain build and test.
