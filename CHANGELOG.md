@@ -6,7 +6,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.3.6 (2026-11-02)
 
 ### Appliance
 - **Admin → Sandbox HTTPS** changes were refused with "Caddy does not accept the configuration: ... mkdir caddy:
