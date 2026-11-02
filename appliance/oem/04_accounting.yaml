@@ -1,0 +1,13 @@
+# Replaces the Elemental default of the same name (root's password "elemental"). root's password is
+# "containerizer" (also on the installer ISO); on the installed system cz-root-password then puts back the one
+# set at the first sign-in, or expires the default so that the first sign-in asks for a new one.
+name: "Default user"
+stages:
+  initramfs:
+    - name: "Setup users"
+      ensure_entities:
+        - path: /etc/shadow
+          entity: |
+            kind: "shadow"
+            username: "root"
+            password: "containerizer"
