@@ -906,8 +906,8 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
     uploaded dev database). The caller commits. Returns `res` (status deployed or no-a-components).
 
     The application's connectivity.yaml (connectivity.py) is read first, from its folder or `connectivity_from`
-    (a sandbox variant: the original's folder): the ports of its approved egress stay open in the regenerated
-    NetworkPolicies, and its approved entries are kept, as they are, in the new file."""
+    (a sandbox variant: the original's folder): its approved entries are kept, as they are, in the new file,
+    and its confirmed links stay open in the regenerated NetworkPolicies."""
     from . import connectivity
     from .generate import generate_app, k8s_name
     dest = out.root / rel

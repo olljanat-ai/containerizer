@@ -9,4 +9,5 @@ export CONTAINERIZER_SQL_PASSWORD
 export CONTAINERIZER_EGRESS_KUBECONFIG=/run/containerizer/egress-observer.kubeconfig
 export HOME=/var/lib/containerizer/egress
 # names are resolved through the sandbox cluster's DNS (what the pods were answered), not the host's resolver
-exec /usr/lib/containerizer/venv/bin/python -m containerizer egress-observe --dns-server 10.43.0.10
+# the appliance firewall's drops from the kernel log (CAP_SYSLOG, see the unit)
+exec /usr/lib/containerizer/venv/bin/python -m containerizer egress-observe --dns-server 10.43.0.10 --kernel-log kmsg

@@ -161,6 +161,7 @@ def test_connectivity_names_the_other_application_on_both_sides():
     assert len(out) == 1 and cy.linked_entries(callee)[1] == [i]
     again = cy.model("egress-demo", EGRESS_NET, existing={"outbound": out})
     assert [x for x in again["outbound"] if x["destination"] == "orders-demo.orders-demo"][0] == out[0]
+    assert out[0]["sandbox"]["reachable"] is True
     again = cy.model("orders-demo", ORDERS_NET, existing={"inbound": [i]})
     assert i in again["inbound"]
     assert "cf-linked" in cy.svg(doc) and "orders-demo / orders-demo :8080" in cy.svg(doc)

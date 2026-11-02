@@ -12,7 +12,7 @@ image, and upgraded from the admin pages. To install it, see [Getting started](a
 | Web UI and API (results, admin pages, System, Firewall and Sandbox HTTPS pages) | systemd service, user `cz-web`, no privileges | `https://<appliance>/` |
 | Scan worker ([organization scans](scheduled-scans.md)) | systemd service, user `containerizer` + Docker | - |
 | LLM queue runner ([queued LLM reviews](scheduled-scans.md#the-llm-queue), [refactoring patches](refactoring.md)) | systemd service `containerizer-llm-queue`, user `containerizer` + Docker (to build and run refactoring patches), reads the scan worker's clones, writes only its answer cache and `/var/lib/containerizer/refactor` | Admin → LLM queue, Admin → Refactoring |
-| [Egress observer](egress.md#the-egress-observer): the connections the sandbox's NetworkPolicies drop | systemd service `containerizer-egress-observer`, user `containerizer` with CAP_NET_ADMIN only (the NFLOG drop log), its own read-only Kubernetes account | Admin → Egress, the results pages' Network connectivity |
+| [Egress observer](egress.md#the-egress-observer): what the sandbox blocks (its NetworkPolicies, the firewall, the DNS filter) | systemd service `containerizer-egress-observer`, user `containerizer` with CAP_NET_ADMIN (the NFLOG drop log) and CAP_SYSLOG (the kernel log, for the firewall's drops) only, its own read-only Kubernetes account | Admin → Egress, the results pages' Network connectivity |
 | SQL Server 2025 (results database), or your own SQL Server ([external database](#external-database)) | container, non-root, data on the persistent partition | `127.0.0.1:1433` only |
 | Sandbox cluster: k3s (single node) with Flux and Traefik | systemd service | `kubectl` on the appliance; apps at `https://<component>-<app>.<domain>/` with [Sandbox HTTPS](sandbox-https.md) |
 | [Lab services](lab-services.md) for the sandboxed apps: SQL Server, PostgreSQL, MySQL, MongoDB, Redis, RabbitMQ, Kafka, S3, Azure Blob storage, SFTP (each optional) | k3s, namespace `containerizer-lab`, data on the persistent partition | Admin → Lab services; inside the cluster only |
@@ -366,12 +366,16 @@ scan worker get the passwords of the backup and are linked to their users in the
 - k3s: secrets encrypted at rest, delivered by External Secrets Operator from a namespace without pods, audit log (`/var/lib/rancher/k3s/server/logs/audit.log`), kernel
   defaults protected, API reachable only from the appliance and its pods. Each app's namespace runs
   under Pod Security "restricted".
-- Egress observer ([egress](egress.md#on-the-appliance)): not root; the `containerizer` user with one capability,
+- The sandbox is isolated: its applications reach nothing outside the appliance but what an egress rule on the
+  Firewall page allows (the firewall's forward chain drops the rest, and the DNS filter refuses every other name),
+  whatever their NetworkPolicies say. Approving egress on the results pages or Admin → Egress only documents a
+  destination for the real environment (connectivity.yaml); it changes no rule here.
+- Egress observer ([egress](egress.md#on-the-appliance)): not root; the `containerizer` user with two capabilities:
   CAP_NET_ADMIN, to read kube-router's drop log (NFLOG group 100: the first 128 bytes of each dropped packet,
-  addresses and ports, at most 10 packets a minute per policy). Its Kubernetes account reads pods and the CoreDNS
-  query log (names pods look up), nothing else; the query log is on for that reason (`coredns-custom`). Approved
-  egress opens the port, not the name, to every address but the blocked ranges, for every pod of the component,
-  like a hub firewall that tells zones apart and not applications: the FQDN is for the production firewall.
+  addresses and ports, at most 10 packets a minute per policy), and CAP_SYSLOG, to read the firewall's
+  `cz-egress-drop` lines from the kernel log (`/dev/kmsg`, the only device it sees; at most 30 a minute). Its
+  Kubernetes account reads pods and the CoreDNS query log (names pods look up, and the ones the DNS filter refused),
+  nothing else; the query log is on for that reason (`coredns-custom`). It changes no firewall rule.
 - Containers of the appliance's own services are pinned by digest in the OS image
   (`/usr/lib/containerizer/images.env`); each release has an SPDX SBOM attested to the image with cosign.
 

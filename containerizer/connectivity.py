@@ -20,9 +20,10 @@ approved destination the configuration no longer names). The same document is th
 output repository (write_files), for the platform or firewall team that writes the real environment's rules.
 
 Approved entries are never rewritten or dropped: `merge_outbound` keeps every approved entry of the existing
-connectivity.yaml exactly as it is, and `approved_entries` gives the generator their ports (org.deploy_app), so
-later scans keep them. A NetworkPolicy cannot name an FQDN: an approved destination opens its port to every
-address but the blocked ranges, zone-wide; the FQDN in connectivity.yaml is for the production firewall.
+connectivity.yaml exactly as it is (only its computed sandbox status changes), and org.deploy_app passes them to the
+generator, so later scans keep them. Approval documents a destination for the real environment and opens nothing
+in the sandbox; `sandbox_status` says whether the sandbox can reach each destination (its NetworkPolicy, and on the
+appliance its egress rules).
 """
 from __future__ import annotations
 
@@ -65,7 +66,7 @@ SKIP_FILE = re.compile(r"(?i)(\.Development\.|launchSettings|(^|/)\.vscode/|(^|/
                        r"dist|build|target|wwwroot/lib)/|\.min\.js$|swagger|openapi|package(-lock)?\.json$)")
 STATUSES = ("allowed", "approved", "proposed", "blocked", "not-allowed", "suspicious", "rejected", "reported", "linked",
             "link-proposed")
-STATUS_TEXT = {"allowed": "Allowed", "approved": "Approved", "proposed": "Proposed", "blocked": "Blocked",
+STATUS_TEXT = {"allowed": "Allowed", "approved": "Approved (documented)", "proposed": "Proposed", "blocked": "Blocked",
                "not-allowed": "Not allowed (will time out)", "suspicious": "Suspicious", "rejected": "Rejected",
                "reported": "Blocked (reported)", "linked": "Linked", "link-proposed": "Link proposed"}
 SOURCE_TEXT = {"config": "configuration", "code": "code", "package": "package", "policy": "NetworkPolicy",
@@ -208,37 +209,92 @@ def _json(s, default):
         return default
 
 
+LAYER_TEXT = {"network-policy": "the NetworkPolicy", "appliance-firewall": "the appliance firewall",
+              "dns-filter": "the appliance's DNS filter"}
+
+
+def sandbox_status(entries: list[dict], comps: list[dict], appliance="auto") -> None:
+    """Whether the sandbox can reach each outbound destination (entry["sandbox"]): its NetworkPolicy must allow the
+    port (inferred dependencies only: approval never opens one) and, on the appliance, an administrators' or system
+    egress rule must allow the destination (the firewall and the DNS filter let nothing else out)."""
+    if appliance == "auto":
+        from .egress import appliance_rules
+        try:
+            appliance = appliance_rules()
+        except Exception:  # noqa: BLE001 - no status rather than no page
+            appliance = None
+    from .egress import appliance_verdict
+    by = {c.get("k8s"): c for c in comps}
+    for e in entries:
+        if e.get("type") == "component":
+            e["sandbox"] = {"reachable": e.get("status") == "linked", "network_policy":
+                            "allows (confirmed link)" if e.get("status") == "linked" else "blocks until the link is confirmed",
+                            "appliance": "inside the sandbox cluster"}
+            continue
+        port = int(e.get("port") or 0)
+        proto = str(e.get("protocol") or "TCP").upper()
+        open_ports = policy_ports(by.get(e.get("component")) or {})
+        policy_ok = e.get("type") == "any" or (port, proto) in open_ports
+        ips = ((e.get("observed") or {}).get("ips") or [None])
+        if e.get("type") == "any":
+            ap = {"allowed": None, "text": "only the destinations the appliance's egress rules allow"} if appliance \
+                else {"allowed": None, "text": "no appliance firewall (lab)"}
+        else:
+            ap = appliance_verdict(str(e.get("destination") or ""), ips[0], port, proto, appliance)
+        st = {"network_policy": ("allows" if policy_ok else "blocks") + (f" port {port}" if port else ""),
+              "appliance": ap["text"]}
+        if ap.get("rule"):
+            st["rule"] = ap["rule"]
+        if not policy_ok:
+            st["reachable"], st["blocked_by"] = False, "network-policy"
+        elif ap.get("allowed") is False:
+            st["reachable"], st["blocked_by"] = False, ap.get("blocked_by")
+        else:
+            st["reachable"] = True if ap.get("allowed") or appliance is None else None
+        e["sandbox"] = st
+
+
+def cluster_dns(f: dict) -> bool:
+    """A drop to port 53 of a cluster address: kube-router catching up with a pod that just started (every generated
+    NetworkPolicy allows the cluster's DNS), not an outbound need (egress.Observer leaves them out too)."""
+    if int(f.get("Port") or 0) != 53:
+        return False
+    from .egress import _in, review_settings
+    return _in(str(f.get("DestinationIp") or f.get("Destination") or ""), review_settings().get("cluster_cidrs"))
+
+
 def fold_unnamed(flows: list[dict]) -> list[dict]:
     """Flows without a name whose address a named flow of the same namespace, component and port had (the
-    observer learned the name later): the named flow explains them, so they are left out."""
+    observer learned the name later): the named flow explains them, so they are left out; so are cluster DNS
+    drops (cluster_dns)."""
+    flows = [f for f in flows if not cluster_dns(f)]
     named = {(f.get("Namespace"), f.get("Component"), int(f.get("Port") or 0), f.get("DestinationIp"))
              for f in flows if f.get("Named") and f.get("DestinationIp")}
     return [f for f in flows if f.get("Named") or
             (f.get("Namespace"), f.get("Component"), int(f.get("Port") or 0), f.get("DestinationIp")) not in named]
 
 
-def policy_ports(comp: dict, approved: list[dict]) -> set[tuple[int, str]]:
-    """(port, protocol) the component's NetworkPolicy opens to any address: the inferred dependencies and the
-    approved egress."""
-    out = {(int(p["port"]), str(p.get("protocol") or "TCP").upper()) for d in comp.get("egress") or []
-           for p in d.get("ports") or []}
-    out |= {(int(e["port"]), str(e.get("protocol") or "TCP").upper()) for e in approved
-            if e.get("component") == comp.get("k8s") and e.get("port")}
-    return out
+def policy_ports(comp: dict) -> set[tuple[int, str]]:
+    """(port, protocol) the component's NetworkPolicy opens to any address: the inferred dependencies only
+    (approved egress is documented for the real environment, never opened in the sandbox)."""
+    return {(int(p["port"]), str(p.get("protocol") or "TCP").upper()) for d in comp.get("egress") or []
+            for p in d.get("ports") or []}
 
 
 def model(app: str, network: dict | None, flows: list[dict] | None = None, decisions: list[dict] | None = None,
           existing: dict | None = None, sandbox: list[dict] | None = None, namespace: str | None = None,
           now: datetime | None = None,
-          links_out: list[dict] | None = None, links_in: list[dict] | None = None) -> dict:
-    """The connectivity document of one application (the shape of connectivity.yaml)."""
+          links_out: list[dict] | None = None, links_in: list[dict] | None = None, appliance="auto") -> dict:
+    """The connectivity document of one application (the shape of connectivity.yaml). `appliance`: the appliance
+    firewall's egress rules (egress.appliance_rules; "auto": read them here, None: no appliance firewall)."""
     now = now or utcnow()
     network = network or {}
     comps = [c for c in network.get("components") or []]
     for c in comps:
         c.setdefault("k8s", _k8s(c.get("name") or ""))
     by_k8s = {c["k8s"]: c for c in comps}
-    flows, decisions = fold_unnamed(list(flows or [])), list(decisions or [])
+    flows = fold_unnamed(list(flows or []))
+    decisions = [d for d in decisions or [] if not cluster_dns(d)]
     old = [e for e in (existing or {}).get("outbound") or [] if isinstance(e, dict)]
     approved = [e for e in old if e.get("status") == "approved"]
     approved += [{"component": d["Component"], "destination": d["Destination"], "port": d["Port"],
@@ -270,7 +326,7 @@ def model(app: str, network: dict | None, flows: list[dict] | None = None, decis
             urls[_k8s(s["ComponentName"])] = s.get("Url")
     for c in comps:
         k = c["k8s"]
-        open_ports = policy_ports(c, approved)
+        open_ports = policy_ports(c)
         if c.get("port"):
             if urls.get(k):
                 inbound.append({"component": k, "from": urls[k], "port": c.get("service_port") or 80,
@@ -290,8 +346,7 @@ def model(app: str, network: dict | None, flows: list[dict] | None = None, decis
                     evidence=[{"file": d["file"], "line": d["line"], "quote": d["quote"]}])
             if ok:
                 e.setdefault("allowed_by", next((x["id"] for x in c.get("egress") or []
-                                                 if any(int(p["port"]) == port for p in x.get("ports") or [])),
-                                                "approved egress"))
+                                                 if any(int(p["port"]) == port for p in x.get("ports") or [])), None))
         for svc, why in (c.get("lab_services") or {}).items():
             from .labservices import LAB_NS, SERVICES
             if svc in SERVICES:
@@ -379,8 +434,21 @@ def model(app: str, network: dict | None, flows: list[dict] | None = None, decis
                  and (d.get("Component"), str(d.get("Destination") or "").lower(), int(d.get("Port") or 0)) not in folded_ips]
     for f in flows:
         comp = f.get("Component") or ""
-        e = add(comp, f["Destination"], f["Port"], f["Protocol"], "fqdn" if f.get("Named") else "ip", "blocked",
-                "observed")
+        e = None
+        if not int(f.get("Port") or 0):
+            # the DNS filter refused the name, so no port is known: the destination the configuration names, if any
+            e = next((x for x in out.values() if x["component"] == comp
+                      and str(x["destination"]).lower() == str(f["Destination"]).lower()), None)
+            if e is not None and "observed" not in e["sources"]:
+                e["sources"].append("observed")
+        if e is None:
+            e = add(comp, f["Destination"], f["Port"], f["Protocol"], "fqdn" if f.get("Named") else "ip", "blocked",
+                    "observed")
+            if not int(f.get("Port") or 0):
+                e["port_unknown"] = True
+        layers = e.setdefault("blocked_by", [])
+        if (f.get("Layer") or "network-policy") not in layers:
+            layers.append(f.get("Layer") or "network-policy")
         ob = e.setdefault("observed", {"packets": 0, "first_seen": None, "last_seen": None, "pods": [], "ips": []})
         ob["packets"] += int(f.get("Packets") or 0)
         fs, ls = _iso(f.get("FirstSeen")), _iso(f.get("LastSeen"))
@@ -398,6 +466,12 @@ def model(app: str, network: dict | None, flows: list[dict] | None = None, decis
         if e["status"] in ("allowed",):
             e["status"] = "blocked"             # inferred as allowed, but the sandbox dropped it
     for d in decisions:
+        if not int(d.get("Port") or 0):
+            e0 = next((x for x in out.values() if x["component"] == d["Component"]
+                       and str(x["destination"]).lower() == str(d["Destination"]).lower() and x["port"]), None)
+            if e0 is not None:
+                d = {**d, "Port": e0["port"], "Protocol": e0["protocol"]}
+                out.pop(_key(d["Component"], d["Destination"], 0, "ANY"), None)
         e = add(d["Component"], d["Destination"], d["Port"], d["Protocol"],
                 "fqdn" if d.get("Verdict") not in ("unnamed",) and not _is_ip(d["Destination"]) else "ip",
                 DEC_STATUS.get(d["Status"], "reported"), "observed",
@@ -415,6 +489,7 @@ def model(app: str, network: dict | None, flows: list[dict] | None = None, decis
             if "approved" not in e["sources"] and d["Status"] == "approved":
                 e["sources"].append("approved")
     entries = merge_outbound(old, list(out.values()))
+    sandbox_status(entries, comps, appliance)
     # approved entries the configuration no longer names: they stay; say so
     for e in entries:
         if e.get("status") == "link-proposed":
@@ -433,7 +508,7 @@ def model(app: str, network: dict | None, flows: list[dict] | None = None, decis
         named_by = set(e.get("sources") or []) & {"config", "code"}
         if named_by and e.get("status") in ("not-allowed", "blocked", "proposed", "reported"):
             what = "configuration" if "config" in named_by else "code"
-            state = {"proposed": " (an egress rule is proposed: approve it)",
+            state = {"proposed": " (proposed: approve it to document it for the real environment)",
                      "blocked": " (blocked in the sandbox)"}.get(e.get("status"), "")
             findings.append({"kind": "missing", "component": e.get("component"),
                              "text": f"{e.get('component')}: the {what} names {e.get('destination')}:{e.get('port')}, but "
@@ -443,9 +518,10 @@ def model(app: str, network: dict | None, flows: list[dict] | None = None, decis
     return {"apiVersion": API_VERSION, "kind": "Connectivity", "application": app, "namespace": ns,
             "generatedAt": _iso(now),
             "observed": bool(flows) or bool(decisions) or any("observed" in (e.get("sources") or []) for e in entries),
-            "note": ("A Kubernetes NetworkPolicy cannot name an FQDN: approved egress opens its port to every address "
-                     "but the blocked ranges, for every pod of the component. Use the destinations below (FQDN, port, "
-                     "protocol) for the production firewall."),
+            "note": ("Approved destinations are documented for the real environment: use them (FQDN, port, protocol) "
+                     "for its firewall rules. Approval opens nothing in the sandbox: it stays isolated, its "
+                     "NetworkPolicies allow only what was inferred and confirmed links between applications, and on "
+                     "the appliance only the administrators' egress rules let anything out."),
             "components": [{"name": c["k8s"], "component": c.get("name"), "role": c.get("role"),
                             "port": c.get("port"), "service_port": c.get("service_port")} for c in comps],
             "inbound": inbound, "internal": internal, "outbound": sorted(entries, key=_sort_key),
@@ -463,7 +539,7 @@ def merge_outbound(existing: list[dict], new: list[dict]) -> list[dict]:
     """Outbound entries: every approved entry of the existing file exactly as it is (never rewritten or dropped:
     what the scan knows now only adds its sources), decided and observed entries carried over (a scan that only
     infers a destination keeps the decision about it: a suspicious one does not become "allowed" because an
-    approved port opened), then the new ones."""
+    inferred port is open), then the new ones."""
     keep: dict[tuple, dict] = {}
     for e in existing:
         if not isinstance(e, dict) or not e.get("destination"):
@@ -475,7 +551,8 @@ def merge_outbound(existing: list[dict], new: list[dict]) -> list[dict]:
         k = entry_key(e)
         old = keep.get(k)
         if old is not None and old.get("status") in KEPT:
-            # the approved entry stays as written; the scan's sources (config, code) are only added to it
+            # the approved entry stays as written (its sandbox status is computed again); the scan's sources
+            # (config, code) are only added to it
             add = [s for s in e.get("sources") or [] if s in ("config", "code") and s not in (old.get("sources") or [])]
             if add:
                 keep[k] = out[k] = {**old, "sources": list(old.get("sources") or []) + add}
@@ -501,7 +578,7 @@ def linked_entries(doc: dict | None) -> tuple[list[dict], list[dict]]:
 
 
 def approved_entries(doc: dict | None) -> list[dict]:
-    """The approved outbound entries of a connectivity.yaml (the generator opens their ports)."""
+    """The approved outbound entries of a connectivity.yaml (kept by the generator, documented; nothing is opened)."""
     return [e for e in (doc or {}).get("outbound") or [] if isinstance(e, dict) and e.get("status") == "approved"
             and e.get("port")]
 
@@ -542,10 +619,13 @@ def markdown(doc: dict) -> str:
         ob = e.get("observed") or {}
         seen = f"{ob.get('packets')} dropped, last {ob.get('last_seen')}" if ob else ""
         who = f"{e.get('approved_by')} {e.get('approved_at') or ''}".strip() if e.get("approved_by") else ""
-        rows.append(f"| {e.get('component')} | {e.get('destination')} | {e.get('port')}/{e.get('protocol')} | "
+        sb = e.get("sandbox") or {}
+        sbt = ("reachable" if sb.get("reachable") else "not reachable" if sb.get("reachable") is False else "unknown") + \
+            (f": {sb.get('appliance')}" if sb else "")
+        rows.append(f"| {e.get('component')} | {e.get('destination')} | {_port(e)} | "
                     f"{STATUS_TEXT.get(e.get('status'), e.get('status'))} | "
                     f"{', '.join(SOURCE_TEXT.get(s, s) for s in e.get('sources') or [])} | "
-                    f"{_md(e.get('reason') or e.get('allowed_by') or '')} | {ev} | {seen} | {who} |")
+                    f"{_md(e.get('reason') or e.get('allowed_by') or '')} | {ev} | {seen} | {who} | {_md(sbt)} |")
     inbound = [f"| {i['component']} | {i['from']} | {i['port']}/{i['protocol']} → {i.get('target_port')} |"
                for i in doc.get("inbound") or []]
     internal = [f"| {i['from']} | {i['to']} | {i['port']}/{i['protocol']} | {SOURCE_TEXT.get(i.get('source'), i.get('source'))} |"
@@ -561,11 +641,15 @@ def markdown(doc: dict) -> str:
     lines += ["## Inbound", "", "| Component | From | Port |", "| --- | --- | --- |", *inbound, ""] if inbound else []
     lines += ["## Between components and lab services", "", "| From | To | Port | Source |", "| --- | --- | --- | --- |",
               *internal, ""] if internal else []
-    lines += ["## Outbound", "", "| Component | Destination | Port | Status | Sources | Reason | Evidence | Observed | Approved |",
-              "| --- | --- | --- | --- | --- | --- | --- | --- | --- |", *rows, ""] if rows else ["## Outbound", "", "None.", ""]
+    lines += ["## Outbound", "", "| Component | Destination | Port | Status | Sources | Reason | Evidence | Observed | Approved | Sandbox |",
+              "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |", *rows, ""] if rows else ["## Outbound", "", "None.", ""]
     if doc.get("findings"):
         lines += ["## Findings", ""] + [f"- **{f['kind']}**: {_md(f['text'])}" for f in doc["findings"]] + [""]
     return "\n".join(lines)
+
+
+def _port(e: dict) -> str:
+    return f"{e.get('port')}/{e.get('protocol')}" if int(e.get("port") or 0) else "unknown"
 
 
 def _md(s: str) -> str:
@@ -590,10 +674,12 @@ WIDTH = 1000
 LINE_CLASS = {"allowed": "cf-allowed", "approved": "cf-approved", "proposed": "cf-proposed", "blocked": "cf-blocked",
               "not-allowed": "cf-missing", "suspicious": "cf-suspicious", "rejected": "cf-rejected",
               "reported": "cf-blocked", "internal": "cf-internal", "inbound": "cf-inbound", "linked": "cf-linked",
-              "link-proposed": "cf-link-proposed"}
-LEGEND = (("allowed", "Allowed by the NetworkPolicy"), ("approved", "Approved egress"), ("proposed", "Proposed"),
+              "link-proposed": "cf-link-proposed", "unreachable": "cf-allowed cf-unreachable"}
+LEGEND = (("allowed", "Allowed by the NetworkPolicy"), ("approved", "Approved for the real environment"),
+          ("proposed", "Proposed"),
           ("blocked", "Blocked in the sandbox"), ("not-allowed", "Named by configuration, not allowed"),
-          ("suspicious", "Suspicious"), ("linked", "Linked application"), ("link-proposed", "Link proposed"))
+          ("suspicious", "Suspicious"), ("linked", "Linked application"), ("link-proposed", "Link proposed"),
+          ("unreachable", "Dotted: the sandbox cannot reach it"))
 SVG_STYLE = """
 .cf-bg{fill:#fff}.cf-box{fill:#f4f4f1;stroke:#8a8983;stroke-width:1}.cf-comp{fill:#e8f0fe;stroke:#1f5fbf}
 .cf-t{font:13px system-ui,-apple-system,"Segoe UI",sans-serif;fill:#0b0b0b}.cf-s{font:11px system-ui,sans-serif;fill:#5f5e58}
@@ -602,6 +688,7 @@ path{fill:none;stroke-width:2}.cf-allowed{stroke:#2e7d32}.cf-approved{stroke:#15
 .cf-blocked{stroke:#c62828;stroke-dasharray:6 4}.cf-missing{stroke:#e65100;stroke-dasharray:2 4}.cf-suspicious{stroke:#8e24aa;stroke-width:3;stroke-dasharray:2 3}
 .cf-rejected{stroke:#8a8983;stroke-dasharray:1 5}.cf-internal{stroke:#5f5e58;stroke-dasharray:4 3}.cf-inbound{stroke:#5f5e58}
 .cf-linked{stroke:#00897b}.cf-link-proposed{stroke:#00897b;stroke-dasharray:6 4}.cf-app{fill:#e0f2f1;stroke:#00897b}
+path.cf-unreachable{stroke-width:1.2;stroke-dasharray:1 3}
 @media (prefers-color-scheme:dark){.cf-bg{fill:#1a1a19}.cf-box{fill:#232321;stroke:#6f6e68}.cf-comp{fill:#16263f;stroke:#7fb0ff}
 .cf-t{fill:#f0efe9}.cf-s,.cf-h{fill:#a8a69c}.cf-allowed{stroke:#66bb6a}.cf-approved{stroke:#64b5f6}.cf-proposed{stroke:#ffc857}
 .cf-blocked{stroke:#ef5350}.cf-missing{stroke:#ff9800}.cf-suspicious{stroke:#ce93d8}.cf-internal,.cf-inbound{stroke:#a8a69c}
@@ -671,8 +758,10 @@ def svg(doc: dict, standalone: bool = False) -> str:
     for e in doc.get("outbound") or []:
         lbl = label(e)
         if e.get("component") in cy and lbl in dy:
-            lines.append(_curve(COLS["comp"][1], cy[e["component"]], COLS["out"][0], dy[lbl],
-                                LINE_CLASS.get(e.get("status"), "cf-blocked"),
+            cls = LINE_CLASS.get(e.get("status"), "cf-blocked")
+            if e.get("status") in ("approved", "allowed") and (e.get("sandbox") or {}).get("reachable") is False:
+                cls += " cf-unreachable"
+            lines.append(_curve(COLS["comp"][1], cy[e["component"]], COLS["out"][0], dy[lbl], cls,
                                 f"{e['component']} → {lbl}: {STATUS_TEXT.get(e.get('status'), e.get('status'))}"))
     for i in doc.get("internal") or []:
         if i["from"] not in cy:
@@ -720,4 +809,6 @@ def label(e: dict) -> str:
     t = e.get("target") or {}
     if e.get("type") == "component" and t:
         return f"{t.get('application')} / {t.get('component')} :{t.get('port')}"
+    if not int(e.get("port") or 0):
+        return f"{e.get('destination')} (port unknown)"
     return f"{e.get('destination')} :{e.get('port')}/{e.get('protocol')}"

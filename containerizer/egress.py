@@ -1,4 +1,4 @@
-"""Egress: what the sandbox's NetworkPolicies block, reviewed, approved by people, written to the output
+"""Egress: what the sandbox blocks, reviewed, approved by people for the real environment, written to the output
 repository (docs/egress.md).
 
 The generator writes a default-deny NetworkPolicy per component that opens egress only on ports it can infer
@@ -11,7 +11,10 @@ in the sandbox: the call times out. Three parts close that gap; agents only prop
    incoming traffic is not an application's dependency), names the destination with the FQDN a pod of that
    namespace looked up just before (CoreDNS query log, `log` in the coredns-custom ConfigMap, matched by
    resolving the names it saw), and adds them up per namespace, component, destination, port and protocol in
-   cz.EgressFlow (RecordEgressFlow) every minute. A destination without a name stays an IP address.
+   cz.EgressFlow (RecordEgressFlow) every minute. A destination without a name stays an IP address. On the
+   appliance it also reads the firewall's drops (`cz-egress-drop` in the kernel log: its egress allow-list lets
+   nothing else out of the sandbox) and the names its DNS filter refused (CoreDNS passes REFUSED on: a flow without
+   a port); each flow records the layer that blocked it.
 2. **The egress review** (LLM queue kind `egress`, `handler`). The queue runner (`housekeep`) looks for new flows
    of applications rated A that run in the sandbox (and of "Make it A" variants). A deterministic pre-filter
    (`prefilter`) decides first and is never overruled: IP addresses without a name, metadata endpoints and the
@@ -23,10 +26,11 @@ in the sandbox: the call times out. Three parts close that gap; agents only prop
    checked against the source; an answer that quotes nothing real proposes only a steady flow.
 3. **Approval and delivery.** Administrators, operators and the application's product owners approve or reject a
    proposal (results page, Admin → Egress). The runner, which holds the output repository's write token, writes
-   the application's connectivity.yaml, CONNECTIVITY.md and connectivity.svg (connectivity.py) and opens the
-   approved port in the component's NetworkPolicy, in one commit; Flux applies it. Later scans keep the approved
-   entries (org.deploy_app). A NetworkPolicy cannot name an FQDN: the port opens to every address but the blocked
-   ranges; the FQDN in connectivity.yaml is for the production firewall.
+   the application's connectivity.yaml, CONNECTIVITY.md and connectivity.svg (connectivity.py) in one commit.
+   Approval documents the destination for the real environment and opens nothing: the sandbox stays isolated
+   (its NetworkPolicies as inferred; on the appliance only the administrators' egress rules let anything out).
+   Later scans keep the approved entries (org.deploy_app). Confirmed links between applications (links.py) are
+   calls inside the sandbox cluster: they are opened in both NetworkPolicies.
 """
 from __future__ import annotations
 
@@ -66,7 +70,7 @@ LOCAL_SOURCES_ENV = "CONTAINERIZER_EGRESS_SOURCES"          # lab only: folders 
 VERDICTS = ("propose", "report", "suspicious", "platform", "unnamed", "in-cluster")
 VERDICT_STATUS = {"propose": "proposed", "report": "reported", "suspicious": "suspicious", "platform": "reported",
                   "unnamed": "reported", "in-cluster": "reported"}
-STATUS_TEXT = {"proposed": "Proposed", "reported": "Reported", "suspicious": "Suspicious", "approved": "Approved",
+STATUS_TEXT = {"proposed": "Proposed", "reported": "Reported", "suspicious": "Suspicious", "approved": "Approved (documented)",
                "rejected": "Rejected"}
 CATEGORY_TEXT = {"ip-literal": "an IP address no pod looked up by name", "metadata": "a metadata endpoint or blocked range",
                  "wildcard": "a wildcard name", "file-sharing": "a paste, file-sharing, tunnelling or request-capture service",
@@ -143,9 +147,9 @@ def prefilter(flow: dict, cfg: dict | None = None) -> tuple[str, str, str] | Non
     plat = _rx_list(cfg.get("platform_domains"))
     if plat and plat.match(dest):
         return "platform", "platform-service", f"{dest} is a service of the cloud platform: the platform team decides"
-    if not port:
+    if not port and flow.get("Layer") != "dns-filter":
         return "unnamed", "no-port", f"{flow.get('Protocol')} to {dest} has no port"
-    if cfg.get("ports") and port not in [int(p) for p in cfg["ports"]]:
+    if port and cfg.get("ports") and port not in [int(p) for p in cfg["ports"]]:
         return "report", "unusual-port", f"port {port} is not one the review proposes: a person decides"
     return None
 
@@ -328,6 +332,7 @@ class Flow:
     ip: str | None = None
     pods: dict = field(default_factory=dict)
     policy: str | None = None
+    layer: str | None = None                # network-policy, appliance-firewall, dns-filter
 
     def key(self) -> tuple:
         return (self.namespace, self.component, self.destination, self.port, self.protocol)
@@ -339,7 +344,8 @@ class Aggregator:
         self.lock = threading.Lock()
         self.stats = {"drops": 0, "egress": 0, "ingress": 0, "named": 0, "platform": 0}
 
-    def add(self, ns, comp, dest, named, port, proto, ip, pod, src, policy, when: datetime) -> Flow:
+    def add(self, ns, comp, dest, named, port, proto, ip, pod, src, policy, when: datetime,
+            layer: str = "network-policy") -> Flow:
         k = (ns, comp, dest, int(port or 0), proto)
         with self.lock:
             f = self.flows.get(k)
@@ -347,8 +353,9 @@ class Aggregator:
                 f = self.flows[k] = Flow(ns, comp, dest, named, int(port or 0), proto, first=when)
             f.packets += 1
             f.last = when
-            f.ip = ip
-            f.policy = policy
+            f.ip = ip or f.ip
+            f.policy = policy or f.policy
+            f.layer = layer
             if pod and pod not in f.pods and len(f.pods) < 5:
                 f.pods[pod] = src
             return f
@@ -367,12 +374,12 @@ def record(conn, flows: list[Flow], observer: str) -> int:
     for f in flows:
         cur.execute("EXEC cz.RecordEgressFlow @Namespace = %s, @Component = %s, @Destination = %s, @Named = %s, "
                     "@DestinationIp = %s, @Port = %s, @Protocol = %s, @Packets = %s, @FirstSeen = %s, @LastSeen = %s, "
-                    "@Pods = %s, @Policy = %s, @Observer = %s",
+                    "@Pods = %s, @Policy = %s, @Observer = %s, @Layer = %s",
                     (f.namespace[:63], (f.component or "")[:63], f.destination[:253], 1 if f.named else 0,
                      (f.ip or None) and f.ip[:45], f.port, f.protocol[:10], f.packets,
                      f.first.replace(tzinfo=None), f.last.replace(tzinfo=None),
                      json.dumps([{"pod": p, "ip": ip} for p, ip in f.pods.items()])[:2000] if f.pods else None,
-                     (f.policy or None) and f.policy[:253], observer[:256]))
+                     (f.policy or None) and f.policy[:253], observer[:256], f.layer or "network-policy"))
         n += 1
     conn.commit()
     return n
@@ -400,8 +407,16 @@ class Observer:
     def app_namespaces(self) -> list[str]:
         """The sandbox namespaces of applications (cz.vSandboxNamespace, refreshed every 5 minutes): where an
         in-cluster destination address is looked for."""
-        if self.connect is None or _time.monotonic() - self._namespaces[0] < 300:
+        if _time.monotonic() - self._namespaces[0] < 300:
             return self._namespaces[1] or list(self.pods.cache)
+        if self.connect is None:            # a dry run: the namespaces containerizer generated (needs the list verb)
+            try:
+                nss = [n["metadata"]["name"] for n in self.kube.get(
+                    "namespaces", selector="app.kubernetes.io/managed-by=containerizer").get("items") or []]
+            except Exception:  # noqa: BLE001
+                nss = []
+            self._namespaces = (_time.monotonic(), nss)
+            return nss or list(self.pods.cache)
         try:
             conn = self.connect()
             try:
@@ -429,10 +444,94 @@ class Observer:
         return None
 
     # CoreDNS
-    def dns_line(self, line: str) -> None:
+    def dns_line(self, line: str, when: datetime | None = None) -> Flow | None:
+        """A query of the CoreDNS log: an answered one is remembered (it names later connections); one the
+        appliance's DNS filter REFUSED (CoreDNS passes its answer on) is a blocked destination by itself, with no
+        port (nothing was connected), when an application pod asked."""
         q = parse_dns_line(line)
-        if q and q[3] == "NOERROR" and q[2] in ("A", "AAAA") and external_name(q[1]):
+        if not q or q[2] not in ("A", "AAAA") or not external_name(q[1]):
+            return None
+        if q[3] == "NOERROR":
             self.memory.add(q[0], q[1])
+            return None
+        if q[3] != "REFUSED":
+            return None
+        hit = self.pod_of(q[0])
+        if hit is None:
+            return None
+        ns, pod, comp = hit
+        self.agg.stats["refused"] = self.agg.stats.get("refused", 0) + 1
+        return self._print(self.agg.add(ns, comp, q[1], True, 0, "ANY", None, pod, q[0], None, when or utcnow(),
+                                        layer="dns-filter"), pod, None)
+
+    def _print(self, f: Flow, pod: str, ip: str | None) -> Flow:
+        """A dry run prints each blocked connection."""
+        if self.out:
+            print(json.dumps({"namespace": f.namespace, "component": f.component, "pod": pod, "destination": f.destination,
+                              "ip": ip, "port": f.port, "protocol": f.protocol, "layer": f.layer}), file=self.out, flush=True)
+        return f
+
+    def pod_of(self, ip: str) -> tuple[str, str, str] | None:
+        """(namespace, pod, component) of an application pod's address, looked up in the application namespaces."""
+        if not _in(ip, self.cfg.get("cluster_cidrs")):
+            return None
+        for ns in self.app_namespaces():
+            if platform_namespace(ns, self.cfg):
+                continue
+            hit = self.pods.of(ns, ip).get(ip)
+            if hit:
+                return ns, hit[0], hit[1]
+        return None
+
+    # the appliance's firewall: the kernel log
+    def kernel_line(self, line: str, when: datetime | None = None) -> Flow | None:
+        """A `cz-egress-drop:` line of the appliance firewall (its egress chain: nothing leaves the sandbox but what
+        an administrators' or system egress rule allows) from an application pod; the destination named as for
+        NetworkPolicy drops."""
+        d = parse_firewall_drop(line)
+        if d is None:
+            return None
+        src, dst, proto, dport = d
+        hit = self.pod_of(src)
+        if hit is None:
+            return None             # the host or a container of the appliance itself: not an application's
+        ns, pod, comp = hit
+        pods = self.pods.of(ns)
+        name = name_for(dst, src, list(pods), self.memory, self.resolver)
+        self.agg.stats["firewall"] = self.agg.stats.get("firewall", 0) + 1
+        return self._print(self.agg.add(ns, comp, name or dst, bool(name), dport or 0, proto, dst, pod, src, None,
+                                        when or utcnow(), layer="appliance-firewall"), pod, dst)
+
+    def follow_kernel(self, source: str) -> None:
+        """The appliance firewall's drops from the kernel log: /dev/kmsg (CAP_SYSLOG with kernel.dmesg_restrict=1),
+        or `journalctl -k -f` (the systemd-journal group), or a file (tests)."""
+        while not self.stopping.is_set():
+            try:
+                if source == "kmsg":
+                    fd = os.open("/dev/kmsg", os.O_RDONLY)
+                    try:
+                        os.lseek(fd, 0, os.SEEK_END)        # new messages only
+                        while not self.stopping.is_set():
+                            try:
+                                rec = os.read(fd, 8192).decode("utf-8", "replace")
+                            except BrokenPipeError:         # the ring buffer overtook this reader: go on
+                                continue
+                            self.kernel_line(rec.split(";", 1)[-1])
+                    finally:
+                        os.close(fd)
+                else:
+                    cmd = ["journalctl", "-k", "-f", "-n", "0", "-o", "cat", "--grep", "cz-egress-drop"] \
+                        if source == "journal" else ["tail", "-n", "0", "-F", source]
+                    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                                         errors="replace", stdin=subprocess.DEVNULL)
+                    for line in p.stdout:
+                        self.kernel_line(line)
+                        if self.stopping.is_set():
+                            break
+                    p.kill()
+            except Exception as ex:  # noqa: BLE001 - keep observing the other signals
+                self.log(f"kernel log ({source}): {type(ex).__name__}: {ex}"[:300])
+            self.stopping.wait(10)
 
     def follow_dns(self) -> None:
         """kubectl logs -f of CoreDNS (read-only, kube-system); reconnects when the stream ends."""
@@ -506,9 +605,11 @@ class Observer:
         self.log(f"{n} flow(s) recorded; {self.agg.stats}")
         return n
 
-    def run(self, reader) -> None:
+    def run(self, reader, kernel: str | None = None) -> None:
         t = threading.Thread(target=self.follow_dns, name="coredns-log", daemon=True)
         t.start()
+        if kernel:
+            threading.Thread(target=self.follow_kernel, args=(kernel,), name="kernel-log", daemon=True).start()
         last = _time.monotonic()
         try:
             while not self.stopping.is_set():
@@ -552,15 +653,45 @@ def observe(args) -> int:
         obs.stopping.set()
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    obs.log(f"reading NFLOG group {reader.group} (NetworkPolicy drops) and the CoreDNS query log"
+    obs.log(f"reading NFLOG group {reader.group} (NetworkPolicy drops), the CoreDNS query log (names; names the "
+            "appliance's DNS filter refused) and the kernel log (the appliance firewall's drops)"
             + (" (dry run: nothing is stored)" if args.dry_run else ""))
     try:
         if args.seconds:
             threading.Timer(args.seconds, obs.stopping.set).start()
-        obs.run(reader)
+        obs.run(reader, kernel_source(args.kernel_log, obs.log))
     finally:
         reader.close()
     return 0
+
+
+def kernel_source(choice: str | None, log=print) -> str | None:
+    """Where the appliance firewall's drops are read: kmsg, journal, a file, or None (auto: /dev/kmsg when this
+    process may read it, else none: a lab without the appliance's firewall)."""
+    choice = choice or "auto"
+    if choice == "none":
+        return None
+    if choice == "auto":
+        try:
+            os.close(os.open("/dev/kmsg", os.O_RDONLY))
+        except OSError:
+            log("the kernel log is not readable here: the appliance firewall's drops are not observed")
+            return None
+        return "kmsg"
+    return choice
+
+
+FW_DROP_RE = re.compile(r"cz-egress-drop: .*?\bSRC=([0-9a-fA-F.:]+) DST=([0-9a-fA-F.:]+) .*?\bPROTO=(TCP|UDP)\b"
+                        r"(?:.*?\bDPT=(\d+))?")
+
+
+def parse_firewall_drop(line: str) -> tuple[str, str, str, int | None] | None:
+    """(source, destination, protocol, destination port) of an appliance firewall drop (sysagent.render: the
+    egress chain logs `cz-egress-drop: IN=cni0 OUT=eth0 ... SRC=<pod> DST=<address> ... PROTO=TCP SPT=.. DPT=..`)."""
+    m = FW_DROP_RE.search(line or "")
+    if not m:
+        return None
+    return m[1], m[2], m[3], int(m[4]) if m[4] else None
 
 
 def observer_rbac(namespaces: list[str]) -> list[dict]:
@@ -587,6 +718,79 @@ def observer_rbac(namespaces: list[str]) -> list[dict]:
 
 COREDNS_LOG = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "coredns-custom", "namespace": "kube-system"},
                "data": {"log.override": "log\n"}}
+
+
+# --------------------------------------------------------------------------- the appliance's egress rules
+
+SYSTEM_RULES_ENV = "CONTAINERIZER_EGRESS_SYSTEM_RULES"     # default: the appliance's files (sysagent.Paths)
+ADMIN_RULES_ENV = "CONTAINERIZER_EGRESS_RULES"
+
+
+def appliance_rules(env=None) -> dict | None:
+    """The appliance firewall's egress allow-list as sysagent reads it (the system rules of the OS image and the
+    administrators' /etc/containerizer/egress.json, validated the same way), read only; None where there is no
+    appliance firewall (a lab, the command line)."""
+    from . import sysagent
+    env = os.environ if env is None else env
+    sys_path = Path(env.get(SYSTEM_RULES_ENV) or sysagent.P.system_rules)
+    admin_path = Path(env.get(ADMIN_RULES_ENV) or sysagent.P.rules)
+    if not sys_path.is_file():
+        return None
+    out = {"mode": "enforce", "rules": []}
+    for path, origin in ((sys_path, "system"), (admin_path, "admin")):
+        try:
+            data = sysagent.validate_rules(json.loads(path.read_text()))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError, sysagent.RuleError):
+            continue                # sysagent ignores a broken admin file too (nothing of it is allowed)
+        out["rules"] += [dict(r, origin=origin) for r in data["rules"]]
+        if origin == "admin":
+            out["mode"] = data.get("mode", "enforce")
+    return out
+
+
+def rule_text(r: dict) -> str:
+    what = r.get("host") or r.get("cidr")
+    note = f" ({r['note']})" if r.get("note") else ""
+    return f"{what} {','.join(r.get('ports') or [])}{note}, {'administrators' if r.get('origin') == 'admin' else 'system'} rule"
+
+
+def appliance_verdict(dest: str, ip: str | None, port: int, proto: str, rules: dict | None) -> dict:
+    """Whether the appliance firewall lets the sandbox reach a destination: {allowed: bool | None, rule, blocked_by}.
+    A name no rule covers is refused by the DNS filter; an address no rule covers is dropped by the firewall."""
+    if rules is None:
+        return {"allowed": None, "text": "no appliance firewall (lab)"}
+    if rules.get("mode") == "log":
+        return {"allowed": True, "text": "the appliance firewall only logs (log mode)"}
+    from .sysagent import _covers
+    proto = (proto or "TCP").lower()
+    name = None if _is_ip_text(dest) else dest.lower().rstrip(".")
+
+    def port_ok(r):
+        return not port or any(p == f"{proto}/{int(port)}" or (proto == "any" and p.endswith(f"/{int(port)}"))
+                               for p in r.get("ports") or [])
+    for r in rules.get("rules") or []:
+        if name and r.get("host") and _covers(r["host"], name):
+            if port_ok(r):
+                return {"allowed": True, "rule": rule_text(r), "text": f"allowed by {rule_text(r)}"}
+            return {"allowed": False, "blocked_by": "appliance-firewall",
+                    "text": f"the name is allowed ({rule_text(r)}), not port {port}"}
+        if r.get("cidr") and (ip or (dest if not name else None)) and _in(ip or dest, [r["cidr"]]) and port_ok(r):
+            return {"allowed": True, "rule": rule_text(r), "text": f"allowed by {rule_text(r)}"}
+    if name:
+        return {"allowed": False, "blocked_by": "dns-filter",
+                "text": "refused by the appliance's DNS filter: no egress rule allows it"}
+    return {"allowed": False, "blocked_by": "appliance-firewall",
+            "text": "dropped by the appliance firewall: no egress rule allows it"}
+
+
+def _is_ip_text(s: str) -> bool:
+    try:
+        ipaddress.ip_address(str(s).strip("[]"))
+        return True
+    except ValueError:
+        return False
 
 
 # --------------------------------------------------------------------------- the review (LLM queue kind `egress`)
@@ -653,7 +857,8 @@ def source_hits(app_root: Path | None, names: list[str], limit: int = MAX_HITS) 
 def prompt(payload: dict, dests: list[dict], hits: dict, source_note: str) -> str:
     items = []
     for d in dests:
-        items.append({"destination": d["destination"], "port": d["port"], "protocol": d["protocol"],
+        items.append({"destination": d["destination"], "port": d["port"] or "unknown (the appliance's DNS filter refused "
+                      "the name, so nothing was connected)", "protocol": d["protocol"],
                       "component": d["component"], "dropped_packets": d.get("packets"), "first_seen": d.get("first_seen"),
                       "last_seen": d.get("last_seen"), "pods": d.get("pods") or [],
                       "named_in_source": hits.get(d["destination"]) or []})
@@ -737,7 +942,7 @@ def insert_decisions(conn, app_id: int, rows: list[dict], job_id: int | None) ->
                      app_id, r.get("namespace", "")[:63], r["component"][:63], r["destination"][:253], int(r["port"]),
                      r["protocol"][:10], r["verdict"], VERDICT_STATUS[r["verdict"]], r.get("category"),
                      (r.get("reason") or "")[:1000], json.dumps(r.get("evidence") or []),
-                     json.dumps({k: r.get(k) for k in ("packets", "first_seen", "last_seen", "pods", "ips", "namespace")},
+                     json.dumps({k: r.get(k) for k in ("packets", "first_seen", "last_seen", "pods", "ips", "namespace", "layer")},
                                 default=str), job_id))
         n += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
     conn.commit()
@@ -831,6 +1036,7 @@ def flow_item(f: dict) -> dict:
     return {"component": f.get("Component") or "", "destination": f["Destination"], "port": int(f["Port"]),
             "protocol": f["Protocol"], "packets": int(f.get("Packets") or 0), "namespace": f["Namespace"],
             "first_seen": str(f.get("FirstSeen") or ""), "last_seen": str(f.get("LastSeen") or ""), "pods": pods,
+            "layer": f.get("Layer") or "network-policy",
             "ips": [f["DestinationIp"]] if f.get("DestinationIp") else []}
 
 
@@ -953,26 +1159,6 @@ def output_target(conn, key, app: dict) -> dict | None:
     return {"url": url, "branch": branch, "token": token, "username": user}
 
 
-def patch_policies(folder: Path, entries: list[dict]) -> list[str]:
-    """Open the approved ports in the components' NetworkPolicies (<folder>/<component>/k8s.yaml); returns the
-    files changed."""
-    import yaml
-    from .generate import _yaml_docs
-    from .harden import approved_ports, open_approved
-    changed = []
-    for comp in sorted({e.get("component") for e in entries if e.get("component")}):
-        f = folder / comp / "k8s.yaml"
-        if not re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?", comp) or not f.is_file():
-            continue
-        docs = [d for d in yaml.safe_load_all(f.read_text()) if isinstance(d, dict)]
-        ports = approved_ports([e for e in entries if e.get("component") == comp])
-        if any(open_approved(d, ports) for d in docs if d.get("kind") == "NetworkPolicy"
-               and (d.get("metadata") or {}).get("name") == comp):
-            f.write_text(_yaml_docs(docs))
-            changed.append(f"{comp}/k8s.yaml")
-    return changed
-
-
 def refresh_folder(conn, app_id: int, folder: Path, namespace: str) -> tuple[dict, list[str]]:
     """connectivity.yaml (+ .md, .svg) of one deployed folder of the application, and its NetworkPolicies."""
     from . import connectivity
@@ -993,7 +1179,7 @@ def refresh_folder(conn, app_id: int, folder: Path, namespace: str) -> tuple[dic
                              [s for s in sandbox if s.get("Namespace") == namespace], namespace,
                              links_out=links_out, links_in=links_in)
     connectivity.write_files(folder, doc)
-    return doc, patch_policies(folder, connectivity.approved_entries(doc)) + patch_links(folder, doc)
+    return doc, patch_links(folder, doc)
 
 
 def patch_links(folder: Path, doc: dict) -> list[str]:

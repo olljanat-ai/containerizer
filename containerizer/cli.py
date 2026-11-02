@@ -873,6 +873,9 @@ def main(argv=None) -> int:
     s.add_argument("--group", type=int, default=100, help="NFLOG group (kube-router: 100)")
     s.add_argument("--dns-server", help="ask this DNS server what a name resolves to (the cluster's, e.g. 10.43.0.10); "
                    "default: the host's resolver")
+    s.add_argument("--kernel-log", default="auto",
+                   help="where the appliance firewall's drops (cz-egress-drop) are read: kmsg (/dev/kmsg, needs CAP_SYSLOG "
+                        "with kernel.dmesg_restrict=1), journal (journalctl -k), a file, none, or auto (kmsg when readable)")
     s.add_argument("--flush", type=int, default=60, help="seconds between writes to SQL Server")
     s.add_argument("--name", help="observer name stored with the flows (default: <host name>-egress-observer)")
     s.add_argument("--dry-run", action="store_true", help="print each dropped connection; store nothing")

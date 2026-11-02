@@ -193,9 +193,6 @@ def harden_manifests(docs: list[dict], repo, c, plan: dict, component: str) -> l
             docs[1:1] = api_role(component, labels)
     if security().get("network", {}).get("default_deny"):
         egress = egress_for(repo, c)
-        approved = approved_ports(plan.get("approved_egress"))
-        if approved:            # egress a person approved (connectivity.yaml of the output repository)
-            egress = egress + [{"id": APPROVED_EGRESS, "ports": approved}]
         plan["egress"] = egress
         docs[:] = [d for d in docs if d.get("kind") != "NetworkPolicy"]
         docs.append(network_policy(component, labels, plan.get("port"), egress))
@@ -263,55 +260,6 @@ def egress_for(repo, c) -> list[dict]:
                     norm.append(e)
             out.append({"id": dep["id"], "ports": norm})
     return out
-
-
-APPROVED_EGRESS = "approved-egress"
-
-
-def approved_ports(entries) -> list[dict]:
-    """[{port, protocol}] of approved egress entries (connectivity.yaml), without duplicates."""
-    out: list[dict] = []
-    for e in entries or []:
-        try:
-            p = {"port": int(e["port"]), "protocol": str(e.get("protocol") or "TCP").upper()}
-        except (KeyError, TypeError, ValueError):
-            continue
-        if 0 < p["port"] < 65536 and p["protocol"] in ("TCP", "UDP", "SCTP") and p not in out:
-            out.append(p)
-    return out
-
-
-def open_approved(doc: dict, ports: list[dict]) -> bool:
-    """Open approved egress ports in a component's generated NetworkPolicy, as network_policy does: the rule to
-    any address but the blocked ranges gets the ports (the rule is added when there is none). A NetworkPolicy
-    cannot name an FQDN, so the port opens to every address. Returns whether the policy changed."""
-    if doc.get("kind") != "NetworkPolicy" or not ports:
-        return False
-    net = security()["network"]
-    spec = doc.setdefault("spec", {})
-    rules = spec.setdefault("egress", [])
-    rule = next((r for r in rules if any((t.get("ipBlock") or {}).get("cidr") == "0.0.0.0/0" for t in r.get("to") or [])),
-                None)
-    changed = False
-    if rule is None:
-        rule = {"to": [{"ipBlock": {"cidr": "0.0.0.0/0", "except": [x for x in net["blocked_cidrs"] if ":" not in x]}},
-                       {"ipBlock": {"cidr": "::/0", "except": [x for x in net["blocked_cidrs"] if ":" in x]}},
-                       {"namespaceSelector": {}}], "ports": []}
-        rules.append(rule)
-        changed = True
-    have = rule.setdefault("ports", [])
-    for p in ports:
-        if p not in have and {"port": p["port"], "protocol": p["protocol"]} not in have:
-            have.append(dict(p))
-            changed = True
-    ann = doc.setdefault("metadata", {}).setdefault("annotations", {})
-    ids = [x for x in str(ann.get(f"{ANNOTATION}/egress") or "").split(",") if x and x != "none"]
-    if APPROVED_EGRESS not in ids:
-        ann[f"{ANNOTATION}/egress"] = ",".join(ids + [APPROVED_EGRESS])
-        changed = True
-    if "Egress" not in spec.setdefault("policyTypes", []):
-        spec["policyTypes"].append("Egress")
-    return changed
 
 
 def network_policy(component: str, labels: dict, port, egress: list[dict]) -> dict:

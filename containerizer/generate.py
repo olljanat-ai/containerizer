@@ -657,8 +657,11 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
                  devdb=None, lab: set | None = None, lab_report: dict | None = None,
                  approved_egress: list[dict] | None = None, links: tuple | None = None) -> list[Path]:
     """`approved_egress`: the approved outbound entries of the application's connectivity.yaml in the output
-    repository (connectivity.approved_entries): their ports are opened in the components' NetworkPolicies, so a
-    scan keeps what people approved.
+    repository (connectivity.approved_entries): kept in the new connectivity.yaml as they are. Approval documents
+    a destination for the real environment; it opens nothing in the sandbox (its NetworkPolicies stay as
+    inferred, and on the appliance only the administrators' egress rules let anything out).
+    `links`: the confirmed links between applications (connectivity.linked_entries): opened in the NetworkPolicies
+    (calls inside the sandbox cluster).
     `devdb`: a devdb.SandboxDb when an operator uploaded a database backup for this application.
     `lab`: the lab services that are on (labservices.py), None where the appliance's lab does not run;
     `lab_report` (a dict) receives what the app needs, what it was pointed at and what is turned off."""
@@ -683,9 +686,6 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
         cdir = out / k8s_name(c.name)
         if buildable(c):
             plan = (plans or {}).get(c.name) or make_plan(a, c, rules)
-            mine = [x for x in approved_egress or [] if x.get("component") == k8s_name(c.name)]
-            if mine:
-                plan["approved_egress"] = [{"port": x["port"], "protocol": x.get("protocol") or "TCP"} for x in mine]
             cdir.mkdir(parents=True, exist_ok=True)
             if c.role == "spa":
                 plan["port"], plan["health"] = 8080, "/healthz"

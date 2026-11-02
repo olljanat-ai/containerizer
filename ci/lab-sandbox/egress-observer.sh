@@ -90,7 +90,8 @@ Environment=PATH=/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=$CZ_REPO
 # a fresh token and the Roles of new namespaces at every start; the unit restarts itself every 12 hours
 ExecStartPre=$LAB_SCRIPTS/egress-observer.sh rbac --token
-ExecStart=$PY -m containerizer egress-observe --name lab-egress-observer
+# the lab has no appliance firewall: no kernel log to read
+ExecStart=$PY -m containerizer egress-observe --name lab-egress-observer --kernel-log none
 RuntimeMaxSec=12h
 Restart=always
 RestartSec=20

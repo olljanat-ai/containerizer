@@ -1,24 +1,27 @@
 # Egress and network connectivity
 
-Containerizer generates a default-deny NetworkPolicy for every component. It opens egress only on the ports it can
-infer from packages, code and configuration (a SQL Server client opens 1433, an HTTP client 443 and 80, a configured
-`Server=db,14330` its port). A dependency it cannot infer is blocked in the sandbox: an HTTPS API named only by a
-configured URL, called with a client the rules do not recognise, times out or is refused.
+The sandbox is isolated. Containerizer generates a default-deny NetworkPolicy for every component that opens
+egress only on the ports it can infer from packages, code and configuration (a SQL Server client opens 1433, an
+HTTP client 443 and 80, a configured `Server=db,14330` its port), and on the appliance nothing leaves the sandbox
+at all unless an administrators' egress rule allows it (**Admin → Firewall**: its firewall drops everything else and
+its DNS filter refuses every other name), whatever a NetworkPolicy says. A dependency of an application is then
+blocked in the sandbox, and someone has to find out what the application needs, and write the real environment's
+firewall rules for it.
 
-Three parts close that gap, and document what every application needs from the network for the real environment;
-[links between applications](#links-between-applications) connect the components that call each other across
-repositories and products.
-Agents only propose; people approve.
+Containerizer finds and documents it; agents only propose, people approve:
 
-1. The **egress observer** records the connections the sandbox's NetworkPolicies block, with the name a pod looked
-   up just before.
+1. The **egress observer** records what the sandbox blocks, at every layer: the NetworkPolicies, the appliance's
+   firewall and its DNS filter, with the name a pod looked up just before.
 2. The **egress review** (an [LLM queue](scheduled-scans.md#the-llm-queue) job) looks at the new ones of
    applications rated **A** that run in the sandbox. A deterministic pre-filter decides first, then the LLM: is the
    destination named by the application's configuration or code (it quotes the file and line), and why does the
    application need it? It proposes, reports or flags it as suspicious.
-3. Administrators, operators and the application's product owners **approve or reject** each proposal. The queue
-   runner writes the approved egress to the application's **`connectivity.yaml`** in the output repository and opens
-   the port in the component's NetworkPolicy; Flux applies it.
+3. Administrators, operators and the application's product owners **approve or reject** each proposal. Approving
+   **documents** the destination for the real environment: the queue runner writes it to the application's
+   **`connectivity.yaml`** in the output repository. It opens nothing in the sandbox.
+
+[Links between applications](#links-between-applications) connect the components that call each other across
+repositories and products; those calls stay inside the sandbox cluster, and a confirmed link opens them there.
 
 **Network connectivity** brings everything together: on the application's results page as a diagram with the
 details, and next to the manifests in the output repository as `connectivity.yaml`, `CONNECTIVITY.md` and
@@ -39,7 +42,7 @@ not. It shows what the application needs from the network, from every source, ea
 | NetworkPolicy | What the generated policy allows: the inferred ports to any address but the blocked ranges, the application's own pods, DNS. |
 | Lab service | The [lab services](lab-services.md) the components need. |
 | Observed in the sandbox | Connections the sandbox blocked (the egress observer), with the dropped packets, when, and from which pods. |
-| Approved | Egress a person approved. |
+| Approved | A destination a person approved for the real environment (documented; the sandbox stays as it is). |
 | Ingress, service port | Who reaches the components: the sandbox HTTPS host, the service port. |
 
 The diagram has the inbound side on the left, the components in the middle and the destinations on the right, one
@@ -48,7 +51,7 @@ line per connection, styled by its status:
 | Status | Meaning |
 | --- | --- |
 | **Allowed** | The generated NetworkPolicy allows it. |
-| **Approved** | A person approved it after the egress review. |
+| **Approved (documented)** | A person approved it for the real environment after the egress review. The sandbox still blocks it unless its NetworkPolicy and, on the appliance, an egress rule allow it (the **Sandbox** column). |
 | **Proposed** | The egress review proposes it: waiting for a person. |
 | **Blocked** | The sandbox blocked it; not reviewed yet, or reported (nothing to propose: an IP address without a name, a platform service). |
 | **Not allowed (will time out)** | The configuration or code names it, and nothing allows it. |
@@ -57,7 +60,20 @@ line per connection, styled by its status:
 
 The table under the diagram has the details: the component, the destination with port and protocol, the status,
 the sources, why (the review's reason, or the dependency the policy opens the port for), the evidence (the quoted
-lines, the flows and pods) and, for staff, Approve and Reject.
+lines, the flows and pods), **Sandbox** (below) and, for staff, Approve and Reject. A destination whose name the
+appliance's DNS filter refused has no port (nothing was connected): it is shown with *port unknown*, or on the
+entry of the same name that the configuration names with its port.
+
+**Sandbox**: whether the sandbox can reach a destination, and what blocks it:
+
+- the component's **NetworkPolicy**: it allows the ports the assessment inferred (and confirmed links), nothing else;
+- on the appliance, its **egress rules** (Admin → Firewall: the system rules of the OS image and the administrators'
+  rules, read from the same files, the same way as the firewall itself, and never changed from here): *allowed by*
+  the rule that covers it, *refused by the appliance's DNS filter* (a name no rule covers), or *dropped by the
+  appliance firewall* (an address or port no rule covers); in log mode everything is allowed and logged;
+- without an appliance (a lab): *no appliance firewall (lab)*.
+
+In the diagram, an allowed or approved destination the sandbox cannot reach is drawn with a thin dotted line.
 
 **Findings** under the table point at what to look at:
 
@@ -74,11 +90,20 @@ observed. Assessments made before this version have no inferred network: scan th
 
 `containerizer egress-observe` runs on the sandbox node. It is deterministic: no LLM.
 
-- **What it reads.** k3s's network policy controller (kube-router) logs every packet a NetworkPolicy drops to the
-  netlink log group 100 with the prefix `DROP by policy <namespace>/<policy>`, at most **10 packets a minute per
-  policy**. The observer binds to that group (NFLOG over a `NETLINK_NETFILTER` socket, no packages and no tcpdump),
-  asks for the first 128 bytes of each packet and reads the IPv4 or IPv6 header and the TCP or UDP ports. Nothing
-  else of the packet is kept.
+- **What it reads**, the three places the sandbox blocks a connection:
+  - **NetworkPolicies.** k3s's network policy controller (kube-router) logs every packet a NetworkPolicy drops to the
+    netlink log group 100 with the prefix `DROP by policy <namespace>/<policy>`, at most **10 packets a minute per
+    policy**. The observer binds to that group (NFLOG over a `NETLINK_NETFILTER` socket, no packages and no tcpdump),
+    asks for the first 128 bytes of each packet and reads the IPv4 or IPv6 header and the TCP or UDP ports. Nothing
+    else of the packet is kept. A drop of a cluster address on port 53 is the controller catching up with a pod that
+    just started (every generated policy allows the cluster's DNS): it is left out.
+  - **The appliance firewall.** Its egress chain logs what it drops to the kernel log
+    (`cz-egress-drop: IN=cni0 OUT=eth0 ... SRC=<pod> DST=<address> ... PROTO=TCP ... DPT=443`, at most 30 a minute).
+    The observer reads those lines from `/dev/kmsg` (`--kernel-log`), takes the ones whose source is an application
+    pod (looked up across the application namespaces) and ignores the rest.
+  - **The appliance's DNS filter.** It refuses every name no egress rule covers; CoreDNS passes the refusal on and
+    logs it. A name an application pod asked for and was refused is a blocked destination by itself, with no port
+    (nothing was connected).
 - **Egress only.** A drop counts when its source is a pod of the namespace; a drop of a pod's incoming traffic is
   not a dependency. Drops in the platform's namespaces (`kube-system`, `flux-system`, `containerizer-*`, ...) are
   left out.
@@ -91,13 +116,14 @@ observed. Assessments made before this version have no inferred network: scan th
 - **Which pod.** The pods of the namespace through the Kubernetes API (address, pod name, the component from its
   `app.kubernetes.io/name` label).
 - **Stored** every minute in the results database, added up per namespace, component, destination, port and
-  protocol: the dropped packets, first and last seen, a few pods, the policy (`cz.EgressFlow`, through the
+  protocol: the dropped packets, first and last seen, a few pods, the policy, and the layer that blocked it
+  (`network-policy`, `appliance-firewall`, `dns-filter`; `cz.EgressFlow`, through the
   procedure `cz.RecordEgressFlow`, with the scanner's writer login). Because kube-router logs at most 10 packets a
   minute per policy, the count is a lower bound.
 - **Which application.** A namespace belongs to the application whose sandbox check last read it, or to the "Make
   it A" order whose [sandbox variant](refactoring.md#the-sandbox-variant) runs in it (`cz.vSandboxNamespace`).
 
-`--dry-run` prints each dropped connection and stores nothing:
+`--dry-run` prints each blocked connection (with its layer) and stores nothing:
 
 ```sh
 sudo -E containerizer egress-observe --dry-run --kubeconfig ~/.kube/config --seconds 60
@@ -107,9 +133,11 @@ sudo -E containerizer egress-observe --dry-run --kubeconfig ~/.kube/config --sec
 
 `containerizer-egress-observer.service` runs it with the least it needs:
 
-- **User** `containerizer`, not root, with one capability, **CAP_NET_ADMIN**: binding to an NFLOG group needs it.
-  The socket only reads. `NoNewPrivileges`, a read-only system, no home directories, and only the address families
-  it uses (netlink, IPv4, IPv6, Unix).
+- **User** `containerizer`, not root, with two capabilities: **CAP_NET_ADMIN**, which binding to an NFLOG group needs
+  (the socket only reads), and **CAP_SYSLOG**, which reading the kernel log needs (`kernel.dmesg_restrict=1`): the
+  appliance firewall's drops. Of the devices, only `/dev/kmsg` is visible (read only); `ProtectKernelLogs` is off for
+  that reason, since it would hide it. `NoNewPrivileges`, a read-only system, no home directories, and only the address
+  families it uses (netlink, IPv4, IPv6, Unix). It changes no firewall rule.
 - **Kubernetes**: its own ServiceAccount, `containerizer-egress-observer` (in `containerizer-verify`), with get and
   list on pods and get on `pods/log` in `kube-system` (the CoreDNS query log) and get and list on pods in every
   namespace Containerizer generated. No Secrets, no write verbs, nothing cluster-wide. `cz-sandbox` applies the Roles
@@ -128,7 +156,8 @@ ci/lab-sandbox/egress-observer.sh remove
 ```
 
 The unit runs as the lab user with CAP_NET_ADMIN only, writes to the lab's results database with the scanner login
-(`results/.env`) and restarts every 12 hours with a fresh token; `sync.sh` gives it the Roles of new namespaces.
+(`results/.env`) and restarts every 12 hours with a fresh token; `sync.sh` gives it the Roles of new namespaces. The lab
+has no appliance firewall or DNS filter: only NetworkPolicy drops are seen there.
 
 ## The egress review
 
@@ -187,37 +216,32 @@ has the same buttons in its Network connectivity table.
 
 - **Approve** is possible for named destinations the review proposed or reported, never for suspicious ones, the
   platform's or IP addresses. A rejected proposal can be approved later.
-- **Reject** keeps it blocked; connectivity.yaml records the decision.
+- **Reject**: connectivity.yaml records the decision.
 - An approved destination stays approved: Containerizer never rewrites or removes it. To take one back, remove it
-  from connectivity.yaml (and the port from the NetworkPolicy) in a commit of your own.
+  from connectivity.yaml in a commit of your own.
 
 Every decision records who made it and when (`DecidedBy`, `DecidedAt`, and the change history).
 
 ### What approving changes
 
-Within a minute the LLM queue runner, which holds the output repository's write token (the one registered for the
-organization scan's output repository, as for [sandbox variants](refactoring.md#the-sandbox-variant)), commits:
+**Approving documents; it opens nothing.** Within a minute the LLM queue runner, which holds the output repository's
+write token (the one registered for the organization scan's output repository, as for
+[sandbox variants](refactoring.md#the-sandbox-variant)), commits the application's `connectivity.yaml`,
+`CONNECTIVITY.md` and `connectivity.svg` with the approved destination: the FQDN, port and protocol, why, the
+evidence and who approved it. That is what the real environment's firewall rules are written from.
 
-- the application's `connectivity.yaml`, `CONNECTIVITY.md` and `connectivity.svg`, with the approved destination;
-- the component's NetworkPolicy with the port opened: to `0.0.0.0/0` and `::/0` except the `blocked_cidrs`, as the
-  generator opens inferred ports, and the annotation `containerizer.io/egress` gains `approved-egress`.
+The sandbox stays isolated. The NetworkPolicies keep allowing only what the assessment inferred, and on the
+appliance only the administrators' egress rules let anything out of the sandbox. If an application must reach a
+destination in the sandbox too, an administrator adds an egress rule on **Admin → Firewall**; the **Sandbox**
+column then shows the rule (the NetworkPolicy still has to allow the port: it allows the inferred ones).
 
-Flux (or Argo CD) applies the commit; the call goes through.
+![After approving: the API is approved for the real environment, with who approved it; the paste site stays suspicious](images/results-connectivity-approved.png#only-light){ .cz-shot }
+![After approving: the API is approved for the real environment, with who approved it; the paste site stays suspicious](images/results-connectivity-approved-dark.png#only-dark){ .cz-shot }
 
-![After approving: the API is approved (solid line), with who approved it; the paste site stays suspicious](images/results-connectivity-approved.png#only-light){ .cz-shot }
-![After approving: the API is approved (solid line), with who approved it; the paste site stays suspicious](images/results-connectivity-approved-dark.png#only-dark){ .cz-shot } Later organization scans keep it: the generator reads
-the application's connectivity.yaml from the output repository and opens the ports of its approved entries again,
-and the new connectivity.yaml keeps every approved entry as it was. A sandbox variant takes the original's.
-
-!!! warning "A NetworkPolicy cannot name an FQDN"
-    Kubernetes NetworkPolicies select addresses and ports, not names. Approving `api.github.com:443` opens port 443
-    to every address but the blocked ranges, for every pod of that component: in the sandbox, the component can then
-    reach any HTTPS destination, including ones the review flagged. This is the same trade-off as a hub firewall that
-    tells zones apart and not applications within one. The FQDN in connectivity.yaml is what the production
-    firewall (or an FQDN-aware policy engine) should allow.
-
-New decisions (also reported and suspicious ones) and rejections are written to connectivity.yaml the same way,
-without changing the NetworkPolicies.
+Later organization scans keep approved entries: the generator reads the application's connectivity.yaml from the
+output repository and the new connectivity.yaml keeps every approved entry as it was (its sandbox status is
+computed again). A sandbox variant takes the original's. New decisions (also reported and suspicious ones) and
+rejections are written to connectivity.yaml the same way.
 
 ## connectivity.yaml
 
@@ -233,7 +257,7 @@ application: egress-demo
 namespace: egress-demo                # in the sandbox
 generatedAt: '2026-11-02T03:45:01Z'
 observed: true                        # false: inferred only, nothing observed in the sandbox
-note: A Kubernetes NetworkPolicy cannot name an FQDN ...
+note: Approved destinations are documented for the real environment ...
 components:
 - {name: egress-demo, component: Egress.Demo, role: web, port: 8080, service_port: 80}
 inbound:
@@ -254,6 +278,12 @@ outbound:
   observed: {packets: 3, first_seen: '2026-11-02T03:38:59Z', last_seen: '2026-11-02T03:38:59Z', pods: [...], ips: [140.82.121.6]}
   approved_by: john.doe@example.com
   approved_at: '2026-11-02T03:43:46Z'
+  blocked_by: [network-policy]        # the layers the sandbox blocked it at: network-policy, appliance-firewall, dns-filter
+  sandbox:                            # whether the sandbox can reach it (computed on every write)
+    network_policy: blocks port 443
+    appliance: 'refused by the appliance''s DNS filter: no egress rule allows it'   # lab: no appliance firewall (lab)
+    reachable: false
+    blocked_by: network-policy
 - component: egress-demo
   destination: orders-demo.orders-demo     # as the configuration names it
   type: component                          # another application's component (links between applications)
@@ -286,6 +316,9 @@ findings:
 | `sources` | `config`, `code`, `package`, `policy`, `observed`, `approved`, `lab-service`. |
 | `evidence` | The lines that name the destination (file, line, the line itself). |
 | `observed` | What the sandbox blocked: dropped packets (a lower bound), first and last seen, pods, addresses. |
+| `blocked_by` | The layers the sandbox blocked it at: `network-policy`, `appliance-firewall`, `dns-filter`. |
+| `sandbox` | Whether the sandbox can reach it: what its NetworkPolicy does, the appliance's egress rule that allows it (`rule`) or what blocks it (`blocked_by`), `reachable`. |
+| `port_unknown` | The appliance's DNS filter refused the name, so no port was seen and the configuration names none (`port: 0`). |
 | `approved_by`, `approved_at`, `rejected_by`, `rejected_at` | Who decided, when. |
 | `inbound`, `internal` | Who reaches the components (the Ingress host, the service port, and confirmed callers from other applications: `source: link`, with their application, component and namespace), component to component and lab services. |
 | `target` (`type: component`) | The other application's component a destination is: application, component, namespace, service name and container port. |
@@ -349,4 +382,6 @@ table. The other side of a link outside the product is shown too, with a dashed 
   several names; the observer takes the name the namespace's own pods looked up.
 - **Rate limit.** kube-router logs at most 10 packets a minute per policy: a burst is counted as at most 10.
 - **The LLM can be wrong.** It only proposes; the quoted line is checked against the source, and a person approves.
-- **One port for all.** See the warning above: approving opens the port, not the name, in the sandbox.
+- **The appliance's signals are rate limited too**: its firewall logs at most 30 drops a minute.
+- **Approval is documentation.** It never changes the sandbox: a destination an application needs in the sandbox
+  as well needs an administrators' egress rule (and a port its NetworkPolicy allows).

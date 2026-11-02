@@ -1,6 +1,7 @@
 """Egress (docs/egress.md): the NFLOG reader, the observer, the pre-filter, the egress review, approval, the
 delivery to the output repository, network connectivity (connectivity.yaml, the diagram, the results page), and
-that later scans keep approved egress."""
+that later scans keep approved egress (documented for the real environment: approval opens nothing in the
+sandbox), and the appliance's own signals and egress rules."""
 import json
 import os
 import re
@@ -19,7 +20,6 @@ from containerizer import connectivity as cy
 from containerizer import egress as eg
 from containerizer import llmqueue as lq
 from containerizer import nflog
-from containerizer.harden import APPROVED_EGRESS, approved_ports, open_approved
 
 from test_llm_queue import FakeConn
 
@@ -323,33 +323,6 @@ def _policy():
     return network_policy("web", {"app.kubernetes.io/name": "web", "app.kubernetes.io/part-of": "shop"}, 8080, [])
 
 
-def test_open_approved_adds_the_port_to_any_address_but_the_blocked_ranges():
-    doc = _policy()
-    assert open_approved(doc, approved_ports([{"port": 443}, {"port": "443", "protocol": "tcp"}, {"port": 99999}]))
-    rule = doc["spec"]["egress"][-1]
-    assert rule["ports"] == [{"port": 443, "protocol": "TCP"}]
-    assert rule["to"][0]["ipBlock"]["cidr"] == "0.0.0.0/0" and "169.254.169.254/32" in rule["to"][0]["ipBlock"]["except"]
-    assert doc["metadata"]["annotations"]["containerizer.io/egress"] == APPROVED_EGRESS
-    assert not open_approved(doc, [{"port": 443, "protocol": "TCP"}])          # idempotent
-    # the generator gives the same policy as the patch
-    from containerizer.harden import network_policy
-    gen = network_policy("web", {"app.kubernetes.io/name": "web", "app.kubernetes.io/part-of": "shop"}, 8080,
-                         [{"id": APPROVED_EGRESS, "ports": [{"port": 443, "protocol": "TCP"}]}])
-    assert gen["spec"]["egress"] == doc["spec"]["egress"]
-
-
-def test_patch_policies_only_touches_the_components_own_policy(tmp_path):
-    from containerizer.generate import _yaml_docs
-    (tmp_path / "web").mkdir()
-    (tmp_path / "web" / "k8s.yaml").write_text(_yaml_docs([{"apiVersion": "v1", "kind": "Service", "metadata": {"name": "web"}},
-                                                           _policy()]))
-    assert eg.patch_policies(tmp_path, [{"component": "web", "port": 443, "protocol": "TCP"},
-                                        {"component": "../etc", "port": 22}]) == ["web/k8s.yaml"]
-    docs = list(yaml.safe_load_all((tmp_path / "web" / "k8s.yaml").read_text()))
-    assert docs[0]["kind"] == "Service" and docs[1]["spec"]["egress"][-1]["ports"] == [{"port": 443, "protocol": "TCP"}]
-    assert eg.patch_policies(tmp_path, [{"component": "web", "port": 443, "protocol": "TCP"}]) == []
-
-
 def test_output_target_from_the_environment(monkeypatch):
     monkeypatch.setenv(eg.OUTPUT_REPO_ENV, "https://git.example.com/platform/sandbox.git")
     monkeypatch.setenv("OUTPUT_GIT_TOKEN", "tok")
@@ -418,7 +391,7 @@ def test_commit_pending_writes_connectivity_and_the_policy_to_the_output_reposit
     e, = [x for x in doc["outbound"] if x["destination"] == "api.github.com"]
     assert (e["status"], e["approved_by"], e["port"]) == ("approved", "john.doe@example.com", 443)
     pol = list(yaml.safe_load_all((check / "lab/_/shop/web/k8s.yaml").read_text()))[0]
-    assert pol["spec"]["egress"][-1]["ports"] == [{"port": 443, "protocol": "TCP"}]
+    assert pol == _policy()                                     # approval documents; the sandbox stays as it was
     assert (check / "lab/_/shop/CONNECTIVITY.md").is_file() and (check / "lab/_/shop/connectivity.svg").is_file()
     (sql, params), = conn.sql(r"UPDATE cz.EgressDecision SET CommittedAt")
     assert len(params[0]) == 40 and params[-1] == 3
@@ -489,6 +462,7 @@ def test_model_marks_every_source_and_the_findings():
     doc = cy.model("shop", NET, flows, dec)
     e, = [x for x in doc["outbound"] if x["destination"] == "api.github.com"]
     assert e["status"] == "approved" and set(e["sources"]) == {"config", "observed", "approved"}
+    assert e["sandbox"]["reachable"] is False and e["sandbox"]["blocked_by"] == "network-policy"
     assert e["observed"]["packets"] == 3 and e["approved_by"] == "john.doe@example.com"
     assert not any(x["destination"] == "140.82.121.6" for x in doc["outbound"])         # explained by the name
     assert doc["observed"] is True and not [f for f in doc["findings"] if f["kind"] == "missing"]
@@ -532,30 +506,25 @@ def test_yaml_markdown_and_svg(tmp_path):
     assert "<x>" not in cy.svg(evil) and "&lt;x&gt;" in cy.svg(evil)
 
 
-def test_generate_opens_approved_ports_and_writes_connectivity(tmp_path):
+def test_generate_keeps_approved_entries_and_opens_nothing(tmp_path):
     from containerizer.assess import assess
     from containerizer.generate import generate_app
     a = assess(DEMO)
     out = tmp_path / "gen"
     generate_app(a, out, approved_egress=[{"component": "egress-demo", "destination": "api.github.com", "port": 443,
                                            "protocol": "TCP", "status": "approved"}])
-    pol = [d for d in yaml.safe_load_all((out / "egress-demo" / "k8s.yaml").read_text())
-           if d and d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == "egress-demo"][0]
-    assert {"port": 443, "protocol": "TCP"} in pol["spec"]["egress"][-1]["ports"]
     doc = cy.read(out)
     e, = [x for x in doc["outbound"] if x["destination"] == "api.github.com"]
-    assert e["status"] == "approved"
+    assert e["status"] == "approved" and e["sandbox"]["reachable"] is False and e["sandbox"]["blocked_by"] == "network-policy"
     p, = [x for x in doc["outbound"] if x["destination"] == "pastebin.com"]
-    assert p["status"] == "allowed"            # inferred only: the port is open (NetworkPolicies cannot name FQDNs)
+    assert p["status"] == "not-allowed"
     generate_app(a, tmp_path / "plain")
-    pol = [d for d in yaml.safe_load_all((tmp_path / "plain" / "egress-demo" / "k8s.yaml").read_text())
-           if d and d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == "egress-demo"][0]
-    assert not any(r.get("ports") == [{"port": 443, "protocol": "TCP"}] for r in pol["spec"]["egress"])
+    assert (out / "egress-demo" / "k8s.yaml").read_text() == (tmp_path / "plain" / "egress-demo" / "k8s.yaml").read_text()
 
 
 def test_a_later_scan_keeps_approved_egress(tmp_path, monkeypatch):
     """org.deploy_app (every organization scan, and the sandbox variants) reads the application's connectivity.yaml
-    from the output repository: the approved ports stay open and the approved entries stay as written."""
+    from the output repository: the approved entries stay as written; the NetworkPolicy stays as inferred."""
     import dataclasses
     from containerizer import org as orgmod
     from containerizer.assess import assess
@@ -583,15 +552,19 @@ def test_a_later_scan_keeps_approved_egress(tmp_path, monkeypatch):
     assert deploy(rel).status == "deployed"
     pol = [d for d in yaml.safe_load_all((out.root / rel / "egress-demo" / "k8s.yaml").read_text())
            if d and d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == "egress-demo"][0]
-    assert {"port": 443, "protocol": "TCP"} in pol["spec"]["egress"][-1]["ports"]
-    assert pol["metadata"]["annotations"]["containerizer.io/egress"] == APPROVED_EGRESS
+    assert not any({"port": 443, "protocol": "TCP"} in (r.get("ports") or []) for r in pol["spec"]["egress"])
+    assert pol["metadata"]["annotations"]["containerizer.io/egress"] == "none"
     doc = cy.read(out.root / rel)
     got = {e["destination"]: e for e in doc["outbound"]}
-    assert got["api.github.com"] == approved                 # as written, nothing rewritten
-    assert got["pastebin.com"]["status"] == "suspicious"     # an open port does not make it allowed
+
+    def plain(e):
+        return {k: v for k, v in e.items() if k != "sandbox"}     # computed again on every write
+    assert plain(got["api.github.com"]) == approved           # as written, nothing rewritten
+    assert got["api.github.com"]["sandbox"]["reachable"] is False
+    assert got["pastebin.com"]["status"] == "suspicious"
     # and again: still there after a second scan
     assert deploy(rel).status == "deployed" and cy.read(out.root / rel)["outbound"][0]
-    assert {e["destination"]: e for e in cy.read(out.root / rel)["outbound"]}["api.github.com"] == approved
+    assert plain({e["destination"]: e for e in cy.read(out.root / rel)["outbound"]}["api.github.com"]) == approved
     # a sandbox variant takes the original's approved egress
     res = orgmod.RepoResult(provider="github", org="lab", project="_", repo="v", status="error")
     orgmod.deploy_app(dataclasses.replace(a), src, "lab/_/egress-demo-refactor-4", o, out, None, "1.0.0-refactor.4",
@@ -658,7 +631,7 @@ def test_approve_and_reject_need_the_role_the_product_and_the_csrf_token(adm):
 def test_notices_are_fixed_texts():
     from containerizer.admin_egress import notice_html
     from containerizer.connectivityui import notice_code
-    assert "Approved:" in notice_html("approved") and notice_html("<script>") == ""
+    assert "approval opens nothing" in notice_html("approved") and notice_html("<script>") == ""
     assert notice_code({"egress": ["<script>"]}) == "" and notice_code({"egress": ["approved"]}) == "approved"
 
 
@@ -672,12 +645,146 @@ def test_results_page_section():
     html = section(app, {"csrf": "<input type='hidden' name='csrf' value='t'>", "egress_notice": "approved"})
     assert "id='connectivity'" in html and "<svg" in html and "&lt;b&gt;upstream&lt;/b&gt;" in html
     assert "action='/admin/egress/3/approve'" in html and "name='back' value='app'" in html
-    assert "Missing" in html and "Approved:" in html
+    assert "Missing" in html and "Approved for the real environment" in html and "<th>Sandbox</th>" in html
     anon = section(app, {})
     assert "/admin/egress/" not in anon and "approved by" not in anon
     assert section({**app, "connectivity": {"available": False}}, {}) == ""
     old = section({**app, "connectivity": {"available": True, "network": None, "flows": [], "decisions": []}}, {})
     assert "Scan the application again" in old
+
+
+# --------------------------------------------------------------------------- the appliance's signals and rules
+
+# as the appliance's kernel logs them (sysagent.render: the egress chain's `log prefix "cz-egress-drop: "`), from
+# /dev/kmsg ("<prio>,<seq>,<usec>,<flags>;<text>") and from the journal (-o cat)
+KMSG_DROP = ("6,48211,9184322113,-;cz-egress-drop: IN=cni0 OUT=eth0 PHYSIN=veth3c1f2a7e MAC=ce:7d:1a:2b:3c:4d:"
+             "6a:11:22:33:44:55:08:00 SRC=10.42.0.25 DST=140.82.121.6 LEN=60 TOS=0x00 PREC=0x00 TTL=63 ID=50731 DF "
+             "PROTO=TCP SPT=43120 DPT=443 WINDOW=64240 RES=0x00 SYN URGP=0 \n")
+JOURNAL_DROP_UDP = ("cz-egress-drop: IN=cni0 OUT=eth0 MAC=ce:7d:1a:2b:3c:4d:6a:11:22:33:44:55:08:00 SRC=10.42.0.26 "
+                    "DST=203.0.113.9 LEN=76 TOS=0x00 PREC=0x00 TTL=63 ID=1 DF PROTO=UDP SPT=40000 DPT=123 LEN=56")
+HOST_DROP = ("cz-egress-drop: IN= OUT=eth0 SRC=192.168.8.10 DST=198.51.100.7 LEN=60 TOS=0x00 PREC=0x00 TTL=64 ID=7 DF "
+             "PROTO=TCP SPT=50000 DPT=443 WINDOW=64240 RES=0x00 SYN URGP=0")
+COREDNS_REFUSED = '[INFO] 10.42.0.25:51515 - 7781 "A IN pastebin.com. udp 41 false 1232" REFUSED qr,rd 41 0.0004s'
+
+
+def test_parses_the_appliance_firewall_drops():
+    assert eg.parse_firewall_drop(KMSG_DROP) == ("10.42.0.25", "140.82.121.6", "TCP", 443)
+    assert eg.parse_firewall_drop(JOURNAL_DROP_UDP) == ("10.42.0.26", "203.0.113.9", "UDP", 123)
+    assert eg.parse_firewall_drop("cz-in-drop: IN=eth0 SRC=1.2.3.4 DST=10.0.0.1 PROTO=TCP DPT=22") is None
+    assert eg.parse_firewall_drop("") is None
+
+
+def _observer(pods=None):
+    import time
+    kube = FakeKube(pods or {"shop": {"10.42.0.25": ("web-1", "web"), "10.42.0.26": ("worker-1", "worker")}})
+    obs = eg.Observer(kube, None, FakeResolver({"api.github.com": {"140.82.121.6"}}), name="t", log=lambda m: None)
+    obs._namespaces = (time.monotonic(), ["shop", "kube-system"])
+    return obs
+
+
+def test_firewall_drops_of_application_pods_are_flows_named_from_dns():
+    obs = _observer()
+    obs.dns_line('[INFO] 10.42.0.25:1 - 2 "A IN api.github.com. udp 32 false 512" NOERROR qr 98 0.01s')
+    f = obs.kernel_line(KMSG_DROP.split(";", 1)[1])
+    assert (f.namespace, f.component, f.destination, f.named, f.port, f.protocol, f.layer) == \
+        ("shop", "web", "api.github.com", True, 443, "TCP", "appliance-firewall")
+    g = obs.kernel_line(JOURNAL_DROP_UDP)
+    assert (g.destination, g.named, g.port, g.protocol, g.component) == ("203.0.113.9", False, 123, "UDP", "worker")
+    assert obs.kernel_line(HOST_DROP) is None                  # the appliance itself, not an application
+    conn = FakeConn()
+    eg.record(conn, obs.agg.take(), "obs")
+    assert {p[-1] for _, p in conn.sql(r"EXEC cz.RecordEgressFlow")} == {"appliance-firewall"}
+
+
+def test_names_the_dns_filter_refused_are_flows_without_a_port():
+    obs = _observer()
+    f = obs.dns_line(COREDNS_REFUSED)
+    assert (f.namespace, f.component, f.destination, f.named, f.port, f.protocol, f.layer, f.pods) == \
+        ("shop", "web", "pastebin.com", True, 0, "ANY", "dns-filter", {"web-1": "10.42.0.25"})
+    # the host's own lookups, NXDOMAIN and cluster names are not
+    assert obs.dns_line(COREDNS_REFUSED.replace("10.42.0.25", "192.168.8.10")) is None
+    assert obs.dns_line(COREDNS_REFUSED.replace("REFUSED", "NXDOMAIN")) is None
+    assert obs.dns_line(COREDNS_REFUSED.replace("pastebin.com.", "db.shop.svc.cluster.local.")) is None
+    # reviewed by name (no port); a flow without a name and a port is not
+    assert eg.prefilter({"Namespace": "shop", "Destination": "api.example.com", "Named": True, "Port": 0,
+                         "Protocol": "ANY", "Layer": "dns-filter"}) is None
+    assert eg.prefilter({"Namespace": "shop", "Destination": "pastebin.com", "Named": True, "Port": 0,
+                         "Protocol": "ANY", "Layer": "dns-filter"})[0] == "suspicious"
+    assert eg.prefilter({"Namespace": "shop", "Destination": "x.example", "Named": True, "Port": 0,
+                         "Protocol": "ICMP"})[1] == "no-port"
+
+
+def test_kernel_log_sources(tmp_path):
+    assert eg.kernel_source("none") is None and eg.kernel_source("journal") == "journal"
+    assert eg.kernel_source(str(tmp_path / "k.log")) == str(tmp_path / "k.log")
+
+
+def _rules(tmp_path, admin=None, mode="enforce"):
+    (tmp_path / "egress-system.json").write_text(json.dumps({"rules": [
+        {"host": "ghcr.io", "ports": ["tcp/443"], "note": "appliance upgrades"}]}))
+    if admin is not None:
+        (tmp_path / "egress.json").write_text(json.dumps({"mode": mode, "rules": admin}))
+    return {eg.SYSTEM_RULES_ENV: str(tmp_path / "egress-system.json"), eg.ADMIN_RULES_ENV: str(tmp_path / "egress.json")}
+
+
+def test_appliance_rules_are_read_as_sysagent_reads_them(tmp_path):
+    assert eg.appliance_rules({eg.SYSTEM_RULES_ENV: str(tmp_path / "none.json")}) is None          # a lab
+    env = _rules(tmp_path, [{"host": "github.com", "ports": "443", "note": "upstream API"},
+                            {"cidr": "203.0.113.0/24", "ports": ["udp/123"]}])
+    r = eg.appliance_rules(env)
+    assert [x["origin"] for x in r["rules"]] == ["system", "admin", "admin"] and r["rules"][1]["ports"] == ["tcp/443"]
+    v = eg.appliance_verdict("api.github.com", "140.82.121.6", 443, "TCP", r)        # a rule covers its subdomains
+    assert v["allowed"] and "github.com tcp/443 (upstream API), administrators rule" in v["text"]
+    assert eg.appliance_verdict("api.github.com", None, 0, "ANY", r)["allowed"]        # port unknown: the name
+    v = eg.appliance_verdict("api.github.com", None, 8443, "TCP", r)
+    assert v["allowed"] is False and v["blocked_by"] == "appliance-firewall" and "not port 8443" in v["text"]
+    v = eg.appliance_verdict("pastebin.com", "172.66.171.73", 443, "TCP", r)
+    assert v["allowed"] is False and v["blocked_by"] == "dns-filter"
+    assert eg.appliance_verdict("203.0.113.9", None, 123, "UDP", r)["allowed"]
+    v = eg.appliance_verdict("198.51.100.7", None, 443, "TCP", r)
+    assert v["allowed"] is False and v["blocked_by"] == "appliance-firewall"
+    assert eg.appliance_verdict("x.example", None, 443, "TCP", None)["text"] == "no appliance firewall (lab)"
+    env = _rules(tmp_path, [], mode="log")
+    assert eg.appliance_verdict("x.example", None, 443, "TCP", eg.appliance_rules(env))["allowed"]
+    # a broken administrators' file allows nothing of it (as sysagent ignores it)
+    (tmp_path / "egress.json").write_text("{not json")
+    assert [x["origin"] for x in eg.appliance_rules(env)["rules"]] == ["system"]
+
+
+def test_sandbox_status_and_port_unknown_entries(tmp_path):
+    rules = eg.appliance_rules(_rules(tmp_path, [{"host": "github.com", "ports": "443"}]))
+    net = {"components": [{"name": "Web", "k8s": "web", "role": "web", "port": 8080, "service_port": 80, "lab_services": {},
+                           "egress": [{"id": "http-apis", "ports": [{"port": 443, "protocol": "TCP"}]}],
+                           "destinations": [{"host": "api.github.com", "port": 443, "protocol": "TCP", "source": "config",
+                                             "file": "a.json", "line": 4, "quote": "q"}]}]}
+    refused = {"Namespace": "shop", "Component": "web", "Destination": "pastebin.com", "Named": True, "DestinationIp": None,
+               "Port": 0, "Protocol": "ANY", "Packets": 2, "FirstSeen": datetime(2026, 11, 2, 4), "Layer": "dns-filter",
+               "LastSeen": datetime(2026, 11, 2, 4), "Pods": "[]"}
+    named_refused = {**refused, "Destination": "api.github.com"}
+    doc = cy.model("shop", net, [refused, named_refused], appliance=rules)
+    out = {e["destination"]: e for e in doc["outbound"]}
+    gh = out["api.github.com"]
+    assert gh["port"] == 443 and "observed" in gh["sources"] and gh["blocked_by"] == ["dns-filter"]   # the inferred port
+    assert gh["sandbox"]["reachable"] is True and "github.com tcp/443" in gh["sandbox"]["rule"]
+    pb = out["pastebin.com"]
+    assert pb["port"] == 0 and pb["port_unknown"] and pb["sandbox"]["blocked_by"] == "network-policy"
+    assert "pastebin.com (port unknown)" in cy.svg(doc) and "| shop | pastebin.com | unknown |" not in cy.markdown(doc)
+    assert "| web | pastebin.com | unknown |" in cy.markdown(doc)
+    # a decision on the port-unknown flow of a destination the configuration names lands on its entry
+    dec = [{"DecisionId": 9, "Component": "web", "Destination": "api.github.com", "Port": 0, "Protocol": "ANY",
+            "Verdict": "propose", "Status": "approved", "Reason": "r", "Evidence": "[]", "DecidedBy": "john.doe@example.com",
+            "DecidedAt": datetime(2026, 11, 2, 5)}]
+    doc = cy.model("shop", net, [named_refused], dec, appliance=rules)
+    gh, = [e for e in doc["outbound"] if e["destination"] == "api.github.com"]
+    assert (gh["port"], gh["status"], gh["approved_by"]) == (443, "approved", "john.doe@example.com")
+    # in the lab: no appliance firewall; an approved destination the NetworkPolicy does not open stays unreachable
+    net["components"][0]["egress"] = []
+    doc = cy.model("shop", net, [named_refused], dec, appliance=None)
+    gh, = [e for e in doc["outbound"] if e["destination"] == "api.github.com"]
+    assert gh["sandbox"] == {"network_policy": "blocks port 443", "appliance": "no appliance firewall (lab)",
+                             "reachable": False, "blocked_by": "network-policy"}
+    assert "cf-approved cf-unreachable" in cy.svg(doc)
+    assert yaml.safe_load(cy.to_yaml(doc))["outbound"][0]["sandbox"]["reachable"] is False
 
 
 # --------------------------------------------------------------------------- SQL Server
@@ -760,9 +867,25 @@ def test_schema_24_flows_decisions_and_the_logins():
     assert rc.fetchone() == {"Status": "approved", "DecidedBy": "john.doe@example.com", "CommitRevision": "a" * 40}
     rc.execute("SELECT NetworkJson FROM cz.vNetworkLatest WHERE ApplicationId = %s", (app_id,))
     assert json.loads(rc.fetchone()["NetworkJson"])["components"][0]["k8s"] == "web"
-    rc.execute("SELECT Packets FROM cz.vEgressFlow")
-    assert rc.fetchone()["Packets"] == 5
+    rc.execute("SELECT Packets, Layer FROM cz.vEgressFlow")
+    assert rc.fetchone() == {"Packets": 5, "Layer": "network-policy"}
+    # a name the appliance's DNS filter refused: no port, the layer that blocked it
+    eg.record(w, [eg.Flow("shop", "web", "pastebin.com", True, 0, "ANY", packets=1, first=t, last=t, layer="dns-filter")], "t")
+    rc.execute("SELECT Port, Protocol, Layer FROM cz.vEgressFlow WHERE Destination = N'pastebin.com'")
+    assert rc.fetchone() == {"Port": 0, "Protocol": "ANY", "Layer": "dns-filter"}
     with pytest.raises(Exception):
         rc.execute("SELECT * FROM cz.EgressFlow")
     for x in (w, adm, rd):
         x.close()
+
+
+def test_cluster_dns_drops_are_no_destination():
+    """A drop to port 53 of a cluster address is kube-router catching up with a new pod: neither the observer nor
+    the model makes it a destination (it was in the lab's data before the observer left them out)."""
+    dns = {"Namespace": "shop", "Component": "web", "Destination": "10.42.0.9", "Named": False, "DestinationIp": "10.42.0.9",
+           "Port": 53, "Protocol": "UDP", "Packets": 31, "FirstSeen": datetime(2026, 11, 2, 4),
+           "LastSeen": datetime(2026, 11, 2, 4), "Pods": "[]"}
+    dec = {"DecisionId": 5, "Component": "web", "Destination": "10.42.0.9", "Port": 53, "Protocol": "UDP",
+           "Verdict": "in-cluster", "Status": "reported", "Reason": "r", "Evidence": "[]"}
+    doc = cy.model("shop", NET, [dns, {**dns, "Destination": "8.8.8.8", "DestinationIp": "8.8.8.8"}], [dec], appliance=None)
+    assert [e["destination"] for e in doc["outbound"] if e["port"] == 53] == ["8.8.8.8"]

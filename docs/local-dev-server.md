@@ -511,7 +511,8 @@ gate's image as `<registry>/<app>/<component>:<tag>`, so for local images that t
 ### The egress observer
 
 `ci/lab-sandbox/egress-observer.sh install` runs the [egress observer](egress.md#the-egress-observer) for the lab, as
-the appliance does: the systemd unit `lab-egress-observer` as this user with CAP_NET_ADMIN only, its own read-only
+the appliance does (but without the appliance firewall's signals: the lab has none): the systemd unit
+`lab-egress-observer` as this user with CAP_NET_ADMIN only, its own read-only
 ServiceAccount (`$LAB_DIR/egress-observer.kubeconfig`), the CoreDNS query log on (`log.override` in the lab's
 `coredns-custom` manifest), flows into the lab's results database with the scanner login of `results/.env`.
 `sync.sh` gives it the Roles of new namespaces; `egress-observer.sh remove` takes it all out again. For an egress

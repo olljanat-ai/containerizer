@@ -1,5 +1,5 @@
 [Unit]
-Description=containerizer appliance: egress observer (connections the sandbox's NetworkPolicies drop; Admin -> Egress)
+Description=containerizer appliance: egress observer (what the sandbox blocks: NetworkPolicies, the firewall, the DNS filter)
 After=k3s.service containerizer-db-init.service containerizer-sandbox.service
 Requires=containerizer-db-init.service
 Wants=k3s.service
@@ -7,17 +7,22 @@ ConditionKernelCommandLine=!cdroot
 ConditionPathExists=!/run/elemental/recovery_mode
 
 [Service]
-# Not root: the containerizer user with one capability. CAP_NET_ADMIN is what binding to the NFLOG group of
-# kube-router's drop log (100) needs; the socket only reads the dropped packets' first 128 bytes (addresses and
-# ports) and the prefix "DROP by policy <namespace>/<policy>". kube-router logs at most 10 packets a minute per
-# policy. Nothing else is privileged: the Kubernetes API is read with the observer's own read-only account (the
-# CoreDNS query log in kube-system, the pods of the app namespaces; no Secrets, no write verbs; cz-sandbox writes
-# its kubeconfig, root:containerizer 0640, renewed every 12 hours), the results database with the scanner's
-# writer login (cz.RecordEgressFlow).
+# Not root: the containerizer user with two capabilities, for the three places the sandbox blocks a connection:
+# - CAP_NET_ADMIN: binding to the NFLOG group of kube-router's NetworkPolicy drop log (100); the socket only reads
+#   the dropped packets' first 128 bytes (addresses and ports) and the prefix "DROP by policy <namespace>/<policy>".
+#   kube-router logs at most 10 packets a minute per policy.
+# - CAP_SYSLOG: reading the kernel log (/dev/kmsg; kernel.dmesg_restrict=1 asks for it) for the appliance
+#   firewall's egress drops ("cz-egress-drop: ... SRC= DST= PROTO= DPT=", at most 30 a minute). Only /dev/kmsg is
+#   visible among the devices; the observer reads the cz-egress-drop lines and ignores the rest.
+# - The names the DNS filter refused come from the CoreDNS query log, through the Kubernetes API.
+# Nothing else is privileged: the Kubernetes API is read with the observer's own read-only account (the CoreDNS
+# query log in kube-system, the pods of the app namespaces; no Secrets, no write verbs; cz-sandbox writes its
+# kubeconfig, root:containerizer 0640, renewed every 12 hours), the results database with the scanner's writer
+# login (cz.RecordEgressFlow). The observer changes no firewall rule: only administrators do (Admin -> Firewall).
 User=containerizer
 Group=containerizer
-AmbientCapabilities=CAP_NET_ADMIN
-CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN CAP_SYSLOG
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYSLOG
 EnvironmentFile=-/etc/containerizer/worker.env
 EnvironmentFile=/run/containerizer/sql.env
 LoadCredential=sql-scanner:/etc/containerizer/secrets/cz-scanner
@@ -32,9 +37,11 @@ ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
+BindReadOnlyPaths=/dev/kmsg
+DeviceAllow=/dev/kmsg r
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
-ProtectKernelLogs=yes
+# no ProtectKernelLogs: it hides /dev/kmsg, the appliance firewall's drop log (read only, CAP_SYSLOG)
 ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes

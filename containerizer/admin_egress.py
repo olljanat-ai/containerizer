@@ -6,7 +6,8 @@
   line of the source, the blocked flows and pods).
 - POST /admin/egress/<id>/approve, /admin/egress/<id>/reject: the decision, recorded with who made it
   (DecidedBy/At; the change history records it too). The LLM queue runner then writes connectivity.yaml and
-  the NetworkPolicy to the output repository (egress.commit_pending). An approved destination stays approved:
+  connectivity.yaml to the output repository (egress.commit_pending); approval documents the destination for
+  the real environment and opens nothing in the sandbox. An approved destination stays approved:
   taking it back is a commit of one's own in the output repository.
 
 Plain HTML forms with the session's CSRF token (admin.py checks every POST), no JavaScript, fixed notice texts
@@ -23,12 +24,13 @@ from .admin_refactor import _rows, allowed_app
 from .admin_scans import _nf
 
 BASE = "/admin/egress"
+LAYER_TEXT = {"network-policy": "NetworkPolicy", "appliance-firewall": "appliance firewall", "dns-filter": "DNS filter"}
 # approve: something the review proposed or reported with a name (never suspicious, platform or an IP address)
 APPROVABLE = {"propose", "report"}
 APPROVE_FROM = {"proposed", "reported", "rejected"}
 REJECT_FROM = {"proposed", "reported", "suspicious"}
-NOTICES = {"approved": ("ok", "Approved: the LLM queue runner writes it to connectivity.yaml and opens the port in the "
-                              "component's NetworkPolicy within a few minutes; the sandbox applies the commit."),
+NOTICES = {"approved": ("ok", "Approved for the real environment: the LLM queue runner writes it to connectivity.yaml "
+                              "within a few minutes. The sandbox stays isolated: approval opens nothing there."),
            "rejected": ("info", "Rejected: it stays blocked, and connectivity.yaml records the decision."),
            "not-allowed": ("bad", "That cannot be approved: only named destinations the review proposed or reported can "
                                   "be (never suspicious ones, the platform's, or IP addresses)."),
@@ -113,7 +115,8 @@ def evidence_html(d: dict) -> str:
         pods = ", ".join(str(p) for p in (fl.get("pods") or [])[:3])
         out.append(f"<div class='small muted'>{int(fl['packets'])} dropped packet(s), {e(str(fl.get('first_seen') or '')[:16])}"
                    f" – {e(str(fl.get('last_seen') or '')[:16])}{' · ' + e(pods) if pods else ''}"
-                   f"{' · ' + e(', '.join(fl.get('ips') or [])) if fl.get('ips') else ''}</div>")
+                   f"{' · ' + e(', '.join(fl.get('ips') or [])) if fl.get('ips') else ''}"
+                   f"{' · blocked by the ' + e(LAYER_TEXT.get(fl['layer'], fl['layer'])) if fl.get('layer') else ''}</div>")
     return "".join(out) or "<span class='muted small'>-</span>"
 
 
@@ -149,15 +152,19 @@ def show_list(adm, conn, s, a, code: str, flash: str) -> Response:
             pass
         rows, code = [], "unavailable"
     mine: dict = {}
-    rows = [r for r in rows if mine.setdefault(r["ApplicationId"], allowed_app(a, conn, r["ApplicationId"]))]
+    from .connectivity import cluster_dns
+    rows = [r for r in rows if not cluster_dns(r)
+            and mine.setdefault(r["ApplicationId"], allowed_app(a, conn, r["ApplicationId"]))]
     csrf = adm._csrf(s)
     body = [notice_html(code),
-            "<p class='muted'>Connections the sandbox's NetworkPolicies blocked for applications rated A, as the egress "
+            "<p class='muted'>Connections the sandbox blocked (its NetworkPolicies, and on the appliance its firewall and DNS "
+            "filter) for applications rated A, as the egress "
             "review sees them: <b>proposed</b> (the configuration or code names it), <b>reported</b> (nothing explains it, "
-            "or a person decides) and <b>suspicious</b> (never proposed). Approving one writes it to the application's "
-            "connectivity.yaml in the output repository and opens the port in the component's NetworkPolicy: a "
-            "NetworkPolicy cannot name an FQDN, so the port opens to every address but the blocked ranges. The FQDN in "
-            "connectivity.yaml is for the production firewall. <a href='https://containerizer.eu/egress/'>How it works</a></p>"]
+            "or a person decides) and <b>suspicious</b> (never proposed). Approving one documents it for the real "
+            "environment: it is written to the application's connectivity.yaml in the output repository, for the "
+            "firewall rules there. It opens nothing in the sandbox, which stays isolated: on the appliance only the "
+            "administrators' egress rules (Admin → Firewall) let anything out. "
+            "<a href='https://containerizer.eu/egress/'>How it works</a></p>"]
     if not rows:
         body.append("<p class='muted'>No blocked connections reviewed yet.</p>")
     else:
@@ -172,7 +179,8 @@ def show_list(adm, conn, s, a, code: str, flash: str) -> Response:
                 commit = f"<div class='small st-bad'>not committed: {e(str(r['CommitError'])[:160])}</div>"
             trs.append(f"<tr><td><a href='/app/{int(r['ApplicationId'])}#connectivity'>{e(r['ApplicationName'])}</a>"
                        f"<div class='muted small'>{e(r['Namespace'])} / {e(r['Component'] or '-')}</div></td>"
-                       f"<td><b>{e(r['Destination'])}</b><div class='muted small'>{int(r['Port'])}/{e(r['Protocol'])}</div></td>"
+                       f"<td><b>{e(r['Destination'])}</b><div class='muted small'>"
+                       f"{(str(int(r['Port'])) + '/' + e(r['Protocol'])) if int(r['Port'] or 0) else 'port unknown'}</div></td>"
                        f"<td>{status_chip(r)}<div class='small muted'>{e(VERDICT_TEXT.get(r['Verdict'], r['Verdict']))}</div>{who}{commit}</td>"
                        f"<td class='small'>{e(r.get('Reason') or '')}</td><td>{evidence_html(r)}</td>"
                        f"<td>{actions_html(r, csrf)}</td></tr>")

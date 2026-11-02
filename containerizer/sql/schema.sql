@@ -1776,10 +1776,15 @@ CREATE TABLE [${schema}].EgressFlow (
     CONSTRAINT UQ_EgressFlow UNIQUE (Namespace, Component, Destination, Port, Protocol)
 );
 GO
+-- which layer blocked it, the last time: network-policy (kube-router's NFLOG), appliance-firewall (the appliance's
+-- egress allow-list, kernel log cz-egress-drop), dns-filter (the appliance's DNS filter refused the name; Port 0)
+IF COL_LENGTH(N'[${schema}].EgressFlow', N'Layer') IS NULL
+    ALTER TABLE [${schema}].EgressFlow ADD Layer nvarchar(20) NULL;
+GO
 CREATE OR ALTER PROCEDURE [${schema}].RecordEgressFlow @Namespace nvarchar(63), @Component nvarchar(63),
     @Destination nvarchar(253), @Named bit, @DestinationIp nvarchar(45) = NULL, @Port int, @Protocol nvarchar(10),
     @Packets int, @FirstSeen datetime2(0), @LastSeen datetime2(0), @Pods nvarchar(2000) = NULL,
-    @Policy nvarchar(253) = NULL, @Observer nvarchar(256) = NULL
+    @Policy nvarchar(253) = NULL, @Observer nvarchar(256) = NULL, @Layer nvarchar(20) = NULL
 AS
 BEGIN
     SET NOCOUNT ON; SET XACT_ABORT ON;
@@ -1789,14 +1794,14 @@ BEGIN
         LastSeen = CASE WHEN @LastSeen > LastSeen THEN @LastSeen ELSE LastSeen END,
         FirstSeen = CASE WHEN @FirstSeen < FirstSeen THEN @FirstSeen ELSE FirstSeen END,
         DestinationIp = COALESCE(@DestinationIp, DestinationIp), Pods = COALESCE(@Pods, Pods),
-        Policy = COALESCE(@Policy, Policy), Observer = COALESCE(@Observer, Observer)
+        Policy = COALESCE(@Policy, Policy), Observer = COALESCE(@Observer, Observer), Layer = COALESCE(@Layer, Layer)
     WHERE Namespace = @Namespace AND Component = @Component AND Destination = @Destination AND Port = @Port
       AND Protocol = @Protocol;
     IF @@ROWCOUNT = 0
         INSERT [${schema}].EgressFlow (Namespace, Component, Destination, Named, DestinationIp, Port, Protocol, Packets,
-                                       FirstSeen, LastSeen, Pods, Policy, Observer)
+                                       FirstSeen, LastSeen, Pods, Policy, Observer, Layer)
         VALUES (@Namespace, @Component, @Destination, @Named, @DestinationIp, @Port, @Protocol, @Packets, @FirstSeen,
-                @LastSeen, @Pods, @Policy, @Observer);
+                @LastSeen, @Pods, @Policy, @Observer, @Layer);
     COMMIT;
 END;
 GO
@@ -1871,7 +1876,7 @@ WHERE x.n = 1 AND x.ApplicationId IS NOT NULL;
 GO
 CREATE OR ALTER VIEW [${schema}].vEgressFlow AS
 SELECT f.FlowId, n.ApplicationId, n.Variant, f.Namespace, f.Component, f.Destination, f.Named, f.DestinationIp, f.Port,
-       f.Protocol, f.Packets, f.FirstSeen, f.LastSeen, f.Pods, f.Policy
+       f.Protocol, f.Packets, f.FirstSeen, f.LastSeen, f.Pods, f.Policy, f.Layer
 FROM [${schema}].EgressFlow f
 LEFT JOIN [${schema}].vSandboxNamespace n ON n.Namespace = f.Namespace;
 GO

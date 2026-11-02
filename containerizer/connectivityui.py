@@ -84,7 +84,9 @@ def section(app: dict, ctx: dict | None) -> str:
                     "assessment was made by an earlier version).</p></section>")
         return "".join(head)
     head.append("<p class='muted small'>What the application needs from the network: inferred from its configuration and "
-                "code, allowed by the generated NetworkPolicy, observed (blocked) in the sandbox, and approved. "
+                "code, allowed by the generated NetworkPolicy, observed (blocked) in the sandbox, and approved for the "
+                "real environment. Approval documents a destination; the sandbox stays isolated (on the appliance only "
+                "the administrators' egress rules let anything out): the Sandbox column says whether it can reach it. "
                 + ("Observed in the sandbox namespace <code>" + _e(ns) + "</code>." if doc["observed"] else
                    "<b>Not observed in the sandbox</b>: everything here is inferred.")
                 + " The output repository has the same as <code>connectivity.yaml</code> next to the manifests, for the "
@@ -124,14 +126,15 @@ def section(app: dict, ctx: dict | None) -> str:
         if x.get("linked_by") and staff:
             who += f"<div class='small muted'>linked by {_e(x['linked_by'])} {_e(str(x.get('linked_at') or '')[:16])}</div>"
         rows.append(f"<tr><td>{_e(x.get('component'))}</td><td><b>{_e(x.get('destination'))}</b>"
-                    f"<div class='muted small'>{int(x.get('port') or 0)}/{_e(x.get('protocol'))}</div>{to}</td>"
+                    f"<div class='muted small'>{_e(_port(x))}</div>{to}</td>"
                     f"<td><span class='st {STATUS_CSS.get(x.get('status'), '')}'>{_e(STATUS_TEXT.get(x.get('status'), x.get('status')))}</span>{who}</td>"
                     f"<td class='small'>{_e(', '.join(SOURCE_TEXT.get(s, s) for s in x.get('sources') or []))}</td>"
-                    f"<td class='small'>{_e(why)}</td><td>{ev}{seen}</td><td>{act}</td></tr>")
+                    f"<td class='small'>{_e(why)}</td><td>{ev}{seen}</td><td class='small'>{_sandbox(x)}</td>"
+                    f"<td>{act}</td></tr>")
     body = list(head)
     if rows:
         body.append("<h3>Outbound</h3><table><thead><tr><th>Component</th><th>Destination</th><th>Status</th><th>Source</th>"
-                    f"<th>Why</th><th>Evidence</th><th></th></tr></thead><tbody>{''.join(rows)}</tbody></table>")
+                    f"<th>Why</th><th>Evidence</th><th>Sandbox</th><th></th></tr></thead><tbody>{''.join(rows)}</tbody></table>")
     else:
         body.append("<p class='muted small'>No outbound destination: DNS and the application's own components only.</p>")
     if doc["inbound"] or doc["internal"]:
@@ -154,6 +157,29 @@ def section(app: dict, ctx: dict | None) -> str:
         body.append("<p class='small'><a href='/connectivity'>How all applications connect</a></p>")
     body.append("</section>")
     return "".join(body)
+
+
+LAYER = {"network-policy": "NetworkPolicy", "appliance-firewall": "appliance firewall", "dns-filter": "DNS filter"}
+
+
+def _port(x: dict) -> str:
+    if not int(x.get("port") or 0):
+        return "port unknown (the name was refused)"
+    return f"{int(x['port'])}/{x.get('protocol')}"
+
+
+def _sandbox(x: dict) -> str:
+    """Whether the sandbox can reach a destination: its NetworkPolicy and the appliance's egress rules."""
+    sb = x.get("sandbox") or {}
+    if not sb:
+        return ""
+    head = {True: "<span class='st st-ok'>Reachable</span>", False: "<span class='st st-off'>Not reachable</span>",
+            None: "<span class='st st-off'>Unknown</span>"}[sb.get("reachable")]
+    lines = [f"NetworkPolicy {_e(sb.get('network_policy'))}", _e(sb.get("appliance"))]
+    seen = [LAYER.get(b, b) for b in x.get("blocked_by") or []]
+    if seen:
+        lines.append("blocked by the " + _e(", ".join(seen)))
+    return head + "".join(f"<div class='muted'>{t}</div>" for t in lines if t)
 
 
 FINDING_TEXT = {"missing": "Missing", "unexplained": "Unexplained", "link": "Link"}
@@ -319,6 +345,7 @@ svg.cf{display:block;max-width:100%;height:auto}svg.cf path{fill:none;stroke-wid
 svg.cf path.cf-suspicious{stroke:#8e24aa;stroke-width:3;stroke-dasharray:2 3}.cf-rejected{stroke:#8a8983;stroke-dasharray:1 5}
 .cf-internal{stroke:var(--muted);stroke-dasharray:4 3}.cf-inbound{stroke:var(--muted)}
 .cf-linked{stroke:#00897b}.cf-link-proposed{stroke:#00897b;stroke-dasharray:6 4}.cf-app{fill:#e0f2f1;stroke:#00897b}
+svg.cf path.cf-unreachable{stroke-width:1.2;stroke-dasharray:1 3}
 .cf-group{fill:var(--card);stroke:var(--line);stroke-width:1}.cf-outside{stroke-dasharray:4 3}.cf-strong{font-weight:600}
 form.link-manual{margin-top:6px;display:block}form.link-manual label{display:block}
 form.link-manual select{display:block;max-width:170px;margin:2px 0 4px}
