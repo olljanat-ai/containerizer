@@ -5,7 +5,7 @@ by hand on `main` with the version, and it tags the commit and releases from the
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.3.1 (2026-11-02)
 
 ### Appliance
 - Hyper-V: the release has a 64 GB dynamic VHDX (`containerizer-vX.Y.Z.vhdx`) in place of the fixed VHD
