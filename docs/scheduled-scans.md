@@ -239,6 +239,18 @@ With **Ask the LLM** on, **LLM reviews** chooses when the LLM is asked:
   CPU below the limit (0: the load is not looked at); and **Parallel requests**, as many as the LLM
   server answers at once (1 for a CPU server). The runner looks at them before each job; a job it has
   started finishes.
+- **Approval**: which kinds of job wait for an administrator's approval (component reviews, refactoring orders,
+  egress reviews and link reviews; all of them by default), and the rules that approve some by themselves:
+  **Approve automatically under** a number of estimated input tokens (0: none, every job of the ticked kinds
+  waits), **while fewer jobs are queued or running than** a number (0: any length of the queue). A small job that
+  arrives when the queue is full waits, and is approved by itself, highest priority first, as the queue gets
+  shorter; a big one always waits for an administrator. Each automatic approval says so on the job
+  (*automatic: estimated under 2,000 tokens and the queue had room*). **Approve all** approves every waiting job.
+- **Reject automatically after** a number of hours (0: never): a job waiting for approval or queued that long
+  (counted from its approval when it had one) is skipped, with the reason. **Requeue** starts its wait again.
+
+After a button on a job (move, skip, approve, reject, requeue) the page opens at that job, or at the one that takes
+its place, not at the top.
 
 Every change to a job (queued, moved, skipped, requeued, answered, failed) and to the settings is in
 **Admin → Change history**.

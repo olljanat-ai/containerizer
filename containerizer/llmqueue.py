@@ -59,7 +59,8 @@ SECOND_OPINION = ("blocker", "rewrite")
 # goes against rules that were sure, so it must be as sure as they were.
 OVERRIDE_CONFIDENCE = {"uncertain": 0.6, "second-opinion": 0.85}
 DEFAULTS = {"Paused": False, "WindowDays": 0, "WindowStart": None, "WindowEnd": None, "OnlyWhenIdle": True,
-            "MaxLoadPerCpu": 0.5, "Parallel": 1, "ApproveKinds": "refactor,review", "ApproveMinTokens": 0}
+            "MaxLoadPerCpu": 0.5, "Parallel": 1, "ApproveKinds": "egress,link,refactor,review", "ApproveMinTokens": 0,
+            "ApproveMaxQueued": 0, "RejectAfterHours": 0}
 
 
 def utcnow() -> datetime:
@@ -650,6 +651,40 @@ def load_settings(conn) -> dict:
     return {**DEFAULTS, **{k: row[k] for k in DEFAULTS if k in row}} if row else dict(DEFAULTS)
 
 
+def _exec_count(conn, proc: str) -> int:
+    try:
+        cur = conn.cursor()
+        cur.execute(f"EXEC cz.{proc}")
+        row = cur.fetchone()
+        conn.commit()
+        return int(row[0]) if row else 0
+    except Exception as ex:  # noqa: BLE001 - an older schema, or a database that is away: nothing changes
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        print(f"warning: {proc}: {type(ex).__name__}: {str(ex)[:200]}", file=sys.stderr)
+        return 0
+
+
+def auto_reject(conn) -> int:
+    """Reject the jobs that waited longer than the settings allow (cz.AutoRejectLlmJobs). Returns how many."""
+    return _exec_count(conn, "AutoRejectLlmJobs")
+
+
+def auto_approve(conn) -> int:
+    """Approve the waiting jobs the approval rules let start by themselves (cz.AutoApproveLlmJobs): kinds that need
+    no approval, and jobs under the size limit while the queue has room. Returns how many."""
+    return _exec_count(conn, "AutoApproveLlmJobs")
+
+
+def apply_rules(conn) -> tuple[int, int]:
+    """The queue's rules, in order: reject what waited too long, then approve what the rules let start.
+    Returns (approved, rejected)."""
+    rejected = auto_reject(conn)
+    return auto_approve(conn), rejected
+
+
 def scans_running(conn) -> int:
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) FROM cz.OrgScanRun WHERE Status = N'running'")
@@ -1047,6 +1082,11 @@ class Runner:
         started = []
         conn = self.connect()
         try:
+            approved, rejected = apply_rules(conn)
+            if rejected:
+                self.log(f"rejected {rejected} job(s) that waited too long")
+            if approved:
+                self.log(f"approved {approved} job(s) by the approval rules")
             self.metrics.queue.refresh(conn)
             settings = load_settings(conn)
             self.metrics.paused.set(1 if settings["Paused"] else 0)

@@ -370,7 +370,8 @@ def test_settings_validation():
     v, errors = admin_llmqueue.validate_settings({"day": ["0", "4"], "From": ["22:00"], "To": ["06:00"],
                                                   "OnlyWhenIdle": ["1"], "MaxLoadPerCpu": ["0.75"], "Parallel": ["2"]})
     assert errors == [] and v == {"Paused": False, "OnlyWhenIdle": True, "WindowDays": 1 | 16, "WindowStart": 1320,
-                                  "WindowEnd": 360, "MaxLoadPerCpu": 0.75, "Parallel": 2, "ApproveKinds": None, "ApproveMinTokens": 0}
+                                  "WindowEnd": 360, "MaxLoadPerCpu": 0.75, "Parallel": 2, "ApproveKinds": None, "ApproveMinTokens": 0,
+                                  "ApproveMaxQueued": 0, "RejectAfterHours": 0}
     v, errors = admin_llmqueue.validate_settings({"From": [""], "To": [""]})
     assert errors == [] and v["WindowStart"] is None and v["WindowEnd"] is None and v["Parallel"] == 1
     for bad, msg in (({"From": ["22:00"]}, "both"), ({"From": ["25:00"], "To": ["01:00"]}, "HH:MM"),
@@ -542,7 +543,7 @@ def test_admin_page_gate_and_listing(adm):
     assert "~2,000 in / ~1,500 out tokens · time: learning" in r.body
     assert "<b>2 jobs waiting</b> (1 uncertain, 1 second opinion)" in r.body
     assert "~3,000 tokens in, ~3,000 tokens out" in r.body and "Learning: no answers yet" in r.body
-    assert r.body.index("2 jobs waiting") < r.body.index("<h2>Queue</h2>")          # the summary is above the list
+    assert r.body.index("2 jobs waiting") < r.body.index("<h2 id='queue'>Queue</h2>")  # the summary is above the list
     assert "config (0.80)" in r.body and "900 in / 300 out tokens in 5 min (estimated ~1,000 in)" in r.body
     assert "Re-scan now" in r.body and "value='9'" in r.body and "All kinds" in r.body
     assert "/admin/llm-queue/2/up" in r.body and "/admin/llm-queue/1/up" not in r.body   # the first cannot go up
@@ -563,10 +564,16 @@ def test_admin_page_actions(adm):
     assert {p[1] for _, p in ups} == {1, 2} and dict((p[1], p[0]) for _, p in ups)[2] > dict((p[1], p[0]) for _, p in ups)[1]
     r = _post(adm, a, "/admin/llm-queue/5/top")
     assert "no+longer+queued" in dict(r.headers)["Location"]
-    _post(adm, a, "/admin/llm-queue/2/skip")
+    r = _post(adm, a, "/admin/llm-queue/2/skip", at="job-3")
     assert adm.conn.sql(r"SET Status = N'skipped'.*Status = N'queued'")[-1][1] == (2,)
+    assert dict(r.headers)["Location"].endswith("#job-3")             # the page opens at the next row, not the top
+    r = _post(adm, a, "/admin/llm-queue/2/down", at="job-2")
+    assert dict(r.headers)["Location"].endswith("#job-2")
+    r = _post(adm, a, "/admin/llm-queue/2/skip", at="javascript:alert(1)")
+    assert "#" not in dict(r.headers)["Location"]                        # only a row or the queue
     _post(adm, a, "/admin/llm-queue/3/requeue")
-    assert adm.conn.sql(r"SET Status = N'queued', Attempts = 0")[-1][1] == (3,)
+    sql, params = adm.conn.sql(r"SET Status = N'queued', Attempts = 0")[-1]
+    assert params == (3,) and "QueuedAt = SYSUTCDATETIME()" in sql      # its wait starts again
     r = _post(adm, a, "/admin/llm-queue/rescan", RepositoryId="9")
     assert r.status == 303 and "%2312" in dict(r.headers)["Location"]
     (sql, params), = adm.conn.sql(r"EXEC cz.QueueOrgScanRun")
@@ -575,7 +582,7 @@ def test_admin_page_actions(adm):
               MaxLoadPerCpu="0.5", Parallel="2")
     assert "Saved" in dict(r.headers)["Location"]
     (sql, params), = adm.conn.sql(r"UPDATE cz.LlmQueueSettings")
-    assert params == (False, 96, 1320, 360, True, 0.5, 2, None, 0)     # no approval
+    assert params == (False, 96, 1320, 360, True, 0.5, 2, None, 0, 0, 0)  # no approval
     r = _post(adm, a, "/admin/llm-queue/settings", From="22:00")
     assert "both" in dict(r.headers)["Location"] and len(adm.conn.sql(r"UPDATE cz.LlmQueueSettings")) == 1
     # the form needs the session's CSRF token
@@ -672,3 +679,95 @@ def test_runner_uses_the_built_in_llm_when_none_is_registered(tmp_path, monkeypa
     unit = (_Path(__file__).resolve().parent.parent / "appliance/rootfs/usr/lib/systemd/system/"
             "containerizer-llm-queue.service").read_text()
     assert "CONTAINERIZER_LOCAL_LLM=/run/containerizer/system/local-llm-status.json" in unit
+
+
+@needs_sql
+def test_approval_rules_in_sql_server():
+    """Approval for every kind, automatic approval of small jobs while the queue has room (cz.QueueLlmJob,
+    cz.AutoApproveLlmJobs), and the upgrade that adds link and egress reviews to the default policy."""
+    import uuid
+    from containerizer import sqlstore
+    pw, sa_pw = "Test-Passw0rd!x", os.environ["CONTAINERIZER_SQL_PASSWORD"]
+    name = "czappr_" + uuid.uuid4().hex[:8]
+    cs = re.sub(r"(?i)(database|initial\s*catalog)\s*=[^;]*", f"Database={name}", ADMIN_SQL)
+    sqlstore.create_database(cs, sa_pw)
+    conn = sqlstore.connect(cs, sa_pw)
+    sqlstore.init_schema(conn)
+    for login, role in (("cz_a_writer", "writer"), ("cz_a_admin", "admin")):
+        sqlstore.create_login(conn, login, pw, role)
+
+    def as_(login):
+        return re.sub(r"(?i)(user\s*id|uid)\s*=[^;]*", f"User Id={login}", cs)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT ApproveKinds FROM cz.LlmQueueSettings")
+        assert cur.fetchone()[0] == "egress,link,refactor,review"         # a new install: every kind waits
+        adm = sqlstore.connect(as_("cz_a_admin"), pw)
+        adm.cursor().execute("UPDATE cz.LlmQueueSettings SET ApproveKinds = N'link,review', ApproveMinTokens = 1000, "
+                             "ApproveMaxQueued = 2")
+        adm.commit()
+        w = sqlstore.connect(as_("cz_a_writer"), pw)
+        wc = w.cursor()
+
+        def queue(kind, prio, tokens):
+            wc.execute("EXEC cz.QueueLlmJob @Kind = %s, @Priority = %s, @DedupeKey = %s, @EstInputTokens = %s, "
+                       "@Payload = N'{}'", (kind, prio, uuid.uuid4().hex, tokens))
+            jid = wc.fetchone()[0]
+            w.commit()
+            return jid
+
+        def status(jid):
+            wc.execute("SELECT Status, ApprovedBy FROM cz.LlmJob WHERE JobId = %s", (jid,))
+            return tuple(wc.fetchone())
+        small1, small2 = queue("review", 10, 100), queue("review", 9, 100)
+        link_small = queue("link", 8, 100)        # small, but the queue already has 2
+        big = queue("review", 50, 5000)           # over the size limit: always an administrator
+        egress = queue("egress", 1, 99999)        # egress needs no approval here: starts at once, whatever its size
+        assert [status(j)[0] for j in (small1, small2, link_small, big, egress)] == \
+            ["queued", "queued", "approval", "approval", "queued"]
+        # two answered: room for one more, the small link review (the big one still waits for an administrator)
+        wc.execute("UPDATE cz.LlmJob SET Status = N'answered', FinishedAt = SYSUTCDATETIME() WHERE JobId IN (%s, %s)",
+                   (small1, small2))
+        w.commit()
+        assert lq.auto_approve(w) == 1
+        assert status(link_small) == ("queued", "automatic: estimated under 1,000 tokens and the queue had room")
+        assert status(big)[0] == "approval" and lq.auto_approve(w) == 0
+        # component reviews need no approval any more: the big one waiting is let go too
+        adm.cursor().execute("UPDATE cz.LlmQueueSettings SET ApproveKinds = N'link'")
+        adm.commit()
+        assert lq.auto_approve(adm) == 1 and status(big) == ("queued", "automatic: its kind needs no approval")
+        # jobs that waited too long are rejected; a running one never, an approved one counts from its approval
+        w2 = sqlstore.connect(as_("cz_a_writer"), pw)
+        c2 = w2.cursor()
+        old_q, fresh = queue("review", 3, 100), queue("review", 2, 100)
+        c2.execute("UPDATE cz.LlmJob SET Status = N'running' WHERE JobId = %s", (big,))
+        w2.commit()
+        conn.cursor().execute("UPDATE cz.LlmJob SET QueuedAt = DATEADD(hour, -30, SYSUTCDATETIME()), ApprovedAt = NULL "
+                              "WHERE JobId IN (%s, %s); UPDATE cz.LlmJob SET QueuedAt = DATEADD(hour, -30, SYSUTCDATETIME()) "
+                              "WHERE JobId = %s", (old_q, big, link_small))
+        conn.commit()
+        assert lq.auto_reject(w2) == 0                                  # off by default
+        adm.cursor().execute("UPDATE cz.LlmQueueSettings SET RejectAfterHours = 24")
+        adm.commit()
+        assert lq.apply_rules(w2)[1] == 1
+        assert status(old_q)[0] == "skipped" and status(fresh)[0] != "skipped"
+        assert status(big)[0] == "running" and status(link_small)[0] == "queued"     # approved a moment ago
+        c2.execute("SELECT Note FROM cz.LlmJob WHERE JobId = %s", (old_q,))
+        assert c2.fetchone()[0] == "rejected automatically: waited more than 24 hours"
+        w2.close()
+        adm.close()
+        w.close()
+        # the upgrade: settings still at the old default get link and egress reviews; changed ones are kept
+        cur.execute("UPDATE cz.LlmQueueSettings SET ApproveKinds = N'refactor,review'; "
+                    "DELETE cz.SchemaVersion WHERE Version = 29")
+        conn.commit()
+        sqlstore.init_schema(conn)
+        cur.execute("SELECT ApproveKinds FROM cz.LlmQueueSettings")
+        assert cur.fetchone()[0] == "egress,link,refactor,review"
+        cur.execute("SELECT COUNT(*) FROM cz.AuditLog WHERE TableName = N'LlmQueueSettings' AND NewValues LIKE N'%ApproveMaxQueued%'")
+        assert cur.fetchone()[0] >= 1
+    finally:
+        conn.close()
+        m = sqlstore.connect(re.sub(r"(?i)Database=\w+", "Database=master", cs), sa_pw, autocommit=True)
+        m.cursor().execute(f"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]")
+        m.close()
