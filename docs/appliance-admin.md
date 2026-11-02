@@ -46,7 +46,7 @@ does not start properly, the appliance goes back to the previous snapshot by its
 
 `root` is the only administrator account on the OS. It signs in on the console or over SSH with its
 password, or over SSH with a key in `/root/.ssh/authorized_keys`. The password is `containerizer` and
-(except in 0.3.3, where you change it yourself with `passwd`) expired on a new appliance, so the first sign-in, on the console or over SSH, asks for a new one (until
+(except in 0.3.4, where you change it yourself with `passwd`) expired on a new appliance, so the first sign-in, on the console or over SSH, asks for a new one (until
 then PAM may refuse an SSH key as well). `/etc` is rebuilt at every boot, so the appliance keeps root's
 password entry in `/etc/containerizer/secrets/root-shadow` (persistent partition) and puts it back at every
 start; changes with `passwd` are saved there by themselves (`containerizer-root-password.path`).
