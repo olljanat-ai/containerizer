@@ -132,6 +132,27 @@ network:
   local_hosts: '^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*|\+)$'
   # who may call a component's service port: any namespace (ingress controllers live elsewhere)
   ingress_from: [{namespaceSelector: {}}]
+  # The egress review (egress.py, docs/egress.md): the deterministic pre-filter that runs before the LLM is
+  # asked. Nothing it matches is ever proposed: it is reported (platform, unnamed, in-cluster) or suspicious.
+  egress_review:
+    # drops in these namespaces are the platform's, not an application's
+    platform_namespaces: ['kube-system', 'kube-public', 'kube-node-lease', 'flux-system', 'argocd', 'external-secrets',
+                          'containerizer-.*', 'cattle-.*', 'cert-manager', 'traefik', 'monitoring', 'default']
+    # pod and service addresses of the sandbox cluster (k3s defaults): a drop there is in-cluster traffic
+    cluster_cidrs: [10.42.0.0/16, 10.43.0.0/16]
+    # paste, file-sharing, tunnelling and request-capture services: data leaves through them
+    suspicious_domains:
+      - pastebin\.com|paste\.ee|pastes?\.io|paste\.rs|hastebin\.com|ghostbin\.\w+|rentry\.(co|org)|dpaste\.(com|org)
+      - termbin\.com|ix\.io|sprunge\.us|controlc\.com|justpaste\.it|privatebin\.\w+|0bin\.net|gist\.githubusercontent\.com
+      - transfer\.sh|file\.io|0x0\.st|temp\.sh|gofile\.io|anonfiles\.\w+|wetransfer\.com|we\.tl|sendspace\.com|mega\.(nz|io)
+      - ngrok(-free)?\.(io|app|dev)|trycloudflare\.com|serveo\.net|localtunnel\.me|loca\.lt|localhost\.run|pagekite\.me
+      - webhook\.site|requestbin\.\w+|pipedream\.net|beeceptor\.com|hookbin\.com|interact\.sh|oast\.\w+|burpcollaborator\.net
+      - canarytokens\.\w+|dnslog\.cn|ceye\.io|duckdns\.org|no-ip\.\w+|ddns\.net
+    # never proposed by name either: the cloud platform's own data plane belongs to the platform team
+    platform_domains: ['.*\.vault\.azure\.net', '.*\.azurecr\.io', 'management\.azure\.com',
+                       'metadata\.google\.internal']
+    # ports the review may propose; others are reported for a person to judge
+    ports: [443, 80, 8443, 1433, 5432, 3306, 1521, 27017, 6379, 6380, 5671, 5672, 9092, 9093, 25, 465, 587, 22, 389, 636]
   egress:
     - id: sql-server
       when: {package: 'Microsoft\.Data\.SqlClient|System\.Data\.SqlClient|Microsoft\.EntityFrameworkCore\.SqlServer.*|Hangfire\.SqlServer|dbup-sqlserver|Microsoft\.SqlServer\..*'}

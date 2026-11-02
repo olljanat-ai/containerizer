@@ -1749,3 +1749,165 @@ WHERE j.Kind = N'refactor';
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 23) INSERT [${schema}].SchemaVersion (Version) VALUES (23);
 GO
+
+-- 24: egress (egress.py, docs/egress.md). The egress observer (`containerizer egress-observe`, a writer login on
+-- the sandbox node) records the connections the sandbox's NetworkPolicies dropped, per namespace, component,
+-- destination (the FQDN a pod of the namespace looked up just before, else the IP), port and protocol
+-- (RecordEgressFlow adds to the counts). The LLM queue runner's egress review (LlmJob Kind 'egress') turns the
+-- new ones into decisions: proposed, reported, suspicious (EgressDecision); administrators, operators and the
+-- application's product owners approve or reject a proposal (admin login: Status, DecidedBy/At); the runner
+-- writes connectivity.yaml and the NetworkPolicy to the output repository and records the commit.
+IF OBJECT_ID(N'[${schema}].EgressFlow', N'U') IS NULL
+CREATE TABLE [${schema}].EgressFlow (
+    FlowId        bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_EgressFlow PRIMARY KEY,
+    Namespace     nvarchar(63)   NOT NULL,
+    Component     nvarchar(63)   NOT NULL,            -- the pod's app.kubernetes.io/name ('' when it has none)
+    Destination   nvarchar(253)  NOT NULL,            -- FQDN, or the IP address when no name is known
+    Named         bit            NOT NULL,
+    DestinationIp nvarchar(45)   NULL,                -- the last address seen
+    Port          int            NOT NULL,            -- 0: no port (ICMP)
+    Protocol      nvarchar(10)   NOT NULL,
+    Packets       int            NOT NULL,            -- dropped packets logged (kube-router logs at most 10 a minute per policy)
+    FirstSeen     datetime2(0)   NOT NULL,
+    LastSeen      datetime2(0)   NOT NULL,
+    Pods          nvarchar(2000) NULL,                -- JSON: a few pods [{"pod", "ip"}]
+    Policy        nvarchar(253)  NULL,                -- the NetworkPolicy that dropped it
+    Observer      nvarchar(256)  NULL,
+    CONSTRAINT UQ_EgressFlow UNIQUE (Namespace, Component, Destination, Port, Protocol)
+);
+GO
+CREATE OR ALTER PROCEDURE [${schema}].RecordEgressFlow @Namespace nvarchar(63), @Component nvarchar(63),
+    @Destination nvarchar(253), @Named bit, @DestinationIp nvarchar(45) = NULL, @Port int, @Protocol nvarchar(10),
+    @Packets int, @FirstSeen datetime2(0), @LastSeen datetime2(0), @Pods nvarchar(2000) = NULL,
+    @Policy nvarchar(253) = NULL, @Observer nvarchar(256) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON; SET XACT_ABORT ON;
+    BEGIN TRANSACTION;
+    UPDATE [${schema}].EgressFlow WITH (UPDLOCK, HOLDLOCK)
+    SET Packets = CASE WHEN Packets > 2000000000 - @Packets THEN 2000000000 ELSE Packets + @Packets END,
+        LastSeen = CASE WHEN @LastSeen > LastSeen THEN @LastSeen ELSE LastSeen END,
+        FirstSeen = CASE WHEN @FirstSeen < FirstSeen THEN @FirstSeen ELSE FirstSeen END,
+        DestinationIp = COALESCE(@DestinationIp, DestinationIp), Pods = COALESCE(@Pods, Pods),
+        Policy = COALESCE(@Policy, Policy), Observer = COALESCE(@Observer, Observer)
+    WHERE Namespace = @Namespace AND Component = @Component AND Destination = @Destination AND Port = @Port
+      AND Protocol = @Protocol;
+    IF @@ROWCOUNT = 0
+        INSERT [${schema}].EgressFlow (Namespace, Component, Destination, Named, DestinationIp, Port, Protocol, Packets,
+                                       FirstSeen, LastSeen, Pods, Policy, Observer)
+        VALUES (@Namespace, @Component, @Destination, @Named, @DestinationIp, @Port, @Protocol, @Packets, @FirstSeen,
+                @LastSeen, @Pods, @Policy, @Observer);
+    COMMIT;
+END;
+GO
+IF OBJECT_ID(N'[${schema}].EgressDecision', N'U') IS NULL
+CREATE TABLE [${schema}].EgressDecision (
+    DecisionId     int IDENTITY(1,1) NOT NULL CONSTRAINT PK_EgressDecision PRIMARY KEY,
+    ApplicationId  int            NOT NULL CONSTRAINT FK_EgressDecision_Application REFERENCES [${schema}].Application (ApplicationId),
+    Namespace      nvarchar(63)   NOT NULL,           -- where it was observed (a sandbox variant's namespace too)
+    Component      nvarchar(63)   NOT NULL,
+    Destination    nvarchar(253)  NOT NULL,
+    Port           int            NOT NULL,
+    Protocol       nvarchar(10)   NOT NULL,
+    -- what the review said: propose (the configuration or code names it), report (nothing names it), suspicious,
+    -- platform (a platform namespace), unnamed (an IP address without a name), in-cluster (a pod or service address)
+    Verdict        nvarchar(20)   NOT NULL CONSTRAINT CK_EgressDecision_Verdict
+                   CHECK (Verdict IN (N'propose', N'report', N'suspicious', N'platform', N'unnamed', N'in-cluster')),
+    Status         nvarchar(20)   NOT NULL CONSTRAINT CK_EgressDecision_Status
+                   CHECK (Status IN (N'proposed', N'reported', N'suspicious', N'approved', N'rejected')),
+    Category       nvarchar(40)   NULL,               -- why the pre-filter decided (paste-site, metadata, ip-literal, ...)
+    Reason         nvarchar(1000) NULL,
+    Evidence       nvarchar(max)  NULL,               -- JSON: [{"file", "line", "quote", "verified"}]
+    Flows          nvarchar(max)  NULL,               -- JSON: the flows when it was reviewed (packets, first/last seen, pods)
+    JobId          int            NULL,               -- the egress review (LlmJob) that decided
+    CreatedAt      datetime2(0)   NOT NULL CONSTRAINT DF_EgressDecision_CreatedAt DEFAULT SYSUTCDATETIME(),
+    DecidedBy      nvarchar(256)  NULL,
+    DecidedByName  nvarchar(256)  NULL,
+    DecidedAt      datetime2(0)   NULL,
+    CommittedAt    datetime2(0)   NULL,               -- written to the output repository (connectivity.yaml)
+    CommitRevision nvarchar(64)   NULL,
+    CommitError    nvarchar(600)  NULL,
+    CONSTRAINT UQ_EgressDecision UNIQUE (ApplicationId, Component, Destination, Port, Protocol)
+);
+GO
+CREATE OR ALTER TRIGGER [${schema}].trEgressDecisionAudit ON [${schema}].EgressDecision
+AFTER UPDATE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'EgressDecision', i.DecisionId,
+           LEFT(i.Destination + N':' + CAST(i.Port AS nvarchar(5)) + N'/' + i.Protocol, 200), N'update',
+           (SELECT d.Status, d.DecidedBy, d.DecidedAt FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES),
+           (SELECT i.Status, i.DecidedBy, i.DecidedAt FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES)
+    FROM inserted i JOIN deleted d ON d.DecisionId = i.DecisionId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE i.Status <> d.Status;
+END;
+GO
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_LlmJob_Kind'
+           AND parent_object_id = OBJECT_ID(N'[${schema}].LlmJob') AND definition NOT LIKE N'%egress%')
+    ALTER TABLE [${schema}].LlmJob DROP CONSTRAINT CK_LlmJob_Kind;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_LlmJob_Kind'
+               AND parent_object_id = OBJECT_ID(N'[${schema}].LlmJob'))
+    ALTER TABLE [${schema}].LlmJob ADD CONSTRAINT CK_LlmJob_Kind CHECK (Kind IN (N'review', N'refactor', N'egress'));
+GO
+-- Which application a sandbox namespace runs: the latest sandbox check of the namespace (sandbox verify), and the
+-- "Make it A" variants that are in the sandbox (their order's application).
+CREATE OR ALTER VIEW [${schema}].vSandboxNamespace AS
+SELECT x.Namespace, x.ApplicationId, x.Variant, x.CheckedAt, x.Status
+FROM (SELECT s.Namespace, s.ApplicationId, CAST(0 AS bit) AS Variant, s.CheckedAt, s.Status,
+             ROW_NUMBER() OVER (PARTITION BY s.Namespace ORDER BY s.CheckedAt DESC, s.CheckId DESC) AS n
+      FROM [${schema}].SandboxCheck s
+      UNION ALL
+      SELECT CAST(JSON_VALUE(j.Result, '$$.sandbox.namespace') AS nvarchar(63)), COALESCE(j.ApplicationId, a.ApplicationId),
+             CAST(1 AS bit), j.FinishedAt,
+             CASE WHEN JSON_VALUE(j.Result, '$$.sandbox.status') = N'running' THEN N'healthy'
+                  ELSE CAST(JSON_VALUE(j.Result, '$$.sandbox.status') AS nvarchar(20)) END, 1
+      FROM [${schema}].LlmJob j LEFT JOIN [${schema}].Application a ON a.SourceKey = j.SourceKey
+      WHERE j.Kind = N'refactor' AND j.Status = N'answered' AND JSON_VALUE(j.Result, '$$.sandbox.namespace') IS NOT NULL
+        AND JSON_VALUE(j.Result, '$$.sandbox.removed_at') IS NULL) x
+WHERE x.n = 1 AND x.ApplicationId IS NOT NULL;
+GO
+CREATE OR ALTER VIEW [${schema}].vEgressFlow AS
+SELECT f.FlowId, n.ApplicationId, n.Variant, f.Namespace, f.Component, f.Destination, f.Named, f.DestinationIp, f.Port,
+       f.Protocol, f.Packets, f.FirstSeen, f.LastSeen, f.Pods, f.Policy
+FROM [${schema}].EgressFlow f
+LEFT JOIN [${schema}].vSandboxNamespace n ON n.Namespace = f.Namespace;
+GO
+CREATE OR ALTER VIEW [${schema}].vEgressDecision AS
+SELECT d.DecisionId, d.ApplicationId, d.Namespace, d.Component, d.Destination, d.Port, d.Protocol, d.Verdict, d.Status,
+       d.Category, d.Reason, d.Evidence, d.Flows, d.JobId, d.CreatedAt, d.DecidedBy, d.DecidedByName, d.DecidedAt,
+       d.CommittedAt, d.CommitRevision, d.CommitError
+FROM [${schema}].EgressDecision d
+JOIN [${schema}].Application a ON a.ApplicationId = d.ApplicationId
+WHERE a.Retired = 0;
+GO
+-- What the latest assessment of each application inferred about its network (assessment.json "network": the
+-- service ports, configured destinations with their file and line, the dependencies the NetworkPolicy opens)
+CREATE OR ALTER VIEW [${schema}].vNetworkLatest AS
+SELECT aa.ApplicationId, aa.AssessmentId, aa.AssessedAt, JSON_QUERY(aa.ReportJson, '$$.network') AS NetworkJson
+FROM [${schema}].ApplicationAssessment aa
+WHERE aa.AssessmentId = (SELECT MAX(x.AssessmentId) FROM [${schema}].ApplicationAssessment x WHERE x.ApplicationId = aa.ApplicationId);
+GO
+GRANT SELECT ON [${schema}].EgressFlow TO [${schema}_writer];
+GRANT EXECUTE ON [${schema}].RecordEgressFlow TO [${schema}_writer];
+GRANT SELECT, INSERT ON [${schema}].EgressDecision TO [${schema}_writer];
+GRANT UPDATE ON [${schema}].EgressDecision (CommittedAt, CommitRevision, CommitError) TO [${schema}_writer];
+GRANT SELECT ON [${schema}].vSandboxNamespace TO [${schema}_writer];
+GRANT SELECT ON [${schema}].vEgressFlow TO [${schema}_writer];
+GRANT SELECT ON [${schema}].vEgressDecision TO [${schema}_writer];
+GRANT SELECT ON [${schema}].vNetworkLatest TO [${schema}_writer];
+GRANT SELECT ON [${schema}].vApplicationLatest TO [${schema}_writer];
+GRANT SELECT ON [${schema}].vSandboxLatest TO [${schema}_writer];
+GRANT SELECT ON [${schema}].vEgressFlow TO [${schema}_reader];
+GRANT SELECT ON [${schema}].vEgressDecision TO [${schema}_reader];
+GRANT SELECT ON [${schema}].vNetworkLatest TO [${schema}_reader];
+GRANT SELECT ON [${schema}].vEgressDecision TO [${schema}_admin];
+GRANT SELECT ON [${schema}].vEgressFlow TO [${schema}_admin];
+GRANT SELECT ON [${schema}].vNetworkLatest TO [${schema}_admin];
+GRANT SELECT ON [${schema}].EgressDecision (DecisionId, ApplicationId, Verdict, Status, Destination) TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].EgressDecision (Status, DecidedBy, DecidedByName, DecidedAt, CommittedAt) TO [${schema}_admin];
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 24) INSERT [${schema}].SchemaVersion (Version) VALUES (24);
+GO

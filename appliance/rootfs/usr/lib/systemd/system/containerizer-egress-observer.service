@@ -1,0 +1,52 @@
+[Unit]
+Description=containerizer appliance: egress observer (connections the sandbox's NetworkPolicies drop; Admin -> Egress)
+After=k3s.service containerizer-db-init.service containerizer-sandbox.service
+Requires=containerizer-db-init.service
+Wants=k3s.service
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+
+[Service]
+# Not root: the containerizer user with one capability. CAP_NET_ADMIN is what binding to the NFLOG group of
+# kube-router's drop log (100) needs; the socket only reads the dropped packets' first 128 bytes (addresses and
+# ports) and the prefix "DROP by policy <namespace>/<policy>". kube-router logs at most 10 packets a minute per
+# policy. Nothing else is privileged: the Kubernetes API is read with the observer's own read-only account (the
+# CoreDNS query log in kube-system, the pods of the app namespaces; no Secrets, no write verbs; cz-sandbox writes
+# its kubeconfig, root:containerizer 0640, renewed every 12 hours), the results database with the scanner's
+# writer login (cz.RecordEgressFlow).
+User=containerizer
+Group=containerizer
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+EnvironmentFile=-/etc/containerizer/worker.env
+EnvironmentFile=/run/containerizer/sql.env
+LoadCredential=sql-scanner:/etc/containerizer/secrets/cz-scanner
+StateDirectory=containerizer/egress
+WorkingDirectory=/var/lib/containerizer/egress
+ExecStart=/usr/lib/containerizer/bin/cz-egress-observer
+# waits for the kubeconfig cz-sandbox writes at its first run
+Restart=always
+RestartSec=30
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+SystemCallArchitectures=native
+# netlink for NFLOG, inet for SQL Server, the Kubernetes API and DNS, unix for name lookups
+RestrictAddressFamilies=AF_NETLINK AF_INET AF_INET6 AF_UNIX
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

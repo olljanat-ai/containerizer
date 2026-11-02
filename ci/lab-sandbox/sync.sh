@@ -73,6 +73,10 @@ k get gitrepositories.source.toolkit.fluxcd.io -A -l app.kubernetes.io/managed-b
       "force-sync=$(date +%s)" >/dev/null
   done
 
+# ---------------------------------------------------------------- the egress observer (egress-observer.sh)
+# its Roles in new app namespaces, when it is installed
+if [ -f "$LAB_DIR/egress-observer.kubeconfig" ]; then "$LAB_SCRIPTS/egress-observer.sh" rbac || true; fi
+
 # ---------------------------------------------------------------- the verifier (lab only)
 # The output repository's sandbox/verify-rbac.yaml (read-only access to the app namespaces, no Secrets)
 # applied as cluster admin, and a kubeconfig with a 24-hour token of that ServiceAccount, renewed after 12.

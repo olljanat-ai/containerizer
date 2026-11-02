@@ -103,6 +103,8 @@ def load_application(conn, app_id: int) -> dict | None:
     app["idp"] = load_idp_clients(conn, app_id)
     app["llm_reviews"] = load_llm_reviews(conn, app_id)
     app["refactors"] = load_refactor_orders(conn, app_id)
+    from .connectivityui import load as load_connectivity
+    app["connectivity"] = load_connectivity(conn, app_id)
     try:
         from .llmqueue import load_speed
         app["llm_speed"] = load_speed(conn) if app["refactors"] else None
@@ -797,9 +799,19 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 {_refactoring(app, refactor)}
 <h2>What needs to change, and why</h2>{''.join(details)}
 {_build_pipeline(app, refactor)}
+{_connectivity(app, refactor)}
 <h2>History</h2><p class='muted small'><a href='/trends'>Trends of all applications</a></p><table class='narrow'><thead><tr><th>Assessed</th><th>Rating</th><th class='num'>Readiness</th>
 </tr></thead><tbody>{hist}</tbody></table>
 <footer>{legend()}</footer>""", script=any(m.get("AgentPrompt") for m in migs.values()))
+
+
+def _connectivity(app: dict, ctx: dict | None) -> str:
+    from .connectivityui import section
+    try:
+        return section(app, ctx)
+    except Exception as ex:  # noqa: BLE001 - one section must not take the page down
+        print(f"connectivity section of {app.get('ApplicationId')}: {type(ex).__name__}: {ex}", file=sys.stderr)
+        return ""
 
 
 def _build_pipeline(app: dict, ctx: dict | None) -> str:
@@ -1274,7 +1286,8 @@ def make_handler(connect, admin=None):
             try:
                 if u.path == "/static/app.css":
                     from .sbomui import CSS as SBOM_CSS
-                    return self._send(200, CSS + SBOM_CSS, "text/css; charset=utf-8", head)
+                    from .connectivityui import CSS as CONNECTIVITY_CSS
+                    return self._send(200, CSS + SBOM_CSS + CONNECTIVITY_CSS, "text/css; charset=utf-8", head)
                 if u.path == "/static/app.js":
                     return self._send(200, JS, "text/javascript; charset=utf-8", head)
                 if u.path in ("/static/favicon.svg", "/favicon.ico"):
@@ -1348,7 +1361,9 @@ def make_handler(connect, admin=None):
                             if app is None:
                                 return self._send(404, page("Not found", "<h1>Application not found</h1><p><a href='/'>Back</a></p>"),
                                                   head=head)
-                            ctx = {"signin": bool(admin), "notice": refactor_notice(parse_qs(u.query))}
+                            from .connectivityui import notice_code
+                            ctx = {"signin": bool(admin), "notice": refactor_notice(parse_qs(u.query)),
+                                   "egress_notice": notice_code(parse_qs(u.query))}
                             s, cookie = admin.dev_session(self.headers) if admin else (None, [])
                             if s and (s.admin or s.operator or s.scopes):   # may order (product owners: their products)
                                 ctx["csrf"] = admin._csrf(s)

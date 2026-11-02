@@ -243,7 +243,21 @@ class AppAssessment:
                 "libraries": [{"name": c.name, "project": c.project.rel, "tfm": c.project.tfms,
                                "findings": [f.to_dict() for f in c.findings]} for c in self.libraries],
                 "tests": [c.project.rel for c in self.tests],
-                "repo_findings": [f.to_dict() for f in self.repo_findings]}
+                "repo_findings": [f.to_dict() for f in self.repo_findings],
+                "network": self.network()}
+
+    def network(self) -> dict:
+        """What the application needs from the network, as far as code and configuration tell
+        (connectivity.infer; computed once)."""
+        net = getattr(self, "_network", None)
+        if net is None:
+            from .connectivity import infer
+            try:
+                net = infer(self)
+            except Exception as ex:  # noqa: BLE001 - the assessment never fails over it
+                net = {"version": 1, "components": [], "error": f"{type(ex).__name__}: {ex}"[:200]}
+            self._network = net
+        return net
 
 
 def classify_role(repo: Repo, p: Project, rules: list[Rule]) -> tuple[str, str]:

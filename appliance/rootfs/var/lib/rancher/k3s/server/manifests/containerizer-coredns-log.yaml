@@ -1,0 +1,14 @@
+# CoreDNS query log for the egress observer (docs/egress.md#the-egress-observer): k3s imports
+# /etc/coredns/custom/*.override into its Corefile, so this turns on the `log` plugin. Each query is one line
+# in CoreDNS's log ("<pod address>:<port> - <id> "A IN api.example.com. udp ..." NOERROR ..."); the observer
+# reads it through the Kubernetes API (kube-system pods/log, its own read-only account) to name the
+# destinations the NetworkPolicies drop. Names only: no answers, no payloads.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-custom
+  namespace: kube-system
+  labels: {app.kubernetes.io/part-of: containerizer-sandbox, app.kubernetes.io/managed-by: containerizer-appliance}
+data:
+  log.override: |
+    log

@@ -1,0 +1,12 @@
+#!/bin/sh
+# The egress observer (docs/egress.md#the-egress-observer): the connections the sandbox's NetworkPolicies drop,
+# named with the FQDN a pod looked up, into the results database (cz.EgressFlow) for the egress review.
+# connection string from /run/containerizer/sql.env (cz-firstboot, from appliance.env); worker.env may set its own
+export CONTAINERIZER_SQL="${CONTAINERIZER_SQL:-$CZ_SQL_SCANNER_CS}"
+CONTAINERIZER_SQL_PASSWORD="$(cat "$CREDENTIALS_DIRECTORY/sql-scanner")"
+export CONTAINERIZER_SQL_PASSWORD
+# the observer's own read-only account (cz-sandbox): CoreDNS's log, the pods of the app namespaces
+export CONTAINERIZER_EGRESS_KUBECONFIG=/run/containerizer/egress-observer.kubeconfig
+export HOME=/var/lib/containerizer/egress
+# names are resolved through the sandbox cluster's DNS (what the pods were answered), not the host's resolver
+exec /usr/lib/containerizer/venv/bin/python -m containerizer egress-observe --dns-server 10.43.0.10

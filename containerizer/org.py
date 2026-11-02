@@ -895,7 +895,7 @@ def tag_local(local: str, ref: str) -> None:
 
 def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Registry | None", tag: str, gitops,
                res: RepoResult, work: Path, app: str, assessment_id: int | None = None,
-               dev_database: bool = True) -> RepoResult:
+               dev_database: bool = True, connectivity_from: Path | None = None) -> RepoResult:
     """Deploy an assessed application to the sandbox through the output repository: the components rated A
     (buildable, verified when verification is on) through the security gate (or generated without it), their
     images built and pushed under <registry>/<namespace>/<component>:<tag> (or tagged locally: local_images),
@@ -903,9 +903,16 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
     image paths, Ingress hosts and IdP clients derive from k8s_name(a.name), the source folder's name.
     The organization scan calls it for each repository (with its assessment id: IdP clients and SBOMs go to
     the results database); the refactoring runner for a patched copy ("Make it A": no assessment id, no
-    uploaded dev database). The caller commits. Returns `res` (status deployed or no-a-components)."""
+    uploaded dev database). The caller commits. Returns `res` (status deployed or no-a-components).
+
+    The application's connectivity.yaml (connectivity.py) is read first, from its folder or `connectivity_from`
+    (a sandbox variant: the original's folder): the ports of its approved egress stay open in the regenerated
+    NetworkPolicies, and its approved entries are kept, as they are, in the new file."""
+    from . import connectivity
     from .generate import generate_app, k8s_name
     dest = out.root / rel
+    existing = connectivity.read(dest) or (connectivity.read(connectivity_from) if connectivity_from else None)
+    approved = connectivity.approved_entries(existing)
     local_mode = local_images(o)
     keep, res.excluded = select_components(a, o.verify)
     lab = _lab_services(o)
@@ -920,13 +927,13 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
         fa = dataclasses.replace(a, components=keep)
         if not o.gate:
             generate_app(fa, gen, registry=o.registry, pin=o.pin, gitops=gitops, tag=tag, devdb=dd, lab=lab,
-                         lab_report=lab_report)
+                         lab_report=lab_report, approved_egress=approved)
             break
         from .harden import security
         from .imagescan import gate_app
         g = gate_app(fa, gen, build=True, scan=True, run=True, registry=o.registry, pin=o.pin, gitops=gitops,
                      tag=tag, scanner=o.scanner or security()["scan"].get("default_scanner", "auto"),
-                     fail_on=o.fail_on, devdb=dd, lab=lab, lab_report=lab_report)
+                     fail_on=o.fail_on, devdb=dd, lab=lab, lab_report=lab_report, approved_egress=approved)
         failed = {c["component"]: gate_failure(c) for c in g["components"] if gate_failure(c)}
         if not failed:
             break
@@ -1020,7 +1027,38 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(gen, dest)
     (dest / "containerizer.json").write_text(json.dumps(res.to_dict(), indent=2, default=str) + "\n")
+    try:                    # what the scan infers, with the approved and observed entries of the file before
+        doc = connectivity.model(k8s_name(a.name), fa_network(a, keep), existing=existing, namespace=k8s_name(a.name),
+                                 sandbox=published_urls(dest, keep))
+        connectivity.write_files(dest, doc)
+    except Exception as e:  # noqa: BLE001 - documentation: the deployment stands
+        print(f"warning: {rel}: connectivity.yaml not written: {type(e).__name__}: {e}", file=sys.stderr)
     return res
+
+
+def published_urls(dest: Path, keep: list) -> list[dict]:
+    """The components' HTTPS URLs from their generated Ingresses ([{ComponentName, Url}], the shape of a sandbox row)."""
+    import yaml
+    from .generate import k8s_name
+    from .sandbox import _published
+    out = []
+    for c in keep:
+        f = dest / k8s_name(c.name) / "k8s.yaml"
+        try:
+            docs = [d for d in yaml.safe_load_all(f.read_text()) if isinstance(d, dict)] if f.is_file() else []
+        except yaml.YAMLError:
+            docs = []
+        url = _published(docs)[0] if docs else ""
+        if url:
+            out.append({"ComponentName": c.name, "Url": url})
+    return out
+
+
+def fa_network(a, keep: list) -> dict:
+    """The assessment's network needs of the deployed components only."""
+    names = {c.name for c in keep}
+    net = a.network() if hasattr(a, "network") else {}
+    return {**net, "components": [c for c in net.get("components") or [] if c.get("name") in names]}
 
 
 # --------------------------------------------------------------------------- the run

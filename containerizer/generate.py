@@ -654,8 +654,12 @@ def _yaml_docs(docs: list[dict]) -> str:
 
 def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, registry: str = "registry.local",
                  plans: dict | None = None, pin: bool = False, gitops=None, tag: str = "latest",
-                 devdb=None, lab: set | None = None, lab_report: dict | None = None) -> list[Path]:
-    """`devdb`: a devdb.SandboxDb when an operator uploaded a database backup for this application.
+                 devdb=None, lab: set | None = None, lab_report: dict | None = None,
+                 approved_egress: list[dict] | None = None) -> list[Path]:
+    """`approved_egress`: the approved outbound entries of the application's connectivity.yaml in the output
+    repository (connectivity.approved_entries): their ports are opened in the components' NetworkPolicies, so a
+    scan keeps what people approved.
+    `devdb`: a devdb.SandboxDb when an operator uploaded a database backup for this application.
     `lab`: the lab services that are on (labservices.py), None where the appliance's lab does not run;
     `lab_report` (a dict) receives what the app needs, what it was pointed at and what is turned off."""
     from .gitops import gitops_manifests, image_setters, readme
@@ -679,6 +683,9 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
         cdir = out / k8s_name(c.name)
         if buildable(c):
             plan = (plans or {}).get(c.name) or make_plan(a, c, rules)
+            mine = [x for x in approved_egress or [] if x.get("component") == k8s_name(c.name)]
+            if mine:
+                plan["approved_egress"] = [{"port": x["port"], "protocol": x.get("protocol") or "TCP"} for x in mine]
             cdir.mkdir(parents=True, exist_ok=True)
             if c.role == "spa":
                 plan["port"], plan["health"] = 8080, "/healthz"
@@ -750,11 +757,25 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
         comp_docs["lab"] = docs
     if all_k8s:
         written += app_files(a, out, all_k8s, comp_docs, images, registry, gitops)
+        written += _connectivity(a, out, approved_egress)
     (out / "MIGRATION.md").write_text(migration_markdown(a))
     written.append(out / "MIGRATION.md")
     written += write_agent_prompts(a, out)
     written += _build_pipeline(a, out, registry)
     return written
+
+
+def _connectivity(a: AppAssessment, out: Path, approved_egress: list[dict] | None) -> list[Path]:
+    """connectivity.yaml, CONNECTIVITY.md and connectivity.svg: what the application needs from the network as the
+    assessment infers it, with the approved egress (org.deploy_app merges the output repository's file in)."""
+    from . import connectivity
+    try:
+        existing = {"outbound": list(approved_egress or [])}
+        doc = connectivity.model(a.name, a.network(), existing=existing, namespace=k8s_name(a.name))
+        return connectivity.write_files(out, doc)
+    except Exception as ex:  # noqa: BLE001 - documentation only: the manifests stand
+        print(f"warning: {a.name}: connectivity.yaml not written: {type(ex).__name__}: {ex}", file=sys.stderr)
+        return []
 
 
 def _build_pipeline(a: AppAssessment, out: Path, registry: str) -> list[Path]:

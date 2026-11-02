@@ -5,6 +5,39 @@ by hand on `main` with the version, and it tags the commit and releases from the
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHD images as release assets.
 
+## Unreleased
+
+Results database schema version 24 (`containerizer db init` upgrades it; the appliance does at start).
+
+### Egress and network connectivity
+- **Egress observer** (docs/egress.md#the-egress-observer): `containerizer egress-observe` reads the packets the
+  sandbox's NetworkPolicies drop (kube-router's NFLOG group 100, a small netlink reader, no packages), keeps the
+  egress of application pods, names each destination with the FQDN a pod of the namespace looked up just before
+  (the CoreDNS query log, `log.override` in `coredns-custom`) and adds the flows up per namespace, component,
+  destination, port and protocol in `cz.EgressFlow`. On the appliance: `containerizer-egress-observer.service`, the
+  `containerizer` user with CAP_NET_ADMIN only and a read-only Kubernetes account of its own (pods, CoreDNS's log);
+  in the lab: `ci/lab-sandbox/egress-observer.sh`.
+- **Egress review** (LLM queue kind `egress`, with the approval policy): for applications rated A that run in the
+  sandbox (and "Make it A" variants), a deterministic pre-filter first (IP addresses without a name, metadata
+  endpoints and blocked ranges, wildcards, paste, file-sharing and tunnelling services, the platform's services and
+  namespaces: reported or suspicious, never proposed), then the LLM per destination: propose, report or suspicious,
+  with the file and line of the assessed commit that names it (checked against the source) and why.
+- **Approve / Reject** per destination (results page, Admin → Egress) for administrators, operators and the
+  application's product owners; the LLM queue runner commits the application's `connectivity.yaml` and the
+  component's NetworkPolicy with the port opened (to every address but the blocked ranges: a NetworkPolicy cannot
+  name an FQDN; the FQDN is for the production firewall). Later scans keep approved egress: the generator reads the
+  output repository's `connectivity.yaml` and opens the approved ports again (sandbox variants take the original's).
+- **Network connectivity**: on every results page, a server-side SVG diagram (no script, light and dark) and a
+  table of what the application needs from the network, each entry marked by its source (configuration and code
+  with file and line, packages, the NetworkPolicy, lab services, observed in the sandbox, approved) and status
+  (allowed, approved, proposed, blocked, not allowed, suspicious, rejected), with the findings *missing* (named by
+  the configuration, nothing allows it) and *unexplained* (open, but nothing names it). Applications not in the
+  sandbox show what was inferred. The same as `connectivity.yaml`, `CONNECTIVITY.md` and `connectivity.svg` next to
+  the manifests in the output repository, written by every scan and refreshed by the runner. Assessments record
+  the inferred network needs (assessment.json `network`).
+- `containerizer llm-queue --kinds` (the job kinds a runner takes; its housekeeping follows them).
+- `examples/egress-demo`: an A-rated app that calls a configured API and a hard-coded paste site.
+
 ## 0.3.0 (2026-11-02)
 
 Results database schema version 23 (`containerizer db init` upgrades it; the appliance does at start).

@@ -1,0 +1,288 @@
+# Egress and network connectivity
+
+Containerizer generates a default-deny NetworkPolicy for every component. It opens egress only on the ports it can
+infer from packages, code and configuration (a SQL Server client opens 1433, an HTTP client 443 and 80, a configured
+`Server=db,14330` its port). A dependency it cannot infer is blocked in the sandbox: an HTTPS API named only by a
+configured URL, called with a client the rules do not recognise, times out or is refused.
+
+Three parts close that gap, and document what every application needs from the network for the real environment.
+Agents only propose; people approve.
+
+1. The **egress observer** records the connections the sandbox's NetworkPolicies block, with the name a pod looked
+   up just before.
+2. The **egress review** (an [LLM queue](scheduled-scans.md#the-llm-queue) job) looks at the new ones of
+   applications rated **A** that run in the sandbox. A deterministic pre-filter decides first, then the LLM: is the
+   destination named by the application's configuration or code (it quotes the file and line), and why does the
+   application need it? It proposes, reports or flags it as suspicious.
+3. Administrators, operators and the application's product owners **approve or reject** each proposal. The queue
+   runner writes the approved egress to the application's **`connectivity.yaml`** in the output repository and opens
+   the port in the component's NetworkPolicy; Flux applies it.
+
+**Network connectivity** brings everything together: on the application's results page as a diagram with the
+details, and next to the manifests in the output repository as `connectivity.yaml`, `CONNECTIVITY.md` and
+`connectivity.svg`, which the platform or firewall team uses to write the real environment's rules.
+
+![The Network connectivity section of an application in the sandbox: the diagram, a suspicious paste site, a proposed API with its evidence, and Approve and Reject](images/results-connectivity-proposed.png#only-light){ .cz-shot }
+![The Network connectivity section of an application in the sandbox: the diagram, a suspicious paste site, a proposed API with its evidence, and Approve and Reject](images/results-connectivity-proposed-dark.png#only-dark){ .cz-shot }
+
+## Network connectivity
+
+Every application has a **Network connectivity** section on its results page, whether it runs in the sandbox or
+not. It shows what the application needs from the network, from every source, each marked by where it comes from:
+
+| Source | What |
+| --- | --- |
+| Configuration, code | URLs and connection strings in the configuration (`appsettings.json`, `web.config`, `.properties`, `.yaml`, `.env`) and the code, with the file and line. Development settings, comments, documentation and schema URLs are left out. |
+| Package | A dependency the generated NetworkPolicy opens a port for (a SQL Server client, an HTTP client, a message broker) when no configuration names its destination. |
+| NetworkPolicy | What the generated policy allows: the inferred ports to any address but the blocked ranges, the application's own pods, DNS. |
+| Lab service | The [lab services](lab-services.md) the components need. |
+| Observed in the sandbox | Connections the sandbox blocked (the egress observer), with the dropped packets, when, and from which pods. |
+| Approved | Egress a person approved. |
+| Ingress, service port | Who reaches the components: the sandbox HTTPS host, the service port. |
+
+The diagram has the inbound side on the left, the components in the middle and the destinations on the right, one
+line per connection, styled by its status:
+
+| Status | Meaning |
+| --- | --- |
+| **Allowed** | The generated NetworkPolicy allows it. |
+| **Approved** | A person approved it after the egress review. |
+| **Proposed** | The egress review proposes it: waiting for a person. |
+| **Blocked** | The sandbox blocked it; not reviewed yet, or reported (nothing to propose: an IP address without a name, a platform service). |
+| **Not allowed (will time out)** | The configuration or code names it, and nothing allows it. |
+| **Suspicious** | The review flagged it (a paste or file-sharing site, a tunnel, a metadata endpoint, ...): never proposed. |
+| **Rejected** | A person rejected it. |
+
+The table under the diagram has the details: the component, the destination with port and protocol, the status,
+the sources, why (the review's reason, or the dependency the policy opens the port for), the evidence (the quoted
+lines, the flows and pods) and, for staff, Approve and Reject.
+
+**Findings** under the table point at what to look at:
+
+- **Missing**: the configuration or code names a destination that nothing allows. The connection fails in the
+  sandbox, and behind a default-deny firewall in the real environment, until a rule allows it.
+- **Unexplained**: a port the NetworkPolicy opens to any address for a package or code pattern, but no configuration
+  names a destination on it; or an approved destination that the configuration no longer names. Keep it only if the
+  application needs it.
+
+An application that is not in the sandbox (yet) shows what the assessment inferred, and says that nothing was
+observed. Assessments made before this version have no inferred network: scan the application again.
+
+## The egress observer
+
+`containerizer egress-observe` runs on the sandbox node. It is deterministic: no LLM.
+
+- **What it reads.** k3s's network policy controller (kube-router) logs every packet a NetworkPolicy drops to the
+  netlink log group 100 with the prefix `DROP by policy <namespace>/<policy>`, at most **10 packets a minute per
+  policy**. The observer binds to that group (NFLOG over a `NETLINK_NETFILTER` socket, no packages and no tcpdump),
+  asks for the first 128 bytes of each packet and reads the IPv4 or IPv6 header and the TCP or UDP ports. Nothing
+  else of the packet is kept.
+- **Egress only.** A drop counts when its source is a pod of the namespace; a drop of a pod's incoming traffic is
+  not a dependency. Drops in the platform's namespaces (`kube-system`, `flux-system`, `containerizer-*`, ...) are
+  left out.
+- **Names.** CoreDNS logs every query (`log` in the `coredns-custom` ConfigMap: the appliance ships it, the lab script
+  turns it on). The observer follows that log and remembers which names each pod looked up in the last 10 minutes.
+  When a pod's connection to an address is dropped, the address is matched to a name the same pod, or another pod
+  of the namespace, looked up: the observer resolves those names (through the cluster's DNS on the appliance) and
+  takes the one that resolves to the address. A destination without such a name stays an IP address, which the
+  review reports and never proposes. An address a named flow had is explained by it and left out.
+- **Which pod.** The pods of the namespace through the Kubernetes API (address, pod name, the component from its
+  `app.kubernetes.io/name` label).
+- **Stored** every minute in the results database, added up per namespace, component, destination, port and
+  protocol: the dropped packets, first and last seen, a few pods, the policy (`cz.EgressFlow`, through the
+  procedure `cz.RecordEgressFlow`, with the scanner's writer login). Because kube-router logs at most 10 packets a
+  minute per policy, the count is a lower bound.
+- **Which application.** A namespace belongs to the application whose sandbox check last read it, or to the "Make
+  it A" order whose [sandbox variant](refactoring.md#the-sandbox-variant) runs in it (`cz.vSandboxNamespace`).
+
+`--dry-run` prints each dropped connection and stores nothing:
+
+```sh
+sudo -E containerizer egress-observe --dry-run --kubeconfig ~/.kube/config --seconds 60
+```
+
+### On the appliance
+
+`containerizer-egress-observer.service` runs it with the least it needs:
+
+- **User** `containerizer`, not root, with one capability, **CAP_NET_ADMIN**: binding to an NFLOG group needs it.
+  The socket only reads. `NoNewPrivileges`, a read-only system, no home directories, and only the address families
+  it uses (netlink, IPv4, IPv6, Unix).
+- **Kubernetes**: its own ServiceAccount, `containerizer-egress-observer` (in `containerizer-verify`), with get and
+  list on pods and get on `pods/log` in `kube-system` (the CoreDNS query log) and get and list on pods in every
+  namespace Containerizer generated. No Secrets, no write verbs, nothing cluster-wide. `cz-sandbox` applies the Roles
+  every 2 minutes and writes the kubeconfig (`/run/containerizer/egress-observer.kubeconfig`, `root:containerizer`
+  0640, a 24-hour token renewed every 12 hours).
+- **CoreDNS query log**: `/var/lib/rancher/k3s/server/manifests/containerizer-coredns-log.yaml` (the `coredns-custom`
+  ConfigMap, `log.override`). The log has the names pods look up and their addresses in the cluster, no answers and
+  no payloads; it stays in the cluster's log (`kubectl -n kube-system logs`).
+- **Database**: the scanner's writer login (`cz.RecordEgressFlow`).
+
+### In the lab
+
+```sh
+ci/lab-sandbox/egress-observer.sh install    # Roles and kubeconfig, CoreDNS query log, systemd unit lab-egress-observer
+ci/lab-sandbox/egress-observer.sh remove
+```
+
+The unit runs as the lab user with CAP_NET_ADMIN only, writes to the lab's results database with the scanner login
+(`results/.env`) and restarts every 12 hours with a fresh token; `sync.sh` gives it the Roles of new namespaces.
+
+## The egress review
+
+The LLM queue runner looks for new blocked flows every minute (part of its housekeeping, with the job kind `egress`;
+`containerizer llm-queue --kinds` chooses the kinds a runner takes). A flow is new when no decision exists for its
+application, component, destination, port and protocol. Only applications rated **A** whose namespace is healthy
+in the sandbox, and "Make it A" variants that run, are reviewed.
+
+**The pre-filter** decides first and is never overruled by the LLM. Its lists are in
+[`rules/60-security.yaml`](https://github.com/olljanat-ai/containerizer/blob/main/rules/60-security.yaml)
+(`network.egress_review`):
+
+| Verdict | When |
+| --- | --- |
+| Suspicious | A metadata endpoint or one of the `blocked_cidrs` (169.254.169.254, ...), a wildcard name, a paste, file-sharing, tunnelling or request-capture service (`suspicious_domains`: pastebin, transfer.sh, ngrok, webhook.site, ...) |
+| Reported: platform | A drop in a platform namespace, a service of the cloud platform (`platform_domains`: Key Vault, the container registry, ...) |
+| Reported: IP address | No pod of the namespace looked the address up by name |
+| Reported: in the cluster | A pod or service address of the cluster (a call to another namespace: allow it with a NetworkPolicy, not egress) |
+| Reported: unusual port | A port that is not in `ports` (443, 80, the usual database and broker ports, ...): a person decides |
+
+**The LLM** gets the rest, one job per application (at most 10 destinations a call): each destination with its
+port, protocol, component, the dropped packets and when, the pods, and the lines of the application's source that
+name it, from the **assessed commit** (the source is loaded as for a [refactoring patch](refactoring.md): the scan
+worker's clone). Without the source, the lines the assessment recorded. It answers per destination, in a fixed JSON
+schema:
+
+```json
+{"destinations": [{"destination": "api.github.com", "port": 443, "verdict": "propose",
+  "reason": "The application configures its upstream API URL (Upstream:Url) ...",
+  "file": "src/Egress.Demo/appsettings.json", "line": 4, "quote": "\"Upstream\": { \"Url\": \"https://api.github.com/zen\" }"}]}
+```
+
+- **propose**: the configuration or code names it, or it is an ordinary public API the application plainly uses
+  with a steady flow;
+- **report**: nothing explains it, or a person should decide;
+- **suspicious**: exfiltration, command and control, a hard-coded destination unrelated to what the application does.
+
+The answer is checked: a quoted line must be in the source (near the line it names), else the evidence is dropped
+and the reason says so; a proposal with no such line and fewer than 3 dropped packets is reported instead. A
+destination the LLM did not answer for is reported. The job goes through the queue's
+[approval policy](scheduled-scans.md#the-llm-queue) like the other kinds (`egress` in *Jobs that wait for approval*).
+
+## Approving
+
+**Admin → Egress** lists the decisions of the applications one may decide for, open ones first; the results page
+has the same buttons in its Network connectivity table.
+
+![Admin → Egress: a suspicious paste site, an IP address without a name, and an approved API with who approved it and the commit](images/admin-egress.png#only-light){ .cz-shot }
+![Admin → Egress: a suspicious paste site, an IP address without a name, and an approved API with who approved it and the commit](images/admin-egress-dark.png#only-dark){ .cz-shot }
+
+| Role | Approve, Reject |
+| --- | --- |
+| Administrator, Operator | Every application |
+| Product owner | The applications of their products |
+| Viewer, anyone without sign-in | Sees the decisions, not the buttons |
+
+- **Approve** is possible for named destinations the review proposed or reported, never for suspicious ones, the
+  platform's or IP addresses. A rejected proposal can be approved later.
+- **Reject** keeps it blocked; connectivity.yaml records the decision.
+- An approved destination stays approved: Containerizer never rewrites or removes it. To take one back, remove it
+  from connectivity.yaml (and the port from the NetworkPolicy) in a commit of your own.
+
+Every decision records who made it and when (`DecidedBy`, `DecidedAt`, and the change history).
+
+### What approving changes
+
+Within a minute the LLM queue runner, which holds the output repository's write token (the one registered for the
+organization scan's output repository, as for [sandbox variants](refactoring.md#the-sandbox-variant)), commits:
+
+- the application's `connectivity.yaml`, `CONNECTIVITY.md` and `connectivity.svg`, with the approved destination;
+- the component's NetworkPolicy with the port opened: to `0.0.0.0/0` and `::/0` except the `blocked_cidrs`, as the
+  generator opens inferred ports, and the annotation `containerizer.io/egress` gains `approved-egress`.
+
+Flux (or Argo CD) applies the commit; the call goes through.
+
+![After approving: the API is approved (solid line), with who approved it; the paste site stays suspicious](images/results-connectivity-approved.png#only-light){ .cz-shot }
+![After approving: the API is approved (solid line), with who approved it; the paste site stays suspicious](images/results-connectivity-approved-dark.png#only-dark){ .cz-shot } Later organization scans keep it: the generator reads
+the application's connectivity.yaml from the output repository and opens the ports of its approved entries again,
+and the new connectivity.yaml keeps every approved entry as it was. A sandbox variant takes the original's.
+
+!!! warning "A NetworkPolicy cannot name an FQDN"
+    Kubernetes NetworkPolicies select addresses and ports, not names. Approving `api.github.com:443` opens port 443
+    to every address but the blocked ranges, for every pod of that component: in the sandbox, the component can then
+    reach any HTTPS destination, including ones the review flagged. This is the same trade-off as a hub firewall that
+    tells zones apart and not applications within one. The FQDN in connectivity.yaml is what the production
+    firewall (or an FQDN-aware policy engine) should allow.
+
+New decisions (also reported and suspicious ones) and rejections are written to connectivity.yaml the same way,
+without changing the NetworkPolicies.
+
+## connectivity.yaml
+
+Next to the application's manifests in the output repository (`<Org>/<Project>/<Repo>/connectivity.yaml`), written by
+every organization scan with the manifests, and refreshed by the queue runner when there are new decisions,
+approvals or rejections. `CONNECTIVITY.md` is the same as a page, with the diagram (`connectivity.svg`, light and
+dark).
+
+```yaml
+apiVersion: containerizer.eu/v1
+kind: Connectivity
+application: egress-demo
+namespace: egress-demo                # in the sandbox
+generatedAt: '2026-11-02T03:45:01Z'
+observed: true                        # false: inferred only, nothing observed in the sandbox
+note: A Kubernetes NetworkPolicy cannot name an FQDN ...
+components:
+- {name: egress-demo, component: Egress.Demo, role: web, port: 8080, service_port: 80}
+inbound:
+- {component: egress-demo, from: 'https://egress-demo.sandbox.lab.test/', port: 80, protocol: TCP, source: ingress, target_port: 8080}
+- {component: egress-demo, from: any namespace (Service), port: 80, protocol: TCP, source: service, target_port: 8080}
+internal: []                          # component to component, lab services
+outbound:
+- component: egress-demo
+  destination: api.github.com
+  type: fqdn                          # fqdn, ip, any (a port open to any address), component (phase 2: another application)
+  port: 443
+  protocol: TCP
+  status: approved                    # allowed, approved, proposed, blocked, not-allowed, suspicious, rejected, reported
+  sources: [config, observed, approved]
+  reason: The application configures its upstream API URL ...
+  evidence:
+  - {file: src/Egress.Demo/appsettings.json, line: 4, quote: '"Upstream": { "Url": "https://api.github.com/zen" }'}
+  observed: {packets: 3, first_seen: '2026-11-02T03:38:59Z', last_seen: '2026-11-02T03:38:59Z', pods: [...], ips: [140.82.121.6]}
+  approved_by: john.doe@example.com
+  approved_at: '2026-11-02T03:43:46Z'
+- component: egress-demo
+  destination: pastebin.com
+  type: fqdn
+  port: 443
+  protocol: TCP
+  status: suspicious
+  category: file-sharing
+  sources: [code, observed]
+  reason: pastebin.com is a paste, file-sharing, tunnelling or request-capture service ...
+findings:
+- {kind: unexplained, component: ..., text: ...}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `outbound[].destination`, `port`, `protocol` | What a firewall rule needs. `type: any` is a port the generated policy opens to any address (a package needs it; name the destination for production). |
+| `status` | As on the results page (table above). `approved` entries are never rewritten or dropped by Containerizer. |
+| `sources` | `config`, `code`, `package`, `policy`, `observed`, `approved`, `lab-service`. |
+| `evidence` | The lines that name the destination (file, line, the line itself). |
+| `observed` | What the sandbox blocked: dropped packets (a lower bound), first and last seen, pods, addresses. |
+| `approved_by`, `approved_at`, `rejected_by`, `rejected_at` | Who decided, when. |
+| `inbound`, `internal` | Who reaches the components (the Ingress host, the service port), component to component and lab services. |
+| `findings` | `missing` and `unexplained`, as on the results page. |
+
+## Limits
+
+- **Only what is blocked is seen.** The observer reads the drop log; allowed traffic is not recorded, so
+  Containerizer cannot tell whether an allowed or approved destination is still used.
+- **Names come from DNS.** A connection to an address no pod of the namespace looked up (a hard-coded IP, a name
+  looked up more than 10 minutes before, a DNS-over-HTTPS client) stays an address. Shared CDN addresses can serve
+  several names; the observer takes the name the namespace's own pods looked up.
+- **Rate limit.** kube-router logs at most 10 packets a minute per policy: a burst is counted as at most 10.
+- **The LLM can be wrong.** It only proposes; the quoted line is checked against the source, and a person approves.
+- **One port for all.** See the warning above: approving opens the port, not the name, in the sandbox.

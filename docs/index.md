@@ -203,6 +203,25 @@ tokens and time, and needs an administrator's approval until you trust it.
 
 </div>
 
+<div class="cz-feature cz-reverse" markdown>
+
+<div markdown>
+
+### See what every app needs from the network
+
+Each application's page draws what it connects to, from its configuration, its NetworkPolicy and what the
+sandbox blocked. An LLM proposes the egress rules the configuration explains and flags the suspicious ones;
+a person approves, and `connectivity.yaml` next to the manifests gives the firewall team the FQDNs.
+
+[Egress and network connectivity :octicons-arrow-right-24:](egress.md)
+
+</div>
+
+![The network connectivity of an application: an approved API, a suspicious paste site and a blocked address](images/results-connectivity-diagram.png#only-light){ .cz-shot }
+![The network connectivity of an application: an approved API, a suspicious paste site and a blocked address](images/results-connectivity-diagram-dark.png#only-dark){ .cz-shot }
+
+</div>
+
 <div class="cz-feature" markdown>
 
 <div markdown>
