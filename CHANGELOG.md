@@ -6,7 +6,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.5.0 (2026-11-03)
 
 ### Appliance
 - Admin → System: **planned restart**. A restart (new **Restart** form), an upgrade and a roll back run now or at a
