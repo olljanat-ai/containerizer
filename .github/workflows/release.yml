@@ -10,7 +10,11 @@
 name: release
 
 on:
-  # Release: run this workflow by hand on main with a version (0.1.0 or v0.1.0). The tag job checks it
+  # Release: push an annotated tag vX.Y.Z on main, after containerizer/__init__.py and CHANGELOG.md say X.Y.Z
+  # (the appliance job checks it)
+  push:
+    tags: ["v*.*.*"]
+  # Or run this workflow by hand on main with a version (0.1.0 or v0.1.0). The tag job checks it
   # against containerizer/__init__.py, tags the commit vX.Y.Z and starts this workflow again on the tag,
   # so the image is signed with the tag identity above. Without a version it is a plain build and test.
   workflow_dispatch:
