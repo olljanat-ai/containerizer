@@ -47,7 +47,7 @@ ORG_RE = re.compile(r"[\w .\-/]{1,200}")
 TIME_RE = re.compile(r"([01]\d|2[0-3]):([0-5]\d)")
 SCAN_COLS = ("Name", "Provider", "Organization", "ApiUrl", "Registry", "OutputRepo", "OutputBranch", "ImagePullSecret", "IncludeRegex", "ExcludeRegex", "SkipForks", "StaleDays", "Verify",
              "Gate", "PushImages", "UseAi", "LlmMode", "LlmHeavy", "ScheduleDays", "ScheduleMinute", "Enabled",
-             "NewReposEnabled")
+             "NewReposEnabled", "Parallel")
 FLAGS = ("SkipForks", "Verify", "Gate", "PushImages", "UseAi", "LlmHeavy", "Enabled")
 LLM_MODES = {"inline": "Inline: ask during the scan",
              "queued": "Queued: later, in the LLM queue (rules only during the scan)"}
@@ -260,6 +260,12 @@ def _output_select(current: str, repos: list[str]) -> str:
             + (f"<p class='muted small'>No repository has a write token yet.{hint}</p>" if hint else ""))
 
 
+def _cores() -> str:
+    import os
+    n = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 0)
+    return f"{n} CPU core{'s' if n != 1 else ''}" if n else "unknown CPU cores"
+
+
 def _scan_form(adm, s, scan: dict, ident, repos: list[str] | None = None) -> str:
     from .worker import DAYS
     v = {k: ("" if scan.get(k) is None else scan.get(k)) for k in SCAN_COLS}
@@ -313,6 +319,11 @@ already found keep their setting.</p>
 <p class='muted small'>Pushing uses the write token registered for this repository URL under Source control, never the
 organization's read-only token. The output repository is never scanned.</p>
 {inp('ImagePullSecret', 'Image pull secret', 'added to every generated workload', ph='regcred', maxlen=253)}
+<label for='Parallel'>Repositories in parallel</label>
+<input id='Parallel' name='Parallel' type='number' min='1' max='8' required value='{int(v.get('Parallel') or 1)}'>
+<p class='muted small'>How many repositories a full scan processes at the same time, each in its own process, so
+the scan uses that many CPU cores (the web UI's machine has {_cores()}). Each one also needs memory (about 1 GB, more with Build
+and run) and asks the LLM on its own, so a self-hosted LLM gets that many requests at once.</p>
 {chk('Verify', 'Build and run every component before rating it')}
 <p class='muted small'>Slow: every component is built and started in a container, and with "Ask the LLM" each failure is
 diagnosed by the LLM too. Off (the default for new scans): the rating comes
@@ -342,7 +353,7 @@ def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
     if ident is None:
         scan = {"Provider": "github", "OutputBranch": "main", "Registry": _local(adm) or "", "SkipForks": True, "StaleDays": 183, "Verify": False,
                 "Gate": True, "PushImages": True, "UseAi": False, "LlmMode": "inline", "LlmHeavy": False, "ScheduleDays": 32, "ScheduleMinute": 120, "Enabled": True,
-                "NewReposEnabled": True}
+                "NewReposEnabled": True, "Parallel": 1}
         return Response(200, adm._shell(s, a, "New organization scan", "scans", _scan_form(adm, s, scan, None, _output_repos(conn)), flash))
     cur = conn.cursor(as_dict=True)
     cur.execute("SELECT * FROM cz.OrgScan WHERE ScanId = %s", (ident,))
@@ -459,6 +470,11 @@ def validate_scan(form: dict, local_registry: str | None = None) -> tuple[dict, 
     for k in FLAGS:
         v[k] = form.get(k, [""])[0] == "1"
     v["NewReposEnabled"] = form.get("NewReposEnabled", ["1"])[0] != "0"
+    par = form.get("Parallel", ["1"])[0].strip() or "1"
+    if not re.fullmatch(r"[1-8]", par):
+        errors.append("Repositories in parallel: 1 to 8")
+        par = "1"
+    v["Parallel"] = int(par)
     if v["LlmHeavy"] and not v["UseAi"]:
         errors.append("LLM-heavy mode needs \"Ask the LLM\" too")
     v["LlmMode"] = form.get("LlmMode", ["inline"])[0] or "inline"

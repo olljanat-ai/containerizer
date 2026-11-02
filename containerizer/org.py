@@ -102,6 +102,7 @@ class OrgOptions:
                                         # an administrator enables them one by one)
     llm_heavy: bool = False             # platform migrations and the sandbox tester ask the LLM as often as they need
                                         # (replatform.py); the worker sets it only when the appliance allows it
+    parallel: int = 1                   # repositories processed at the same time, each in its own process (1..MAX_PARALLEL)
     review_queue: object = None         # with ai: queued LLM reviews (llmqueue.ReviewQueue): the scan asks the LLM
                                         # nothing, component reviews wait in the LLM review queue (no LLM-heavy mode,
                                         # no failure diagnosis or dev database questions either)
@@ -1206,48 +1207,197 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
     if hooks and hasattr(hooks, "start"):
         hooks.start(len(repos))
     import time as _time
+
+    def finish(i: int, r: SourceRepo, res: RepoResult) -> None:
+        """One repository's result: recorded, committed to the output repository (one at a time), counted."""
+        results.append(res)
+        detail = ", ".join(c["component"] for c in res.components) or res.reason
+        log(f"[{i}/{len(repos)}] {r.project}/{r.name}: {res.status}" + (f" - {detail}" if detail else ""))
+        if o.state and not o.dry_run:
+            o.state.record(r, res)
+        if out:
+            ns = write_sandbox(out.root, out.url, o.output_branch)
+            org_index(out.root, out.root / segment(o.org), [x.to_dict() for x in results], run)
+            out.commit(f"containerizer: {o.org}/{r.project}/{r.name} {res.status}"
+                       + (f" ({len(res.components)} components, {tag})" if res.components else "")
+                       + f"\n\n{len(ns)} apps in {SANDBOX}/.")
+        if hooks and hasattr(hooks, "repo_done"):
+            hooks.repo_done(i, r, res)
+
+    parallel = 1 if o.dry_run else max(1, min(int(o.parallel or 1), MAX_PARALLEL))
     try:
-        for i, r in enumerate(repos, 1):
-            if hooks and hasattr(hooks, "should_stop") and hooks.should_stop():
-                log(f"stopped before {r.project}/{r.name}: {len(results)} of {len(repos)} repositories done")
-                break
-            if hooks and hasattr(hooks, "repo_start"):
-                hooks.repo_start(i, r)
-            t0 = _time.monotonic()
-            if o.dry_run:
-                res = process_repo(r, prov, o, names[r.key], _DryOut(), work, None, tag, cutoff, reset_cache,
-                                   admin.get(r.key))
-            else:
-                try:
-                    res = process_repo(r, prov, o, names[r.key], out, work, reg, tag, cutoff, reset_cache,
-                                       admin.get(r.key))
-                except Exception as e:          # one repository must not stop the organization run
-                    res = RepoResult(provider=r.provider, org=o.org, project=r.project, repo=r.name, status="error",
-                                     reason=REDACT(f"{type(e).__name__}: {e}")[:500], web_url=r.web_url,
-                                     app=names[r.key])
-            res.seconds = round(_time.monotonic() - t0, 1)
-            results.append(res)
-            detail = ", ".join(c["component"] for c in res.components) or res.reason
-            log(f"[{i}/{len(repos)}] {r.project}/{r.name}: {res.status}" + (f" - {detail}" if detail else ""))
-            if o.state and not o.dry_run:
-                o.state.record(r, res)
-            if out:
-                ns = write_sandbox(out.root, out.url, o.output_branch)
-                org_index(out.root, out.root / segment(o.org), [x.to_dict() for x in results], run)
-                out.commit(f"containerizer: {o.org}/{r.project}/{r.name} {res.status}"
-                           + (f" ({len(res.components)} components, {tag})" if res.components else "")
-                           + f"\n\n{len(ns)} apps in {SANDBOX}/.")
-            if hooks and hasattr(hooks, "repo_done"):
-                hooks.repo_done(i, r, res)
+        if parallel > 1 and len(repos) > 1:
+            log(f"{o.org}: {parallel} repositories at a time")
+            stopped = _run_parallel(repos, parallel, o, prov, out, work, reg, tag, cutoff, reset_cache, admin, names,
+                                    finish, log)
         else:
-            if cache and o.only_projects is None and o.only_repos is None:
-                prune_cache(cache, set(names.values()), log)
+            stopped = False
+            for i, r in enumerate(repos, 1):
+                if hooks and hasattr(hooks, "should_stop") and hooks.should_stop():
+                    log(f"stopped before {r.project}/{r.name}: {len(results)} of {len(repos)} repositories done")
+                    stopped = True
+                    break
+                if hooks and hasattr(hooks, "repo_start"):
+                    hooks.repo_start(i, r)
+                t0 = _time.monotonic()
+                res = _repo_job(r, prov, o, names[r.key], _DryOut() if o.dry_run else out, work,
+                                None if o.dry_run else reg, tag, cutoff, reset_cache, admin.get(r.key))
+                res.seconds = round(_time.monotonic() - t0, 1)
+                finish(i, r, res)
+        if not stopped and cache and o.only_projects is None and o.only_repos is None:
+            prune_cache(cache, set(names.values()), log)
     finally:
         if reg:
             reg.close()
     if o.verify_sandbox and out:
         sandbox_step(o, out, log)
     return results
+
+
+# --------------------------------------------------------------------------- repositories in parallel
+
+MAX_PARALLEL = 8
+
+
+def _repo_job(r: SourceRepo, prov, o: OrgOptions, app: str, out, work: Path, reg, tag: str, cutoff, rules_reset,
+              admin: str | None) -> RepoResult:
+    """process_repo; an exception is that repository's error, never the run's."""
+    try:
+        return process_repo(r, prov, o, app, out, work, reg, tag, cutoff, rules_reset, admin)
+    except Exception as e:
+        return RepoResult(provider=r.provider, org=o.org, project=r.project, repo=r.name, status="error",
+                          reason=REDACT(f"{type(e).__name__}: {e}")[:500], web_url=r.web_url, app=app)
+
+
+class _GitEvents:
+    """The hooks a repository's process has: its git operations, sent back to the run for the metrics."""
+
+    def __init__(self):
+        self.events: list = []
+
+    def git(self, op: str, seconds: float, ok: bool) -> None:
+        self.events.append((op, seconds, ok))
+
+
+def _child(send, stop, r: SourceRepo, prov, o: OrgOptions, app: str, out, work: Path, reg, tag: str, cutoff,
+           rules_reset, admin: str | None) -> None:
+    """One repository in its own process (forked from the run): the analysis is CPU-bound Python, so processes,
+    not threads, use the other cores. It writes the output repository's files into its own staging folder
+    (`out.root`) and sends back the result, its git operations and its LLM usage; the run commits."""
+    import signal
+    import time as _time
+    from . import ai
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)      # a stopping machine ends it at once
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    usage: list = []
+    ai.LISTENERS[:] = [usage.append]                    # the run's listeners (metrics) live in the parent
+    git_events = _GitEvents()
+    o = dataclasses.replace(o, hooks=git_events, state=None)
+    work.mkdir(parents=True, exist_ok=True)
+    t0 = _time.monotonic()
+    with ai.cancel_when(stop.is_set):                   # a cancelled run stops this one's LLM calls too
+        res = _repo_job(r, prov, o, app, out, work, reg, tag, cutoff, rules_reset, admin)
+    res.seconds = round(_time.monotonic() - t0, 1)
+    try:
+        send.send((res, git_events.events, usage))
+    except Exception as e:                              # not picklable: the run still learns what happened
+        send.send((RepoResult(provider=r.provider, org=o.org, project=r.project, repo=r.name, status="error",
+                              reason=f"result not sent back: {type(e).__name__}: {e}"[:500], app=app), [], usage))
+    send.close()
+
+
+def _run_parallel(repos: list, n: int, o: OrgOptions, prov, out, work: Path, reg, tag: str, cutoff, rules_reset,
+                  admin: dict, names: dict, finish, log) -> bool:
+    """Up to n repositories at a time, each in its own forked process with its own work and staging folders.
+    Results are handled in the order they finish: the staged files replace the repository's folder in the output
+    repository, then `finish` records and commits it (one at a time, so a commit never holds another repository's
+    half-written files). A stop request starts nothing more and stops the running ones' LLM calls; they finish
+    the step they are on. Returns True when the run was stopped."""
+    import multiprocessing as mp
+    import time as _time
+    import warnings
+    from multiprocessing.connection import wait
+    from types import SimpleNamespace
+    from . import ai
+    hooks = o.hooks
+    ctx = mp.get_context("fork")
+    stop = ctx.Event()
+    pending = list(repos)
+    running: dict = {}
+    done, started, stopped = 0, 0, False
+    base = work / "parallel"
+
+    def start(r: SourceRepo) -> None:
+        nonlocal started
+        started += 1
+        app = names[r.key]
+        rel = Path(segment(o.org)) / segment(r.project) / segment(r.name)
+        stage = base / app
+        if stage.exists():
+            shutil.rmtree(stage)
+        (stage / "out").mkdir(parents=True)
+        if out and (out.root / rel).exists():          # the files it had: the scan reads and updates them
+            shutil.copytree(out.root / rel, stage / "out" / rel, symlinks=True)
+        recv, send = ctx.Pipe(duplex=False)
+        p = ctx.Process(target=_child, name=f"cz-repo-{app}",
+                        args=(send, stop, r, prov, o, app, SimpleNamespace(root=stage / "out", url=out.url if out else ""),
+                              stage / "work", reg, tag, cutoff, rules_reset, admin.get(r.key)))
+        if hooks and hasattr(hooks, "repo_start"):
+            hooks.repo_start(started, r)
+        with warnings.catch_warnings():                 # forking a process with threads (heartbeat, metrics)
+            warnings.simplefilter("ignore", DeprecationWarning)
+            p.start()
+        send.close()
+        running[recv] = (p, r, rel, stage)
+
+    try:
+        while pending or running:
+            if not stopped and hooks and hasattr(hooks, "should_stop") and hooks.should_stop():
+                stopped = True
+                stop.set()
+                log(f"stopped: {done} of {len(repos)} repositories done, waiting for the {len(running)} in progress")
+                pending.clear()
+            while pending and len(running) < n:
+                start(pending.pop(0))
+            if not running:
+                break
+            for recv in wait(list(running), timeout=1.0):
+                p, r, rel, stage = running.pop(recv)
+                try:
+                    res, git_events, usage = recv.recv()
+                except Exception:                       # the process died without an answer
+                    res, git_events, usage = None, [], []
+                recv.close()
+                p.join(timeout=60)
+                for u in usage:
+                    ai.record_usage(u)
+                for ev in git_events:
+                    if hooks and hasattr(hooks, "git"):
+                        hooks.git(*ev)
+                if res is None:
+                    if stopped:                         # the machine is stopping: not this repository's fault
+                        shutil.rmtree(stage, ignore_errors=True)
+                        continue
+                    res = RepoResult(provider=r.provider, org=o.org, project=r.project, repo=r.name, status="error",
+                                     reason=f"the process scanning it ended without a result (exit code {p.exitcode})",
+                                     web_url=r.web_url, app=names[r.key])
+                elif out:                               # its files replace the folder it had
+                    dest, staged = out.root / rel, stage / "out" / rel
+                    if dest.exists():
+                        shutil.rmtree(dest)
+                    if staged.exists():
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(staged), str(dest))
+                shutil.rmtree(stage, ignore_errors=True)
+                done += 1
+                finish(done, r, res)
+    finally:
+        stop.set()
+        for p, *_ in running.values():                  # an exception in the run: no process is left behind
+            p.join(timeout=5)
+            if p.is_alive():
+                p.kill()
+    return stopped
 
 
 # automatic skips that only need the provider's API (discovery records them); the others need the clone
