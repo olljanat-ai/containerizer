@@ -505,6 +505,9 @@ table inet {TABLE} {{
     ct state established,related accept
     meta l4proto icmp icmp type {{ destination-unreachable, time-exceeded, parameter-problem }} accept
     meta l4proto ipv6-icmp icmpv6 type {{ destination-unreachable, packet-too-big, time-exceeded, parameter-problem, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert }} accept
+    # ping from anywhere (rate limited; above it the drop below applies)
+    meta l4proto icmp icmp type echo-request limit rate 20/second burst 50 packets accept
+    meta l4proto ipv6-icmp icmpv6 type echo-request limit rate 20/second burst 50 packets accept
     udp sport 67 udp dport 68 accept
     udp sport 547 udp dport 546 accept
     tcp dport {{ {", ".join(str(p) for p in INBOUND_TCP)} }} accept

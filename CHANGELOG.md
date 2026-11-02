@@ -6,6 +6,11 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+### Appliance
+- The firewall answers ping from outside: ICMP and ICMPv6 echo requests are allowed in (at most 20 a second).
+
 ## 0.3.4 (2026-11-02)
 
 0.3.3 was tagged but not released (its boot test was stopped); its changes are in 0.3.4.

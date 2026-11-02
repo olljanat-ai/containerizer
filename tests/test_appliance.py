@@ -137,6 +137,8 @@ def test_render_dns_only_allowed_names_and_parent_sets():
     assert "ip daddr @f4_udp123 udp dport { 123 } accept" in nft
     assert "ip daddr 10.20.0.0/16 tcp dport { 1433 } accept" in nft
     assert "tcp dport { 22, 443 } accept" in nft                   # inbound: SSH and HTTPS only
+    assert "icmp type echo-request limit rate 20/second burst 50 packets accept" in nft      # and ping
+    assert "icmpv6 type echo-request limit rate 20/second burst 50 packets accept" in nft
     assert "policy drop" in nft.split("chain input")[1].split("}")[0]
     def last(n):
         return [x.strip() for x in n.split("chain egress {")[1].splitlines() if x.strip() not in ("", "}")][-1]

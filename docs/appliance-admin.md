@@ -145,7 +145,7 @@ If the settings are not valid, the web UI and the scan worker do not start:
 
 ## Firewall
 
-**Inbound**: only TCP 22 (SSH) and 443 (HTTPS). The k3s API, SQL Server, the registry,
+**Inbound**: only TCP 22 (SSH) and 443 (HTTPS), and ping (ICMP and ICMPv6 echo requests, at most 20 a second). The k3s API, SQL Server, the registry,
 Prometheus and Grafana listen on the loopback interface or are not reachable from outside; NodePorts of
 the sandbox cluster are blocked too (use `ssh -L` to reach anything else).
 
