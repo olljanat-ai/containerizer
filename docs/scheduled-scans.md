@@ -236,9 +236,11 @@ With **Ask the LLM** on, **LLM reviews** chooses when the LLM is asked:
 - the settings: **Paused**; the days and hours (UTC) the runner may start jobs (no day selected: every
   day; From and To empty: all day; 22:00 to 06:00 runs past midnight, and the night belongs to the day it
   started); **Only when idle**: no organization scan running and the machine's 1-minute load average per
-  CPU below the limit (0: the load is not looked at); and **Parallel requests**, as many as the LLM
-  server answers at once (1 for a CPU server). The runner looks at them before each job; a job it has
-  started finishes.
+  CPU below the limit (0: the load is not looked at); **Parallel requests**, as many as the worker's own
+  LLM answers at once (a registered LLM has its own, see [several LLMs at once](source-control.md#the-llm)); and
+  the **built-in LLM's order** and **jobs up to** beside the registered LLMs (the appliance only). The page lists
+  the LLMs in their order, and each job goes to the first that takes its size and has a free request. The runner
+  looks at them before each job; a job it has started finishes.
 - **Approval**: which kinds of job wait for an administrator's approval (component reviews, refactoring orders,
   egress reviews and link reviews; all of them by default), and the rules that approve some by themselves:
   **Approve automatically under** a number of estimated input tokens (0: none, every job of the ticked kinds

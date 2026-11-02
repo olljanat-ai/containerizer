@@ -174,9 +174,15 @@ BACKENDS = ("api", "cli", "openai")
 # administrator registered (Admin → Source control & LLM) here, so its key never enters os.environ and
 # so never reaches the processes a scan starts (git, docker builds of the scanned code).
 _OVERRIDE: dict[str, str] = {}
+# Settings of the current thread only (configured(..., local=True)): the LLM queue asks the built-in LLM for small
+# jobs and the registered one for the others at the same time, each job in its own thread.
+_LOCAL: contextvars.ContextVar = contextvars.ContextVar("containerizer_llm_local", default=None)
 
 
 def _env(name: str, default: str = "") -> str:
+    local = _LOCAL.get()
+    if local is not None and name in local:
+        return local[name]
     return _OVERRIDE[name] if name in _OVERRIDE else os.environ.get(name, default)
 
 
@@ -186,10 +192,15 @@ class configured:
     KEYS = ("CONTAINERIZER_AI_BACKEND", "CONTAINERIZER_LLM_BASE_URL", "CONTAINERIZER_LLM_API_KEY", "CONTAINERIZER_MODEL",
             "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL")
 
-    def __init__(self, values: dict | None):
+    def __init__(self, values: dict | None, local: bool = False):
         self.values = values
+        self.local = local              # this thread only (the process-wide settings stay as they are)
 
     def __enter__(self):
+        if self.local:
+            self.token = _LOCAL.set(None if self.values is None else
+                                    {**{k: "" for k in self.KEYS}, **{k: v for k, v in self.values.items() if v is not None}})
+            return self
         self.saved = dict(_OVERRIDE)
         if self.values is not None:
             _OVERRIDE.update({k: "" for k in self.KEYS})
@@ -197,6 +208,9 @@ class configured:
         return self
 
     def __exit__(self, *exc):
+        if self.local:
+            _LOCAL.reset(self.token)
+            return
         _OVERRIDE.clear()
         _OVERRIDE.update(self.saved)
 

@@ -26,6 +26,14 @@ qcow2 and VHDX images as release assets.
   enough RAM: one server, as before. Prometheus reads each server (labels `server`, `numa_node`). The server unit is
   now `containerizer-local-llm@<n>.service` (container `cz-llm-<n>`); `containerizer-local-llm.service` is the front.
 
+### LLM
+- Several LLMs at once: more than one LLM can be registered (Admin → Source control & LLM), each with an order, the
+  biggest job it takes (estimated input tokens; 0: any) and its requests at once. The LLM queue gives each job to the
+  first LLM in the order that takes its size and has a free request, so a GPU server, CPU servers and the appliance's
+  built-in LLM (its order and size limit under LLM queue → Settings) answer at the same time. The LLM queue page lists
+  them and warns when no LLM takes the biggest jobs. Scans that ask directly use the first LLM. The registered LLM
+  keeps the LLM queue's Parallel requests as its own (schema 30).
+
 ## 0.4.0 (2026-11-02)
 
 0.3.13 was tagged but not released (signing failed at Sigstore's transparency log, a 502); its changes are listed

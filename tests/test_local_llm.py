@@ -621,15 +621,11 @@ def test_each_server_is_pinned_to_its_node_and_the_front_spreads_the_requests(ll
     assert any("containerizer-local-llm@*.service" in c for c in r.calls if c[:2] == ["systemctl", "stop"])
 
 
-def test_the_queue_runner_asks_one_job_per_server(monkeypatch):
+def test_the_queue_asks_the_built_in_llm_once_per_server():
     from containerizer import llmqueue
-    runner = llmqueue.Runner.__new__(llmqueue.Runner)
-    monkeypatch.setattr(local_llm, "worker_settings", lambda env=None: {"CONTAINERIZER_LLM_BASE_URL": local_llm.BASE_URL})
-    monkeypatch.setattr(local_llm, "queue_parallel", lambda settings, env=None: 2 if settings else 1)
-    runner.llm_settings = lambda conn: {"CONTAINERIZER_LLM_BASE_URL": local_llm.BASE_URL}
-    assert runner.builtin_parallel(None) == 2
-    runner.llm_settings = lambda conn: None            # a registered LLM is in use
-    assert runner.builtin_parallel(None) == 1
+    builtin = {"CONTAINERIZER_LLM_BASE_URL": local_llm.BASE_URL, "CONTAINERIZER_MODEL": "qwen3-coder-30b-a3b"}
+    lanes = llmqueue.plan_lanes([], builtin, {"Parallel": 1})
+    assert [(ln["name"], ln["parallel"], ln["max_tokens"]) for ln in lanes] == [("built-in", 1, 0)]
 
 
 def test_the_front_config():
