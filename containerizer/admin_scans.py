@@ -313,7 +313,10 @@ already found keep their setting.</p>
 <p class='muted small'>Pushing uses the write token registered for this repository URL under Source control, never the
 organization's read-only token. The output repository is never scanned.</p>
 {inp('ImagePullSecret', 'Image pull secret', 'added to every generated workload', ph='regcred', maxlen=253)}
-{chk('Verify', 'Build and run every component before rating it (recommended)')}
+{chk('Verify', 'Build and run every component before rating it')}
+<p class='muted small'>Slow: every component is built and started in a container, and with "Ask the LLM" each failure is
+diagnosed by the LLM too. Off (the default for new scans): the rating comes
+from the rules alone.</p>
 {chk('Gate', 'Security gate: lint, image vulnerability scan, hardened run (recommended)')}
 {chk('UseAi', 'Ask the LLM about uncertain components and unexplained failures')}
 <label for='LlmMode'>LLM reviews</label><select id='LlmMode' name='LlmMode'>{modes}</select>
@@ -337,7 +340,7 @@ under <a href='/admin/repositories'>Repositories</a>.</p>
 def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
     from .worker import check_scan, schedule_text
     if ident is None:
-        scan = {"Provider": "github", "OutputBranch": "main", "Registry": _local(adm) or "", "SkipForks": True, "StaleDays": 183, "Verify": True,
+        scan = {"Provider": "github", "OutputBranch": "main", "Registry": _local(adm) or "", "SkipForks": True, "StaleDays": 183, "Verify": False,
                 "Gate": True, "PushImages": True, "UseAi": False, "LlmMode": "inline", "LlmHeavy": False, "ScheduleDays": 32, "ScheduleMinute": 120, "Enabled": True,
                 "NewReposEnabled": True}
         return Response(200, adm._shell(s, a, "New organization scan", "scans", _scan_form(adm, s, scan, None, _output_repos(conn)), flash))

@@ -2,6 +2,7 @@
 (sysagent.py): signed upgrades, roll back, the egress allow-list and its nftables/dnsmasq rendering."""
 import io
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -617,3 +618,13 @@ def test_sandbox_writes_the_read_only_verifier_kubeconfig_for_the_llm_queue():
     assert script.index("verifier_access ||") < script.index("cz_store_ready || exit 0")
     from containerizer.sandbox import VERIFIER, VERIFIER_NS
     assert (VERIFIER, VERIFIER_NS) == ("containerizer-verifier", "containerizer-verify")
+
+
+def test_reboot_does_not_wait_for_a_scan_and_the_screen_shows_why():
+    """A reboot during a scan waited up to 2 hours for the worker, behind a black screen: systemd's status went to
+    the serial console (the last console=)."""
+    unit = (APPLIANCE / "rootfs/usr/lib/systemd/system/containerizer-worker.service").read_text()
+    assert re.search(r"^TimeoutStopSec=2min$", unit, re.M)
+    args = (APPLIANCE / "elemental/bootargs.cfg").read_text()
+    cmds = re.findall(r'set kernelcmd="([^"]*)"', args)
+    assert len(cmds) == 2 and all(re.findall(r"console=(\S+)", c)[-1] == "tty1" for c in cmds)

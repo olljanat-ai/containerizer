@@ -743,14 +743,14 @@ class Worker:
             o.on_listed = lambda prov, n: self._listed(read, prov, n)
             (self.data / f"scan-{int(scan['ScanId'])}").mkdir(parents=True, exist_ok=True)
             from .org import run_org
-            from .ai import configured
+            from .ai import cancel_when, configured
             from .credentials import llm_for_run
             # the registered LLM, else the appliance's built-in one, else the environment's; for this run
             # only, never through os.environ (the scan's processes inherit it)
             choice = llm_for_run(llm) if scan["UseAi"] else None
             if choice and choice.model:
                 o.model = choice.model
-            with configured(choice.settings if choice else None):
+            with configured(choice.settings if choice else None), cancel_when(hooks.should_stop):
                 results = run_org(o, log=lambda msg: self.log(f"{name}: {msg}"))
             if write:
                 self._mark(write, "ok: pushed the generated files" if o.push else "ok")
@@ -856,7 +856,7 @@ def build(args) -> int:
               + (" (bearer token required)" if token else ""))
 
     def stop(signum, frame):
-        w.log("stopping after the current repository")
+        w.log("stopping: the run ends after the step it is on; its LLM calls stop now")
         w.stopping.set()
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)

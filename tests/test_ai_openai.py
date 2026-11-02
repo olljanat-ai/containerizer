@@ -226,3 +226,43 @@ def test_reviews_ask_for_a_short_answer(monkeypatch):
     monkeypatch.setattr(ai, "review_prompt", lambda a, c: "p")
     ai.ai_review_component(object(), object())
     assert seen["max_tokens"] == ai.SHORT_ANSWER_TOKENS
+
+
+def test_cancelled_run_stops_the_llm_call(server, monkeypatch):
+    """A cancelled scan run: a call not started yet never reaches the server, and one the server is still
+    answering has its connection closed at once (which stops a self-hosted server generating)."""
+    import time
+    monkeypatch.setattr(ai, "CANCEL_POLL", 0.1)
+    with ai.cancel_when(lambda: True):
+        with pytest.raises(ai.Cancelled):
+            ai.ask_json("p", SCHEMA)
+    assert server.requests == []
+
+    stop = threading.Event()
+
+    def slow(body):
+        time.sleep(3)                   # a long answer; the client goes away meanwhile
+        return 200, {"choices": [{"message": {"content": '{"verdict": "info", "confidence": 1}'}}]}
+    server.replies.append((200, slow))
+    threading.Timer(0.3, stop.set).start()
+    t0 = time.monotonic()
+    with ai.cancel_when(stop.is_set):
+        with pytest.raises(ai.Cancelled, match="while the LLM was answering"):
+            ai.ask_json("q", SCHEMA)
+    assert time.monotonic() - t0 < 2 and len(server.requests) == 1
+    assert ai._CANCEL["check"] is None              # the run's check is gone after it
+    time.sleep(3)                                   # let the fake server finish before the next test
+
+
+def test_cancelled_run_kills_the_claude_cli(monkeypatch):
+    import time
+    monkeypatch.setattr(ai, "CANCEL_POLL", 0.1)
+    stop = threading.Event()
+    threading.Timer(0.3, stop.set).start()
+    t0 = time.monotonic()
+    with ai.cancel_when(stop.is_set):
+        with pytest.raises(ai.Cancelled):
+            ai._run_cancellable(["sleep", "30"], "", 900)
+    assert time.monotonic() - t0 < 3
+    p = ai._run_cancellable(["cat"], "hello", 10)
+    assert p.returncode == 0 and p.stdout == "hello"

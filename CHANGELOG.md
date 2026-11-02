@@ -6,6 +6,25 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+### Appliance
+- A reboot during an organization scan could sit on a black screen for a long time: the scan worker had up to 2 hours
+  to finish the repository it was on. It now stops within 2 minutes (its LLM calls at once); the run is marked failed
+  and the next one processes every repository again.
+- The screen is the main console now (`console=ttyS0 console=tty1`), so a slow boot or shutdown shows what it is waiting
+  for ("A stop job is running for ...") on the Hyper-V or Proxmox console instead of a black screen.
+
+### Organization scans
+- A full scan no longer walks through the disabled repositories: they are left out before it starts, so they are not
+  in its progress ("N of M"), its log or the output repository's history one commit each. They still show "Not
+  processed (disabled)", and the files of one deployed before are removed in a single commit.
+- Cancelling a run now stops its LLM calls: a call not started yet is not made, and one the LLM server is still
+  answering has its connection closed (llama.cpp, vLLM and Ollama then stop generating; the claude CLI is
+  killed). Before, the repository in progress kept the self-hosted LLM busy until it was done.
+- New scans start with **Build and run every component before rating it** off: it is slow, more so with "Ask the
+  LLM". Existing scans keep their setting.
+
 ## 0.3.9 (2026-11-02)
 
 ### Web UI

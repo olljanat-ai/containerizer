@@ -1177,6 +1177,31 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
            "started": now.isoformat(timespec="seconds"), "stale_days": o.stale_days,
            "verify": o.verify, "gate": o.gate}
     results: list[RepoResult] = []
+    # disabled by an administrator (the repository or its project): left out of the run before it starts, so they
+    # are not counted in its progress, logged one by one or committed one by one. Their state says "not processed",
+    # and the generated files of one that was deployed before are removed (it leaves the sandbox) in one commit.
+    off = [r for r in repos if admin.get(r.key) in ("disabled", "project-disabled")]
+    if off:
+        repos = [r for r in repos if admin.get(r.key) not in ("disabled", "project-disabled")]
+        log(f"{o.org}: {len(off)} disabled repositories left out, {len(repos)} to process")
+        removed = 0
+        for r in off:
+            if out:
+                dest = out.root / segment(o.org) / segment(r.project) / segment(r.name)
+                if dest.exists():
+                    shutil.rmtree(dest)
+                    removed += 1
+            if o.state and not o.dry_run:
+                why = (f"project {r.project} disabled by an administrator" if admin.get(r.key) == "project-disabled"
+                       else "disabled by an administrator")
+                o.state.record(r, RepoResult(provider=r.provider, org=o.org, project=r.project, repo=r.name,
+                                             status="disabled", reason=why, web_url=r.web_url, clone_url=r.clone_url,
+                                             app=names[r.key]))
+        if removed:
+            write_sandbox(out.root, out.url, o.output_branch)
+            if not repos:                   # nothing else rewrites the index in this run
+                org_index(out.root, out.root / segment(o.org), [], run)
+            out.commit(f"containerizer: {o.org}: {removed} disabled repositor{'y' if removed == 1 else 'ies'} removed")
     hooks = o.hooks
     if hooks and hasattr(hooks, "start"):
         hooks.start(len(repos))
