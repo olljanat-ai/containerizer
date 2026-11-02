@@ -88,6 +88,15 @@ fi
 } > /run/containerizer/caddy.env
 echo "CONTAINERIZER_PUBLIC_URL=https://$host" > /run/containerizer/web-url.env
 echo "GF_SERVER_ROOT_URL=https://$host/grafana/" > /run/containerizer/grafana-url.env
+# Grafana with sign-in through an identity provider (GF_AUTH_<provider>_ENABLED=true in grafana.env): no user
+# name and password form, straight to the provider. Set in grafana.env, either setting is left to it.
+sso=$(grep -Eio '^GF_AUTH_(GENERIC_OAUTH|AZUREAD|GOOGLE|GITHUB|GITLAB|OKTA)_ENABLED=["'"'"']?true' "$C/grafana.env" \
+  | sed -E 's/^GF_AUTH_(.*)_ENABLED=.*/\1/' | tr '[:lower:]' '[:upper:]' || true)
+if [ -n "$sso" ]; then
+  for kv in GF_AUTH_DISABLE_LOGIN_FORM=true $(for p in $sso; do echo "GF_AUTH_${p}_AUTO_LOGIN=true"; done); do
+    grep -q "^${kv%%=*}=" "$C/grafana.env" || echo "$kv" >> /run/containerizer/grafana-url.env
+  done
+fi
 echo "CONTAINERIZER_GRAFANA_URL=https://$host/grafana/d/containerizer-scans" >> /run/containerizer/web-url.env
 # LLM-heavy mode (docs/platform-migration.md): off unless appliance.env turns it on; the web UI shows it, the
 # worker only uses it for scans that have it ticked too
