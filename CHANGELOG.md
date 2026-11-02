@@ -6,7 +6,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.3.8 (2026-11-02)
 
 ### Appliance
 - Organization scans and the LLM queue failed with "credential key /run/credentials/...: readable by others": systemd
