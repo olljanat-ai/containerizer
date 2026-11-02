@@ -134,7 +134,8 @@ def prefilter(flow: dict, cfg: dict | None = None) -> tuple[str, str, str] | Non
     if "*" in dest:
         return "suspicious", "wildcard", f"{dest} is a wildcard"
     if dest.endswith(".cluster.local") or dest.endswith(".svc"):
-        return "in-cluster", "in-cluster", f"{dest} is a name inside the cluster"
+        return "in-cluster", "in-cluster", (f"{dest} is a component inside the cluster: link it (links between "
+                                            "applications), it is not egress")
     sus = _rx_list(cfg.get("suspicious_domains"))
     if sus and sus.match(dest):
         return "suspicious", "file-sharing", (f"{dest} is a paste, file-sharing, tunnelling or request-capture service: "
@@ -394,6 +395,38 @@ class Observer:
         self.cfg = cfg if cfg is not None else review_settings()
         self.out = out                          # dry run: print each flow here
         self.stopping = threading.Event()
+        self._namespaces: tuple[float, list] = (-1e9, [])
+
+    def app_namespaces(self) -> list[str]:
+        """The sandbox namespaces of applications (cz.vSandboxNamespace, refreshed every 5 minutes): where an
+        in-cluster destination address is looked for."""
+        if self.connect is None or _time.monotonic() - self._namespaces[0] < 300:
+            return self._namespaces[1] or list(self.pods.cache)
+        try:
+            conn = self.connect()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT DISTINCT Namespace FROM cz.vSandboxNamespace")
+                nss = [r[0] for r in cur.fetchall() if r[0]]
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 - keep the last list
+            nss = self._namespaces[1]
+        self._namespaces = (_time.monotonic(), nss)
+        return nss
+
+    def in_cluster_name(self, dst: str, own: str) -> str | None:
+        """`<component>.<namespace>.svc.cluster.local` when `dst` is a pod of another application's namespace (a
+        call to another application, links.py), else None."""
+        if not _in(dst, self.cfg.get("cluster_cidrs")):
+            return None
+        for ns in self.app_namespaces():
+            if ns == own or platform_namespace(ns, self.cfg):
+                continue
+            hit = self.pods.of(ns, dst).get(dst)
+            if hit and hit[1]:
+                return f"{hit[1]}.{ns}.svc.cluster.local"
+        return None
 
     # CoreDNS
     def dns_line(self, line: str) -> None:
@@ -438,7 +471,7 @@ class Observer:
             self.agg.stats["ingress"] += 1      # the pod is the destination: incoming traffic, not egress
             return None
         pod, comp = pods[d.src]
-        name = name_for(d.dst, d.src, list(pods), self.memory, self.resolver)
+        name = self.in_cluster_name(d.dst, d.namespace) or name_for(d.dst, d.src, list(pods), self.memory, self.resolver)
         if name:
             self.agg.stats["named"] += 1
         self.agg.stats["egress"] += 1
@@ -944,10 +977,37 @@ def refresh_folder(conn, app_id: int, folder: Path, namespace: str) -> tuple[dic
     decisions = _rows(conn, "SELECT * FROM cz.vEgressDecision WHERE ApplicationId = %s", (app_id,))
     sandbox = _rows(conn, "SELECT ComponentName, Url, Namespace FROM cz.vSandboxLatest WHERE ApplicationId = %s", (app_id,))
     existing = connectivity.read(folder)
+    try:                                    # links to and from other applications (schema 25)
+        links_out = _rows(conn, "SELECT * FROM cz.vComponentLink WHERE FromApplicationId = %s", (app_id,))
+        links_in = _rows(conn, "SELECT * FROM cz.vComponentLink WHERE ToApplicationId = %s AND Status = N'confirmed'",
+                         (app_id,))
+    except Exception:  # noqa: BLE001
+        conn.rollback()
+        links_out, links_in = [], []
     doc = connectivity.model(namespace, network, flows, decisions, existing,
-                             [s for s in sandbox if s.get("Namespace") == namespace], namespace)
+                             [s for s in sandbox if s.get("Namespace") == namespace], namespace,
+                             links_out=links_out, links_in=links_in)
     connectivity.write_files(folder, doc)
-    return doc, patch_policies(folder, connectivity.approved_entries(doc))
+    return doc, patch_policies(folder, connectivity.approved_entries(doc)) + patch_links(folder, doc)
+
+
+def patch_links(folder: Path, doc: dict) -> list[str]:
+    """Open the confirmed links of connectivity.yaml in the components' NetworkPolicies."""
+    import yaml
+    from .generate import _yaml_docs
+    from .links import apply_links
+    from . import connectivity
+    out, inn = connectivity.linked_entries(doc)
+    changed = []
+    for comp in sorted({e.get("component") for e in out} | {i.get("component") for i in inn}):
+        f = folder / str(comp) / "k8s.yaml"
+        if not re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?", str(comp)) or not f.is_file():
+            continue
+        docs = [d for d in yaml.safe_load_all(f.read_text()) if isinstance(d, dict)]
+        if apply_links(docs, comp, out, inn):
+            f.write_text(_yaml_docs(docs))
+            changed.append(f"{comp}/k8s.yaml")
+    return changed
 
 
 def commit_pending(connect, key, work: Path, log=print, now: float | None = None) -> int:
@@ -966,7 +1026,27 @@ def commit_pending(connect, key, work: Path, log=print, now: float | None = None
         for r in pend:
             if now - _FAILED.get(int(r["ApplicationId"]), -1e9) < 600:
                 continue
-            apps.setdefault(int(r["ApplicationId"]), {"app": r, "ids": []})["ids"].append(int(r["DecisionId"]))
+            apps.setdefault(int(r["ApplicationId"]), {"app": r, "ids": [], "links": []})["ids"].append(int(r["DecisionId"]))
+        try:                                # links (schema 25): both sides of a confirmed one are written
+            lp = _rows(conn, "SELECT l.LinkId, l.FromApplicationId, l.ToApplicationId, l.Status, l.FromComponent, "
+                             "l.ToApplication, l.ToComponent FROM cz.vComponentLink l WHERE l.CommittedAt IS NULL "
+                             "AND l.Status IN (N'proposed', N'confirmed', N'rejected')")
+        except Exception:  # noqa: BLE001
+            conn.rollback()
+            lp = []
+        for r in lp:
+            sides = [r["FromApplicationId"]] + ([r["ToApplicationId"]] if r["Status"] == "confirmed" and r["ToApplicationId"] else [])
+            for aid in sides:
+                aid = int(aid)
+                if now - _FAILED.get(aid, -1e9) < 600:
+                    continue
+                if aid not in apps:
+                    a = _rows(conn, "SELECT ApplicationId, ApplicationName, RepositoryUrl FROM cz.vApplicationLatest "
+                                    "WHERE ApplicationId = %s", (aid,))
+                    if not a:
+                        continue
+                    apps[aid] = {"app": a[0], "ids": [], "links": []}
+                apps[aid]["links"].append(r)
         targets: dict[str, dict] = {}
         for app_id, x in apps.items():
             t = output_target(conn, key, x["app"])
@@ -996,13 +1076,20 @@ def commit_pending(connect, key, work: Path, log=print, now: float | None = None
                     folders = deployed_apps(out.root, set(nss))
                     if not folders:
                         _mark(conn, apps[app_id]["ids"], None, "the application is not in the output repository")
+                        _mark_links(conn, [l["LinkId"] for l in apps[app_id]["links"]
+                                           if int(l["FromApplicationId"]) == app_id], None,
+                                    "the application is not in the output repository")
                         continue
                     for f in folders:
                         doc, pol = refresh_folder(conn, app_id, out.root / f["rel"], f["app"])
                     appr = [d for d in _rows(conn, "SELECT Destination, Port, Status FROM cz.vEgressDecision WHERE "
-                                                   "DecisionId IN (" + ",".join(str(i) for i in apps[app_id]["ids"]) + ")")]
+                                                   "DecisionId IN (" + ",".join(str(i) for i in apps[app_id]["ids"]) + ")")] \
+                        if apps[app_id]["ids"] else []
                     what = ", ".join(sorted({f"{d['Destination']}:{d['Port']}" for d in appr if d["Status"] == "approved"}))
-                    msgs.append(f"{apps[app_id]['app']['ApplicationName']}" + (f": approved {what}" if what else ""))
+                    lk = ", ".join(sorted({f"{l['FromComponent']} -> {l['ToApplication']}/{l['ToComponent']}"
+                                           for l in apps[app_id]["links"] if l["Status"] == "confirmed"}))
+                    msgs.append(f"{apps[app_id]['app']['ApplicationName']}" + (f": approved {what}" if what else "")
+                                + (f": linked {lk}" if lk else ""))
                     written[app_id] = apps[app_id]["ids"]
                 if written:
                     out.commit("containerizer: connectivity of " + "; ".join(msgs)[:300])
@@ -1011,6 +1098,9 @@ def commit_pending(connect, key, work: Path, log=print, now: float | None = None
                     for app_id, ids in written.items():
                         _mark(conn, ids, rev, None)
                         _FAILED.pop(app_id, None)
+                    # a link is written when every side of it that is in this repository is
+                    done_links = {int(l["LinkId"]) for a in written for l in apps[a]["links"]}
+                    _mark_links(conn, sorted(done_links), rev, None)
                     done += len(written)
                     log(f"connectivity committed ({rev[:12]}): {'; '.join(msgs)[:300]}")
             finally:
@@ -1028,6 +1118,15 @@ def commit_pending(connect, key, work: Path, log=print, now: float | None = None
         finally:
             shutil.rmtree(wdir, ignore_errors=True)
     return done
+
+
+def _mark_links(conn, ids: list[int], revision: str | None, error: str | None) -> None:
+    if not ids:
+        return
+    cur = conn.cursor()
+    cur.execute(f"UPDATE cz.ComponentLink SET CommittedAt = SYSUTCDATETIME(), CommitRevision = %s, CommitError = %s "
+                f"WHERE LinkId IN ({', '.join(['%s'] * len(ids))})", (revision, error, *ids))
+    conn.commit()
 
 
 def _mark(conn, ids: list[int], revision: str | None, error: str | None, keep_open: bool = False) -> None:
@@ -1049,6 +1148,12 @@ def housekeep(connect, key, work: Path, log=print) -> dict:
     conn = connect()
     try:
         q = queue_reviews(conn, log)
+        try:                                # links between applications (schema 25)
+            from .links import housekeep as link_housekeep
+            q["links"] = link_housekeep(conn, log)
+        except Exception as ex:  # noqa: BLE001 - a database from before schema 25: next time
+            conn.rollback()
+            log(f"links: {type(ex).__name__}: {ex}"[:300])
     finally:
         conn.close()
     q["committed"] = commit_pending(connect, key, work, log)

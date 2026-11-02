@@ -433,7 +433,8 @@ def test_infer_names_the_configured_and_hard_coded_destinations():
     assert (c["k8s"], c["port"], c["service_port"], c["egress"]) == ("egress-demo", 8080, 80, [])
     got = {(d["host"], d["port"], d["source"], d["file"], d["line"]) for d in c["destinations"]}
     assert ("api.github.com", 443, "config", "src/Egress.Demo/appsettings.json", 4) in got
-    assert ("pastebin.com", 443, "code", "src/Egress.Demo/Program.cs", 29) in got
+    assert ("pastebin.com", 443, "code", "src/Egress.Demo/Program.cs", 32) in got
+    assert ("orders-demo.orders-demo", 80, "config", "src/Egress.Demo/appsettings.json", 5) in got
 
 
 def test_scan_destinations_skips_noise(tmp_path):
@@ -699,7 +700,7 @@ def test_schema_24_flows_decisions_and_the_logins():
     sqlstore.init_schema(conn)
     cur = conn.cursor()
     cur.execute("SELECT MAX(Version) FROM cz.SchemaVersion")
-    assert cur.fetchone()[0] == 24
+    assert cur.fetchone()[0] >= 24
     cur.execute("INSERT cz.Application (SourceKey, Name) VALUES (N'k', N'shop')")
     cur.execute("SELECT ApplicationId FROM cz.Application WHERE SourceKey = N'k'")
     app_id = cur.fetchone()[0]

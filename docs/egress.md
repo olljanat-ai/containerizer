@@ -5,7 +5,9 @@ infer from packages, code and configuration (a SQL Server client opens 1433, an 
 `Server=db,14330` its port). A dependency it cannot infer is blocked in the sandbox: an HTTPS API named only by a
 configured URL, called with a client the rules do not recognise, times out or is refused.
 
-Three parts close that gap, and document what every application needs from the network for the real environment.
+Three parts close that gap, and document what every application needs from the network for the real environment;
+[links between applications](#links-between-applications) connect the components that call each other across
+repositories and products.
 Agents only propose; people approve.
 
 1. The **egress observer** records the connections the sandbox's NetworkPolicies block, with the name a pod looked
@@ -241,7 +243,7 @@ internal: []                          # component to component, lab services
 outbound:
 - component: egress-demo
   destination: api.github.com
-  type: fqdn                          # fqdn, ip, any (a port open to any address), component (phase 2: another application)
+  type: fqdn                          # fqdn, ip, any (a port open to any address), component (another application)
   port: 443
   protocol: TCP
   status: approved                    # allowed, approved, proposed, blocked, not-allowed, suspicious, rejected, reported
@@ -252,6 +254,18 @@ outbound:
   observed: {packets: 3, first_seen: '2026-11-02T03:38:59Z', last_seen: '2026-11-02T03:38:59Z', pods: [...], ips: [140.82.121.6]}
   approved_by: john.doe@example.com
   approved_at: '2026-11-02T03:43:46Z'
+- component: egress-demo
+  destination: orders-demo.orders-demo     # as the configuration names it
+  type: component                          # another application's component (links between applications)
+  port: 80
+  protocol: TCP
+  status: linked                           # linked, link-proposed
+  sources: [config, link-config]
+  target: {application: orders-demo, application_id: 1011, component: orders-demo, namespace: orders-demo,
+           service: orders-demo.orders-demo.svc.cluster.local, port: 8080}
+  link: {id: 1, status: confirmed, method: config, confidence: 0.95, reason: the configuration names ...}
+  linked_by: john.doe@example.com
+  linked_at: '2026-11-02T04:12:59Z'
 - component: egress-demo
   destination: pastebin.com
   type: fqdn
@@ -273,8 +287,58 @@ findings:
 | `evidence` | The lines that name the destination (file, line, the line itself). |
 | `observed` | What the sandbox blocked: dropped packets (a lower bound), first and last seen, pods, addresses. |
 | `approved_by`, `approved_at`, `rejected_by`, `rejected_at` | Who decided, when. |
-| `inbound`, `internal` | Who reaches the components (the Ingress host, the service port), component to component and lab services. |
+| `inbound`, `internal` | Who reaches the components (the Ingress host, the service port, and confirmed callers from other applications: `source: link`, with their application, component and namespace), component to component and lab services. |
+| `target` (`type: component`) | The other application's component a destination is: application, component, namespace, service name and container port. |
 | `findings` | `missing` and `unexplained`, as on the results page. |
+
+## Links between applications
+
+A real application is often several Containerizer applications: components in different repositories, owned by
+different teams or products, calling each other. An outbound destination can then be **another component assessed
+here**, and connectivity says so: the destination is linked to that component (`type: component` in
+connectivity.yaml), the diagram draws it as a teal box with the other application's name, and the table links to
+its page.
+
+![A link to another application: egress-demo calls orders-demo through a configured URL, linked and allowed in both NetworkPolicies](images/results-connectivity-linked.png#only-light){ .cz-shot }
+![A link to another application: egress-demo calls orders-demo through a configured URL, linked and allowed in both NetworkPolicies](images/results-connectivity-linked-dark.png#only-dark){ .cz-shot }
+
+**How links are found** (`cz.ComponentLink`, every minute by the LLM queue runner's housekeeping), each recorded with
+how it was found and its evidence:
+
+| Found by | When |
+| --- | --- |
+| Configuration matches (`config`) | A configured host is another application's component: its service in the sandbox (`<component>.<namespace>`, `...svc`, `...svc.cluster.local`) or its sandbox Ingress host. Confidence 0.95. |
+| Observed in the sandbox (`observed`) | The sandbox blocked a call from one application's pod to another application's pod (the observer names such a destination `<component>.<namespace>.svc.cluster.local`). Not recorded again when the configuration already links it. |
+| LLM (`llm`) | A configured destination that looks internal (one label, or `.local`, `.internal`, `.corp`, `.lan`, `.intranet`, `.svc`, ...) and that nothing matched. A `link` job of the [LLM queue](scheduled-scans.md#the-llm-queue) (with its approval policy) gives the LLM the destination, its configuration lines and a shortlist of 15 candidate components of other applications (name, application, product, project, role, repository) and asks for the best match, its confidence and why, or none. Answers below 0.5 or outside the shortlist are not taken. |
+| By hand (`manual`) | **Link manually** on the results page: pick one of the components assessed here. |
+
+Every link is a **proposal** until a person confirms it: **Confirm** and **Reject** on the calling application's
+results page, for administrators, operators and the calling application's product owners; a link made by hand is
+confirmed at once. A destination that looks internal and is not linked shows as *Looks internal, not linked*, with
+*Link manually*. Every decision is recorded with who made it (and in the change history).
+
+**A confirmed link** is written by the queue runner to **both** applications in the output repository, in one commit:
+
+- the caller's connectivity.yaml names the other application, component, namespace, service and port
+  (`type: component`, `target`), and the caller's NetworkPolicy gets an egress rule to that namespace and those pods
+  on the component's container port;
+- the callee's connectivity.yaml lists the caller under `inbound` (`source: link`), and its NetworkPolicy gets an
+  ingress rule from the caller's namespace and pods.
+
+Later scans keep both (the generator reads them from connectivity.yaml), as they keep approved egress.
+
+The callee's page shows its callers:
+
+![The called application's page: its callers from other applications under Inbound](images/results-connectivity-callee.png#only-light){ .cz-shot }
+![The called application's page: its callers from other applications under Inbound](images/results-connectivity-callee-dark.png#only-dark){ .cz-shot }
+
+**How the applications connect** (`/connectivity`, linked from each application's section; `?product=<id>` or
+`?bu=<id>` for one product or business unit): the applications as groups of their components, the links between them
+(confirmed solid, proposed dashed), each application's decided outbound destinations summed up, and the links in a
+table. The other side of a link outside the product is shown too, with a dashed frame.
+
+![How the applications connect: two applications, their components and a confirmed link](images/connectivity-portfolio.png#only-light){ .cz-shot }
+![How the applications connect: two applications, their components and a confirmed link](images/connectivity-portfolio-dark.png#only-dark){ .cz-shot }
 
 ## Limits
 

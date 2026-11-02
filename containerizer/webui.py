@@ -1180,6 +1180,8 @@ def _keep_query(path: str, q: dict) -> str:
         from .trends import parse_query
         rng, bu, product = parse_query(q)
         return urlencode([(k, v) for k, v in (("range", rng), ("bu", bu), ("product", product)) if v is not None])
+    if path == "/connectivity":
+        return urlencode([(k, q[k][0]) for k in ("product", "bu") if re.fullmatch(r"\d{1,9}", (q.get(k) or [""])[0])])
     if path == "/sbom":
         from .sbomui import parse_query
         bu, product = parse_query(q)
@@ -1302,7 +1304,7 @@ def make_handler(connect, admin=None):
                 m = re.fullmatch(r"/app/(\d{1,9})", u.path)
                 pm = re.fullmatch(r"/app/(\d{1,9})/component/(\d{1,9})/agent-prompt\.md", u.path)
                 cm = re.fullmatch(r"/app/(\d{1,9})/component/(\d{1,9})(/sbom\.cdx\.json)?", u.path)
-                if admin and (u.path in ("/", "/trends", "/sbom") or m or pm or cm):    # sign-in first when CONTAINERIZER_VIEWERS is set
+                if admin and (u.path in ("/", "/trends", "/sbom", "/connectivity") or m or pm or cm):    # sign-in first when CONTAINERIZER_VIEWERS is set
                     keep = _keep_query(u.path, parse_qs(u.query))
                     stop, s = admin.gate(self.headers, u.path, keep)
                     if stop:
@@ -1342,6 +1344,20 @@ def make_handler(connect, admin=None):
                         return self._send(200, sbomui.render_component(comp, show, nav), head=head, forms=bool(nav))
                     finally:
                         conn.close()
+                if u.path == "/connectivity":      # how the applications connect (connectivityui.py)
+                    from . import connectivityui
+                    q = parse_qs(u.query)
+                    pr, bu = q.get("product", [""])[0], q.get("bu", [""])[0]
+                    pr = int(pr) if re.fullmatch(r"\d{1,9}", pr or "") else None
+                    bu = int(bu) if re.fullmatch(r"\d{1,9}", bu or "") else None
+                    conn = connect()
+                    try:
+                        data = connectivityui.load_portfolio(conn, pr, bu)
+                    finally:
+                        conn.close()
+                    name = next((a.get("ProductName") for a in data["apps"] if pr is not None and a.get("ProductId") == pr), None)
+                    title = f"Connectivity: {name}" if name else "Connectivity of all applications"
+                    return self._send(200, connectivityui.render_portfolio(data, title, nav), head=head, forms=bool(nav))
                 if u.path == "/trends":
                     from . import trends
                     rng, bu, product = trends.parse_query(parse_qs(u.query))
@@ -1363,7 +1379,8 @@ def make_handler(connect, admin=None):
                                                   head=head)
                             from .connectivityui import notice_code
                             ctx = {"signin": bool(admin), "notice": refactor_notice(parse_qs(u.query)),
-                                   "egress_notice": notice_code(parse_qs(u.query))}
+                                   "egress_notice": notice_code(parse_qs(u.query)),
+                                   "link_notice": notice_code(parse_qs(u.query), "link")}
                             s, cookie = admin.dev_session(self.headers) if admin else (None, [])
                             if s and (s.admin or s.operator or s.scopes):   # may order (product owners: their products)
                                 ctx["csrf"] = admin._csrf(s)

@@ -63,15 +63,19 @@ NOISE_HOSTS = re.compile(r"(?i)^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*
 CODE_COMMENT = re.compile(r"^\s*(?://|/\*|\*|#|<!--|'|--|REM\b)")
 SKIP_FILE = re.compile(r"(?i)(\.Development\.|launchSettings|(^|/)\.vscode/|(^|/)\.idea/|(^|/)(bin|obj|node_modules|"
                        r"dist|build|target|wwwroot/lib)/|\.min\.js$|swagger|openapi|package(-lock)?\.json$)")
-STATUSES = ("allowed", "approved", "proposed", "blocked", "not-allowed", "suspicious", "rejected", "reported")
+STATUSES = ("allowed", "approved", "proposed", "blocked", "not-allowed", "suspicious", "rejected", "reported", "linked",
+            "link-proposed")
 STATUS_TEXT = {"allowed": "Allowed", "approved": "Approved", "proposed": "Proposed", "blocked": "Blocked",
                "not-allowed": "Not allowed (will time out)", "suspicious": "Suspicious", "rejected": "Rejected",
-               "reported": "Blocked (reported)"}
+               "reported": "Blocked (reported)", "linked": "Linked", "link-proposed": "Link proposed"}
 SOURCE_TEXT = {"config": "configuration", "code": "code", "package": "package", "policy": "NetworkPolicy",
                "observed": "observed in the sandbox", "approved": "approved", "lab-service": "lab service",
-               "ingress": "Ingress", "service": "service port", "sibling": "sibling component"}
+               "ingress": "Ingress", "service": "service port", "sibling": "sibling component",
+               "link": "linked application", "link-config": "configuration matches", "link-observed": "observed call",
+               "link-llm": "LLM", "link-manual": "linked by hand"}
 INFERRED = ("allowed", "not-allowed")                # what a scan alone can say about a destination
-DECIDED = ("approved", "rejected", "proposed", "suspicious", "reported")
+DECIDED = ("approved", "rejected", "proposed", "suspicious", "reported", "linked", "link-proposed")
+KEPT = ("approved", "linked")                         # never rewritten or dropped by a scan
 DEC_STATUS = {"proposed": "proposed", "reported": "reported", "suspicious": "suspicious", "approved": "approved",
               "rejected": "rejected"}
 
@@ -225,7 +229,8 @@ def policy_ports(comp: dict, approved: list[dict]) -> set[tuple[int, str]]:
 
 def model(app: str, network: dict | None, flows: list[dict] | None = None, decisions: list[dict] | None = None,
           existing: dict | None = None, sandbox: list[dict] | None = None, namespace: str | None = None,
-          now: datetime | None = None) -> dict:
+          now: datetime | None = None,
+          links_out: list[dict] | None = None, links_in: list[dict] | None = None) -> dict:
     """The connectivity document of one application (the shape of connectivity.yaml)."""
     now = now or utcnow()
     network = network or {}
@@ -305,6 +310,73 @@ def model(app: str, network: dict | None, flows: list[dict] | None = None, decis
                              "text": f"{k}: port {', '.join(str(p) for p, _ in ports)} is open to any address for "
                                      f"{dep['id']}, but no configuration names a destination on it: keep it only if the "
                                      "application needs it, and name the destination for the production firewall"})
+    # links to components of other applications (links.py): the destination is that component
+    link_svc: dict[tuple, tuple] = {}           # (component, service name) -> the link entry's key
+    for lo in links_out or []:
+        st = lo.get("Status")
+        if st not in ("confirmed", "proposed", "unresolved"):
+            continue
+        comp, dest = lo["FromComponent"], lo["Destination"]
+        base = out.get(_key(comp, dest, lo["Port"], lo.get("Protocol")))
+        if st == "unresolved":
+            if base is not None:
+                base["link"] = {"id": int(lo["LinkId"]), "status": "unresolved", "reason": lo.get("Reason")}
+            continue
+        ns = lo.get("ToNamespace") or _k8s(lo.get("ToApplication") or "")
+        target = {"application": lo.get("ToApplication"), "application_id": lo.get("ToApplicationId"),
+                  "component": lo.get("ToComponent"), "namespace": ns,
+                  "service": f"{lo.get('ToComponent')}.{ns}.svc.cluster.local", "port": int(lo.get("ToPort") or 8080)}
+        e = add(comp, dest, lo["Port"], lo.get("Protocol"), "component", "linked" if st == "confirmed" else "link-proposed",
+                f"link-{lo.get('Method')}", evidence=[x for x in _json(lo.get("Evidence"), []) if x.get("file")])
+        e.update(type="component", target=target, status="linked" if st == "confirmed" else "link-proposed",
+                 link={"id": int(lo["LinkId"]), "status": st, "method": lo.get("Method"),
+                       "confidence": float(lo["Confidence"]) if lo.get("Confidence") is not None else None,
+                       "reason": lo.get("Reason")})
+        e.pop("allowed_by", None)
+        if st == "confirmed":
+            e["linked_by"], e["linked_at"] = lo.get("DecidedBy"), _iso(lo.get("DecidedAt"))
+        link_svc[(comp, target["service"])] = entry_key(e)
+    for li in links_in or []:
+        if li.get("Status") != "confirmed":
+            continue
+        inbound.append({"component": li["ToComponent"], "from": f"{li.get('FromApplication')}/{li['FromComponent']}",
+                        "port": int(li.get("ToPort") or 8080), "protocol": li.get("Protocol") or "TCP", "source": "link",
+                        "application": li.get("FromApplication"), "application_id": li.get("FromApplicationId"),
+                        "from_component": li["FromComponent"],
+                        "namespace": li.get("FromNamespace") or _k8s(li.get("FromApplication") or ""),
+                        "target_port": int(li.get("ToPort") or 8080), "link": int(li["LinkId"])})
+    for e in (existing or {}).get("inbound") or []:            # confirmed callers stay, as approved egress does
+        if isinstance(e, dict) and e.get("source") == "link" and not any(
+                i.get("source") == "link" and i.get("from") == e.get("from") and i.get("component") == e.get("component")
+                for i in inbound):
+            inbound.append(e)
+    # a blocked call to a linked component is the link's evidence, not a destination of its own; so is a call to
+    # another pod address on the same port that the observer could not name (a replica it did not know yet)
+    linked = set(link_svc)
+    linked_ports, folded_ips = set(), set()
+    kept = []
+    for f in flows:
+        k = (f.get("Component") or "", str(f.get("Destination") or "").lower())
+        if k in linked:
+            e = out[link_svc[k]]
+            ob = e.setdefault("observed", {"packets": 0, "last_seen": None})
+            ob["packets"] = int(ob.get("packets") or 0) + int(f.get("Packets") or 0)
+            ob["last_seen"] = max(x for x in (ob.get("last_seen"), _iso(f.get("LastSeen"))) if x) if \
+                (ob.get("last_seen") or f.get("LastSeen")) else None
+            linked_ports.add((k[0], int(f.get("Port") or 0)))
+        else:
+            kept.append(f)
+    from .egress import review_settings, _in
+    cluster = review_settings().get("cluster_cidrs") or []
+    flows = []
+    for f in kept:
+        if not f.get("Named") and (f.get("Component") or "", int(f.get("Port") or 0)) in linked_ports \
+                and _in(str(f.get("DestinationIp") or f.get("Destination") or ""), cluster):
+            folded_ips.add((f.get("Component") or "", str(f.get("Destination") or "").lower(), int(f.get("Port") or 0)))
+            continue
+        flows.append(f)
+    decisions = [d for d in decisions if (d.get("Component"), str(d.get("Destination") or "").lower()) not in linked
+                 and (d.get("Component"), str(d.get("Destination") or "").lower(), int(d.get("Port") or 0)) not in folded_ips]
     for f in flows:
         comp = f.get("Component") or ""
         e = add(comp, f["Destination"], f["Port"], f["Protocol"], "fqdn" if f.get("Named") else "ip", "blocked",
@@ -345,6 +417,15 @@ def model(app: str, network: dict | None, flows: list[dict] | None = None, decis
     entries = merge_outbound(old, list(out.values()))
     # approved entries the configuration no longer names: they stay; say so
     for e in entries:
+        if e.get("status") == "link-proposed":
+            findings.append({"kind": "link", "component": e.get("component"),
+                             "text": f"{e.get('component')}: {e.get('destination')} looks like "
+                                     f"{(e.get('target') or {}).get('application')}/{(e.get('target') or {}).get('component')}"
+                                     ": confirm the link so both NetworkPolicies allow it"})
+        if (e.get("link") or {}).get("status") == "unresolved":
+            findings.append({"kind": "link", "component": e.get("component"),
+                             "text": f"{e.get('component')}: {e.get('destination')} looks internal, but it is not linked to "
+                                     "a component assessed here: link it by hand, or it is outside Containerizer"})
         if e.get("status") == "approved" and not set(e.get("sources") or []) & {"config", "code"}:
             findings.append({"kind": "unexplained", "component": e.get("component"),
                              "text": f"{e.get('component')}: {e.get('destination')}:{e.get('port')} is approved, but no "
@@ -393,7 +474,7 @@ def merge_outbound(existing: list[dict], new: list[dict]) -> list[dict]:
     for e in new:
         k = entry_key(e)
         old = keep.get(k)
-        if old is not None and old.get("status") == "approved":
+        if old is not None and old.get("status") in KEPT:
             # the approved entry stays as written; the scan's sources (config, code) are only added to it
             add = [s for s in e.get("sources") or [] if s in ("config", "code") and s not in (old.get("sources") or [])]
             if add:
@@ -408,6 +489,15 @@ def merge_outbound(existing: list[dict], new: list[dict]) -> list[dict]:
             continue
         out[k] = e
     return list(out.values())
+
+
+def linked_entries(doc: dict | None) -> tuple[list[dict], list[dict]]:
+    """The confirmed links of a connectivity.yaml: (outbound to other applications' components, inbound callers);
+    the generator opens them in the NetworkPolicies."""
+    doc = doc or {}
+    out = [e for e in doc.get("outbound") or [] if isinstance(e, dict) and e.get("status") == "linked" and e.get("target")]
+    inn = [i for i in doc.get("inbound") or [] if isinstance(i, dict) and i.get("source") == "link"]
+    return out, inn
 
 
 def approved_entries(doc: dict | None) -> list[dict]:
@@ -499,10 +589,11 @@ COLS = {"in": (10, 230), "comp": (330, 560), "out": (690, 990)}
 WIDTH = 1000
 LINE_CLASS = {"allowed": "cf-allowed", "approved": "cf-approved", "proposed": "cf-proposed", "blocked": "cf-blocked",
               "not-allowed": "cf-missing", "suspicious": "cf-suspicious", "rejected": "cf-rejected",
-              "reported": "cf-blocked", "internal": "cf-internal", "inbound": "cf-inbound"}
+              "reported": "cf-blocked", "internal": "cf-internal", "inbound": "cf-inbound", "linked": "cf-linked",
+              "link-proposed": "cf-link-proposed"}
 LEGEND = (("allowed", "Allowed by the NetworkPolicy"), ("approved", "Approved egress"), ("proposed", "Proposed"),
           ("blocked", "Blocked in the sandbox"), ("not-allowed", "Named by configuration, not allowed"),
-          ("suspicious", "Suspicious"))
+          ("suspicious", "Suspicious"), ("linked", "Linked application"), ("link-proposed", "Link proposed"))
 SVG_STYLE = """
 .cf-bg{fill:#fff}.cf-box{fill:#f4f4f1;stroke:#8a8983;stroke-width:1}.cf-comp{fill:#e8f0fe;stroke:#1f5fbf}
 .cf-t{font:13px system-ui,-apple-system,"Segoe UI",sans-serif;fill:#0b0b0b}.cf-s{font:11px system-ui,sans-serif;fill:#5f5e58}
@@ -510,9 +601,11 @@ SVG_STYLE = """
 path{fill:none;stroke-width:2}.cf-allowed{stroke:#2e7d32}.cf-approved{stroke:#1565c0}.cf-proposed{stroke:#c98a00;stroke-dasharray:6 4}
 .cf-blocked{stroke:#c62828;stroke-dasharray:6 4}.cf-missing{stroke:#e65100;stroke-dasharray:2 4}.cf-suspicious{stroke:#8e24aa;stroke-width:3;stroke-dasharray:2 3}
 .cf-rejected{stroke:#8a8983;stroke-dasharray:1 5}.cf-internal{stroke:#5f5e58;stroke-dasharray:4 3}.cf-inbound{stroke:#5f5e58}
+.cf-linked{stroke:#00897b}.cf-link-proposed{stroke:#00897b;stroke-dasharray:6 4}.cf-app{fill:#e0f2f1;stroke:#00897b}
 @media (prefers-color-scheme:dark){.cf-bg{fill:#1a1a19}.cf-box{fill:#232321;stroke:#6f6e68}.cf-comp{fill:#16263f;stroke:#7fb0ff}
 .cf-t{fill:#f0efe9}.cf-s,.cf-h{fill:#a8a69c}.cf-allowed{stroke:#66bb6a}.cf-approved{stroke:#64b5f6}.cf-proposed{stroke:#ffc857}
-.cf-blocked{stroke:#ef5350}.cf-missing{stroke:#ff9800}.cf-suspicious{stroke:#ce93d8}.cf-internal,.cf-inbound{stroke:#a8a69c}}
+.cf-blocked{stroke:#ef5350}.cf-missing{stroke:#ff9800}.cf-suspicious{stroke:#ce93d8}.cf-internal,.cf-inbound{stroke:#a8a69c}
+.cf-linked,.cf-link-proposed{stroke:#4db6ac}.cf-app{fill:#10302d;stroke:#4db6ac}}
 """
 
 
@@ -540,11 +633,13 @@ def svg(doc: dict, standalone: bool = False) -> str:
     for i in doc.get("inbound") or []:
         if i["from"] not in inbound:
             inbound.append(i["from"])
-    dests = []
+    dests, app_nodes = [], set()
     for e in doc.get("outbound") or []:
-        lbl = f"{e.get('destination')} :{e.get('port')}/{e.get('protocol')}"
+        lbl = label(e)
         if lbl not in dests:
             dests.append(lbl)
+        if e.get("type") == "component":
+            app_nodes.add(lbl)
     for i in doc.get("internal") or []:
         if i["to"] not in comps:
             lbl = f"{i['to']} :{i['port']}/{i['protocol']}"
@@ -574,7 +669,7 @@ def svg(doc: dict, standalone: bool = False) -> str:
             lines.append(_curve(COLS["in"][1], iy[i["from"]], COLS["comp"][0], cy[i["component"]], "cf-inbound",
                                 f"{i['from']} → {i['component']} :{i['port']}"))
     for e in doc.get("outbound") or []:
-        lbl = f"{e.get('destination')} :{e.get('port')}/{e.get('protocol')}"
+        lbl = label(e)
         if e.get("component") in cy and lbl in dy:
             lines.append(_curve(COLS["comp"][1], cy[e["component"]], COLS["out"][0], dy[lbl],
                                 LINE_CLASS.get(e.get("status"), "cf-blocked"),
@@ -597,7 +692,7 @@ def svg(doc: dict, standalone: bool = False) -> str:
     for c, yy in cy.items():
         parts.append(_box(COLS["comp"], yy, c, "cf-box cf-comp", 30))
     for s, yy in dy.items():
-        parts.append(_box(COLS["out"], yy, s, "cf-box", 42))
+        parts.append(_box(COLS["out"], yy, s, "cf-box cf-app" if s in app_nodes else "cf-box", 42))
     ly = top + rows * ROW + 24
     x = 10
     for st, text in LEGEND:
@@ -618,3 +713,11 @@ def _box(col, yy, label, cls, n):
     return (f"<g><title>{escape(str(label))}</title><rect class='{cls}' x='{x1}' y='{yy - BOX_H / 2:.0f}' "
             f"width='{x2 - x1}' height='{BOX_H}' rx='6'/>"
             f"<text class='cf-t' x='{x1 + 8}' y='{yy + 4:.0f}'>{escape(_trim(label, n))}</text></g>")
+
+
+def label(e: dict) -> str:
+    """How the diagram names an outbound destination."""
+    t = e.get("target") or {}
+    if e.get("type") == "component" and t:
+        return f"{t.get('application')} / {t.get('component')} :{t.get('port')}"
+    return f"{e.get('destination')} :{e.get('port')}/{e.get('protocol')}"

@@ -518,7 +518,7 @@ ServiceAccount (`$LAB_DIR/egress-observer.kubeconfig`), the CoreDNS query log on
 review in the lab, a queue runner needs the output repository and, for apps not cloned by an organization scan,
 their checkouts: `CONTAINERIZER_EGRESS_OUTPUT_REPO=$LAB_OUTPUT_REPO`, `CONTAINERIZER_EGRESS_OUTPUT_USERNAME=lab-admin`,
 the write token in `OUTPUT_GIT_TOKEN` (env.sh) and `CONTAINERIZER_EGRESS_SOURCES=<folder of checkouts named after
-the applications>`; `containerizer llm-queue --kinds egress --name <own name>` runs one beside the lab's runner.
+the applications>`; `containerizer llm-queue --kinds egress,link --name <own name>` runs one beside the lab's runner.
 
 ### The smoke test
 

@@ -227,6 +227,9 @@ class Admin:
         if kind == "build-pipeline":                 # the results page's Build pipeline downloads: no tab of its own
             from . import pipelineui
             return pipelineui.route(self, conn, s, a, method, parts, q)
+        if kind == "links":                          # the results page's links between applications: no tab of its own
+            from . import admin_links
+            return admin_links.route(self, conn, s, a, method, parts, q, form)
         if kind not in {k for k, _ in tabs}:
             known = kind in ("applications", "products", "business-units", "audit", "access", "scans", "repositories",
                              "llm-queue", "refactoring", "egress", "api",

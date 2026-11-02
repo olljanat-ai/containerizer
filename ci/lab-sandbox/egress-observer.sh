@@ -70,7 +70,7 @@ case "${1:-install}" in
       CONTAINERIZER_SQL_PASSWORD=$pw
     fi
     umask 077
-    printf 'CONTAINERIZER_SQL=%s\nCONTAINERIZER_SQL_PASSWORD=%s\nCONTAINERIZER_EGRESS_KUBECONFIG=%s\nPYTHONPATH=%s\n' \
+    printf 'CONTAINERIZER_SQL="%s"\nCONTAINERIZER_SQL_PASSWORD="%s"\nCONTAINERIZER_EGRESS_KUBECONFIG="%s"\nPYTHONPATH="%s"\n' \
       "$CONTAINERIZER_SQL" "$CONTAINERIZER_SQL_PASSWORD" "$OKC" "$CZ_REPO" > "$OENV"
     say "4. systemd unit $UNIT (as $(id -un), CAP_NET_ADMIN only)"
     sudo tee "/etc/systemd/system/$UNIT.service" >/dev/null <<UNIT

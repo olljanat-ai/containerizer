@@ -7,7 +7,7 @@ qcow2 and VHD images as release assets.
 
 ## Unreleased
 
-Results database schema version 24 (`containerizer db init` upgrades it; the appliance does at start).
+Results database schema version 25 (`containerizer db init` upgrades it; the appliance does at start).
 
 ### Egress and network connectivity
 - **Egress observer** (docs/egress.md#the-egress-observer): `containerizer egress-observe` reads the packets the
@@ -35,8 +35,18 @@ Results database schema version 24 (`containerizer db init` upgrades it; the app
   sandbox show what was inferred. The same as `connectivity.yaml`, `CONNECTIVITY.md` and `connectivity.svg` next to
   the manifests in the output repository, written by every scan and refreshed by the runner. Assessments record
   the inferred network needs (assessment.json `network`).
+- **Links between applications** (docs/egress.md#links-between-applications): an outbound destination can be
+  another application's component (another repository or product). Links (`cz.ComponentLink`) are found by a
+  configured host matching the other component's service or Ingress host, by a blocked call to another
+  application's pod in the sandbox, by the LLM (queue kind `link`: a destination that looks internal, a shortlist of
+  candidate components, the best match with its confidence) or by hand; a person confirms them (Confirm, Reject,
+  Link manually on the results page). The runner writes a confirmed link to both applications' connectivity.yaml
+  (`type: component` with its target; the callee's `inbound` callers) and NetworkPolicies (the caller's egress to the
+  callee's pods, the callee's ingress from the caller), and later scans keep them. `/connectivity` shows how the
+  applications of a product, a business unit or all connect.
 - `containerizer llm-queue --kinds` (the job kinds a runner takes; its housekeeping follows them).
-- `examples/egress-demo`: an A-rated app that calls a configured API and a hard-coded paste site.
+- `examples/egress-demo` (an A-rated app that calls a configured API, another application and a hard-coded paste
+  site) and `examples/orders-demo` (the other application).
 
 ## 0.3.0 (2026-11-02)
 

@@ -1911,3 +1911,100 @@ GRANT UPDATE ON [${schema}].EgressDecision (Status, DecidedBy, DecidedByName, De
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 24) INSERT [${schema}].SchemaVersion (Version) VALUES (24);
 GO
+
+-- 25: links between components (links.py, docs/egress.md#links-between-applications). An outbound destination of a
+-- component can be another component assessed here, in the same or another application (another repository or
+-- product). A link records the destination as the caller's configuration or the sandbox names it, the component it
+-- reaches, how it was found (config: a configured name matches the other component's service, namespace or Ingress
+-- host; observed: a sandbox flow to the other component's pod; llm: the link review proposed it; manual: a person
+-- linked them), and its status (proposed, confirmed, rejected). The queue runner (writer login) proposes links and
+-- writes confirmed ones to both sides' connectivity.yaml and NetworkPolicies; administrators, operators and the
+-- calling application's product owners confirm, reject or link by hand (admin login).
+IF OBJECT_ID(N'[${schema}].ComponentLink', N'U') IS NULL
+CREATE TABLE [${schema}].ComponentLink (
+    LinkId            int IDENTITY(1,1) NOT NULL CONSTRAINT PK_ComponentLink PRIMARY KEY,
+    FromApplicationId int            NOT NULL CONSTRAINT FK_ComponentLink_From REFERENCES [${schema}].Application (ApplicationId),
+    FromComponent     nvarchar(63)   NOT NULL,       -- the caller's component (its Kubernetes name)
+    Destination       nvarchar(253)  NOT NULL,       -- as the caller names it (host), or as the sandbox saw it
+    Port              int            NOT NULL,
+    Protocol          nvarchar(10)   NOT NULL CONSTRAINT DF_ComponentLink_Protocol DEFAULT N'TCP',
+    ToApplicationId   int            NULL CONSTRAINT FK_ComponentLink_To REFERENCES [${schema}].Application (ApplicationId),
+    ToComponent       nvarchar(63)   NULL,           -- NULL: unresolved (looks internal, nothing matched yet)
+    Method            nvarchar(20)   NOT NULL CONSTRAINT CK_ComponentLink_Method CHECK (Method IN (N'config', N'observed', N'llm', N'manual')),
+    Status            nvarchar(20)   NOT NULL CONSTRAINT CK_ComponentLink_Status CHECK (Status IN (N'proposed', N'confirmed', N'rejected', N'unresolved')),
+    Confidence        decimal(4,2)   NULL,
+    Reason            nvarchar(1000) NULL,
+    Evidence          nvarchar(max)  NULL,           -- JSON: [{"file", "line", "quote"}] and the flows
+    JobId             int            NULL,
+    CreatedAt         datetime2(0)   NOT NULL CONSTRAINT DF_ComponentLink_CreatedAt DEFAULT SYSUTCDATETIME(),
+    DecidedBy         nvarchar(256)  NULL,
+    DecidedByName     nvarchar(256)  NULL,
+    DecidedAt         datetime2(0)   NULL,
+    CommittedAt       datetime2(0)   NULL,
+    CommitRevision    nvarchar(64)   NULL,
+    CommitError       nvarchar(600)  NULL,
+    CONSTRAINT UQ_ComponentLink UNIQUE (FromApplicationId, FromComponent, Destination, Port, Protocol)
+);
+GO
+CREATE OR ALTER TRIGGER [${schema}].trComponentLinkAudit ON [${schema}].ComponentLink
+AFTER UPDATE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'ComponentLink', i.LinkId,
+           LEFT(i.FromComponent + N' -> ' + i.Destination + N':' + CAST(i.Port AS nvarchar(5)), 200), N'update',
+           (SELECT d.Status, d.ToApplicationId, d.ToComponent, d.Method, d.DecidedBy FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES),
+           (SELECT i.Status, i.ToApplicationId, i.ToComponent, i.Method, i.DecidedBy FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES)
+    FROM inserted i JOIN deleted d ON d.LinkId = i.LinkId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE i.Status <> d.Status OR EXISTS (SELECT i.ToApplicationId, i.ToComponent EXCEPT SELECT d.ToApplicationId, d.ToComponent);
+END;
+GO
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_LlmJob_Kind'
+           AND parent_object_id = OBJECT_ID(N'[${schema}].LlmJob') AND definition NOT LIKE N'%link%')
+    ALTER TABLE [${schema}].LlmJob DROP CONSTRAINT CK_LlmJob_Kind;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_LlmJob_Kind'
+               AND parent_object_id = OBJECT_ID(N'[${schema}].LlmJob'))
+    ALTER TABLE [${schema}].LlmJob ADD CONSTRAINT CK_LlmJob_Kind CHECK (Kind IN (N'review', N'refactor', N'egress', N'link'));
+GO
+CREATE OR ALTER VIEW [${schema}].vComponentLink AS
+SELECT l.LinkId, l.FromApplicationId, fa.Name AS FromApplication, fa.ProductId AS FromProductId, l.FromComponent,
+       l.Destination, l.Port, l.Protocol, l.ToApplicationId, ta.Name AS ToApplication, ta.ProductId AS ToProductId,
+       l.ToComponent, l.Method, l.Status, l.Confidence, l.Reason, l.Evidence, l.JobId, l.CreatedAt, l.DecidedBy,
+       l.DecidedByName, l.DecidedAt, l.CommittedAt, l.CommitRevision, l.CommitError,
+       (SELECT TOP (1) n.Namespace FROM [${schema}].vSandboxNamespace n WHERE n.ApplicationId = l.ToApplicationId
+        AND n.Variant = 0 ORDER BY n.CheckedAt DESC) AS ToNamespace,
+       (SELECT TOP (1) n.Namespace FROM [${schema}].vSandboxNamespace n WHERE n.ApplicationId = l.FromApplicationId
+        AND n.Variant = 0 ORDER BY n.CheckedAt DESC) AS FromNamespace
+FROM [${schema}].ComponentLink l
+JOIN [${schema}].Application fa ON fa.ApplicationId = l.FromApplicationId
+LEFT JOIN [${schema}].Application ta ON ta.ApplicationId = l.ToApplicationId
+WHERE fa.Retired = 0 AND (ta.ApplicationId IS NULL OR ta.Retired = 0);
+GO
+-- every component of the latest assessments, with its application, product and business unit: the candidates a
+-- link can point at (names only)
+CREATE OR ALTER VIEW [${schema}].vLinkCandidate AS
+SELECT c.ApplicationId, a.ApplicationName, a.ProductId, a.ProductName, a.BusinessUnitName, a.RepositoryUrl, a.Rating,
+       c.ComponentId, c.ComponentName, c.ProjectPath, c.Role
+FROM [${schema}].vComponentLatest c
+JOIN [${schema}].vApplicationLatest a ON a.ApplicationId = c.ApplicationId;
+GO
+GRANT SELECT, INSERT ON [${schema}].ComponentLink TO [${schema}_writer];
+GRANT UPDATE ON [${schema}].ComponentLink (ToApplicationId, ToComponent, Method, Status, Confidence, Reason, Evidence, JobId,
+                                           CommittedAt, CommitRevision, CommitError) TO [${schema}_writer];
+GRANT SELECT ON [${schema}].vComponentLink TO [${schema}_writer];
+GRANT SELECT ON [${schema}].vLinkCandidate TO [${schema}_writer];
+GRANT SELECT ON [${schema}].vComponentLatest TO [${schema}_writer];
+GRANT SELECT ON [${schema}].vComponentLink TO [${schema}_reader];
+GRANT SELECT ON [${schema}].vLinkCandidate TO [${schema}_reader];
+GRANT SELECT ON [${schema}].vComponentLink TO [${schema}_admin];
+GRANT SELECT ON [${schema}].vLinkCandidate TO [${schema}_admin];
+GRANT SELECT ON [${schema}].ComponentLink (LinkId, FromApplicationId, FromComponent, Destination, Port, Protocol, Status,
+                                           ToApplicationId, ToComponent) TO [${schema}_admin];
+GRANT INSERT ON [${schema}].ComponentLink TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].ComponentLink (ToApplicationId, ToComponent, Method, Status, Reason, DecidedBy, DecidedByName,
+                                           DecidedAt, CommittedAt) TO [${schema}_admin];
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 25) INSERT [${schema}].SchemaVersion (Version) VALUES (25);
+GO

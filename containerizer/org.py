@@ -913,6 +913,7 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
     dest = out.root / rel
     existing = connectivity.read(dest) or (connectivity.read(connectivity_from) if connectivity_from else None)
     approved = connectivity.approved_entries(existing)
+    linked = connectivity.linked_entries(existing)
     local_mode = local_images(o)
     keep, res.excluded = select_components(a, o.verify)
     lab = _lab_services(o)
@@ -927,13 +928,13 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
         fa = dataclasses.replace(a, components=keep)
         if not o.gate:
             generate_app(fa, gen, registry=o.registry, pin=o.pin, gitops=gitops, tag=tag, devdb=dd, lab=lab,
-                         lab_report=lab_report, approved_egress=approved)
+                         lab_report=lab_report, approved_egress=approved, links=linked)
             break
         from .harden import security
         from .imagescan import gate_app
         g = gate_app(fa, gen, build=True, scan=True, run=True, registry=o.registry, pin=o.pin, gitops=gitops,
                      tag=tag, scanner=o.scanner or security()["scan"].get("default_scanner", "auto"),
-                     fail_on=o.fail_on, devdb=dd, lab=lab, lab_report=lab_report, approved_egress=approved)
+                     fail_on=o.fail_on, devdb=dd, lab=lab, lab_report=lab_report, approved_egress=approved, links=linked)
         failed = {c["component"]: gate_failure(c) for c in g["components"] if gate_failure(c)}
         if not failed:
             break

@@ -209,16 +209,35 @@ tokens and time, and needs an administrator's approval until you trust it.
 
 ### See what every app needs from the network
 
-Each application's page draws what it connects to, from its configuration, its NetworkPolicy and what the
-sandbox blocked. An LLM proposes the egress rules the configuration explains and flags the suspicious ones;
+Each application's page draws what it connects to, from its configuration, its NetworkPolicy, what the
+sandbox blocked and the other applications it calls. An LLM proposes the egress rules the configuration explains and flags the suspicious ones;
 a person approves, and `connectivity.yaml` next to the manifests gives the firewall team the FQDNs.
 
 [Egress and network connectivity :octicons-arrow-right-24:](egress.md)
 
 </div>
 
-![The network connectivity of an application: an approved API, a suspicious paste site and a blocked address](images/results-connectivity-diagram.png#only-light){ .cz-shot }
-![The network connectivity of an application: an approved API, a suspicious paste site and a blocked address](images/results-connectivity-diagram-dark.png#only-dark){ .cz-shot }
+![The network connectivity of an application: an approved API, a linked application, a suspicious paste site and blocked addresses](images/results-connectivity-diagram.png#only-light){ .cz-shot }
+![The network connectivity of an application: an approved API, a linked application, a suspicious paste site and blocked addresses](images/results-connectivity-diagram-dark.png#only-dark){ .cz-shot }
+
+</div>
+
+<div class="cz-feature" markdown>
+
+<div markdown>
+
+### Connect the applications that call each other
+
+Components in different repositories and products are linked when one's configuration names the other's service,
+the sandbox sees the call, or the LLM matches an internal name. A person confirms the link; both NetworkPolicies
+allow it, and both `connectivity.yaml` files document it.
+
+[Links between applications :octicons-arrow-right-24:](egress.md#links-between-applications)
+
+</div>
+
+![How the applications connect: their components and the links between them](images/connectivity-portfolio.png#only-light){ .cz-shot }
+![How the applications connect: their components and the links between them](images/connectivity-portfolio-dark.png#only-dark){ .cz-shot }
 
 </div>
 

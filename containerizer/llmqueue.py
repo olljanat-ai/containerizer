@@ -291,6 +291,16 @@ def egress_handler(job: dict) -> dict:
 
 
 register(EGRESS, "Egress review", egress_handler, "egress-queued")
+LINK = "link"
+
+
+def link_handler(job: dict) -> dict:
+    """A link review: the component of another application an internal-looking destination is (links.handler)."""
+    from .links import handler
+    return handler(job)
+
+
+register(LINK, "Link review", link_handler, "link-queued")
 
 
 # --------------------------------------------------------------------------- component reviews: what, how urgent
@@ -1006,7 +1016,7 @@ class Runner:
                 n += variant.housekeep(self.connect, self.key, base, log=self.log)
             except Exception as ex:             # a database from before schema 23, the output repository away: next time
                 self.log(f"sandbox variants: {type(ex).__name__}: {ex}"[:400])
-        if EGRESS in self.kinds:
+        if EGRESS in self.kinds or LINK in self.kinds:
             # blocked connections: reviews queued for new ones; decisions written to the output repository
             from . import egress
             try:
