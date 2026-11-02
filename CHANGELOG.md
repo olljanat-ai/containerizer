@@ -6,7 +6,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.3.10 (2026-11-02)
 
 ### Appliance
 - A reboot during an organization scan could sit on a black screen for a long time: the scan worker had up to 2 hours
