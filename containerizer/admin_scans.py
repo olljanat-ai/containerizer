@@ -38,6 +38,9 @@ RUN_TEXT = {"queued": "Queued", "running": "Running", "succeeded": "Finished", "
             "cancelled": "Cancelled"}
 KIND_TEXT = {"full": "Full scan", "discovery": "Discovery"}
 REGISTRY_RE = re.compile(r"[A-Za-z0-9.-]+(:\d{1,5})?(/[a-z0-9._/-]+)?")
+# the appliance's own registry (docs/appliance-admin.md#local-registry-and-the-sandbox-cluster): the worker pushes
+# and k3s pulls without credentials; the default there when a scan names no registry
+LOCAL_REGISTRY = "localhost:5000/sandbox"
 BRANCH_RE = re.compile(r"(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}")
 SECRET_RE = re.compile(r"[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?")
 ORG_RE = re.compile(r"[\w .\-/]{1,200}")
@@ -115,7 +118,7 @@ def route(adm, conn, s, a, method: str, kind: str, parts: list, q: dict, form: d
     action = parts[2] if len(parts) > 2 else ""
     if kind == "scans":
         if len(parts) > 1 and parts[1] == "new":
-            return save_scan(conn, None, form) if method == "POST" else edit_scan(adm, conn, s, a, None, flash, q)
+            return save_scan(conn, None, form, _local(adm)) if method == "POST" else edit_scan(adm, conn, s, a, None, flash, q)
         if ident is None:
             return list_scans(adm, conn, s, a, flash) if method == "GET" and len(parts) == 1 else _nf()
         if method == "POST":
@@ -126,7 +129,7 @@ def route(adm, conn, s, a, method: str, kind: str, parts: list, q: dict, form: d
             if action == "delete":
                 return delete_scan(conn, ident)
             if not action:
-                return save_scan(conn, ident, form)
+                return save_scan(conn, ident, form, _local(adm))
             return _nf()
         return edit_scan(adm, conn, s, a, ident, flash, q) if not action else _nf()
     if kind == "repositories":
@@ -226,7 +229,35 @@ def list_scans(adm, conn, s, a, flash: str) -> Response:
     return Response(200, adm._shell(s, a, "Organization scans", "scans", body, flash))
 
 
-def _scan_form(adm, s, scan: dict, ident) -> str:
+def _local(adm) -> str | None:
+    """The local registry on the appliance (it has one), else None."""
+    return LOCAL_REGISTRY if getattr(adm, "system", None) else None
+
+
+def _output_repos(conn) -> list[str]:
+    """The repositories with an enabled write token (Source control): what a scan can commit its results to."""
+    from .credentials import load
+    return sorted({c.scope for c in load(conn).items if c.purpose == "write" and c.enabled}, key=str.casefold)
+
+
+def _output_select(current: str, repos: list[str]) -> str:
+    """The output repository: one with a write token, or none. A saved URL without a token stays selectable."""
+    from .credentials import repo_key
+    cur = (current or "").strip()
+    known = {repo_key(r) for r in repos}
+    opts = [("", "none: the results are kept on the worker")] + [(r, r) for r in repos]
+    if cur and repo_key(cur) not in known:
+        opts.append((cur, f"{cur} (no write token)"))
+    sel = next((v for v, _ in opts if v and cur and repo_key(v) == repo_key(cur)), "")
+    html = "".join(f"<option value='{e(v)}'{' selected' if v == sel else ''}>{e(t)}</option>" for v, t in opts)
+    hint = "" if repos else (" <a href='/admin/source-control'>Register one</a> under Source control with a write token.")
+    return (f"<label for='OutputRepo'>Output repository <span class=muted>(the Dockerfiles, manifests and Argo CD / "
+            f"Flux files are committed to it; the repositories with a write token under Source control)</span></label>"
+            f"<select id='OutputRepo' name='OutputRepo'>{html}</select>"
+            + (f"<p class='muted small'>No repository has a write token yet.{hint}</p>" if hint else ""))
+
+
+def _scan_form(adm, s, scan: dict, ident, repos: list[str] | None = None) -> str:
     from .worker import DAYS
     v = {k: ("" if scan.get(k) is None else scan.get(k)) for k in SCAN_COLS}
 
@@ -240,6 +271,13 @@ def _scan_form(adm, s, scan: dict, ident) -> str:
     prov = "".join(f"<option value='{k}'{' selected' if v['Provider'] == k else ''}>{t}</option>" for k, t in PROVIDERS.items())
     modes = "".join(f"<option value='{k}'{' selected' if (v['LlmMode'] or 'inline') == k else ''}>{e(t)}</option>"
                     for k, t in LLM_MODES.items())
+    if _local(adm):
+        registry = inp('Registry', 'Image registry', f'host and path the images are pushed to; empty: {LOCAL_REGISTRY}, '
+                       'the appliance\'s own registry, which needs no credentials and serves the sandbox. An external '
+                       'registry needs push credentials in worker.env', False, LOCAL_REGISTRY)
+    else:
+        registry = inp('Registry', 'Image registry', 'host and path the images are pushed to; the worker has the credentials',
+                       True, 'acmeregistry.azurecr.io/sandbox')
     days = "".join(f"<label class='check day'><input type='checkbox' name='day' value='{i}'"
                    f"{' checked' if int(v['ScheduleDays'] or 0) & (1 << i) else ''}> {d}</label>" for i, d in enumerate(DAYS))
     minute = int(v["ScheduleMinute"] if v["ScheduleMinute"] != "" else 120)
@@ -257,9 +295,9 @@ def _scan_form(adm, s, scan: dict, ident) -> str:
 {chk('SkipForks', 'Skip forks')}
 {inp('StaleDays', 'Skip repositories not updated for', 'days; 0 keeps all', maxlen=4, typ='number')}
 <h3>Results</h3>
-{inp('Registry', 'Image registry', 'host and path the images are pushed to; the worker has the credentials', True, 'acmeregistry.azurecr.io/sandbox')}
+{registry}
 {chk('PushImages', 'Push images')}
-{inp('OutputRepo', 'Output repository', 'https Git repository the Dockerfiles, manifests and Argo CD / Flux files are committed to; empty: kept on the worker', ph='https://', typ='url')}
+{_output_select(str(v['OutputRepo']), repos or [])}
 {inp('OutputBranch', 'Output branch', '', maxlen=200)}
 <p class='muted small'>Pushing uses the write token registered for this repository URL under Source control, never the
 organization's read-only token. The output repository is never scanned.</p>
@@ -288,9 +326,9 @@ under <a href='/admin/repositories'>Repositories</a>.</p>
 def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
     from .worker import check_scan, schedule_text
     if ident is None:
-        scan = {"Provider": "github", "OutputBranch": "main", "SkipForks": True, "StaleDays": 183, "Verify": True,
+        scan = {"Provider": "github", "OutputBranch": "main", "Registry": _local(adm) or "", "SkipForks": True, "StaleDays": 183, "Verify": True,
                 "Gate": True, "PushImages": True, "UseAi": False, "LlmMode": "inline", "LlmHeavy": False, "ScheduleDays": 32, "ScheduleMinute": 120, "Enabled": True}
-        return Response(200, adm._shell(s, a, "New organization scan", "scans", _scan_form(adm, s, scan, None), flash))
+        return Response(200, adm._shell(s, a, "New organization scan", "scans", _scan_form(adm, s, scan, None, _output_repos(conn)), flash))
     cur = conn.cursor(as_dict=True)
     cur.execute("SELECT * FROM cz.OrgScan WHERE ScanId = %s", (ident,))
     scan = cur.fetchone()
@@ -358,12 +396,13 @@ def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
             f"<h2>Runs</h2><table><thead><tr><th class='num'>#</th><th>Status</th><th>Started</th><th class='num'>Took</th>"
             f"<th>Repositories</th><th>Result</th></tr></thead>"
             f"<tbody>{''.join(rows) or '<tr><td colspan=6 class=muted>Not run yet.</td></tr>'}</tbody></table>"
-            f"<h2>Settings</h2>{_scan_form(adm, s, scan, ident)}{delete}"
+            f"<h2>Settings</h2>{_scan_form(adm, s, scan, ident, _output_repos(conn))}{delete}"
             f"<h2>Changes</h2>{adm._history(conn, 'OrgScan', ident)}")
     return Response(200, adm._shell(s, a, scan["Name"], "scans", body, flash))
 
 
-def validate_scan(form: dict) -> tuple[dict, list[str]]:
+def validate_scan(form: dict, local_registry: str | None = None) -> tuple[dict, list[str]]:
+    """The scan settings from the form. local_registry (the appliance): the registry when the form names none."""
     errors, v = [], {}
 
     def text(k, label, required=False, n=400, rx=None, msg=""):
@@ -384,7 +423,8 @@ def validate_scan(form: dict) -> tuple[dict, list[str]]:
         errors.append("Choose a provider")
     text("Organization", "Organization", True, 200, ORG_RE, "Organization: letters, digits, space, . _ - and / only")
     text("ApiUrl", "Server", n=400, rx=URL_RE, msg="Server must be a plain https:// address")
-    text("Registry", "Image registry", True, 400, REGISTRY_RE, "Image registry: host[:port]/path in lower case")
+    text("Registry", "Image registry", not local_registry, 400, REGISTRY_RE, "Image registry: host[:port]/path in lower case")
+    v["Registry"] = v["Registry"] or local_registry
     text("OutputRepo", "Output repository", n=400, rx=URL_RE, msg="Output repository must be a plain https:// address")
     text("OutputBranch", "Output branch", n=200, rx=BRANCH_RE, msg="Output branch is not a valid branch name")
     v["OutputBranch"] = v["OutputBranch"] or "main"
@@ -419,8 +459,8 @@ def validate_scan(form: dict) -> tuple[dict, list[str]]:
     return v, errors
 
 
-def save_scan(conn, ident, form: dict) -> Response:
-    v, errors = validate_scan(form)
+def save_scan(conn, ident, form: dict, local_registry: str | None = None) -> Response:
+    v, errors = validate_scan(form, local_registry)
     back = f"/admin/scans/{ident}" if ident else "/admin/scans/new"
     if errors:
         return _back(back, "; ".join(errors))

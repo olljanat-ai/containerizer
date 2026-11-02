@@ -116,6 +116,21 @@ def test_scan_form_validation():
     assert errors == [] and v["LlmHeavy"] is True and v["UseAi"] is True
 
 
+def test_scan_registry_defaults_to_the_local_registry_on_the_appliance():
+    from types import SimpleNamespace
+    local = admin_scans.LOCAL_REGISTRY
+    assert local == "localhost:5000/sandbox" and admin_scans.REGISTRY_RE.fullmatch(local)
+    # elsewhere the registry stays required; on the appliance an empty one is the local registry
+    _, errors = admin_scans.validate_scan(_form(Registry=""))
+    assert any("Image registry is required" in x for x in errors)
+    v, errors = admin_scans.validate_scan(_form(Registry=""), local)
+    assert errors == [] and v["Registry"] == local
+    v, errors = admin_scans.validate_scan(_form(Registry="acr.example.io/sandbox"), local)
+    assert errors == [] and v["Registry"] == "acr.example.io/sandbox"          # an external one is kept
+    assert admin_scans._local(SimpleNamespace(system=object())) == local
+    assert admin_scans._local(SimpleNamespace(system=None)) is None
+
+
 def test_repo_state_texts():
     base = {"RemovedAt": None, "AdminState": None, "AdminNote": None, "SkipStatus": None, "SkipReason": None,
             "LastStatus": "deployed"}
@@ -713,3 +728,21 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         m = sqlstore.connect(re.sub(r"Database=\w+", "Database=master", cs), sa_pw, autocommit=True)
         m.cursor().execute(f"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]")
         m.close()
+
+
+def test_output_repository_is_chosen_from_the_repositories_with_a_write_token():
+    repos = ["https://github.com/contoso/sandbox-out", "https://dev.azure.com/contoso/P/_git/out"]
+    html = admin_scans._output_select("", repos)
+    assert "<select id='OutputRepo' name='OutputRepo'>" in html and "<option value='' selected>none" in html
+    assert all(f"<option value='{r}'>{r}</option>" in html for r in repos) and "no write token" not in html
+    # the saved one is selected, also when written differently (case, .git, trailing slash)
+    html = admin_scans._output_select("https://GitHub.com/contoso/sandbox-out.git/", repos)
+    assert "<option value='https://github.com/contoso/sandbox-out' selected>" in html
+    # a saved URL without a write token stays, marked
+    html = admin_scans._output_select("https://github.com/contoso/old", repos)
+    assert "<option value='https://github.com/contoso/old' selected>https://github.com/contoso/old (no write token)" in html
+    # nothing registered: only "none", and where to register one
+    html = admin_scans._output_select("", [])
+    assert html.count("<option") == 1 and "/admin/source-control" in html
+    # the value is escaped
+    assert "&lt;x&gt;" in admin_scans._output_select("https://e.example/<x>", [])
