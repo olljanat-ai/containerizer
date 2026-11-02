@@ -552,6 +552,91 @@ def task_prompt(payload: dict, task: dict, app_root: Path) -> tuple[str, list[st
     return "\n".join(head) + "\n" + "\n\n".join(parts), shown
 
 
+# --------------------------------------------------------------------------- the same code, changed once
+
+SHARED_ENV = "CONTAINERIZER_REFACTOR_SHARED"
+
+
+def shared_dir() -> Path:
+    """Where the answers for a file's code are kept for other orders: next to the LLM answer cache."""
+    if os.environ.get(SHARED_ENV):
+        return Path(os.environ[SHARED_ENV])
+    from . import ai
+    return Path(ai.CACHE) / "refactor-shared"
+
+
+def share_key(payload: dict, task: dict, app_root: Path) -> str | None:
+    """What the LLM's answer for one file depends on: the file's text, the findings in it (rule, why, fix, evidence),
+    the component's settings file shown with it, its language, target framework and packages, and whether the data
+    guidance applies. Not the application, the component's name or where the file is: the same library code in
+    another component, application or repository gets the same key, and the LLM is asked about it once.
+    None: not shared (a repair answers a patch of its own)."""
+    if payload.get("goal") == "repair":
+        return None
+    comp = next((c for c in payload["components"] if c["name"] == task["component"]), payload["components"][0])
+    proj = app_root / (task.get("project") or comp.get("project") or "")
+    path = app_root / task["file"]
+    if not path.is_file():
+        return None
+    extra = proj.parent / "appsettings.json" if proj.name else None
+    state = payload.get("goal") == "stateless" or (payload.get("goal") == "rating-a" and (
+        any(f["rule"] == "move-state-out" for f in task["findings"])
+        or any(x.get("component") == task["component"] for x in payload.get("state") or [])))
+    doc = {"v": 1, "text": _read_text(path)[0],
+           "extra": _read_text(extra)[0] if extra is not None and extra.is_file() and extra.resolve() != path.resolve()
+           and extra.stat().st_size <= EXTRA_FILE_CHARS else None,
+           "findings": [[f["rule"], f["severity"], f["why"], f["fix"], [[e["line"], e["text"]] for e in f["evidence"]]]
+                        for f in task["findings"]],
+           "language": comp.get("language"), "tfm": sorted(comp.get("tfm") or []),
+           "packages": _packages(proj) if proj.is_file() else [], "state": bool(state)}
+    return hashlib.sha256(json.dumps(doc, sort_keys=True).encode()).hexdigest()
+
+
+def _moved(answer: dict, old: str, new: str) -> dict:
+    """An answer given for `old` (a path in another application), for the same file at `new`: the folders in front of
+    the part both paths share are swapped in every file the answer names."""
+    o, n = Path(old).parts, Path(new).parts
+    k = 0
+    while k < min(len(o), len(n)) and o[len(o) - 1 - k] == n[len(n) - 1 - k]:
+        k += 1
+    o_pre, n_pre = "/".join(o[:len(o) - k]), "/".join(n[:len(n) - k])
+
+    def fix(p: str) -> str:
+        p = str(p or "")
+        if not o_pre:
+            return f"{n_pre}/{p}" if n_pre else p
+        return n_pre + p[len(o_pre):] if p == o_pre or p.startswith(o_pre + "/") else p
+    if old == new:
+        return answer
+    return {**answer, "edits": [{**e, "file": fix(e.get("file"))} for e in answer.get("edits") or []],
+            "new_files": [{**f, "file": fix(f.get("file"))} for f in answer.get("new_files") or []]}
+
+
+def shared_answer(key: str | None) -> dict | None:
+    if not key:
+        return None
+    f = shared_dir() / f"{key}.json"
+    try:
+        doc = json.loads(f.read_text())
+        return doc if isinstance(doc.get("answer"), dict) and doc.get("file") else None
+    except (OSError, ValueError):
+        return None
+
+
+def keep_answer(key: str | None, answer: dict, file: str, app: str | None) -> None:
+    """Keep an answer that applied cleanly, for the next order with the same code (best effort)."""
+    if not key:
+        return
+    try:
+        d = shared_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        tmp = d / f".{key}.{os.getpid()}.tmp"
+        tmp.write_text(json.dumps({"answer": answer, "file": file, "app": app}))
+        os.replace(tmp, d / f"{key}.json")
+    except OSError as ex:
+        print(f"warning: the answer for {file} is not kept for other orders: {ex}", file=sys.stderr)
+
+
 def estimate_chars(payload: dict, app_root: Path | None = None) -> int:
     """Characters sent to the LLM for the order (system, prompts, schema), for the queue's token estimate:
     the real prompts when the source is readable, else the findings' texts and a typical file size."""
@@ -1120,10 +1205,24 @@ def generate(payload: dict, tasks: list[dict], app_root: Path, ask, limit: int, 
                 r["reason"] = f"{t['file']} is not in the source at this commit"
             continue
         progress(f"generating: {label}file {n} of {min(len(tasks), limit)}: {t['file']}")
-        log(f"asking about {t['file']} ({', '.join(f['rule'] for f in t['findings'])})")
         prompt, shown = task_prompt(payload, t, app_root)
         answer, errors, changes = None, [], []
-        for attempt in (1, 2):
+        key = share_key(payload, t, app_root)
+        kept = shared_answer(key)
+        if kept:                                        # the same code was changed by an earlier order: no LLM call
+            reuse = _moved(kept["answer"], kept["file"], t["file"])
+            changes, errors = apply_answer(app_root, reuse, shown, t.get("project"))
+            if not errors:
+                answer = reuse
+                log(f"{t['file']}: the same code was changed before ({kept.get('app') or 'another order'}): "
+                    f"its change is reused, the LLM is not asked")
+                notes.append(f"{t['file']}: the change made for the same code in {kept.get('app') or 'an earlier order'} "
+                             f"was reused (no LLM call)")
+                for r in rows:
+                    r["shared"] = kept.get("app") or True
+        if answer is None:
+            log(f"asking about {t['file']} ({', '.join(f['rule'] for f in t['findings'])})")
+        for attempt in ((1, 2) if answer is None else ()):
             if attempt == 2 and budget is not None and calls >= budget:
                 break                                   # no call left for the retry: the errors stand
             q = prompt if attempt == 1 else retry_prompt(prompt, answer, errors)
@@ -1157,6 +1256,9 @@ def generate(payload: dict, tasks: list[dict], app_root: Path, ask, limit: int, 
                 r.update(status="fixed", reason="")
             else:
                 r["reason"] = why or ("no change made" if not code_changes else "the LLM did not say this one is fixed")
+        # kept for other orders only when it fixed everything in the file: a partial answer is asked again
+        if code_changes and all(r["status"] == "fixed" for r in rows) and not any(r.get("shared") for r in rows):
+            keep_answer(key, answer, t["file"], payload.get("app"))
     for c in changes_all:
         if c["kind"] == "package-manual":
             notes.append(f"package change to make by hand in {c['file'] or 'the project'}: {c['detail']}")

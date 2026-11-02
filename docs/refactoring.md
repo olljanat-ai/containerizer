@@ -73,6 +73,17 @@ half of the question's (8,192 at most), so a model that rambles cannot hold a CP
 the encoding of each file are kept. Package changes go into the component's `.csproj`; for other project
 types they are listed in the notes to make by hand.
 
+**The same code is changed once.** A library file used by several components of one application is one call
+(the calls are per file). Across orders, of the same application or of others, even in other repositories: an
+answer that fixed everything in its file is kept (next to the LLM answer cache), under a key made of the file's
+text, its findings (rule, why, fix and evidence lines), the component's `appsettings.json` shown with it, its
+language, target framework and packages, not of the application, the component or the file's path. An order that
+meets the same key gets that change, moved to where the file is in its own application, without asking the LLM;
+if the edits do not apply, the LLM is asked as usual. Each order still verifies its own patched copy, and the
+order page says which files had a change reused (*no LLM call*). Changed code, other findings or other packages
+make another key: those are asked about. Start "Make it A" with the smallest orders (Admin → Refactoring) and the
+ones after them reuse what the shared libraries got.
+
 The changes become one commit in a scratch copy ("Containerizer: &lt;app&gt;: &lt;findings fixed&gt;", author
 `Containerizer <containerizer@localhost>`), and the patch is `git format-patch` of it, so `git am` applies it
 as a commit with that message.

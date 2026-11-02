@@ -6,6 +6,18 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+0.3.13 was tagged but not released (signing failed at Sigstore's transparency log, a 502); its changes are listed
+under 0.3.13 below and are in this release.
+
+### Refactoring
+- The same code is changed by the LLM once: an answer that fixed everything in a file is kept under a key of the
+  file's text, its findings and the component's settings, language, target framework and packages (not the
+  application or the path), and a later order, of any application or repository, with the same file gets that change
+  without an LLM call (moved to where the file is; the LLM is asked when it does not apply). Libraries shared by
+  several applications are refactored once. The order page notes each reused change.
+
 ## 0.3.13 (2026-11-02)
 
 ### Web UI

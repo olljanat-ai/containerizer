@@ -4,6 +4,7 @@ matches, the retry with the errors), the patch from `git format-patch` that `git
 copy, the verification status, the queue handler, the admin pages (roles, CSRF, the download, escaping in
 the diff), the results page's Refactoring box, the command line, and the schema (CONTAINERIZER_TEST_SQL)."""
 import json
+import shutil
 import os
 import re
 import subprocess
@@ -279,7 +280,9 @@ def test_an_answer_that_does_not_apply_is_asked_again_with_the_errors(shop, tmp_
     res = rf.run_order(pl, tmp_path / "w", ask=ask)
     assert len(asked) == 2 and res["status"] == "applies-only"
     assert "could not be applied" in asked[1] and "was not found" in asked[1] and asked[1].startswith(asked[0])
-    # twice wrong: nothing changes, and no patch is offered
+    # twice wrong: nothing changes, and no patch is offered (a fresh store: the answer above would be reused)
+    import shutil as _sh
+    _sh.rmtree(rf.shared_dir(), ignore_errors=True)
     res = rf.run_order(pl, tmp_path / "w2", ask=lambda p, s: {**good_answer(), "edits": [
         {"file": "src/Shop.Api/Bank.cs", "search": "nope", "replace": "x"}]})
     assert res["status"] == "failed" and res["patch"] is None and "no usable edits" in res["reason"]
@@ -790,3 +793,46 @@ def test_the_results_page_says_what_happened_with_fixed_texts_only():
     assert "<script" not in webui.refactor_notice(parse_qs("refactor=ordered&files=%3Cscript%3E"))
     assert "some file(s)" in webui.refactor_notice(parse_qs("refactor=ordered&files=%3Cscript%3E"))
     assert webui.refactor_notice({}) == ""
+
+
+def test_the_same_code_is_changed_once_for_every_order(shop, tmp_path):
+    """A library's file with the same code and findings in another application (here at another path) gets the
+    change made for the first order without asking the LLM again; changed code is asked about."""
+    first = []
+    res = rf.run_order(_payload(shop, verify=False), tmp_path / "w", ask=lambda p, s: first.append(p) or good_answer())
+    assert len(first) == 1 and res["calls"] == 1 and len(list(rf.shared_dir().glob("*.json"))) == 1
+    # the same code in another repository, under lib/ instead of src/
+    other = tmp_path / "other"
+    (other / "lib").mkdir(parents=True)
+    shutil.copytree(shop / "src", other / "lib", dirs_exist_ok=True)
+    _git(other, "init", "--quiet")
+    _git(other, "add", "-A")
+    _git(other, "commit", "--quiet", "-m", "initial")
+    doc = json.loads(json.dumps(_doc(shop)).replace("src/Shop.Api", "lib/Shop.Api"))
+    pl = rf.build_payload(doc, {"type": "local", "path": str(other), "subdir": ".", "git": True},
+                          _git(other, "rev-parse", "HEAD").strip(), source_key="other")
+    pl["app"] = "other"
+    asked = []
+    res = rf.run_order(pl, tmp_path / "w2", ask=lambda p, s: asked.append(p) or good_answer())
+    assert asked == [] and res["calls"] == 0, res.get("reason")
+    assert [f["status"] for f in res["findings"]] == ["fixed", "fixed"]
+    assert "+        return X509CertificateLoader.LoadPkcs12FromFile(path, null);" in res["patch"]
+    assert "lib/Shop.Api/Bank.cs" in res["patch"] and "src/Shop.Api" not in res["patch"]
+    assert any("was reused (no LLM call)" in n for n in res["notes"])
+    # different code: the LLM is asked
+    (other / "lib/Shop.Api/Bank.cs").write_text(BANK + "// changed\n")
+    _git(other, "commit", "--quiet", "-am", "change")
+    pl["commit"] = _git(other, "rev-parse", "HEAD").strip()
+    rf.run_order(pl, tmp_path / "w3", ask=lambda p, s: asked.append(p) or good_answer())
+    assert asked and asked[0].startswith("Application other")         # asked (the fake answer's path is src/: retried)
+
+
+def test_an_answer_moves_with_the_file():
+    a = {"edits": [{"file": "src/Lib/A.cs", "search": "x", "replace": "y"}, {"file": "src/Lib/appsettings.json",
+                                                                              "search": "a", "replace": "b"}],
+         "new_files": [{"file": "src/Lib/Certs.cs", "content": "c"}]}
+    m = rf._moved(a, "src/Lib/A.cs", "libs/common/Lib/A.cs")
+    assert [e["file"] for e in m["edits"]] == ["libs/common/Lib/A.cs", "libs/common/Lib/appsettings.json"]
+    assert m["new_files"][0]["file"] == "libs/common/Lib/Certs.cs"
+    assert rf._moved(a, "src/Lib/A.cs", "src/Lib/A.cs") is a
+    assert rf._moved({"edits": [{"file": "A.cs"}]}, "A.cs", "x/A.cs")["edits"][0]["file"] == "x/A.cs"
