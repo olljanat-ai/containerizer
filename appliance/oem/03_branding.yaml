@@ -27,7 +27,7 @@ stages:
         - path: /etc/issue
           content: |
             containerizer appliance \n (\l): RECOVERY
-            Sign in as root, password "containerizer" (you change it at the sign-in).
+            Sign in as root, password "containerizer".
             Reinstall the OS with "elemental reset" (the persistent partition is kept).
 
           permissions: 0644

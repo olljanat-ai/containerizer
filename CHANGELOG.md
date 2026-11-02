@@ -6,6 +6,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## 0.3.3 (2026-11-02)
+
+### Appliance
+- Temporarily, root's default password `containerizer` is not expired: no sign-in is forced to change it. Change
+  it with `passwd` after the first sign-in; the change is kept on the persistent partition as before. The first
+  sign-in's forced change failed on Hyper-V ("Authentication token manipulation error"); `EXPIRE_DEFAULT` in
+  `cz-root-password` turns it back on once that is fixed.
+
 ## 0.3.2 (2026-11-02)
 
 ### Appliance
