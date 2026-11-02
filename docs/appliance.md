@@ -72,7 +72,8 @@ files ([configuration files](appliance-admin.md#configuration-files)). Then:
 4. Open `https://<CZ_HOSTNAME>/admin`. With the default certificate from the appliance's own CA, browsers
    warn until you trust its root: `/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt`.
    With `CZ_ACME_EMAIL`, allow `acme-v02.api.letsencrypt.org` on the Firewall page first; the name must
-   resolve to the appliance from the internet (TLS-ALPN challenge on 443).
+   resolve to the appliance from the internet (TLS-ALPN challenge on 443). For a certificate from your own
+   CA, see [HTTPS certificate](appliance-admin.md#https-certificate).
 5. **Admin → Firewall**: allow the hosts your scans need (Git servers, package feeds, registries).
 6. **Admin → Source control & LLM**: a read-only token for each organization to scan and a write token
    for each output repository ([source-control.md](source-control.md)), and the LLM if scans should ask one.

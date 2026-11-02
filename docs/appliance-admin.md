@@ -81,7 +81,7 @@ The first boot creates `/etc/containerizer/` (mode 700) with:
 
 | File | What to set |
 | --- | --- |
-| `appliance.env` | `CZ_HOSTNAME` (the DNS name users open, usually the FQDN: the name in the HTTPS certificate and the sign-in redirect; it does not rename the machine), `CZ_ACME_EMAIL` (Let's Encrypt instead of the appliance's own CA), `CZ_DNS_SERVERS`, `CZ_MSSQL_EDITION`, `CZ_MSSQL_MEMORY`, `CZ_SQL_*` ([external database](#external-database)), `CZ_LLM_HEAVY` ([LLM-heavy mode](platform-migration.md#llm-heavy-mode), off by default) |
+| `appliance.env` | `CZ_HOSTNAME` (the DNS name users open, usually the FQDN: the name in the HTTPS certificate and the sign-in redirect; it does not rename the machine), `CZ_ACME_EMAIL` (Let's Encrypt instead of the appliance's own CA; your own certificate: [HTTPS certificate](#https-certificate)), `CZ_DNS_SERVERS`, `CZ_MSSQL_EDITION`, `CZ_MSSQL_MEMORY`, `CZ_SQL_*` ([external database](#external-database)), `CZ_LLM_HEAVY` ([LLM-heavy mode](platform-migration.md#llm-heavy-mode), off by default) |
 | `web.env` | Sign-in for the web UI: `CONTAINERIZER_OIDC_*`, `CONTAINERIZER_ADMINS`, roles, viewers, API ([sign-in and roles](sign-in.md)) |
 | `worker.env` | Push credentials for an external image registry, and extra registry hosts the worker may push to. Scans that push to the appliance's own registry need none; source control tokens are registered on the admin pages ([source-control.md](source-control.md)) |
 | `sandbox.env` | The output repository the sandbox cluster deploys from ([the sandbox cluster](scheduled-scans.md#the-sandbox-cluster)) |
@@ -89,6 +89,25 @@ The first boot creates `/etc/containerizer/` (mode 700) with:
 | `egress.json` | The egress allow-list: change it on the Firewall page, not here |
 | `secrets/` | Generated passwords (SQL Server logins, Grafana `admin`), the root password (`root-shadow`), `sql-owner` for an [external database](#external-database) and the key pair that seals source control tokens (`credential-key` for the worker only, `credential-key.pub` for the web UI): root-only, never shown in the web UI. Keep `credential-key` when restoring a backup: the registered tokens open only with it |
 | `network/` | Optional `systemd-networkd` `.network` files for static addresses (default: DHCP on every NIC) |
+
+## HTTPS certificate
+
+The web UI and Grafana are served over HTTPS for `CZ_HOSTNAME` (`appliance.env`) with one of three
+certificates, the first that applies:
+
+1. **Your own**, for example from your company's CA: put the certificate in
+   `/etc/containerizer/tls/cert.pem`, followed by its intermediate CA certificates (PEM, server certificate
+   first; the root is not needed), and its private key, unencrypted, in `/etc/containerizer/tls/key.pem`
+   (`chmod 600`). It must name `CZ_HOSTNAME` (subject alternative name). Then `systemctl reboot`. Renew it the
+   same way: replace both files and restart. It wins over `CZ_ACME_EMAIL`.
+2. **Let's Encrypt**, with `CZ_ACME_EMAIL` set: the name must resolve to the appliance from the internet
+   (TLS-ALPN challenge on 443), and `acme-v02.api.letsencrypt.org` must be allowed on the Firewall page.
+3. **The appliance's own CA** (default): browsers warn until you trust its root,
+   `/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt`.
+
+Only the internal CA's certificate also covers the appliance's IP addresses. If the web UI does not answer after
+a change, `journalctl -b -u caddy -u containerizer-firstboot` says why (for example a key that does not match
+the certificate).
 
 ## External database
 
