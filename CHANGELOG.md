@@ -5,7 +5,7 @@ by hand on `main` with the version, and it tags the commit and releases from the
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHD images as release assets.
 
-## Unreleased
+## 0.3.0 (2026-11-02)
 
 Results database schema version 25 (`containerizer db init` upgrades it; the appliance does at start).
 
@@ -47,10 +47,6 @@ Results database schema version 25 (`containerizer db init` upgrades it; the app
 - `containerizer llm-queue --kinds` (the job kinds a runner takes; its housekeeping follows them).
 - `examples/egress-demo` (an A-rated app that calls a configured API, another application and a hard-coded paste
   site) and `examples/orders-demo` (the other application).
-
-## 0.3.0 (2026-11-02)
-
-Results database schema version 23 (`containerizer db init` upgrades it; the appliance does at start).
 
 ### Build pipelines
 - Container image build pipelines for the application's own repository (docs/build-pipelines.md), for the

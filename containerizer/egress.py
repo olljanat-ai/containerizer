@@ -466,6 +466,11 @@ class Observer:
         if platform_namespace(d.namespace, self.cfg):
             self.agg.stats["platform"] += 1
             return None
+        if (d.dport or 0) == 53 and _in(d.dst, self.cfg.get("cluster_cidrs")):
+            # cluster DNS: every generated NetworkPolicy allows it, so a drop is kube-router's ipsets catching up
+            # with a pod that just started (seen in the lab), not something the application needs
+            self.agg.stats["dns"] = self.agg.stats.get("dns", 0) + 1
+            return None
         pods = self.pods.of(d.namespace, d.src)
         if d.src not in pods:
             self.agg.stats["ingress"] += 1      # the pod is the destination: incoming traffic, not egress

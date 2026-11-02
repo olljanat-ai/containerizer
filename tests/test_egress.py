@@ -137,9 +137,10 @@ def test_observer_keeps_egress_of_app_pods_and_names_it():
     assert (f.destination, f.named, f.component, f.packets, f.pods) == ("api.github.com", True, "web", 2, {"web-1": "10.42.0.25"})
     assert obs.drop(D("shop", "web", out, "10.42.0.99", "10.42.0.25", "TCP", 4000, 8080, True)) is None   # incoming
     assert obs.drop(D("kube-system", "x", out, "10.42.0.3", "8.8.8.8", "UDP", 1, 53, False)) is None      # platform
+    assert obs.drop(D("shop", "web", out, "10.42.0.25", "10.42.0.9", "UDP", 5000, 53, False)) is None      # cluster DNS
     g = obs.drop(D("shop", "web", out, "10.42.0.25", "203.0.113.9", "TCP", 4002, 8443, True))
     assert (g.destination, g.named) == ("203.0.113.9", False)
-    assert obs.agg.stats == {"drops": 5, "egress": 3, "ingress": 1, "named": 2, "platform": 1}
+    assert obs.agg.stats == {"drops": 6, "egress": 3, "ingress": 1, "named": 2, "platform": 1, "dns": 1}
     conn = FakeConn()
     assert eg.record(conn, obs.agg.take(), "obs") == 2
     (sql, p), _ = conn.sql(r"EXEC cz.RecordEgressFlow")
