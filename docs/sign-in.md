@@ -115,4 +115,9 @@ rows needs the database owner).
   SIEM if they must be tamper-proof.
 
 Grafana has its own sign-in: user `admin` with the password in `/etc/containerizer/secrets/grafana-admin`,
-or your identity provider through `GF_AUTH_GENERIC_OAUTH_*` settings in `/etc/containerizer/grafana.env`.
+or your identity provider through `GF_AUTH_GENERIC_OAUTH_*` (or `GF_AUTH_AZUREAD_*`, ...) settings in
+`/etc/containerizer/grafana.env`. Once a provider is enabled there (`GF_AUTH_<provider>_ENABLED=true`), the
+appliance hides Grafana's user name and password form and sends people straight to the provider
+(`GF_AUTH_DISABLE_LOGIN_FORM=true`, `GF_AUTH_<provider>_AUTO_LOGIN=true`; set either in `grafana.env` to choose
+yourself, e.g. `GF_AUTH_DISABLE_LOGIN_FORM=false` to sign in as `admin` again). The `admin` password still works
+for Grafana's API. Reboot after a change (the settings are worked out at start-up). Grafana's home page is the **Containerizer: organization scans** dashboard.

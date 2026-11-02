@@ -81,7 +81,8 @@ files ([configuration files](appliance-admin.md#configuration-files)). Then:
    fill in `sandbox.env` so the sandbox cluster deploys what they generate.
 
 Grafana is at `https://<CZ_HOSTNAME>/grafana/`, user `admin`, password in
-`/etc/containerizer/secrets/grafana-admin` (change it in Grafana, or set up sign-in in `grafana.env`).
+`/etc/containerizer/secrets/grafana-admin` (change it in Grafana, or set up sign-in in `grafana.env`:
+[Grafana sign-in](sign-in.md)). It opens on the **Containerizer: organization scans** dashboard.
 
 ## Next steps
 

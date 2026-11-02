@@ -6,7 +6,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.3.5 (2026-11-02)
 
 ### Appliance
 - The firewall answers ping from outside: ICMP and ICMPv6 echo requests are allowed in (at most 20 a second).
@@ -18,6 +18,8 @@ qcow2 and VHDX images as release assets.
 - Your own HTTPS certificate for the web UI (for example from your company's CA): `cert.pem` (with its chain) and
   `key.pem` in `/etc/containerizer/tls/`. It wins over Let's Encrypt and the appliance's own CA
   (docs/appliance-admin.md#https-certificate).
+- Grafana opens on the **Containerizer: organization scans** dashboard. With an identity provider enabled in
+  `grafana.env`, its user name and password form is hidden and sign-in goes straight to the provider.
 
 ## 0.3.4 (2026-11-02)
 
