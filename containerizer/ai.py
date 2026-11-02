@@ -19,13 +19,16 @@ to rules/learned/ with `source: ai` and the model name, so it can be reviewed.
 from __future__ import annotations
 
 import contextvars
+import http.client
 import ipaddress
 import json
 import os
 import re
 import shutil
 import subprocess
+import socket
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -50,6 +53,44 @@ LISTENERS: list = []
 # sandbox-tester, ...) and the repository being scanned; set with `with usage_scope(...)`
 _SCOPE: contextvars.ContextVar = contextvars.ContextVar("containerizer_llm_scope", default={})
 HEAVY_ENV = "CONTAINERIZER_LLM_HEAVY"
+
+
+# Cancelling a scan run stops its LLM calls (worker.py sets the check for the run): a call not started yet raises
+# Cancelled, and one waiting for a self-hosted server has its connection closed, which makes llama.cpp, vLLM and
+# Ollama stop generating, so a cancelled scan does not keep the local LLM busy.
+_CANCEL = {"check": None}
+CANCEL_POLL = 1.0
+
+
+class Cancelled(RuntimeError):
+    """The scan run asking the LLM was cancelled (or the worker is stopping)."""
+
+
+class cancel_when:
+    """`with cancel_when(hooks.should_stop):` the LLM calls inside it (any thread) stop when it returns true."""
+
+    def __init__(self, check):
+        self.check = check
+
+    def __enter__(self):
+        self.prev, _CANCEL["check"] = _CANCEL["check"], self.check
+        return self
+
+    def __exit__(self, *exc):
+        _CANCEL["check"] = self.prev
+
+
+def cancelled() -> bool:
+    check = _CANCEL["check"]
+    try:
+        return bool(check and check())
+    except Exception:
+        return False
+
+
+def _raise_if_cancelled() -> None:
+    if cancelled():
+        raise Cancelled("cancelled: the scan run was cancelled, the LLM was not asked")
 
 
 class usage_scope:
@@ -266,6 +307,7 @@ def ask_json(prompt: str, schema: dict, model: str | None = None, effort: str = 
         cached = json.loads(cf.read_text())
         record_usage({**cached["usage"], **tags, "cached": True})
         return cached["data"]
+    _raise_if_cancelled()
     t0 = time.time()
     try:
         if backend == "api":
@@ -326,12 +368,31 @@ def _first_json(text: str):
     return None
 
 
+def _run_cancellable(cmd: list[str], stdin: str, timeout: float) -> subprocess.CompletedProcess:
+    """subprocess.run(..., capture_output=True, text=True, cwd=/tmp), killed when the scan run is cancelled."""
+    with subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                          cwd="/tmp") as proc:
+        end = time.monotonic() + timeout
+        pending = stdin
+        while True:
+            try:
+                out, err = proc.communicate(pending, timeout=CANCEL_POLL)
+                return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+            except subprocess.TimeoutExpired:
+                pending = None
+                if cancelled() or time.monotonic() > end:
+                    proc.kill()
+                    proc.communicate()
+                    if cancelled():
+                        raise Cancelled("cancelled: the scan run was cancelled while the LLM was answering") from None
+                    raise
+
+
 def _ask_cli(prompt: str, schema: dict, model: str, _retry: bool = False, system: str = SYSTEM):
     full = (f"{system}\n\n{prompt}\n\nRespond with ONLY a JSON object (no prose, no code fences) that validates "
             f"against this JSON schema:\n{json.dumps(schema)}")
-    p = subprocess.run(["claude", "-p", "--model", model, "--output-format", "json", "--max-turns", "1",
-                        "--disallowedTools", "Bash,Edit,Write,Read,Glob,Grep,WebFetch,WebSearch,Agent"],
-                       input=full, capture_output=True, text=True, timeout=900, cwd="/tmp")
+    p = _run_cancellable(["claude", "-p", "--model", model, "--output-format", "json", "--max-turns", "1",
+                          "--disallowedTools", "Bash,Edit,Write,Read,Glob,Grep,WebFetch,WebSearch,Agent"], full, 900)
     try:
         env = json.loads(p.stdout)
     except json.JSONDecodeError:
@@ -404,11 +465,64 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
+class _Tracked:
+    """The HTTP(S) connections of one request, so a cancel can close them while the answer is awaited."""
+
+    def __init__(self):
+        self.conns: list = []
+
+    def handlers(self):
+        tracked = self
+
+        def factory(cls):
+            def make(*a, **kw):
+                c = cls(*a, **kw)
+                tracked.conns.append(c)
+                return c
+            return make
+
+        class H(urllib.request.HTTPHandler):
+            def http_open(self, req):
+                return self.do_open(factory(http.client.HTTPConnection), req)
+
+        class S(urllib.request.HTTPSHandler):
+            def https_open(self, req):
+                return self.do_open(factory(http.client.HTTPSConnection), req, context=self._context)
+        return H(), S()
+
+    def close(self) -> None:
+        for c in self.conns:
+            sock = getattr(c, "sock", None)
+            try:
+                if sock:
+                    sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+
 def _post_json(url: str, body: dict, headers: dict, timeout: float) -> dict:
     req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
                                  headers={"Content-Type": "application/json", "Accept": "application/json", **headers})
-    with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 - scheme checked in _llm_base_url
-        return json.loads(r.read().decode("utf-8", "replace"))
+    tracked = _Tracked()
+    opener = urllib.request.build_opener(*tracked.handlers())        # proxies from the environment as urlopen
+    done = threading.Event()
+
+    def watch():                        # closes the connection when the run is cancelled mid-answer
+        while not done.wait(CANCEL_POLL):
+            if cancelled():
+                tracked.close()
+                return
+    if _CANCEL["check"]:
+        threading.Thread(target=watch, daemon=True).start()
+    try:
+        with opener.open(req, timeout=timeout) as r:  # noqa: S310 - scheme checked in _llm_base_url
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except (OSError, http.client.HTTPException, ValueError):
+        if cancelled():
+            raise Cancelled("cancelled: the scan run was cancelled while the LLM was answering") from None
+        raise
+    finally:
+        done.set()
 
 
 # A server that is restarting or still loading its model (llama.cpp and vLLM answer 503 until it is in
@@ -434,7 +548,14 @@ def _post_json_retrying(url: str, body: dict, headers: dict, timeout: float) -> 
                 raise
             why = str(reason)
         print(f"[ai] LLM server not ready ({why}): retrying in {delay:.0f} s", file=sys.stderr, flush=True)
-        time.sleep(delay)
+        if _CANCEL["check"]:            # a scan run: stop waiting as soon as it is cancelled
+            stop = time.monotonic() + delay
+            while time.monotonic() < stop:
+                _raise_if_cancelled()
+                time.sleep(min(CANCEL_POLL, max(0.0, stop - time.monotonic())))
+            _raise_if_cancelled()
+        else:
+            time.sleep(delay)
         delay = min(delay * 2, 30.0)
 
 

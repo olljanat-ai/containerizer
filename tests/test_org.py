@@ -571,12 +571,14 @@ def test_run_org_with_cache_state_and_overrides(tmp_path, monkeypatch):
     assert res["dockerized"].status == "deployed"
     assert res["dockerized"].overridden == [{"status": "skipped-dockerfile", "reason": "found Dockerfile"}]
     assert res["docs"].status == "skipped-no-code" and "no source code" in res["docs"].reason
-    assert res["off"].status == "disabled" and "skipme" not in res
+    # disabled: left out of the run before it starts (not in its results or progress), recorded as not processed
+    assert "off" not in res and "skipme" not in res
+    assert state.recorded["off"].status == "disabled" and state.recorded["off"].reason == "disabled by an administrator"
     # enabled although it has no code: analyzed, nothing to deploy
     assert res["readme"].status == "no-a-components" and res["readme"].overridden[0]["status"] == "skipped-no-code"
     assert state.recorded["skipme"].status == "skipped-filter"
     assert set(state.recorded) == {"web", "dockerized", "docs", "off", "skipme", "readme"}
-    assert ("start", 5) in hooks.events and ("git", "clone", True) in hooks.events
+    assert ("start", 4) in hooks.events and ("git", "clone", True) in hooks.events
     assert not (cache / "off").exists()                 # disabled: never fetched
     assert (cache / "web").is_dir() and (cache / orgmod.CACHE_MARK).exists()
     # second run: clones are pulled, not cloned again; a repository that left the organization loses its clone

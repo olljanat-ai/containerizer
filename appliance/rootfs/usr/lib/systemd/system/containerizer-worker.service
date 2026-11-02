@@ -27,9 +27,11 @@ LoadCredential=sql-scanner:/etc/containerizer/secrets/cz-scanner
 LoadCredential=credential-key:/etc/containerizer/secrets/credential-key
 WorkingDirectory=/var/lib/containerizer/worker
 ExecStart=/usr/lib/containerizer/bin/cz-worker
-# finishes the repository it is on, then stops; the run is marked cancelled
+# SIGTERM stops the run: its LLM calls at once (the connection to the LLM server is closed), and the run ends after the
+# step it is on. A reboot waits at most 2 minutes for that (it waited up to 2 hours for the whole repository before);
+# a run cut off is marked failed at the next start and the next run processes every repository again.
 KillSignal=SIGTERM
-TimeoutStopSec=2h
+TimeoutStopSec=2min
 Restart=on-failure
 RestartSec=30
 # The docker group is root-equivalent: the worker builds and runs the scanned repositories' images,
