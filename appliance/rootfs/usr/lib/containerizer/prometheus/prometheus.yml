@@ -22,3 +22,84 @@ scrape_configs:
   - job_name: prometheus
     static_configs:
       - targets: ["127.0.0.1:9090"]
+
+  # The k3s sandbox cluster (docs/appliance-admin.md#metrics), read with the cz-monitoring/cz-prometheus token that
+  # containerizer-prometheus-k8s.service copies to /run/containerizer/prometheus-k8s (with the cluster's CA). Until
+  # k3s is up these targets are down. Only the metrics the dashboards use are kept.
+  - job_name: k3s-apiserver
+    scheme: https
+    tls_config: {ca_file: /etc/prometheus-k8s/ca.crt}
+    authorization: {credentials_file: /etc/prometheus-k8s/token}
+    static_configs:
+      - targets: ["127.0.0.1:6443"]
+        labels: {instance: appliance}
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: apiserver_request_total|apiserver_request_duration_seconds_(bucket|count|sum)|apiserver_current_inflight_requests|apiserver_storage_objects|process_cpu_seconds_total|process_resident_memory_bytes|go_goroutines
+        action: keep
+      - source_labels: [__name__, verb]
+        regex: apiserver_request_duration_seconds_bucket;(WATCH|CONNECT)
+        action: drop
+  - job_name: kubelet
+    scheme: https
+    tls_config: {ca_file: /etc/prometheus-k8s/ca.crt}
+    authorization: {credentials_file: /etc/prometheus-k8s/token}
+    static_configs:
+      - targets: ["127.0.0.1:10250"]
+        labels: {instance: appliance}
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: kubelet_running_pods|kubelet_running_containers|kubelet_volume_stats_(used|capacity)_bytes|kubelet_pod_start_duration_seconds_(count|sum)|kubelet_node_name
+        action: keep
+  - job_name: kubelet-cadvisor
+    scheme: https
+    metrics_path: /metrics/cadvisor
+    tls_config: {ca_file: /etc/prometheus-k8s/ca.crt}
+    authorization: {credentials_file: /etc/prometheus-k8s/token}
+    static_configs:
+      - targets: ["127.0.0.1:10250"]
+        labels: {instance: appliance}
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: container_cpu_usage_seconds_total|container_memory_working_set_bytes|container_network_(receive|transmit)_bytes_total|container_fs_usage_bytes|machine_cpu_cores|machine_memory_bytes
+        action: keep
+      # per pod (cgroup of the pod: container="" and pod set; the same with containerd and Docker); the machine's own
+      # cgroups and containers no pod is known for are dropped, so the series stay unique without id, name and image
+      - source_labels: [__name__, pod]
+        regex: container_.+;
+        action: drop
+      - source_labels: [container]
+        regex: .+
+        action: drop
+      - regex: id|name|image
+        action: labeldrop
+  # kube-state-metrics (cz-monitoring) and Flux's controllers (flux-system), found through the API server
+  - job_name: kubernetes-pods
+    honor_labels: true                  # kube-state-metrics' own namespace and pod labels describe the objects
+    kubernetes_sd_configs:
+      - role: pod
+        api_server: https://127.0.0.1:6443
+        tls_config: {ca_file: /etc/prometheus-k8s/ca.crt}
+        authorization: {credentials_file: /etc/prometheus-k8s/token}
+        namespaces: {names: [cz-monitoring, flux-system]}
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_pod_container_port_name]
+        regex: cz-monitoring;http-metrics|flux-system;http-prom
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__meta_kubernetes_namespace]
+        regex: cz-monitoring
+        replacement: kube-state-metrics
+        target_label: job
+      - source_labels: [__meta_kubernetes_namespace]
+        regex: flux-system
+        replacement: flux
+        target_label: job
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        target_label: app
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - target_label: instance
+        replacement: appliance

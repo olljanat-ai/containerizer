@@ -628,3 +628,64 @@ def test_reboot_does_not_wait_for_a_scan_and_the_screen_shows_why():
     args = (APPLIANCE / "elemental/bootargs.cfg").read_text()
     cmds = re.findall(r'set kernelcmd="([^"]*)"', args)
     assert len(cmds) == 2 and all(re.findall(r"console=(\S+)", c)[-1] == "tty1" for c in cmds)
+
+
+def test_k3s_and_flux_metrics_and_dashboards():
+    """Grafana's k3s and Flux dashboards: Prometheus reads the cluster as a read-only ServiceAccount over verified TLS,
+    keeps every metric the dashboards use, and kube-state-metrics (pinned by digest) reports Flux's objects."""
+    import yaml
+    root = APPLIANCE.parent
+    docs = list(yaml.safe_load_all((APPLIANCE / "rootfs/var/lib/rancher/k3s/server/manifests/"
+                                                 "containerizer-monitoring.yaml").read_text()))
+    by = {(d["kind"], d["metadata"]["name"]): d for d in docs}
+    ns = by[("Namespace", "cz-monitoring")]
+    assert ns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "restricted"
+    image = by[("Deployment", "kube-state-metrics")]["spec"]["template"]["spec"]["containers"][0]["image"]
+    assert re.fullmatch(r"registry\.k8s\.io/kube-state-metrics/kube-state-metrics:v[\d.]+@sha256:[0-9a-f]{64}", image)
+    for role in ("cz-prometheus", "cz-kube-state-metrics"):
+        verbs = {v for r in by[("ClusterRole", role)]["rules"] for v in r["verbs"]}
+        assert verbs <= {"get", "list", "watch"}, role                 # read-only
+    flux = yaml.safe_load(by[("ConfigMap", "kube-state-metrics-flux")]["data"]["flux.yaml"])
+    kinds = {r["groupVersionKind"]["kind"] for r in flux["spec"]["resources"]}
+    assert {"Kustomization", "GitRepository", "HelmRelease", "OCIRepository"} <= kinds
+    assert by[("Secret", "cz-prometheus-token")]["type"] == "kubernetes.io/service-account-token"
+
+    prom = yaml.safe_load((APPLIANCE / "rootfs/usr/lib/containerizer/prometheus/prometheus.yml").read_text())
+    jobs = {j["job_name"]: j for j in prom["scrape_configs"]}
+    keep = set()
+    for name in ("k3s-apiserver", "kubelet", "kubelet-cadvisor"):
+        j = jobs[name]
+        assert j["tls_config"] == {"ca_file": "/etc/prometheus-k8s/ca.crt"}          # verified, never insecure
+        assert j["authorization"] == {"credentials_file": "/etc/prometheus-k8s/token"}
+        keep |= {re.compile(r["regex"]) for r in j["metric_relabel_configs"] if r.get("action") == "keep"}
+    sd = jobs["kubernetes-pods"]["kubernetes_sd_configs"][0]
+    assert sd["tls_config"]["ca_file"] == "/etc/prometheus-k8s/ca.crt" and "insecure_skip_verify" not in str(prom)
+    unit = (APPLIANCE / "rootfs/usr/lib/systemd/system/containerizer-prometheus.service").read_text()
+    assert "/run/containerizer/prometheus-k8s:/etc/prometheus-k8s:ro" in unit
+    assert "containerizer-prometheus-k8s.service" in (APPLIANCE / "Dockerfile").read_text()
+
+    uids = set()
+    for f in ("containerizer-scans.json", "containerizer-k3s.json", "containerizer-flux.json"):
+        d = json.loads((root / "monitoring/grafana" / f).read_text())
+        assert d["uid"] not in uids
+        uids.add(d["uid"])
+        ids = [p["id"] for p in d["panels"]]
+        assert len(ids) == len(set(ids)), f
+        cells = set()
+        for p in d["panels"]:
+            g = p["gridPos"]
+            mine = {(x, y) for x in range(g["x"], g["x"] + g["w"]) for y in range(g["y"], g["y"] + g["h"])}
+            assert not mine & cells and g["x"] + g["w"] <= 24, (f, p["title"])
+            cells |= mine
+        if f == "containerizer-scans.json":
+            continue
+        for p in d["panels"]:
+            for t in p.get("targets") or []:
+                for m in re.findall(r"\b([a-z_:]+)\s*(?=\{|\[|\))", t["expr"]):
+                    if m in ("sum", "by", "count", "max", "rate", "increase", "topk", "or", "vector", "histogram_quantile",
+                             "le", "verb", "code", "namespace", "pod", "phase", "reason", "deployment", "controller",
+                             "result", "name", "persistentvolumeclaim"):
+                        continue
+                    ok = m == "up" or m.startswith(("kube_", "gotk_", "controller_runtime_", "workqueue_")) or \
+                        any(k.fullmatch(m) for k in keep)
+                    assert ok, (f, p["title"], m)

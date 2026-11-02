@@ -19,6 +19,14 @@ qcow2 and VHDX images as release assets.
   processes that many repositories at the same time, each in its own process, so it uses that many CPU cores
   (the assessment is CPU-bound Python, so threads would not help). Results are committed one at a time.
 
+### Appliance
+- Grafana: two more dashboards, **Containerizer: k3s sandbox cluster** (API server and kubelet up, pods not running,
+  containers waiting, restarts, deployments short of replicas, CPU, memory and network by namespace, top pods, volumes,
+  API server requests and latency) and **Containerizer: Flux** (every Flux object with its Ready state, reason,
+  revision and suspend flag; reconciliations, errors, reconcile time, work queues and the controllers' CPU and memory).
+  Prometheus reads k3s and Flux as a read-only ServiceAccount, and kube-state-metrics runs in the sandbox cluster
+  (namespace `cz-monitoring`).
+
 ## 0.3.10 (2026-11-02)
 
 ### Appliance
