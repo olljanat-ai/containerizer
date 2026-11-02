@@ -15,6 +15,9 @@ qcow2 and VHDX images as release assets.
 - `CZ_HOSTNAME` is only the web UI's name (usually the FQDN: the HTTPS certificate and the sign-in redirect). It no
   longer renames the machine: the sandbox cluster's k3s node is named after the machine, and a rename made k3s
   register a second node.
+- Your own HTTPS certificate for the web UI (for example from your company's CA): `cert.pem` (with its chain) and
+  `key.pem` in `/etc/containerizer/tls/`. It wins over Let's Encrypt and the appliance's own CA
+  (docs/appliance-admin.md#https-certificate).
 
 ## 0.3.4 (2026-11-02)
 

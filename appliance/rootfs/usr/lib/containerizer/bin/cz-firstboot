@@ -59,10 +59,26 @@ set +a
 # else "containerizer") is the sandbox cluster's node name too, and k3s would register a second node
 host="${CZ_HOSTNAME:-$(hostname)}"
 install -d -m 0755 /run/containerizer
-# Caddy: the certificate covers the name and the addresses (added by cz-addresses once DHCP is done)
+# Caddy: the certificate covers the name and the addresses (added by cz-addresses once DHCP is done).
+# Certificate: your own (/etc/containerizer/tls/cert.pem with its chain, and key.pem), else Let's Encrypt
+# (CZ_ACME_EMAIL), else Caddy's own CA. Caddy (group caddy) cannot read /etc/containerizer: a copy in /run.
+T=$C/tls
+R=/run/containerizer/tls
+rm -rf "$R"
+if [ -s "$T/cert.pem" ] && [ -s "$T/key.pem" ]; then
+  install -d -m 0750 -o root -g caddy "$R"
+  install -m 0644 -o root -g caddy "$T/cert.pem" "$R/cert.pem"
+  install -m 0640 -o root -g caddy "$T/key.pem" "$R/key.pem"
+  [ -z "${CZ_ACME_EMAIL:-}" ] || echo "cz-firstboot: $T has a certificate: CZ_ACME_EMAIL is not used" >&2
+elif [ -e "$T/cert.pem" ] || [ -e "$T/key.pem" ]; then
+  echo "cz-firstboot: $T needs both cert.pem and key.pem: not used" >&2
+fi
 {
   echo "CZ_SITES=https://$host"
-  if [ -n "${CZ_ACME_EMAIL:-}" ]; then
+  if [ -s "$R/key.pem" ]; then
+    echo "CZ_CADDY_TLS=$R/cert.pem $R/key.pem"
+    echo "CZ_CADDY_ACME="
+  elif [ -n "${CZ_ACME_EMAIL:-}" ]; then
     echo "CZ_CADDY_TLS=$CZ_ACME_EMAIL"
     echo "CZ_CADDY_ACME=email $CZ_ACME_EMAIL"
   else
