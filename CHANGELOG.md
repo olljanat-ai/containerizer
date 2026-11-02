@@ -14,6 +14,11 @@ qcow2 and VHDX images as release assets.
   sign-in's forced change failed on Hyper-V ("Authentication token manipulation error"); `EXPIRE_DEFAULT` in
   `cz-root-password` turns it back on once that is fixed.
 
+### CI
+- The `ci` and `security` workflows run only by hand (Actions → Run workflow) for now: no pull request, push or
+  schedule triggers. The release's QEMU boot test is optional (`boot_test` input of a manual run); a pushed tag
+  releases without it.
+
 ## 0.3.2 (2026-11-02)
 
 ### Appliance
