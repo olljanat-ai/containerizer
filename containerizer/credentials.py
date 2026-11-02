@@ -110,7 +110,12 @@ def load_private(path: str | Path):
     p = Path(path)
     try:
         mode = p.stat().st_mode
-        if mode & (stat.S_IRWXG | stat.S_IRWXO):
+        # systemd's LoadCredential= gives the service its copy as root:root 0440 (read through an ACL) in
+        # $CREDENTIALS_DIRECTORY, a directory only that service sees: group read is fine there, nowhere else
+        creds_dir = os.environ.get("CREDENTIALS_DIRECTORY")
+        systemd = bool(creds_dir) and p.resolve().parent == Path(creds_dir).resolve()
+        allowed = stat.S_IRGRP if systemd else 0
+        if mode & (stat.S_IRWXG | stat.S_IRWXO) & ~allowed:
             raise CredentialError(f"credential key {path}: readable by others; chmod 600 it")
         k = serialization.load_pem_private_key(p.read_bytes(), password=None)
     except OSError as ex:
