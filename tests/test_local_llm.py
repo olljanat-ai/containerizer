@@ -633,3 +633,11 @@ def test_the_front_config():
     for s in ("admin off", "{$CZ_LLM_UPSTREAMS}", "lb_policy least_conn", "health_uri /health", "bind 127.0.0.1",
               "http://:{$CZ_LLM_PORT}"):
         assert s in caddy, s
+    # the appliance has Debian's Caddy 2.6.2: no persist_config there (0.5.0's front never started);
+    # appliance/ci/vm-checks.sh validates the file with that Caddy
+    assert "persist_config" not in caddy
+
+
+def test_a_restart_of_the_front_leaves_the_servers_running():
+    tmpl = (APPLIANCE / "rootfs/usr/lib/systemd/system/containerizer-local-llm@.service").read_text()
+    assert not re.search(r"^(PartOf|BindsTo)=", tmpl, re.M)

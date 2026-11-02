@@ -3,7 +3,6 @@
 # CZ_LLM_PORT and CZ_LLM_UPSTREAMS ("127.0.0.1:8090 127.0.0.1:8091") come from /run/containerizer/local-llm.env.
 {
 	admin off
-	persist_config off
 	auto_https off
 	servers {
 		protocols h1

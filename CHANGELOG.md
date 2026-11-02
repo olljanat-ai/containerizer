@@ -6,6 +6,15 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## 0.5.1 (2026-11-03)
+
+### Appliance
+- Built-in LLM: 0.5.0's front (`containerizer-local-llm.service`, 127.0.0.1:8082) never started: its Caddy config set
+  `persist_config`, which the appliance's Caddy (2.6.2) does not know. The unit restarted every 10 seconds and, as
+  the llama.cpp servers were part of it, restarted them too, so no server stayed up long enough to answer. The
+  option is gone, the servers are no longer part of the front (a restart of the front leaves them running), and the
+  appliance boot test checks the front's config with the appliance's Caddy.
+
 ## 0.5.0 (2026-11-03)
 
 ### Appliance

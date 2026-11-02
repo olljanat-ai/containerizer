@@ -10,7 +10,8 @@ ConditionPathExists=!/run/elemental/recovery_mode
 # for a copy of the model on each (local_llm.plan), on 127.0.0.1:8090+%i; containerizer-local-llm.service answers
 # on 127.0.0.1:8082 and sends each request to the least busy one.
 ConditionPathExists=/run/containerizer/local-llm-%i.env
-PartOf=containerizer-local-llm.service
+# Not PartOf the front: a restart of the front (its own Restart=always) would restart every server too, and each
+# one loads and locks 16 GB again. The system agent stops the servers with the front (local_llm._stop_server).
 
 [Service]
 EnvironmentFile=/usr/lib/containerizer/images.env

@@ -188,7 +188,11 @@ if [ "$(systemctl is-enabled containerizer-local-llm.service 2>/dev/null)" = ena
 for u in containerizer-local-llm.service containerizer-local-llm-download.service; do
   if systemctl is-active --quiet "$u"; then fail "$u must not run while the built-in LLM is off"; fi
 done
-test -z "$(docker ps -aq --filter name='^cz-llm$')" || fail "no cz-llm container while the built-in LLM is off"
+test -z "$(docker ps -aq --filter name='^cz-llm')" || fail "no cz-llm-<n> container while the built-in LLM is off"
+# the front's config with this appliance's Caddy (2.6.2 refused 0.5.0's, so the front never started)
+CZ_LLM_PORT=8082 CZ_LLM_UPSTREAMS="127.0.0.1:8090 127.0.0.1:8091" HOME=/tmp XDG_DATA_HOME=/tmp XDG_CONFIG_HOME=/tmp \
+  caddy validate --config /usr/lib/containerizer/local-llm-front.caddy --adapter caddyfile \
+  || fail "Caddy refuses the built-in LLM's front config"
 if curl -sS -o /dev/null --max-time 5 http://127.0.0.1:8082/health; then fail "nothing may listen on 127.0.0.1:8082"; fi
 if getent ahostsv4 huggingface.co; then fail "huggingface.co must not resolve while no model download runs"; fi
 worker_env() { tr '\0' '\n' < "/proc/$(systemctl show -p MainPID --value containerizer-worker.service)/environ"; }
