@@ -28,10 +28,11 @@ from pathlib import Path
 import yaml
 
 from .harden import lifecycle, lint_dockerfile, lint_manifests, load_yaml_docs, security, summarize
+from .paths import work_dir
 
 LEVELS = ["UNKNOWN", "NEGLIGIBLE", "LOW", "MEDIUM", "HIGH", "CRITICAL"]
 RANK = {s: i for i, s in enumerate(LEVELS)}
-WORK = Path(os.environ.get("CONTAINERIZER_WORK", Path(__file__).resolve().parent.parent / ".work"))
+WORK = work_dir()  # CONTAINERIZER_WORK (the appliance's services set it); never the read-only code
 
 
 @dataclass
