@@ -6,7 +6,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.8.0 (2026-11-03)
 
 ### Appliance
 - **kubemg** (optional, off by default: `CZ_KUBEMG=true` in `appliance.env`): [kubemg](https://kubemg.readthedocs.io/)
