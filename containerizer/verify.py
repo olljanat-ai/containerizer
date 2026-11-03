@@ -29,7 +29,7 @@ from pathlib import Path
 import yaml
 
 from .assess import AppAssessment, Component
-from .generate import (CONTAINER_PORT, DOCKERIGNORE, add_reason, _writable_abs, buildable, dockerfile_dotnet, dockerfile_for, dockerfile_spa,
+from .generate import (CONTAINER_PORT, DOCKERIGNORE, add_reason, _writable_abs, hides_app, writable_dirs, buildable, dockerfile_dotnet, dockerfile_for, dockerfile_spa,
                        images, k8s_name, make_plan, merge_plan)
 from .rules import RULES_DIR, load_rules
 from .paths import work_dir
@@ -209,7 +209,7 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
     import shutil
     fsroot = workdir / "fs"
     shutil.rmtree(fsroot, ignore_errors=True)
-    for w in sorted({_writable_abs(w) for w in plan["add_writable"]}):
+    for w in writable_dirs(plan):
         host = fsroot / k8s_name(w)
         host.mkdir(parents=True, exist_ok=True)
         host.chmod(0o777)
@@ -367,7 +367,10 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
             if json.dumps(plan, sort_keys=True) != before:
                 add_reason(plan, fr["id"], _fmt(fr.get("diagnosis", ""), caps), fr.get("refs"))
             if json.dumps(plan, sort_keys=True) == before:
-                entry["note"] = "fix already applied; giving up"
+                inside = [w for w in patch.get("add_writable") or [] if hides_app(w)]
+                entry["note"] = (f"the app writes into its own folder ({', '.join(inside)}): a writable mount there "
+                                 "would hide the app itself; it must write elsewhere (a setting, /tmp or a volume)"
+                                 if inside else "fix already applied; giving up")
                 result["status"] = f"{stage}-failed"
                 break
             learned_patches.append((fr, caps, patch))

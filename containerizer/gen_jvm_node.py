@@ -209,7 +209,7 @@ JAR_PICK = ("f=$(ls -S {d}/*.{ext} 2>/dev/null | grep -Ev -- '-(sources|javadoc|
 
 
 def dockerfile_java(plan: dict) -> str:
-    from .generate import _writable_abs, reason_comments
+    from .generate import _writable_abs, reason_comments, writable_dirs
     im = _images()["java"]
     line, tool, mode = java_line(str(plan["java"])), plan["build_tool"], plan["java_mode"]
     uid = im["app_uid"]
@@ -276,7 +276,7 @@ def dockerfile_java(plan: dict) -> str:
         collect += [JAR_PICK.format(d=out, ext=ext), f'cp "$f" /out/app.{ext}']
         entry = ["java", "-jar", f"/app/app.{ext}"]
     lines.append("RUN " + " \\\n && ".join(collect))
-    writable = sorted({_writable_abs(w) for w in plan["add_writable"]})
+    writable = writable_dirs(plan)
     if writable:
         lines.append("RUN mkdir -p " + " ".join("/writable" + w for w in writable))
     if mode == "tomcat":
@@ -542,7 +542,7 @@ def node_build_stage(plan: dict) -> list[str]:
 
 
 def dockerfile_node(plan: dict) -> str:
-    from .generate import _writable_abs, reason_comments
+    from .generate import _writable_abs, reason_comments, writable_dirs
     im = _images()["node"]
     line, pm, uid = plan["node"], plan["pm"], im["app_uid"]
     mod = plan.get("module") or ""
@@ -557,7 +557,7 @@ def dockerfile_node(plan: dict) -> str:
         cd = f"cd {_q(mod)} && " if mod else ""
         lines += [f"RUN {cd}f=$(node /usr/local/lib/containerizer-resolve-bin.cjs {_q(plan['node_bin'])}) \\",
                   ' && ln -s "$(realpath --relative-to=. "$f")" .containerizer-start.js']
-    writable = sorted({_writable_abs(w) for w in plan["add_writable"]})
+    writable = writable_dirs(plan)
     if writable:
         lines.append("RUN mkdir -p " + " ".join("/writable" + w for w in writable))
     workdir = "/app" + (f"/{mod}" if mod else "")

@@ -266,6 +266,8 @@ def merge_plan(plan: dict, patch: dict) -> dict:
     for k, v in (patch or {}).items():
         if k in ("add_packages", "add_writable", "publish_args", "remove_files", "args"):
             for x in v:
+                if k == "add_writable" and hides_app(x):
+                    continue                    # a mount there hides the app itself
                 if x not in plan[k]:
                     plan[k].append(x)
         elif k == "env":
@@ -337,6 +339,21 @@ def _writable_abs(w: str) -> str:
     return posixpath.normpath(w if w.startswith("/") else "/app/" + w.strip("/"))
 
 
+APP_DIR = "/app"
+
+
+def hides_app(w: str) -> bool:
+    """A writable folder that is the app folder or contains it: mounted there (a volume, a tmpfs), it would hide
+    the application's own files ("The application 'X.dll' does not exist")."""
+    a = _writable_abs(w)
+    return a == "/" or APP_DIR == a or APP_DIR.startswith(a.rstrip("/") + "/")
+
+
+def writable_dirs(plan: dict) -> list[str]:
+    """The plan's writable folders, absolute, without those that would hide the app folder."""
+    return sorted({_writable_abs(w) for w in plan["add_writable"] if not hides_app(w)})
+
+
 def dockerfile_dotnet(plan: dict) -> str:
     im = images()["dotnet"]
     uid = im["app_uid"]
@@ -395,7 +412,7 @@ def dockerfile_dotnet(plan: dict) -> str:
               *(["    export PATH=/opt/npm-prebuilt:$PATH; \\"] if plan.get("spa_root") else []),
               f'    dotnet restore "{proj}"{rid_arg}{restore_tfm} \\',
               f' && dotnet publish "{proj}" --no-restore {" ".join(pub)}']
-    writable = sorted({_writable_abs(w) for w in plan["add_writable"]})
+    writable = writable_dirs(plan)
     if writable:
         lines.append("RUN mkdir -p " + " ".join("/writable" + w for w in writable))
     lines += ["", f"FROM {base} AS final"]
@@ -541,7 +558,7 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
         secret_keys.append(key)
         env.append({"name": key, "valueFrom": {"secretKeyRef": {"name": secret_name, "key": key, "optional": True}}})
     volumes, mounts = [], []
-    for i, w in enumerate(sorted({_writable_abs(w) for w in plan["add_writable"]})):
+    for i, w in enumerate(writable_dirs(plan)):
         vname = f"w{i}-" + k8s_name(w.split("/")[-1] or "root")[:40]
         persistent = any(x in w.lower() for x in ("app_data", "data", "keys", "archive", "store", "uploads", "documents"))
         if persistent and plan.get("single_replica"):
