@@ -2278,3 +2278,12 @@ GO
 -- 33: cancelling a job that is being asked (LlmJob.CancelRequestedAt/By)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 33) INSERT [${schema}].SchemaVersion (Version) VALUES (33);
 GO
+-- 34: no software bills of materials (the Dependencies and licences page was removed): their tables and views go
+DROP VIEW IF EXISTS [${schema}].vSbomDocumentLatest;
+DROP VIEW IF EXISTS [${schema}].vSbomPackageLatest;
+DROP VIEW IF EXISTS [${schema}].vSbomLatest;
+DROP TABLE IF EXISTS [${schema}].SbomPackage;
+DROP TABLE IF EXISTS [${schema}].ComponentSbom;
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 34) INSERT [${schema}].SchemaVersion (Version) VALUES (34);
+GO

@@ -27,7 +27,8 @@ Derived from the workflows themselves, so the local run matches CI:
 | `release.yml` appliance | Docker + buildx, KVM, `qemu-system-x86`, `qemu-utils`, `ovmf`, `zstd`, `expect` (the boot test changes the expired root password over SSH); the Elemental toolkit is built inside `appliance/Dockerfile`, so it needs no install | `appliance` |
 
 Not needed: Node.js (the repository has no JavaScript build), Syft as a binary (it runs as the
-`anchore/syft` container), and cosign / oras unless you test `sbom attach` or release signing by hand.
+`anchore/syft` container, in the generated build pipelines' tests), and cosign unless you test release signing
+by hand.
 
 ## Hardware
 
@@ -96,7 +97,7 @@ but is not exactly what CI runs. If `.venv-ci/` was created that way and uv is i
 
 ### Optional: cosign
 
-Only for testing release signing or `containerizer sbom attach` by hand. The same pinned version and
+Only for testing release signing by hand. The same pinned version and
 checksum as `release.yml`:
 
 ```sh

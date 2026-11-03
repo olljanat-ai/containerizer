@@ -15,7 +15,7 @@ and generates the same output as for applications it containerizes itself:
 
 The image is the application's own: built from the repository's Dockerfile, or the image the platform
 runs today pulled and mirrored to the scan's registry. It goes through the same gate as generated images
-(manifest lint, image scan, a run with the hardened security context, SBOM).
+(manifest lint, image scan, a run with the hardened security context).
 
 LLM-heavy mode (off by default; CONTAINERIZER_LLM_HEAVY=true on the worker and the scan's "LLM-heavy"
 setting) lets the LLM translate descriptors the rules cannot read (other platforms, broken parses),
@@ -718,9 +718,6 @@ def _gate_component(src: Path, sv: Service, cdir: Path, docs: list[dict], local:
     comp = {"component": cn, "base": None, "lint": lint, "scans": []}
     res = scan_image(local, scanner, local=True)
     comp["scans"].append(_scan_entry(res, evaluate(res, pol), "image"))
-    from .sbom import component_sbom, config as sbom_config
-    if sbom_config().get("enabled", True):
-        comp["sbom"] = component_sbom(local, cdir, [] if res.error else res.vulns, (sv.name, sv.name))
     comp["run"] = run_as_manifest(local, docs)
     return comp
 
@@ -873,14 +870,6 @@ def migrate_repo(src: Path, o, res, app: str, rel: str, dest: Path, gen: Path, r
             entry["digest"] = reg.push(local, ref, [f"{ref.rsplit(':', 1)[0]}:git-{res.commit[:12]}"] if res.commit else [])
             if o.cosign_key and entry["digest"]:
                 entry["signature"] = reg.sign(ref, entry["digest"], o.cosign_key)
-            sb = gc.get("sbom")
-            if sb and not sb.get("error") and entry["digest"] and (gen / cn / "sbom.cdx.json").exists():
-                from .sbom import attach
-                sb["attestation"] = attach(ref, entry["digest"], gen / cn / "sbom.cdx.json", o.cosign_key, reg.config)
-        sb = gc.get("sbom")
-        if sb and not sb.get("error"):
-            entry["sbom"] = {k: sb.get(k) for k in ("file", "format", "tool", "attestation")} | {
-                "summary": {k: v for k, v in (sb.get("summary") or {}).items() if k not in ("warn", "denied")}}
         comps_out.append(entry)
     res.components, res.rating = comps_out, "A"
     _clean_generated(gen)

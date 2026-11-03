@@ -139,7 +139,7 @@ running and deploying them in its own sandbox cluster.
     ---
 
     Single sign-on, admins, product owners and operators, an audit log of every change, an access log,
-    trends over time, and SBOMs with licences and CVEs per package.
+    and trends over time.
 
     [:octicons-arrow-right-24: Sign-in and roles](sign-in.md)
 
@@ -332,24 +332,6 @@ reject them; approved rules make the next run faster and AI-free.
 
 ![Rule review with a proposed rule and its evidence](images/rule-review-detail.png#only-light){ .cz-shot }
 ![Rule review with a proposed rule and its evidence](images/rule-review-detail-dark.png#only-dark){ .cz-shot }
-
-</div>
-
-<div class="cz-feature cz-reverse" markdown>
-
-<div markdown>
-
-### Know what's inside every image
-
-CycloneDX SBOMs for each built image, licences checked against your policy, and CVEs per package
-across the whole portfolio.
-
-[SBOM, licences and CVEs :octicons-arrow-right-24:](sbom.md)
-
-</div>
-
-![SBOM portfolio with licences and CVEs](images/sbom-portfolio.png#only-light){ .cz-shot }
-![SBOM portfolio with licences and CVEs](images/sbom-portfolio-dark.png#only-dark){ .cz-shot }
 
 </div>
 

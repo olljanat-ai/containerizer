@@ -84,9 +84,8 @@ def test_check_scan_needs_registered_tokens_and_allowed_registry():
     same = ("write", "github", None, "https://github.com/acme/sandbox.git", "ro-token")
     assert "separate read-only token" in worker.check_scan(out, hosts, _creds(acme, same))[0]
     assert worker.check_scan(out, hosts, _creds(acme, ("write", "github", None, "https://github.com/acme/sandbox2", "x")))
-    # registry hosts
-    assert worker.check_scan({**SCAN, "PushImages": True, "Registry": "other.example/x"}, hosts)
-    assert worker.check_scan({**SCAN, "PushImages": True}, hosts) == []
+    # the registry is always the appliance's own: a stored external one is not checked (nor used)
+    assert worker.check_scan({**SCAN, "PushImages": True, "Registry": "other.example/x"}, hosts) == []
     assert worker.check_scan({**SCAN, "IncludeRegex": "("}, hosts)
 
 
@@ -103,8 +102,7 @@ def test_scan_form_validation():
     assert errors == [] and v["ScheduleDays"] == (1 << 5) | (1 << 6) and v["ScheduleMinute"] == 150
     assert v["Enabled"] is True and v["Gate"] is False and v["OutputBranch"] == "main"
     for bad, msg in [({"ApiUrl": "javascript:alert(1)"}, "https"), ({"OutputRepo": "http://x.example/r"}, "https"),
-                     ({"Registry": "Reg Example"}, "registry"), ({"OutputBranch": "-x"}, "branch"),
-                     ({"OutputBranch": "a..b"}, "branch"), ({"ImagePullSecret": "Bad_Name"}, "secret"),
+                     ({"OutputBranch": "-x"}, "branch"), ({"OutputBranch": "a..b"}, "branch"),
                      ({"IncludeRegex": "(["}, "matching"), ({"StaleDays": "99999"}, "3650"), ({"At": "25:00"}, "HH:MM"),
                      ({"Provider": "svn"}, "provider"), ({"Name": ""}, "Name is required")]:
         _, errors = admin_scans.validate_scan(_form(**bad))
@@ -132,19 +130,23 @@ def test_new_repositories_enabled_or_disabled_by_default():
     assert "data-select-all" in webui.JS
 
 
-def test_scan_registry_defaults_to_the_local_registry_on_the_appliance():
-    from types import SimpleNamespace
-    local = admin_scans.LOCAL_REGISTRY
-    assert local == "localhost:5000/sandbox" and admin_scans.REGISTRY_RE.fullmatch(local)
-    # elsewhere the registry stays required; on the appliance an empty one is the local registry
-    _, errors = admin_scans.validate_scan(_form(Registry=""))
-    assert any("Image registry is required" in x for x in errors)
-    v, errors = admin_scans.validate_scan(_form(Registry=""), local)
-    assert errors == [] and v["Registry"] == local
-    v, errors = admin_scans.validate_scan(_form(Registry="acr.example.io/sandbox"), local)
-    assert errors == [] and v["Registry"] == "acr.example.io/sandbox"          # an external one is kept
-    assert admin_scans._local(SimpleNamespace(system=object())) == local
-    assert admin_scans._local(SimpleNamespace(system=None)) is None
+def test_scans_always_push_to_the_appliances_own_registry(monkeypatch):
+    monkeypatch.delenv("CONTAINERIZER_LOCAL_IMAGES", raising=False)
+    from containerizer.org import SANDBOX_REGISTRY
+    assert admin_scans.LOCAL_REGISTRY == SANDBOX_REGISTRY == "localhost:5000/sandbox"
+    # whatever the form (or an older scan) says: the local registry, pushed, no pull secret
+    for form in (_form(), _form(Registry="acr.example.io/sandbox", ImagePullSecret="regcred"), _form(Registry="")):
+        v, errors = admin_scans.validate_scan(form)
+        assert errors == [] and (v["Registry"], v["PushImages"], v["ImagePullSecret"]) == (SANDBOX_REGISTRY, True, None)
+    w = worker.Worker.__new__(worker.Worker)
+    w.data, w.sql, w.hosts = Path("/tmp/x"), None, set()
+    old = {**SCAN, "ScanId": 1, "Registry": "acr.example.io/sandbox", "PushImages": False, "ImagePullSecret": "regcred",
+           "OutputRepo": None, "OutputBranch": "main", "IncludeRegex": None, "ExcludeRegex": None, "SkipForks": True,
+           "StaleDays": 0, "UseAi": False, "Verify": True, "Gate": False}
+    o = w.options(old, None, None)
+    assert (o.registry, o.push_images, o.image_pull_secret) == (SANDBOX_REGISTRY, True, None)
+    monkeypatch.setenv("CONTAINERIZER_LOCAL_IMAGES", "1")                 # a lab sharing the image store: tagged only
+    assert w.options(old, None, None).push_images is False
 
 
 def test_repo_state_texts():

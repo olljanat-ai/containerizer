@@ -20,7 +20,7 @@ import tempfile
 from pathlib import Path
 
 SCHEMA = Path(__file__).resolve().parent / "sql" / "schema.sql"
-SCHEMA_FILES = [SCHEMA, SCHEMA.parent / "sbom.sql"]          # applied in this order by `db init`
+SCHEMA_FILES = [SCHEMA]                                       # applied in this order by `db init`
 SEV_RANK = {"info": 0, "config": 1, "refactor": 2, "rewrite": 3, "blocker": 4}
 _TRUE = {"yes", "true", "1", "mandatory", "strict"}
 _FALSE = {"no", "false", "0", "optional"}
@@ -291,7 +291,7 @@ def _cut(s, n: int):
     return s if len(s) <= n else s[:n - 1] + "…"
 
 
-def store_assessment(conn, doc: dict, source: dict, assessed_at=None, sboms: dict | None = None) -> int:
+def store_assessment(conn, doc: dict, source: dict, assessed_at=None) -> int:
     """Insert one application's assessment (an assessment.json entry); returns the AssessmentId.
 
     The application and its components are created or matched automatically (by source key and by
@@ -344,9 +344,6 @@ def store_assessment(conn, doc: dict, source: dict, assessed_at=None, sboms: dic
                 _finding(cur, assessment_id, comp_id, f)
             if v.get("finding"):
                 _finding(cur, assessment_id, comp_id, _runtime_finding(v["finding"]))
-            if sboms and c["name"] in sboms:
-                sdoc, pkgs = sboms[c["name"]]
-                _sbom(cur, assessment_id, comp_id, "source", sdoc, pkgs, tool="containerizer")
         for f in doc.get("repo_findings", []):
             _finding(cur, assessment_id, None, f)
         conn.commit()
@@ -400,58 +397,6 @@ def _finding(cur, assessment_id: int, comp_id: int | None, f: dict) -> None:
                  _cut(f.get("source"), 40)))
 
 
-def _sbom(cur, assessment_id: int, comp_id: int, kind: str, doc: dict, packages: list, tool: str | None = None,
-          image_ref: str | None = None, digest: str | None = None, attestation: str | None = None,
-          os_name: str | None = None) -> int:
-    """Insert one SBOM and its packages (dicts as sbom.Package.to_dict(), or Package objects)."""
-    cur.execute("INSERT cz.ComponentSbom (AssessmentId, ComponentId, Kind, ImageRef, ImageDigest, Format, Tool, "
-                "OperatingSystem, PackageCount, Attestation, Document) OUTPUT INSERTED.SbomId "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (assessment_id, comp_id, kind, _cut(image_ref, 400), _cut(digest, 100),
-                 _cut(f"CycloneDX {doc.get('specVersion', '')}".strip(), 40), _cut(tool, 100), _cut(os_name, 100),
-                 len(packages), _cut(attestation, 300), json.dumps(doc)))
-    sbom_id = cur.fetchone()[0]
-    rows = []
-    for i, p in enumerate(packages, 1):
-        p = p if isinstance(p, dict) else p.to_dict()
-        c = p.get("counts") or {}
-        vulns = p.get("vulns") or []
-        rows.append((sbom_id, i, _cut(p["name"], 400), _cut(p.get("version") or None, 200), _cut(p.get("type") or None, 40),
-                     _cut(p.get("purl") or None, 1000), _cut(p.get("license") or None, 1000),
-                     _cut(p.get("license_source") or None, 20), p.get("status") or "unknown", _cut(p.get("scope") or "app", 10),
-                     bool(p.get("applies", True)), _cut(p.get("accepted") or None, 400), _cut(p.get("found_by") or "sbom", 10),
-                     int(c.get("CRITICAL", 0)), int(c.get("HIGH", 0)), int(c.get("MEDIUM", 0)), int(c.get("LOW", 0)),
-                     json.dumps(vulns) if vulns else None))
-    if rows:
-        cur.executemany("INSERT cz.SbomPackage (SbomId, PackageNo, Name, Version, Type, Purl, License, LicenseSource, "
-                        "LicenseStatus, Scope, PolicyApplies, Accepted, FoundBy, Critical, High, Medium, Low, Vulns) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", rows)
-    return sbom_id
-
-
-def store_image_sboms(conn, assessment_id: int, entries: list[dict]) -> int:
-    """Image SBOMs of components built after an assessment was stored (`containerizer org`). Each entry:
-    project (path as stored), document, packages, tool, os, image, digest, attestation. Returns rows written."""
-    cur = conn.cursor()
-    n = 0
-    try:
-        for e in entries:
-            cur.execute("SELECT c.ComponentId FROM cz.Component c JOIN cz.ApplicationAssessment aa "
-                        "ON aa.ApplicationId = c.ApplicationId WHERE aa.AssessmentId = %s AND c.ProjectPath = %s",
-                        (assessment_id, _cut(e["project"], 400)))
-            row = cur.fetchone()
-            if not row:
-                continue
-            _sbom(cur, assessment_id, row[0], "image", e["document"], e["packages"], e.get("tool"), e.get("image"),
-                  e.get("digest"), e.get("attestation"), e.get("os"))
-            n += 1
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    return n
-
-
 def store_idp_clients(conn, assessment_id: int, entries: list[dict]) -> int:
     """Sandbox IdP registrations of the components deployed after an assessment (`containerizer org`).
     Each entry: project (path as stored), protocol, idp_url, app_url, identifier, metadata_url, settings
@@ -481,33 +426,16 @@ def store_idp_clients(conn, assessment_id: int, entries: list[dict]) -> int:
     return n
 
 
-def source_sboms(a) -> dict:
-    """Source SBOMs of an AppAssessment's components (sbom.source in rules/60-security.yaml)."""
-    from .sbom import config, source_component_sbom
-    cfg = config()
-    if not cfg.get("enabled", True) or not cfg.get("source", True):
-        return {}
-    out = {}
-    for c in a.components:
-        try:
-            out[c.name] = source_component_sbom(c, getattr(a, "repo", None))
-        except Exception as ex:          # an SBOM must never cost the assessment
-            print(f"warning: no source SBOM for {c.name}: {type(ex).__name__}: {ex}", file=sys.stderr)
-    return out
-
-
 def assessment_doc(a) -> dict:
     """The assessment.json entry of an AppAssessment (with build-and-run results when there are any)."""
-    return {**a.to_dict(), **({"verification": a.verification} if getattr(a, "verification", None) else {}),
-            # what the results page makes the application's image build pipeline from (pipelines.py)
-            **({"build_pipeline": a.build_pipeline} if getattr(a, "build_pipeline", None) else {})}
+    return {**a.to_dict(), **({"verification": a.verification} if getattr(a, "verification", None) else {})}
 
 
 def store_results(cs: str | None, results: list, paths: list[Path], password: str | None = None) -> list[int]:
     """Store AppAssessments assessed from `paths` (same order). Returns the AssessmentIds."""
     conn = connect(cs, password)
     try:
-        return [store_assessment(conn, assessment_doc(a), source_info(p, a.name), sboms=source_sboms(a))
+        return [store_assessment(conn, assessment_doc(a), source_info(p, a.name), )
                 for a, p in zip(results, paths)]
     finally:
         conn.close()

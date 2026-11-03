@@ -126,8 +126,6 @@ def load_application(conn, app_id: int) -> dict | None:
     app["history"] = _rows(conn, "SELECT TOP (20) AssessedAt, Rating, Score FROM cz.ApplicationAssessment "
                                  "WHERE ApplicationId = %s ORDER BY AssessedAt DESC, AssessmentId DESC", (app_id,))
     app["migrations"] = load_migrations(conn, app_id)
-    from .sbomui import load_app_sboms
-    app["sboms"] = load_app_sboms(conn, app_id)
     app["idp"] = load_idp_clients(conn, app_id)
     app["llm_reviews"] = load_llm_reviews(conn, app_id)
     app["refactors"] = load_refactor_orders(conn, app_id)
@@ -635,10 +633,6 @@ def _trends_href(bu) -> str:
     return "/trends" + (f"?bu={quote(str(bu))}" if bu is not None else "")
 
 
-def _sbom_href(bu) -> str:
-    return "/sbom" + (f"?bu={quote(str(bu))}" if bu is not None else "")
-
-
 VARIANT_TEXT = {"running": "Running in the sandbox", "deployed": "In the sandbox (health not checked)",
                 "failing": "Failing in the sandbox", "deploying": "Deploying", "removed": "Removed from the sandbox",
                 "expired": "Expired in the sandbox", "skipped": "Not deployed", "error": "Deploy failed"}
@@ -753,7 +747,7 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "") -> 
 <header><h1>Containerization readiness</h1>
 <p class='muted'>How ready our applications are to run in Linux containers{f' · last assessed {_date(last)}' if last else ''}
 {f" · <a href='{e(_trends_href(bu_filter))}'>Trends over time</a>" if all_apps else ''}
-{f" · <a href='{e(_sbom_href(bu_filter))}'>Dependencies and licences</a>" if all_apps else ''}</p></header>
+</p></header>
 {empty}<nav class='chips'>{''.join(chips) if all_apps else ''}</nav>
 <div class='tiles'>{tiles if all_apps else ''}</div>
 {f"<div class='overall'>{segmented(c, total, 'Ratings of all applications shown')}{legend(c)}</div>" if total else ''}
@@ -810,7 +804,6 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 
     migs = {m["ComponentId"]: m for m in app.get("migrations") or []}
     reviews = {r["ComponentId"]: r for r in app.get("llm_reviews") or []}
-    sboms = app.get("sboms") or {}
     comp_rows = "".join(
         f"<tr><td><a href='#c{int(c['ComponentId'])}'>{e(c['ComponentName'])}</a>"
         f"<div class='muted small'>{e(c['ProjectPath'])}</div></td>"
@@ -819,7 +812,6 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
         f"<td>{_verify(c)}</td>"
         + (f"<td>{_sandbox(sandbox.get(c['ComponentId']))}</td>" if sandbox else "")
         + f"<td>{_plan_cell(app['ApplicationId'], c, migs.get(c['ComponentId']), refactor)}</td>"
-        + (f"<td>{_sbom_cell(app['ApplicationId'], c['ComponentId'], sboms.get(c['ComponentId']))}</td>" if sboms else "")
         + "</tr>"
         for c in app["components"])
 
@@ -864,12 +856,11 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 <div class='meta'>{owner}{src}</div>
 {f"<h2>Main obstacles</h2><ul class='obstacles'>{obs_html}</ul>" if obs_html else ''}
 <h2>Components</h2>
-<table><thead><tr><th>Component</th><th>What it is</th><th>Verdict</th><th>Build and run</th>{"<th>Sandbox cluster</th>" if sandbox else ""}<th>Migration</th>{"<th>Packages</th>" if sboms else ""}</tr></thead>
+<table><thead><tr><th>Component</th><th>What it is</th><th>Verdict</th><th>Build and run</th>{"<th>Sandbox cluster</th>" if sandbox else ""}<th>Migration</th></tr></thead>
 <tbody>{comp_rows}</tbody></table>
 {_idp_section(app.get("idp") or [])}
 {_refactoring(app, refactor)}
 <h2>What needs to change, and why</h2>{''.join(details)}
-{_build_pipeline(app, refactor)}
 {_connectivity(app, refactor)}
 <h2>History</h2><p class='muted small'><a href='/trends'>Trends of all applications</a></p><table class='narrow'><thead><tr><th>Assessed</th><th>Rating</th><th class='num'>Readiness</th>
 </tr></thead><tbody>{hist}</tbody></table>
@@ -883,11 +874,6 @@ def _connectivity(app: dict, ctx: dict | None) -> str:
     except Exception as ex:  # noqa: BLE001 - one section must not take the page down
         print(f"connectivity section of {app.get('ApplicationId')}: {type(ex).__name__}: {ex}", file=sys.stderr)
         return ""
-
-
-def _build_pipeline(app: dict, ctx: dict | None) -> str:
-    from .pipelineui import section
-    return section(app, ctx)
 
 
 PLAN_OUTCOME_TEXT = {"linux-container": "Can move to a Linux container",
@@ -965,11 +951,6 @@ def _migration(app_id, m: dict | None, ctx: dict | None = None) -> str:
         out.append("<p class='muted'>No code change inside this component makes it run in a Linux container, so there "
                    "is no agent prompt.</p>")
     return "".join(out) + "</section>"
-
-
-def _sbom_cell(app_id, comp_id, s) -> str:
-    from .sbomui import app_cell
-    return app_cell(app_id, comp_id, s)
 
 
 def _verify(c: dict) -> str:
@@ -1267,12 +1248,6 @@ def _keep_query(path: str, q: dict) -> str:
         return urlencode([(k, v) for k, v in (("range", rng), ("bu", bu), ("product", product)) if v is not None])
     if path == "/connectivity":
         return urlencode([(k, q[k][0]) for k in ("product", "bu") if re.fullmatch(r"\d{1,9}", (q.get(k) or [""])[0])])
-    if path == "/sbom":
-        from .sbomui import parse_query
-        bu, product = parse_query(q)
-        return urlencode([(k, v) for k, v in (("bu", bu), ("product", product)) if v is not None])
-    if re.fullmatch(r"/app/\d{1,9}/component/\d{1,9}", path):
-        return "show=attention" if q.get("show", [""])[0] == "attention" else ""
     if path == "/":
         bu = q.get("bu", [None])[0]
         return f"bu={bu}" if bu and re.fullmatch(r"\d{1,9}|none", bu) else ""
@@ -1372,9 +1347,8 @@ def make_handler(connect, admin=None):
             u = urlsplit(self.path)
             try:
                 if u.path == "/static/app.css":
-                    from .sbomui import CSS as SBOM_CSS
                     from .connectivityui import CSS as CONNECTIVITY_CSS
-                    return self._send(200, CSS + SBOM_CSS + CONNECTIVITY_CSS, "text/css; charset=utf-8", head)
+                    return self._send(200, CSS + CONNECTIVITY_CSS, "text/css; charset=utf-8", head)
                 if u.path == "/static/app.js":
                     return self._send(200, JS, "text/javascript; charset=utf-8", head)
                 if u.path in ("/static/favicon.svg", "/favicon.ico"):
@@ -1388,15 +1362,14 @@ def make_handler(connect, admin=None):
                 nav = admin.nav(self.headers) if admin else ""
                 m = re.fullmatch(r"/app/(\d{1,9})", u.path)
                 pm = re.fullmatch(r"/app/(\d{1,9})/component/(\d{1,9})/agent-prompt\.md", u.path)
-                cm = re.fullmatch(r"/app/(\d{1,9})/component/(\d{1,9})(/sbom\.cdx\.json)?", u.path)
-                if admin and (u.path in ("/", "/trends", "/sbom", "/connectivity") or m or pm or cm):    # sign-in first when CONTAINERIZER_VIEWERS is set
+                if admin and (u.path in ("/", "/trends", "/connectivity") or m or pm):    # sign-in first when CONTAINERIZER_VIEWERS is set
                     keep = _keep_query(u.path, parse_qs(u.query))
                     stop, s = admin.gate(self.headers, u.path, keep)
                     if stop:
                         return self._send(stop.status, stop.body, stop.ctype, head, stop.headers, forms=True)
                     if s and not head and admin.viewers_required:
                         admin.log_access(s.user, s.name, "view", u.path + ("?" + keep if keep else ""),
-                                         int((m or pm or cm)[1]) if (m or pm or cm) else None, self.client_address[0])
+                                         int((m or pm)[1]) if (m or pm) else None, self.client_address[0])
                 if pm:
                     conn = connect()
                     try:
@@ -1406,29 +1379,6 @@ def make_handler(connect, admin=None):
                     if not rows or not rows[0].get("AgentPrompt"):
                         return self._send(404, "No agent prompt for this component.\n", "text/plain; charset=utf-8", head)
                     return self._send(200, rows[0]["AgentPrompt"], "text/plain; charset=utf-8", head)
-                if cm or u.path == "/sbom":
-                    from . import sbomui
-                    conn = connect()
-                    try:
-                        if u.path == "/sbom":
-                            bu, product = sbomui.parse_query(parse_qs(u.query))
-                            return self._send(200, sbomui.render_portfolio(sbomui.load_portfolio(conn, bu, product), bu,
-                                                                           product, nav), head=head, forms=bool(nav))
-                        if cm[3]:
-                            doc = sbomui.load_document(conn, int(cm[1]), int(cm[2]))
-                            if doc is None:
-                                return self._send(404, "No SBOM for this component.\n", "text/plain; charset=utf-8", head)
-                            name = re.sub(r"[^A-Za-z0-9._-]", "_", f"app{cm[1]}-component{cm[2]}") + ".cdx.json"
-                            return self._send(200, doc, "application/vnd.cyclonedx+json", head,
-                                              [("Content-Disposition", f'attachment; filename="{name}"')])
-                        comp = sbomui.load_component(conn, int(cm[1]), int(cm[2]))
-                        if comp is None:
-                            return self._send(404, page("Not found", "<h1>Component not found</h1><p><a href='/'>Back</a></p>"),
-                                              head=head)
-                        show = "attention" if parse_qs(u.query).get("show", [""])[0] == "attention" else "all"
-                        return self._send(200, sbomui.render_component(comp, show, nav), head=head, forms=bool(nav))
-                    finally:
-                        conn.close()
                 if u.path == "/connectivity":      # how the applications connect (connectivityui.py)
                     from . import connectivityui
                     q = parse_qs(u.query)
@@ -1471,8 +1421,6 @@ def make_handler(connect, admin=None):
                                 ctx["csrf"] = admin._csrf(s)
                                 if app.get("Rating") == "B":
                                     ctx["estimates"] = refactor_estimates(admin, app)
-                            from . import pipelineui     # the Build pipeline box: its files for who may download
-                            ctx["pipeline"] = pipelineui.page_data(admin, s, app, parse_qs(u.query))
                             return self._send(200, render_application(app, nav, ctx), head=head, forms=bool(nav),
                                               extra=cookie or None)
                         bu = parse_qs(u.query).get("bu", [None])[0]

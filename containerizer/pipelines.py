@@ -14,9 +14,9 @@ The build context is the application's folder in the repository, as for the scan
 <generated>/<component>/Dockerfile <application folder>`), and `Dockerfile.dockerignore` next to the
 Dockerfile is the context filter (BuildKit reads `<Dockerfile>.dockerignore`).
 
-`spec()` captures what the files are made of when the application is generated (generate_app): stored
-with the assessment (assessment.json `build_pipeline`), the results page builds the files and a
-`git am` patch from it without the source (pipelineui.py). `files()` renders them for one provider.
+`spec()` captures what the files are made of when the application is generated (generate_app), which writes
+them to `pipeline/` in the generated output: an organization scan commits that to the output repository, next to
+the application's manifests. `files()` renders them for one provider.
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ SPEC_VERSION = 1
 PIPELINE_MARK = "# the build pipeline's own files are not part of the image"
 
 # Pinned by digest (multi-arch index). The scanners' versions come from rules/60-security.yaml (scan.scanners,
-# sbom.generator): when one changes there, add its digest here (tests/test_pipelines.py checks it):
+# pipelines.syft_image): when one changes there, add its digest here (tests/test_pipelines.py checks it):
 #   docker buildx imagetools inspect aquasec/trivy:<version> | grep Digest
 DIGESTS = {
     "aquasec/trivy:0.67.2": "sha256:e2b22eac59c02003d8749f5b8d9bd073b62e30fefaef5b7c8371204e0a4b0c08",
@@ -174,6 +174,14 @@ def _ours(folder: Path) -> bool:
                                    for f in folder.glob("*/Dockerfile.dockerignore"))
 
 
+def _sandbox_only(registry: str | None) -> bool:
+    """A registry the real environment cannot use: none, the placeholder, or one on this machine (the appliance's
+    own, localhost:5000, which the scans push to). The pipeline then uses its provider's own registry."""
+    reg = (registry or "").rstrip("/")
+    host = reg.split("/", 1)[0].rsplit(":", 1)[0].lower()
+    return reg in UNKNOWN_REGISTRIES or host in ("localhost", "127.0.0.1", "[::1]")
+
+
 def spec(a, out: Path, registry: str = "registry.local", branch: str | None = None,
          repository_url: str | None = None) -> dict | None:
     """What the build pipeline of a generated application is made of (None: no Linux image to build).
@@ -215,14 +223,14 @@ def spec(a, out: Path, registry: str = "registry.local", branch: str | None = No
     targets += [pre + f"{folder}/README.md", ".github/workflows/containerizer-images.yml",
                 "containerizer.gitlab-ci.yml", "azure-pipelines.containerizer.yml"]
     return {"version": SPEC_VERSION, "app": a.name, "namespace": k8s_name(a.name),
-            "registry": "" if (registry or "").rstrip("/") in UNKNOWN_REGISTRIES else registry.rstrip("/"),
+            "registry": "" if _sandbox_only(registry) else registry.rstrip("/"),
             "subdir": subdir, "folder": folder, "branch": branch, "repository_url": repository_url,
             "detected": detect_provider(repository_url),
             "gitlab_ci": (top_p / ".gitlab-ci.yml").exists(),
             "existing": sorted(t for t in targets if (top_p / t).exists()),
             "fail_on": str(scan.get("fail_on") or "CRITICAL").upper(),
             "ignore_unfixed": bool(scan.get("ignore_unfixed", True)),
-            "tlog": bool((sec.get("sbom") or {}).get("cosign_tlog_upload", True)),
+            "tlog": bool((sec.get("pipelines") or {}).get("cosign_tlog_upload", True)),
             "components": comps}
 
 
@@ -244,7 +252,7 @@ def scanner_images() -> tuple[str, str]:
     sec = security()
     trivy = next((s.get("image") for s in (sec.get("scan") or {}).get("scanners") or [] if s.get("name") == "trivy"),
                  None) or "aquasec/trivy:0.67.2"
-    syft = ((sec.get("sbom") or {}).get("generator") or {}).get("image") or "anchore/syft:v1.33.0"
+    syft = (sec.get("pipelines") or {}).get("syft_image") or "anchore/syft:v1.33.0"
     return pinned(trivy), pinned(syft)
 
 
@@ -800,8 +808,7 @@ def write_output(out: Path, spec_: dict, provider: str | None = None, sign: str 
            "(the folders mirror the repository), commit them on a branch and open a pull request. The "
            "`README.md` in its `" + (spec_.get('folder') or FOLDER) + "/` folder says which secrets or "
            "variables to create first.", "",
-           "Or download the same files as a patch (`git am`) from the application's results page "
-           "(Build pipeline), or make it from a checkout with `containerizer pipeline <path> --patch`.", "",
+           "Or make them as a patch (`git am`) from a checkout with `containerizer pipeline <path> --patch`.", "",
            "More: https://containerizer.eu/build-pipelines/", ""]
     if spec_.get("existing"):
         idx[4:4] = ["These files exist in the repository already, check them before copying: "

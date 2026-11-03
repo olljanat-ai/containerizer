@@ -422,7 +422,7 @@ repository the allow-list lets through (your mirror), or put the repositories' h
 
 | | |
 | --- | --- |
-| Services | `containerizer-kubemg.service` (kubemg, `127.0.0.1:8444` behind Caddy), `containerizer-kubemg-db.service` (PostgreSQL 16, `127.0.0.1:5434`), `containerizer-kubemg-sandbox.service` (the registration) |
+| Services | `containerizer-kubemg.service` (kubemg, HTTPS on `127.0.0.1:8444` behind Caddy, with a certificate of a local CA that only Caddy trusts, in `/var/lib/containerizer/kubemg/tls`), `containerizer-kubemg-db.service` (PostgreSQL 16, `127.0.0.1:5434`), `containerizer-kubemg-sandbox.service` (the registration) |
 | Data | `/var/lib/containerizer/kubemg` (the database and the recorded sessions) |
 | Secrets | `/etc/containerizer/secrets/kubemg-*`. `kubemg-secret-key` encrypts the credentials in kubemg's database: keep it with the database, which is unreadable without it |
 | Images | pinned by digest in `/usr/lib/containerizer/images.env` (`CZ_IMAGE_KUBEMG*`); the agent and the browser shell are pulled by k3s from `ghcr.io` |

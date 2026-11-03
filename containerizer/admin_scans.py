@@ -38,12 +38,9 @@ LAST_TEXT = {"deployed": "Deployed to the sandbox", "no-a-components": "Assessed
 RUN_TEXT = {"queued": "Queued", "running": "Running", "succeeded": "Finished", "failed": "Failed",
             "cancelled": "Cancelled"}
 KIND_TEXT = {"full": "Full scan", "discovery": "Discovery"}
-REGISTRY_RE = re.compile(r"[A-Za-z0-9.-]+(:\d{1,5})?(/[a-z0-9._/-]+)?")
-# the appliance's own registry (docs/appliance-admin.md#local-registry-and-the-sandbox-cluster): the worker pushes
-# and k3s pulls without credentials; the default there when a scan names no registry
-LOCAL_REGISTRY = "localhost:5000/sandbox"
+# the appliance's own registry, the only one scans push to (org.SANDBOX_REGISTRY)
+from .org import SANDBOX_REGISTRY as LOCAL_REGISTRY  # noqa: E402
 BRANCH_RE = re.compile(r"(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}")
-SECRET_RE = re.compile(r"[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?")
 ORG_RE = re.compile(r"[\w .\-/]{1,200}")
 TIME_RE = re.compile(r"([01]\d|2[0-3]):([0-5]\d)")
 SCAN_COLS = ("Name", "Provider", "Organization", "ApiUrl", "Registry", "OutputRepo", "OutputBranch", "ImagePullSecret", "IncludeRegex", "ExcludeRegex", "SkipForks", "StaleDays", "Verify",
@@ -287,13 +284,6 @@ def _scan_form(adm, s, scan: dict, ident, repos: list[str] | None = None) -> str
     prov = "".join(f"<option value='{k}'{' selected' if v['Provider'] == k else ''}>{t}</option>" for k, t in PROVIDERS.items())
     modes = "".join(f"<option value='{k}'{' selected' if (v['LlmMode'] or 'inline') == k else ''}>{e(t)}</option>"
                     for k, t in LLM_MODES.items())
-    if _local(adm):
-        registry = inp('Registry', 'Image registry', f'host and path the images are pushed to; empty: {LOCAL_REGISTRY}, '
-                       'the appliance\'s own registry, which needs no credentials and serves the sandbox. An external '
-                       'registry needs push credentials in worker.env', False, LOCAL_REGISTRY)
-    else:
-        registry = inp('Registry', 'Image registry', 'host and path the images are pushed to; the worker has the credentials',
-                       True, 'acmeregistry.azurecr.io/sandbox')
     days = "".join(f"<label class='check day'><input type='checkbox' name='day' value='{i}'"
                    f"{' checked' if int(v['ScheduleDays'] or 0) & (1 << i) else ''}> {d}</label>" for i, d in enumerate(DAYS))
     minute = int(v["ScheduleMinute"] if v["ScheduleMinute"] != "" else 120)
@@ -319,13 +309,12 @@ def _scan_form(adm, s, scan: dict, ident, repos: list[str] | None = None) -> str
 the full scan leaves it out until you enable it under <a href='/admin/repositories'>Repositories</a>. Repositories
 already found keep their setting.</p>
 <h3>Results</h3>
-{registry}
-{chk('PushImages', 'Push images')}
+<p class='muted small'>Images go to the appliance's own registry (<code>{LOCAL_REGISTRY}</code>), which serves the
+sandbox cluster and needs no credentials.</p>
 {_output_select(str(v['OutputRepo']), repos or [])}
 {inp('OutputBranch', 'Output branch', '', maxlen=200)}
 <p class='muted small'>Pushing uses the write token registered for this repository URL under Source control, never the
 organization's read-only token. The output repository is never scanned.</p>
-{inp('ImagePullSecret', 'Image pull secret', 'added to every generated workload', ph='regcred', maxlen=253)}
 <label for='Parallel'>Repositories in parallel</label>
 <input id='Parallel' name='Parallel' type='number' min='1' max='8' required value='{int(v.get('Parallel') or 1)}'>
 <p class='muted small'>How many repositories a full scan processes at the same time, each in its own process, so
@@ -358,7 +347,7 @@ under <a href='/admin/repositories'>Repositories</a>.</p>
 def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
     from .worker import check_scan, schedule_text
     if ident is None:
-        scan = {"Provider": "github", "OutputBranch": "main", "Registry": _local(adm) or "", "SkipForks": True, "StaleDays": 183, "Verify": False,
+        scan = {"Provider": "github", "OutputBranch": "main", "Registry": LOCAL_REGISTRY, "SkipForks": True, "StaleDays": 183, "Verify": False,
                 "Gate": True, "PushImages": True, "UseAi": False, "LlmMode": "inline", "LlmHeavy": False, "ScheduleDays": 32, "ScheduleMinute": 120, "Enabled": True,
                 "NewReposEnabled": True, "Parallel": 1}
         return Response(200, adm._shell(s, a, "New organization scan", "scans", _scan_form(adm, s, scan, None, _output_repos(conn)), flash))
@@ -585,12 +574,11 @@ def validate_scan(form: dict, local_registry: str | None = None) -> tuple[dict, 
         errors.append("Choose a provider")
     text("Organization", "Organization", True, 200, ORG_RE, "Organization: letters, digits, space, . _ - and / only")
     text("ApiUrl", "Server", n=400, rx=URL_RE, msg="Server must be a plain https:// address")
-    text("Registry", "Image registry", not local_registry, 400, REGISTRY_RE, "Image registry: host[:port]/path in lower case")
-    v["Registry"] = v["Registry"] or local_registry
+    v["Registry"] = LOCAL_REGISTRY             # always the appliance's own registry: pushed, no pull secret
     text("OutputRepo", "Output repository", n=400, rx=URL_RE, msg="Output repository must be a plain https:// address")
     text("OutputBranch", "Output branch", n=200, rx=BRANCH_RE, msg="Output branch is not a valid branch name")
     v["OutputBranch"] = v["OutputBranch"] or "main"
-    text("ImagePullSecret", "Image pull secret", n=253, rx=SECRET_RE, msg="Image pull secret: a Kubernetes secret name")
+    v["ImagePullSecret"] = None
     for k, label in (("IncludeRegex", "Only repositories matching"), ("ExcludeRegex", "Leave out repositories matching")):
         text(k, label, n=400)
         if v[k]:
@@ -605,6 +593,7 @@ def validate_scan(form: dict, local_registry: str | None = None) -> tuple[dict, 
     v["StaleDays"] = int(sd)
     for k in FLAGS:
         v[k] = form.get(k, [""])[0] == "1"
+    v["PushImages"] = True
     v["NewReposEnabled"] = form.get("NewReposEnabled", ["1"])[0] != "0"
     par = form.get("Parallel", ["1"])[0].strip() or "1"
     if not re.fullmatch(r"[1-8]", par):

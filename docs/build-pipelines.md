@@ -7,18 +7,12 @@ generates a **container image build pipeline** for the CI system the code lives 
 
 The pipeline is made without an LLM, from what the assessment generated: the same Dockerfiles, the same
 image names as the generated Kubernetes manifests, and the same tag scheme the sandbox's GitOps image
-automation follows. Containerizer never writes to the repository: you get the files, or a patch to apply
-with `git am`, and open the pull request yourself.
+automation follows. Containerizer never writes to the application's repository: an organization scan commits the
+files to its output repository, and you copy them (or apply a patch made with `git am`) and open the pull request
+yourself.
 
 ## Where to get it
 
-![The Build pipeline box on an application's results page: the provider, the files it adds, Download .patch and how to apply it](images/results-build-pipeline.png#only-light){ .cz-shot }
-![The Build pipeline box on an application's results page: the provider, the files it adds, Download .patch and how to apply it](images/results-build-pipeline-dark.png#only-dark){ .cz-shot }
-
-- **The results page**: the application's **Build pipeline** box. Administrators, operators and the
-  application's product owners see where the code lives, the files the pipeline adds, **Download .patch**,
-  the same files as a `.tar.gz`, how to apply it and the files themselves as a diff. Choose another provider
-  or signing there. Everyone else sees that the pipeline exists.
 - **The output repository** of an organization scan: `<organization>/<project>/<repository>/pipeline/`, next
   to the generated manifests. `pipeline/<provider>/` mirrors the application's repository: copy its contents
   to the repository root. `pipeline/README.md` says what to do.
@@ -32,20 +26,14 @@ with `git am`, and open the pull request yourself.
   Without `--patch` it writes `DIR/pipeline/<provider>/...`; with `--patch` a `git am` patch made on a
   scratch copy of the checkout's HEAD commit and checked by applying it to another clean copy.
 
-| Role | The Build pipeline box | Downloads (`/admin/build-pipeline/<id>.patch`, `.tar.gz`) |
-| --- | --- | --- |
-| Admin, Operator | Everything | Every application |
-| Product owner | Everything, for the applications of their products | Those applications |
-| Viewer, anyone without sign-in | That it exists (and for which provider, from the repository URL) | No access |
-
 ## Which provider
 
 The provider comes from, in this order: the organization scan that has the repository (its **Provider**:
 GitHub, GitLab or Azure DevOps, also self-hosted ones through its API URL: GitHub Enterprise Server, GitLab
 self-managed, Azure DevOps Server / TFS); then the repository URL: `github.com`, `*.ghe.com` or a host named
 `github`/`ghe`; `gitlab.com` or a host named `gitlab`; `dev.azure.com`, `*.visualstudio.com`, or a URL with
-`/_git/` or `/tfs/`. When neither tells, all three are offered (the output repository gets all three folders,
-the results page a download per provider). `--provider` or the box's provider list overrides it.
+`/_git/` or `/tfs/`. When neither tells, the output repository gets all three folders. `--provider` overrides
+it on the command line.
 
 ## What it adds to the repository
 
@@ -97,9 +85,9 @@ DOCKER_BUILDKIT=1 docker build -f containerizer/<component>/Dockerfile .
   pipeline variables `TRIVY_SEVERITY` and `TRIVY_IGNORE_UNFIXED`. Trivy and Syft run as containers that read
   the image from the job's Docker daemon (on GitLab: from the Docker-in-Docker service), so nothing is
   installed on the runner.
-- **The image** is `<registry>/<app>/<component>`, the name in the generated manifests. The registry is the
-  organization scan's **Registry** setting when it has one; otherwise GitHub Container Registry
-  (`ghcr.io/<owner>`), the GitLab project's registry (`$CI_REGISTRY_IMAGE`), or on Azure a placeholder
+- **The image** is `<registry>/<app>/<component>`, the name in the generated manifests. The registry is
+  `--registry` on the command line when given (never the appliance's own `localhost:5000`, where the scans push
+  for the sandbox); otherwise GitHub Container Registry (`ghcr.io/<owner>`), the GitLab project's registry (`$CI_REGISTRY_IMAGE`), or on Azure a placeholder
   (`REPLACE-ME.azurecr.io`) that fails the push job with a message until you set it. The variable
   `CONTAINERIZER_REGISTRY` overrides it in each provider.
 - **Tags**: `1.<yyyymmdd>.<hhmm>` (UTC, when the pipeline started) is the same semver scheme as the scans'
@@ -163,7 +151,7 @@ DOCKER_BUILDKIT=1 docker build -f containerizer/<component>/Dockerfile .
   '^https://github.com/<owner>/<repo>/' --certificate-oidc-issuer https://token.actions.githubusercontent.com
   <image>`. Not for images whose names must not appear in a public log.
 - `key`: cosign signs with your key (`cosign generate-key-pair`). The signature is recorded in Rekor unless
-  `sbom.cosign_tlog_upload` in `rules/60-security.yaml` is `false` (then `--tlog-upload=false`). This is the
+  `pipelines.cosign_tlog_upload` in `rules/60-security.yaml` is `false` (then `--tlog-upload=false`). This is the
   same key the generated `cluster/verify-images.yaml` (Kyverno) can enforce.
 
 When signing, the SBOM is also attached to the image as a signed CycloneDX attestation
@@ -181,8 +169,9 @@ version tag `1.<yyyymmdd>.<hhmm>` is that scheme, the same as the scans' own pus
 2. Flux sees it within the `ImageRepository` interval (10 minutes) and commits the tag to the output
    repository within the automation interval (30 minutes); the sandbox then rolls it out.
 
-This needs the pipeline and the generated manifests to use the same registry: the organization scan's
-Registry setting, which is the pipeline's default. The `sha-<commit>` tag does not match the policy and is
+This needs the pipeline and the generated manifests to use the same registry. The sandbox runs the scans' images
+from the appliance's own registry, so for the real environment set the manifests' images to the registry the
+pipeline pushes to (`CONTAINERIZER_REGISTRY`). The `sha-<commit>` tag does not match the policy and is
 never rolled out by itself: it is for finding the image of a commit. No pipeline step writes to the output
 repository.
 
@@ -191,7 +180,7 @@ repository.
 | What | Pinned to |
 | --- | --- |
 | Trivy | `aquasec/trivy:0.67.2@sha256:e2b22eac59c02003d8749f5b8d9bd073b62e30fefaef5b7c8371204e0a4b0c08` (the security gate's version) |
-| Syft | `anchore/syft:v1.33.0@sha256:f94e5d9fce1f2278491a8e3a63bd5f6ddb81fdfdbb8bf7a1637565c1d5344357` (the SBOM generator's version) |
+| Syft | `anchore/syft:v1.33.0@sha256:f94e5d9fce1f2278491a8e3a63bd5f6ddb81fdfdbb8bf7a1637565c1d5344357` (`pipelines.syft_image` in `rules/60-security.yaml`) |
 | Docker CLI and Docker-in-Docker (GitLab) | `docker:29.9.2-cli@sha256:5e6baf67…`, `docker:29.9.2-dind@sha256:9e79b879…` |
 | `actions/checkout` | `3d3c42e5aac5ba805825da76410c181273ba90b1` (v7.0.1) |
 | `actions/upload-artifact` | `cf430e030ddbb5b0abf93d22962f4752f3646cd9` (v7.0.2) |
@@ -206,16 +195,10 @@ digest in the code.
 
 ## How the patch is made
 
-The results page makes the patch from what the scan recorded with the assessment (the generated
-Dockerfiles, the components' folders, which of the files the repository already has, the default branch):
-nothing is cloned and no LLM is asked. The patch only **adds** files, so it is made on an empty commit and
-`git am` applies it on the assessed commit and on later commits that do not have these files (the box
-warns when the scan found one of them already). If one exists, use the `.tar.gz` and merge by hand.
-`containerizer pipeline --patch` makes it on the checkout's HEAD commit and checks it with `git am` on a
-clean copy.
-
-An assessment made before this feature, or by `containerizer assess` (which generates nothing), has no
-build pipeline: scan the repository again, or run `containerizer pipeline` on a checkout.
+`containerizer pipeline --patch` makes a `git am` patch on the checkout's HEAD commit and checks it with
+`git am` on a clean copy. The patch only **adds** files; if one of them exists in the repository already, the
+output repository's `pipeline/README.md` names it: copy the files and merge that one by hand. Nothing is cloned
+and no LLM is asked: the files come from what the scan generated.
 
 ## What it does not do
 

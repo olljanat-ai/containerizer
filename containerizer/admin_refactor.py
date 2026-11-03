@@ -707,17 +707,21 @@ def bulk_plan(adm, conn) -> dict:
     active = {int(r["ApplicationId"]): r for r in _rows(
         conn, "SELECT ApplicationId, MAX(JobId) AS JobId, MAX(Status) AS Status FROM cz.LlmJob WHERE Kind = N'refactor' "
               "AND Status IN (N'approval', N'queued', N'running') AND ApplicationId IS NOT NULL GROUP BY ApplicationId")}
+    from .webui import load_a_patches
+    patched = load_a_patches(conn)          # a verified patch makes it A already: not ordered again from here
     items = []
     for app in apps:
         payload, code = make_payload(adm, conn, app, "rating-a")
-        item = {"app": app, "payload": payload, "code": code, "active": active.get(int(app["ApplicationId"]))}
+        item = {"app": app, "payload": payload, "code": code, "active": active.get(int(app["ApplicationId"])),
+                "patched": patched.get(app["ApplicationId"])}
         if payload is not None:
             item["job"] = {"Kind": rf.KIND, "InputChars": rf.order_chars(payload), "Model": None}
             item["est"] = speed.job(item["job"])
             item["tokens"] = _tokens(item["est"])
         items.append(item)
     # smallest first; the ones that cannot be ordered last
-    items.sort(key=lambda x: (x["payload"] is None, x.get("tokens", 0), str(x["app"]["ApplicationName"]).lower()))
+    items.sort(key=lambda x: (x["payload"] is None, bool(x["patched"]), x.get("tokens", 0),
+                              str(x["app"]["ApplicationName"]).lower()))
     parallel = int(settings.get("Parallel") or 1)
     return {"items": items, "parallel": parallel, "speed": speed,
             "total": speed.queue([x["job"] for x in items if x.get("job")], parallel) if any(x.get("job") for x in items)
@@ -725,8 +729,9 @@ def bulk_plan(adm, conn) -> dict:
 
 
 def under(plan: dict, limit: int | None) -> list[dict]:
-    """The orders to queue: orderable, none in the queue already, and estimated under `limit` tokens (None: all)."""
-    return [x for x in plan["items"] if x["payload"] is not None and not x["active"]
+    """The orders to queue: orderable, none in the queue already, no verified patch that makes it A yet, and
+    estimated under `limit` tokens (None: all)."""
+    return [x for x in plan["items"] if x["payload"] is not None and not x["active"] and not x.get("patched")
             and (limit is None or x["tokens"] < limit)]
 
 
@@ -755,11 +760,14 @@ def make_all_a(adm, conn, s, a, q: dict | None = None) -> Response:
         if x["active"]:
             state = (f"<a href='{BASE}/{int(x['active']['JobId'])}'>in the queue</a> "
                      f"<span class='muted'>({e(x['active']['Status'])})</span>")
+        elif x.get("patched"):
+            state = (f"made A by <a href='{BASE}/{int(x['patched']['JobId'])}'>a patch</a> "
+                     f"<span class='muted'>(not queued from here: order it on its page to make a new one)</span>")
         else:
             run_jobs.append(x["job"])
             cum = plan["speed"].queue(run_jobs, plan["parallel"])
             state = (f"<span class='muted'>up to here: {e(est_text(cum))}</span>")
-        mark = " class='under'" if not x["active"] and x["tokens"] < limit else ""
+        mark = " class='under'" if not x["active"] and not x.get("patched") and x["tokens"] < limit else ""
         rows.append(f"<tr{mark}><td>{name}</td><td class='small'>{e(what)}</td>"
                     f"<td class='num nowrap'>{x['tokens']:,}</td><td class='small nowrap'>{e(est_text(x['est']))}</td>"
                     f"<td class='small'>{state}</td></tr>")

@@ -305,12 +305,6 @@ OS package with a fix, the gate upgrades just that package in the final stage (`
 `apt-get --only-upgrade`; chiseled images have no package manager and need a newer tag). Results go to
 `SECURITY.md` and `security.json` next to the generated files.
 
-**SBOM and licences.** Every built image gets a CycloneDX SBOM from Syft, with NuGet licences looked
-up from the feed, each package checked against the licence policy (deny fails the gate, warn is
-reported; GPL/AGPL warn by default) and the scan's CVEs attached to the package they are in. The SBOM
-is stored with the results and committed next to the generated files; the web UI shows the packages of each
-component and a portfolio page of licences and CVEs. See [SBOMs, licences and CVEs](sbom.md).
-
 ### NSA/CISA hardening
 
 The manifests follow the [NSA/CISA Kubernetes Hardening Guide](https://media.defense.gov/2022/Aug/29/2003066362/-1/-1/0/CTR_KUBERNETES_HARDENING_GUIDANCE_1.2_20220829.PDF)

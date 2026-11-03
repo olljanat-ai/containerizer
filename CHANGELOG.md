@@ -6,8 +6,31 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.9.0 (2026-11-03)
 
+- The *Dependencies and licences* page and the software bills of materials behind it are gone:
+  - the component package pages and the application page's Packages column;
+  - the `/api/v1/.../sbom` endpoints and the `containerizer sbom` command;
+  - the security gate's licence policy, which no longer fails a component;
+  - the SBOM attached to each pushed image, and ORAS in the appliance image.
+  Schema 34 drops their tables. The build pipelines generated for the applications' own repositories still make
+  an SBOM with Syft in their CI: its version is now `pipelines.syft_image` in `rules/60-security.yaml`.
+- Build pipelines are only in the output repository now (`<organization>/<project>/<repository>/pipeline/`, written
+  by every organization scan) and from `containerizer pipeline` on a checkout. The application page's *Build
+  pipeline* box and its `.patch` and `.tar.gz` downloads are gone, and the assessment no longer stores the
+  pipeline's spec. A pipeline never pushes to the appliance's own registry (`localhost:5000`): without
+  `--registry` it uses its provider's registry.
+- Organization scans and Make it A variants always push to the appliance's own registry
+  (`localhost:5000/sandbox`). The scan form no longer has *Image registry*, *Push images* or *Image pull secret*,
+  and a registry stored by an older scan is ignored. This also fixes Make it A variants that were not deployed
+  with "the registry host is not allowed on this machine (CONTAINERIZER_WORKER_HOSTS)": the LLM queue runner did
+  not allow `localhost`. External registries remain for the build pipelines generated for the real environment.
+- kubemg on the appliance serves HTTPS on loopback too (`KUBEMG_TLS_ENABLED=true`). Its setup checklist blocked on
+  "HTTPS is off" (kubectl will not send a token over plain HTTP, so generated kubeconfigs and exec would not
+  work). Its certificate is issued by a local CA that only Caddy trusts, made on the first start in
+  `/var/lib/containerizer/kubemg/tls`, and the setup check now says `ok`.
+- Make it A: every B application: an application that a verified patch makes A already links to that patch and
+  is not queued again from the page.
 - Releases no longer have the VHDX image or the SPDX SBOM file (`.spdx.json`), and the SBOM is no longer
   attested to the appliance image. On Hyper-V, install from the ISO (generation 2, Secure Boot template
   Microsoft UEFI Certificate Authority).

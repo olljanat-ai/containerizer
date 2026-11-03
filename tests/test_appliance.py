@@ -460,10 +460,10 @@ def test_dev_database_folder_is_shared_by_the_web_ui_and_the_worker():
     assert f'install -d -m 2750 -o cz-web -g containerizer "$D/devdb"' in firstboot
 
 
-def test_sbom_attach_tool_is_in_the_image():
+def test_every_download_in_the_image_is_pinned():
     docker = (APPLIANCE / "Dockerfile").read_text()
-    assert "oras-project/oras/releases/download/" in docker and "-C /usr/bin --no-same-owner oras" in docker
-    assert docker.count("--checksum=sha256:") >= 4        # every download is pinned
+    assert "oras" not in docker                           # no SBOM attachments: no ORAS
+    assert docker.count("--checksum=sha256:") >= 3
 
 
 def test_root_password_default_is_expired_and_kept_and_ssh_takes_it():

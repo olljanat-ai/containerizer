@@ -1,4 +1,4 @@
-"""Container image build pipelines for the application's own repository (pipelines.py, pipelineui.py)."""
+"""Container image build pipelines for the application's own repository (pipelines.py)."""
 import copy
 import io
 import json
@@ -101,7 +101,7 @@ def test_severities_follow_the_gate():
 def test_scanner_pins_are_the_security_rules_versions_with_their_digests():
     sec = security()
     trivy = next(s["image"] for s in sec["scan"]["scanners"] if s["name"] == "trivy")
-    syft = sec["sbom"]["generator"]["image"]
+    syft = sec["pipelines"]["syft_image"]
     assert trivy in pl.DIGESTS and syft in pl.DIGESTS, "add the digest of a new scanner version to pipelines.DIGESTS"
     t, s = pl.scanner_images()
     assert t == f"{trivy}@{pl.DIGESTS[trivy]}" and s == f"{syft}@{pl.DIGESTS[syft]}"
@@ -154,8 +154,8 @@ def test_generate_records_the_spec_and_writes_the_pipeline_folder(tmp_path):
     assert not (out / "pipeline" / "gitlab").exists()
     # the pipeline folder is not a component: not in the kustomization
     assert "pipeline" not in (out / "kustomization.yaml").read_text()
-    # stored with the assessment for the results page
-    assert assessment_doc(a)["build_pipeline"] == sp
+    # not stored with the assessment: the output repository has the files
+    assert "build_pipeline" not in assessment_doc(a)
     # the gate changed the Dockerfile: the copy follows
     (out / c["folder"] / "Dockerfile").write_text(c["dockerfile"] + "RUN apk upgrade --no-cache x\n")
     pl.refresh_dockerfiles(out)
@@ -545,128 +545,25 @@ def test_ci_demo_builds_from_the_repository_root_with_the_copied_dockerfile(tmp_
         subprocess.run(["docker", "rmi", "-f", f"cz-local/{folder}:ci"], capture_output=True)
 
 
-# --------------------------------------------------------------------------- the results page
+# --------------------------------------------------------------------------- in the output repository only
 
-def _app(**kw):
-    return {"ApplicationId": 7, "ApplicationName": "Shop", "ProductId": 5, "AssessmentId": 70, "Rating": "A",
-            "SourceCommit": "b" * 40, "RepositoryUrl": "https://github.com/acme/shop",
-            "components": [{"ComponentId": 11, "ComponentName": "Shop.Web", "Verdict": "info", "Tier": "server"}], **kw}
-
-
-def test_the_box_for_viewers_says_it_exists():
-    from containerizer import pipelineui as ui
-    html = ui.section(_app(), {"pipeline": {"allowed": False, "signin": True}})
-    assert "id='build-pipeline'" in html and "for GitHub Actions" in html and "(sign in)" in html
-    assert "/admin/build-pipeline" not in html and "<code>containerizer/" not in html
-    assert "containerizer pipeline" in ui.section(_app(), {"pipeline": {"allowed": False, "signin": False}})
-    # nothing to build: no box
-    assert ui.section(_app(components=[{"Verdict": "blocker", "Tier": "server"}]), {}) == ""
-
-
-def test_the_box_for_operators_shows_the_files_the_patch_and_escapes(monkeypatch):
-    from containerizer import pipelineui as ui
-    sp = spec(app="<Shop>", existing=["containerizer/<x>"])
-    sp["components"][0]["dockerfile"] = "FROM scratch\n# <script>alert(1)</script>\n"
-    d = {"allowed": True, "spec": sp, "provider": "github", "how": "the repository URL", "chosen": "github",
-         "sign": "none", "files": pl.files(sp, "github"), "patch": pl.patch_for(sp, "github").decode()}
-    html = ui.section(_app(), {"pipeline": d})
-    assert "<script>" not in html and "&lt;script&gt;" in html and "containerizer/&lt;x&gt;" in html
-    assert "<b>GitHub</b> (from the repository URL)" in html
-    assert "/admin/build-pipeline/7.patch?provider=github&amp;sign=none" in html and ".tar.gz" in html
-    assert "git checkout -b containerizer-build-pipeline bbbbbbbbbbbb" in html
-    assert "git am &lt; Shop-build-pipeline-github.patch" in html
-    assert "<code>.github/workflows/containerizer-images.yml</code>" in html and "class='diff'" in html
-    assert "GitHub Container Registry" in html
-    # provider not known: a link per provider
-    html = ui.section(_app(), {"pipeline": {**d, "provider": None, "chosen": None, "files": None, "patch": None}})
-    assert html.count("Download .patch") == 3 and "<b>not known</b>" in html and "Provider…" in html
-    # no build pipeline in this assessment
-    html = ui.section(_app(), {"pipeline": {"allowed": True, "spec": None}})
-    assert "Scan the repository again" in html and "Download" not in html
-
-
-@pytest.fixture
-def adm():
-    pytest.importorskip("jwt")
-    from test_llm_queue import FakeConn
-    from containerizer import admin as adminmod
-    from containerizer.oidc import OidcConfig
-    c = OidcConfig(issuer="https://idp.example.com", client_id="cz", client_secret="s", public_url="https://cz.example.com",
-                   admins=["group:a"])
-    conn = FakeConn()
-    a = adminmod.Admin(c, lambda: conn, provider=object())
-    a.conn = conn
-    return a
-
-
-def _get(adm, sid, path, query=""):
-    return adm.handle("GET", path, query, {"Cookie": f"{adm.cookie}={sid}"}, b"")
-
-
-def test_downloads_need_a_role_and_the_application(adm):
-    sp = spec(components=[{**SPEC["components"][0], "folder": "demo-web"}])
-    adm.conn.answers = {
-        r"FROM cz.vApplicationLatest WHERE ApplicationId": [_app()],
-        r"SELECT ReportJson FROM cz.ApplicationAssessment": [{"ReportJson": json.dumps({"build_pipeline": sp})}],
-        r"FROM cz.OrgRepository r JOIN cz.OrgScan": [{"Provider": "gitlab", "ApiUrl": None, "Registry": "cz.lab:5000",
-                                                    "DefaultBranch": "develop"}],
-        r"SELECT BusinessUnitId AS Id, Name FROM cz.BusinessUnit": [{"Id": 1, "Name": "Finance"}],
-        r"SELECT ProductId AS Id, Name, BusinessUnitId FROM cz.Product": [{"Id": 5, "Name": "Shop", "BusinessUnitId": 1},
-                                                                         {"Id": 6, "Name": "Other", "BusinessUnitId": 2}]}
-    viewer = adm.sessions.create("v@example.com", "V", False, True)
-    assert _get(adm, viewer, "/admin/build-pipeline/7.patch").status == 403
-    other = adm.sessions.create("p@example.com", "P", False, True, False, ["product:Other"])
-    assert _get(adm, other, "/admin/build-pipeline/7.patch").status == 404
-    owner = adm.sessions.create("q@example.com", "Q", False, True, False, ["product:Shop"])
-    r = _get(adm, owner, "/admin/build-pipeline/7.patch")
-    assert r.status == 200 and r.ctype == "text/x-diff; charset=utf-8"
-    assert dict(r.headers)["Content-Disposition"] == 'attachment; filename="Shop-build-pipeline-gitlab.patch"'
-    body = r.body.decode()
-    assert "Container image build pipeline (GitLab CI/CD)" in body              # the organization scan's provider
-    assert 'REGISTRY="${CONTAINERIZER_REGISTRY:-cz.lab:5000}"' in body                # the organization scan's registry
-    op = adm.sessions.create("o@example.com", "O", False, True, True, [])
-    r = _get(adm, op, "/admin/build-pipeline/7.patch", "provider=azure-devops&sign=key")
-    text = r.body.decode()
-    assert r.status == 200 and "Azure Pipelines" in text and "cosign.key" in text and "- develop" in text
-    r = _get(adm, op, "/admin/build-pipeline/7.tar.gz", "provider=github")
-    assert r.status == 200 and r.ctype == "application/gzip"
-    names = tarfile.open(fileobj=io.BytesIO(r.body)).getnames()
-    assert "Shop-build-pipeline-github/.github/workflows/containerizer-images.yml" in names
-    # a bad provider is ignored (the scan's is used); bad paths are not found
-    assert "GitLab" in _get(adm, op, "/admin/build-pipeline/7.patch", "provider=<x>").body.decode()
-    for path in ("/admin/build-pipeline/7", "/admin/build-pipeline/x.patch", "/admin/build-pipeline/7.zip",
-                 "/admin/build-pipeline"):
-        assert _get(adm, op, path).status == 404, path
-    assert adm.handle("POST", "/admin/build-pipeline/7.patch", "", {"Cookie": f"{adm.cookie}={op}"},
-                      b"csrf=" + adm.sessions.get(op).csrf.encode()).status == 404
-    # no build pipeline recorded
-    adm.conn.answers[r"SELECT ReportJson FROM cz.ApplicationAssessment"] = [{"ReportJson": "{}"}]
-    assert _get(adm, op, "/admin/build-pipeline/7.patch").status == 404
-
-
-def test_page_data_reads_with_the_admin_login_for_who_may_download(adm):
-    from containerizer import pipelineui as ui
-    adm.conn.answers = {
-        r"SELECT ReportJson FROM cz.ApplicationAssessment": [{"ReportJson": json.dumps({"build_pipeline": spec()})}],
-        r"SELECT ProductId AS Id, Name, BusinessUnitId FROM cz.Product": [{"Id": 5, "Name": "Shop", "BusinessUnitId": 1}]}
-    viewer = adm.sessions.get(adm.sessions.create("v@example.com", "V", False, True))
-    assert ui.page_data(adm, viewer, _app(), {}) == {"allowed": False, "signin": True}
-    assert ui.page_data(adm, None, _app(), {}) == {"allowed": False, "signin": True}
-    assert ui.page_data(None, None, _app(), {}) == {"allowed": False, "signin": False}
-    owner = adm.sessions.get(adm.sessions.create("q@example.com", "Q", False, True, False, ["product:Shop"]))
-    d = ui.page_data(adm, owner, _app(), {"pipeline": ["gitlab"], "sign": ["keyless"]})
-    assert d["allowed"] and d["provider"] == "github" and d["chosen"] == "gitlab" and d["sign"] == "keyless"
-    assert ".gitlab-ci.yml" in d["files"] and d["patch"].startswith("From ")
-    d = ui.page_data(adm, owner, _app(), {"pipeline": ["nope"], "sign": ["<x>"]})
-    assert d["chosen"] == "github" and d["sign"] == "none"
-    assert not ui.page_data(adm, owner, _app(ProductId=6), {})["allowed"]
-
-
-def test_results_page_has_the_box_after_the_findings():
+def test_the_results_page_has_no_build_pipeline_box_and_no_downloads():
     from containerizer import webui
-    app = {**_app(), "BusinessUnitId": None, "BusinessUnitName": None, "ProductName": None, "Score": 90,
-           "Confidence": 0.9, "Verified": False, "AssessedAt": None, "Summary": "s", "findings": [], "history": [],
-           "components": [{**_app()["components"][0], "ProjectPath": "src/W.csproj", "Role": "web", "VerifyStatus": None,
-                           "VerdictText": "", "WindowsContainerOk": False, "TargetFramework": "net8.0"}]}
-    html = webui.render_application(app, "", {"signin": True, "pipeline": {"allowed": False, "signin": True}})
-    assert html.index("What needs to change") < html.index("id='build-pipeline'") < html.index("<h2>History")
+    import importlib.util
+    assert importlib.util.find_spec("containerizer.pipelineui") is None
+    app = {"ApplicationId": 7, "ApplicationName": "Shop", "ProductId": 5, "AssessmentId": 70, "Rating": "A",
+           "SourceCommit": "b" * 40, "RepositoryUrl": "https://github.com/acme/shop", "BusinessUnitId": None,
+           "BusinessUnitName": None, "ProductName": None, "Score": 90, "Confidence": 0.9, "Verified": False,
+           "AssessedAt": None, "Summary": "s", "findings": [], "history": [],
+           "components": [{"ComponentId": 11, "ComponentName": "Shop.Web", "Verdict": "info", "Tier": "server",
+                           "ProjectPath": "src/W.csproj", "Role": "web", "VerifyStatus": None, "VerdictText": "",
+                           "WindowsContainerOk": False, "TargetFramework": "net8.0"}]}
+    html = webui.render_application(app, "", {"signin": True})
+    assert "build-pipeline" not in html and "Build pipeline" not in html
+
+
+def test_the_scans_own_registry_is_not_the_real_environments():
+    for reg in ("", "registry.local", "localhost:5000/sandbox", "127.0.0.1:5000/x", "LOCALHOST/lab"):
+        assert pl._sandbox_only(reg), reg
+    for reg in ("acr.example.io/team", "ghcr.io/acme", "registry.example.com:5000/x"):
+        assert not pl._sandbox_only(reg), reg
