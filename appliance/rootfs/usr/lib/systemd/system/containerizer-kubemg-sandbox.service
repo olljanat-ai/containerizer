@@ -1,0 +1,20 @@
+[Unit]
+Description=containerizer appliance: the k3s sandbox cluster in kubemg (its agent)
+After=containerizer-kubemg.service k3s.service
+Wants=containerizer-kubemg.service k3s.service
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+ConditionPathExists=/run/containerizer/kubemg/kubemg.env
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/containerizer/bin/cz-kubemg sandbox
+TimeoutStartSec=20min
+Restart=on-failure
+RestartSec=120
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

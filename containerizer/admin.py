@@ -89,6 +89,7 @@ class Admin:
         self.devdb = None                           # devdb.Settings when dev database uploads are on
         self.credential_key = None                  # the scan worker's public key: seals source control tokens
         self.grafana_url = ""                       # CONTAINERIZER_GRAFANA_URL: link on the admin pages
+        self.kubemg_url = ""                        # CONTAINERIZER_KUBEMG_URL: kubemg on the appliance (optional)
         self.system = None                          # appliance.SystemPage on the appliance (System, Firewall)
         self.dev: DevIdentity | None = None         # development mode: no sign-in (CONTAINERIZER_DEV_NO_AUTH)
         from .rulereview import ApplyConfig
@@ -441,7 +442,10 @@ class Admin:
         if self.grafana_url and (a.admin or a.operator):
             tabs += (f"<a class='chip' href='{e(self.grafana_url)}' rel='noopener noreferrer' target='_blank'"
                      f" title='Metrics of the scans and the scan worker'>Grafana ↗</a>")
-        msg = f"<p class='note'>{e(flash)}</p>" if flash else ""
+        if self.kubemg_url and (a.admin or a.operator):
+            tabs += (f"<a class='chip' href='{e(self.kubemg_url)}' rel='noopener noreferrer' target='_blank'"
+                     f" title='kubemg: audited console and kubectl access to the sandbox cluster'>kubemg ↗</a>")
+        msg =f"<p class='note'>{e(flash)}</p>" if flash else ""
         role = role_label(s.admin, s.operator, s.scopes)
         scope = f": {e(', '.join(s.scopes))}" if s.scopes and not s.admin else ""
         return page(title, f"""<div class='topnav'><a href='/'>← Results</a><span>Signed in as <b>{e(s.name)}</b>
@@ -981,6 +985,9 @@ def build(env=None) -> Admin | None:
     grafana = (env.get("CONTAINERIZER_GRAFANA_URL") or "").strip()
     if grafana and not LINK_RE.fullmatch(grafana):
         raise OidcError("CONTAINERIZER_GRAFANA_URL must be an https:// link (http:// only to localhost)")
+    kubemg = (env.get("CONTAINERIZER_KUBEMG_URL") or "").strip()
+    if kubemg and not LINK_RE.fullmatch(kubemg):
+        raise OidcError("CONTAINERIZER_KUBEMG_URL must be an https:// link (http:// only to localhost)")
     from . import api
     from .rulereview import ApplyConfig, ReviewError
     adm = Admin(cfg, lambda: connect(cs, pw), provider=object() if dev else None)
@@ -996,6 +1003,7 @@ def build(env=None) -> Admin | None:
         adm.rule_apply_error = str(ex)
         print(f"warning: rule review: {ex}", file=sys.stderr)
     adm.grafana_url = grafana
+    adm.kubemg_url = kubemg
     from .credentials import CredentialError, public_key_from_env
     try:
         adm.credential_key = public_key_from_env(env)
