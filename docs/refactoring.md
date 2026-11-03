@@ -246,8 +246,10 @@ run by the queue's settings (hours, idle, parallel requests). Nothing is queued 
 
 ## The sandbox variant
 
-A Make it A order whose patched copy rates A and is verified is **deployed to the sandbox beside the
-original**, never in its place, the way an [organization scan](scheduled-scans.md) deploys (the same code):
+A Make it A order whose patched copy rates A and is verified is **deployed to the sandbox as its own
+application**, never in place of the original, the way an [organization scan](scheduled-scans.md) deploys (the same
+code). The original stays as the scan left it: an organization scan deploys only an application's components that
+rate A on their own, so a B application has only those in the sandbox, often none. The patched copy:
 
 - **Its own name.** The patched copy's folder is `<app>-refactor-<job>` (a DNS label of at most 63
   characters), and everything that an organization scan derives from an application's name derives from it:

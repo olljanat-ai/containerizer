@@ -2302,7 +2302,7 @@ def handler(job: dict) -> dict:
         result = run_order(run_pl, work, progress=progress, name=name)
         _stop_if_cancelled()                # cancelled while it verified: nothing deployed, no next order
         if pl.get("goal") == "rating-a":
-            # a patched copy that rates A and verifies runs in the sandbox beside the original (variant.py)
+            # a patched copy that rates A and verifies runs in the sandbox as its own application (variant.py)
             from . import variant
             result["sandbox"] = variant.after_order(job, pl, result, work, name, progress)
             if ends:

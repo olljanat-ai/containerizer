@@ -6,6 +6,12 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+- Make it A: the front page, the refactoring pages and the docs no longer say the patched copy runs "beside the
+  original". It runs as its own application, and an organization scan has only the original's A-rated components
+  in the sandbox, often none.
+
 ## 0.9.0 (2026-11-03)
 
 - The *Dependencies and licences* page and the software bills of materials behind it are gone:

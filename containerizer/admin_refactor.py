@@ -432,7 +432,7 @@ def _make_it_a(res: dict, pl: dict, st: str) -> str:
         out.append(f"<p class='muted'>The LLM changes the code for every finding that keeps the application from A and "
                    f"moves the data of the components that keep their own; the patch is verified and repaired, and the "
                    f"patched copy assessed again ({e(lim)}). A copy that rates A and runs is deployed to the sandbox "
-                   f"beside the original.</p>")
+                   f"as its own application, separate from the original.</p>")
     return "".join(out)
 
 
@@ -792,7 +792,7 @@ def make_all_a(adm, conn, s, a, q: dict | None = None) -> Response:
             "<p class='muted'>One \"Make it A\" order per B-rated application, <b>smallest first</b>: the LLM changes the "
             "code for every finding that keeps it from A (and moves the data of components that keep their own), the "
             "patch is verified and repaired, the patched copy assessed again; one that rates A and runs is deployed to "
-            "the sandbox beside the original. Start with the small ones to get the most applications to A for the "
+            "the sandbox as its own application, separate from the original. Start with the small ones to get the most applications to A for the "
             "LLM's time. Orders queued from this page are <b>approved</b> by you at once (they do not wait for "
             "approval); they run one after another in the LLM queue, by its settings.</p>"
             + tot + pick + form

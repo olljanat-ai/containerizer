@@ -666,8 +666,9 @@ def a_patches_html(apps: list[dict], nav: str = "") -> str:
                     f"<td><span class='st {css}'>{e(VARIANT_TEXT.get(st, 'Not in the sandbox'))}</span>{link}</td>"
                     f"<td class='small'>{_date(ap.get('FinishedAt'))}</td></tr>")
     return ("<section class='a-patches'><h2>Made A by a patch</h2><p class='muted'>A \"Make it A\" patch for these "
-            "applications builds, runs and rates A; the ones running in the sandbox are deployed there beside the "
-            "original. Merging the patch makes the application itself A.</p><table><thead><tr><th>Rating</th>"
+            "applications builds, runs and rates A. The patched copy runs in the sandbox as its own application "
+            "(&lt;app&gt;-refactor-&lt;order&gt;), separate from the original, which the sandbox has only the A-rated "
+            "components of (often none). Merging the patch makes the application itself A.</p><table><thead><tr><th>Rating</th>"
             "<th>Application</th><th>Sandbox</th><th>Patch made</th></tr></thead><tbody>" + "".join(rows)
             + "</tbody></table></section>")
 
