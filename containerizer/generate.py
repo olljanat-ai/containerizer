@@ -801,7 +801,7 @@ def _connectivity(a: AppAssessment, out: Path, approved_egress: list[dict] | Non
 
 def _build_pipeline(a: AppAssessment, out: Path, registry: str) -> list[Path]:
     """The image build pipeline for the application's own repository (pipelines.py): `pipeline/` in the
-    output, and its spec on the assessment (assessment.json `build_pipeline`, the results page's patch).
+    output (an organization scan commits it to the output repository).
     A failure here never fails the generation."""
     from . import pipelines
     try:

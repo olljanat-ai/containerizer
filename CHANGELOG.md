@@ -8,6 +8,11 @@ qcow2 and VHDX images as release assets.
 
 ## Unreleased
 
+- Build pipelines are only in the output repository now (`<organization>/<project>/<repository>/pipeline/`, written
+  by every organization scan) and from `containerizer pipeline` on a checkout. The application page's *Build
+  pipeline* box and its `.patch` and `.tar.gz` downloads are gone, and the assessment no longer stores the
+  pipeline's spec. A pipeline never pushes to the appliance's own registry (`localhost:5000`): without
+  `--registry` it uses its provider's registry.
 - Organization scans and Make it A variants always push to the appliance's own registry
   (`localhost:5000/sandbox`). The scan form no longer has *Image registry*, *Push images* or *Image pull secret*,
   and a registry stored by an older scan is ignored. This also fixes Make it A variants that were not deployed
