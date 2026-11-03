@@ -582,11 +582,12 @@ def build_or_pull(src: Path, sv: Service, local: str, cdir: Path, timeout: int =
     """The service's image as `local`: built from the repository's Dockerfile, or the image it runs today
     pulled and tagged."""
     if sv.build:
-        from .verify import _build_env_args
+        from .verify import _build_env_args, readable_context
         ctx = (src / (sv.build.get("context") or ".")).resolve()
         df = (src / sv.build["dockerfile"]).resolve()
         if not str(ctx).startswith(str(src.resolve())) or not str(df).startswith(str(src.resolve())):
             return False, "the build context or Dockerfile is outside the repository"
+        readable_context(ctx)
         args = ["build", "--progress=plain", *_build_env_args(), "-f", str(df), "-t", local]
         for k, v in (sv.build.get("args") or {}).items():
             if ENV_NAME_RE.fullmatch(k):

@@ -1128,3 +1128,38 @@ def test_the_prompt_of_a_fresh_start_says_what_failed(shop):
                                shop / "app" if (shop / "app").is_dir() else shop)
     assert "failed again and again with these errors" in prompt and "NU1605" in prompt
     assert "Never remove a feature" in prompt and "Never write a user name or a password" in prompt
+
+
+def test_a_downgrade_is_found_from_nugets_dependency_paths_alone(tmp_path):
+    app = _dotnet_app(tmp_path)
+    # a log tail without the "Detected package downgrade" line (it was cut off above)
+    log = ("csproj : error NU1605:  Web -> Microsoft.EntityFrameworkCore.SqlServer 8.0.11 -> Microsoft.Data.SqlClient (>= 5.1.6)\n"
+           "3.281 /src/src/Web/Web.csproj : error NU1605:  Web -> Microsoft.EntityFrameworkCore.SqlServer 8.0.11 -> "
+           "Microsoft.Data.SqlClient (>= 5.1.6)\n"
+           "3.281 /src/src/Web/Web.csproj : error NU1605:  Web -> Microsoft.Data.SqlClient (>= 5.1.1)\n"
+           "3.385   Failed to restore /src/src/Web/Web.csproj (in 1.24 sec).\n")
+    changes, _, fixed = rf.fix_downgrades(app, log, log=lambda s: None)
+    assert [c["detail"] for c in changes] == ["raise Microsoft.Data.SqlClient 5.1.1 -> 5.1.6"]
+    assert rf.without_fixed(rf.build_errors(log), fixed) == []
+
+
+def test_a_failed_builds_log_keeps_its_errors_before_dockers_report():
+    log = "\n".join(["#11 3.4 /src/src/Web/Web.csproj : error NU1605: Detected package downgrade: X from 2.0 to 1.0"] * 2
+                    + [f"#11 3.{i} noise line {i}" for i in range(200)]
+                    + ["3.4 /src/src/Web/Web.csproj : error NU1605: Detected package downgrade: X from 2.0 to 1.0",
+                       "ERROR: failed to solve: process did not complete successfully: exit code: 1"])
+    tail = rf._build_tail(log)
+    assert tail.count("Detected package downgrade") == 2 and tail.index("------") < tail.index("ERROR: failed to solve")
+    assert "noise line 5\n" not in tail
+
+
+def test_a_build_context_is_made_readable_for_the_images_user(tmp_path):
+    from containerizer.verify import readable_context
+    (tmp_path / "src/App").mkdir(parents=True)
+    f = tmp_path / "src/App/appsettings.json"
+    f.write_text("{}")
+    f.chmod(0o600)
+    (tmp_path / "src/App").chmod(0o700)
+    (tmp_path / "link").symlink_to("/etc/hostname")
+    readable_context(tmp_path)
+    assert oct(f.stat().st_mode & 0o777) == "0o644" and oct((tmp_path / "src/App").stat().st_mode & 0o777) == "0o755"

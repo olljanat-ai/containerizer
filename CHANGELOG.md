@@ -6,6 +6,18 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+- Verification on the appliance: the build context is made readable before `docker build`. The appliance's
+  services run with `UMask=0077`, so their clones were `0600`. `dotnet publish` kept that mode, and the image's
+  non-root user could not read the app's own `appsettings.json` ("Access to the path '/app/appsettings.json' is
+  denied"). This affected every .NET component verified on the appliance, scans included. The clones stay under
+  `0700` work folders.
+- Refactoring: a NuGet downgrade is also found from the dependency paths NuGet lists ("App -> Lib 8.0.11 ->
+  P (>= 5.1.6)" and "App -> P (>= 5.1.1)"). A failed build's log, on the order page and for the repair, keeps the
+  error lines before Docker's own report. Before this, only the last 1,500 characters were kept, which cut off
+  NuGet's "Detected package downgrade" line, so the downgrade was not raised.
+
 ## 0.8.3 (2026-11-03)
 
 - Refactoring: NuGet package downgrades (NU1605) are fixed without the LLM. A package reference the LLM adds below

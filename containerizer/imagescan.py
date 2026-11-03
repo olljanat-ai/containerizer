@@ -500,8 +500,9 @@ def os_patch(dockerfile: str, base: str, res: ScanResult, blocking: list[Vuln]) 
 
 
 def build_image(app_root: Path, cdir: Path, tag: str, timeout: int = 1800) -> tuple[bool, str]:
-    from .verify import _build_env_args, _ensure_images
+    from .verify import _build_env_args, _ensure_images, readable_context
     _ensure_images((cdir / "Dockerfile").read_text())
+    readable_context(app_root)
     rc, out, err = _run(["docker", "build", "--progress=plain", *_build_env_args(), "-f", str(cdir / "Dockerfile"),
                          "-t", tag, str(app_root)], timeout)
     (cdir / "build.log").write_text(out + err)

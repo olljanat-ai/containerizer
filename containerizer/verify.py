@@ -98,6 +98,26 @@ class DockerUnavailable(RuntimeError):
 DOCKER_DOWN = "Cannot connect to the Docker daemon"
 
 
+def readable_context(root: Path) -> None:
+    """Make a build context readable for everyone (files a+r, folders a+rx). The appliance's services run with
+    UMask=0077, so their clones are 0600; `docker build` keeps the modes, and an image's root-owned 0600 files
+    (appsettings.json copied by dotnet publish) cannot be read by the app's own non-root user: "Access to the path
+    '/app/appsettings.json' is denied". The clones are under 0700 work folders, so nobody else on the host sees
+    more. Symbolic links and other users' files are left alone."""
+    import stat
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d != ".git"]
+        for name, bits in [(d, 0o555) for d in dirnames] + [(f, 0o444) for f in filenames] + [(".", 0o555)]:
+            path = os.path.join(dirpath, name)
+            try:
+                st = os.lstat(path)
+                if stat.S_ISLNK(st.st_mode) or st.st_uid != os.getuid() or (st.st_mode & bits) == bits:
+                    continue
+                os.chmod(path, stat.S_IMODE(st.st_mode) | bits)
+            except OSError:
+                continue
+
+
 def _run(cmd: list[str], timeout: int, cwd: Path | None = None) -> tuple[int, str]:
     try:
         p = subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -191,6 +211,7 @@ def build(a: AppAssessment, c: Component, plan: dict, workdir: Path, timeout: in
     from .generate import dockerignore
     (workdir / "Dockerfile.dockerignore").write_text(dockerignore(a.repo))
     tag = f"containerizer/{k8s_name(a.name)}-{k8s_name(c.name)}:verify"
+    readable_context(a.repo.root)
     rc, log = _run(["docker", "build", "--progress=plain", *_build_env_args(), "-f", str(workdir / "Dockerfile"),
                     "-t", tag, str(a.repo.root)], timeout)
     (workdir / "build.log").write_text(log)
