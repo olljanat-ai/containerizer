@@ -395,7 +395,9 @@ Then:
    wildcard) to it. Let's Encrypt (`CZ_ACME_EMAIL`) issues one for it by itself when the name is public. Caddy's
    own CA issues one too, and browsers warn until they trust that CA, as for the web UI.
 3. **Sign in** at `https://kubemg.<appliance>/` as `admin` with the password in
-   `/etc/containerizer/secrets/kubemg-admin` (root only). kubemg's setup wizard asks you to change it, and offers
+   `/etc/containerizer/secrets/kubemg-admin` (root only; `/usr/lib/containerizer/bin/cz-kubemg password` prints
+   it). The appliance generates it, so kubemg does not print one to its log as its sign-in page says, and
+   `journalctl -u containerizer-kubemg` says where it is. kubemg's setup wizard asks you to change it, and offers
    SSO: OIDC (the identity provider the web UI uses works, with the redirect URI
    `https://kubemg.<appliance>/api/v1/auth/sso/providers/<id>/callback`), SAML or LDAP. **Admin →
    Settings → SSO** in kubemg sets it up, with group mappings to kubemg roles.
@@ -408,6 +410,15 @@ agent trusts the CA of the appliance's certificate: your own (`/etc/containerize
 generated `admin` password, so this works only before you change that password. If the agent is removed after
 that, register the cluster again in kubemg (**Admin → Clusters → Add**, agent mode) and apply its manifest with
 `k3s kubectl apply -f`.
+
+**Its log** (`docker logs cz-kubemg`, also in `journalctl -u containerizer-kubemg`) has no level to set. Its audit
+trail is always in it, one JSON line per call, among them kubemg's own look for shell pods every 2 minutes
+(`kubemg:shell-runner`). A `record not found` line with its SQL at the start is a setting not made yet, not an
+error. **Helm chart repositories**: kubemg adds six public ones on its first start (argo, bitnami, grafana,
+ingress-nginx, jetstack, prometheus-community), and the appliance's outbound allow-list blocks them, so each
+hourly sync would log `server misbehaving` for them. The appliance deletes them while the generated `admin`
+password still works; after that, delete them in kubemg (**Admin → Settings → Helm**, Chart repositories). To use charts, add a
+repository the allow-list lets through (your mirror), or put the repositories' hosts on the allow-list.
 
 | | |
 | --- | --- |

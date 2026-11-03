@@ -9,6 +9,10 @@ API in agent mode and applies the agent's manifest to k3s, with a host alias tha
 (the sandbox's DNS filter does not resolve it; pods reach the appliance on 443 like any client). It signs in as the
 bootstrap administrator with the generated password, which kubemg's setup wizard has the administrator change at
 the first sign-in: so it registers once, on the first start, and later only checks that the agent is there.
+
+While that password still works it also deletes the Helm chart repositories kubemg seeds on its first start
+(`SEEDED_REPOS`): the appliance's outbound allow-list does not let it reach them, so their hourly sync only logs
+warnings. A repository the administrator adds, or one whose address was changed, is kept.
 """
 from __future__ import annotations
 
@@ -17,6 +21,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import yaml
@@ -25,6 +30,15 @@ API = "http://127.0.0.1:8444/api/v1"
 CLUSTER = "sandbox"
 NAMESPACE = "kubemg-system"
 KUBECTL = ["/usr/bin/k3s", "kubectl"]
+# the chart repositories kubemg 0.17 seeds on its first start, by name and address
+SEEDED_REPOS = {
+    "argo": "https://argoproj.github.io/argo-helm",
+    "bitnami": "https://charts.bitnami.com/bitnami",
+    "grafana": "https://grafana.github.io/helm-charts",
+    "ingress-nginx": "https://kubernetes.github.io/ingress-nginx",
+    "jetstack": "https://charts.jetstack.io",
+    "prometheus-community": "https://prometheus-community.github.io/helm-charts",
+}
 
 
 class KubemgError(Exception):
@@ -79,6 +93,19 @@ def ensure_cluster(token: str, call=_call) -> dict:
     return call("POST", "/clusters", token, {"name": CLUSTER, "environment": "dev", "connection_mode": "agent"})
 
 
+def drop_seeded_repos(token: str, call=_call) -> list[str]:
+    """Delete the chart repositories kubemg seeded (unchanged ones only). Returns their names."""
+    out = call("GET", "/helm/repositories", token)
+    repos = out if isinstance(out, list) else out.get("repositories") or out.get("items") or []
+    gone = []
+    for r in repos:
+        name, url = r.get("name"), (r.get("url") or "").rstrip("/")
+        if name in SEEDED_REPOS and url == SEEDED_REPOS[name]:
+            call("DELETE", f"/helm/repositories/{urllib.parse.quote(name)}", token)
+            gone.append(name)
+    return gone
+
+
 def with_host_alias(manifest: str, host: str, ip: str) -> str:
     """The agent's manifest with hostAliases on its Deployment: <host> is the node's address."""
     docs = [d for d in yaml.safe_load_all(manifest) if d]
@@ -113,10 +140,20 @@ def node_ip() -> str:
 def sandbox(host: str, password: str, username: str = "admin", call=_call, installed=agent_installed,
             apply=None, ip=node_ip, log=print) -> str:
     """Register the sandbox cluster and install kubemg's agent in it. Returns what it did."""
-    if installed():
-        return "the kubemg agent is installed in the sandbox cluster"
+    done = installed()
     wait_up(call=call)
     token = login(username, password, call)
+    if token is not None:
+        try:
+            gone = drop_seeded_repos(token, call)
+        except KubemgError as e:            # not worth failing the registration for
+            log(f"kubemg: the seeded chart repositories were not deleted: {e}")
+        else:
+            if gone:
+                log(f"kubemg: deleted the seeded chart repositories {', '.join(gone)} (not on the outbound "
+                    "allow-list); add your own in kubemg (Admin → Settings → Helm)")
+    if done:
+        return "the kubemg agent is installed in the sandbox cluster"
     if token is None:
         return ("kubemg's administrator password was changed (its setup wizard asks for that): the sandbox cluster was "
                 "not registered by the appliance. Register it in kubemg (Admin → Clusters → Add, agent mode) and apply "
