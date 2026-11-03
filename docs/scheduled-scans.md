@@ -42,7 +42,7 @@ A scan runs in two phases, so time is not spent on repositories nobody uses any 
    never cloned, and one that was deployed before leaves the sandbox at that run.
 
 Disabled repositories and projects are also **hidden from the results pages**: the overview, the
-trends, the SBOM pages and the application pages leave out the applications that come from them (they
+trends and the application pages leave out the applications that come from them (they
 stay on the admin pages). Enabling them again brings their results back at once. Repositories the scan
 skips automatically are not hidden. Every change to a project or repository, with who made it and the
 note, is in **Admin → Change history** (Projects, Repositories) and on the project's or repository's own
@@ -75,7 +75,7 @@ in that run unless their project is disabled.
 5. **Selected**: a component is deployed only when it is a server component (web, worker, console, SPA)
    rated **A** on its own (including the stateless requirement), a Linux image can be generated for it,
    and it built and ran in the verification (or ran and only lacked its database or broker).
-6. **Security gate**: lint, image build, vulnerability scan, licence policy and a run with the pod's
+6. **Security gate**: lint, image build, vulnerability scan and a run with the pod's
    security context ([security gate](overview.md#security-gate)). A component that fails is dropped, and
    the rest are gated again so the namespace, network policies and GitOps files cover only what is
    deployed.
@@ -196,7 +196,7 @@ note in the change history. A disabled project overrides the settings of its rep
     containerizer.json       source URL, commit, images, digests, verification
     gitops/argocd/           AppProject + Application for this app
     gitops/flux/             tenant.yaml, git/sync.yaml, oci/, image automation
-    <component>/             Dockerfile, Dockerfile.dockerignore, k8s.yaml, plan.json, sbom.cdx.json
+    <component>/             Dockerfile, Dockerfile.dockerignore, k8s.yaml, plan.json
     pipeline/<provider>/     the image build pipeline for the application's own repository (build-pipelines.md)
 sandbox/
   README.md namespaces.txt

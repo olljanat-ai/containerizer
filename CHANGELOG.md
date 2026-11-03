@@ -8,6 +8,13 @@ qcow2 and VHDX images as release assets.
 
 ## Unreleased
 
+- The *Dependencies and licences* page and the software bills of materials behind it are gone:
+  - the component package pages and the application page's Packages column;
+  - the `/api/v1/.../sbom` endpoints and the `containerizer sbom` command;
+  - the security gate's licence policy, which no longer fails a component;
+  - the SBOM attached to each pushed image, and ORAS in the appliance image.
+  Schema 34 drops their tables. The build pipelines generated for the applications' own repositories still make
+  an SBOM with Syft in their CI: its version is now `pipelines.syft_image` in `rules/60-security.yaml`.
 - Build pipelines are only in the output repository now (`<organization>/<project>/<repository>/pipeline/`, written
   by every organization scan) and from `containerizer pipeline` on a checkout. The application page's *Build
   pipeline* box and its `.patch` and `.tar.gz` downloads are gone, and the assessment no longer stores the

@@ -47,7 +47,7 @@ SPEC_VERSION = 1
 PIPELINE_MARK = "# the build pipeline's own files are not part of the image"
 
 # Pinned by digest (multi-arch index). The scanners' versions come from rules/60-security.yaml (scan.scanners,
-# sbom.generator): when one changes there, add its digest here (tests/test_pipelines.py checks it):
+# pipelines.syft_image): when one changes there, add its digest here (tests/test_pipelines.py checks it):
 #   docker buildx imagetools inspect aquasec/trivy:<version> | grep Digest
 DIGESTS = {
     "aquasec/trivy:0.67.2": "sha256:e2b22eac59c02003d8749f5b8d9bd073b62e30fefaef5b7c8371204e0a4b0c08",
@@ -230,7 +230,7 @@ def spec(a, out: Path, registry: str = "registry.local", branch: str | None = No
             "existing": sorted(t for t in targets if (top_p / t).exists()),
             "fail_on": str(scan.get("fail_on") or "CRITICAL").upper(),
             "ignore_unfixed": bool(scan.get("ignore_unfixed", True)),
-            "tlog": bool((sec.get("sbom") or {}).get("cosign_tlog_upload", True)),
+            "tlog": bool((sec.get("pipelines") or {}).get("cosign_tlog_upload", True)),
             "components": comps}
 
 
@@ -252,7 +252,7 @@ def scanner_images() -> tuple[str, str]:
     sec = security()
     trivy = next((s.get("image") for s in (sec.get("scan") or {}).get("scanners") or [] if s.get("name") == "trivy"),
                  None) or "aquasec/trivy:0.67.2"
-    syft = ((sec.get("sbom") or {}).get("generator") or {}).get("image") or "anchore/syft:v1.33.0"
+    syft = (sec.get("pipelines") or {}).get("syft_image") or "anchore/syft:v1.33.0"
     return pinned(trivy), pinned(syft)
 
 

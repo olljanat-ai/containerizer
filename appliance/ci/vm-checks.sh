@@ -121,24 +121,6 @@ wait_for 300 "pod from the local registry" sh -c 'k3s kubectl get pod ci-registr
 k3s kubectl logs ci-registry
 k3s kubectl delete pod ci-registry --wait=false
 
-step "SBOM attached to a pushed image with ORAS (as the scan worker does it)"
-oras version
-digest=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' localhost:5000/ci/registry:1 \
-  | sed -n 's#^localhost:5000/ci/registry@##p' | head -1)
-test -n "$digest"
-install -d -m 0700 -o containerizer -g containerizer /var/lib/containerizer/worker/ci
-runuser -u containerizer -- env HOME=/var/lib/containerizer/worker $PY - "$digest" <<'PY'
-import json, sys, pathlib
-from containerizer import sbom
-f = pathlib.Path("/var/lib/containerizer/worker/ci/sbom.cdx.json")
-f.write_text(json.dumps({"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1, "components": []}))
-r = sbom.attach("localhost:5000/ci/registry:1", sys.argv[1], f)
-print(r)
-assert r == "attached", r
-PY
-oras discover --format json "localhost:5000/ci/registry@$digest" | grep -q 'application/vnd.cyclonedx+json'
-rm -rf /var/lib/containerizer/worker/ci
-
 step "dev database uploads: the web UI stores them, the scan worker reads them"
 test "$(stat -c '%U:%G %a' /var/lib/containerizer/devdb)" = "cz-web:containerizer 2750"
 for u in containerizer-web containerizer-worker; do

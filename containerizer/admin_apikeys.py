@@ -171,7 +171,6 @@ for app in api("GET", "/applications?unmapped=true")["items"]:
 <tr><td>GET</td><td><code>/applications[?unmapped=true&amp;productId=&amp;name=]</code>, <code>/applications/{{id}}</code></td><td>applications with their latest rating</td></tr>
 <tr><td>PATCH</td><td><code>/applications/{{id}}</code></td><td>display name, owner, description, product, retired (full)</td></tr>
 <tr><td>GET</td><td><code>/audit[?table=&amp;rowId=&amp;limit=]</code></td><td>the change history</td></tr>
-<tr><td>GET</td><td><code>/applications/{{id}}/components/{{cid}}/sbom</code>, <code>/sbom/packages</code>, <code>/sbom/summary</code></td><td>software bills of materials</td></tr>
 </tbody></table>
 <p class='muted small'>Errors are JSON <code>{{"error": ..., "message": ...}}</code>: 401 a missing, unknown, revoked or
 expired key; 403 a read-only key that tries to change something; 404 an unknown id; 415 a body that is not JSON.

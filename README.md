@@ -17,7 +17,7 @@ it in its own sandbox cluster.
 - **Learns by doing.** Failed builds are matched against failure rules, patched and retried, and fixes that
   work are proposed as new rules for a person to approve.
 - **Secure by default.** Distroless, non-root images, read-only root filesystems and manifests that pass
-  Pod Security `restricted`, with a vulnerability scan and SBOM for every image.
+  Pod Security `restricted`, with a vulnerability scan for every image.
 
 It was built for the [onek8s containerization challenge](https://github.com/onek8s/containerization-challenge),
 33 Windows-era .NET business applications, and for real-life portfolios.

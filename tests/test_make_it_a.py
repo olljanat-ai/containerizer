@@ -325,7 +325,6 @@ def _deploy(tmp_path, monkeypatch, **opts):
     builds, tags = [], []
     monkeypatch.setattr(imagescan, "build_image", lambda src, cdir, tag, timeout=1800: builds.append(tag) or (True, ""))
     monkeypatch.setattr(orgmod, "tag_local", lambda local, ref: tags.append((local, ref)))
-    monkeypatch.setattr(orgmod, "sbom_entry", lambda *a, **k: None)
     monkeypatch.delenv(orgmod.LOCAL_IMAGES_ENV, raising=False)
     src, a = _a_app(tmp_path, "shop-web")
     o = orgmod.OrgOptions(provider="github", org="acme", registry="reg.example/sandbox", verify=True, gate=False,
@@ -350,7 +349,6 @@ def test_deploy_app_pushes_as_before(tmp_path, monkeypatch):
     builds = []
     monkeypatch.setattr(imagescan, "build_image", lambda src, cdir, tag, timeout=1800: builds.append(tag) or (True, ""))
     monkeypatch.setattr(orgmod, "tag_local", lambda local, ref: pytest.fail("no local tag when pushing"))
-    monkeypatch.setattr(orgmod, "sbom_entry", lambda *a, **k: None)
     monkeypatch.setenv(orgmod.LOCAL_IMAGES_ENV, "1")              # ignored: Push images is on
     src, a = _a_app(tmp_path, "shop-web")
     o = orgmod.OrgOptions(provider="github", org="acme", registry="reg.example/sandbox", verify=True, gate=False,

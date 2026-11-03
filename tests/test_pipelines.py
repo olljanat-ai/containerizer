@@ -101,7 +101,7 @@ def test_severities_follow_the_gate():
 def test_scanner_pins_are_the_security_rules_versions_with_their_digests():
     sec = security()
     trivy = next(s["image"] for s in sec["scan"]["scanners"] if s["name"] == "trivy")
-    syft = sec["sbom"]["generator"]["image"]
+    syft = sec["pipelines"]["syft_image"]
     assert trivy in pl.DIGESTS and syft in pl.DIGESTS, "add the digest of a new scanner version to pipelines.DIGESTS"
     t, s = pl.scanner_images()
     assert t == f"{trivy}@{pl.DIGESTS[trivy]}" and s == f"{syft}@{pl.DIGESTS[syft]}"

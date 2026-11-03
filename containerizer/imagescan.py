@@ -45,7 +45,7 @@ class Vuln:
     type: str = ""
     title: str = ""
     origin: str = ""                # base | app (when a base scan is available)
-    purl: str = ""                  # package URL, to match the package in the SBOM
+    purl: str = ""                  # package URL
 
     @property
     def key(self) -> tuple:
@@ -646,10 +646,9 @@ def _build_with_retries(a, cdir: Path, tag: str, comp: dict, pin: bool, post) ->
 def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str = "auto",
              fail_on: str | None = None, registry: str = "registry.local", pin: bool = False,
              base_cache: dict | None = None, run: bool = False, refresh: bool = True, gitops=None,
-             tag: str = "latest", sbom: bool | None = None, devdb=None, lab: set | None = None,
+             tag: str = "latest", devdb=None, lab: set | None = None,
              lab_report: dict | None = None, approved_egress: list[dict] | None = None, links: tuple | None = None) -> dict:
     from .generate import generate_app, k8s_name
-    from .sbom import config as sbom_config
 
     age = lock_age_days()
     if refresh and scan and age is not None and age > security()["images"].get("lock_max_age_days", 14):
@@ -659,8 +658,6 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
                  lab_report=lab_report, approved_egress=approved_egress, links=links)
     pol = policy(fail_on)
     base_cache = base_cache if base_cache is not None else {}
-    sbom = sbom_config().get("enabled", True) if sbom is None else sbom
-    by_folder = {k8s_name(c.name): c for c in a.components}
     comps = []
     lint_all = []
     from .harden import external_secret_targets
@@ -701,13 +698,6 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
                     for v in res.vulns:
                         v.origin = "base" if v.key in base_keys else "app"
                     comp["scans"].append(_scan_entry(res, evaluate(res, pol), "image"))
-                    if sbom:
-                        from .sbom import component_sbom
-                        c = by_folder.get(cdir.name)
-                        own = (c.name, c.project.name) if c else ()
-                        comp["sbom"] = component_sbom(tag, cdir, [] if res.error else res.vulns, own)
-                        if res.error and not comp["sbom"].get("error"):
-                            comp["sbom"]["note"] = "the image scan failed: no CVEs attached to the packages"
                     if run and (cdir / "k8s.yaml").exists():
                         comp["run"] = run_as_manifest(tag, load_yaml_docs((cdir / "k8s.yaml").read_text()))
         comp.pop("_os_patch_df", None)
@@ -720,8 +710,7 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
         notes.append(f"rules/images.lock.yaml is {age} days old; run `containerizer images --update`")
     result = {"app": a.name, "policy": {"fail_on": pol["fail_on"], "ignore_unfixed": pol.get("ignore_unfixed", True)},
               "passed": not lint_errors and not scan_fail and not any(c.get("build_error") for c in comps)
-              and not any((c.get("run") or {}).get("status") == "hardening-failure" for c in comps)
-              and all((c.get("sbom") or {}).get("passed", True) for c in comps),
+              and not any((c.get("run") or {}).get("status") == "hardening-failure" for c in comps),
               "lint": summarize(lint_all), "components": comps, "notes": notes}
     (out / "security.json").write_text(json.dumps(result, indent=2, default=str))
     (out / "SECURITY.md").write_text(security_markdown(result))
@@ -744,8 +733,7 @@ def security_markdown(r: dict) -> str:
     p = r["policy"]
     lines = [f"# Security gate: {r['app']}", "",
              f"**{'PASSED' if r['passed'] else 'FAILED'}**: fails on fixable {p['fail_on']} or worse "
-             f"vulnerabilities{'' if p['ignore_unfixed'] else ' (including unfixed)'}, on lint errors and on "
-             f"licences the policy denies.", "",
+             f"vulnerabilities{'' if p['ignore_unfixed'] else ' (including unfixed)'} and on lint errors.", "",
              f"Lint: {r['lint'].get('error', 0)} errors, {r['lint'].get('warning', 0)} warnings.", ""]
     for n in r.get("notes") or []:
         lines.append(f"> {n}")
@@ -772,12 +760,9 @@ def security_markdown(r: dict) -> str:
         hard = (c.get("run") or {}).get("status") == "hardening-failure"
         notes = any(s.get("scanner_notes") for s in c["scans"])
         if not (block or errs or app_fix or c.get("os_patch") or c.get("build_error") or hard or notes
-                or c.get("build_fixes") or c.get("sbom")):
+                or c.get("build_fixes")):
             continue
         lines += ["", f"## {c['component']}", ""]
-        if c.get("sbom"):
-            from .sbom import markdown as sbom_markdown
-            lines.append(sbom_markdown(c["component"], c["sbom"]).rstrip("\n"))
         if hard:
             lines.append("- fails under the hardened security context: " + "; ".join(c["run"]["errors"])
                          + " (add a hardening exception in rules/60-security.yaml if the app really needs it)")

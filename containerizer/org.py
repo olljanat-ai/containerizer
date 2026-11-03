@@ -231,18 +231,6 @@ def select_components(a, verified: bool) -> tuple[list, list[dict]]:
     return keep, excluded
 
 
-def sbom_entry(g: dict | None, folder: str, cdir: Path, local: str, c, o: OrgOptions) -> dict | None:
-    """The SBOM the gate made for a component; without the gate, one made here (no CVEs: nothing was scanned)."""
-    if g is not None:
-        sb = next((x.get("sbom") for x in g["components"] if x["component"] == folder), None)
-        return sb if sb and not sb.get("error") else None
-    from .sbom import component_sbom, config
-    if not (o.push_images or local_images(o)) or not config().get("enabled", True):
-        return None
-    sb = component_sbom(local, cdir, [], (c.name, c.project.name))
-    return None if sb.get("error") else sb
-
-
 def gate_failure(comp: dict) -> str:
     if comp.get("build_error"):
         return "image build failed"
@@ -256,9 +244,6 @@ def gate_failure(comp: dict) -> str:
             return f"{len(s.get('blocking', []))} fixable vulnerabilities at or above the gate threshold ({s.get('kind')})"
     if (comp.get("run") or {}).get("status") == "hardening-failure":
         return "does not run with the hardened pod security context"
-    denied = ((comp.get("sbom") or {}).get("summary") or {}).get("denied") or []
-    if denied:
-        return f"licence denied by policy: {', '.join(denied[:3])}"[:300]
     return ""
 
 
@@ -1109,7 +1094,7 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
     images built and pushed under <registry>/<namespace>/<component>:<tag> (or tagged locally: local_images),
     the generated files copied to <output>/<rel> with containerizer.json (RepoResult.to_dict). The namespace,
     image paths, Ingress hosts and IdP clients derive from k8s_name(a.name), the source folder's name.
-    The organization scan calls it for each repository (with its assessment id: IdP clients and SBOMs go to
+    The organization scan calls it for each repository (with its assessment id: IdP clients go to
     the results database); the refactoring runner for a patched copy ("Make it A": no assessment id, no
     uploaded dev database). The caller commits. Returns `res` (status deployed or no-a-components).
 
@@ -1166,7 +1151,7 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
 
     # images: built by the gate (or here), pushed under <registry>/<app>/<component>:<tag>
     from .imagescan import build_image
-    comps, sboms = [], []
+    comps = []
     for c in keep:
         cn = k8s_name(c.name)
         cdir = gen / cn
@@ -1183,7 +1168,6 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
                  "project_name": c.project.name,
                  "verification": next((v.get("status") for v in getattr(a, "verification", None) or [] if v.get("component") == c.name),
                                       "not run")}
-        sb = sbom_entry(g, cn, cdir, local, c, o)
         if o.push_images and reg:
             progress.step(progress.PUSH)
             progress.detail(f"{c.name} to {o.registry}")
@@ -1191,20 +1175,11 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
                                        if res.commit else [])
             if o.cosign_key and entry["digest"]:
                 entry["signature"] = reg.sign(ref, entry["digest"], o.cosign_key)
-            if sb and entry["digest"]:
-                from .sbom import attach
-                sb["attestation"] = attach(ref, entry["digest"], cdir / "sbom.cdx.json", o.cosign_key, reg.config)
         elif local_mode:
-            # the cluster runs the builder's own image: no registry, so no digest, signature or SBOM attestation
+            # the cluster runs the builder's own image: no registry, so no digest or signature
             tag_local(local, ref)
             entry["image_source"] = "local"
-            entry["note"] = "local image (shared Docker image store): not pushed, so no digest, signature or attestation"
-        if sb:
-            entry["sbom"] = {k: sb.get(k) for k in ("file", "format", "tool", "attestation")} | {
-                "summary": {k: v for k, v in sb["summary"].items() if k not in ("warn", "denied")}}
-            sboms.append({"project": c.project.rel, "document": json.loads((cdir / "sbom.cdx.json").read_text()),
-                          "packages": sb["packages"], "tool": sb.get("tool"), "os": sb.get("os"), "image": ref,
-                          "digest": entry.get("digest"), "attestation": sb.get("attestation")})
+            entry["note"] = "local image (shared Docker image store): not pushed, so no digest or signature"
         comps.append(entry)
     res.components = comps
     progress.step(progress.OUTPUT)
@@ -1220,17 +1195,6 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
         except Exception as e:
             print(f"warning: sandbox IdP registrations not written to SQL Server: {type(e).__name__}: "
                   f"{REDACT(str(e))[:300]}", file=sys.stderr)
-    if assessment_id and sboms:
-        from .sqlstore import connect, store_image_sboms
-        try:                              # the images are pushed already: a database error must not undo that
-            conn = connect(o.sql)
-            try:
-                store_image_sboms(conn, assessment_id, sboms)
-            finally:
-                conn.close()
-        except Exception as e:
-            print(f"warning: SBOMs not written to SQL Server: {type(e).__name__}: {REDACT(str(e))[:300]}",
-                  file=sys.stderr)
 
     if lab is not None:
         res.lab_services = lab_report

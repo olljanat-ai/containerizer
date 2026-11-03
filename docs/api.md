@@ -64,9 +64,6 @@ Bodies are JSON (`Content-Type: application/json`, up to 64 KiB); unknown fields
 | `GET /api/v1/applications` | list with the latest rating (`?unmapped=true`, `?productId=`, `?name=`, `?retired=true`) |
 | `GET` · `PATCH /api/v1/applications/{id}` | read · set `productId`, `displayName`, `owner`, `description`, `retired` (applications themselves come from scans) |
 | `GET /api/v1/audit` | the change history (`?table=Application`, `?rowId=`, `?limit=` up to 1000) |
-| `GET /api/v1/applications/{id}/components/{cid}/sbom` | packages of one component with licence, policy status and CVEs; `?format=cyclonedx` for the CycloneDX document |
-| `GET /api/v1/sbom/packages` | packages across the portfolio (`?businessUnitId=`, `?productId=`, `?licenseStatus=allowed,warn,denied,unknown`, `?vulnerable=true`, `?limit=` up to 10000) |
-| `GET /api/v1/sbom/summary` | the numbers of the Dependencies and licences page (`?businessUnitId=`, `?productId=`) |
 
 `businessUnitId` and `productId` filters take an id or `none` (not assigned). Errors are
 `{"error": "...", "message": "..."}` with 400 (invalid field), 401 (no or bad token), 403 (not allowed),
@@ -90,6 +87,4 @@ curl -s -H "Authorization: Bearer $TOKEN" "$API/applications?unmapped=true" \
         -d "{\"productId\": $PRODUCT}" "$API/applications/$id"
     done
 
-# licences to review or denied in one business unit
-curl -s -H "Authorization: Bearer $TOKEN" "$API/sbom/packages?businessUnitId=3&licenseStatus=warn,denied"
 ```

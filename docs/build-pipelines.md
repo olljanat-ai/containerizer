@@ -151,7 +151,7 @@ DOCKER_BUILDKIT=1 docker build -f containerizer/<component>/Dockerfile .
   '^https://github.com/<owner>/<repo>/' --certificate-oidc-issuer https://token.actions.githubusercontent.com
   <image>`. Not for images whose names must not appear in a public log.
 - `key`: cosign signs with your key (`cosign generate-key-pair`). The signature is recorded in Rekor unless
-  `sbom.cosign_tlog_upload` in `rules/60-security.yaml` is `false` (then `--tlog-upload=false`). This is the
+  `pipelines.cosign_tlog_upload` in `rules/60-security.yaml` is `false` (then `--tlog-upload=false`). This is the
   same key the generated `cluster/verify-images.yaml` (Kyverno) can enforce.
 
 When signing, the SBOM is also attached to the image as a signed CycloneDX attestation
@@ -180,7 +180,7 @@ repository.
 | What | Pinned to |
 | --- | --- |
 | Trivy | `aquasec/trivy:0.67.2@sha256:e2b22eac59c02003d8749f5b8d9bd073b62e30fefaef5b7c8371204e0a4b0c08` (the security gate's version) |
-| Syft | `anchore/syft:v1.33.0@sha256:f94e5d9fce1f2278491a8e3a63bd5f6ddb81fdfdbb8bf7a1637565c1d5344357` (the SBOM generator's version) |
+| Syft | `anchore/syft:v1.33.0@sha256:f94e5d9fce1f2278491a8e3a63bd5f6ddb81fdfdbb8bf7a1637565c1d5344357` (`pipelines.syft_image` in `rules/60-security.yaml`) |
 | Docker CLI and Docker-in-Docker (GitLab) | `docker:29.9.2-cli@sha256:5e6baf67…`, `docker:29.9.2-dind@sha256:9e79b879…` |
 | `actions/checkout` | `3d3c42e5aac5ba805825da76410c181273ba90b1` (v7.0.1) |
 | `actions/upload-artifact` | `cf430e030ddbb5b0abf93d22962f4752f3646cd9` (v7.0.2) |
