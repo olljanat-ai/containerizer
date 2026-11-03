@@ -1,0 +1,33 @@
+[Unit]
+Description=containerizer appliance: kubemg (https://kubemg.<appliance>/, optional, CZ_KUBEMG=true)
+After=docker.service containerizer-kubemg-db.service caddy.service containerizer-addresses.service
+Requires=docker.service containerizer-kubemg-db.service
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+ConditionPathExists=/run/containerizer/kubemg/kubemg.env
+
+[Service]
+EnvironmentFile=/usr/lib/containerizer/images.env
+ExecStartPre=-/usr/bin/docker rm -f cz-kubemg
+# the CA that issued Caddy's certificate for kubemg's name, pinned into the agent's manifest (none for Let's Encrypt)
+ExecStartPre=/usr/lib/containerizer/bin/cz-kubemg ca
+# plain HTTP on loopback behind Caddy, which terminates TLS for https://kubemg.<CZ_HOSTNAME>
+ExecStart=/usr/bin/docker run --rm --name cz-kubemg --network host \
+  --env-file /run/containerizer/kubemg/kubemg.env \
+  --env-file /etc/containerizer/secrets/kubemg.env \
+  --env-file /run/containerizer/kubemg/ca.env \
+  --env KUBEMG_LISTEN_ADDR=127.0.0.1:8444 --env KUBEMG_TLS_ENABLED=false --env KUBEMG_TRUSTED_PROXIES=127.0.0.1 \
+  --env DB_HOST=127.0.0.1 --env DB_PORT=5434 --env DB_USER=kubemg --env DB_NAME=kubemg --env DB_SSLMODE=disable \
+  --env KUBEMG_SESSION_RECORDING_DIR=/var/lib/kubemg/recordings \
+  --env KUBEMG_AGENT_IMAGE=${CZ_IMAGE_KUBEMG_AGENT} --env KUBEMG_SHELL_IMAGE=${CZ_IMAGE_KUBEMG_SHELL} \
+  --volume /var/lib/containerizer/kubemg/recordings:/var/lib/kubemg/recordings \
+  --volume /run/containerizer/kubemg/ca:/ca:ro \
+  --user 65532:65532 --read-only --tmpfs /tmp:size=64m --cap-drop ALL --security-opt no-new-privileges \
+  ${CZ_IMAGE_KUBEMG}
+ExecStop=/usr/bin/docker stop cz-kubemg
+Restart=always
+RestartSec=30
+TimeoutStartSec=15min
+
+[Install]
+WantedBy=multi-user.target

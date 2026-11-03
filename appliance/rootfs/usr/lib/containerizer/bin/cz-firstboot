@@ -112,6 +112,43 @@ rm -f /run/containerizer/sql-external /run/containerizer/sql.env /run/containeri
 chmod 0644 /run/containerizer/caddy.env /run/containerizer/web-url.env /run/containerizer/grafana-url.env \
   /run/containerizer/llm.env
 
+# kubemg (optional, CZ_KUBEMG=true): its secrets (kept when it is turned off: the database is encrypted with the
+# secret key), data folders, settings and Caddy site. /run/containerizer/kubemg/kubemg.env starts its services.
+rm -rf /run/containerizer/kubemg /run/containerizer/kubemg.caddy
+case "${CZ_KUBEMG:-false}" in true|yes|1|on) kubemg=true;; *) kubemg=false;; esac
+if [ "$kubemg" = true ]; then
+  key() { [ -s "$S/$1" ] || { head -c 32 /dev/urandom | base64 > "$S/$1"; chmod 0400 "$S/$1"; }; }
+  secret kubemg-db; secret kubemg-admin; key kubemg-secret-key; key kubemg-recording-key
+  rm -f "$S/kubemg-db.env" "$S/kubemg.env"
+  printf 'POSTGRES_PASSWORD=%s\n' "$(cat $S/kubemg-db)" > "$S/kubemg-db.env"
+  printf 'DB_PASSWORD=%s\nKUBEMG_ADMIN_PASSWORD=%s\nKUBEMG_SECRET_KEY=%s\nKUBEMG_SESSION_RECORDING_KEY=%s\n' \
+    "$(cat $S/kubemg-db)" "$(cat $S/kubemg-admin)" "$(cat $S/kubemg-secret-key)" "$(cat $S/kubemg-recording-key)" \
+    > "$S/kubemg.env"
+  chmod 0400 "$S/kubemg-db.env" "$S/kubemg.env"
+  install -d -m 0755 -o root -g root "$D/kubemg"
+  install -d -m 0700 -o 70 -g 70 "$D/kubemg/postgres"
+  install -d -m 0700 -o 65532 -g 65532 "$D/kubemg/recordings"
+  khost="${CZ_KUBEMG_HOSTNAME:-kubemg.$host}"
+  install -d -m 0755 /run/containerizer/kubemg
+  printf 'CZ_KUBEMG_HOST=%s\nKUBEMG_PUBLIC_URL=https://%s\nCZ_ACME_EMAIL=%s\n' "$khost" "$khost" "${CZ_ACME_EMAIL:-}" \
+    > /run/containerizer/kubemg/kubemg.env
+  # its own site in Caddy, with the appliance's certificate settings (the certificate must cover the name)
+  cat > /run/containerizer/kubemg.caddy <<CADDY
+https://$khost {
+	tls {\$CZ_CADDY_TLS}
+	encode zstd gzip
+	header -Server
+	reverse_proxy 127.0.0.1:8444
+	log {
+		output stderr
+		format console
+	}
+}
+CADDY
+  chmod 0644 /run/containerizer/kubemg/kubemg.env /run/containerizer/kubemg.caddy
+  echo "CONTAINERIZER_KUBEMG_URL=https://$khost/" >> /run/containerizer/web-url.env
+fi
+
 # Learned rules: the code reads and writes rules/learned/, which on the appliance is a link to the
 # persistent partition. The OS image ships the project's learned rules in learned-seed/. A file nobody
 # changed locally follows the image; a file the worker added to keeps the local copy, and the image's

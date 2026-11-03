@@ -1,0 +1,27 @@
+[Unit]
+Description=containerizer appliance: kubemg's PostgreSQL (optional, CZ_KUBEMG=true)
+After=docker.service containerizer-firstboot.service
+Requires=docker.service
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+# written by cz-firstboot when appliance.env has CZ_KUBEMG=true
+ConditionPathExists=/run/containerizer/kubemg/kubemg.env
+
+[Service]
+EnvironmentFile=/usr/lib/containerizer/images.env
+ExecStartPre=-/usr/bin/docker rm -f cz-kubemg-db
+# loopback only (kubemg runs on the host network too); data on the persistent partition
+ExecStart=/usr/bin/docker run --rm --name cz-kubemg-db --network host \
+  --env-file /etc/containerizer/secrets/kubemg-db.env \
+  --env POSTGRES_USER=kubemg --env POSTGRES_DB=kubemg \
+  --volume /var/lib/containerizer/kubemg/postgres:/var/lib/postgresql/data \
+  --user 70:70 --read-only --tmpfs /var/run/postgresql:uid=70,gid=70 --tmpfs /tmp:size=64m --shm-size 128m \
+  --cap-drop ALL --security-opt no-new-privileges \
+  ${CZ_IMAGE_KUBEMG_POSTGRES} -c listen_addresses=127.0.0.1 -c port=5434
+ExecStop=/usr/bin/docker stop cz-kubemg-db
+Restart=always
+RestartSec=30
+TimeoutStartSec=15min
+
+[Install]
+WantedBy=multi-user.target

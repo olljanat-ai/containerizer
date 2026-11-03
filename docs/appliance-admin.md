@@ -21,6 +21,7 @@ image, and upgraded from the admin pages. To install it, see [Getting started](a
 | HTTPS (Caddy), SSH | systemd services | ports 443 and 22: the only open ports |
 | Firewall and DNS filter: every outgoing connection is blocked unless an allow-list rule covers it | nftables + dnsmasq | Admin → Firewall |
 | [Built-in LLM](#built-in-llm) (optional, off by default): llama.cpp with Qwen3-Coder 30B-A3B on the CPU | container, non-root, read-only model | `127.0.0.1:8090` (and up, one port per server) only; Admin → Source control & LLM |
+| [kubemg](#kubemg) (optional, off by default): audited console and kubectl access to the sandbox cluster | containers (kubemg and its PostgreSQL), non-root, read-only; its agent in the sandbox cluster | `https://kubemg.<appliance>/` (its own name on 443) |
 
 ```
                  443 (HTTPS)                                  22 (SSH, root)    
@@ -373,6 +374,52 @@ Grafana dashboard has a **Built-in LLM** row: whether each server is up, request
 tokens per second it generates (each per server, label `server`), and the jobs the LLM queue is asking each LLM
 about now (`built-in-<n>` for the built-in LLM's servers).
 
+## kubemg
+
+[kubemg](https://kubemg.readthedocs.io/) is an audited console and kubectl gateway for Kubernetes clusters:
+people sign in, browse the sandbox cluster's resources, read logs, open a shell, scale and restart, or take a
+short-lived kubeconfig for their own `kubectl`. The cluster's RBAC decides what each one may do, and every call is
+on the record (with recorded shell sessions). It is off by default. To turn it on, set this in
+`/etc/containerizer/appliance.env` and reboot:
+
+```sh
+CZ_KUBEMG=true
+# its own name, on port 443 (it cannot run under a path such as /kubemg/). Empty: kubemg.<CZ_HOSTNAME>
+CZ_KUBEMG_HOSTNAME=
+```
+
+Then:
+
+1. **DNS**: point the name (`kubemg.containerizer.example.com`) at the appliance.
+2. **Certificate**: it must cover that name. With [your own certificate](#https-certificate), add the name (or a
+   wildcard) to it. Let's Encrypt (`CZ_ACME_EMAIL`) issues one for it by itself when the name is public. Caddy's
+   own CA issues one too, and browsers warn until they trust that CA, as for the web UI.
+3. **Sign in** at `https://kubemg.<appliance>/` as `admin` with the password in
+   `/etc/containerizer/secrets/kubemg-admin` (root only). kubemg's setup wizard asks you to change it, and offers
+   SSO: OIDC (the identity provider the web UI uses works, with the redirect URI
+   `https://kubemg.<appliance>/api/v1/auth/sso/providers/<id>/callback`), SAML or LDAP. **Admin →
+   Settings → SSO** in kubemg sets it up, with group mappings to kubemg roles.
+
+**The sandbox cluster** is registered at the first start, as `sandbox` in agent mode. Its agent runs in the
+namespace `kubemg-system` and connects out to `https://kubemg.<appliance>/`. Nothing listens for it, and the
+firewall allows it as it allows any HTTPS client (the agent resolves the name to the appliance by itself). The
+agent trusts the CA of the appliance's certificate: your own (`/etc/containerizer/tls/ca.pem`, else the chain in
+`cert.pem`), Caddy's own CA, or the public CAs for Let's Encrypt. The appliance registers the cluster with the
+generated `admin` password, so this works only before you change that password. If the agent is removed after
+that, register the cluster again in kubemg (**Admin → Clusters → Add**, agent mode) and apply its manifest with
+`k3s kubectl apply -f`.
+
+| | |
+| --- | --- |
+| Services | `containerizer-kubemg.service` (kubemg, `127.0.0.1:8444` behind Caddy), `containerizer-kubemg-db.service` (PostgreSQL 16, `127.0.0.1:5434`), `containerizer-kubemg-sandbox.service` (the registration) |
+| Data | `/var/lib/containerizer/kubemg` (the database and the recorded sessions) |
+| Secrets | `/etc/containerizer/secrets/kubemg-*`. `kubemg-secret-key` encrypts the credentials in kubemg's database: keep it with the database, which is unreadable without it |
+| Images | pinned by digest in `/usr/lib/containerizer/images.env` (`CZ_IMAGE_KUBEMG*`); the agent and the browser shell are pulled by k3s from `ghcr.io` |
+| License | kubemg's server is AGPL-3.0 and its agent Apache-2.0: the appliance runs the published images unmodified |
+
+Turning it off (`CZ_KUBEMG=false`, reboot) stops kubemg and keeps its data and secrets. The agent stays in the
+sandbox cluster, trying to reconnect, until you delete it: `k3s kubectl delete namespace kubemg-system`.
+
 ## Backup
 
 The OS is rebuilt from the image; what has to be backed up is on the persistent partition. Scans rebuild
@@ -387,6 +434,7 @@ the clones, images in the local registry and the sandbox apps, but not the rest:
 | Learned rules | `/var/lib/containerizer/learned` | Rules the learning loop added on this appliance. Rules approved in the rule review are in your rules repository |
 | HTTPS certificate authority | `/var/lib/caddy` | Without `CZ_ACME_EMAIL`, the appliance's own CA: a new one means every browser has to trust a new root |
 | Metrics (optional) | `/var/lib/containerizer/prometheus`, `/var/lib/containerizer/grafana` | 90 days of scan and LLM usage metrics, and changes made in Grafana |
+| kubemg (optional) | `/var/lib/containerizer/kubemg` (with `secrets/kubemg-secret-key`) | kubemg's users, SSO settings, audit trail and recorded sessions |
 
 The [built-in LLM](#built-in-llm)'s model file (`/var/lib/containerizer/llm`, 16 GB) can be downloaded
 again: leave it out of backups (the archive below does). Its on/off setting is in `/var/lib/containerizer/system`.
@@ -410,6 +458,14 @@ and the folders (the database backup above included):
 ```sh
 tar -C / -czf /root/containerizer-backup.tgz etc/containerizer var/lib/containerizer/mssql/backup \
   var/lib/containerizer/devdb var/lib/containerizer/system var/lib/containerizer/learned var/lib/caddy
+```
+
+With [kubemg](#kubemg) on, dump its database too, and add the dump and its recordings (the secret key is in
+`etc/containerizer` already):
+
+```sh
+docker exec cz-kubemg-db pg_dump -p 5434 -U kubemg -Fc kubemg > /var/lib/containerizer/kubemg/kubemg.dump
+tar -C / -czf /root/containerizer-kubemg.tgz var/lib/containerizer/kubemg/kubemg.dump var/lib/containerizer/kubemg/recordings
 ```
 
 Copy the archive off the appliance (`scp root@<appliance>:/root/containerizer-backup.tgz .`): it holds

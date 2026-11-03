@@ -6,6 +6,15 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+### Appliance
+- **kubemg** (optional, off by default: `CZ_KUBEMG=true` in `appliance.env`): [kubemg](https://kubemg.readthedocs.io/)
+  0.17.0, an audited console and kubectl gateway, for the k3s sandbox cluster at `https://kubemg.<CZ_HOSTNAME>/`
+  (`CZ_KUBEMG_HOSTNAME`). It runs as containers (kubemg and PostgreSQL 16) behind Caddy, with the appliance's
+  certificate settings. The sandbox cluster is registered at the first start, with its agent in `kubemg-system`.
+  The agent connects out to kubemg and trusts the CA of the appliance's certificate. The admin pages link it as
+  **kubemg ↗**.
 ## 0.7.3 (2026-11-03)
 
 ### Refactoring

@@ -106,6 +106,7 @@ RUN chmod 0755 /usr/lib/containerizer/bin/* /usr/libexec/elemental-checker/conta
       containerizer-worker.service containerizer-llm-queue.service containerizer-registry.service \
       containerizer-egress-observer.service \
       containerizer-prometheus.service containerizer-prometheus-k8s.service containerizer-grafana.service \
+      containerizer-kubemg-db.service containerizer-kubemg.service containerizer-kubemg-sandbox.service \
       k3s.service containerizer-sandbox.timer containerizer-lab.timer
 
 # Elemental: snapshots, layout, boot assessment, initrd
