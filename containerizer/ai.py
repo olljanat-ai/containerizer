@@ -322,6 +322,8 @@ def ask_json(prompt: str, schema: dict, model: str | None = None, effort: str = 
         record_usage({**cached["usage"], **tags, "cached": True})
         return cached["data"]
     _raise_if_cancelled()
+    from . import progress
+    progress.llm_call(feature)
     t0 = time.time()
     try:
         if backend == "api":
@@ -337,6 +339,8 @@ def ask_json(prompt: str, schema: dict, model: str | None = None, effort: str = 
         record_usage({"model": model, "backend": backend, "seconds": round(time.time() - t0, 1), "input_tokens": 0,
                       "output_tokens": 0, "cost_usd": 0.0, **tags, "error": True})
         raise
+    finally:
+        progress.detail("")
     usage.update({"model": model, "backend": backend, "seconds": round(time.time() - t0, 1)})
     price = _price(model, backend)
     if usage.get("cost_usd") is None:

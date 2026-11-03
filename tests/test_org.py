@@ -13,6 +13,7 @@ import yaml
 
 from containerizer import org as orgmod
 from containerizer import orgsource
+from containerizer import progress
 from containerizer.assess import assess
 from containerizer.org import (OrgOptions, add_pull_secret, app_name, default_tag, run_org, segment,
                                select_components, unique_names)
@@ -524,6 +525,15 @@ class _Hooks:
     def repo_done(self, i, r, res):
         self.events.append(("done", r.name, res.status))
 
+    def repo_step(self, r, kind, text):
+        self.events.append((kind, r.name, text))
+
+    def phase(self, text):
+        self.events.append(("phase", text))
+
+    def steps(self, name):
+        return [e[2] for e in self.events if e[0] == "step" and e[1] == name]
+
     def git(self, op, seconds, ok):
         self.events.append(("git", op, ok))
 
@@ -579,6 +589,14 @@ def test_run_org_with_cache_state_and_overrides(tmp_path, monkeypatch):
     assert state.recorded["skipme"].status == "skipped-filter"
     assert set(state.recorded) == {"web", "dockerized", "docs", "off", "skipme", "readme"}
     assert ("start", 4) in hooks.events and ("git", "clone", True) in hooks.events
+    # the progress page: each repository's steps as it goes, and the run's phases
+    assert hooks.steps("web") == [progress.CLONE, progress.CODE, progress.ASSESS, progress.REASSESS,
+                                  progress.GENERATE, progress.DEVDB, progress.GENERATE, progress.OUTPUT]
+    assert hooks.steps("docs") == [progress.CLONE, progress.CODE]
+    assert ("phase", "Listing the repositories") in hooks.events and ("phase", "Scanning the repositories") in hooks.events
+    assert ("phase", "Committing web to the output repository") in hooks.events
+    i = hooks.events.index(("repo", "web"))
+    assert hooks.events[i + 1] == ("step", "web", progress.CLONE)       # after repo_start, before its result
     assert not (cache / "off").exists()                 # disabled: never fetched
     assert (cache / "web").is_dir() and (cache / orgmod.CACHE_MARK).exists()
     # second run: clones are pulled, not cloned again; a repository that left the organization loses its clone
@@ -633,6 +651,10 @@ def test_run_org_in_parallel_processes(tmp_path, monkeypatch):
     assert not (out / "acme" / "_" / "docs").exists()
     assert sorted(e[1] for e in hooks.events if e[0] == "done") == ["api", "docs", "shop", "web"]
     assert sum(e == ("git", "clone", True) for e in hooks.events) == 4        # reported back from the processes
+    for n in ("web", "api", "shop"):                                          # the steps too, as they happen
+        steps = hooks.steps(n)
+        assert steps[0] == progress.CLONE and steps[-1] == progress.OUTPUT and progress.ASSESS in steps, steps
+        assert hooks.events.index(("step", n, progress.CLONE)) < hooks.events.index(("done", n, "deployed"))
     assert not (tmp_path / "work" / "parallel").exists() or not any((tmp_path / "work" / "parallel").iterdir())
     index = json.loads((out / "acme" / "index.json").read_text()) if (out / "acme" / "index.json").exists() else None
     if index is not None:

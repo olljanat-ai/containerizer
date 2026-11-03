@@ -1008,8 +1008,9 @@ def test_llm_heavy_windows_in_sql_server():
         finally:
             ai.LISTENERS.remove(r.metrics.llm)
         # a window of one component; ended early: no longer
-        ac.execute("UPDATE cz.LlmHeavyWindow SET EndsAt = SYSUTCDATETIME(), EndedAt = SYSUTCDATETIME(), "
-                   "EndedBy = N'alice@example.com'")
+        # a second ago: datetime2(0) rounds SYSUTCDATETIME() to the nearest second, maybe up into the future
+        ac.execute("UPDATE cz.LlmHeavyWindow SET EndsAt = DATEADD(second, -1, SYSUTCDATETIME()), "
+                   "EndedAt = SYSUTCDATETIME(), EndedBy = N'alice@example.com'")
         ac.execute("INSERT cz.LlmHeavyWindow (ApplicationId, ProjectPath, Component, EndsAt, Hours) "
                    "SELECT ApplicationId, N'src/Api/Api.csproj', N'Api', DATEADD(hour, 1, SYSUTCDATETIME()), 1 "
                    "FROM cz.Application WHERE SourceKey = N'shop'")

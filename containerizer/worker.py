@@ -427,6 +427,12 @@ class RunHooks:
         self.w, self.conn, self.run_id, self.scan, self.store = worker, conn, run_id, scan, store
         self.counts = {"done": 0, "deployed": 0, "skipped": 0, "errors": 0}
         self.total = 0
+        # the progress page (OrgScanRun.Activity): the repositories in progress with the step each one is on, what
+        # the run as a whole does, and the time the repositories spent in each step (summed over the processes)
+        self.active: dict = {}
+        self.steps: dict = {}
+        self.phase_text = ""
+        self.phase_since = 0.0
 
     def _update(self, **cols) -> None:
         sets = ", ".join(f"{k} = %s" for k in cols)
@@ -454,10 +460,52 @@ class RunHooks:
         if i % 25 == 0 or i == self.total:          # many quick repositories: do not write a row for each
             self._update(ReposDone=i, ReposSkipped=self.counts["skipped"], ReposErrors=self.counts["errors"])
 
+    @staticmethod
+    def _label(r) -> str:
+        return f"{r.project}/{r.name}" if r.project != "_" else r.name
+
+    def activity(self) -> str:
+        now = _time.time()
+        return json.dumps({
+            "at": round(now, 1), "phase": self.phase_text, "phase_since": round(self.phase_since, 1),
+            "active": [{k: v for k, v in a.items() if k != "key"} for a in self.active.values()],
+            "steps": {k: {"seconds": round(v["seconds"], 1), "repos": len(v["repos"])} for k, v in self.steps.items()}})
+
+    def _close_step(self, a: dict, now: float) -> None:
+        if a.get("step"):
+            t = self.steps.setdefault(a["step"], {"seconds": 0.0, "repos": set()})
+            t["seconds"] += max(0.0, now - a["since"])
+            t["repos"].add(a["key"])
+
+    def phase(self, text: str) -> None:
+        if text != self.phase_text:
+            self.phase_text, self.phase_since = text, _time.time()
+            self._update(Activity=self.activity())
+
     def repo_start(self, i: int, r) -> None:
-        self._update(CurrentRepo=_cut(f"{r.project}/{r.name}" if r.project != "_" else r.name, 400))
+        now = _time.time()
+        self.active[r.key] = {"key": r.key, "repo": self._label(r), "n": i, "started": round(now, 1),
+                              "step": "", "since": round(now, 1), "detail": "", "detail_since": None}
+        self._update(CurrentRepo=_cut(self._label(r), 400), Activity=self.activity())
+
+    def repo_step(self, r, kind: str, text: str) -> None:
+        a = self.active.get(r.key)
+        if a is None:
+            return
+        now = _time.time()
+        if kind == "step":
+            if text == a["step"]:
+                return
+            self._close_step(a, now)
+            a.update(step=_cut(text, 200), since=round(now, 1), detail="", detail_since=None)
+        else:
+            a.update(detail=_cut(text, 300), detail_since=round(now, 1) if text else None)
+        self._update(Activity=self.activity())
 
     def repo_done(self, i: int, r, res) -> None:
+        a = self.active.pop(r.key, None)
+        if a is not None:
+            self._close_step(a, _time.time())
         c = self.counts
         c["done"] = i
         if res.status == "deployed":
@@ -473,7 +521,9 @@ class RunHooks:
         pushed = sum(1 for x in res.components if x.get("digest"))
         if pushed:
             m.images.inc(pushed, scan=self.scan)
-        self._update(ReposDone=i, ReposDeployed=c["deployed"], ReposSkipped=c["skipped"], ReposErrors=c["errors"])
+        rest = list(self.active.values())
+        self._update(ReposDone=i, ReposDeployed=c["deployed"], ReposSkipped=c["skipped"], ReposErrors=c["errors"],
+                     CurrentRepo=_cut(rest[-1]["repo"], 400) if rest else None, Activity=self.activity())
 
     def git(self, op: str, seconds: float, ok: bool) -> None:
         m = self.w.metrics
@@ -806,7 +856,10 @@ class Worker:
                 self._mark(read, f"failed: {message[:400]}")
             done.set()
             try:
-                hooks._update(Status=status, FinishedAt=naive(utcnow()), CurrentRepo=None, Message=_cut(message, 2000))
+                hooks.active.clear()
+                hooks.phase_text = ""
+                hooks._update(Status=status, FinishedAt=naive(utcnow()), CurrentRepo=None, Message=_cut(message, 2000),
+                              Activity=hooks.activity())
             except Exception as ex:
                 self.log(f"{name}: could not record the end of run #{run_id}: {type(ex).__name__}: {ex}")
             conn.close()

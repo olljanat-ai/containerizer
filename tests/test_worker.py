@@ -2,6 +2,7 @@
 SQL Server (CONTAINERIZER_TEST_SQL): an administrator adds a scan and presses Run now, the worker runs
 it, skipped repositories show as disabled with the reason, enable/disable is honoured and audited, new
 and removed repositories are detected, and the metrics follow."""
+import json
 import os
 import re
 import shutil
@@ -692,6 +693,33 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         assert sorted(fetched) == sorted(keys), logs
         apps, hist = visible()
         assert set(apps) == {"api", "web", "old-app"} and hist == 3
+
+        # the run's progress page: where the time went, the slowest and latest repositories; no reload when done
+        body = b.follow(f"/admin/scans/{scan_id}")[2]
+        run_id = int(re.search(rf"/admin/scans/{scan_id}/runs/(\d+)'>Progress", body)[1])
+        s, _, body = b.follow(f"/admin/scans/{scan_id}/runs/{run_id}")
+        assert s == 200 and "Where the time goes" in body and "Assessing (rules)" in body, body
+        assert "Pulling" in body or "Cloning" in body
+        assert "Finished most recently" in body and "Slowest" in body and "old-app" in body
+        assert "3 of 3 done (100 %)" in body and "http-equiv='refresh'" not in body
+        assert b.follow(f"/admin/scans/{scan_id}/runs/999999")[0] == 404
+        # while it runs: the repositories in progress, the step each is on and for how long, and it reloads itself
+        now = datetime.now(timezone.utc).timestamp()
+        c = sqlstore.connect(writer, PW)
+        c.cursor().execute(
+            "UPDATE cz.OrgScanRun SET Status = N'running', FinishedAt = NULL, Activity = %s WHERE RunId = %s",
+            (json.dumps({"phase": "Scanning the repositories", "phase_since": now - 30, "steps": {}, "active": [
+                {"repo": "Billing/api", "n": 1, "started": now - 1300, "step": "LLM review", "since": now - 1200,
+                 "detail": "waiting for LLM call 2 (review)", "detail_since": now - 40}]}), run_id))
+        c.commit()
+        body = b.follow(f"/admin/scans/{scan_id}/runs/{run_id}")[2]
+        assert "In progress" in body and "Billing/api" in body and "waiting for LLM call 2 (review)" in body, body
+        assert ">slow<" in body and "20 min" in body and "http-equiv='refresh' content='10'" in body
+        assert "Billing/api: LLM review" in b.follow(f"/admin/scans/{scan_id}")[2]
+        c.cursor().execute("UPDATE cz.OrgScanRun SET Status = N'succeeded', FinishedAt = SYSUTCDATETIME() "
+                           "WHERE RunId = %s", (run_id,))
+        c.commit()
+        c.close()
 
         # phase two: the administrator disables the deprecated project and one repository
         s, _, body = b.follow("/admin/repositories/projects/bulk", {"csrf": csrf, "project": [str(projects["Legacy"])],

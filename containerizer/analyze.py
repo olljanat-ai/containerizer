@@ -24,23 +24,31 @@ def analyze_app(path: Path, out: Path, ai: bool = False, model: str | None = Non
     from .rulereview import LearningSession
     from .verify import verify_app
 
+    from . import progress
     queued = ai and review_queue is not None
     with LearningSession(source_path=path, ai=ai, model=model, sql=sql) as learning:
+        progress.step(progress.ASSESS)
         a = assess(path, load_rules())
         if ai:
+            progress.step(progress.LLM)
             # queued: only answers already there; the questions are queued from the final assessment below,
             # whose prompts the next scan reproduces
             apply_ai(a, model, queue=review_queue, enqueue=False)
+        if verify:
+            progress.step(progress.VERIFY)
         ver = verify_app(a, out / a.name / "verify", learn=True, ai=ai and not queued, model=model,
                          timeout=timeout) if verify else []
         learning.app = a.name
         learning.add_results(ver)
         # runtime findings and learned plan rules feed back into the final assessment
         reset_cache()
+        progress.step(progress.REASSESS)
         rules = load_rules()
         a = assess(path, rules)
         if ai:
+            progress.step(progress.LLM)
             apply_ai(a, model, queue=review_queue)
         a.verification = ver
+        progress.step(progress.GENERATE)
         generate_app(a, out / a.name, rules, registry=registry, pin=pin, gitops=gitops)
     return a

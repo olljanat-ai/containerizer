@@ -436,7 +436,7 @@ class Admin:
         v = form.get(key, [""])[0]
         return int(v) if re.fullmatch(r"\d{1,9}", v) else None
 
-    def _shell(self, s: Session, a: Access, title: str, active: str, body: str, flash: str = "") -> str:
+    def _shell(self, s: Session, a: Access, title: str, active: str, body: str, flash: str = "", refresh: int = 0) -> str:
         tabs = "".join(f"<a class='chip{' on' if k == active else ''}' href='/admin/{k}'>{t}</a>" for k, t in self._tabs(s, a))
         if self.grafana_url and (a.admin or a.operator):
             tabs += (f"<a class='chip' href='{e(self.grafana_url)}' rel='noopener noreferrer' target='_blank'"
@@ -446,7 +446,7 @@ class Admin:
         scope = f": {e(', '.join(s.scopes))}" if s.scopes and not s.admin else ""
         return page(title, f"""<div class='topnav'><a href='/'>← Results</a><span>Signed in as <b>{e(s.name)}</b>
 <span class='muted'>({e(s.user)}) · {e(role)}{scope}</span> {self._logout_form(s)}</span></div>
-<header><h1>{e(title)}</h1></header><nav class='chips'>{tabs}</nav>{msg}{body}""", script=True)
+<header><h1>{e(title)}</h1></header><nav class='chips'>{tabs}</nav>{msg}{body}""", script=True, refresh=refresh)
 
     # -- applications ---------------------------------------------------------------------------
 
@@ -916,9 +916,9 @@ def render_audit(rows: list[dict], show_target: bool = True) -> str:
     return f"<table class='audit'><thead><tr>{head}</tr></thead><tbody>{''.join(out)}</tbody></table>"
 
 
-def page(title: str, body: str, script: bool = False) -> str:
+def page(title: str, body: str, script: bool = False, refresh: int = 0) -> str:
     from .webui import page as _page
-    return _page(title, body, script)
+    return _page(title, body, script, refresh)
 
 
 DEV_ENV = "CONTAINERIZER_DEV_NO_AUTH"
