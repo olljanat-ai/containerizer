@@ -6,6 +6,12 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+- Releases no longer have the VHDX image or the SPDX SBOM file (`.spdx.json`), and the SBOM is no longer
+  attested to the appliance image. On Hyper-V, install from the ISO (generation 2, Secure Boot template
+  Microsoft UEFI Certificate Authority).
+
 ## 0.8.4 (2026-11-03)
 
 - Verification on the appliance: the build context is made readable before `docker build`. The appliance's
