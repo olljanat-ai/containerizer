@@ -170,6 +170,36 @@ them when the queue's settings let it, for example at night or only while no sca
 In queued mode the scan does not ask the LLM about build or run failures, dev databases, platform
 migrations or the sandbox tester either, so **LLM-heavy mode** needs inline reviews.
 
+#### LLM-heavy for a while
+
+When one application, or one of its components, needs the LLM's full attention for a while (a migration being
+worked on, a component the rules keep getting wrong), an administrator turns **LLM-heavy mode** on for it on
+its page (**Admin → Applications** → the application → **LLM-heavy mode**): the whole application or one
+component, for 1 hour to 7 days.
+
+![LLM-heavy mode on an application's page: the window open now, with End now, and the form for another](images/admin-app-llm-heavy.png#only-light){ .cz-shot }
+![LLM-heavy mode on an application's page: the window open now, with End now, and the form for another](images/admin-app-llm-heavy-dark.png#only-dark){ .cz-shot }
+
+Until it ends:
+
+- its LLM jobs of every kind need no approval: those waiting are approved at once, new ones are queued
+  approved (*automatic: LLM-heavy until …*);
+- they go before every other job in the queue, whatever their priority or position;
+- scans with queued LLM reviews queue a review of **every** component it covers, not only the uncertain ones and
+  the second opinions (reason *LLM-heavy*; the answer changes a verdict when the LLM is at least 0.85 sure, as
+  for a second opinion);
+- scans run LLM-heavy mode for it (platform migrations and the sandbox tester ask the LLM as often as they need,
+  even in a scan with queued reviews) when the appliance allows LLM-heavy mode (`CZ_LLM_HEAVY=true`) and the scan
+  has **Ask the LLM** on. These calls are made during the scan, as for a scan in LLM-heavy mode.
+
+**Scan its repository now** (ticked by default) starts a scan of its repository at once, so the reviews are
+queued without waiting for the schedule. The windows open now are listed on the application's page and on the
+LLM queue page (**LLM-heavy now**), each with **End now**; their jobs then take their usual place again.
+Turning a window on or ending it is in the audit log.
+
+![The LLM queue with two LLM-heavy windows: their jobs first, each marked LLM-heavy until its end](images/admin-llm-queue-heavy.png#only-light){ .cz-shot }
+![The LLM queue with two LLM-heavy windows: their jobs first, each marked LLM-heavy until its end](images/admin-llm-queue-heavy-dark.png#only-dark){ .cz-shot }
+
 Each job's page shows the question sent, the answer with its reasoning per finding, and the actual tokens
 and time against the estimate:
 

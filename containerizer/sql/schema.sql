@@ -1694,6 +1694,73 @@ IF COL_LENGTH(N'[${schema}].LlmQueueSettings', N'LocalMaxTokens') IS NULL
         CONSTRAINT DF_LlmQueueSettings_LocalMaxTokens DEFAULT 0
         CONSTRAINT CK_LlmQueueSettings_LocalMaxTokens CHECK (LocalMaxTokens BETWEEN 0 AND 10000000);
 GO
+-- 31: LLM-heavy windows (llmqueue.py, docs/source-control.md#llm-heavy-for-a-while). An administrator turns LLM-heavy
+-- mode on for one application, or one of its components (ProjectPath; NULL: the whole application), for some hours
+-- (Admin -> Applications). Until EndsAt its LLM jobs need no approval and go before every other job in the queue
+-- (fnLlmJobHeavy), scans with queued LLM reviews queue a review of each of its components, and scans run LLM-heavy
+-- mode for it where the appliance allows that (CZ_LLM_HEAVY). Ending it early sets EndsAt (EndedBy, EndedAt).
+IF OBJECT_ID(N'[${schema}].LlmHeavyWindow', N'U') IS NULL
+CREATE TABLE [${schema}].LlmHeavyWindow (
+    WindowId       int IDENTITY(1,1) NOT NULL CONSTRAINT PK_LlmHeavyWindow PRIMARY KEY,
+    ApplicationId  int            NOT NULL CONSTRAINT FK_LlmHeavyWindow_Application
+                                  REFERENCES [${schema}].Application (ApplicationId),
+    ProjectPath    nvarchar(400)  NULL,              -- one component (Component.ProjectPath); NULL: the whole application
+    Component      nvarchar(200)  NULL,              -- its name when it was turned on
+    StartsAt       datetime2(0)   NOT NULL CONSTRAINT DF_LlmHeavyWindow_StartsAt DEFAULT SYSUTCDATETIME(),
+    EndsAt         datetime2(0)   NOT NULL,
+    Hours          int            NOT NULL CONSTRAINT CK_LlmHeavyWindow_Hours CHECK (Hours BETWEEN 1 AND 168),
+    CreatedBy      nvarchar(256)  NULL,
+    CreatedByName  nvarchar(256)  NULL,
+    EndedBy        nvarchar(256)  NULL,              -- ended before its time
+    EndedByName    nvarchar(256)  NULL,
+    EndedAt        datetime2(0)   NULL
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_LlmHeavyWindow_Ends'
+               AND object_id = OBJECT_ID(N'[${schema}].LlmHeavyWindow'))
+CREATE INDEX IX_LlmHeavyWindow_Ends ON [${schema}].LlmHeavyWindow (EndsAt) INCLUDE (ApplicationId, ProjectPath, StartsAt);
+GO
+CREATE OR ALTER VIEW [${schema}].vLlmHeavyActive AS
+SELECT w.WindowId, w.ApplicationId, a.SourceKey, COALESCE(a.DisplayName, a.Name) AS ApplicationName, w.ProjectPath,
+       w.Component, w.StartsAt, w.EndsAt, w.Hours, w.CreatedBy, w.CreatedByName
+FROM [${schema}].LlmHeavyWindow w JOIN [${schema}].Application a ON a.ApplicationId = w.ApplicationId
+WHERE w.EndsAt > SYSUTCDATETIME();          -- a window starts when it is turned on (StartsAt rounds to the second)
+GO
+-- the LLM-heavy window a job falls in (the one that lasts longest), if any: its application (by id or SourceKey) and,
+-- for a window of one component, that component's ProjectPath
+CREATE OR ALTER FUNCTION [${schema}].fnLlmJobHeavy (@ApplicationId int, @SourceKey nvarchar(400), @ProjectPath nvarchar(400))
+RETURNS TABLE AS RETURN (
+    SELECT TOP (1) h.WindowId, h.EndsAt FROM [${schema}].vLlmHeavyActive h
+    WHERE (h.ApplicationId = @ApplicationId OR h.SourceKey = @SourceKey)
+      AND (h.ProjectPath IS NULL OR h.ProjectPath = @ProjectPath)
+    ORDER BY h.EndsAt DESC
+);
+GO
+CREATE OR ALTER TRIGGER [${schema}].trLlmHeavyWindowAudit ON [${schema}].LlmHeavyWindow
+AFTER INSERT, UPDATE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'LlmHeavyWindow', i.WindowId,
+           LEFT(N'LLM-heavy: ' + COALESCE(i.Component, N'the whole application') + N' of application '
+                + CAST(i.ApplicationId AS nvarchar(10)), 200),
+           CASE WHEN d.WindowId IS NULL THEN N'insert' ELSE N'update' END,
+           CASE WHEN d.WindowId IS NOT NULL THEN (SELECT d.EndsAt, d.EndedBy FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           (SELECT i.ApplicationId, i.ProjectPath, i.StartsAt, i.EndsAt, i.Hours, i.EndedBy
+            FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES)
+    FROM inserted i LEFT JOIN deleted d ON d.WindowId = i.WindowId
+    CROSS JOIN [${schema}].fnAuditWho() w;
+END;
+GO
+GRANT SELECT ON [${schema}].vLlmHeavyActive TO [${schema}_writer];
+GRANT SELECT ON [${schema}].fnLlmJobHeavy TO [${schema}_writer];
+GRANT SELECT ON [${schema}].vLlmHeavyActive TO [${schema}_admin];
+GRANT SELECT ON [${schema}].fnLlmJobHeavy TO [${schema}_admin];
+GRANT SELECT, INSERT ON [${schema}].LlmHeavyWindow TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].LlmHeavyWindow (EndsAt, EndedBy, EndedByName, EndedAt) TO [${schema}_admin];
+-- the form's components (Admin -> Applications)
+GRANT SELECT ON [${schema}].Component (ComponentId, ApplicationId, ProjectPath, Name) TO [${schema}_admin];
+GO
 CREATE OR ALTER PROCEDURE [${schema}].QueueLlmJob @Kind nvarchar(20), @Reason nvarchar(40) = NULL, @ScanId int = NULL,
     @ProjectName nvarchar(200) = NULL, @RepoName nvarchar(200) = NULL, @Repository nvarchar(400) = NULL,
     @App nvarchar(200) = NULL, @SourceKey nvarchar(400) = NULL, @ApplicationId int = NULL, @AssessmentId int = NULL,
@@ -1713,6 +1780,11 @@ BEGIN
                           AND (SELECT COUNT(*) FROM [${schema}].LlmJob q WHERE q.Status IN (N'queued', N'running'))
                               >= s.ApproveMaxQueued)))
         SET @status = N'approval';
+    -- an LLM-heavy window of its application or component (31): no approval
+    DECLARE @heavy datetime2(0) = (SELECT h.EndsAt FROM [${schema}].fnLlmJobHeavy(
+        COALESCE(@ApplicationId, (SELECT a.ApplicationId FROM [${schema}].Application a WHERE a.SourceKey = @SourceKey)),
+        @SourceKey, @ProjectPath) h);
+    IF @heavy IS NOT NULL SET @status = N'queued';
     BEGIN TRANSACTION;
     IF NOT EXISTS (SELECT 1 FROM [${schema}].LlmJob WITH (UPDLOCK, HOLDLOCK)
                    WHERE Kind = @Kind AND DedupeKey = @DedupeKey AND Status IN (N'approval', N'queued', N'running'))
@@ -1722,14 +1794,16 @@ BEGIN
             WHERE Status IN (N'approval', N'queued') AND Kind = @Kind AND SourceKey = @SourceKey AND ProjectPath = @ProjectPath;
         INSERT [${schema}].LlmJob (Kind, Reason, Priority, ScanId, RepositoryId, Repository, App, SourceKey, ApplicationId,
                                    AssessmentId, Component, ProjectPath, RuleVerdict, Confidence, DedupeKey, Model,
-                                   RequestedBy, InputChars, EstInputTokens, Payload, Status)
+                                   RequestedBy, InputChars, EstInputTokens, Payload, Status, ApprovedBy, ApprovedAt)
         SELECT @Kind, @Reason, @Priority, @ScanId,
                (SELECT r.RepositoryId FROM [${schema}].OrgRepository r
                 WHERE r.ScanId = @ScanId AND r.ProjectName = @ProjectName AND r.Name = @RepoName),
                @Repository, @App, @SourceKey,
                COALESCE(@ApplicationId, (SELECT a.ApplicationId FROM [${schema}].Application a WHERE a.SourceKey = @SourceKey)),
                @AssessmentId, @Component, @ProjectPath, @RuleVerdict, @Confidence, @DedupeKey, @Model,
-               COALESCE(@RequestedBy, w.ChangedBy), @InputChars, @EstInputTokens, @Payload, @status
+               COALESCE(@RequestedBy, w.ChangedBy), @InputChars, @EstInputTokens, @Payload, @status,
+               CASE WHEN @heavy IS NOT NULL THEN N'automatic: LLM-heavy until ' + FORMAT(@heavy, N'yyyy-MM-dd HH:mm') + N' UTC' END,
+               CASE WHEN @heavy IS NOT NULL THEN SYSUTCDATETIME() END
         FROM [${schema}].fnAuditWho() w;
         SET @id = SCOPE_IDENTITY();
     END
@@ -1776,17 +1850,15 @@ BEGIN
     SELECT @kinds = N',' + REPLACE(COALESCE(ApproveKinds, N''), N' ', N'') + N',', @min = ApproveMinTokens,
            @maxq = ApproveMaxQueued
     FROM [${schema}].LlmQueueSettings WHERE SettingsId = 1;
-    IF @kinds IS NULL
-    BEGIN
-        SELECT 0 AS Approved;
-        RETURN;
-    END;
     BEGIN TRANSACTION;
-    UPDATE [${schema}].LlmJob WITH (UPDLOCK, HOLDLOCK)
-    SET Status = N'queued', ApprovedBy = N'automatic: its kind needs no approval', ApprovedAt = SYSUTCDATETIME()
-    WHERE Status = N'approval' AND CHARINDEX(N',' + Kind + N',', @kinds) = 0;
-    SET @n = @@ROWCOUNT;
-    IF @min > 0
+    IF @kinds IS NOT NULL
+    BEGIN
+        UPDATE [${schema}].LlmJob WITH (UPDLOCK, HOLDLOCK)
+        SET Status = N'queued', ApprovedBy = N'automatic: its kind needs no approval', ApprovedAt = SYSUTCDATETIME()
+        WHERE Status = N'approval' AND CHARINDEX(N',' + Kind + N',', @kinds) = 0;
+        SET @n = @@ROWCOUNT;
+    END;
+    IF @kinds IS NOT NULL AND @min > 0
     BEGIN
         SET @free = CASE WHEN @maxq > 0
                          THEN @maxq - (SELECT COUNT(*) FROM [${schema}].LlmJob WITH (UPDLOCK, HOLDLOCK)
@@ -1803,6 +1875,13 @@ BEGIN
             SET @n += @@ROWCOUNT;
         END;
     END;
+    -- jobs of an application or component in an LLM-heavy window (31)
+    UPDATE j SET Status = N'queued', ApprovedAt = SYSUTCDATETIME(),
+                 ApprovedBy = N'automatic: LLM-heavy until ' + FORMAT(h.EndsAt, N'yyyy-MM-dd HH:mm') + N' UTC'
+    FROM [${schema}].LlmJob j WITH (UPDLOCK, HOLDLOCK)
+    CROSS APPLY [${schema}].fnLlmJobHeavy(j.ApplicationId, j.SourceKey, j.ProjectPath) h
+    WHERE j.Status = N'approval';
+    SET @n += @@ROWCOUNT;
     COMMIT;
     SELECT @n AS Approved;
 END;
@@ -2176,4 +2255,7 @@ GO
 -- 30: several LLMs at once in the LLM queue, by order and job size (SourceCredential.LlmOrder, LlmMaxTokens,
 -- LlmParallel; LlmQueueSettings.LocalOrder, LocalMaxTokens for the built-in LLM)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 30) INSERT [${schema}].SchemaVersion (Version) VALUES (30);
+GO
+-- 31: LLM-heavy windows of applications and components (LlmHeavyWindow, vLlmHeavyActive, fnLlmJobHeavy)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 31) INSERT [${schema}].SchemaVersion (Version) VALUES (31);
 GO

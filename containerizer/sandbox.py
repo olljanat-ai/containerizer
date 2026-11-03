@@ -592,6 +592,8 @@ class SandboxOptions:
     apps: list | None = None          # only these namespaces (a "Make it A" variant); None: every deployed app
     wait_forbidden: bool = False      # access not granted yet counts as waiting (the appliance grants the read-only
                                       # verifier its Role in a new namespace within minutes: cz-sandbox)
+    llm_keys: set = field(default_factory=set)   # LLM-heavy for these applications only (Application.SourceKey):
+                                                 # an administrator's LLM-heavy windows (org.OrgOptions.heavy_windows)
     llm: bool = False                 # LLM-heavy mode: the LLM diagnoses what the rules could not, and proposes
     model: str | None = None          # a manifest fix (replatform.llm_sandbox_diagnosis); off by default
 
@@ -735,7 +737,7 @@ def verify_sandbox(root: Path, o: SandboxOptions | None = None, kube: Kube | Non
                 r["diagnosis"] = d
                 r["reason"] = f"{r['reason']} - {d['diagnosis']}" if r["reason"] else d["diagnosis"]
         r["log_tail"] = ob.log            # redacted; kept out of the output repository (see write_health)
-        if o.llm and r["status"] in (FAILING, PENDING):
+        if (o.llm or a["doc"].get("source_key") in o.llm_keys) and r["status"] in (FAILING, PENDING):
             from .replatform import llm_sandbox_diagnosis
             k8s = root / a["rel"] / (c.get("folder") or "") / "k8s.yaml"
             from .ai import usage_scope

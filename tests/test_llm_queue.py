@@ -554,7 +554,7 @@ def test_admin_page_gate_and_listing(adm):
 
 def test_admin_page_actions(adm):
     a = adm.sessions.create("a@example.com", "A", True)
-    adm.conn.answers = {r"SELECT JobId, Priority, AdminRank FROM cz.LlmJob": QUEUED,
+    adm.conn.answers = {r"SELECT j.JobId, j.Priority, j.AdminRank, h.EndsAt AS HeavyUntil FROM cz.LlmJob": QUEUED,
                         r"FROM cz.OrgRepository WHERE RemovedAt IS NULL AND RepositoryId IN": [
                             {"ScanId": 4, "Name": "Billing/old"}],
                         r"EXEC cz.QueueOrgScanRun": [{"RunId": 12}]}
@@ -866,3 +866,161 @@ def test_the_page_shows_the_llms_in_order_and_warns_when_none_takes_big_jobs():
     assert v["LocalOrder"] == 5 and v["LocalMaxTokens"] == 4000
     v, errors = admin_llmqueue.validate_settings({"LocalOrder": ["x"]})
     assert "Built-in LLM order: 0 to 1,000, or empty" in errors
+
+
+# --------------------------------------------------------------------------- LLM-heavy windows
+
+class HeavyQueue(lq.JobQueue):
+    def __init__(self, heavy):
+        super().__init__(scan_name="nightly")
+        self.jobs, self._windows = [], heavy
+
+    def heavy(self, key):
+        return self._windows.get(key)
+
+    def add(self, job):
+        self.jobs.append(self._job(job))
+        return len(self.jobs)
+
+    def result(self, kind, key):
+        return None
+
+
+def test_an_llm_heavy_window_reviews_every_component(llm):
+    a = app(comp("Api", confidence=0.95, verdict="config"), comp("Web", confidence=0.99, verdict="info"),
+            comp("Old", confidence=0.5))
+    q = HeavyQueue({})
+    lq.queue_reviews(a, q)
+    assert [(j["Component"], j["Reason"]) for j in q.jobs] == [("Old", "uncertain")]      # no window: as before
+    q = HeavyQueue({"shop": lq.ALL})                     # the whole application ("shop": its key without git)
+    lq.queue_reviews(a, q)
+    assert [(j["Component"], j["Reason"]) for j in q.jobs] == [("Api", "heavy"), ("Web", "heavy"), ("Old", "uncertain")]
+    q = HeavyQueue({"shop": {"src/Web/Web.csproj"}})     # one component
+    lq.queue_reviews(a, q)
+    assert [(j["Component"], j["Reason"]) for j in q.jobs] == [("Web", "heavy"), ("Old", "uncertain")]
+    assert lq.REASON_TEXT["heavy"] == "LLM-heavy" and lq.OVERRIDE_CONFIDENCE["heavy"] == 0.85
+    assert not llm                                       # still nothing asked while the scan runs
+
+
+def test_jobs_in_an_llm_heavy_window_go_first():
+    rows = [{"JobId": 1, "Priority": 1500, "AdminRank": None}, {"JobId": 2, "Priority": 10, "AdminRank": None,
+            "HeavyUntil": "2026-11-03T12:00:00"}, {"JobId": 3, "Priority": 900, "AdminRank": 2000.0}]
+    assert [r["JobId"] for r in lq.ordered(rows)] == [2, 3, 1]
+    assert "fnLlmJobHeavy" in lq.HEAVY_APPLY and lq.HEAVY_FIRST.startswith("CASE WHEN h.WindowId IS NULL")
+    conn = FakeConn({r"FROM cz.vLlmHeavyActive": [{"SourceKey": "a", "ProjectPath": "x.csproj"},
+                                                  {"SourceKey": "a", "ProjectPath": "y.csproj"},
+                                                  {"SourceKey": "b", "ProjectPath": None},
+                                                  {"SourceKey": "b", "ProjectPath": "z.csproj"}]})
+    assert lq.heavy_windows(conn) == {"a": ["x.csproj", "y.csproj"], "b": ["*"]}
+    q = lq.SqlJobQueue(lambda: conn)
+    assert q.heavy("a") == {"x.csproj", "y.csproj"} and q.heavy("b") is lq.ALL and q.heavy("c") is None
+    assert lq.heavy_covers(lq.ALL, "any") and lq.heavy_covers({"x"}, "x") and not lq.heavy_covers(None, "x")
+
+
+def test_scans_run_llm_heavy_for_the_applications_in_a_window():
+    from containerizer import org, sandbox
+    o = org.OrgOptions(provider="github", org="acme", registry="r", ai=True, heavy_windows={"k1": ["*"]})
+    assert org.heavy_for(o, "k1") and not org.heavy_for(o, "k2")
+    assert not org.heavy_for(org.OrgOptions(provider="github", org="acme", registry="r", ai=False, heavy_windows={"k1": ["*"]}), "k1")
+    assert sandbox.SandboxOptions().llm_keys == set()
+
+
+def test_admin_turns_llm_heavy_on_and_ends_it(adm):
+    a = adm.sessions.create("a@example.com", "Alice", True)
+    po = adm.sessions.create("p@example.com", "Pat", False)
+    adm.conn.answers = {r"FROM cz.Application WHERE ApplicationId": [{"ApplicationId": 5, "RepositoryUrl": None, "Name": "shop"}],
+                        r"FROM cz.Component WHERE ComponentId": [{"ProjectPath": "src/Api/Api.csproj", "Name": "Api"}],
+                        r"SELECT EndsAt FROM cz.LlmHeavyWindow": [{"EndsAt": "2026-11-03 20:00"}],
+                        r"EXEC cz.AutoApproveLlmJobs": [{"Approved": 3}]}
+    r = _post(adm, a, "/admin/applications/5/heavy", Scope="7", Hours="8")
+    loc = dict(r.headers)["Location"]
+    assert r.status == 303 and "LLM-heavy+mode+on+for+Api+of+shop" in loc and "3+waiting+jobs+approved" in loc
+    (sql, params), = adm.conn.sql(r"INSERT cz.LlmHeavyWindow")
+    assert params == (5, "src/Api/Api.csproj", "Api", 8, 8, "a@example.com", "Alice")
+    assert "OUTPUT" not in sql                                   # the table has an audit trigger
+    assert "Choose+for+how+many+hours" in dict(_post(adm, a, "/admin/applications/5/heavy", Hours="999").headers)["Location"]
+    _post(adm, po, "/admin/applications/5/heavy", Hours="8")
+    assert len(adm.conn.sql(r"INSERT cz.LlmHeavyWindow")) == 1   # administrators only
+    r = _post(adm, a, "/admin/llm-queue/heavy/4/end", back="/admin/applications/5")
+    (sql, params), = adm.conn.sql(r"UPDATE cz.LlmHeavyWindow SET EndsAt")
+    assert params == ("a@example.com", "Alice", 4) and dict(r.headers)["Location"].startswith("/admin/applications/5?")
+    r = _post(adm, a, "/admin/llm-queue/heavy/4/end", back="https://evil.example.com")
+    assert dict(r.headers)["Location"].startswith("/admin/llm-queue?")
+
+
+@needs_sql
+def test_llm_heavy_windows_in_sql_server():
+    """A window approves its application's jobs (new and waiting) and puts them first; one of a component only its
+    own; an ended window none (cz.QueueLlmJob, cz.AutoApproveLlmJobs, cz.fnLlmJobHeavy, the runner's order)."""
+    import uuid
+    from containerizer import sqlstore
+    pw, sa_pw = "Test-Passw0rd!x", os.environ["CONTAINERIZER_SQL_PASSWORD"]
+    name = "czheavy_" + uuid.uuid4().hex[:8]
+    cs = re.sub(r"(?i)(database|initial\s*catalog)\s*=[^;]*", f"Database={name}", ADMIN_SQL)
+    sqlstore.create_database(cs, sa_pw)
+    conn = sqlstore.connect(cs, sa_pw)
+    sqlstore.init_schema(conn)
+    sqlstore.init_schema(conn)
+    for login, role in (("cz_h_writer", "writer"), ("cz_h_admin", "admin")):
+        sqlstore.create_login(conn, login, pw, role)
+
+    def as_(login):
+        return re.sub(r"(?i)(user\s*id|uid)\s*=[^;]*", f"User Id={login}", cs)
+    try:
+        cur = conn.cursor()
+        cur.execute("INSERT cz.Application (SourceKey, Name) VALUES (N'shop', N'shop'), (N'other', N'other')")
+        conn.commit()
+        w = sqlstore.connect(as_("cz_h_writer"), pw)
+        q = lq.SqlJobQueue(lambda: sqlstore.connect(as_("cz_h_writer"), pw))
+
+        def add(key, path, prio):
+            return q.add_with(w, {"Kind": "review", "Priority": prio, "DedupeKey": uuid.uuid4().hex, "SourceKey": key,
+                                  "ProjectPath": path, "Payload": {}})
+
+        def status(jid):
+            c = w.cursor()
+            c.execute("SELECT Status, ApprovedBy FROM cz.LlmJob WHERE JobId = %s", (jid,))
+            return tuple(c.fetchone())
+        waiting = add("shop", "src/Web/Web.csproj", 5)
+        other = add("other", "a.csproj", 1000)
+        assert status(waiting)[0] == "approval"                              # every job waits by default
+        adm = sqlstore.connect(as_("cz_h_admin"), pw)
+        ac = adm.cursor()
+        ac.execute("INSERT cz.LlmHeavyWindow (ApplicationId, ProjectPath, EndsAt, Hours, CreatedBy) "
+                   "SELECT ApplicationId, NULL, DATEADD(hour, 8, SYSUTCDATETIME()), 8, N'alice@example.com' "
+                   "FROM cz.Application WHERE SourceKey = N'shop'")
+        adm.commit()
+        assert lq.auto_approve(adm) == 1                                    # the one waiting, not the other app's
+        assert status(waiting)[0] == "queued" and status(waiting)[1].startswith("automatic: LLM-heavy until ")
+        assert status(other)[0] == "approval"
+        new = add("shop", "src/Api/Api.csproj", 1)
+        assert status(new)[0] == "queued"                                   # queued approved
+        assert q.heavy("shop") is lq.ALL and lq.heavy_windows(w) == {"shop": ["*"]}
+        # the runner takes them first, whatever their priority
+        ac.execute("UPDATE cz.LlmJob SET Status = N'queued' WHERE JobId = %s", (other,))
+        adm.commit()
+        r = lq.Runner(lambda: sqlstore.connect(as_("cz_h_writer"), pw), name="t", metrics=lq.QueueMetrics("t"),
+                      log=lambda msg: None, load=lambda: 0.0)
+        try:
+            first = r.claim(w)
+            assert first["JobId"] == waiting and first["HeavyUntil"] is not None
+            assert r.claim(w)["JobId"] == new and r.claim(w)["JobId"] == other
+        finally:
+            ai.LISTENERS.remove(r.metrics.llm)
+        # a window of one component; ended early: no longer
+        ac.execute("UPDATE cz.LlmHeavyWindow SET EndsAt = SYSUTCDATETIME(), EndedAt = SYSUTCDATETIME(), "
+                   "EndedBy = N'alice@example.com'")
+        ac.execute("INSERT cz.LlmHeavyWindow (ApplicationId, ProjectPath, Component, EndsAt, Hours) "
+                   "SELECT ApplicationId, N'src/Api/Api.csproj', N'Api', DATEADD(hour, 1, SYSUTCDATETIME()), 1 "
+                   "FROM cz.Application WHERE SourceKey = N'shop'")
+        adm.commit()
+        assert status(add("shop", "src/Api/Api.csproj", 1))[0] == "queued"
+        assert status(add("shop", "src/Web/Web.csproj", 1))[0] == "approval"
+        assert q.heavy("shop") is lq.ALL                                    # the scan's copy: read again after a minute
+        assert lq.heavy_windows(w) == {"shop": ["src/Api/Api.csproj"]}
+        cur.execute("SELECT COUNT(*) FROM cz.AuditLog WHERE TableName = N'LlmHeavyWindow'")
+        assert cur.fetchone()[0] == 3                                       # two windows, one ended
+        w.close()
+        adm.close()
+    finally:
+        conn.close()
