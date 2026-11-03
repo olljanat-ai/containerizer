@@ -8,6 +8,12 @@ qcow2 and VHDX images as release assets.
 
 ## Unreleased
 
+- The sandbox can be turned off per application: **Admin → Applications** → the application → **Sandbox**. It is
+  on by default, and administrators and the application's product owners can switch it. Off: the scans
+  still assess the application but build and deploy nothing of it, and new Make it A patches are not deployed.
+  Its folders in the output repository and its images in the registry stay, only out of `sandbox/`. On again
+  brings the same manifests and images back, Make it A copies included, without a build. The LLM queue runner
+  applies a switch within a few minutes. Schema 35 adds `Application.SandboxEnabled`.
 - Make it A: the front page, the refactoring pages and the docs no longer say the patched copy runs "beside the
   original". It runs as its own application, and an organization scan has only the original's A-rated components
   in the sandbox, often none.

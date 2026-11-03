@@ -48,6 +48,23 @@ skips automatically are not hidden. Every change to a project or repository, wit
 note, is in **Admin → Change history** (Projects, Repositories) and on the project's or repository's own
 page.
 
+<a id="sandbox-per-application"></a>**The sandbox of one application** can be turned off without disabling its
+repository: **Admin → Applications** → the application → **Sandbox** → **Disable the sandbox** (administrators,
+and the product owners of its product). It is on by default.
+
+- **Off:** nothing of the application runs in the sandbox cluster. That includes its original components and its
+  Make it A copies. The scans still assess it, so its results stay current, but they build and deploy nothing of it.
+  New Make it A patches for it are made and verified, but not deployed.
+- **The files stay:** its folders in the output repository and its images in the appliance's registry are kept.
+  `sandbox/` leaves them out, so Flux removes them from the cluster.
+- **On again:** `sandbox/` lists them again, and Flux deploys the same manifests with the same images (the
+  patched ones of a Make it A copy too), without a build. The next scan of its repository then builds the original
+  as usual.
+
+The LLM queue runner applies a change within a few minutes: it regenerates `sandbox/` in every output repository
+and commits it. A scan also leaves the application out when it writes `sandbox/`. The change history records who
+switched it and when. A Make it A copy still expires after its 7 days, also while the sandbox is off.
+
 **Scan now**, on a project's or repository's page or for the ones selected in the lists, runs a full
 scan of only those, outside the schedule, for example after a fix was pushed. The other repositories
 keep their results from the last full run. Disabled ones stay disabled; a run of the scan that is

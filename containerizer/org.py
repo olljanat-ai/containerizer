@@ -117,6 +117,9 @@ class OrgOptions:
                                         # opened (llmqueue.heavy_windows); the worker sets it only when the appliance
                                         # allows LLM-heavy mode and the scan asks the LLM. Those applications get
                                         # LLM-heavy mode in this scan, even one with queued LLM reviews
+    sandbox_off: set | None = None      # SourceKeys and ApplicationIds of the applications whose sandbox an administrator
+                                        # turned off (Admin -> Applications, load_sandbox_off): assessed, not built or
+                                        # deployed; their folders stay in the output repository, out of sandbox/
     review_queue: object = None         # with ai: queued LLM reviews (llmqueue.ReviewQueue): the scan asks the LLM
                                         # nothing, component reviews wait in the LLM review queue (no LLM-heavy mode,
                                         # no failure diagnosis or dev database questions either)
@@ -395,10 +398,36 @@ def write_idp(root: Path, apps) -> str:
     return sb.url
 
 
-def write_sandbox(root: Path, git_url: str, branch: str) -> list[str]:
-    """sandbox/: Argo CD app-of-apps and Flux root Kustomization over every app in the repository."""
+def sandbox_excluded(doc: dict, off) -> bool:
+    """An app folder (its containerizer.json) of an application whose sandbox is turned off: the original's folder
+    by its SourceKey, a Make it A variant's by its application id. `off` holds both (load_sandbox_off)."""
+    if not off:
+        return False
+    return doc.get("source_key") in off or (doc.get("variant") or {}).get("application_id") in off
+
+
+def load_sandbox_off(conn) -> set:
+    """The SourceKeys and ApplicationIds of the applications whose sandbox is turned off (Application.SandboxEnabled
+    = 0, schema 35). Empty on an older schema."""
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT ApplicationId, SourceKey FROM cz.Application WHERE SandboxEnabled = 0")
+        rows = cur.fetchall()
+    except Exception:  # noqa: BLE001 - before schema 35: every application is in the sandbox
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return set()
+    return {int(r[0]) for r in rows} | {str(r[1]) for r in rows}
+
+
+def write_sandbox(root: Path, git_url: str, branch: str, off=None) -> list[str]:
+    """sandbox/: Argo CD app-of-apps and Flux root Kustomization over every app in the repository, except the ones of
+    applications whose sandbox is turned off (`off`, load_sandbox_off): their folders stay, the cluster prunes them,
+    and turning the sandbox on again brings the same manifests and images back without a build."""
     from .gitops import ARGO_API, ARGO_NS, FLUX_NS, IN_CLUSTER, KUSTOMIZE_API, SOURCE_API
-    apps = _apps_in(root)
+    apps = [x for x in _apps_in(root) if not sandbox_excluded(x[2], off)]
     sb = root / SANDBOX
     if sb.exists():
         shutil.rmtree(sb)
@@ -920,6 +949,8 @@ def _process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, wor
             from .replatform import migrate_repo
             from .sqlstore import source_info
             tres.source_key = source_info(path, name)["key"]
+            if sandbox_off(o, tres.source_key):
+                return sandbox_off_result(tres, tdest)
             mo = o
             if not o.llm_heavy and heavy_for(o, tres.source_key):
                 mo = dataclasses.replace(o, llm_heavy=True)    # an administrator's LLM-heavy window for this app
@@ -1104,6 +1135,8 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
     from . import connectivity
     from .generate import generate_app, k8s_name
     dest = out.root / rel
+    if sandbox_off(o, res.source_key):
+        return sandbox_off_result(res, dest)
     existing = connectivity.read(dest) or (connectivity.read(connectivity_from) if connectivity_from else None)
     approved = connectivity.approved_entries(existing)
     linked = connectivity.linked_entries(existing)
@@ -1383,7 +1416,7 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
                                              status="disabled", reason=why, web_url=r.web_url, clone_url=r.clone_url,
                                              app=names[r.key]))
         if removed:
-            write_sandbox(out.root, out.url, o.output_branch)
+            write_sandbox(out.root, out.url, o.output_branch, o.sandbox_off)
             if not repos:                   # nothing else rewrites the index in this run
                 org_index(out.root, out.root / segment(o.org), [], run)
             out.commit(f"containerizer: {o.org}: {removed} disabled repositor{'y' if removed == 1 else 'ies'} removed")
@@ -1401,7 +1434,7 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
             o.state.record(r, res)
         if out:
             _phase(hooks, f"Committing {repo_label(r)} to the output repository")
-            ns = write_sandbox(out.root, out.url, o.output_branch)
+            ns = write_sandbox(out.root, out.url, o.output_branch, o.sandbox_off)
             org_index(out.root, out.root / segment(o.org), [x.to_dict() for x in results], run)
             out.commit(f"containerizer: {o.org}/{r.project}/{r.name} {res.status}"
                        + (f" ({len(res.components)} components, {tag})" if res.components else "")
@@ -1716,6 +1749,22 @@ def prune_cache(cache: Path, keep: set[str], log=print) -> None:
         if d.is_dir() and d.name not in keep and (d / ".git").is_dir():
             shutil.rmtree(d, ignore_errors=True)
             log(f"removed the clone of {d.name}: no longer in the organization")
+
+
+SANDBOX_OFF = "sandbox-off"
+SANDBOX_OFF_REASON = "the sandbox is turned off for this application (Admin → Applications)"
+
+
+def sandbox_off(o: OrgOptions, source_key: str | None) -> bool:
+    """An administrator turned the sandbox off for this application: it is assessed, not deployed."""
+    return bool(o.sandbox_off and source_key and source_key in o.sandbox_off)
+
+
+def sandbox_off_result(res: "RepoResult", dest: Path) -> "RepoResult":
+    """Not built or deployed. What was deployed before keeps its folder (and its images in the registry): sandbox/
+    leaves it out, so the cluster removes it, and turning the sandbox on again puts it back as it was."""
+    res.status, res.reason = SANDBOX_OFF, SANDBOX_OFF_REASON
+    return res
 
 
 def heavy_for(o: OrgOptions, source_key: str | None) -> bool:

@@ -378,6 +378,14 @@ def test_admin_maps_and_audits(idp, tmp_path):
         s, _, body = b.follow(f"/admin/applications/{app}", {"csrf": csrf, "ProductId": pid, "DisplayName": "Web Shop",
                                                               "Owner": "", "Description": ""})
         assert "Saved." in body and "Jane Doe" in body and "Web shop" in body      # its change history
+        # its sandbox: on by default; off and on again, both in the change history
+        assert "<span class='st st-ok'>Enabled</span>" in body and "Disable the sandbox" in body
+        assert b.go(f"/admin/applications/{app}/sandbox", {"Enabled": "0"})[0] == 403            # no CSRF token
+        s, _, body = b.follow(f"/admin/applications/{app}/sandbox", {"csrf": csrf, "Enabled": "0"})
+        assert "Sandbox disabled" in body and "<span class='st st-off'>Disabled</span>" in body and "Enable the sandbox" in body
+        assert "Not saved" in b.follow(f"/admin/applications/{app}/sandbox", {"csrf": csrf, "Enabled": "x"})[2]
+        s, _, body = b.follow(f"/admin/applications/{app}/sandbox", {"csrf": csrf, "Enabled": "1"})
+        assert "Sandbox enabled" in body and "Disable the sandbox" in body
         # results pages show the mapping and the product page link
         body = b.follow("/")[2]
         assert "Retail" in body and "Web Shop" in body and "https://cmdb.example.com/products/42" in body

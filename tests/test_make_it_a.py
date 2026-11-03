@@ -958,3 +958,68 @@ def test_a_chain_stuck_on_the_same_errors_starts_over_from_the_original_code(sta
     last = {**pl, "heavy_restarts": rf.HEAVY_RESTARTS}
     assert rf.heavy_next(job, last, failed(5), ends, tmp_path, queue=q)["stopped"] == (
         "3 orders in a row failed with the same errors, after 2 fresh starts")
+
+
+def test_the_runner_regenerates_the_sandbox_index_only_when_a_switch_changed(tmp_path, monkeypatch):
+    from containerizer import credentials, org, variant, worker as wk
+    off = {"set": set()}
+    commits, written = [], []
+
+    class Conn:
+        def close(self):
+            pass
+
+    class Write:
+        token, username = "t", "x-access-token"
+
+    class Creds:
+        def write_for(self, repo):
+            return Write()
+
+        def hosts(self):
+            return {"git.example.com"}
+
+    class Out:
+        def __init__(self, o, d):
+            self.root, self.url = d, o.output_repo
+
+        def commit(self, msg):
+            commits.append(msg)
+            return True
+    monkeypatch.setattr(org, "load_sandbox_off", lambda conn: set(off["set"]))
+    monkeypatch.setattr(org, "Output", Out)
+    monkeypatch.setattr(org, "write_sandbox", lambda root, url, branch, o=None: written.append((url, set(o or ()))))
+    monkeypatch.setattr(credentials, "load", lambda conn, key=None: Creds())
+    monkeypatch.setattr(wk, "allowed_hosts", lambda: set())
+    scan = {"ScanId": 1, "Provider": "github", "Organization": "acme", "OutputRepo": "https://git.example.com/out",
+            "OutputBranch": "main", "Gate": False, "PushImages": True, "ImagePullSecret": None, "Registry": "x"}
+    monkeypatch.setattr(variant, "_rows", lambda conn, sql, params=(): [scan, {**scan, "ScanId": 2}])
+    work = tmp_path / "w"
+    assert variant.sync_sandbox(Conn, "key", work, log=lambda s: None) == 1          # the first time: once per repo
+    assert written == [("https://git.example.com/out", set())]
+    assert variant.sync_sandbox(Conn, "key", work, log=lambda s: None) == 0 and len(written) == 1   # nothing changed
+    off["set"] = {"https://x/shop#", 5}                                           # turned off
+    assert variant.sync_sandbox(Conn, "key", work, log=lambda s: None) == 1 and written[-1][1] == {"https://x/shop#", 5}
+    off["set"] = set()                                                            # on again
+    assert variant.sync_sandbox(Conn, "key", work, log=lambda s: None) == 1 and written[-1][1] == set()
+    assert "sandbox switches" in commits[0]
+
+
+def test_a_make_it_a_copy_of_an_application_whose_sandbox_is_off_is_not_deployed():
+    from containerizer import variant
+
+    class Cur:
+        def execute(self, sql, params=()):
+            self.sql = sql
+
+        def fetchone(self):
+            return (False,)
+
+    class Conn:
+        def cursor(self, as_dict=False):
+            return Cur()
+
+        def close(self):
+            pass
+    with pytest.raises(variant.Skip, match="sandbox is turned off"):
+        variant._open(Conn, None, {"application_id": 5, "source": {"type": "org-clone", "scan_id": 1}}, Path("/tmp/x"))

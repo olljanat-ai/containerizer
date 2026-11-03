@@ -823,3 +823,47 @@ def test_run_org_split_repository(tmp_path, monkeypatch, parallel):
     assert not list((out / "acme" / "_").glob("mono@*")) and (out / "acme" / "_" / "mono").is_dir() == \
         (res["mono"].status == "deployed")
     assert res["solo"].split_hint == {}
+
+
+def test_the_sandbox_index_leaves_out_applications_whose_sandbox_is_off(tmp_path):
+    """Admin → Applications → Sandbox off: the original's folder (by SourceKey) and its Make it A copies (by
+    ApplicationId) stay in the output repository, out of sandbox/; on again lists the same folders."""
+    import json as _json
+    from containerizer import org
+    root = tmp_path / "out"
+
+    def app(rel, doc):
+        d = root / rel
+        (d / "gitops" / "argocd").mkdir(parents=True)
+        (d / "gitops" / "flux").mkdir(parents=True)
+        (d / "gitops" / "argocd" / "kustomization.yaml").write_text("resources: []\\n")
+        (d / "gitops" / "flux" / "kustomization.yaml").write_text("resources: []\\n")
+        (d / "containerizer.json").write_text(_json.dumps(doc))
+    app("acme/p/shop", {"source_key": "https://x/shop#"})
+    app("acme/p/shop-refactor-7", {"source_key": "", "variant": {"application_id": 5, "job": 7}})
+    app("acme/p/billing", {"source_key": "https://x/billing#"})
+
+    def listed():
+        return (root / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text()
+    org.write_sandbox(root, "https://git/out", "main")
+    assert "acme/p/shop/" in listed() and "shop-refactor-7" in listed()
+    org.write_sandbox(root, "https://git/out", "main", {"https://x/shop#", 5})
+    assert "acme/p/shop/" not in listed() and "shop-refactor-7" not in listed() and "acme/p/billing/" in listed()
+    assert (root / "acme/p/shop/containerizer.json").exists() and (root / "acme/p/shop-refactor-7").is_dir()
+    org.write_sandbox(root, "https://git/out", "main", set())
+    assert "acme/p/shop/" in listed() and "shop-refactor-7" in listed()
+
+
+def test_a_scan_of_an_application_whose_sandbox_is_off_builds_nothing_and_keeps_its_folder(tmp_path):
+    from containerizer import org
+    dest = tmp_path / "out" / "acme/p/shop"
+    dest.mkdir(parents=True)
+    (dest / "containerizer.json").write_text("{}")
+    o = org.OrgOptions(provider="github", org="acme", registry="localhost:5000/sandbox", sandbox_off={"k"})
+    res = org.RepoResult(provider="github", org="acme", project="p", repo="shop", status="error", source_key="k")
+
+    class Out:
+        root = tmp_path / "out"
+    r = org.deploy_app(None, tmp_path, "acme/p/shop", o, Out(), None, "1", None, res, tmp_path / "w", "shop")
+    assert (r.status, r.reason) == ("sandbox-off", org.SANDBOX_OFF_REASON) and (dest / "containerizer.json").exists()
+    assert not org.sandbox_off(o, "other") and not org.sandbox_off(org.OrgOptions(provider="github", org="a", registry="r"), "k")

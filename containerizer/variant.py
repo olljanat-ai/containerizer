@@ -126,6 +126,16 @@ def options(scan: dict, write, work: Path):
                       sql=None, work_dir=str(work), ai=False)
 
 
+def _off(connect) -> set:
+    """The applications whose sandbox is turned off (org.load_sandbox_off): left out of sandbox/."""
+    from .org import load_sandbox_off
+    conn = connect()
+    try:
+        return load_sandbox_off(conn)
+    finally:
+        conn.close()
+
+
 def _open(connect, key, payload: dict, work: Path):
     """(target, OrgOptions) with the output repository's write token; Skip when it cannot be deployed."""
     from .credentials import CredentialError, load, private_key_from_env
@@ -134,6 +144,13 @@ def _open(connect, key, payload: dict, work: Path):
     from .worker import allowed_hosts
     conn = connect()
     try:
+        if payload.get("application_id") is not None:
+            cur = conn.cursor()
+            cur.execute("SELECT SandboxEnabled FROM cz.Application WHERE ApplicationId = %s", (int(payload["application_id"]),))
+            row = cur.fetchone()
+            if row is not None and not row[0]:
+                from .org import SANDBOX_OFF_REASON
+                raise Skip(f"not deployed: {SANDBOX_OFF_REASON}")
         target = load_target(conn, payload)
         try:
             creds = load(conn, key if key is not None else private_key_from_env())
@@ -249,7 +266,7 @@ def deploy(connect, key, payload: dict, job: int, result: dict, work: Path, name
     doc["variant"] = {"of": original, "of_app": payload.get("app"), "job": job, "application_id": payload.get("application_id"),
                       "expires_at": _iso(expires)}
     (out.root / rel / "containerizer.json").write_text(json.dumps(doc, indent=2, default=str) + "\n")
-    write_sandbox(out.root, out.url, o.output_branch)
+    write_sandbox(out.root, out.url, o.output_branch, _off(connect))
     out.commit(f"containerizer: sandbox variant {rel} of {original} (\"Make it A\" order #{job}, {tag})")
     rev = _head(out.root)
     from .sandbox import deployed_apps
@@ -320,7 +337,7 @@ def remove(connect, key, job: int, payload: dict, sandbox: dict, work: Path, sta
     d = out.root / folder
     if d.exists():
         shutil.rmtree(d)
-    write_sandbox(out.root, out.url, o.output_branch)
+    write_sandbox(out.root, out.url, o.output_branch, _off(connect))
     why = "expired" if status == "expired" else "removed"
     out.commit(f"containerizer: sandbox variant {folder} {why} (\"Make it A\" order #{job})")
     return {**sandbox, "status": status, "removed_at": _iso(now), "removed_by": by,
@@ -390,3 +407,57 @@ def housekeep(connect, key, work: Path, log=print, now: datetime | None = None) 
         log(f"#{jid}: sandbox variant {sb.get('namespace')} {sb['status']}")
         n += 1
     return n
+
+
+# --------------------------------------------------------------------------- the applications' sandbox switch
+
+SYNC_STATE = "sandbox-off.json"
+
+
+def sync_sandbox(connect, key, work: Path, log=print) -> int:
+    """The queue runner's periodic step: when an administrator turned an application's sandbox off or on, regenerate
+    sandbox/ in every output repository (org.write_sandbox leaves those applications out; their folders and images
+    stay, so on again deploys them as they were, without a build). Only when the set changed since the last sync
+    (work/sandbox-off.json). Returns the commits made."""
+    from .credentials import load, private_key_from_env
+    from .org import Output, host_allowed, load_sandbox_off, write_sandbox
+    from .orgsource import REDACT
+    from .worker import allowed_hosts
+    conn = connect()
+    try:
+        off = load_sandbox_off(conn)
+        scans = _rows(conn, "SELECT * FROM cz.OrgScan WHERE OutputRepo IS NOT NULL ORDER BY ScanId")
+        creds = load(conn, key if key is not None else private_key_from_env()) if scans else None
+    finally:
+        conn.close()
+    sig = json.dumps(sorted(str(x) for x in off))
+    state = work / SYNC_STATE
+    if state.is_file() and state.read_text() == sig:
+        return 0
+    n, seen = 0, set()
+    hosts = allowed_hosts() | (creds.hosts() if creds else set())
+    for scan in scans:
+        repo = scan["OutputRepo"]
+        if repo in seen:
+            continue
+        seen.add(repo)
+        write = creds.write_for(repo) if creds else None
+        if write is None or not write.token or not host_allowed(repo, hosts):
+            log(f"sandbox switch: {repo} not updated: no write token for it, or its host is not allowed")
+            continue
+        REDACT.add(write.token, write.username)
+        d = work / f"sync-{len(seen)}"
+        shutil.rmtree(d, ignore_errors=True)
+        try:
+            o = options(scan, write, d)
+            out = Output(o, d)
+            write_sandbox(out.root, out.url, o.output_branch, off)
+            if out.commit("containerizer: sandbox/ follows the applications' sandbox switches (Admin → Applications)"):
+                n += 1
+                log(f"sandbox switch: {repo}: sandbox/ regenerated")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+    work.mkdir(parents=True, exist_ok=True)
+    state.write_text(sig)
+    return n
+

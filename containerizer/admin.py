@@ -34,7 +34,7 @@ TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Applicatio
               "RulesRepository": "Internal rules repository", "LlmJob": "LLM queue job",
               "LlmQueueSettings": "LLM queue settings"}
 FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
-              "Retired": "Hidden", "Product": "Product", "BusinessUnit": "Business unit", "InfoUrl": "Product page link",
+              "Retired": "Hidden", "SandboxEnabled": "Sandbox", "Product": "Product", "BusinessUnit": "Business unit", "InfoUrl": "Product page link",
               # the internal rules repository (rule review)
               "RepoUrl": "Repository URL", "Branch": "Branch", "Path": "Folder",
               # organization scans
@@ -271,6 +271,8 @@ class Admin:
         if kind == "applications":
             if method == "POST" and len(parts) > 1 and parts[1] == "bulk":
                 return self.bulk_map(conn, a, form)
+            if ident is not None and len(parts) == 3 and parts[2] == "sandbox" and method == "POST":
+                return self.set_sandbox(conn, a, ident, form)
             if ident is not None and len(parts) == 3 and parts[2] == "heavy" and method == "POST":
                 from . import admin_heavy                # LLM-heavy mode for a while (administrators)
                 return admin_heavy.start(conn, s, a, ident, form)
@@ -540,7 +542,7 @@ class Admin:
     def edit_application(self, conn, s: Session, a: Access, app_id: int, flash: str) -> Response:
         cur = conn.cursor(as_dict=True)
         cur.execute("SELECT x.ApplicationId, x.Name, x.DisplayName, x.Description, x.Owner, x.ProductId, x.Retired, x.RepositoryUrl, "
-                    "x.SourcePath, x.FirstSeenAt, x.LastSeenAt, p.Name AS ProductName FROM cz.Application x "
+                    "x.SandboxEnabled, x.SourcePath, x.FirstSeenAt, x.LastSeenAt, p.Name AS ProductName FROM cz.Application x "
                     "LEFT JOIN cz.Product p ON p.ProductId = x.ProductId WHERE x.ApplicationId = %s", (app_id,))
         r = cur.fetchone()
         if not r:
@@ -567,8 +569,51 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
                     f"<dt>Hidden</dt><dd>{'yes' if r['Retired'] else 'no'}</dd></dl>")
         from . import admin_heavy
         heavy = admin_heavy.section(self, conn, s, a, app_id) if a.admin else ""
-        body = f"{head}{form}{heavy}<h2>Changes</h2>{self._history(conn, 'Application', app_id)}"
+        body = f"{head}{form}{self._sandbox_section(s, a, r)}{heavy}<h2>Changes</h2>{self._history(conn, 'Application', app_id)}"
         return Response(200, self._shell(s, a, r["DisplayName"] or r["Name"], "applications", body, flash))
+
+    @staticmethod
+    def may_switch_sandbox(a: Access, product_id) -> bool:
+        """Administrators, and the product owners of the application's product (operators have no Applications pages)."""
+        return bool(a.admin or (product_id is not None and a.owner and product_id in a.products))
+
+    def _sandbox_section(self, s: Session, a: Access, r: dict) -> str:
+        """The application's sandbox: on (the scans deploy its A-rated components and its Make it A patches) or off."""
+        on = r.get("SandboxEnabled") is None or bool(r["SandboxEnabled"])
+        state = ("<span class='st st-ok'>Enabled</span> The organization scans deploy its components that rate A, and "
+                 "its Make it A patches, to the sandbox cluster." if on else
+                 "<span class='st st-off'>Disabled</span> Nothing of it runs in the sandbox cluster. The scans still "
+                 "assess it but build nothing, and new Make it A patches are not deployed. What was deployed keeps "
+                 "its files and images: enabling the sandbox again brings it back as it was, without a build.")
+        out = f"<h2>Sandbox</h2><p>{state}</p>"
+        if self.may_switch_sandbox(a, r["ProductId"]):
+            out += (f"<form method='post' action='/admin/applications/{int(r['ApplicationId'])}/sandbox' class='formrow'>"
+                    f"{self._csrf(s)}<input type='hidden' name='Enabled' value='{'0' if on else '1'}'>"
+                    f"<button{' class=secondary' if on else ''}>{'Disable' if on else 'Enable'} the sandbox</button></form>")
+        return out
+
+    def set_sandbox(self, conn, a: Access, app_id: int, form: dict) -> Response:
+        """Turn the application's sandbox on or off (Application.SandboxEnabled; the change history records it)."""
+        val = form.get("Enabled", [""])[0]
+        if val not in ("0", "1"):
+            return redirect(f"/admin/applications/{app_id}?" + urlencode({"msg": "Not saved: enable or disable."}))
+        try:
+            rows = self._locked_apps(conn, [app_id])
+            if not rows:
+                conn.rollback()
+                return Response(404, page("Not found", "<h1>Application not found</h1>"))
+            if not self.may_switch_sandbox(a, rows[0]["ProductId"]):
+                conn.rollback()
+                return redirect(f"/admin/applications/{app_id}?" + urlencode({"msg": "Not saved: that is outside your products."}))
+            cur = conn.cursor()
+            cur.execute("UPDATE cz.Application SET SandboxEnabled = %s WHERE ApplicationId = %s", (val == "1", app_id))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        msg = ("Sandbox enabled: what was deployed of it is back in the sandbox within a few minutes." if val == "1" else
+               "Sandbox disabled: it leaves the sandbox within a few minutes.")
+        return redirect(f"/admin/applications/{app_id}?" + urlencode({"msg": msg}))
 
     def save_application(self, conn, a: Access, app_id: int, form: dict) -> Response:
         vals, errors = {}, []

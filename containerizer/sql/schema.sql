@@ -81,8 +81,14 @@ CREATE TABLE [${schema}].Application (
     SourcePath    nvarchar(400)  NULL,              -- folder in the repository
     FirstSeenAt   datetime2(0)   NOT NULL CONSTRAINT DF_Application_FirstSeenAt DEFAULT SYSUTCDATETIME(),
     LastSeenAt    datetime2(0)   NOT NULL CONSTRAINT DF_Application_LastSeenAt DEFAULT SYSUTCDATETIME(),
-    Retired       bit            NOT NULL CONSTRAINT DF_Application_Retired DEFAULT 0  -- set by people: hide from the UI
+    Retired       bit            NOT NULL CONSTRAINT DF_Application_Retired DEFAULT 0, -- set by people: hide from the UI
+    SandboxEnabled bit           NOT NULL CONSTRAINT DF_Application_SandboxEnabled DEFAULT 1  -- set by people: deployed to the sandbox
 );
+GO
+-- 35: the sandbox can be turned off per application (Admin -> Applications): the scans assess it, but do not deploy it
+IF COL_LENGTH(N'[${schema}].Application', N'SandboxEnabled') IS NULL
+    ALTER TABLE [${schema}].Application ADD SandboxEnabled bit NOT NULL
+        CONSTRAINT DF_Application_SandboxEnabled DEFAULT 1;
 GO
 
 -- A deployable part of an application (web site, service, worker, desktop client, ...), matched by
@@ -533,17 +539,17 @@ BEGIN
     SELECT w.ChangedBy, w.ChangedByName, w.Via, N'Application', COALESCE(i.ApplicationId, d.ApplicationId),
            COALESCE(i.DisplayName, i.Name, d.DisplayName, d.Name),
            CASE WHEN d.ApplicationId IS NULL THEN N'insert' WHEN i.ApplicationId IS NULL THEN N'delete' ELSE N'update' END,
-           CASE WHEN d.ApplicationId IS NOT NULL THEN (SELECT d.Name, d.DisplayName, d.Description, d.Owner, d.Retired,
+           CASE WHEN d.ApplicationId IS NOT NULL THEN (SELECT d.Name, d.DisplayName, d.Description, d.Owner, d.Retired, d.SandboxEnabled,
                 (SELECT p.Name FROM [${schema}].Product p WHERE p.ProductId = d.ProductId) AS Product
                 FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
-           CASE WHEN i.ApplicationId IS NOT NULL THEN (SELECT i.Name, i.DisplayName, i.Description, i.Owner, i.Retired,
+           CASE WHEN i.ApplicationId IS NOT NULL THEN (SELECT i.Name, i.DisplayName, i.Description, i.Owner, i.Retired, i.SandboxEnabled,
                 (SELECT p.Name FROM [${schema}].Product p WHERE p.ProductId = i.ProductId) AS Product
                 FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
     FROM inserted i FULL OUTER JOIN deleted d ON d.ApplicationId = i.ApplicationId
     CROSS JOIN [${schema}].fnAuditWho() w
     WHERE d.ApplicationId IS NULL OR i.ApplicationId IS NULL
-       OR EXISTS (SELECT i.Name, i.DisplayName, i.Description, i.Owner, i.Retired, i.ProductId
-                  EXCEPT SELECT d.Name, d.DisplayName, d.Description, d.Owner, d.Retired, d.ProductId);
+       OR EXISTS (SELECT i.Name, i.DisplayName, i.Description, i.Owner, i.Retired, i.SandboxEnabled, i.ProductId
+                  EXCEPT SELECT d.Name, d.DisplayName, d.Description, d.Owner, d.Retired, d.SandboxEnabled, d.ProductId);
 END;
 GO
 
@@ -1163,7 +1169,7 @@ GRANT SELECT ON [${schema}].ApplicationAssessment (AssessmentId, ApplicationId, 
 GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].BusinessUnit TO [${schema}_admin];
 GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].Product TO [${schema}_admin];
 GRANT SELECT ON [${schema}].Application TO [${schema}_admin];
-GRANT UPDATE ON [${schema}].Application (ProductId, DisplayName, Description, Owner, Retired) TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].Application (ProductId, DisplayName, Description, Owner, Retired, SandboxEnabled) TO [${schema}_admin];
 GRANT SELECT ON [${schema}].AuditLog TO [${schema}_admin];
 GRANT SELECT, INSERT ON [${schema}].AccessLog TO [${schema}_admin];
 GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].DevDatabase TO [${schema}_admin];
@@ -2286,4 +2292,7 @@ DROP TABLE IF EXISTS [${schema}].SbomPackage;
 DROP TABLE IF EXISTS [${schema}].ComponentSbom;
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 34) INSERT [${schema}].SchemaVersion (Version) VALUES (34);
+GO
+-- 35: Application.SandboxEnabled (above, next to the table)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 35) INSERT [${schema}].SchemaVersion (Version) VALUES (35);
 GO
