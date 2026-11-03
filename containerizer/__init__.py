@@ -1,2 +1,2 @@
 # Released versions are tagged vX.Y.Z; keep this in step with the tag (see CHANGELOG.md).
-__version__ = "0.7.1"
+__version__ = "0.7.2"
