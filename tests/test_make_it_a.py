@@ -923,3 +923,33 @@ def test_the_front_page_lists_the_apps_a_patch_makes_a():
         {"ApplicationId": 1, "JobId": 2, "SandboxStatus": "running", "SandboxUrl": None, "FinishedAt": None},
         {"ApplicationId": 1, "JobId": 4, "SandboxStatus": "removed", "SandboxUrl": None, "FinishedAt": None}]})
     assert webui.load_a_patches(conn)[1]["JobId"] == 2                 # the one running in the sandbox
+
+
+def test_a_chain_stuck_on_the_same_errors_starts_over_from_the_original_code(stateful, tmp_path):
+    ends = datetime.now(timezone.utc) + timedelta(hours=2)
+    job, q = {"JobId": 60}, Q()
+
+    def failed(n):     # the same NuGet error each time; only the times and the patch differ
+        log = (f"#11 {n}.4 /src/src/Web/Web.csproj : error NU1605: Detected package downgrade: X from 8.0.11 to 8.0.0\n"
+               f"{n}.5 Failed to restore /src/src/Web/Web.csproj (in 1.{n} sec).")
+        return {"patch": f"P{n}", "status": "applies-only",
+                "verification": [{"component": "Web", "status": "build-failed", "log_tail": log},
+                                 {"component": "Worker", "status": "ok"}]}
+
+    pl = {**_pl(stateful), "base_patch": "P0", "heavy_round": 2}
+    for n in (1, 2):
+        rf.heavy_next(job, pl, failed(n), ends, tmp_path, queue=q)
+        pl = q.jobs[-1]["Payload"]
+        assert pl["base_patch"] == f"P{n}" and pl["heavy_stuck"] == n
+    out = rf.heavy_next(job, pl, failed(3), ends, tmp_path, queue=q)
+    assert out["next"] == "start over from the original code (3 orders in a row failed with the same errors)"
+    fresh = q.jobs[-1]["Payload"]
+    assert "base_patch" not in fresh and fresh["heavy_restarts"] == 1 and fresh["heavy_stuck"] == 0
+    assert "NU1605" in fresh["heavy_avoid"] and fresh["tasks"] == _pl(stateful)["tasks"]
+    # a different error resets the count; the second fresh start is the last
+    other = {**failed(4), "verification": [{"component": "Web", "status": "run-failed", "log_tail": "Unhandled exception"}]}
+    rf.heavy_next(job, {**fresh, "base_patch": "P3"}, other, ends, tmp_path, queue=q)
+    assert q.jobs[-1]["Payload"]["heavy_stuck"] == 1
+    last = {**pl, "heavy_restarts": rf.HEAVY_RESTARTS}
+    assert rf.heavy_next(job, last, failed(5), ends, tmp_path, queue=q)["stopped"] == (
+        "3 orders in a row failed with the same errors, after 2 fresh starts")

@@ -364,13 +364,18 @@ def _heavy_line(res: dict, pl: dict) -> str:
     rnd = int(hv.get("round") or pl.get("heavy_round") or 1)
     parent = pl.get("heavy_parent")
     line = (f"LLM-heavy mode, order {rnd} of the chain"
-            + (f" (after <a href='{BASE}/{int(parent)}'>#{int(parent)}</a>)" if parent else "") + ": ")
+            + (f" (after <a href='{BASE}/{int(parent)}'>#{int(parent)}</a>)" if parent else "")
+            + (f", fresh start {int(pl['heavy_restarts'])} from the original code" if pl.get("heavy_restarts") else "")
+            + ": ")
     if hv.get("done"):
         line += f"done, {e(hv['done'])}."
     elif hv.get("next_job"):
         not_yet = "not running in the sandbox yet" if pl.get("goal") == "rating-a" else "not finished yet"
+        nxt = str(hv.get("next") or "")
+        how = (e("starts over" + nxt[len("start over"):]) if nxt.startswith("start over") else
+               f"continues from this patch ({e(nxt)})")
         line += (f"{not_yet}; the next order, <a href='{BASE}/{int(hv['next_job'])}'>"
-                 f"#{int(hv['next_job'])}</a>, continues from this patch ({e(hv.get('next') or '')}), until "
+                 f"#{int(hv['next_job'])}</a>, {how}, until "
                  f"{_d(rf._deadline(hv.get('until')))} at the latest.")
     elif hv.get("stopped"):
         line += f"stopped: {e(hv['stopped'])}."
