@@ -6,7 +6,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.8.4 (2026-11-03)
 
 - Verification on the appliance: the build context is made readable before `docker build`. The appliance's
   services run with `UMask=0077`, so their clones were `0600`. `dotnet publish` kept that mode, and the image's
