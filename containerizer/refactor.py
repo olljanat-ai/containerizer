@@ -248,12 +248,33 @@ DOWNGRADE_RE = re.compile(r"(?:^|\s)/src/(?P<file>[^\s(:]+\.(?:cs|vb|fs)proj) ?:
                           r"to (?P<have>\d[\w\-+]*(?:\.[\w\-+]+)*)")
 
 
+DOWNGRADE_PATH_RE = re.compile(r"(?:^|\s)/src/(?P<file>[^\s(:]+\.(?:cs|vb|fs)proj) ?: error NU1605:\s+"
+                               r"(?P<path>[\w.\-]+(?: [\w.\-+]+)?(?: -> [\w.\-]+(?: [\w.\-+]+)?)*? -> [\w.\-]+ \(>= [\w.\-+]+\))")
+
+
 def fix_downgrades(app_root: Path, log_text: str, log=print) -> tuple[list[dict], list[str], set]:
     """NuGet's NU1605 "Detected package downgrade: P from B to A" in a build log: the project references P A
     directly, and something it uses needs B. Raises that reference to B, without the LLM. Returns (changes,
     notes, the fixed (project, package) pairs)."""
     changes, notes, fixed = [], [], set()
-    for m in DOWNGRADE_RE.finditer(log_text or ""):
+    found = [(m["file"], m["pkg"], m["want"], m["have"]) for m in DOWNGRADE_RE.finditer(log_text or "")]
+    # the dependency paths NuGet lists under it (a log tail may have only these): "App -> P (>= A)" is the direct
+    # reference, "App -> Lib 1.0 -> P (>= B)" what something it uses needs
+    direct, needed = {}, {}
+    for m in DOWNGRADE_PATH_RE.finditer(log_text or ""):
+        hops = [h.strip() for h in m["path"].split(" -> ")]
+        last = re.fullmatch(r"([\w.\-]+) \(>= ([\w.\-+]+)\)", hops[-1]) if len(hops) >= 2 else None
+        if not last or _version_key(last[2]) is None:
+            continue
+        key = (m["file"], last[1])
+        if len(hops) == 2:
+            direct[key] = last[2]
+        elif key not in needed or _version_key(last[2]) > _version_key(needed[key]):
+            needed[key] = last[2]
+    found += [(f, pkg, needed[(f, pkg)], have) for (f, pkg), have in direct.items()
+              if (f, pkg) in needed and _version_key(have) is not None and _version_key(have) < _version_key(needed[(f, pkg)])]
+    for file, pkg, want, have in found:
+        m = {"file": file, "pkg": pkg, "want": want, "have": have}
         rel = safe_rel(m["file"])
         key = (rel, m["pkg"].lower())
         if not rel or key in fixed or not (app_root / rel).is_file() \
@@ -1296,6 +1317,19 @@ def _tail(text: str, n: int = 60) -> str:
     return "\n".join(str(text or "").splitlines()[-n:])[-6000:]
 
 
+def _build_tail(log: str) -> str:
+    """A failed build's log for the page and the repair: its error lines (each once, the last 40), then its end."""
+    seen, errs = set(), []
+    for line in str(log or "").splitlines():
+        key = re.sub(r"^#\d+\s+[\d.]+\s+|^[\d.]+\s+", "", line).strip()
+        if re.search(r"\berror\b", key, re.I) and not key.startswith(("ERROR: failed to solve", ">>>")) \
+                and key not in seen:
+            seen.add(key)
+            errs.append(line)
+    end = _tail(log, 20)
+    return (("\n".join(errs[-40:]) + "\n------\n") if errs else "")[-4000:] + end[-2000:]
+
+
 def rules_after(payload: dict, app_root: Path) -> tuple[dict, list[dict]]:
     """Run the rules on the patched copy: for each (component, rule) sent, 'resolved', 'partly' (fewer
     places) or 'still found'; and findings of the changed components that were not there before."""
@@ -1447,6 +1481,10 @@ def verify_components(payload: dict, app_root: Path, work: Path, timeout: int = 
         wd = work / "verify" / a.name / vf.k8s_name(c.name)
         last = (r.get("attempts") or [{}])[-1]
         log = last.get("log_tail") or ""
+        if r["status"] == "build-failed" and (wd / "build.log").exists():
+            # the whole log's end, not the attempt's last 1,500 characters: NuGet's "Detected package downgrade"
+            # line and the compiler errors come before Docker's own report of the failed step
+            log = (wd / "build.log").read_text(errors="replace")
         for name in (("build.log",) if r["status"] == "build-failed" else ("run.log", "build.log")):
             if not log and (wd / name).exists():
                 log = (wd / name).read_text(errors="replace")
@@ -1454,7 +1492,8 @@ def verify_components(payload: dict, app_root: Path, work: Path, timeout: int = 
                     "detail": "; ".join(str(h.get("rule") or h.get("status")) for h in r.get("attempts") or []),
                     "seconds": r.get("seconds"),
                     "finding": (r.get("finding") or {}).get("title") if r.get("finding") else None,
-                    "log_tail": "" if r["status"] == "ok" else _tail(log)})
+                    "log_tail": "" if r["status"] == "ok" else
+                    _build_tail(log) if r["status"] == "build-failed" else _tail(log)})
     return out
 
 
