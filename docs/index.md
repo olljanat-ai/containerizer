@@ -357,6 +357,24 @@ across the whole portfolio.
 
 <div markdown>
 
+### From B to A, running in the sandbox
+
+The front page lists the applications a verified **Make it A** patch makes A, and whether that patched copy runs
+in the sandbox beside the original right now.
+
+[Make it A :octicons-arrow-right-24:](refactoring.md#make-it-a)
+
+</div>
+
+![The front page: applications a verified patch makes A, one running in the sandbox](images/front-a-patches.png#only-light){ .cz-shot }
+![The front page: applications a verified patch makes A, one running in the sandbox](images/front-a-patches-dark.png#only-dark){ .cz-shot }
+
+</div>
+
+<div class="cz-feature" markdown>
+
+<div markdown>
+
 ### Operations you can see
 
 The scan worker exports Prometheus metrics about scans, the process and the VM, with a Grafana

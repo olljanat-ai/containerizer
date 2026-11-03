@@ -810,3 +810,116 @@ def test_schema_23_removal_request_and_the_view():
         rd.cursor().execute("SELECT Result FROM cz.LlmJob")
     for x in (rd, w, adm):
         x.close()
+
+
+# --------------------------------------------------------------------------- the call budget and LLM-heavy chains
+
+def test_a_pass_leaves_calls_for_its_repair_round(stateful, tmp_path, builds):
+    outcomes, _ = builds
+    outcomes[:] = ["build-failed", "ok"]
+    fixed_line = '        return X509CertificateLoader.LoadPkcs12FromFile(path, null);'
+    answers = {**GOOD, ("repair", "src/Shop.Api/Bank.cs"):
+               edit("src/Shop.Api/Bank.cs", fixed_line, '        return new X509Certificate2(path);', ["build-error"])}
+    ask = Asker(answers)
+    res = rf.run_order(_pl(stateful, max_calls=4), tmp_path / "w", ask=ask, name="shop-refactor-20")
+    # 4 calls: one kept for the repair round (a quarter), so 3 for the files, and the repair still happens
+    assert [x["kind"] for x in res["loop"]] == ["generate", "repair"] and res["calls"] == 4
+    assert res["status"] == "verified" and res["rating_reached"], res.get("reason")
+
+
+def test_an_llm_heavy_order_continues_from_the_patch_and_repairs_the_sandbox_failure(stateful, tmp_path, builds):
+    first = rf.run_order(_pl(stateful), tmp_path / "w1", ask=Asker(GOOD), name="shop-refactor-21")
+    assert first["status"] == "verified"
+    line = '        return X509CertificateLoader.LoadPkcs12FromFile(path, null);'
+    ask = Asker({("repair", "src/Shop.Api/Bank.cs"): edit("src/Shop.Api/Bank.cs", line,
+                                                           '        return new X509Certificate2(path);')})
+    pl = {**_pl(stateful), "base_patch": first["patch"], "heavy_round": 2,
+          "sandbox_errors": "Shop.Api: failing: CrashLoopBackOff\nUnhandled exception: X509 store not found"}
+    res = rf.run_order(pl, tmp_path / "w2", ask=ask, name="shop-refactor-22")
+    assert [x["kind"] for x in res["loop"]][:2] == ["generate", "repair"]
+    assert res["loop"][0]["files"] == 0                          # nothing generated again: the earlier patch stands
+    prompt = next(p for p in ask.prompts if "An earlier change" in p)
+    assert "X509 store not found" in prompt and "does not run" in prompt
+    assert "UseSqlServer" in res["patch"] and "new X509Certificate2(path)" in res["patch"]   # both, one commit
+    assert res["patch"].count("Subject: [PATCH]") == 1 and res["heavy_round"] == 2
+    # after the window: no LLM call
+    late = {**_pl(stateful), "deadline": "2020-01-01T00:00:00+00:00"}
+    ask = Asker(GOOD)
+    res = rf.run_order(late, tmp_path / "w3", ask=ask, name="shop-refactor-23")
+    assert ask.asked == {} and "the LLM-heavy window ended: no further LLM calls" in res["notes"]
+
+
+class Q:
+    def __init__(self):
+        self.jobs = []
+
+    def add(self, job):
+        self.jobs.append(job)
+        return 500 + len(self.jobs)
+
+
+def test_heavy_next_queues_until_it_runs_in_the_sandbox(stateful, tmp_path):
+    ends = datetime.now(timezone.utc) + timedelta(hours=2)
+    pl = {**_pl(stateful), "heavy_round": 3, "deadline": "x"}
+    job = {"JobId": 41}
+    assert rf.heavy_next(job, pl, {"sandbox": {"status": "running"}}, ends, tmp_path)["done"] == "running in the sandbox"
+    assert rf.heavy_next(job, pl, {"patch": "p"}, ends, tmp_path, now=ends)["stopped"] == "the LLM-heavy window ended"
+    q = Q()
+    sb = {"status": "failing", "health": [{"component": "Shop.Api", "status": "failing", "reason": "CrashLoopBackOff",
+                                           "log_tail": "boom"}, {"component": "Web", "status": "healthy"}]}
+    out = rf.heavy_next(job, pl, {"patch": "P2", "status": "verified", "sandbox": sb}, ends, tmp_path, queue=q)
+    assert out["next_job"] == 501 and out["round"] == 3 and out["next"] == "repair in the sandbox"
+    nxt = q.jobs[0]["Payload"]
+    assert nxt["base_patch"] == "P2" and nxt["heavy_round"] == 4 and nxt["heavy_parent"] == 41 and "deadline" not in nxt
+    assert nxt["sandbox_errors"] == "Shop.Api: failing: CrashLoopBackOff\nboom"
+    assert q.jobs[0]["RequestedBy"] == "LLM-heavy: after #41" and q.jobs[0]["Priority"] == rf.PRIORITY
+    assert q.jobs[0]["DedupeKey"] != rf.dedupe_key(pl)          # a new order, not "already waiting"
+    # it builds or runs no better: the next one repairs that; twice nothing new: stopped
+    out = rf.heavy_next(job, {**pl, "base_patch": "P2"}, {"patch": "P2", "status": "applies-only"}, ends, tmp_path, queue=q)
+    assert out["next"] == "repair the build or run" and q.jobs[-1]["Payload"]["heavy_same"] == 1
+    out = rf.heavy_next(job, {**pl, "base_patch": "P2", "heavy_same": 1}, {"patch": None}, ends, tmp_path, queue=q)
+    assert out["stopped"] == "two orders in a row changed nothing"
+    assert rf.heavy_next(job, {**pl, "heavy_round": rf.HEAVY_MAX_ROUNDS}, {}, ends, tmp_path, queue=q)["stopped"].startswith("30")
+    big = rf.heavy_payload(_pl(stateful), ends)
+    assert (big["max_calls"], big["max_passes"], big["max_repairs"]) == (40, 4, 4) and big["deadline"]
+
+
+def test_the_order_page_says_a_by_the_rules_is_not_a_yet(adm):
+    from test_refactor import _job, RESULT
+    res = {**RESULT, "status": "applies-only", "goal": "rating-a", "rating_before": "B", "rating_after": "A",
+           "rating_reached": False, "loop": [], "remaining": [{"component": "Web", "rule": "unc-shares"}],
+           "heavy": {"round": 2, "next_job": 77, "next": "repair the build or run", "until": "2026-11-04T06:00:00+00:00"}}
+    job = _job(result=res, Payload=json.dumps({"commit": "a" * 40, "goal": "rating-a", "tasks": [], "heavy_round": 2,
+                                               "heavy_parent": 70}))
+    adm.conn.answers = {r"FROM cz.LlmJob WHERE JobId = %s AND Kind = N'refactor'": [job],
+                        r"SELECT RemoveRequestedAt FROM cz.LlmJob": [{"RemoveRequestedAt": None}]}
+    op = adm.sessions.create("o@example.com", "O", False, True, True, [])
+    b = _get(adm, op, "/admin/refactoring/42").body
+    assert "Still A" not in b and "A by the rules, but the patched copy does not build or run" in b
+    assert "Findings left (they do not keep it from A):" in b
+    assert "LLM-heavy mode, order 2 of the chain" in b and "href='/admin/refactoring/77'" in b and "#70" in b
+    assert "2026-11-04 06:00 UTC" in b
+
+
+def test_the_front_page_lists_the_apps_a_patch_makes_a():
+    from containerizer import webui
+    from test_sqlstore import _app
+    apps = [{**_app(1, "billing", "B"), "APatch": {"JobId": 9, "SandboxStatus": "running",
+                                                   "SandboxUrl": "https://billing-refactor-9.sb.example.com/",
+                                                   "FinishedAt": datetime(2026, 11, 2)}},
+            {**_app(2, "ledger", "B"), "APatch": {"JobId": 8, "SandboxStatus": "expired", "SandboxUrl": None,
+                                                  "FinishedAt": datetime(2026, 10, 1)}},
+            {**_app(3, "orders", "B"), "APatch": None}]
+    html = webui.render_overview({"apps": apps, "unmapped": {}})
+    assert "Made A by a patch" in html and "A with a patch (B → A)" in html and "1 running in the sandbox" in html
+    assert html.index(">Running in the sandbox<") < html.index("Expired in the sandbox")    # running ones first
+    assert "href='https://billing-refactor-9.sb.example.com/' target='_blank'" in html
+    assert "href='/app/1#refactoring'" in html and "/admin/refactoring/9" not in html  # the patch link: staff only
+    assert html.count("class='a-patch here'") == 1 and html.count("class='a-patch'") == 1
+    assert "/admin/refactoring/9" in webui.render_overview({"apps": apps, "unmapped": {}}, nav="<nav></nav>")
+    assert "Made A by a patch" not in webui.render_overview({"apps": [apps[2]], "unmapped": {}})
+    conn = FakeConn({r"FROM cz.vRefactorOrder": [
+        {"ApplicationId": 1, "JobId": 3, "SandboxStatus": "failing", "SandboxUrl": None, "FinishedAt": None},
+        {"ApplicationId": 1, "JobId": 2, "SandboxStatus": "running", "SandboxUrl": None, "FinishedAt": None},
+        {"ApplicationId": 1, "JobId": 4, "SandboxStatus": "removed", "SandboxUrl": None, "FinishedAt": None}]})
+    assert webui.load_a_patches(conn)[1]["JobId"] == 2                 # the one running in the sandbox

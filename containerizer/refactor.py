@@ -39,6 +39,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 KIND = "refactor"
@@ -192,6 +193,13 @@ GOALS = ("fix", "stateless", "repair", "rating-a")
 MAX_CALLS_A = 16                        # LLM calls of a whole "Make it A" order (every pass and repair round)
 MAX_PASSES_A = 2                        # passes over the findings: the first, and one on what still remains
 MAX_REPAIRS_A = 2                       # repair rounds per pass when the patched copy does not build or run
+REPAIR_RESERVE_A = 4                    # LLM calls a pass leaves for its repair rounds (at most a quarter of them)
+# An application in an LLM-heavy window (llmqueue, cz.LlmHeavyWindow): each order may do more, and one that does not
+# end with its copy running in the sandbox queues the next (heavy_next) until it does or the window ends
+HEAVY_CALLS_A = 40
+HEAVY_PASSES_A = 4
+HEAVY_REPAIRS_A = 4
+HEAVY_MAX_ROUNDS = 30                   # orders in one chain at most, whatever the window
 
 # A compiler error in a build log: /src/<path>(line,col): error CODE: message [project]
 BUILD_ERROR_RE = re.compile(r"(?:^|\s)/src/(?P<file>[^\s(:]+\.(?:cs|vb|fs|cshtml|razor|csproj|vbproj|fsproj))"
@@ -327,7 +335,9 @@ def dedupe_key(payload: dict) -> str:
     basis = json.dumps([payload.get("source_key") or payload.get("app"), payload.get("commit"),
                         sorted(c["project"] or "" for c in payload["components"]), payload.get("include_config"),
                         payload.get("goal", "fix"),
-                        [(t["file"], [f["rule"] for f in t["findings"]]) for t in payload["tasks"]]], sort_keys=True)
+                        [(t["file"], [f["rule"] for f in t["findings"]]) for t in payload["tasks"]]]
+                       + ([payload["heavy_parent"], payload.get("heavy_round")] if payload.get("heavy_parent") else []),
+                       sort_keys=True)
     return hashlib.sha256(basis.encode()).hexdigest()
 
 
@@ -1456,7 +1466,12 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
     and the patch: repair_tasks) changes the edit copy again and the combined patch is verified again (at most
     `max_repairs` rounds a pass). Then the patched copy is assessed again with every rule: its rating is the
     result. Still B with findings left and calls left: one more pass on what remains (at most `max_passes`).
-    Every LLM call of the job counts against `max_calls`."""
+    Every LLM call of the job counts against `max_calls`, and each pass leaves REPAIR_RESERVE_A of them for its
+    repair rounds.
+
+    An LLM-heavy order (heavy_next) continues an earlier one: `base_patch` (its patch) is applied to the edit copy
+    first, `sandbox_errors` (why its copy failed in the sandbox) start a repair round even when the copy builds and
+    runs here, and no LLM call starts after `deadline` (the end of the window, ISO UTC)."""
     from . import ai
     from .assess import assess
     ask = ask or (lambda prompt, schema: ai.ask_json(prompt, schema, feature=FEATURE, system=SYSTEM,
@@ -1475,14 +1490,26 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
         model = ai.model_name()
     except Exception:  # noqa: BLE001
         model = None
+    deadline = _deadline(payload.get("deadline"))
+
+    def late() -> bool:
+        return deadline is not None and datetime.now(timezone.utc) >= deadline
+    base_files: list[str] = []
+    if payload.get("base_patch"):                 # an LLM-heavy order continues from the earlier one's patch
+        ok, blog = apply_patch(repo, str(payload["base_patch"]).encode("utf-8"))
+        if not ok:
+            raise RefactorError("the earlier patch no longer applies to the commit: " + blog[-400:])
+        base_files = [d["file"] for d in diffstat(str(payload["base_patch"]))]
+    sandbox_errors = str(payload.get("sandbox_errors") or "")
     comps = list(payload.get("components") or [])
     rows: dict[tuple, dict] = {}                  # (component, rule, file) -> the latest attempt
     repair_rows: list[dict] = []
     notes: list[str] = []
-    changes_all: list[dict] = []
+    changes_all: list[dict] = [{"file": f, "kind": "base"} for f in base_files]
     attempted: list[dict] = []                    # every task sent, for the rules and the build
     loop: list[dict] = []
     calls = 0
+    reserve = min(REPAIR_RESERVE_A, budget // 4) if verify and repairs else 0
     verification: list[dict] = []
     patch = None
     check_app = None
@@ -1491,13 +1518,16 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
     new_findings: list[dict] = []
     apply_failed = False
     current = {**payload}
-    tasks = list(payload.get("tasks") or []) + state_tasks(_stateful_only(payload), app_root)
-    if not tasks:
+    tasks = [] if base_files else list(payload.get("tasks") or []) + state_tasks(_stateful_only(payload), app_root)
+    if not tasks and not base_files:
         raise RefactorError("nothing to change: no file names a finding or uses an embedded database")
     p = 0
     for p in range(1, passes + 1):
+        if late():
+            notes.append("the LLM-heavy window ended: no further LLM calls")
+            break
         found, n, changes, nt = generate(current, tasks, app_root, ask, len(tasks), progress, log,
-                                         label=f"pass {p}: ", budget=budget - calls)
+                                         label=f"pass {p}: ", budget=max(0, budget - calls - reserve))
         calls += n
         for r in found:
             key = (r["component"], r["rule"], r["file"])
@@ -1529,11 +1559,14 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
             loop[-1]["verification"] = [{"component": v.get("component"), "status": v.get("status")}
                                         for v in verification]
             broken = _broken(verification)
-            if not broken or rnd > repairs or calls >= budget:
+            logs = "\n".join(str(v.get("log_tail") or v.get("detail") or "") for v in broken)
+            if not broken and sandbox_errors and p == 1 and rnd == 1:
+                logs = sandbox_errors                 # it runs here, but failed in the sandbox: repair that once
+                broken = [{"component": "sandbox"}]
+            if not broken or rnd > repairs or calls >= budget or late():
                 break
             # a repair round, in this job: the errors of the build or the run, the files they are in, the patch
             text = patch.decode("utf-8", errors="replace")
-            logs = "\n".join(str(v.get("log_tail") or v.get("detail") or "") for v in broken)
             rp = {**payload, "goal": "repair", "base_patch": text, "errors": build_errors(logs),
                   "log_tail": logs[-4000:], "components": comps}
             rtasks = repair_tasks(rp, app_root, [d["file"] for d in diffstat(text)])
@@ -1585,6 +1618,7 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
               "filename": patch_filename(payload.get("app"), "make-it-a"), "patch": None, "files": [],
               "apply_log": _tail(alog, 40), "verification": verification, "new_findings": [], "verify": bool(verify),
               "rating_before": payload.get("rating") or "B", "rating_after": doc_after.get("rating"),
+              "heavy_round": int(payload.get("heavy_round") or 0) or None,
               "rating_reached": doc_after.get("rating") == "A", "passes": p, "loop": loop,
               "still_state": still_stateful(doc_after) if doc_after else [],
               "remaining": remaining_findings(doc_after) if doc_after else [],
@@ -1626,6 +1660,16 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
     return result
 
 
+def _deadline(v) -> datetime | None:
+    if not v:
+        return None
+    try:
+        d = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
 def rating_text(result: dict) -> str:
     """"B → A: Rating A reached" or "B → B" (and what keeps it there: the data it still keeps)."""
     before, after = result.get("rating_before") or "B", result.get("rating_after") or "?"
@@ -1656,9 +1700,97 @@ def summary(result: dict) -> str:
         if sb.get("status"):
             from .variant import STATUS_TEXT as SANDBOX_TEXT
             out += "; " + SANDBOX_TEXT.get(sb["status"], sb["status"]).lower()
+        hv = result.get("heavy") or {}
+        if hv.get("next_job"):
+            out += f"; LLM-heavy: continues as #{int(hv['next_job'])}"
         return out[:400]
     return (f"{st}: {len(fx)} of {n} finding{'s' if n != 1 else ''} fixed, {files} file{'s' if files != 1 else ''} changed"
             + (f" ({left} not attempted: call limit)" if left else ""))
+
+
+def heavy_window(job: dict) -> datetime | None:
+    """When the LLM-heavy window of the job's whole application ends (cz.fnLlmJobHeavy), or None."""
+    connect = job.get("_connect")
+    if not connect or not (job.get("ApplicationId") or job.get("SourceKey")):
+        return None
+    try:
+        conn = connect()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT TOP (1) h.EndsAt FROM cz.fnLlmJobHeavy(%s, %s, NULL) h",
+                        (job.get("ApplicationId"), job.get("SourceKey")))
+            row = cur.fetchone()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - an older schema: not heavy
+        return None
+    if not row or not row[0]:
+        return None
+    d = row[0] if isinstance(row[0], datetime) else _deadline(row[0])
+    return d.replace(tzinfo=timezone.utc) if d and d.tzinfo is None else d
+
+
+def heavy_payload(payload: dict, ends: datetime) -> dict:
+    """A "Make it A" order in an LLM-heavy window: higher limits, and no LLM call after the window ends."""
+    return {**payload, "deadline": ends.isoformat(timespec="seconds"),
+            "max_calls": max(int(payload.get("max_calls") or 0), HEAVY_CALLS_A),
+            "max_passes": max(int(payload.get("max_passes") or 0), HEAVY_PASSES_A),
+            "max_repairs": max(int(payload.get("max_repairs") or 0), HEAVY_REPAIRS_A)}
+
+
+def sandbox_errors(sb: dict) -> str:
+    """Why a variant failed in the sandbox, for the next order's repair round: each component's state and log."""
+    out = []
+    for h in sb.get("health") or []:
+        if h.get("status") != "healthy":
+            out.append(f"{h.get('component')}: {h.get('status')}: {h.get('reason') or ''}\n{h.get('log_tail') or ''}")
+    return ("\n".join(out) or str(sb.get("reason") or ""))[-4000:]
+
+
+def heavy_next(job: dict, payload: dict, result: dict, ends: datetime, work: Path, now: datetime | None = None,
+               queue=None) -> dict:
+    """In an LLM-heavy window: the order's copy runs in the sandbox (done), or the next order is queued, continuing
+    from this one's patch with what went wrong (its build, its run or the sandbox), until the window ends, the chain
+    has HEAVY_MAX_ROUNDS orders or two orders in a row changed nothing. A variant that failed in the sandbox is taken
+    out first (the next order deploys its own). Returns result["heavy"]."""
+    now = now or datetime.now(timezone.utc)
+    jid = int(job.get("JobId") or 0)
+    rnd = int(payload.get("heavy_round") or 1)
+    sb = result.get("sandbox") or {}
+    out = {"round": rnd, "until": ends.isoformat(timespec="seconds")}
+    if sb.get("status") == "running":
+        return {**out, "done": "running in the sandbox"}
+    if now >= ends:
+        return {**out, "stopped": "the LLM-heavy window ended"}
+    if rnd >= HEAVY_MAX_ROUNDS:
+        return {**out, "stopped": f"{HEAVY_MAX_ROUNDS} orders in a row: the limit of one chain"}
+    patch = result.get("patch") or payload.get("base_patch")
+    same = int(payload.get("heavy_same") or 0) + 1 if not result.get("patch") or result.get("patch") == payload.get(
+        "base_patch") else 0
+    if same >= 2:
+        return {**out, "stopped": "two orders in a row changed nothing"}
+    errors = sandbox_errors(sb) if sb.get("status") == "failing" else ""
+    if sb.get("status") in ("failing", "deployed") and job.get("_connect"):
+        from . import variant
+        try:
+            result["sandbox"] = variant.remove(job["_connect"], job.get("_key"), jid, payload, sb, work / "remove",
+                                               by="LLM-heavy mode (tried again)")
+        except Exception as ex:  # noqa: BLE001 - it expires on its own
+            out["note"] = f"the failing variant was not removed: {type(ex).__name__}"
+    keep = {k: v for k, v in payload.items() if k not in ("deadline", "base_patch", "sandbox_errors")}
+    nxt = {**keep, "heavy_round": rnd + 1, "heavy_parent": jid, "heavy_same": same,
+           **({"base_patch": patch} if patch else {}), **({"sandbox_errors": errors} if errors else {})}
+    if queue is None:
+        if not job.get("_connect"):
+            return {**out, "stopped": "no results database to queue the next order in"}
+        from .llmqueue import SqlJobQueue
+        queue = SqlJobQueue(job["_connect"])
+    try:
+        nid = queue.add(queue_job(nxt, order_chars(nxt), requested_by=f"LLM-heavy: after #{jid}"))
+    except Exception as ex:  # noqa: BLE001
+        return {**out, "stopped": f"the next order could not be queued: {type(ex).__name__}: {str(ex)[:200]}"}
+    return {**out, "next_job": int(nid or 0), "next": "repair in the sandbox" if errors else
+            "repair the build or run" if patch and result.get("status") != "verified" else "the findings left"}
 
 
 def handler(job: dict) -> dict:
@@ -1669,12 +1801,16 @@ def handler(job: dict) -> dict:
     work = Path(tempfile.mkdtemp(prefix=f"refactor-{int(job.get('JobId') or 0)}-", dir=base))
     progress = job.get("_progress") or (lambda text: None)
     name = variant_name(pl.get("app"), int(job.get("JobId") or 0))
+    ends = heavy_window(job) if pl.get("goal") == "rating-a" else None
+    run_pl = heavy_payload(pl, ends) if ends else pl
     try:
-        result = run_order(pl, work, progress=progress, name=name)
+        result = run_order(run_pl, work, progress=progress, name=name)
         if pl.get("goal") == "rating-a":
             # a patched copy that rates A and verifies runs in the sandbox beside the original (variant.py)
             from . import variant
             result["sandbox"] = variant.after_order(job, pl, result, work, name, progress)
+            if ends:
+                result["heavy"] = heavy_next(job, pl, result, ends, work)
     finally:
         if not os.environ.get("CONTAINERIZER_KEEP_REFACTOR_WORK"):
             shutil.rmtree(work, ignore_errors=True)

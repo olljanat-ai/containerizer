@@ -76,10 +76,38 @@ def load_overview(conn) -> dict:
         k = (SEV_ORDER.index(r["Severity"]), -r["N"], r["Title"])
         if r["ApplicationId"] not in best or k < best[r["ApplicationId"]][0]:
             best[r["ApplicationId"]] = (k, r["Title"])
+    ready = load_a_patches(conn)
     for a in apps:
         a["Components"] = n.get(a["ApplicationId"], 0)
         a["MainObstacle"] = best.get(a["ApplicationId"], (None, ""))[1]
+        a["APatch"] = ready.get(a["ApplicationId"])
     return {"apps": apps, "unmapped": {r["Kind"]: r["N"] for r in unmapped}}
+
+
+# a sandbox variant's state as the front page groups it: running there, deployed without a health check, or not there
+SANDBOX_HERE = ("running", "deployed")
+
+
+def load_a_patches(conn) -> dict[int, dict]:
+    """Per application, its best "Make it A" patch that works: verified (it builds and runs) and rated A by the
+    rules (cz.vRefactorOrder). One running in the sandbox comes first, then the newest. Empty before schema 23."""
+    try:
+        rows = _rows(conn, "SELECT ApplicationId, JobId, SandboxStatus, SandboxUrl, FinishedAt FROM cz.vRefactorOrder "
+                           "WHERE Goal = N'rating-a' AND Status = N'verified' AND RatingAfter = N'A' "
+                           "AND ApplicationId IS NOT NULL")
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {}
+    best: dict[int, dict] = {}
+    for r in rows:
+        k = (r.get("SandboxStatus") == "running", r.get("SandboxStatus") in SANDBOX_HERE, int(r["JobId"]))
+        cur = best.get(r["ApplicationId"])
+        if cur is None or k > cur["_k"]:
+            best[r["ApplicationId"]] = {**r, "_k": k}
+    return best
 
 
 def load_application(conn, app_id: int) -> dict | None:
@@ -611,6 +639,45 @@ def _sbom_href(bu) -> str:
     return "/sbom" + (f"?bu={quote(str(bu))}" if bu is not None else "")
 
 
+VARIANT_TEXT = {"running": "Running in the sandbox", "deployed": "In the sandbox (health not checked)",
+                "failing": "Failing in the sandbox", "deploying": "Deploying", "removed": "Removed from the sandbox",
+                "expired": "Expired in the sandbox", "skipped": "Not deployed", "error": "Deploy failed"}
+
+
+def _a_patch_mark(a: dict) -> str:
+    """→ A next to a B application's rating when a verified patch makes it A (green when it runs in the sandbox)."""
+    ap = a.get("APatch")
+    if not ap or a.get("Rating") == "A":
+        return ""
+    here = ap.get("SandboxStatus") in SANDBOX_HERE
+    return (f" <span class='a-patch{' here' if here else ''}' title='A verified patch makes it A"
+            f"{' and runs in the sandbox' if here else ''}'>→ A</span>")
+
+
+def a_patches_html(apps: list[dict], nav: str = "") -> str:
+    """The applications a verified "Make it A" patch makes A, the ones running in the sandbox first."""
+    if not apps:
+        return ""
+    rows = []
+    for a in sorted(apps, key=lambda a: (a["APatch"].get("SandboxStatus") not in SANDBOX_HERE, a["ApplicationName"].lower())):
+        ap = a["APatch"]
+        st = ap.get("SandboxStatus") or ""
+        css = "st-ok" if st in SANDBOX_HERE else "st-bad" if st in ("failing", "error") else "st-off"
+        url = ap.get("SandboxUrl") if st in SANDBOX_HERE else None
+        link = (f" <a href='{e(url)}' target='_blank' rel='noopener noreferrer'>Open</a>"
+                if url and re.match(r"https?://", str(url)) else "")
+        patch = f" · <a href='/admin/refactoring/{int(ap['JobId'])}'>The patch</a>" if nav else ""
+        rows.append(f"<tr><td>{badge(a['Rating'])} → {badge('A')}</td>"
+                    f"<td><a href='/app/{int(a['ApplicationId'])}#refactoring'>{e(a['ApplicationName'])}</a>{patch}</td>"
+                    f"<td><span class='st {css}'>{e(VARIANT_TEXT.get(st, 'Not in the sandbox'))}</span>{link}</td>"
+                    f"<td class='small'>{_date(ap.get('FinishedAt'))}</td></tr>")
+    return ("<section class='a-patches'><h2>Made A by a patch</h2><p class='muted'>A \"Make it A\" patch for these "
+            "applications builds, runs and rates A; the ones running in the sandbox are deployed there beside the "
+            "original. Merging the patch makes the application itself A.</p><table><thead><tr><th>Rating</th>"
+            "<th>Application</th><th>Sandbox</th><th>Patch made</th></tr></thead><tbody>" + "".join(rows)
+            + "</tbody></table></section>")
+
+
 def render_overview(data: dict, bu_filter: str | None = None, nav: str = "") -> str:
     apps = data["apps"]
     all_apps = apps
@@ -622,13 +689,17 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "") -> 
 
     def pct(n):
         return f"{round(100 * n / total)}%" if total else "-"
+    patched = [a for a in apps if a.get("APatch") and a.get("Rating") != "A"]
+    in_sb = [a for a in patched if a["APatch"].get("SandboxStatus") in SANDBOX_HERE]
     tiles = (f"<div class='tile'><div class='label'>Applications assessed</div><div class='value'>{total}</div></div>"
              f"<div class='tile'><div class='label'>Ready now (A)</div><div class='value'>{c['A']}</div>"
              f"<div class='sub'>{pct(c['A'])} of applications</div></div>"
              f"<div class='tile'><div class='label'>Need code changes (B, C)</div><div class='value'>{c['B'] + c['C']}</div>"
              f"<div class='sub'>{pct(c['B'] + c['C'])}</div></div>"
              f"<div class='tile'><div class='label'>Partly or not feasible (D, E)</div><div class='value'>{c['D'] + c['E']}</div>"
-             f"<div class='sub'>{pct(c['D'] + c['E'])}</div></div>")
+             f"<div class='sub'>{pct(c['D'] + c['E'])}</div></div>"
+             + (f"<div class='tile'><div class='label'>A with a patch (B → A)</div><div class='value'>{len(patched)}</div>"
+                f"<div class='sub'>{len(in_sb)} running in the sandbox</div></div>" if patched else ""))
 
     bus: dict = {}
     for a in all_apps:
@@ -650,7 +721,7 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "") -> 
         body = []
         for (prod, pid), lst in sorted(products.items(), key=lambda kv: (kv[0][1] is None, kv[0][0].lower())):
             rows = "".join(
-                f"<tr><td>{badge(a['Rating'])}</td>"
+                f"<tr><td>{badge(a['Rating'])}{_a_patch_mark(a)}</td>"
                 f"<td><a href='/app/{int(a['ApplicationId'])}'>{e(a['ApplicationName'])}</a>"
                 f"<div class='muted small'>{e(RATING_TITLE.get(a['Rating'], ''))}: {e(RATING_TEXT.get(a['Rating'], ''))}</div></td>"
                 f"<td class='num'>{int(a['Score'])}</td>"
@@ -667,14 +738,14 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "") -> 
                         f"{segmented(bc, len(bu_apps), f'Ratings in {bu or UNASSIGNED}', 10)}{''.join(body)}</section>")
 
     um = data.get("unmapped") or {}
-    note = ""
+    note = a_patches_html(patched, nav)
     if um.get("Application") or um.get("Product"):
         parts = []
         if um.get("Application"):
             parts.append(f"{um['Application']} application(s) are not mapped to a product")
         if um.get("Product"):
             parts.append(f"{um['Product']} product(s) are not mapped to a business unit")
-        note = (f"<p class='note'>{e('; '.join(parts))}. Administrators maintain the mapping on the "
+        note += (f"<p class='note'>{e('; '.join(parts))}. Administrators maintain the mapping on the "
                 f"<a href='/admin'>admin pages</a>.</p>") if nav else (
                 f"<p class='note'>{e('; '.join(parts))}.</p>")
     empty = "<p>No assessments yet. Run <code>containerizer assess --sql …</code> to add some.</p>" if not all_apps else ""
@@ -1108,6 +1179,9 @@ font-size:11px;font-weight:700;border-radius:4px;color:#fff}.cell.rB,.cell.rC{co
 .good{color:#006300;font-weight:600}.bad{color:#b42727;font-weight:600}
 @media (prefers-color-scheme:dark){.good{color:#4fd14f}.bad{color:#f07a7a}}
 .chips+.chips{margin-top:8px}
+.a-patch{font-size:12px;font-weight:700;color:var(--muted);margin-left:4px;white-space:nowrap}.a-patch.here{color:#0a7d0a}
+@media (prefers-color-scheme:dark){.a-patch.here{color:#4fd14f}}
+.a-patches{margin:18px 0}.a-patches table{margin-top:6px}
 @media (forced-colors:active){.bar,.badge,.key,.cell,.chart{forced-color-adjust:none;border:1px solid CanvasText}}
 .st{display:inline-block;font-size:12px;font-weight:600;border-radius:999px;padding:1px 9px;border:1px solid currentColor;white-space:nowrap}
 .st-ok{color:#0a7d0a}.st-bad{color:#b42727}.st-off{color:var(--muted)}.st-run{color:#1f5fbf}
