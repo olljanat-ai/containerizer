@@ -233,6 +233,12 @@ def repair_payload(payload: dict, result: dict, base_job: int) -> dict:
         raise RefactorError("the earlier order has no patch to repair")
     logs = "\n".join(str(v.get("log_tail") or v.get("detail") or "") for v in result.get("verification") or [])
     errors = build_errors(logs)
+    if payload.get("goal") == "rating-a":
+        # a Make it A order goes on as one: from its patch, with its own repair rounds (and their LLM-heavy limits),
+        # then the sandbox, and in an LLM-heavy window the chain until it runs there (heavy_next)
+        keep_a = {k: v for k, v in payload.items() if k not in ("deadline", "base_patch", "sandbox_errors", "heavy_same")}
+        return {**keep_a, "base_patch": result["patch"], "base_job": int(base_job), "errors": errors,
+                "heavy_parent": int(base_job), "heavy_round": int(payload.get("heavy_round") or 1) + 1}
     keep = ("version", "app", "rating", "application_id", "assessment_id", "source_key", "commit", "source",
             "component", "components", "verify")
     return {**{k: payload.get(k) for k in keep}, "goal": "repair", "base_job": int(base_job),
@@ -1076,6 +1082,20 @@ def parse_patch(text: str) -> dict:
     return out
 
 
+def app_files(repo: Path, app_root: Path, text: str) -> list[str]:
+    """The files a patch changes, relative to the application folder (the tasks', the findings' and the build
+    errors' paths): a patch names them from the repository's root, which differs for an application in a folder
+    of its repository (a mono-repo split into applications). Files outside the application are left out."""
+    out = []
+    for d in diffstat(text):
+        try:
+            rel = (repo / d["file"]).resolve().relative_to(app_root.resolve()).as_posix()
+        except ValueError:
+            continue
+        out.append(rel)
+    return out
+
+
 def diffstat(text: str) -> list[dict]:
     return [{"file": f["new"] if f["status"] != "deleted" else f["old"], "status": f["status"], "added": f["added"],
              "removed": f["removed"], "binary": f["binary"]} for f in parse_patch(text)["files"]]
@@ -1341,8 +1361,11 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
     if payload.get("goal") == "stateless":
         tasks += state_tasks(payload, app_root)
     if payload.get("goal") == "repair":
-        changed = [d["file"] for d in diffstat(base_patch)]
+        changed = app_files(repo, app_root, base_patch)
         tasks += repair_tasks(payload, app_root, changed)
+    if not tasks and payload.get("goal") == "repair":
+        raise RefactorError("nothing to repair: the build or run errors name no file of the application, and the "
+                            "earlier patch changes none")
     if not tasks:
         raise RefactorError("nothing to change: no file of the component uses an embedded database or names a finding")
     limit = int(MAX_CALLS if payload.get("max_calls") is None else payload["max_calls"])
@@ -1530,7 +1553,7 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
         ok, blog = apply_patch(repo, str(payload["base_patch"]).encode("utf-8"))
         if not ok:
             raise RefactorError("the earlier patch no longer applies to the commit: " + blog[-400:])
-        base_files = [d["file"] for d in diffstat(str(payload["base_patch"]))]
+        base_files = app_files(repo, app_root, str(payload["base_patch"]))
     sandbox_errors = str(payload.get("sandbox_errors") or "")
     comps = list(payload.get("components") or [])
     rows: dict[tuple, dict] = {}                  # (component, rule, file) -> the latest attempt
@@ -1600,7 +1623,7 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
             text = patch.decode("utf-8", errors="replace")
             rp = {**payload, "goal": "repair", "base_patch": text, "errors": build_errors(logs),
                   "log_tail": logs[-4000:], "components": comps}
-            rtasks = repair_tasks(rp, app_root, [d["file"] for d in diffstat(text)])
+            rtasks = repair_tasks(rp, app_root, app_files(repo, app_root, text))
             for t in rtasks:
                 c = _component_of(comps, t["file"])
                 t.update(component=c.get("name"), project=c.get("project"))

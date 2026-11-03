@@ -517,7 +517,7 @@ def show_order(adm, conn, s, a, ident: int, flash: str) -> Response:
             except Exception:  # noqa: BLE001
                 pass
         body.append(_sandbox_section(adm, s, ident, res.get("sandbox") or {}, requested))
-    if pl.get("goal") == "repair" and pl.get("base_job"):
+    if pl.get("base_job"):
         body.append(f"<p class='muted small'>Repairs the patch of order <a href='{BASE}/{int(pl['base_job'])}'>"
                     f"#{int(pl['base_job'])}</a>.</p>")
     if st in ("queued", "generating", "verifying", "deploying"):
