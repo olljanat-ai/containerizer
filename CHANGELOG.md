@@ -6,6 +6,16 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+### LLM
+- **LLM-heavy for a while**, per application or component (Admin → Applications → the application → LLM-heavy mode,
+  administrators): for 1 hour to 7 days its LLM jobs need no approval (those waiting are approved at once) and go
+  before every other job in the LLM queue; scans with queued LLM reviews queue a review of each of its components
+  (reason *LLM-heavy*); and scans run LLM-heavy mode for it (migrations, the sandbox tester) where the appliance
+  allows it (`CZ_LLM_HEAVY`), even with queued reviews. The windows open now are on the application's page and the
+  LLM queue page, with End now (schema 31: `LlmHeavyWindow`, `vLlmHeavyActive`, `fnLlmJobHeavy`).
+
 ## 0.5.1 (2026-11-03)
 
 ### Appliance

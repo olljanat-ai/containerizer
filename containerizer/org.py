@@ -106,6 +106,10 @@ class OrgOptions:
     splits: dict | None = None          # project/repository -> folder pattern ("scenarios/*"): one application per
                                         # folder (the worker: OrgRepository.SplitPath from the state's sync)
     parallel: int = 1                   # repositories processed at the same time, each in its own process (1..MAX_PARALLEL)
+    heavy_windows: dict | None = None   # Application.SourceKey -> ["*"] or ProjectPaths: LLM-heavy windows an administrator
+                                        # opened (llmqueue.heavy_windows); the worker sets it only when the appliance
+                                        # allows LLM-heavy mode and the scan asks the LLM. Those applications get
+                                        # LLM-heavy mode in this scan, even one with queued LLM reviews
     review_queue: object = None         # with ai: queued LLM reviews (llmqueue.ReviewQueue): the scan asks the LLM
                                         # nothing, component reviews wait in the LLM review queue (no LLM-heavy mode,
                                         # no failure diagnosis or dev database questions either)
@@ -924,7 +928,11 @@ def _process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, wor
             from .replatform import migrate_repo
             from .sqlstore import source_info
             tres.source_key = source_info(path, name)["key"]
-            mres = migrate_repo(path, o, tres, name, trel, tdest, work / "gen" / name, reg, tag, gitops,
+            mo = o
+            if not o.llm_heavy and heavy_for(o, tres.source_key):
+                mo = dataclasses.replace(o, llm_heavy=True)    # an administrator's LLM-heavy window for this app
+                print(f"{name}: LLM-heavy mode on (an administrator's LLM-heavy window)", flush=True)
+            mres = migrate_repo(path, mo, tres, name, trel, tdest, work / "gen" / name, reg, tag, gitops,
                                 existing_dockerfiles(path, limit=200))
             if mres is not None:
                 if mres.status == "deployed":
@@ -1694,12 +1702,19 @@ def prune_cache(cache: Path, keep: set[str], log=print) -> None:
             log(f"removed the clone of {d.name}: no longer in the organization")
 
 
+def heavy_for(o: OrgOptions, source_key: str | None) -> bool:
+    """An administrator's LLM-heavy window covers this application (any of its components counts: migrations and
+    the sandbox tester work on whole applications)."""
+    return bool(o.ai and o.heavy_windows and source_key and source_key in o.heavy_windows)
+
+
 def sandbox_step(o: OrgOptions, out: "Output", log=print) -> dict:
     """Wait for the sandbox cluster to sync what was pushed and record the health of every component:
     sandbox/HEALTH.md + health.json in the output repository, the results database, the learning loop."""
     from .sandbox import KubeOptions, SandboxOptions, summary, verify_sandbox, write_health
     so = SandboxOptions(kube=KubeOptions(kubeconfig=o.kubeconfig, context=o.kube_context), gitops=o.gitops,
-                        timeout=o.sandbox_timeout, llm=o.llm_heavy, model=o.model)
+                        timeout=o.sandbox_timeout, llm=o.llm_heavy, model=o.model,
+                        llm_keys=set(o.heavy_windows or {}) if o.ai else set())
     if out.git and not out.push:
         doc = {"checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "revision": "",
                "gitops": o.gitops, "cluster": "", "components": [],
@@ -1707,7 +1722,7 @@ def sandbox_step(o: OrgOptions, out: "Output", log=print) -> dict:
         log(f"sandbox verification skipped: {doc['skipped']}")
     else:
         doc = verify_sandbox(out.root, so, log=log)
-        if o.llm_heavy and not doc.get("skipped"):
+        if (o.llm_heavy or so.llm_keys) and not doc.get("skipped"):
             # LLM-heavy sandbox tester: the LLM's fixes for failing migrated apps, applied and checked again
             from .replatform import apply_sandbox_fixes, heavy_rounds
             for i in range(heavy_rounds()):

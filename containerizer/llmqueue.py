@@ -14,7 +14,10 @@ decide, and the component reviews the LLM would have been asked are queued with 
 - *uncertain* components (server or platform tier, confidence below 0.85: the components an inline scan
   asks about) come first;
 - components the rules rate *blocker* or *rewrite* with confidence follow at low priority, as a *second
-  opinion*.
+  opinion*;
+- every other component of an application or component an administrator put in an *LLM-heavy window*
+  (cz.LlmHeavyWindow, Admin -> Applications) is reviewed too (reason `heavy`). Until the window ends, every job
+  of it needs no approval and goes before all other jobs (cz.fnLlmJobHeavy, HEAVY_FIRST).
 
 A review job keeps the exact question (prompt) and its answer cache key in its payload. The runner asks
 the stored question through ai.ask_json with the same model, so the answer lands in the answer cache under
@@ -48,8 +51,8 @@ from pathlib import Path
 
 from . import restartplan
 
-REASONS = ("uncertain", "second-opinion")          # why a component review is queued
-REASON_TEXT = {"uncertain": "Uncertain", "second-opinion": "Second opinion"}
+REASONS = ("uncertain", "second-opinion", "heavy")          # why a component review is queued
+REASON_TEXT = {"uncertain": "Uncertain", "second-opinion": "Second opinion", "heavy": "LLM-heavy"}
 STATUSES = ("queued", "running", "answered", "failed", "skipped")
 PENDING = ("queued", "running")
 FEATURE = "assessment-queued"           # LLM usage feature of the reviews the runner asks
@@ -60,7 +63,8 @@ STALE_MINUTES = 10                      # a running job without a heartbeat for 
 SECOND_OPINION = ("blocker", "rewrite")
 # How sure the LLM must be to change the verdict: as inline for uncertain components; a second opinion
 # goes against rules that were sure, so it must be as sure as they were.
-OVERRIDE_CONFIDENCE = {"uncertain": 0.6, "second-opinion": 0.85}
+OVERRIDE_CONFIDENCE = {"uncertain": 0.6, "second-opinion": 0.85, "heavy": 0.85}
+HEAVY_CACHE = 60                        # seconds a scan keeps the LLM-heavy windows it read (SqlJobQueue.heavy)
 DEFAULTS = {"Paused": False, "WindowDays": 0, "WindowStart": None, "WindowEnd": None, "OnlyWhenIdle": True,
             "MaxLoadPerCpu": 0.5, "Parallel": 1, "ApproveKinds": "egress,link,refactor,review", "ApproveMinTokens": 0,
             "ApproveMaxQueued": 0, "RejectAfterHours": 0, "LocalOrder": None, "LocalMaxTokens": 0}
@@ -327,6 +331,11 @@ def a_candidate(c) -> bool:
     return c.tier == "server" and c.stateless and c.verdict not in ("info", "config")
 
 
+def heavy_covers(heavy, path: str | None) -> bool:
+    """Whether an LLM-heavy window (SqlJobQueue.heavy: None, ALL or a set of ProjectPaths) covers a component."""
+    return heavy is ALL or (bool(heavy) and path in heavy)
+
+
 def priority(c, reason: str) -> int:
     """The queue order of a component review (higher first), as docs/source-control.md#queued-llm-reviews
     describes:
@@ -359,9 +368,19 @@ def queue_reviews(a, queue, model: str | None = None, threshold: float = 0.85, l
     (when `enqueue`) and c.ai says so. Returns the answers applied."""
     from . import ai
     from .assess import apply_review
-    applied, key_of_app = [], None
+    applied, key_of_app, heavy = [], None, None
     for c in a.components:
         reason = review_kind(c, threshold)
+        if reason is None and enqueue and hasattr(queue, "heavy"):
+            if heavy is None:
+                key_of_app = key_of_app or _source_key(a)
+                try:
+                    heavy = queue.heavy(key_of_app) or set()
+                except Exception as e:  # noqa: BLE001 - the queue's database may be away
+                    print(f"warning: LLM-heavy windows not read: {type(e).__name__}: {str(e)[:200]}", file=sys.stderr)
+                    heavy = set()
+            if heavy_covers(heavy, c.project.rel):
+                reason = "heavy"            # an administrator's LLM-heavy window: every component is reviewed
         if reason is None:
             continue
         try:
@@ -408,6 +427,13 @@ def queue_reviews(a, queue, model: str | None = None, threshold: float = 0.85, l
 
 # --------------------------------------------------------------------------- where the queue is kept
 
+ALL = frozenset({"*"})                  # an LLM-heavy window of the whole application (SqlJobQueue.heavy)
+
+# the queue order: jobs in an LLM-heavy window first (cz.fnLlmJobHeavy as h), then by position or priority
+HEAVY_APPLY = "OUTER APPLY cz.fnLlmJobHeavy(j.ApplicationId, j.SourceKey, j.ProjectPath) h"
+HEAVY_FIRST = "CASE WHEN h.WindowId IS NULL THEN 1 ELSE 0 END, COALESCE(j.AdminRank, CAST(j.Priority AS float)) DESC, j.JobId"
+
+
 class JobQueue:
     """Where jobs are queued; a scan in queued mode binds it to one repository with `for_repo`."""
 
@@ -440,6 +466,24 @@ class JobQueue:
     def result(self, kind: str, dedupe_key: str) -> dict | None:
         """The result of the latest answered job of this kind and DedupeKey, when the queue has one."""
         raise NotImplementedError
+
+
+def heavy_windows(conn) -> dict[str, list[str]]:
+    """The LLM-heavy windows open now (cz.vLlmHeavyActive) by Application.SourceKey: ["*"] for the whole
+    application, else the ProjectPaths of its components in one (plain data: a scan's options go to the processes
+    of its repositories)."""
+    cur = conn.cursor()
+    cur.execute("SELECT SourceKey, ProjectPath FROM cz.vLlmHeavyActive")
+    by: dict[str, list[str]] = {}
+    for key, path in cur.fetchall():
+        paths = by.setdefault(key, [])
+        if "*" in paths:
+            continue
+        if path is None:
+            by[key] = ["*"]
+        elif path not in paths:
+            paths.append(path)
+    return by
 
 
 def _cut(s, n: int):
@@ -481,6 +525,21 @@ class SqlJobQueue(JobQueue):
         rid = cur.fetchone()[0]
         conn.commit()
         return int(rid or 0)
+
+    def heavy(self, source_key: str):
+        """The LLM-heavy windows of an application now (cz.vLlmHeavyActive, read again after HEAVY_CACHE seconds):
+        None (none), ALL (the whole application) or the ProjectPaths of its components in one."""
+        now = _time.monotonic()
+        cache = self.__dict__.setdefault("_heavy", {})
+        if cache.get("at") is None or now - cache["at"] > HEAVY_CACHE:
+            conn = self.connect()
+            try:
+                by = heavy_windows(conn)
+            finally:
+                conn.close()
+            cache.update(at=now, by=by)
+        found = cache["by"].get(source_key)
+        return None if found is None else ALL if "*" in found else set(found)
 
     def result(self, kind: str, dedupe_key: str) -> dict | None:
         conn = self.connect()
@@ -547,8 +606,9 @@ def effective(r: dict) -> float:
 
 
 def ordered(rows: list[dict]) -> list[dict]:
-    """Queued jobs in the order the runner takes them (as ORDER BY in Runner.claim)."""
-    return sorted(rows, key=lambda r: (-effective(r), r["JobId"]))
+    """Queued jobs in the order the runner takes them (as HEAVY_FIRST in Runner.claim): those in an LLM-heavy
+    window (HeavyUntil) first."""
+    return sorted(rows, key=lambda r: (r.get("HeavyUntil") is None, -effective(r), r["JobId"]))
 
 
 def reorder(rows: list[dict], job_id: int, action: str) -> dict[int, float]:
@@ -924,11 +984,11 @@ class Runner:
         if min_tokens is not None:
             size, args = size + " AND COALESCE(j.EstInputTokens, 0) >= %s", args + (int(min_tokens),)
         cur = conn.cursor(as_dict=True)
-        cur.execute("SELECT TOP (1) j.*, s.Name AS ScanName FROM cz.LlmJob j WITH (UPDLOCK, READPAST, ROWLOCK) "
-                    "LEFT JOIN cz.OrgScan s ON s.ScanId = j.ScanId "
+        cur.execute("SELECT TOP (1) j.*, s.Name AS ScanName, h.EndsAt AS HeavyUntil FROM cz.LlmJob j "
+                    f"WITH (UPDLOCK, READPAST, ROWLOCK) LEFT JOIN cz.OrgScan s ON s.ScanId = j.ScanId {HEAVY_APPLY} "
                     "WHERE j.Status = N'queued' AND (j.NotBefore IS NULL OR j.NotBefore <= SYSUTCDATETIME()) "
                     f"AND j.Kind IN ({', '.join(['%s'] * len(kinds))}){size} "
-                    "ORDER BY COALESCE(j.AdminRank, CAST(j.Priority AS float)) DESC, j.JobId", args)
+                    f"ORDER BY {HEAVY_FIRST}", args)
         row = cur.fetchone()
         if row:
             cur.execute("UPDATE cz.LlmJob SET Status = N'running', Runner = %s, StartedAt = SYSUTCDATETIME(), "

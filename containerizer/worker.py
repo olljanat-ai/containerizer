@@ -691,8 +691,26 @@ class Worker:
             parallel=int(scan.get("Parallel") or 1),
             verify=bool(scan["Verify"]), gate=bool(scan["Gate"]), sql=self.sql, work_dir=str(base / "work"),
             llm_heavy=llm_heavy(scan), review_queue=self.review_queue(scan) if llm_queued(scan) else None,
+            heavy_windows=self.heavy_windows() if scan["UseAi"] else None,
             cache_dir=str(base / "repos"), state=store, hooks=hooks,
             allowed_hosts=self.hosts | (creds.hosts() if creds else set()))
+
+    def heavy_windows(self) -> dict | None:
+        """The LLM-heavy windows administrators opened (llmqueue.heavy_windows), when this worker allows LLM-heavy
+        mode (CONTAINERIZER_LLM_HEAVY): those applications get it in the run even when the scan's own setting is off."""
+        from .ai import heavy_allowed
+        from .llmqueue import heavy_windows
+        if not heavy_allowed():
+            return None
+        try:
+            conn = self.connect()
+            try:
+                return heavy_windows(conn) or None
+            finally:
+                conn.close()
+        except Exception as ex:  # noqa: BLE001 - an older schema: no windows
+            self.log(f"LLM-heavy windows not read: {type(ex).__name__}: {str(ex)[:200]}")
+            return None
 
     def review_queue(self, scan: dict):
         """Where a scan with queued LLM reviews puts them: cz.LlmJob (llmqueue.py)."""

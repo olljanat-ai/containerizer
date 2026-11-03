@@ -273,6 +273,9 @@ class Admin:
         if kind == "applications":
             if method == "POST" and len(parts) > 1 and parts[1] == "bulk":
                 return self.bulk_map(conn, a, form)
+            if ident is not None and len(parts) == 3 and parts[2] == "heavy" and method == "POST":
+                from . import admin_heavy                # LLM-heavy mode for a while (administrators)
+                return admin_heavy.start(conn, s, a, ident, form)
             if ident is not None:
                 return self.save_application(conn, a, ident, form) if method == "POST" else \
                     self.edit_application(conn, s, a, ident, flash)
@@ -561,7 +564,9 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
                     f"products, so you can only look at it.</p><dl class='facts'><dt>Display name</dt><dd>{e(r['DisplayName'] or '-')}</dd>"
                     f"<dt>Owner</dt><dd>{e(r['Owner'] or '-')}</dd><dt>Description</dt><dd>{e(r['Description'] or '-')}</dd>"
                     f"<dt>Hidden</dt><dd>{'yes' if r['Retired'] else 'no'}</dd></dl>")
-        body = f"{head}{form}<h2>Changes</h2>{self._history(conn, 'Application', app_id)}"
+        from . import admin_heavy
+        heavy = admin_heavy.section(self, conn, s, a, app_id) if a.admin else ""
+        body = f"{head}{form}{heavy}<h2>Changes</h2>{self._history(conn, 'Application', app_id)}"
         return Response(200, self._shell(s, a, r["DisplayName"] or r["Name"], "applications", body, flash))
 
     def save_application(self, conn, a: Access, app_id: int, form: dict) -> Response:

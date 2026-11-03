@@ -47,6 +47,10 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict, flash:
         n = cur.rowcount
         conn.commit()
         return _back(BASE, f"{n} job{'s' if n != 1 else ''} approved: queued.")
+    if len(parts) == 4 and parts[1] == "heavy" and re.fullmatch(r"\d{1,9}", parts[2]) and parts[3] == "end" \
+            and method == "POST":
+        from . import admin_heavy
+        return admin_heavy.end(conn, s, a, int(parts[2]), form)
     if ident is not None and len(parts) == 2 and method == "GET":
         return show_job(adm, conn, s, a, ident, flash)
     if ident is not None and len(parts) == 3 and method == "POST":
@@ -78,7 +82,10 @@ def what(r: dict) -> str:
     title = lq.kind_title(r["Kind"])
     target = " / ".join(x for x in (r.get("Repository") or r.get("App"), r.get("Component")) if x)
     href = f"/admin/refactoring/{int(r['JobId'])}" if r["Kind"] == lq.REFACTOR else f"{BASE}/{int(r['JobId'])}"
-    out = f"<a href='{href}'>{e(target or title)}</a><div class='muted small'>{e(title)}"
+    out = f"<a href='{href}'>{e(target or title)}</a>"
+    if r.get("HeavyUntil") and r.get("Status") in ("approval", "queued", "running"):
+        out += f" <span class='st st-wait'>LLM-heavy until {_d(r['HeavyUntil'])}</span>"
+    out += f"<div class='muted small'>{e(title)}"
     if r.get("Reason"):
         out += f" · {e(lq.REASON_TEXT.get(r['Reason'], r['Reason']))}"
     if r.get("RuleVerdict"):
@@ -244,8 +251,9 @@ def show(adm, conn, s, a, q: dict, flash: str) -> Response:
     where, params = ("", ()) if not kind else (" AND Kind = %s", (kind,))
     settings = lq.load_settings(conn)
     speed = lq.load_speed(conn)
-    active = _rows(conn, f"SELECT {JOB_COLS} FROM cz.LlmJob WHERE Status IN (N'approval', N'queued', N'running'){where} "
-                         f"ORDER BY {ACTIVE_ORDER}, {ORDER}", params)
+    active = _rows(conn, f"SELECT {JOB_COLS}, h.EndsAt AS HeavyUntil FROM cz.LlmJob j {lq.HEAVY_APPLY} "
+                         f"WHERE Status IN (N'approval', N'queued', N'running'){where} "
+                         f"ORDER BY {ACTIVE_ORDER}, {lq.HEAVY_FIRST}", params)
     done = _rows(conn, f"SELECT TOP (50) {JOB_COLS} FROM cz.LlmJob WHERE Status IN (N'answered', N'failed', N'skipped')"
                        f"{where} ORDER BY COALESCE(FinishedAt, QueuedAt) DESC, JobId DESC", params)
     queued = [r for r in active if r["Status"] == "queued"]
@@ -318,7 +326,7 @@ def show(adm, conn, s, a, q: dict, flash: str) -> Response:
             f"repository; <b>Re-scan now</b> scans it without waiting for the schedule. Assessments already stored do not "
             f"change.</p>"
             f"<div class='formrow'><span>{state}</span> · <span>{e(lq.settings_text(settings))}</span></div>"
-            f"{summary_html(totals(active, speed, settings, now), now)}{lanes_html(ls)}"
+            f"{summary_html(totals(active, speed, settings, now), now)}{lanes_html(ls)}{heavy_html(adm, conn, s, a)}"
             f"<nav class='chips'>{chips}</nav>"
             f"<h2 id='queue'>Queue</h2><table><thead><tr><th class='num'>#</th><th>Status</th><th>Job</th><th class='num'>Priority</th>"
             f"<th>Estimate</th><th>Queued</th><th>Order</th></tr></thead>"
@@ -380,11 +388,24 @@ def show_job(adm, conn, s, a, ident: int, flash: str) -> Response:
     return Response(200, adm._shell(s, a, f"LLM queue job #{ident}", "llm-queue", body, flash))
 
 
+def heavy_html(adm, conn, s, a) -> str:
+    """The LLM-heavy windows open now: their jobs need no approval and go first."""
+    from . import admin_heavy
+    rows = admin_heavy.active(conn)
+    if not rows:
+        return ""
+    return ("<h2 id='llm-heavy'>LLM-heavy now</h2><p class='muted small'>Until each ends, the jobs of these applications "
+            "and components need no approval and go before every other job; scans queue a review of each of their "
+            "components. Turned on from the application's page (Admin → Applications).</p>"
+            + admin_heavy.windows_html(adm, s, a, rows, BASE, with_app=True))
+
+
 # --------------------------------------------------------------------------- actions
 
 def move(conn, ident: int, action: str) -> Response:
     cur = conn.cursor(as_dict=True)
-    cur.execute("SELECT JobId, Priority, AdminRank FROM cz.LlmJob WITH (UPDLOCK, HOLDLOCK) WHERE Status = N'queued'")
+    cur.execute(f"SELECT j.JobId, j.Priority, j.AdminRank, h.EndsAt AS HeavyUntil FROM cz.LlmJob j WITH (UPDLOCK, HOLDLOCK) "
+                f"{lq.HEAVY_APPLY} WHERE j.Status = N'queued'")
     rows = cur.fetchall()
     if ident not in {r["JobId"] for r in rows}:
         conn.rollback()
