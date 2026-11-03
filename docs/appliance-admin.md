@@ -20,7 +20,7 @@ image, and upgraded from the admin pages. To install it, see [Getting started](a
 | Prometheus and Grafana, with the scan worker's, k3s' and Flux's metrics, alerts and dashboards ([metrics](#metrics)) | containers | `https://<appliance>/grafana/` |
 | HTTPS (Caddy), SSH | systemd services | ports 443 and 22: the only open ports |
 | Firewall and DNS filter: every outgoing connection is blocked unless an allow-list rule covers it | nftables + dnsmasq | Admin → Firewall |
-| [Built-in LLM](#built-in-llm) (optional, off by default): llama.cpp with Qwen3-Coder 30B-A3B on the CPU | container, non-root, read-only model | `127.0.0.1:8082` only; Admin → Source control & LLM |
+| [Built-in LLM](#built-in-llm) (optional, off by default): llama.cpp with Qwen3-Coder 30B-A3B on the CPU | container, non-root, read-only model | `127.0.0.1:8090` (and up, one port per server) only; Admin → Source control & LLM |
 
 ```
                  443 (HTTPS)                                  22 (SSH, root)    
@@ -308,7 +308,7 @@ there always wins. See [the LLM](source-control.md#the-llm) for what it is asked
 | --- | --- |
 | Model | Qwen3-Coder 30B-A3B Instruct, ByteShape's `IQ4_XS-4.20bpw` GGUF build (16 GB, Apache 2.0), served as `qwen3-coder-30b-a3b` |
 | Server | llama.cpp `llama-server` (image `CZ_IMAGE_LLAMA_CPP` in `images.env`, pinned by digest): one per NUMA node (see below), `containerizer-local-llm@<n>.service`, container `cz-llm-<n>`, on `127.0.0.1:8090+n` |
-| Listens on | `127.0.0.1:8082` only: `containerizer-local-llm.service`, a Caddy of its own that sends each request to the least busy server (none to a server still loading its model). Prometheus reads each server's metrics |
+| Listens on | `127.0.0.1:8090+n` only. The LLM queue asks each server as an LLM of its own, one job at a time each (a server still loading its model takes none yet); scans that ask directly use the first server that is up. Prometheus reads each server's metrics |
 | Memory | at least 40 GB on the machine. The model (15.6 GB) is locked in RAM, so builds cannot push it out; each answer slot adds about 2 GB |
 | Disk | about 20 GB free on the persistent partition for the download (16 GB plus 4 GB to spare) |
 | Speed | about 7 to 12 tokens per second on a 22-core server; reading a 5,000 to 15,000 token evidence pack takes 1.5 to 5 minutes, so an answer takes about 5 minutes. Calls may take up to an hour (`CONTAINERIZER_LLM_TIMEOUT=3600` is set for it) |
@@ -339,8 +339,8 @@ When the machine has several NUMA nodes and the RAM for a copy of the model on e
 plus at least 23 GB per copy, and each node's own memory at least its server's limit), the appliance runs one
 server per node, pinned to that node's CPUs and memory (`docker run --cpuset-cpus --cpuset-mems`, as many
 threads as the node has CPUs). Each answers at full speed, so two sockets answer about twice as many jobs per
-hour, and the LLM queue asks one job per server at once, whatever its **Parallel requests** setting says (a
-higher setting still counts). One server on both sockets instead would read half of its weights across the
+hour. The LLM queue lists each server as an LLM of its own (`built-in-0`, `built-in-1`, ... on the LLM queue page)
+and asks one job per server at once (a higher **Parallel requests** setting is shared out between them). One server on both sockets instead would read half of its weights across the
 link between them. With one node, or not enough RAM, it is one server on the whole machine, as before. The
 page shows how it is sized and each server's state. The RAM is shared out between the servers before the slots
 are sized (the table above, per server): 128 GB with two nodes gives two servers of 3 slots.
@@ -365,13 +365,13 @@ Files:
 | On or off, the download's state and the change history | `/var/lib/containerizer/system/local-llm.json` |
 | The model file (re-downloadable) | `/var/lib/containerizer/llm/` |
 | What the page and the scan worker read | `/run/containerizer/system/local-llm-status.json` |
-| The front's settings while it is on (the servers' ports) | `/run/containerizer/local-llm.env` |
 | Each server's settings (slots, context, memory, NUMA node) | `/run/containerizer/local-llm-<n>.env` |
 
-On the console: `systemctl status 'containerizer-local-llm*'`, `docker logs cz-llm-0`, and `curl -s http://127.0.0.1:8082/health`. It is not part of the start-up check of an
+On the console: `systemctl status 'containerizer-local-llm*'`, `docker logs cz-llm-0`, and `curl -s http://127.0.0.1:8090/health` (8091 for the second server). It is not part of the start-up check of an
 upgrade: a missing or slow model never makes the appliance go back to the previous snapshot. The
-Grafana dashboard has a **Built-in LLM** row: whether it is up, requests in progress and waiting, and
-the tokens per second it generates.
+Grafana dashboard has a **Built-in LLM** row: whether each server is up, requests in progress and waiting, the
+tokens per second it generates (each per server, label `server`), and the jobs the LLM queue is asking each LLM
+about now (`built-in-<n>` for the built-in LLM's servers).
 
 ## Backup
 

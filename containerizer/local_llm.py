@@ -10,8 +10,8 @@ it again here before it changes anything:
   and hf.co are on the egress allow-list only while it runs (egress_rules). Then one llama.cpp server runs per
   NUMA node (containerizer-local-llm@<n>.service on 127.0.0.1:8090+n, pinned to that node's CPUs and memory)
   when the machine has several nodes and the RAM for a copy of the model on each, else one server on the whole
-  machine; containerizer-local-llm.service answers on 127.0.0.1:8082 and sends each request to the least busy
-  server. The servers, their answer slots and memory are sized from the RAM and the NUMA nodes (plan). On a
+  machine. The LLM queue asks each server as an LLM of its own (server_lanes: one request at a time each, like
+  the registered LLMs), scans that ask directly the first one that is up (worker_settings). The servers, their answer slots and memory are sized from the RAM and the NUMA nodes (plan). On a
   machine with two CPU sockets (two NUMA nodes) two copies each read their own socket's memory: about twice the
   answers per hour, where one copy on both sockets would read half its weights across the link between them.
 - disable: stops the server (or the download); the model file stays, so turning it on again is quick.
@@ -63,18 +63,15 @@ MODEL = Model(
     size=16_018_452_000,
     alias="qwen3-coder-30b-a3b",
 )
-PORT = 8082                         # the front (8081 is Caddy's http_port on the appliance)
-SERVER_PORT = 8090                  # + the server's index: the llama.cpp servers behind the front
+SERVER_PORT = 8090                  # + the server's index: the llama.cpp servers (8081 is Caddy's http_port)
 MAX_SERVERS = 8
 OS_RAM = 16 * GiB                   # what the rest of the appliance needs
 SERVER_MIN_RAM = 23 * GiB           # a copy of the model with one answer slot (MIN_RAM less OS_RAM)
-BASE_URL = f"http://127.0.0.1:{PORT}/v1"
 TIMEOUT = 3600                      # seconds per LLM call: prompts of 5-15K tokens take minutes on a CPU
 HF_HOSTS = ("huggingface.co", "hf.co")      # hf.co covers the CDN the resolve URL redirects to
 MIN_RAM = 39 * GiB                  # MemTotal of a 40 GiB machine (the kernel keeps some): OS 16 GiB + LLM
 DISK_MARGIN = 4 * GiB               # free space left on the persistent partition after the download
 CTX_PER_SLOT = 22016                # tokens per answer slot (a multiple of 256, above the 15K evidence packs)
-UNIT = "containerizer-local-llm.service"         # the front on PORT
 SERVER_UNIT = "containerizer-local-llm@{}.service"  # a llama.cpp server (its index)
 DOWNLOAD_UNIT = "containerizer-local-llm-download.service"
 ACTIONS = ("enable", "disable", "remove-model")
@@ -87,7 +84,7 @@ HISTORY = 30
 class Paths:
     config: Path = Path("/var/lib/containerizer/system/local-llm.json")
     status: Path = Path("/run/containerizer/system/local-llm-status.json")
-    env: Path = Path("/run/containerizer/local-llm.env")       # the server unit runs only while it exists
+    env: Path = Path("/run/containerizer/local-llm.env")       # local-llm-<n>.env: server n runs only while it exists
     models: Path = Path("/var/lib/containerizer/llm")
     meminfo: Path = Path("/proc/meminfo")
     nodes: Path = Path("/sys/devices/system/node")
@@ -321,9 +318,12 @@ def _unit_state(unit: str) -> str:
         return "unknown"
 
 
-def server_health(timeout: float = 2.0, port: int = PORT) -> bool:
-    """llama.cpp answers /health with 200 once the model is loaded (503 while it loads); the front passes it on
-    from a server that is up (502 while none is)."""
+def base_url(port: int) -> str:
+    return f"http://127.0.0.1:{int(port)}/v1"
+
+
+def server_health(timeout: float = 2.0, port: int = SERVER_PORT) -> bool:
+    """llama.cpp answers /health with 200 once the model is loaded (503 while it loads)."""
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=timeout) as r:
             return r.status == 200
@@ -342,13 +342,12 @@ def _restarts(unit: str) -> int:
 CRASH_LOOP_RESTARTS = 3
 
 
-def status(cfg: dict | None = None, paths: Paths | None = None, unit_state=None, health=None, restarts=None,
-           probe=None, **extra) -> dict:
-    """The status the web UI and the scan worker read. `health`: the front answers; `probe(port)`: a server does."""
+def status(cfg: dict | None = None, paths: Paths | None = None, unit_state=None, restarts=None, probe=None,
+           **extra) -> dict:
+    """The status the web UI, the scan worker and the LLM queue read. `probe(port)`: a server answers."""
     paths = paths or P
     cfg = load_config(paths) if cfg is None else cfg
     unit_state = unit_state or _unit_state
-    health = health or server_health
     restarts = restarts or _restarts
     probe = probe or (lambda port: server_health(port=port))
     servers = []
@@ -377,24 +376,16 @@ def status(cfg: dict | None = None, paths: Paths | None = None, unit_state=None,
                     "error" if restarts(unit) >= CRASH_LOOP_RESTARTS else "starting"
             else:
                 s_state = "error" if su == "failed" else "starting"
-            servers.append({**sv, "state": s_state, "unit": unit})
+            servers.append({**sv, "state": s_state, "unit": unit, "base_url": base_url(sv["port"])})
         broken = [x for x in servers if x["state"] == "error"]
-        u = unit_state(UNIT)
-        if u in ("active", "activating", "reloading"):
-            if health():
-                state = "running"
-                if broken:
-                    message = (f"{len(broken)} of {len(servers)} servers keep failing (e.g. not enough memory on "
-                               f"their NUMA node to lock the model): see journalctl -u {broken[0]['unit']}")
-            elif broken and len(broken) == len(servers):
-                state, message = "error", (f"the server keeps restarting (e.g. not enough memory to lock the "
-                                           f"model): see journalctl -u {broken[0]['unit']}")
-            elif (n := restarts(UNIT)) >= CRASH_LOOP_RESTARTS:
-                state, message = "error", f"the front keeps restarting ({n} restarts): see journalctl -u {UNIT}"
-            else:
-                state = "starting"
-        elif u == "failed":
-            state, message = "error", f"{UNIT} failed: see journalctl -u {UNIT}"
+        if any(x["state"] == "running" for x in servers):
+            state = "running"
+            if broken:
+                message = (f"{len(broken)} of {len(servers)} servers keep failing (e.g. not enough memory on "
+                           f"their NUMA node to lock the model): see journalctl -u {broken[0]['unit']}")
+        elif broken and len(broken) == len(servers):
+            state, message = "error", (f"the server keeps restarting (e.g. not enough memory to lock the "
+                                       f"model): see journalctl -u {broken[0]['unit']}")
         else:
             state = "starting"
     st = {"enabled": on, "state": state, "message": message, "model": {"file": MODEL.file, "alias": MODEL.alias,
@@ -402,7 +393,7 @@ def status(cfg: dict | None = None, paths: Paths | None = None, unit_state=None,
           "verified": model_ready(cfg, paths)},
           "download": {"bytes": _size(paths.part) if state in ("downloading", "verifying", "download-failed") else 0,
                        "total": MODEL.size},
-          "requirements": req, "plan": cfg.get("plan") or req["plan"], "base_url": BASE_URL, "port": PORT,
+          "requirements": req, "plan": cfg.get("plan") or req["plan"], 
           "servers": servers,
           "changed_by": cfg.get("changed_by"), "changed_by_name": cfg.get("changed_by_name"),
           "changed_at": cfg.get("changed_at"), "history": cfg.get("history") or [], "updated": now()}
@@ -422,45 +413,51 @@ def publish(st: dict | None = None, paths: Paths | None = None) -> dict:
 STATUS_ENV = "CONTAINERIZER_LOCAL_LLM"      # the status file (set on the appliance's worker unit)
 
 
-def worker_settings(env=None) -> dict | None:
-    """ai.configured() settings for the built-in LLM when it is on (starting or running), else None.
-    Only the on/off state comes from the file; the address and model are this module's constants."""
-    env = os.environ if env is None else env
-    path = env.get(STATUS_ENV)
-    if not path:
-        return None
+def _read_status(path) -> dict | None:
     try:
-        st = json.loads(Path(path).read_text())
+        st = json.loads(Path(path).read_text()) if path else None
     except (OSError, ValueError):
         return None
     if not isinstance(st, dict) or not st.get("enabled") or st.get("state") not in USABLE:
         return None
-    return {"CONTAINERIZER_AI_BACKEND": "openai", "CONTAINERIZER_LLM_BASE_URL": BASE_URL, "CONTAINERIZER_LLM_API_KEY": "",
-            "CONTAINERIZER_MODEL": MODEL.alias, "CONTAINERIZER_LLM_TIMEOUT": str(TIMEOUT)}
+    return st
 
 
-def queue_parallel(settings: dict | None, env=None) -> int:
-    """Jobs the LLM queue runs at once when `settings` (credentials.llm_for_run) are the built-in LLM's: one per
-    server it runs (its status file), else 1."""
-    if not settings or settings.get("CONTAINERIZER_LLM_BASE_URL") != BASE_URL:
-        return 1
+def _settings(port: int) -> dict:
+    return {"CONTAINERIZER_AI_BACKEND": "openai", "CONTAINERIZER_LLM_BASE_URL": base_url(port),
+            "CONTAINERIZER_LLM_API_KEY": "", "CONTAINERIZER_MODEL": MODEL.alias, "CONTAINERIZER_LLM_TIMEOUT": str(TIMEOUT)}
+
+
+def server_lanes(env=None) -> list[dict]:
+    """The built-in LLM's servers for the LLM queue while it is on (starting or running), else []: each its own
+    LLM, {"index", "node" (None: the whole machine), "ready" (the model is loaded), "settings"}. Only the on/off
+    state and the servers come from the status file; the address and model are this module's constants."""
     env = os.environ if env is None else env
-    try:
-        st = json.loads(Path(env.get(STATUS_ENV) or "").read_text())
-    except (OSError, ValueError):
-        return 1
-    return parallel(st.get("plan")) if isinstance(st, dict) else 1
+    st = _read_status(env.get(STATUS_ENV))
+    if not st:
+        return []
+    live = {int(x.get("index", 0)): x for x in st.get("servers") or [] if isinstance(x, dict)}
+    plan_ = st.get("plan") if isinstance(st.get("plan"), dict) else {}
+    out = []
+    for sv in plan_.get("servers") or [{"index": 0, "port": SERVER_PORT}]:
+        i = int(sv.get("index", 0))
+        out.append({"index": i, "node": sv.get("node"), "ready": (live.get(i) or {}).get("state") == "running",
+                    "settings": _settings(int(sv.get("port", SERVER_PORT + i)))})
+    return out
+
+
+def worker_settings(env=None) -> dict | None:
+    """ai.configured() settings for the built-in LLM when it is on (starting or running), else None: the first
+    server whose model is loaded, else the first one (requests wait for it)."""
+    lanes = server_lanes(env)
+    if not lanes:
+        return None
+    return next((ln for ln in lanes if ln["ready"]), lanes[0])["settings"]
 
 
 def servers_in_use(path: Path | None = None) -> int:
     """Servers of the built-in LLM while it is on and usable (its status file), else 1 (the admin pages)."""
-    try:
-        st = json.loads((path or P.status).read_text())
-    except (OSError, ValueError):
-        return 1
-    if not isinstance(st, dict) or not st.get("enabled") or st.get("state") not in USABLE:
-        return 1
-    return parallel(st.get("plan"))
+    return max(1, len(server_lanes({STATUS_ENV: str(path or P.status)})))
 
 
 # --------------------------------------------------------------------------- the system agent's side
@@ -474,12 +471,6 @@ def server_env(p: dict, sv: dict | None = None) -> str:
     return (f"CZ_LLM_MODEL_FILE={MODEL.file}\nCZ_LLM_ALIAS={MODEL.alias}\nCZ_LLM_PORT={int(sv['port'])}\n"
             f"CZ_LLM_SLOTS={int(p['slots'])}\nCZ_LLM_CTX={int(p['ctx_size'])}\nCZ_LLM_MEMORY={p['memory']}\n"
             f"CZ_LLM_PIN={pin}\nCZ_LLM_THREADS={threads}\n")
-
-
-def front_env(p: dict) -> str:
-    """The environment of the front (Caddy on PORT): the servers it sends the requests to."""
-    ups = " ".join(f"127.0.0.1:{int(sv['port'])}" for sv in p.get("servers") or [{"port": SERVER_PORT}])
-    return f"CZ_LLM_PORT={PORT}\nCZ_LLM_UPSTREAMS={ups}\n"
 
 
 def _targets(p: dict | None, paths: Paths) -> None:
@@ -515,22 +506,15 @@ def _start_server(cfg: dict, paths: Paths) -> None:
             f.unlink(missing_ok=True)
             _run(["systemctl", "stop", "--no-block", SERVER_UNIT.format(f.stem.rsplit("-", 1)[1])], timeout=60,
                  check=False)
-    text = front_env(p)
-    old = paths.env.read_text() if paths.env.exists() else None
-    _atomic(paths.env, text, 0o644)
-    if old is not None and old != text:
-        _run(["systemctl", "try-restart", "--no-block", UNIT], timeout=60, check=False)
     _targets(p, paths)
-    _run(["systemctl", "start", "--no-block", UNIT, *(SERVER_UNIT.format(sv["index"]) for sv in p["servers"])],
-         timeout=60)
+    _run(["systemctl", "start", "--no-block", *(SERVER_UNIT.format(sv["index"]) for sv in p["servers"])], timeout=60)
 
 
 def _stop_server(paths: Paths) -> None:
-    paths.env.unlink(missing_ok=True)
     for f in _server_envs(paths):
         f.unlink(missing_ok=True)
     _targets(None, paths)
-    _run(["systemctl", "stop", "--no-block", UNIT, SERVER_UNIT.format("*"), DOWNLOAD_UNIT], timeout=60, check=False)
+    _run(["systemctl", "stop", "--no-block", SERVER_UNIT.format("*"), DOWNLOAD_UNIT], timeout=60, check=False)
 
 
 def _firewall() -> None:
@@ -598,7 +582,7 @@ def reconcile(paths: Paths | None = None) -> dict:
     with locked(paths):
         cfg = load_config(paths)
         if not cfg.get("enabled"):
-            if paths.env.exists() or _server_envs(paths):
+            if _server_envs(paths):
                 _stop_server(paths)
             return publish(status(cfg, paths), paths)
         if cfg.get("phase") == "download":
@@ -613,7 +597,7 @@ def reconcile(paths: Paths | None = None) -> dict:
             if not model_ready(cfg, paths):
                 pass                                    # status() reports it; the admin turns it off and on
             elif mem_total(paths) < MIN_RAM:
-                if paths.env.exists():
+                if _server_envs(paths):
                     _stop_server(paths)
             else:
                 _start_server(cfg, paths)

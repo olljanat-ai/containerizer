@@ -125,7 +125,8 @@ def section(adm, s, a, registered: bool) -> str:
                      "built-in LLM.</div>")
     elif on and state in L.USABLE:
         lines.append(f"<div><span class='label'>Used by</span> scans with <i>Ask the LLM</i> on (model "
-                     f"<code>{e(L.MODEL.alias)}</code> at <code>{e(L.BASE_URL)}</code>)</div>")
+                     f"<code>{e(L.MODEL.alias)}</code> at " + ", ".join(f"<code>{e(L.base_url(int(sv.get('port', L.SERVER_PORT))))}</code>"
+                     for sv in (plan or {}).get("servers") or [{"port": L.SERVER_PORT}]) + ")</div>")
     problems = req.get("problems") or []
     if not on and problems:
         lines.append("<div class='note'>Cannot be turned on: " + e("; ".join(problems)) + ".</div>")
@@ -153,7 +154,7 @@ def section(adm, s, a, registered: bool) -> str:
                      for h in hist[:30]) + "</tbody></table></details>") if hist else ""
     return f"""<h2 id='built-in-llm'>Built-in LLM (this appliance)</h2>
 <p class='muted'>For sites without an LLM server of their own: the appliance runs Qwen3-Coder 30B-A3B (a 16 GB
-CPU-friendly build) with llama.cpp on its own CPU, on <code>127.0.0.1:{L.PORT}</code> only. Scans with <i>Ask the LLM</i>
+CPU-friendly build) with llama.cpp on its own CPU, on <code>127.0.0.1:{L.SERVER_PORT}</code> (one port per server) only. Scans with <i>Ask the LLM</i>
 use it when no LLM is set above. It is slow: about 7 to 12 tokens per second on a 22-core server, a few minutes per
 answer, so use the queued LLM mode for organization scans where it is offered, and leave LLM-heavy mode off. It needs a
 machine with at least 40 GiB of RAM and about 20 GB of free disk. Turning it on downloads the model once from Hugging
