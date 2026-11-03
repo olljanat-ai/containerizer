@@ -3,9 +3,16 @@
 #   cz-kubemg ca       before kubemg starts: the CA of the certificate Caddy serves for kubemg's name, for the
 #                      agent's manifest (KUBEMG_AGENT_CA_BUNDLE): your own CA (tls/ca.pem, else the chain in
 #                      tls/cert.pem), Caddy's own CA, or none for Let's Encrypt
+#   cz-kubemg password the generated password of kubemg's `admin` (until it is changed in kubemg's setup wizard)
 #   cz-kubemg sandbox  register the k3s sandbox cluster in kubemg and install its agent (containerizer.kubemg)
 set -euo pipefail
 K=/run/containerizer/kubemg
+PW=/etc/containerizer/secrets/kubemg-admin
+if [ "${1:-}" = password ]; then
+  [ -r "$PW" ] || { echo "cz-kubemg: $PW is not there or not readable (root only; is CZ_KUBEMG=true?)" >&2; exit 1; }
+  cat "$PW"; echo
+  exit 0
+fi
 . "$K/kubemg.env"
 case "${1:-}" in
 ca)
@@ -27,10 +34,12 @@ ca)
     install -m 0644 "$src" "$K/ca/ca.pem"
     echo "KUBEMG_AGENT_CA_BUNDLE=/ca/ca.pem" > "$K/ca.env"
   fi
+  # kubemg logs no password (the appliance sets it): say where it is
+  echo "kubemg: https://$CZ_KUBEMG_HOST/ - sign in as admin with the password in $PW (/usr/lib/containerizer/bin/cz-kubemg password)"
   ;;
 sandbox)
   exec /usr/lib/containerizer/venv/bin/python -m containerizer.kubemg sandbox --host "$CZ_KUBEMG_HOST" \
-    --password-file /etc/containerizer/secrets/kubemg-admin
+    --password-file "$PW"
   ;;
-*) echo "usage: cz-kubemg ca|sandbox" >&2; exit 2 ;;
+*) echo "usage: cz-kubemg ca|password|sandbox" >&2; exit 2 ;;
 esac

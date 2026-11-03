@@ -43,8 +43,9 @@ spec:
 
 
 class FakeKubemg:
-    def __init__(self, password="pw", clusters=None, mfa=False):
+    def __init__(self, password="pw", clusters=None, mfa=False, repos=None):
         self.password, self.clusters, self.mfa, self.calls = password, list(clusters or []), mfa, []
+        self.repos = [dict(r) for r in repos or []]
 
     def __call__(self, method, path, token=None, body=None, raw=False, timeout=30):
         self.calls.append((method, path.split("?")[0], token))
@@ -53,6 +54,11 @@ class FakeKubemg:
                 raise kubemg.KubemgError("POST /auth/login: HTTP 401: invalid credentials")
             return {"mfa_required": True, "challenge": "c"} if self.mfa else {"token": "T", "user": {"id": 1}}
         assert token == "T"
+        if method == "GET" and path == "/helm/repositories":
+            return {"repositories": [dict(r) for r in self.repos]}
+        if method == "DELETE" and path.startswith("/helm/repositories/"):
+            self.repos = [r for r in self.repos if r["name"] != path.rsplit("/", 1)[1]]
+            return {"message": "removed"}
         if method == "GET" and path == "/clusters":
             return {"clusters": self.clusters}
         if method == "POST" and path == "/clusters":
@@ -70,7 +76,7 @@ def test_registers_the_sandbox_once_and_installs_the_agent_with_a_host_alias():
     out = kubemg.sandbox("kubemg.example.com", "pw", call=api, installed=lambda: False, apply=applied.append,
                          ip=lambda: "192.0.2.10", log=logs.append)
     assert out == "the sandbox cluster is registered in kubemg as sandbox and its agent is installed"
-    assert [c[:2] for c in api.calls if c[1] != "/auth/login"] == [
+    assert [c[:2] for c in api.calls if c[1] not in ("/auth/login", "/helm/repositories")] == [
         ("GET", "/clusters"), ("POST", "/clusters"), ("GET", "/clusters/7/kustomize")]
     docs = list(yaml.safe_load_all(applied[0]))
     dep = next(d for d in docs if d["kind"] == "Deployment")
@@ -80,10 +86,36 @@ def test_registers_the_sandbox_once_and_installs_the_agent_with_a_host_alias():
     kubemg.sandbox("kubemg.example.com", "pw", call=api, installed=lambda: False, apply=applied.append,
                    ip=lambda: "192.0.2.10", log=logs.append)
     assert sum(c[:2] == ("POST", "/clusters") for c in api.calls) == 1 and len(applied) == 2
-    # the agent is there: nothing is asked
+    # the agent is there: it is not registered again
     n = len(api.calls)
     assert "installed" in kubemg.sandbox("kubemg.example.com", "pw", call=api, installed=lambda: True)
-    assert len(api.calls) == n
+    assert not [c for c in api.calls[n:] if "/clusters" in c[1]]
+
+
+def test_the_seeded_chart_repositories_it_cannot_reach_are_deleted_while_the_password_works():
+    seeded = [{"name": n, "url": u + "/", "seeded": True} for n, u in kubemg.SEEDED_REPOS.items()]
+    own = [{"name": "bitnami-mirror", "url": "https://charts.example.com/bitnami"},
+           {"name": "grafana", "url": "https://charts.example.com/grafana"}]           # a seeded name, moved
+    api, logs = FakeKubemg(repos=seeded[:2] + own), []
+    out = kubemg.sandbox("kubemg.example.com", "pw", call=api, installed=lambda: True, log=logs.append)
+    assert "installed" in out
+    assert [r["name"] for r in api.repos] == ["bitnami-mirror", "grafana"]
+    assert "argo, bitnami" in logs[0]
+    # the password was changed: nothing is asked of kubemg
+    api = FakeKubemg(password="changed", repos=seeded)
+    kubemg.sandbox("kubemg.example.com", "pw", call=api, installed=lambda: True)
+    assert len(api.repos) == 6 and {c[1] for c in api.calls} == {"/auth/login"}
+
+
+def test_a_failed_repository_cleanup_does_not_stop_the_registration():
+    def call(method, path, token=None, body=None, raw=False, timeout=30):
+        if path == "/helm/repositories":
+            raise kubemg.KubemgError("GET /helm/repositories: HTTP 500: boom")
+        return api(method, path, token, body, raw, timeout)
+    api, applied, logs = FakeKubemg(), [], []
+    out = kubemg.sandbox("kubemg.example.com", "pw", call=call, installed=lambda: False, apply=applied.append,
+                         ip=lambda: "192.0.2.10", log=logs.append)
+    assert "registered" in out and applied and "were not deleted" in logs[0]
 
 
 @pytest.mark.parametrize("api", [FakeKubemg(password="changed"), FakeKubemg(mfa=True)])

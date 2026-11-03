@@ -6,6 +6,15 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+- kubemg on the appliance: where its `admin` password is is now said in its journal at each start
+  (`journalctl -u containerizer-kubemg`), and `/usr/lib/containerizer/bin/cz-kubemg password` prints it. kubemg's
+  sign-in page points to its log, which has no password, because the appliance sets it.
+- kubemg: the six public Helm chart repositories kubemg adds on its first start are deleted while the generated
+  `admin` password works. The outbound allow-list blocks them, so their hourly sync logged a warning for each.
+- docs: what kubemg's log has in it (audit lines, no level to set).
+
 ## 0.8.1 (2026-11-03)
 
 0.8.0 was not published (its image push to GHCR failed): 0.8.1 includes it (kubemg, below).
