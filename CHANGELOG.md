@@ -6,7 +6,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.8.2 (2026-11-03)
 
 - kubemg on the appliance: where its `admin` password is is now said in its journal at each start
   (`journalctl -u containerizer-kubemg`), and `/usr/lib/containerizer/bin/cz-kubemg password` prints it. kubemg's
