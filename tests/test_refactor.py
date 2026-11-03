@@ -953,3 +953,33 @@ def test_the_order_page_shows_the_llm_heavy_chain_of_a_refactoring_order(adm):
     b = _get(adm, op, "/admin/refactoring/42").body
     assert "LLM-heavy mode, order 2 of the chain" in b and "not finished yet" in b and "href='/admin/refactoring/77'" in b
     assert "#70" in b and "the findings left (3 files)" in b and "Make it A" not in b
+
+
+def test_a_patch_of_an_app_in_a_folder_is_repaired_in_that_folder(tmp_path):
+    """A split repository's application lives in a folder: the patch names files from the repository's root, the
+    repair asks about them relative to the application (they were not found, so nothing was repaired)."""
+    repo = tmp_path / "mono"
+    app = repo / "scenarios" / "field-service"
+    (app / "src").mkdir(parents=True)
+    (app / "src" / "Job.cs").write_text("class Job {}\n")
+    (repo / "README.md").write_text("x\n")
+    patch = ("From x\nSubject: [PATCH] c\n\n---\n"
+             "diff --git a/scenarios/field-service/src/Job.cs b/scenarios/field-service/src/Job.cs\n"
+             "--- a/scenarios/field-service/src/Job.cs\n+++ b/scenarios/field-service/src/Job.cs\n"
+             "@@ -1 +1 @@\n-class Job {}\n+class Job { }\n"
+             "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n")
+    assert rf.app_files(repo, app, patch) == ["src/Job.cs"]             # the file outside the application: left out
+    tasks = rf.repair_tasks({"components": [{"name": "Web", "project": "src/Web.csproj"}], "log_tail": "boom"}, app,
+                            rf.app_files(repo, app, patch))
+    assert [t["file"] for t in tasks] == ["src/Job.cs"] and "does not run: boom" in tasks[0]["findings"][0]["title"]
+
+
+def test_fix_it_with_the_llm_on_a_make_it_a_order_goes_on_as_make_it_a():
+    pl = {"goal": "rating-a", "app": "shop", "commit": "c" * 40, "components": [{"name": "Web", "project": "p"}],
+          "tasks": [{"file": "a.cs", "findings": []}], "deadline": "x", "heavy_round": 2, "max_calls": 16}
+    res = {"patch": "PATCH", "status": "applies-only",
+           "verification": [{"component": "Web", "status": "build-failed", "log_tail": "error"}]}
+    nxt = rf.repair_payload(pl, res, 41)
+    assert nxt["goal"] == "rating-a" and nxt["base_patch"] == "PATCH" and nxt["base_job"] == 41
+    assert nxt["heavy_parent"] == 41 and nxt["heavy_round"] == 3 and "deadline" not in nxt
+    assert rf.repair_payload({**pl, "goal": "fix"}, res, 41)["goal"] == "repair"       # other orders: a repair

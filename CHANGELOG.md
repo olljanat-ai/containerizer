@@ -6,6 +6,18 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## 0.7.3 (2026-11-03)
+
+### Refactoring
+- Make it A and **Fix it with the LLM** repaired nothing for an application in a folder of its repository (a split
+  mono-repo, e.g. `scenarios/field-service`): the patch names its files from the repository's root, the repair
+  looked for them in the application's folder, so a build or run failure without a compiler error line found no
+  file to fix (*nothing to change: no file of the component uses an embedded database or names a finding*), and
+  an LLM-heavy chain stopped after two orders that changed nothing.
+- **Fix it with the LLM** on a Make it A order now queues a Make it A order that continues from its patch: its own
+  repair rounds (with the LLM-heavy limits in a window), the sandbox, and in an LLM-heavy window the chain until
+  it runs there. Before, it queued a plain repair, which never deployed to the sandbox.
+
 ## 0.7.2 (2026-11-03)
 
 ### Refactoring
