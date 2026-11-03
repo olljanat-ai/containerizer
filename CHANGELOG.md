@@ -6,8 +6,20 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.9.1 (2026-11-04)
 
+- A Make it A copy, or an application in a scan, that is not deployed because no component qualifies now says why
+  for each component: the rating, the build and run, or the security gate. The order page lists them, also for
+  orders made before.
+- Make it A copies in the sandbox no longer expire after 7 days (`CONTAINERIZER_SANDBOX_VARIANT_DAYS` is gone).
+  A copy stays until a scan assesses another commit of its application, so its patch no longer matches, or until
+  someone removes it. The order page then says *Replaced by newer code*, with both commits.
+- The sandbox can be turned off per application: **Admin → Applications** → the application → **Sandbox**. It is
+  on by default, and administrators and the application's product owners can switch it. Off: the scans
+  still assess the application but build and deploy nothing of it, and new Make it A patches are not deployed.
+  Its folders in the output repository and its images in the registry stay, only out of `sandbox/`. On again
+  brings the same manifests and images back, Make it A copies included, without a build. The LLM queue runner
+  applies a switch within a few minutes. Schema 35 adds `Application.SandboxEnabled`.
 - Make it A: the front page, the refactoring pages and the docs no longer say the patched copy runs "beside the
   original". It runs as its own application, and an organization scan has only the original's A-rated components
   in the sandbox, often none.

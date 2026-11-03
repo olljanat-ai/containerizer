@@ -352,13 +352,8 @@ def order_button(app_id, comp_id, goal: str, csrf: str, label: str, est: dict | 
 
 
 VARIANT_CSS = {"deploying": "st-run", "running": "st-ok", "failing": "st-bad", "deployed": "st-warn",
-               "removed": "st-off", "expired": "st-off", "error": "st-bad"}
+               "removed": "st-off", "outdated": "st-off", "expired": "st-off", "error": "st-bad"}
 VARIANT_URL_RE = re.compile(r"https://[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::\d{1,5})?/[A-Za-z0-9._~/-]{0,200}")
-
-
-def _variant_days() -> int:
-    from .variant import expiry_days
-    return expiry_days()
 
 
 def _variant_chip(o: dict) -> str:
@@ -428,8 +423,8 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
                        "from A: the LLM changes the code for every finding (and moves the data of the components that "
                        "keep their own), the patch is verified and repaired when it does not build, and the patched copy "
                        "is assessed again, with one more pass on what remains. A copy that rates A and runs is deployed "
-                       "to the sandbox beside this one, in a namespace of its own, for "
-                       f"{_variant_days()} days.</p>"
+                       "to the sandbox as its own application, in a namespace of its own, until a scan finds newer "
+                       "code of this application.</p>"
                        + (f"<div class='note offer'>{existing_offer(have_a, ctx, app['ApplicationId'], None, 'rating-a', ctx.get('speed'))}</div>"
                           if (have_a := existing_order(ctx.get("orders"), None, "rating-a")) else
                           order_button(app["ApplicationId"], None, "rating-a", ctx["csrf"], "Make it A", est)
@@ -635,7 +630,8 @@ def _trends_href(bu) -> str:
 
 VARIANT_TEXT = {"running": "Running in the sandbox", "deployed": "In the sandbox (health not checked)",
                 "failing": "Failing in the sandbox", "deploying": "Deploying", "removed": "Removed from the sandbox",
-                "expired": "Expired in the sandbox", "skipped": "Not deployed", "error": "Deploy failed"}
+                "outdated": "Replaced by newer code", "expired": "Expired in the sandbox", "skipped": "Not deployed",
+                "error": "Deploy failed"}
 
 
 def _a_patch_mark(a: dict) -> str:

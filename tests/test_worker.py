@@ -139,7 +139,11 @@ def test_scans_always_push_to_the_appliances_own_registry(monkeypatch):
         v, errors = admin_scans.validate_scan(form)
         assert errors == [] and (v["Registry"], v["PushImages"], v["ImagePullSecret"]) == (SANDBOX_REGISTRY, True, None)
     w = worker.Worker.__new__(worker.Worker)
-    w.data, w.sql, w.hosts = Path("/tmp/x"), None, set()
+    w.data, w.sql, w.hosts, w.log = Path("/tmp/x"), None, set(), lambda *a: None
+
+    def no_db():
+        raise OSError("no results database")
+    w.connect = no_db
     old = {**SCAN, "ScanId": 1, "Registry": "acr.example.io/sandbox", "PushImages": False, "ImagePullSecret": "regcred",
            "OutputRepo": None, "OutputBranch": "main", "IncludeRegex": None, "ExcludeRegex": None, "SkipForks": True,
            "StaleDays": 0, "UseAi": False, "Verify": True, "Gate": False}

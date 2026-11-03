@@ -1206,6 +1206,7 @@ class Runner:
             try:
                 base = Path(os.environ.get(refactor.WORK_ENV) or tempfile.gettempdir()) / "variants"
                 n += variant.housekeep(self.connect, self.key, base, log=self.log)
+                n += variant.sync_sandbox(self.connect, self.key, base, log=self.log)
             except Exception as ex:             # a database from before schema 23, the output repository away: next time
                 self.log(f"sandbox variants: {type(ex).__name__}: {ex}"[:400])
         if EGRESS in self.kinds or LINK in self.kinds:

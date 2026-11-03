@@ -260,7 +260,7 @@ class SqlRepoStore:
         whether it shows as enabled. An administrator's decision is never changed here."""
         if res.status.startswith("skipped-"):
             skip = (res.status, res.reason)
-        elif res.status in ("deployed", "no-a-components"):
+        elif res.status in ("deployed", "no-a-components", "sandbox-off"):
             o = res.overridden[0] if res.overridden else None
             skip = (o["status"], o["reason"]) if o else (None, None)
         else:
@@ -730,9 +730,22 @@ class Worker:
             parallel=int(scan.get("Parallel") or 1),
             verify=bool(scan["Verify"]), gate=bool(scan["Gate"]), sql=self.sql, work_dir=str(base / "work"),
             llm_heavy=llm_heavy(scan), review_queue=self.review_queue(scan) if llm_queued(scan) else None,
-            heavy_windows=self.heavy_windows() if scan["UseAi"] else None,
+            heavy_windows=self.heavy_windows() if scan["UseAi"] else None, sandbox_off=self.sandbox_off(),
             cache_dir=str(base / "repos"), state=store, hooks=hooks,
             allowed_hosts=self.hosts | (creds.hosts() if creds else set()))
+
+    def sandbox_off(self) -> set | None:
+        """The applications whose sandbox an administrator turned off (org.load_sandbox_off)."""
+        from .org import load_sandbox_off
+        try:
+            conn = self.connect()
+            try:
+                return load_sandbox_off(conn) or None
+            finally:
+                conn.close()
+        except Exception as ex:  # noqa: BLE001 - an older schema: every application is deployed
+            self.log(f"applications without a sandbox not read: {type(ex).__name__}: {str(ex)[:200]}")
+            return None
 
     def heavy_windows(self) -> dict | None:
         """The LLM-heavy windows administrators opened (llmqueue.heavy_windows), when this worker allows LLM-heavy
