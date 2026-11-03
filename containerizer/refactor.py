@@ -205,13 +205,24 @@ HEAVY_MAX_ROUNDS = 30                   # orders in one chain at most, whatever 
 # next order (heavy_next_fix) until every finding is fixed and it builds and runs, or the window ends
 HEAVY_CALLS = 40
 
-# A compiler error in a build log: /src/<path>(line,col): error CODE: message [project]
-BUILD_ERROR_RE = re.compile(r"(?:^|\s)/src/(?P<file>[^\s(:]+\.(?:cs|vb|fs|cshtml|razor|csproj|vbproj|fsproj))"
-                            r"\((?P<line>\d+)(?:,\d+)?\): error (?P<code>[A-Z]+\d+): (?P<msg>[^\[\n]+)")
+# A compiler error in a build log: /src/<path>(line,col): error CODE: message [project]; or a project's own error,
+# without a line (NuGet's NU1605 package downgrade, MSBuild's): /src/<project> : error CODE: message
+BUILD_ERROR_RE = re.compile(r"(?:^|\s)/src/(?P<file>[^\s(:]+\.(?:cs|vb|fs|cshtml|razor|csproj|vbproj|fsproj|props|targets))"
+                            r"(?:\((?P<line>\d+)(?:,\d+)?\)| ):? error (?P<code>[A-Z]+\d+): (?P<msg>[^\[\n]+)")
 REPAIR_GUIDANCE = """An earlier change (the patch below) was made to fix the findings, but the result does not build
 (or does not run). Fix the errors listed for this file so that the code builds and runs, and keep the intent of
 the earlier change. Often another file of the patch changed something this file uses (a constructor, a method, a
 setting): adapt this file to it, do not undo the earlier change."""
+
+
+def error_lines(log: str, limit: int = 1500) -> str:
+    """What a failed build or run says: its lines that name an error (the last ones, about `limit` characters),
+    else the end of the log. The end alone is often Docker's own report of the failed step, without the error."""
+    lines = [" ".join(l.split()) for l in (log or "").splitlines()]
+    errs = [l for l in lines if re.search(r"\berror\b|\bexception\b|\bfailed\b|\bfatal\b", l, re.I)
+            and not l.startswith(("ERROR: failed to solve", "------", ">>>"))]
+    out = " | ".join(errs)
+    return out[-limit:] if errs else " ".join((log or "").split())[-600:]
 
 
 def build_errors(log: str) -> list[dict]:
@@ -219,10 +230,12 @@ def build_errors(log: str) -> list[dict]:
     seen, out = set(), []
     for m in BUILD_ERROR_RE.finditer(log or ""):
         rel = safe_rel(m["file"])
-        key = (rel, m["line"], m["code"])
+        text = " ".join(m["msg"].split())[:300]
+        # a project's errors have no line: NuGet writes one error line per dependency path, each says something
+        key = (rel, m["line"], m["code"]) if m["line"] else (rel, m["code"], text)
         if rel and key not in seen:
             seen.add(key)
-            out.append({"file": rel, "line": int(m["line"]), "code": m["code"], "text": " ".join(m["msg"].split())[:300]})
+            out.append({"file": rel, "line": int(m["line"] or 0), "code": m["code"], "text": text})
     return out[:40]
 
 
@@ -270,7 +283,7 @@ def repair_tasks(payload: dict, app_root: Path, changed: list[str]) -> list[dict
         if (app_root / err["file"]).is_file():
             by_file.setdefault(err["file"], []).append(err)
     if not by_file:
-        tail = " ".join(str(payload.get("log_tail") or "").split())[-600:]
+        tail = error_lines(str(payload.get("log_tail") or ""))
         by_file = {f: [{"file": f, "line": 0, "code": "run", "text": "the patched component does not run: " + tail}]
                    for f in changed if (app_root / f).is_file()}
     return [{"file": f, "component": comp.get("name"), "project": comp.get("project"), "findings": [{
@@ -1119,7 +1132,8 @@ APPLIES_TEXT = {"build": ("Does not build", "The patch applies to the commit, bu
                 "run": ("Does not start", "The patch applies and the component builds, but its container does not "
                         "start or answer: the log is under Verification. Fix it with the LLM, or by hand."),
                 "none": ("Not built", "The patch applies to the commit, but it was not built and run (verification "
-                         "was off, or Docker was not available): build and test it yourself.")}
+                         "was off, Docker was not available, or no component it changes can be built here): build "
+                         "and test it yourself.")}
 
 
 def status_label(status: str, verify_statuses=()) -> tuple[str, str]:
@@ -1180,9 +1194,12 @@ def rules_after(payload: dict, app_root: Path) -> tuple[dict, list[dict]]:
     return out, new
 
 
-def verify_components(payload: dict, app_root: Path, work: Path, timeout: int = 900, name: str | None = None) -> list[dict]:
-    """Build and run each changed component of the patched copy (verify.verify_component). `name`: the
-    application's name for the image tags (variant_name; default the folder's name)."""
+def verify_components(payload: dict, app_root: Path, work: Path, timeout: int = 900, name: str | None = None,
+                      files: list[str] | None = None) -> list[dict]:
+    """Build and run each changed component of the patched copy (verify.verify_component): those of the payload's
+    tasks and those whose project folder holds a file the patch changes (`files`, relative to the application: a
+    repair, or an order that continues an earlier patch, has no tasks of its own). `name`: the application's name
+    for the image tags (variant_name; default the folder's name)."""
     from .assess import assess
     from .generate import buildable
     from .rules import load_rules
@@ -1198,7 +1215,8 @@ def verify_components(payload: dict, app_root: Path, work: Path, timeout: int = 
         return [{"component": c["name"], "status": "not-built", "detail": f"Docker is not available: {ex}"[:400]}
                 for c in payload["components"]]
     out = []
-    changed = {t["component"] for t in payload["tasks"]}
+    changed = {t["component"] for t in payload.get("tasks") or []}
+    changed |= {_component_of(payload["components"], f).get("name") for f in files or []}
     for comp in payload["components"]:
         if comp["name"] not in changed:
             continue
@@ -1418,6 +1436,7 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
     result.update(patch=text, files=diffstat(text))
     if text.encode("utf-8") != patch:
         result["patch_b64"] = base64.b64encode(patch).decode()
+    _stop_if_cancelled()
     progress("verifying: applying the patch to a clean copy")
     check_repo, check_app = checkout(payload["source"], payload.get("commit"), work / name)
     ok, alog = apply_patch(check_repo, patch)
@@ -1437,7 +1456,8 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
         notes.append(f"the rules could not run on the patched copy: {type(ex).__name__}: {ex}"[:400])
     if verify:
         progress("verifying: building and running the changed components")
-        result["verification"] = verify_components(payload, check_app, work / "verify-work", name=name)
+        result["verification"] = verify_components(payload, check_app, work / "verify-work", name=name,
+                                                   files=app_files(check_repo, check_app, text))
     result["status"] = verification_status(True, len(changes_all), result["verification"] if verify else None)
     if not verify:
         result["reason"] = "verification was off: the patch applies, it was not built"
@@ -1577,6 +1597,7 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
         raise RefactorError("nothing to change: no file names a finding or uses an embedded database")
     p = 0
     for p in range(1, passes + 1):
+        _stop_if_cancelled()
         if late():
             notes.append("the LLM-heavy window ended: no further LLM calls")
             break
@@ -1600,6 +1621,7 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
             patch = _combined_patch(repo, base, payload, list(rows.values()), notes, model)
             if patch is None:
                 break
+            _stop_if_cancelled()
             progress(f"verifying: pass {p}, round {rnd}: applying the patch to a clean copy")
             check_repo, check_app = checkout(payload["source"], payload.get("commit"), work / name)
             ok, alog = apply_patch(check_repo, patch)
@@ -1609,7 +1631,9 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
             verification = []
             if verify:
                 progress(f"verifying: pass {p}, round {rnd}: building and running the changed components")
-                verification = verify_components(all_payload, check_app, work / "verify-work", name=name)
+                verification = verify_components(all_payload, check_app, work / "verify-work", name=name,
+                                                 files=app_files(check_repo, check_app,
+                                                                 patch.decode("utf-8", errors="replace")))
             loop[-1]["verification"] = [{"component": v.get("component"), "status": v.get("status")}
                                         for v in verification]
             broken = _broken(verification)
@@ -1757,12 +1781,15 @@ def summary(result: dict) -> str:
         hv = result.get("heavy") or {}
         if hv.get("next_job"):
             out += f"; LLM-heavy: continues as #{int(hv['next_job'])}"
+        elif hv.get("stopped"):
+            out += f"; LLM-heavy: stopped: {hv['stopped']}"
         return out[:400]
     hv = result.get("heavy") or {}
     return (f"{st}: {len(fx)} of {n} finding{'s' if n != 1 else ''} fixed, {files} file{'s' if files != 1 else ''} changed"
             + (f" ({left} not attempted: {not_attempted_reason(result)})" if left else "")
             + (f"; LLM-heavy: continues as #{int(hv['next_job'])}" if hv.get("next_job") else
-               f"; LLM-heavy: {hv['done']}" if hv.get("done") else ""))[:400]
+               f"; LLM-heavy: {hv['done']}" if hv.get("done") else
+               f"; LLM-heavy: stopped: {hv['stopped']}" if hv.get("stopped") else ""))[:400]
 
 
 def not_attempted_reason(result: dict) -> str:
@@ -1925,6 +1952,13 @@ def heavy_next_fix(job: dict, payload: dict, result: dict, ends: datetime, now: 
     return {**out, "next_job": int(nid or 0), "next": what}
 
 
+def _stop_if_cancelled() -> None:
+    """Cancel on the order (Admin → LLM queue): no further step (a build, the sandbox, the next order)."""
+    from . import ai
+    if ai.cancelled():
+        raise ai.Cancelled("cancelled: the order was cancelled")
+
+
 def handler(job: dict) -> dict:
     """The LLM queue's handler of `refactor` jobs."""
     pl = job["Payload"]
@@ -1937,6 +1971,7 @@ def handler(job: dict) -> dict:
     run_pl = heavy_payload(pl, ends) if ends else pl
     try:
         result = run_order(run_pl, work, progress=progress, name=name)
+        _stop_if_cancelled()                # cancelled while it verified: nothing deployed, no next order
         if pl.get("goal") == "rating-a":
             # a patched copy that rates A and verifies runs in the sandbox beside the original (variant.py)
             from . import variant

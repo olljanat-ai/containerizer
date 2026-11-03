@@ -59,6 +59,7 @@ FEATURE = "assessment-queued"           # LLM usage feature of the reviews the r
 MAX_ATTEMPTS = 3                        # a job that failed this often stays failed (requeue on the page)
 RETRY_MINUTES = 5                       # wait before the next attempt: this times the attempts so far
 HEARTBEAT = 30                          # seconds between heartbeats of the jobs being asked
+CANCEL_CHECK = 5                        # seconds between looks for Cancel on the jobs being asked
 STALE_MINUTES = 10                      # a running job without a heartbeat for this long lost its runner
 SECOND_OPINION = ("blocker", "rewrite")
 # How sure the LLM must be to change the verdict: as inline for uncertain components; a second opinion
@@ -930,6 +931,7 @@ class Runner:
         self.load = load
         self.stopping = threading.Event()
         self.active: dict[int, dict] = {}   # JobId -> row being asked
+        self.cancelling: dict[int, str] = {}  # JobId -> who pressed Cancel (cz.LlmJob.CancelRequestedBy)
         self.lock = threading.Lock()
         self._ctx = None                    # ai.configured() of the jobs being asked
         self.status = None
@@ -1002,11 +1004,14 @@ class Runner:
         return row
 
     def process(self, row: dict) -> str:
-        """One job: its kind's handler, and the result (or the failure) recorded. Returns the result."""
+        """One job: its kind's handler, and the result (or the failure) recorded. Returns the result. A job someone
+        cancelled (Admin → LLM queue → Cancel) is recorded as skipped, whatever its handler did."""
         from . import ai
         from .orgsource import REDACT
         t0 = _time.monotonic()
         kind = JOB_KINDS[row["Kind"]]
+        if row.get("CancelRequestedAt"):
+            return self.cancelled(row, row.get("CancelRequestedBy"))
         try:
             with ai.usage_scope(feature=kind.feature, repo=row.get("Repository") or row.get("App"),
                                 scan=row.get("ScanName")), _usage() as used:
@@ -1015,8 +1020,15 @@ class Runner:
                 out = kind.handler({**row, "Payload": _payload(row), "_progress": lambda text: self.progress(row, text),
                                     "_connect": self.connect, "_key": self.key})
         except Exception as ex:  # noqa: BLE001
-            result = self.failed(row, REDACT(f"{type(ex).__name__}: {ex}")[:1000])
+            if row["JobId"] in self.cancelling:
+                result = self.cancelled(row, self.cancelling.get(row["JobId"]))
+            else:
+                result = self.failed(row, REDACT(f"{type(ex).__name__}: {ex}")[:1000])
         else:
+            if row["JobId"] in self.cancelling:
+                result = self.cancelled(row, self.cancelling.get(row["JobId"]))
+                self.metrics.jobs.inc(kind=kind.name, result=result)
+                return result
             out = {**out, "tokens": used.tokens()}
             result = self.answered(row, out, _time.monotonic() - t0)
             self.learn(row, used, _time.monotonic() - t0)
@@ -1024,6 +1036,41 @@ class Runner:
         if result == "answered":
             self.metrics.seconds.observe(_time.monotonic() - t0, kind=kind.name)
         return result
+
+    def cancelled(self, row: dict, by: str | None) -> str:
+        conn = self.connect()
+        try:
+            cur = conn.cursor()
+            cur.execute("UPDATE cz.LlmJob SET Status = N'skipped', Runner = NULL, HeartbeatAt = NULL, "
+                        "FinishedAt = SYSUTCDATETIME(), Note = %s WHERE JobId = %s AND Status = N'running' AND Runner = %s",
+                        (_cut(f"cancelled by {by or 'an administrator'}", 400), row["JobId"], self.name))
+            conn.commit()
+        finally:
+            conn.close()
+        with self.lock:
+            self.cancelling.pop(row["JobId"], None)
+        self.log(f"#{row['JobId']} {row['Kind']} {row.get('Repository')}: cancelled by {by or 'an administrator'}")
+        return "skipped"
+
+    def check_cancel(self) -> None:
+        """The jobs being asked that someone cancelled: their LLM calls stop (ai.cancel_thread_when in _run)."""
+        with self.lock:
+            ids = list(self.active)
+        if not ids:
+            return
+        conn = self.connect()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT JobId, CancelRequestedBy FROM cz.LlmJob WHERE CancelRequestedAt IS NOT NULL "
+                        f"AND JobId IN ({', '.join(['%s'] * len(ids))})", tuple(ids))
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+        with self.lock:
+            for jid, by in rows:
+                if jid in self.active and jid not in self.cancelling:
+                    self.cancelling[jid] = by or ""
+                    self.log(f"#{jid}: cancelled by {by or 'an administrator'}: stopping its LLM calls")
 
     def answered(self, row: dict, out: dict, seconds: float) -> str:
         conn = self.connect()
@@ -1125,7 +1172,16 @@ class Runner:
             conn.close()
 
     def _heartbeats(self) -> None:
-        while not self.stopping.wait(HEARTBEAT):
+        n = 0
+        while not self.stopping.wait(CANCEL_CHECK):
+            n += 1
+            try:
+                self.check_cancel()
+            except Exception as ex:
+                self.log(f"cancel check: {type(ex).__name__}: {ex}")
+            if n * CANCEL_CHECK < HEARTBEAT:
+                continue
+            n = 0
             try:
                 self.heartbeat()
             except Exception as ex:
@@ -1263,12 +1319,14 @@ class Runner:
         return started
 
     def _run(self, row: dict) -> str:
+        from .ai import cancel_thread_when
         try:
-            if row.get("_llm"):                 # the LLM of the job's lane, for this job's thread only
-                from .ai import configured
-                with configured(row["_llm"], local=True):
-                    return self.process({**row, "Model": None})
-            return self.process(row)
+            with cancel_thread_when(lambda: row["JobId"] in self.cancelling):   # Cancel: its LLM calls stop
+                if row.get("_llm"):                 # the LLM of the job's lane, for this job's thread only
+                    from .ai import configured
+                    with configured(row["_llm"], local=True):
+                        return self.process({**row, "Model": None})
+                return self.process(row)
         finally:
             with self.lock:
                 self.active.pop(row["JobId"], None)

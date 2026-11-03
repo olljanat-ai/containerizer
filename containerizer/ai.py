@@ -80,10 +80,37 @@ class cancel_when:
         _CANCEL["check"] = self.prev
 
 
+class cancel_thread_when:
+    """`with cancel_thread_when(check):` like cancel_when, for the LLM calls of this thread only (the LLM queue
+    runner asks for several jobs at once, each in its own thread; Cancel on one stops that one)."""
+
+    def __init__(self, check):
+        self.check = check
+
+    def __enter__(self):
+        self.prev, _THREAD.check = getattr(_THREAD, "check", None), self.check
+        return self
+
+    def __exit__(self, *exc):
+        _THREAD.check = self.prev
+
+
+_THREAD = threading.local()
+
+
 def cancelled() -> bool:
-    check = _CANCEL["check"]
+    for check in (_CANCEL["check"], getattr(_THREAD, "check", None)):
+        try:
+            if check and check():
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _safe(check) -> bool:
     try:
-        return bool(check and check())
+        return bool(check())
     except Exception:
         return False
 
@@ -525,12 +552,14 @@ def _post_json(url: str, body: dict, headers: dict, timeout: float) -> dict:
     opener = urllib.request.build_opener(*tracked.handlers())        # proxies from the environment as urlopen
     done = threading.Event()
 
+    own = getattr(_THREAD, "check", None)   # this thread's job (the LLM queue): the watcher runs in its own thread
+
     def watch():                        # closes the connection when the run is cancelled mid-answer
         while not done.wait(CANCEL_POLL):
-            if cancelled():
+            if cancelled() or (own is not None and _safe(own)):
                 tracked.close()
                 return
-    if _CANCEL["check"]:
+    if _CANCEL["check"] or own is not None:
         threading.Thread(target=watch, daemon=True).start()
     try:
         with opener.open(req, timeout=timeout) as r:  # noqa: S310 - scheme checked in _llm_base_url

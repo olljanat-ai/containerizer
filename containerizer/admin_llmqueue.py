@@ -1,7 +1,7 @@
 """Admin page of the LLM queue (llmqueue.py, docs/scheduled-scans.md#the-llm-queue): administrators and operators.
 
 - The queue: running and queued jobs of every kind in the order the runner takes them, with their estimated
-  tokens and time; Top, Up, Down, Bottom and Skip on each queued job.
+  tokens and time; Top, Up, Down, Bottom and Skip on each queued job, Cancel on each job being asked.
 - Finished jobs: answers (with the reasoning), failures and skipped jobs; Requeue on failed and skipped ones.
 - Repositories whose reviews are all answered since their last scan: Re-scan now (a full scan of only that
   repository), so the answers apply without waiting for the schedule.
@@ -26,7 +26,8 @@ STATUS_TEXT = {"approval": "Waiting for approval", "queued": "Queued", "running"
 STATUS_CSS = {"approval": "st-wait", "queued": "st-run", "running": "st-run", "answered": "st-ok", "failed": "st-bad", "skipped": "st-off"}
 JOB_COLS = ("JobId, Kind, Reason, Status, Priority, AdminRank, ScanId, RepositoryId, Repository, App, Component, ProjectPath, "
             "RuleVerdict, Confidence, Model, RequestedBy, InputChars, EstInputTokens, InputTokens, OutputTokens, Endpoint, "
-            "Parallel, Summary, Error, Note, Attempts, NotBefore, QueuedAt, StartedAt, FinishedAt, Runner, Seconds")
+            "Parallel, Summary, Error, Note, Attempts, NotBefore, QueuedAt, StartedAt, FinishedAt, Runner, Seconds, "
+            "CancelRequestedAt, CancelRequestedBy")
 ORDER = "COALESCE(AdminRank, CAST(Priority AS float)) DESC, JobId"
 
 
@@ -58,6 +59,8 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict, flash:
             return _anchored(move(conn, ident, parts[2]), form)
         if parts[2] == "skip":
             return _anchored(skip(conn, ident), form)
+        if parts[2] == "cancel":
+            return _anchored(cancel(conn, ident, s.user), form)
         if parts[2] == "requeue":
             return _anchored(requeue(conn, ident), form)
         if parts[2] in ("approve", "reject"):
@@ -290,6 +293,12 @@ def show(adm, conn, s, a, q: dict, flash: str) -> Response:
         acts = _buttons(adm, s, r, r is queued[0] if queued else True, r is queued[-1] if queued else True, gone_to) \
             if r["Status"] == "queued" and not kind else \
             (_buttons(adm, s, r, True, True, gone_to) if r["Status"] == "queued" else "")
+        if r["Status"] == "running":
+            acts = (f"<span class='muted small'>cancelling: requested by {e(r.get('CancelRequestedBy') or '?')}</span>"
+                    if r.get("CancelRequestedAt") else
+                    f"<form method='post' action='{BASE}/{jid}/cancel' class='inline'>{adm._csrf(s)}{_at(f'job-{jid}')}"
+                    f"<button class='link' title='Stop asking the LLM for this job: its LLM calls stop at once, and it "
+                    f"is recorded as skipped (Requeue starts it again)'>Cancel</button></form>")
         if r["Status"] == "approval":
             acts = (f"<form method='post' action='{BASE}/{jid}/approve' class='inline'>{adm._csrf(s)}{_at(f'job-{jid}')}"
                     f"<button>Approve</button></form> <form method='post' action='{BASE}/{jid}/reject' "
@@ -426,6 +435,18 @@ def skip(conn, ident: int) -> Response:
     return _back(BASE, f"Job #{ident} skipped." if n else f"Job #{ident} is not queued (the runner may have taken it).")
 
 
+def cancel(conn, ident: int, user: str) -> Response:
+    """Cancel a job being asked: the runner holding it sees the request within seconds (Runner.check_cancel), stops
+    its LLM calls and the rest of its work (a refactoring's build, sandbox and next order) and records it as skipped."""
+    cur = conn.cursor()
+    cur.execute("UPDATE cz.LlmJob SET CancelRequestedAt = SYSUTCDATETIME(), CancelRequestedBy = %s "
+                "WHERE JobId = %s AND Status = N'running' AND CancelRequestedAt IS NULL", (user[:256], ident))
+    n = cur.rowcount
+    conn.commit()
+    return _back(BASE, f"Job #{ident}: cancelling. Its LLM calls stop within a few seconds." if n else
+                 f"Job #{ident} is not being asked (use Skip for a queued job).")
+
+
 def approve(conn, ident: int, user: str) -> Response:
     cur = conn.cursor()
     cur.execute("UPDATE cz.LlmJob SET Status = N'queued', ApprovedBy = %s, ApprovedAt = SYSUTCDATETIME() "
@@ -447,7 +468,8 @@ def reject(conn, ident: int, user: str) -> Response:
 def requeue(conn, ident: int) -> Response:
     cur = conn.cursor()
     cur.execute("UPDATE cz.LlmJob SET Status = N'queued', Attempts = 0, NotBefore = NULL, Error = NULL, Note = NULL, "
-                "FinishedAt = NULL, QueuedAt = SYSUTCDATETIME() WHERE JobId = %s AND Status IN (N'failed', N'skipped')",
+                "FinishedAt = NULL, QueuedAt = SYSUTCDATETIME(), CancelRequestedAt = NULL, CancelRequestedBy = NULL "
+                "WHERE JobId = %s AND Status IN (N'failed', N'skipped')",
                 (ident,))
     n = cur.rowcount
     conn.commit()

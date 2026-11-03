@@ -1955,6 +1955,14 @@ IF COL_LENGTH(N'[${schema}].LlmJob', N'RemoveRequestedAt') IS NULL
 GO
 GRANT UPDATE ON [${schema}].LlmJob (RemoveRequestedAt, RemoveRequestedBy) TO [${schema}_admin];
 GO
+-- 33: Cancel on a job being asked (Admin -> LLM queue): an administrator asks (CancelRequestedAt/By, admin login); the
+-- queue runner that holds the job sees it at its next heartbeat, stops the job's LLM calls and records it as skipped,
+-- "cancelled by ..." (writer login: Status, Note)
+IF COL_LENGTH(N'[${schema}].LlmJob', N'CancelRequestedAt') IS NULL
+    ALTER TABLE [${schema}].LlmJob ADD CancelRequestedAt datetime2(0) NULL, CancelRequestedBy nvarchar(256) NULL;
+GO
+GRANT UPDATE ON [${schema}].LlmJob (CancelRequestedAt, CancelRequestedBy) TO [${schema}_admin];
+GO
 CREATE OR ALTER VIEW [${schema}].vRefactorOrder AS
 SELECT j.JobId, COALESCE(j.ApplicationId, a.ApplicationId) AS ApplicationId, j.AssessmentId, j.Component, j.ProjectPath,
        CASE WHEN j.Status = N'approval' THEN N'approval'
@@ -2266,4 +2274,7 @@ IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 31) INSER
 GO
 -- 32: what a running organization scan is doing, for its progress page (OrgScanRun.Activity)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 32) INSERT [${schema}].SchemaVersion (Version) VALUES (32);
+GO
+-- 33: cancelling a job that is being asked (LlmJob.CancelRequestedAt/By)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 33) INSERT [${schema}].SchemaVersion (Version) VALUES (33);
 GO

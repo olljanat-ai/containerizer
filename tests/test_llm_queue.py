@@ -1025,3 +1025,71 @@ def test_llm_heavy_windows_in_sql_server():
         adm.close()
     finally:
         conn.close()
+
+
+# --------------------------------------------------------------------------- Cancel on a job being asked
+
+def test_cancel_stops_only_the_cancelled_jobs_llm_calls():
+    import threading
+    stop = {"a": False}
+    inside, other = threading.Event(), {}
+
+    def neighbour():                                     # another job, asking while job "a" is cancelled
+        inside.wait(5)
+        with ai.cancel_thread_when(lambda: False):
+            other["cancelled"] = ai.cancelled()
+    t = threading.Thread(target=neighbour)
+    t.start()
+    with ai.cancel_thread_when(lambda: stop["a"]):
+        before = ai.cancelled()
+        stop["a"] = True
+        inside.set()
+        t.join()
+        after = ai.cancelled()
+    assert (before, after, other["cancelled"]) == (False, True, False) and not ai.cancelled()
+
+
+def test_the_runner_records_a_cancelled_job_and_drops_its_result(monkeypatch):
+    conn = FakeConn({r"SELECT JobId, CancelRequestedBy FROM cz.LlmJob": [{"JobId": 7, "CancelRequestedBy": "a@x"}]})
+    r = lq.Runner(lambda: conn, name="r1", metrics=lq.QueueMetrics("r1"), log=lambda msg: None, load=lambda: 0.0)
+    row = {"JobId": 7, "Kind": "refactor", "Repository": "shop", "Attempts": 1, "Payload": "{}"}
+    r.active[7] = row
+    calls = []
+
+    def handler(job):
+        calls.append(ai.cancelled())
+        r.check_cancel()                                  # what the heartbeat thread does every few seconds
+        calls.append(ai.cancelled())
+        raise ai.Cancelled("cancelled: the order was cancelled")
+    monkeypatch.setitem(lq.JOB_KINDS, "refactor", SimpleNamespace(name="refactor", feature="refactor-queued",
+                                                                    handler=handler))
+    assert r._run(row) == "skipped" and calls == [False, True]
+    sql, params = conn.sql(r"SET Status = N'skipped'.*Runner = %s")[-1]
+    assert params == ("cancelled by a@x", 7, "r1") and not conn.sql(r"SET Status = N'failed'")
+    assert 7 not in r.cancelling and 7 not in r.active
+    # put back in the queue while cancelling (the runner stopped): cancelled when it is taken again, never run
+    calls.clear()
+    assert r.process({**row, "CancelRequestedAt": datetime(2026, 11, 3), "CancelRequestedBy": "b@x"}) == "skipped"
+    assert calls == [] and conn.sql(r"SET Status = N'skipped'")[-1][1][0] == "cancelled by b@x"
+
+
+def test_cancel_on_the_queue_page(adm):
+    running = [{**QUEUED[0], "JobId": 4, "Status": "running", "StartedAt": datetime(2026, 11, 3, 13, 0),
+                "Runner": "containerizer-llm-queue", "CancelRequestedAt": None, "CancelRequestedBy": None}]
+    adm.conn.answers = {r"FROM cz.LlmQueueSettings": [dict(lq.DEFAULTS)], r"FROM cz.LlmSpeed": [],
+                        r"COUNT\(\*\) FROM cz.OrgScanRun": [{"N": 0}],
+                        r"Status IN \(N'approval', N'queued', N'running'\)\s+ORDER BY": running,
+                        r"FROM cz.LlmJob WHERE Status IN \(N'approval', N'queued', N'running'\)": running}
+    operator = adm.sessions.create("o@example.com", "O", False, True, True, [])
+    body = _get(adm, operator, "/admin/llm-queue").body
+    assert "action='/admin/llm-queue/4/cancel'" in body and ">Cancel</button>" in body
+    r = _post(adm, operator, "/admin/llm-queue/4/cancel", at="job-4")
+    sql, params = adm.conn.sql(r"SET CancelRequestedAt = SYSUTCDATETIME\(\)")[-1]
+    assert "Status = N'running'" in sql and params == ("o@example.com", 4) and "cancelling" in dict(r.headers)["Location"]
+    cancelling = [{**running[0], "CancelRequestedAt": datetime(2026, 11, 3, 13, 5), "CancelRequestedBy": "o@example.com"}]
+    adm.conn.answers[r"Status IN \(N'approval', N'queued', N'running'\)\s+ORDER BY"] = cancelling
+    adm.conn.answers[r"FROM cz.LlmJob WHERE Status IN \(N'approval', N'queued', N'running'\)"] = cancelling
+    body = _get(adm, operator, "/admin/llm-queue").body
+    assert "cancelling: requested by o@example.com" in body and "/4/cancel" not in body
+    _post(adm, operator, "/admin/llm-queue/4/requeue")
+    assert "CancelRequestedAt = NULL" in adm.conn.sql(r"SET Status = N'queued', Attempts = 0")[-1][0]
