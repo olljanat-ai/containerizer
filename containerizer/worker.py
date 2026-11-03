@@ -21,7 +21,7 @@ public key. The web UI can seal them but never open them; the worker opens them 
 registered read-only token does not run (no anonymous access), the output repository's token is
 picked by its URL and only used to push there, and each token is only sent with the URLs of its own
 organization or repository. The registry's credentials stay with the worker as environment
-variables, and images are only pushed to the providers' hosts and CONTAINERIZER_WORKER_HOSTS.
+variables, and images are only pushed to the appliance's own registry (org.SANDBOX_REGISTRY).
 
 The worker also does what needs the internal rules repository's write token (rule review, rulereview.py):
 it opens the pull request of each rule a reviewer approved on the admin pages (a thread of its own, so
@@ -37,7 +37,6 @@ import socket
 import sys
 import threading
 import time as _time
-import urllib.parse
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
@@ -100,26 +99,16 @@ def allowed_hosts(env=None) -> set[str]:
     return DEFAULT_HOSTS | extra
 
 
-def _host(url: str) -> str:
-    return (urllib.parse.urlsplit(url if "://" in url else "https://" + url).hostname or "").lower()
-
-
 def check_scan(scan: dict, hosts: set[str] | None = None, creds=None, key_id: str | None = None) -> list[str]:
     """What keeps a scan from running safely on this worker (empty when it can run). `creds`
     (credentials.Credentials) checks that the organization and the output repository have their
-    registered tokens; `hosts` that the registry may receive the worker's registry credentials."""
-    from .org import host_allowed
+    registered tokens. (`hosts` is kept for the callers; scans push only to the appliance's own registry.)"""
     from .orgsource import PROVIDERS
     problems = []
     if scan.get("Provider") not in PROVIDERS:
         problems.append(f"unknown provider {scan.get('Provider')!r}")
     if creds is not None:
         problems += creds.problems(scan, key_id)
-    if hosts is not None:
-        url = scan.get("Registry") if scan.get("PushImages") else None
-        if url and not host_allowed(url, hosts | (creds.hosts() if creds is not None else set())):
-            problems.append(f"registry host {_host(url)} is not allowed on this worker: add it to "
-                            "CONTAINERIZER_WORKER_HOSTS")
     for k in ("IncludeRegex", "ExcludeRegex"):
         if scan.get(k):
             try:
@@ -726,17 +715,17 @@ class Worker:
         return load(conn, self.private_key())
 
     def options(self, scan: dict, store, hooks, creds=None):
-        from .org import OrgOptions
+        from .org import SANDBOX_REGISTRY, OrgOptions, scan_pushes
         base = self.data / f"scan-{int(scan['ScanId'])}"
         read = creds.read_for(scan["Provider"], scan["ApiUrl"], scan["Organization"]) if creds else None
         write = creds.write_for(scan["OutputRepo"]) if creds else None
         return OrgOptions(
-            provider=scan["Provider"], org=scan["Organization"], registry=scan["Registry"], api_url=scan["ApiUrl"],
+            provider=scan["Provider"], org=scan["Organization"], registry=SANDBOX_REGISTRY, api_url=scan["ApiUrl"],
             token=(read.token or "") if read else "", output_repo=scan["OutputRepo"],
             output_dir=None if scan["OutputRepo"] else str(base / "output"), output_branch=scan["OutputBranch"],
             output_token=(write.token or "") if write else "",
-            output_username=write.username if write else "x-access-token", push_images=bool(scan["PushImages"]),
-            image_pull_secret=scan["ImagePullSecret"], include=scan["IncludeRegex"], exclude=scan["ExcludeRegex"],
+            output_username=write.username if write else "x-access-token", push_images=scan_pushes(),
+            image_pull_secret=None, include=scan["IncludeRegex"], exclude=scan["ExcludeRegex"],
             skip_forks=bool(scan["SkipForks"]), stale_days=int(scan["StaleDays"]), ai=bool(scan["UseAi"]),
             parallel=int(scan.get("Parallel") or 1),
             verify=bool(scan["Verify"]), gate=bool(scan["Gate"]), sql=self.sql, work_dir=str(base / "work"),

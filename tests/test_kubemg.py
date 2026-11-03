@@ -1,6 +1,7 @@
 """kubemg on the appliance (optional): the sandbox cluster's registration (containerizer.kubemg) and the appliance's
 units, settings and Caddy site for it."""
 import os
+import sys
 import shutil
 import subprocess
 from pathlib import Path
@@ -158,7 +159,8 @@ def test_units_start_only_when_turned_on_and_are_locked_down():
     srv = (UNITS / "containerizer-kubemg.service").read_text()
     db = (UNITS / "containerizer-kubemg-db.service").read_text()
     # loopback only behind Caddy, non-root, read-only; the database on loopback too
-    assert "KUBEMG_LISTEN_ADDR=127.0.0.1:8444" in srv and "KUBEMG_TLS_ENABLED=false" in srv and "ALLOW_INSECURE" not in srv
+    assert "KUBEMG_LISTEN_ADDR=127.0.0.1:8444" in srv and "KUBEMG_TLS_ENABLED=true" in srv and "ALLOW_INSECURE" not in srv
+    assert "--volume /var/lib/containerizer/kubemg/tls/ssl:/etc/kubemg/ssl:ro" in srv           # its loopback certificate
     assert "DB_HOST=127.0.0.1 --env DB_PORT=5434" in db.replace("\\\n  ", "") or "DB_PORT=5434" in srv
     assert "listen_addresses=127.0.0.1 -c port=5434" in db
     for text, user in ((srv, "65532:65532"), (db, "70:70")):
@@ -183,7 +185,8 @@ def test_firstboot_writes_the_settings_site_and_secrets_only_when_turned_on(tmp_
     (run / "web-url.env").write_text("CONTAINERIZER_PUBLIC_URL=https://cz.example.com\n")
     script = block.replace("/run/containerizer", str(run)).replace("install -d -m 0700 -o 70 -g 70", "mkdir -p") \
         .replace("install -d -m 0700 -o 65532 -g 65532", "mkdir -p").replace("install -d -m 0755 -o root -g root", "mkdir -p") \
-        .replace("install -d -m 0755", "mkdir -p")
+        .replace("install -d -m 0755", "mkdir -p") \
+        .replace("/usr/lib/containerizer/venv/bin/python", sys.executable).replace(" --group 65532", "")
     secret = ("secret() { [ -s \"$S/$1\" ] || { printf '%s' \"$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' "
               "| head -c 32)Aa1!\" > \"$S/$1\"; chmod 0400 \"$S/$1\"; }; }\n")
 
@@ -196,7 +199,9 @@ def test_firstboot_writes_the_settings_site_and_secrets_only_when_turned_on(tmp_
     assert "CZ_KUBEMG_HOST=kubemg.cz.example.com" in kenv and "KUBEMG_PUBLIC_URL=https://kubemg.cz.example.com" in kenv
     site = (run / "kubemg.caddy").read_text()
     assert site.startswith("https://kubemg.cz.example.com {") and "tls {$CZ_CADDY_TLS}" in site
-    assert "reverse_proxy 127.0.0.1:8444" in site
+    assert "reverse_proxy https://127.0.0.1:8444 {" in site
+    assert f"tls_trusted_ca_certs {run}/kubemg/loopback-ca.pem" in site
+    assert (run / "kubemg/loopback-ca.pem").read_text() == (d / "kubemg/tls/ca.crt").read_text()
     assert "CONTAINERIZER_KUBEMG_URL=https://kubemg.cz.example.com/" in (run / "web-url.env").read_text()
     sec = dict(l.split("=", 1) for l in (s / "kubemg.env").read_text().splitlines())
     assert set(sec) == {"DB_PASSWORD", "KUBEMG_ADMIN_PASSWORD", "KUBEMG_SECRET_KEY", "KUBEMG_SESSION_RECORDING_KEY"}
@@ -226,3 +231,18 @@ def test_the_admin_pages_link_kubemg():
                                       "T", "applications", "")
     with pytest.raises(OidcError, match="KUBEMG_URL"):
         build({**base, "CONTAINERIZER_KUBEMG_URL": "javascript:alert(1)"})
+
+
+def test_the_loopback_certificate_is_issued_by_its_own_ca_once(tmp_path):
+    from cryptography import x509
+    assert kubemg.loopback_tls(tmp_path / "tls") is True
+    ca = x509.load_pem_x509_certificate((tmp_path / "tls/ca.crt").read_bytes())
+    cert = x509.load_pem_x509_certificate((tmp_path / "tls/ssl/tls.crt").read_bytes())
+    cert.verify_directly_issued_by(ca)                                     # not self-signed: kubemg's check is ok
+    assert cert.issuer != cert.subject
+    san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert [str(i) for i in san.get_values_for_type(x509.IPAddress)] == ["127.0.0.1"]
+    assert oct((tmp_path / "tls/ca.key").stat().st_mode & 0o777) == "0o400"
+    assert oct((tmp_path / "tls/ssl/tls.key").stat().st_mode & 0o777) == "0o400"
+    before = (tmp_path / "tls/ssl/tls.crt").read_bytes()
+    assert kubemg.loopback_tls(tmp_path / "tls") is False and (tmp_path / "tls/ssl/tls.crt").read_bytes() == before

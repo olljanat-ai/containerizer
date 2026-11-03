@@ -8,6 +8,17 @@ qcow2 and VHDX images as release assets.
 
 ## Unreleased
 
+- Organization scans and Make it A variants always push to the appliance's own registry
+  (`localhost:5000/sandbox`). The scan form no longer has *Image registry*, *Push images* or *Image pull secret*,
+  and a registry stored by an older scan is ignored. This also fixes Make it A variants that were not deployed
+  with "the registry host is not allowed on this machine (CONTAINERIZER_WORKER_HOSTS)": the LLM queue runner did
+  not allow `localhost`. External registries remain for the build pipelines generated for the real environment.
+- kubemg on the appliance serves HTTPS on loopback too (`KUBEMG_TLS_ENABLED=true`). Its setup checklist blocked on
+  "HTTPS is off" (kubectl will not send a token over plain HTTP, so generated kubeconfigs and exec would not
+  work). Its certificate is issued by a local CA that only Caddy trusts, made on the first start in
+  `/var/lib/containerizer/kubemg/tls`, and the setup check now says `ok`.
+- Make it A: every B application: an application that a verified patch makes A already links to that patch and
+  is not queued again from the page.
 - Releases no longer have the VHDX image or the SPDX SBOM file (`.spdx.json`), and the SBOM is no longer
   attested to the appliance image. On Hyper-V, install from the ISO (generation 2, Secure Boot template
   Microsoft UEFI Certificate Authority).

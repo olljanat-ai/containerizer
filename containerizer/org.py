@@ -44,6 +44,12 @@ SANDBOX = "sandbox"
 GIT_USER = ("containerizer", "containerizer@users.noreply.invalid")
 
 
+
+# Organization scans (and the "Make it A" variants deployed beside them) push to the appliance's own registry: the
+# worker pushes and k3s pulls without credentials (docs/appliance-admin.md#local-registry-and-the-sandbox-cluster).
+# External registries are for the CI pipelines generated for the real environment (pipelines.py), not for scans.
+SANDBOX_REGISTRY = "localhost:5000/sandbox"
+
 @dataclass
 class OrgOptions:
     provider: str
@@ -1080,6 +1086,12 @@ def local_images(o: "OrgOptions") -> bool:
     if o.local_images is not None:
         return bool(o.local_images)
     return os.environ.get(LOCAL_IMAGES_ENV) == "1"
+
+
+def scan_pushes() -> bool:
+    """Whether organization scans (and Make it A variants) push to SANDBOX_REGISTRY: always, except in a lab whose
+    cluster shares the builder's image store (CONTAINERIZER_LOCAL_IMAGES=1: tagged, not pushed)."""
+    return os.environ.get(LOCAL_IMAGES_ENV) != "1"
 
 
 def tag_local(local: str, ref: str) -> None:

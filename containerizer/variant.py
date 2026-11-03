@@ -117,11 +117,12 @@ def load_target(conn, payload: dict) -> dict:
 def options(scan: dict, write, work: Path):
     """OrgOptions of the scan, for one deployment (no SQL Server: nothing is stored as an assessment)."""
     from .org import OrgOptions
-    return OrgOptions(provider=scan["Provider"], org=scan["Organization"], registry=scan["Registry"],
+    from .org import SANDBOX_REGISTRY, scan_pushes
+    return OrgOptions(provider=scan["Provider"], org=scan["Organization"], registry=SANDBOX_REGISTRY,
                       api_url=scan.get("ApiUrl"), token="", output_repo=scan["OutputRepo"],
                       output_branch=scan.get("OutputBranch") or "main", output_token=write.token or "",
-                      output_username=write.username or "x-access-token", push_images=bool(scan.get("PushImages")),
-                      image_pull_secret=scan.get("ImagePullSecret"), verify=True, gate=bool(scan.get("Gate")),
+                      output_username=write.username or "x-access-token", push_images=scan_pushes(),
+                      image_pull_secret=None, verify=True, gate=bool(scan.get("Gate")),
                       sql=None, work_dir=str(work), ai=False)
 
 
@@ -148,8 +149,6 @@ def _open(connect, key, payload: dict, work: Path):
     hosts = allowed_hosts() | creds.hosts()
     if not host_allowed(scan["OutputRepo"], hosts):
         raise Skip("no output repository access: its host is not allowed on this machine (CONTAINERIZER_WORKER_HOSTS)")
-    if scan.get("PushImages") and not host_allowed(scan["Registry"], hosts):
-        raise Skip("the registry host is not allowed on this machine (CONTAINERIZER_WORKER_HOSTS)")
     return target, options(scan, write, work)
 
 

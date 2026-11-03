@@ -728,6 +728,13 @@ def test_make_it_a_for_every_b_app_smallest_first(adm, stateful, monkeypatch):
         {"ApplicationId": 7, "JobId": 42, "Status": "queued"}]
     b = _get(adm, ad, "/admin/refactoring/make-all-a").body
     assert "href='/admin/refactoring/42'>in the queue</a>" in b and "<b>1 order(s)</b> can be queued" in b
+    # one that a verified patch makes A already is shown with it, not queued again from here
+    adm.conn.answers[r"FROM cz.LlmJob WHERE Kind = N'refactor'\s+AND Status IN"] = []
+    adm.conn.answers[r"FROM cz.vRefactorOrder\s+WHERE Goal = N'rating-a' AND Status = N'verified'"] = [
+        {"ApplicationId": 7, "JobId": 77, "SandboxStatus": "skipped", "SandboxUrl": None, "FinishedAt": None}]
+    b = _getq(adm, ad, "/admin/refactoring/make-all-a", "limit=99999999").body
+    assert "made A by <a href='/admin/refactoring/77'>a patch</a>" in b and "<b>1 order(s)</b> can be queued" in b
+    assert b.index(">Big<") < b.index(">Shop<") and "Queue 1 order(s) under 99,999,999 tokens" in b
 
 
 # --------------------------------------------------------------------------- SQL Server

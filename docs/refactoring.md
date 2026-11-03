@@ -236,7 +236,9 @@ second pass, when needed, take more, up to the limit of 16 calls.
 **Make it A: every B application** (Admin → Refactoring, administrators) lists every B-rated application with what
 changes and its order's estimate (tokens and LLM time), **smallest first**, with the running total of the LLM time
 up to each row, so the LLM's time goes to the cheapest wins first; a local LLM gets the most applications to A for
-its hours. Applications with an order in the queue already say so and link to it; the ones that cannot be ordered
+its hours. Applications with an order in the queue already say so and link to it. The ones that a verified patch
+makes A already (*Made A by a patch* on the front page: it builds, runs and rates A, merged or not) link to that
+patch and are not queued again from here (order one on its application page for a new patch). The ones that cannot be ordered
 (no commit recorded, source not kept on this machine) are at the bottom with the reason. **Orders under** a number
 of tokens each (20,000 to begin with) marks the ones that fit, and **Queue … approved** places one order for each of
 them, approved by you at once: they do not wait for approval, whatever the LLM queue's approval policy says, and
@@ -255,8 +257,8 @@ original**, never in its place, the way an [organization scan](scheduled-scans.m
   that the original's image automation never picks up.
 - **Where.** A sibling folder of the original in the output repository of the organization scan that
   assessed the application, `<Organization>/<Project>/<Repository>-refactor-<job>/`, with `sandbox/`
-  regenerated, in one commit; Flux (or Argo CD) deploys it from there. The registry, output repository and
-  branch, image pull secret, security gate and *Push images* are that scan's; the output repository's write
+  regenerated, in one commit; Flux (or Argo CD) deploys it from there. Its images go to the appliance's own
+  registry, as the scan's do; the output repository and branch and the security gate are that scan's; the output repository's write
   token is its registered credential. An application that no organization scan with an output repository
   assessed here is not deployed, and the order page says so (`no output repository: ...`).
 - **Data.** Only the components that rate A are deployed, with no uploaded dev database: the variant gets
@@ -276,12 +278,11 @@ original**, never in its place, the way an [organization scan](scheduled-scans.m
 
 The results page shows the variant's state next to the order, with its URL (**open ↗**) while it runs.
 
-**Images without a registry.** When the organization scan's *Push images* is off and the sandbox cluster
-shares the image builder's Docker image store (a lab: k3s with `--docker` on the machine that builds), set
-`CONTAINERIZER_LOCAL_IMAGES=1` for the scan worker and the LLM queue runner: each image is then tagged with its
-deploy reference (`docker tag`, no push) and the manifests run it with `imagePullPolicy: IfNotPresent`. Such
-images have no digest, signature or SBOM attestation (they need a registry). Without the setting, nothing
-changes: with *Push images* on the images are pushed (the appliance pushes to its own registry).
+**Images without a registry.** In a lab whose sandbox cluster shares the image builder's Docker image store (k3s
+with `--docker` on the machine that builds), set `CONTAINERIZER_LOCAL_IMAGES=1` for the scan worker and the LLM
+queue runner: each image is then tagged with its deploy reference (`docker tag`, no push) and the manifests run it
+with `imagePullPolicy: IfNotPresent`. Such images have no digest or signature (they need a registry). Without the
+setting (the appliance), the images are pushed to the appliance's own registry.
 
 ## The command line
 

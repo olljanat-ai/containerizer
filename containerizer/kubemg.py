@@ -17,16 +17,20 @@ warnings. A repository the administrator adds, or one whose address was changed,
 from __future__ import annotations
 
 import json
+import ssl
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 import yaml
 
-API = "http://127.0.0.1:8444/api/v1"
+API = "https://127.0.0.1:8444/api/v1"
+# kubemg's loopback certificate is issued by the appliance's local CA (cz-firstboot)
+LOOPBACK_CA = "/run/containerizer/kubemg/loopback-ca.pem"
 CLUSTER = "sandbox"
 NAMESPACE = "kubemg-system"
 KUBECTL = ["/usr/bin/k3s", "kubectl"]
@@ -51,7 +55,8 @@ def _call(method: str, path: str, token: str | None = None, body: dict | None = 
                                  headers={"Content-Type": "application/json",
                                           **({"Authorization": f"Bearer {token}"} if token else {})})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        ctx = ssl.create_default_context(cafile=LOOPBACK_CA) if API.startswith("https:") else None
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
             data = r.read()
     except urllib.error.HTTPError as e:
         raise KubemgError(f"{method} {path}: HTTP {e.code}: {e.read()[:300].decode(errors='replace')}") from None
@@ -171,13 +176,78 @@ def sandbox(host: str, password: str, username: str = "admin", call=_call, insta
     return f"the sandbox cluster is registered in kubemg as {CLUSTER} and its agent is installed"
 
 
+def loopback_tls(folder: Path, group: int | None = None, days: int = 7300) -> bool:
+    """kubemg's HTTPS certificate on loopback (KUBEMG_TLS_ENABLED=true; its setup refuses plain HTTP): a local CA
+    that only Caddy trusts (ca.crt; its key ca.key, root only) and a certificate for 127.0.0.1 it issued
+    (ssl/tls.crt, ssl/tls.key readable by kubemg's group). Made once: returns whether it made them."""
+    import datetime
+    import ipaddress
+    import os
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+    ssl_dir = folder / "ssl"
+    files = (folder / "ca.crt", folder / "ca.key", ssl_dir / "tls.crt", ssl_dir / "tls.key")
+    if all(f.is_file() and f.stat().st_size for f in files):
+        return False
+    folder.mkdir(mode=0o755, parents=True, exist_ok=True)
+    ssl_dir.mkdir(mode=0o750, exist_ok=True)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    until = now + datetime.timedelta(days=days)
+    ca_key, key = ec.generate_private_key(ec.SECP256R1()), ec.generate_private_key(ec.SECP256R1())
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "containerizer kubemg loopback CA")])
+    ca = (x509.CertificateBuilder().subject_name(ca_name).issuer_name(ca_name).public_key(ca_key.public_key())
+          .serial_number(x509.random_serial_number()).not_valid_before(now).not_valid_after(until)
+          .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+          .add_extension(x509.KeyUsage(False, False, False, False, False, True, True, False, False), critical=True)
+          .sign(ca_key, hashes.SHA256()))
+    cert = (x509.CertificateBuilder()
+            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])).issuer_name(ca_name)
+            .public_key(key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now).not_valid_after(until)
+            .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), critical=False)
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+            .sign(ca_key, hashes.SHA256()))
+
+    def write(path: Path, data: bytes, mode: int, gid: int | None = None) -> None:
+        path.unlink(missing_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        if gid is not None:
+            os.chown(path, -1, gid)
+        os.chmod(path, mode)
+
+    pem = serialization.Encoding.PEM
+    raw = dict(encoding=pem, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption())
+    write(folder / "ca.key", ca_key.private_bytes(**raw), 0o400)
+    write(folder / "ca.crt", ca.public_bytes(pem), 0o644)
+    write(ssl_dir / "tls.crt", cert.public_bytes(pem), 0o644)
+    write(ssl_dir / "tls.key", key.private_bytes(**raw), 0o440 if group is not None else 0o400, group)
+    if group is not None:
+        os.chown(ssl_dir, -1, group)
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     p = argparse.ArgumentParser(prog="python -m containerizer.kubemg")
-    p.add_argument("command", choices=["sandbox"])
-    p.add_argument("--host", required=True, help="kubemg's DNS name (the agent dials https://<host>)")
-    p.add_argument("--password-file", required=True)
+    p.add_argument("command", choices=["sandbox", "loopback-tls"])
+    p.add_argument("--host", help="kubemg's DNS name (the agent dials https://<host>)")
+    p.add_argument("--password-file")
+    p.add_argument("--dir", help="loopback-tls: the folder of the CA and of ssl/ (kubemg's /etc/kubemg/ssl)")
+    p.add_argument("--group", type=int, help="loopback-tls: the group that may read the certificate's key")
     a = p.parse_args(argv)
+    if a.command == "loopback-tls":
+        if not a.dir:
+            p.error("loopback-tls needs --dir")
+        if loopback_tls(Path(a.dir), a.group):
+            print(f"kubemg: made its loopback certificate in {a.dir}")
+        return 0
+    if not a.host or not a.password_file:
+        p.error("sandbox needs --host and --password-file")
     try:
         with open(a.password_file) as f:
             pw = f.read().strip()
