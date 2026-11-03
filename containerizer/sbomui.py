@@ -524,9 +524,9 @@ CSS = """
 @media (prefers-color-scheme:dark){.ls-allowed{color:#4fd14f}.ls-warn{color:#fac35a}.ls-denied,.cv-critical{color:#f07a7a}
 .cv-high{color:#f2a07f}.cv-medium{color:#fac35a}}
 details.cves{border:0;padding:0;margin:0;background:none}details.cves ul{margin:4px 0;padding-left:18px}
-.st-allowed{fill:#0ca30c;background:#0ca30c}.st-warn{fill:#fab219;background:#fab219}.st-denied{fill:#d03b3b;background:#d03b3b}
-.st-unknown{fill:#c3c2b7;background:#c3c2b7}
-@media (prefers-color-scheme:dark){.st-unknown{fill:#5f5e58;background:#5f5e58}}
+rect.st-allowed,.key.st-allowed{fill:#0ca30c;background:#0ca30c}rect.st-warn,.key.st-warn{fill:#fab219;background:#fab219}
+rect.st-denied,.key.st-denied{fill:#d03b3b;background:#d03b3b}rect.st-unknown,.key.st-unknown{fill:#c3c2b7;background:#c3c2b7}
+@media (prefers-color-scheme:dark){rect.st-unknown,.key.st-unknown{fill:#5f5e58;background:#5f5e58}}
 .hbars .hb{fill:var(--o1)}.hbars{max-width:760px}
-@media (forced-colors:active){.ls,.st-allowed,.st-warn,.st-denied,.st-unknown{forced-color-adjust:none}}
+@media (forced-colors:active){.ls,rect.st-allowed,.key.st-allowed,rect.st-warn,.key.st-warn,rect.st-denied,.key.st-denied,rect.st-unknown,.key.st-unknown{forced-color-adjust:none}}
 """

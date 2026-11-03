@@ -105,6 +105,32 @@ and disk space, and with **Ask the LLM** each asks the LLM on its own, so a self
 many requests at once (give llama.cpp that many slots, `--parallel`). Start with the number of CPU cores minus
 one, and lower it if the machine runs short of memory.
 
+## Progress of a run
+
+Each full run has a **Progress** page (the link under its status in the scan's **Runs** table, or next to the
+progress count in the scan list). It reloads itself every 10 seconds while the run is in progress, and shows:
+
+- **In progress**: each repository being scanned, the step it is on (Cloning or Pulling, Looking for application
+  code, Assessing (rules), LLM review, Verifying: build and run, Assessing again, Generating files, Development
+  database, Security gate: build, scan, run, Building images, Pushing images, Writing the output files), how long it
+  has been on that step and on the repository, and what it waits for inside the step (the LLM call, the components
+  in the security gate). A step that has taken more than 15 minutes is marked **slow**.
+- The pace (the average time a repository has taken so far) and an **estimated end** at that pace, and what the run
+  as a whole does between repositories (listing the repositories, committing to the output repository, checking
+  the sandbox).
+- **Where the time goes**: each step's total time over the repositories of the run, its share, and its average per
+  repository, so you can see whether a slow scan waits for the LLM, for builds and verification, for the security
+  gate or for git. With **Repositories in parallel** above 1, the times are summed over the processes.
+- **Finished most recently** and **Slowest**: the repositories of the run with their result and how long each took.
+
+![Progress of a running organization scan: repositories in progress and where the time goes](images/admin-scan-run-progress.png#only-light){ .cz-shot }
+![Progress of a running organization scan: repositories in progress and where the time goes](images/admin-scan-run-progress-dark.png#only-dark){ .cz-shot }
+
+Typical fixes when one step dominates: **LLM review** — queue the LLM reviews ([**LLM reviews**: Queued](#the-llm-queue)) so the
+scan uses the rules only, or give a self-hosted LLM more slots; **Verifying** and **Security gate** — scan more
+repositories in parallel if the machine has the cores and memory; **Cloning** — the first run clones everything,
+later runs only pull. The [Grafana dashboard](#metrics-and-grafana) has the same run over time.
+
 ## Repositories with several applications
 
 A scan assesses each repository as one application. A mono-repo that holds several applications, for example

@@ -33,6 +33,7 @@ from pathlib import Path
 
 import yaml
 
+from . import progress
 from .credentials import in_org, same_repo
 from .orgsource import (NO_PROJECT, REDACT, SourceError, SourceRepo, clone, code_summary, existing_dockerfiles, git,
                         head_commit, provider, read_token, strip_userinfo, update_clone)
@@ -932,6 +933,7 @@ def _process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, wor
             if not o.llm_heavy and heavy_for(o, tres.source_key):
                 mo = dataclasses.replace(o, llm_heavy=True)    # an administrator's LLM-heavy window for this app
                 print(f"{name}: LLM-heavy mode on (an administrator's LLM-heavy window)", flush=True)
+            progress.step(progress.REPLATFORM)
             mres = migrate_repo(path, mo, tres, name, trel, tdest, work / "gen" / name, reg, tag, gitops,
                                 existing_dockerfiles(path, limit=200))
             if mres is not None:
@@ -939,6 +941,7 @@ def _process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, wor
                     (tdest / "containerizer.json").write_text(json.dumps(mres.to_dict(), indent=2, default=str) + "\n")
                 return mres
         if o.skip_no_code:
+            progress.step(progress.CODE)
             rules_reset()
             status, why = no_code_reason(path)
             if status and (x := tskip(status, why)):
@@ -1006,6 +1009,7 @@ def _process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, wor
     import time as _time
     t0 = _time.monotonic()
     op = "pull" if cached and (src / ".git").is_dir() else "clone"
+    progress.step(progress.PULL if op == "pull" else progress.CLONE)
     try:
         if cached:
             op = "pull" if update_clone(r.clone_url, src, r.default_branch, prov.git_header()) == "pulled" else "clone"
@@ -1110,6 +1114,8 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
     keep, res.excluded = select_components(a, o.verify)
     lab = _lab_services(o)
     lab_report: dict = {}
+    if keep and dev_database:
+        progress.step(progress.DEVDB)
     dd, dd_row = (_dev_database(o, res, a, keep, work, reg, tag, lab) if keep and dev_database else (None, None))
     gen = work / "gen" / app
     names = {k8s_name(c.name): c for c in keep}
@@ -1119,11 +1125,15 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
             shutil.rmtree(gen)
         fa = dataclasses.replace(a, components=keep)
         if not o.gate:
+            progress.step(progress.GENERATE)
             generate_app(fa, gen, registry=o.registry, pin=o.pin, gitops=gitops, tag=tag, devdb=dd, lab=lab,
                          lab_report=lab_report, approved_egress=approved, links=linked)
             break
         from .harden import security
         from .imagescan import gate_app
+        progress.step(progress.GATE)
+        progress.detail(f"{len(keep)} component{'' if len(keep) == 1 else 's'}: " + ", ".join(c.name for c in keep[:5])
+                        + (" ..." if len(keep) > 5 else ""))
         g = gate_app(fa, gen, build=True, scan=True, run=True, registry=o.registry, pin=o.pin, gitops=gitops,
                      tag=tag, scanner=o.scanner or security()["scan"].get("default_scanner", "auto"),
                      fail_on=o.fail_on, devdb=dd, lab=lab, lab_report=lab_report, approved_egress=approved, links=linked)
@@ -1150,6 +1160,8 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
         cdir = gen / cn
         local = f"containerizer/{k8s_name(a.name)}-{cn}:gate"
         if not o.gate and (o.push_images or local_mode):
+            progress.step(progress.BUILD)
+            progress.detail(c.name)
             ok, tail = build_image(src, cdir, local, timeout=o.timeout)
             if not ok:
                 raise SourceError(f"{c.name}: image build failed: {tail[-300:]}")
@@ -1161,6 +1173,8 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
                                       "not run")}
         sb = sbom_entry(g, cn, cdir, local, c, o)
         if o.push_images and reg:
+            progress.step(progress.PUSH)
+            progress.detail(f"{c.name} to {o.registry}")
             entry["digest"] = reg.push(local, ref, [f"{ref.rsplit(':', 1)[0]}:git-{res.commit[:12]}"]
                                        if res.commit else [])
             if o.cosign_key and entry["digest"]:
@@ -1181,6 +1195,7 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
                           "digest": entry.get("digest"), "attestation": sb.get("attestation")})
         comps.append(entry)
     res.components = comps
+    progress.step(progress.OUTPUT)
     idp_rows = idp_entries(gen, keep)
     if assessment_id and idp_rows:
         from .sqlstore import connect, store_idp_clients
@@ -1337,6 +1352,7 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
     work.mkdir(parents=True, exist_ok=True)
     os.chmod(work, 0o700)
 
+    _phase(o.hooks, "Listing the repositories")
     listed = list(prov.repos())
     if o.on_listed:
         o.on_listed(prov, len(listed))
@@ -1408,6 +1424,7 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
         if o.state and not o.dry_run:
             o.state.record(r, res)
         if out:
+            _phase(hooks, f"Committing {repo_label(r)} to the output repository")
             ns = write_sandbox(out.root, out.url, o.output_branch)
             org_index(out.root, out.root / segment(o.org), [x.to_dict() for x in results], run)
             out.commit(f"containerizer: {o.org}/{r.project}/{r.name} {res.status}"
@@ -1415,8 +1432,10 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
                        + f"\n\n{len(ns)} apps in {SANDBOX}/.")
         if hooks and hasattr(hooks, "repo_done"):
             hooks.repo_done(i, r, res)
+        _phase(hooks, "Scanning the repositories")
 
     parallel = 1 if o.dry_run else max(1, min(int(o.parallel or 1), MAX_PARALLEL))
+    _phase(hooks, "Scanning the repositories")
     try:
         if parallel > 1 and len(repos) > 1:
             log(f"{o.org}: {parallel} repositories at a time")
@@ -1432,19 +1451,32 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
                 if hooks and hasattr(hooks, "repo_start"):
                     hooks.repo_start(i, r)
                 t0 = _time.monotonic()
-                res = _repo_job(r, prov, o, names[r.key], _DryOut() if o.dry_run else out, work,
-                                None if o.dry_run else reg, tag, cutoff, reset_cache, admin.get(r.key),
-                                splits.get(r.key))
+                if hooks and hasattr(hooks, "repo_step"):
+                    progress.set_reporter(lambda kind, text, r=r: hooks.repo_step(r, kind, text))
+                try:
+                    res = _repo_job(r, prov, o, names[r.key], _DryOut() if o.dry_run else out, work,
+                                    None if o.dry_run else reg, tag, cutoff, reset_cache, admin.get(r.key),
+                                    splits.get(r.key))
+                finally:
+                    progress.set_reporter(None)
                 res.seconds = round(_time.monotonic() - t0, 1)
                 finish(i, r, res)
         if not stopped and cache and o.only_projects is None and o.only_repos is None:
+            _phase(hooks, "Pruning the clone cache")
             prune_cache(cache, set(names.values()), log)
     finally:
         if reg:
             reg.close()
     if o.verify_sandbox and out:
+        _phase(hooks, "Checking the sandbox")
         sandbox_step(o, out, log)
     return results
+
+
+def _phase(hooks, text: str) -> None:
+    """What the run as a whole is doing (listing, committing, checking the sandbox), for its progress page."""
+    if hooks and hasattr(hooks, "phase"):
+        hooks.phase(text)
 
 
 # --------------------------------------------------------------------------- repositories in parallel
@@ -1486,6 +1518,8 @@ def _child(send, stop, r: SourceRepo, prov, o: OrgOptions, app: str, out, work: 
     ai.LISTENERS[:] = [usage.append]                    # the run's listeners (metrics) live in the parent
     git_events = _GitEvents()
     o = dataclasses.replace(o, hooks=git_events, state=None)
+    # its steps go back to the run as they happen (the progress page); the result comes last
+    progress.set_reporter(lambda kind, text: send.send(("progress", kind, text)))
     work.mkdir(parents=True, exist_ok=True)
     t0 = _time.monotonic()
     with ai.cancel_when(stop.is_set):                   # a cancelled run stops this one's LLM calls too
@@ -1557,11 +1591,17 @@ def _run_parallel(repos: list, n: int, o: OrgOptions, prov, out, work: Path, reg
             if not running:
                 break
             for recv in wait(list(running), timeout=1.0):
-                p, r, rel, stage = running.pop(recv)
+                p, r, rel, stage = running[recv]
                 try:
-                    res, git_events, usage = recv.recv()
+                    msg = recv.recv()
                 except Exception:                       # the process died without an answer
-                    res, git_events, usage = None, [], []
+                    msg = None
+                if msg and isinstance(msg[0], str):     # ("progress", kind, text): the step it is on
+                    if hooks and hasattr(hooks, "repo_step"):
+                        hooks.repo_step(r, msg[1], msg[2])
+                    continue
+                del running[recv]
+                res, git_events, usage = msg if msg else (None, [], [])
                 recv.close()
                 p.join(timeout=60)
                 for u in usage:

@@ -2,7 +2,8 @@
 
 - Organization scans: what to scan (provider, organization), where the results go (registry, output
   repository), the filters, and the schedule (days and time, UTC); "Discover", "Run full scan", cancel,
-  and the runs with their progress. Tokens are not entered here: the scan uses the read-only token registered for its
+  and the runs with their progress (run_progress: the repositories in progress, the step each one is on and where
+  the time goes, from OrgScanRun.Activity). Tokens are not entered here: the scan uses the read-only token registered for its
   organization and the write token registered for its output repository (Source control,
   admin_credentials.py), and does not run without them.
 - Discovery: a cheap first run that only lists the projects, the repositories and each one's latest
@@ -134,6 +135,8 @@ def route(adm, conn, s, a, method: str, kind: str, parts: list, q: dict, form: d
             if not action:
                 return save_scan(conn, ident, form, _local(adm))
             return _nf()
+        if action == "runs" and len(parts) == 4 and re.fullmatch(r"\d{1,9}", parts[3]):
+            return run_progress(adm, conn, s, a, ident, int(parts[3]), flash)
         return edit_scan(adm, conn, s, a, ident, flash, q) if not action else _nf()
     if kind == "repositories":
         if len(parts) > 1 and parts[1] == "projects":
@@ -210,7 +213,11 @@ def list_scans(adm, conn, s, a, flash: str) -> Response:
             when = r["FinishedAt"] or r["StartedAt"] or r["RequestedAt"]
             prog = f" {int(r['ReposDone'] or 0)}/{int(r['ReposTotal'] or 0)}" if r["RunStatus"] == "running" else ""
             kind = " <span class='muted small'>discovery</span>" if r["Kind"] == "discovery" else ""
-            last = f"{run_chip(r['RunStatus'])}{kind}{e(prog)} <span class='muted small'>{_d(when)}</span>" \
+            if prog and r["Kind"] != "discovery":
+                prog = f" <a href='/admin/scans/{int(r['ScanId'])}/runs/{int(r['RunId'])}'>{e(prog.strip())} · progress</a>"
+            else:
+                prog = e(prog)
+            last = f"{run_chip(r['RunStatus'])}{kind}{prog} <span class='muted small'>{_d(when)}</span>" \
                    f"<div class='muted small'>{e(r['Message'] or '')}</div>"
         rows.append(
             f"<tr><td><a href='/admin/scans/{int(r['ScanId'])}'>{e(r['Name'])}</a>{'' if r['Enabled'] else PAUSED}{missing}</td>"
@@ -393,9 +400,15 @@ def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
                       f"<input type='hidden' name='RunId' value='{int(r['RunId'])}'><button class='link'>Cancel</button></form>")
         elif r["CancelRequested"] and r["Status"] == "running":
             cancel = "<div class='muted small'>cancelling after the current repository</div>"
-        current = f"<div class='muted small'>now: {e(r['CurrentRepo'])}</div>" if r["Status"] == "running" and r["CurrentRepo"] else ""
+        current = ""
+        if r["Status"] == "running":
+            current = "".join(f"<div class='muted small'>{e(x['repo'])}: {e(x.get('step') or 'starting')}</div>"
+                              for x in _activity(r).get("active", [])[:3]) or \
+                (f"<div class='muted small'>now: {e(r['CurrentRepo'])}</div>" if r["CurrentRepo"] else "")
+        progress = (f"<div class='small'><a href='/admin/scans/{ident}/runs/{int(r['RunId'])}'>Progress</a></div>"
+                    if r["StartedAt"] and (r.get("Kind") or "full") == "full" else "")
         kind = KIND_TEXT.get(r.get("Kind") or "full", r.get("Kind")) + (f": {scope}" if scope else "")
-        rows.append(f"<tr><td class='num'>{int(r['RunId'])}</td><td>{run_chip(r['Status'])}"
+        rows.append(f"<tr><td class='num'>{int(r['RunId'])}</td><td>{run_chip(r['Status'])}{progress}"
                     f"<div class='muted small'>{e(kind)}</div>{current}{cancel}</td>"
                     f"<td class='nowrap'>{_d(r['StartedAt'] or r['RequestedAt'])}<div class='muted small'>{e(who)}"
                     f"{' · ' + e(r['Worker']) if r['Worker'] else ''}</div></td><td class='num'>{took}</td>"
@@ -425,6 +438,129 @@ def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
             f"<h2>Settings</h2>{_scan_form(adm, s, scan, ident, _output_repos(conn))}{delete}"
             f"<h2>Changes</h2>{adm._history(conn, 'OrgScan', ident)}")
     return Response(200, adm._shell(s, a, scan["Name"], "scans", body, flash))
+
+
+# --------------------------------------------------------------------------- progress of a run
+
+REFRESH = 10            # seconds between reloads of a running scan's progress page
+SLOW_STEP = 15 * 60     # a step this long is marked: is it stuck, or is that repository just big?
+
+
+def _activity(run: dict) -> dict:
+    try:
+        return json.loads(run.get("Activity") or "{}") or {}
+    except ValueError:
+        return {}
+
+
+def run_progress(adm, conn, s, a, ident: int, run_id: int, flash: str) -> Response:
+    """One run of an organization scan: the repositories in progress and the step each one is on (cloning,
+    assessing, LLM review, verifying, the security gate, pushing, ...), how long they have been on it, an estimate
+    of the end, where the time goes (each step's total over the repositories), and the slowest and latest ones.
+    Reloads itself every REFRESH seconds while the run is queued or running."""
+    import time as _time
+    cur = conn.cursor(as_dict=True)
+    cur.execute("SELECT r.*, s.Name AS ScanName, s.Parallel FROM cz.OrgScanRun r JOIN cz.OrgScan s ON s.ScanId = r.ScanId "
+                "WHERE r.RunId = %s AND r.ScanId = %s", (run_id, ident))
+    run = cur.fetchone()
+    if not run:
+        return _nf()
+    live = run["Status"] in ("queued", "running")
+    act = _activity(run)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    t_now = _time.time()
+    done, total = int(run["ReposDone"] or 0), run["ReposTotal"]
+    took = ((run["FinishedAt"] or now) - run["StartedAt"]).total_seconds() if run["StartedAt"] else 0
+    facts = [("Status", run_chip(run["Status"]) + (" <span class='muted small'>cancelling after the repositories in "
+                                                    "progress</span>" if run["CancelRequested"] and live else "")),
+             ("Started", f"{_d(run['StartedAt'] or run['RequestedAt'])}" + (f" · {e(run['Worker'])}" if run["Worker"] else "")),
+             ("Took" if not live else "Running for", _secs(took) if run["StartedAt"] else "")]
+    if total is not None:
+        pct = f" ({round(100 * done / total)} %)" if total else ""
+        facts.append(("Repositories", f"{done} of {int(total)} done{pct} · {int(run['ReposDeployed'] or 0)} deployed · "
+                                      f"{int(run['ReposSkipped'] or 0)} skipped · {int(run['ReposErrors'] or 0)} failed"))
+        if done and took:
+            facts.append(("Pace", f"{_secs(took / done)} a repository on average"
+                                  + (f", {int(run['Parallel'])} at a time" if (run["Parallel"] or 1) > 1 else "")))
+        if live and done and total > done:
+            left = took / done * (total - done)
+            end = now + timedelta(seconds=left)
+            facts.append(("Estimated end", f"{_d(end)} <span class='muted small'>(in about {_secs(left)}, at the pace "
+                                           f"so far)</span>"))
+    if live and act.get("phase") and act["phase"] != "Scanning the repositories":     # that one: In progress says it
+        facts.append(("Now", f"{e(act['phase'])} <span class='muted small'>for "
+                             f"{_secs(t_now - (act.get('phase_since') or t_now))}</span>"))
+    if run["HeartbeatAt"] and live and run["HeartbeatAt"] < now - timedelta(minutes=3):
+        facts.append(("Worker", f"<span class='st st-bad'>No report since {_d(run['HeartbeatAt'])}</span>"))
+    if run["Message"]:
+        facts.append(("Result", e(run["Message"])))
+    meta = "".join(f"<div><span class='label'>{k}</span> {v}</div>" for k, v in facts if v)
+
+    active = act.get("active", []) if run["Status"] == "running" else []
+    rows = []
+    for x in sorted(active, key=lambda x: x.get("started") or 0):
+        on = t_now - (x.get("since") or t_now)
+        slow = " <span class='st st-warn' title='A long time on one step'>slow</span>" if on > SLOW_STEP else ""
+        det = ""
+        if x.get("detail"):
+            det = (f"<div class='muted small'>{e(x['detail'])}"
+                   + (f" · {_secs(t_now - x['detail_since'])}" if x.get("detail_since") else "") + "</div>")
+        rows.append(f"<tr><td class='num'>{int(x.get('n') or 0)}</td><td>{e(x.get('repo', ''))}</td>"
+                    f"<td>{e(x.get('step') or 'starting')}{slow}{det}</td><td class='num'>{_secs(on)}</td>"
+                    f"<td class='num'>{_secs(t_now - (x.get('started') or t_now))}</td></tr>")
+    in_progress = ""
+    if run["Status"] == "running":
+        in_progress = (f"<h2>In progress</h2><table><thead><tr><th class='num'>#</th><th>Repository</th><th>Step</th>"
+                       f"<th class='num'>On this step</th><th class='num'>Repository so far</th></tr></thead><tbody>"
+                       f"{''.join(rows) or '<tr><td colspan=5 class=muted>No repository right now.</td></tr>'}</tbody></table>")
+
+    # where the time goes: the finished steps, and the ones in progress so far
+    steps = {k: {"seconds": float(v.get("seconds") or 0), "repos": int(v.get("repos") or 0)}
+             for k, v in (act.get("steps") or {}).items()}
+    for x in active:
+        if x.get("step"):
+            t = steps.setdefault(x["step"], {"seconds": 0.0, "repos": 0})
+            t["seconds"] += max(0.0, t_now - (x.get("since") or t_now))
+            t["repos"] += 1
+    spent = sum(v["seconds"] for v in steps.values()) or 1
+    trows = "".join(
+        f"<tr><td>{e(k)}</td><td class='num'>{_secs(v['seconds'])}</td><td class='num'>{round(100 * v['seconds'] / spent)} %</td>"
+        f"<td class='num'>{v['repos']}</td><td class='num'>{_secs(v['seconds'] / v['repos']) if v['repos'] else ''}</td></tr>"
+        for k, v in sorted(steps.items(), key=lambda kv: -kv[1]["seconds"]))
+    where = ""
+    if trows:
+        where = (f"<h2>Where the time goes</h2><p class='muted small'>Each step's time over the repositories of this run"
+                 f"{' (summed over the repositories scanned at the same time)' if (run['Parallel'] or 1) > 1 else ''}.</p>"
+                 f"<table><thead><tr><th>Step</th><th class='num'>Time</th><th class='num'>Share</th>"
+                 f"<th class='num'>Repositories</th><th class='num'>Average</th></tr></thead><tbody>{trows}</tbody></table>")
+
+    def _reason(r: dict) -> str:
+        return (f"<div class='muted small'>{e((r['LastReason'] or '')[:160])}</div>"
+                if r["LastStatus"] == "error" and r["LastReason"] else "")
+
+    def repo_rows(order: str) -> str:
+        cur.execute(f"SELECT TOP (10) RepositoryId, ProjectName, Name, LastStatus, LastReason, LastSeconds, LastScannedAt "
+                    f"FROM cz.OrgRepository WHERE ScanId = %s AND LastRunId = %s ORDER BY {order}", (ident, run_id))
+        return "".join(
+            f"<tr><td><a href='/admin/repositories/{int(r['RepositoryId'])}'>{e(_repo_name(r))}</a></td>"
+            f"<td>{e(LAST_TEXT.get(r['LastStatus'], r['LastStatus'] or ''))}"
+            f"{_reason(r)}</td>"
+            f"<td class='num'>{_secs(r['LastSeconds']) if r['LastSeconds'] is not None else ''}</td>"
+            f"<td class='nowrap'>{_d(r['LastScannedAt'])}</td></tr>" for r in cur.fetchall())
+    head = ("<table><thead><tr><th>Repository</th><th>Result</th><th class='num'>Took</th><th>Finished</th></tr></thead>"
+            "<tbody>{}</tbody></table>")
+    slowest, latest = repo_rows("LastSeconds DESC"), repo_rows("LastScannedAt DESC, RepositoryId DESC")
+    lists = ""
+    if latest:
+        lists = (f"<h2>Finished most recently</h2>{head.format(latest)}"
+                 f"<h2>Slowest</h2>{head.format(slowest)}")
+    note = (f"<p class='muted small'>This page reloads every {REFRESH} seconds while the run is in progress.</p>"
+            if live else "")
+    body = (f"<div class='formrow'><a href='/admin/scans/{ident}'>← {e(run['ScanName'])}</a> · "
+            f"<a href='/admin/repositories?scan={ident}'>Repositories</a></div>{note}"
+            f"<div class='meta'>{meta}</div>{in_progress}{where}{lists}")
+    return Response(200, adm._shell(s, a, f"{run['ScanName']}: run #{run_id}", "scans", body, flash,
+                                    refresh=REFRESH if live else 0))
 
 
 def validate_scan(form: dict, local_registry: str | None = None) -> tuple[dict, list[str]]:

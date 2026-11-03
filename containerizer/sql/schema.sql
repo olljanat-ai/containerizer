@@ -629,6 +629,11 @@ CREATE TABLE [${schema}].OrgScanRun (
     Message         nvarchar(2000) NULL
 );
 GO
+-- 32: what the run is doing right now, for its progress page (worker.py RunHooks.activity): JSON with the
+-- repositories in progress and the step each one is on, the run's phase, and the seconds spent in each step
+IF COL_LENGTH(N'[${schema}].OrgScanRun', N'Activity') IS NULL
+ALTER TABLE [${schema}].OrgScanRun ADD Activity nvarchar(max) NULL;
+GO
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_OrgScanRun_Scan' AND object_id = OBJECT_ID(N'[${schema}].OrgScanRun'))
 CREATE INDEX IX_OrgScanRun_Scan ON [${schema}].OrgScanRun (ScanId, RunId DESC) INCLUDE (Status);
 GO
@@ -1129,7 +1134,7 @@ GRANT SELECT ON [${schema}].OrgScan TO [${schema}_writer];
 GRANT UPDATE ON [${schema}].OrgScan (NextRunAt) TO [${schema}_writer];
 GRANT SELECT ON [${schema}].OrgScanRun TO [${schema}_writer];
 GRANT UPDATE ON [${schema}].OrgScanRun (Status, Worker, StartedAt, HeartbeatAt, FinishedAt, ImageTag, ReposListed, ReposTotal,
-    ReposDone, ReposNew, ReposDeployed, ReposSkipped, ReposErrors, CurrentRepo, Message) TO [${schema}_writer];
+    ReposDone, ReposNew, ReposDeployed, ReposSkipped, ReposErrors, CurrentRepo, Message, Activity) TO [${schema}_writer];
 GRANT SELECT, INSERT ON [${schema}].OrgRepository TO [${schema}_writer];
 GRANT UPDATE ON [${schema}].OrgRepository (ProjectName, Name, ExternalId, CloneUrl, WebUrl, RepositoryUrl, DefaultBranch, AppName,
     LastActivityAt, LastSeenAt, RemovedAt, SkipStatus, SkipReason, LastStatus, LastReason, LastCommit, LastCommitAt,
@@ -2258,4 +2263,7 @@ IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 30) INSER
 GO
 -- 31: LLM-heavy windows of applications and components (LlmHeavyWindow, vLlmHeavyActive, fnLlmJobHeavy)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 31) INSERT [${schema}].SchemaVersion (Version) VALUES (31);
+GO
+-- 32: what a running organization scan is doing, for its progress page (OrgScanRun.Activity)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 32) INSERT [${schema}].SchemaVersion (Version) VALUES (32);
 GO

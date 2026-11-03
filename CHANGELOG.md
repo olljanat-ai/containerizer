@@ -6,6 +6,19 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## 0.7.1 (2026-11-03)
+
+### Organization scans
+- **Progress of a run** (Admin → Organization scans → the scan → a run's **Progress**, or the progress link in the
+  scan list): the repositories in progress and the step each one is on (cloning, assessing, LLM review, verifying,
+  the security gate, pushing images, ...), how long it has been on it (marked **slow** after 15 minutes), the LLM
+  call it waits for, the pace and an estimated end, **Where the time goes** (each step's total and average over the
+  repositories of the run), and the slowest and the latest finished repositories. It reloads itself every 10
+  seconds while the run is in progress; the scan's Runs table shows the repositories in progress and their steps
+  too. Repositories scanned in parallel report their steps from their own processes. Schema 32:
+  `OrgScanRun.Activity`.
+- The SBOM chart's colours no longer leak onto other pages' amber status chips (unreadable in dark mode).
+
 ## 0.7.0 (2026-11-03)
 
 ### Refactoring

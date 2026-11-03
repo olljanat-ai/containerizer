@@ -1094,8 +1094,10 @@ def external_links(html: str) -> str:
 DEV_BANNER = ""
 
 
-def page(title: str, body: str, script: bool = False) -> str:
+def page(title: str, body: str, script: bool = False, refresh: int = 0) -> str:
+    """`refresh`: reload the page every so many seconds (a running scan's progress page; no script needed)."""
     return (f"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
+            + (f"<meta http-equiv='refresh' content='{int(refresh)}'>" if refresh > 0 else "") +
             f"<meta name='viewport' content='width=device-width,initial-scale=1'><title>{e(title)}</title>"
             f"<link rel='stylesheet' href='/static/app.css'><link rel='icon' href='/static/favicon.svg' type='image/svg+xml'></head>"
             f"<body>{DEV_BANNER}<main>{external_links(body)}</main>{SCRIPT_TAG if script else ''}</body></html>")
