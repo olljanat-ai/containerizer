@@ -15,6 +15,7 @@ qcow2 and VHDX images as release assets.
   certificate settings. The sandbox cluster is registered at the first start, with its agent in `kubemg-system`.
   The agent connects out to kubemg and trusts the CA of the appliance's certificate. The admin pages link it as
   **kubemg ↗**.
+
 ## 0.7.3 (2026-11-03)
 
 ### Refactoring
