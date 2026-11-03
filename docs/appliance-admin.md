@@ -523,7 +523,7 @@ scan worker get the passwords of the backup and are linked to their users in the
   Kubernetes account reads pods and the CoreDNS query log (names pods look up, and the ones the DNS filter refused),
   nothing else; the query log is on for that reason (`coredns-custom`). It changes no firewall rule.
 - Containers of the appliance's own services are pinned by digest in the OS image
-  (`/usr/lib/containerizer/images.env`); each release has an SPDX SBOM attested to the image with cosign.
+  (`/usr/lib/containerizer/images.env`).
 
 ## Troubleshooting
 

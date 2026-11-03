@@ -8,7 +8,8 @@ appliance runs and how to operate it is in [Running the appliance](appliance-adm
 ## Requirements
 
 - x86-64 VM (or server) with **UEFI** firmware (Secure Boot works: the shim and GRUB are Debian's signed
-  ones). Hyper-V: generation 2. VMware: EFI firmware.
+  ones). Hyper-V: generation 2 with the Secure Boot template **Microsoft UEFI Certificate Authority**, installed
+  from the ISO. VMware: EFI firmware.
 - 4 vCPU and 16 GB memory or more (SQL Server takes 4 GB, `CZ_MSSQL_MEMORY`), more for parallel builds.
 - One disk of **64 GB or more**: 16 GB for the OS snapshots, the rest is the persistent partition.
 - Optional, for the [built-in LLM](appliance-admin.md#built-in-llm) (off by default, for sites without an
@@ -26,7 +27,6 @@ Every [release](https://github.com/olljanat-ai/containerizer/releases) has:
 | --- | --- |
 | `containerizer-vX.Y.Z.iso` | Installer: boot it, answer the questions on the console. |
 | `containerizer-vX.Y.Z.qcow2` | KVM, Proxmox, OpenStack: a 64 GB thin disk. For a larger one, grow it before the first boot (`qemu-img resize`). |
-| `containerizer-vX.Y.Z.vhdx` | Hyper-V generation 2: a 64 GB dynamic VHDX. Secure Boot template **Microsoft UEFI Certificate Authority**. For a larger disk, grow it before the first boot (`Resize-VHD`). |
 | `SHA256SUMS`, `SHA256SUMS.sigstore.json` | Check the downloads (command in the release notes). |
 
 On its first boot a disk image partitions the whole disk and installs itself, then restarts. If the disk was

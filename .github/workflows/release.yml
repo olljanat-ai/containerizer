@@ -195,23 +195,11 @@ jobs:
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           cosign sign --yes "$IMAGE@$digest"
 
-      - name: SBOM
-        if: steps.v.outputs.release == 'true'
-        uses: anchore/sbom-action@v0
-        with:
-          image: containerizer-appliance:build
-          format: spdx-json
-          output-file: build/containerizer-${{ steps.v.outputs.version }}.spdx.json
-          upload-artifact: false
-          upload-release-assets: false
-
-      - name: Attest the SBOM, check the signature like the appliance does
+      - name: Check the signature like the appliance does
         if: steps.v.outputs.release == 'true'
         env:
           V: ${{ steps.v.outputs.version }}
-          DIGEST: ${{ steps.push.outputs.digest }}
         run: |
-          cosign attest --yes --type spdxjson --predicate "build/containerizer-$V.spdx.json" "$IMAGE@$DIGEST"
           cosign verify --output json \
             --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY//./\\.}/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com "$IMAGE:$V" > /dev/null
@@ -222,17 +210,11 @@ jobs:
           V: ${{ steps.v.outputs.version }}
         run: |
           cd build
-          # Both are 64 GB thin disks (the minimum): the expandable image partitions the whole disk on its first
-          # boot, and the shipped 1 GB would leave it in recovery with no COS_STATE to boot next time.
+          # A 64 GB thin disk (the minimum): the expandable image partitions the whole disk on its first boot, and
+          # the shipped 1 GB would leave it in recovery with no COS_STATE to boot next time.
           qemu-img convert -c -O qcow2 "containerizer-$V.raw" "containerizer-$V.qcow2"
           qemu-img resize "containerizer-$V.qcow2" 64G
-          # Hyper-V generation 2 boots VHDX only (dynamic: the file holds the written blocks, under 1 GB)
-          cp --sparse=always "containerizer-$V.raw" disk-64g.raw
-          qemu-img resize -f raw disk-64g.raw 64G
-          qemu-img convert -f raw -O vhdx -o subformat=dynamic disk-64g.raw "containerizer-$V.vhdx"
-          rm disk-64g.raw
-          sha256sum "containerizer-$V.iso" "containerizer-$V.qcow2" "containerizer-$V.vhdx" \
-            "containerizer-$V.spdx.json" > SHA256SUMS
+          sha256sum "containerizer-$V.iso" "containerizer-$V.qcow2" > SHA256SUMS
           cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
           ls -la
 
@@ -248,12 +230,9 @@ jobs:
 
             - `containerizer-${{ steps.v.outputs.version }}.iso`: installer (UEFI)
             - `containerizer-${{ steps.v.outputs.version }}.qcow2`: 64 GB disk image for KVM/Proxmox/OpenStack (grow it before the first boot for a larger disk)
-            - `containerizer-${{ steps.v.outputs.version }}.vhdx`: 64 GB dynamic VHDX for Hyper-V generation 2 (Secure Boot template: Microsoft UEFI Certificate Authority)
             - `SHA256SUMS` + `SHA256SUMS.sigstore.json`: verify with `cosign verify-blob --bundle SHA256SUMS.sigstore.json --certificate-identity-regexp '^https://github\.com/${{ github.repository }}/\.github/workflows/release\.yml@refs/tags/' --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS`
           files: |
             build/containerizer-${{ steps.v.outputs.version }}.iso
             build/containerizer-${{ steps.v.outputs.version }}.qcow2
-            build/containerizer-${{ steps.v.outputs.version }}.vhdx
-            build/containerizer-${{ steps.v.outputs.version }}.spdx.json
             build/SHA256SUMS
             build/SHA256SUMS.sigstore.json
