@@ -200,6 +200,10 @@ HEAVY_CALLS_A = 40
 HEAVY_PASSES_A = 4
 HEAVY_REPAIRS_A = 4
 HEAVY_MAX_ROUNDS = 30                   # orders in one chain at most, whatever the window
+# Orders in a row that fail with the same errors before the chain starts over from the original code (with what
+# failed, so the LLM is asked differently, and no answer of the stuck attempt is reused); and how often it may
+HEAVY_STUCK = 3
+HEAVY_RESTARTS = 2
 # A refactoring order of chosen findings in an LLM-heavy window (the whole application or the order's component):
 # this many LLM calls (files) instead of MAX_CALLS, and one that leaves findings or does not build or run queues the
 # next order (heavy_next_fix) until every finding is fixed and it builds and runs, or the window ends
@@ -467,6 +471,14 @@ INSTRUCTIONS = """Rules for your answer:
   - A Windows-only API: use a cross-platform equivalent (for example ILogger to the console instead of the
     Event Log, a certificate file instead of the certificate store) when it behaves the same; otherwise keep
     the Windows code behind OperatingSystem.IsWindows() and add the cross-platform path next to it.
+- Never remove a feature to make a finding go away: keep every Directory.CreateDirectory, file write, file move,
+  scheduled job and database setup the code has, unless the finding is about exactly that line. If a finding
+  cannot be fixed without removing what the application does, leave it, and put it in not_fixed with the reason.
+- Never write a user name or a password into a file, not even an example one (sa, your_password, changeme):
+  credentials come from configuration that a secret sets (ConnectionStrings__<Name>, Section__Key). For Windows
+  integrated security (Integrated Security, Trusted_Connection) in a connection string: leave the setting as it
+  is for Windows, and say in notes that the container gets its connection string, with SQL or Entra
+  credentials, from the secret ConnectionStrings__<Name>.
 - "new_files": only when a new file is really needed (path relative to the application folder, next to the
   project); otherwise an empty list.
 - "package_changes": NuGet/Maven/npm packages to add or remove for the component's project, with a version
@@ -562,15 +574,24 @@ STATE_CODE_RE = re.compile(r"UseSqlite|SqliteConnection|Microsoft\.Data\.Sqlite|
                            r"LiteDB|UseInMemoryDatabase|Data Source=[^;\"]*\.(db|sqlite3?|litedb)", re.I)
 STATE_GUIDANCE = """The goal of this change: make the component stateless, so it can run as several replicas
 that can be replaced at any time. Its data must live in an external database, not in a file inside the container.
+Being stateless means the data is kept elsewhere; it never means the data, or the code that writes it, is dropped.
 - Move the embedded database (SQLite or LiteDB) to Microsoft SQL Server. With Entity Framework Core: replace the
   package Microsoft.EntityFrameworkCore.Sqlite with Microsoft.EntityFrameworkCore.SqlServer (the same version as
   the other EF Core packages; use package_changes), UseSqlite(...) with UseSqlServer(...), SqliteConnection with
-  SqlConnection (package Microsoft.Data.SqlClient). Keep EnsureCreated or Migrate as it is.
+  SqlConnection (package Microsoft.Data.SqlClient).
+- Keep the application's own database setup exactly as it is: EnsureCreated, Migrate, a DbInitializer or a seed
+  method stay, called the same way. Do not replace one with another.
 - The connection string comes from configuration (ConnectionStrings in appsettings.json, overridden by the
-  environment variable ConnectionStrings__<Name>), never a file path. In appsettings.json put a placeholder such as
-  "Server=sqlserver;Database=<App>;User Id=<user>;Password=<from a secret>;TrustServerCertificate=True" with no real
-  password.
-- Code that creates the database file or its folder is no longer needed: remove it.
+  environment variable ConnectionStrings__<Name>, which the container gets from a secret), never a file path.
+  Keep its name. Never write a user name or a password into a settings file, not even an example one such as
+  sa or your_password: use "Server=sqlserver;Database=<App>;TrustServerCertificate=True" and say in notes that
+  the container's connection string, with its credentials, comes from the secret ConnectionStrings__<Name>.
+- Only the code that creates the folder of the embedded database FILE (the .db, .sqlite or .litedb file) is no
+  longer needed: remove just that. Keep every other Directory.CreateDirectory: folders for uploads, photos,
+  exports, reports, locks and state still need it.
+- Never delete code that writes data the application reads back later (a last-run date, a counter, a state or
+  marker file), and never replace it with a log line: keep it, with its folder from configuration (a volume in
+  the container), or move that value into the database.
 - EF Core migrations generated for SQLite must be generated again for SQL Server: do not edit them; say so in notes.
 - Log to the console (stdout) instead of files. Files the application must keep (uploads, exports) go to a
   configurable folder; say in notes that it must be a shared volume or object storage.
@@ -640,6 +661,9 @@ def task_prompt(payload: dict, task: dict, app_root: Path) -> tuple[str, list[st
         diff = diff[diff.find("diff --git"):] if "diff --git" in diff else diff
         head += ["", REPAIR_GUIDANCE, "", "The earlier patch (already applied to the file below):",
                  "```diff", diff[:12000] + ("\n... (cut)" if len(diff) > 12000 else ""), "```"]
+    if payload.get("heavy_avoid"):
+        head += ["", "An earlier attempt at this change, from the same original code, failed again and again with "
+                 "these errors. Do it differently, so that they do not happen:", str(payload["heavy_avoid"])[:1500]]
     head += ["", INSTRUCTIONS, ""]
     shown = [task["file"]]
     parts = []
@@ -854,6 +878,39 @@ def _first_mismatch(text: str, search: str) -> str:
     return f"its lines are in the file, but not one after the other as given (it starts with {search.strip()[:80]!r})"
 
 
+# What an edit may not take away (the code still needs it), and what it may not add (credentials in a file).
+# Folder creation of the embedded database file may go (STATE_GUIDANCE): a line that names the database.
+KEEP_RE = {
+    "Directory.CreateDirectory": re.compile(r"\bDirectory\.CreateDirectory\s*\("),
+    "a file write": re.compile(r"\bFile\.(?:Write|Append)\w*\s*\(|\bFile\.(?:Create|Move|Copy)\s*\(|\bnew\s+(?:FileStream|StreamWriter)\s*\("),
+}
+DB_FILE_RE = re.compile(r"sqlite|litedb|\.db\b|database|dbpath|db_path|datasource|data source", re.I)
+CREDENTIAL_RE = re.compile(r"\b(?:password|pwd)\s*=\s*(?![\s;\"'<{$%]|\*{3})[^;\"'\s]+|"
+                           r"\b(?:user\s*id|uid|user(?:name)?)\s*=\s*sa\b", re.I)
+
+
+def harmful_edit(rel: str, search: str, replace: str) -> list[str]:
+    """Why an edit (search -> replace) removes what the application does or adds a credential (empty: it does not).
+    The model is asked again with these reasons; a second answer that still does it is not applied."""
+    out = []
+    for what, rx in KEEP_RE.items():
+        before = [l.strip() for l in search.splitlines() if rx.search(l)]
+        if len(before) <= len(rx.findall(replace)):
+            continue                            # as many as before (kept, or rewritten)
+        kept = {l.strip() for l in replace.splitlines()}
+        gone = [l for l in before if l not in kept and not DB_FILE_RE.search(l)]
+        if gone:
+            out.append(f"{rel}: the edit removes {what} ({gone[0][:120]}); the application still needs it: keep it "
+                       "(its folder can come from configuration)")
+    old = {m.group(0).lower() for m in CREDENTIAL_RE.finditer(search)}
+    for m in CREDENTIAL_RE.finditer(replace):
+        if m.group(0).lower() not in old:
+            out.append(f"{rel}: the edit writes a credential ({m.group(0)[:40]}) into a file; credentials come from "
+                       "a secret (ConnectionStrings__<Name>): leave them out")
+            break
+    return out
+
+
 def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | None) -> tuple[list[dict], list[str]]:
     """Apply one answer: every edit's search text must occur exactly once (in the file as changed by the
     edits before it). All or nothing: on any error nothing is written. Returns (changes, errors)."""
@@ -899,6 +956,10 @@ def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | 
             errors.append(f"edit {i} ({rel}): the search text occurs {n} times; include more of the surrounding lines "
                           "so that it occurs exactly once")
             continue
+        harm = harmful_edit(rel, search, replace)
+        if harm:
+            errors += [f"edit {i}: {h}" for h in harm]
+            continue
         files[rel] = (text.replace(search, replace, 1), how)
         changes.append({"file": rel, "kind": "edit"})
     new_files: dict[str, str] = {}
@@ -913,6 +974,8 @@ def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | 
             errors.append(f"new file {i}: {rel} is empty or too large")
         elif not (root / rel).parent.resolve().is_relative_to(root):
             errors.append(f"new file {i}: {rel} is outside the application")
+        elif harm := harmful_edit(rel, "", content):
+            errors += [f"new file {i}: {h}" for h in harm]
         else:
             new_files[rel] = content
             changes.append({"file": rel, "kind": "new"})
@@ -1426,7 +1489,7 @@ def generate(payload: dict, tasks: list[dict], app_root: Path, ask, limit: int, 
         prompt, shown = task_prompt(payload, t, app_root)
         answer, errors, changes = None, [], []
         key = share_key(payload, t, app_root)
-        kept = shared_answer(key)
+        kept = None if payload.get("heavy_avoid") else shared_answer(key)     # starting over: no reuse
         if kept:                                        # the same code was changed by an earlier order: no LLM call
             reuse = _moved(kept["answer"], kept["file"], t["file"])
             changes, errors = apply_answer(app_root, reuse, shown, t.get("project"))
@@ -2007,6 +2070,46 @@ def sandbox_errors(sb: dict) -> str:
     return ("\n".join(out) or str(sb.get("reason") or ""))[-4000:]
 
 
+def failure_signature(result: dict) -> str:
+    """What an order's verification failed with, without the numbers that change from run to run (times, line
+    numbers): the same signature on orders in a row means the chain is stuck on the same errors."""
+    parts = []
+    for v in result.get("verification") or []:
+        if v.get("status") in ("ok", "ok-external", "not-built"):
+            continue
+        log = str(v.get("log_tail") or v.get("detail") or "")
+        errs = sorted({f"{e['file']}:{e['code']}" for e in build_errors(log)})
+        text = ",".join(errs) if errs else re.sub(r"\d+", "#", error_lines(log, 300))
+        parts.append(f"{v.get('component')}={v.get('status')}:{text}")
+    sb = result.get("sandbox") or {}
+    if sb.get("status") == "failing":
+        parts.append("sandbox:" + re.sub(r"\d+", "#", sandbox_errors(sb)[:300]))
+    return " | ".join(sorted(parts))[:2000]
+
+
+def heavy_stuck(payload: dict, result: dict) -> tuple[dict, str | None]:
+    """The chain's record of the same failure (heavy_fail, heavy_stuck), and whether the next order starts over:
+    (the keys for the next order, the reason to start over or None)."""
+    sig = failure_signature(result)
+    if not sig:
+        return {"heavy_fail": "", "heavy_stuck": 0}, None
+    stuck = int(payload.get("heavy_stuck") or 0) + 1 if sig == payload.get("heavy_fail") else 1
+    keys = {"heavy_fail": sig, "heavy_stuck": stuck}
+    if stuck < HEAVY_STUCK or not (payload.get("base_patch") or result.get("patch")):
+        return keys, None
+    return keys, f"{stuck} orders in a row failed with the same errors"
+
+
+def heavy_avoid(result: dict) -> str:
+    """The errors of the stuck attempt, for the prompt of the order that starts over."""
+    logs = "\n".join(str(v.get("log_tail") or v.get("detail") or "") for v in result.get("verification") or []
+                     if v.get("status") not in ("ok", "ok-external", "not-built"))
+    sb = result.get("sandbox") or {}
+    if sb.get("status") == "failing":
+        logs += "\n" + sandbox_errors(sb)
+    return error_lines(logs, 1200)
+
+
 def heavy_next(job: dict, payload: dict, result: dict, ends: datetime, work: Path, now: datetime | None = None,
                queue=None) -> dict:
     """In an LLM-heavy window: the order's copy runs in the sandbox (done), or the next order is queued, continuing
@@ -2029,6 +2132,10 @@ def heavy_next(job: dict, payload: dict, result: dict, ends: datetime, work: Pat
         "base_patch") else 0
     if same >= 2:
         return {**out, "stopped": "two orders in a row changed nothing"}
+    stuck_keys, restart = heavy_stuck(payload, result)
+    restarts = int(payload.get("heavy_restarts") or 0)
+    if restart and restarts >= HEAVY_RESTARTS:
+        return {**out, "stopped": f"{restart}, after {restarts} fresh start{'s' if restarts != 1 else ''}"}
     errors = sandbox_errors(sb) if sb.get("status") == "failing" else ""
     if sb.get("status") in ("failing", "deployed") and job.get("_connect"):
         from . import variant
@@ -2038,8 +2145,13 @@ def heavy_next(job: dict, payload: dict, result: dict, ends: datetime, work: Pat
         except Exception as ex:  # noqa: BLE001 - it expires on its own
             out["note"] = f"the failing variant was not removed: {type(ex).__name__}"
     keep = {k: v for k, v in payload.items() if k not in ("deadline", "base_patch", "sandbox_errors")}
-    nxt = {**keep, "heavy_round": rnd + 1, "heavy_parent": jid, "heavy_same": same,
+    nxt = {**keep, "heavy_round": rnd + 1, "heavy_parent": jid, "heavy_same": same, **stuck_keys,
            **({"base_patch": patch} if patch else {}), **({"sandbox_errors": errors} if errors else {})}
+    if restart:                     # from the original code again, told what failed
+        for k in ("base_patch", "sandbox_errors", "base_job"):
+            nxt.pop(k, None)
+        nxt.update(heavy_restarts=restarts + 1, heavy_avoid=heavy_avoid(result), heavy_fail="", heavy_stuck=0,
+                   heavy_same=0)
     if queue is None:
         if not job.get("_connect"):
             return {**out, "stopped": "no results database to queue the next order in"}
@@ -2049,6 +2161,8 @@ def heavy_next(job: dict, payload: dict, result: dict, ends: datetime, work: Pat
         nid = queue.add(queue_job(nxt, order_chars(nxt), requested_by=f"LLM-heavy: after #{jid}"))
     except Exception as ex:  # noqa: BLE001
         return {**out, "stopped": f"the next order could not be queued: {type(ex).__name__}: {str(ex)[:200]}"}
+    if restart:
+        return {**out, "next_job": int(nid or 0), "next": f"start over from the original code ({restart})"}
     return {**out, "next_job": int(nid or 0), "next": "repair in the sandbox" if errors else
             "repair the build or run" if patch and result.get("status") != "verified" else "the findings left"}
 
@@ -2095,8 +2209,19 @@ def heavy_next_fix(job: dict, payload: dict, result: dict, ends: datetime, now: 
     if same >= 2:
         return {**out, "stopped": "two orders in a row changed nothing"}
     goal = payload.get("heavy_goal") or (payload.get("goal") if payload.get("goal") != "repair" else "fix")
-    chain = {"heavy_round": rnd + 1, "heavy_parent": jid, "heavy_same": same, "heavy_goal": goal}
-    if result.get("patch") and not builds:
+    origin = payload.get("heavy_origin") or {"goal": goal, "tasks": payload.get("tasks") or []}
+    stuck_keys, restart = heavy_stuck(payload, result)
+    restarts = int(payload.get("heavy_restarts") or 0)
+    if restart and restarts >= HEAVY_RESTARTS:
+        return {**out, "stopped": f"{restart}, after {restarts} fresh start{'s' if restarts != 1 else ''}"}
+    chain = {"heavy_round": rnd + 1, "heavy_parent": jid, "heavy_same": same, "heavy_goal": goal,
+             "heavy_origin": origin, **stuck_keys, "heavy_restarts": restarts}
+    if restart and origin["tasks"]:
+        keep = {k: v for k, v in payload.items() if k not in HEAVY_DROP}
+        nxt = {**keep, **chain, "goal": origin["goal"], "tasks": origin["tasks"], "heavy_restarts": restarts + 1,
+               "heavy_avoid": heavy_avoid(result), "heavy_fail": "", "heavy_stuck": 0, "heavy_same": 0}
+        what = f"start over from the original code ({restart})"
+    elif result.get("patch") and not builds:
         nxt = {**repair_payload(payload, result, jid), **chain, "heavy_tasks": todo}
         what = "repair the build or run"
     elif todo:

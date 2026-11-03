@@ -64,7 +64,14 @@ The LLM answers with **structured edits**, not with a diff (diffs written by LLM
 Containerizer applies the edits itself: each search text must occur **exactly once** in the file, and only
 the files shown may be edited (new files stay inside the application folder). An answer that does not apply
 is sent back once with the errors ("not found", "occurs 3 times: include more lines"); if it still does not
-apply, that file is left unchanged and its findings are *not fixed*. The errors name the first line of the
+apply, that file is left unchanged and its findings are *not fixed*. **An edit that takes away what the
+application does is refused the same way**, with the reason: a `Directory.CreateDirectory` or a file write
+(`File.Write…`, `File.Create`, `File.Move`, a `FileStream`) that the edit removes and does not write elsewhere
+(the folder of an embedded database file may go, when it moves to SQL Server). So is a user name or password it
+writes into a file (`User Id=sa`, `Password=…`; a placeholder such as `Password=<from a secret>` is fine), because
+credentials come from a secret (`ConnectionStrings__<Name>`). The instructions say the same: never remove a feature to make a
+finding go away, keep the application's own database setup, and for Windows integrated security leave the setting
+for Windows and let the container's connection string come from the secret. The errors name the first line of the
 search text that is not in the file and the file's closest line. One slip is forgiven: models often get
 backslashes wrong when they write code into JSON (`"LocalMachine\\My"` in C# comes back with one
 backslash), so a search text that matches exactly once with every run of backslashes scaled the same way
@@ -199,6 +206,12 @@ wrong: the compiler errors or the run log, or, when it was deployed but failed t
 log of each failing component (its failing variant is taken out of the sandbox first). The chain ends when a
 variant runs in the sandbox, when the window ends, after 30 orders, or when two orders in a row changed nothing.
 Each order's page links the one before and the next.
+
+**A chain stuck on the same errors starts over.** Repairs build on the patch before them, so an early wrong edit
+is carried by every order after it. When 3 orders in a row fail with the same errors (the same compiler errors,
+or the same run or sandbox error, apart from times and line numbers), the next order starts again from the
+original code. Its prompt says what kept failing, and no answer of the stuck attempt is reused. A chain starts
+over at most twice; stuck a third time, it stops and says so. This applies to the refactoring orders below too.
 
 <a id="llm-heavy-refactoring-orders"></a>**Refactoring orders in an LLM-heavy window.** With an
 [LLM-heavy window](source-control.md#llm-heavy-for-a-while) on the whole application, or on the component of an

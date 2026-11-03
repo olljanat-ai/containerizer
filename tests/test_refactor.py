@@ -1093,3 +1093,38 @@ def test_a_writable_folder_never_hides_the_app():
     merge_plan(plan, {"add_writable": ["/app", "/var/lib/x"]})
     assert plan["add_writable"] == ["/tmp", ".", "/var/lib/x"]
     assert writable_dirs(plan) == ["/tmp", "/var/lib/x"]
+
+
+def test_an_edit_that_removes_what_the_app_does_or_adds_a_credential_is_refused():
+    h = rf.harmful_edit
+    gone = h("PhotoStore.cs", "        var folder = Path.Combine(root, n);\n        Directory.CreateDirectory(folder);\n",
+             "        var folder = Path.Combine(root, n);\n")
+    assert len(gone) == 1 and "removes Directory.CreateDirectory" in gone[0]
+    state = h("Nightly.cs", "        await File.WriteAllTextAsync(StateFile, d, ct);\n", "        _log.LogInformation(\"done\");\n")
+    assert "removes a file write" in state[0]
+    # moved to another folder, or the embedded database's own folder: allowed
+    assert h("Lock.cs", "        Directory.CreateDirectory(folder);\n", "        Directory.CreateDirectory(lockFolder);\n") == []
+    assert h("Db.cs", "    Directory.CreateDirectory(Path.GetDirectoryName(dbPath));\n    o.UseSqlite(cs);\n",
+             "    o.UseSqlServer(cs);\n") == []
+    cred = h("appsettings.json", '"Server=a;Integrated Security=true"', '"Server=a;User ID=sa;Password=your_password_here"')
+    assert "writes a credential" in cred[0]
+    assert h("appsettings.json", '"Server=a;Integrated Security=true"', '"Server=a;Password=<from a secret>"') == []
+    assert h("appsettings.json", '"Server=a;Password=kept1"', '"Server=b;Password=kept1"') == []     # already there
+
+
+def test_a_refused_edit_is_asked_again_with_the_reason(shop, tmp_path):
+    pl = _payload(shop, verify=False)
+    bad = {"edits": [{"file": "src/Shop.Api/appsettings.json", "search": '"Thumbprint": "AB12"',
+                       "replace": '"Thumbprint": "AB12", "Db": "Server=a;User Id=sa;Password=x1"'}],
+           "new_files": [], "package_changes": [], "fixed": ["cert-store-localmachine-code"], "not_fixed": []}
+    asked = []
+    rf.run_order(pl, tmp_path / "w", ask=lambda p, s: asked.append(p) or (bad if len(asked) == 1 else good_answer()))
+    assert len(asked) == 2 and "could not be applied" in asked[1] and "writes a credential (User Id=sa)" in asked[1]
+
+
+def test_the_prompt_of_a_fresh_start_says_what_failed(shop):
+    pl = _payload(shop, verify=False)
+    prompt, _ = rf.task_prompt({**pl, "heavy_avoid": "error NU1605: Detected package downgrade"}, pl["tasks"][0],
+                               shop / "app" if (shop / "app").is_dir() else shop)
+    assert "failed again and again with these errors" in prompt and "NU1605" in prompt
+    assert "Never remove a feature" in prompt and "Never write a user name or a password" in prompt

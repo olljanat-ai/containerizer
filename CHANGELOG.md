@@ -6,12 +6,22 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.8.3 (2026-11-03)
 
 - Refactoring: NuGet package downgrades (NU1605) are fixed without the LLM. A package reference the LLM adds below
   the version a referenced project uses is raised to it, and a downgrade the build reports is raised to the
   version NuGet names. The prompt lists the packages of the referenced projects. Before this, a Make it A chain
   could repeat the same build error until it reached the 30-order limit, as seen with field-service.
+- Refactoring instructions: never remove a feature to make a finding go away (folders, file writes, state, the
+  app's own database setup), never write a user name or password into a file, and for Windows integrated security
+  leave the setting for Windows and let the container's connection string come from a secret. The local model had
+  removed `Directory.CreateDirectory` for photo folders and the nightly job's state write, and written
+  `User ID=sa;Password=…` into `appsettings.json`.
+- Refactoring: an edit that removes a `Directory.CreateDirectory` or a file write, or writes a credential into a
+  file, is refused and asked again once with the reason. The folder of an embedded database file may still go.
+- LLM-heavy chains: after 3 orders in a row that fail with the same errors, the next order starts over from the
+  original code, with those errors in its prompt and no reuse of the stuck attempt's answers. A chain starts over
+  at most twice, and the order page says when an order is a fresh start.
 - Verification and generation: a writable folder is never mounted on the app folder (`/app`) or above it, which
   would hide the application ("The application 'X.dll' does not exist"). The attempt's note says that the app
   writes into its own folder.
