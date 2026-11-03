@@ -99,6 +99,13 @@ The patch is applied to a second, **clean copy at the assessed commit**: `git ap
 2. **Each changed component is built and run** with the same build-and-run step as the scans
    ([verify](overview.md#self-learning-loop)): the generated Dockerfile, a hardened container, an HTTP probe.
 
+**NuGet package versions are fixed without the LLM.** The LLM sees only the file it edits, so it may add a
+package reference at a lower version than a project the component references (or a package it uses) needs.
+NuGet refuses that build (NU1605, *Detected package downgrade*). Right after the LLM's edits, a direct reference
+below the version of a referenced project is raised to it. A downgrade the build still reports is raised to the
+version NuGet names in the next repair round, without an LLM call. The patch's notes list each version raised. The
+prompt also lists the packages the referenced projects bring in, so that they are not added again.
+
 | Status | Meaning |
 | --- | --- |
 | Queued | Waiting in the [LLM queue](scheduled-scans.md#the-llm-queue) |

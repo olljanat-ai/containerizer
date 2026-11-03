@@ -6,6 +6,16 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+- Refactoring: NuGet package downgrades (NU1605) are fixed without the LLM. A package reference the LLM adds below
+  the version a referenced project uses is raised to it, and a downgrade the build reports is raised to the
+  version NuGet names. The prompt lists the packages of the referenced projects. Before this, a Make it A chain
+  could repeat the same build error until it reached the 30-order limit, as seen with field-service.
+- Verification and generation: a writable folder is never mounted on the app folder (`/app`) or above it, which
+  would hide the application ("The application 'X.dll' does not exist"). The attempt's note says that the app
+  writes into its own folder.
+
 ## 0.8.2 (2026-11-03)
 
 - kubemg on the appliance: where its `admin` password is is now said in its journal at each start

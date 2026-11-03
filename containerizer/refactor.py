@@ -239,6 +239,44 @@ def build_errors(log: str) -> list[dict]:
     return out[:40]
 
 
+DOWNGRADE_RE = re.compile(r"(?:^|\s)/src/(?P<file>[^\s(:]+\.(?:cs|vb|fs)proj) ?: error NU1605: (?:Warning As Error: )?"
+                          r"Detected package downgrade: (?P<pkg>[\w.\-]+) from (?P<want>\d[\w\-+]*(?:\.[\w\-+]+)*) "
+                          r"to (?P<have>\d[\w\-+]*(?:\.[\w\-+]+)*)")
+
+
+def fix_downgrades(app_root: Path, log_text: str, log=print) -> tuple[list[dict], list[str], set]:
+    """NuGet's NU1605 "Detected package downgrade: P from B to A" in a build log: the project references P A
+    directly, and something it uses needs B. Raises that reference to B, without the LLM. Returns (changes,
+    notes, the fixed (project, package) pairs)."""
+    changes, notes, fixed = [], [], set()
+    for m in DOWNGRADE_RE.finditer(log_text or ""):
+        rel = safe_rel(m["file"])
+        key = (rel, m["pkg"].lower())
+        if not rel or key in fixed or not (app_root / rel).is_file() \
+                or _version_key(m["want"]) is None or _version_key(m["have"]) is None:
+            continue
+        f = app_root / rel
+        text, how = _read_text(f)
+        ref = re.compile(r"(<PackageReference\s+Include=\"" + re.escape(m["pkg"]) + r"\"\s+Version=\")"
+                         + re.escape(m["have"]) + r"(\")", re.I)
+        new, n = ref.subn(lambda x: x[1] + m["want"] + x[2], text)
+        if not n:
+            continue
+        _write_text(f, new, how)
+        fixed.add(key)
+        changes.append({"file": rel, "kind": "package", "detail": f"raise {m['pkg']} {m['have']} -> {m['want']}"})
+        notes.append(f"{rel}: raised {m['pkg']} {m['have']} -> {m['want']}: the build needs at least that version "
+                     "(NU1605 package downgrade; no LLM call)")
+        log(notes[-1])
+    return changes, notes, fixed
+
+
+def without_fixed(errors: list[dict], fixed: set) -> list[dict]:
+    """The build errors that fix_downgrades did not take care of."""
+    return [e for e in errors if not (e.get("code") == "NU1605" and any(
+        e.get("file") == f and pkg in str(e.get("text") or "").lower() for f, pkg in fixed))]
+
+
 def repair_payload(payload: dict, result: dict, base_job: int) -> dict:
     """An order that repairs the patch of an earlier one whose build or run failed: the same source and
     commit, the earlier patch applied first, and the errors of its verification."""
@@ -479,6 +517,32 @@ def _packages(project_file: Path) -> list[str]:
     return []
 
 
+def referenced_packages(project_file: Path, limit: int = 40) -> list[str]:
+    """The packages (with versions) of the projects a .NET project references, transitively."""
+    if not project_file.is_file() or not project_file.suffix.lower().endswith("proj"):
+        return []
+    out, seen, todo = {}, {project_file.resolve()}, []
+
+    def refs(f: Path) -> list[Path]:
+        try:
+            text = f.read_text(errors="replace")
+        except OSError:
+            return []
+        return [(f.parent / m[1].replace("\\", "/")).resolve()
+                for m in re.finditer(r"<ProjectReference\s+Include=\"([^\"]+)\"", text, re.I)]
+
+    todo = refs(project_file)
+    while todo:
+        q = todo.pop(0)
+        if q in seen or not q.is_file():
+            continue
+        seen.add(q)
+        todo += refs(q)
+        for x in _packages(q):
+            out.setdefault(x.split()[0].lower(), x)
+    return sorted(out.values())[:limit]
+
+
 def window(text: str, lines: list[int], budget: int) -> tuple[str, int, int]:
     """The file, or the part around the evidence lines that fits `budget` characters:
     (text, first line, last line), 1-based."""
@@ -556,7 +620,10 @@ def task_prompt(payload: dict, task: dict, app_root: Path) -> tuple[str, list[st
     pk = _packages(proj) if proj.is_file() else []
     head = [f"Application {payload.get('app')}, component {comp['name']} ({comp.get('project')}): "
             f"{comp.get('language')}, role {comp.get('role')}, target framework {', '.join(comp.get('tfm') or []) or 'unknown'}.",
-            f"Packages: {', '.join(pk) if pk else 'none listed'}.", "",
+            f"Packages: {', '.join(pk) if pk else 'none listed'}.",
+            *([f"Packages it gets from the projects it references (already available: do not add them to this "
+               f"project; if you must, use exactly these versions): {', '.join(rp)}."] if (rp := referenced_packages(proj)) else []),
+            "",
             "The assessment found these in the file below; they keep it from running in a Linux container:"]
     for i, f in enumerate(task["findings"], 1):
         head.append(f"{i}. [{f['severity']}] {f['rule']}: {f['title']}")
@@ -1194,6 +1261,87 @@ def rules_after(payload: dict, app_root: Path) -> tuple[dict, list[dict]]:
     return out, new
 
 
+def _version_key(v: str) -> tuple | None:
+    """A plain NuGet version (1.2.3, 1.2.3-rc.1) as a sortable key; None for ranges and wildcards."""
+    m = re.fullmatch(r"(\d+(?:\.\d+){0,3})(-[0-9A-Za-z.\-]+)?", v.strip())
+    if not m:
+        return None
+    nums = tuple(int(x) for x in m[1].split("."))
+    nums += (0,) * (4 - len(nums))
+    return nums + ((1, "") if not m[2] else (0, m[2]))     # a release sorts after its pre-releases
+
+
+PKG_VERSION_RE = re.compile(r"(<PackageReference\s+Include=\"(?P<pkg>[^\"]+)\"\s+Version=\")(?P<ver>[^\"]+)(\")", re.I)
+
+
+def align_package_versions(app_root: Path, log=print) -> list[str]:
+    """Raise a project's direct package reference to the version a project it references asks for (NuGet's
+    NU1605 "Detected package downgrade", an error: an edit added `X 8.0.0` where a referenced project has `X 8.0.11`).
+    The LLM sees only the file it edits, not the referenced projects. Returns notes of what was raised."""
+    projects = {f.resolve(): f for f in app_root.rglob("*.csproj")
+                if not any(part in ("bin", "obj", "node_modules", ".git") for part in f.parts)}
+
+    def refs(f: Path) -> list[Path]:
+        try:
+            text = f.read_text(errors="replace")
+        except OSError:
+            return []
+        out = []
+        for m in re.finditer(r"<ProjectReference\s+Include=\"([^\"]+)\"", text, re.I):
+            q = (f.parent / m[1].replace("\\", "/")).resolve()
+            if q in projects:
+                out.append(q)
+        return out
+
+    def versions(f: Path) -> dict[str, str]:
+        try:
+            text = f.read_text(errors="replace")
+        except OSError:
+            return {}
+        return {m["pkg"].lower(): m["ver"] for m in PKG_VERSION_RE.finditer(text)}
+
+    def wanted(f: Path) -> dict[str, str]:
+        """The highest version of each package that the projects f references (transitively) ask for."""
+        best: dict[str, str] = {}
+        seen, todo = {f}, list(refs(f))
+        while todo:
+            q = todo.pop()
+            if q in seen:
+                continue
+            seen.add(q)
+            todo += refs(q)
+            for pkg, v in versions(q).items():
+                k = _version_key(v)
+                if k is not None and (pkg not in best or k > _version_key(best[pkg])):
+                    best[pkg] = v
+        return best
+
+    notes = []
+    for real, f in sorted(projects.items()):
+        best = wanted(real)
+        if not best:
+            continue
+        text, how = _read_text(f)
+        raised = []
+
+        def bump(m):
+            want = best.get(m["pkg"].lower())
+            have, need = _version_key(m["ver"]), _version_key(want) if want else None
+            if have is None or need is None or have >= need:
+                return m[0]
+            raised.append(f"{m['pkg']} {m['ver']} -> {want}")
+            return m[1] + want + m[4]
+
+        new = PKG_VERSION_RE.sub(bump, text)
+        if raised:
+            _write_text(f, new, how)
+            rel = f.relative_to(app_root).as_posix()
+            notes.append(f"{rel}: raised {', '.join(raised)} to the version a referenced project uses "
+                         "(a lower one is a package downgrade, NU1605)")
+            log(notes[-1])
+    return notes
+
+
 def verify_components(payload: dict, app_root: Path, work: Path, timeout: int = 900, name: str | None = None,
                       files: list[str] | None = None) -> list[dict]:
     """Build and run each changed component of the patched copy (verify.verify_component): those of the payload's
@@ -1329,6 +1477,8 @@ def generate(payload: dict, tasks: list[dict], app_root: Path, ask, limit: int, 
         # kept for other orders only when it fixed everything in the file: a partial answer is asked again
         if code_changes and all(r["status"] == "fixed" for r in rows) and not any(r.get("shared") for r in rows):
             keep_answer(key, answer, t["file"], payload.get("app"))
+    if changes_all:
+        notes += align_package_versions(app_root, log)
     for c in changes_all:
         if c["kind"] == "package-manual":
             notes.append(f"package change to make by hand in {c['file'] or 'the project'}: {c['detail']}")
@@ -1378,16 +1528,22 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
             raise RefactorError("the earlier patch no longer applies to the commit: " + alog[-400:])
     if payload.get("goal") == "stateless":
         tasks += state_tasks(payload, app_root)
+    pre_changes, pre_notes = [], []
     if payload.get("goal") == "repair":
         changed = app_files(repo, app_root, base_patch)
-        tasks += repair_tasks(payload, app_root, changed)
-    if not tasks and payload.get("goal") == "repair":
+        pre_changes, pre_notes, fixed = fix_downgrades(app_root, str(payload.get("log_tail") or ""), log)
+        if fixed:
+            payload = {**payload, "errors": without_fixed(payload.get("errors") or [], fixed)}
+        if not (pre_changes and not payload.get("errors")):
+            tasks += repair_tasks(payload, app_root, changed)
+    if not tasks and payload.get("goal") == "repair" and not pre_changes:
         raise RefactorError("nothing to repair: the build or run errors name no file of the application, and the "
                             "earlier patch changes none")
-    if not tasks:
+    if not tasks and not pre_changes:           # (NuGet's downgrades only: raised, nothing to ask the LLM)
         raise RefactorError("nothing to change: no file of the component uses an embedded database or names a finding")
     limit = int(MAX_CALLS if payload.get("max_calls") is None else payload["max_calls"])
     findings, calls, changes_all, notes = generate(payload, tasks, app_root, ask, limit, progress, log)
+    changes_all, notes = pre_changes + changes_all, pre_notes + notes
     # The rules are the better judge than the LLM's own list: a finding the edits removed from a file they changed
     # is fixed even when the answer did not name it (and the commit message lists it too).
     changed = {c["file"] for c in changes_all if c["kind"] != "package-manual"}
@@ -1647,6 +1803,15 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
             text = patch.decode("utf-8", errors="replace")
             rp = {**payload, "goal": "repair", "base_patch": text, "errors": build_errors(logs),
                   "log_tail": logs[-4000:], "components": comps}
+            dchanges, dnotes, fixed = fix_downgrades(app_root, logs, log)
+            if dchanges:
+                notes += dnotes
+                changes_all += dchanges
+                rp["errors"] = without_fixed(rp["errors"], fixed)
+                if not rp["errors"]:            # NuGet's downgrades only: raised without the LLM, verify again
+                    loop.append({"pass": p, "round": rnd, "kind": "repair", "files": len({c["file"] for c in dchanges}),
+                                 "calls": 0, "changes": len(dchanges)})
+                    continue
             rtasks = repair_tasks(rp, app_root, app_files(repo, app_root, text))
             for t in rtasks:
                 c = _component_of(comps, t["file"])

@@ -1025,3 +1025,71 @@ def test_a_repair_builds_the_components_its_patch_changes(shop, tmp_path, monkey
     out = rf.verify_components({**pl, "tasks": []}, shop, tmp_path / "v", files=["src/Shop.Api/Bank.cs"])
     assert built == ["Shop.Api"] and [v["status"] for v in out] == ["ok"]
     assert rf.verify_components({**pl, "tasks": []}, shop, tmp_path / "v2") == []          # nothing changed
+
+
+# --------------------------------------------------------------------------- NuGet package downgrades (NU1605)
+
+def _dotnet_app(tmp_path):
+    app = tmp_path / "app"
+    (app / "src/Data").mkdir(parents=True)
+    (app / "src/Web").mkdir(parents=True)
+    (app / "src/Data/Data.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk">\n  <ItemGroup>\n'
+        '    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.11" />\n'
+        '  </ItemGroup>\n</Project>\n')
+    (app / "src/Web/Web.csproj").write_bytes(
+        b'\xef\xbb\xbf<Project Sdk="Microsoft.NET.Sdk.Web">\r\n  <ItemGroup>\r\n'
+        b'    <ProjectReference Include="..\\Data\\Data.csproj" />\r\n'
+        b'    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.0" />\r\n'
+        b'    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.1.1" />\r\n'
+        b'    <PackageReference Include="Serilog" Version="[3.0,)" />\r\n'
+        b'  </ItemGroup>\r\n</Project>\r\n')
+    return app
+
+
+def test_a_direct_reference_below_a_referenced_projects_version_is_raised(tmp_path):
+    app = _dotnet_app(tmp_path)
+    assert rf.referenced_packages(app / "src/Web/Web.csproj") == ["Microsoft.EntityFrameworkCore.SqlServer 8.0.11"]
+    notes = rf.align_package_versions(app, log=lambda s: None)
+    raw = (app / "src/Web/Web.csproj").read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf") and b"\r\n" in raw                     # written back as it was
+    assert b'SqlServer" Version="8.0.11"' in raw and b'SqlClient" Version="5.1.1"' in raw
+    assert b'Version="[3.0,)"' in raw                                               # ranges are left alone
+    assert len(notes) == 1 and "8.0.0 -> 8.0.11" in notes[0]
+    assert rf.align_package_versions(app, log=lambda s: None) == []                 # nothing more to raise
+
+
+def test_nugets_downgrade_errors_are_fixed_without_the_llm(tmp_path):
+    app = _dotnet_app(tmp_path)
+    log = ("#11 3.4 /src/src/Web/Web.csproj : error NU1605: Warning As Error: Detected package downgrade: "
+           "Microsoft.Data.SqlClient from 5.1.6 to 5.1.1. Reference the package directly from the project.\n"
+           "#11 3.4 /src/src/Web/Web.csproj : error NU1605:  Web -> Microsoft.EntityFrameworkCore.SqlServer 8.0.11 -> "
+           "Microsoft.Data.SqlClient (>= 5.1.6)\n"
+           "#11 3.4 /src/src/Web/Web.csproj : error NU1605:  Web -> Microsoft.Data.SqlClient (>= 5.1.1)\n"
+           "#11 3.5 /src/src/Web/Program.cs(3,1): error CS0246: The type or namespace name 'Foo' could not be found\n")
+    changes, notes, fixed = rf.fix_downgrades(app, log, log=lambda s: None)
+    assert changes == [{"file": "src/Web/Web.csproj", "kind": "package",
+                        "detail": "raise Microsoft.Data.SqlClient 5.1.1 -> 5.1.6"}]
+    assert b'SqlClient" Version="5.1.6"' in (app / "src/Web/Web.csproj").read_bytes() and "no LLM call" in notes[0]
+    left = rf.without_fixed(rf.build_errors(log), fixed)
+    assert [e["code"] for e in left] == ["CS0246"]                                  # the compiler error is the LLM's
+    assert rf.fix_downgrades(app, log, log=lambda s: None)[0] == []                 # already raised
+
+
+def test_a_build_with_only_downgrades_leaves_no_error_for_the_llm(tmp_path):
+    app = _dotnet_app(tmp_path)
+    log = ("/src/src/Web/Web.csproj : error NU1605: Warning As Error: Detected package downgrade: "
+           "Microsoft.Data.SqlClient from 5.1.6 to 5.1.1. Reference the package directly from the project.\n")
+    payload = {"goal": "repair", "errors": rf.build_errors(log), "log_tail": log}
+    changes, _, fixed = rf.fix_downgrades(app, payload["log_tail"], log=lambda s: None)
+    assert changes and rf.without_fixed(payload["errors"], fixed) == []
+
+
+def test_a_writable_folder_never_hides_the_app():
+    from containerizer.generate import hides_app, merge_plan, writable_dirs
+    assert hides_app("/app") and hides_app("/") and hides_app(".") and hides_app("/app/")
+    assert not hides_app("/app/data") and not hides_app("/tmp") and not hides_app("/application")
+    plan = {"add_writable": ["/tmp", "."], "add_packages": [], "env": {}}
+    merge_plan(plan, {"add_writable": ["/app", "/var/lib/x"]})
+    assert plan["add_writable"] == ["/tmp", ".", "/var/lib/x"]
+    assert writable_dirs(plan) == ["/tmp", "/var/lib/x"]
