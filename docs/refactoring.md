@@ -272,11 +272,15 @@ rate A on their own, so a B application has only those in the sandbox, often non
   sandbox**, **failing in the sandbox**, or *deployed, health not checked* without a kubeconfig. The
   original's sandbox results on its results page stay as they are: the variant is not a sandbox check of the
   application and teaches the learning loop nothing.
-- **Expiry and removal.** A variant expires after **7 days** (`CONTAINERIZER_SANDBOX_VARIANT_DAYS`). **Remove
-  from the sandbox** on the order page (administrators, operators, the application's product owners) asks for
-  its removal; the queue runner takes expired and requested variants out of the output repository within a few
-  minutes (the folder deleted, `sandbox/` regenerated, one commit: the cluster removes the namespace) and records
-  it: **removed** or **expired**. The patch stays available.
+- **How long it stays.** A variant does not expire with time. It stays until a scan assesses newer code of its
+  application: another commit than the one its patch was made for, so the patch no longer matches the
+  application. Without scheduled scans, the code an order was made for stays the code the scans know, and so does
+  the variant. **Remove from the sandbox** on the order page (administrators, operators, the application's
+  product owners) takes it out sooner. The queue runner takes outdated and requested variants out of the
+  output repository within a few minutes (the folder deleted, `sandbox/` regenerated, one commit: the cluster
+  removes the namespace) and records it: **replaced by newer code** (with both commits) or **removed**. The
+  patch stays available: order Make it A again for the new code. Variants deployed before 0.9.1 had an expiry
+  date, which no longer applies.
 
 The results page shows the variant's state next to the order, with its URL (**open ↗**) while it runs.
 

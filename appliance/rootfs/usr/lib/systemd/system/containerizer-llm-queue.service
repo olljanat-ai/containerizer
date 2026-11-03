@@ -32,8 +32,8 @@ Environment=DOCKER_CONFIG=/var/lib/containerizer/refactor/.docker
 # (docs/refactoring.md#the-sandbox-variant): its files are committed to the scan's output repository from a
 # clone under the scratch space (the write token: the registered credential, opened with the credential key);
 # the lab services that are on give it its own, empty lab database; its health is read back with the
-# read-only verifier kubeconfig cz-sandbox writes (containerizer-sandbox.timer); variants expire after
-# CONTAINERIZER_SANDBOX_VARIANT_DAYS days (default 7: set it in worker.env)
+# read-only verifier kubeconfig cz-sandbox writes (containerizer-sandbox.timer); a variant stays until a scan
+# assesses newer code of its application, or until someone removes it
 Environment=CONTAINERIZER_LAB_SERVICES=/var/lib/containerizer/system/lab-services.json
 Environment=CONTAINERIZER_SANDBOX_KUBECONFIG=/run/containerizer/sandbox-verifier.kubeconfig
 # results database (CZ_SQL_SCANNER_CS): the appliance's own or CZ_SQL_SERVER (cz-firstboot)

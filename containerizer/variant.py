@@ -18,10 +18,11 @@ pulls it from there.
   learning loop and without cz.SandboxCheck rows: the variant's health is in the order's result
   (`result["sandbox"]`), so the original application's sandbox results stay as they are. Without a kubeconfig:
   "deployed; health not checked".
-- Expiry and removal: a variant expires after CONTAINERIZER_SANDBOX_VARIANT_DAYS days (default 7); "Remove from
-  the sandbox" on the order page asks for its removal (cz.LlmJob.RemoveRequestedAt). The queue runner removes
-  expired and requested variants (housekeep): the folder is deleted, sandbox/ regenerated and committed, and
-  the removal recorded in the result.
+- Outdated and removal: a variant stays until a scan assesses newer code of its application (another commit than
+  the one its patch was made for: its patch no longer applies to what the application is now), or until "Remove
+  from the sandbox" on the order page asks for its removal (cz.LlmJob.RemoveRequestedAt). The queue runner removes
+  outdated and requested variants (housekeep): the folder is deleted, sandbox/ regenerated and committed, and the
+  removal recorded in the result. (Variants made before this kept an expiry date; it no longer applies.)
 """
 from __future__ import annotations
 
@@ -30,23 +31,22 @@ import os
 import re
 import shutil
 import subprocess
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
-EXPIRY_ENV = "CONTAINERIZER_SANDBOX_VARIANT_DAYS"
 KUBECONFIG_ENV = "CONTAINERIZER_SANDBOX_KUBECONFIG"
 CONTEXT_ENV = "CONTAINERIZER_SANDBOX_CONTEXT"
 GITOPS_ENV = "CONTAINERIZER_SANDBOX_GITOPS"
 TIMEOUT_ENV = "CONTAINERIZER_SANDBOX_VARIANT_TIMEOUT"
-DEFAULT_DAYS = 7
 DEFAULT_TIMEOUT = 900
 SUFFIX = "-refactor-"
-STATUSES = ("deploying", "running", "failing", "deployed", "skipped", "error", "removed", "expired")
+STATUSES = ("deploying", "running", "failing", "deployed", "skipped", "error", "removed", "outdated", "expired")
 STATUS_TEXT = {"deploying": "Deploying", "running": "Running in the sandbox", "failing": "Failing in the sandbox",
                "deployed": "Deployed, health not checked", "skipped": "Not deployed", "error": "Deploy failed",
-               "removed": "Removed from the sandbox", "expired": "Expired"}
+               "removed": "Removed from the sandbox", "outdated": "Replaced by newer code",
+               "expired": "Expired"}                    # (expired: variants removed by the old 7-day expiry)
 ACTIVE = ("running", "failing", "deployed")         # in the output repository: can be removed
-HOUSEKEEP_SECONDS = 300                             # how often the runner looks for expired variants
+HOUSEKEEP_SECONDS = 300                             # how often the runner looks for outdated variants
 
 
 class Skip(Exception):
@@ -61,12 +61,10 @@ def _iso(t: datetime) -> str:
     return t.astimezone(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
 
 
-def expiry_days(env=None) -> int:
-    env = os.environ if env is None else env
-    try:
-        return max(1, min(365, int(env.get(EXPIRY_ENV) or DEFAULT_DAYS)))
-    except ValueError:
-        return DEFAULT_DAYS
+def _same_commit(a: str | None, b: str | None) -> bool:
+    """The same commit, one written short (12 characters) and the other in full."""
+    a, b = (a or "").strip().lower(), (b or "").strip().lower()
+    return bool(a and b) and (a.startswith(b) or b.startswith(a))
 
 
 def variant_tag(now: datetime, job: int) -> str:
@@ -129,6 +127,8 @@ def options(scan: dict, write, work: Path):
 def _off(connect) -> set:
     """The applications whose sandbox is turned off (org.load_sandbox_off): left out of sandbox/."""
     from .org import load_sandbox_off
+    if connect is None:
+        return set()
     conn = connect()
     try:
         return load_sandbox_off(conn)
@@ -136,15 +136,16 @@ def _off(connect) -> set:
         conn.close()
 
 
-def _open(connect, key, payload: dict, work: Path):
-    """(target, OrgOptions) with the output repository's write token; Skip when it cannot be deployed."""
+def _open(connect, key, payload: dict, work: Path, deploying: bool = True):
+    """(target, OrgOptions) with the output repository's write token; Skip when it cannot be deployed (`deploying`:
+    also when the application's sandbox is turned off; a removal goes ahead)."""
     from .credentials import CredentialError, load, private_key_from_env
     from .org import host_allowed
     from .orgsource import REDACT
     from .worker import allowed_hosts
     conn = connect()
     try:
-        if payload.get("application_id") is not None:
+        if deploying and payload.get("application_id") is not None:
             cur = conn.cursor()
             cur.execute("SELECT SandboxEnabled FROM cz.Application WHERE ApplicationId = %s", (int(payload["application_id"]),))
             row = cur.fetchone()
@@ -238,7 +239,6 @@ def deploy(connect, key, payload: dict, job: int, result: dict, work: Path, name
     from .org import segment
     original = f"{segment(scan['Organization'])}/{segment(repo['ProjectName'])}/{segment(repo['Name'])}"
     tag = variant_tag(now, job)
-    expires = now + timedelta(days=expiry_days())
     progress("deploying: building and running the components that did not change")
     a = _assessed(src, name, result, work / "deploy-verify")
     (work / "deploy").mkdir(parents=True, exist_ok=True)
@@ -264,7 +264,7 @@ def deploy(connect, key, payload: dict, job: int, result: dict, work: Path, name
                 "excluded": res.excluded}
     doc = res.to_dict()
     doc["variant"] = {"of": original, "of_app": payload.get("app"), "job": job, "application_id": payload.get("application_id"),
-                      "expires_at": _iso(expires)}
+                      "commit": payload.get("commit")}
     (out.root / rel / "containerizer.json").write_text(json.dumps(doc, indent=2, default=str) + "\n")
     write_sandbox(out.root, out.url, o.output_branch, _off(connect))
     out.commit(f"containerizer: sandbox variant {rel} of {original} (\"Make it A\" order #{job}, {tag})")
@@ -274,7 +274,7 @@ def deploy(connect, key, payload: dict, job: int, result: dict, work: Path, name
     sb = {"status": "deployed", "namespace": name, "folder": rel, "of": original, "scan_id": int(scan["ScanId"]),
           "tag": tag, "images": [c.get("image") for c in res.components], "revision": rev,
           "url": next((c.get("url") for c in comps if c.get("url")), None), "url_check": None, "checked_at": None,
-          "deployed_at": _iso(now), "expires_at": _iso(expires), "excluded": res.excluded,
+          "deployed_at": _iso(now), "commit": payload.get("commit"), "excluded": res.excluded,
           "local_images": any(c.get("image_source") == "local" for c in res.components),
           "reason": "deployed"}
     progress("deploying: waiting for the sandbox to run it")
@@ -331,46 +331,58 @@ def remove(connect, key, job: int, payload: dict, sandbox: dict, work: Path, sta
     folder = sandbox.get("folder") or ""
     if not valid_folder(folder, job):
         raise Skip(f"not a sandbox variant folder of order #{job}: {folder!r}")
-    _, o = _open(connect, key, payload, work)
+    _, o = _open(connect, key, payload, work, deploying=False)
     work.mkdir(parents=True, exist_ok=True)
     out = Output(o, work)
     d = out.root / folder
     if d.exists():
         shutil.rmtree(d)
     write_sandbox(out.root, out.url, o.output_branch, _off(connect))
-    why = "expired" if status == "expired" else "removed"
+    why = "outdated: its application's code changed" if status == "outdated" else "removed"
     out.commit(f"containerizer: sandbox variant {folder} {why} (\"Make it A\" order #{job})")
-    return {**sandbox, "status": status, "removed_at": _iso(now), "removed_by": by,
-            "reason": (f"expired after {expiry_days()} days" if status == "expired" else
-                       "removed from the sandbox" + (f" by {by}" if by else "")), "revision": _head(out.root)}
+    if status == "outdated":          # `by` is the commit a scan assessed since
+        reason = (f"replaced by newer code: a scan assessed commit {str(by or '')[:12]} of the application, and the "
+                  f"patch was made for {str(payload.get('commit') or '')[:12]}")
+        by = None
+    else:
+        reason = "removed from the sandbox" + (f" by {by}" if by else "")
+    return {**sandbox, "status": status, "removed_at": _iso(now), "removed_by": by, "reason": reason,
+            "revision": _head(out.root)}
 
 
-def due(rows: list[dict], now: datetime | None = None) -> list[tuple[dict, str]]:
-    """(row, 'removed' | 'expired') of the variants the runner takes out now."""
-    now = now or utcnow()
+def due(rows: list[dict], latest: dict | None = None) -> list[tuple[dict, str, str | None]]:
+    """(row, 'removed' | 'outdated', who or the new commit) of the variants the runner takes out now: the ones someone
+    asked to remove, and the ones whose application a scan assessed at another commit than the patch was made for
+    (`latest`: ApplicationId -> its latest assessed commit). A variant does not expire otherwise."""
     out = []
     for r in rows:
         try:
             sb = (json.loads(r["Result"]) if isinstance(r.get("Result"), str) else r.get("Result") or {}).get("sandbox") or {}
+            pl = json.loads(r["Payload"]) if isinstance(r.get("Payload"), str) else r.get("Payload") or {}
         except ValueError:
             continue
         if sb.get("status") not in ACTIVE or sb.get("removed_at"):
             continue
         if r.get("RemoveRequestedAt"):
-            out.append((r, "removed"))
+            out.append((r, "removed", r.get("RemoveRequestedBy")))
             continue
-        try:
-            exp = datetime.fromisoformat(str(sb.get("expires_at"))).replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
-        if exp <= now:
-            out.append((r, "expired"))
+        app_id = pl.get("application_id")
+        now_at = (latest or {}).get(int(app_id)) if app_id is not None else None
+        made_for = pl.get("commit")
+        if now_at and made_for and not _same_commit(now_at, made_for):
+            out.append((r, "outdated", now_at))
     return out
 
 
+def latest_commits(conn) -> dict:
+    """ApplicationId -> the commit its latest assessment is of."""
+    return {int(r["ApplicationId"]): r["SourceCommit"] for r in _rows(
+        conn, "SELECT ApplicationId, SourceCommit FROM cz.vApplicationLatest WHERE SourceCommit IS NOT NULL")}
+
+
 def housekeep(connect, key, work: Path, log=print, now: datetime | None = None) -> int:
-    """The queue runner's periodic step: remove the variants that expired or that someone asked to remove.
-    Returns how many were removed."""
+    """The queue runner's periodic step: remove the variants whose application's code changed (a scan assessed
+    another commit) or that someone asked to remove. Returns how many were removed."""
     from .orgsource import REDACT
     conn = connect()
     try:
@@ -378,16 +390,16 @@ def housekeep(connect, key, work: Path, log=print, now: datetime | None = None) 
                            "WHERE Kind = N'refactor' AND Status = N'answered' "
                            "AND JSON_VALUE(Result, '$.sandbox.folder') IS NOT NULL "
                            "AND JSON_VALUE(Result, '$.sandbox.removed_at') IS NULL")
+        latest = latest_commits(conn) if rows else {}
     finally:
         conn.close()
     n = 0
-    for r, status in due(rows, now):
+    for r, status, by in due(rows, latest):
         jid = int(r["JobId"])
         result = json.loads(r["Result"]) if isinstance(r["Result"], str) else dict(r["Result"])
         payload = json.loads(r["Payload"]) if isinstance(r["Payload"], str) else dict(r["Payload"] or {})
         try:
-            sb = remove(connect, key, jid, payload, result["sandbox"], work / f"remove-{jid}", status,
-                        r.get("RemoveRequestedBy"), now)
+            sb = remove(connect, key, jid, payload, result["sandbox"], work / f"remove-{jid}", status, by, now)
         except Skip as ex:
             sb = {**result["sandbox"], "status": "error", "reason": f"could not be removed: {ex}"[:600]}
         except Exception as ex:  # noqa: BLE001 - tried again next time

@@ -294,8 +294,8 @@ def test_variant_folder_tag_and_what_may_be_deleted():
     assert not variant.valid_folder("Contoso/shop-refactor-42", 42)
     t = variant.variant_tag(datetime(2026, 11, 1, 9, 5, tzinfo=timezone.utc), 42)
     assert t == "1.20261101.905-refactor.42"         # a pre-release: the original's semver range never takes it
-    assert variant.expiry_days({}) == 7 and variant.expiry_days({variant.EXPIRY_ENV: "2"}) == 2
-    assert variant.expiry_days({variant.EXPIRY_ENV: "x"}) == 7
+    assert variant._same_commit("abcdef123456", "ABCDEF1234567890") and not variant._same_commit("abc", "abd")
+    assert not variant._same_commit("", "abc") and not variant._same_commit(None, None)
 
 
 # --------------------------------------------------------------------------- deploy_app: shared with the scan
@@ -441,7 +441,7 @@ PAYLOAD = {"app": "shop", "commit": "c" * 40, "application_id": 7, "goal": "rati
 def test_the_variant_is_deployed_beside_the_original_and_removed_again(tmp_path, monkeypatch):
     out, o = _output(tmp_path)
     before = (out / "Contoso/_/shop/containerizer.json").read_text()
-    monkeypatch.setattr(variant, "_open", lambda connect, key, payload, work: (TARGET, o))
+    monkeypatch.setattr(variant, "_open", lambda connect, key, payload, work, deploying=True: (TARGET, o))
     monkeypatch.delenv(variant.KUBECONFIG_ENV, raising=False)
     work = tmp_path / "job"
     name = rf.variant_name("shop", 42)
@@ -454,13 +454,13 @@ def test_the_variant_is_deployed_beside_the_original_and_removed_again(tmp_path,
     assert sb["namespace"] == "shop-refactor-42" and sb["folder"] == "Contoso/_/shop-refactor-42"
     assert sb["of"] == "Contoso/_/shop" and sb["tag"] == "1.20261101.905-refactor.42"
     assert sb["images"] == ["reg.example/sandbox/shop-refactor-42/demo-web:1.20261101.905-refactor.42"]
-    assert sb["expires_at"] == "2026-11-08T09:05:00" and len(sb["revision"]) == 40
+    assert "expires_at" not in sb and sb["commit"] == PAYLOAD.get("commit") and len(sb["revision"]) == 40
     assert progress and all(p.startswith("deploying:") for p in progress)
     d = out / sb["folder"]
     meta = json.loads((d / "containerizer.json").read_text())
     assert meta["app"] == "shop-refactor-42" and meta["source_key"] == "" and meta["repo"] == "shop-refactor-42"
     assert meta["variant"] == {"of": "Contoso/_/shop", "of_app": "shop", "job": 42, "application_id": 7,
-                               "expires_at": "2026-11-08T09:05:00"}
+                               "commit": PAYLOAD.get("commit")}
     # its own namespace, image path and GitOps objects; the original is untouched
     assert (out / "Contoso/_/shop/containerizer.json").read_text() == before
     k = yaml.safe_load((d / "kustomization.yaml").read_text())
@@ -476,12 +476,13 @@ def test_the_variant_is_deployed_beside_the_original_and_removed_again(tmp_path,
     assert "sandbox variant Contoso/_/shop-refactor-42 of Contoso/_/shop" in log
     # removal: the folder goes, sandbox/ is regenerated, the original stays
     later = now + timedelta(days=8)
-    sb2 = variant.remove(None, None, 42, PAYLOAD, sb, tmp_path / "rm", "expired", None, now=later)
-    assert sb2["status"] == "expired" and sb2["removed_at"] == "2026-11-09T09:05:00"
-    assert "expired after 7 days" in sb2["reason"]
+    sb2 = variant.remove(None, None, 42, PAYLOAD, sb, tmp_path / "rm", "outdated", "d" * 40, now=later)
+    assert sb2["status"] == "outdated" and sb2["removed_at"] == "2026-11-09T09:05:00" and sb2["removed_by"] is None
+    assert sb2["reason"] == f"replaced by newer code: a scan assessed commit {'d' * 12} of the application, and the " \
+                            f"patch was made for {'c' * 12}"
     assert not d.exists() and (out / "Contoso/_/shop").is_dir()
     assert (out / "sandbox/namespaces.txt").read_text() == "shop\n"
-    assert "sandbox variant Contoso/_/shop-refactor-42 expired" in subprocess.run(
+    assert "sandbox variant Contoso/_/shop-refactor-42 outdated" in subprocess.run(
         ["git", "log", "-1", "--format=%s"], cwd=out, capture_output=True, text=True).stdout
     with pytest.raises(variant.Skip):
         variant.remove(None, None, 42, PAYLOAD, {**sb, "folder": "Contoso/_/shop"}, tmp_path / "rm2")
@@ -499,19 +500,24 @@ def test_no_output_repository_is_a_clear_note():
 
 
 def test_what_the_runner_removes_and_when():
-    now = datetime(2026, 11, 10, tzinfo=timezone.utc)
-
-    def row(jid, status="running", expires="2026-11-08T00:00:00", req=None, removed=None):
-        return {"JobId": jid, "RemoveRequestedAt": req,
-                "Result": json.dumps({"sandbox": {"status": status, "expires_at": expires, "removed_at": removed}})}
-    rows = [row(1), row(2, expires="2026-11-20T00:00:00"), row(3, expires="2026-11-20T00:00:00", req=now),
-            row(4, status="skipped"), row(5, status="removed", removed="x"), row(6, status="failing")]
-    assert [(r["JobId"], why) for r, why in variant.due(rows, now)] == [(1, "expired"), (3, "removed"), (6, "expired")]
+    """Only what someone asked to remove, and copies whose application a scan assessed at another commit: a copy
+    does not expire with time (an old expiry date is ignored)."""
+    def row(jid, status="running", commit="a" * 40, app=7, req=None, removed=None, by=None):
+        return {"JobId": jid, "RemoveRequestedAt": req, "RemoveRequestedBy": by,
+                "Payload": json.dumps({"application_id": app, "commit": commit}),
+                "Result": json.dumps({"sandbox": {"status": status, "expires_at": "2020-01-01T00:00:00",
+                                                  "removed_at": removed}})}
+    rows = [row(1), row(2, app=8), row(3, req=datetime(2026, 11, 1), by="o@example.com"),
+            row(4, status="skipped", app=8), row(5, status="removed", removed="x", app=8), row(6, status="failing", app=8),
+            row(7, app=9)]
+    latest = {7: "a" * 12, 8: "b" * 40}                  # 7: the same commit (written short); 8: newer code; 9: unknown
+    assert [(r["JobId"], why, by) for r, why, by in variant.due(rows, latest)] == [
+        (2, "outdated", "b" * 40), (3, "removed", "o@example.com"), (6, "outdated", "b" * 40)]
+    assert variant.due(rows, {}) == [(rows[2], "removed", "o@example.com")]       # no scan since: nothing goes
 
 
 def test_housekeep_records_the_removal(monkeypatch, tmp_path):
-    sb = {"status": "running", "folder": "Contoso/_/shop-refactor-9", "namespace": "shop-refactor-9",
-          "expires_at": "2026-01-01T00:00:00"}
+    sb = {"status": "running", "folder": "Contoso/_/shop-refactor-9", "namespace": "shop-refactor-9"}
     conn = FakeConn({r"SELECT JobId, Payload, Result, RemoveRequestedAt": [
         {"JobId": 9, "Payload": json.dumps(PAYLOAD), "Result": json.dumps({"status": "verified", "sandbox": sb}),
          "RemoveRequestedAt": datetime(2026, 11, 1), "RemoveRequestedBy": "o@example.com"}]})
@@ -618,7 +624,7 @@ def test_results_page_make_it_a_button_and_variant_chip():
     html = webui._refactoring(app, {"csrf": "<input type='hidden' name='csrf' value='t'>",
                                     "estimates": {(None, "rating-a"): est}})
     assert "<h3>Make it A</h3>" in html and "name='Goal' value='rating-a'" in html and ">Make it A</button>" in html
-    assert "~12,000 tokens · ~20 min" in html and "for 7 days" in html
+    assert "~12,000 tokens · ~20 min" in html and "until a scan finds newer code" in html
     assert "Running in the sandbox" in html and "Failing in the sandbox" in html
     assert "href='https://web-shop-refactor-42.sandbox.example.com/' target='_blank'" in html and "open ↗" in html
     assert "javascript:" not in html
@@ -647,7 +653,7 @@ def test_order_page_shows_the_loop_and_the_sandbox(adm):
     b = _get(adm, op, "/admin/refactoring/42").body
     assert "Make it A #42" in b and "Rating A reached" in b and "Repair of the build or run" in b
     assert "Api: Build failed" in b and "16 LLM calls, 2 passes, 2 repair rounds a pass; 4 calls made" in b
-    assert "Running in the sandbox" in b and "shop-refactor-42" in b and "2026-11-08 09:05 UTC" in b
+    assert "Running in the sandbox" in b and "shop-refactor-42" in b and "Expires" not in b     # no expiry
     assert "&lt;b&gt;" in b and "<x>" not in b and "sb.example.com/&lt;x&gt;" not in b   # not plain: not linked
     assert "action='/admin/refactoring/42/remove'" in b and "Remove from the sandbox" in b
     ok = {**res["sandbox"], "url": "https://web-shop-refactor-42.sb.example.com/"}

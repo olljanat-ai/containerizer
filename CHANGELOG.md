@@ -6,8 +6,11 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.9.1 (2026-11-04)
 
+- Make it A copies in the sandbox no longer expire after 7 days (`CONTAINERIZER_SANDBOX_VARIANT_DAYS` is gone).
+  A copy stays until a scan assesses another commit of its application, so its patch no longer matches, or until
+  someone removes it. The order page then says *Replaced by newer code*, with both commits.
 - The sandbox can be turned off per application: **Admin → Applications** → the application → **Sandbox**. It is
   on by default, and administrators and the application's product owners can switch it. Off: the scans
   still assess the application but build and deploy nothing of it, and new Make it A patches are not deployed.

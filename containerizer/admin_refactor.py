@@ -38,7 +38,7 @@ STATUS_CSS = {"queued": "st-run", "generating": "st-run", "verifying": "st-run",
               "verified": "st-ok", "applies-only": "st-warn", "failed": "st-bad", "cancelled": "st-off",
               "approval": "st-wait"}
 SANDBOX_CSS = {"deploying": "st-run", "running": "st-ok", "failing": "st-bad", "deployed": "st-warn",
-               "skipped": "st-off", "error": "st-bad", "removed": "st-off", "expired": "st-off"}
+               "skipped": "st-off", "error": "st-bad", "removed": "st-off", "outdated": "st-off", "expired": "st-off"}
 URL_RE = re.compile(r"https://[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::\d{1,5})?/[A-Za-z0-9._~/-]{0,200}")
 # what the order page says after an action: fixed texts chosen by a code in the URL
 ORDER_NOTICES = {"remove-requested": "Removal requested: the LLM queue runner takes the variant out of the sandbox "
@@ -450,8 +450,7 @@ def _sandbox_section(adm, s, ident: int, sb: dict, requested) -> str:
     if url and st in ACTIVE:
         out.append(f"<div><span class='label'>URL</span> <a href='{e(url)}' target='_blank' rel='noopener noreferrer'>"
                    f"{e(url)} ↗</a></div>")
-    for label, key in (("Deployed", "deployed_at"), ("Checked", "checked_at"), ("Expires", "expires_at"),
-                       ("Removed", "removed_at")):
+    for label, key in (("Deployed", "deployed_at"), ("Checked", "checked_at"), ("Removed", "removed_at")):
         if sb.get(key):
             out.append(f"<div><span class='label'>{label}</span> {e(str(sb[key]).replace('T', ' ')[:16])} UTC</div>")
     out.append("</div>")

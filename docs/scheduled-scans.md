@@ -63,7 +63,8 @@ and the product owners of its product). It is on by default.
 
 The LLM queue runner applies a change within a few minutes: it regenerates `sandbox/` in every output repository
 and commits it. A scan also leaves the application out when it writes `sandbox/`. The change history records who
-switched it and when. A Make it A copy still expires after its 7 days, also while the sandbox is off.
+switched it and when. A Make it A copy stays until a scan assesses newer code of its application, also while
+the sandbox is off.
 
 **Scan now**, on a project's or repository's page or for the ones selected in the lists, runs a full
 scan of only those, outside the schedule, for example after a fix was pushed. The other repositories
