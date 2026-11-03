@@ -673,7 +673,7 @@ def test_runner_uses_the_built_in_llm_when_none_is_registered(tmp_path, monkeypa
     runner = object.__new__(lq.Runner)
     runner.key, runner.log = None, lambda msg: None
     s = lq.Runner.llm_settings(runner, conn=None)
-    assert s["CONTAINERIZER_LLM_BASE_URL"] == local_llm.BASE_URL and s["CONTAINERIZER_MODEL"] == local_llm.MODEL.alias
+    assert s["CONTAINERIZER_LLM_BASE_URL"] == "http://127.0.0.1:8090/v1" and s["CONTAINERIZER_MODEL"] == local_llm.MODEL.alias
     status.write_text(_json.dumps({"enabled": False, "state": "off"}))
     assert lq.Runner.llm_settings(runner, conn=None) is None          # the environment's
     unit = (_Path(__file__).resolve().parent.parent / "appliance/rootfs/usr/lib/systemd/system/"
@@ -781,22 +781,26 @@ def _llm(cid, order, max_tokens=0, parallel=1, model="m"):
                       model=model, llm_order=order, llm_max_tokens=max_tokens, llm_parallel=parallel, token="")
 
 
-BUILTIN = {"CONTAINERIZER_AI_BACKEND": "openai", "CONTAINERIZER_LLM_BASE_URL": "http://127.0.0.1:8082/v1",
+BUILTIN = {"CONTAINERIZER_AI_BACKEND": "openai", "CONTAINERIZER_LLM_BASE_URL": "http://127.0.0.1:8090/v1",
            "CONTAINERIZER_MODEL": "qwen3-coder-30b-a3b"}
 
 
-def test_lanes_follow_the_order_sizes_and_requests_at_once(monkeypatch):
-    from containerizer import local_llm
-    monkeypatch.setattr(local_llm, "queue_parallel", lambda settings, env=None: 2)       # two NUMA nodes
+SERVERS = [{"index": 0, "node": 0, "ready": True, "settings": BUILTIN},          # two NUMA nodes
+           {"index": 1, "node": 1, "ready": True, "settings": {**BUILTIN, "CONTAINERIZER_LLM_BASE_URL": "http://127.0.0.1:8091/v1"}}]
+
+
+def test_lanes_follow_the_order_sizes_and_requests_at_once():
     gpu, cpu = _llm(1, 30, 0, 4, "big"), _llm(2, 20, 15000, 1, "small")
-    lanes = lq.plan_lanes([cpu, gpu], BUILTIN, {"LocalOrder": 10, "LocalMaxTokens": 4000})
+    lanes = lq.plan_lanes([cpu, gpu], SERVERS, {"LocalOrder": 10, "LocalMaxTokens": 4000})
     assert [(ln["name"], ln["max_tokens"], ln["parallel"]) for ln in lanes] == \
-        [("built-in", 4000, 2), ("llm-2", 15000, 1), ("llm-1", 0, 4)]
-    assert lanes[1]["settings"]["CONTAINERIZER_MODEL"] == "small"
+        [("built-in-0", 4000, 1), ("built-in-1", 4000, 1), ("llm-2", 15000, 1), ("llm-1", 0, 4)]
+    assert lanes[2]["settings"]["CONTAINERIZER_MODEL"] == "small"
+    assert lanes[1]["settings"]["CONTAINERIZER_LLM_BASE_URL"] == "http://127.0.0.1:8091/v1"
     # no place in the order: the built-in LLM is not used beside registered ones (as before)
-    assert [ln["name"] for ln in lq.plan_lanes([gpu], BUILTIN, {})] == ["llm-1"]
-    # alone, it takes every job, at least Parallel at once
-    assert [(ln["max_tokens"], ln["parallel"]) for ln in lq.plan_lanes([], BUILTIN, {"Parallel": 3})] == [(0, 3)]
+    assert [ln["name"] for ln in lq.plan_lanes([gpu], SERVERS, {})] == ["llm-1"]
+    # alone, it takes every job, Parallel shared out between its servers
+    assert [(ln["max_tokens"], ln["parallel"]) for ln in lq.plan_lanes([], SERVERS[:1], {"Parallel": 3})] == [(0, 3)]
+    assert [ln["parallel"] for ln in lq.plan_lanes([], SERVERS, {"Parallel": 3})] == [2, 2]
     assert lq.plan_lanes([], None, {"Parallel": 2})[0] | {"label": ""} == {
         "name": "environment", "label": "", "settings": None, "max_tokens": 0, "parallel": 2, "order": 0}
 
@@ -828,6 +832,7 @@ def test_fill_gives_each_job_to_the_first_llm_that_takes_it(monkeypatch):
         pool = SimpleNamespace(submit=lambda fn, row: submitted.append(row) or row)
         r.fill(pool)
         assert [(x["JobId"], x["_lane"]) for x in submitted] == [(2, "built-in"), (3, "llm-2"), (1, "llm-1"), (4, "llm-1")]
+        assert r.metrics.llm_jobs._values == {("built-in", "built-in"): 1, ("llm-2", "llm-2"): 1, ("llm-1", "llm-1"): 2}
         assert [x["JobId"] for x in jobs] == [5]                       # every LLM is busy: the big one waits
         assert submitted[0]["_llm"] is BUILTIN and submitted[2]["_parallel"] == 1 and submitted[3]["_parallel"] == 2
     finally:
@@ -846,7 +851,7 @@ def test_each_job_thread_asks_its_own_llm():
         t.start()
         t.join()
         seen["main"] = (ai._llm_base_url(), ai.model_name())
-    assert seen["thread"] == ("http://127.0.0.1:8082/v1", "qwen3-coder-30b-a3b")
+    assert seen["thread"] == ("http://127.0.0.1:8090/v1", "qwen3-coder-30b-a3b")
     assert seen["main"] == ("https://gpu.example.com/v1", "big")
 
 

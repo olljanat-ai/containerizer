@@ -2184,13 +2184,13 @@
     },
     {
       "type": "stat",
-      "title": "Built-in LLM",
+      "title": "Built-in LLM servers",
       "id": 201,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "llama.cpp on the appliance (Admin -> Source control & LLM). Off by default; shows Off or down while it is off or loading.",
+      "description": "llama.cpp on the appliance (Admin -> Source control & LLM): one server per NUMA node when the machine has the RAM for a copy of the model on each. Off by default; Off or down while it is off or loading.",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -2204,8 +2204,8 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "max(up{job=\"local-llm\"}) or vector(0)",
-          "legendFormat": "",
+          "expr": "up{job=\"local-llm\"} or on() vector(0)",
+          "legendFormat": "server {{server}}",
           "instant": true,
           "range": false
         }
@@ -2244,7 +2244,7 @@
         },
         "colorMode": "value",
         "graphMode": "none",
-        "textMode": "auto",
+        "textMode": "value_and_name",
         "justifyMode": "auto",
         "orientation": "auto"
       }
@@ -2477,10 +2477,10 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Generation is live; prompt and answer tokens are counted when a request finishes, so they show as bursts.",
+      "description": "Generation is live; prompt and answer tokens are counted when a request finishes, so they show as bursts. One line of each per server (NUMA node).",
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 8,
         "x": 0,
         "y": 67
       },
@@ -2491,8 +2491,8 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "sum(rate(llamacpp:n_decode_total{job=\"local-llm\"}[2m]) * llamacpp:n_busy_slots_per_decode{job=\"local-llm\"})",
-          "legendFormat": "generation (live)"
+          "expr": "sum by (server) (rate(llamacpp:n_decode_total{job=\"local-llm\"}[2m]) * llamacpp:n_busy_slots_per_decode{job=\"local-llm\"})",
+          "legendFormat": "server {{server}}: generation (live)"
         },
         {
           "datasource": {
@@ -2500,8 +2500,8 @@
             "uid": "${datasource}"
           },
           "refId": "B",
-          "expr": "sum(rate(llamacpp:prompt_tokens_total{job=\"local-llm\"}[5m]))",
-          "legendFormat": "prompt"
+          "expr": "sum by (server) (rate(llamacpp:prompt_tokens_total{job=\"local-llm\"}[5m]))",
+          "legendFormat": "server {{server}}: prompt"
         },
         {
           "datasource": {
@@ -2509,8 +2509,8 @@
             "uid": "${datasource}"
           },
           "refId": "C",
-          "expr": "sum(rate(llamacpp:tokens_predicted_total{job=\"local-llm\"}[5m]))",
-          "legendFormat": "answers (when finished)"
+          "expr": "sum by (server) (rate(llamacpp:tokens_predicted_total{job=\"local-llm\"}[5m]))",
+          "legendFormat": "server {{server}}: answers (when finished)"
         }
       ],
       "fieldConfig": {
@@ -2554,11 +2554,11 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Requests in progress and waiting for a free answer slot.",
+      "description": "Requests in progress and waiting for a free answer slot, per server (NUMA node).",
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
+        "w": 8,
+        "x": 8,
         "y": 67
       },
       "targets": [
@@ -2568,8 +2568,8 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "sum(llamacpp:requests_processing{job=\"local-llm\"})",
-          "legendFormat": "in progress"
+          "expr": "sum by (server) (llamacpp:requests_processing{job=\"local-llm\"})",
+          "legendFormat": "server {{server}}: in progress"
         },
         {
           "datasource": {
@@ -2577,8 +2577,67 @@
             "uid": "${datasource}"
           },
           "refId": "B",
-          "expr": "sum(llamacpp:requests_deferred{job=\"local-llm\"})",
-          "legendFormat": "waiting"
+          "expr": "sum by (server) (llamacpp:requests_deferred{job=\"local-llm\"})",
+          "legendFormat": "server {{server}}: waiting"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "LLM queue: jobs per LLM",
+      "id": 208,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Jobs the LLM queue is asking each LLM about now, in its order: built-in-<n> is a server of the built-in LLM, llm-<id> a registered LLM.",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 67
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "sum by (llm) (containerizer_llm_queue_llm_jobs{instance=~\"$instance\"})",
+          "legendFormat": "{{llm}}"
         }
       ],
       "fieldConfig": {

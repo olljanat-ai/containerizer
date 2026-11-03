@@ -24,7 +24,7 @@ def llm(tmp_path, monkeypatch, paths):  # noqa: F811
                         meminfo=tmp_path / "meminfo", nodes=tmp_path / "sys" / "node",
                         targets=tmp_path / "run" / "prometheus-sd" / "local-llm.json")
     monkeypatch.setattr(local_llm, "P", p)
-    monkeypatch.setattr(local_llm, "server_health", lambda timeout=2.0, port=8082: False)
+    monkeypatch.setattr(local_llm, "server_health", lambda timeout=2.0, port=8090: False)
     monkeypatch.setattr(local_llm, "free_disk", lambda path: 200 * GiB)
     ram(p, 64)
     return p
@@ -111,7 +111,7 @@ def test_enable_downloads_with_hugging_face_allowed_only_meanwhile(llm, paths, m
     assert cfg["enabled"] and cfg["phase"] == "download"
     assert hf_hosts() == {"huggingface.co", "hf.co"}
     assert "nftset=/huggingface.co/" in paths.dnsmasq.read_text() and "nftset=/hf.co/" in paths.dnsmasq.read_text()
-    assert starts(r, local_llm.DOWNLOAD_UNIT) and not starts(r, local_llm.UNIT)
+    assert starts(r, local_llm.DOWNLOAD_UNIT) and not starts(r, "containerizer-local-llm@0.service")
     assert json.loads(llm.status.read_text())["state"] == "downloading"
     # the Firewall page lists them as system rules while the download runs
     assert {"huggingface.co", "hf.co"} <= {x.get("host") for x in sysagent.egress_status(journal="")["system_rules"]}
@@ -164,26 +164,26 @@ def test_download_resumes_checks_and_starts_the_server(llm, paths, monkeypatch):
     cfg = local_llm.load_config(llm)
     assert cfg["phase"] == "ready" and local_llm.model_ready(cfg, llm)
     assert hf_hosts() == set() and "huggingface.co" not in paths.dnsmasq.read_text()
-    assert llm.env.read_text() == "CZ_LLM_PORT=8082\nCZ_LLM_UPSTREAMS=127.0.0.1:8090\n"      # the front
+    assert not llm.env.exists()                                                             # no front
     env = llm.server_env(0).read_text()                                                     # one server, unpinned
     assert f"CZ_LLM_MODEL_FILE={model.file}" in env and "CZ_LLM_SLOTS=3" in env and "CZ_LLM_CTX=66048" in env
     assert "CZ_LLM_MEMORY=30g" in env and "CZ_LLM_PORT=8090" in env and "CZ_LLM_PIN=\n" in env
-    assert starts(r, local_llm.UNIT) and starts(r, "containerizer-local-llm@0.service")
+    assert starts(r, "containerizer-local-llm@0.service")
     assert json.loads(llm.targets.read_text())[0]["targets"] == ["127.0.0.1:8090"]
     st = json.loads(llm.status.read_text())
     assert st["state"] == "starting" and st["model"]["verified"]
     # used by the worker while it is on
     assert local_llm.worker_settings({local_llm.STATUS_ENV: str(llm.status)})["CONTAINERIZER_LLM_BASE_URL"] == \
-        "http://127.0.0.1:8082/v1"
+        "http://127.0.0.1:8090/v1"
     # off and on again: no new download, the server starts at once
     request(paths, do="disable")
     sysagent.process()
-    assert not llm.env.exists() and not llm.server_env(0).exists() and llm.model.exists()
+    assert not llm.server_env(0).exists() and llm.model.exists()
     assert json.loads(llm.targets.read_text()) == []
     r.calls.clear()
     request(paths, do="enable")
     sysagent.process()
-    assert starts(r, local_llm.UNIT) and not starts(r, local_llm.DOWNLOAD_UNIT) and hf_hosts() == set()
+    assert starts(r, "containerizer-local-llm@0.service") and not starts(r, local_llm.DOWNLOAD_UNIT) and hf_hosts() == set()
 
 
 def test_download_checksum_mismatch_deletes_the_file(llm, paths, monkeypatch):  # noqa: F811
@@ -200,7 +200,7 @@ def test_download_checksum_mismatch_deletes_the_file(llm, paths, monkeypatch):  
     assert cfg["phase"] == "failed" and "checksum mismatch" in cfg["error"]
     st = json.loads(llm.status.read_text())
     assert st["state"] == "download-failed" and "checksum" in st["message"]
-    assert hf_hosts() == set() and not llm.env.exists() and not starts(r, local_llm.UNIT)
+    assert hf_hosts() == set() and not llm.server_env(0).exists() and not starts(r, "containerizer-local-llm@0.service")
     assert local_llm.worker_settings({local_llm.STATUS_ENV: str(llm.status)}) is None
     # not retried by itself
     r.calls.clear()
@@ -252,12 +252,12 @@ def test_reconcile_at_boot(llm, paths, monkeypatch):  # noqa: F811
     local_llm.save_config({"enabled": True, "phase": "ready", "verified": local_llm._stamp(llm.model)}, llm)
     r = fake_run(monkeypatch)
     assert local_llm.reconcile(llm)["state"] == "starting"       # /run is empty after a restart
-    assert llm.env.exists() and starts(r, local_llm.UNIT)
+    assert llm.server_env(0).exists() and starts(r, "containerizer-local-llm@0.service")
     # the machine lost RAM: not started
-    llm.env.unlink()
+    llm.server_env(0).unlink()
     r.calls.clear()
     ram(llm, 32)
-    assert local_llm.reconcile(llm)["state"] == "refused" and not starts(r, local_llm.UNIT)
+    assert local_llm.reconcile(llm)["state"] == "refused" and not starts(r, "containerizer-local-llm@0.service")
     # an interrupted download is resumed; one whose unit failed is reported and Hugging Face closed again
     ram(llm, 64)
     local_llm.save_config({"enabled": True, "phase": "download"}, llm)
@@ -266,10 +266,10 @@ def test_reconcile_at_boot(llm, paths, monkeypatch):  # noqa: F811
     fake_run(monkeypatch, **{f"systemctl is-active {local_llm.DOWNLOAD_UNIT}": "failed\n"})
     assert local_llm.reconcile(llm)["state"] == "download-failed" and hf_hosts() == set()
     # off: the server's environment goes, so the unit cannot start
-    llm.env.write_text("x")
+    llm.server_env(0).write_text("x")
     local_llm.save_config({"enabled": False}, llm)
     local_llm.reconcile(llm)
-    assert not llm.env.exists()
+    assert not llm.server_env(0).exists()
 
 
 def test_status_command_reconciles(llm, paths, monkeypatch):  # noqa: F811
@@ -292,7 +292,7 @@ def test_remove_model_only_while_off(llm, paths, monkeypatch):  # noqa: F811
 
 def test_never_part_of_the_boot_assessment():
     src = inspect.getsource(sysagent.health)
-    assert "llm" not in src.lower() and "8082" not in src
+    assert "llm" not in src.lower() and "8090" not in src
 
 
 # ------------------------------------------------------------------------------- the scan worker
@@ -307,7 +307,7 @@ def test_llm_for_run_prefers_the_registered_llm_then_the_built_in_one(tmp_path):
         f.write_text(json.dumps({"enabled": True, "state": state, "base_url": "http://evil.example/v1"}))
         c = credentials.llm_for_run(None, env=env)
         assert c.source == "built-in" and c.model == "qwen3-coder-30b-a3b"
-        assert c.settings == {"CONTAINERIZER_AI_BACKEND": "openai", "CONTAINERIZER_LLM_BASE_URL": "http://127.0.0.1:8082/v1",
+        assert c.settings == {"CONTAINERIZER_AI_BACKEND": "openai", "CONTAINERIZER_LLM_BASE_URL": "http://127.0.0.1:8090/v1",
                               "CONTAINERIZER_LLM_API_KEY": "", "CONTAINERIZER_MODEL": "qwen3-coder-30b-a3b",
                               "CONTAINERIZER_LLM_TIMEOUT": "3600"}
     reg = credentials.Credential(id=1, purpose="llm", provider="openai", api_url="https://gpu.example/v1", scope="llm",
@@ -339,11 +339,12 @@ def test_units_are_off_by_default_and_condition_skipped():
     docker = (APPLIANCE / "Dockerfile").read_text()
     enable = docker[docker.index("systemctl enable"):docker.index("# Elemental")]
     assert "local-llm" not in enable
-    srv = _unit("containerizer-local-llm.service")
-    assert "/run/containerizer/local-llm.env" in srv["ConditionPathExists"]
-    assert "WantedBy" not in srv and "/run/containerizer/local-llm.env" in srv["EnvironmentFile"]
+    srv = _unit("containerizer-local-llm@.service")
+    assert "/run/containerizer/local-llm-%i.env" in srv["ConditionPathExists"]
+    assert "WantedBy" not in srv and "/run/containerizer/local-llm-%i.env" in srv["EnvironmentFile"]
+    assert not (APPLIANCE / "rootfs/usr/lib/systemd/system/containerizer-local-llm.service").exists()   # no front
+    assert "PartOf" not in srv and "BindsTo" not in srv
     run = " ".join(srv["ExecStart"])
-    assert "local-llm-front.caddy" in run
     text = (APPLIANCE / "rootfs/usr/lib/systemd/system/containerizer-local-llm@.service").read_text()
     for flag in ("--network host", "/var/lib/containerizer/llm:/models:ro", "--memory ${CZ_LLM_MEMORY}", "--cpu-shares 256",
                  "--user 65534:65534", "--read-only", "--cap-drop ALL", "--cap-add IPC_LOCK", "--ulimit memlock=-1:-1",
@@ -361,16 +362,16 @@ def test_units_are_off_by_default_and_condition_skipped():
     images = (APPLIANCE / "rootfs/usr/lib/containerizer/images.env").read_text()
     assert re.search(r"^CZ_IMAGE_LLAMA_CPP=ghcr\.io/ggml-org/llama\.cpp:server-b12030@sha256:e67d88af[0-9a-f]{56}$", images, re.M)
     # 8081 is Caddy's; the server's port is the module's
-    assert "http_port 8081" in (APPLIANCE / "rootfs/etc/caddy/Caddyfile").read_text() and local_llm.PORT == 8082
+    assert "http_port 8081" in (APPLIANCE / "rootfs/etc/caddy/Caddyfile").read_text() and local_llm.SERVER_PORT == 8090
     assert local_llm.server_env(local_llm.plan(40 * GiB)).count("\n") == 8
 
 
 def test_ci_boot_test_checks_it_is_off():
     checks = (APPLIANCE / "ci" / "vm-checks.sh").read_text()
-    for s in ("containerizer-local-llm.service", "127.0.0.1:8082", "huggingface.co", "CONTAINERIZER_LLM_BASE_URL",
+    for s in ("containerizer-local-llm@0.service", "127.0.0.1:8090", "huggingface.co", "CONTAINERIZER_LLM_BASE_URL",
               '"do": "enable"', "ConditionResult"):
         assert s in checks
-    assert "containerizer-local-llm containerizer-local-llm-download" in (APPLIANCE / "ci" / "boot-test.sh").read_text()
+    assert "containerizer-local-llm@0 containerizer-local-llm-download" in (APPLIANCE / "ci" / "boot-test.sh").read_text()
 
 
 def test_prometheus_scrapes_it_and_grafana_shows_it():
@@ -391,6 +392,9 @@ def test_prometheus_scrapes_it_and_grafana_shows_it():
     exprs = " ".join(t["expr"] for p in mine for t in p.get("targets") or [])
     assert "rate(llamacpp:n_decode_total" in exprs and "llamacpp:n_busy_slots_per_decode" in exprs
     assert "llamacpp:requests_processing" in exprs and "llamacpp:requests_deferred" in exprs
+    # each server (NUMA node) on its own line, and the queue's jobs per LLM (built-in-<n>)
+    assert "sum by (server) (llamacpp:requests_processing" in exprs and "containerizer_llm_queue_llm_jobs" in exprs
+    assert all("{{server}}" in t["legendFormat"] for p in mine if p["id"] in (201, 206, 207) for t in p["targets"])
     for p in mine:
         refs = [t["refId"] for t in p.get("targets") or []]
         assert len(refs) == len(set(refs)), p["title"]
@@ -464,7 +468,7 @@ def test_section_shows_the_download_and_the_running_server(adm, monkeypatch):
     monkeypatch.setattr(local_llm, "server_health", lambda timeout=2.0: True)
     page_status(adm, enabled=True, state="starting", requirements=GOOD, model={"verified": True, "on_disk": 1})
     html = admin_local_llm.section(adm, ADMIN, A_ADMIN, False)
-    assert ">Running<" in html and "http://127.0.0.1:8082/v1" in html
+    assert ">Running<" in html and "http://127.0.0.1:8090/v1" in html
     html = admin_local_llm.section(adm, ADMIN, A_ADMIN, True)
     assert "Not used while an LLM is set above" in html
 
@@ -524,7 +528,7 @@ def test_a_crash_looping_server_is_an_error_not_starting(llm, monkeypatch):
     cfg = {"enabled": True, "phase": "ready"}
 
     def st(restarts, healthy=False):
-        return local_llm.status(cfg, llm, unit_state=lambda u: "active", health=lambda: healthy,
+        return local_llm.status(cfg, llm, unit_state=lambda u: "active", probe=lambda port: healthy,
                                 restarts=lambda u: restarts)
     assert st(0)["state"] == "starting"                  # loading the model
     assert st(2)["state"] == "starting"
@@ -583,14 +587,14 @@ def test_plan_runs_a_server_per_numa_node_when_the_ram_allows():
     assert len(local_llm.plan(256 * GiB, four)["servers"]) == 4
 
 
-def test_each_server_is_pinned_to_its_node_and_the_front_spreads_the_requests(llm, monkeypatch):
+def test_each_server_is_pinned_to_its_node_and_the_queue_asks_each_one(llm, monkeypatch):
     monkeypatch.setattr(local_llm, "model_ready", lambda cfg, paths: True)
     r = fake_run(monkeypatch)
     ram(llm, 128)
     numa(llm, [("0-11", 64), ("12-23", 64)])
     local_llm.save_config({"enabled": True, "phase": "ready"}, llm)
     local_llm.reconcile(llm)
-    assert llm.env.read_text() == "CZ_LLM_PORT=8082\nCZ_LLM_UPSTREAMS=127.0.0.1:8090 127.0.0.1:8091\n"
+    assert not llm.env.exists()                                         # no front
     e1 = llm.server_env(1).read_text()
     assert "CZ_LLM_PORT=8091\n" in e1 and "CZ_LLM_PIN=--cpuset-cpus 12-23 --cpuset-mems 1\n" in e1
     assert "CZ_LLM_THREADS=--threads 12 --threads-batch 12\n" in e1 and "CZ_LLM_MEMORY=30g" in e1
@@ -598,22 +602,26 @@ def test_each_server_is_pinned_to_its_node_and_the_front_spreads_the_requests(ll
     assert [g["labels"]["numa_node"] for g in json.loads(llm.targets.read_text())] == ["0", "1"]
     # the status: both servers, and the queue asks two jobs at once
     monkeypatch.setattr(local_llm, "_unit_state", lambda u: "active")
-    monkeypatch.setattr(local_llm, "server_health", lambda timeout=2.0, port=8082: port != 8091)
+    monkeypatch.setattr(local_llm, "server_health", lambda timeout=2.0, port=8090: port != 8091)
     monkeypatch.setattr(local_llm, "_restarts", lambda u: 0)
     st = local_llm.publish(paths=llm)
     assert st["state"] == "running" and [x["state"] for x in st["servers"]] == ["running", "starting"]
-    settings = local_llm.worker_settings({local_llm.STATUS_ENV: str(llm.status)})
-    assert local_llm.queue_parallel(settings, {local_llm.STATUS_ENV: str(llm.status)}) == 2
-    assert local_llm.queue_parallel({"CONTAINERIZER_LLM_BASE_URL": "https://gpu.example.com/v1"},
-                                    {local_llm.STATUS_ENV: str(llm.status)}) == 1
+    env = {local_llm.STATUS_ENV: str(llm.status)}
+    lanes = local_llm.server_lanes(env)
+    assert [(x["index"], x["node"], x["ready"], x["settings"]["CONTAINERIZER_LLM_BASE_URL"]) for x in lanes] == [
+        (0, 0, True, "http://127.0.0.1:8090/v1"), (1, 1, False, "http://127.0.0.1:8091/v1")]
+    assert local_llm.worker_settings(env)["CONTAINERIZER_LLM_BASE_URL"] == "http://127.0.0.1:8090/v1"
     assert local_llm.servers_in_use(llm.status) == 2
+    # server 0 down, server 1 up: scans that ask directly use server 1
+    monkeypatch.setattr(local_llm, "server_health", lambda timeout=2.0, port=8090: port == 8091)
+    local_llm.publish(paths=llm)
+    assert local_llm.worker_settings(env)["CONTAINERIZER_LLM_BASE_URL"] == "http://127.0.0.1:8091/v1"
     # less RAM later: one server; the second one is stopped and its file removed
     r.calls.clear()
     ram(llm, 56)
     local_llm.reconcile(llm)
     assert not llm.server_env(1).exists() and "CZ_LLM_PIN=\n" in llm.server_env(0).read_text()
     assert ["systemctl", "stop", "--no-block", "containerizer-local-llm@1.service"] in r.calls
-    assert llm.env.read_text().endswith("CZ_LLM_UPSTREAMS=127.0.0.1:8090\n")
     # off: every server stops
     local_llm.save_config({"enabled": False}, llm)
     local_llm.reconcile(llm)
@@ -621,15 +629,13 @@ def test_each_server_is_pinned_to_its_node_and_the_front_spreads_the_requests(ll
     assert any("containerizer-local-llm@*.service" in c for c in r.calls if c[:2] == ["systemctl", "stop"])
 
 
-def test_the_queue_asks_the_built_in_llm_once_per_server():
+def test_the_queue_asks_each_server_as_an_llm_of_its_own():
     from containerizer import llmqueue
-    builtin = {"CONTAINERIZER_LLM_BASE_URL": local_llm.BASE_URL, "CONTAINERIZER_MODEL": "qwen3-coder-30b-a3b"}
-    lanes = llmqueue.plan_lanes([], builtin, {"Parallel": 1})
-    assert [(ln["name"], ln["parallel"], ln["max_tokens"]) for ln in lanes] == [("built-in", 1, 0)]
-
-
-def test_the_front_config():
-    caddy = (APPLIANCE / "rootfs/usr/lib/containerizer/local-llm-front.caddy").read_text()
-    for s in ("admin off", "{$CZ_LLM_UPSTREAMS}", "lb_policy least_conn", "health_uri /health", "bind 127.0.0.1",
-              "http://:{$CZ_LLM_PORT}"):
-        assert s in caddy, s
+    lanes = [{"index": 0, "node": 0, "ready": True, "settings": local_llm._settings(8090)},
+             {"index": 1, "node": 1, "ready": False, "settings": local_llm._settings(8091)}]
+    got = llmqueue.plan_lanes([], lanes, {"Parallel": 1})
+    assert [(ln["name"], ln["parallel"], ln["max_tokens"]) for ln in got] == [("built-in-0", 1, 0), ("built-in-1", 0, 0)]
+    assert got[0]["settings"]["CONTAINERIZER_LLM_BASE_URL"] == "http://127.0.0.1:8090/v1"
+    assert "NUMA node 1" in got[1]["label"] and "loading" in got[1]["label"]     # takes no job while it loads
+    lanes[1]["ready"] = True
+    assert [ln["parallel"] for ln in llmqueue.plan_lanes([], lanes, {"Parallel": 3})] == [2, 2]   # Parallel shared out

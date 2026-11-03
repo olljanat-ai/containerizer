@@ -6,6 +6,18 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## 0.5.1 (2026-11-03)
+
+### Appliance
+- Built-in LLM: 0.5.0's front (`containerizer-local-llm.service`, a Caddy on 127.0.0.1:8082) never started: its
+  config set `persist_config`, which the appliance's Caddy (2.6.2) does not know. It restarted every 10 seconds and
+  took the llama.cpp servers with it, so none stayed up. The front is gone: the LLM queue now asks each server as an
+  LLM of its own, like the registered LLMs (`built-in-0`, `built-in-1`, ... on the LLM queue page, one job at a time
+  each; a server still loading its model takes none yet), and scans that ask directly use the first server that is
+  up, on `127.0.0.1:8090+n`.
+- Grafana, **Built-in LLM** row: each server's state, tokens per second and requests on lines of their own (label
+  `server`), and a new panel **LLM queue: jobs per LLM** (metric `containerizer_llm_queue_llm_jobs`, label `llm`).
+
 ## 0.5.0 (2026-11-03)
 
 ### Appliance

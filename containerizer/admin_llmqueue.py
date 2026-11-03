@@ -111,7 +111,7 @@ def lanes(conn, settings: dict) -> list[dict]:
         regs = cr.load(conn).llms()
     except Exception:                   # noqa: BLE001 - an older schema: the estimate only
         regs = []
-    builtin = local_llm.worker_settings({local_llm.STATUS_ENV: str(local_llm.P.status)})
+    builtin = local_llm.server_lanes({local_llm.STATUS_ENV: str(local_llm.P.status)})
     return lq.plan_lanes(regs, builtin, settings)
 
 
@@ -126,7 +126,7 @@ def lanes_html(ls: list[dict]) -> str:
     def link(ln):
         if ln["name"].startswith("llm-"):
             return f"<a href='/admin/source-control/{int(ln['name'][4:])}'>{e(ln['label'])}</a>"
-        if ln["name"] == "built-in":
+        if ln["name"].startswith("built-in"):
             return f"<a href='/admin/source-control#built-in-llm'>{e(ln['label'])}</a>"
         return e(ln["label"])
     trs = "".join(f"<tr><td class='num'>{int(ln['order'])}</td><td>{link(ln)}</td>"

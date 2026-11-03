@@ -761,6 +761,9 @@ class QueueMetrics:
         self.open = r.gauge("containerizer_llm_queue_open", "1 when the queue settings let the runner start a job now.")
         self.paused = r.gauge("containerizer_llm_queue_paused", "1 when an administrator paused the queue.")
         self.active = r.gauge("containerizer_llm_queue_active_jobs", "Jobs the runner is asking the LLM about now.")
+        self.llm_jobs = r.gauge("containerizer_llm_queue_llm_jobs", "Jobs being asked now, by LLM in the order: llm-<id> "
+                                "a registered LLM, built-in-<n> a server of the built-in LLM (one per NUMA node).",
+                                ("llm", "label"))
         self.jobs = r.counter("containerizer_llm_queue_jobs_finished_total", "Jobs the runner finished, by kind and "
                               "result: answered, failed (no attempts left) or retried (tried again later).",
                               ("kind", "result"))
@@ -823,26 +826,32 @@ class _usage:
         return any(u.get("cached") for u in self.entries)
 
 
-def plan_lanes(registered: list, builtin: dict | None, settings: dict) -> list[dict]:
+def plan_lanes(registered: list, builtin: list | None, settings: dict) -> list[dict]:
     """The LLMs the queue runner asks at once, in their order: each registered LLM (credentials.Credential, key
-    opened) with its biggest job (LlmMaxTokens; 0: any) and requests at once (LlmParallel); the appliance's built-in
-    LLM, one request per server, beside them when it has a place in the order (LocalOrder, LocalMaxTokens) or alone
-    when none is registered; else the environment's LLM (settings None) with Parallel. A job goes to the first lane
-    with a free request that takes its size."""
-    from . import local_llm
+    opened) with its biggest job (LlmMaxTokens; 0: any) and requests at once (LlmParallel); each server of the
+    appliance's built-in LLM (local_llm.server_lanes: one per NUMA node) as an LLM of its own, one request at once
+    (alone: Parallel shared out), beside them when it has a place in the order (LocalOrder, LocalMaxTokens) or
+    alone when none is registered; a server still loading its model takes no job yet; else the environment's LLM
+    (settings None) with Parallel. A job goes to the first lane with a free request that takes its size."""
     s = {**DEFAULTS, **(settings or {})}
     lanes = [{"name": f"llm-{c.id}", "label": c.label, "settings": c.ai_settings(), "max_tokens": int(c.llm_max_tokens or 0),
               "parallel": max(1, int(c.llm_parallel or 1)), "order": int(c.llm_order)} for c in registered]
+    builtin = builtin or []
     if builtin and (not lanes or s.get("LocalOrder") is not None):
         alone = not lanes
-        lanes.append({"name": "built-in", "label": f"built-in LLM ({builtin.get('CONTAINERIZER_MODEL')})",
-                      "settings": builtin, "max_tokens": 0 if alone else int(s.get("LocalMaxTokens") or 0),
-                      "parallel": max(local_llm.queue_parallel(builtin), int(s["Parallel"] or 1) if alone else 1),
-                      "order": 0 if alone else int(s["LocalOrder"])})
+        each = max(1, -(-int(s["Parallel"] or 1) // len(builtin))) if alone else 1
+        for sv in builtin:
+            where = (f", server {int(sv['index'])}" + (f" (NUMA node {int(sv['node'])})" if sv.get("node") is not None else "")
+                     if len(builtin) > 1 else "")
+            lanes.append({"name": f"built-in-{int(sv['index'])}",
+                          "label": f"built-in LLM ({sv['settings'].get('CONTAINERIZER_MODEL')}){where}"
+                                   + ("" if sv.get("ready") else ", loading its model"),
+                          "settings": sv["settings"], "max_tokens": 0 if alone else int(s.get("LocalMaxTokens") or 0),
+                          "parallel": each if sv.get("ready") else 0, "order": 0 if alone else int(s["LocalOrder"])})
     if not lanes:
         lanes.append({"name": "environment", "label": "the worker's own LLM settings", "settings": None,
                       "max_tokens": 0, "parallel": max(1, int(s["Parallel"] or 1)), "order": 0})
-    return sorted(lanes, key=lambda ln: (ln["order"], ln["name"] != "built-in", ln["name"]))
+    return sorted(lanes, key=lambda ln: (ln["order"], not ln["name"].startswith("built-in"), ln["name"]))
 
 
 class Runner:
@@ -1123,7 +1132,7 @@ class Runner:
 
     def lanes(self, conn, settings: dict) -> list[dict]:
         from . import local_llm
-        return plan_lanes(self.registered_llms(conn), local_llm.worker_settings(), settings)
+        return plan_lanes(self.registered_llms(conn), local_llm.server_lanes(), settings)
 
     def _enter_llm(self, conn) -> None:
         """The LLM settings for the jobs about to be asked; changed only when none is in progress
@@ -1186,6 +1195,7 @@ class Runner:
                 with self.lock:
                     self.active[row["JobId"]] = row
                 started.append(pool.submit(self._run, row))
+            self.metrics.llm_jobs.replace({(ln["name"], ln.get("label") or ln["name"]): in_lane[ln["name"]] for ln in lanes})
         finally:
             conn.close()
         self.metrics.active.set(len(self.active))
