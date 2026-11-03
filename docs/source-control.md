@@ -193,7 +193,10 @@ Until it ends:
   has **Ask the LLM** on. These calls are made during the scan, as for a scan in LLM-heavy mode.
 
 - a [Make it A](refactoring.md#make-it-a) order of the whole application keeps going, one order after another,
-  until its patched copy runs in the sandbox or the window ends.
+  until its patched copy runs in the sandbox or the window ends;
+- a [refactoring order](refactoring.md#llm-heavy-refactoring-orders) of chosen findings (of the whole application,
+  or of the component the window is on) makes up to 40 LLM calls instead of 8 and keeps going, with repairs and the
+  findings left, until every finding is fixed and the patched copy builds and runs, or the window ends.
 
 **Scan its repository now** (ticked by default) starts a scan of its repository at once, so the reviews are
 queued without waiting for the schedule. The windows open now are listed on the application's page and on the

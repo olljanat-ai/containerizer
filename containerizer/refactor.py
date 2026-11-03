@@ -200,6 +200,10 @@ HEAVY_CALLS_A = 40
 HEAVY_PASSES_A = 4
 HEAVY_REPAIRS_A = 4
 HEAVY_MAX_ROUNDS = 30                   # orders in one chain at most, whatever the window
+# A refactoring order of chosen findings in an LLM-heavy window (the whole application or the order's component):
+# this many LLM calls (files) instead of MAX_CALLS, and one that leaves findings or does not build or run queues the
+# next order (heavy_next_fix) until every finding is fixed and it builds and runs, or the window ends
+HEAVY_CALLS = 40
 
 # A compiler error in a build log: /src/<path>(line,col): error CODE: message [project]
 BUILD_ERROR_RE = re.compile(r"(?:^|\s)/src/(?P<file>[^\s(:]+\.(?:cs|vb|fs|cshtml|razor|csproj|vbproj|fsproj))"
@@ -233,10 +237,23 @@ def repair_payload(payload: dict, result: dict, base_job: int) -> dict:
             "component", "components", "verify")
     return {**{k: payload.get(k) for k in keep}, "goal": "repair", "base_job": int(base_job),
             "base_patch": result["patch"], "base_status": result.get("status"),
-            "base_subject": next((l[len("Subject: [PATCH] "):] for l in result["patch"].splitlines()
-                                  if l.startswith("Subject: [PATCH] ")), ""),
+            "base_subject": _patch_subject(result["patch"]),
             "errors": errors, "log_tail": logs[-4000:], "tasks": [], "skipped": [], "include_config": False,
             "max_calls": max(4, len({e["file"] for e in errors}) or 4)}
+
+
+def _patch_subject(patch: str) -> str:
+    """The subject of a format-patch, unfolded (git folds a long one onto lines that start with a space)."""
+    lines = str(patch or "").split("\n")
+    for i, l in enumerate(lines):
+        if l.startswith("Subject: [PATCH] "):
+            out = l[len("Subject: [PATCH] "):]
+            for nxt in lines[i + 1:]:
+                if not nxt.startswith(" "):
+                    break
+                out += nxt
+            return out.strip()
+    return ""
 
 
 def repair_tasks(payload: dict, app_root: Path, changed: list[str]) -> list[dict]:
@@ -1201,10 +1218,15 @@ def generate(payload: dict, tasks: list[dict], app_root: Path, ask, limit: int, 
     notes: list[str] = []
     changes_all: list[dict] = []
     calls = 0
+    deadline = _deadline(payload.get("deadline"))
     for n, t in enumerate(tasks, 1):
         rows = [{"rule": f["rule"], "title": f["title"], "severity": f["severity"], "component": f["component"],
                  "file": t["file"], "status": "not-fixed", "reason": ""} for f in t["findings"]]
         findings += rows
+        if deadline is not None and datetime.now(timezone.utc) >= deadline:
+            for r in rows:
+                r.update(status="skipped", reason="not attempted: the LLM-heavy window ended")
+            continue
         if n > limit or (budget is not None and calls >= budget):
             cap = limit if n > limit else (payload.get("max_calls") or budget)
             for r in rows:
@@ -1311,13 +1333,15 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
     notes: list[str] = []
     changes_all: list[dict] = []
     tasks = list(payload["tasks"])
+    base_patch = str(payload.get("base_patch") or "")
+    if base_patch:          # a repair, or an LLM-heavy order that continues the earlier one (heavy_next_fix)
+        ok, alog = apply_patch(repo, base_patch.encode("utf-8"))
+        if not ok:
+            raise RefactorError("the earlier patch no longer applies to the commit: " + alog[-400:])
     if payload.get("goal") == "stateless":
         tasks += state_tasks(payload, app_root)
     if payload.get("goal") == "repair":
-        ok, alog = apply_patch(repo, str(payload.get("base_patch") or "").encode("utf-8"))
-        if not ok:
-            raise RefactorError("the earlier patch no longer applies to the commit: " + alog[-400:])
-        changed = [d["file"] for d in diffstat(str(payload.get("base_patch") or ""))]
+        changed = [d["file"] for d in diffstat(base_patch)]
         tasks += repair_tasks(payload, app_root, changed)
     if not tasks:
         raise RefactorError("nothing to change: no file of the component uses an embedded database or names a finding")
@@ -1354,6 +1378,13 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
         # one patch with the earlier change and its repair, for the assessed commit
         subject = (payload.get("base_subject") or subject.replace("build-error", "refactoring")).strip() + " (repaired)"
         body = body.replace("Code changes generated", f"Repairs order #{payload.get('base_job')}: code changes generated", 1)
+        git(["reset", "--soft", str(payload.get("commit"))], cwd=repo)
+    elif base_patch and changes_all:
+        # an LLM-heavy order that continues the earlier one: one patch with both changes, for the assessed commit
+        first = _patch_subject(base_patch).removesuffix(" (continued)").removesuffix(" (repaired)")
+        subject = (first or subject) + " (continued)"
+        body = body.replace("Code changes generated",
+                            f"Continues order #{payload.get('heavy_parent')}: code changes generated", 1)
         git(["reset", "--soft", str(payload.get("commit"))], cwd=repo)
     patch = make_patch(repo, subject, body) if fixed or changes_all else None
     if patch is None:
@@ -1704,12 +1735,22 @@ def summary(result: dict) -> str:
         if hv.get("next_job"):
             out += f"; LLM-heavy: continues as #{int(hv['next_job'])}"
         return out[:400]
+    hv = result.get("heavy") or {}
     return (f"{st}: {len(fx)} of {n} finding{'s' if n != 1 else ''} fixed, {files} file{'s' if files != 1 else ''} changed"
-            + (f" ({left} not attempted: call limit)" if left else ""))
+            + (f" ({left} not attempted: {not_attempted_reason(result)})" if left else "")
+            + (f"; LLM-heavy: continues as #{int(hv['next_job'])}" if hv.get("next_job") else
+               f"; LLM-heavy: {hv['done']}" if hv.get("done") else ""))[:400]
+
+
+def not_attempted_reason(result: dict) -> str:
+    """Why findings were not attempted: the call limit, or the end of the LLM-heavy window."""
+    why = {str(f.get("reason") or "") for f in result.get("findings") or [] if f.get("status") == "skipped"}
+    return "the LLM-heavy window ended" if why and all("window ended" in w for w in why) else "call limit"
 
 
 def heavy_window(job: dict) -> datetime | None:
-    """When the LLM-heavy window of the job's whole application ends (cz.fnLlmJobHeavy), or None."""
+    """When the LLM-heavy window of the job's application (the whole application, or the order's one component:
+    its ProjectPath) ends (cz.fnLlmJobHeavy), or None."""
     connect = job.get("_connect")
     if not connect or not (job.get("ApplicationId") or job.get("SourceKey")):
         return None
@@ -1717,8 +1758,9 @@ def heavy_window(job: dict) -> datetime | None:
         conn = connect()
         try:
             cur = conn.cursor()
-            cur.execute("SELECT TOP (1) h.EndsAt FROM cz.fnLlmJobHeavy(%s, %s, NULL) h",
-                        (job.get("ApplicationId"), job.get("SourceKey")))
+            # the whole application's window, or (an order of one component) that component's
+            cur.execute("SELECT TOP (1) h.EndsAt FROM cz.fnLlmJobHeavy(%s, %s, %s) h",
+                        (job.get("ApplicationId"), job.get("SourceKey"), job.get("ProjectPath")))
             row = cur.fetchone()
         finally:
             conn.close()
@@ -1731,7 +1773,10 @@ def heavy_window(job: dict) -> datetime | None:
 
 
 def heavy_payload(payload: dict, ends: datetime) -> dict:
-    """A "Make it A" order in an LLM-heavy window: higher limits, and no LLM call after the window ends."""
+    """An order in an LLM-heavy window: higher limits, and no LLM call after the window ends."""
+    if payload.get("goal") != "rating-a":
+        return {**payload, "deadline": ends.isoformat(timespec="seconds"),
+                "max_calls": max(int(payload.get("max_calls") or 0), HEAVY_CALLS)}
     return {**payload, "deadline": ends.isoformat(timespec="seconds"),
             "max_calls": max(int(payload.get("max_calls") or 0), HEAVY_CALLS_A),
             "max_passes": max(int(payload.get("max_passes") or 0), HEAVY_PASSES_A),
@@ -1793,6 +1838,70 @@ def heavy_next(job: dict, payload: dict, result: dict, ends: datetime, work: Pat
             "repair the build or run" if patch and result.get("status") != "verified" else "the findings left"}
 
 
+HEAVY_DROP = ("deadline", "base_patch", "base_job", "base_status", "base_subject", "errors", "log_tail", "heavy_tasks",
+              "heavy_goal", "sandbox_errors")
+
+
+def remaining_tasks(payload: dict, result: dict) -> list[dict]:
+    """The tasks of an order whose findings are not all fixed (call limit, not fixed, LLM error), and those a repair
+    order carries for after the repair (heavy_tasks): what the next LLM-heavy order asks about."""
+    left = {f.get("file") for f in result.get("findings") or []
+            if f.get("status") != "fixed" and f.get("rule") != "build-error"}
+    out, seen = [], set()
+    for t in [*(t for t in payload.get("tasks") or [] if t.get("file") in left), *(payload.get("heavy_tasks") or [])]:
+        if t.get("file") not in seen:
+            seen.add(t.get("file"))
+            out.append(t)
+    return out
+
+
+def heavy_next_fix(job: dict, payload: dict, result: dict, ends: datetime, now: datetime | None = None,
+                   queue=None) -> dict:
+    """A refactoring order of chosen findings in an LLM-heavy window: done when every finding is fixed and the
+    patched copy builds and runs; otherwise the next order is queued (approved and first, as LLM-heavy jobs are):
+    a repair when the patch does not build or run (repair_payload, carrying the findings left for after it), else
+    the findings left, continuing from this order's patch. The chain ends as heavy_next's does: the window ends,
+    HEAVY_MAX_ROUNDS orders, or two orders in a row that changed nothing. Returns result["heavy"]."""
+    now = now or datetime.now(timezone.utc)
+    jid = int(job.get("JobId") or 0)
+    rnd = int(payload.get("heavy_round") or 1)
+    out = {"round": rnd, "until": ends.isoformat(timespec="seconds")}
+    builds = result.get("status") == "verified" or (result.get("status") == "applies-only" and not result.get("verify"))
+    todo = remaining_tasks(payload, result)
+    if builds and not todo:
+        return {**out, "done": "every finding fixed" + (", it builds and runs" if result.get("verify") else "")}
+    if now >= ends:
+        return {**out, "stopped": "the LLM-heavy window ended"}
+    if rnd >= HEAVY_MAX_ROUNDS:
+        return {**out, "stopped": f"{HEAVY_MAX_ROUNDS} orders in a row: the limit of one chain"}
+    patch = result.get("patch") or payload.get("base_patch")
+    same = int(payload.get("heavy_same") or 0) + 1 if not result.get("patch") or result.get("patch") == payload.get(
+        "base_patch") else 0
+    if same >= 2:
+        return {**out, "stopped": "two orders in a row changed nothing"}
+    goal = payload.get("heavy_goal") or (payload.get("goal") if payload.get("goal") != "repair" else "fix")
+    chain = {"heavy_round": rnd + 1, "heavy_parent": jid, "heavy_same": same, "heavy_goal": goal}
+    if result.get("patch") and not builds:
+        nxt = {**repair_payload(payload, result, jid), **chain, "heavy_tasks": todo}
+        what = "repair the build or run"
+    elif todo:
+        keep = {k: v for k, v in payload.items() if k not in HEAVY_DROP}
+        nxt = {**keep, **chain, "goal": goal, "tasks": todo, **({"base_patch": patch} if patch else {})}
+        what = f"the findings left ({len(todo)} file{'s' if len(todo) != 1 else ''})"
+    else:
+        return {**out, "stopped": "nothing left to try"}
+    if queue is None:
+        if not job.get("_connect"):
+            return {**out, "stopped": "no results database to queue the next order in"}
+        from .llmqueue import SqlJobQueue
+        queue = SqlJobQueue(job["_connect"])
+    try:
+        nid = queue.add(queue_job(nxt, order_chars(nxt), requested_by=f"LLM-heavy: after #{jid}"))
+    except Exception as ex:  # noqa: BLE001
+        return {**out, "stopped": f"the next order could not be queued: {type(ex).__name__}: {str(ex)[:200]}"}
+    return {**out, "next_job": int(nid or 0), "next": what}
+
+
 def handler(job: dict) -> dict:
     """The LLM queue's handler of `refactor` jobs."""
     pl = job["Payload"]
@@ -1801,7 +1910,7 @@ def handler(job: dict) -> dict:
     work = Path(tempfile.mkdtemp(prefix=f"refactor-{int(job.get('JobId') or 0)}-", dir=base))
     progress = job.get("_progress") or (lambda text: None)
     name = variant_name(pl.get("app"), int(job.get("JobId") or 0))
-    ends = heavy_window(job) if pl.get("goal") == "rating-a" else None
+    ends = heavy_window(job)
     run_pl = heavy_payload(pl, ends) if ends else pl
     try:
         result = run_order(run_pl, work, progress=progress, name=name)
@@ -1811,6 +1920,8 @@ def handler(job: dict) -> dict:
             result["sandbox"] = variant.after_order(job, pl, result, work, name, progress)
             if ends:
                 result["heavy"] = heavy_next(job, pl, result, ends, work)
+        elif ends:
+            result["heavy"] = heavy_next_fix(job, pl, result, ends)
     finally:
         if not os.environ.get("CONTAINERIZER_KEEP_REFACTOR_WORK"):
             shutil.rmtree(work, ignore_errors=True)

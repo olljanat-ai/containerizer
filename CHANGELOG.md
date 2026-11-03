@@ -6,6 +6,17 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## 0.7.2 (2026-11-03)
+
+### Refactoring
+- **LLM-heavy refactoring orders**: in an LLM-heavy window on the whole application, or on the component of an order
+  of one component, a refactoring order of chosen findings makes up to 40 LLM calls (files) instead of 8, and makes
+  no LLM call after the window ends. An order that leaves findings or whose patch does not build or run queues the
+  next one at once: a repair of its build or run, or the findings left, continuing from its patch (one patch with
+  every change). The chain ends when every finding is fixed and it builds and runs, the window ends, after 30
+  orders, or two orders in a row that changed nothing. Before, LLM-heavy mode only changed Make it A orders, so a
+  refactoring order stopped at 8 files with *not attempted: call limit*.
+
 ## 0.7.1 (2026-11-03)
 
 ### Organization scans

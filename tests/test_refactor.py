@@ -836,3 +836,120 @@ def test_an_answer_moves_with_the_file():
     assert m["new_files"][0]["file"] == "libs/common/Lib/Certs.cs"
     assert rf._moved(a, "src/Lib/A.cs", "src/Lib/A.cs") is a
     assert rf._moved({"edits": [{"file": "A.cs"}]}, "A.cs", "x/A.cs")["edits"][0]["file"] == "x/A.cs"
+
+
+# --------------------------------------------------------------------------- LLM-heavy refactoring orders
+
+class _Q:
+    def __init__(self):
+        self.jobs = []
+
+    def add(self, job):
+        self.jobs.append(job)
+        return 900 + len(self.jobs)
+
+
+def _ends(hours=2):
+    from datetime import datetime, timedelta, timezone
+    return datetime.now(timezone.utc) + timedelta(hours=hours)
+
+
+def test_a_heavy_refactoring_order_has_more_calls_and_stops_at_the_end_of_the_window(shop, tmp_path):
+    pl = _payload(shop, verify=False)
+    big = rf.heavy_payload(pl, _ends())
+    assert big["max_calls"] == rf.HEAVY_CALLS == 40 and big["deadline"] and "max_passes" not in big
+    asked = []
+    late = {**pl, "deadline": "2020-01-01T00:00:00+00:00"}
+    res = rf.run_order(late, tmp_path / "w", ask=lambda p, s: asked.append(p) or good_answer())
+    assert asked == [] and {f["status"] for f in res["findings"]} == {"skipped"}
+    assert "not attempted: the LLM-heavy window ended" in rf.summary(res)
+
+
+def test_heavy_next_fix_continues_until_every_finding_is_fixed(shop, tmp_path):
+    q, ends = _Q(), _ends()
+    # the call limit left every finding: the next order asks about them again (nothing changed yet: heavy_same 1)
+    pl = _payload(shop, verify=False, max_calls=0)
+    res = rf.run_order(pl, tmp_path / "w1", ask=lambda p, s: good_answer())
+    out = rf.heavy_next_fix({"JobId": 11}, pl, res, ends, queue=q)
+    assert out["next_job"] == 901 and out["next"] == "the findings left (1 file)"
+    nxt = q.jobs[0]["Payload"]
+    assert nxt["heavy_round"] == 2 and nxt["heavy_parent"] == 11 and nxt["heavy_same"] == 1 and nxt["goal"] == "fix"
+    assert [t["file"] for t in nxt["tasks"]] == ["src/Shop.Api/Bank.cs"] and "base_patch" not in nxt
+    assert q.jobs[0]["RequestedBy"] == "LLM-heavy: after #11" and q.jobs[0]["DedupeKey"] != rf.dedupe_key(pl)
+    # it fixes them: done
+    res2 = rf.run_order({**nxt, "max_calls": 40}, tmp_path / "w2", ask=lambda p, s: good_answer())
+    assert rf.heavy_next_fix({"JobId": 901}, nxt, res2, ends, queue=q) == {
+        "round": 2, "until": ends.isoformat(timespec="seconds"), "done": "every finding fixed"}
+    assert len(q.jobs) == 1
+    # twice nothing: stopped; after the window, or 30 orders: stopped
+    assert rf.heavy_next_fix({"JobId": 12}, nxt, res, ends, queue=q)["stopped"] == "two orders in a row changed nothing"
+    assert rf.heavy_next_fix({"JobId": 12}, pl, res, _ends(-1), queue=q)["stopped"] == "the LLM-heavy window ended"
+    assert rf.heavy_next_fix({"JobId": 12}, {**pl, "heavy_round": 30}, res, ends, queue=q)["stopped"].startswith("30")
+
+
+def test_heavy_next_fix_repairs_a_patch_that_does_not_build_then_does_the_rest(shop, tmp_path):
+    q, ends = _Q(), _ends()
+    pl = _payload(shop)
+    rest = {**pl["tasks"][0], "file": "src/Shop.Api/Program.cs"}
+    pl = {**pl, "tasks": [*pl["tasks"], rest]}
+    log = "/src/src/Shop.Api/Bank.cs(9,16): error CS0103: The name 'X509CertificateLoader' does not exist"
+    res = {"status": "applies-only", "verify": True, "patch": "From x\nSubject: [PATCH] Containerizer: shop: cert-store\n",
+           "verification": [{"component": "Shop.Api", "status": "build-failed", "log_tail": log}],
+           "findings": [{"file": "src/Shop.Api/Bank.cs", "rule": "cert-store", "status": "fixed"},
+                        {"file": "src/Shop.Api/Program.cs", "rule": "cert-store", "status": "skipped"}]}
+    out = rf.heavy_next_fix({"JobId": 20}, pl, res, ends, queue=q)
+    assert out["next"] == "repair the build or run"
+    rep = q.jobs[-1]["Payload"]
+    assert rep["goal"] == "repair" and rep["base_patch"] == res["patch"] and rep["errors"][0]["code"] == "CS0103"
+    assert [t["file"] for t in rep["heavy_tasks"]] == ["src/Shop.Api/Program.cs"] and rep["heavy_goal"] == "fix"
+    # the repair builds: the findings left come next, from the repaired patch
+    fixed = {"status": "verified", "verify": True, "patch": "REPAIRED",
+             "findings": [{"file": "src/Shop.Api/Bank.cs", "rule": "build-error", "status": "fixed"}]}
+    out = rf.heavy_next_fix({"JobId": 21}, rep, fixed, ends, queue=q)
+    cont = q.jobs[-1]["Payload"]
+    assert out["next"] == "the findings left (1 file)" and cont["goal"] == "fix" and cont["base_patch"] == "REPAIRED"
+    assert [t["file"] for t in cont["tasks"]] == ["src/Shop.Api/Program.cs"]
+    assert not {"errors", "heavy_tasks", "base_job", "log_tail"} & set(cont) and cont["heavy_round"] == 3
+
+
+def test_a_continued_order_makes_one_patch_with_both_changes(shop, tmp_path):
+    first = rf.run_order(_payload(shop, verify=False), tmp_path / "w1", ask=lambda p, s: good_answer())
+    pl = _payload(shop, verify=False)
+    task = {**pl["tasks"][0], "file": "src/Shop.Api/Program.cs",
+            "findings": [{**pl["tasks"][0]["findings"][0], "rule": "x-rule"}]}
+    answer = {"edits": [{"file": "src/Shop.Api/Program.cs", "search": 'app.MapGet("/", () => "ok");',
+                         "replace": 'app.MapGet("/", () => "ok!");'}], "new_files": [], "package_changes": [],
+              "fixed": ["x-rule"], "not_fixed": []}
+    res = rf.run_order({**pl, "tasks": [task], "base_patch": first["patch"], "heavy_parent": 31, "heavy_round": 2},
+                       tmp_path / "w2", ask=lambda p, s: answer)
+    assert res["status"] == "applies-only", res
+    assert res["patch"].count("Subject: [PATCH]") == 1 and "LoadPkcs12FromFile" in res["patch"] and '"ok!"' in res["patch"]
+    head = res["patch"].replace("\n ", " ")                    # the long subject is folded
+    assert "cert-store-localmachine-code (continued)" in head and "Continues order #31" in head
+    assert {f["file"] for f in res["files"]} == {"src/Shop.Api/Bank.cs", "src/Shop.Api/Program.cs"}
+    assert rf._patch_subject(res["patch"]) == "Containerizer: shop: cert-store, cert-store-localmachine-code (continued)"
+
+
+def test_the_handler_runs_a_refactoring_order_llm_heavy(shop, tmp_path, monkeypatch):
+    monkeypatch.setenv(rf.WORK_ENV, str(tmp_path / "scratch"))
+    seen = {}
+    monkeypatch.setattr(rf, "heavy_window", lambda job: seen.setdefault("job", job) and _ends())
+    real = rf.run_order
+    monkeypatch.setattr(rf, "run_order", lambda pl, work, **kw: seen.setdefault("pl", pl) and real(
+        pl, work, ask=lambda p, s: good_answer(), **kw))
+    out = rf.handler({"JobId": 5, "Payload": _payload(shop, verify=False), "ProjectPath": "src/Shop.Api/Shop.Api.csproj"})
+    assert seen["pl"]["max_calls"] == 40 and seen["pl"]["deadline"]
+    assert out["result"]["heavy"]["done"] == "every finding fixed" and "LLM-heavy: every finding fixed" in out["summary"]
+
+
+def test_the_order_page_shows_the_llm_heavy_chain_of_a_refactoring_order(adm):
+    res = {**RESULT, "heavy": {"round": 2, "next_job": 77, "next": "the findings left (3 files)",
+                               "until": "2026-11-04T06:00:00+00:00"}}
+    job = _job(result=res, Payload=json.dumps({"commit": "a" * 40, "goal": "fix", "tasks": [], "heavy_round": 2,
+                                               "heavy_parent": 70}))
+    adm.conn.answers = {r"FROM cz.LlmJob WHERE JobId = %s AND Kind = N'refactor'": [job],
+                        r"SELECT RemoveRequestedAt FROM cz.LlmJob": [{"RemoveRequestedAt": None}]}
+    op = adm.sessions.create("o@example.com", "O", False, True, True, [])
+    b = _get(adm, op, "/admin/refactoring/42").body
+    assert "LLM-heavy mode, order 2 of the chain" in b and "not finished yet" in b and "href='/admin/refactoring/77'" in b
+    assert "#70" in b and "the findings left (3 files)" in b and "Make it A" not in b

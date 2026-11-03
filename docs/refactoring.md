@@ -45,7 +45,7 @@ checkout.
   keep the part on Windows, findings in library code the component never reaches, and findings whose
   evidence names no file. The order's page lists them under *Findings not sent to the LLM*.
 - **One LLM call per file**, with every finding in that file, never the whole application, and at most 8
-  calls per order (`--max-calls` on the command line). A call has the rules' *why* and *fix*, the evidence
+  calls per order (`--max-calls` on the command line; 40 in an [LLM-heavy window](#llm-heavy-refactoring-orders)). A call has the rules' *why* and *fix*, the evidence
   lines, the file (or, when it is large, the part around the evidence lines), the component's
   `appsettings.json`, its target framework and packages, and strict instructions. Each call is kept under
   about 12,000 tokens so that it fits a slot of the [built-in CPU LLM](appliance-admin.md#built-in-llm).
@@ -192,6 +192,22 @@ wrong: the compiler errors or the run log, or, when it was deployed but failed t
 log of each failing component (its failing variant is taken out of the sandbox first). The chain ends when a
 variant runs in the sandbox, when the window ends, after 30 orders, or when two orders in a row changed nothing.
 Each order's page links the one before and the next.
+
+<a id="llm-heavy-refactoring-orders"></a>**Refactoring orders in an LLM-heavy window.** With an
+[LLM-heavy window](source-control.md#llm-heavy-for-a-while) on the whole application, or on the component of an
+order of one component, a refactoring order of chosen findings makes up to 40 LLM calls (files) instead of 8, and
+makes no LLM call after the window ends (the files left say *not attempted: the LLM-heavy window ended*). An order
+that does not finish the job queues the next one at once, approved and first in the queue:
+
+- its patch does not build or run: a **repair** order (as **Fix it with the LLM**), with the build errors or the run
+  log, which carries the findings that are left for after the repair;
+- it builds and runs, but findings are left (not attempted, not fixed, or an LLM error): an order for the files of
+  those findings, which continues from its patch, so the result is one patch with every change (its subject ends
+  in *(continued)*).
+
+The chain ends when every finding is fixed and the patched copy builds and runs, when the window ends, after 30
+orders, or when two orders in a row changed nothing. Each order's page says where it is in the chain and links the
+one before and the next; the queue's result line ends with *LLM-heavy: continues as #n*.
 
 **Estimates.** The button and the bulk page show the queue's estimate of the first pass (the size of what
 it sends, a typical file for each stateful component, at the speed the queue learned); repair rounds and a

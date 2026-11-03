@@ -354,6 +354,29 @@ def _verification(res: dict, st: str) -> str:
 KIND_TEXT = {"generate": "Changes for the findings", "repair": "Repair of the build or run"}
 
 
+def _heavy_line(res: dict, pl: dict) -> str:
+    """Where an order is in its LLM-heavy chain: the one before, done, the next one, or why it stopped."""
+    hv = res.get("heavy") or {}
+    if not hv and not pl.get("heavy_round"):
+        return ""
+    rnd = int(hv.get("round") or pl.get("heavy_round") or 1)
+    parent = pl.get("heavy_parent")
+    line = (f"LLM-heavy mode, order {rnd} of the chain"
+            + (f" (after <a href='{BASE}/{int(parent)}'>#{int(parent)}</a>)" if parent else "") + ": ")
+    if hv.get("done"):
+        line += f"done, {e(hv['done'])}."
+    elif hv.get("next_job"):
+        not_yet = "not running in the sandbox yet" if pl.get("goal") == "rating-a" else "not finished yet"
+        line += (f"{not_yet}; the next order, <a href='{BASE}/{int(hv['next_job'])}'>"
+                 f"#{int(hv['next_job'])}</a>, continues from this patch ({e(hv.get('next') or '')}), until "
+                 f"{_d(rf._deadline(hv.get('until')))} at the latest.")
+    elif hv.get("stopped"):
+        line += f"stopped: {e(hv['stopped'])}."
+    else:
+        line += "running."
+    return f"<p class='note'>{line}</p>"
+
+
 def _make_it_a(res: dict, pl: dict, st: str) -> str:
     """The "Make it A" loop: the rating before and after, each pass and repair round, and what is left."""
     from .webui import badge
@@ -374,23 +397,7 @@ def _make_it_a(res: dict, pl: dict, st: str) -> str:
             said = "<b>Not assessed again.</b>"
         out.append(f"<p class='rating-change'>{badge(before)} → {badge(after) if after else '<span class=muted>?</span>'} "
                    f"{said}</p>")
-        hv = res.get("heavy") or {}
-        if hv or pl.get("heavy_round"):
-            rnd = int(hv.get("round") or pl.get("heavy_round") or 1)
-            parent = pl.get("heavy_parent")
-            line = (f"LLM-heavy mode, order {rnd} of the chain"
-                    + (f" (after <a href='{BASE}/{int(parent)}'>#{int(parent)}</a>)" if parent else "") + ": ")
-            if hv.get("done"):
-                line += f"done, {e(hv['done'])}."
-            elif hv.get("next_job"):
-                line += (f"not running in the sandbox yet; the next order, <a href='{BASE}/{int(hv['next_job'])}'>"
-                         f"#{int(hv['next_job'])}</a>, continues from this patch ({e(hv.get('next') or '')}), until "
-                         f"{_d(rf._deadline(hv.get('until')))} at the latest.")
-            elif hv.get("stopped"):
-                line += f"stopped: {e(hv['stopped'])}."
-            else:
-                line += "running."
-            out.append(f"<p class='note'>{line}</p>")
+        out.append(_heavy_line(res, pl))
         lim = res.get("limits") or {}
         rows = "".join(
             f"<tr><td class='num'>{int(x.get('pass') or 0)}</td><td class='num'>{int(x.get('round') or 0)}</td>"
@@ -496,6 +503,8 @@ def show_order(adm, conn, s, a, ident: int, flash: str) -> Response:
                     f"the files they are in and this patch, and the result is one patch with both changes, verified again."
                     f"<form method='post' action='{BASE}/{ident}/repair' class='inline'>{adm._csrf(s)}"
                     f"<button>Fix it with the LLM</button></form></div>")
+    if pl.get("goal") != "rating-a" and res:
+        body.append(_heavy_line(res, pl))
     if pl.get("goal") == "rating-a":
         body.append(_make_it_a(res, pl, st))
         requested = None
