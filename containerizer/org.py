@@ -1176,7 +1176,8 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
         keep = [c for c in keep if k8s_name(c.name) not in failed]
     if not keep:
         res.status = "no-a-components"
-        res.reason = (f"none of {len(res.excluded)} server components qualifies" if res.excluded
+        res.reason = (f"none of {len(res.excluded)} server components qualifies: "
+                      + "; ".join(f"{x['component']}: {x['reason']}" for x in res.excluded)[:700] if res.excluded
                       else "no server component")
         if dest.exists():                                      # it no longer qualifies: stop deploying it
             shutil.rmtree(dest)

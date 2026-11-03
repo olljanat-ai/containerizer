@@ -1029,3 +1029,17 @@ def test_a_make_it_a_copy_of_an_application_whose_sandbox_is_off_is_not_deployed
             pass
     with pytest.raises(variant.Skip, match="sandbox is turned off"):
         variant._open(Conn, None, {"application_id": 5, "source": {"type": "org-clone", "scan_id": 1}}, Path("/tmp/x"))
+
+
+def test_the_order_page_says_why_each_component_was_left_out(adm):
+    from test_refactor import _job, RESULT
+    res = {**RESULT, "status": "verified", "goal": "rating-a", "rating_before": "B", "rating_after": "A",
+           "rating_reached": True, "loop": [],
+           "sandbox": {"status": "skipped", "namespace": "pc-refactor-152",
+                       "reason": "not deployed: none of 1 server components qualifies",
+                       "excluded": [{"component": "PartsCatalog", "reason": "security gate: <b>3 fixable</b> vulnerabilities"}]}}
+    adm.conn.answers = {r"FROM cz.LlmJob WHERE JobId = %s AND Kind = N'refactor'": [_job(result=res, Payload=json.dumps({"commit": "a" * 40, "goal": "rating-a", "tasks": []}))],
+                        r"SELECT RemoveRequestedAt FROM cz.LlmJob": [{"RemoveRequestedAt": None}]}
+    op = adm.sessions.create("o@example.com", "O", False, True, True, [])
+    b = _get(adm, op, "/admin/refactoring/42").body
+    assert "<li><b>PartsCatalog</b>: security gate: &lt;b&gt;3 fixable&lt;/b&gt; vulnerabilities</li>" in b

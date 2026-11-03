@@ -8,6 +8,9 @@ qcow2 and VHDX images as release assets.
 
 ## 0.9.1 (2026-11-04)
 
+- A Make it A copy, or an application in a scan, that is not deployed because no component qualifies now says why
+  for each component: the rating, the build and run, or the security gate. The order page lists them, also for
+  orders made before.
 - Make it A copies in the sandbox no longer expire after 7 days (`CONTAINERIZER_SANDBOX_VARIANT_DAYS` is gone).
   A copy stays until a scan assesses another commit of its application, so its patch no longer matches, or until
   someone removes it. The order page then says *Replaced by newer code*, with both commits.

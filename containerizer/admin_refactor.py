@@ -456,6 +456,10 @@ def _sandbox_section(adm, s, ident: int, sb: dict, requested) -> str:
     out.append("</div>")
     if sb.get("reason"):
         out.append(f"<p class='small'>{e(sb['reason'])}</p>")
+    if sb.get("excluded"):           # why each component was left out (the rating, the build and run, the security gate)
+        out.append("<ul class='small'>" + "".join(
+            f"<li><b>{e(str(x.get('component') or ''))}</b>: {e(str(x.get('reason') or ''))}</li>"
+            for x in sb["excluded"][:20] if isinstance(x, dict)) + "</ul>")
     if sb.get("url_check"):
         out.append(f"<p class='muted small'>URL check: {e(sb['url_check'])}</p>")
     if sb.get("local_images"):
