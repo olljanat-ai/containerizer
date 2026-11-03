@@ -983,3 +983,45 @@ def test_fix_it_with_the_llm_on_a_make_it_a_order_goes_on_as_make_it_a():
     assert nxt["goal"] == "rating-a" and nxt["base_patch"] == "PATCH" and nxt["base_job"] == 41
     assert nxt["heavy_parent"] == 41 and nxt["heavy_round"] == 3 and "deadline" not in nxt
     assert rf.repair_payload({**pl, "goal": "fix"}, res, 41)["goal"] == "repair"       # other orders: a repair
+
+
+NUGET_LOG = """#12 3.385 /src/src/FieldService.Web/FieldService.Web.csproj : error NU1605: Warning As Error: Detected package downgrade: Microsoft.EntityFrameworkCore.SqlServer from 8.0.11 to 8.0.0. Reference the package directly from the project to select a different version.  [/src/src/FieldService.Web/FieldService.Web.csproj]
+3.385 /src/src/FieldService.Web/FieldService.Web.csproj : error NU1605:  FieldService.Web -> FieldService.Data -> Microsoft.EntityFrameworkCore.SqlServer (>= 8.0.11)
+3.385 /src/src/FieldService.Web/FieldService.Web.csproj : error NU1605:  FieldService.Web -> Microsoft.EntityFrameworkCore.SqlServer (>= 8.0.0)
+3.492   Failed to restore /src/src/FieldService.Web/FieldService.Web.csproj (in 1.24 sec).
+------
+Dockerfile:22
+ERROR: failed to solve: process "/bin/sh -c dotnet restore" did not complete successfully: exit code: 1"""
+
+
+def test_a_nuget_error_of_a_project_is_repaired_in_that_project():
+    """NU1605 (package downgrade) names the project, without a line: the repair asks about that project file, with
+    every dependency path NuGet printed; the last characters of the log are only Docker's report of the step."""
+    errs = rf.build_errors(NUGET_LOG)
+    assert {e["file"] for e in errs} == {"src/FieldService.Web/FieldService.Web.csproj"}
+    assert [e["code"] for e in errs] == ["NU1605"] * 3 and errs[0]["line"] == 0
+    assert "from 8.0.11 to 8.0.0" in errs[0]["text"] and "FieldService.Data -> " in errs[1]["text"]
+    assert rf.build_errors("/src/a/B.cs(3,7): error CS0103: x [/src/a/a.csproj]")[0] == {
+        "file": "a/B.cs", "line": 3, "code": "CS0103", "text": "x"}
+    lines = rf.error_lines(NUGET_LOG)
+    assert "Detected package downgrade" in lines and "failed to solve" not in lines
+
+
+def test_heavy_stop_reason_is_in_the_result_line():
+    res = {"status": "applies-only", "verify": True, "files": [1], "findings": [{"status": "fixed"}],
+           "verification": [{"status": "build-failed"}], "heavy": {"stopped": "two orders in a row changed nothing"}}
+    assert rf.summary(res).endswith("; LLM-heavy: stopped: two orders in a row changed nothing")
+
+
+def test_a_repair_builds_the_components_its_patch_changes(shop, tmp_path, monkeypatch):
+    """A repair (or an order that continues an earlier patch) has no tasks of its own: the components to build are
+    those whose files the patch changes. Before, nothing was built: "Not built" with Docker there."""
+    from containerizer import verify as vf
+    built = []
+    monkeypatch.setattr(vf, "_run", lambda cmd, timeout: None)
+    monkeypatch.setattr(vf, "verify_component", lambda a, c, rules, timeout, work: built.append(c.name) or
+                        {"status": "ok", "attempts": []})
+    pl = _payload(shop)
+    out = rf.verify_components({**pl, "tasks": []}, shop, tmp_path / "v", files=["src/Shop.Api/Bank.cs"])
+    assert built == ["Shop.Api"] and [v["status"] for v in out] == ["ok"]
+    assert rf.verify_components({**pl, "tasks": []}, shop, tmp_path / "v2") == []          # nothing changed

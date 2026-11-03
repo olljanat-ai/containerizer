@@ -6,6 +6,27 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## 0.8.1 (2026-11-03)
+
+0.8.0 was not published (its image push to GHCR failed): 0.8.1 includes it (kubemg, below).
+
+### Refactoring
+- Repairs (**Fix it with the LLM**, Make it A's repair rounds, LLM-heavy chains) now see a project's own build
+  errors, which have no line: NuGet's (e.g. NU1605, a package downgrade between two projects) and MSBuild's. Before,
+  only compiler errors with a line counted, so the repair asked about the patch's files instead of the project,
+  with the end of the log, which is Docker's report of the failed step, not the error. Without any such error, a
+  repair now gets the log's error lines.
+- Repairs and orders that continue an earlier patch (Fix it with the LLM, Make it A from a patch, LLM-heavy chains)
+  were not built: verification built only the components of the order's own findings, and these orders have none,
+  so they ended *Not built* although Docker was there. Verification now builds every component whose files the
+  patch changes.
+- **Cancel** on a job that is being asked (Admin → LLM queue): its LLM calls stop within a few seconds, a refactoring
+  order does not go on to its build, the sandbox or the next order of an LLM-heavy chain, and it is recorded as
+  skipped, *cancelled by …* (**Requeue** starts it again). Before, only queued jobs could be skipped. Turning
+  LLM-heavy mode off does not stop the orders already being asked: cancel them. Schema 33:
+  `LlmJob.CancelRequestedAt/By`.
+- An LLM-heavy chain that stops says why in the result line (*LLM-heavy: stopped: …*), not only on the order's page.
+
 ## 0.8.0 (2026-11-03)
 
 ### Appliance

@@ -248,7 +248,10 @@ With **Ask the LLM** on, **LLM reviews** chooses when the LLM is asked:
 - the jobs waiting, in the order the runner takes them: the repository and component, why it is queued
   (uncertain, or a second opinion on the rules' blocker or rewrite verdict) and the estimated tokens and
   time. **Top**, **Up**, **Down** and **Bottom** move a job; new jobs still go in by their priority.
-  **Skip** takes one out of the queue;
+  **Skip** takes one out of the queue. **Cancel** stops a job that is being asked: the runner sees it within a
+  few seconds, its LLM calls stop at once (the connection is closed, so a self-hosted LLM stops generating), a
+  refactoring order does not go on to its build, the sandbox or the next order of an LLM-heavy chain, and the job
+  is recorded as skipped (*cancelled by …*); **Requeue** starts it again;
 - at the top, the totals: jobs waiting and being asked, by kind (uncertain, second opinion); their
   estimated tokens in and out; the LLM time they need at the measured speed with the parallel requests
   set, for example *~7 h 20 min of LLM time (3 in parallel)*, and when they would all be done if the

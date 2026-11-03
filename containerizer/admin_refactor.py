@@ -334,6 +334,8 @@ def _verification(res: dict, st: str) -> str:
              f"<code>{e(str(res.get('commit') or '')[:12])}</code> (<code>git apply --check</code>, then <code>git am</code>)</li>"]
     if not res.get("verify", True):
         parts.append("<li>Not built: verification was off for this order.</li>")
+    elif not res.get("verification") and res.get("patch"):
+        parts.append("<li>Not built: no component this patch changes was built.</li>")
     for v in res.get("verification") or []:
         ok = v.get("status") in ("ok", "ok-external")
         parts.append(f"<li><span class='st {'st-ok' if ok else 'st-bad'}'>{e(VERIFY_TEXT.get(v.get('status'), v.get('status')))}</span> "
