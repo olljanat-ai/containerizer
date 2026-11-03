@@ -191,7 +191,7 @@ Windows" instead of being forced.
 ### Make it A
 
 One order has the LLM fix everything that keeps a B application from A, verifies and repairs the patch,
-assesses it again and deploys the patched copy to the sandbox beside the original. Every order shows its
+assesses it again and deploys the patched copy to the sandbox as its own application. Every order shows its
 tokens and time, and needs an administrator's approval until you trust it.
 
 [Refactoring patches :octicons-arrow-right-24:](refactoring.md#make-it-a)
@@ -342,7 +342,7 @@ reject them; approved rules make the next run faster and AI-free.
 ### From B to A, running in the sandbox
 
 The front page lists the applications a verified **Make it A** patch makes A, and whether that patched copy runs
-in the sandbox beside the original right now.
+in the sandbox right now.
 
 [Make it A :octicons-arrow-right-24:](refactoring.md#make-it-a)
 

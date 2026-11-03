@@ -1,7 +1,7 @@
 """"Make it A" (refactor.py goal rating-a, variant.py, docs/refactoring.md#make-it-a): the order's plan, the loop
 in one job (generate, apply, verify, repair round, re-assessment, a second pass, the call cap), the rating
 before and after, the names of the patched copy (DNS-safe, unique per job), the deploy step shared with the
-organization scan (org.deploy_app; local images), the sandbox variant beside the original (written to the
+organization scan (org.deploy_app; local images), the sandbox variant, its own application (written to the
 output repository, picked up by write_sandbox, removed again), its health for one namespace only, the result
 and the view, and the web pages (the button, the bulk confirmation, Remove; roles, CSRF, fixed notices)."""
 import json
