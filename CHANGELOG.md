@@ -6,6 +6,24 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## 0.7.0 (2026-11-03)
+
+### Refactoring
+- Make it A: the order page said `B → A Still A.` for a patched copy the rules rate A but that does not build or
+  run. It now says **A by the rules, but the patched copy does not build or run** (not A yet, not deployed), and
+  lists the findings left as ones that do not keep it from A.
+- Make it A: each pass leaves a quarter of the LLM calls (at most 4) for its repair rounds; a first pass over many
+  files could use all 16 and leave a patch that does not build without a repair.
+- Make it A in an LLM-heavy window (whole application): 40 calls, 4 passes and 4 repair rounds a pass, no LLM call
+  after the window ends, and an order whose copy does not end up running in the sandbox queues the next one, which
+  continues from its patch with the build or run errors, or the sandbox's state and log of the failing components
+  (the failing variant is taken out first). Until a variant runs in the sandbox, the window ends, 30 orders, or two
+  orders that changed nothing.
+
+### Results
+- Front page: **Made A by a patch**, the applications a verified Make it A patch makes A and whether their variant
+  runs in the sandbox (with its link), running ones first; a tile with their count, and → A next to their rating.
+
 ## 0.6.0 (2026-11-03)
 
 ### LLM

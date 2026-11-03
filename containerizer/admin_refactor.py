@@ -362,9 +362,35 @@ def _make_it_a(res: dict, pl: dict, st: str) -> str:
     out = ["<h2>Make it A</h2>"]
     if res:
         reached = bool(res.get("rating_reached"))
+        if reached:
+            said = "<b>Rating A reached.</b>"
+        elif after == "A":
+            # the rules rate the patched copy A, but A counts only when it also builds and runs
+            said = ("<b>A by the rules, but the patched copy does not build or run</b>, so it is not A yet and was not "
+                    "deployed." if res.get("status") != "verified" else "<b>A by the rules.</b>")
+        elif after:
+            said = f"<b>Still {e(after)}.</b>"
+        else:
+            said = "<b>Not assessed again.</b>"
         out.append(f"<p class='rating-change'>{badge(before)} → {badge(after) if after else '<span class=muted>?</span>'} "
-                   + ("<b>Rating A reached.</b>" if reached else
-                      "<b>Still " + e(after) + ".</b>" if after else "<b>Not assessed again.</b>") + "</p>")
+                   f"{said}</p>")
+        hv = res.get("heavy") or {}
+        if hv or pl.get("heavy_round"):
+            rnd = int(hv.get("round") or pl.get("heavy_round") or 1)
+            parent = pl.get("heavy_parent")
+            line = (f"LLM-heavy mode, order {rnd} of the chain"
+                    + (f" (after <a href='{BASE}/{int(parent)}'>#{int(parent)}</a>)" if parent else "") + ": ")
+            if hv.get("done"):
+                line += f"done, {e(hv['done'])}."
+            elif hv.get("next_job"):
+                line += (f"not running in the sandbox yet; the next order, <a href='{BASE}/{int(hv['next_job'])}'>"
+                         f"#{int(hv['next_job'])}</a>, continues from this patch ({e(hv.get('next') or '')}), until "
+                         f"{_d(rf._deadline(hv.get('until')))} at the latest.")
+            elif hv.get("stopped"):
+                line += f"stopped: {e(hv['stopped'])}."
+            else:
+                line += "running."
+            out.append(f"<p class='note'>{line}</p>")
         lim = res.get("limits") or {}
         rows = "".join(
             f"<tr><td class='num'>{int(x.get('pass') or 0)}</td><td class='num'>{int(x.get('round') or 0)}</td>"
@@ -384,7 +410,8 @@ def _make_it_a(res: dict, pl: dict, st: str) -> str:
             out.append("<p class='note'><b>Still keeps its own data:</b> " + "; ".join(
                 f"{e(x.get('component'))} ({e(', '.join(x.get('state') or []))})" for x in res["still_state"]) + "</p>")
         if not reached and res.get("remaining"):
-            out.append("<p class='note'><b>Still found:</b> " + ", ".join(
+            out.append("<p class='note'><b>" + ("Findings left (they do not keep it from A):" if after == "A" else
+                                                 "Still found:") + "</b> " + ", ".join(
                 f"{e(x.get('component'))}: <code>{e(x.get('rule'))}</code>" for x in res["remaining"][:30]) + "</p>")
     else:
         lim = f"at most {int(pl.get('max_calls') or rf.MAX_CALLS_A)} LLM calls, {int(pl.get('max_passes') or rf.MAX_PASSES_A)} passes"

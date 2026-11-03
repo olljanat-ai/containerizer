@@ -299,7 +299,8 @@ def check_health(root: Path, namespace: str, revision: str, env=None, kube=None,
             "reason": "; ".join(f"{c.get('component')}: {c.get('status_text')}" + (f" ({c['reason']})" if c.get("reason") else "")
                                 for c in comps)[:800],
             "url_check": next((c.get("url_check") for c in comps if c.get("url_check")), None),
-            "health": [{"component": c.get("component"), "status": c.get("status"), "reason": str(c.get("reason") or "")[:300]}
+            "health": [{"component": c.get("component"), "status": c.get("status"), "reason": str(c.get("reason") or "")[:300],
+                        **({"log_tail": str(c["log_tail"])[-1500:]} if c.get("log_tail") and c.get("status") != HEALTHY else {})}
                        for c in comps]}
 
 

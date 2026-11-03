@@ -192,6 +192,9 @@ Until it ends:
   even in a scan with queued reviews) when the appliance allows LLM-heavy mode (`CZ_LLM_HEAVY=true`) and the scan
   has **Ask the LLM** on. These calls are made during the scan, as for a scan in LLM-heavy mode.
 
+- a [Make it A](refactoring.md#make-it-a) order of the whole application keeps going, one order after another,
+  until its patched copy runs in the sandbox or the window ends.
+
 **Scan its repository now** (ticked by default) starts a scan of its repository at once, so the reviews are
 queued without waiting for the schedule. The windows open now are listed on the application's page and on the
 LLM queue page (**LLM-heavy now**), each with **End now**; their jobs then take their usual place again.

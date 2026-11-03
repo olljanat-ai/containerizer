@@ -171,11 +171,27 @@ The order is one `refactor` job (goal `rating-a`) that loops in the queue runner
    its data) and LLM calls left: one more pass on what remains, then steps 2 to 4 again. At most **2 passes**.
 
 Every LLM call of the job, retries and repair rounds included, counts against its limit of **16 calls**;
-files beyond it are *not attempted*. The order page shows each pass and round (files, calls, changes, the
+files beyond it are *not attempted*. Each pass leaves a quarter of the calls (at most 4) for its repair rounds,
+so a patch that does not build always gets a repair round. The order page shows each pass and round (files, calls, changes, the
 build and run, the rating), the rating before and after (`B → A: Rating A reached`, or `B → B: 4 of 6 fixed;
 still keeps data in Api (Embedded file database)`), the result per finding as the rules see the final patched
 copy, and the one patch to download, as for any refactoring patch. Its statuses are the same (verified,
 does not build, does not start, ...).
+
+**Reading the order page.** `B → A: Rating A reached` is the goal: the rules rate the patched copy A *and* it
+builds and runs, so it is deployed to the sandbox. `B → A` with **A by the rules, but the patched copy does not
+build or run** means the code changes remove what kept it from A, but the copy is not A yet and is not deployed: the
+errors are under **Verification**; **Fix it with the LLM** orders a repair. **Findings left (they do not keep it
+from A)** are configuration findings an A application may still have.
+
+**Until it runs in the sandbox (LLM-heavy mode).** With an [LLM-heavy window](source-control.md#llm-heavy-for-a-while)
+on the whole application (Admin → Applications), a Make it A order may do more (40 LLM calls, 4 passes, 4 repair
+rounds a pass) and stops making LLM calls when the window ends. An order whose copy does not end up running in the
+sandbox queues the next one at once, approved and first in the queue, which continues from its patch with what went
+wrong: the compiler errors or the run log, or, when it was deployed but failed there, the sandbox's state and
+log of each failing component (its failing variant is taken out of the sandbox first). The chain ends when a
+variant runs in the sandbox, when the window ends, after 30 orders, or when two orders in a row changed nothing.
+Each order's page links the one before and the next.
 
 **Estimates.** The button and the bulk page show the queue's estimate of the first pass (the size of what
 it sends, a typical file for each stateful component, at the speed the queue learned); repair rounds and a
