@@ -8,6 +8,9 @@ qcow2 and VHDX images as release assets.
 
 ## Unreleased
 
+- Appliance, kubemg: when the sandbox cluster's registration in kubemg cannot complete the TLS handshake with kubemg
+  (loopback HTTPS), it stops at once and says why in `journalctl -u containerizer-kubemg-sandbox`, instead of retrying
+  every 5 seconds for 10 minutes (a `tls: bad record MAC` line in kubemg's log each time) and starting over.
 - An application's results page links to its admin pages for those who may open them (Admin: Application settings for
   administrators and the product's owners, Dev databases and Refactoring orders for administrators and operators),
   and Admin → Applications links each application to its results page.

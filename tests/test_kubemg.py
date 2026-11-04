@@ -277,3 +277,32 @@ def test_the_loopback_certificate_is_readable_by_kubemgs_group_whatever_the_umas
     srv = (RFS / "usr/lib/systemd/system/containerizer-kubemg.service").read_text()
     assert "--volume /var/lib/containerizer/kubemg/tls/ssl:/etc/kubemg/ssl:ro" in srv and "--user 65532:65532" in srv
     assert srv.index("cz-kubemg ca") < srv.index("ExecStart=")
+
+
+def test_wait_up_stops_at_once_on_a_tls_failure(monkeypatch):
+    """A refused connection is kubemg starting (wait); a failed TLS handshake is not (say so at once, with the
+    client's error), so the sandbox service does not retry silently every 5 s for 10 minutes."""
+    import ssl
+    import urllib.error
+
+    import pytest
+
+    from containerizer import kubemg
+    calls = []
+
+    def refused_then_up(method, path, **kw):
+        calls.append(path)
+        if len(calls) < 3:
+            raise urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+        raise kubemg.KubemgError("HTTP 401")
+    monkeypatch.setattr(kubemg.time, "sleep", lambda s: None)
+    kubemg.wait_up(call=refused_then_up)
+    assert len(calls) == 3
+
+    def bad_mac(method, path, **kw):
+        calls.append(path)
+        raise urllib.error.URLError(ssl.SSLError(1, "[SSL: BAD_RECORD_MAC] bad record mac"))
+    calls.clear()
+    with pytest.raises(kubemg.KubemgError, match="TLS handshake fails: .*bad record mac"):
+        kubemg.wait_up(call=bad_mac)
+    assert len(calls) == 1
