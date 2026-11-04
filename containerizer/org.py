@@ -589,6 +589,45 @@ def org_index(root: Path, org_dir: Path, results: list[dict], run: dict) -> None
     (org_dir / "README.md").write_text("\n".join(lines) + "\n")
 
 
+# What git says when the output repository's server refused the write token (git then asks for a user name, which
+# is turned off) and when it failed for a while (an outage, a dropped connection): the first is said plainly and not
+# tried again, the second is tried again after a pause.
+AUTH_FAILED_RE = re.compile(r"could not read Username|Authentication failed|HTTP 401|HTTP 403|"
+                            r"Write access to repository not granted|Permission to \S+ denied|returned error: 40[13]", re.I)
+TRANSIENT_RE = re.compile(r"Internal Server Error|HTTP 50[0234]|returned error: 50[0234]|\b50[0234] (?:Bad Gateway|"
+                          r"Service Unavailable|Gateway Time-?out)|remote rejected\].*\((?:failure|Internal Server Error)\)|"
+                          r"Connection (?:reset|refused|timed out)|Could not resolve host|early EOF|RPC failed|"
+                          r"unexpected disconnect|Operation timed out", re.I)
+OUTPUT_RETRY_PAUSES = (10, 30, 90)          # seconds before the 2nd, 3rd and 4th try
+
+
+def output_git_error(url: str, e: SourceError) -> SourceError:
+    """A git error of the output repository, with a token the server refused said plainly."""
+    if AUTH_FAILED_RE.search(str(e)):
+        host = re.sub(r"^https?://", "", url).split("/", 1)[0]
+        return SourceError(f"{host} refused the write token for {url}: it is expired, revoked, or has no write access "
+                           f"to this repository (Admin → Source control). git: {str(e)[-300:]}")
+    return e
+
+
+def _retry(url: str, what, sleep=None, before_retry=None):
+    """Run `what()`; after a transient failure (an outage, a dropped connection: TRANSIENT_RE) wait and try again
+    (OUTPUT_RETRY_PAUSES), calling `before_retry()` first. A refused token or another error is raised at once."""
+    import time
+    sleep = sleep or time.sleep
+    for i in range(len(OUTPUT_RETRY_PAUSES) + 1):
+        try:
+            return what()
+        except SourceError as e:
+            if AUTH_FAILED_RE.search(str(e)) or not TRANSIENT_RE.search(str(e)) or i == len(OUTPUT_RETRY_PAUSES):
+                raise output_git_error(url, e) from None
+            print(f"output repository: {REDACT(str(e))[-200:]}; trying again in {OUTPUT_RETRY_PAUSES[i]}s",
+                  file=sys.stderr)
+            sleep(OUTPUT_RETRY_PAUSES[i])
+            if before_retry:
+                before_retry()
+
+
 class Output:
     """The output Git repository: cloned with its own write token (never the organization's read-only
     token; the header is scoped to this repository's URL) or a local folder."""
@@ -607,12 +646,15 @@ class Output:
             self.root = work / "output"
             if self.root.exists():
                 shutil.rmtree(self.root)
+            def fresh():
+                shutil.rmtree(self.root, ignore_errors=True)
             try:
-                clone(self.url, self.root, o.output_branch, self.header)
+                _retry(self.url, lambda: clone(self.url, self.root, o.output_branch, self.header), before_retry=fresh)
             except SourceError as e:
                 if "not found in upstream" not in str(e) and "Remote branch" not in str(e):
                     raise
-                clone(self.url, self.root, "", self.header)       # new branch in an existing (maybe empty) repo
+                fresh()                                           # new branch in an existing (maybe empty) repo
+                _retry(self.url, lambda: clone(self.url, self.root, "", self.header), before_retry=fresh)
                 git(["checkout", "-B", o.output_branch], cwd=self.root)
             self.git = True
         else:
@@ -633,17 +675,21 @@ class Output:
         email = os.environ.get("GIT_AUTHOR_EMAIL") or GIT_USER[1]
         git(["-c", f"user.name={name}", "-c", f"user.email={email}", "commit", "-q", "-m", message], cwd=self.root)
         if self.push:
+            def push():
+                git(["push", "-q", "origin", f"HEAD:{self.o.output_branch}"], cwd=self.root, url=self.url,
+                    header=self.header)
+
+            def pull():                     # someone else pushed meanwhile: our generated commit on top of theirs
+                git(["pull", "-q", "--rebase", "--depth", "50", "origin", self.o.output_branch], cwd=self.root,
+                    url=self.url, header=self.header, check=False)
             for attempt in range(3):
                 try:
-                    git(["push", "-q", "origin", f"HEAD:{self.o.output_branch}"], cwd=self.root, url=self.url,
-                        header=self.header)
+                    _retry(self.url, push, before_retry=pull)
                     break
-                except SourceError:
-                    if attempt == 2:
+                except SourceError as e:
+                    if attempt == 2 or AUTH_FAILED_RE.search(str(e)) or "refused the write token" in str(e):
                         raise
-                    # someone else pushed: rebase our generated commit on top and retry
-                    git(["pull", "-q", "--rebase", "--depth", "50", "origin", self.o.output_branch], cwd=self.root,
-                        url=self.url, header=self.header, check=False)
+                    pull()
         return True
 
 
