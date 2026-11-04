@@ -176,3 +176,8 @@ for s in "$SEED"/*.yaml; do
   fi
   install -m 0644 -o containerizer -g containerizer "$s" "$L/.seed/$f"
 done
+
+# The configuration without its secrets, for the output repositories (containerizer.configbackup): staged at every
+# boot (the files change only by hand, and a reboot applies them); the LLM queue runner commits it when it changed.
+/usr/lib/containerizer/venv/bin/python -I -m containerizer.configbackup collect >/dev/null \
+  || echo "containerizer: the configuration backup could not be staged" >&2

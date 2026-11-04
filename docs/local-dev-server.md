@@ -76,6 +76,10 @@ curl -fsSLo /usr/local/bin/kind https://github.com/kubernetes-sigs/kind/releases
 curl -fsSLo /usr/local/bin/kubectl https://dl.k8s.io/release/v1.32.0/bin/linux/amd64/kubectl
 chmod 0755 /usr/local/bin/kind /usr/local/bin/kubectl
 
+# kind's kubelet watches files with inotify; with the lab k3s and builds beside it Debian's 128 instances
+# run out ("unable to create inotify: too many open files") and the sandbox test's cluster never starts
+echo 'fs.inotify.max_user_instances = 1024' > /etc/sysctl.d/90-inotify.conf && sysctl --system >/dev/null
+
 # docker: run containers without sudo (see Security); kvm: the appliance boot test
 usermod -aG docker,kvm dev
 ```

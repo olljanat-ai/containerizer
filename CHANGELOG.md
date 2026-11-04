@@ -8,6 +8,9 @@ qcow2 and VHDX images as release assets.
 
 ## Unreleased
 
+- The appliance's configuration files (`/etc/containerizer`: the `.env` files, `egress.json`, `network/`) are copied
+  without their secrets to `.appliance/<CZ_HOSTNAME>/config/` of every output repository at every boot, in one commit
+  when something changed: their history is in Git ([backup](docs/appliance-admin.md#backup)).
 - Grafana's **Flux** dashboard starts with whether the sandbox is connected to the output repository at all: what
   `cz-sandbox` last found (connected, or `sandbox.env` without a repository URL or token, the secret store or Flux
   not ready) and when, the root sync's GitRepository and Kustomization (missing, not ready with the reason, or

@@ -1209,6 +1209,12 @@ class Runner:
                 n += variant.sync_sandbox(self.connect, self.key, base, log=self.log)
             except Exception as ex:             # a database from before schema 23, the output repository away: next time
                 self.log(f"sandbox variants: {type(ex).__name__}: {ex}"[:400])
+            try:                                # /etc/containerizer without secrets, once per change (at boot)
+                from . import configbackup
+                base = Path(os.environ.get(refactor.WORK_ENV) or tempfile.gettempdir()) / "config-backup"
+                n += configbackup.sync(self.connect, self.key, base, log=self.log)
+            except Exception as ex:             # no output repository yet, or it is away: next time
+                self.log(f"configuration backup: {type(ex).__name__}: {ex}"[:400])
             try:                                # applications moved to an output repository of their own (once)
                 from . import appoutput
                 base = Path(os.environ.get(refactor.WORK_ENV) or tempfile.gettempdir()) / "app-output"
