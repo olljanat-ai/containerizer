@@ -80,7 +80,7 @@ def test_rating_of_is_the_application_rule(tmp_path):
         assert rating_of(comps) == AppAssessment(None, comps, [], [], []).rating
 
 
-def test_plan_splits_into_generations():
+def test_plan_splits_into_waves():
     p = mp.build(loans())
     assert [x["c"]["ComponentName"] for x in p["now"]] == ["CustomerPortal", "Documents"]
     assert [c["ComponentName"] for c in p["after"]] == ["LoanTape"]
@@ -97,7 +97,7 @@ def test_plan_splits_into_generations():
     assert states["CustomerPortal"]["state"] == "checked" and states["Documents"]["state"] == "deployed"
 
 
-def test_build_failure_keeps_a_ready_component_out_of_generation_1():
+def test_build_failure_keeps_a_ready_component_out_of_wave_1():
     app = loans()
     app["components"][4]["VerifyStatus"] = "run-failed"
     p = mp.build(app)
@@ -110,7 +110,7 @@ def test_section_on_the_page():
     assert html.index("Main obstacles") < html.index("Migration plan") < html.index("<h2>Components</h2>")
     sec = _plan_html(html)
     assert "2 of 6 components can run in Linux containers now; 1 more after code changes; 3 stay on Windows." in sec
-    assert "Generation 1, now" in sec and "to Kubernetes" in sec and "Generation 2, after code changes" in sec
+    assert "Wave 1, now" in sec and "to Kubernetes" in sec and "Wave 2, after code changes" in sec
     assert "Stays on Windows" in sec and "OLE DB / Access database engine" in sec
     assert "a Windows container is a workable stop-gap" in sec          # Api: WindowsContainerOk
     assert "Deployed and healthy" in sec and "deployed, not checked yet" in sec

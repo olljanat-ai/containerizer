@@ -25,9 +25,9 @@ qcow2 and VHDX images as release assets.
   (loopback HTTPS), it stops at once and says why in `journalctl -u containerizer-kubemg-sandbox`, instead of retrying
   every 5 seconds for 10 minutes (a `tls: bad record MAC` line in kubemg's log each time) and starting over.
 - **Migration plan** on the results page of every application that does not rate A, right after the main
-  obstacles: its components in generations. *Generation 1, now*: the components that rate A on their own, with
+  obstacles: its components in waves. *Wave 1, now*: the components that rate A on their own, with
   whether each is in the sandbox (the check's result, "deployed, not checked yet", or "not deployed" and why: the
-  application's sandbox is off, the scan left it out). *Generation 2, after code changes*: what to fix (pointing
+  application's sandbox is off, the scan left it out). *Wave 2, after code changes*: what to fix (pointing
   to Make it A where the page has it) and what the part that can run in Linux containers rates once it is fixed
   (the application rating rule, `assess.rating_of`). *After a framework port*, *Stays on Windows (VMs)* with the
   main obstacle, and *Between the parts*: the calls from one part to the other from the connectivity data. A

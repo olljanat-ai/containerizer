@@ -680,7 +680,7 @@ def _a_patch_mark(a: dict) -> str:
 
 def _ready_mark(a: dict) -> str:
     """Next to the rating of an application that is not A: how many of its components can run in Linux containers
-    now (rate A on their own: the first generation of its migration plan), when at least one can."""
+    now (rate A on their own: the first wave of its migration plan), when at least one can."""
     n, total = a.get("ReadyNow") or 0, a.get("PlanComponents") or 0
     if a.get("Rating") == "A" or not n or not total:
         return ""

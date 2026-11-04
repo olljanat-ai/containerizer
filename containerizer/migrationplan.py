@@ -3,11 +3,11 @@
 The letter grades the whole application's end state. Its components do not have to move together: an organization
 scan already deploys every component that rates A on its own to the sandbox (org.select_components). The plan shows
 
-- **Generation 1, now**: components that rate A on their own (the same rule as the application rating,
+- **Wave 1, now**: components that rate A on their own (the same rule as the application rating,
   assess.rating_of, on one component), build and run, and are in the sandbox or why not;
-- **Generation 2, after code changes**: components whose findings can be fixed in code (targeted changes, data kept
+- **Wave 2, after code changes**: components whose findings can be fixed in code (targeted changes, data kept
   in external services), and what the part that can run in Linux containers rates once they are fixed;
-- **After a port or rewrite**: components that need a framework port;
+- **Later, after a port or rewrite**: components that need a framework port;
 - **Stays on Windows (VMs)**: components that cannot run in a Linux container, with their main obstacle;
 - **Between the parts**: the calls from one part to the other (connectivity data), so the reader sees what each
   part needs to reach in the other.
@@ -72,7 +72,7 @@ def rating_of(comps: list[dict], state: dict, fixed: tuple = ()) -> str | None:
 
 
 def ready_now(c: dict, state: dict) -> bool:
-    """Generation 1: a server component that rates A on its own and has not failed to build and run (what an
+    """Wave 1: a server component that rates A on its own and has not failed to build and run (what an
     organization scan deploys to the sandbox, org.select_components)."""
     from .assess import rating_of as rate
     return ((c.get("Tier") or "server") == "server" and c.get("VerifyStatus") not in FAILED_VERIFY
@@ -320,20 +320,20 @@ def section(app: dict, ctx: dict | None = None, refactoring_box: bool = False) -
         out.append(txt + ".</p>")
 
     out.append("<div class='gens'>")
-    # generation 1
+    # wave 1
     rows = "".join(f"<tr><td><a href='#c{int(x['c']['ComponentId'])}'>{e(x['c']['ComponentName'])}</a></td>"
                    f"<td>{_sandbox_html(x['sandbox'])}</td></tr>" for x in plan["now"])
-    out.append("<div class='gen g1'><h3>Generation 1, now <span class='muted small'>to Kubernetes</span></h3>"
+    out.append("<div class='gen g1'><h3>Wave 1, now <span class='muted small'>to Kubernetes</span></h3>"
                + (f"<p class='muted small'>Rate A on their own: configuration only, no data of their own.</p>"
                   f"<table><thead><tr><th>Component</th><th>Sandbox</th></tr></thead><tbody>{rows}</tbody></table>"
                   if rows else "<p class='muted'>No component rates A on its own yet.</p>") + "</div>")
-    # generation 2
+    # wave 2
     if plan["after"]:
         link = ("<a href='#refactoring'>Make it A ↓</a> (the Refactoring box) has the LLM make these changes"
                 if refactoring_box else "The findings below say what to change")
         rows = "".join(f"<tr><td><a href='#c{int(c['ComponentId'])}'>{e(c['ComponentName'])}</a></td>"
                        f"<td class='small'>{e(_fixes(c, plan))}</td></tr>" for c in plan["after"])
-        out.append("<div class='gen g2'><h3>Generation 2, after code changes</h3>"
+        out.append("<div class='gen g2'><h3>Wave 2, after code changes</h3>"
                    f"<p class='muted small'>{link}"
                    + (f"; then the Linux part rates {e(plan['linux_after'])} ({e(RATING_TITLE.get(plan['linux_after'], ''))})"
                       if plan["linux_after"] else "") + ".</p>"
@@ -341,7 +341,7 @@ def section(app: dict, ctx: dict | None = None, refactoring_box: bool = False) -
     if plan["port"]:
         rows = "".join(f"<tr><td><a href='#c{int(c['ComponentId'])}'>{e(c['ComponentName'])}</a></td>"
                        f"<td class='small'>{e(_obstacle(c, plan, ('rewrite',)))}</td></tr>" for c in plan["port"])
-        out.append("<div class='gen g3'><h3>After a framework port or rewrite</h3>"
+        out.append("<div class='gen g3'><h3>Later, after a framework port or rewrite</h3>"
                    "<p class='muted small'>Not a targeted change: the component moves to a framework that runs on "
                    "Linux (the migration assistant below lists the replacements).</p>"
                    f"<table><thead><tr><th>Component</th><th>Main obstacle</th></tr></thead><tbody>{rows}</tbody></table></div>")
