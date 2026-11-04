@@ -214,7 +214,10 @@ k3s also runs External Secrets Operator, and the generated configurations get ev
 To deploy what the scans generate, set `sandbox.env` (output repository URL, branch, read-only token).
 Every 2 minutes `cz-sandbox` puts the read-only token in the secret store for Flux's root sync and for
 every app namespace, and creates the root `GitRepository` + `Kustomization` of the output repository's
-`sandbox/flux/`. Each app reconciles as its own ServiceAccount with its own copy of the token
+`sandbox/flux/`. Until `sandbox.env` names the repository nothing is deployed, even when the scans and Make it A
+write to it with the write token of **Admin → Source control**: the two are set separately. What `cz-sandbox` last
+found is at the top of Grafana's Flux dashboard and in `journalctl -u containerizer-sandbox` (each change), and the
+alert `ContainerizerSandboxNotConnected` fires after 15 minutes without a connection. Each app reconciles as its own ServiceAccount with its own copy of the token
 ([the sandbox cluster](scheduled-scans.md#the-sandbox-cluster)). Allow the Git server on
 the Firewall page. `kubectl` (as root on the appliance) shows the result. Flux is the only GitOps tool.
 An application moved to an [output repository of its own](scheduled-scans.md#own-output-repository) is
@@ -241,7 +244,7 @@ Grafana (`https://<appliance>/grafana/`, **Grafana ↗** on the admin pages) has
 | --- | --- |
 | **Containerizer: organization scans** (the home page) | Scans, the scan worker, LLM usage, the LLM queue and the built-in LLM ([scheduled-scans.md](scheduled-scans.md#metrics-and-grafana)) |
 | **Containerizer: k3s sandbox cluster** | Whether the API server and kubelet answer, pods running and not running, containers waiting (CrashLoopBackOff, ImagePullBackOff, ...), restarts, deployments short of replicas, CPU, memory and network by namespace and the top pods, volume usage, and the API server's requests and latency |
-| **Containerizer: Flux** | Every Flux object (Kustomizations, Git, OCI and Helm sources, Helm releases, image automation) with its Ready state, reason, revision and suspend flag; the ones not ready first; the controllers' reconciliations, errors, reconcile time, work queues, CPU and memory |
+| **Containerizer: Flux** | First, whether the sandbox is connected to the output repository at all: what `cz-sandbox` last found (connected, or why not: `sandbox.env` without a repository URL, no token, the secret store or Flux not ready) and when, and the root sync's GitRepository and Kustomization (`flux-system/containerizer-sandbox`: missing, not ready with the reason, or ready at a revision); the applications' containers that do not start (ImagePullBackOff, CrashLoopBackOff, ...) and restart. Then every Flux object (Kustomizations, Git, OCI and Helm sources, Helm releases, image automation) with its Ready state, reason, revision and suspend flag; the ones not ready first; the controllers' reconciliations, errors, reconcile time, work queues, CPU and memory |
 
 ![Grafana: the k3s sandbox cluster dashboard](images/grafana-k3s-dashboard.png#only-light)
 ![Grafana: the k3s sandbox cluster dashboard](images/grafana-k3s-dashboard-dark.png#only-dark)

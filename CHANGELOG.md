@@ -8,6 +8,13 @@ qcow2 and VHDX images as release assets.
 
 ## Unreleased
 
+- Grafana's **Flux** dashboard starts with whether the sandbox is connected to the output repository at all: what
+  `cz-sandbox` last found (connected, or `sandbox.env` without a repository URL or token, the secret store or Flux
+  not ready) and when, the root sync's GitRepository and Kustomization (missing, not ready with the reason, or
+  ready), and the applications' containers that do not start or restart. `cz-sandbox` used to stop without a word
+  when `sandbox.env` was empty: it now logs each change of its state and writes it for the worker's metrics
+  (`containerizer_sandbox_connection`). New alerts: `ContainerizerSandboxNotConnected`,
+  `ContainerizerSandboxRootSyncNotReady`.
 - Refactoring: a package reference to a part of ASP.NET Core (`Microsoft.AspNetCore.HttpOverrides` and the like)
   in a .NET Core 3.0+ project is removed without the LLM when NuGet cannot find it (NU1101, NU1102). Those parts
   ship with the shared framework and their packages end at 2.x. The LLM's answers no longer add them, and a

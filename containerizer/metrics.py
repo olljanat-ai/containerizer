@@ -296,6 +296,38 @@ def host_metrics(paths: dict | None = None) -> list[_Metric]:
     return out
 
 
+# --------------------------------------------------------------------------- the sandbox's connection
+
+SANDBOX_STATUS = "/run/containerizer/sandbox-status"
+# what cz-sandbox (the appliance, every 2 minutes) last found: "connected" deploys; the rest say why nothing does
+SANDBOX_STATES = ("connected", "no-token", "no-repository", "bad-url", "store-not-ready", "no-flux")
+
+
+def sandbox_metrics(path: str = SANDBOX_STATUS) -> list[_Metric]:
+    """containerizer_sandbox_connection{state} (1 for the state cz-sandbox last wrote, 0 for the others) and the time
+    of that run, from its status file (state=, at=, detail=; no secret in it). Nothing where there is no such file
+    (not an appliance, or cz-sandbox has not run yet)."""
+    text = _read(path)
+    if not text:
+        return []
+    kv = dict(l.split("=", 1) for l in text.splitlines() if "=" in l)
+    state = kv.get("state", "").strip()
+    g = Gauge("containerizer_sandbox_connection", "The sandbox cluster's connection to the output repository "
+              "(cz-sandbox): 1 for its current state (connected, no-token, no-repository, bad-url, store-not-ready, "
+              "no-flux).", ("state", "detail"))
+    for s in SANDBOX_STATES + ((state,) if state and state not in SANDBOX_STATES else ()):
+        g.set(1 if s == state else 0, state=s, detail=kv.get("detail", "").strip()[:300] if s == state else "")
+    out: list[_Metric] = [g]
+    try:
+        at = float(kv.get("at", ""))
+    except ValueError:
+        return out
+    t = Gauge("containerizer_sandbox_connection_checked_timestamp_seconds",
+              "When cz-sandbox last checked the sandbox's connection (it runs every 2 minutes).")
+    t.set(at)
+    return out + [t]
+
+
 # --------------------------------------------------------------------------- endpoint
 
 def serve(registry: Registry, host: str = "127.0.0.1", port: int = 9464, token: str | None = None):

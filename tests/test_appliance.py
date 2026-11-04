@@ -618,7 +618,7 @@ def test_sandbox_writes_the_read_only_verifier_kubeconfig_for_the_llm_queue():
     assert "create token containerizer-verifier --duration=24h" in script
     assert 'chown root:containerizer "$tmp" && chmod 0640 "$tmp"' in script
     # before the steps that need the secret store or the output repository: it works without them
-    assert script.index("verifier_access ||") < script.index("cz_store_ready || exit 0")
+    assert script.index("verifier_access ||") < script.index("if ! cz_store_ready; then")
     from containerizer.sandbox import VERIFIER, VERIFIER_NS
     assert (VERIFIER, VERIFIER_NS) == ("containerizer-verifier", "containerizer-verify")
 
@@ -687,9 +687,10 @@ def test_k3s_and_flux_metrics_and_dashboards():
                 for m in re.findall(r"\b([a-z_:]+)\s*(?=\{|\[|\))", t["expr"]):
                     if m in ("sum", "by", "count", "max", "rate", "increase", "topk", "or", "vector", "histogram_quantile",
                              "le", "verb", "code", "namespace", "pod", "phase", "reason", "deployment", "controller",
-                             "result", "name", "persistentvolumeclaim"):
+                             "result", "name", "persistentvolumeclaim", "container"):
                         continue
-                    ok = m == "up" or m.startswith(("kube_", "gotk_", "controller_runtime_", "workqueue_")) or \
+                    ok = m in ("up", "time") or m.startswith(("kube_", "gotk_", "controller_runtime_", "workqueue_",
+                                                              "containerizer_sandbox_")) or \
                         any(k.fullmatch(m) for k in keep)
                     assert ok, (f, p["title"], m)
 
@@ -838,3 +839,25 @@ def test_new_work_waits_while_a_restart_is_due():
     from containerizer import llmqueue
     assert llmqueue.gate({}, T0, 0, 0.0, "waiting for the planned restart") == (False, "waiting for the planned restart")
     assert llmqueue.gate({"OnlyWhenIdle": False}, T0, 0, 0.0, None)[0]
+
+
+def test_sandbox_says_why_nothing_deploys():
+    """An appliance whose sandbox.env was never filled in deployed nothing, and cz-sandbox exited without a word.
+    It now writes its state (no secret in it) for the worker's metrics and logs each change; the Flux dashboard and
+    an alert show it."""
+    script = (APPLIANCE / "rootfs/usr/lib/containerizer/bin/cz-sandbox").read_text()
+    from containerizer.metrics import SANDBOX_STATES, SANDBOX_STATUS
+    assert f"STATUS={SANDBOX_STATUS}" in script
+    for state in SANDBOX_STATES:
+        assert f"sandbox_status {state} " in script, state
+    # every early exit after sandbox.env says why
+    tail = script.split(". /etc/containerizer/sandbox.env", 1)[1].split("git_token() {", 1)[0]
+    lines = tail.splitlines()
+    exits = [i for i, l in enumerate(lines) if re.search(r"\bexit [01]\b", l)]
+    assert len(exits) == 4 and all("sandbox_status" in lines[i] + lines[i - 1] for i in exits)
+    assert "CZ_SANDBOX_GIT_TOKEN:-}" in script and "chmod 0644" in script
+    alerts = (APPLIANCE.parent / "monitoring/prometheus/containerizer-alerts.yml").read_text()
+    assert "ContainerizerSandboxNotConnected" in alerts and "ContainerizerSandboxRootSyncNotReady" in alerts
+    flux = json.loads((APPLIANCE.parent / "monitoring/grafana/containerizer-flux.json").read_text())
+    exprs = " ".join(t["expr"] for p in flux["panels"] for t in p.get("targets") or [])
+    assert "containerizer_sandbox_connection" in exprs and 'name="containerizer-sandbox"' in exprs
