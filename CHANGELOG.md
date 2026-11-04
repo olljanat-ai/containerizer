@@ -16,6 +16,11 @@ qcow2 and VHDX images as release assets.
 - **Make it A: every B application** can turn [LLM-heavy mode](docs/source-control.md#llm-heavy-for-a-while) on
   for each application it orders, for the hours chosen, with the same button: their orders and the jobs that
   follow go first in the LLM queue, approved ([Make it A](docs/refactoring.md#make-it-a)).
+- Appliance: kubemg (`CZ_KUBEMG=true`) starts again; https://kubemg.<appliance>/ gave HTTP 502. Its loopback HTTPS
+  certificate was made under cz-firstboot's umask 077, so its folder was 0700 root and kubemg, which does not run as
+  root, could not read it (`tls setup failed: stat /etc/kubemg/ssl/tls.crt: permission denied`). The modes are now
+  set explicitly: the folder and the key are open to kubemg's group only, the local CA's key stays root's. Every
+  start of kubemg sets them again, so an appliance with the broken folder heals without a reboot.
 
 ## 0.9.3 (2026-11-04)
 

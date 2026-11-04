@@ -246,3 +246,34 @@ def test_the_loopback_certificate_is_issued_by_its_own_ca_once(tmp_path):
     assert oct((tmp_path / "tls/ssl/tls.key").stat().st_mode & 0o777) == "0o400"
     before = (tmp_path / "tls/ssl/tls.crt").read_bytes()
     assert kubemg.loopback_tls(tmp_path / "tls") is False and (tmp_path / "tls/ssl/tls.crt").read_bytes() == before
+
+
+def test_the_loopback_certificate_is_readable_by_kubemgs_group_whatever_the_umask(tmp_path):
+    """0.9.3: cz-firstboot's umask 077 cut ssl/ to 0700, and kubemg (65532, not root) could not stat
+    /etc/kubemg/ssl/tls.crt. The modes are set explicitly, and again on every call (cz-kubemg ca), which heals."""
+    tls, gid = tmp_path / "tls", os.getgid()
+    mode = lambda p: oct(p.stat().st_mode & 0o777)
+    old = os.umask(0o077)
+    try:
+        assert kubemg.loopback_tls(tls, gid) is True
+    finally:
+        os.umask(old)
+
+    def check():
+        assert (mode(tls), mode(tls / "ca.key"), mode(tls / "ca.crt")) == ("0o700", "0o400", "0o644")
+        assert (mode(tls / "ssl"), mode(tls / "ssl/tls.crt"), mode(tls / "ssl/tls.key")) == ("0o750", "0o644", "0o440")
+        assert (tls / "ssl").stat().st_gid == gid and (tls / "ssl/tls.key").stat().st_gid == gid
+    check()
+    before = (tls / "ssl/tls.key").read_bytes()
+    os.chmod(tls / "ssl", 0o700)                                      # as 0.9.3 left it
+    os.chmod(tls / "ssl/tls.key", 0o400)
+    assert kubemg.loopback_tls(tls, gid) is False
+    check()
+    assert (tls / "ssl/tls.key").read_bytes() == before                # healed, not replaced: Caddy pins its CA
+    ca = (RFS / "usr/lib/containerizer/bin/cz-kubemg").read_text()
+    ca = ca[ca.index("\nca)\n"):ca.index(";;")]
+    assert "-m containerizer.kubemg loopback-tls --dir \"$KT\" --group 65532" in ca
+    assert "KT=/var/lib/containerizer/kubemg/tls" in ca
+    srv = (RFS / "usr/lib/systemd/system/containerizer-kubemg.service").read_text()
+    assert "--volume /var/lib/containerizer/kubemg/tls/ssl:/etc/kubemg/ssl:ro" in srv and "--user 65532:65532" in srv
+    assert srv.index("cz-kubemg ca") < srv.index("ExecStart=")

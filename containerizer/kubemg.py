@@ -179,7 +179,9 @@ def sandbox(host: str, password: str, username: str = "admin", call=_call, insta
 def loopback_tls(folder: Path, group: int | None = None, days: int = 7300) -> bool:
     """kubemg's HTTPS certificate on loopback (KUBEMG_TLS_ENABLED=true; its setup refuses plain HTTP): a local CA
     that only Caddy trusts (ca.crt; its key ca.key, root only) and a certificate for 127.0.0.1 it issued
-    (ssl/tls.crt, ssl/tls.key readable by kubemg's group). Made once: returns whether it made them."""
+    (ssl/tls.crt, ssl/tls.key readable by kubemg's group). Made once: returns whether it made them. The modes and
+    owners are set on every call, whatever the umask (cz-firstboot's is 077, which left ssl/ 0700 and kubemg unable
+    to stat /etc/kubemg/ssl/tls.crt): a call heals a folder made with the wrong ones."""
     import datetime
     import ipaddress
     import os
@@ -190,9 +192,10 @@ def loopback_tls(folder: Path, group: int | None = None, days: int = 7300) -> bo
     ssl_dir = folder / "ssl"
     files = (folder / "ca.crt", folder / "ca.key", ssl_dir / "tls.crt", ssl_dir / "tls.key")
     if all(f.is_file() and f.stat().st_size for f in files):
+        _loopback_tls_modes(folder, group)
         return False
-    folder.mkdir(mode=0o755, parents=True, exist_ok=True)
-    ssl_dir.mkdir(mode=0o750, exist_ok=True)
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    ssl_dir.mkdir(mode=0o700, exist_ok=True)
     now = datetime.datetime.now(datetime.timezone.utc)
     until = now + datetime.timedelta(days=days)
     ca_key, key = ec.generate_private_key(ec.SECP256R1()), ec.generate_private_key(ec.SECP256R1())
@@ -211,24 +214,37 @@ def loopback_tls(folder: Path, group: int | None = None, days: int = 7300) -> bo
             .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
             .sign(ca_key, hashes.SHA256()))
 
-    def write(path: Path, data: bytes, mode: int, gid: int | None = None) -> None:
+    def write(path: Path, data: bytes) -> None:
         path.unlink(missing_ok=True)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
-        if gid is not None:
-            os.chown(path, -1, gid)
-        os.chmod(path, mode)
 
     pem = serialization.Encoding.PEM
     raw = dict(encoding=pem, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption())
-    write(folder / "ca.key", ca_key.private_bytes(**raw), 0o400)
-    write(folder / "ca.crt", ca.public_bytes(pem), 0o644)
-    write(ssl_dir / "tls.crt", cert.public_bytes(pem), 0o644)
-    write(ssl_dir / "tls.key", key.private_bytes(**raw), 0o440 if group is not None else 0o400, group)
+    write(folder / "ca.key", ca_key.private_bytes(**raw))
+    write(folder / "ca.crt", ca.public_bytes(pem))
+    write(ssl_dir / "tls.crt", cert.public_bytes(pem))
+    write(ssl_dir / "tls.key", key.private_bytes(**raw))
+    _loopback_tls_modes(folder, group)
+    return True
+
+
+def _loopback_tls_modes(folder: Path, group: int | None) -> None:
+    """The modes of loopback_tls's files, set explicitly (mkdir and open modes are cut by the umask). The folder and
+    the CA's key are root's; ssl/ (bind-mounted as kubemg's /etc/kubemg/ssl) and its key are open to kubemg's group
+    only, its certificate to all."""
+    import os
+    ssl_dir = folder / "ssl"
+    os.chmod(folder, 0o700)
+    os.chmod(folder / "ca.key", 0o400)
+    os.chmod(folder / "ca.crt", 0o644)
     if group is not None:
         os.chown(ssl_dir, -1, group)
-    return True
+        os.chown(ssl_dir / "tls.key", -1, group)
+    os.chmod(ssl_dir, 0o750 if group is not None else 0o700)
+    os.chmod(ssl_dir / "tls.crt", 0o644)
+    os.chmod(ssl_dir / "tls.key", 0o440 if group is not None else 0o400)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -244,7 +260,7 @@ def main(argv: list[str] | None = None) -> int:
         if not a.dir:
             p.error("loopback-tls needs --dir")
         if loopback_tls(Path(a.dir), a.group):
-            print(f"kubemg: made its loopback certificate in {a.dir}")
+            print(f"kubemg: made its loopback certificate in {a.dir}")  # else: its modes set again
         return 0
     if not a.host or not a.password_file:
         p.error("sandbox needs --host and --password-file")
