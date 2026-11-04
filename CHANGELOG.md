@@ -6,7 +6,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.9.2 (2026-11-04)
 
 - An application can get an **output repository of its own**: **Admin → Applications** → the application →
   **Output repository** (administrators): a repository with a write token, a branch and a folder (`deploy` by
