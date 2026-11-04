@@ -82,7 +82,7 @@ def handler_site(root, handler_type):
 def test_nancy_aspnet_host_without_global_asax_is_web(tmp_path):
     handler_site(tmp_path, "Nancy.Hosting.Aspnet.NancyHttpRequestHandler")
     assert role_of(tmp_path, "Site") == "web"
-    assert rating(tmp_path) == "C"
+    assert rating(tmp_path) == "D"
 
 
 def test_builtin_catch_all_handler_does_not_make_a_web_app(tmp_path):

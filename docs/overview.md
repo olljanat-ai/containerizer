@@ -57,8 +57,11 @@ explains how the assessment works and what it generates. To install and use it, 
 6. **Confidence**: packages and references unknown to `rules/packages*.yaml`, and uncertain rules,
    lower a component's confidence. Low confidence triggers verification and, optionally, Claude.
 7. **Rating** per application: **A** container-ready (built on a modern stack and libraries, runs in
-   containers with configuration only, no code changes), **B** minor refactoring, **C** major refactoring
-   (framework port), **D** partial (some components must stay on Windows), **E** not feasible.
+   containers with configuration only, no code changes), **B** minor refactoring, **C** partial (some
+   components must stay on Windows; the rest need at most minor changes, so that part can run in Linux
+   containers now), **D** major refactoring (a framework port is needed, also when other components must
+   stay on Windows), **E** not feasible (no server component, or three quarters or more of them must stay
+   on Windows).
    **A** also requires every server component to be **stateless**: persistent data may live in
    services that are available as managed cloud services (SQL Server, PostgreSQL, MySQL, MongoDB,
    Redis, blob storage, queues), but not on the component's own disk or in its process memory. Rules

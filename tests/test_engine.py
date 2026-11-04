@@ -76,7 +76,7 @@ def test_netfx_webforms_needs_port(tmp_path):
     a = assess(tmp_path)
     assert a.components[0].role == "web"
     assert a.components[0].verdict == "rewrite"
-    assert a.rating == "C"
+    assert a.rating == "D"
 
 
 def test_windows_paths_and_file_logs_are_repointed(tmp_path):

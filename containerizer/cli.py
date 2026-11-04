@@ -673,7 +673,7 @@ def main(argv=None) -> int:
     s.add_argument("--fail-on", default="rewrite", choices=["none", "config", "refactor", "rewrite", "blocker"],
                    help="fail on new findings of this severity or worse (default: rewrite)")
     s.add_argument("--allow-rating-drop", action="store_true", help="do not fail when the rating gets worse")
-    s.add_argument("--max-rating", choices=list("ABCDE"), help="fail when an app is rated worse than this")
+    s.add_argument("--max-rating", choices=list("ABCDE"), help="fail when an app is rated worse than this (C: partial passes, a framework port fails; D: both pass)")
     s.add_argument("--markdown", help="write the PR comment / summary here")
     s.add_argument("--sarif", help="write SARIF 2.1.0 here")
     s.add_argument("--json", help="write snapshot and diff here")

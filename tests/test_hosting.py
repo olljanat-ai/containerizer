@@ -96,7 +96,7 @@ def test_cloud_services_worker_role(tmp_path):
     c = next(c for c in a.components if c.name == "Worker")
     assert c.role == "worker"
     assert "host-cloud-services-classic" in ids(c)
-    assert c.verdict == "rewrite" and a.rating == "C"
+    assert c.verdict == "rewrite" and a.rating == "D"
     assert "host-cloud-service-definition" in repo_ids(a)
 
 

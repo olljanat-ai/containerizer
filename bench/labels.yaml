@@ -1,14 +1,15 @@
 # Hand-made expectations for the onek8s/containerization-challenge scenarios,
 # written from each scenario's README and a read of its code (not from tool output).
 #
-# rating:      acceptable app ratings (A lift&shift, B minor refactor, C port,
-#              D partial - some components must stay on Windows, E not feasible)
+# rating:      acceptable app ratings (A lift&shift, B minor refactor, C partial - some components
+#              must stay on Windows, the rest need at most minor changes, D framework port - also
+#              when other components must stay on Windows, E not feasible)
 # blocked:     components that cannot run in a Linux container
 # not_blocked: components that can (possibly after a port)
 # note:        why
 apps:
   account-statements:
-    rating: [C]
+    rating: [D]
     not_blocked: [AccountStatements.Web, AccountStatements.Api, AccountStatements.Distribution]
     note: .NET Framework 4.8 MVC 5 / Web API 2 / Windows service with RDLC reports - a port, nothing impossible.
   b2b-integration:
@@ -16,25 +17,25 @@ apps:
     blocked: [VanArsdel.Integration.Orchestrations, VanArsdel.Integration.Maps, VanArsdel.Integration.Pipelines, VanArsdel.Integration.Schemas]
     note: The integration engine is BizTalk Server; only the surrounding portals/gateway could be ported.
   batch-release:
-    rating: [D]
+    rating: [C]
     blocked: [BatchRelease.SigningHost]
     not_blocked: [BatchRelease.Portal, BatchRelease.Api]
     note: Signing host relies on TPM keys, LogonUser, AuthZ and EFS; portal and API are plain .NET 8.
   broker-quotes:
-    rating: [D]
+    rating: [C]
     blocked: [Humongous.Quoting.Api, Humongous.PolicyService]
     not_blocked: [Humongous.Identity, Humongous.BrokerPortal, Humongous.Workbench, Humongous.Documents]
     note: Rating uses the VB6 RateCore COM component in a 32-bit process.
   city-permits:
-    rating: [D]
+    rating: [C]
     blocked: [CityPermits.MapService, CityPermits.MailIntake]
     not_blocked: [CityPermits.Citizen, CityPermits.Inspections, CityPermits.OpenData]
     note: Geomatix Pro map engine (Windows install, STA) and Windows.Media.Ocr; FileTable archive.
   clinic-scheduling:
-    rating: [C]
+    rating: [D]
     note: .NET 3.5-4.5 Web Forms, ASMX, WCF, WF3, LINQ to SQL - large port but no hard blocker.
   consumer-loans:
-    rating: [D]
+    rating: [C]
     blocked: [Lucerne.Lending.Api, Lucerne.Lending.BackOffice, Lucerne.Lending.Collections]
     not_blocked: [Lucerne.Lending.CustomerPortal, Lucerne.Lending.Documents, Lucerne.Lending.LoanTape]
     note: Core banking access through IBM i Access for Windows (cwbx COM, IBMDA400 OLE DB).
@@ -47,7 +48,7 @@ apps:
     not_blocked: [CreditDesk.Web, CreditDesk.CreditService]
     note: Letters are produced by automating Microsoft Word and printing; WCF net.tcp, MSMQ, MSDTC.
   customer-care:
-    rating: [C]
+    rating: [D]
     note: Web Forms + MVC 5, WCF, EF6 on .NET Framework 4.8.
   dealer-orders:
     rating: [D]
@@ -62,19 +63,19 @@ apps:
     rating: [A, B]
     not_blocked: [ExpenseClaims.Api, ExpenseClaims.Jobs, expenses-web]
   field-sales:
-    rating: [C]
+    rating: [D]
     not_blocked: [FieldSales.Api, FieldSales.Backoffice]
     note: WPF ClickOnce client stays on laptops; server side is Web API 2 / MVC 5.
   field-service:
     rating: [A, B]
     not_blocked: [FieldService.Web, FieldService.Worker]
   freight-rates:
-    rating: [D]
+    rating: [C]
     blocked: [FreightRates.RatingHost]
     not_blocked: [FreightRates.Api, FreightRates.Admin]
     note: Meridian RateEngine is a 32-bit Windows DLL.
   furnace-records:
-    rating: [D]
+    rating: [C]
     blocked: [FurnaceRecords.Daq]
     not_blocked: [FurnaceRecords.Portal, FurnaceRecords.Api, FurnaceRecords.Worker]
     note: Thermocouple boards (COM SDK) and OPC DA over DCOM.
@@ -85,17 +86,17 @@ apps:
     rating: [E]
     note: Desktop app printing to a local label printer.
   meter-billing:
-    rating: [C]
+    rating: [D]
     not_blocked: [MeterBilling.Lookup]
   order-hub:
-    rating: [C]
+    rating: [D]
     note: ASP.NET Core 2.1 on .NET Framework and Topshelf services.
   parts-catalog:
     rating: [B]
     not_blocked: [PartsCatalog]
     note: Ready to containerize, but it keeps its catalog in a local SQLite file (App_Data/catalog.db), so it is not stateless and needs a volume and a single replica.
   policy-changes:
-    rating: [D]
+    rating: [C]
     blocked: [PolicyChanges.DeskRunner]
     not_blocked: [PolicyChanges.Portal, PolicyChanges.Api]
     note: Desk runner drives the PolicyDesk desktop client through user32 screen automation.
@@ -106,9 +107,9 @@ apps:
     blocked: [Lucerne.ProjectSites.Farm, Lucerne.ProjectSites.Claims]
     note: SharePoint 2016 farm solution; provider-hosted add-in and sync service can be ported.
   property-inspections:
-    rating: [C]
+    rating: [D]
   purchase-requests:
-    rating: [C]
+    rating: [D]
   retail-backoffice:
     rating: [A, B]
   shift-clock:
@@ -120,12 +121,12 @@ apps:
     not_blocked: [StaffOnboarding.Portal]
     note: WF4 workflow services; provisioning uses AD/DFS/NTFS Win32 APIs.
   study-data:
-    rating: [E, D]
+    rating: [E, C]
     blocked: [StudyData.Edc.Web, StudyData.Jobs, StudyData.Monitor.Api]
     not_blocked: [StudyData.Sponsor.Api]
     note: Excel automation for calculations, WPF/XPS rendering, Coderis COM coding engine.
   supplier-invoices:
-    rating: [C]
+    rating: [D]
     not_blocked: [Invoices.Admin]
     note: MSMQ, WCF net.tcp and .NET Framework services.
   trade-rebates:

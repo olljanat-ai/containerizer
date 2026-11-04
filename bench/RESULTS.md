@@ -7,7 +7,7 @@ Run with `python -m containerizer bench [--technique T --model M]`.
 
 | Technique | Model | Rating accuracy | Easy/hard split | Blocker precision | Blocker recall | Feasible components | Claude calls | Cost (USD) | Time (s) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| **rules** | none | **1.00** | 0.97 | 1.00 | 1.00 | 1.00 | 0 | **0** | **32** |
+| **rules** | none | **1.00** | 1.00 | 1.00 | 1.00 | 1.00 | 0 | **0** | **32** |
 | hybrid | claude-haiku-5-5 | 1.00 | 0.97 | 1.00 | 1.00 | 1.00 | 11 | 0.11 | 267 |
 | hybrid | claude-sonnet-5-5 | 1.00 | 0.97 | 1.00 | 1.00 | 1.00 | 11 | 1.00 | 139 |
 | hybrid | claude-opus-5-5 | 1.00 | 0.97 | 1.00 | 1.00 | 1.00 | 10 | 1.91 | 204 |
@@ -26,16 +26,21 @@ cache: its cost and time are understated, and one app got no rating.
 
 Notes:
 
+- Ratings C and D swapped meaning (C is now partial, D a framework port; see the CHANGELOG): the
+  labels were rewritten for the new scale and the **rules** row was scored again on it. The LLM rows
+  were measured on the old scale (C framework port, D partial) and have not been run again.
 - *Rating accuracy* counts a rating as right when it is one of the labelled ratings (some apps are
-  honestly C-or-D). *Easy/hard split* is whether the app lands in A–C versus D–E; the one miss is
-  an app labelled C/D that both rules and Claude rate C.
+  honestly C-or-D). *Easy/hard split* is whether the app lands in A–C (runs in Linux, fully or in
+  part, after at most minor changes) versus D–E (needs a framework port, or not feasible). On the old
+  scale the one miss was an app labelled C/D (`staff-onboarding`) that both rules and Claude rated a
+  port; a port is D now, so the rules no longer miss it.
 - The rules-only score was 0.97 until command-aware reachability was added: in `document-control`,
   the Indexer's proprietary `dtzip.dll` is used only by the optional `--import-doctrack` command.
   Hybrid mode with Haiku already caught that. The rule engine now catches it on its own, without Claude.
 - Hybrid mode asks Claude only about the 11 components whose confidence is low (unknown packages,
   uncertain rules). It costs less than any whole-app AI technique and is never worse than rules.
 - AI-only (Claude sees the project inventory and README, but no rules) is the weakest at every
-  model size. The larger models are more *optimistic*: Opus and Fable rate `consumer-loans` B or C
+  model size. The larger models are more *optimistic*: Opus and Fable rate `consumer-loans` B or a port (C on the old scale)
   and miss its three blocked components (the README and inventory look modern; the blockers sit in
   the code). Showing Claude the rule verdicts (ai+rules) helps Sonnet but not Opus or Fable, which
   overrule correct rule verdicts.

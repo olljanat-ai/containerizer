@@ -264,8 +264,8 @@ MERGE [${schema}].Rating AS t
 USING (VALUES
     ('A', N'Container-ready', N'Modern stack, containers with configuration only, no code changes', 1),
     ('B', N'Minor refactoring', N'Small code changes', 2),
-    ('C', N'Major refactoring', N'Framework port needed', 3),
-    ('D', N'Partial', N'Some components must stay on Windows', 4),
+    ('C', N'Partial', N'Some components must stay on Windows, the rest need at most minor changes', 3),
+    ('D', N'Major refactoring', N'Framework port needed', 4),
     ('E', N'Not feasible', N'Core depends on Windows-only technology', 5)
 ) AS s (Rating, Title, Description, SortOrder)
 ON t.Rating = s.Rating
@@ -2429,4 +2429,57 @@ GO
 GRANT SELECT ON [${schema}].vSandboxDeploy TO [${schema}_reader];
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 39) INSERT [${schema}].SchemaVersion (Version) VALUES (39);
+GO
+-- 40: ratings C and D swap meaning: C is now Partial (some components must stay on Windows, the rest need at most minor
+-- changes) and D Major refactoring (a framework port is needed, also when other components must stay on Windows), as
+-- the partial application can run its Linux part now. The Rating titles change with the MERGE above; this rewrites,
+-- once, every stored rating so history keeps its meaning. An assessment rated D (partial) stays D when its stored
+-- report has a server component that needs a port (verdict rewrite), else becomes C; C (framework port) becomes D.
+-- The other copies of a rating (OrgRepository.LastRating, the ratings inside LlmJob and LastDetail JSON written by
+-- json.dumps) swap C and D. One transaction with SchemaVersion 40, so it never runs twice.
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 40)
+BEGIN
+BEGIN TRY
+    BEGIN TRANSACTION;
+    UPDATE x SET Rating = n.Rating,
+           ReportJson = CASE WHEN ISJSON(x.ReportJson) = 1
+                             THEN JSON_MODIFY(JSON_MODIFY(x.ReportJson, '$$.rating', n.Rating), '$$.rating_text',
+                                  CASE n.Rating WHEN 'C' THEN N'Partial - some components must stay on Windows, the rest need at most minor changes'
+                                                ELSE N'Major refactoring - framework port needed' END)
+                             ELSE x.ReportJson END
+    FROM [${schema}].ApplicationAssessment x
+    CROSS APPLY (SELECT CASE WHEN x.Rating = 'C' THEN 'D'
+                             WHEN ISJSON(x.ReportJson) = 1 AND EXISTS (
+                                  SELECT 1 FROM OPENJSON(x.ReportJson, '$$.components')
+                                  WITH (tier nvarchar(20) '$$.tier', verdict nvarchar(20) '$$.verdict') c
+                                  WHERE c.tier IN (N'server', N'platform') AND c.verdict = N'rewrite') THEN 'D'
+                             ELSE 'C' END AS Rating) n
+    WHERE x.Rating IN ('C', 'D');
+    UPDATE [${schema}].OrgRepository
+    SET LastRating = CASE LastRating WHEN 'C' THEN 'D' WHEN 'D' THEN 'C' END
+    WHERE LastRating IN ('C', 'D');
+    UPDATE [${schema}].OrgRepository
+    SET LastDetail = REPLACE(REPLACE(REPLACE(LastDetail, N'"rating": "C"', N'"rating": "~"'),
+                                     N'"rating": "D"', N'"rating": "C"'), N'"rating": "~"', N'"rating": "D"')
+    WHERE LastDetail LIKE N'%"rating": "[CD]"%';
+    UPDATE [${schema}].LlmJob
+    SET Payload = REPLACE(REPLACE(REPLACE(Payload, N'"rating": "C"', N'"rating": "~"'),
+                                  N'"rating": "D"', N'"rating": "C"'), N'"rating": "~"', N'"rating": "D"')
+    WHERE Kind = N'refactor' AND Payload LIKE N'%"rating": "[CD]"%';
+    UPDATE [${schema}].LlmJob
+    SET Result = REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(Result,
+                     N'"rating": "C"', N'"rating": "~"'), N'"rating": "D"', N'"rating": "C"'), N'"rating": "~"', N'"rating": "D"'),
+                     N'"rating_before": "C"', N'"rating_before": "~"'), N'"rating_before": "D"', N'"rating_before": "C"'),
+                     N'"rating_before": "~"', N'"rating_before": "D"'),
+                     N'"rating_after": "C"', N'"rating_after": "~"'), N'"rating_after": "D"', N'"rating_after": "C"'),
+                     N'"rating_after": "~"', N'"rating_after": "D"')
+    WHERE Kind = N'refactor' AND Result LIKE N'%"rating%": "[CD]"%';
+    INSERT [${schema}].SchemaVersion (Version) VALUES (40);
+    COMMIT;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK;
+    THROW;
+END CATCH;
+END;
 GO

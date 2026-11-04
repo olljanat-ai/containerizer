@@ -30,7 +30,9 @@ inputs:
     description: Do not fail when the app's rating (A-E) gets worse.
     default: "false"
   max-rating:
-    description: Fail when any app is rated worse than this (A-E), whatever the base branch says.
+    description: >-
+      Fail when any app is rated worse than this (A-E), whatever the base branch says. C lets partial
+      applications pass (some components stay on Windows) but not framework ports; D lets both pass.
     default: ""
   comment:
     description: Post (and keep updating) one comment on the pull request.
