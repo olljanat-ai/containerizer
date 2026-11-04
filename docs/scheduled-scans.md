@@ -258,8 +258,14 @@ sandbox/
 
 The project folder is the Azure DevOps project, `_` for GitHub (no projects), or the GitLab subgroup
 path with `--` for `/`. The **app name** (Kubernetes namespace and image path) is
-`<project>-<repository>` in DNS form, prefixed with `app-` when it would be a system namespace, shortened
+`<project>-<repository>` in DNS form, prefixed with `app-` when it would be a reserved namespace, shortened
 with a hash past 63 characters, and given a hash suffix when two repositories would map to the same name.
+Reserved are the cluster's, the platform's and Containerizer's own namespaces: `default`, `kube-*`,
+`openshift*`, `flux-system`, `external-secrets`, `containerizer-*`, `cert-manager` and other common add-ons
+(`generate.RESERVED_NAMESPACES`). So a repository called `kube-system` or `external-secrets` (a fork of
+External Secrets Operator, say) is deployed as `app-kube-system` / `app-external-secrets`, never into the real one;
+the same goes for a folder of a split repository (`flux` + `system`) and for `containerizer generate`. The
+sandbox never deploys an app folder that names a reserved namespace, whatever made it.
 
 ## The sandbox cluster
 

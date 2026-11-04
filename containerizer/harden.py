@@ -517,8 +517,8 @@ def harden_gitops(docs: dict[str, list[dict]], a=None) -> dict[str, list[dict]]:
       and are dropped from the synced set.
     - Secrets come from the external store, so the secret CRD is the only Secret source allowed.
     """
-    from .generate import k8s_name
-    ns = k8s_name(a.name) if a is not None else None
+    from .generate import k8s_name, app_ns
+    ns = app_ns(a.name) if a is not None else None
     policies = copy.deepcopy(_NS_POLICIES.get(ns) or namespace_policies([]))
     for p in policies:
         p.setdefault("metadata", {})["namespace"] = ns

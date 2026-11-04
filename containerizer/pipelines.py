@@ -186,7 +186,7 @@ def spec(a, out: Path, registry: str = "registry.local", branch: str | None = No
          repository_url: str | None = None) -> dict | None:
     """What the build pipeline of a generated application is made of (None: no Linux image to build).
     Reads the Dockerfiles generate_app wrote to `out/<component>/`."""
-    from .generate import buildable, k8s_name
+    from .generate import buildable, k8s_name, app_ns
     from .harden import security
     app_root = Path(a.repo.root).resolve()
     top = _git(app_root, "rev-parse", "--show-toplevel")
@@ -222,7 +222,7 @@ def spec(a, out: Path, registry: str = "registry.local", branch: str | None = No
     targets = [pre + f"{folder}/{c['folder']}/{n}" for c in comps for n in ("Dockerfile", "Dockerfile.dockerignore")]
     targets += [pre + f"{folder}/README.md", ".github/workflows/containerizer-images.yml",
                 "containerizer.gitlab-ci.yml", "azure-pipelines.containerizer.yml"]
-    return {"version": SPEC_VERSION, "app": a.name, "namespace": k8s_name(a.name),
+    return {"version": SPEC_VERSION, "app": a.name, "namespace": app_ns(a.name),
             "registry": "" if _sandbox_only(registry) else registry.rstrip("/"),
             "subdir": subdir, "folder": folder, "branch": branch, "repository_url": repository_url,
             "detected": detect_provider(repository_url),

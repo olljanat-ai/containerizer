@@ -56,6 +56,13 @@ RESERVED_NS = frozenset({LAB_NS, "containerizer-secrets", "kube-system", "kube-p
 NS_RE = re.compile(r"[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?")
 
 
+def reserved(ns: str) -> bool:
+    """A namespace that may never ask for lab credentials: these, and every namespace no application may have
+    (generate.reserved_namespace: the cluster's, the platform's, Containerizer's own)."""
+    from .generate import reserved_namespace
+    return ns in RESERVED_NS or reserved_namespace(ns)
+
+
 @dataclass(frozen=True)
 class Service:
     id: str
@@ -193,7 +200,7 @@ def db_name(ns: str) -> str:
 
 
 def check_namespace(ns: str) -> None:
-    if not NS_RE.fullmatch(ns or "") or ns in RESERVED_NS:
+    if not NS_RE.fullmatch(ns or "") or reserved(ns):
         raise LabError(f"namespace {ns!r} cannot use lab services")
 
 

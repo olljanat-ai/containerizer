@@ -609,7 +609,7 @@ def _apply_os_patch(dockerfile: str, comp: dict) -> str:
 def _build_with_retries(a, cdir: Path, tag: str, comp: dict, pin: bool, post) -> tuple[bool, str]:
     """Build; when the build fails in a way the verification failure rules know how to fix
     (rules/50-failures.yaml, outcome retry), patch the build plan, regenerate and build again."""
-    from .generate import dockerfile_for, k8s_manifests, k8s_name, merge_plan, pin_digests, _yaml_docs
+    from .generate import dockerfile_for, k8s_manifests, k8s_name, app_ns, merge_plan, pin_digests, _yaml_docs
     from .verify import MAX_ATTEMPTS, _fmt, diagnose, load_failures
     comps = {k8s_name(c.name): c for c in a.components}
     c = comps.get(cdir.name)
@@ -649,7 +649,7 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
              tag: str = "latest", devdb=None, lab: set | None = None,
              lab_report: dict | None = None, approved_egress: list[dict] | None = None, links: tuple | None = None,
              ci_provider: str | None = None) -> dict:
-    from .generate import generate_app, k8s_name
+    from .generate import generate_app, k8s_name, app_ns
 
     age = lock_age_days()
     if refresh and scan and age is not None and age > security()["images"].get("lock_max_age_days", 14):
@@ -689,7 +689,7 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
                 bev["passed"] = not bev["blocking"] and not bres.error
             comp["scans"].append(_scan_entry(bres, bev, "base"))
             if build:
-                tag = f"containerizer/{k8s_name(a.name)}-{cdir.name}:gate"
+                tag = f"containerizer/{app_ns(a.name)}-{cdir.name}:gate"
                 ok, log = _build_with_retries(a, cdir, tag, comp, pin, lambda d: _apply_os_patch(d, comp))
                 if not ok:
                     comp["build_error"] = log[-800:]

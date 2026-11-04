@@ -11,6 +11,14 @@ qcow2 and VHDX images as release assets.
 - An application's results page links to its admin pages for those who may open them (Admin: Application settings for
   administrators and the product's owners, Dev databases and Refactoring orders for administrators and operators),
   and Admin → Applications links each application to its results page.
+- Security: no application gets a namespace of the cluster, the platform or Containerizer itself. Only `default`,
+  `kube-*`, `openshift*` and a few add-ons were reserved, so a scanned repository called `external-secrets` (a fork of
+  External Secrets Operator) or `containerizer-secrets` (or project `containerizer` + repository `secrets`, or a
+  split repository's folder) became that namespace: its Flux tenant got the `admin` role there, its default-deny
+  NetworkPolicies cut the operator off, and removing the application deleted the namespace. Such names now get
+  `app-` in front (`app-external-secrets`), for organization scans, split folders and `containerizer generate`
+  alike, and the sandbox leaves out any app folder that names a reserved namespace
+  ([app names](docs/scheduled-scans.md)).
 - The web UI says it is Containerizer: the front page has the logo and the name above its title, linking to
   [containerizer.eu](https://containerizer.eu), every page ends with a link to it, and browser tabs read
   "… · Containerizer". The front page asks "How ready are our applications to run in Linux containers?" (it had
