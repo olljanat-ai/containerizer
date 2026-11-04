@@ -1,12 +1,14 @@
 """Admin page of the LLM queue (llmqueue.py, docs/scheduled-scans.md#the-llm-queue): administrators and operators.
 
 - The queue: running and queued jobs of every kind in the order the runner takes them, with their estimated
-  tokens and time; Top, Up, Down, Bottom and Skip on each queued job, Cancel on each job being asked.
+  tokens and time; what each running job does now (asking an LLM, waiting for one, or its phase: building,
+  verifying, deploying); Top, Up, Down, Bottom and Skip on each queued job, Cancel on each running job.
 - Finished jobs: answers (with the reasoning), failures and skipped jobs; Requeue on failed and skipped ones.
 - Repositories whose reviews are all answered since their last scan: Re-scan now (a full scan of only that
   repository), so the answers apply without waiting for the schedule.
+- The LLMs in their order with the requests in progress on each.
 - The settings: paused, days and hours (UTC) the runner may work, only when the machine is idle, parallel
-  requests.
+  requests, jobs at once.
 
 Same conventions as admin.py: plain HTML forms with the session's CSRF token, no JavaScript, everything
 escaped, changes audited by triggers (cz.LlmJob, cz.LlmQueueSettings).
@@ -22,12 +24,14 @@ from .admin_scans import TIME_RE, _back, _nf
 from . import llmqueue as lq, restartplan
 
 BASE = "/admin/llm-queue"
-STATUS_TEXT = {"approval": "Waiting for approval", "queued": "Queued", "running": "Asking", "answered": "Answered", "failed": "Failed", "skipped": "Skipped"}
+STATUS_TEXT = {"approval": "Waiting for approval", "queued": "Queued", "running": "Running", "answered": "Answered", "failed": "Failed", "skipped": "Skipped"}
+# a running job's LLM call (cz.LlmJob.CallState, written by the runner): no call is "Running" with its phase
+CALL_TEXT = {"asking": "Asking", "waiting": "Waiting for an LLM"}
 STATUS_CSS = {"approval": "st-wait", "queued": "st-run", "running": "st-run", "answered": "st-ok", "failed": "st-bad", "skipped": "st-off"}
 JOB_COLS = ("JobId, Kind, Reason, Status, Priority, AdminRank, ScanId, RepositoryId, Repository, App, Component, ProjectPath, "
             "RuleVerdict, Confidence, Model, RequestedBy, InputChars, EstInputTokens, InputTokens, OutputTokens, Endpoint, "
             "Parallel, Summary, Error, Note, Attempts, NotBefore, QueuedAt, StartedAt, FinishedAt, Runner, Seconds, "
-            "CancelRequestedAt, CancelRequestedBy")
+            "CancelRequestedAt, CancelRequestedBy, CallState, CallLlm, CallSince")
 ORDER = "COALESCE(AdminRank, CAST(Priority AS float)) DESC, JobId"
 
 
@@ -74,6 +78,26 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict, flash:
 
 def chip(status: str) -> str:
     return f"<span class='st {STATUS_CSS.get(status, '')}'>{e(STATUS_TEXT.get(status, status))}</span>"
+
+
+def running_chip(r: dict) -> str:
+    """A running job: "Asking" only while one of its LLM calls is being answered, "Waiting for an LLM" while a call
+    waits for a free request, else "Running" (it prepares, builds, verifies or deploys)."""
+    state = r.get("CallState")
+    if state in CALL_TEXT:
+        return f"<span class='st {'st-run' if state == 'asking' else 'st-wait'}'>{e(CALL_TEXT[state])}</span>"
+    return chip("running")
+
+
+def doing(r: dict) -> str:
+    """What a running job does now, under its start time: the LLM it asks (and the progress it reports), or its phase."""
+    since = f" since {_d(r['CallSince'])}" if r.get("CallSince") else ""
+    phase = f" · {e(r['Summary'])}" if r.get("Summary") else ""
+    if r.get("CallState") == "asking":
+        return f"asking {e(r.get('CallLlm') or 'the LLM')}{since}{phase}"
+    if r.get("CallState") == "waiting":
+        return f"waiting for a free request of an LLM that takes its size{since}{phase}"
+    return e(r.get("Summary") or "working (no LLM call in progress)")
 
 
 def _n(x) -> str:
@@ -129,9 +153,22 @@ def _size(n) -> str:
     return "any size" if not n else f"{int(n):,} tokens"
 
 
-def lanes_html(ls: list[dict]) -> str:
-    """The LLMs in their order, and a warning when no LLM takes the biggest jobs."""
-    if len(ls) <= 1 and ls and not ls[0]["max_tokens"]:
+def calls_now(active: list[dict]) -> dict:
+    """The LLM requests in progress now by LLM (CallLlm: the label the runner gave it), and the calls waiting."""
+    out: dict = {}
+    for r in active:
+        if r.get("Status") == "running" and r.get("CallState") == "asking":
+            out[r.get("CallLlm") or ""] = out.get(r.get("CallLlm") or "", 0) + 1
+        elif r.get("Status") == "running" and r.get("CallState") == "waiting":
+            out[None] = out.get(None, 0) + 1
+    return out
+
+
+def lanes_html(ls: list[dict], calls: dict | None = None) -> str:
+    """The LLMs in their order with the requests in progress on each, and a warning when no LLM takes the biggest
+    jobs. `calls`: calls_now."""
+    calls = calls or {}
+    if not ls:
         return ""
     def link(ln):
         if ln["name"].startswith("llm-"):
@@ -141,15 +178,21 @@ def lanes_html(ls: list[dict]) -> str:
         return e(ln["label"])
     trs = "".join(f"<tr><td class='num'>{int(ln['order'])}</td><td>{link(ln)}</td>"
                   f"<td>{_size(ln['max_tokens'])}</td>"
-                  f"<td class='num'>{int(ln['parallel'])}</td></tr>" for ln in ls)
+                  f"<td class='num'>{int(ln['parallel'])}</td>"
+                  f"<td class='num'>{int(calls.get(ln.get('label') or ln['name'], 0))}</td></tr>" for ln in ls)
     warn = ""
     if ls and all(ln["max_tokens"] for ln in ls):
         warn = (f"<p class='note'>Jobs over {max(ln['max_tokens'] for ln in ls):,} estimated tokens wait: no LLM takes them. "
                 f"Set the last LLM in the order to any size (0).</p>")
-    return ("<h2>LLMs</h2><p class='muted small'>Each job goes to the first LLM in this order that takes its size and has a "
-            "free request; they answer at the same time. Registered LLMs are set under Admin → Source control & LLM, the "
-            "built-in LLM's place below.</p><table><thead><tr><th class='num'>Order</th><th>LLM</th><th>Jobs up to</th>"
-            f"<th class='num'>At once</th></tr></thead><tbody>{trs}</tbody></table>{warn}")
+    if calls.get(None):
+        n = int(calls[None])
+        warn += (f"<p class='muted small'>{n} LLM call{'s wait' if n != 1 else ' waits'} for a free request.</p>")
+    return ("<h2>LLMs</h2><p class='muted small'>Each LLM call of a job goes to the first LLM in this order that takes its "
+            "size and has a free request, and gives the request back as soon as it is answered: a job that builds, "
+            "verifies or deploys holds none. Calls that wait are answered in the queue's order. Registered LLMs are set "
+            "under Admin → Source control & LLM, the built-in LLM's place below.</p><table><thead><tr>"
+            "<th class='num'>Order</th><th>LLM</th><th>Calls up to</th><th class='num'>At once</th>"
+            f"<th class='num'>Asking now</th></tr></thead><tbody>{trs}</tbody></table>{warn}")
 
 
 def totals(active: list[dict], speed, settings: dict, now) -> dict:
@@ -179,7 +222,7 @@ def summary_html(t: dict, now) -> str:
         return "<div class='note'><b>Nothing is waiting.</b></div>"
     kinds = ", ".join(f"{n} {k.lower()}" for k, n in sorted(t["by"].items(), key=lambda kv: -kv[1]))
     lines = [f"<b>{t['waiting']} job{'s' if t['waiting'] != 1 else ''} waiting</b>" + (f" ({e(kinds)})" if kinds else "")
-             + (f" · {t['running']} being asked now" if t["running"] else ""),
+             + (f" · {t['running']} running now" if t["running"] else ""),
              f"~{_n(t['in'])} tokens in, ~{_n(t['out'])} tokens out"]
     if t["seconds"] is None:
         lines.append("Time: learning (estimated once the runner has answered on this LLM)")
@@ -268,6 +311,8 @@ def show(adm, conn, s, a, q: dict, flash: str) -> Response:
     now = lq.utcnow()
     ok, why = lq.gate(settings, now, lq.scans_running(conn), lq.load_per_cpu(), restartplan.holding())
     state = "<span class='st st-ok'>Open</span>" if ok else f"<span class='st st-off'>Waiting</span> {e(why)}"
+    room = lq.jobs_at_once(stored, ls)
+    state += f" · {room} job{'s' if room != 1 else ''} at once" + ("" if int(stored.get("JobsAtOnce") or 0) else " (automatic)")
     waiting = sum(1 for r in active if r["Status"] == "approval")
     if waiting:
         state += f" · <span class='st st-wait'>{waiting} waiting for approval</span>"
@@ -284,8 +329,8 @@ def show(adm, conn, s, a, q: dict, flash: str) -> Response:
         near = active[i + 1] if i + 1 < len(active) else (active[i - 1] if i else None)
         gone_to = f"job-{int(near['JobId'])}" if near else "queue"
         est = speed.job(r)
-        when = (f"asking since {_d(r['StartedAt'])}" + (f" · {e(r['Runner'])}" if r.get("Runner") else "")) \
-            if r["Status"] == "running" else f"queued {_d(r['QueuedAt'])}"
+        when = (f"started {_d(r['StartedAt'])}" + (f" · {e(r['Runner'])}" if r.get("Runner") else "")
+                + f"<div>{doing(r)}</div>") if r["Status"] == "running" else f"queued {_d(r['QueuedAt'])}"
         if r.get("NotBefore") and r["Status"] == "queued":
             when += f" · next try after {_d(r['NotBefore'])}"
         moved = " <span class='muted small'>(moved)</span>" if r.get("AdminRank") is not None and \
@@ -297,15 +342,16 @@ def show(adm, conn, s, a, q: dict, flash: str) -> Response:
             acts = (f"<span class='muted small'>cancelling: requested by {e(r.get('CancelRequestedBy') or '?')}</span>"
                     if r.get("CancelRequestedAt") else
                     f"<form method='post' action='{BASE}/{jid}/cancel' class='inline'>{adm._csrf(s)}{_at(f'job-{jid}')}"
-                    f"<button class='link' title='Stop asking the LLM for this job: its LLM calls stop at once, and it "
-                    f"is recorded as skipped (Requeue starts it again)'>Cancel</button></form>")
+                    f"<button class='link' title='Stop this job: its LLM calls stop at once, and its build, sandbox and "
+                    f"next order do not start; it is recorded as skipped (Requeue starts it again)'>Cancel</button></form>")
         if r["Status"] == "approval":
             acts = (f"<form method='post' action='{BASE}/{jid}/approve' class='inline'>{adm._csrf(s)}{_at(f'job-{jid}')}"
                     f"<button>Approve</button></form> <form method='post' action='{BASE}/{jid}/reject' "
                     f"class='inline'>{adm._csrf(s)}{_at(gone_to)}<button class='secondary'>Reject</button></form>") \
                 if a.admin else "<span class='muted small'>an administrator approves it</span>"
         err = f"<div class='muted small'>last try: {e(r['Error'])}</div>" if r.get("Error") else ""
-        rows.append(f"<tr id='job-{jid}'><td class='num'>{i + 1}</td><td>{chip(r['Status'])}</td><td>{what(r)}{err}</td>"
+        status = running_chip(r) if r["Status"] == "running" else chip(r["Status"])
+        rows.append(f"<tr id='job-{jid}'><td class='num'>{i + 1}</td><td>{status}</td><td>{what(r)}{err}</td>"
                     f"<td class='num'>{int(r['Priority'])}{moved}</td><td class='small'>{estimate(est)}</td>"
                     f"<td class='small'>{when}<div class='muted'>{e(r.get('RequestedBy') or '')}</div></td>"
                     f"<td class='nowrap'>{acts}</td></tr>")
@@ -330,12 +376,14 @@ def show(adm, conn, s, a, q: dict, flash: str) -> Response:
                      for k, t in (("", "All kinds"), *((k, v.title) for k, v in lq.JOB_KINDS.items())))
     body = (f"<p class='muted'>LLM jobs that do not hold up the scans. Scans set to <b>queued</b> LLM reviews (Organization "
             f"scans → LLM reviews) put the component reviews here: uncertain components first, then a second opinion on "
-            f"blockers and rewrites. The queue runner (<code>containerizer llm-queue</code>) asks them one after another "
-            f"when the settings below allow it. An answer shows here at once and is used by the next scan of its "
+            f"blockers and rewrites. The queue runner (<code>containerizer llm-queue</code>) works on the jobs at once set "
+            f"below, in this order, when the settings allow it; each LLM call takes a request of an LLM only while it is "
+            f"answered. An answer shows here at once and is used by the next scan of its "
             f"repository; <b>Re-scan now</b> scans it without waiting for the schedule. Assessments already stored do not "
             f"change.</p>"
             f"<div class='formrow'><span>{state}</span> · <span>{e(lq.settings_text(settings))}</span></div>"
-            f"{summary_html(totals(active, speed, settings, now), now)}{lanes_html(ls)}{heavy_html(adm, conn, s, a)}"
+            f"{summary_html(totals(active, speed, settings, now), now)}{lanes_html(ls, calls_now(active))}"
+            f"{heavy_html(adm, conn, s, a)}"
             f"<nav class='chips'>{chips}</nav>"
             f"<h2 id='queue'>Queue</h2><table><thead><tr><th class='num'>#</th><th>Status</th><th>Job</th><th class='num'>Priority</th>"
             f"<th>Estimate</th><th>Queued</th><th>Order</th></tr></thead>"
@@ -365,7 +413,10 @@ def show_job(adm, conn, s, a, ident: int, flash: str) -> Response:
     except ValueError:
         res = None
     est = lq.load_speed(conn).job(r)
-    meta = [("Kind", lq.kind_title(r["Kind"])), ("Status", STATUS_TEXT.get(r["Status"], r["Status"])),
+    status = STATUS_TEXT.get(r["Status"], r["Status"])
+    if r["Status"] == "running" and r.get("CallState") in CALL_TEXT:
+        status = CALL_TEXT[r["CallState"]] + (f" {r['CallLlm']}" if r.get("CallState") == "asking" and r.get("CallLlm") else "")
+    meta = [("Kind", lq.kind_title(r["Kind"])), ("Status", status),
             ("Why queued", lq.REASON_TEXT.get(r.get("Reason"), r.get("Reason"))), ("Repository", r.get("Repository")),
             ("Component", r.get("Component")), ("Project", r.get("ProjectPath")),
             ("Rules", f"{r['RuleVerdict']} (confidence {float(r['Confidence']):.2f})" if r.get("RuleVerdict") else None),
@@ -436,7 +487,7 @@ def skip(conn, ident: int) -> Response:
 
 
 def cancel(conn, ident: int, user: str) -> Response:
-    """Cancel a job being asked: the runner holding it sees the request within seconds (Runner.check_cancel), stops
+    """Cancel a running job: the runner holding it sees the request within seconds (Runner.check_cancel), stops
     its LLM calls and the rest of its work (a refactoring's build, sandbox and next order) and records it as skipped."""
     cur = conn.cursor()
     cur.execute("UPDATE cz.LlmJob SET CancelRequestedAt = SYSUTCDATETIME(), CancelRequestedBy = %s "
@@ -444,7 +495,7 @@ def cancel(conn, ident: int, user: str) -> Response:
     n = cur.rowcount
     conn.commit()
     return _back(BASE, f"Job #{ident}: cancelling. Its LLM calls stop within a few seconds." if n else
-                 f"Job #{ident} is not being asked (use Skip for a queued job).")
+                 f"Job #{ident} is not running (use Skip for a queued job).")
 
 
 def approve(conn, ident: int, user: str) -> Response:
@@ -546,11 +597,16 @@ value='{float(v['MaxLoadPerCpu'] or 0):.2f}'>
 no LLM is registered, which always gets at least one per server, one per NUMA node; a registered LLM has its own
 setting under Admin → Source control & LLM)</span></label><input id='Parallel' name='Parallel' type='number' min='1'
 max='16' value='{int(v['Parallel'] or 1)}'>
+<label for='JobsAtOnce'>Jobs at once <span class='muted'>(how many jobs the runner works on at the same time,
+whether they ask an LLM, wait for one, or build, verify and deploy; an LLM call takes a request of an LLM only while
+it is answered. Builds take CPU and memory, as does the built-in LLM. 0: automatic, every LLM request at once plus
+one)</span></label><input id='JobsAtOnce' name='JobsAtOnce' type='number' min='0' max='{lq.JOBS_AT_ONCE_MAX}'
+value='{int(v.get('JobsAtOnce') or 0)}'>
 <label for='LocalOrder'>Built-in LLM beside the registered LLMs: its order <span class='muted'>(the appliance only;
 empty: only when no LLM is registered)</span></label><input id='LocalOrder' name='LocalOrder' type='number' min='0'
 max='1000' value='{"" if v.get('LocalOrder') is None else int(v['LocalOrder'])}'>
-<label for='LocalMaxTokens'>Built-in LLM: jobs up to <span class='muted'>(estimated input tokens, when beside the
-registered LLMs; bigger jobs go to the next LLM in the order; 0: any size)</span></label><input id='LocalMaxTokens'
+<label for='LocalMaxTokens'>Built-in LLM: calls up to <span class='muted'>(estimated input tokens of one LLM call,
+when beside the registered LLMs; bigger calls go to the next LLM in the order; 0: any size)</span></label><input id='LocalMaxTokens'
 name='LocalMaxTokens' type='number' min='0' max='10000000' value='{int(v.get('LocalMaxTokens') or 0)}'>
 <h3>Approval</h3>
 <p class='note'>{e(approval_text(v) + reject_text(v))}</p>
@@ -629,14 +685,20 @@ def validate_settings(form: dict) -> tuple[dict, list[str]]:
     v["LocalOrder"] = int(o) if o else None
     t = form.get("LocalMaxTokens", ["0"])[0].strip() or "0"
     if not re.fullmatch(r"\d{1,8}", t) or int(t) > 10_000_000:
-        errors.append("Built-in LLM jobs up to: a number of tokens, 0 to 10,000,000")
+        errors.append("Built-in LLM calls up to: a number of tokens, 0 to 10,000,000")
         t = "0"
     v["LocalMaxTokens"] = int(t)
+    j = form.get("JobsAtOnce", ["0"])[0].strip() or "0"
+    if not re.fullmatch(r"\d{1,2}", j) or int(j) > lq.JOBS_AT_ONCE_MAX:
+        errors.append(f"Jobs at once: 0 (automatic) to {lq.JOBS_AT_ONCE_MAX}")
+        j = "0"
+    v["JobsAtOnce"] = int(j)
     return v, errors
 
 
 SETTING_COLS = ("Paused", "WindowDays", "WindowStart", "WindowEnd", "OnlyWhenIdle", "MaxLoadPerCpu", "Parallel",
-                "ApproveKinds", "ApproveMinTokens", "ApproveMaxQueued", "RejectAfterHours", "LocalOrder", "LocalMaxTokens")
+                "ApproveKinds", "ApproveMinTokens", "ApproveMaxQueued", "RejectAfterHours", "LocalOrder", "LocalMaxTokens",
+                "JobsAtOnce")
 
 
 def save_settings(conn, form: dict) -> Response:

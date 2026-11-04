@@ -371,12 +371,15 @@ def test_settings_validation():
                                                   "OnlyWhenIdle": ["1"], "MaxLoadPerCpu": ["0.75"], "Parallel": ["2"]})
     assert errors == [] and v == {"Paused": False, "OnlyWhenIdle": True, "WindowDays": 1 | 16, "WindowStart": 1320,
                                   "WindowEnd": 360, "MaxLoadPerCpu": 0.75, "Parallel": 2, "ApproveKinds": None, "ApproveMinTokens": 0,
-                                  "ApproveMaxQueued": 0, "RejectAfterHours": 0, "LocalOrder": None, "LocalMaxTokens": 0}
+                                  "ApproveMaxQueued": 0, "RejectAfterHours": 0, "LocalOrder": None, "LocalMaxTokens": 0,
+                                  "JobsAtOnce": 0}
     v, errors = admin_llmqueue.validate_settings({"From": [""], "To": [""]})
     assert errors == [] and v["WindowStart"] is None and v["WindowEnd"] is None and v["Parallel"] == 1
+    assert admin_llmqueue.validate_settings({"JobsAtOnce": ["4"]})[0]["JobsAtOnce"] == 4
     for bad, msg in (({"From": ["22:00"]}, "both"), ({"From": ["25:00"], "To": ["01:00"]}, "HH:MM"),
                      ({"From": ["08:00"], "To": ["08:00"]}, "same"), ({"Parallel": ["0"]}, "1 to 16"),
-                     ({"MaxLoadPerCpu": ["x"]}, "0 to 16")):
+                     ({"MaxLoadPerCpu": ["x"]}, "0 to 16"), ({"JobsAtOnce": ["33"]}, "Jobs at once: 0 (automatic) to 32"),
+                     ({"JobsAtOnce": ["-1"]}, "Jobs at once")):
         _, errors = admin_llmqueue.validate_settings(bad)
         assert any(msg in x for x in errors), (bad, errors)
 
@@ -445,7 +448,7 @@ def test_queue_totals_and_summary():
     assert t["done"] == now + __import__("datetime").timedelta(seconds=t["seconds"]) and t["next_open"] == now
     assert t["basis"].startswith("learned from 1 answers on qwen3:32b")
     html = admin_llmqueue.summary_html(t, now)
-    assert "<b>3 jobs waiting</b> (2 uncertain, 1 second opinion) · 1 being asked now" in html
+    assert "<b>3 jobs waiting</b> (2 uncertain, 1 second opinion) · 1 running now" in html
     assert "~6,000 tokens in, ~600 tokens out" in html and "<b>~3 min of LLM time</b> (3 in parallel)" in html
     assert "all done around 2026-11-02 12:03 UTC" in html and "not included" in html
     # nothing learned yet; the hours start in the evening
@@ -579,10 +582,11 @@ def test_admin_page_actions(adm):
     (sql, params), = adm.conn.sql(r"EXEC cz.QueueOrgScanRun")
     assert params[0] == 4 and json.loads(params[1]) == {"projects": [], "repositories": ["Billing/old"]}
     r = _post(adm, a, "/admin/llm-queue/settings", day=["5", "6"], From="22:00", To="06:00", OnlyWhenIdle="1",
-              MaxLoadPerCpu="0.5", Parallel="2")
+              MaxLoadPerCpu="0.5", Parallel="2", JobsAtOnce="4")
     assert "Saved" in dict(r.headers)["Location"]
     (sql, params), = adm.conn.sql(r"UPDATE cz.LlmQueueSettings")
-    assert params == (False, 96, 1320, 360, True, 0.5, 2, None, 0, 0, 0, None, 0)  # no approval
+    assert params == (False, 96, 1320, 360, True, 0.5, 2, None, 0, 0, 0, None, 0, 4)  # no approval; 4 jobs at once
+    assert "JobsAtOnce = %s" in sql
     r = _post(adm, a, "/admin/llm-queue/settings", From="22:00")
     assert "both" in dict(r.headers)["Location"] and len(adm.conn.sql(r"UPDATE cz.LlmQueueSettings")) == 1
     # the form needs the session's CSRF token
@@ -805,38 +809,375 @@ def test_lanes_follow_the_order_sizes_and_requests_at_once():
         "name": "environment", "label": "", "settings": None, "max_tokens": 0, "parallel": 2, "order": 0}
 
 
-def test_fill_gives_each_job_to_the_first_llm_that_takes_it(monkeypatch):
+def _fill_runner(monkeypatch, lanes, jobs, settings=None, conn=None):
+    """A runner whose fill sees `lanes` and claims `jobs` in their order (the size limit as cz.LlmJob's claim)."""
+    conn = conn or FakeConn()
+    r = lq.Runner(lambda: conn, name="r1", metrics=lq.QueueMetrics("r1"), log=lambda msg: None, load=lambda: 0.0)
+    monkeypatch.setattr(lq, "apply_rules", lambda conn: (0, 0))
+    monkeypatch.setattr(lq, "load_settings", lambda conn: dict(lq.DEFAULTS, OnlyWhenIdle=False, **(settings or {})))
+    monkeypatch.setattr(lq, "scans_running", lambda conn: 0)
+    monkeypatch.setattr(r, "lanes", lambda conn, settings: lanes)
+    monkeypatch.setattr(r, "_enter_llm", lambda conn: None)
+    r.limits = []
+
+    def claim(conn, max_tokens=None, min_tokens=None):
+        r.limits.append(max_tokens)
+        for j in jobs:
+            if max_tokens is None or int(j.get("EstInputTokens") or 0) <= max_tokens:
+                jobs.remove(j)
+                return dict(j)
+        return None
+    monkeypatch.setattr(r, "claim", claim)
+    return r
+
+
+def test_fill_starts_jobs_in_order_while_an_llm_takes_them_and_job_slots_are_free(monkeypatch):
     jobs = [{"JobId": 1, "Kind": "review", "EstInputTokens": 20000}, {"JobId": 2, "Kind": "review", "EstInputTokens": 3000},
             {"JobId": 3, "Kind": "review", "EstInputTokens": 9000}, {"JobId": 4, "Kind": "review", "EstInputTokens": 2000},
-            {"JobId": 5, "Kind": "review", "EstInputTokens": 50000}]
+            {"JobId": 5, "Kind": "review", "EstInputTokens": 50000}, {"JobId": 6, "Kind": "refactor", "EstInputTokens": 0},
+            {"JobId": 7, "Kind": "refactor", "EstInputTokens": 0}]
     lanes = [{"name": "built-in", "settings": BUILTIN, "max_tokens": 4000, "parallel": 1, "order": 10},
              {"name": "llm-2", "settings": {"CONTAINERIZER_MODEL": "small"}, "max_tokens": 15000, "parallel": 1, "order": 20},
              {"name": "llm-1", "settings": {"CONTAINERIZER_MODEL": "big"}, "max_tokens": 0, "parallel": 2, "order": 30}]
-    conn = FakeConn()
-    r = lq.Runner(lambda: conn, name="r1", metrics=lq.QueueMetrics("r1"), log=lambda msg: None, load=lambda: 0.0)
+    r = _fill_runner(monkeypatch, lanes, jobs)
     try:
-        monkeypatch.setattr(lq, "apply_rules", lambda conn: (0, 0))
-        monkeypatch.setattr(lq, "load_settings", lambda conn: dict(lq.DEFAULTS, OnlyWhenIdle=False))
-        monkeypatch.setattr(lq, "scans_running", lambda conn: 0)
-        monkeypatch.setattr(r, "lanes", lambda conn, settings: lanes)
-        monkeypatch.setattr(r, "_enter_llm", lambda conn: None)
-
-        def claim(conn, max_tokens=None, min_tokens=None):
-            for j in jobs:
-                if max_tokens is None or j["EstInputTokens"] <= max_tokens:
-                    jobs.remove(j)
-                    return dict(j)
-            return None
-        monkeypatch.setattr(r, "claim", claim)
         submitted = []
         pool = SimpleNamespace(submit=lambda fn, row: submitted.append(row) or row)
         r.fill(pool)
-        assert [(x["JobId"], x["_lane"]) for x in submitted] == [(2, "built-in"), (3, "llm-2"), (1, "llm-1"), (4, "llm-1")]
-        assert r.metrics.llm_jobs._values == {("built-in", "built-in"): 1, ("llm-2", "llm-2"): 1, ("llm-1", "llm-1"): 2}
-        assert [x["JobId"] for x in jobs] == [5]                       # every LLM is busy: the big one waits
-        assert submitted[0]["_llm"] is BUILTIN and submitted[2]["_parallel"] == 1 and submitted[3]["_parallel"] == 2
+        # 4 LLM requests at once: 5 jobs at once (automatic). Jobs in the queue's order, each with its own LLM (the
+        # first free one that takes its size); once every request is spoken for, only a job without LLM work starts
+        assert [(x["JobId"], x["_lane"]) for x in submitted] == [(1, "llm-1"), (2, "built-in"), (3, "llm-2"),
+                                                                 (4, "llm-1"), (6, "built-in")]
+        assert r.limits == [None, None, None, None, 0]
+        assert [x["JobId"] for x in jobs] == [5, 7]                    # no LLM free for 5; no job slot left for 7
+        assert submitted[1]["_llm"] is BUILTIN and submitted[2]["_parallel"] == 1 and submitted[0]["_calls"] == []
+        assert r.metrics.llm_jobs._values == {("built-in", "built-in"): 0, ("llm-2", "llm-2"): 0, ("llm-1", "llm-1"): 0}
+        assert all(x.get("_reserve_until") for x in submitted[:4]) and not submitted[4].get("_reserve_until")
+        # the setting: 2 jobs at once
+        jobs[:] = [{"JobId": 8, "Kind": "refactor", "EstInputTokens": 0}, {"JobId": 9, "Kind": "refactor", "EstInputTokens": 0},
+                   {"JobId": 10, "Kind": "review", "EstInputTokens": 10}]
+        r2 = _fill_runner(monkeypatch, lanes, jobs, {"JobsAtOnce": 2})
+        try:
+            submitted.clear()
+            r2.fill(pool)
+            assert [x["JobId"] for x in submitted] == [8, 9]
+        finally:
+            ai.LISTENERS.remove(r2.metrics.llm)
     finally:
         ai.LISTENERS.remove(r.metrics.llm)
+
+
+def test_jobs_at_once_default():
+    lanes = [{"name": "built-in-0", "parallel": 1}, {"name": "built-in-1", "parallel": 1}]
+    assert lq.jobs_at_once(lq.DEFAULTS, lanes) == 3                 # every LLM request at once, plus one
+    assert lq.jobs_at_once({"JobsAtOnce": 5}, lanes) == 5
+    assert lq.jobs_at_once({}, [{"name": "built-in-0", "parallel": 0}]) == 2       # loading its model: still a job
+    assert lq.jobs_at_once({}, [{"name": "llm-1", "parallel": 40}]) == lq.JOBS_AT_ONCE_MAX
+
+
+SMALL = {"name": "small", "label": "small LLM", "settings": {"CONTAINERIZER_MODEL": "small"}, "max_tokens": 4000,
+         "parallel": 1, "order": 10}
+BIG = {"name": "big", "label": "big LLM", "settings": {"CONTAINERIZER_MODEL": "big"}, "max_tokens": 0, "parallel": 1,
+       "order": 20}
+
+
+def test_each_call_goes_to_the_first_free_llm_that_takes_its_size():
+    s = lq.Slots()
+    s.update([SMALL, BIG])
+    assert [ln["name"] for ln in s.candidates(3000)] == ["small", "big"]
+    assert [ln["name"] for ln in s.candidates(10000)] == ["big"]
+    assert s.acquire(1, 10000)["name"] == "big"                     # too big for the small one, even while it is free
+    assert s.acquire(2, 3000)["name"] == "small"
+    assert s.in_progress() == {"big": 1, "small": 1} and s.spare() == {"small": 0, "big": 0}
+    s.release(BIG)
+    s.release(SMALL)
+    assert s.acquire(3, 2000)["name"] == "small" and s.acquire(4, 2000)["name"] == "big"   # the small one busy
+    # every LLM has a limit and the call is bigger than all of them: the one with the biggest limit
+    s.update([SMALL, {**BIG, "max_tokens": 8000}])
+    assert [ln["name"] for ln in s.candidates(50000)] == ["big"]
+    # an LLM still loading its model (no request at once) takes no call
+    s.update([{**SMALL, "parallel": 0}, BIG])
+    assert [ln["name"] for ln in s.candidates(10)] == ["big"]
+    assert s.spare([10]) == {"small": -1, "big": 0}     # both in use (calls 3 and 4): nothing spare for a new job
+
+
+def test_calls_that_wait_are_answered_in_the_queues_order():
+    import threading
+    s = lq.Slots()
+    s.update([SMALL])
+    first = s.acquire(1, 100)
+    got, waits = [], []
+
+    def call(order):
+        ln = s.acquire(order, 100, on_wait=lambda: waits.append(order))
+        got.append(order)
+        s.release(ln)
+    late = threading.Thread(target=call, args=(9,))
+    late.start()
+    while s.waiting_calls() < 1:
+        pass
+    early = threading.Thread(target=call, args=(3,))              # started later, but its job is older
+    early.start()
+    while s.waiting_calls() < 2:
+        pass
+    s.release(first)
+    late.join(5)
+    early.join(5)
+    assert got == [3, 9] and sorted(waits) == [3, 9] and s.waiting_calls() == 0 and s.in_progress() == {"small": 0}
+
+
+def test_a_waiting_call_gives_up_on_cancel_and_leaves_no_slot_behind():
+    s = lq.Slots()
+    s.update([SMALL])
+    held = s.acquire(1, 100)
+    stop = {"n": 0}
+
+    def check():
+        stop["n"] += 1
+        if stop["n"] >= 2:
+            raise ai.Cancelled("cancelled")
+    with pytest.raises(ai.Cancelled):
+        s.acquire(2, 100, check)
+    assert s.waiting_calls() == 0 and s.in_progress() == {"small": 1}
+    s.release(held)
+    assert s.in_progress() == {"small": 0}
+
+
+def _api_answers(monkeypatch, tmp_path, answer=None):
+    """A fake Claude API that tells which model (LLM) answered; the answer cache in tmp_path."""
+    monkeypatch.setattr(ai, "CACHE", tmp_path / "cache")
+    asked = []
+
+    def ask(prompt, schema, model, effort, system):
+        asked.append((prompt, model))
+        if answer:
+            answer(prompt, model)
+        return ({"verdict": "info", "confidence": 0.9, "reasoning": "r", "findings": [], "packages": []},
+                {"input_tokens": 1000, "output_tokens": 200, "prompt_seconds": 1.0, "generate_seconds": 4.0})
+    monkeypatch.setattr(ai, "_ask_api", ask)
+    return asked
+
+
+API = {"CONTAINERIZER_AI_BACKEND": "api", "ANTHROPIC_API_KEY": "k"}
+
+
+def test_a_job_takes_an_llm_request_only_while_its_call_is_answered(monkeypatch, tmp_path):
+    """Two lanes of one request each; two jobs that asked once and then build (no LLM) do not keep a third job from
+    asking: before, each held its lane until it finished."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    import time
+    asked = _api_answers(monkeypatch, tmp_path)
+    lanes = [{**SMALL, "max_tokens": 0, "settings": {**API, "CONTAINERIZER_MODEL": "m-a"}},
+             {**BIG, "settings": {**API, "CONTAINERIZER_MODEL": "m-b"}}]
+    built = threading.Event()
+    building = []
+
+    def make_it_a(job):                                  # asks once, then builds and verifies for a long time
+        ai.ask_json(f"file of {job['JobId']}", ai.REVIEW_SCHEMA)
+        building.append(job["JobId"])
+        assert built.wait(10)
+        return {"result": {}, "summary": "verified"}
+    monkeypatch.setitem(lq.JOB_KINDS, "refactor", SimpleNamespace(name="refactor", feature="refactor-queued",
+                                                                    handler=make_it_a))
+
+    def review(job):                                     # asks once both others build
+        while len(building) < 2:
+            time.sleep(0.01)
+        return lq.review_handler(job)
+    monkeypatch.setitem(lq.JOB_KINDS, "review", SimpleNamespace(name="review", feature="assessment-queued",
+                                                                  handler=review))
+    jobs = [{"JobId": 1, "Kind": "refactor", "EstInputTokens": 0, "Attempts": 1, "Payload": "{}"},
+            {"JobId": 2, "Kind": "refactor", "EstInputTokens": 0, "Attempts": 1, "Payload": "{}"},
+            {"JobId": 3, "Kind": "review", "EstInputTokens": 3000, "Attempts": 1, "InputChars": 10500,
+             "Payload": json.dumps({"prompt": "review shop/Api"})}]
+    conn = FakeConn({r"SELECT \* FROM cz.LlmSpeed": []})
+    r = _fill_runner(monkeypatch, lanes, jobs, conn=conn)
+    pool = ThreadPoolExecutor(4)
+    try:
+        started = r.fill(pool)
+        assert [x["JobId"] for x in r.active.values()] == [1, 2, 3]       # 3 jobs at once: 2 requests + 1
+        assert started[2].result(10) == "answered"                       # the review asked while the others build
+        assert sorted(building) == [1, 2] and not started[0].done() and not started[1].done()
+        assert not any(r.slots.in_progress().values())                    # nobody holds an LLM while building
+        assert len(asked) == 3 and asked[-1] == ("review shop/Api", "m-a")    # both LLMs free: the first
+        built.set()
+        assert [f.result(10) for f in started[:2]] == ["answered", "answered"]
+    finally:
+        built.set()
+        pool.shutdown(wait=True)
+        ai.LISTENERS.remove(r.metrics.llm)
+    # the page sees each call: asking, then nothing (the job builds)
+    states = [p[0] for _, p in conn.sql(r"SET CallState = %s") if p[3] == 3]
+    assert states == [None, "asking", None]
+    (sql, params), = [x for x in conn.sql(r"SET Status = N'answered'") if x[1][-2] == 3]
+    assert params[6] == "api m-a" and params[7] == 1                  # the endpoint that answered, 1 request on it
+    assert [p[1] for _, p in conn.sql(r"INSERT cz.LlmSpeed") if p[1] == "review"] == ["review"]
+
+
+def test_an_llm_job_waiting_for_a_request_does_not_keep_other_jobs_from_starting(monkeypatch, tmp_path):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    inside, go = threading.Event(), threading.Event()
+
+    def slow(prompt, model):
+        if prompt == "review first":
+            inside.set()
+            assert go.wait(10)
+    _api_answers(monkeypatch, tmp_path, slow)
+    lanes = [{**BIG, "settings": {**API, "CONTAINERIZER_MODEL": "m"}}]          # one LLM, one request at once
+    jobs = [{"JobId": 1, "Kind": "review", "EstInputTokens": 3000, "Attempts": 1, "Payload": json.dumps({"prompt": "review first"})},
+            {"JobId": 2, "Kind": "review", "EstInputTokens": 3000, "Attempts": 1, "Payload": json.dumps({"prompt": "review second"})},
+            {"JobId": 3, "Kind": "refactor", "EstInputTokens": 0, "Attempts": 1, "Payload": "{}"}]
+    ran = []
+    monkeypatch.setitem(lq.JOB_KINDS, "refactor", SimpleNamespace(
+        name="refactor", feature="refactor-queued", handler=lambda job: ran.append(job["JobId"]) or {"result": {}}))
+    conn = FakeConn()
+    r = _fill_runner(monkeypatch, lanes, jobs, {"JobsAtOnce": 3}, conn=conn)
+    pool = ThreadPoolExecutor(4)
+    try:
+        started = r.fill(pool)
+        # job 1 will ask: the only request is spoken for; job 2 (LLM) waits in the queue, job 3 (no LLM) starts
+        assert [x["JobId"] for x in r.active.values()][:1] == [1] and r.limits == [None, 0, 0]
+        assert started[1].result(10) == "answered" and ran == [3] and [j["JobId"] for j in jobs] == [2]
+        assert inside.wait(10)
+        # while job 1 asks, the next job without LLM work starts too; job 2 still waits for the LLM in the queue
+        jobs.append({"JobId": 4, "Kind": "refactor", "EstInputTokens": 0, "Attempts": 1, "Payload": "{}"})
+        more = r.fill(pool)
+        assert len(more) == 1 and more[0].result(10) == "answered" and ran == [3, 4]
+        assert [j["JobId"] for j in jobs] == [2] and r.slots.in_progress() == {"big": 1}
+        go.set()
+        assert started[0].result(10) == "answered"
+        # the LLM is free again: job 2 starts
+        last = r.fill(pool)
+        assert len(last) == 1 and last[0].result(10) == "answered" and jobs == []
+    finally:
+        go.set()
+        pool.shutdown(wait=True)
+        ai.LISTENERS.remove(r.metrics.llm)
+
+
+def test_a_call_waits_for_a_request_and_gives_it_back_on_error_cancel_and_stop(monkeypatch, tmp_path):
+    import threading
+    _api_answers(monkeypatch, tmp_path)
+    conn = FakeConn()
+    r = lq.Runner(lambda: conn, name="r1", metrics=lq.QueueMetrics("r1"), log=lambda msg: None, load=lambda: 0.0)
+    try:
+        r.slots.update([{**BIG, "settings": {**API, "CONTAINERIZER_MODEL": "m"}}])
+        row = {"JobId": 5, "Kind": "review", "_order": 1, "_calls": []}
+        calls = lq._JobCalls(r, row)
+        # an error inside the call: the request is given back, the call recorded, the page told
+        with pytest.raises(RuntimeError):
+            with calls.take(3500):
+                assert r.slots.in_progress() == {"big": 1}
+                raise RuntimeError("the LLM server went away")
+        assert r.slots.in_progress() == {"big": 0} and len(row["_calls"]) == 1 and row["_calls"][0]["endpoint"] == "api m"
+        assert [p[:2] for _, p in conn.sql(r"SET CallState")] == [("asking", "big LLM"), (None, None)]
+        # waiting while another job asks; Cancel on the job: it gives up waiting
+        held = r.slots.acquire(0, 10)
+        with ai.cancel_thread_when(lambda: True), pytest.raises(ai.Cancelled):
+            with calls.take(3500):
+                pass
+        assert [p[0] for _, p in conn.sql(r"SET CallState")][-1] == "waiting" and r.slots.waiting_calls() == 0
+        # the runner stops: a job waiting for a request goes back to the queue, its attempt not counted
+        out = {}
+        monkeypatch.setitem(lq.JOB_KINDS, "review", SimpleNamespace(
+            name="review", feature="assessment-queued", handler=lambda job: ai.ask_json("q", ai.REVIEW_SCHEMA)))
+        t = threading.Thread(target=lambda: out.setdefault("r", r._run({"JobId": 6, "Kind": "review", "Attempts": 1,
+                                                                        "Payload": "{}", "_order": 2, "_calls": []})))
+        t.start()
+        while r.slots.waiting_calls() < 1:
+            pass
+        r.stopping.set()
+        t.join(10)
+        assert out["r"] == "released" and r.slots.waiting_calls() == 0
+        assert conn.sql(r"SET Status = N'queued', Runner = NULL.*Attempts - 1")[-1][1] == ("r1", 6)
+        r.slots.release(held)
+    finally:
+        ai.LISTENERS.remove(r.metrics.llm)
+
+
+def test_an_answer_in_the_cache_needs_no_llm_request(monkeypatch, tmp_path):
+    asked = _api_answers(monkeypatch, tmp_path)
+    lane = {**BIG, "settings": {**API, "CONTAINERIZER_MODEL": "m"}}
+    s = lq.Slots()
+    s.update([lane])
+    took = []
+
+    class Calls:
+        def choices(self, chars):
+            return [ln["settings"] for ln in s.candidates(lq.call_tokens(chars))]
+
+        def take(self, chars):
+            took.append(chars)
+            import contextlib
+            return contextlib.nullcontext(lane["settings"])
+    with ai.llm_slots(Calls()):
+        ai.ask_json("review shop/Api", ai.REVIEW_SCHEMA)
+        key = ai.last_cache_key()
+        ai.ask_json("review shop/Api", ai.REVIEW_SCHEMA)          # answered from the cache: no request taken
+    assert len(asked) == 1 and len(took) == 1 and ai.last_cache_key() == key
+    with ai.configured(lane["settings"]):
+        assert ai.cache_key("review shop/Api", ai.REVIEW_SCHEMA) == key
+    assert took[0] == len(ai.SYSTEM) + len("review shop/Api") + len(json.dumps(ai.REVIEW_SCHEMA))
+
+
+def test_speed_is_learned_per_llm_from_the_calls_only():
+    saved = []
+    r = object.__new__(lq.Runner)
+    r.log = lambda msg: None
+    r.connect = lambda: FakeConn()
+    import containerizer.llmqueue as mod
+    orig = mod.save_speed
+    mod.save_speed = lambda conn, ep, model, kind, obs: saved.append((ep, obs))
+    try:
+        entry = {"input_tokens": 1000, "output_tokens": 100, "prompt_seconds": 2.0, "generate_seconds": 8.0}
+        row = {"Kind": "refactor", "_calls": [
+            {"endpoint": "openai a m", "parallel": 1, "chars": 3500, "seconds": 10, "entries": [entry]},
+            {"endpoint": "openai b m", "parallel": 2, "chars": 7000, "seconds": 30, "entries": [entry, entry]},
+            {"endpoint": "openai a m", "parallel": 1, "chars": 3500, "seconds": 10, "entries": [entry]}]}
+        used = lq._usage()
+        used.entries = [entry] * 4
+        r.learn(row, used, 3600)                          # an hour of building and verifying is not LLM time
+    finally:
+        mod.save_speed = orig
+    got = {ep: (o["chars"], o["input_tokens"], o["seconds"], o["parallel"]) for ep, o in saved}
+    assert got == {"openai a m": (7000, 2000, 20, 1), "openai b m": (7000, 2000, 30, 2)}
+    assert lq.Runner.answered_by(row) == {"_endpoint": "openai a m", "_parallel": 1}
+    assert lq.Runner.answered_by({"_calls": []}) == {"_endpoint": None, "_parallel": 1}
+    assert lq.Runner.answered_by({"_endpoint": "x"}) == {}
+
+
+def test_the_queue_page_says_asking_only_while_a_call_is_answered(adm):
+    base = {**QUEUED[0], "Status": "running", "StartedAt": datetime(2026, 11, 3, 13, 0), "Runner": "containerizer-llm-queue",
+            "CancelRequestedAt": None, "CancelRequestedBy": None}
+    running = [{**base, "JobId": 4, "Kind": "refactor", "Summary": "verifying: building the image", "CallState": None},
+               {**base, "JobId": 5, "CallState": "asking", "CallLlm": "built-in LLM (qwen), server 1 (NUMA node 1)",
+                "CallSince": datetime(2026, 11, 3, 13, 2)},
+               {**base, "JobId": 6, "CallState": "waiting", "CallSince": datetime(2026, 11, 3, 13, 3)}]
+    adm.conn.answers = {r"FROM cz.LlmQueueSettings": [dict(lq.DEFAULTS)], r"FROM cz.LlmSpeed": [],
+                        r"COUNT\(\*\) FROM cz.OrgScanRun": [{"N": 0}],
+                        r"Status IN \(N'approval', N'queued', N'running'\)\s+ORDER BY": running}
+    from containerizer import admin_llmqueue as page
+    lanes = [{"name": "built-in-0", "label": "built-in LLM (qwen), server 0 (NUMA node 0)", "settings": {}, "max_tokens": 0,
+              "parallel": 1, "order": 0},
+             {"name": "built-in-1", "label": "built-in LLM (qwen), server 1 (NUMA node 1)", "settings": {}, "max_tokens": 0,
+              "parallel": 1, "order": 0}]
+    orig = page.lanes
+    page.lanes = lambda conn, settings: lanes
+    try:
+        operator = adm.sessions.create("o@example.com", "O", False, True, True, [])
+        body = _get(adm, operator, "/admin/llm-queue").body
+    finally:
+        page.lanes = orig
+    rows = {int(m[1]): m[2] for m in re.finditer(r"<tr id='job-(\d+)'>(.*?)</tr>", body, re.S)}
+    assert ">Running</span>" in rows[4] and "verifying: building the image" in rows[4] and "Asking" not in rows[4]
+    assert ">Asking</span>" in rows[5] and "asking built-in LLM (qwen), server 1 (NUMA node 1) since" in rows[5]
+    assert ">Waiting for an LLM</span>" in rows[6]
+    llms = body.split("<h2>LLMs</h2>")[1].split("</table>")[0]
+    assert "<th class='num'>Asking now</th>" in llms
+    assert re.findall(r"<td class='num'>(\d+)</td></tr>", llms) == ["0", "1"]
+    assert "1 LLM call waits for a free request" in body and "3 jobs at once (automatic)" in body
 
 
 def test_each_job_thread_asks_its_own_llm():
@@ -1093,3 +1434,66 @@ def test_cancel_on_the_queue_page(adm):
     assert "cancelling: requested by o@example.com" in body and "/4/cancel" not in body
     _post(adm, operator, "/admin/llm-queue/4/requeue")
     assert "CancelRequestedAt = NULL" in adm.conn.sql(r"SET Status = N'queued', Attempts = 0")[-1][0]
+
+
+@needs_sql
+def test_jobs_at_once_and_the_call_state_in_sql_server():
+    """Schema 41: the Jobs at once setting (default 0: automatic) that an administrator edits on the page, audited,
+    and the state of a running job's LLM call that the runner (writer login) records for the page."""
+    import uuid
+    from containerizer import sqlstore
+    pw, sa_pw = "Test-Passw0rd!x", os.environ["CONTAINERIZER_SQL_PASSWORD"]
+    name = "czllms_" + uuid.uuid4().hex[:8]
+    cs = re.sub(r"(?i)(database|initial\s*catalog)\s*=[^;]*", f"Database={name}", ADMIN_SQL)
+    sqlstore.create_database(cs, sa_pw)
+    conn = sqlstore.connect(cs, sa_pw)
+    try:
+        sqlstore.init_schema(conn)
+        sqlstore.init_schema(conn)
+        for login, role in (("cz_s_writer", "writer"), ("cz_s_admin", "admin")):
+            sqlstore.create_login(conn, login, pw, role)
+        cur = conn.cursor()
+        cur.execute("SELECT MAX(Version) FROM cz.SchemaVersion")
+        assert cur.fetchone()[0] >= 41
+
+        def as_(login):
+            return re.sub(r"(?i)(user\s*id|uid)\s*=[^;]*", f"User Id={login}", cs)
+        writer = lambda: sqlstore.connect(as_("cz_s_writer"), pw)  # noqa: E731
+        adm = sqlstore.connect(as_("cz_s_admin"), pw)
+        assert lq.load_settings(adm)["JobsAtOnce"] == 0
+        admin_llmqueue.save_settings(adm, {"JobsAtOnce": ["4"], "Parallel": ["2"]})
+        assert lq.load_settings(adm)["JobsAtOnce"] == 4
+        ac = adm.cursor()
+        ac.execute("SELECT TOP (1) NewValues FROM cz.AuditLog WHERE TableName = N'LlmQueueSettings' ORDER BY AuditId DESC")
+        assert json.loads(ac.fetchone()[0])["JobsAtOnce"] == 4
+        adm.commit()
+        with pytest.raises(Exception):
+            ac.execute("UPDATE cz.LlmQueueSettings SET JobsAtOnce = 33")
+        adm.rollback()
+        # the runner records what its job's LLM call does; the page reads it
+        lq.SqlJobQueue(writer).add({"Kind": "review", "Priority": 5, "DedupeKey": "k1", "Payload": {"prompt": "p"}})
+        ac.execute("UPDATE cz.LlmJob SET Status = N'queued' WHERE Status = N'approval'")
+        adm.commit()
+        r = lq.Runner(writer, name="t", metrics=lq.QueueMetrics("t"), log=lambda msg: None, load=lambda: 0.0)
+        try:
+            w = writer()
+            row = r.claim(w)
+            w.close()
+            r.call_state(row, "asking", "built-in LLM (qwen), server 1")
+            ac.execute("SELECT CallState, CallLlm, CallSince FROM cz.LlmJob WHERE JobId = %s", (row["JobId"],))
+            state, llm, since = ac.fetchone()
+            assert (state, llm) == ("asking", "built-in LLM (qwen), server 1") and since is not None
+            adm.commit()
+            r.call_state(row, None)
+            ac.execute("SELECT CallState, CallLlm, CallSince FROM cz.LlmJob WHERE JobId = %s", (row["JobId"],))
+            assert tuple(ac.fetchone()) == (None, None, None) and r._call_state
+            adm.commit()
+            ac.execute("SELECT Action, NewValues FROM cz.AuditLog WHERE TableName = N'LlmJob' AND RowId = %s",
+                       (row["JobId"],))
+            assert [a for a, _ in ac.fetchall()] == ["insert"]          # not the runner's call states
+            adm.commit()
+        finally:
+            ai.LISTENERS.remove(r.metrics.llm)
+        adm.close()
+    finally:
+        conn.close()

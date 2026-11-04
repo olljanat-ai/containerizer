@@ -2483,3 +2483,46 @@ BEGIN CATCH
 END CATCH;
 END;
 GO
+-- 41: the LLM queue runner takes an LLM request per LLM call, not per job (llmqueue.Slots): a job that builds,
+-- verifies or deploys holds no LLM. How many jobs it works on at once is a setting of its own (JobsAtOnce; 0:
+-- automatic, every LLM request at once plus one). What a running job's LLM call does now, for the queue page
+-- (writer login, the runner): CallState 'waiting' for a free request or 'asking' CallLlm since CallSince; NULL: no
+-- call in progress (the job prepares, builds, verifies or deploys).
+IF COL_LENGTH(N'[${schema}].LlmQueueSettings', N'JobsAtOnce') IS NULL
+    ALTER TABLE [${schema}].LlmQueueSettings ADD JobsAtOnce tinyint NOT NULL
+        CONSTRAINT DF_LlmQueueSettings_JobsAtOnce DEFAULT 0
+        CONSTRAINT CK_LlmQueueSettings_JobsAtOnce CHECK (JobsAtOnce BETWEEN 0 AND 32);
+GO
+IF COL_LENGTH(N'[${schema}].LlmJob', N'CallState') IS NULL
+    ALTER TABLE [${schema}].LlmJob ADD CallState nvarchar(10) NULL
+        CONSTRAINT CK_LlmJob_CallState CHECK (CallState IN (N'waiting', N'asking')),
+        CallLlm nvarchar(400) NULL, CallSince datetime2(0) NULL;
+GO
+GRANT UPDATE ON [${schema}].LlmJob (CallState, CallLlm, CallSince) TO [${schema}_writer];
+GO
+CREATE OR ALTER TRIGGER [${schema}].trLlmQueueSettingsAudit ON [${schema}].LlmQueueSettings
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'LlmQueueSettings', COALESCE(i.SettingsId, d.SettingsId), N'LLM queue',
+           CASE WHEN d.SettingsId IS NULL THEN N'insert' WHEN i.SettingsId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.SettingsId IS NOT NULL THEN (SELECT d.Paused, d.WindowDays, d.WindowStart, d.WindowEnd, d.OnlyWhenIdle,
+                d.MaxLoadPerCpu, d.Parallel, d.ApproveKinds, d.ApproveMinTokens, d.ApproveMaxQueued, d.RejectAfterHours,
+                d.LocalOrder, d.LocalMaxTokens, d.JobsAtOnce FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.SettingsId IS NOT NULL THEN (SELECT i.Paused, i.WindowDays, i.WindowStart, i.WindowEnd, i.OnlyWhenIdle,
+                i.MaxLoadPerCpu, i.Parallel, i.ApproveKinds, i.ApproveMinTokens, i.ApproveMaxQueued, i.RejectAfterHours,
+                i.LocalOrder, i.LocalMaxTokens, i.JobsAtOnce FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.SettingsId = i.SettingsId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.SettingsId IS NULL OR i.SettingsId IS NULL
+       OR EXISTS (SELECT i.Paused, i.WindowDays, i.WindowStart, i.WindowEnd, i.OnlyWhenIdle, i.MaxLoadPerCpu, i.Parallel,
+                         i.ApproveKinds, i.ApproveMinTokens, i.ApproveMaxQueued, i.RejectAfterHours, i.LocalOrder, i.LocalMaxTokens,
+                         i.JobsAtOnce
+                  EXCEPT SELECT d.Paused, d.WindowDays, d.WindowStart, d.WindowEnd, d.OnlyWhenIdle, d.MaxLoadPerCpu, d.Parallel,
+                         d.ApproveKinds, d.ApproveMinTokens, d.ApproveMaxQueued, d.RejectAfterHours, d.LocalOrder, d.LocalMaxTokens,
+                         d.JobsAtOnce);
+END;
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 41) INSERT [${schema}].SchemaVersion (Version) VALUES (41);
+GO

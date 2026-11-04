@@ -25,6 +25,25 @@ qcow2 and VHDX images as release assets.
   includes, are gone from the page, also from each component's migration assistant ("How to fix" points to Make
   it A). They remain on the command line (`containerizer refactor --goal fix|stateless`), and earlier orders still
   show with their patches.
+- **LLM queue: a job holds an LLM only while it asks.** Before, the runner gave each job one of an LLM's requests
+  for the job's whole life, so two Make it A orders that were building, verifying or deploying (or reusing answers
+  and asking nothing) kept both built-in LLM servers "Asking" while a job that needed the LLM waited. Now each LLM
+  call takes a request of the first LLM in the order that takes the call's size and has a free one, and gives it
+  back as soon as it is answered; calls that wait are answered in the queue's order, and an answer in the cache
+  needs no request. How many jobs run at once is a setting of its own, **Jobs at once** (LLM queue → Settings; 0,
+  the default: automatic, every LLM request at once plus one, kept modest because builds compete with a CPU LLM for
+  the machine). A job that needs the LLM starts while an LLM that takes it has a spare request; the jobs after it
+  that need no LLM start meanwhile. An LLM's size limit (**Calls up to**, formerly *Jobs up to*) is now per LLM call:
+  a refactoring order's files can go to different LLMs. Schema 41 (`containerizer db init`; the appliance runs it at
+  boot) adds the setting and what a running job's call does now.
+  - The queue page says **Asking** and the LLM only while a call of the job is answered, **Waiting for an LLM**
+    while a call waits for a request, else **Running** with the job's progress (generating, verifying, deploying);
+    the LLMs table shows the requests in progress on each (**Asking now**).
+  - Speed statistics are learned per call: each LLM's figures from the calls it answered (their size, tokens and
+    time and the requests at once on it), no longer from the job's whole time with its builds. A job's **Answered
+    by** is the LLM that answered most of its calls, none when it asked nothing. The metric
+    `containerizer_llm_queue_llm_jobs` counts the requests in progress per LLM; the new
+    `containerizer_llm_queue_llm_waiting` counts the calls waiting for one.
 
 ## 0.10.0 (2026-11-04)
 

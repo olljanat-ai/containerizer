@@ -98,6 +98,30 @@ class cancel_thread_when:
 _THREAD = threading.local()
 
 
+class llm_slots:
+    """`with llm_slots(slots):` every LLM call this thread makes (ask_json) takes an LLM request slot for that call
+    only. The LLM queue runner (llmqueue.Runner) runs each job in a thread of its own: the job holds no LLM while it
+    builds, verifies or deploys, only while a call is being answered. `slots.choices(chars)` gives the settings
+    (ai.configured; None: the settings in effect) of the LLMs that could answer a question of `chars` characters (an
+    answer cached under one of them needs no slot), and `slots.take(chars)` a context manager that waits for a free
+    request on one of them and gives its settings for the call."""
+
+    def __init__(self, slots):
+        self.slots = slots
+
+    def __enter__(self):
+        self.prev, _THREAD.slots = getattr(_THREAD, "slots", None), self.slots
+        return self
+
+    def __exit__(self, *exc):
+        _THREAD.slots = self.prev
+
+
+def last_cache_key() -> str | None:
+    """The answer cache key of this thread's last ask_json call (asked or answered from the cache)."""
+    return getattr(_THREAD, "last_key", None)
+
+
 def cancelled() -> bool:
     for check in (_CANCEL["check"], getattr(_THREAD, "check", None)):
         try:
@@ -307,11 +331,13 @@ def cached_answer(prompt: str, schema: dict, model: str | None = None, effort: s
                   feature: str | None = None, system: str | None = None) -> dict | None:
     """The cached answer to exactly this question, or None; never calls the LLM. A hit is recorded like
     a cached ask_json call. Queued LLM reviews (llmqueue.py) look here first."""
-    cf = CACHE / f"{cache_key(prompt, schema, model, effort, system)}.json"
+    key = cache_key(prompt, schema, model, effort, system)
+    cf = CACHE / f"{key}.json"
     try:
         cached = json.loads(cf.read_text())
     except (OSError, ValueError):
         return None
+    _THREAD.last_key = key
     record_usage({**cached.get("usage", {}), **_tags(feature), "cached": True})
     return cached["data"]
 
@@ -337,12 +363,35 @@ SHORT_ANSWER_TOKENS = 4096
 def ask_json(prompt: str, schema: dict, model: str | None = None, effort: str = "medium", feature: str | None = None,
              system: str | None = None, max_tokens: int | None = None) -> dict:
     """One structured LLM call. Every call (answered, cached or failed) is recorded with its feature and
-    repository (usage_scope) in USAGE_LOG and sent to LISTENERS."""
+    repository (usage_scope) in USAGE_LOG and sent to LISTENERS. In a thread with LLM request slots (llm_slots: a
+    job of the LLM queue), the call takes a free request of the first LLM that takes its size for the call only,
+    unless its answer is in the cache."""
+    slots = getattr(_THREAD, "slots", None)
+    if slots is None:
+        return _ask_json(prompt, schema, model, effort, feature, system, max_tokens)
+    import contextlib
+    # the size of the question as the LLM queue estimates a job's (InputChars: system prompt, prompt and schema)
+    chars = len(system or SYSTEM) + len(prompt) + len(json.dumps(schema))
+    for settings in slots.choices(chars):
+        with configured(settings, local=True) if settings is not None else contextlib.nullcontext():
+            try:
+                hit = cached_answer(prompt, schema, model, effort, feature, system)
+            except Exception:  # noqa: BLE001 - no model for this LLM: asked below
+                hit = None
+        if hit is not None:
+            return hit
+    with slots.take(chars) as settings:
+        with configured(settings, local=True) if settings is not None else contextlib.nullcontext():
+            return _ask_json(prompt, schema, model, effort, feature, system, max_tokens)
+
+
+def _ask_json(prompt: str, schema: dict, model: str | None, effort: str, feature: str | None, system: str | None,
+              max_tokens: int | None) -> dict:
     system = system or SYSTEM
     tags = _tags(feature)
     model = model_name(model)
     backend = _backend()
-    key = cache_key(prompt, schema, model, effort, system)
+    key = _THREAD.last_key = cache_key(prompt, schema, model, effort, system)
     cf = CACHE / f"{key}.json"
     if cf.exists():
         cached = json.loads(cf.read_text())

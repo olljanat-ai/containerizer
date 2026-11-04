@@ -278,7 +278,7 @@ class Credential:
     note: str = ""
     model: str = ""                  # llm: the model name
     llm_order: int = 10              # llm: the LLM queue tries the LLMs in this order (lowest first)
-    llm_max_tokens: int = 0          # llm: the biggest job it takes (estimated input tokens; 0: any)
+    llm_max_tokens: int = 0          # llm: the biggest LLM call it takes (estimated input tokens; 0: any)
     llm_parallel: int = 1            # llm: requests the LLM queue sends it at once
     token_set_at: object = None      # when the token was last set (the newest wins among duplicates)
     sealed: str = field(default="", repr=False)

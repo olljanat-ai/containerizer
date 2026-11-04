@@ -2,7 +2,9 @@
 
 A self-hosted LLM on CPUs can take minutes per answer. The queue (cz.LlmJob) holds LLM jobs of any kind,
 and its runner (`containerizer llm-queue`, a process of its own) works through them when the settings let
-it (Admin → LLM queue: paused, days and hours in UTC, only when the machine is idle, parallel requests).
+it (Admin → LLM queue: paused, days and hours in UTC, only when the machine is idle, parallel requests,
+jobs at once). A job takes an LLM request only while one of its LLM calls is answered (Slots), so jobs that build,
+verify or deploy do not hold an LLM.
 
 Job kinds (JOB_KINDS, `register`): `review`, a component review, `refactor`, a refactoring patch a
 person ordered for a B-rated application (refactor.py, docs/refactoring.md), and `egress`, the review of the
@@ -45,7 +47,7 @@ import socket
 import sys
 import threading
 import time as _time
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -58,8 +60,8 @@ PENDING = ("queued", "running")
 FEATURE = "assessment-queued"           # LLM usage feature of the reviews the runner asks
 MAX_ATTEMPTS = 3                        # a job that failed this often stays failed (requeue on the page)
 RETRY_MINUTES = 5                       # wait before the next attempt: this times the attempts so far
-HEARTBEAT = 30                          # seconds between heartbeats of the jobs being asked
-CANCEL_CHECK = 5                        # seconds between looks for Cancel on the jobs being asked
+HEARTBEAT = 30                          # seconds between heartbeats of the running jobs
+CANCEL_CHECK = 5                        # seconds between looks for Cancel on the running jobs
 STALE_MINUTES = 10                      # a running job without a heartbeat for this long lost its runner
 SECOND_OPINION = ("blocker", "rewrite")
 # How sure the LLM must be to change the verdict: as inline for uncertain components; a second opinion
@@ -68,7 +70,9 @@ OVERRIDE_CONFIDENCE = {"uncertain": 0.6, "second-opinion": 0.85, "heavy": 0.85}
 HEAVY_CACHE = 60                        # seconds a scan keeps the LLM-heavy windows it read (SqlJobQueue.heavy)
 DEFAULTS = {"Paused": False, "WindowDays": 0, "WindowStart": None, "WindowEnd": None, "OnlyWhenIdle": True,
             "MaxLoadPerCpu": 0.5, "Parallel": 1, "ApproveKinds": "egress,link,refactor,review", "ApproveMinTokens": 0,
-            "ApproveMaxQueued": 0, "RejectAfterHours": 0, "LocalOrder": None, "LocalMaxTokens": 0}
+            "ApproveMaxQueued": 0, "RejectAfterHours": 0, "LocalOrder": None, "LocalMaxTokens": 0, "JobsAtOnce": 0}
+JOBS_AT_ONCE_MAX = 32                   # LlmQueueSettings.JobsAtOnce (0: automatic, jobs_at_once)
+RESERVE_SECONDS = 120                   # a job just started keeps an LLM request for its first call this long at most
 
 
 def utcnow() -> datetime:
@@ -268,8 +272,8 @@ def review_handler(job: dict) -> dict:
     model = pl.get("model") or None
     data = ai.ask_json(pl["prompt"], ai.REVIEW_SCHEMA, model=model, feature=FEATURE, max_tokens=ai.SHORT_ANSWER_TOKENS)
     note = None
-    try:
-        if ai.cache_key(pl["prompt"], ai.REVIEW_SCHEMA, model) != pl.get("cache_key"):
+    try:            # the key of the LLM that answered (the queue runner picks one per call)
+        if (ai.last_cache_key() or ai.cache_key(pl["prompt"], ai.REVIEW_SCHEMA, model)) != pl.get("cache_key"):
             note = ("the LLM settings changed since it was queued: the next scan asks again, unless it finds "
                     "this answer in the queue")
     except Exception:
@@ -821,10 +825,13 @@ class QueueMetrics:
         self.poll_errors = r.counter("containerizer_llm_queue_poll_errors_total", "Failed looks at the queue (database errors).")
         self.open = r.gauge("containerizer_llm_queue_open", "1 when the queue settings let the runner start a job now.")
         self.paused = r.gauge("containerizer_llm_queue_paused", "1 when an administrator paused the queue.")
-        self.active = r.gauge("containerizer_llm_queue_active_jobs", "Jobs the runner is asking the LLM about now.")
-        self.llm_jobs = r.gauge("containerizer_llm_queue_llm_jobs", "Jobs being asked now, by LLM in the order: llm-<id> "
-                                "a registered LLM, built-in-<n> a server of the built-in LLM (one per NUMA node).",
-                                ("llm", "label"))
+        self.active = r.gauge("containerizer_llm_queue_active_jobs", "Jobs the runner works on now: asking an LLM, "
+                              "waiting for one, or building, verifying or deploying (at most the jobs at once set).")
+        self.llm_jobs = r.gauge("containerizer_llm_queue_llm_jobs", "LLM requests in progress now (one per job asking), "
+                                "by LLM in the order: llm-<id> a registered LLM, built-in-<n> a server of the built-in "
+                                "LLM (one per NUMA node).", ("llm", "label"))
+        self.llm_waiting = r.gauge("containerizer_llm_queue_llm_waiting", "LLM calls of running jobs waiting for a free "
+                                   "request of an LLM that takes their size.")
         self.jobs = r.counter("containerizer_llm_queue_jobs_finished_total", "Jobs the runner finished, by kind and "
                               "result: answered, failed (no attempts left) or retried (tried again later).",
                               ("kind", "result"))
@@ -889,11 +896,12 @@ class _usage:
 
 def plan_lanes(registered: list, builtin: list | None, settings: dict) -> list[dict]:
     """The LLMs the queue runner asks at once, in their order: each registered LLM (credentials.Credential, key
-    opened) with its biggest job (LlmMaxTokens; 0: any) and requests at once (LlmParallel); each server of the
-    appliance's built-in LLM (local_llm.server_lanes: one per NUMA node) as an LLM of its own, one request at once
-    (alone: Parallel shared out), beside them when it has a place in the order (LocalOrder, LocalMaxTokens) or
-    alone when none is registered; a server still loading its model takes no job yet; else the environment's LLM
-    (settings None) with Parallel. A job goes to the first lane with a free request that takes its size."""
+    opened) with its biggest LLM call (LlmMaxTokens, estimated input tokens of one call; 0: any) and requests at once
+    (LlmParallel); each server of the appliance's built-in LLM (local_llm.server_lanes: one per NUMA node) as an LLM
+    of its own, one request at once (alone: Parallel shared out), beside them when it has a place in the order
+    (LocalOrder, LocalMaxTokens) or alone when none is registered; a server still loading its model takes no call yet;
+    else the environment's LLM (settings None) with Parallel. Each LLM call of a job goes to the first lane with a
+    free request that takes its size (Slots); a job starts when one with a spare request takes its estimate."""
     s = {**DEFAULTS, **(settings or {})}
     lanes = [{"name": f"llm-{c.id}", "label": c.label, "settings": c.ai_settings(), "max_tokens": int(c.llm_max_tokens or 0),
               "parallel": max(1, int(c.llm_parallel or 1)), "order": int(c.llm_order)} for c in registered]
@@ -915,6 +923,169 @@ def plan_lanes(registered: list, builtin: list | None, settings: dict) -> list[d
     return sorted(lanes, key=lambda ln: (ln["order"], not ln["name"].startswith("built-in"), ln["name"]))
 
 
+def jobs_at_once(settings: dict, lanes: list[dict]) -> int:
+    """How many jobs the runner works on at once (LlmQueueSettings.JobsAtOnce): the number set, or with 0 (automatic)
+    every LLM request at once of the LLMs in the order plus one, so that a job building or verifying does not keep
+    another from asking while an LLM is free. Builds are heavy on CPU and memory, and compete with a CPU-only
+    built-in LLM: the automatic number stays modest."""
+    n = int((settings or {}).get("JobsAtOnce") or 0)
+    if n > 0:
+        return min(n, JOBS_AT_ONCE_MAX)
+    return min(JOBS_AT_ONCE_MAX, max(1, sum(max(0, int(ln["parallel"])) for ln in lanes)) + 1)
+
+
+def call_tokens(chars: int) -> int:
+    """The estimated input tokens of one LLM call of `chars` characters (as a job's EstInputTokens)."""
+    return int(-(-int(chars or 0) // CHARS_PER_TOKEN)) if chars else 0
+
+
+class Slots:
+    """The LLM request slots of the runner: each LLM in the order (a lane of plan_lanes) answers `parallel` requests
+    at once. A job's LLM call takes one for the call only (Runner via ai.llm_slots), not the job for its lifetime: a
+    job that builds, verifies or deploys holds none. A call goes to the first LLM in the order that takes its size
+    (max_tokens per call; 0: any) and has a free request; a call bigger than every limit goes to the LLM(s) with the
+    biggest. Calls that wait are served in the order their jobs started (the queue's order); a call that only a busy
+    LLM takes does not hold up a later one that a free LLM takes."""
+
+    def __init__(self, on_change=None):
+        self.cond = threading.Condition()
+        self.lanes: list[dict] = []
+        self.busy: dict[str, int] = {}          # lane name -> requests in progress
+        self.waiting: list[list] = []           # [order, tokens] of the calls waiting, oldest job first
+        self.on_change = on_change or (lambda: None)
+
+    def update(self, lanes: list[dict]) -> None:
+        with self.cond:
+            self.lanes = list(lanes)
+            self.cond.notify_all()
+
+    def candidates(self, tokens: int, lanes: list[dict] | None = None) -> list[dict]:
+        """The LLMs that take a call of `tokens`, in their order (those with a request at all)."""
+        ls = [ln for ln in (self.lanes if lanes is None else lanes) if int(ln["parallel"]) > 0]
+        fit = [ln for ln in ls if not ln["max_tokens"] or tokens <= int(ln["max_tokens"])]
+        if fit or not ls:
+            return fit
+        top = max(int(ln["max_tokens"]) for ln in ls)
+        return [ln for ln in ls if int(ln["max_tokens"]) == top]
+
+    def _free(self) -> dict[str, int]:
+        return {ln["name"]: int(ln["parallel"]) - self.busy.get(ln["name"], 0) for ln in self.lanes}
+
+    def _assign(self, free: dict[str, int]) -> dict[int, dict]:
+        """Which waiting call gets which free request now (id of the waiter -> lane); `free` is what is left."""
+        out = {}
+        for w in self.waiting:
+            for ln in self.candidates(w[1]):
+                if free.get(ln["name"], 0) > 0:
+                    free[ln["name"]] -= 1
+                    out[id(w)] = ln
+                    break
+        return out
+
+    def spare(self, reserved: list[int] = ()) -> dict[str, int]:
+        """The requests of each LLM that no waiting call and no job just started (`reserved`: their estimated
+        tokens, each keeping a request of the first LLM that takes it) will take: room for another job."""
+        with self.cond:
+            free = self._free()
+            self._assign(free)
+            for tokens in reserved:
+                for ln in self.candidates(tokens):
+                    if free.get(ln["name"], 0) > 0:
+                        free[ln["name"]] -= 1
+                        break
+            return free
+
+    def in_progress(self) -> dict[str, int]:
+        with self.cond:
+            return dict(self.busy)
+
+    def waiting_calls(self) -> int:
+        with self.cond:
+            return len(self.waiting)
+
+    def acquire(self, order, tokens: int, check=None, on_wait=None) -> dict:
+        """Wait for a request of an LLM that takes a call of `tokens` (`order`: the job's place, oldest first) and
+        take it. `check()` raises to give up (Cancel, the runner stopping); `on_wait()` once when the call waits."""
+        w = [order, int(tokens or 0)]
+        with self.cond:
+            self.waiting.append(w)
+            self.waiting.sort(key=lambda x: x[0])
+        told = False
+        try:
+            while True:
+                with self.cond:
+                    lane = self._assign(self._free()).get(id(w))
+                    if lane is not None:
+                        self.busy[lane["name"]] = self.busy.get(lane["name"], 0) + 1
+                        break
+                    if told:
+                        self.cond.wait(1.0)
+                if not told:
+                    told = True
+                    if on_wait:
+                        on_wait()
+                if check:
+                    check()
+        finally:
+            with self.cond:
+                self.waiting.remove(w)
+                self.cond.notify_all()
+        self.on_change()
+        return lane
+
+    def release(self, lane: dict) -> None:
+        with self.cond:
+            self.busy[lane["name"]] = max(0, self.busy.get(lane["name"], 0) - 1)
+            self.cond.notify_all()
+        self.on_change()
+
+
+class _JobCalls:
+    """The LLM calls of one job (ai.llm_slots in its thread): each takes a request slot for the call only, and is
+    recorded (row["_calls"]: the LLM, its endpoint, the requests at once on it, the call's size, time and usage) for
+    the speed statistics and the job's Endpoint and Parallel. While a call waits or asks, the job's row says so
+    (CallState, CallLlm, CallSince) for the queue page."""
+
+    def __init__(self, runner: "Runner", row: dict):
+        self.runner, self.row = runner, row
+
+    def choices(self, chars: int) -> list:
+        return [ln.get("settings") for ln in self.runner.slots.candidates(call_tokens(chars))]
+
+    @contextlib.contextmanager
+    def take(self, chars: int):
+        from . import ai
+        r, row = self.runner, self.row
+
+        def check():
+            if r.stopping.is_set():
+                raise ai.Cancelled("the queue runner is stopping")
+            ai._raise_if_cancelled()
+        lane = r.slots.acquire(row.get("_order", row["JobId"]), call_tokens(chars), check,
+                               on_wait=lambda: r.call_state(row, "waiting"))
+        row.pop("_reserve_until", None)
+        try:
+            parallel = r.slots.in_progress().get(lane["name"], 1)
+            settings = lane.get("settings")
+            try:
+                with ai.configured(settings, local=True) if settings else contextlib.nullcontext():
+                    ep = ai.endpoint(None if settings else row.get("Model"))
+            except Exception:  # noqa: BLE001
+                ep = None
+            r.call_state(row, "asking", lane.get("label") or lane["name"])
+            t0 = _time.monotonic()
+            with _usage() as used:
+                try:
+                    yield settings
+                finally:
+                    row.setdefault("_calls", []).append(
+                        {"lane": lane["name"], "endpoint": ep, "parallel": parallel, "chars": int(chars),
+                         "seconds": _time.monotonic() - t0, "entries": list(used.entries)})
+        finally:
+            r.slots.release(lane)
+            r.call_state(row, None)
+
+
 class Runner:
     """`containerizer llm-queue`: works through cz.LlmJob when the settings let it."""
 
@@ -930,10 +1101,14 @@ class Runner:
         self.key = key                      # X25519 private key that opens the LLM credential (None: from the env)
         self.load = load
         self.stopping = threading.Event()
-        self.active: dict[int, dict] = {}   # JobId -> row being asked
+        self.active: dict[int, dict] = {}   # JobId -> row of a job being worked on
         self.cancelling: dict[int, str] = {}  # JobId -> who pressed Cancel (cz.LlmJob.CancelRequestedBy)
         self.lock = threading.Lock()
-        self._ctx = None                    # ai.configured() of the jobs being asked
+        self._ctx = None                    # ai.configured() of the jobs being worked on
+        self.wake = threading.Event()       # a job finished or an LLM request came free: look at the queue again
+        self.slots = Slots(self._slots_changed)  # the LLM requests: taken per call (_JobCalls), not per job
+        self._order = 0                     # the jobs in the order they started: their calls wait in this order
+        self._call_state = True             # False: a database from before schema 41 (no CallState)
         self.status = None
         self._housekept = None              # when expired or removed sandbox variants were last looked for
 
@@ -1022,6 +1197,9 @@ class Runner:
         except Exception as ex:  # noqa: BLE001
             if row["JobId"] in self.cancelling:
                 result = self.cancelled(row, self.cancelling.get(row["JobId"]))
+            elif self.stopping.is_set() and isinstance(ex, ai.Cancelled):
+                self.release([row["JobId"]])    # stopped while waiting for an LLM: back in the queue, no attempt
+                return "released"
             else:
                 result = self.failed(row, REDACT(f"{type(ex).__name__}: {ex}")[:1000])
         else:
@@ -1030,12 +1208,43 @@ class Runner:
                 self.metrics.jobs.inc(kind=kind.name, result=result)
                 return result
             out = {**out, "tokens": used.tokens()}
+            row = {**row, **self.answered_by(row)}
             result = self.answered(row, out, _time.monotonic() - t0)
             self.learn(row, used, _time.monotonic() - t0)
         self.metrics.jobs.inc(kind=kind.name, result=result)
         if result == "answered":
             self.metrics.seconds.observe(_time.monotonic() - t0, kind=kind.name)
         return result
+
+    def _slots_changed(self) -> None:
+        self.wake.set()
+        try:
+            busy = self.slots.in_progress()
+            self.metrics.llm_jobs.replace({(ln["name"], ln.get("label") or ln["name"]): busy.get(ln["name"], 0)
+                                           for ln in self.slots.lanes})
+            self.metrics.llm_waiting.set(self.slots.waiting_calls())
+        except Exception:  # noqa: BLE001 - metrics only
+            pass
+
+    def call_state(self, row: dict, state: str | None, llm: str | None = None) -> None:
+        """What the job's LLM call does now, for the queue page: 'waiting' for a request, 'asking' `llm`, or None
+        (no call: the job builds, verifies, deploys or prepares)."""
+        if not self._call_state:
+            return
+        try:
+            conn = self.connect()
+            try:
+                cur = conn.cursor()
+                cur.execute("UPDATE cz.LlmJob SET CallState = %s, CallLlm = %s, CallSince = CASE WHEN %s IS NULL THEN NULL "
+                            "ELSE SYSUTCDATETIME() END WHERE JobId = %s AND Status = N'running' AND Runner = %s",
+                            (state, _cut(llm, 400), state, row["JobId"], self.name))
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as ex:                 # the page only
+            if "CallState" in str(ex):
+                self._call_state = False        # schema 41 not applied yet
+            self.log(f"#{row['JobId']}: LLM call state not recorded: {type(ex).__name__}: {ex}"[:400])
 
     def cancelled(self, row: dict, by: str | None) -> str:
         conn = self.connect()
@@ -1053,7 +1262,7 @@ class Runner:
         return "skipped"
 
     def check_cancel(self) -> None:
-        """The jobs being asked that someone cancelled: their LLM calls stop (ai.cancel_thread_when in _run)."""
+        """The running jobs someone cancelled: their LLM calls stop (ai.cancel_thread_when in _run)."""
         with self.lock:
             ids = list(self.active)
         if not ids:
@@ -1090,26 +1299,61 @@ class Runner:
                  f"{out.get('summary')} in {seconds:.0f} s")
         return "answered"
 
+    @staticmethod
+    def answered_by(row: dict) -> dict:
+        """The job's Endpoint and Parallel from its LLM calls (row["_calls"]): the endpoint that answered most of
+        them, and the most requests at once on it during one; no call (answered from the cache, or no LLM work):
+        no endpoint. A row without the record (a job not run by _run) keeps its own."""
+        calls = row.get("_calls")
+        if calls is None:
+            return {}
+        asked = [c for c in calls if c.get("endpoint")]
+        if not asked:
+            return {"_endpoint": None, "_parallel": 1}
+        n: dict[str, int] = {}
+        for c in asked:
+            n[c["endpoint"]] = n.get(c["endpoint"], 0) + 1
+        ep = max(n, key=lambda k: n[k])
+        return {"_endpoint": ep, "_parallel": max(int(c.get("parallel") or 1) for c in asked if c["endpoint"] == ep)}
+
     def learn(self, row: dict, used: "_usage", seconds: float) -> None:
-        """The speed and size figures of the endpoint that answered (cz.LlmSpeed); a cached answer teaches nothing."""
-        tin, tout = used.tokens()
-        if not tin and not tout or not row.get("_endpoint"):
-            return
+        """The speed and size figures of each endpoint that answered (cz.LlmSpeed), from the job's LLM calls on it:
+        their characters, tokens and time (the calls only: building or verifying in between is not LLM time) and
+        the most requests at once on it; a job partly answered from the cache teaches nothing."""
         if used.partly_cached():                # the job's size counts answers that cost nothing now: no lesson
             return
-        ps, gs = used.timings()
-        try:
-            conn = self.connect()
+        calls = row.get("_calls")
+        if calls is None:                       # a job not run by _run: the job as one call on its endpoint
+            groups = {row.get("_endpoint"): ({"chars": row.get("InputChars"), "seconds": seconds,
+                                              "parallel": row.get("_parallel") or 1}, used.entries)}
+        else:
+            groups = {}
+            for c in calls:
+                if not c.get("endpoint"):
+                    continue
+                g, entries = groups.setdefault(c["endpoint"], ({"chars": 0, "seconds": 0.0, "parallel": 1}, []))
+                g["chars"] += int(c.get("chars") or 0)
+                g["seconds"] += float(c.get("seconds") or 0)
+                g["parallel"] = max(g["parallel"], int(c.get("parallel") or 1))
+                entries += list(c.get("entries") or [])
+        for ep, (g, entries) in groups.items():
+            u = _usage()
+            u.entries = entries
+            tin, tout = u.tokens()
+            if not tin and not tout or not ep:
+                continue
+            ps, gs = u.timings()
             try:
-                save_speed(conn, row["_endpoint"], row.get("Model") or "", row["Kind"],
-                           {"chars": row.get("InputChars"), "input_tokens": tin, "output_tokens": tout,
-                            "seconds": seconds, "prompt_seconds": ps, "generate_seconds": gs,
-                            "prompt_read": used.prompt_read(),
-                            "parallel": row.get("_parallel") or 1})
-            finally:
-                conn.close()
-        except Exception as ex:                 # statistics only
-            self.log(f"speed statistics not updated: {type(ex).__name__}: {ex}")
+                conn = self.connect()
+                try:
+                    save_speed(conn, ep, row.get("Model") or "", row["Kind"],
+                               {"chars": g["chars"] or None, "input_tokens": tin, "output_tokens": tout,
+                                "seconds": g["seconds"], "prompt_seconds": ps, "generate_seconds": gs,
+                                "prompt_read": u.prompt_read(), "parallel": g["parallel"]})
+                finally:
+                    conn.close()
+            except Exception as ex:                 # statistics only
+                self.log(f"speed statistics not updated: {type(ex).__name__}: {ex}")
 
     def progress(self, row: dict, text: str) -> None:
         """A long job's progress while it runs (a refactoring: generating, verifying), in Summary."""
@@ -1144,7 +1388,7 @@ class Runner:
         return "failed" if last else "retried"
 
     def release(self, ids: list[int]) -> None:
-        """Jobs still being asked at shutdown go back to the queue; the attempt does not count."""
+        """Jobs still running at shutdown go back to the queue; the attempt does not count."""
         if not ids:
             return
         conn = self.connect()
@@ -1277,7 +1521,11 @@ class Runner:
             self._ctx = None
 
     def fill(self, pool) -> list:
-        """Start jobs while the settings allow and slots are free. Returns the futures started."""
+        """Start jobs while the settings allow and job slots are free (jobs_at_once), in the queue's order. A job
+        needs no LLM request to start: its calls take one each (Slots). Only a job estimated to need the LLM waits
+        in the queue while every LLM request that would take it is in use or wanted (by calls waiting, or by jobs
+        just started that have not asked yet): the jobs after it that need no LLM start meanwhile. Returns the
+        futures started."""
         started = []
         conn = self.connect()
         try:
@@ -1290,41 +1538,56 @@ class Runner:
             settings = load_settings(conn)
             self.metrics.paused.set(1 if settings["Paused"] else 0)
             lanes = self.lanes(conn, settings)      # each LLM in its order, with its size limit and requests at once
+            self.slots.update(lanes)
+            room = jobs_at_once(settings, lanes)
+            now = _time.monotonic()
             with self.lock:
                 busy = len(self.active)
-                in_lane = {ln["name"]: sum(1 for r in self.active.values() if r.get("_lane") == ln["name"]) for ln in lanes}
-            # "only when idle" is checked before the first request: the runner's own requests load the machine
+                reserved = [int(r.get("EstInputTokens") or 0) for r in self.active.values()
+                            if r.get("_reserve_until", 0) > now]
+            spare = self.slots.spare(reserved)
+            # "only when idle" is checked before the first job: the runner's own work loads the machine
             ok, why = gate(settings, utcnow(), scans_running(conn), self.load() if not busy else 0.0,
                             restartplan.holding())
             self.metrics.open.set(1 if ok else 0)
             if why != self.status:
                 self.log(why or "open: taking jobs")
                 self.status = why
-            while ok and not self.stopping.is_set():
-                row = lane = None
-                for lane in lanes:              # the first LLM in the order that has a free request takes the
-                    if in_lane[lane["name"]] < lane["parallel"]:        # next job of a size it takes
-                        row = self.claim(conn, max_tokens=lane["max_tokens"] or None)
-                        if row:
-                            break
+            while ok and not self.stopping.is_set() and busy < room:
+                free = [ln for ln in lanes if spare.get(ln["name"], 0) > 0]
+                # an LLM with a spare request takes the next job of a size it takes; none: only jobs without LLM work
+                limit = 0 if not free else None if any(not ln["max_tokens"] for ln in free) else \
+                    max(int(ln["max_tokens"]) for ln in free)
+                row = self.claim(conn, max_tokens=limit)
                 if not row:
                     break
-                name, llm = lane["name"], lane["settings"]
+                est = int(row.get("EstInputTokens") or 0)
+                home = next(iter(self.slots.candidates(est, free if est else lanes)), None) or \
+                    (lanes[0] if lanes else {"name": "environment", "settings": None})
+                if est:                         # its first call is expected soon: that request is not spare
+                    spare[home["name"]] = spare.get(home["name"], 0) - 1
+                    row["_reserve_until"] = now + RESERVE_SECONDS
                 self._enter_llm(conn)
                 busy += 1
-                in_lane[name] += 1
-                row["_lane"], row["_llm"] = name, llm
+                self._order += 1
+                # the job's own LLM (the first in the order that takes its size) for what it does outside its calls
+                # (the model name in its result); each call picks its LLM again (Slots)
+                row["_lane"], row["_llm"], row["_order"], row["_calls"] = home["name"], home.get("settings"), self._order, []
                 try:
                     from .ai import configured, endpoint
-                    with configured(llm, local=True) if llm else contextlib.nullcontext():
-                        row["_endpoint"] = endpoint(row.get("Model") if not llm else None)
+                    with configured(row["_llm"], local=True) if row["_llm"] else contextlib.nullcontext():
+                        row["_endpoint"] = endpoint(row.get("Model") if not row["_llm"] else None)
                 except Exception:
                     row["_endpoint"] = None
-                row["_parallel"] = in_lane[name]    # jobs sharing the server while this one is asked
+                row["_parallel"] = 1
                 with self.lock:
                     self.active[row["JobId"]] = row
-                started.append(pool.submit(self._run, row))
-            self.metrics.llm_jobs.replace({(ln["name"], ln.get("label") or ln["name"]): in_lane[ln["name"]] for ln in lanes})
+                self.call_state(row, None)      # nothing left over from an earlier attempt
+                f = pool.submit(self._run, row)
+                if hasattr(f, "add_done_callback"):
+                    f.add_done_callback(lambda _f: self.wake.set())
+                started.append(f)
+            self._slots_changed()
         finally:
             conn.close()
         self.metrics.active.set(len(self.active))
@@ -1332,10 +1595,10 @@ class Runner:
         return started
 
     def _run(self, row: dict) -> str:
-        from .ai import cancel_thread_when
+        from .ai import cancel_thread_when, llm_slots
         try:
-            with cancel_thread_when(lambda: row["JobId"] in self.cancelling):   # Cancel: its LLM calls stop
-                if row.get("_llm"):                 # the LLM of the job's lane, for this job's thread only
+            with cancel_thread_when(lambda: row["JobId"] in self.cancelling), llm_slots(_JobCalls(self, row)):
+                if row.get("_llm"):                 # the job's own LLM, for this job's thread only
                     from .ai import configured
                     with configured(row["_llm"], local=True):
                         return self.process({**row, "Model": None})
@@ -1348,7 +1611,7 @@ class Runner:
         """Until stopped (or, with `once`, until nothing more can start). Returns the jobs finished."""
         self.recover(own=True)
         threading.Thread(target=self._heartbeats, name="llm-queue-heartbeat", daemon=True).start()
-        pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix="llm-job")
+        pool = ThreadPoolExecutor(max_workers=JOBS_AT_ONCE_MAX, thread_name_prefix="llm-job")
         futures: set = set()
         finished = 0
         try:
@@ -1365,9 +1628,12 @@ class Runner:
                 if once and not futures:
                     break
                 if futures:
-                    done, pending = wait(futures, timeout=self.poll, return_when=FIRST_COMPLETED)
+                    # until a job finishes, an LLM request comes free (another job may start) or the next poll
+                    self.wake.wait(self.poll)
+                    self.wake.clear()
+                    done = {f for f in futures if f.done()}
                     finished += len(done)
-                    futures = set(pending)
+                    futures -= done
                 else:
                     self.stopping.wait(self.poll)
                 if not futures:
@@ -1457,6 +1723,7 @@ def build(args) -> int:
     def stop(signum, frame):
         r.log("stopping")
         r.stopping.set()
+        r.wake.set()
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     r.log(f"{r.name}: looking at the LLM queue every {args.poll}s (kinds: {', '.join(r.kinds)})")

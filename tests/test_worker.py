@@ -374,7 +374,7 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
         s, _, body = b.follow("/admin/source-control/llm", {"csrf": csrf, "Provider": "anthropic", "Model": "x",
                                                             "Token": "sk-ant-0123456789", "LlmOrder": "20",
                                                             "LlmMaxTokens": "0", "LlmParallel": "4"})
-        assert "LLM saved" in body and "order 20, jobs up to any size, 4 at once" in body
+        assert "LLM saved" in body and "order 20, calls up to any size, 4 at once" in body
         second = int(re.search(r"/admin/source-control/(\d+)/token", body)[1])
         s, _, body = b.follow("/admin/source-control/llm", {"csrf": csrf, "Provider": "openai", "ApiUrl": "https://llm.example/v1",
                                                             "Model": "other", "Token": "x" * 20})

@@ -127,7 +127,7 @@ when the build cannot find one (NU1101, NU1102), the reference is removed (outsi
 | **Verified** | The patch applies cleanly, and every changed component builds and runs |
 | **Applies only** | The patch applies cleanly, but a build or a run failed, or could not be done (no Docker, a component that is not built in a Linux container as it is): the log tail says why |
 | **Failed** | No patch: the LLM made no usable edits, or the patch did not apply cleanly (never offered) |
-| Cancelled | Skipped, or cancelled while it was being asked, on the LLM queue page |
+| Cancelled | Skipped, or cancelled while it ran, on the LLM queue page |
 
 A failure to reach the LLM, or a source that is gone, is a failed attempt of the queue job: it is tried
 again up to three times (the LLM queue page shows the error), then the order fails. A commit that is no
