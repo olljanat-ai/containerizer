@@ -11,6 +11,8 @@ qcow2 and VHDX images as release assets.
 - The appliance's configuration files (`/etc/containerizer`: the `.env` files, `egress.json`, `network/`) are copied
   without their secrets to `.appliance/<CZ_HOSTNAME>/config/` of every output repository at every boot, in one commit
   when something changed: their history is in Git ([backup](docs/appliance-admin.md#backup)).
+- An output repository registered twice under Admin → Source control (another spelling of its URL) uses the write
+  token set last, the one that most likely replaced an expired or revoked one, instead of the first in the list.
 - The output repository's clone and push are tried again after a transient failure (a GitHub outage: HTTP 5xx,
   `[remote rejected] (Internal Server Error)`, a dropped connection), after 10, 30 and 90 seconds. Before, the three
   push attempts came back to back, so a short outage failed a scan's or a Make it A order's deploy. A write token
