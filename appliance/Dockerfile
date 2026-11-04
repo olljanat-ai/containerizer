@@ -33,7 +33,7 @@ RUN apt-get update \
     grub2-common grub-efi-amd64-signed shim-signed \
     btrfs-progs btrfsmaintenance dosfstools e2fsprogs fdisk gdisk parted lvm2 dmsetup mtools squashfs-tools xorriso \
     rsync findutils kmod kbd tzdata less vim bash-completion \
-    ca-certificates curl gpg iproute2 iputils-ping nftables iptables conntrack dnsmasq-base \
+    ca-certificates curl gpg iproute2 iputils-ping net-tools bridge-utils nftables iptables conntrack dnsmasq-base \
     openssh-server openssh-client \
     apparmor docker.io docker-cli docker-buildx git caddy \
     python3 python3-venv \

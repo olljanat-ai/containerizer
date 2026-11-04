@@ -22,6 +22,8 @@ qcow2 and VHDX images as release assets.
   switch which port the appliance is on. A static address now goes on `bond0`; a file that names a NIC keeps that
   NIC out of the bond. The DHCP client ID is now that of `bond0`, so the DHCP server may hand out a new
   address after the upgrade unless it is reserved.
+- The appliance has `net-tools` (`ifconfig`, `netstat`, `route`, `arp`) and `bridge-utils` (`brctl`) for those
+  used to them; `ip`, `ss` and `bridge` remain the ones the docs use.
 - The appliance's configuration files (`/etc/containerizer`: the `.env` files, `egress.json`, `network/`) are copied
   without their secrets to `.appliance/<CZ_HOSTNAME>/config/` of every output repository at every boot, in one commit
   when something changed: their history is in Git ([backup](docs/appliance-admin.md#backup)).
