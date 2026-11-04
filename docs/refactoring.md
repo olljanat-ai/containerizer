@@ -198,6 +198,13 @@ build or run** means the code changes remove what kept it from A, but the copy i
 errors are under **Verification**; **Fix it with the LLM** orders a repair. **Findings left (they do not keep it
 from A)** are configuration findings an A application may still have.
 
+**Build again (no LLM).** A build or run can fail for a reason outside the code: the appliance's firewall blocks
+a package mirror (`E: Unable to locate package ...`), a registry was down. Once that is fixed, **Build again (no
+LLM)** on the order page (any finished Make it A order with a patch) places a new order with the same patch: it is
+applied, built, run and assessed, and deployed to the sandbox when it rates A and runs, as the first time. It makes
+no LLM call (no repair round either, and no LLM-heavy chain), so it needs no approval; it still waits for its turn in
+the LLM queue. When it still fails, **Fix it with the LLM** on its page is there as usual.
+
 **Newer code starts from the earlier patch.** When the application has a working Make it A patch (it builds,
 runs and rates A) for an older commit, a new order for the newer code starts from it. The patch is applied file by
 file (with a 3-way merge where git can). The files it still applies to are kept as they are and the LLM is not asked

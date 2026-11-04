@@ -8,6 +8,9 @@ qcow2 and VHDX images as release assets.
 
 ## Unreleased
 
+- **Build again (no LLM)** on a Make it A order: the same patch is built, run, assessed and deployed to the
+  sandbox again without an LLM call, for a build that failed outside the code (a firewall rule, a package mirror).
+
 - A Make it A order for newer code starts from the application's earlier working patch: the files it still
   applies to are kept without asking the LLM, and only the rest are edited again. When the newer code did not touch
   the patched files, the order makes no LLM call. The order page says which patch it started from.

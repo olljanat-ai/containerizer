@@ -94,6 +94,8 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict, flash:
                                                                      ORDER_NOTICES.get(code, flash))
         if len(parts) == 3 and parts[2] == "repair" and method == "POST" and not m[2]:
             return repair(adm, conn, s, a, r)
+        if len(parts) == 3 and parts[2] == "rebuild" and method == "POST" and not m[2]:
+            return rebuild(adm, conn, s, a, r)
         if len(parts) == 3 and parts[2] == "remove" and method == "POST" and not m[2]:
             return remove_variant(adm, conn, s, a, r)
     return _nf()
@@ -124,6 +126,36 @@ def repair(adm, conn, s, a, r: dict) -> Response:
     wait = st and st[0]["Status"] == "approval"
     return _back(f"{BASE}/{jid}", "Fix requested: " + ("it waits for an administrator's approval."
                                                        if wait else "it waits in the LLM queue."))
+
+
+def rebuildable(r: dict, pl: dict, res: dict) -> bool:
+    """A finished Make it A order with a patch: it can be built, run and deployed again without the LLM."""
+    return pl.get("goal") == "rating-a" and bool(res.get("patch")) and r.get("Status") in ("answered", "failed", "skipped")
+
+
+def rebuild(adm, conn, s, a, r: dict) -> Response:
+    """"Build again (no LLM)": a new order with the same patch (rf.rebuild_payload), approved at once: it makes no
+    LLM call, so it does not wait for an approval."""
+    from .llmqueue import SqlJobQueue
+    jid0 = int(r["JobId"])
+    pl, res = _json(r.get("Payload")), _json(r.get("Result"))
+    if not rebuildable(r, pl, res):
+        return _back(f"{BASE}/{jid0}", "Only a finished Make it A order with a patch can be built again.")
+    try:
+        payload = rf.rebuild_payload(pl, res, jid0)
+    except rf.RefactorError as ex:
+        return _back(f"{BASE}/{jid0}", str(ex))
+    job = rf.queue_job(payload, 0, requested_by=None)
+    job["Repository"] = r.get("Repository") or r.get("App")
+    jid = SqlJobQueue(None).add_with(conn, job)
+    if not jid:
+        return _back(f"{BASE}/{jid0}", "A build of this patch is already requested.")
+    cur = conn.cursor()
+    cur.execute("UPDATE cz.LlmJob SET Status = N'queued', ApprovedBy = %s, ApprovedAt = SYSUTCDATETIME() "
+                "WHERE JobId = %s AND Status = N'approval'", (s.user, jid))
+    conn.commit()
+    return _back(f"{BASE}/{jid}", "Build requested: the same patch is built, run and assessed again, without the LLM, "
+                                  "and deployed to the sandbox when it rates A and runs.")
 
 
 def remove_variant(adm, conn, s, a, r: dict) -> Response:
@@ -359,6 +391,9 @@ KIND_TEXT = {"generate": "Changes for the findings", "repair": "Repair of the bu
 def _reused_line(res: dict, pl: dict) -> str:
     """The earlier patch this order started from (refactor.reuse_files): the files it still applied to as they
     were, and the ones the LLM edited again."""
+    if pl.get("rebuild") and pl.get("base_job"):
+        return (f"<p class='small'>The patch of order <a href='{BASE}/{int(pl['base_job'])}'>#{int(pl['base_job'])}</a>"
+                f", built again as it is, without the LLM.</p>")
     ru = res.get("reused") or {}
     if not ru.get("job"):
         return ""
@@ -529,6 +564,12 @@ def show_order(adm, conn, s, a, ident: int, flash: str) -> Response:
                     f"the files they are in and this patch, and the result is one patch with both changes, verified again."
                     f"<form method='post' action='{BASE}/{ident}/repair' class='inline'>{adm._csrf(s)}"
                     f"<button>Fix it with the LLM</button></form></div>")
+    if rebuildable(r, pl, res):
+        body.append(f"<div class='note'><b>Fixed something outside the code?</b> After a firewall rule or a package "
+                    f"mirror, build this patch again as it is: it is applied, built, run and assessed, and deployed "
+                    f"to the sandbox when it rates A, without the LLM."
+                    f"<form method='post' action='{BASE}/{ident}/rebuild' class='inline'>{adm._csrf(s)}"
+                    f"<button>Build again (no LLM)</button></form></div>")
     if pl.get("goal") != "rating-a" and res:
         body.append(_heavy_line(res, pl))
     if pl.get("goal") == "rating-a":

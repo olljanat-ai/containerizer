@@ -1110,3 +1110,45 @@ def test_a_patch_for_older_code_no_longer_counts_as_made_a():
         {"ApplicationId": 1, "JobId": 2, "SandboxStatus": "running", "SandboxUrl": None, "FinishedAt": None}]})
     assert webui.load_a_patches(conn)[1]["JobId"] == 2
     assert conn.sql(r"o\.SourceCommit = l\.SourceCommit")
+
+
+# --------------------------------------------------------------------------- Build again (no LLM)
+
+def test_build_again_reuses_the_patch_without_the_llm(stateful, tmp_path, builds):
+    outcomes, _ = builds
+    outcomes[:] = ["build-failed", "build-failed", "build-failed", "ok"]
+    first = rf.run_order({**_pl(stateful), "max_repairs": 0}, tmp_path / "w1", ask=Asker(GOOD), name="shop-refactor-50")
+    assert first["status"] != "verified" and first["patch"]
+    pl = rf.rebuild_payload({**_pl(stateful), "heavy_round": 3, "deadline": "x", "reuse_patch": "P"}, first, 50)
+    assert pl["max_calls"] == 0 and pl["rebuild"] and pl["base_job"] == 50 and pl["base_patch"] == first["patch"]
+    assert not any(k.startswith("heavy_") for k in pl) and "deadline" not in pl and "reuse_patch" not in pl
+    outcomes[:] = ["ok"]                                     # the firewall rule is in now
+    ask = Asker(GOOD)
+    res = rf.run_order(pl, tmp_path / "w2", ask=ask, name="shop-refactor-51")
+    assert ask.asked == {} and res["calls"] == 0
+    assert res["status"] == "verified" and res["rating_reached"], res.get("reason")
+    outcomes[:] = ["build-failed"]                           # still failing: no repair round, still no LLM
+    res = rf.run_order(pl, tmp_path / "w3", ask=ask, name="shop-refactor-52")
+    assert ask.asked == {} and res["status"] != "verified" and [x["kind"] for x in res["loop"]] == ["generate"]
+    with pytest.raises(rf.RefactorError):
+        rf.rebuild_payload({**pl, "goal": "fix"}, first, 50)
+
+
+def test_build_again_button_queues_an_approved_order(adm):
+    from test_refactor import _job, RESULT
+    res = {**RESULT, "status": "applies-only", "goal": "rating-a", "rating_before": "B", "rating_after": "A",
+           "rating_reached": False, "loop": []}
+    job = _job(result=res, Payload=json.dumps({"commit": "a" * 40, "goal": "rating-a", "tasks": [],
+                                                                  "components": [{"name": "Web", "project": "Web"}]}))
+    adm.conn.answers = {r"FROM cz.LlmJob WHERE JobId = %s AND Kind = N'refactor'": [job],
+                        r"SELECT RemoveRequestedAt FROM cz.LlmJob": [{"RemoveRequestedAt": None}],
+                        r"EXEC cz.QueueLlmJob": [{"JobId": 43}]}
+    op = adm.sessions.create("o@example.com", "O", False, True, True, [])
+    b = _get(adm, op, "/admin/refactoring/42").body
+    assert "action='/admin/refactoring/42/rebuild'" in b and "Build again (no LLM)" in b
+    r = _post(adm, op, "/admin/refactoring/42/rebuild")
+    assert "/admin/refactoring/43" in _loc(r)
+    (sql, params), = adm.conn.sql("EXEC cz.QueueLlmJob")
+    pl = json.loads(params[-1])
+    assert pl["rebuild"] and pl["max_calls"] == 0 and pl["base_job"] == 42
+    assert adm.conn.sql(r"SET Status = N'queued', ApprovedBy")                    # no approval wait: no LLM call

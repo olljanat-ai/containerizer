@@ -307,6 +307,21 @@ def without_fixed(errors: list[dict], fixed: set) -> list[dict]:
 REUSE_KEYS = ("reuse_patch", "reuse_job", "reuse_commit")
 
 
+def rebuild_payload(payload: dict, result: dict, base_job: int) -> dict:
+    """"Build again (no LLM)": a Make it A order whose patch is the earlier order's, as it is: applied, built, run,
+    assessed and, when it rates A and runs, deployed to the sandbox, without an LLM call (max_calls 0) and outside
+    any LLM-heavy chain. For a build that failed for a reason outside the code (a firewall rule, a package mirror),
+    once that is fixed."""
+    if payload.get("goal") != "rating-a":
+        raise RefactorError("only a Make it A order can be built again")
+    if not result.get("patch"):
+        raise RefactorError("the earlier order has no patch to build again")
+    drop = ("deadline", "base_patch", "sandbox_errors", "errors", "log_tail", "base_status", "base_subject") + REUSE_KEYS
+    keep = {k: v for k, v in payload.items() if k not in drop and not k.startswith("heavy_")}
+    return {**keep, "base_patch": result["patch"], "base_job": int(base_job), "rebuild": True,
+            "max_calls": 0, "max_passes": 1, "max_repairs": 0}
+
+
 def repair_payload(payload: dict, result: dict, base_job: int) -> dict:
     """An order that repairs the patch of an earlier one whose build or run failed: the same source and
     commit, the earlier patch applied first, and the errors of its verification."""
@@ -1848,7 +1863,7 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
     progress = progress or (lambda text: None)
     log = log or (lambda text: None)
     verify = payload.get("verify", True) if verify is None else verify
-    budget = int(payload.get("max_calls") or MAX_CALLS_A)
+    budget = MAX_CALLS_A if payload.get("max_calls") is None else int(payload["max_calls"])   # 0: no LLM (rebuild)
     passes = max(1, int(payload.get("max_passes") or MAX_PASSES_A))
     repairs = max(0, int(MAX_REPAIRS_A if payload.get("max_repairs") is None else payload["max_repairs"]))
     work.mkdir(parents=True, exist_ok=True)
@@ -2351,7 +2366,7 @@ def handler(job: dict) -> dict:
     work = Path(tempfile.mkdtemp(prefix=f"refactor-{int(job.get('JobId') or 0)}-", dir=base))
     progress = job.get("_progress") or (lambda text: None)
     name = variant_name(pl.get("app"), int(job.get("JobId") or 0))
-    ends = heavy_window(job)
+    ends = None if pl.get("rebuild") else heavy_window(job)     # a rebuild makes no LLM call and starts no chain
     run_pl = heavy_payload(pl, ends) if ends else pl
     try:
         result = run_order(run_pl, work, progress=progress, name=name)
