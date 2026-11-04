@@ -8,6 +8,16 @@ qcow2 and VHDX images as release assets.
 
 ## Unreleased
 
+- Appliance: a push to the output repository deploys at once instead of at Flux's next poll (up to 5 minutes).
+  `cz-sandbox` keeps a Flux webhook Receiver (`flux-system/containerizer-sandbox`, type generic) over the root
+  sync's GitRepository and every app's own, with a token it makes once in the secret store
+  (`flux-system--cz-webhook`); the scan worker and the LLM queue runner call it after every successful push (scans,
+  Make it A variants, connectivity and link decisions, moved applications, sandbox switches, configuration backup),
+  through `/run/containerizer/flux-webhook` (root:containerizer 0640, the receiver's cluster address: reachable from
+  the appliance only). Best effort: a failed call is logged once and never fails the push, and polling stays as the
+  fallback. Existing appliances get it after the upgrade: `cz-sandbox` makes the Receiver within 2 minutes and the
+  URL on a later run, once the Receiver is ready. docs/scheduled-scans.md#flux-webhook also shows a Receiver for a
+  cluster of your own.
 - The Containerizer logo and name sit in the top bar's right corner of every results page, above the sign-in links,
   instead of a line of their own above the front page's title.
 - The Refactoring box on a B application's results page has one button, **Make it A**. The separate **Request a

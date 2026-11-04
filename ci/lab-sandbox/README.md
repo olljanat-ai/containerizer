@@ -26,6 +26,7 @@ sandbox through GitOps can be tested end to end. The full description is in the 
 | Sync (cz-sandbox equivalent), systemd `lab-sandbox-sync.timer` | every 2 minutes, runs `sync.sh` as this user |
 | Credentials | `secrets.env` (600): Gitea admin `lab-admin` password, write token (output repository), read-only token (Flux) |
 | Read-only verifier | `verifier.kubeconfig` (24-hour token, renewed by the timer) |
+| Flux webhook (Receiver `containerizer-sandbox`) | `flux-webhook` (600): the URL a push calls so Flux reconciles at once (`CONTAINERIZER_FLUX_WEBHOOK` in `env.sh`) |
 | Lab CA | `state/pki/ca.crt` (git trusts it for `https://lab-git:3001/` only, in `~/.gitconfig`) |
 
 Images: pods use Docker's image store. `docker build -t localhost/lab/<app>/<component>:<tag>` and a

@@ -10,6 +10,8 @@ export LAB_DIR=$_lab_dir
 # the cluster: admin (kubectl, Flux) and the read-only verifier (containerizer sandbox verify)
 export KUBECONFIG=$_lab_dir/kubeconfig
 export LAB_VERIFIER_KUBECONFIG=$_lab_dir/verifier.kubeconfig
+# Flux reconciles right after each push to the output repository (sync.sh writes the URL; fluxhook.py)
+export CONTAINERIZER_FLUX_WEBHOOK=$_lab_dir/flux-webhook
 
 # the output repository (Gitea): the same URL works on the host and in the cluster
 export LAB_OUTPUT_REPO=https://lab-git:3001/lab/sandbox-deployments.git

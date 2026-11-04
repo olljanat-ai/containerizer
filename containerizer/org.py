@@ -738,6 +738,9 @@ class Output:
                     if attempt == 2 or AUTH_FAILED_RE.search(str(e)) or "refused the write token" in str(e):
                         raise
                     pull()
+            # the sandbox's Flux reconciles now instead of at its next poll (fluxhook.py; a no-op off the appliance)
+            from .fluxhook import notify
+            notify(message.splitlines()[0] if message else "")
         return True
 
 

@@ -277,7 +277,41 @@ and allow the Git server on **Admin → Firewall**. Every 2 minutes the applianc
   in `sandbox/namespaces.txt`;
 - creates the root `GitRepository` and `Kustomization` of `sandbox/flux/`. The root creates each tenant
   (namespace with Pod Security "restricted", ServiceAccounts, a namespace-only RoleBinding, read access to
-  its own secret store keys), and each app then reconciles as its own ServiceAccount.
+  its own secret store keys), and each app then reconciles as its own ServiceAccount;
+- keeps the Flux webhook up to date (below).
+
+<a id="flux-webhook"></a>**Polling and the webhook.** Flux polls the output repository: the root sync and each
+app's own `GitRepository` every 5 minutes. So that a deploy does not wait for the next poll, `cz-sandbox` keeps a
+Flux `Receiver` (notification-controller, type `generic`) named `containerizer-sandbox` in `flux-system` that names
+the root sync's `GitRepository` and every `GitRepository` containerizer generated in the app namespaces. After each
+push to the output repository (a scan, a Make it A variant, a connectivity or link decision, an application moved
+to its own output repository, the sandbox switches, the configuration backup) the scan worker and the LLM queue
+runner call it, and Flux fetches the new commit at once. Its token is made once and kept in the secret store
+(`flux-system--cz-webhook`, read by the ExternalSecret `containerizer-sandbox-webhook`); the URL, the
+`webhook-receiver` Service's cluster address and the path Flux derives from the token, is in
+`/run/containerizer/flux-webhook` (root:containerizer, 0640). The receiver is reached from the appliance itself
+only: nothing publishes it. A call that fails (Flux restarting, the receiver not ready yet after the first boot)
+is logged once and never fails the push; polling picks the commit up as before.
+
+On another cluster (the generated `gitops/` or `sandbox/README.md`), Flux polls unless you add a receiver
+yourself. To deploy on each push, create a `Receiver` of your Git server's type for the app's `GitRepository`
+and point the repository's push webhook at it ([Flux webhook receivers](https://fluxcd.io/flux/guides/webhook-receivers/)):
+
+```yaml
+apiVersion: notification.toolkit.fluxcd.io/v1
+kind: Receiver
+metadata: {name: <namespace>, namespace: <namespace>}
+spec:
+  type: github                 # gitlab, bitbucket, ... ; Azure DevOps: generic (a service hook to the URL)
+  events: [push]
+  secretRef: {name: <namespace>-webhook}   # key `token`: an ExternalSecret from the store, never in Git
+  resources:
+    - {apiVersion: source.toolkit.fluxcd.io/v1, kind: GitRepository, name: <namespace>}
+```
+
+The webhook URL is `https://<receiver address>` + the Receiver's `.status.webhookPath`; expose the
+notification-controller's `webhook-receiver` Service through your Ingress for the Git server only, and set the
+webhook's secret to the same token.
 
 Nothing in the output repository is a Secret: credentials are ExternalSecrets ([secrets](external-secrets.md)).
 Apps that need a database, cache or object storage get one from the [lab services](lab-services.md), or a

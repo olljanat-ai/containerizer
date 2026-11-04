@@ -257,6 +257,11 @@ deployed from that repository, with its token: the LLM queue runner writes it to
 `/var/lib/containerizer/refactor/sandbox-git/<namespace>` (0600, its own user) and `cz-sandbox` puts it in that
 namespace's key.
 
+Flux polls the output repository every 5 minutes; after each push the scan worker and the LLM queue runner also
+call a Flux webhook (Receiver `flux-system/containerizer-sandbox`, which `cz-sandbox` keeps up to date) so the
+commit deploys at once. Its URL, the secret, is in `/run/containerizer/flux-webhook` (root:containerizer 0640) and
+reachable from the appliance only ([polling and the webhook](scheduled-scans.md#flux-webhook)).
+
 To reach the deployed apps over HTTPS, set up a wildcard domain and certificate on **Admin → Sandbox
 HTTPS**: Caddy answers for `*.<domain>` on the same port 443 and passes the requests to Traefik in k3s,
 and every web component gets `https://<component>-<app>.<domain>/` ([sandbox-https.md](sandbox-https.md)).
