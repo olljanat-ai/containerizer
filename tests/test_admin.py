@@ -386,6 +386,14 @@ def test_admin_maps_and_audits(idp, tmp_path):
         assert "Not saved" in b.follow(f"/admin/applications/{app}/sandbox", {"csrf": csrf, "Enabled": "x"})[2]
         s, _, body = b.follow(f"/admin/applications/{app}/sandbox", {"csrf": csrf, "Enabled": "1"})
         assert "Sandbox enabled" in body and "Disable the sandbox" in body
+        # its own output repository (administrators): only one with a write token; clearing needs the admin grant
+        assert "<h2>Output repository</h2>" in body
+        s, _, body = b.follow(f"/admin/applications/{app}/output", {"csrf": csrf, "Action": "save", "OutputBranch": "main",
+                                                                    "OutputRepo": "https://git.example.com/nope",
+                                                                    "OutputPath": "deploy"})
+        assert "choose a repository with a write token" in body
+        s, _, body = b.follow(f"/admin/applications/{app}/output", {"csrf": csrf, "Action": "clear"})
+        assert "Cleared" in body
         # results pages show the mapping and the product page link
         body = b.follow("/")[2]
         assert "Retail" in body and "Web Shop" in body and "https://cmdb.example.com/products/42" in body

@@ -300,6 +300,9 @@ rate A on their own, so a B application has only those in the sandbox, often non
   starts from it (above). Variants deployed before 0.9.1 had an expiry
   date, which no longer applies.
 
+The variant's folder also holds the order's patch, `make-it-a.patch`, so developers who look in the output
+repository find the code change next to its manifests (`git am` it on the commit it was made for).
+
 The results page shows the variant's state next to the order, with its URL (**open ↗**) while it runs.
 
 **Images without a registry.** In a lab whose sandbox cluster shares the image builder's Docker image store (k3s

@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 KUBECONFIG_ENV = "CONTAINERIZER_SANDBOX_KUBECONFIG"
+PATCH_FILE = "make-it-a.patch"                 # the order's patch, in the variant's folder
 CONTEXT_ENV = "CONTAINERIZER_SANDBOX_CONTEXT"
 TIMEOUT_ENV = "CONTAINERIZER_SANDBOX_VARIANT_TIMEOUT"
 DEFAULT_TIMEOUT = 900
@@ -265,6 +266,8 @@ def deploy(connect, key, payload: dict, job: int, result: dict, work: Path, name
     doc["variant"] = {"of": original, "of_app": payload.get("app"), "job": job, "application_id": payload.get("application_id"),
                       "commit": payload.get("commit")}
     (out.root / rel / "containerizer.json").write_text(json.dumps(doc, indent=2, default=str) + "\n")
+    if result.get("patch"):          # the order's patch, for developers who look here (apply it to the commit)
+        (out.root / rel / PATCH_FILE).write_text(str(result["patch"]))
     write_sandbox(out.root, out.url, o.output_branch, _off(connect))
     out.commit(f"containerizer: sandbox variant {rel} of {original} (\"Make it A\" order #{job}, {tag})")
     rev = _head(out.root)

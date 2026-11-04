@@ -35,6 +35,7 @@ SKIP_TEXT = {"skipped-dockerfile": "Has a Dockerfile", "skipped-no-code": "No ap
              "skipped-output": "The scan's output repository"}
 LAST_TEXT = {"deployed": "Deployed to the sandbox", "no-a-components": "Assessed: no component rated A",
              "sandbox-off": "Assessed: its sandbox is turned off",
+             "moved": "Assessed: its files are in its own output repository",
              "error": "Failed", "disabled": "Not processed (disabled)", **{k: "Skipped" for k in SKIP_TEXT}}
 RUN_TEXT = {"queued": "Queued", "running": "Running", "succeeded": "Finished", "failed": "Failed",
             "cancelled": "Cancelled"}

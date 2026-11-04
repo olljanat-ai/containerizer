@@ -66,6 +66,40 @@ and commits it. A scan also leaves the application out when it writes `sandbox/`
 switched it and when. A Make it A copy stays until a scan assesses newer code of its application, also while
 the sandbox is off.
 
+<a id="own-output-repository"></a>
+## An application's own output repository
+
+What works in the sandbox can be the starting point of the application's real deployment. **Admin →
+Applications** → the application → **Output repository** (administrators) gives it a repository of its own, one
+with a write token under **Admin → Source control**, a branch, and a folder in it (`deploy` by default). Its files
+are then **moved there once**:
+
+1. Within a few minutes the LLM queue runner copies the application's folder from the scan's output repository
+   to that folder, with its Flux files pointed at the new repository, branch and folder, and commits it there
+   (*moved here from ...*). `containerizer.json` says where it came from, and `MOVED.md` says what follows. The
+   folder must be empty or missing: one with other files in it is not overwritten (the page says so, and the
+   runner tries again every 10 minutes). Until a scan has deployed the application, the move waits.
+2. In the scan's output repository, the application's folder becomes a **stub**: `containerizer.json` (with
+   `moved_to`), the Flux tenant and sync files, pointed at the application's repository, each component's
+   `idp.json` and `k8s.yaml`, and a README. `sandbox/` still lists it, so **the sandbox deploys it from its own
+   repository**: what its team changes there runs in the sandbox too.
+3. The page shows **Moved**, with the repository, the folder, the commit and when.
+
+From then on the files are its team's. The scans still **assess** the application, so its results stay current,
+but they do not generate, build or deploy it, and they never change or remove its stub (the repository's state
+says *Assessed: its files are in its own output repository*). Its Make it A copies are still deployed beside it,
+in the scan's output repository, as before.
+
+The sandbox reads the application's repository with a read token registered for the organization it is in, or
+else with its write token. On the appliance the LLM queue runner hands it to `cz-sandbox`
+(`/var/lib/containerizer/refactor/sandbox-git/<namespace>`, readable by the runner and root only), which puts it in
+the namespace's key of the secret store. Allow the repository's host on **Admin → Firewall** if it is another one.
+
+**Back to the scan's output repository** (on the same page) undoes it: the runner removes the stub, so the
+application leaves the sandbox, and the next scan of its repository generates and deploys it in the scan's
+output repository again. The copy in its own repository stays. To move it somewhere else, go back first. Every
+change is in the application's change history.
+
 **Scan now**, on a project's or repository's page or for the ones selected in the lists, runs a full
 scan of only those, outside the schedule, for example after a fix was pushed. The other repositories
 keep their results from the last full run. Disabled ones stay disabled; a run of the scan that is
@@ -215,6 +249,7 @@ note in the change history. A disabled project overrides the settings of its rep
     gitops/flux/             tenant.yaml, git/sync.yaml, oci/, image automation
     <component>/             Dockerfile, Dockerfile.dockerignore, k8s.yaml, plan.json
     pipeline/<provider>/     the image build pipeline for the application's own repository (build-pipelines.md)
+  <Project>/<Repository>-refactor-<job>/   a Make it A copy (refactoring.md), with make-it-a.patch
 sandbox/
   README.md namespaces.txt
   flux/bootstrap.yaml        GitRepository + root Kustomization

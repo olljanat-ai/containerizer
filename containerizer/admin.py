@@ -34,7 +34,8 @@ TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Applicatio
               "RulesRepository": "Internal rules repository", "LlmJob": "LLM queue job",
               "LlmQueueSettings": "LLM queue settings"}
 FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
-              "Retired": "Hidden", "SandboxEnabled": "Sandbox", "Product": "Product", "BusinessUnit": "Business unit", "InfoUrl": "Product page link",
+              "Retired": "Hidden", "SandboxEnabled": "Sandbox", "OutputRepo": "Own output repository",
+              "OutputBranch": "Its branch", "OutputPath": "Its folder", "Product": "Product", "BusinessUnit": "Business unit", "InfoUrl": "Product page link",
               # the internal rules repository (rule review)
               "RepoUrl": "Repository URL", "Branch": "Branch", "Path": "Folder",
               # organization scans
@@ -273,6 +274,8 @@ class Admin:
                 return self.bulk_map(conn, a, form)
             if ident is not None and len(parts) == 3 and parts[2] == "sandbox" and method == "POST":
                 return self.set_sandbox(conn, a, ident, form)
+            if ident is not None and len(parts) == 3 and parts[2] == "output" and method == "POST":
+                return self.set_output(conn, a, ident, form)
             if ident is not None and len(parts) == 3 and parts[2] == "heavy" and method == "POST":
                 from . import admin_heavy                # LLM-heavy mode for a while (administrators)
                 return admin_heavy.start(conn, s, a, ident, form)
@@ -542,7 +545,8 @@ class Admin:
     def edit_application(self, conn, s: Session, a: Access, app_id: int, flash: str) -> Response:
         cur = conn.cursor(as_dict=True)
         cur.execute("SELECT x.ApplicationId, x.Name, x.DisplayName, x.Description, x.Owner, x.ProductId, x.Retired, x.RepositoryUrl, "
-                    "x.SandboxEnabled, x.SourcePath, x.FirstSeenAt, x.LastSeenAt, p.Name AS ProductName FROM cz.Application x "
+                    "x.SandboxEnabled, x.SourcePath, x.FirstSeenAt, x.LastSeenAt, p.Name AS ProductName, x.OutputRepo, "
+                    "x.OutputBranch, x.OutputPath, x.OutputMovedAt, x.OutputMovedCommit, x.OutputMoveError FROM cz.Application x "
                     "LEFT JOIN cz.Product p ON p.ProductId = x.ProductId WHERE x.ApplicationId = %s", (app_id,))
         r = cur.fetchone()
         if not r:
@@ -569,7 +573,8 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
                     f"<dt>Hidden</dt><dd>{'yes' if r['Retired'] else 'no'}</dd></dl>")
         from . import admin_heavy
         heavy = admin_heavy.section(self, conn, s, a, app_id) if a.admin else ""
-        body = f"{head}{form}{self._sandbox_section(s, a, r)}{heavy}<h2>Changes</h2>{self._history(conn, 'Application', app_id)}"
+        output = self._output_section(conn, s, a, r) if a.admin else ""
+        body = f"{head}{form}{self._sandbox_section(s, a, r)}{output}{heavy}<h2>Changes</h2>{self._history(conn, 'Application', app_id)}"
         return Response(200, self._shell(s, a, r["DisplayName"] or r["Name"], "applications", body, flash))
 
     @staticmethod
@@ -591,6 +596,102 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
                     f"{self._csrf(s)}<input type='hidden' name='Enabled' value='{'0' if on else '1'}'>"
                     f"<button{' class=secondary' if on else ''}>{'Disable' if on else 'Enable'} the sandbox</button></form>")
         return out
+
+    def _output_section(self, conn, s: Session, a: Access, r: dict) -> str:
+        """The application's own output repository (appoutput.py; administrators: it uses the registered write
+        tokens): where its files are moved once, the starting point of its real deployment."""
+        from .admin_scans import _output_repos
+        from .appoutput import DEFAULT_PATH, WAITING
+        app_id = int(r["ApplicationId"])
+        out = ["<h2>Output repository</h2>"]
+        repo = r.get("OutputRepo")
+        if repo and r.get("OutputMovedAt"):
+            out.append(f"<p><span class='st st-ok'>Moved</span> Its files are in <b>{e(repo)}</b>, folder "
+                       f"<code>{e(r.get('OutputPath') or DEFAULT_PATH)}</code> on <code>{e(r.get('OutputBranch') or 'main')}</code> "
+                       f"(commit <code>{e(str(r.get('OutputMovedCommit') or '')[:12])}</code>, {_d(r['OutputMovedAt'])}). "
+                       "They are its team's now: the scans assess the application but no longer write its files, and "
+                       "the sandbox deploys it from there.</p>"
+                       f"<form method='post' action='/admin/applications/{app_id}/output' class='formrow'>{self._csrf(s)}"
+                       "<input type='hidden' name='Action' value='clear'><button class=secondary>Back to the scan's output "
+                       "repository</button></form><p class='muted small'>The copy in its own repository stays. The next "
+                       "scan generates and deploys it in the scan's output repository again; until then it is out of "
+                       "the sandbox. To move it somewhere else, go back first.</p>")
+            return "".join(out)
+        if repo:
+            err = r.get("OutputMoveError")
+            state = (f"<span class='st st-warn'>Waiting</span> {e(err)}" if err == WAITING else
+                     f"<span class='st st-bad'>Not moved</span> {e(err)} (tried again every 10 minutes)" if err else
+                     "<span class='st st-wait'>Pending</span> The files are moved within a few minutes.")
+            out.append(f"<p>{state}</p>")
+        else:
+            out.append("<p>Its files are in the output repository of the organization scan that assesses it. Give it a "
+                       "repository of its own to start its real deployment from what works in the sandbox: its files "
+                       "are moved there once and are its team's from then on (the scans only assess it, and the "
+                       "sandbox deploys it from there).</p>")
+        repos = _output_repos(conn)
+        opts = "".join(f"<option value='{e(x)}'{' selected' if repo and x == repo else ''}>{e(x)}</option>" for x in repos)
+        if repo and repo not in repos:
+            opts += f"<option value='{e(repo)}' selected>{e(repo)} (no write token)</option>"
+        hint = "" if repos else ("<p class='muted small'>No repository has a write token yet. "
+                                 "<a href='/admin/source-control'>Register one</a> under Source control.</p>")
+        out.append(f"""<form method='post' action='/admin/applications/{app_id}/output' class='edit'>{self._csrf(s)}
+<input type='hidden' name='Action' value='save'>
+<label for='OutputRepo'>Repository <span class='muted'>(the ones with a write token under Source control)</span></label>
+<select id='OutputRepo' name='OutputRepo'><option value=''>choose one</option>{opts}</select>{hint}
+<label for='OutputBranch'>Branch</label><input id='OutputBranch' name='OutputBranch' maxlength='200' value='{e(r.get('OutputBranch') or 'main')}'>
+<label for='OutputPath'>Folder <span class='muted'>(must be empty or missing)</span></label>
+<input id='OutputPath' name='OutputPath' maxlength='200' value='{e(r.get('OutputPath') or DEFAULT_PATH)}'>
+<div><button>Move its files there</button></div></form>""")
+        if repo:
+            out.append(f"<form method='post' action='/admin/applications/{app_id}/output' class='formrow'>{self._csrf(s)}"
+                       "<input type='hidden' name='Action' value='clear'><button class=secondary>Cancel the move</button></form>")
+        return "".join(out)
+
+    def set_output(self, conn, a: Access, app_id: int, form: dict) -> Response:
+        """Set or clear the application's own output repository (administrators). Setting it resets the move's state:
+        the LLM queue runner moves the files (appoutput.housekeep). Moved files are not moved again: clear first."""
+        from .admin_scans import BRANCH_RE, _output_repos
+        from .appoutput import clean_path
+        back = f"/admin/applications/{app_id}?"
+        if not a.admin:
+            return redirect(back + urlencode({"msg": "Not saved: only administrators set an output repository."}))
+        action = form.get("Action", [""])[0]
+        vals = (None, None, None)
+        if action == "save":
+            repo = form.get("OutputRepo", [""])[0].strip()
+            branch = form.get("OutputBranch", [""])[0].strip() or "main"
+            path = clean_path(form.get("OutputPath", [""])[0])
+            if not repo or not URL_RE.fullmatch(repo) or repo not in _output_repos(conn):
+                return redirect(back + urlencode({"msg": "Not saved: choose a repository with a write token."}))
+            if not BRANCH_RE.fullmatch(branch):
+                return redirect(back + urlencode({"msg": "Not saved: the branch is not a valid branch name."}))
+            if path is None:
+                return redirect(back + urlencode({"msg": "Not saved: the folder must be relative, without '..', made of "
+                                                         "letters, digits, '.', '_' and '-'."}))
+            vals = (repo, branch, path)
+        elif action != "clear":
+            return redirect(back + urlencode({"msg": "Not saved: save or clear."}))
+        try:
+            if not self._locked_apps(conn, [app_id]):
+                conn.rollback()
+                return Response(404, page("Not found", "<h1>Application not found</h1>"))
+            cur = conn.cursor()
+            cur.execute("SELECT OutputMovedAt FROM cz.Application WHERE ApplicationId = %s", (app_id,))
+            row = cur.fetchone()
+            if action == "save" and row and row[0]:
+                conn.rollback()
+                return redirect(back + urlencode({"msg": "Not saved: its files were moved already. Go back to the "
+                                                         "scan's output repository first."}))
+            cur.execute("UPDATE cz.Application SET OutputRepo = %s, OutputBranch = %s, OutputPath = %s, OutputMovedAt = NULL, "
+                        "OutputMovedCommit = NULL, OutputNamespace = NULL, OutputMoveError = NULL WHERE ApplicationId = %s",
+                        (*vals, app_id))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        msg = ("Saved: its files are moved there within a few minutes." if action == "save" else
+               "Cleared: the next scan generates and deploys it in the scan's output repository again.")
+        return redirect(back + urlencode({"msg": msg}))
 
     def set_sandbox(self, conn, a: Access, app_id: int, form: dict) -> Response:
         """Turn the application's sandbox on or off (Application.SandboxEnabled; the change history records it)."""
