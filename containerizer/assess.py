@@ -260,6 +260,13 @@ class AppAssessment:
         return net
 
 
+def rating_of(components) -> str:
+    """The rating AppAssessment.rating gives an application of these components: objects with `tier`, `verdict`
+    and `stateless` (Component, or a stand-in built from the results database). The web UI's migration plan rates
+    a part of an application with it (one component, or the part that can run in Linux containers)."""
+    return AppAssessment(repo=None, components=list(components), libraries=[], tests=[], repo_findings=[]).rating
+
+
 def classify_role(repo: Repo, p: Project, rules: list[Rule]) -> tuple[str, str]:
     best: tuple[int, str, str] | None = None
     for r in rules:

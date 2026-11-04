@@ -2380,3 +2380,53 @@ GRANT SELECT ON [${schema}].vSandboxNamespace TO [${schema}_admin];
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 38) INSERT [${schema}].SchemaVersion (Version) VALUES (38);
 GO
+
+-- 39: what the latest organization scan deployed to the sandbox, per application, for the results page's migration
+-- plan and Components table (webui.load_deploys): the application's sandbox switch (Application.SandboxEnabled), the
+-- scan's result for it (deployed, no-a-components, sandbox-off, ...) and, from OrgRepository.LastDetail, the
+-- components it put in the output repository ('deployed') and the ones it left out with why ('excluded'): one row
+-- per such component, and one row with Kind NULL for every application (the switch and the scan's result alone).
+-- A repository split into applications (SplitPath) has them per application folder (apps[], matched by SourceKey).
+-- The reader role reads this view, never OrgRepository itself (LastDetail also holds admin-only detail).
+CREATE OR ALTER VIEW [${schema}].vSandboxDeploy AS
+SELECT a.ApplicationId, a.SandboxEnabled, r.ScannedAt,
+       CASE WHEN r.SplitPath IS NULL THEN r.LastStatus ELSE s.status END AS ScanStatus,
+       d.Kind, d.ComponentName, d.ProjectPath, d.Reason
+FROM [${schema}].Application a
+OUTER APPLY (SELECT TOP (1) o.LastStatus, o.LastScannedAt AS ScannedAt, o.SplitPath,
+                    CASE WHEN ISJSON(o.LastDetail) = 1 THEN o.LastDetail END AS Detail
+             FROM [${schema}].OrgRepository o
+             WHERE o.RepositoryUrl = a.RepositoryUrl AND o.RemovedAt IS NULL AND o.LastScannedAt IS NOT NULL
+               AND (o.SplitPath IS NOT NULL OR a.SourcePath IS NULL OR a.SourcePath IN (N'', N'.'))
+             ORDER BY o.LastScannedAt DESC, o.RepositoryId DESC) r
+OUTER APPLY (SELECT TOP (1) j.status, j.folder FROM OPENJSON(CASE WHEN r.SplitPath IS NOT NULL THEN r.Detail END, '$$.apps')
+             WITH (source_key nvarchar(400), status nvarchar(40), folder nvarchar(400)) j
+             WHERE j.source_key = a.SourceKey) s
+OUTER APPLY (
+    SELECT N'deployed' AS Kind, j.component AS ComponentName, j.project AS ProjectPath, CAST(NULL AS nvarchar(1000)) AS Reason
+    FROM OPENJSON(CASE WHEN r.SplitPath IS NULL THEN r.Detail END, '$$.components')
+         WITH (component nvarchar(200), project nvarchar(400)) j
+    UNION ALL
+    SELECT N'excluded', j.component, NULL, j.reason
+    FROM OPENJSON(CASE WHEN r.SplitPath IS NULL THEN r.Detail END, '$$.excluded')
+         WITH (component nvarchar(200), reason nvarchar(1000)) j
+    UNION ALL
+    SELECT N'deployed', j.component, j.project, NULL
+    FROM OPENJSON(CASE WHEN s.folder IS NOT NULL THEN r.Detail END, '$$.components')
+         WITH (component nvarchar(200), project nvarchar(400), application nvarchar(400)) j
+    WHERE j.application = s.folder
+    UNION ALL
+    SELECT N'excluded', SUBSTRING(j.component, LEN(s.folder) + 3, 200), NULL, j.reason
+    FROM OPENJSON(CASE WHEN s.folder IS NOT NULL THEN r.Detail END, '$$.excluded')
+         WITH (component nvarchar(400), reason nvarchar(1000)) j
+    WHERE LEFT(j.component, LEN(s.folder) + 2) = s.folder + N': '
+    UNION ALL
+    SELECT NULL, NULL, NULL, NULL
+) d
+WHERE a.Retired = 0
+  AND NOT EXISTS (SELECT 1 FROM [${schema}].vDisabledRepositoryUrl h WHERE h.RepositoryUrl = a.RepositoryUrl);
+GO
+GRANT SELECT ON [${schema}].vSandboxDeploy TO [${schema}_reader];
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 39) INSERT [${schema}].SchemaVersion (Version) VALUES (39);
+GO

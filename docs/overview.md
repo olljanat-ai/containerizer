@@ -71,6 +71,10 @@ explains how the assessment works and what it generates. To install and use it, 
    file shipped with the app, Lucene used only for text analysis, temp files and logs, and the
    ASP.NET Core Data Protection key ring (one `PersistKeysTo*` line; reported separately).
 
+   The letter grades the **whole application's end state**: an application with one component that must stay
+   on Windows is rated for that, even when its other components run in Linux containers today. What can go
+   first is on the results page's [migration plan](#migration-plan).
+
 ### Rules are data
 
 ```yaml
@@ -153,6 +157,43 @@ list of verified https links (docs page, upstream issue, vendor statement) shown
 commented allowlist.
 Later files override earlier rules with the same id; `rules/learned/` is loaded last.
 
+### Migration plan
+
+The components of an application do not have to move together. The results page of every application that
+does not rate A has a **Migration plan**, right after the main obstacles, that splits it into generations:
+
+- **Generation 1, now** (to Kubernetes): the server components that rate A on their own (the application rating
+  rule applied to the one component: configuration only, no data of their own) and did not fail to build and
+  run. These are the components an organization scan deploys to the sandbox, so each shows whether it is there:
+  the sandbox check's result, *deployed, not checked yet* (the scan deployed it, no check has a result yet), or
+  *not deployed* with why (the application's sandbox is turned off, the scan left it out, or no organization
+  scan deploys the application).
+- **Generation 2, after code changes**: components whose findings can be fixed in code (targeted changes, data
+  moved to an external service, a failed build or run), with what to fix, and what the part that can run in
+  Linux containers rates once they are fixed. Where the page has the Refactoring box,
+  [Make it A](refactoring.md#make-it-a) makes these changes.
+- **After a framework port or rewrite**: components that need one, with their main obstacle.
+- **Stays on Windows (VMs)**: components that cannot run in a Linux container, with their main obstacle.
+- **Between the parts**: the calls from a component of one part to a component of the other, from the
+  destinations the assessment found in the components' configuration and code (a service name, the sandbox URL,
+  or an internal host whose name is the end of the component's name, such as `lending-api.corp.local` for
+  `Lucerne.Lending.Api`) and links within the application: "CustomerPortal calls Api over HTTPS: the Windows part
+  must be reachable from the cluster". Left out when nothing crosses.
+
+A line at the top sums it up: *2 of 6 components can run in Linux containers now; 1 more after code changes;
+3 stay on Windows.* (or *Nothing runs in a Linux container until the framework port is done.*). The part that can
+run in Linux containers is rated with the same rule as the application (`assess.rating_of`), as it is and with
+the changes made. The front page shows the first generation next to the rating of such an application,
+*2/6 ready now*.
+
+![Migration plan of an application with components that must stay on Windows: two components ready and in the sandbox, one after code changes, three that stay on Windows, and the calls between the parts](images/results-migration-plan.png#only-light){ .cz-shot }
+![Migration plan of an application with components that must stay on Windows: two components ready and in the sandbox, one after code changes, three that stay on Windows, and the calls between the parts](images/results-migration-plan-dark.png#only-dark){ .cz-shot }
+
+The Components table has the **Sandbox cluster** column whenever a component of the application is deployed to the
+sandbox. Whether it is comes from the latest sandbox check (`cz.vSandboxLatest`) and, before a check has a result,
+from what the latest organization scan put in the output repository and left out (`cz.vSandboxDeploy`, read from
+the scan's record of the repository) together with the application's sandbox switch.
+
 ### Migration assistant
 
 For every component that is not ready (verdict refactor, rewrite or blocker), each blocking finding is
@@ -176,8 +217,9 @@ instead of being forced into a code change.
 
 The plan is also rendered as a self-contained **prompt for AI coding agents** (Claude Code, GitHub
 Copilot, ...): the findings with their evidence, the replacements in order, constraints (minimal
-changes, no secrets in code, non-root and read-only file system) and how to verify. The web UI shows
-it on the component's migration assistant with a copy button.
+changes, no secrets in code, non-root and read-only file system) and how to verify. It is in the output
+repository (`agent-prompts/`, linked from `MIGRATION.md`); the results page shows the plan, and
+[Make it A](refactoring.md#make-it-a) has Containerizer make the changes itself.
 
 For a **B-rated** application Containerizer can also make the changes: a
 [refactoring patch](refactoring.md) has the LLM change the code for its refactor findings, one file
