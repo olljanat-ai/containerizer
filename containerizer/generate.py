@@ -349,6 +349,12 @@ def hides_app(w: str) -> bool:
     return a == "/" or APP_DIR == a or APP_DIR.startswith(a.rstrip("/") + "/")
 
 
+# where ASP.NET Core keeps its Data Protection key ring in the container (rules/40-plan.yaml plan-dataprotection-keys,
+# only when the code does not persist the keys itself), and the Secret that holds the key mounted there
+DATAPROTECTION_DIR = "/home/app/.aspnet/DataProtection-Keys"
+DATAPROTECTION_SUFFIX = "-dataprotection"
+
+
 def writable_dirs(plan: dict) -> list[str]:
     """The plan's writable folders, absolute, without those that would hide the app folder."""
     return sorted({_writable_abs(w) for w in plan["add_writable"] if not hides_app(w)})
@@ -560,6 +566,12 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
     volumes, mounts = [], []
     for i, w in enumerate(writable_dirs(plan)):
         vname = f"w{i}-" + k8s_name(w.split("/")[-1] or "root")[:40]
+        if w == DATAPROTECTION_DIR:
+            # one Data Protection key for every replica and restart, generated in the cluster (harden.py
+            # dataprotection_docs): cookies and antiforgery tokens of one pod decrypt in the others
+            volumes.append({"name": vname, "secret": {"secretName": f"{name}{DATAPROTECTION_SUFFIX}"}})
+            mounts.append({"name": vname, "mountPath": w, "readOnly": True})
+            continue
         persistent = any(x in w.lower() for x in ("app_data", "data", "keys", "archive", "store", "uploads", "documents"))
         if persistent and plan.get("single_replica"):
             volumes.append({"name": vname, "persistentVolumeClaim": {"claimName": f"{name}-{vname}"}})
@@ -606,7 +618,10 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
                                   "jobTemplate": {"spec": {"template": {"metadata": {"labels": labels}, "spec": jpod}}}}})
     else:
         docs.append({"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": name, "labels": labels},
-                     "spec": {"replicas": 1 if plan.get("single_replica") or c.role != "web" else 2,
+                     # one replica: the goal is a container that runs, not scaling out. A second replica needs shared
+                     # state first (Data Protection keys, sessions, caches: the findings say which), which is a code
+                     # change; with per-pod keys, two replicas failed every form post that landed on the other pod.
+                     "spec": {"replicas": 1,
                               "strategy": {"type": "Recreate"} if plan.get("single_replica") else {"type": "RollingUpdate"},
                               "selector": {"matchLabels": labels},
                               "template": {"metadata": {"labels": labels}, "spec": pod}}})

@@ -170,7 +170,9 @@ rules:
       Cookies and antiforgery tokens are encrypted with Data Protection keys. In a container the
       keys live in the pod's home folder and are lost on restart or differ between replicas, so
       users are logged out and forms fail.
-    fix: Mount a volume at the key folder (set by the generator) or persist keys to Redis/SQL/blob in code.
+    fix: >-
+      The generated manifests mount one key, generated in the cluster by External Secrets Operator, read-only at the
+      key folder, so it works as is. To manage the key ring yourself, persist keys to Redis/SQL/blob in code (PersistKeysTo*).
     refs:
       - https://learn.microsoft.com/en-us/aspnet/core/security/data-protection/configuration/default-settings
 

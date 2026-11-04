@@ -21,6 +21,14 @@ qcow2 and VHDX images as release assets.
   root, could not read it (`tls setup failed: stat /etc/kubemg/ssl/tls.crt: permission denied`). The modes are now
   set explicitly: the folder and the key are open to kubemg's group only, the local CA's key stays root's. Every
   start of kubemg sets them again, so an appliance with the broken folder heals without a reboot.
+- Generated web components run **one replica** (was two). A second replica needs shared state first, which is a
+  code change (the findings say which: sessions, caches, SignalR). With two, an ASP.NET Core app's forms failed
+  whenever the post landed on the other pod: `The antiforgery token could not be decrypted ... The key {…} was not
+  found in the key ring` (parts-catalog in the lab).
+- ASP.NET Core **Data Protection keys** are shared and survive restarts, without a code change: when the code does
+  not persist them (`PersistKeysTo*`), the key folder gets one key, read-only, from a Secret that External Secrets
+  Operator generates once in the cluster (Password generator; no secret store, nothing to set up). Before, each pod
+  kept its own keys in an `emptyDir`, so every restart or redeploy logged users out and broke open forms.
 
 ## 0.9.3 (2026-11-04)
 
