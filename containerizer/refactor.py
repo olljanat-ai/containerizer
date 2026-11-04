@@ -997,6 +997,27 @@ def _backslash_match(text: str, search: str, replace: str) -> str | None:
     return text[:m.start()] + new + text[m.end():]
 
 
+def _trailing_space_match(text: str, search: str, replace: str) -> str | None:
+    """LLMs sometimes end lines with a space the file does not have (`using System; `). When the search text's
+    lines, without the spaces and tabs at their ends, match exactly once, the edit applies there with the
+    replacement's line ends trimmed the same way. Returns the new text, or None."""
+    want = [ln.rstrip(" \t") for ln in search.split("\n")]
+    while want and not want[-1]:
+        want.pop()
+    if not want or want == search.split("\n"):
+        return None
+    lines = text.split("\n")
+    have = [ln.rstrip(" \t") for ln in lines]
+    at = [i for i in range(len(lines) - len(want) + 1) if have[i:i + len(want)] == want]
+    if len(at) != 1:
+        return None
+    i = at[0]
+    new = [ln.rstrip(" \t") for ln in replace.split("\n")]
+    if search.endswith("\n") and new and new[-1] == "":
+        new.pop()
+    return "\n".join(lines[:i] + new + lines[i + len(want):])
+
+
 def _first_mismatch(text: str, search: str) -> str:
     """Where a search text that was not found goes wrong: its first line that is not in the file, and the
     file's closest line, so the retry can copy it exactly."""
@@ -1043,9 +1064,21 @@ def harmful_edit(rel: str, search: str, replace: str) -> list[str]:
     return out
 
 
+def without_credentials(search: str, replace: str) -> str:
+    """The replacement with the credentials it adds cut out (`User ID=sa;`, `Password=...;` in a connection
+    string): the rest of the edit is right, and the sandbox gives the connection string with its credentials
+    from a secret (ConnectionStrings__<Name>)."""
+    old = {m.group(0).lower() for m in CREDENTIAL_RE.finditer(search)}
+
+    def cut(m):
+        return m.group(0) if m.group(1).lower() in old else ""
+    return re.sub(r"(" + CREDENTIAL_RE.pattern + r")[ \t]*;?[ \t]*", cut, replace, flags=re.I)
+
+
 def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | None) -> tuple[list[dict], list[str]]:
     """Apply one answer: every edit's search text must occur exactly once (in the file as changed by the
-    edits before it). All or nothing: on any error nothing is written. Returns (changes, errors)."""
+    edits before it). All or nothing: on any error nothing is written (an edit or package change that changes
+    nothing is left out, not an error; a credential an edit adds is cut out of it). Returns (changes, errors)."""
     errors: list[str] = []
     files: dict[str, tuple[str, dict]] = {}
     changes: list[dict] = []
@@ -1072,14 +1105,21 @@ def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | 
             errors.append(f"edit {i} ({rel}): the search text is empty")
             continue
         if search == replace:
-            errors.append(f"edit {i} ({rel}): the replacement is the same as the search text")
-            continue
+            continue                # changes nothing: left out, so that the answer's other edits still apply
         n = text.count(search)
         if n == 0:
             fixed = _backslash_match(text, search, replace)
             if fixed is not None:                  # the same text but for JSON-escaped backslashes
                 files[rel] = (fixed, how)
                 changes.append({"file": rel, "kind": "edit", "detail": "backslashes as in the file"})
+                continue
+            fixed = _trailing_space_match(text, search, replace)
+            if fixed is not None:
+                if harm := harmful_edit(rel, search, replace):
+                    errors += [f"edit {i}: {h}" for h in harm]
+                    continue
+                files[rel] = (fixed, how)          # the same lines but for spaces at their ends
+                changes.append({"file": rel, "kind": "edit", "detail": "trailing spaces as in the file"})
                 continue
             errors.append(f"edit {i} ({rel}): the search text was not found in the file; copy it exactly from the "
                           f"file shown ({_first_mismatch(text, search)})")
@@ -1088,12 +1128,16 @@ def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | 
             errors.append(f"edit {i} ({rel}): the search text occurs {n} times; include more of the surrounding lines "
                           "so that it occurs exactly once")
             continue
+        how_edit = {}
         harm = harmful_edit(rel, search, replace)
+        if harm and (clean := without_credentials(search, replace)) != replace and not harmful_edit(rel, search, clean):
+            replace, harm = clean, []
+            how_edit = {"detail": "credential left out (it comes from a secret)"}
         if harm:
             errors += [f"edit {i}: {h}" for h in harm]
             continue
         files[rel] = (text.replace(search, replace, 1), how)
-        changes.append({"file": rel, "kind": "edit"})
+        changes.append({"file": rel, "kind": "edit", **how_edit})
     new_files: dict[str, str] = {}
     for i, nf in enumerate(answer.get("new_files") or [], 1):
         rel = safe_rel(nf.get("file"))
@@ -1106,10 +1150,10 @@ def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | 
             errors.append(f"new file {i}: {rel} is empty or too large")
         elif not (root / rel).parent.resolve().is_relative_to(root):
             errors.append(f"new file {i}: {rel} is outside the application")
-        elif harm := harmful_edit(rel, "", content):
+        elif (harm := harmful_edit(rel, "", content)) and harmful_edit(rel, "", without_credentials("", content)):
             errors += [f"new file {i}: {h}" for h in harm]
         else:
-            new_files[rel] = content
+            new_files[rel] = without_credentials("", content)
             changes.append({"file": rel, "kind": "new"})
     pkgs = [p for p in answer.get("package_changes") or [] if isinstance(p, dict)]
     if pkgs:
@@ -1129,6 +1173,8 @@ def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | 
                 if act == "add" and framework_package(name, text, ver):
                     continue                # in the ASP.NET Core shared framework: no package (it would not restore)
                 new, err = _csproj_change(text, act, name, ver)
+                if err and act == "remove" and err.endswith("is not referenced"):
+                    continue                # already not there: what the change wants
                 if err:
                     errors.append(f"package change {i}: {err}")
                     continue

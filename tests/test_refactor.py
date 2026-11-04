@@ -198,8 +198,9 @@ def test_edits_need_exactly_one_match(tmp_path):
     os.symlink("/etc/hostname", root / "L.cs")
     _, err = rf.apply_answer(root, {"edits": [{"file": "L.cs", "search": "a", "replace": "b"}]}, ["L.cs"], None)
     assert "not a file of the application" in err[0]
-    _, err = rf.apply_answer(root, {"edits": [{"file": "A.cs", "search": "int a = 2;", "replace": "int a = 2;"}]}, shown, None)
-    assert "the same" in err[0]
+    before = (root / "A.cs").read_bytes()
+    ch, err = rf.apply_answer(root, {"edits": [{"file": "A.cs", "search": "int a = 2;", "replace": "int a = 2;"}]}, shown, None)
+    assert ch == [] and err == [] and (root / "A.cs").read_bytes() == before     # changes nothing: left out
     ch, err = rf.apply_answer(root, {"new_files": [{"file": "Certs/Loader.cs", "content": "class Loader {}\n"}]}, shown, None)
     assert err == [] and (root / "Certs/Loader.cs").read_text() == "class Loader {}\n"
     _, err = rf.apply_answer(root, {"new_files": [{"file": "A.cs", "content": "x"}]}, shown, None)
@@ -1114,12 +1115,36 @@ def test_an_edit_that_removes_what_the_app_does_or_adds_a_credential_is_refused(
 
 def test_a_refused_edit_is_asked_again_with_the_reason(shop, tmp_path):
     pl = _payload(shop, verify=False)
-    bad = {"edits": [{"file": "src/Shop.Api/appsettings.json", "search": '"Thumbprint": "AB12"',
-                       "replace": '"Thumbprint": "AB12", "Db": "Server=a;User Id=sa;Password=x1"'}],
+    bad = {"edits": [{"file": "src/Shop.Api/Bank.cs", "search": "", "replace": "x"}],
            "new_files": [], "package_changes": [], "fixed": ["cert-store-localmachine-code"], "not_fixed": []}
     asked = []
     rf.run_order(pl, tmp_path / "w", ask=lambda p, s: asked.append(p) or (bad if len(asked) == 1 else good_answer()))
-    assert len(asked) == 2 and "could not be applied" in asked[1] and "writes a credential (User Id=sa)" in asked[1]
+    assert len(asked) == 2 and "could not be applied" in asked[1] and "the search text is empty" in asked[1]
+
+
+def test_a_credential_an_edit_adds_is_cut_out_and_the_rest_applies(tmp_path):
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "appsettings.json").write_text('{"Db": "Server=sql;Database=Shop;Integrated Security=true;"}\n')
+    (app / "App.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk">\n  <ItemGroup>\n'
+                                    '    <PackageReference Include="A" Version="1.0" />\n  </ItemGroup>\n</Project>\n')
+    answer = {"edits": [{"file": "appsettings.json", "search": "Integrated Security=true;",
+                         "replace": "User ID=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=true;"},
+                        {"file": "appsettings.json", "search": '"Db"', "replace": '"Db"'}],          # changes nothing
+              "package_changes": [{"action": "remove", "package": "Microsoft.EntityFrameworkCore.Sqlite"},  # not there
+                                  {"action": "remove", "package": "A"}]}
+    changes, errors = rf.apply_answer(app, answer, ["appsettings.json"], "App.csproj")
+    assert errors == []
+    assert (app / "appsettings.json").read_text() == '{"Db": "Server=sql;Database=Shop;TrustServerCertificate=true;"}\n'
+    assert "credential left out" in changes[0]["detail"]
+    assert "PackageReference" not in (app / "App.csproj").read_text()
+    assert rf.without_credentials("", "Server=a;uid=sa;pwd=hunter22") == "Server=a;"
+    # the LLM ended its search lines with a space the file does not have
+    (app / "Host.cs").write_text("using System;\nusing System.Management;\n\nnamespace X;\n")
+    changes, errors = rf.apply_answer(app, {"edits": [{"file": "Host.cs", "search": "using System; \nusing System.Management; \n",
+                                                       "replace": "using System; \n"}]}, ["Host.cs"], None)
+    assert errors == [] and (app / "Host.cs").read_text() == "using System;\n\nnamespace X;\n", changes
+    assert rf.without_credentials("Password=kept1", "Server=b;Password=kept1") == "Server=b;Password=kept1"
 
 
 def test_the_prompt_of_a_fresh_start_says_what_failed(shop):
