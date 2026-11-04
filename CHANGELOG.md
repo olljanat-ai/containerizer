@@ -13,6 +13,9 @@ qcow2 and VHDX images as release assets.
   tiles and bars then count only those applications. The change history records the tags, and the API returns
   them and filters by one (`?tag=`). Needs schema 37 (`containerizer db init`; the appliance runs it at boot)
   ([Application tags](docs/sign-in.md#application-tags)).
+- **Make it A: every B application** can turn [LLM-heavy mode](docs/source-control.md#llm-heavy-for-a-while) on
+  for each application it orders, for the hours chosen, with the same button: their orders and the jobs that
+  follow go first in the LLM queue, approved ([Make it A](docs/refactoring.md#make-it-a)).
 
 ## 0.9.3 (2026-11-04)
 

@@ -15,7 +15,8 @@
   application's product owners; the queue runner removes it).
 - /admin/refactoring/make-all-a (administrators): "Make it A: every B application": every B-rated application with
   its order's estimate, smallest first, with the running total; POST queues the orders under a number of tokens
-  each (Limit; none: all), approved by the administrator at once.
+  each (Limit; none: all), approved by the administrator at once; with Heavy=1, each application ordered is
+  LLM-heavy for Hours as well (admin_heavy.open_window).
 
 Same conventions as admin.py: plain HTML forms with the session's CSRF token, no JavaScript, everything
 escaped. Patches contain source code: they are shown to administrators and operators only; the results
@@ -45,9 +46,12 @@ ORDER_NOTICES = {"remove-requested": "Removal requested: the LLM queue runner ta
                                      "within a few minutes (its folder is deleted from the output repository).",
                  "remove-not-active": "This order has nothing running in the sandbox.",
                  "remove-unavailable": "Removal needs the database schema of this version: run `containerizer db init`."}
-# what the Refactoring list says after "Make it A: every B application": {q}, {w}, {x}, {n} are numbers
+# what the Refactoring list says after "Make it A: every B application": {q}, {w}, {x}, {n}, {h} are numbers
 BULK_NOTICES = {"queued": "\"Make it A\" queued and approved for {q} application(s); {x} already had one waiting; "
                           "{n} left out (over the limit, in the queue already, or not orderable).",
+                "queued-heavy": "\"Make it A\" queued and approved for {q} application(s), each LLM-heavy for {h} "
+                                "hour(s); {x} already had one waiting; {n} left out (over the limit, in the queue "
+                                "already, or not orderable).",
                 "none": "No B-rated application could be ordered."}
 FINDING_TEXT = {"fixed": "Fixed", "not-fixed": "Not fixed", "llm-error": "LLM error", "skipped": "Not attempted"}
 FINDING_CSS = {"fixed": "st-ok", "not-fixed": "st-off", "llm-error": "st-bad", "skipped": "st-off"}
@@ -186,7 +190,7 @@ def bulk_notice(q: dict) -> str:
     if code not in BULK_NOTICES:
         return ""
     text = BULK_NOTICES[code]
-    for k in ("q", "w", "x", "n"):
+    for k in ("q", "w", "x", "n", "h"):
         v = (q.get(k) or [""])[0]
         text = text.replace("{" + k + "}", str(int(v)) if re.fullmatch(r"\d{1,6}", v or "") else "0")
     return text
@@ -869,10 +873,17 @@ def make_all_a(adm, conn, s, a, q: dict | None = None) -> Response:
     pick = (f"<form method='get' action='{BASE}/make-all-a' class='formrow'><label for='limit'>Orders under</label>"
             f"<input id='limit' name='limit' type='number' min='1' max='100000000' value='{limit}'>"
             f"<span>tokens each</span><button class='secondary'>Show</button></form>")
+    from .admin_heavy import hours_options
     form = (f"<form method='post' action='{BASE}/make-all-a' class='formrow'>{adm._csrf(s)}"
             f"<input type='hidden' name='Limit' value='{limit}'>"
             f"<button>Queue {len(sel)} order(s) under {limit:,} tokens, approved</button>"
-            f"<span class='muted small'>{e(est_text(sel_tot))}</span></form>" if sel else
+            f"<span class='muted small'>{e(est_text(sel_tot))}</span>"
+            f"<label class='check'><input type='checkbox' name='Heavy' value='1'> and LLM-heavy mode for these "
+            f"applications for</label><select name='Hours' aria-label='How long LLM-heavy'>{hours_options()}</select>"
+            f"</form><p class='muted small'>LLM-heavy mode puts their orders, and the LLM jobs that follow (repairs, "
+            f"egress and link reviews), before every other job in the LLM queue, approved, and their scans review "
+            f"each of their components (<a href='/admin/llm-queue'>LLM queue</a> lists the windows, with End now).</p>"
+            if sel else
             f"<p class='muted'>No order is estimated under {limit:,} tokens.</p>" if all_ else "")
     body = (f"<p><a href='{BASE}'>← Refactoring</a></p>"
             "<p class='muted'>One \"Make it A\" order per B-rated application, <b>smallest first</b>: the LLM changes the "
@@ -894,7 +905,9 @@ def make_all_a_post(adm, conn, s, a, form: dict | None = None) -> Response:
     limit = int(raw) if re.fullmatch(r"\d{1,9}", raw or "") else None
     plan = bulk_plan(adm, conn)
     chosen = under(plan, limit)
-    queued = exists = 0
+    from .admin_heavy import open_window, parse_hours
+    hours = parse_hours(((form or {}).get("Hours") or [""])[0]) if ((form or {}).get("Heavy") or [""])[0] == "1" else None
+    queued = exists = heavy = 0
     for x in chosen:
         jid, _ = queue_order(conn, x["app"], x["payload"])
         if not jid:
@@ -904,7 +917,20 @@ def make_all_a_post(adm, conn, s, a, form: dict | None = None) -> Response:
         cur = conn.cursor()
         cur.execute("UPDATE cz.LlmJob SET Status = N'queued', ApprovedBy = %s, ApprovedAt = SYSUTCDATETIME() "
                     "WHERE JobId = %s AND Status = N'approval'", (s.user, jid))
+        if hours:                           # the applications ordered from here: LLM-heavy for a while (admin_heavy.py)
+            try:
+                open_window(conn, s, int(x["app"]["ApplicationId"]), hours)
+                heavy += 1
+            except Exception as ex:  # noqa: BLE001 - a database from before schema 31: the order still goes
+                print(f"LLM-heavy for application {x['app']['ApplicationId']}: {type(ex).__name__}: {ex}", file=sys.stderr)
+                conn.rollback()
+                cur = conn.cursor()
+                cur.execute("UPDATE cz.LlmJob SET Status = N'queued', ApprovedBy = %s, ApprovedAt = SYSUTCDATETIME() "
+                            "WHERE JobId = %s AND Status = N'approval'", (s.user, jid))
         conn.commit()
+    if heavy:
+        from . import llmqueue as lq
+        lq.auto_approve(conn)               # what else of theirs waits for approval
     left = sum(1 for x in plan["items"] if x not in chosen)
-    code = "queued" if queued or exists else "none"
-    return redirect(f"{BASE}?" + urlencode({"bulk": code, "q": queued, "w": 0, "x": exists, "n": left}))
+    code = ("queued-heavy" if heavy else "queued") if queued or exists else "none"
+    return redirect(f"{BASE}?" + urlencode({"bulk": code, "q": queued, "w": 0, "x": exists, "n": left, "h": hours or 0}))
