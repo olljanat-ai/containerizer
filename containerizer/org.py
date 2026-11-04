@@ -44,7 +44,7 @@ GIT_USER = ("containerizer", "containerizer@users.noreply.invalid")
 
 
 
-# Organization scans (and the "Make it A" variants deployed beside them) push to the appliance's own registry: the
+# Organization scans (and the "Make it A" patches deployed in their folders) push to the appliance's own registry: the
 # worker pushes and k3s pulls without credentials (docs/appliance-admin.md#local-registry-and-the-sandbox-cluster).
 # External registries are for the CI pipelines generated for the real environment (pipelines.py), not for scans.
 SANDBOX_REGISTRY = "localhost:5000/sandbox"
@@ -152,6 +152,8 @@ class RepoResult:
     apps: list = field(default_factory=list)           # a repository split into applications (OrgRepository.SplitPath):
                                                        # one entry per folder (folder, app, status, rating, ...)
     split_hint: dict = field(default_factory=dict)     # a whole repository that looks like several applications
+    patched: dict = field(default_factory=dict)        # the folder runs a "Make it A" patch (variant.py): its order,
+                                                       # source commit and the output repository's commit before it
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -397,11 +399,36 @@ def write_idp(root: Path, apps) -> str:
 
 
 def sandbox_excluded(doc: dict, off) -> bool:
-    """An app folder (its containerizer.json) of an application whose sandbox is turned off: the original's folder
-    by its SourceKey, a Make it A variant's by its application id. `off` holds both (load_sandbox_off)."""
+    """An app folder (its containerizer.json) of an application whose sandbox is turned off: by its SourceKey, or by
+    the application id of the Make it A patch it runs (`patched`; `variant`: a variant folder of 0.10.0 and before, where the
+    patched copy had a folder of its own). `off` holds both (load_sandbox_off)."""
     if not off:
         return False
-    return doc.get("source_key") in off or (doc.get("variant") or {}).get("application_id") in off
+    return doc.get("source_key") in off or any((doc.get(k) or {}).get("application_id") in off
+                                               for k in ("patched", "variant"))
+
+
+def kept_patch(dest: Path, res: "RepoResult") -> "RepoResult | None":
+    """A scan leaves an application's folder as it is when it runs a "Make it A" patch made for the commit the scan
+    assessed (variant.py: the patch is newer than what the scan would write); the result says what runs there.
+    None: the scan writes its own output (no patch there, or a patch made for other code: the order's state becomes
+    outdated)."""
+    try:
+        doc = json.loads((dest / "containerizer.json").read_text())
+    except (OSError, ValueError):
+        return None
+    m = doc.get("patched") if isinstance(doc, dict) else None
+    if not isinstance(m, dict) or not m.get("job") or not res.commit:
+        return None
+    from .variant import _same_commit
+    if not _same_commit(str(m.get("commit") or ""), res.commit):
+        return None
+    res.status, res.path = "deployed", str(doc.get("path") or "")
+    res.components, res.excluded = list(doc.get("components") or []), list(doc.get("excluded") or [])
+    res.lab_services = doc.get("lab_services") or {}
+    res.patched = m
+    res.reason = f"runs the Make it A patch of order #{m['job']} for this commit: the scan left its folder as it is"
+    return res
 
 
 def load_sandbox_off(conn) -> set:
@@ -1168,7 +1195,7 @@ def local_images(o: "OrgOptions") -> bool:
 
 
 def scan_pushes() -> bool:
-    """Whether organization scans (and Make it A variants) push to SANDBOX_REGISTRY: always, except in a lab whose
+    """Whether organization scans (and Make it A patches) push to SANDBOX_REGISTRY: always, except in a lab whose
     cluster shares the builder's image store (CONTAINERIZER_LOCAL_IMAGES=1: tagged, not pushed)."""
     return os.environ.get(LOCAL_IMAGES_ENV) != "1"
 
@@ -1182,19 +1209,22 @@ def tag_local(local: str, ref: str) -> None:
 
 def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Registry | None", tag: str, gitops,
                res: RepoResult, work: Path, app: str, assessment_id: int | None = None,
-               dev_database: bool = True, connectivity_from: Path | None = None) -> RepoResult:
+               dev_database: bool = True, connectivity_from: Path | None = None,
+               keep_patched: bool = True) -> RepoResult:
     """Deploy an assessed application to the sandbox through the output repository: the components rated A
     (buildable, verified when verification is on) through the security gate (or generated without it), their
     images built and pushed under <registry>/<namespace>/<component>:<tag> (or tagged locally: local_images),
     the generated files copied to <output>/<rel> with containerizer.json (RepoResult.to_dict). The namespace,
     image paths, Ingress hosts and IdP clients derive from app_ns(a.name), the source folder's name.
     The organization scan calls it for each repository (with its assessment id: IdP clients go to
-    the results database); the refactoring runner for a patched copy ("Make it A": no assessment id, no
-    uploaded dev database). The caller commits. Returns `res` (status deployed or no-a-components).
+    the results database); the refactoring runner for a patched copy ("Make it A", variant.py: into the same folder,
+    no assessment id, no uploaded dev database, `keep_patched` off). The caller commits. Returns `res` (status
+    deployed or no-a-components). With `keep_patched` (a scan), a folder that runs a Make it A patch made for the
+    commit the scan assessed stays as it is (kept_patch).
 
-    The application's connectivity.yaml (connectivity.py) is read first, from its folder or `connectivity_from`
-    (a sandbox variant: the original's folder): its approved entries are kept, as they are, in the new file,
-    and its confirmed links stay open in the regenerated NetworkPolicies."""
+    The application's connectivity.yaml (connectivity.py) is read first, from its folder or `connectivity_from`:
+    its approved entries are kept, as they are, in the new file, and its confirmed links stay open in the
+    regenerated NetworkPolicies."""
     from . import connectivity
     from .generate import generate_app, k8s_name, app_ns
     dest = out.root / rel
@@ -1202,6 +1232,8 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
         return moved_result(res, m)
     if sandbox_off(o, res.source_key):
         return sandbox_off_result(res, dest)
+    if keep_patched and (kept := kept_patch(dest, res)):
+        return kept
     existing = connectivity.read(dest) or (connectivity.read(connectivity_from) if connectivity_from else None)
     approved = connectivity.approved_entries(existing)
     linked = connectivity.linked_entries(existing)

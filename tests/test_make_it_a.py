@@ -438,56 +438,243 @@ PAYLOAD = {"app": "shop", "commit": "c" * 40, "application_id": 7, "goal": "rati
            "source": {"type": "org-clone", "scan_id": 3, "dir": "scan-3/repos/shop", "subdir": "."}}
 
 
-def test_the_variant_is_deployed_beside_the_original_and_removed_again(tmp_path, monkeypatch):
-    out, o = _output(tmp_path)
-    before = (out / "Contoso/_/shop/containerizer.json").read_text()
+def _log(out, n=1):
+    return subprocess.run(["git", "log", f"-{n}", "--format=%s"], cwd=out, capture_output=True, text=True).stdout
+
+
+def _head(out):
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=out, capture_output=True, text=True).stdout.strip()
+
+
+def _patched(tmp_path, monkeypatch, jid, out, o, now=None, payload=PAYLOAD, patch="From 1 Mon Sep 17 00:00:00 2001\n"):
+    """An order's patched copy (the demo app, as run_rating_a leaves it) deployed by variant.deploy."""
     monkeypatch.setattr(variant, "_open", lambda connect, key, payload, work, deploying=True: (TARGET, o))
     monkeypatch.delenv(variant.KUBECONFIG_ENV, raising=False)
-    work = tmp_path / "job"
-    name = rf.variant_name("shop", 42)
-    shutil.copytree(DEMO, work / name)                     # the patched copy, as run_rating_a leaves it
+    work = tmp_path / f"job-{jid}"
+    name = rf.variant_name("shop", jid)
+    shutil.copytree(DEMO, work / name)
     result = {"status": "verified", "rating_reached": True, "verification": [{"component": "demo-web", "status": "ok"}],
-              "patch": "From 1 Mon Sep 17 00:00:00 2001\nSubject: [PATCH] make it A\n"}
-    progress = []
-    now = datetime(2026, 11, 1, 9, 5, tzinfo=timezone.utc)
-    sb = variant.deploy(None, None, PAYLOAD, 42, result, work, name, progress.append, now=now)
+              "patch": patch}
+    now = now or datetime(2026, 11, 1, 9, 5, tzinfo=timezone.utc)
+    result["sandbox"] = variant.deploy(None, None, payload, jid, result, work, name, lambda t: None, now=now)
+    return result
+
+
+def _scan(tmp_path, out, commit, tag="1.1.0"):
+    """The organization scan of the application at `commit` (org.deploy_app, as _process_repo calls it), committed."""
+    from containerizer.gitops import GitOpsOptions
+    src, a = _a_app(tmp_path / f"scan-{tag}", "shop")
+    o = orgmod.OrgOptions(provider="github", org="Contoso", registry="reg.example/sandbox", verify=True, gate=False,
+                          push_images=False, output_dir=str(out))
+    o2 = orgmod.Output(o, tmp_path / f"w-{tag}")
+    res = orgmod.RepoResult(provider="github", org="Contoso", project="_", repo="shop", status="error", app="shop",
+                            source_key="https://github.com/contoso/shop#", commit=commit)
+    res = orgmod.deploy_app(a, src, "Contoso/_/shop", o, o2, None, tag, GitOpsOptions(git_url=o2.url, path="Contoso/_/shop"),
+                            res, tmp_path / f"w-{tag}", "shop")
+    orgmod.write_sandbox(out, o2.url, "main")
+    o2.commit(f"scan {tag}")
+    return res
+
+
+def test_the_patched_copy_runs_in_place_and_remove_brings_the_scan_output_back(tmp_path, monkeypatch):
+    out, o = _output(tmp_path)
+    before = (out / "Contoso/_/shop/containerizer.json").read_text()
+    scan_rev = _head(out)
+    result = _patched(tmp_path, monkeypatch, 42, out, o)
+    sb = result["sandbox"]
     assert sb["status"] == "deployed" and "health not checked (no cluster access configured" in sb["reason"]
-    assert sb["namespace"] == "shop-refactor-42" and sb["folder"] == "Contoso/_/shop-refactor-42"
-    assert sb["of"] == "Contoso/_/shop" and sb["tag"] == "1.20261101.905-refactor.42"
-    assert sb["images"] == ["reg.example/sandbox/shop-refactor-42/demo-web:1.20261101.905-refactor.42"]
-    assert "expires_at" not in sb and sb["commit"] == PAYLOAD.get("commit") and len(sb["revision"]) == 40
-    assert progress and all(p.startswith("deploying:") for p in progress)
-    d = out / sb["folder"]
+    assert sb["in_place"] and sb["namespace"] == "shop" and sb["folder"] == "Contoso/_/shop" == sb["of"]
+    assert sb["tag"] == "1.20261101.905-refactor.42" and sb["previous_revision"] == scan_rev
+    assert sb["images"] == ["reg.example/sandbox/shop/demo-web:1.20261101.905-refactor.42"]   # the app's image path
+    assert sb["commit"] == PAYLOAD["commit"] and len(sb["revision"]) == 40
+    # one folder: the scan's output replaced, no -refactor- folder, sandbox/ lists the application once
+    assert sorted(p.name for p in (out / "Contoso/_").iterdir()) == ["shop"]
+    d = out / "Contoso/_/shop"
     meta = json.loads((d / "containerizer.json").read_text())
-    assert meta["app"] == "shop-refactor-42" and meta["source_key"] == "" and meta["repo"] == "shop-refactor-42"
-    assert (d / variant.PATCH_FILE).read_text() == result["patch"]          # the order's patch, beside its files
-    assert meta["variant"] == {"of": "Contoso/_/shop", "of_app": "shop", "job": 42, "application_id": 7,
-                               "commit": PAYLOAD.get("commit")}
-    # its own namespace, image path and GitOps objects; the original is untouched
-    assert (out / "Contoso/_/shop/containerizer.json").read_text() == before
-    k = yaml.safe_load((d / "kustomization.yaml").read_text())
-    assert k["namespace"] == "shop-refactor-42"
+    assert meta["app"] == "shop" and meta["repo"] == "shop" and meta["source_key"] == "https://github.com/contoso/shop#"
+    assert meta["patched"] == {"job": 42, "commit": PAYLOAD["commit"], "application_id": 7, "app": "shop",
+                               "tag": "1.20261101.905-refactor.42", "deployed_at": "2026-11-01T09:05:00",
+                               "previous_revision": scan_rev}
+    assert (d / variant.PATCH_FILE).read_text() == result["patch"]
+    assert yaml.safe_load((d / "kustomization.yaml").read_text())["namespace"] == "shop"
     ks = next(x for x in yaml.safe_load_all((d / "gitops/flux/git/sync.yaml").read_text()) if x and x["kind"] == "Kustomization")
-    assert ks["metadata"]["name"] == "shop-refactor-42" and ks["spec"]["path"] == "./Contoso/_/shop-refactor-42"
-    # write_sandbox picked it up next to the original
-    assert (out / "sandbox/namespaces.txt").read_text() == "shop\nshop-refactor-42\n"
-    flux = yaml.safe_load((out / "sandbox/flux/apps/kustomization.yaml").read_text())["resources"]
-    assert flux == ["../../../Contoso/_/shop/gitops/flux", "../../../Contoso/_/shop-refactor-42/gitops/flux"]
-    assert "namespace: shop-refactor-42" in (out / "sandbox/verify-rbac.yaml").read_text()
-    log = subprocess.run(["git", "log", "--format=%s"], cwd=out, capture_output=True, text=True).stdout
-    assert "sandbox variant Contoso/_/shop-refactor-42 of Contoso/_/shop" in log
-    # removal: the folder goes, sandbox/ is regenerated, the original stays
-    later = now + timedelta(days=8)
-    sb2 = variant.remove(None, None, 42, PAYLOAD, sb, tmp_path / "rm", "outdated", "d" * 40, now=later)
-    assert sb2["status"] == "outdated" and sb2["removed_at"] == "2026-11-09T09:05:00" and sb2["removed_by"] is None
-    assert sb2["reason"] == f"replaced by newer code: a scan assessed commit {'d' * 12} of the application, and the " \
-                            f"patch was made for {'c' * 12}"
-    assert not d.exists() and (out / "Contoso/_/shop").is_dir()
+    assert ks["metadata"]["name"] == "shop" and ks["spec"]["path"] == "./Contoso/_/shop"
     assert (out / "sandbox/namespaces.txt").read_text() == "shop\n"
-    assert "sandbox variant Contoso/_/shop-refactor-42 outdated" in subprocess.run(
-        ["git", "log", "-1", "--format=%s"], cwd=out, capture_output=True, text=True).stdout
+    assert yaml.safe_load((out / "sandbox/flux/apps/kustomization.yaml").read_text())["resources"] == [
+        "../../../Contoso/_/shop/gitops/flux"]
+    assert _log(out) == f"sandbox: shop runs the Make it A patch of order #42 (commit {'c' * 12})\n"
+    # Remove from the sandbox: the scan's output is back from the output repository's history
+    later = datetime(2026, 11, 3, 8, 0, tzinfo=timezone.utc)
+    sb2 = variant.remove(None, None, 42, PAYLOAD, sb, tmp_path / "rm", "removed", "o@example.com", now=later)
+    assert sb2["status"] == "removed" and sb2["removed_at"] == "2026-11-03T08:00:00" and sb2["removed_by"] == "o@example.com"
+    assert sb2["reason"] == "removed from the sandbox by o@example.com: the scan's output is back in the application's folder"
+    assert (d / "containerizer.json").read_text() == before and not (d / variant.PATCH_FILE).exists()
+    assert subprocess.run(["git", "diff", "--quiet", scan_rev, "HEAD", "--", "Contoso"], cwd=out).returncode == 0
+    assert (out / "sandbox/namespaces.txt").read_text() == "shop\n"
+    assert "gets the scan's output back: the Make it A patch of order #42 removed" in _log(out)
     with pytest.raises(variant.Skip):
-        variant.remove(None, None, 42, PAYLOAD, {**sb, "folder": "Contoso/_/shop"}, tmp_path / "rm2")
+        variant.remove(None, None, 42, PAYLOAD, {**sb, "folder": "../shop"}, tmp_path / "rm2")
+
+
+def test_an_application_without_scan_output_goes_back_to_no_folder(tmp_path, monkeypatch):
+    """The scan deployed nothing of it (no component rated A on its own): the patched copy gets the folder, and a
+    removal takes it away again."""
+    out, o = _output(tmp_path)
+    shutil.rmtree(out / "Contoso/_/shop")
+    orgmod.write_sandbox(out, "https://git.example/x.git", "main")
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "nothing A"], cwd=out, check=True)
+    sb = _patched(tmp_path, monkeypatch, 43, out, o)["sandbox"]
+    assert sb["status"] == "deployed" and sb["folder"] == "Contoso/_/shop" and sb["namespace"] == "shop"
+    assert (out / "sandbox/namespaces.txt").read_text() == "shop\n"
+    variant.remove(None, None, 43, PAYLOAD, sb, tmp_path / "rm")
+    assert not (out / "Contoso/_/shop").exists() and (out / "sandbox/namespaces.txt").read_text() == ""
+
+
+def test_a_scan_of_the_same_commit_keeps_the_patch_and_newer_code_replaces_it(tmp_path, monkeypatch):
+    out, o = _output(tmp_path)
+    scan_rev = _head(out)
+    result = _patched(tmp_path, monkeypatch, 44, out, o)
+    d = out / "Contoso/_/shop"
+    patched = (d / "containerizer.json").read_text()
+    # the same commit: the folder stays as it is; the scan's result says what runs there (LastDetail)
+    res = _scan(tmp_path, out, "c" * 12, tag="1.1.0")
+    assert res.status == "deployed" and res.patched["job"] == 44 and "order #44" in res.reason
+    assert [c["image"] for c in res.components] == result["sandbox"]["images"]
+    assert (d / "containerizer.json").read_text() == patched and (d / variant.PATCH_FILE).exists()
+    # newer code: the scan writes its own output, and the order's copy is outdated
+    res = _scan(tmp_path, out, "d" * 40, tag="1.2.0")
+    assert res.status == "deployed" and not res.patched
+    meta = json.loads((d / "containerizer.json").read_text())
+    assert "patched" not in meta or not meta["patched"]
+    assert meta["components"][0]["image"].endswith("/shop/demo-web:1.2.0") and not (d / variant.PATCH_FILE).exists()
+    rows = [{"JobId": 44, "Payload": json.dumps(PAYLOAD), "Result": json.dumps(result), "RemoveRequestedAt": None,
+             "RemoveRequestedBy": None}]
+    conn = FakeConn({r"SELECT JobId, Payload, Result, RemoveRequestedAt": rows,
+                     r"FROM cz.vApplicationLatest": [{"ApplicationId": 7, "SourceCommit": "d" * 40}]})
+    rev = _head(out)
+    assert variant.housekeep(lambda: conn, None, tmp_path / "hk", log=lambda m: None) == 1
+    assert _head(out) == rev                    # nothing of the patch is left in the folder: nothing to commit
+    (sql, params), = conn.sql(r"UPDATE cz.LlmJob SET Result")
+    sb = json.loads(params[0])["sandbox"]
+    assert sb["status"] == "outdated" and sb["reason"].startswith(f"replaced by newer code: a scan assessed commit {'d' * 12}")
+    assert scan_rev
+
+
+def test_a_newer_order_overwrites_the_older_one_in_place(tmp_path, monkeypatch):
+    """Two orders of one application (the lab: jobs 168 and 172): the newer one's copy replaces the older one's in
+    the same folder, keeping the scan's commit to go back to; housekeep records the older one as replaced; removing
+    the newer one brings the scan's output back."""
+    out, o = _output(tmp_path)
+    before = (out / "Contoso/_/shop/containerizer.json").read_text()
+    scan_rev = _head(out)
+    now = datetime(2026, 11, 4, 9, 5, tzinfo=timezone.utc)
+    rows = []
+    for jid in (168, 172):
+        result = _patched(tmp_path, monkeypatch, jid, out, o, now=now)
+        assert result["sandbox"]["status"] == "deployed"
+        rows.append({"JobId": jid, "Payload": json.dumps(PAYLOAD), "Result": json.dumps(result),
+                     "RemoveRequestedAt": None, "RemoveRequestedBy": None})
+    sb172 = json.loads(rows[1]["Result"])["sandbox"]
+    assert sb172["previous_revision"] == scan_rev and sb172["replaced_job"] == 168
+    meta = json.loads((out / "Contoso/_/shop/containerizer.json").read_text())
+    assert meta["patched"]["job"] == 172 and meta["patched"]["previous_revision"] == scan_rev
+    assert meta["patched"]["replaced_job"] == 168
+    assert sorted(p.name for p in (out / "Contoso/_").iterdir()) == ["shop"]
+    assert (out / "sandbox/namespaces.txt").read_text() == "shop\n"
+    conn = FakeConn({r"SELECT JobId, Payload, Result, RemoveRequestedAt": rows,
+                     r"FROM cz.vApplicationLatest": [{"ApplicationId": 7, "SourceCommit": PAYLOAD["commit"]}]})
+    rev = _head(out)
+    assert variant.housekeep(lambda: conn, None, tmp_path / "hk", log=lambda m: None, now=now) == 1
+    assert _head(out) == rev and json.loads((out / "Contoso/_/shop/containerizer.json").read_text())["patched"]["job"] == 172
+    (sql, params), = conn.sql(r"UPDATE cz.LlmJob SET Result")
+    sb = json.loads(params[0])["sandbox"]
+    assert params[1] == 168 and sb["status"] == "outdated" and sb["removed_at"] == "2026-11-04T09:05:00"
+    assert sb["removed_by"] is None and sb["reason"].startswith("replaced by newer code: order #172 deployed a newer")
+    assert variant.STATUS_TEXT[sb["status"]] == "Replaced by newer code"
+    variant.remove(None, None, 172, PAYLOAD, sb172, tmp_path / "rm")
+    assert (out / "Contoso/_/shop/containerizer.json").read_text() == before
+
+
+def _legacy(tmp_path, out, jid):
+    """A variant folder of before (`<app>-refactor-<job>`, its own namespace), as variant.deploy wrote it until now."""
+    from containerizer.gitops import GitOpsOptions
+    src, a = _a_app(tmp_path / f"legacy-{jid}", f"shop-refactor-{jid}")
+    o = orgmod.OrgOptions(provider="github", org="Contoso", registry="reg.example/sandbox", verify=True, gate=False,
+                          push_images=False, output_dir=str(out))
+    o2 = orgmod.Output(o, tmp_path / f"wl-{jid}")
+    rel = f"Contoso/_/shop-refactor-{jid}"
+    tag = f"1.20261101.905-refactor.{jid}"
+    res = orgmod.RepoResult(provider="github", org="Contoso", project="_", repo=f"shop-refactor-{jid}", status="error",
+                            app=f"shop-refactor-{jid}", commit="c" * 40)
+    res = orgmod.deploy_app(a, src, rel, o, o2, None, tag, GitOpsOptions(git_url=o2.url, path=rel), res,
+                            tmp_path / f"wl-{jid}", f"shop-refactor-{jid}", dev_database=False)
+    doc = res.to_dict()
+    doc["variant"] = {"of": "Contoso/_/shop", "of_app": "shop", "job": jid, "application_id": 7, "commit": "c" * 40}
+    (out / rel / "containerizer.json").write_text(json.dumps(doc))
+    orgmod.write_sandbox(out, o2.url, "main")
+    o2.commit(f"containerizer: sandbox variant {rel} of Contoso/_/shop")
+    return {"status": "running", "namespace": f"shop-refactor-{jid}", "folder": rel, "of": "Contoso/_/shop", "tag": tag,
+            "images": [c["image"] for c in res.components], "url": f"https://demo-web-shop-refactor-{jid}.sb.example/",
+            "commit": "c" * 40}
+
+
+def test_housekeep_moves_the_variants_of_before_into_the_applications_folder(tmp_path, monkeypatch):
+    """The latest active `<app>-refactor-<job>` of an application moves into its own folder (the source at the commit
+    with the patch, generated under the application's name, the images it was built as), the variant folders go,
+    sandbox/ lists the application once: one commit. The order's result points at the application's namespace."""
+    out, o = _output(tmp_path)
+    scan_rev0 = _head(out)
+    # the scan worker's clone (the order's source) and the order's patch
+    clone = tmp_path / "sources" / "scan-3" / "repos" / "shop"
+    shutil.copytree(DEMO, clone)
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=clone, check=True)
+    subprocess.run(git + ["add", "-A"], cwd=clone, check=True)
+    subprocess.run(git + ["commit", "-qm", "app"], cwd=clone, check=True)
+    commit = _head(clone)
+    (clone / "PATCHED.md").write_text("made A\n")
+    subprocess.run(git + ["add", "-A"], cwd=clone, check=True)
+    subprocess.run(git + ["commit", "-qm", "make it A"], cwd=clone, check=True)
+    patch = subprocess.run(["git", "format-patch", "-1", "--stdout", "HEAD"], cwd=clone, capture_output=True,
+                           text=True).stdout
+    subprocess.run(["git", "reset", "-q", "--hard", "HEAD~1"], cwd=clone, check=True)
+    monkeypatch.setenv(rf.SOURCES_ENV, str(tmp_path / "sources"))
+    monkeypatch.setattr(variant, "_open", lambda connect, key, payload, work, deploying=True: (TARGET, o))
+    pl = {**PAYLOAD, "commit": commit}
+    old = {jid: _legacy(tmp_path, out, jid) for jid in (150, 151)}
+    assert (out / "sandbox/namespaces.txt").read_text() == "shop\nshop-refactor-150\nshop-refactor-151\n"
+    scan_rev = _head(out)
+    rows = [{"JobId": jid, "Payload": json.dumps(pl), "RemoveRequestedAt": None, "RemoveRequestedBy": None,
+             "Result": json.dumps({"status": "verified", "patch": patch, "sandbox": {**sb, "commit": commit}})}
+            for jid, sb in old.items()]
+    conn = FakeConn({r"SELECT JobId, Payload, Result, RemoveRequestedAt": rows,
+                     r"FROM cz.vApplicationLatest": [{"ApplicationId": 7, "SourceCommit": commit}]})
+    now = datetime(2026, 11, 5, 7, 0, tzinfo=timezone.utc)
+    logs = []
+    assert variant.housekeep(lambda: conn, None, tmp_path / "hk", log=logs.append, now=now) == 2
+    assert sorted(p.name for p in (out / "Contoso/_").iterdir()) == ["shop"]
+    assert (out / "sandbox/namespaces.txt").read_text() == "shop\n"
+    assert yaml.safe_load((out / "sandbox/flux/apps/kustomization.yaml").read_text())["resources"] == [
+        "../../../Contoso/_/shop/gitops/flux"]
+    assert _log(out) == (f"sandbox: shop runs the Make it A patch of order #151 (commit {commit[:12]}), moved from "
+                         f"Contoso/_/shop-refactor-151 (patched copies run in their application's folder now)\n")
+    d = out / "Contoso/_/shop"
+    meta = json.loads((d / "containerizer.json").read_text())
+    assert meta["app"] == "shop" and meta["patched"]["job"] == 151 and meta["patched"]["previous_revision"] == scan_rev
+    assert yaml.safe_load((d / "kustomization.yaml").read_text())["namespace"] == "shop"
+    # the images it was built as: nothing was built again
+    old_img = "reg.example/sandbox/shop-refactor-151/demo-web:1.20261101.905-refactor.151"
+    assert meta["components"][0]["image"] == old_img
+    assert f"image: {old_img}" in (d / "demo-web/k8s.yaml").read_text()
+    assert "shop-refactor" not in (d / "gitops/flux/git/sync.yaml").read_text()
+    upd = {p[1]: json.loads(p[0])["sandbox"] for _, p in conn.sql(r"UPDATE cz.LlmJob SET Result")}
+    assert upd[151]["status"] == "deployed" and upd[151]["in_place"] and upd[151]["namespace"] == "shop"
+    assert upd[151]["folder"] == "Contoso/_/shop" and upd[151]["moved_from"]["namespace"] == "shop-refactor-151"
+    assert upd[151]["url"] != old[151]["url"] and "shop-refactor" not in str(upd[151]["url"])
+    assert upd[150]["status"] == "outdated" and upd[150]["reason"].startswith("replaced by newer code: order #151")
+    # removal of the moved one: the scan's output of before the move comes back
+    variant.remove(None, None, 151, pl, upd[151], tmp_path / "rm")
+    assert subprocess.run(["git", "diff", "--quiet", scan_rev0, "HEAD", "--", "Contoso"], cwd=out).returncode == 0
 
 
 def test_no_output_repository_is_a_clear_note():
@@ -542,42 +729,6 @@ def test_only_the_latest_orders_variant_of_an_application_stays():
     # variants without an ApplicationId: one application by the original's folder and its name
     old = [{**r, "Payload": json.dumps({"app": "shop", "commit": "c" * 40})} for r in (_vrow(3), _vrow(4))]
     assert [(r["JobId"], by) for r, _, by in variant.due(old)] == [(3, 4)]
-
-
-def test_housekeep_retires_the_older_variant_of_the_same_application(tmp_path, monkeypatch):
-    """Both variants deployed (the duplicate in the lab): the runner deletes the older one's folder and its Flux
-    objects from the output repository (sandbox/ regenerated: the cluster prunes its namespace), as "Remove from the
-    sandbox" does, and records it as replaced by the newer order; the newer one stays."""
-    out, o = _output(tmp_path)
-    monkeypatch.setattr(variant, "_open", lambda connect, key, payload, work, deploying=True: (TARGET, o))
-    monkeypatch.delenv(variant.KUBECONFIG_ENV, raising=False)
-    now = datetime(2026, 11, 4, 9, 5, tzinfo=timezone.utc)
-    rows = []
-    for jid in (168, 172):
-        work = tmp_path / f"job-{jid}"
-        name = rf.variant_name("shop", jid)
-        shutil.copytree(DEMO, work / name)
-        result = {"status": "verified", "rating_reached": True,
-                  "verification": [{"component": "demo-web", "status": "ok"}]}
-        result["sandbox"] = variant.deploy(None, None, PAYLOAD, jid, result, work, name, lambda t: None, now=now)
-        assert result["sandbox"]["status"] == "deployed"
-        rows.append({"JobId": jid, "Payload": json.dumps(PAYLOAD), "Result": json.dumps(result),
-                     "RemoveRequestedAt": None, "RemoveRequestedBy": None})
-    assert (out / "sandbox/namespaces.txt").read_text() == "shop\nshop-refactor-168\nshop-refactor-172\n"
-    conn = FakeConn({r"SELECT JobId, Payload, Result, RemoveRequestedAt": rows,
-                     r"FROM cz.vApplicationLatest": [{"ApplicationId": 7, "SourceCommit": PAYLOAD["commit"]}]})
-    assert variant.housekeep(lambda: conn, None, tmp_path / "hk", log=lambda m: None, now=now) == 1
-    assert not (out / "Contoso/_/shop-refactor-168").exists() and (out / "Contoso/_/shop-refactor-172").is_dir()
-    assert (out / "sandbox/namespaces.txt").read_text() == "shop\nshop-refactor-172\n"
-    flux = yaml.safe_load((out / "sandbox/flux/apps/kustomization.yaml").read_text())["resources"]
-    assert flux == ["../../../Contoso/_/shop/gitops/flux", "../../../Contoso/_/shop-refactor-172/gitops/flux"]
-    assert "sandbox variant Contoso/_/shop-refactor-168 replaced by the variant of order #172" in subprocess.run(
-        ["git", "log", "-1", "--format=%s"], cwd=out, capture_output=True, text=True).stdout
-    (sql, params), = conn.sql(r"UPDATE cz.LlmJob SET Result")
-    sb = json.loads(params[0])["sandbox"]
-    assert params[1] == 168 and sb["status"] == "outdated" and sb["removed_at"] == "2026-11-04T09:05:00"
-    assert sb["removed_by"] is None and sb["reason"].startswith("replaced by newer code: order #172 deployed a newer")
-    assert variant.STATUS_TEXT[sb["status"]] == "Replaced by newer code"
 
 
 def test_housekeep_records_the_removal(monkeypatch, tmp_path):
@@ -753,6 +904,17 @@ def test_order_page_shows_the_loop_and_the_sandbox(adm):
     # the notice codes are fixed texts; anything else shows nothing of the URL
     assert "Removal requested: the LLM queue runner" in _getq(adm, op, "/admin/refactoring/42", "notice=remove-requested").body
     assert "evil" not in _getq(adm, op, "/admin/refactoring/42", "notice=%3Cb%3Eevil").body
+    # in place (the application's own folder and namespace): no "Beside"; Remove brings the scan's output back
+    here = {"status": "running", "in_place": True, "namespace": "shop", "folder": "Contoso/_/shop", "of": "Contoso/_/shop",
+            "url": "https://web-shop.sb.example.com/", "moved_from": {"namespace": "shop-refactor-42"}}
+    adm.conn.answers[r"SELECT RemoveRequestedAt FROM cz.LlmJob"] = [{"RemoveRequestedAt": None}]
+    adm.conn.answers[r"FROM cz.LlmJob WHERE JobId = %s AND Kind = N'refactor'"] = [
+        {**job, "Result": json.dumps({**res, "sandbox": here})}]
+    b = _get(adm, op, "/admin/refactoring/42").body
+    assert "Beside" not in b and "It runs in place of the application's scan output" in b
+    assert "<span class='label'>Before</span> <code>shop-refactor-42</code>" in b
+    assert "Puts the scan's output back into the application's folder" in b
+    assert "href='https://web-shop.sb.example.com/' target='_blank'" in b
 
 
 def test_remove_needs_the_csrf_token_and_the_application(adm):
@@ -867,6 +1029,7 @@ def test_schema_23_removal_request_and_the_view():
     cur.execute("INSERT cz.Application (SourceKey, Name) VALUES (N'k', N'shop')")
     cur.execute("SELECT ApplicationId FROM cz.Application WHERE SourceKey = N'k'")
     app_id = cur.fetchone()[0]
+    cur.execute("INSERT cz.SandboxCheck (ApplicationId, Status, Namespace) VALUES (%s, N'healthy', N'shop')", (app_id,))
     conn.commit()
     for login, role in (("cz_ma_admin", "admin"), ("cz_ma_reader", "reader"), ("cz_ma_writer", "writer")):
         sqlstore.create_login(conn, login, pw, role)
@@ -898,6 +1061,18 @@ def test_schema_23_removal_request_and_the_view():
     (o,) = rc.fetchall()
     assert (o["Status"], o["RatingAfter"], o["SandboxStatus"]) == ("verified", "A", "running")
     assert o["SandboxUrl"] == "https://web-shop-refactor-1.sb.example.com/" and "RemoveRequestedBy" not in o
+    # schema 42: one row per namespace; a patch running in place marks the application's own namespace (Variant, Own)
+    ns = lambda: variant._rows(w, "SELECT Namespace, ApplicationId, Variant, Own, Status FROM cz.vSandboxNamespace "  # noqa: E731
+                                  "WHERE ApplicationId = %s ORDER BY Namespace", (app_id,))
+    assert [(r["Namespace"], r["Variant"], r["Own"]) for r in ns()] == [("shop", False, True)]   # no namespace yet
+    for sb, want in (({"namespace": "shop-refactor-1"}, [("shop", False, True), ("shop-refactor-1", True, False)]),
+                     ({"namespace": "shop", "in_place": True}, [("shop", True, True)])):
+        c.execute("UPDATE cz.LlmJob SET Result = %s WHERE JobId = %s",
+                  (json.dumps({**result, "sandbox": {**result["sandbox"], **sb}}), jid))
+        w.commit()
+        assert [(r["Namespace"], r["Variant"], r["Own"]) for r in ns()] == want
+    c.execute("UPDATE cz.LlmJob SET Result = %s WHERE JobId = %s", (json.dumps(result), jid))
+    w.commit()
     # "Remove from the sandbox": the admin login records the request, cannot touch the result
     a = adm.cursor()
     a.execute("UPDATE cz.LlmJob SET RemoveRequestedAt = SYSUTCDATETIME(), RemoveRequestedBy = %s WHERE JobId = %s",
@@ -1023,6 +1198,7 @@ def test_the_front_page_lists_the_apps_a_patch_makes_a():
             {**_app(3, "orders", "B"), "APatch": None}]
     html = webui.render_overview({"apps": apps, "unmapped": {}})
     assert "Made A by a patch" in html and "A with a patch (B → A)" in html and "1 running in the sandbox" in html
+    assert "in place of the application's scan output" in html and "-refactor-&lt;order&gt;" not in html
     assert html.index(">Running in the sandbox<") < html.index("Expired in the sandbox")    # running ones first
     assert "href='https://billing-refactor-9.sb.example.com/' target='_blank'" in html
     assert "href='/app/1#refactoring'" in html and "/admin/refactoring/9" not in html  # the patch link: staff only

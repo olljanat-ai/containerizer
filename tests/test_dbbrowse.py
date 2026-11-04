@@ -566,7 +566,7 @@ def test_application_page_lists_its_databases_latest_namespace_first(site):
     r = _get(adm, h, "/admin/dev-databases/3")
     assert r.status == 200
     assert r.body.index(f"<td>{VARIANT}") < r.body.index(f"<td>{NS}<")
-    assert "(Make it A variant)" in r.body and "parts_catalog_refactor_7" in r.body
+    assert "(runs a Make it A patch)" in r.body and "parts_catalog_refactor_7" in r.body
 
 
 def test_tables_rows_and_editor(site):

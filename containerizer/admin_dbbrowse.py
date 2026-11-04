@@ -11,7 +11,7 @@ Under /admin/dev-databases/<application id>:
 
 `d` names one of the application's databases: a lab-service database (SQL Server, PostgreSQL or MySQL in
 containerizer-lab, lab-status.json) or the restored dev database (cz.DevDatabase), in one of the
-application's sandbox namespaces (cz.vSandboxNamespace: its own and its Make it A variants, the latest first).
+application's sandbox namespaces (cz.vSandboxNamespace: its own, where a Make it A patch runs in place, the latest first).
 Everything runs through the system agent (dbbrowse.py), which checks it all again. Every change is recorded
 in cz.DatabaseEdit before it runs (copied to the change history by a trigger); if it cannot be recorded, it
 does not run. Reads are logged like other results views when CONTAINERIZER_VIEW_AUDIT is on.
@@ -56,7 +56,7 @@ class Db:
     source: str                 # lab, devdb
     engine: str                 # sqlserver, postgres, mysql
     namespace: str
-    variant: bool = False       # a Make it A variant's namespace
+    variant: bool = False       # a Make it A patch runs in the namespace (in place; a -refactor- one of before)
     database: str = ""          # the database's name (what the agent derives too)
     ready: bool = True
 
@@ -254,7 +254,7 @@ def _hidden(**kv) -> str:
 def picker(app_id: int, dbs: list[Db], current: Db | None) -> str:
     """Which database: each lab-service and dev database in each namespace, the latest namespace first."""
     opts = "".join(f"<option value='{e(d.key)}'{' selected' if current and d.key == current.key else ''}>"
-                   f"{e(d.title)} · {e(d.namespace)}{' (Make it A variant)' if d.variant else ''}"
+                   f"{e(d.title)} · {e(d.namespace)}{' (runs a Make it A patch)' if d.variant else ''}"
                    f"{'' if d.ready else ' (not ready yet)'}</option>" for d in dbs)
     return (f"<form method='get' action='/admin/dev-databases/{app_id}/browse' class='formrow dbpick'>"
             f"<label for='d'>Database</label><select id='d' name='d'>{opts}</select>"
@@ -276,7 +276,7 @@ def section(adm, conn, s, app_id: int) -> str:
         return (f"<h2>Databases in the sandbox</h2><p class='muted'>{e(why)} MongoDB, Redis and the other lab "
                 "services are not browsed here.</p>")
     rows = "".join(f"<tr><td><a href='{e(_href(app_id, d))}'>{e(d.title)}</a></td><td>{e(d.namespace)}"
-                   f"{' <span class=muted>(Make it A variant)</span>' if d.variant else ''}</td><td>{e(d.database)}</td>"
+                   f"{' <span class=muted>(runs a Make it A patch)</span>' if d.variant else ''}</td><td>{e(d.database)}</td>"
                    f"<td>{'' if d.ready else '<span class=muted>not ready yet</span>'}</td></tr>" for d in dbs)
     return ("<h2>Databases in the sandbox</h2><p class='muted'>Look at and fix the application's data: tables, rows, "
             "SQL. Statements run as the application's own database login, in its own database only, and every change "

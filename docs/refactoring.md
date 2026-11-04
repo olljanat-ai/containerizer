@@ -230,8 +230,8 @@ on the whole application (Admin → Applications), a Make it A order may do more
 rounds a pass) and stops making LLM calls when the window ends. An order whose copy does not end up running in the
 sandbox queues the next one at once, approved and first in the queue, which continues from its patch with what went
 wrong: the compiler errors or the run log, or, when it was deployed but failed there, the sandbox's state and
-log of each failing component (its failing variant is taken out of the sandbox first). The chain ends when a
-variant runs in the sandbox, when the window ends, after 30 orders, or when two orders in a row changed nothing.
+log of each failing component (its failing copy is taken out of the sandbox first: the scan's output goes back). The chain ends when a
+copy runs in the sandbox, when the window ends, after 30 orders, or when two orders in a row changed nothing.
 Each order's page links the one before and the next.
 
 **A chain stuck on the same errors starts over.** Repairs build on the patch before them, so an early wrong edit
@@ -283,50 +283,67 @@ each with **End now**. Applications that already had an order waiting are not tu
 
 ## The sandbox variant
 
-A Make it A order whose patched copy rates A and is verified is **deployed to the sandbox as its own
-application**, never in place of the original, the way an [organization scan](scheduled-scans.md) deploys (the same
-code). The original stays as the scan left it: an organization scan deploys only an application's components that
-rate A on their own, so a B application has only those in the sandbox, often none. The patched copy:
+A Make it A order whose patched copy rates A and is verified is **deployed to the sandbox in place of the
+application's scan output**, the way an [organization scan](scheduled-scans.md) deploys (the same code): an
+organization scan deploys only an application's components that rate A on their own, so a B application has only
+those in the sandbox, often none; the patched copy takes the application's place. There is one folder, one Git
+history, one namespace, one set of URLs, IdP clients, lab databases and egress decisions per application.
 
-- **Its own name.** The patched copy's folder is `<app>-refactor-<job>` (a DNS label of at most 63
-  characters), and everything that an organization scan derives from an application's name derives from it:
-  the **namespace** `<app>-refactor-<job>`, the images `<registry>/<app>-refactor-<job>/<component>`, the
-  Ingress hosts, the sandbox IdP clients and the lab services, so the variant shares nothing with the
-  original or with another order. The image tag is `1.<yyyymmdd>.<hhmm>-refactor.<job>`, a semver pre-release
-  that the original's image automation never picks up.
-- **Where.** A sibling folder of the original in the output repository of the organization scan that
-  assessed the application, `<Organization>/<Project>/<Repository>-refactor-<job>/`, with `sandbox/`
-  regenerated, in one commit; Flux deploys it from there. Its images go to the appliance's own
-  registry, as the scan's do; the output repository and branch and the security gate are that scan's; the output repository's write
-  token is its registered credential. An application that no organization scan with an output repository
-  assessed here is not deployed, and the order page says so (`no output repository: ...`).
-- **Data.** Only the components that rate A are deployed, with no uploaded dev database: the variant gets
-  a **new, empty lab database** of its own (when the [lab services](lab-services.md) are on), as a new
-  application would.
-- **Health.** The runner reads the variant's namespace back with a read-only kubeconfig
+- **Where.** The application's own folder in the output repository of the organization scan that assessed it,
+  `<Organization>/<Project>/<Repository>/` (or `<Repository>@<folder>/` for one application of a split
+  repository), the folder the scan writes. The scan's output there is replaced, `sandbox/` is regenerated, in one
+  commit: `sandbox: <app> runs the Make it A patch of order #<job> (commit <sha>)`; Flux rolls the application
+  over to it. Its images go to the appliance's own registry, as the scan's do; the output repository and branch and
+  the security gate are that scan's; the output repository's write token is its registered credential. An
+  application that no organization scan with an output repository assessed here is not deployed, and the order page
+  says so (`no output repository: ...`).
+- **The application's name.** Everything an organization scan derives from an application's name is the
+  application's own: the **namespace**, the images `<registry>/<app>/<component>`, the Ingress hosts (so the
+  application's sandbox URLs), the sandbox IdP clients, the lab services, the `connectivity.yaml` with its approved
+  egress and confirmed links, and the NetworkPolicies. The image tag says it is the patch:
+  `1.<yyyymmdd>.<hhmm>-refactor.<job>`, a semver pre-release that the application's image automation never picks up.
+- **What it records.** `containerizer.json` in the folder has `patched`: the order (`job`), the source commit the
+  patch was made for (`commit`), the tag, and `previous_revision`, the output repository's commit before the
+  first patch ran there, whose folder is the scan's output. The scan's output is never lost: it stays in the output
+  repository's history.
+- **Data.** Only the components that rate A are deployed, with no uploaded dev database: the patched copy uses
+  **the application's lab database** (when the [lab services](lab-services.md) are on), the one its scan output
+  uses, as the lab services are per namespace.
+- **Health.** The runner reads the application's namespace back with a read-only kubeconfig
   (`CONTAINERIZER_SANDBOX_KUBECONFIG`, optional `CONTAINERIZER_SANDBOX_CONTEXT`; on the appliance the
   verifier account of `sandbox/verify-rbac.yaml`, below) and records it in the order: **running in the
-  sandbox**, **failing in the sandbox**, or *deployed, health not checked* without a kubeconfig. The
-  original's sandbox results on its results page stay as they are: the variant is not a sandbox check of the
-  application and teaches the learning loop nothing.
-- **How long it stays.** A variant does not expire with time. It stays until a scan assesses newer code of its
-  application: another commit than the one its patch was made for, so the patch no longer matches the
-  application. Without scheduled scans, the code an order was made for stays the code the scans know, and so does
-  the variant. **One variant per application:** only the variant of an application's latest order stays, so when
-  a newer order's variant is deployed (on the same commit or another), the older ones of that application are
-  replaced. **Remove from the sandbox** on the order page (administrators, operators, the application's
-  product owners) takes it out sooner. The queue runner takes outdated, replaced and requested variants out of the
-  output repository within a few minutes (the folder deleted, `sandbox/` regenerated, one commit: the cluster
-  removes the namespace) and records it: **replaced by newer code** (with both commits, or the newer order) or
-  **removed**. The
-  patch stays available on its order (in the results database), and a new Make it A order for the new code
-  starts from it (above). Variants deployed before 0.9.1 had an expiry
-  date, which no longer applies.
+  sandbox**, **failing in the sandbox**, or *deployed, health not checked* without a kubeconfig. From then on the
+  scan's sandbox checks of the application see the patched copy, and the results page's Migration plan says the
+  sandbox runs the patch.
+- **Scans.** A scan that assesses the commit the patch was made for leaves the folder as it is (the patch is newer
+  than what the scan would write) and still records its assessment; its result says the folder runs the patch. A
+  scan that assesses **newer code** writes its own output into the folder, and the order's state becomes
+  **replaced by newer code**: the patch was made for code the application no longer is. Without scheduled scans,
+  the code an order was made for stays the code the scans know, and so does the patched copy.
+- **One per application.** A newer order's patched copy overwrites the older one in place (on the same commit or
+  another; it keeps the scan's commit to go back to), and the older order's state becomes **replaced by newer
+  code**, with the newer order.
+- **Remove from the sandbox** on the order page (administrators, operators, the application's product owners)
+  puts the scan's output back: the queue runner, within a few minutes, checks the folder out of
+  `previous_revision` (no folder there, as when no component rated A on its own: the folder goes), regenerates
+  `sandbox/` and commits; the sandbox runs the application as the scan deployed it. The patch stays available on its
+  order (in the results database), and a new Make it A order for the new code starts from it (above).
 
-The variant's folder also holds the order's patch, `make-it-a.patch`, so developers who look in the output
-repository find the code change next to its manifests (`git am` it on the commit it was made for).
+**Variants of before: `<app>-refactor-<job>`.** Until 0.10.0 patched copies ran beside the application, in a folder
+`<Organization>/<Project>/<Repository>-refactor-<job>/` and a namespace of their own. The LLM queue runner's
+housekeeping moves them: the latest one of each application that still runs is generated again under the
+application's name from the source at its commit with its patch (its images as they were built: nothing is built
+again) into the application's folder, the `-refactor-` folders are deleted and `sandbox/` regenerated, in one
+commit; Flux prunes the old namespaces (with their lab database). The order keeps its history; its sandbox
+namespace, folder and URL become the application's (the old ones under *Before* on the order page). One that cannot
+be moved (its source is gone) is taken out of the sandbox, and **Build again (no LLM)** on its order deploys it in
+place. Variants deployed before 0.9.1 had an expiry date, which no longer applies.
 
-The results page shows the variant's state next to the order, with its URL (**open ↗**) while it runs.
+The folder also holds the order's patch, `make-it-a.patch`, so developers who look in the output repository find
+the code change next to its manifests (`git am` it on the commit it was made for).
+
+The results page shows the patched copy's state next to the order, with its URL (**open ↗**, the application's own)
+while it runs; the front page lists it under **Made A by a patch**.
 
 **Images without a registry.** In a lab whose sandbox cluster shares the image builder's Docker image store (k3s
 with `--docker` on the machine that builds), set `CONTAINERIZER_LOCAL_IMAGES=1` for the scan worker and the LLM
@@ -366,13 +383,13 @@ The LLM queue runner (`containerizer-llm-queue`) carries out the orders. For the
   group is root-equivalent: the runner builds the same repositories' code in the same hardened containers
   as the scan worker, which is why the appliance is a dedicated machine with an egress allow-list
   ([appliance](appliance.md)). Without Docker the patches are *applies only*.
-- for [sandbox variants](#the-sandbox-variant): clones the scan's output repository into its scratch space
-  with the registered write token, pushes the variant's images to the appliance's registry, reads the lab
-  services that are on, and reads the variant's health with the kubeconfig of the read-only verifier
+- for the [sandbox deployment](#the-sandbox-variant) of patched copies: clones the scan's output repository into its scratch space
+  with the registered write token, pushes the patched copy's images to the appliance's registry, reads the lab
+  services that are on, and reads its health with the kubeconfig of the read-only verifier
   account, `/run/containerizer/sandbox-verifier.kubeconfig`. `cz-sandbox` (root, every 2 minutes) gives that
   account its Role in every namespace Containerizer generated (`sandbox/verify-rbac.yaml`: workloads, pods,
   their logs and events, the namespace's Flux Kustomization; no Secrets, nothing cluster-wide) and writes the
-  kubeconfig with a 24-hour token (`root:containerizer`, 0640). A new variant's namespace gets its Role at the
+  kubeconfig with a 24-hour token (`root:containerizer`, 0640). A namespace new to the sandbox gets its Role at the
   next run of `cz-sandbox`; the runner waits for it within its health check (15 minutes,
   `CONTAINERIZER_SANDBOX_VARIANT_TIMEOUT`).
 
@@ -395,5 +412,5 @@ The LLM queue runner (`containerizer-llm-queue`) carries out the orders. For the
 - **Make it A** stops at its limits (16 LLM calls, 2 passes, 2 repair rounds a pass): an application whose
   findings need more stays B, and the order says what is left. The rating after is the rules' rating of the
   patched copy and the build and run of its components, not a test of the application.
-- **A sandbox variant** runs the patched code with a new, empty lab database: it shows that the application
-  starts and answers as a stateless container, not that its data or its integrations work.
+- **A patched copy in the sandbox** runs with the application's lab database (the one its scan output uses): it
+  shows that the application starts and answers as a stateless container, not that its data or its integrations work.

@@ -211,7 +211,7 @@ Windows" instead of being forced.
 ### Make it A
 
 One order has the LLM fix everything that keeps a B application from A, verifies and repairs the patch,
-assesses it again and deploys the patched copy to the sandbox as its own application. Every order shows its
+assesses it again and deploys the patched copy to the sandbox in place of the application's scan output. Every order shows its
 tokens and time, and needs an administrator's approval until you trust it.
 
 [Refactoring patches :octicons-arrow-right-24:](refactoring.md#make-it-a)

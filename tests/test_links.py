@@ -41,7 +41,7 @@ def _conn(links=(), flows=()):
             {"ApplicationId": 2, "ApplicationName": "orders-demo", "ProductName": "Orders", "RepositoryUrl": None,
              "NetworkJson": json.dumps(ORDERS_NET)}]
     return FakeConn({r"FROM cz.vNetworkLatest n JOIN": apps,
-                     r"FROM cz.vSandboxNamespace WHERE Variant = 0": [{"Namespace": "egress-demo", "ApplicationId": 1},
+                     r"FROM cz.vSandboxNamespace WHERE Own = 1": [{"Namespace": "egress-demo", "ApplicationId": 1},
                                                                        {"Namespace": "orders-demo", "ApplicationId": 2}],
                      r"FROM cz.vSandboxLatest WHERE Url": [],
                      r"SELECT FromApplicationId, FromComponent, Destination, Port FROM cz.ComponentLink": list(links),

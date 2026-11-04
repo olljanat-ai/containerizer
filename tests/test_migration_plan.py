@@ -260,3 +260,15 @@ def test_agent_prompt_route_is_gone():
         assert ".gens{" in css and ".ready-now{" in css
     finally:
         httpd.shutdown()
+
+
+def test_the_plan_says_when_a_make_it_a_patch_runs_in_place():
+    """A Make it A patched copy runs in the application's own folder and namespace (variant.py): the plan says the
+    Sandbox column shows the patched copy."""
+    orders = [{"JobId": 40, "Goal": "rating-a", "SandboxStatus": "outdated"},
+              {"JobId": 42, "Goal": "rating-a", "SandboxStatus": "running"}, {"JobId": 43, "Goal": "fix"}]
+    assert mp.patch_in_sandbox(loans(refactors=orders))["JobId"] == 42
+    sec = _plan_html(webui.render_application(loans(Rating="B", refactors=orders)))
+    assert "The sandbox runs the Make it A patch of order #42 in place of this application's scan output" in sec
+    assert mp.patch_in_sandbox(loans(refactors=orders[:1])) is None
+    assert "Make it A patch of order" not in _plan_html(webui.render_application(loans(Rating="B")))
