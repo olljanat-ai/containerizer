@@ -265,6 +265,15 @@ of tokens each (20,000 to begin with) marks the ones that fit, and **Queue … a
 them, approved by you at once: they do not wait for approval, whatever the LLM queue's approval policy says, and
 run by the queue's settings (hours, idle, parallel requests). Nothing is queued by opening the page.
 
+Tick **Also LLM-heavy mode for these applications, for** (8 hours to begin with, up to 7 days) to turn
+[LLM-heavy mode](source-control.md#llm-heavy-for-a-while) on for each application ordered, with the same button:
+until the window ends, their orders and the LLM jobs that follow (egress and link reviews) go before every other job
+in the LLM queue, approved, and their scans review each of their components. Admin → LLM queue lists the windows,
+each with **End now**. Applications that already had an order waiting are not turned LLM-heavy.
+
+![Make it A: every B application, with the LLM-heavy option above the Queue button](images/admin-make-all-a-heavy.png#only-light){ .cz-shot }
+![Make it A: every B application, with the LLM-heavy option above the Queue button](images/admin-make-all-a-heavy-dark.png#only-dark){ .cz-shot }
+
 ## The sandbox variant
 
 A Make it A order whose patched copy rates A and is verified is **deployed to the sandbox as its own

@@ -81,9 +81,7 @@ def section(adm, conn, s, a, app_id: int) -> str:
         opts = "<option value=''>The whole application</option>" + "".join(
             f"<option value='{int(c['ComponentId'])}'>{e(c['Name'])} ({e(c['ProjectPath'])})</option>"
             for c in _components(conn, app_id))
-        hours = "".join(f"<option value='{h}'{' selected' if h == DEFAULT_HOURS else ''}>"
-                        f"{h if h < 24 else h // 24} {('hour' if h == 1 else 'hours') if h < 24 else ('day' if h == 24 else 'days')}"
-                        f"</option>" for h in HOURS)
+        hours = hours_options()
         form = (f"<form method='post' action='/admin/applications/{app_id}/heavy' class='edit'>{adm._csrf(s)}"
                 f"<label for='Scope'>LLM-heavy for</label><select id='Scope' name='Scope'>{opts}</select>"
                 f"<label for='Hours'>How long</label><select id='Hours' name='Hours'>{hours}</select>"
@@ -92,6 +90,30 @@ def section(adm, conn, s, a, app_id: int) -> str:
                 f"<div><button>Turn on LLM-heavy</button></div></form>")
     return (f"<h2 id='llm-heavy'>LLM-heavy mode</h2>{intro}"
             f"{windows_html(adm, s, a, rows, f'/admin/applications/{app_id}')}{form}")
+
+
+def hours_options(selected: int = DEFAULT_HOURS) -> str:
+    """The <option>s of How long."""
+    return "".join(f"<option value='{h}'{' selected' if h == selected else ''}>"
+                   f"{h if h < 24 else h // 24} {('hour' if h == 1 else 'hours') if h < 24 else ('day' if h == 24 else 'days')}"
+                   f"</option>" for h in HOURS)
+
+
+def parse_hours(raw) -> int | None:
+    return int(raw) if re.fullmatch(r"\d{1,3}", raw or "") and 1 <= int(raw) <= 168 else None
+
+
+def open_window(conn, s, app_id: int, hours: int, comp: dict | None = None):
+    """Insert an LLM-heavy window of the application (or one component) for `hours` from now; its end. The caller
+    commits, and then approves what waits (llmqueue.auto_approve)."""
+    cur = conn.cursor(as_dict=True)
+    # no OUTPUT clause: the table has an audit trigger
+    cur.execute("INSERT cz.LlmHeavyWindow (ApplicationId, ProjectPath, Component, EndsAt, Hours, CreatedBy, CreatedByName) "
+                "VALUES (%s, %s, %s, DATEADD(hour, %s, SYSUTCDATETIME()), %s, %s, %s); "
+                "SELECT EndsAt FROM cz.LlmHeavyWindow WHERE WindowId = SCOPE_IDENTITY()",
+                (app_id, comp["ProjectPath"] if comp else None, comp["Name"] if comp else None, hours, hours,
+                 s.user[:256], (s.name or "")[:256] or None))
+    return cur.fetchone()["EndsAt"]
 
 
 def _back(url: str, msg: str) -> Response:
@@ -103,8 +125,8 @@ def start(conn, s, a, app_id: int, form: dict) -> Response:
     back = f"/admin/applications/{app_id}"
     if not a.admin:
         return _back(back, "Only administrators turn LLM-heavy mode on.")
-    hours = form.get("Hours", [""])[0]
-    if not re.fullmatch(r"\d{1,3}", hours) or not 1 <= int(hours) <= 168:
+    hours = parse_hours(form.get("Hours", [""])[0])
+    if hours is None:
         return _back(back, "Choose for how many hours (1 to 168).")
     scope = form.get("Scope", [""])[0]
     cur = conn.cursor(as_dict=True)
@@ -123,13 +145,7 @@ def start(conn, s, a, app_id: int, form: dict) -> Response:
         if not comp:
             return _back(back, "That component is not part of this application.")
     try:
-        # no OUTPUT clause: the table has an audit trigger
-        cur.execute("INSERT cz.LlmHeavyWindow (ApplicationId, ProjectPath, Component, EndsAt, Hours, CreatedBy, CreatedByName) "
-                    "VALUES (%s, %s, %s, DATEADD(hour, %s, SYSUTCDATETIME()), %s, %s, %s); "
-                    "SELECT EndsAt FROM cz.LlmHeavyWindow WHERE WindowId = SCOPE_IDENTITY()",
-                    (app_id, comp["ProjectPath"] if comp else None, comp["Name"] if comp else None, int(hours), int(hours),
-                     s.user[:256], (s.name or "")[:256] or None))
-        ends = cur.fetchone()["EndsAt"]
+        ends = open_window(conn, s, app_id, int(hours), comp)
         conn.commit()
     except Exception:
         conn.rollback()

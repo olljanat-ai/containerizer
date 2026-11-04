@@ -742,7 +742,8 @@ def test_make_it_a_for_every_b_app_smallest_first(adm, stateful, monkeypatch):
     assert _post(adm, ad, "/admin/refactoring/make-all-a", csrf="wrong").status == 403
     assert not adm.conn.sql("EXEC cz.QueueLlmJob")
     r = _post(adm, ad, "/admin/refactoring/make-all-a", Limit="20000")
-    assert _loc(r) == "/admin/refactoring?bulk=queued&q=1&w=0&x=0&n=2"
+    assert _loc(r) == "/admin/refactoring?bulk=queued&q=1&w=0&x=0&n=2&h=0"
+    assert not adm.conn.sql("INSERT cz.LlmHeavyWindow")                             # not asked for
     (sql, params), = adm.conn.sql("EXEC cz.QueueLlmJob")
     assert json.loads(params[-1])["goal"] == "rating-a" and json.loads(params[-1])["application_id"] == 7
     (sql, params), = adm.conn.sql(r"SET Status = N'queued', ApprovedBy")             # approved at once
@@ -750,6 +751,20 @@ def test_make_it_a_for_every_b_app_smallest_first(adm, stateful, monkeypatch):
     b = _getq(adm, ad, "/admin/refactoring", "bulk=queued&q=1&w=0&x=0&n=2").body
     assert "queued and approved for 1 application(s)" in b and "2 left out" in b
     assert "evil" not in _getq(adm, ad, "/admin/refactoring", "bulk=queued&q=%3Cevil%3E").body
+    # and LLM-heavy mode for the applications ordered from here, for the hours chosen
+    assert "name='Heavy' value='1'" in _get(adm, ad, "/admin/refactoring/make-all-a").body
+    adm.conn.log.clear()
+    adm.conn.answers[r"SELECT EndsAt FROM cz.LlmHeavyWindow"] = [{"EndsAt": datetime(2026, 11, 5)}]
+    r = _post(adm, ad, "/admin/refactoring/make-all-a", Limit="20000", Heavy="1", Hours="12")
+    assert _loc(r) == "/admin/refactoring?bulk=queued-heavy&q=1&w=0&x=0&n=2&h=12"
+    (sql, params), = adm.conn.sql("INSERT cz.LlmHeavyWindow")
+    assert params[:5] == (7, None, None, 12, 12) and params[5] == "a@example.com"   # the whole application
+    assert adm.conn.sql("AutoApproveLlmJobs")                                        # what else of it waits
+    b = _getq(adm, ad, "/admin/refactoring", "bulk=queued-heavy&q=1&w=0&x=0&n=2&h=12").body
+    assert "each LLM-heavy for 12 hour(s)" in b
+    adm.conn.log.clear()
+    _post(adm, ad, "/admin/refactoring/make-all-a", Limit="20000", Heavy="1", Hours="999")     # not a choice: no window
+    assert adm.conn.sql("EXEC cz.QueueLlmJob") and not adm.conn.sql("INSERT cz.LlmHeavyWindow")
     # an application with an order in the queue already is shown, not ordered again
     adm.conn.answers[r"FROM cz.LlmJob WHERE Kind = N'refactor'\s+AND Status IN"] = [
         {"ApplicationId": 7, "JobId": 42, "Status": "queued"}]
