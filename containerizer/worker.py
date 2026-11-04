@@ -126,6 +126,36 @@ def llm_heavy(scan: dict, env=None) -> bool:
     return bool(scan.get("LlmHeavy")) and bool(scan.get("UseAi")) and not llm_queued(scan) and heavy_allowed(env)
 
 
+SANDBOX_KUBECONFIG_ENV = "CONTAINERIZER_SANDBOX_KUBECONFIG"
+
+
+def sandbox_check_options(log=None, env=None, status_path: str | None = None) -> dict:
+    """OrgOptions for the sandbox check at the end of a scan (org.sandbox_step: wait for Flux, read back every
+    component's health, cz.SandboxCheck rows for the results pages). On when the worker has the read-only verifier
+    kubeconfig (CONTAINERIZER_SANDBOX_KUBECONFIG; the appliance: the one cz-sandbox writes) and, where cz-sandbox
+    writes its state, the sandbox is connected to the output repository: otherwise nothing deploys and the check
+    would only wait out its timeout."""
+    from .metrics import SANDBOX_STATUS
+    env = os.environ if env is None else env
+    kc = env.get(SANDBOX_KUBECONFIG_ENV) or ""
+    if not kc:
+        return {}
+    if not os.path.isfile(kc):
+        if log:
+            log(f"sandbox check off for this run: {kc} does not exist yet (cz-sandbox writes it)")
+        return {}
+    try:
+        with open(status_path or SANDBOX_STATUS) as f:
+            state = dict(l.split("=", 1) for l in f.read().splitlines() if "=" in l).get("state", "").strip()
+    except OSError:
+        state = "connected"                 # not an appliance (no cz-sandbox): the kubeconfig is all there is
+    if state != "connected":
+        if log:
+            log(f"sandbox check off for this run: the sandbox is not connected to the output repository ({state})")
+        return {}
+    return {"verify_sandbox": True, "kubeconfig": kc, "kube_context": env.get("CONTAINERIZER_SANDBOX_CONTEXT") or None}
+
+
 def llm_queued(scan: dict) -> bool:
     """The scan asks the LLM through the LLM review queue (OrgScan.LlmMode 'queued', llmqueue.py)."""
     return bool(scan.get("UseAi")) and (scan.get("LlmMode") or "inline") == "queued"
@@ -732,7 +762,8 @@ class Worker:
             llm_heavy=llm_heavy(scan), review_queue=self.review_queue(scan) if llm_queued(scan) else None,
             heavy_windows=self.heavy_windows() if scan["UseAi"] else None, sandbox_off=self.sandbox_off(),
             cache_dir=str(base / "repos"), state=store, hooks=hooks,
-            allowed_hosts=self.hosts | (creds.hosts() if creds else set()))
+            allowed_hosts=self.hosts | (creds.hosts() if creds else set()),
+            **sandbox_check_options(self.log))
 
     def sandbox_off(self) -> set | None:
         """The applications whose sandbox an administrator turned off (org.load_sandbox_off)."""

@@ -153,6 +153,40 @@ def test_scans_always_push_to_the_appliances_own_registry(monkeypatch):
     assert w.options(old, None, None).push_images is False
 
 
+def test_scans_check_the_sandbox_when_the_worker_can_read_it(tmp_path, monkeypatch):
+    """The appliance's scans never ran the sandbox check (OrgOptions.verify_sandbox was off in the worker), so the
+    results pages never showed the sandbox. With the verifier kubeconfig cz-sandbox writes, and the sandbox connected
+    to the output repository, a scan ends with it."""
+    kc = tmp_path / "verifier.kubeconfig"
+    status = tmp_path / "sandbox-status"
+    logs = []
+    env = {"CONTAINERIZER_SANDBOX_KUBECONFIG": str(kc)}
+    assert worker.sandbox_check_options(logs.append, {}, str(status)) == {}
+    assert worker.sandbox_check_options(logs.append, env, str(status)) == {} and "does not exist yet" in logs[-1]
+    kc.write_text("apiVersion: v1\n")
+    on = {"verify_sandbox": True, "kubeconfig": str(kc), "kube_context": None}
+    assert worker.sandbox_check_options(logs.append, env, str(status)) == on        # no cz-sandbox: not an appliance
+    status.write_text("state=no-repository\nat=1\ndetail=CZ_SANDBOX_GIT_URL is empty\n")
+    assert worker.sandbox_check_options(logs.append, env, str(status)) == {} and "(no-repository)" in logs[-1]
+    status.write_text("state=connected\nat=1\ndetail=\n")
+    assert worker.sandbox_check_options(logs.append, {**env, "CONTAINERIZER_SANDBOX_CONTEXT": "sandbox"},
+                                        str(status)) == {**on, "kube_context": "sandbox"}
+    monkeypatch.setenv("CONTAINERIZER_SANDBOX_KUBECONFIG", str(kc))
+    monkeypatch.setattr(metrics, "SANDBOX_STATUS", str(status))
+    w = worker.Worker.__new__(worker.Worker)
+    w.data, w.sql, w.hosts, w.log = Path("/tmp/x"), None, set(), lambda *a: None
+
+    def no_db():
+        raise OSError("no results database")
+    w.connect = no_db
+    scan = {**SCAN, "ScanId": 1, "OutputRepo": None, "OutputBranch": "main", "IncludeRegex": None, "ExcludeRegex": None,
+            "SkipForks": True, "StaleDays": 0, "UseAi": False, "Verify": True, "Gate": False}
+    o = w.options(scan, None, None)
+    assert (o.verify_sandbox, o.kubeconfig) == (True, str(kc))
+    monkeypatch.delenv("CONTAINERIZER_SANDBOX_KUBECONFIG")
+    assert w.options(scan, None, None).verify_sandbox is False
+
+
 def test_repo_state_texts():
     base = {"RemovedAt": None, "AdminState": None, "AdminNote": None, "SkipStatus": None, "SkipReason": None,
             "LastStatus": "deployed"}

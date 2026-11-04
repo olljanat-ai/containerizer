@@ -13,8 +13,8 @@ set -euo pipefail
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 k() { /usr/bin/k3s kubectl "$@"; }
 . /usr/lib/containerizer/lib/secret-store.sh
-
-# Read-only access for the LLM queue runner, which checks the health of "Make it A" variants
+# Read-only access for the scan worker, which checks the sandbox at the end of each scan (the results pages), and
+# the LLM queue runner, which checks the health of "Make it A" variants
 # (docs/refactoring.md#the-sandbox-variant): the verifier ServiceAccount of sandbox/verify-rbac.yaml with its
 # Role in every namespace containerizer generated (get/list workloads, pods, logs, events and the namespace's
 # Flux Kustomization; no Secrets, nothing cluster-wide), and a kubeconfig with a short-lived token of it in
@@ -44,7 +44,7 @@ current-context: sandbox
 KUBECONFIG
   chown root:containerizer "$tmp" && chmod 0640 "$tmp" && mv -f "$tmp" "$VERIFIER_KUBECONFIG"
 }
-verifier_access || echo "containerizer: the read-only sandbox access for the LLM queue runner is not ready yet; retrying in 2 minutes" >&2
+verifier_access || echo "containerizer: the read-only sandbox access for the scan worker and the LLM queue runner is not ready yet; retrying in 2 minutes" >&2
 
 # Read-only access for the egress observer (containerizer-egress-observer, docs/egress.md#the-egress-observer): its
 # own ServiceAccount with get/list pods and get pods/log in kube-system (the CoreDNS query log the

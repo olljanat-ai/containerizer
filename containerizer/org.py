@@ -420,6 +420,41 @@ def load_sandbox_off(conn) -> set:
     return {int(r[0]) for r in rows} | {str(r[1]) for r in rows}
 
 
+def _app_docs(folder: Path) -> list[dict]:
+    """Every document the app folder's kustomization.yaml lists (what its Flux Kustomization applies)."""
+    try:
+        res = (yaml.safe_load((folder / "kustomization.yaml").read_text()) or {}).get("resources") or []
+    except (OSError, yaml.YAMLError):
+        return []
+    docs = []
+    for r in res:
+        f = folder / str(r)
+        if f.is_file() and f.suffix in (".yaml", ".yml"):
+            try:
+                docs += [d for d in yaml.safe_load_all(f.read_text()) if isinstance(d, dict)]
+            except yaml.YAMLError:
+                continue
+    return docs
+
+
+def sandbox_wait_patch(folder: Path, doc: dict) -> dict | None:
+    """kustomize patch for the sandbox's copy of an app's Flux Kustomization: wait for the app's workloads and the
+    Secrets they need (gitops.sandbox_health_checks), not for every object. The generated ExternalSecrets of
+    settings, secret files and keytabs read remote keys that nobody fills in the sandbox; their references are
+    optional, so the pods run, but with `wait: true` Flux waited for those ExternalSecrets and the Kustomization never
+    became Ready. The app folder's own gitops/flux/git/sync.yaml keeps `wait: true` for the real environment, where a
+    secret missing from the store should stop the rollout."""
+    from .gitops import KUSTOMIZE_API, sandbox_health_checks
+    ns = doc.get("app") or ""
+    if not ns:
+        return None
+    ops = [{"op": "add", "path": "/spec/wait", "value": False},
+           {"op": "add", "path": "/spec/healthChecks", "value": sandbox_health_checks(_app_docs(folder), ns)}]
+    group, version = KUSTOMIZE_API.split("/")
+    return {"target": {"group": group, "version": version, "kind": "Kustomization", "name": ns, "namespace": ns},
+            "patch": json.dumps(ops)}
+
+
 def write_sandbox(root: Path, git_url: str, branch: str, off=None) -> list[str]:
     """sandbox/: the Flux root Kustomization over every app in the repository, except the ones of applications
     whose sandbox is turned off (`off`, load_sandbox_off): their folders stay, the cluster prunes them, and turning
@@ -449,9 +484,10 @@ def write_sandbox(root: Path, git_url: str, branch: str, off=None) -> list[str]:
         return "---\n".join(yaml.safe_dump(d, sort_keys=False) for d in docs)
 
     idp_url = write_idp(root, apps)
+    patches = [p for _, d, doc in apps if (p := sandbox_wait_patch(d, doc))]
     (sb / "flux" / "apps" / "kustomization.yaml").write_text(yaml.safe_dump(
         {**k, "resources": [f"../../../{rel}/gitops/flux" for rel, _, _ in apps]
-         + (["../../idp"] if idp_url else [])}, sort_keys=False))
+         + (["../../idp"] if idp_url else []), **({"patches": patches} if patches else {})}, sort_keys=False))
     (sb / "flux" / "bootstrap.yaml").write_text(dump(sandbox_credentials(FLUX_NS, name, labels) + [
         {"apiVersion": SOURCE_API, "kind": "GitRepository",
          "metadata": {"name": name, "namespace": FLUX_NS, "labels": labels},
@@ -534,6 +570,11 @@ The root Kustomization applies each app's `gitops/flux/tenant.yaml` (namespace w
 "restricted", ServiceAccount, namespace-only RoleBinding) and `gitops/flux/git/sync.yaml`. Image
 automation (`gitops/flux/git/image-automation.yaml`) is left out: it needs a write key. Apply each app's
 `cluster/secret-store.yaml` too: it lets the app's namespace read its own keys.
+
+`flux/apps/kustomization.yaml` patches each app's Kustomization to wait for its Deployments, StatefulSets and
+the ExternalSecrets of Secrets a pod cannot start without (`wait: false` with `healthChecks`), not for the
+ExternalSecrets of the components' own settings: their references are optional and the sandbox's secret
+store usually has no values for them. Outside the sandbox `gitops/flux/git/sync.yaml` keeps `wait: true`.
 
 ## Identity provider
 {idp_text}
@@ -1499,10 +1540,14 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
     finally:
         if reg:
             reg.close()
-    if o.verify_sandbox and out:
+    if o.verify_sandbox and out and not (o.dry_run or _stop_requested(hooks)):
         _phase(hooks, "Checking the sandbox")
         sandbox_step(o, out, log)
     return results
+
+
+def _stop_requested(hooks) -> bool:
+    return bool(hooks and hasattr(hooks, "should_stop") and hooks.should_stop())
 
 
 def _phase(hooks, text: str) -> None:
@@ -1820,7 +1865,12 @@ def sandbox_step(o: OrgOptions, out: "Output", log=print) -> dict:
                "skipped": "the output repository was not pushed (--no-push or no remote): the cluster cannot sync it"}
         log(f"sandbox verification skipped: {doc['skipped']}")
     else:
-        doc = verify_sandbox(out.root, so, log=log)
+        import time
+
+        def clock(_c=time.monotonic):
+            # a stop request (the worker: Stop, shutdown) ends the waiting; a check cut short records nothing
+            return float("inf") if _stop_requested(o.hooks) else _c()
+        doc = verify_sandbox(out.root, so, log=log, clock=clock)
         if (o.llm_heavy or so.llm_keys) and not doc.get("skipped"):
             # LLM-heavy sandbox tester: the LLM's fixes for failing migrated apps, applied and checked again
             from .replatform import apply_sandbox_fixes, heavy_rounds
@@ -1830,7 +1880,10 @@ def sandbox_step(o: OrgOptions, out: "Output", log=print) -> dict:
                     break
                 so.revision = ""
                 log(f"sandbox tester round {i + 1}: {len(changed)} app(s) changed, checking again")
-                doc = verify_sandbox(out.root, so, log=log)
+                doc = verify_sandbox(out.root, so, log=log, clock=clock)
+    if _stop_requested(o.hooks):
+        log("sandbox check stopped: nothing recorded")
+        return doc
     write_health(out.root, doc)
     log(f"sandbox health: {summary(doc)}" + (f" (skipped: {doc['skipped']})" if doc.get("skipped") else ""))
     if doc.get("learned"):

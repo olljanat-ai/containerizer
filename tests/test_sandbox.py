@@ -476,10 +476,134 @@ def test_org_run_with_verify_sandbox_and_no_cluster(tmp_path, monkeypatch):
     assert "Not checked: kubectl is not installed" in (out / "sandbox" / "HEALTH.md").read_text()
     rbac = list(yaml.safe_load_all((out / "sandbox" / "verify-rbac.yaml").read_text()))
     assert any(d["kind"] == "Role" and d["metadata"]["namespace"] == meta["app"] for d in rbac)
-    log = subprocess.run(["git", "log", "--format=%s"], cwd=out, capture_output=True, text=True).stdout
+    # the sandbox waits for the generated app's workloads only; its own sync.yaml (the real environment) for everything
+    [patch] = yaml.safe_load((out / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text())["patches"]
+    ops = json.loads(patch["patch"])
+    assert patch["target"]["name"] == meta["app"] and ops[0] == {"op": "add", "path": "/spec/wait", "value": False}
+    assert ops[1]["value"] and {c["kind"] for c in ops[1]["value"]} <= {"Deployment", "StatefulSet", "ExternalSecret"}
+    sync = list(yaml.safe_load_all((out / "acme" / "_" / "ci-demo" / "gitops" / "flux" / "git" / "sync.yaml").read_text()))
+    assert [d["spec"]["wait"] for d in sync if d["kind"] == "Kustomization"] == [True]
+    log =subprocess.run(["git", "log", "--format=%s"], cwd=out, capture_output=True, text=True).stdout
     assert log.splitlines()[0].startswith("containerizer: sandbox health skipped=1")
     pushed = subprocess.run(["git", "log", "--format=%s", "main"], cwd=bare, capture_output=True, text=True).stdout
     assert pushed.splitlines()[0] == log.splitlines()[0]
+
+
+def _es(name, keys=("K",), secret_type=None):
+    from containerizer import eso
+    return eso.external_secret(name, "shop-web", f"shop-web--{name}", list(keys), {"a": "b"}, secret_type=secret_type)
+
+
+def test_sandbox_health_checks_wait_for_workloads_and_required_secrets_only():
+    """An app's sandbox Kustomization waits for its Deployments and StatefulSets and for the ExternalSecrets of Secrets
+    a pod cannot start without (Data Protection keys, image pull credential, a non-optional reference), not for the
+    ExternalSecrets of settings, secret files and keytabs nobody put in the sandbox's store (optional references)."""
+    from containerizer.gitops import required_secrets, sandbox_health_checks
+    from containerizer.harden import dataprotection_docs
+    pod = {"imagePullSecrets": [{"name": "regcred"}],
+           "volumes": [{"name": "dp", "secret": {"secretName": "web-dataprotection"}},
+                       {"name": "f", "secret": {"secretName": "web-files", "optional": True}},
+                       {"name": "kt", "secret": {"secretName": "web-keytab", "optional": True}},
+                       {"name": "p", "projected": {"sources": [{"secret": {"name": "web-projected"}}]}}],
+           "containers": [{"name": "web", "env": [
+               {"name": "A", "valueFrom": {"secretKeyRef": {"name": "web-secrets", "key": "A", "optional": True}}},
+               {"name": "B", "valueFrom": {"secretKeyRef": {"name": "web-must", "key": "B"}}}]}],
+           "initContainers": [{"name": "init", "envFrom": [{"secretRef": {"name": "web-init"}},
+                                                           {"secretRef": {"name": "web-opt", "optional": True}}]}]}
+    docs = [{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "web"},
+             "spec": {"template": {"spec": pod}}},
+            {"apiVersion": "apps/v1", "kind": "StatefulSet", "metadata": {"name": "db"}, "spec": {"template": {"spec": {}}}},
+            {"apiVersion": "batch/v1", "kind": "CronJob", "metadata": {"name": "nightly"},
+             "spec": {"jobTemplate": {"spec": {"template": {"spec": {"containers": [{"name": "n", "env": [
+                 {"name": "C", "valueFrom": {"secretKeyRef": {"name": "nightly-secrets", "key": "C",
+                                                               "optional": True}}}]}]}}}}}},
+            {"apiVersion": "networking.k8s.io/v1", "kind": "Ingress", "metadata": {"name": "web"},
+             "spec": {"tls": [{"hosts": ["web.example"], "secretName": "web-tls"}, {"hosts": ["x"]}]}},
+            _es("web-secrets"), _es("web-files"), _es("web-keytab"), _es("nightly-secrets"), _es("web-must"),
+            _es("web-tls"), _es("web-unused"), _es("pull", secret_type="kubernetes.io/dockerconfigjson"),
+            *dataprotection_docs("web-dataprotection", {"a": "b"})]
+    assert required_secrets(docs) == {"regcred", "web-dataprotection", "web-projected", "web-must", "web-init",
+                                      "web-tls"}
+    checks = sandbox_health_checks(docs, "shop-web")
+    assert all(c["namespace"] == "shop-web" for c in checks)
+    assert [(c["apiVersion"], c["kind"], c["name"]) for c in checks] == [
+        ("apps/v1", "Deployment", "web"),
+        ("external-secrets.io/v1", "ExternalSecret", "pull"),               # the image pull credential
+        ("external-secrets.io/v1", "ExternalSecret", "web-dataprotection"),  # generated in the cluster: always Ready
+        ("external-secrets.io/v1", "ExternalSecret", "web-must"),
+        ("external-secrets.io/v1", "ExternalSecret", "web-tls"),
+        ("apps/v1", "StatefulSet", "db")]                                    # no CronJob: it has no health
+
+
+def test_sandbox_kustomizations_wait_for_the_workloads_not_every_object(tmp_path):
+    """sandbox/flux/apps patches each app's Flux Kustomization to `wait: false` + `healthChecks` (the sandbox's
+    store has none of the optional settings, so their ExternalSecrets never sync and `wait: true` never became
+    Ready). The app folder's own sync.yaml, the real environment's, keeps `wait: true`."""
+    from containerizer.org import write_sandbox
+    root = output_repo(tmp_path)
+    app = root / "Contoso" / "_" / "shop"
+    (app / "gitops" / "flux" / "git").mkdir()
+    ks = {"apiVersion": "kustomize.toolkit.fluxcd.io/v1", "kind": "Kustomization",
+          "metadata": {"name": "shop-web", "namespace": "shop-web"},
+          "spec": {"interval": "10m", "prune": True, "wait": True, "path": "./Contoso/_/shop"}}
+    (app / "gitops" / "flux" / "git" / "sync.yaml").write_text(yaml.safe_dump(ks))
+    (app / "gitops" / "flux" / "kustomization.yaml").write_text(yaml.safe_dump(
+        {"apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization", "resources": ["git/sync.yaml"]}))
+    docs = list(yaml.safe_load_all((app / "web" / "k8s.yaml").read_text())) + [_es("web-secrets")]
+    (app / "web" / "k8s.yaml").write_text("---\n".join(yaml.safe_dump(d) for d in docs))
+    (app / "kustomization.yaml").write_text(yaml.safe_dump({"resources": ["web/k8s.yaml", "missing.yaml"]}))
+    assert write_sandbox(root, "https://git.example/out.git", "main") == ["shop-web"]
+    k = yaml.safe_load((root / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text())
+    [p] = k["patches"]
+    assert p["target"] == {"group": "kustomize.toolkit.fluxcd.io", "version": "v1", "kind": "Kustomization",
+                           "name": "shop-web", "namespace": "shop-web"}
+    assert json.loads(p["patch"]) == [
+        {"op": "add", "path": "/spec/wait", "value": False},
+        {"op": "add", "path": "/spec/healthChecks", "value": [
+            {"apiVersion": "apps/v1", "kind": "Deployment", "name": "web", "namespace": "shop-web"}]}]
+    assert yaml.safe_load((app / "gitops" / "flux" / "git" / "sync.yaml").read_text())["spec"]["wait"] is True
+    if shutil.which("kubectl"):                    # what Flux's root sync applies (kustomize build)
+        built = subprocess.run(["kubectl", "kustomize", str(root / "sandbox" / "flux" / "apps")], capture_output=True,
+                               text=True, check=True).stdout
+        [got] = [d for d in yaml.safe_load_all(built) if d and d["kind"] == "Kustomization"]
+        assert got["spec"]["wait"] is False and got["spec"]["prune"] is True
+        assert got["spec"]["healthChecks"] == [{"apiVersion": "apps/v1", "kind": "Deployment", "name": "web",
+                                                "namespace": "shop-web"}]
+
+
+def test_a_stopped_scan_records_no_sandbox_check(tmp_path, monkeypatch):
+    """The worker's Stop (or shutdown) ends the sandbox check's waiting, and a check cut short is not recorded."""
+    from containerizer import org as orgmod
+    from containerizer.org import OrgOptions, sandbox_step
+
+    class Hooks:
+        stop = False
+
+        def should_stop(self):
+            return self.stop
+
+    class Out:
+        git, push, root = True, True, output_repo(tmp_path)
+        commits = []
+
+        def commit(self, m):
+            self.commits.append(m)
+    hooks, seen = Hooks(), {}
+
+    def fake_verify(root, so, log=print, clock=None, **kw):
+        seen["before"] = clock()
+        hooks.stop = True
+        seen["after"] = clock()
+        return {"components": [], "skipped": ""}
+    monkeypatch.setattr(sb, "verify_sandbox", fake_verify)
+    written = []
+    monkeypatch.setattr(sb, "write_health", lambda *a: written.append(a))
+    logs = []
+    sandbox_step(OrgOptions(provider="github", org="acme", registry="r", verify_sandbox=True, hooks=hooks), Out(),
+                 log=logs.append)
+    assert seen["before"] < float("inf") == seen["after"]
+    assert not written and not Out.commits and "nothing recorded" in logs[-1]
+    assert orgmod._stop_requested(hooks) and not orgmod._stop_requested(None)
 
 
 def test_org_without_push_skips_the_check(tmp_path):
