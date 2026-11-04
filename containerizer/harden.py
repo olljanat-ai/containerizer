@@ -447,9 +447,11 @@ def namespace_policies(app_docs: list[dict]) -> list[dict]:
     return out
 
 
-def cluster_kit(app: str, registry: str) -> dict[str, list[dict]]:
+def cluster_kit(app: str | None, registry: str, image_refs: list[str] | None = None) -> dict[str, list[dict]]:
     """Cluster-level starting points (not part of the app's kustomization): audit policy and
-    image signature verification."""
+    image signature verification. `app` None: one kit for every namespace Containerizer manages (an organization
+    scan's output repository: its root `cluster/`), whose policy admits the images `image_refs` (each app's
+    `<registry>/<app>/*`)."""
     audit = {"apiVersion": "audit.k8s.io/v1", "kind": "Policy",
              "_comment": "NSA/CISA 'Kubernetes native audit logging configuration'; pass with --audit-policy-file",
              "omitStages": ["RequestReceived"],
@@ -464,14 +466,18 @@ def cluster_kit(app: str, registry: str) -> dict[str, list[dict]]:
                  {"level": "None", "users": ["system:kube-proxy"], "verbs": ["watch"]},
                  {"level": "None", "nonResourceURLs": ["/healthz*", "/readyz*", "/livez*", "/version"]},
                  {"level": "Metadata"}]}
+    match = ({"resources": {"kinds": ["Pod"], "namespaces": [app]}} if app else
+             {"resources": {"kinds": ["Pod"], "namespaceSelector": {"matchLabels": {
+                 "app.kubernetes.io/managed-by": "containerizer"}}}})
+    refs = [f"{registry}/{app}/*"] if app else sorted(set(image_refs or [])) or [f"{registry}/*"]
     verify = {"apiVersion": "kyverno.io/v1", "kind": "ClusterPolicy",
-              "metadata": {"name": f"verify-images-{app}"},
+              "metadata": {"name": f"verify-images-{app}" if app else "verify-images-containerizer"},
               "_comment": "Kyverno: only cosign-signed images from the application registry run in the namespace; "
                           "replace the key with your signing identity (or use keyless attestors)",
               "spec": {"validationFailureAction": "Enforce", "webhookTimeoutSeconds": 30, "background": False,
                        "rules": [{"name": "signed-images",
-                                  "match": {"any": [{"resources": {"kinds": ["Pod"], "namespaces": [app]}}]},
-                                  "verifyImages": [{"imageReferences": [f"{registry}/{app}/*"],
+                                  "match": {"any": [match]},
+                                  "verifyImages": [{"imageReferences": refs,
                                                     "mutateDigest": True, "verifyDigest": True, "required": True,
                                                     "attestors": [{"entries": [{"keys": {"publicKeys":
                                                         "-----BEGIN PUBLIC KEY-----\n<cosign.pub>\n-----END PUBLIC KEY-----"}}]}]}]}]}}
