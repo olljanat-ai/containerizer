@@ -89,7 +89,8 @@ CREATE TABLE [${schema}].Application (
     OutputMovedAt  datetime2(0)  NULL,              -- set by the LLM queue runner: when its files were moved there
     OutputMovedCommit nvarchar(64) NULL,            -- the commit in OutputRepo that holds them
     OutputNamespace nvarchar(63) NULL,              -- its sandbox namespace (the read token for its repository goes there)
-    OutputMoveError nvarchar(800) NULL              -- why the move did not happen (yet)
+    OutputMoveError nvarchar(800) NULL,             -- why the move did not happen (yet)
+    Tags           nvarchar(800) NULL               -- set by people: comma-separated tags, the front page filters by them (37)
 );
 GO
 -- 35: the sandbox can be turned off per application (Admin -> Applications): the scans assess it, but do not deploy it
@@ -103,6 +104,11 @@ IF COL_LENGTH(N'[${schema}].Application', N'OutputRepo') IS NULL
     ALTER TABLE [${schema}].Application ADD OutputRepo nvarchar(400) NULL, OutputBranch nvarchar(200) NULL,
         OutputPath nvarchar(200) NULL, OutputMovedAt datetime2(0) NULL, OutputMovedCommit nvarchar(64) NULL,
         OutputNamespace nvarchar(63) NULL, OutputMoveError nvarchar(800) NULL;
+GO
+-- 37: tags of an application (administrators and operators, on its results page; webui.py TAG_RE): comma-separated,
+-- the front page filters by them
+IF COL_LENGTH(N'[${schema}].Application', N'Tags') IS NULL
+    ALTER TABLE [${schema}].Application ADD Tags nvarchar(800) NULL;
 GO
 
 -- A deployable part of an application (web site, service, worker, desktop client, ...), matched by
@@ -554,20 +560,20 @@ BEGIN
            COALESCE(i.DisplayName, i.Name, d.DisplayName, d.Name),
            CASE WHEN d.ApplicationId IS NULL THEN N'insert' WHEN i.ApplicationId IS NULL THEN N'delete' ELSE N'update' END,
            CASE WHEN d.ApplicationId IS NOT NULL THEN (SELECT d.Name, d.DisplayName, d.Description, d.Owner, d.Retired, d.SandboxEnabled,
-                d.OutputRepo, d.OutputBranch, d.OutputPath,
+                d.OutputRepo, d.OutputBranch, d.OutputPath, d.Tags,
                 (SELECT p.Name FROM [${schema}].Product p WHERE p.ProductId = d.ProductId) AS Product
                 FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
            CASE WHEN i.ApplicationId IS NOT NULL THEN (SELECT i.Name, i.DisplayName, i.Description, i.Owner, i.Retired, i.SandboxEnabled,
-                i.OutputRepo, i.OutputBranch, i.OutputPath,
+                i.OutputRepo, i.OutputBranch, i.OutputPath, i.Tags,
                 (SELECT p.Name FROM [${schema}].Product p WHERE p.ProductId = i.ProductId) AS Product
                 FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
     FROM inserted i FULL OUTER JOIN deleted d ON d.ApplicationId = i.ApplicationId
     CROSS JOIN [${schema}].fnAuditWho() w
     WHERE d.ApplicationId IS NULL OR i.ApplicationId IS NULL
        OR EXISTS (SELECT i.Name, i.DisplayName, i.Description, i.Owner, i.Retired, i.SandboxEnabled, i.ProductId,
-                         i.OutputRepo, i.OutputBranch, i.OutputPath
+                         i.OutputRepo, i.OutputBranch, i.OutputPath, i.Tags
                   EXCEPT SELECT d.Name, d.DisplayName, d.Description, d.Owner, d.Retired, d.SandboxEnabled, d.ProductId,
-                         d.OutputRepo, d.OutputBranch, d.OutputPath);
+                         d.OutputRepo, d.OutputBranch, d.OutputPath, d.Tags);
 END;
 GO
 
@@ -779,7 +785,7 @@ SELECT a.ApplicationId,
        p.ProductId, p.Name AS ProductName, p.Owner AS ProductOwner, p.InfoUrl AS ProductInfoUrl,
        bu.BusinessUnitId, bu.Name AS BusinessUnitName, bu.Owner AS BusinessUnitOwner,
        x.AssessmentId, x.AssessedAt, x.Rating, r.Title AS RatingTitle, r.Description AS RatingDescription,
-       x.Score, x.Confidence, x.Summary, x.Verified, x.SourceCommit, x.SourceBranch
+       x.Score, x.Confidence, x.Summary, x.Verified, x.SourceCommit, x.SourceBranch, a.Tags
 FROM [${schema}].Application a
 CROSS APPLY (SELECT TOP (1) * FROM [${schema}].ApplicationAssessment aa
              WHERE aa.ApplicationId = a.ApplicationId
@@ -1194,6 +1200,8 @@ GRANT UPDATE ON [${schema}].Application (OutputRepo, OutputBranch, OutputPath, O
     OutputNamespace, OutputMoveError) TO [${schema}_admin];
 GRANT UPDATE ON [${schema}].Application (OutputMovedAt, OutputMovedCommit, OutputNamespace, OutputMoveError)
     TO [${schema}_writer];
+-- 37: tags (administrators and operators; the checks are in admin_tags.py)
+GRANT UPDATE ON [${schema}].Application (Tags) TO [${schema}_admin];
 GRANT SELECT ON [${schema}].AuditLog TO [${schema}_admin];
 GRANT SELECT, INSERT ON [${schema}].AccessLog TO [${schema}_admin];
 GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].DevDatabase TO [${schema}_admin];
@@ -2322,4 +2330,7 @@ IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 35) INSER
 GO
 -- 36: Application.OutputRepo, OutputBranch, OutputPath and the move's state (above, next to the table)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 36) INSERT [${schema}].SchemaVersion (Version) VALUES (36);
+GO
+-- 37: Application.Tags (above, next to the table)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 37) INSERT [${schema}].SchemaVersion (Version) VALUES (37);
 GO

@@ -241,7 +241,7 @@ allow it, and both `connectivity.yaml` files document it.
 
 </div>
 
-<div class="cz-feature" markdown>
+<div class="cz-feature cz-reverse" markdown>
 
 <div markdown>
 
@@ -256,6 +256,24 @@ of each fix and each newly learned rule.
 
 ![Readiness trends over time](images/results-trends.png#only-light){ .cz-shot }
 ![Readiness trends over time](images/results-trends-dark.png#only-dark){ .cz-shot }
+
+</div>
+
+<div class="cz-feature" markdown>
+
+<div markdown>
+
+### Tag it, filter by it
+
+Administrators and operators tag applications (customer-facing, PCI, migration wave 1, ...), and everyone
+filters the front page by a tag: the tiles and bars then count only those applications.
+
+[Application tags :octicons-arrow-right-24:](sign-in.md#application-tags)
+
+</div>
+
+![The front page filtered by a tag](images/front-tags.png#only-light){ .cz-shot }
+![The front page filtered by a tag](images/front-tags-dark.png#only-dark){ .cz-shot }
 
 </div>
 
@@ -335,7 +353,7 @@ reject them; approved rules make the next run faster and AI-free.
 
 </div>
 
-<div class="cz-feature" markdown>
+<div class="cz-feature cz-reverse" markdown>
 
 <div markdown>
 

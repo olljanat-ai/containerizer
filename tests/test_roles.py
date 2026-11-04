@@ -120,6 +120,16 @@ def test_roles_end_to_end(idp, tmp_path):  # noqa: F811
             assert op.follow(path)[0] == 403, path
         assert op.go("/admin/applications/bulk", {"csrf": op.csrf(body), "app": ["1"], "ProductId": ""})[0] == 403
         assert op.follow("/")[0] == 200
+        # operators tag applications on their results page; everyone filters the front page by the tags
+        tag_app = re.search(r"<a href='/app/(\d+)'>billing</a>", op.follow("/")[2])[1]
+        s, _, page = op.follow(f"/app/{tag_app}")
+        assert "action='/admin/tags/" in page
+        assert op.go(f"/admin/tags/{tag_app}", {"Tags": "pci"})[0] == 403                     # no CSRF token
+        s, _, page = op.follow(f"/admin/tags/{tag_app}", {"csrf": op.csrf(page), "Tags": "PCI, wave 1, pci"})
+        assert s == 200 and "Tags saved." in page and "<a class='tag' href='/?tag=PCI'>PCI</a>" in page
+        assert "Not saved" in op.follow(f"/admin/tags/{tag_app}", {"csrf": op.csrf(page), "Tags": "<b>"})[2]
+        s, _, page = op.follow("/?tag=pci")
+        assert "billing</a>" in page and "freight</a>" not in page
         for path in ("/admin/scans", "/admin/repositories", "/admin/scans/new"):
             s, _, page = op.follow(path)
             assert s == 200 and "href='/admin/scans'" in page, path
@@ -170,6 +180,9 @@ def test_roles_end_to_end(idp, tmp_path):  # noqa: F811
         assert "Not saved" in fo.follow("/admin/products/new", {"csrf": csrf, "Name": "Nope", "BusinessUnitId": "",
                                                                  "InfoUrl": "", "Owner": "", "Description": ""})[2]
         assert fo.follow("/admin/business-units")[0] == 403
+        # tags are for administrators and operators: no editor, and a post is refused
+        assert "action='/admin/tags/" not in fo.follow(f"/app/{ids['billing']}")[2]
+        assert fo.go(f"/admin/tags/{ids['billing']}", {"csrf": csrf, "Tags": "x"})[0] == 403
         assert "Not deleted" in fo.follow(f"/admin/products/{freight_pid}/delete", {"csrf": csrf})[2]
         s, _, body = fo.follow(f"/admin/products/{freight_pid}")
         assert "you can only look at it" in body and "Delete" not in body

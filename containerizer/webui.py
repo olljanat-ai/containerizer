@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
+from .tags import TAG_RE, has_tag, split_tags
+
 RATINGS = ["A", "B", "C", "D", "E"]
 RATING_TITLE = {"A": "Container-ready", "B": "Minor refactoring", "C": "Major refactoring", "D": "Partial",
                 "E": "Not feasible"}
@@ -64,8 +66,16 @@ def _rows(conn, sql: str, params: tuple = ()) -> list[dict]:
 
 
 def load_overview(conn) -> dict:
-    apps = _rows(conn, "SELECT ApplicationId, ApplicationName, ProductId, ProductName, ProductInfoUrl, BusinessUnitId, BusinessUnitName, "
-                       "Rating, Score, Confidence, Summary, AssessedAt, Verified FROM cz.vApplicationLatest")
+    cols = ("ApplicationId, ApplicationName, ProductId, ProductName, ProductInfoUrl, BusinessUnitId, BusinessUnitName, "
+            "Rating, Score, Confidence, Summary, AssessedAt, Verified")
+    try:
+        apps = _rows(conn, f"SELECT {cols}, Tags FROM cz.vApplicationLatest")
+    except Exception:  # noqa: BLE001 - a database from before schema 37 has no tags
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        apps = _rows(conn, f"SELECT {cols} FROM cz.vApplicationLatest")
     comps = _rows(conn, "SELECT ApplicationId, COUNT(*) AS N FROM cz.vComponentLatest GROUP BY ApplicationId")
     top = _rows(conn, "SELECT ApplicationId, Title, Severity, COUNT(*) AS N FROM cz.vFindingLatest "
                       "WHERE Severity IN ('blocker', 'rewrite') GROUP BY ApplicationId, Title, Severity")
@@ -627,6 +637,16 @@ def _bu_href(bu) -> str:
     return "/?bu=" + quote(str(bu if bu is not None else "none"))
 
 
+def _overview_href(bu=None, tag=None) -> str:
+    q = {k: v for k, v in (("bu", bu), ("tag", tag)) if v is not None}
+    return "/" + ("?" + urlencode(q) if q else "")
+
+
+def _tag_chips(stored) -> str:
+    """An application's tags, each a link to the front page filtered by it."""
+    return "".join(f" <a class='tag' href='{e(_overview_href(tag=t))}'>{e(t)}</a>" for t in split_tags(stored))
+
+
 def _trends_href(bu) -> str:
     return "/trends" + (f"?bu={quote(str(bu))}" if bu is not None else "")
 
@@ -672,11 +692,14 @@ def a_patches_html(apps: list[dict], nav: str = "") -> str:
             + "</tbody></table></section>")
 
 
-def render_overview(data: dict, bu_filter: str | None = None, nav: str = "") -> str:
+def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag_filter: str | None = None) -> str:
     apps = data["apps"]
     all_apps = apps
     if bu_filter is not None:
         apps = [a for a in apps if str(a["BusinessUnitId"] if a["BusinessUnitId"] is not None else "none") == bu_filter]
+    in_bu = apps
+    if tag_filter is not None:
+        apps = [a for a in apps if has_tag(a.get("Tags"), tag_filter)]
     c = _mix(apps)
     total = len(apps)
     last = max((a["AssessedAt"] for a in apps if a["AssessedAt"]), default=None)
@@ -699,11 +722,27 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "") -> 
     for a in all_apps:
         key = (a["BusinessUnitName"] or "", a["BusinessUnitId"])
         bus.setdefault(key, []).append(a)
-    chips = [f"<a class='chip{' on' if bu_filter is None else ''}' href='/'>All</a>"]
+    chips = [f"<a class='chip{' on' if bu_filter is None else ''}' href='{e(_overview_href(tag=tag_filter))}'>All</a>"]
     for (name, bid), lst in sorted(bus.items(), key=lambda kv: (kv[0][1] is None, kv[0][0].lower())):
         on = bu_filter == str(bid if bid is not None else "none")
-        chips.append(f"<a class='chip{' on' if on else ''}' href='{e(_bu_href(bid))}'>{e(name or UNASSIGNED)}"
-                     f" <span class='muted'>{len(lst)}</span></a>")
+        chips.append(f"<a class='chip{' on' if on else ''}' href='{e(_overview_href(str(bid if bid is not None else 'none'), tag_filter))}'>"
+                     f"{e(name or UNASSIGNED)} <span class='muted'>{len(lst)}</span></a>")
+    # tags of the applications in the business unit shown (the one filtered by stays, even with none left)
+    tag_n: dict = {}
+    for a in in_bu:
+        for t in split_tags(a.get("Tags")):
+            k = t.casefold()
+            tag_n[k] = (tag_n.get(k, (t, 0))[0], tag_n.get(k, (t, 0))[1] + 1)
+    if tag_filter is not None and tag_filter.casefold() not in tag_n:
+        tag_n[tag_filter.casefold()] = (tag_filter, 0)
+    tag_chips = []
+    if tag_n:
+        tag_chips.append(f"<span class='muted small'>Tags</span><a class='chip tagchip{' on' if tag_filter is None else ''}' "
+                         f"href='{e(_overview_href(bu_filter))}'>Any</a>")
+        for k, (t, n) in sorted(tag_n.items()):
+            on = tag_filter is not None and tag_filter.casefold() == k
+            tag_chips.append(f"<a class='chip tagchip{' on' if on else ''}' href='{e(_overview_href(bu_filter, None if on else t))}'"
+                             f"{' aria-current=true' if on else ''}>{e(t)} <span class='muted'>{n}</span></a>")
 
     sections = []
     groups: dict = {}
@@ -716,7 +755,7 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "") -> 
         for (prod, pid), lst in sorted(products.items(), key=lambda kv: (kv[0][1] is None, kv[0][0].lower())):
             rows = "".join(
                 f"<tr><td>{badge(a['Rating'])}{_a_patch_mark(a)}</td>"
-                f"<td><a href='/app/{int(a['ApplicationId'])}'>{e(a['ApplicationName'])}</a>"
+                f"<td><a href='/app/{int(a['ApplicationId'])}'>{e(a['ApplicationName'])}</a>{_tag_chips(a.get('Tags'))}"
                 f"<div class='muted small'>{e(RATING_TITLE.get(a['Rating'], ''))}: {e(RATING_TEXT.get(a['Rating'], ''))}</div></td>"
                 f"<td class='num'>{int(a['Score'])}</td>"
                 f"<td class='num'>{int(a['Components'])}</td><td>{e(a['MainObstacle'] or '-')}</td></tr>"
@@ -749,6 +788,8 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "") -> 
 {f" · <a href='{e(_trends_href(bu_filter))}'>Trends over time</a>" if all_apps else ''}
 </p></header>
 {empty}<nav class='chips'>{''.join(chips) if all_apps else ''}</nav>
+{f"<nav class='chips tags' aria-label='Filter by tag'>{''.join(tag_chips)}</nav>" if tag_chips else ''}
+{f"<p class='muted'>No applications{' in this business unit' if bu_filter is not None else ''} have the tag <b>{e(tag_filter)}</b>.</p>" if tag_filter is not None and not apps and all_apps else ''}
 <div class='tiles'>{tiles if all_apps else ''}</div>
 {f"<div class='overall'>{segmented(c, total, 'Ratings of all applications shown')}{legend(c)}</div>" if total else ''}
 {note}{''.join(sections)}
@@ -854,6 +895,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 <div class='tile'><div class='label'>Last assessed</div><div class='value small-value'>{_date(app['AssessedAt'])}</div></div>
 </div>
 <div class='meta'>{owner}{src}</div>
+{_tags_section(app, refactor)}
 {f"<h2>Main obstacles</h2><ul class='obstacles'>{obs_html}</ul>" if obs_html else ''}
 <h2>Components</h2>
 <table><thead><tr><th>Component</th><th>What it is</th><th>Verdict</th><th>Build and run</th>{"<th>Sandbox cluster</th>" if sandbox else ""}<th>Migration</th></tr></thead>
@@ -865,6 +907,24 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 <h2>History</h2><p class='muted small'><a href='/trends'>Trends of all applications</a></p><table class='narrow'><thead><tr><th>Assessed</th><th>Rating</th><th class='num'>Readiness</th>
 </tr></thead><tbody>{hist}</tbody></table>
 <footer>{legend()}</footer>""", script=any(m.get("AgentPrompt") for m in migs.values()))
+
+
+def _tags_section(app: dict, ctx: dict | None) -> str:
+    """The application's tags; administrators and operators edit them here (tags.py)."""
+    from .tags import notice_html
+    ctx = ctx or {}
+    tags = split_tags(app.get("Tags"))
+    shown = _tag_chips(app.get("Tags")) if tags else (" <span class='muted'>none</span>" if ctx.get("tags_csrf") else "")
+    if not shown:
+        return ""
+    form = ""
+    if ctx.get("tags_csrf"):
+        form = (f"<form method='post' action='/admin/tags/{int(app['ApplicationId'])}' class='formrow tagform'>{ctx['tags_csrf']}"
+                f"<label for='Tags' class='sr'>Tags, separated by commas</label>"
+                f"<input id='Tags' name='Tags' maxlength='900' value='{e(', '.join(tags))}' "
+                f"placeholder='e.g. customer-facing, pci, wave 1'> <button class='secondary'>Save tags</button></form>")
+    return (f"<div id='tags' class='tags-row'>{notice_html(ctx.get('tags_notice') or '')}"
+            f"<span class='label'>Tags</span>{shown}{form}</div>")
 
 
 def _connectivity(app: dict, ctx: dict | None) -> str:
@@ -1162,6 +1222,11 @@ font-size:11px;font-weight:700;border-radius:4px;color:#fff}.cell.rB,.cell.rC{co
 .good{color:#006300;font-weight:600}.bad{color:#b42727;font-weight:600}
 @media (prefers-color-scheme:dark){.good{color:#4fd14f}.bad{color:#f07a7a}}
 .chips+.chips{margin-top:8px}
+.chips.tags{align-items:center}.chip.tagchip{font-size:13px;padding:2px 10px}
+a.tag{display:inline-block;font-size:12px;line-height:1.5;padding:0 8px;margin-left:4px;border-radius:999px;border:1px solid var(--line);
+background:var(--card);color:var(--muted);text-decoration:none;vertical-align:1px}a.tag:hover{color:var(--fg);border-color:var(--fg)}
+.tags-row{margin:12px 0;font-size:14px}.tags-row .label{margin-right:2px}.tagform{margin:8px 0 0}.formrow.tagform input:not([type=hidden]):not([type=checkbox]){min-width:340px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .a-patch{font-size:12px;font-weight:700;color:var(--muted);margin-left:4px;white-space:nowrap}.a-patch.here{color:#0a7d0a}
 @media (prefers-color-scheme:dark){.a-patch.here{color:#4fd14f}}
 .a-patches{margin:18px 0}.a-patches table{margin-top:6px}
@@ -1421,12 +1486,18 @@ def make_handler(connect, admin=None):
                                 ctx["csrf"] = admin._csrf(s)
                                 if app.get("Rating") == "B":
                                     ctx["estimates"] = refactor_estimates(admin, app)
+                            if s and (s.admin or s.operator):                   # may tag it (tags.py)
+                                ctx["tags_csrf"] = admin._csrf(s)
+                            ctx["tags_notice"] = parse_qs(u.query).get("tags", [""])[0]
                             return self._send(200, render_application(app, nav, ctx), head=head, forms=bool(nav),
                                               extra=cookie or None)
                         bu = parse_qs(u.query).get("bu", [None])[0]
                         if bu is not None and not re.fullmatch(r"\d{1,9}|none", bu):
                             bu = None
-                        return self._send(200, render_overview(load_overview(conn), bu, nav), head=head, forms=bool(nav))
+                        tag = " ".join(parse_qs(u.query).get("tag", [""])[0].split()) or None
+                        if tag is not None and not TAG_RE.fullmatch(tag):
+                            tag = None
+                        return self._send(200, render_overview(load_overview(conn), bu, nav, tag), head=head, forms=bool(nav))
                     finally:
                         conn.close()
                 return self._send(404, page("Not found", "<h1>Not found</h1><p><a href='/'>Back</a></p>"), head=head)
