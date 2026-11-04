@@ -6,6 +6,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+- A Make it A order for newer code starts from the application's earlier working patch: the files it still
+  applies to are kept without asking the LLM, and only the rest are edited again. When the newer code did not touch
+  the patched files, the order makes no LLM call. The order page says which patch it started from.
+- *Made A by a patch* (front page, bulk Make it A) counts only a patch made for the commit the latest scan
+  assessed. Before, an application whose code had changed since stayed marked and was not ordered again.
+
 ## 0.9.1 (2026-11-04)
 
 - A Make it A copy, or an application in a scan, that is not deployed because no component qualifies now says why

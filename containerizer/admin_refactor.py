@@ -356,6 +356,21 @@ def _verification(res: dict, st: str) -> str:
 KIND_TEXT = {"generate": "Changes for the findings", "repair": "Repair of the build or run"}
 
 
+def _reused_line(res: dict, pl: dict) -> str:
+    """The earlier patch this order started from (refactor.reuse_files): the files it still applied to as they
+    were, and the ones the LLM edited again."""
+    ru = res.get("reused") or {}
+    if not ru.get("job"):
+        return ""
+    link = f"<a href='{BASE}/{int(ru['job'])}'>#{int(ru['job'])}</a>"
+    line = f"Started from the patch of order {link} (made for commit {e(str(ru.get('commit') or '?')[:12])})"
+    files, edited = ru.get("files") or [], ru.get("edited") or []
+    line += (f": {len(files)} file(s) applied as they were" if files else ": it no longer applied to any file")
+    if edited:
+        line += f"; edited again by the LLM: {e(', '.join(edited[:10]))}" + (" …" if len(edited) > 10 else "")
+    return f"<p class='small'>{line}.</p>"
+
+
 def _heavy_line(res: dict, pl: dict) -> str:
     """Where an order is in its LLM-heavy chain: the one before, done, the next one, or why it stopped."""
     hv = res.get("heavy") or {}
@@ -405,6 +420,7 @@ def _make_it_a(res: dict, pl: dict, st: str) -> str:
         out.append(f"<p class='rating-change'>{badge(before)} → {badge(after) if after else '<span class=muted>?</span>'} "
                    f"{said}</p>")
         out.append(_heavy_line(res, pl))
+        out.append(_reused_line(res, pl))
         lim = res.get("limits") or {}
         rows = "".join(
             f"<tr><td class='num'>{int(x.get('pass') or 0)}</td><td class='num'>{int(x.get('round') or 0)}</td>"
@@ -638,7 +654,33 @@ def make_payload(adm, conn, app: dict, goal: str = "fix", component: str | None 
         print(f"refactoring order for application {app['ApplicationId']} refused: {ex}", file=sys.stderr)
         return None, "nothing" if "nothing" in str(ex).lower() else "failed"
     payload["app"] = app.get("ScanName") or payload.get("app")
+    if goal == "rating-a":
+        payload.update(reusable_patch(conn, int(app["ApplicationId"]), app["SourceCommit"]))
     return payload, ""
+
+
+def reusable_patch(conn, app_id: int, commit: str) -> dict:
+    """The newest "Make it A" patch of the application that worked (verified, rated A) for another commit than
+    `commit`, as the payload keys a new order starts from (rf.REUSE_KEYS; refactor.reuse_files): {} when there is
+    none or it cannot be read."""
+    try:
+        rows = _rows(conn, "SELECT TOP 1 j.JobId, o.SourceCommit, j.Result FROM cz.vRefactorOrder o "
+                           "JOIN cz.LlmJob j ON j.JobId = o.JobId WHERE o.ApplicationId = %s AND o.Goal = N'rating-a' "
+                           "AND o.Status = N'verified' AND o.RatingAfter = N'A' "
+                           "AND (o.SourceCommit IS NULL OR o.SourceCommit <> %s) ORDER BY j.JobId DESC",
+                     (int(app_id), str(commit or "")))
+    except Exception:  # noqa: BLE001 - an order without it starts from the code alone
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return {}
+    if not rows:
+        return {}
+    patch = (_json(rows[0]["Result"]) or {}).get("patch")
+    if not patch:
+        return {}
+    return {"reuse_patch": patch, "reuse_job": int(rows[0]["JobId"]), "reuse_commit": rows[0].get("SourceCommit")}
 
 
 def queue_order(conn, app: dict, payload: dict) -> tuple[int, dict]:

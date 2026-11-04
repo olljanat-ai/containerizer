@@ -734,7 +734,7 @@ def test_make_it_a_for_every_b_app_smallest_first(adm, stateful, monkeypatch):
     assert "href='/admin/refactoring/42'>in the queue</a>" in b and "<b>1 order(s)</b> can be queued" in b
     # one that a verified patch makes A already is shown with it, not queued again from here
     adm.conn.answers[r"FROM cz.LlmJob WHERE Kind = N'refactor'\s+AND Status IN"] = []
-    adm.conn.answers[r"FROM cz.vRefactorOrder\s+WHERE Goal = N'rating-a' AND Status = N'verified'"] = [
+    adm.conn.answers[r"FROM cz.vRefactorOrder o JOIN cz.vApplicationLatest l"] = [
         {"ApplicationId": 7, "JobId": 77, "SandboxStatus": "skipped", "SandboxUrl": None, "FinishedAt": None}]
     b = _getq(adm, ad, "/admin/refactoring/make-all-a", "limit=99999999").body
     assert "made A by <a href='/admin/refactoring/77'>a patch</a>" in b and "<b>1 order(s)</b> can be queued" in b
@@ -1043,3 +1043,70 @@ def test_the_order_page_says_why_each_component_was_left_out(adm):
     op = adm.sessions.create("o@example.com", "O", False, True, True, [])
     b = _get(adm, op, "/admin/refactoring/42").body
     assert "<li><b>PartsCatalog</b>: security gate: &lt;b&gt;3 fixable&lt;/b&gt; vulnerabilities</li>" in b
+
+
+# --------------------------------------------------------------------------- newer code: the earlier patch reused
+
+def _new_commit(root, path, old, new):
+    f = root / path
+    f.write_text(f.read_text().replace(old, new) if old else f.read_text() + new)
+    _git(root, "commit", "--quiet", "-am", "newer code")
+
+
+def test_newer_code_starts_from_the_earlier_patch_without_the_llm(stateful, tmp_path, builds):
+    first = rf.run_order(_pl(stateful), tmp_path / "w1", ask=Asker(GOOD), name="shop-refactor-30")
+    assert first["status"] == "verified" and first["rating_after"] == "A"
+    _new_commit(stateful, "src/Shop.Api/Bank.cs", "", "// newer code, elsewhere in the file\n")
+    pl = {**_pl(stateful), "reuse_patch": first["patch"], "reuse_job": 30, "reuse_commit": first["commit"]}
+    ask = Asker(GOOD)
+    res = rf.run_order(pl, tmp_path / "w2", ask=ask, name="shop-refactor-31")
+    assert ask.asked == {} and res["calls"] == 0                  # every file of the earlier patch still applies
+    assert res["status"] == "verified" and res["rating_reached"], res.get("reason")
+    assert sorted(res["reused"]["files"]) == ["src/Shop.Api/Bank.cs", "src/Shop.Api/Program.cs",
+                                               "src/Shop.Api/Shop.Api.csproj"] and res["reused"]["edited"] == []
+    assert res["commit"] != first["commit"] and "for the assessment of commit " + res["commit"][:12] in res["patch"]
+    assert any("reused order #30's patch" in n for n in res["notes"])
+
+
+def test_a_file_the_earlier_patch_no_longer_applies_to_is_edited_again(stateful, tmp_path, builds):
+    first = rf.run_order(_pl(stateful), tmp_path / "w1", ask=Asker(GOOD), name="shop-refactor-32")
+    moved = SQLITE_LINE.replace("shop.db", "data/shop.db")
+    _new_commit(stateful, "src/Shop.Api/Program.cs", SQLITE_LINE, moved)
+    pl = {**_pl(stateful), "reuse_patch": first["patch"], "reuse_job": 32, "reuse_commit": first["commit"]}
+    ask = Asker({"src/Shop.Api/Program.cs": edit("src/Shop.Api/Program.cs", moved, SQLSERVER_LINE, ["move-state-out"])})
+    res = rf.run_order(pl, tmp_path / "w2", ask=ask, name="shop-refactor-33")
+    assert list(ask.asked) == ["src/Shop.Api/Program.cs"]          # only the file it did not apply to
+    assert res["reused"]["edited"] == ["src/Shop.Api/Program.cs"] and "src/Shop.Api/Bank.cs" in res["reused"]["files"]
+    assert res["status"] == "verified" and res["rating_reached"], res.get("reason")
+    assert "UseSqlServer" in res["patch"] and "<<<<<<<" not in res["patch"]
+
+
+def test_a_reused_patch_is_not_carried_into_the_orders_after_it(stateful, tmp_path):
+    pl = {**_pl(stateful), "reuse_patch": "P", "reuse_job": 3, "reuse_commit": "c" * 40}
+    rep = rf.repair_payload(pl, {"patch": "P2", "verification": []}, 9)
+    assert rep["base_patch"] == "P2" and not set(rf.REUSE_KEYS) & set(rep)
+    q = Q()
+    rf.heavy_next({"JobId": 41}, {**pl, "heavy_round": 2}, {"patch": "P2", "status": "applies-only"},
+                  datetime.now(timezone.utc) + timedelta(hours=2), tmp_path, queue=q)
+    assert q.jobs[0]["Payload"]["base_patch"] == "P2" and not set(rf.REUSE_KEYS) & set(q.jobs[0]["Payload"])
+
+
+def test_reusable_patch_is_the_newest_working_one_for_another_commit():
+    seen = []
+
+    def rows(params):
+        seen.append(params)
+        return [{"JobId": 12, "SourceCommit": "a" * 40, "Result": json.dumps({"patch": "From x\n"})}]
+    conn = FakeConn({r"FROM cz.vRefactorOrder o JOIN cz.LlmJob j": rows})
+    assert admin_refactor.reusable_patch(conn, 5, "b" * 40) == {"reuse_patch": "From x\n", "reuse_job": 12,
+                                                                "reuse_commit": "a" * 40}
+    assert seen == [(5, "b" * 40)]
+    assert admin_refactor.reusable_patch(FakeConn({}), 5, "b" * 40) == {}
+
+
+def test_a_patch_for_older_code_no_longer_counts_as_made_a():
+    from containerizer import webui
+    conn = FakeConn({r"FROM cz.vRefactorOrder o JOIN cz.vApplicationLatest l": [
+        {"ApplicationId": 1, "JobId": 2, "SandboxStatus": "running", "SandboxUrl": None, "FinishedAt": None}]})
+    assert webui.load_a_patches(conn)[1]["JobId"] == 2
+    assert conn.sql(r"o\.SourceCommit = l\.SourceCommit")

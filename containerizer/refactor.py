@@ -302,6 +302,11 @@ def without_fixed(errors: list[dict], fixed: set) -> list[dict]:
         e.get("file") == f and pkg in str(e.get("text") or "").lower() for f, pkg in fixed))]
 
 
+# an earlier patch a new "Make it A" order starts from (admin_refactor.reusable_patch); the orders that follow it
+# (repair rounds, the LLM-heavy chain) carry its result in base_patch instead
+REUSE_KEYS = ("reuse_patch", "reuse_job", "reuse_commit")
+
+
 def repair_payload(payload: dict, result: dict, base_job: int) -> dict:
     """An order that repairs the patch of an earlier one whose build or run failed: the same source and
     commit, the earlier patch applied first, and the errors of its verification."""
@@ -312,7 +317,8 @@ def repair_payload(payload: dict, result: dict, base_job: int) -> dict:
     if payload.get("goal") == "rating-a":
         # a Make it A order goes on as one: from its patch, with its own repair rounds (and their LLM-heavy limits),
         # then the sandbox, and in an LLM-heavy window the chain until it runs there (heavy_next)
-        keep_a = {k: v for k, v in payload.items() if k not in ("deadline", "base_patch", "sandbox_errors", "heavy_same")}
+        keep_a = {k: v for k, v in payload.items() if k not in ("deadline", "base_patch", "sandbox_errors", "heavy_same")
+                  + REUSE_KEYS}
         return {**keep_a, "base_patch": result["patch"], "base_job": int(base_job), "errors": errors,
                 "heavy_parent": int(base_job), "heavy_round": int(payload.get("heavy_round") or 1) + 1}
     keep = ("version", "app", "rating", "application_id", "assessment_id", "source_key", "commit", "source",
@@ -1175,6 +1181,37 @@ def apply_patch(repo: Path, patch: bytes) -> tuple[bool, str]:
     return True, log
 
 
+def reuse_files(repo: Path, app_root: Path, text: str) -> tuple[list[str], list[str]]:
+    """An earlier "Make it A" patch (made for another commit) applied to the edit copy file by file, with a 3-way
+    merge where git has the blobs: (the files it changed cleanly, the files it did not), relative to the
+    application. A file that does not apply, or applies only with conflicts, is put back as it was: the LLM
+    edits it afresh. Files outside the application are left out. Nothing is committed."""
+    f = repo.parent / (repo.name + ".reuse.patch")
+    f.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+    applied: list[str] = []
+    failed: list[str] = []
+    for d in diffstat(text):
+        path = d["file"]
+        try:
+            rel = (repo / path).resolve().relative_to(app_root.resolve()).as_posix()
+        except ValueError:
+            continue
+        p = git(["apply", "--3way", "--include", path, str(f)], cwd=repo, check=False)
+        if p.returncode == 0:
+            applied.append(rel)
+            continue
+        failed.append(rel)
+        tracked = git(["cat-file", "-e", f"HEAD:{path}"], cwd=repo, check=False).returncode == 0
+        git(["reset", "-q", "--", path], cwd=repo, check=False)
+        if tracked:
+            git(["checkout", "HEAD", "--", path], cwd=repo, check=False)
+        else:
+            (repo / path).unlink(missing_ok=True)
+    git(["reset", "-q"], cwd=repo, check=False)
+    f.unlink(missing_ok=True)
+    return applied, failed
+
+
 # --------------------------------------------------------------------------- the patch as data
 
 HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$")
@@ -1832,12 +1869,26 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
         if not ok:
             raise RefactorError("the earlier patch no longer applies to the commit: " + blog[-400:])
         base_files = app_files(repo, app_root, str(payload["base_patch"]))
+    reused: list[str] = []
+    reuse_failed: list[str] = []
+    if not base_files and payload.get("reuse_patch"):
+        # the application's earlier working patch, made for another commit: what still applies is kept, and the
+        # LLM is asked only about the rest (the files it did not change, and the ones it no longer applies to)
+        progress("generating: applying the earlier patch")
+        reused, reuse_failed = reuse_files(repo, app_root, str(payload["reuse_patch"]))
+        log(f"earlier patch (order #{payload.get('reuse_job')}): {len(reused)} file(s) applied, "
+            f"{len(reuse_failed)} not")
     sandbox_errors = str(payload.get("sandbox_errors") or "")
     comps = list(payload.get("components") or [])
     rows: dict[tuple, dict] = {}                  # (component, rule, file) -> the latest attempt
     repair_rows: list[dict] = []
     notes: list[str] = []
-    changes_all: list[dict] = [{"file": f, "kind": "base"} for f in base_files]
+    changes_all: list[dict] = ([{"file": f, "kind": "base"} for f in base_files]
+                               + [{"file": f, "kind": "reused"} for f in reused])
+    if reused or reuse_failed:
+        notes.append(f"reused order #{payload.get('reuse_job')}'s patch (commit "
+                     f"{str(payload.get('reuse_commit') or '')[:12]}): {len(reused)} file(s) as they were"
+                     + (f"; edited again: {', '.join(reuse_failed[:10])}" if reuse_failed else ""))
     attempted: list[dict] = []                    # every task sent, for the rules and the build
     loop: list[dict] = []
     calls = 0
@@ -1851,7 +1902,9 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
     apply_failed = False
     current = {**payload}
     tasks = [] if base_files else list(payload.get("tasks") or []) + state_tasks(_stateful_only(payload), app_root)
-    if not tasks and not base_files:
+    if reused:                                    # done by the earlier patch: the rules after it say what is left
+        tasks = [t for t in tasks if t.get("file") not in set(reused)]
+    if not tasks and not base_files and not reused:
         raise RefactorError("nothing to change: no file names a finding or uses an embedded database")
     p = 0
     for p in range(1, passes + 1):
@@ -1965,6 +2018,8 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
               "rating_before": payload.get("rating") or "B", "rating_after": doc_after.get("rating"),
               "heavy_round": int(payload.get("heavy_round") or 0) or None,
               "rating_reached": doc_after.get("rating") == "A", "passes": p, "loop": loop,
+              "reused": ({"job": payload.get("reuse_job"), "commit": payload.get("reuse_commit"), "files": reused,
+                          "edited": reuse_failed} if reused or reuse_failed else None),
               "still_state": still_stateful(doc_after) if doc_after else [],
               "remaining": remaining_findings(doc_after) if doc_after else [],
               "limits": {"max_calls": budget, "max_passes": passes, "max_repairs": repairs}}
@@ -2183,7 +2238,7 @@ def heavy_next(job: dict, payload: dict, result: dict, ends: datetime, work: Pat
                                                by="LLM-heavy mode (tried again)")
         except Exception as ex:  # noqa: BLE001 - it expires on its own
             out["note"] = f"the failing variant was not removed: {type(ex).__name__}"
-    keep = {k: v for k, v in payload.items() if k not in ("deadline", "base_patch", "sandbox_errors")}
+    keep = {k: v for k, v in payload.items() if k not in ("deadline", "base_patch", "sandbox_errors") + REUSE_KEYS}
     nxt = {**keep, "heavy_round": rnd + 1, "heavy_parent": jid, "heavy_same": same, **stuck_keys,
            **({"base_patch": patch} if patch else {}), **({"sandbox_errors": errors} if errors else {})}
     if restart:                     # from the original code again, told what failed
@@ -2207,7 +2262,7 @@ def heavy_next(job: dict, payload: dict, result: dict, ends: datetime, work: Pat
 
 
 HEAVY_DROP = ("deadline", "base_patch", "base_job", "base_status", "base_subject", "errors", "log_tail", "heavy_tasks",
-              "heavy_goal", "sandbox_errors")
+              "heavy_goal", "sandbox_errors") + REUSE_KEYS
 
 
 def remaining_tasks(payload: dict, result: dict) -> list[dict]:

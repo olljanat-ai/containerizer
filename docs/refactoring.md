@@ -198,6 +198,15 @@ build or run** means the code changes remove what kept it from A, but the copy i
 errors are under **Verification**; **Fix it with the LLM** orders a repair. **Findings left (they do not keep it
 from A)** are configuration findings an A application may still have.
 
+**Newer code starts from the earlier patch.** When the application has a working Make it A patch (it builds,
+runs and rates A) for an older commit, a new order for the newer code starts from it. The patch is applied file by
+file (with a 3-way merge where git can). The files it still applies to are kept as they are and the LLM is not asked
+about them; the files it no longer applies to are put back and edited again, with every file the newer code
+needs. Then the copy is verified and assessed as usual, and a second pass takes what is still found. When the
+newer code did not touch the patched files, the order makes no LLM call at all. The order page says which order's
+patch it started from, how many files were kept and which were edited again. A chain that starts over
+(below) does not use the earlier patch again.
+
 **Until it runs in the sandbox (LLM-heavy mode).** With an [LLM-heavy window](source-control.md#llm-heavy-for-a-while)
 on the whole application (Admin → Applications), a Make it A order may do more (40 LLM calls, 4 passes, 4 repair
 rounds a pass) and stops making LLM calls when the window ends. An order whose copy does not end up running in the
@@ -237,7 +246,8 @@ second pass, when needed, take more, up to the limit of 16 calls.
 changes and its order's estimate (tokens and LLM time), **smallest first**, with the running total of the LLM time
 up to each row, so the LLM's time goes to the cheapest wins first; a local LLM gets the most applications to A for
 its hours. Applications with an order in the queue already say so and link to it. The ones that a verified patch
-makes A already (*Made A by a patch* on the front page: it builds, runs and rates A, merged or not) link to that
+makes A already (*Made A by a patch* on the front page: it builds, runs and rates A, merged or not, for the commit
+the latest scan assessed) link to that
 patch and are not queued again from here (order one on its application page for a new patch). The ones that cannot be ordered
 (no commit recorded, source not kept on this machine) are at the bottom with the reason. **Orders under** a number
 of tokens each (20,000 to begin with) marks the ones that fit, and **Queue … approved** places one order for each of
@@ -279,7 +289,8 @@ rate A on their own, so a B application has only those in the sandbox, often non
   product owners) takes it out sooner. The queue runner takes outdated and requested variants out of the
   output repository within a few minutes (the folder deleted, `sandbox/` regenerated, one commit: the cluster
   removes the namespace) and records it: **replaced by newer code** (with both commits) or **removed**. The
-  patch stays available: order Make it A again for the new code. Variants deployed before 0.9.1 had an expiry
+  patch stays available on its order (in the results database), and a new Make it A order for the new code
+  starts from it (above). Variants deployed before 0.9.1 had an expiry
   date, which no longer applies.
 
 The results page shows the variant's state next to the order, with its URL (**open ↗**) while it runs.
