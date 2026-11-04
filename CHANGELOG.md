@@ -6,8 +6,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.9.2 (2026-11-04)
 
+- An application can get an **output repository of its own**: **Admin → Applications** → the application →
+  **Output repository** (administrators): a repository with a write token, a branch and a folder (`deploy` by
+  default). Its files are moved there once, with their Flux files pointed at it, as the starting point of its
+  real deployment; the sandbox keeps deploying it, from there. The scans then assess it only and leave its files
+  to its team. **Back to the scan's output repository** undoes it. Schema 36.
+- A Make it A copy's folder in the output repository holds the order's patch, `make-it-a.patch`.
 - **Build again (no LLM)** on a Make it A order: the same patch is built, run, assessed and deployed to the
   sandbox again without an LLM call, for a build that failed outside the code (a firewall rule, a package mirror).
 - A Make it A order for newer code starts from the application's earlier working patch: the files it still

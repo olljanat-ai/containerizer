@@ -1209,6 +1209,12 @@ class Runner:
                 n += variant.sync_sandbox(self.connect, self.key, base, log=self.log)
             except Exception as ex:             # a database from before schema 23, the output repository away: next time
                 self.log(f"sandbox variants: {type(ex).__name__}: {ex}"[:400])
+            try:                                # applications moved to an output repository of their own (once)
+                from . import appoutput
+                base = Path(os.environ.get(refactor.WORK_ENV) or tempfile.gettempdir()) / "app-output"
+                n += appoutput.housekeep(self.connect, self.key, base, log=self.log)
+            except Exception as ex:             # a database from before schema 36, a repository away: next time
+                self.log(f"application output repositories: {type(ex).__name__}: {ex}"[:400])
         if EGRESS in self.kinds or LINK in self.kinds:
             # blocked connections: reviews queued for new ones; decisions written to the output repository
             from . import egress

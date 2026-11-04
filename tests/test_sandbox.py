@@ -585,3 +585,17 @@ def test_sandbox_checks_in_sql(tmp_path):
         m = sqlstore.connect(re.sub(r"Database=\w+", "Database=master", cs), autocommit=True)
         m.cursor().execute(f"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]")
         m.close()
+
+
+def test_an_application_moved_to_its_own_repository_syncs_any_revision_from_there(tmp_path):
+    """appoutput.py: Flux reads a moved application from its own repository, whose commits are not ours."""
+    root = output_repo(tmp_path)
+    meta = root / "Contoso/_/shop/containerizer.json"
+    k = FakeKube({(sb.FLUX_KS, "shop-web", "shop-web"): flux_ks(applied="1" * 40, attempted="1" * 40),
+                  ("deployments.apps", "shop-web", "web"): deployment("web"),
+                  ("pods", "shop-web", SEL): {"items": [pod("web-1"), pod("web-2")]}})
+    doc, _ = run(root, k, timeout=60)
+    assert doc["components"][0]["status"] != HEALTHY                  # not moved: another commit is not ours
+    meta.write_text(json.dumps({**json.loads(meta.read_text()), "moved_to": {"repo": "https://git.example/team"}}))
+    doc, _ = run(root, k, timeout=60)
+    assert doc["components"][0]["status"] == HEALTHY

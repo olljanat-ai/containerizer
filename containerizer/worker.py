@@ -260,7 +260,7 @@ class SqlRepoStore:
         whether it shows as enabled. An administrator's decision is never changed here."""
         if res.status.startswith("skipped-"):
             skip = (res.status, res.reason)
-        elif res.status in ("deployed", "no-a-components", "sandbox-off"):
+        elif res.status in ("deployed", "no-a-components", "sandbox-off", "moved"):
             o = res.overridden[0] if res.overridden else None
             skip = (o["status"], o["reason"]) if o else (None, None)
         else:

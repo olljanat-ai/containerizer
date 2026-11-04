@@ -82,13 +82,27 @@ CREATE TABLE [${schema}].Application (
     FirstSeenAt   datetime2(0)   NOT NULL CONSTRAINT DF_Application_FirstSeenAt DEFAULT SYSUTCDATETIME(),
     LastSeenAt    datetime2(0)   NOT NULL CONSTRAINT DF_Application_LastSeenAt DEFAULT SYSUTCDATETIME(),
     Retired       bit            NOT NULL CONSTRAINT DF_Application_Retired DEFAULT 0, -- set by people: hide from the UI
-    SandboxEnabled bit           NOT NULL CONSTRAINT DF_Application_SandboxEnabled DEFAULT 1  -- set by people: deployed to the sandbox
+    SandboxEnabled bit           NOT NULL CONSTRAINT DF_Application_SandboxEnabled DEFAULT 1, -- set by people: deployed to the sandbox
+    OutputRepo     nvarchar(400) NULL,              -- set by people: the application's own output repository (36)
+    OutputBranch   nvarchar(200) NULL,
+    OutputPath     nvarchar(200) NULL,              -- folder in it ('deploy' when NULL)
+    OutputMovedAt  datetime2(0)  NULL,              -- set by the LLM queue runner: when its files were moved there
+    OutputMovedCommit nvarchar(64) NULL,            -- the commit in OutputRepo that holds them
+    OutputNamespace nvarchar(63) NULL,              -- its sandbox namespace (the read token for its repository goes there)
+    OutputMoveError nvarchar(800) NULL              -- why the move did not happen (yet)
 );
 GO
 -- 35: the sandbox can be turned off per application (Admin -> Applications): the scans assess it, but do not deploy it
 IF COL_LENGTH(N'[${schema}].Application', N'SandboxEnabled') IS NULL
     ALTER TABLE [${schema}].Application ADD SandboxEnabled bit NOT NULL
         CONSTRAINT DF_Application_SandboxEnabled DEFAULT 1;
+GO
+-- 36: an application's own output repository (Admin -> Applications, administrators): the LLM queue runner moves its
+-- files there once (appoutput.py); afterwards the scans assess it only, and the sandbox deploys it from there
+IF COL_LENGTH(N'[${schema}].Application', N'OutputRepo') IS NULL
+    ALTER TABLE [${schema}].Application ADD OutputRepo nvarchar(400) NULL, OutputBranch nvarchar(200) NULL,
+        OutputPath nvarchar(200) NULL, OutputMovedAt datetime2(0) NULL, OutputMovedCommit nvarchar(64) NULL,
+        OutputNamespace nvarchar(63) NULL, OutputMoveError nvarchar(800) NULL;
 GO
 
 -- A deployable part of an application (web site, service, worker, desktop client, ...), matched by
@@ -540,16 +554,20 @@ BEGIN
            COALESCE(i.DisplayName, i.Name, d.DisplayName, d.Name),
            CASE WHEN d.ApplicationId IS NULL THEN N'insert' WHEN i.ApplicationId IS NULL THEN N'delete' ELSE N'update' END,
            CASE WHEN d.ApplicationId IS NOT NULL THEN (SELECT d.Name, d.DisplayName, d.Description, d.Owner, d.Retired, d.SandboxEnabled,
+                d.OutputRepo, d.OutputBranch, d.OutputPath,
                 (SELECT p.Name FROM [${schema}].Product p WHERE p.ProductId = d.ProductId) AS Product
                 FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
            CASE WHEN i.ApplicationId IS NOT NULL THEN (SELECT i.Name, i.DisplayName, i.Description, i.Owner, i.Retired, i.SandboxEnabled,
+                i.OutputRepo, i.OutputBranch, i.OutputPath,
                 (SELECT p.Name FROM [${schema}].Product p WHERE p.ProductId = i.ProductId) AS Product
                 FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
     FROM inserted i FULL OUTER JOIN deleted d ON d.ApplicationId = i.ApplicationId
     CROSS JOIN [${schema}].fnAuditWho() w
     WHERE d.ApplicationId IS NULL OR i.ApplicationId IS NULL
-       OR EXISTS (SELECT i.Name, i.DisplayName, i.Description, i.Owner, i.Retired, i.SandboxEnabled, i.ProductId
-                  EXCEPT SELECT d.Name, d.DisplayName, d.Description, d.Owner, d.Retired, d.SandboxEnabled, d.ProductId);
+       OR EXISTS (SELECT i.Name, i.DisplayName, i.Description, i.Owner, i.Retired, i.SandboxEnabled, i.ProductId,
+                         i.OutputRepo, i.OutputBranch, i.OutputPath
+                  EXCEPT SELECT d.Name, d.DisplayName, d.Description, d.Owner, d.Retired, d.SandboxEnabled, d.ProductId,
+                         d.OutputRepo, d.OutputBranch, d.OutputPath);
 END;
 GO
 
@@ -1170,6 +1188,12 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].BusinessUnit TO [${schema}_a
 GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].Product TO [${schema}_admin];
 GRANT SELECT ON [${schema}].Application TO [${schema}_admin];
 GRANT UPDATE ON [${schema}].Application (ProductId, DisplayName, Description, Owner, Retired, SandboxEnabled) TO [${schema}_admin];
+GO
+-- 36: the application's own output repository; changing it resets the move (the runner moves the files again)
+GRANT UPDATE ON [${schema}].Application (OutputRepo, OutputBranch, OutputPath, OutputMovedAt, OutputMovedCommit,
+    OutputNamespace, OutputMoveError) TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].Application (OutputMovedAt, OutputMovedCommit, OutputNamespace, OutputMoveError)
+    TO [${schema}_writer];
 GRANT SELECT ON [${schema}].AuditLog TO [${schema}_admin];
 GRANT SELECT, INSERT ON [${schema}].AccessLog TO [${schema}_admin];
 GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].DevDatabase TO [${schema}_admin];
@@ -2295,4 +2319,7 @@ IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 34) INSER
 GO
 -- 35: Application.SandboxEnabled (above, next to the table)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 35) INSERT [${schema}].SchemaVersion (Version) VALUES (35);
+GO
+-- 36: Application.OutputRepo, OutputBranch, OutputPath and the move's state (above, next to the table)
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 36) INSERT [${schema}].SchemaVersion (Version) VALUES (36);
 GO

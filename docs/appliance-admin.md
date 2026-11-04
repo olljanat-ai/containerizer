@@ -217,6 +217,10 @@ every app namespace, and creates the root `GitRepository` + `Kustomization` of t
 `sandbox/flux/`. Each app reconciles as its own ServiceAccount with its own copy of the token
 ([the sandbox cluster](scheduled-scans.md#the-sandbox-cluster)). Allow the Git server on
 the Firewall page. `kubectl` (as root on the appliance) shows the result. Flux is the only GitOps tool.
+An application moved to an [output repository of its own](scheduled-scans.md#own-output-repository) is
+deployed from that repository, with its token: the LLM queue runner writes it to
+`/var/lib/containerizer/refactor/sandbox-git/<namespace>` (0600, its own user) and `cz-sandbox` puts it in that
+namespace's key.
 
 To reach the deployed apps over HTTPS, set up a wildcard domain and certificate on **Admin → Sandbox
 HTTPS**: Caddy answers for `*.<domain>` on the same port 443 and passes the requests to Traefik in k3s,

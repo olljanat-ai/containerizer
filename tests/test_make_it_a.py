@@ -446,7 +446,8 @@ def test_the_variant_is_deployed_beside_the_original_and_removed_again(tmp_path,
     work = tmp_path / "job"
     name = rf.variant_name("shop", 42)
     shutil.copytree(DEMO, work / name)                     # the patched copy, as run_rating_a leaves it
-    result = {"status": "verified", "rating_reached": True, "verification": [{"component": "demo-web", "status": "ok"}]}
+    result = {"status": "verified", "rating_reached": True, "verification": [{"component": "demo-web", "status": "ok"}],
+              "patch": "From 1 Mon Sep 17 00:00:00 2001\nSubject: [PATCH] make it A\n"}
     progress = []
     now = datetime(2026, 11, 1, 9, 5, tzinfo=timezone.utc)
     sb = variant.deploy(None, None, PAYLOAD, 42, result, work, name, progress.append, now=now)
@@ -459,6 +460,7 @@ def test_the_variant_is_deployed_beside_the_original_and_removed_again(tmp_path,
     d = out / sb["folder"]
     meta = json.loads((d / "containerizer.json").read_text())
     assert meta["app"] == "shop-refactor-42" and meta["source_key"] == "" and meta["repo"] == "shop-refactor-42"
+    assert (d / variant.PATCH_FILE).read_text() == result["patch"]          # the order's patch, beside its files
     assert meta["variant"] == {"of": "Contoso/_/shop", "of_app": "shop", "job": 42, "application_id": 7,
                                "commit": PAYLOAD.get("commit")}
     # its own namespace, image path and GitOps objects; the original is untouched
@@ -534,8 +536,8 @@ def test_housekeep_records_the_removal(monkeypatch, tmp_path):
     def away():
         raise RuntimeError("db away")
     r = lq.Runner(away, name="r", log=logs.append, metrics=object.__new__(lq.QueueMetrics))
-    # one line per step (sandbox variants, egress), once a minute
-    assert r.housekeep() == 0 and r.housekeep() == 0 and len(logs) == 2 and all("db away" in m for m in logs)
+    # one line per step (sandbox variants, applications' own output repositories, egress), once a minute
+    assert r.housekeep() == 0 and r.housekeep() == 0 and len(logs) == 3 and all("db away" in m for m in logs)
 
 
 # --------------------------------------------------------------------------- health: this namespace only

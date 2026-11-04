@@ -619,7 +619,9 @@ def verify_sandbox(root: Path, o: SandboxOptions | None = None, kube: Kube | Non
                 continue
             try:
                 tool, obj = gitops_object(kube, a["app"])
-                st, detail = flux_state(obj, ours, root)
+                # an application moved to its own output repository (appoutput.py) syncs from there: any revision
+                moved = bool((a.get("doc") or {}).get("moved_to"))
+                st, detail = flux_state(obj, "" if moved else ours, None if moved else root)
                 state[a["app"]] = (tool, st, detail)
             except KubeError as e:
                 if e.kind == "unreachable":

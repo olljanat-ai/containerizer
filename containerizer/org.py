@@ -33,6 +33,7 @@ from pathlib import Path
 import yaml
 
 from . import progress
+from .appoutput import moved_to
 from .credentials import in_org, same_repo
 from .orgsource import (NO_PROJECT, REDACT, SourceError, SourceRepo, clone, code_summary, existing_dockerfiles, git,
                         head_commit, provider, read_token, strip_userinfo, update_clone)
@@ -757,9 +758,11 @@ def split_dirs(root: Path, rel: str) -> list[Path]:
 
 
 def repo_dirs(root: Path, rel: str) -> list[Path]:
-    """All of a repository's folders in the output repository: <repo> (whole) and <repo>@<folder> (split)."""
+    """All of a repository's folders in the output repository: <repo> (whole) and <repo>@<folder> (split). The stubs
+    of applications moved to their own output repository (appoutput.py) are not among them: a scan never removes
+    or replaces them."""
     base = root / rel
-    return ([base] if base.exists() else []) + split_dirs(root, rel)
+    return [d for d in ([base] if base.exists() else []) + split_dirs(root, rel) if not moved_to(d)]
 
 
 def suggest_split(src: Path, limit: int = 20000) -> dict:
@@ -809,6 +812,8 @@ def combine_split(res: RepoResult, subs: list, pattern: str) -> RepoResult:
         res.status = "deployed"
     elif n["no-a-components"]:
         res.status = "no-a-components"
+    elif (only := [x for x in statuses if x in ("moved", SANDBOX_OFF)]) and not n["error"]:
+        res.status = only[0]                    # assessed only: moved to its own repository, or its sandbox off
     elif skipped and not n["error"]:
         res.status = statuses[0] if len(set(statuses)) == 1 else "skipped-no-app"
     else:
@@ -881,7 +886,7 @@ def _process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, wor
         <app>-<folder>, not the folder's own)."""
         def tstop(status: str, reason: str) -> RepoResult:
             tres.status, tres.reason = status, reason
-            if tdest.exists():                                 # it no longer qualifies: stop deploying it
+            if tdest.exists() and not moved_to(tdest):          # it no longer qualifies: stop deploying it
                 shutil.rmtree(tdest)
             return tres
 
@@ -905,6 +910,8 @@ def _process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, wor
             from .replatform import migrate_repo
             from .sqlstore import source_info
             tres.source_key = source_info(path, name)["key"]
+            if m := moved_to(tdest):
+                return moved_result(tres, m)
             if sandbox_off(o, tres.source_key):
                 return sandbox_off_result(tres, tdest)
             mo = o
@@ -1091,6 +1098,8 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
     from . import connectivity
     from .generate import generate_app, k8s_name
     dest = out.root / rel
+    if m := moved_to(dest):
+        return moved_result(res, m)
     if sandbox_off(o, res.source_key):
         return sandbox_off_result(res, dest)
     existing = connectivity.read(dest) or (connectivity.read(connectivity_from) if connectivity_from else None)
@@ -1722,6 +1731,14 @@ def sandbox_off_result(res: "RepoResult", dest: Path) -> "RepoResult":
     """Not built or deployed. What was deployed before keeps its folder (and its images in the registry): sandbox/
     leaves it out, so the cluster removes it, and turning the sandbox on again puts it back as it was."""
     res.status, res.reason = SANDBOX_OFF, SANDBOX_OFF_REASON
+    return res
+
+
+def moved_result(res: "RepoResult", m: dict) -> "RepoResult":
+    """An application moved to its own output repository (appoutput.py): assessed only. Its files are its team's
+    now; its stub here (the sandbox deploys it from its own repository) is left as it is."""
+    from .appoutput import MOVED, moved_reason
+    res.status, res.reason = MOVED, moved_reason(m)
     return res
 
 
