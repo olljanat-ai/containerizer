@@ -6,6 +6,15 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+- The cluster-level kit (`cluster/`: the API server audit policy, the `ClusterSecretStore`, the Kyverno policy that
+  admits only signed images) is written once at the root of an organization scan's output repository, for every
+  app, instead of a copy in every app folder: the audit policy and the store were the same everywhere, the store
+  access Role is in each app's `gitops/flux/tenant.yaml`, and one image policy now covers every namespace
+  Containerizer manages with each app's image path. The next scan removes the app folders' `cluster/`.
+  `containerizer generate` on a single app keeps writing it into its output folder.
+
 ## 0.11.0 (2026-11-05)
 
 - Appliance: a push to the output repository deploys at once instead of at Flux's next poll (up to 5 minutes).

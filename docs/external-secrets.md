@@ -31,7 +31,7 @@ ServiceAccount `app-secrets-reader`, **without a namespace**. ESO then authentic
 
 - **kubernetes provider** (appliance, default): a Role in `containerizer-secrets` with `get` on exactly the
   remote Secrets of `shop` (`resourceNames`, no `list`, no `watch`). It is generated in
-  `cluster/secret-store.yaml` and, for Flux, in `gitops/flux/tenant.yaml`.
+  `gitops/flux/tenant.yaml` (with `containerizer generate` on a single app, also in its `cluster/secret-store.yaml`).
 - **Vault / OpenBao**: a policy that allows `<mount>/data/<namespace>--*` for the namespace of the caller.
 - **AWS Secrets Manager**: an IAM role per namespace (IRSA) limited to `secret:<namespace>--*`.
 - **Azure Key Vault**: a workload identity per namespace with *Key Vault Secrets User* on its own secrets.
@@ -114,7 +114,8 @@ metadata level only.
 ## Real clusters
 
 Install ESO (the [Helm chart](https://external-secrets.io/latest/introduction/getting-started/)), apply
-one app's `cluster/secret-store.yaml` (the store is the same for every app; the Role in it is per app), and
+`cluster/secret-store.yaml` at the root of the organization scan's output repository (the store is the same for every app;
+each app's Role is in its `gitops/flux/tenant.yaml`), and
 put the remote keys from `HARDENING.md` in the store. Then deploy as usual. To use another backend, set
 `CONTAINERIZER_SECRET_STORE` for the scans, or edit the store. The app manifests stay the same.
 

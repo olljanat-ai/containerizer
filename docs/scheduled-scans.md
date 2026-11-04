@@ -239,12 +239,13 @@ note in the change history. A disabled project overrides the settings of its rep
 ## Output repository layout
 
 ```
+cluster/                     the cluster-level kit for every app, once: secret store, signed images (Kyverno), audit policy
 <Organization>/
   README.md                  every repository: status, rating, deployed and excluded components with reasons
   org-run.json               the same as data (merged across runs)
   <Project>/<Repository>/    one application (namespace <app>)
     kustomization.yaml       namespace, security policies, components, image tags
-    namespace.yaml security.yaml HARDENING.md SECURITY.md MIGRATION.md cluster/
+    namespace.yaml security.yaml HARDENING.md SECURITY.md MIGRATION.md
     containerizer.json       source URL, commit, images, digests, verification
     gitops/flux/             tenant.yaml, git/sync.yaml, oci/, image automation
     <component>/             Dockerfile, Dockerfile.dockerignore, k8s.yaml, plan.json

@@ -54,3 +54,31 @@ def test_the_sandbox_never_deploys_into_a_reserved_namespace(tmp_path, capsys):
     text = "".join(p.read_text() for p in (tmp_path / "sandbox").rglob("*.yaml"))
     assert "org/p/shop" in text and "org/p/evil" not in text
     assert "namespace external-secrets is reserved" in capsys.readouterr().err
+
+
+def test_one_cluster_kit_at_the_repository_root(tmp_path):
+    """The cluster-level kit is written once at the output repository's root (secret store, one image policy
+    for every managed namespace with each app's image path, audit policy); the app folders' copies go."""
+    import yaml
+    for rel, ns in (("org/p/shop", "shop"), ("org/p/billing", "billing")):
+        d = tmp_path / rel
+        (d / "gitops" / "flux").mkdir(parents=True)
+        (d / "gitops" / "flux" / "kustomization.yaml").write_text("resources: []\n")
+        (d / "containerizer.json").write_text(json.dumps({"namespace": ns, "app": ns}))
+        (d / "web").mkdir()
+        (d / "web" / "k8s.yaml").write_text(f"kind: Deployment\nspec:\n  template:\n    spec:\n      containers:\n"
+                                            f"      - image: registry.local/{ns}/web:1.2\n")
+        (d / "cluster").mkdir()
+        (d / "cluster" / "audit-policy.yaml").write_text("old\n")
+    org.write_sandbox(tmp_path, "https://git.example.com/out.git", "main")
+    assert not (tmp_path / "org/p/shop/cluster").exists() and not (tmp_path / "org/p/billing/cluster").exists()
+    kit = tmp_path / "cluster"
+    assert sorted(p.name for p in kit.iterdir()) == ["README.md", "audit-policy.yaml", "secret-store.yaml",
+                                                      "verify-images.yaml"]
+    pol = yaml.safe_load((kit / "verify-images.yaml").read_text())
+    rule = pol["spec"]["rules"][0]
+    assert pol["metadata"]["name"] == "verify-images-containerizer"
+    assert rule["verifyImages"][0]["imageReferences"] == ["registry.local/billing/*", "registry.local/shop/*"]
+    assert rule["match"]["any"][0]["resources"]["namespaceSelector"]["matchLabels"] == {
+        "app.kubernetes.io/managed-by": "containerizer"}
+    assert any(d["kind"] == "ClusterSecretStore" for d in yaml.safe_load_all((kit / "secret-store.yaml").read_text()) if d)

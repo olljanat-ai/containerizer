@@ -379,7 +379,8 @@ or an action for the cluster operator, with the guide section and CIS number.
   defines the store (kubernetes provider by default; Vault, Azure Key Vault or AWS Secrets Manager by
   setting), and the gate fails on any plain Secret or Secret reference that no ExternalSecret produces. See
   [Secrets (External Secrets)](external-secrets.md).
-- **Cluster kit** (`cluster/`): an API server audit policy (metadata only for Secrets, full requests and
+- **Cluster kit** (`cluster/`, once at the root of an organization scan's output repository for every app; in the
+  output folder with `containerizer generate`): an API server audit policy (metadata only for Secrets, full requests and
   responses for RBAC, every write and every exec) and a Kyverno `verifyImages` policy that only admits images signed with your cosign
   key. These are for the cluster operator to apply. The report also lists the cluster controls the
   generator can't set, such as etcd encryption, kubelet authentication and control plane TLS.
