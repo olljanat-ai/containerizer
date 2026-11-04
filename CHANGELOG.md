@@ -6,6 +6,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+- Refactoring: a package reference to a part of ASP.NET Core (`Microsoft.AspNetCore.HttpOverrides` and the like)
+  in a .NET Core 3.0+ project is removed without the LLM when NuGet cannot find it (NU1101, NU1102). Those parts
+  ship with the shared framework and their packages end at 2.x. The LLM's answers no longer add them, and a
+  repair may now remove a package the earlier change added when it does not exist. Before, the repair rounds kept
+  the reference and the patched copy never built.
+
 ## 0.9.2 (2026-11-04)
 
 - An application can get an **output repository of its own**: **Admin → Applications** → the application →

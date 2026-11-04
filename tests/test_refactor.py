@@ -1163,3 +1163,65 @@ def test_a_build_context_is_made_readable_for_the_images_user(tmp_path):
     (tmp_path / "link").symlink_to("/etc/hostname")
     readable_context(tmp_path)
     assert oct(f.stat().st_mode & 0o777) == "0o644" and oct((tmp_path / "src/App").stat().st_mode & 0o777) == "0o755"
+
+
+NU1102_LOG = (
+    "#12 3.620 /src/src/Api/Api.csproj : error NU1102: Unable to find package Microsoft.AspNetCore.HttpOverrides "
+    "with version (>= 6.0.0)\n"
+    "#12 3.620 /src/src/Api/Api.csproj : error NU1102:   - Found 39 version(s) in nuget.org [ Nearest version: 2.3.13 ]\n"
+    "#12 3.709   Failed to restore /src/src/Api/Api.csproj (in 1.15 sec).\n")
+
+
+def _api_app(tmp_path, sdk="Microsoft.NET.Sdk.Web", tfm="net6.0"):
+    app = tmp_path / "app"
+    (app / "src/Api").mkdir(parents=True)
+    (app / "src/Api/Api.csproj").write_text(
+        f'<Project Sdk="{sdk}">\n  <PropertyGroup>\n    <TargetFramework>{tfm}</TargetFramework>\n  </PropertyGroup>\n'
+        '  <ItemGroup>\n    <PackageReference Include="Serilog.AspNetCore" Version="6.0.1" />\n'
+        '    <PackageReference Include="Microsoft.AspNetCore.HttpOverrides" Version="6.0.0" />\n'
+        '  </ItemGroup>\n</Project>\n')
+    return app
+
+
+def test_an_aspnetcore_framework_package_that_does_not_restore_is_removed_without_the_llm(tmp_path):
+    app = _api_app(tmp_path)
+    errors = rf.build_errors(NU1102_LOG)
+    assert [e["code"] for e in errors] == ["NU1102", "NU1102"]
+    changes, notes, fixed = rf.fix_packages(app, NU1102_LOG, log=lambda s: None)
+    assert changes == [{"file": "src/Api/Api.csproj", "kind": "package",
+                        "detail": "remove Microsoft.AspNetCore.HttpOverrides (part of ASP.NET Core)"}]
+    text = (app / "src/Api/Api.csproj").read_text()
+    assert "HttpOverrides" not in text and "Serilog.AspNetCore" in text and "FrameworkReference" not in text
+    assert "no LLM call" in notes[0]
+    assert rf.without_fixed(errors, fixed) == []                 # the "- Found 39 version(s)" line goes with it
+    assert rf.fix_packages(app, NU1102_LOG, log=lambda s: None)[0] == []     # already removed
+
+
+def test_a_framework_package_outside_the_web_sdk_becomes_a_framework_reference(tmp_path):
+    app = _api_app(tmp_path, sdk="Microsoft.NET.Sdk", tfm="net8.0")
+    rf.fix_packages(app, NU1102_LOG, log=lambda s: None)
+    text = (app / "src/Api/Api.csproj").read_text()
+    assert "HttpOverrides" not in text and '<FrameworkReference Include="Microsoft.AspNetCore.App" />' in text
+
+
+def test_a_framework_package_is_kept_where_aspnetcore_is_not_a_framework(tmp_path):
+    app = _api_app(tmp_path, tfm="net48")
+    assert rf.fix_packages(app, NU1102_LOG, log=lambda s: None)[0] == []
+    other = NU1102_LOG.replace("Microsoft.AspNetCore.HttpOverrides", "Contoso.Missing")
+    assert rf.fix_packages(_api_app(tmp_path / "b"), other, log=lambda s: None)[0] == []
+    # an unknown Microsoft.AspNetCore.* package whose packages end at 2.x while 3.0+ is asked for: a framework part
+    assert rf.framework_package("Microsoft.AspNetCore.Something", "<TargetFramework>net6.0</TargetFramework>", "6.0.0", "2.3.0")
+    assert not rf.framework_package("Microsoft.AspNetCore.Authentication.JwtBearer",
+                                    "<TargetFramework>net6.0</TargetFramework>", "6.0.10", "6.0.10")
+
+
+def test_an_answer_that_adds_an_aspnetcore_framework_package_does_not_add_it(tmp_path):
+    app = _api_app(tmp_path)
+    proj = app / "src/Api/Api.csproj"
+    proj.write_text(proj.read_text().replace('    <PackageReference Include="Microsoft.AspNetCore.HttpOverrides" Version="6.0.0" />\n', ""))
+    answer = {"edits": [], "new_files": [], "package_changes": [
+        {"action": "add", "package": "Microsoft.AspNetCore.HttpOverrides", "version": "6.0.0"},
+        {"action": "add", "package": "Polly", "version": "7.2.4"}]}
+    changes, errors = rf.apply_answer(app, answer, ["src/Api/Program.cs"], "src/Api/Api.csproj")
+    assert errors == [] and [c["detail"] for c in changes] == ["add Polly 7.2.4"]
+    assert "HttpOverrides" not in proj.read_text()
