@@ -825,7 +825,7 @@ class Agent:
                 raise DbError("The database could not be dropped: " + _clean_error(err or out or problem, ""))
             self.forget_provisioned(engine, ns)
             log(f"dbdelete: {req.get('requested_by')} dropped {name} on the lab's {engine} ({ns})")
-            return ({"deleted": name, "message": "recreate"}, lambda: self.recreate(ns))
+            return ({"deleted": name, "message": "recreate"}, lambda: self.recreate(engine, ns))
         pod, database = self.devdb_pod(engine, ns)
         if req.get("confirm") != database:
             raise DbError("Type the database's name to confirm.")
@@ -842,13 +842,18 @@ class Agent:
             state[engine].pop(ns)
             labagent.save_json(path, state, 0o600)
 
-    def recreate(self, ns: str) -> None:
+    def recreate(self, engine: str, ns: str) -> None:
         """After the answer: the lab agent's reconcile (its own unit, as on the timer) creates the database again
         empty with the same login; then the application's Deployments restart and create their schema."""
-        try:
-            (self.systemctl or _systemctl)(["start", "containerizer-lab.service"])
-        except Exception as ex:  # noqa: BLE001 - the timer tries again within 2 minutes
-            log(f"dbdelete: lab agent: {type(ex).__name__}: {ex}")
+        # A run the timer started before the drop may write the old "provisioned" mark back when it ends, and
+        # `systemctl start` only waits for such a run: forget the mark again and run once more.
+        for again in (False, True):
+            try:
+                if again:
+                    self.forget_provisioned(engine, ns)
+                (self.systemctl or _systemctl)(["start", "containerizer-lab.service"])
+            except Exception as ex:  # noqa: BLE001 - the timer tries again within 2 minutes
+                log(f"dbdelete: lab agent: {type(ex).__name__}: {ex}")
         kube = self._kube()
         data = kube.get(["-n", ns, "deployments"]) or {}
         for d in data.get("items") or []:

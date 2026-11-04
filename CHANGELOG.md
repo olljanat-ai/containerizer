@@ -6,6 +6,21 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+- **Browse and fix the sandbox databases** (appliance): Admin → Dev databases now opens each application's
+  database in the sandbox, a lab-service database (SQL Server, PostgreSQL, MySQL) or a restored dev database, in
+  its namespace or a Make it A variant's (the latest first). Tables, rows (50 a page, sort, filter), a row editor
+  (change, add, delete by primary key, NULL and default boxes), a SQL box, and **Delete database** after typing
+  its name: a lab-service database is created again empty with the same login and the application restarts; a
+  restored dev database is restored again from its backup. Administrators and operators only. The web UI asks the
+  system agent and waits for its answer (`/run/containerizer/system/answers`); the agent checks that the namespace
+  is the application's and runs each statement with the engine's own client in the server's container, as the
+  application's own login, in its own database, the password on stdin only. At most 500 rows or 1 MB, 15 seconds
+  a statement. Every change is recorded before it runs, with its values, in the change history (**Sandbox
+  databases**); needs schema 38 (`containerizer db init`; the appliance runs it at boot). MongoDB, Redis and the
+  other lab services are not browsed ([Browse and fix the data](docs/dev-databases.md#browse-and-fix-the-data)).
+
 ## 0.9.4 (2026-11-04)
 
 - Application tags: administrators and operators tag an application on its results page (`customer-facing, pci,

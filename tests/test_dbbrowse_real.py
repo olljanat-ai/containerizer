@@ -51,6 +51,10 @@ def _wait(engine: str, name: str) -> None:
     probe = {"postgres": "SELECT 1;\n", "mysql": "SELECT 1;\n", "sqlserver": "SELECT 1;\nGO\n"}[engine]
     deadline = time.time() + 240
     while time.time() < deadline:
+        # the postgres image's entry point runs a temporary server during initdb, then stops it
+        if engine == "postgres" and "PostgreSQL init process complete" not in _docker("logs", name, check=False).stdout:
+            time.sleep(1)
+            continue
         if _admin(engine, name, probe).returncode == 0:
             if engine != "mysql":
                 return

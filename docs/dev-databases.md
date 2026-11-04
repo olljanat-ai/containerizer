@@ -92,6 +92,86 @@ Two details of the SQL Server image:
 - **`MSSQL_PID=Developer`.** SQL Server Developer edition is free for development and test use, and not
   licensed for production. These databases only run in the sandbox.
 
+## Browse and fix the data
+
+On the appliance, **Admin → Dev databases** also opens the databases the applications have in the sandbox,
+to look at and fix their data while you debug them: a restored dev database (above), or the application's
+own database on a [lab service](lab-services.md)'s shared SQL Server, PostgreSQL or MySQL. Only
+administrators and operators see the page (product owners and viewers do not, not even the link).
+
+- **Which database.** The list at the top names every application with a database in the sandbox. On an
+  application's page, pick the database and the namespace: the application's own, or one of its
+  [Make it A](refactoring.md#make-it-a) variants (`<app>-refactor-<job>`), the latest first. MongoDB, Redis
+  and the other lab services are not browsed here.
+- **Tables.** The tables and views, with their approximate row counts.
+- **Rows.** 50 a page, sorted by any column (the primary key by default), filtered on one column (equals,
+  contains, is NULL, is not NULL). Values are shown as text: binary columns as hex, NULL as *NULL*.
+- **Edit.** Change a row, add one or delete one, always picked out by its primary key. Only the values you
+  change are written; tick **NULL** for no value, and **default** on a new row to leave a column to the
+  database (identity, auto-increment and columns with a default start ticked). Computed columns, `rowversion`
+  and binary columns are not written here. A table without a primary key, or with a binary one, and a view
+  are read-only, and the page says why.
+- **SQL.** Run one statement (on SQL Server one batch, without `GO`): the result table (at most 500 rows),
+  the number of rows affected, or the database's error. A SQL Server statement whose result cannot be
+  captured as a table (temporary tables, several result sets) shows `sqlcmd`'s text output instead.
+- **Delete the database**, after typing its name:
+    - a **lab-service database** is dropped (its open connections closed first) and the lab agent creates it
+      again straight away, empty, with the same login and password; then the application's Deployments
+      restart, so an application that creates its own tables (Entity Framework `EnsureCreated`, migrations,
+      seed data) fills it again;
+    - a **restored dev database** restarts. It keeps its data in its pod only, so it is restored again from
+      the uploaded backup, which takes as long as the first restore. To stop restoring the backup, remove the
+      backup instead.
+
+![Admin → Dev databases: the rows of a table, sorted by a column, with a filter and an Edit link per row](images/db-browser.png#only-light){ .cz-shot }
+![Admin → Dev databases: the rows of a table, sorted by a column, with a filter and an Edit link per row](images/db-browser-dark.png#only-dark){ .cz-shot }
+
+![Admin → Dev databases: one row in the editor, a value per column with its type and a NULL box](images/db-row-editor.png#only-light){ .cz-shot }
+![Admin → Dev databases: one row in the editor, a value per column with its type and a NULL box](images/db-row-editor-dark.png#only-dark){ .cz-shot }
+
+### How a statement reaches the database
+
+```
+web UI (cz-web) --requests/<id>.json--> system agent (root) --kubectl exec -i--> the server's own client
+        ^                                    |                                   (psql, mysql, sqlcmd)
+        └──────── answers/<id>.json ─────────┘                                    as the application's login
+```
+
+The web UI has no access to the cluster. It hands each step to the system agent as a request carrying the
+signed-in user, the application, the namespace and the statements, and waits up to 45 seconds for the answer
+in `/run/containerizer/system/answers/<id>.json` (readable by root and the web UI only); otherwise it says
+the appliance did not answer. The agent trusts nothing in the request:
+
+- the namespace must be one that the results database maps to that application, and not a system namespace;
+- **lab service**: the lab agent must have provisioned that namespace's database. The login, password and
+  database come from the secret store (`containerizer-secrets/<ns>--cz-lab-<service>`), and the agent checks
+  them against the names it derives itself;
+- **restored dev database**: the ready `devdb` pod in that namespace; its engine and database name come from
+  the pod, the password from the namespace's `devdb` Secret, the login is `app`.
+
+The statement then runs through the engine's own client inside the server's container, **as the application's
+own login, in its own database**: whatever SQL a request holds, it can only do what the application itself can
+do there. The password is the first line of the client's standard input, read by a fixed script into the
+client's environment: it is never on a command line, in a request or answer file, or sent to the web UI.
+Nothing in a statement reaches the client's own command language: `psql -c` (no backslash commands),
+`mysql --binary-mode` (no client commands, no local files), and on SQL Server the statement travels
+hex-encoded into `sp_executesql` (no `:` commands, no `$(variables)`). Values typed into the row editor are
+quoted for the engine (SQL Server `N'…'`, PostgreSQL `'…'`/`E'…'`, MySQL hex literals), never pasted in raw.
+Each statement stops after 15 seconds; an answer holds at most 500 rows and 1 MB.
+
+Deleting a lab-service database runs `DROP DATABASE` as the shared server's admin (from its own
+environment, as provisioning does) on the database name the agent derives itself; the typed name must match it.
+
+### What the change history records
+
+Every change, before it runs: a row changed, added or deleted, a SQL statement (even a `SELECT`), a database
+deleted. It is recorded with who, when, the application, the namespace, the engine and the statement **with
+its values** (these are lab databases), in `DatabaseEdit` and the change history (**Change history →
+Sandbox databases**); the outcome (rows affected or the error) follows on the application's database page. If
+it cannot be recorded (a results database older than schema 38: run `containerizer db init`), it does not run.
+Looking at tables and rows is not recorded, unless the access log is on (`CONTAINERIZER_VIEW_AUDIT`): then
+each page is logged like other results pages.
+
 ## Setting it up
 
 Nothing to set up: the appliance keeps the backups on its data partition in

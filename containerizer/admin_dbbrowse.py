@@ -234,7 +234,7 @@ def _cell(v, limit: int = 160) -> str:
 
 
 def _crumbs(app_id: int, app_name: str, db: Db, schema: str = "", table: str = "", last: str = "") -> str:
-    parts = [f"<a href='/admin/dev-databases'>Dev databases</a>", f"<a href='/admin/dev-databases/{app_id}'>{e(app_name)}</a>",
+    parts = ["<a href='/admin/dev-databases'>Dev databases</a>", f"<a href='/admin/dev-databases/{app_id}'>{e(app_name)}</a>",
              f"<a href='{e(_href(app_id, db))}'>{e(db.title)} · {e(db.namespace)}</a>"]
     if table:
         parts.append(f"<a href='{e(_href(app_id, db, schema=schema, table=table))}'>{e(_tname(db, schema, table))}</a>")
@@ -463,7 +463,7 @@ def _table(adm, s, a, app_id, name, db: Db, schema, table, q, flash) -> Response
     for c in cols:
         nd = "1" if sort == c.name and not desc else None
         arrow = (" ▼" if desc else " ▲") if sort == c.name else ""
-        mark = " 🔑" if c.pk else ""
+        mark = " <span class='dbkey'>key</span>" if c.pk else ""
         heads.append(f"<th><a href='{e(_href(app_id, db, **base, sort=c.name, desc=nd))}'>{e(c.name)}{arrow}</a>{mark}"
                      f"<span class='dbtype'>{e(c.type)}</span></th>")
     pk = D.primary_key(cols)
@@ -473,8 +473,8 @@ def _table(adm, s, a, app_id, name, db: Db, schema, table, q, flash) -> Response
         edit = ""
         if not ro:
             key = {c.name: r[names.index(c.name)] for c in pk}
-            edit = f"<td><a href='{e(_href(app_id, db, schema=schema, table=table, row=json.dumps(key)))}'>Edit</a></td>"
-        trs.append(f"<tr>{edit}{''.join(f'<td>{_cell(x)}</td>' for x in r)}</tr>")
+            edit = f"<td class='nowrap'><a href='{e(_href(app_id, db, schema=schema, table=table, row=json.dumps(key)))}'>Edit</a></td>"
+        trs.append(f"<tr>{edit}{''.join(f'<td>{_cell(x, 60)}</td>' for x in r)}</tr>")
     if res is not None and not data:
         trs.append(f"<tr><td colspan='{len(cols) + (0 if ro else 1)}' class='muted'>No rows{' match' if filt else ''}.</td></tr>")
     grid = (f"<div class='dbwrap'><table class='dbrows'><thead><tr>{'' if ro else '<th></th>'}{''.join(heads)}</tr></thead>"

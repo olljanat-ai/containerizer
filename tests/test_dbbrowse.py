@@ -8,8 +8,7 @@ import json
 import sys
 import threading
 import time
-from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import urlencode, urlsplit
 
 import pytest
 
@@ -384,7 +383,7 @@ def test_delete_lab_database_drops_and_recreates(tmp_path):
     assert "ALTER DATABASE [parts_catalog] SET SINGLE_USER WITH ROLLBACK IMMEDIATE" in stdin and "DROP DATABASE [parts_catalog]" in stdin
     assert json.loads((tmp_path / "state.json").read_text()) == {"sqlserver": {"other-app": "uid:x"}}   # provisioned again
     after()
-    assert systemctl == [["start", "containerizer-lab.service"]]
+    assert systemctl == [["start", "containerizer-lab.service"]] * 2                # once more after a run already going
     assert kube.runs == [["-n", NS, "rollout", "restart", "deployment/parts-api"],
                          ["-n", NS, "rollout", "restart", "deployment/parts-web"]]
 
@@ -576,7 +575,7 @@ def test_tables_rows_and_editor(site):
     r = _get(adm, h, f"/admin/dev-databases/3/browse?d={KEY}")
     assert r.status == 200 and ">dbo.Parts</a>" in r.body and "Delete database" in r.body
     assert adm.system.asked[0][2]["namespace"] == NS and adm.system.asked[0][2]["application_id"] == 3
-    r = _get(adm, h, f"/admin/dev-databases/3/browse?" + urlencode({"d": KEY, "schema": "dbo", "table": "Parts",
+    r = _get(adm, h, "/admin/dev-databases/3/browse?" + urlencode({"d": KEY, "schema": "dbo", "table": "Parts",
                                                                    "f": "Sku", "op": "contains", "v": "PC", "sort": "Sku"}))
     assert r.status == 200 and "PC-&lt;1&gt;" in r.body and "<span class='null'>NULL</span>" in r.body
     stmt = adm.system.asked[-1][2]["statements"][0]

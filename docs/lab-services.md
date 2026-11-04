@@ -228,6 +228,10 @@ k3s kubectl -n containerizer-secrets delete secret -l containerizer.io/lab-app=<
 
 On a shared server, drop the app's database and login with the server's tools.
 
+To look at or fix an app's data in its SQL Server, PostgreSQL or MySQL database, or to start it again empty,
+use the database browser under **Admin → Dev databases** ([Browse and fix the data](dev-databases.md#browse-and-fix-the-data)).
+It runs every statement as the app's own login, in its own database, and records every change.
+
 ## Resources
 
 When it is in use, SQL Server takes 2 to 3 GiB of memory, on top of the appliance's own SQL Server.

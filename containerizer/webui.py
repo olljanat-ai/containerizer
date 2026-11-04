@@ -1266,7 +1266,8 @@ table.diff .sign{display:inline-block;width:1.2em;color:var(--muted);user-select
 table.diff tr.add td{background:#16351a}table.diff tr.del td{background:#3d1a1a}}
 ol.steps li{margin:6px 0}ol.steps pre.code{margin:4px 0}ul.checks{padding-left:18px}ul.checks li{margin:6px 0}
 .dbwrap{overflow-x:auto;margin:10px 0}table.dbrows{font-size:13px}table.dbrows td{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-white-space:pre-wrap;word-break:break-word;max-width:420px;vertical-align:top}table.dbrows th{white-space:nowrap;vertical-align:bottom}
+white-space:pre;vertical-align:top}table.dbrows th{white-space:nowrap;vertical-align:bottom}
+.dbkey{font-size:10px;font-weight:600;border:1px solid currentColor;border-radius:4px;padding:0 4px;margin-left:4px;color:var(--muted)}
 table.dbrows th a{color:inherit}table.dbrows .null{color:var(--muted);font-style:italic}.dbtype{display:block;font-weight:400;font-size:11px;color:var(--muted)}
 .dbpick select{min-width:340px}form.dbfilter{margin:10px 0}form.dbfilter select{min-width:0}form.dbfilter input:not([type=hidden]){min-width:220px}
 .dbfield{display:grid;grid-template-columns:minmax(160px,220px) 1fr auto;gap:8px;align-items:start;padding:6px 0;border-top:1px solid var(--line)}
