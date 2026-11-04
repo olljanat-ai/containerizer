@@ -2526,3 +2526,32 @@ END;
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 41) INSERT [${schema}].SchemaVersion (Version) VALUES (41);
 GO
+
+-- 42: a "Make it A" order's patched copy runs in place, in its application's own folder and namespace (variant.py,
+-- in_place in the order's Result.sandbox), no longer as <app>-refactor-<job> beside it. vSandboxNamespace keeps one
+-- row per namespace: Variant = 1 when a Make it A patch runs in it (egress reviews it like an A application), Own = 1
+-- when it is the application's own namespace (its sandbox checks, or a patch running in place; links.py reads these),
+-- and the latest of the sandbox check and the order's state as its Status.
+CREATE OR ALTER VIEW [${schema}].vSandboxNamespace AS
+SELECT y.Namespace, y.ApplicationId, y.Variant, y.CheckedAt, y.Status, y.Own
+FROM (SELECT x.Namespace, x.ApplicationId,
+             CAST(MAX(x.Variant) OVER (PARTITION BY x.Namespace) AS bit) AS Variant,
+             CAST(MAX(x.Own) OVER (PARTITION BY x.Namespace) AS bit) AS Own,
+             x.CheckedAt, x.Status,
+             ROW_NUMBER() OVER (PARTITION BY x.Namespace ORDER BY x.CheckedAt DESC, x.Variant) AS k
+      FROM (SELECT s.Namespace, s.ApplicationId, 0 AS Variant, 1 AS Own, s.CheckedAt, s.Status,
+                   ROW_NUMBER() OVER (PARTITION BY s.Namespace ORDER BY s.CheckedAt DESC, s.CheckId DESC) AS n
+            FROM [${schema}].SandboxCheck s
+            UNION ALL
+            SELECT CAST(JSON_VALUE(j.Result, '$$.sandbox.namespace') AS nvarchar(63)), COALESCE(j.ApplicationId, a.ApplicationId),
+                   1, CASE WHEN JSON_VALUE(j.Result, '$$.sandbox.in_place') = N'true' THEN 1 ELSE 0 END, j.FinishedAt,
+                   CASE WHEN JSON_VALUE(j.Result, '$$.sandbox.status') = N'running' THEN N'healthy'
+                        ELSE CAST(JSON_VALUE(j.Result, '$$.sandbox.status') AS nvarchar(20)) END, 1
+            FROM [${schema}].LlmJob j LEFT JOIN [${schema}].Application a ON a.SourceKey = j.SourceKey
+            WHERE j.Kind = N'refactor' AND j.Status = N'answered' AND JSON_VALUE(j.Result, '$$.sandbox.namespace') IS NOT NULL
+              AND JSON_VALUE(j.Result, '$$.sandbox.removed_at') IS NULL) x
+      WHERE x.n = 1 AND x.ApplicationId IS NOT NULL) y
+WHERE y.k = 1;
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 42) INSERT [${schema}].SchemaVersion (Version) VALUES (42);
+GO

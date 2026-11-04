@@ -18,6 +18,20 @@ qcow2 and VHDX images as release assets.
   fallback. Existing appliances get it after the upgrade: `cz-sandbox` makes the Receiver within 2 minutes and the
   URL on a later run, once the Receiver is ready. docs/scheduled-scans.md#flux-webhook also shows a Receiver for a
   cluster of your own.
+- A "Make it A" patched copy that rates A and runs is deployed to the sandbox **in place** of the application's scan
+  output: into the application's own folder of the output repository and its own namespace, so it has the
+  application's URLs, IdP clients, lab database, `connectivity.yaml` and egress and link decisions (one folder, one Git
+  history, one namespace per application), no longer a separate `<app>-refactor-<job>` application. The images keep
+  the application's image path with the tag `1.<date>.<time>-refactor.<job>`; `containerizer.json` records the
+  order, its source commit and the output repository's commit before it (`patched`). A scan of the same commit leaves
+  the folder as it is (and still records its assessment); a scan of newer code writes its own output and the order
+  becomes *replaced by newer code*; a newer order overwrites an older one in place; **Remove from the sandbox** puts
+  the scan's output back from the output repository's history. Existing variants move by themselves: the LLM queue
+  runner's housekeeping generates the latest running `<app>-refactor-<job>` of each application again in the
+  application's folder (from the source at its commit with its patch, with the images it was built as), deletes the
+  `-refactor-` folders and regenerates `sandbox/` in one commit; Flux prunes the old namespaces (and their lab
+  databases), and the orders' pages show the application's own namespace and URL. Schema 42: `cz.vSandboxNamespace`
+  has one row per namespace and a column `Own`. ([refactoring.md](docs/refactoring.md#the-sandbox-variant))
 - The Containerizer logo and name sit in the top bar's right corner of every results page, above the sign-in links,
   instead of a line of their own above the front page's title.
 - The Refactoring box on a B application's results page has one button, **Make it A**. The separate **Request a

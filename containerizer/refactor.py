@@ -1781,10 +1781,10 @@ def generate(payload: dict, tasks: list[dict], app_root: Path, ask, limit: int, 
 
 
 def variant_name(app: str | None, job) -> str:
-    """The folder of an order's patched copy, and so the name of its application: `<app>-refactor-<job>`, a
-    DNS label (at most 63 characters). The verify step's image tags, and a "Make it A" variant's namespace,
-    image paths, Ingress hosts and lab services derive from it, so parallel orders and the original app never
-    share any of them."""
+    """The folder of an order's patched copy in the runner's work folder: `<app>-refactor-<job>`, a DNS label (at
+    most 63 characters). The verify step's local image tags derive from it, so parallel orders and the application's
+    own scan never share them. The sandbox deployment of a "Make it A" copy does not: it runs in place, under the
+    application's own name and namespace (variant.py)."""
     from .org import _dns
     suffix = "-refactor-" + (re.sub(r"[^a-z0-9]+", "", str(job).lower())[:12] or "0")
     base = re.sub(r"-{2,}", "-", _dns(str(app or ""))).strip("-") or "app"
@@ -2364,8 +2364,8 @@ def heavy_next(job: dict, payload: dict, result: dict, ends: datetime, work: Pat
                queue=None) -> dict:
     """In an LLM-heavy window: the order's copy runs in the sandbox (done), or the next order is queued, continuing
     from this one's patch with what went wrong (its build, its run or the sandbox), until the window ends, the chain
-    has HEAVY_MAX_ROUNDS orders or two orders in a row changed nothing. A variant that failed in the sandbox is taken
-    out first (the next order deploys its own). Returns result["heavy"]."""
+    has HEAVY_MAX_ROUNDS orders or two orders in a row changed nothing. A copy that failed in the sandbox is taken
+    out first (the scan's output goes back; the next order deploys its own). Returns result["heavy"]."""
     now = now or datetime.now(timezone.utc)
     jid = int(job.get("JobId") or 0)
     rnd = int(payload.get("heavy_round") or 1)
@@ -2513,7 +2513,7 @@ def handler(job: dict) -> dict:
         result = run_order(run_pl, work, progress=progress, name=name)
         _stop_if_cancelled()                # cancelled while it verified: nothing deployed, no next order
         if pl.get("goal") == "rating-a":
-            # a patched copy that rates A and verifies runs in the sandbox as its own application (variant.py)
+            # a patched copy that rates A and verifies runs in the sandbox in place of the scan's output (variant.py)
             from . import variant
             result["sandbox"] = variant.after_order(job, pl, result, work, name, progress)
             if ends:

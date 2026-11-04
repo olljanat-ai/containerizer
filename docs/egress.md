@@ -121,7 +121,7 @@ observed. Assessments made before this version have no inferred network: scan th
   procedure `cz.RecordEgressFlow`, with the scanner's writer login). Because kube-router logs at most 10 packets a
   minute per policy, the count is a lower bound.
 - **Which application.** A namespace belongs to the application whose sandbox check last read it, or to the "Make
-  it A" order whose [sandbox variant](refactoring.md#the-sandbox-variant) runs in it (`cz.vSandboxNamespace`).
+  it A" order whose [patched copy](refactoring.md#the-sandbox-variant) runs in it, in place (`cz.vSandboxNamespace`).
 
 `--dry-run` prints each blocked connection (with its layer) and stores nothing:
 
@@ -164,7 +164,7 @@ has no appliance firewall or DNS filter: only NetworkPolicy drops are seen there
 The LLM queue runner looks for new blocked flows every minute (part of its housekeeping, with the job kind `egress`;
 `containerizer llm-queue --kinds` chooses the kinds a runner takes). A flow is new when no decision exists for its
 application, component, destination, port and protocol. Only applications rated **A** whose namespace is healthy
-in the sandbox, and "Make it A" variants that run, are reviewed.
+in the sandbox, and applications a "Make it A" patch runs for (in their own namespace), are reviewed.
 
 **The pre-filter** decides first and is never overruled by the LLM. Its lists are in
 [`rules/60-security.yaml`](https://github.com/olljanat-ai/containerizer/blob/main/rules/60-security.yaml)
@@ -226,7 +226,7 @@ Every decision records who made it and when (`DecidedBy`, `DecidedAt`, and the c
 
 **Approving documents; it opens nothing.** Within a minute the LLM queue runner, which holds the output repository's
 write token (the one registered for the organization scan's output repository, as for
-[sandbox variants](refactoring.md#the-sandbox-variant)), commits the application's `connectivity.yaml`,
+[Make it A patched copies](refactoring.md#the-sandbox-variant)), commits the application's `connectivity.yaml`,
 `CONNECTIVITY.md` and `connectivity.svg` with the approved destination: the FQDN, port and protocol, why, the
 evidence and who approved it. That is what the real environment's firewall rules are written from.
 
@@ -240,7 +240,7 @@ column then shows the rule (the NetworkPolicy still has to allow the port: it al
 
 Later organization scans keep approved entries: the generator reads the application's connectivity.yaml from the
 output repository and the new connectivity.yaml keeps every approved entry as it was (its sandbox status is
-computed again). A sandbox variant takes the original's. New decisions (also reported and suspicious ones) and
+computed again). A Make it A patched copy runs in the application's folder and keeps them too. New decisions (also reported and suspicious ones) and
 rejections are written to connectivity.yaml the same way.
 
 ## connectivity.yaml

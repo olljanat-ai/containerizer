@@ -42,8 +42,8 @@ SANDBOX_CSS = {"deploying": "st-run", "running": "st-ok", "failing": "st-bad", "
                "skipped": "st-off", "error": "st-bad", "removed": "st-off", "outdated": "st-off", "expired": "st-off"}
 URL_RE = re.compile(r"https://[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::\d{1,5})?/[A-Za-z0-9._~/-]{0,200}")
 # what the order page says after an action: fixed texts chosen by a code in the URL
-ORDER_NOTICES = {"remove-requested": "Removal requested: the LLM queue runner takes the variant out of the sandbox "
-                                     "within a few minutes (its folder is deleted from the output repository).",
+ORDER_NOTICES = {"remove-requested": "Removal requested: the LLM queue runner takes the patched copy out of the sandbox "
+                                     "within a few minutes (the scan's output goes back into the application's folder).",
                  "remove-not-active": "This order has nothing running in the sandbox.",
                  "remove-unavailable": "Removal needs the database schema of this version: run `containerizer db init`."}
 # what the Refactoring list says after "Make it A: every B application": {q}, {w}, {x}, {n}, {h} are numbers
@@ -487,20 +487,27 @@ def _make_it_a(res: dict, pl: dict, st: str) -> str:
         out.append(f"<p class='muted'>The LLM changes the code for every finding that keeps the application from A and "
                    f"moves the data of the components that keep their own; the patch is verified and repaired, and the "
                    f"patched copy assessed again ({e(lim)}). A copy that rates A and runs is deployed to the sandbox "
-                   f"as its own application, separate from the original.</p>")
+                   f"in place of the application's scan output, in its own namespace.</p>")
     return "".join(out)
 
 
 def _sandbox_section(adm, s, ident: int, sb: dict, requested) -> str:
-    """The sandbox variant: its state, namespace, URL (opens in a new tab), expiry and Remove."""
-    from .variant import ACTIVE, STATUS_TEXT
+    """Where the patched copy runs in the sandbox: its state, the application's namespace and folder (in place), URL
+    (opens in a new tab) and Remove."""
+    from .variant import ACTIVE, STATUS_TEXT, in_place
     if not sb:
         return ""
     st = sb.get("status") or ""
+    here = in_place(sb)
     out = [f"<h2>Sandbox</h2><div class='meta'><div><span class='label'>State</span> {sandbox_chip(sb, bool(requested))}</div>"]
-    for label, key in (("Namespace", "namespace"), ("Folder", "folder"), ("Beside", "of"), ("Image tag", "tag")):
+    keys = ((("Namespace", "namespace"), ("Folder", "folder"), ("Image tag", "tag")) if here else
+            (("Namespace", "namespace"), ("Folder", "folder"), ("Beside", "of"), ("Image tag", "tag")))
+    for label, key in keys:
         if sb.get(key):
             out.append(f"<div><span class='label'>{label}</span> <code>{e(sb[key])}</code></div>")
+    moved = sb.get("moved_from") if isinstance(sb.get("moved_from"), dict) else {}
+    if moved.get("namespace"):
+        out.append(f"<div><span class='label'>Before</span> <code>{e(str(moved['namespace']))}</code></div>")
     url = safe_url(sb.get("url"))
     if url and st in ACTIVE:
         out.append(f"<div><span class='label'>URL</span> <a href='{e(url)}' target='_blank' rel='noopener noreferrer'>"
@@ -509,9 +516,13 @@ def _sandbox_section(adm, s, ident: int, sb: dict, requested) -> str:
         if sb.get(key):
             out.append(f"<div><span class='label'>{label}</span> {e(str(sb[key]).replace('T', ' ')[:16])} UTC</div>")
     out.append("</div>")
+    if here and st in ACTIVE and not sb.get("removed_at"):
+        out.append("<p class='muted small'>It runs in place of the application's scan output: in the application's "
+                   "own folder and namespace, at its URLs, with its IdP clients, lab database and egress decisions. "
+                   "A scan of the same commit leaves it there; a scan of newer code replaces it.</p>")
     if sb.get("reason"):
         out.append(f"<p class='small'>{e(sb['reason'])}</p>")
-    if sb.get("excluded"):           # why each component was left out (the rating, the build and run, the security gate)
+    if sb.get("excluded"):          # why each component was left out (the rating, the build and run, the security gate)
         out.append("<ul class='small'>" + "".join(
             f"<li><b>{e(str(x.get('component') or ''))}</b>: {e(str(x.get('reason') or ''))}</li>"
             for x in sb["excluded"][:20] if isinstance(x, dict)) + "</ul>")
@@ -525,8 +536,11 @@ def _sandbox_section(adm, s, ident: int, sb: dict, requested) -> str:
             out.append("<p class='note'>Removal requested: the LLM queue runner takes it out within a few minutes.</p>")
         else:
             out.append(f"<form method='post' action='{BASE}/{ident}/remove' class='inline'>{adm._csrf(s)}"
-                       f"<button>Remove from the sandbox</button></form> <span class='muted small'>Deletes its folder from "
-                       f"the output repository; the cluster removes the namespace. The original application stays.</span>")
+                       f"<button>Remove from the sandbox</button></form> <span class='muted small'>"
+                       + ("Puts the scan's output back into the application's folder (from the output repository's "
+                          "history); the sandbox runs the application as the scan deployed it.</span>" if here else
+                          "Deletes its folder from the output repository; the cluster removes the namespace. The "
+                          "original application stays.</span>"))
     return "".join(out)
 
 
@@ -890,7 +904,7 @@ def make_all_a(adm, conn, s, a, q: dict | None = None) -> Response:
             "<p class='muted'>One \"Make it A\" order per B-rated application, <b>smallest first</b>: the LLM changes the "
             "code for every finding that keeps it from A (and moves the data of components that keep their own), the "
             "patch is verified and repaired, the patched copy assessed again; one that rates A and runs is deployed to "
-            "the sandbox as its own application, separate from the original. Start with the small ones to get the most applications to A for the "
+            "the sandbox in place of the application's scan output. Start with the small ones to get the most applications to A for the "
             "LLM's time. Orders queued from this page are <b>approved</b> by you at once (they do not wait for "
             "approval); they run one after another in the LLM queue, by its settings.</p>"
             + tot + pick + form

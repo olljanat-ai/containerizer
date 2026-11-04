@@ -249,7 +249,7 @@ note in the change history. A disabled project overrides the settings of its rep
     gitops/flux/             tenant.yaml, git/sync.yaml, oci/, image automation
     <component>/             Dockerfile, Dockerfile.dockerignore, k8s.yaml, plan.json
     pipeline/<provider>/     the image build pipeline for the application's own repository (build-pipelines.md)
-  <Project>/<Repository>-refactor-<job>/   a Make it A copy (refactoring.md), with make-it-a.patch
+    make-it-a.patch          while a Make it A copy runs here in place of the scan's output (refactoring.md)
 sandbox/
   README.md namespaces.txt
   flux/bootstrap.yaml        GitRepository + root Kustomization

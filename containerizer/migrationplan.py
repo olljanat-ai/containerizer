@@ -296,6 +296,14 @@ def summary(plan: dict) -> str:
     return line
 
 
+def patch_in_sandbox(app: dict) -> dict | None:
+    """The "Make it A" order (vRefactorOrder row) whose patched copy runs in the application's folder and namespace
+    (variant.py: in place of the scan's output), or None."""
+    from .variant import ACTIVE
+    live = [o for o in app.get("refactors") or [] if o.get("Goal") == "rating-a" and o.get("SandboxStatus") in ACTIVE]
+    return max(live, key=lambda o: int(o.get("JobId") or 0)) if live else None
+
+
 def section(app: dict, ctx: dict | None = None, refactoring_box: bool = False) -> str:
     """The Migration plan section (empty for an application that rates A, or with no server component)."""
     if app.get("Rating") == "A":
@@ -309,6 +317,10 @@ def section(app: dict, ctx: dict | None = None, refactoring_box: bool = False) -
            "<p class='muted small'>The rating grades the whole application's end state. The plan shows what can go "
            "first: its components do not have to move together, and the ones that are ready run in the sandbox "
            "already. <a href='https://containerizer.eu/overview/#migration-plan'>How it works</a></p>"]
+    if (p := patch_in_sandbox(app)):
+        out.append(f"<p class='note small'>The sandbox runs the Make it A patch of order #{int(p['JobId'])} in place of "
+                   "this application's scan output (its own namespace and URLs): the Sandbox column shows the patched "
+                   "copy. <a href='#refactoring'>Refactoring ↓</a></p>")
     n = len(plan["now"]) + len(plan["after"]) + len(plan["port"])
     if n and plan["linux_now"]:
         txt = (f"<p class='plan-rating'>The part that can run in Linux containers ({n} component{'s' if n != 1 else ''}) "

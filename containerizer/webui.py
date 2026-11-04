@@ -195,7 +195,7 @@ REFACTOR_NOTICES = {
     "approval": ("info", "Refactoring patch requested: {files} file(s) to change. It waits for an administrator to "
                          "approve it (Admin → LLM queue); its status shows below."),
     "ordered-a": ("ok", "\"Make it A\" requested: {files} file(s) to change first. It waits in the LLM queue; its "
-                        "progress shows below, and a copy that rates A and runs appears in the sandbox beside this one."),
+                        "progress shows below, and a copy that rates A and runs takes this application's place in the sandbox."),
     "approval-a": ("info", "\"Make it A\" requested: {files} file(s) to change first. It waits for an administrator "
                            "to approve it (Admin → LLM queue); its status shows below."),
     "not-b": ("bad", "Refactoring patches are for applications rated B."),
@@ -441,7 +441,7 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
                        "from A: the LLM changes the code for every finding (and moves the data of the components that "
                        "keep their own), the patch is verified and repaired when it does not build, and the patched copy "
                        "is assessed again, with one more pass on what remains. A copy that rates A and runs is deployed "
-                       "to the sandbox as its own application, in a namespace of its own, until a scan finds newer "
+                       "to the sandbox in place of this application's scan output (its namespace, URLs and lab database), until a scan finds newer "
                        "code of this application.</p>"
                        + (f"<div class='note offer'>{existing_offer(have_a, ctx, app['ApplicationId'], None, 'rating-a', ctx.get('speed'))}</div>"
                           if (have_a := existing_order(ctx.get("orders"), None, "rating-a")) else
@@ -669,9 +669,10 @@ def a_patches_html(apps: list[dict], nav: str = "") -> str:
                     f"<td><span class='st {css}'>{e(VARIANT_TEXT.get(st, 'Not in the sandbox'))}</span>{link}</td>"
                     f"<td class='small'>{_date(ap.get('FinishedAt'))}</td></tr>")
     return ("<section class='a-patches'><h2>Made A by a patch</h2><p class='muted'>A \"Make it A\" patch for these "
-            "applications builds, runs and rates A. The patched copy runs in the sandbox as its own application "
-            "(&lt;app&gt;-refactor-&lt;order&gt;), separate from the original, which the sandbox has only the A-rated "
-            "components of (often none). Merging the patch makes the application itself A.</p><table><thead><tr><th>Rating</th>"
+            "applications builds, runs and rates A. The patched copy runs in the sandbox in place of the application's "
+            "scan output (often none: only components that rate A on their own run without it), in the application's "
+            "own namespace, at its URLs and with its lab database. Merging the patch makes the application itself A."
+            "</p><table><thead><tr><th>Rating</th>"
             "<th>Application</th><th>Sandbox</th><th>Patch made</th></tr></thead><tbody>" + "".join(rows)
             + "</tbody></table></section>")
 

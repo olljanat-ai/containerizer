@@ -100,9 +100,9 @@ own database on a [lab service](lab-services.md)'s shared SQL Server, PostgreSQL
 administrators and operators see the page (product owners and viewers do not, not even the link).
 
 - **Which database.** The list at the top names every application with a database in the sandbox. On an
-  application's page, pick the database and the namespace: the application's own, or one of its
-  [Make it A](refactoring.md#make-it-a) variants (`<app>-refactor-<job>`), the latest first. MongoDB, Redis
-  and the other lab services are not browsed here.
+  application's page, pick the database and the namespace: the application's own (also while a
+  [Make it A](refactoring.md#make-it-a) patch runs there in place: it uses the application's lab database), the
+  latest first. MongoDB, Redis and the other lab services are not browsed here.
 - **Tables.** The tables and views, with their approximate row counts.
 - **Rows.** 50 a page, sorted by any column (the primary key by default), filtered on one column (equals,
   contains, is NULL, is not NULL). Values are shown as text: binary columns as hex, NULL as *NULL*.

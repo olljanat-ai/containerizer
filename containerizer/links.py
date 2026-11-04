@@ -93,7 +93,12 @@ def load_apps(conn) -> list[dict]:
     rows = _rows(conn, "SELECT n.ApplicationId, a.ApplicationName, a.ProductName, a.RepositoryUrl, n.NetworkJson "
                        "FROM cz.vNetworkLatest n JOIN cz.vApplicationLatest a ON a.ApplicationId = n.ApplicationId")
     ns = {}
-    for r in _rows(conn, "SELECT Namespace, ApplicationId FROM cz.vSandboxNamespace WHERE Variant = 0"):
+    try:        # the application's own namespace (schema 42: also when a Make it A patch runs in it, in place)
+        own = _rows(conn, "SELECT Namespace, ApplicationId FROM cz.vSandboxNamespace WHERE Own = 1")
+    except Exception:  # noqa: BLE001 - before schema 42
+        conn.rollback()
+        own = _rows(conn, "SELECT Namespace, ApplicationId FROM cz.vSandboxNamespace WHERE Variant = 0")
+    for r in own:
         ns.setdefault(int(r["ApplicationId"]), r["Namespace"])
     urls: dict[int, dict] = {}
     for r in _rows(conn, "SELECT ApplicationId, ComponentName, Url FROM cz.vSandboxLatest WHERE Url IS NOT NULL"):
