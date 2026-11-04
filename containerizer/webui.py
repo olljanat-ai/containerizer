@@ -886,7 +886,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
                     (("Owner", app.get("Owner")), ("Product owner", app.get("ProductOwner")),
                      ("Business unit owner", app.get("BusinessUnitOwner"))) if v)
     return page(app["ApplicationName"], f"""{_nav(nav)}
-<p class='crumbs'>{crumbs}</p>
+<p class='crumbs'>{crumbs}</p>{_admin_links_html(refactor.get("admin_links"))}
 <header class='app'>{badge(r, True)}<div><h1>{e(app['ApplicationName'])}</h1>
 <p class='lead'><b>{e(RATING_TITLE.get(r, ''))}</b>: {e(RATING_TEXT.get(r, ''))}</p>
 {f"<p>{e(app['Description'])}</p>" if app.get('Description') else ''}<p>{e(app['Summary'])}</p>{rating_why(app)[0]}</div></header>
@@ -909,6 +909,30 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 <h2>History</h2><p class='muted small'><a href='/trends'>Trends of all applications</a></p><table class='narrow'><thead><tr><th>Assessed</th><th>Rating</th><th class='num'>Readiness</th>
 </tr></thead><tbody>{hist}</tbody></table>
 <footer>{legend()}</footer>""", script=any(m.get("AgentPrompt") for m in migs.values()))
+
+
+def admin_links(admin, conn, s, app: dict) -> list[tuple[str, str]]:
+    """The admin pages of this application the signed-in person may open, for the results page: its settings
+    (administrators, and product owners of its product) and its sandbox databases (administrators, operators)."""
+    from .admin_devdb import enabled as devdb_enabled
+    from .roles import Access
+    app_id = int(app["ApplicationId"])
+    a = Access.resolve(conn, s.admin, s.operator, s.scopes)
+    out = []
+    if a.can_edit_app(app.get("ProductId")):
+        out.append(("Application settings", f"/admin/applications/{app_id}"))
+    if devdb_enabled(admin, a):
+        out.append(("Dev databases", f"/admin/dev-databases/{app_id}"))
+    if a.admin or a.operator:
+        out.append(("Refactoring orders", "/admin/refactoring"))
+    return out
+
+
+def _admin_links_html(links) -> str:
+    if not links:
+        return ""
+    return ("<p class='adminlinks small'><span class='label'>Admin</span>"
+            + " · ".join(f"<a href='{e(h)}'>{e(t)}</a>" for t, h in links) + "</p>")
 
 
 def _tags_section(app: dict, ctx: dict | None) -> str:
@@ -1161,7 +1185,7 @@ CSS = """
 .why-rating{background:var(--card);border-left:4px solid #e0a800;padding:8px 12px;margin:10px 0}section.refactor h3{font-size:16px;margin:16px 0 4px}
 table.make-a tr.under td:first-child{box-shadow:inset 3px 0 0 #2e7d32}
 .notice{padding:10px 14px;border-radius:8px;margin:10px 0;border:1px solid}.notice-ok{background:#e8f5e9;border-color:#2e7d32;color:#1b5e20}.notice-info{background:#e3f2fd;border-color:#1565c0;color:#0d47a1}.notice-bad{background:#fdecea;border-color:#c62828;color:#8e1c1c}@media (prefers-color-scheme:dark){.notice-ok{background:#16301a;color:#b9f6ca}.notice-info{background:#132a40;color:#bbdefb}.notice-bad{background:#3a1715;color:#ffcdd2}}
-a.brand{display:inline-flex;align-items:center;gap:8px;color:var(--fg);text-decoration:none;font-weight:650;font-size:17px;
+.adminlinks{margin:2px 0 0}a.brand{display:inline-flex;align-items:center;gap:8px;color:var(--fg);text-decoration:none;font-weight:650;font-size:17px;
 letter-spacing:.01em;margin:0 0 10px}a.brand img{display:block}a.brand:hover span{text-decoration:underline}
 .brand-foot{margin:40px 0 0;padding-top:12px;border-top:1px solid var(--line);
 color:var(--muted);font-size:12px;text-align:center}.brand-foot a{color:var(--muted)}
@@ -1511,6 +1535,8 @@ def make_handler(connect, admin=None):
                             if s and (s.admin or s.operator):                   # may tag it (tags.py)
                                 ctx["tags_csrf"] = admin._csrf(s)
                             ctx["tags_notice"] = parse_qs(u.query).get("tags", [""])[0]
+                            if s and (s.admin or s.operator or s.scopes):
+                                ctx["admin_links"] = admin_links(admin, conn, s, app)
                             return self._send(200, render_application(app, nav, ctx), head=head, forms=bool(nav),
                                               extra=cookie or None)
                         bu = parse_qs(u.query).get("bu", [None])[0]

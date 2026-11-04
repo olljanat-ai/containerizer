@@ -499,7 +499,9 @@ class Admin:
         rows = "".join(
             f"<tr><td>{pick(r)}</td>"
             f"<td><a href='/admin/applications/{int(r['ApplicationId'])}'>{e(r['AppName'])}</a>"
-            f"<div class='muted small'>{e(_source(r))}</div></td>"
+            + (f" <a class='small' href='/app/{int(r['ApplicationId'])}' title='Its results page'>results</a>"
+               if r["Rating"] and show != "hidden" else "")      # hidden or never assessed: no results page
+            + f"<div class='muted small'>{e(_source(r))}</div></td>"
             f"<td>{e(r['Rating'] or '-')}</td><td>{e(r['ProductName'] or '-')}</td><td>{e(r['BusinessUnitName'] or '-')}</td></tr>"
             for r in apps)
         if not products:

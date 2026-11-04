@@ -8,6 +8,9 @@ qcow2 and VHDX images as release assets.
 
 ## Unreleased
 
+- An application's results page links to its admin pages for those who may open them (Admin: Application settings for
+  administrators and the product's owners, Dev databases and Refactoring orders for administrators and operators),
+  and Admin → Applications links each application to its results page.
 - The web UI says it is Containerizer: the front page has the logo and the name above its title, linking to
   [containerizer.eu](https://containerizer.eu), every page ends with a link to it, and browser tabs read
   "… · Containerizer". The front page asks "How ready are our applications to run in Linux containers?" (it had
