@@ -874,15 +874,16 @@ def make_all_a(adm, conn, s, a, q: dict | None = None) -> Response:
             f"<input id='limit' name='limit' type='number' min='1' max='100000000' value='{limit}'>"
             f"<span>tokens each</span><button class='secondary'>Show</button></form>")
     from .admin_heavy import hours_options
-    form = (f"<form method='post' action='{BASE}/make-all-a' class='formrow'>{adm._csrf(s)}"
+    form = (f"<form method='post' action='{BASE}/make-all-a'>{adm._csrf(s)}"
             f"<input type='hidden' name='Limit' value='{limit}'>"
+            f"<div class='formrow'><label class='check'><input type='checkbox' name='Heavy' value='1'> Also LLM-heavy "
+            f"mode for these applications, for</label><select name='Hours' aria-label='How long LLM-heavy'>"
+            f"{hours_options()}</select></div><p class='muted small'>LLM-heavy mode puts their orders, and the LLM jobs "
+            f"that follow (egress and link reviews), before every other job in the LLM queue, approved, and their "
+            f"scans review each of their components (<a href='/admin/llm-queue'>LLM queue</a> lists the windows, "
+            f"with End now).</p><div class='formrow'>"
             f"<button>Queue {len(sel)} order(s) under {limit:,} tokens, approved</button>"
-            f"<span class='muted small'>{e(est_text(sel_tot))}</span>"
-            f"<label class='check'><input type='checkbox' name='Heavy' value='1'> and LLM-heavy mode for these "
-            f"applications for</label><select name='Hours' aria-label='How long LLM-heavy'>{hours_options()}</select>"
-            f"</form><p class='muted small'>LLM-heavy mode puts their orders, and the LLM jobs that follow (repairs, "
-            f"egress and link reviews), before every other job in the LLM queue, approved, and their scans review "
-            f"each of their components (<a href='/admin/llm-queue'>LLM queue</a> lists the windows, with End now).</p>"
+            f"<span class='muted small'>{e(est_text(sel_tot))}</span></div></form>"
             if sel else
             f"<p class='muted'>No order is estimated under {limit:,} tokens.</p>" if all_ else "")
     body = (f"<p><a href='{BASE}'>← Refactoring</a></p>"
