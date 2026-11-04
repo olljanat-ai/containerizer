@@ -6,7 +6,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.10.0 (2026-11-04)
 
 - **Breaking: ratings C and D swap meaning.** **C** is now *Partial*: some components must stay on Windows and the
   ones that can move need at most minor changes, so that part can run in Linux containers now. **D** is now *Major
