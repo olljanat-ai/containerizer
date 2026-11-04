@@ -331,7 +331,7 @@ def check_health(root: Path, namespace: str, revision: str, env=None, kube=None,
 # --------------------------------------------------------------------------- removal
 
 def remove(connect, key, job: int, payload: dict, sandbox: dict, work: Path, status: str = "removed",
-           by: str | None = None, now: datetime | None = None) -> dict:
+           by: str | int | None = None, now: datetime | None = None) -> dict:
     """Take a variant out of the output repository (its folder, sandbox/ regenerated, one commit): Flux prunes
     the namespace. Returns the new result["sandbox"]."""
     from .org import Output, write_sandbox
@@ -346,9 +346,15 @@ def remove(connect, key, job: int, payload: dict, sandbox: dict, work: Path, sta
     if d.exists():
         shutil.rmtree(d)
     write_sandbox(out.root, out.url, o.output_branch, _off(connect))
-    why = "outdated: its application's code changed" if status == "outdated" else "removed"
+    newer = by if status == "outdated" and isinstance(by, int) else None    # the newer order that replaced it
+    why = ("removed" if status != "outdated" else f"replaced by the variant of order #{newer}" if newer is not None
+           else "outdated: its application's code changed")
     out.commit(f"containerizer: sandbox variant {folder} {why} (\"Make it A\" order #{job})")
-    if status == "outdated":          # `by` is the commit a scan assessed since
+    if newer is not None:
+        reason = (f"replaced by newer code: order #{newer} deployed a newer variant of the application, and only the "
+                  f"latest order's variant stays in the sandbox")
+        by = None
+    elif status == "outdated":          # `by` is the commit a scan assessed since
         reason = (f"replaced by newer code: a scan assessed commit {str(by or '')[:12]} of the application, and the "
                   f"patch was made for {str(payload.get('commit') or '')[:12]}")
         by = None
@@ -358,11 +364,25 @@ def remove(connect, key, job: int, payload: dict, sandbox: dict, work: Path, sta
             "revision": _head(out.root)}
 
 
-def due(rows: list[dict], latest: dict | None = None) -> list[tuple[dict, str, str | None]]:
-    """(row, 'removed' | 'outdated', who or the new commit) of the variants the runner takes out now: the ones someone
-    asked to remove, and the ones whose application a scan assessed at another commit than the patch was made for
-    (`latest`: ApplicationId -> its latest assessed commit). A variant does not expire otherwise."""
-    out = []
+def _app_key(pl: dict, sb: dict):
+    """What makes two variants variants of one application: its ApplicationId, else the original's folder and app."""
+    if pl.get("application_id") is not None:
+        try:
+            return ("id", int(pl["application_id"]))
+        except (TypeError, ValueError):
+            pass
+    if sb.get("of"):
+        return ("of", str(sb["of"]), str(pl.get("app") or ""))
+    return None
+
+
+def due(rows: list[dict], latest: dict | None = None) -> list[tuple[dict, str, str | int | None]]:
+    """(row, 'removed' | 'outdated', who asked, the new commit or the newer order's JobId (an int)) of the variants
+    the runner takes out now: the ones someone asked to remove, the ones whose application a scan assessed at another commit than the
+    patch was made for (`latest`: ApplicationId -> its latest assessed commit), and the ones a newer order of the same
+    application replaced (only the variant of an application's latest order stays, whatever commit each was made
+    for). A variant does not expire otherwise."""
+    out, live = [], []
     for r in rows:
         try:
             sb = (json.loads(r["Result"]) if isinstance(r.get("Result"), str) else r.get("Result") or {}).get("sandbox") or {}
@@ -379,6 +399,15 @@ def due(rows: list[dict], latest: dict | None = None) -> list[tuple[dict, str, s
         made_for = pl.get("commit")
         if now_at and made_for and not _same_commit(now_at, made_for):
             out.append((r, "outdated", now_at))
+            continue
+        live.append((r, _app_key(pl, sb)))
+    newest: dict = {}
+    for r, k in live:                   # the latest order of each application stays
+        if k is not None and int(r["JobId"]) > newest.get(k, -1):
+            newest[k] = int(r["JobId"])
+    for r, k in live:
+        if k is not None and int(r["JobId"]) < newest[k]:
+            out.append((r, "outdated", newest[k]))
     return out
 
 
@@ -390,7 +419,8 @@ def latest_commits(conn) -> dict:
 
 def housekeep(connect, key, work: Path, log=print, now: datetime | None = None) -> int:
     """The queue runner's periodic step: remove the variants whose application's code changed (a scan assessed
-    another commit) or that someone asked to remove. Returns how many were removed."""
+    another commit), that a newer order's variant of the same application replaced (variants already deployed twice
+    included), or that someone asked to remove. Returns how many were removed."""
     from .orgsource import REDACT
     conn = connect()
     try:
