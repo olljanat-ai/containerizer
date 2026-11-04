@@ -6,7 +6,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.11.0 (2026-11-05)
 
 - Appliance: a push to the output repository deploys at once instead of at Flux's next poll (up to 5 minutes).
   `cz-sandbox` keeps a Flux webhook Receiver (`flux-system/containerizer-sandbox`, type generic) over the root
