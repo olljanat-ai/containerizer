@@ -585,6 +585,22 @@ def test_verify_sandbox_filter_and_the_variants_health(tmp_path):
     assert h["status"] == "deployed" and "health not checked: no read access" in h["reason"], h
 
 
+def test_a_cronjob_that_has_not_run_yet_is_not_failing(tmp_path, monkeypatch):
+    from containerizer import sandbox as sbm
+    comps = [{"component": "Api", "status": sbm.HEALTHY, "status_text": "deployed and healthy"},
+             {"component": "StatementWorker", "status": sbm.SCHEDULED, "status_text": "deployed, scheduled job has not run yet",
+              "reason": "no run yet (the schedule is a placeholder: see HARDENING.md)", "log_tail": "x"}]
+    monkeypatch.setattr(sbm, "verify_sandbox", lambda *a, **k: {"components": comps, "checked_at": "now"})
+    cfg = tmp_path / "kc"
+    cfg.write_text("apiVersion: v1\n")
+    h = variant.check_health(tmp_path, "ns", "a" * 40, env={variant.KUBECONFIG_ENV: str(cfg)})
+    assert h["status"] == "running", h
+    assert "StatementWorker: deployed, scheduled job has not run yet" in h["reason"]
+    assert not any("log_tail" in c for c in h["health"])
+    comps[0]["status"] = sbm.FAILING
+    assert variant.check_health(tmp_path, "ns", "a" * 40, env={variant.KUBECONFIG_ENV: str(cfg)})["status"] == "failing"
+
+
 # --------------------------------------------------------------------------- the pages
 
 APP = {"ApplicationId": 7, "ApplicationName": "Shop", "ScanName": "shop", "AssessmentId": 70, "Rating": "B",

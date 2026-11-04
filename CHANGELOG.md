@@ -24,6 +24,8 @@ qcow2 and VHDX images as release assets.
   components came back as errors at once. A namespace that never becomes readable within the timeout (the sandbox
   not connected to the output repository) is now *not checked*, with that hint, instead of an error, and a Make it A
   variant that could not be checked at all shows **Deployed, health not checked** instead of **Failing**.
+- A Make it A variant whose scheduled job (CronJob) has not run yet is no longer **Failing**: its schedule is a
+  placeholder until it is set (HARDENING.md), so the job is deployed as it should be and the variant is **Running**.
 - Grafana's **Flux** dashboard starts with whether the sandbox is connected to the output repository at all: what
   `cz-sandbox` last found (connected, or `sandbox.env` without a repository URL or token, the secret store or Flux
   not ready) and when, the root sync's GitRepository and Kustomization (missing, not ready with the reason, or

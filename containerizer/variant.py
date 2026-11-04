@@ -292,7 +292,7 @@ def _head(root: Path) -> str:
 def check_health(root: Path, namespace: str, revision: str, env=None, kube=None, sleep=None) -> dict:
     """The variant's health from the cluster (read only, this namespace only): status running, failing or
     deployed (not checked), the reason, the URL check and when."""
-    from .sandbox import HEALTHY, KubeOptions, SandboxOptions, verify_sandbox
+    from .sandbox import HEALTHY, SCHEDULED, KubeOptions, SandboxOptions, verify_sandbox
     env = os.environ if env is None else env
     kc = env.get(KUBECONFIG_ENV)
     if not kc and kube is None:
@@ -317,13 +317,14 @@ def check_health(root: Path, namespace: str, revision: str, env=None, kube=None,
         return {"status": "deployed", "checked_at": when,
                 "reason": f"deployed; health {str(comps[0].get('reason') or 'not checked')}"[:800]}
     comps = [c for c in comps if c.get("status") != SKIPPED]
-    ok = all(c.get("status") == HEALTHY for c in comps)
+    # a CronJob that has not run yet (its schedule is a placeholder) is deployed as it should be: not failing
+    ok = all(c.get("status") in (HEALTHY, SCHEDULED) for c in comps)
     return {"status": "running" if ok else "failing", "checked_at": when,
             "reason": "; ".join(f"{c.get('component')}: {c.get('status_text')}" + (f" ({c['reason']})" if c.get("reason") else "")
                                 for c in comps)[:800],
             "url_check": next((c.get("url_check") for c in comps if c.get("url_check")), None),
             "health": [{"component": c.get("component"), "status": c.get("status"), "reason": str(c.get("reason") or "")[:300],
-                        **({"log_tail": str(c["log_tail"])[-1500:]} if c.get("log_tail") and c.get("status") != HEALTHY else {})}
+                        **({"log_tail": str(c["log_tail"])[-1500:]} if c.get("log_tail") and c.get("status") not in (HEALTHY, SCHEDULED) else {})}
                        for c in comps]}
 
 
