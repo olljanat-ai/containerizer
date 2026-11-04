@@ -8,7 +8,7 @@ qcow2 and VHDX images as release assets.
 
 ## Unreleased
 
-- The Containerizer logo and name sit in the top bar's right corner of every results page, next to the sign-in links,
+- The Containerizer logo and name sit in the top bar's right corner of every results page, above the sign-in links,
   instead of a line of their own above the front page's title.
 
 ## 0.10.0 (2026-11-04)
