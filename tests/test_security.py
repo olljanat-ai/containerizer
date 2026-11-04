@@ -281,7 +281,7 @@ def test_own_service_account_apparmor_and_external_secrets(tmp_path):
     assert pod["serviceAccountName"] == sa["metadata"]["name"]
     assert pod["containers"][0]["securityContext"]["appArmorProfile"] == {"type": "RuntimeDefault"}
     assert not _kind(docs, "Secret") and not _kind(docs, "Role")
-    [es] = _kind(docs, "ExternalSecret")
+    [es] = [d for d in _kind(docs, "ExternalSecret") if "secretStoreRef" in d["spec"]]   # not the generated Data Protection key
     assert es["spec"]["secretStoreRef"]["kind"] == "ClusterSecretStore"
     assert es["spec"]["data"][0]["secretKey"] == "ConnectionStrings__Main"
     checks = {v.check for v in lint_manifests(docs)}
