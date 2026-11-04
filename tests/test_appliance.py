@@ -861,3 +861,17 @@ def test_sandbox_says_why_nothing_deploys():
     flux = json.loads((APPLIANCE.parent / "monitoring/grafana/containerizer-flux.json").read_text())
     exprs = " ".join(t["expr"] for p in flux["panels"] for t in p.get("targets") or [])
     assert "containerizer_sandbox_connection" in exprs and 'name="containerizer-sandbox"' in exprs
+
+
+def test_every_wired_nic_joins_one_active_backup_bond_with_the_address_on_it():
+    """As olljanat/nomad-qemu-node (netplan's output for its bond), without the bridge it needs for VMs."""
+    net = Path(__file__).resolve().parent.parent / "appliance/rootfs/etc/systemd/network"
+    nic = (net / "20-uplink.network").read_text()
+    assert "Name=e*" in nic and "Bond=bond0" in nic and "LinkLocalAddressing=no" in nic and "DHCP" not in nic
+    assert "RequiredForOnline=no" in nic                    # a port without a cable does not hold up the boot
+    bond = (net / "21-uplink-bond0.netdev").read_text()
+    for line in ("Kind=bond", "Mode=active-backup", "MIIMonitorSec=100ms", "MinLinks=1",
+                 "MACAddress=none"):                        # the first NIC's MAC: hypervisors drop a made-up one
+        assert line in bond, line
+    addr = (net / "21-uplink-bond0.network").read_text()
+    assert "Name=bond0" in addr and "DHCP=yes" in addr

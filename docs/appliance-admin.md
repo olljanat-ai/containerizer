@@ -89,7 +89,39 @@ The first boot creates `/etc/containerizer/` (mode 700) with:
 | `grafana.env` | Optional Grafana settings, e.g. sign-in with your identity provider |
 | `egress.json` | The egress allow-list: change it on the Firewall page, not here |
 | `secrets/` | Generated passwords (SQL Server logins, Grafana `admin`), the root password (`root-shadow`), `sql-owner` for an [external database](#external-database) and the key pair that seals source control tokens (`credential-key` for the worker only, `credential-key.pub` for the web UI): root-only, never shown in the web UI. Keep `credential-key` when restoring a backup: the registered tokens open only with it |
-| `network/` | Optional `systemd-networkd` `.network` files for static addresses (default: DHCP on every NIC) |
+| `network/` | Optional `systemd-networkd` `.network` files for static addresses (default: every NIC in one bond, DHCP on it: [Network](#network)) |
+
+## Network
+
+Every wired interface (`e*`) joins one bond, `bond0`, in active-backup mode, and the appliance takes its
+address on `bond0` by DHCP (IPv4 and IPv6). On a physical server, cable every NIC you want to use: when the
+active one loses its link (a cable, a NIC or a switch port), another takes over within a fraction of a second, on
+the same address. Connect them to the same network (VLAN); no switch configuration is needed (no LACP). On a VM
+with one NIC the bond is just that NIC.
+
+- **MAC address:** the bond uses the MAC of its first interface, so a hypervisor that allows only the MAC it
+  assigned (Hyper-V, vSphere port groups that reject forged transmits) still passes its traffic.
+- **DHCP reservation:** the DHCP client ID comes from the appliance's machine-id, so the lease stays the same
+  whichever NIC is active. Reserve the address by that client ID (`networkctl status bond0` shows the lease), or
+  set a static address.
+- **Static address:** a `.network` file for `bond0` in `/etc/containerizer/network/`, named so it sorts before
+  `21-uplink-bond0.network`, then reboot:
+
+    ```ini
+    # /etc/containerizer/network/10-static.network
+    [Match]
+    Name=bond0
+
+    [Network]
+    Address=192.0.2.10/24
+    Gateway=192.0.2.1
+    DNS=192.0.2.53
+    ```
+
+  A file that matches a NIC by name (`Name=eno1`) instead keeps that NIC out of the bond.
+- **Switches:** the appliance sends and receives LLDP on every port, so the switch shows which port it is on, and
+  `networkctl lldp` shows the switch and port of each NIC.
+- `cat /proc/net/bonding/bond0` shows the active interface and each port's link.
 
 ## HTTPS certificate
 
