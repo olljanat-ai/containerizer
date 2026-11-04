@@ -315,7 +315,11 @@ def test_an_existing_order_is_offered_instead_of_a_new_one():
     assert webui.existing_order(orders, "src/Api/Api.csproj", "fix")["JobId"] == 7  # the failed one is skipped
     ctx = {"csrf": "<input name='csrf'>"}
     html = webui.existing_offer(orders[0], ctx, 7, None, "stateless")
-    assert "A patch was made" in html and "/admin/refactoring/9.patch" in html and "Request a new one" in html
+    # an earlier targeted/stateless order: its patch, and Make it A instead of ordering the same again
+    assert "A patch was made" in html and "/admin/refactoring/9.patch" in html and "Request a new one" not in html
+    assert "href='#refactoring'>Make it A</a>" in html
+    made_a = webui.existing_offer({**orders[0], "Goal": "rating-a"}, ctx, 7, None, "rating-a")
+    assert "Request a new one" in made_a                                   # a Make it A order: order it again
     assert "8,160 tokens · 4 min" in html and "805d5fc80057" in html
     html = webui.existing_offer(orders[2], ctx, 7, 3, "fix")
     assert "Already requested" in html and "/admin/refactoring/7" in html and "Request a new one" not in html
