@@ -10,6 +10,11 @@ qcow2 and VHDX images as release assets.
 
 - The Containerizer logo and name sit in the top bar's right corner of every results page, above the sign-in links,
   instead of a line of their own above the front page's title.
+- The Refactoring box on a B application's results page has one button, **Make it A**. The separate **Request a
+  refactoring patch** (targeted changes) and **Make it stateless** (data to SQL Server) orders, which Make it A
+  includes, are gone from the page, also from each component's migration assistant ("How to fix" points to Make
+  it A). They remain on the command line (`containerizer refactor --goal fix|stateless`), and earlier orders still
+  show with their patches.
 
 ## 0.10.0 (2026-11-04)
 

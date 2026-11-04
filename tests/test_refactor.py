@@ -715,7 +715,9 @@ def test_results_page_refactoring_box():
                "QueuedAt": datetime(2026, 11, 1), "FinishedAt": datetime(2026, 11, 2)}]
     staff = webui._refactoring(_app(orders=orders), {"csrf": "<input type='hidden' name='csrf' value='t'>", "signin": True})
     assert "action='/admin/refactoring/new'" in staff and "name='csrf' value='t'" in staff
-    assert "<option value='11'>Shop.Api" in staff and "value='12'" not in staff
+    # one button: Make it A (no separate targeted or stateless orders, no component picker)
+    assert staff.count("<form") == 1 and "name='Goal' value='rating-a'" in staff and ">Make it A</button>" in staff
+    assert "value='fix'" not in staff and "value='stateless'" not in staff and "<select" not in staff
     assert "href='/admin/refactoring/42'" in staff and "Verified" in staff and "&lt;1&gt;" in staff
     viewer = webui._refactoring(_app(orders=orders), {"signin": True})
     assert "Verified" in viewer and "<form" not in viewer and "/admin/refactoring/42" not in viewer

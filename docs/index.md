@@ -342,7 +342,7 @@ many tokens and hours are left, estimated from the speed it has measured on your
 
 ### From finding to a verified patch
 
-For applications that need targeted code changes, an operator orders a refactoring patch. The LLM makes
+For applications that need targeted code changes, an operator presses **Make it A**. The LLM makes
 the changes, then Containerizer applies them to the assessed commit, runs the rules again and builds and
 runs the container. You get a coloured diff, the result per finding and a `.patch` to apply with `git am`.
 
