@@ -135,7 +135,7 @@ def test_netfx_web_port_sizing_signals(tmp_path):
             "mig-output-cache", "mig-smtp-mailsettings", "mig-wif", "mig-system-web-cache",
             "mig-aspnet-signalr", "mig-javascriptserializer", "mig-asmx-client"} <= found
     # port-sizing rules never escalate beyond the netfx rewrite
-    assert c.verdict == "rewrite" and a.rating == "C"
+    assert c.verdict == "rewrite" and a.rating == "D"
     assert all(f.rule.severity in ("info", "config", "refactor") for f in c.findings if f.rule.id.startswith("mig-"))
 
 

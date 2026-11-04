@@ -8,6 +8,26 @@ qcow2 and VHDX images as release assets.
 
 ## Unreleased
 
+- **Breaking: ratings C and D swap meaning.** **C** is now *Partial*: some components must stay on Windows and the
+  ones that can move need at most minor changes, so that part can run in Linux containers now. **D** is now *Major
+  refactoring*: a framework port is needed before anything runs, also when other components must stay on Windows
+  (the worse of the two). A, B and E do not change (E: no server component, or three quarters or more of them must
+  stay on Windows). A partial application ranks better than a framework port because its Linux part can run today.
+  - Stored history keeps its meaning: schema 40 (`containerizer db init`; the appliance runs it at boot) rewrites,
+    once, every stored rating. An assessment rated C (framework port) becomes D; one rated D (partial) becomes C,
+    or stays D when its stored report shows a server component that needs a port (blocked and port, D on the new
+    scale). The copies of a rating elsewhere (a repository's last rating on the scan pages, the ratings of Make it A
+    orders and of split repositories' folders) swap C and D plainly, so a repository that was partial *and* needed a
+    port shows C there until its next scan. Trends and history pages show the new meaning. Upgrade every
+    `containerizer assess --sql` writer (pipelines, workers) with the database: an older one still writes the old
+    letters.
+  - CI gates: `containerizer check --max-rating` and the action's `max-rating` follow the new order. `--max-rating C`
+    now lets partial applications pass but fails framework ports (it was the other way round); `--max-rating D`
+    lets both pass as before. A gate set to C should be set to D to keep passing framework ports. A rating drop
+    from C to D on a pull request (the PR adds a port to a partial application) now fails `fail-on-rating-drop`.
+  - The front page tiles group by meaning: **Need code changes (B, D)** and **Partly or not feasible (C, E)**.
+  - The benchmark labels (`bench/labels.yaml`, `bench/realworld.yaml`) are rewritten for the new scale; the
+    benchmark's easy/hard split stays A–C against D–E, which now means a port or not feasible against the rest.
 - The front page leaves out applications not mapped to a product for everyone but administrators: nobody has said
   whose they are yet. Administrators see them with a note and a link to map them. Without sign-in (no admin pages)
   everything is shown as before.

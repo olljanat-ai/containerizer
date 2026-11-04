@@ -25,8 +25,8 @@ VERDICT_TEXT = {
 APP_RATINGS = {
     "A": "Container-ready - modern, stateless stack; containers with configuration only, no code changes",
     "B": "Minor refactoring - small code changes",
-    "C": "Major refactoring - framework port needed",
-    "D": "Partial - some components must stay on Windows",
+    "C": "Partial - some components must stay on Windows, the rest need at most minor changes",
+    "D": "Major refactoring - framework port needed",
     "E": "Not feasible - core depends on Windows-only technology",
 }
 
@@ -161,10 +161,14 @@ class AppAssessment:
         if not server:
             return "E"
         blocked = [c for c in server if c.verdict == "blocker"]
+        if blocked and len(blocked) * 4 >= len(server) * 3:
+            return "E"
+        if any(c.verdict == "rewrite" for c in server):
+            return "D"        # a framework port is needed before anything runs, blocked parts or not
         if blocked:
-            return "E" if len(blocked) * 4 >= len(server) * 3 else "D"
+            return "C"        # the movable part runs in Linux now with at most minor changes
         worst = max((c.verdict for c in server), key=lambda s: SEV_RANK[s])
-        rating = {"info": "A", "config": "A", "refactor": "B", "rewrite": "C"}[worst]
+        rating = {"info": "A", "config": "A", "refactor": "B"}[worst]
         # A means stateless: data only in external services (SQL, Redis, blob storage, queues),
         # none on a component's own disk or in its memory, so replicas can come and go
         if rating == "A" and any(not c.stateless for c in server):

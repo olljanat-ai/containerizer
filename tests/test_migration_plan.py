@@ -43,7 +43,7 @@ def loans(**kw):
                                          d("payhub.corp.local", 443, "https")]},
         {"name": "BackOffice", "destinations": [d("documents", 80, "http")]}]}
     app = {"ApplicationId": 7, "ApplicationName": "consumer-loans", "BusinessUnitId": None, "BusinessUnitName": None,
-           "ProductName": None, "Rating": "D", "Score": 44, "Confidence": 0.9, "Verified": True, "AssessedAt": now,
+           "ProductName": None, "Rating": "C", "Score": 44, "Confidence": 0.9, "Verified": True, "AssessedAt": now,
            "Summary": "", "Description": None, "Owner": None, "ProductOwner": None, "BusinessUnitOwner": None,
            "RepositoryUrl": None, "SourcePath": ".", "SourceCommit": "abc", "components": comps, "findings": finds,
            "sandbox": [{"ComponentId": 4, "ComponentName": "CustomerPortal", "CheckedAt": now, "Status": "healthy",
@@ -147,7 +147,7 @@ def test_make_it_a_link_when_the_box_is_there():
 
 
 def test_nothing_ready_until_the_port():
-    app = loans(Rating="C")
+    app = loans(Rating="D")
     app["components"] = [_c(1, "Web", "rewrite"), _c(2, "Jobs", "rewrite", "worker")]
     app["findings"] = [_f(1, "Web", "rewrite", "ASP.NET Web Forms")]
     sec = _plan_html(webui.render_application(app))
@@ -208,7 +208,7 @@ def test_front_page_marker():
     from test_sqlstore import overview_data
     data = overview_data()
     a = data["apps"][0]
-    a.update(Rating="D", ReadyNow=2, PlanComponents=6)
+    a.update(Rating="C", ReadyNow=2, PlanComponents=6)
     html = webui.render_overview(data)
     assert "<span class='ready-now' title='2 of 6 components rate A on their own" in html and ">2/6 ready now</span>" in html
     a.update(ReadyNow=0)
@@ -231,7 +231,7 @@ def test_load_overview_counts_ready_components():
                 assert params == (STATE_RULE,)
                 self.rows = rows["state"]
             elif "FROM cz.vApplicationLatest" in sql and "vRefactorOrder" not in sql:
-                self.rows = [{"ApplicationId": 1, "ApplicationName": "loans", "Rating": "D", "Score": 44}]
+                self.rows = [{"ApplicationId": 1, "ApplicationName": "loans", "Rating": "C", "Score": 44}]
             else:
                 self.rows = []
 

@@ -940,10 +940,11 @@ APP_SCHEMA = {
 }
 RATING_HELP = ("Ratings: A container-ready (modern stack: all server components run in Linux containers with "
                "configuration only, no code changes); "
-               "B minor refactoring; C major refactoring (framework port, e.g. .NET Framework to .NET 8, or a Java EE "
-               "server application to an embedded server); "
-               "D partial (some server components cannot run in Linux containers and must stay on Windows, at least a "
-               "quarter of them can); E not feasible (three quarters or more of the server components cannot, or there is "
+               "B minor refactoring; C partial (some server components cannot run in Linux containers and must stay "
+               "on Windows, at least a quarter of them can, and those need at most minor changes); "
+               "D major refactoring (framework port, e.g. .NET Framework to .NET 8, or a Java EE "
+               "server application to an embedded server, also when other components must stay on Windows); "
+               "E not feasible (three quarters or more of the server components cannot, or there is "
                "no server component). Desktop clients, test tools and database-tier code (SQL CLR, SSIS) do not count "
                "as server components.")
 

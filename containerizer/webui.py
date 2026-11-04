@@ -20,10 +20,11 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from .tags import TAG_RE, has_tag, split_tags
 
 RATINGS = ["A", "B", "C", "D", "E"]
-RATING_TITLE = {"A": "Container-ready", "B": "Minor refactoring", "C": "Major refactoring", "D": "Partial",
+RATING_TITLE = {"A": "Container-ready", "B": "Minor refactoring", "C": "Partial", "D": "Major refactoring",
                 "E": "Not feasible"}
 RATING_TEXT = {"A": "Modern stack, containers with configuration only, no code changes", "B": "Small code changes",
-               "C": "Framework port needed", "D": "Some components must stay on Windows",
+               "C": "Some components must stay on Windows, the rest need at most minor changes",
+               "D": "Framework port needed",
                "E": "Core depends on Windows-only technology"}
 ROLE_TEXT = {"web": "Web application", "worker": "Background service", "console": "Console / scheduled job",
              "spa": "Browser front end", "desktop": "Desktop client", "biztalk": "BizTalk integration",
@@ -240,9 +241,9 @@ def rating_why(app: dict) -> tuple[str, list[dict], list[dict]]:
     names = lambda cs: ", ".join(c["ComponentName"] for c in cs)   # noqa: E731
     r = app.get("Rating")
     parts = []
-    if r in ("D", "E") and by("blocker"):
+    if r in ("C", "D", "E") and by("blocker"):
         parts.append(f"{names(by('blocker'))} cannot run in Linux containers (blockers).")
-    if r in ("C", "D", "E") and by("rewrite"):
+    if r in ("D", "E") and by("rewrite"):
         parts.append(f"{names(by('rewrite'))} need a port or rewrite.")
     if refactor:
         parts.append(f"{names(refactor)} need targeted code changes.")
@@ -740,10 +741,10 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag
     tiles = (f"<div class='tile'><div class='label'>Applications assessed</div><div class='value'>{total}</div></div>"
              f"<div class='tile'><div class='label'>Ready now (A)</div><div class='value'>{c['A']}</div>"
              f"<div class='sub'>{pct(c['A'])} of applications</div></div>"
-             f"<div class='tile'><div class='label'>Need code changes (B, C)</div><div class='value'>{c['B'] + c['C']}</div>"
-             f"<div class='sub'>{pct(c['B'] + c['C'])}</div></div>"
-             f"<div class='tile'><div class='label'>Partly or not feasible (D, E)</div><div class='value'>{c['D'] + c['E']}</div>"
-             f"<div class='sub'>{pct(c['D'] + c['E'])}</div></div>"
+             f"<div class='tile'><div class='label'>Need code changes (B, D)</div><div class='value'>{c['B'] + c['D']}</div>"
+             f"<div class='sub'>{pct(c['B'] + c['D'])}</div></div>"
+             f"<div class='tile'><div class='label'>Partly or not feasible (C, E)</div><div class='value'>{c['C'] + c['E']}</div>"
+             f"<div class='sub'>{pct(c['C'] + c['E'])}</div></div>"
              + (f"<div class='tile'><div class='label'>A with a patch (B → A)</div><div class='value'>{len(patched)}</div>"
                 f"<div class='sub'>{len(in_sb)} running in the sandbox</div></div>" if patched else ""))
 

@@ -4,10 +4,14 @@
 # `git fetch --depth 1 origin <commit> && git checkout <commit>` to pin (Umbraco: tag release-8.18.9).
 # Never build or run their code. Expectations come from reading each repo, not from tool output.
 #
-# expected_rating: A lift&shift, B minor refactor, C framework port, D partial, E not feasible.
+# expected_rating: A lift&shift, B minor refactor, C partial (some components must stay on Windows,
+# the rest need at most minor changes), D framework port (also when other components must stay on
+# Windows), E not feasible. Until 2026-11-04 C meant a framework port and D partial: the
+# expected_rating values were rewritten for the new scale, but the dated notes and "tool (...)" lines
+# written before then keep the letters of the old scale.
 # expected_roles: role per project (web/worker/console/library/test/tool/desktop/spa...).
 # Convention: desktop/mobile clients are reported but do not lower the rating, which is
-# about the server side (a server + WinForms client whose server needs a port is C, not D).
+# about the server side (a server + WinForms client whose server needs a port is D, a port, not C).
 # Azure Functions apps have role worker.
 repos:
   - name: rw-eshop
@@ -71,14 +75,14 @@ repos:
   - name: rw-eshopmodernizing
     url: https://github.com/dotnet-architecture/eShopModernizing
     commit: 63bc9ec4414d7e281dc9f9d7bdcf70030950457d
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [eShopLegacyMVC, eShopModernizedMVC, eShopLegacyWebForms, eShopModernizedWebForms, WcfService1, eShopPorted], desktop: [eShopWinForms]}
     notes: .NET Framework 4.7.2 MVC5 / WebForms / WCF (.svc) and WinForms clients; built for Windows containers. Linux needs a port. System.EnterpriseServices/System.Management/System.Windows.Forms are unused template references. Web.Release.config connection strings are inside XML comments. eShopPorted is ASP.NET Core 2.2 on net461 (retarget only).
 
   - name: rw-smartstorenet
     url: https://github.com/smartstore/SmartStoreNET
     commit: b6520754a3793da1bd4157589459b6cac7f2ef8c
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [SmartStore.Web], library: [SmartStore.Admin, "src/Plugins/SmartStore.[A-CE-Z]*"], tool: [SmartStore.DevTools]}
     notes: .NET Framework 4.7.2 MVC5 e-commerce; port required (successor Smartstore is .NET Core). Plugins and Admin are MVC area/plugin libraries loaded into SmartStore.Web (web project type GUID but no Global.asax). Nothing is a hard blocker; .mdb only appears in a JS file-type map.
 
@@ -86,7 +90,7 @@ repos:
     url: https://github.com/umbraco/Umbraco-CMS
     commit: dac9986ed28b798400ced60d1b055771f6b973e1
     ref: release-8.18.9
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [Umbraco.Web.UI], library: [Umbraco.Web, Umbraco.ModelsBuilder.Embedded, Umbraco.TestData], tool: [Umbraco.Tests.Benchmarks]}
     notes: Umbraco v8 on .NET Framework 4.7.2 MVC5/WebApi/OWIN; Linux needs the v9+ port. dbghelp MiniDump P/Invoke is an optional crash dump; LocalDb.cs ProgramFiles probe is dev-only.
     review: "2026-10-30 Umbraco.TestData expected library (it is a class library, not a deployable tool)."
@@ -94,21 +98,21 @@ repos:
   - name: rw-footloosefinancialservices
     url: https://github.com/pcarrasco23/FootlooseFinancialServices
     commit: 2edc7016684159358aaf7e0db86887f5da6a8e2d
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [FootlooseFS.EnterpriseService, FootlooseFS.Web.AdminUI, FootlooseFS.Web.Service], console: [FootlooseFSDocumentDBETL]}
     notes: .NET 4.5 WCF (.svc) + MVC + Web API + ETL console, EF6, SQL LocalDB (AttachDbFilename) and MongoDB. Port to .NET 8 / CoreWCF; LocalDB must become a real SQL Server.
 
   - name: rw-owin-webapi-service
     url: https://github.com/danesparza/OWIN-WebAPI-Service
     commit: 7135b8ca6ee93dbdb1b7b3a9b2eafdabb9100791
-    expected_rating: C
+    expected_rating: D
     expected_roles: {worker: [OWINTest.Service]}
     notes: Windows service (ServiceBase, OutputType WinExe) self-hosting OWIN Web API 2 on .NET 4.5. Port to a .NET 8 Kestrel app; it is not a desktop app.
 
   - name: rw-sampleuiandservice
     url: https://github.com/r-aghaei/SampleUIandService
     commit: 8cb4683446fa97876480deb89117d9ade7799a34
-    expected_rating: C
+    expected_rating: D
     expected_roles: {worker: [ServiceLayer], desktop: [UILayer]}
     notes: WCF service hosted in a Windows service (ServiceBase, WinExe, net48) + WinForms client + installer. Service is portable via CoreWCF; the WinForms UI stays on PCs.
 
@@ -232,7 +236,7 @@ repos:
   - name: rw2-aad-native-desktop
     url: https://github.com/Azure-Samples/active-directory-dotnet-native-desktop
     commit: 7a4fbf7f8374a60778e20c4908be66a3ac6d9b31
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [TodoListService], desktop: [TodoListClient]}
     notes: >-
       Pinned before the archive commit. .NET Framework 4.5 Web API 2 + MVC HelpPage on OWIN/System.Web (web project
@@ -244,7 +248,7 @@ repos:
   - name: rw2-hangfire-highlighter
     url: https://github.com/HangfireIO/Hangfire.Highlighter
     commit: ecd4d2462b467a9f5775a2d2660a5890c223f9ff
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [Hangfire.Highlighter]}
     notes: >-
       ASP.NET MVC 5 on net48 (web project GUID) + SignalR 2 + EF6 migrations + Hangfire server running in-process
@@ -255,7 +259,7 @@ repos:
   - name: rw2-bugnet
     url: https://github.com/dubeaud/bugnet
     commit: cfab4aeacc7224425db86f0e1f94cf24e22acf2a
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [BugNET_WAP], tool: [BugNET.MercurialChangeGroupHook, BugNET.SubversionHooks], test: [BugNET.Tests, BugNET.MailboxReader.Tests]}
     notes: >-
       Legacy ASP.NET WebForms issue tracker on .NET 4.5: ~100 .aspx/.ascx, ASMX (Webservices/BugNetServices.asmx),
@@ -268,7 +272,7 @@ repos:
   - name: rw2-blogengine
     url: https://github.com/BlogEngine/BlogEngine.NET
     commit: 95c84261ed94402f45094c1fda85afbbf6f4d833
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [BlogEngine.NET], library: [BlogEngine.Core], test: [BlogEngine.Tests]}
     notes: >-
       .NET 4.5 WebForms blog (+ Web API 2 controllers in AppCode/Api, setup/upgrade/Updater.asmx). Default XML
@@ -279,7 +283,7 @@ repos:
   - name: rw2-nugetgallery
     url: https://github.com/NuGet/NuGetGallery
     commit: c25bab040e19d24593fc0c298a0cedb51bf57dcb
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [NuGetGallery, NuGetCDNRedirect], tool: [NuGetGallery.AppHost]}
     notes: >-
       Large enterprise-style portfolio: NuGetGallery is ASP.NET MVC 5 on net472 (web GUID) with ~40 net472 job exes
@@ -318,7 +322,7 @@ repos:
   - name: rw3-crystal-reports-mvc
     url: https://github.com/raihanM95/Crystal-Reports
     commit: 70604044bd65206164ea0af95cf7da7bb5130b80
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [DotNetAppSqlDb]}
     notes: >-
       ASP.NET MVC 5 on net472 (web GUID) with EF6; TodosController.cs:145-176 renders .rpt files with
@@ -342,7 +346,7 @@ repos:
   - name: rw3-wcf-nettcp-winsvc
     url: https://github.com/kathleenwest/MyWindowsServiceDemo
     commit: df6089d76efc3d8ee9075b2e091f29777cf2fe51
-    expected_rating: C
+    expected_rating: D
     expected_roles: {worker: [PositiveAffirmationsHost], desktop: [TestClientGUI]}
     notes: >-
       net461 WCF service (MyAffirmationServiceLib) self-hosted with ServiceHost inside a Windows service
@@ -355,7 +359,7 @@ repos:
   - name: rw3-wf3-aspnet
     url: https://github.com/geersch/WindowsWorkFlowAspNet
     commit: dd583b91b7564562c90dd242e8383bd9d169029a
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [WebApplication]}
     notes: >-
       .NET 3.5 ASP.NET WebForms (web GUID) hosting a WF3 WorkflowRuntime in Global.asax.cs:13 with
@@ -367,7 +371,7 @@ repos:
   - name: rw3-remoting-smarthome
     url: https://github.com/Safa31Ben/My-Smart-Home
     commit: 3d1949602b0f99522afa10bebca8eb730a72f4cb
-    expected_rating: C
+    expected_rating: D
     expected_roles: {worker: [Server, "Systeme de surveillance", "Système de sécurité"], desktop: [AdminGUI, Personne, Porte]}
     notes: >-
       Student .NET 4.5 smart-home: three console exes host .NET Remoting TcpChannel servers
@@ -380,7 +384,7 @@ repos:
   - name: rw3-ssrs-reportviewer-mvc
     url: https://github.com/dhana29/ReportViewer-control-to-replace-iFrame-on-MVC-Project
     commit: b1979c2f8ab2863e55d9d230f7cc9511a2ecf2af
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [SSRSReportViewByiFrame]}
     notes: >-
       .NET 4.5 MVC 5 app embedding a WebForms page Report/ReportViewer.aspx with Microsoft.ReportViewer.WebForms in
@@ -570,7 +574,7 @@ repos:
   - name: rw4-orchard1
     url: https://github.com/OrchardCMS/Orchard
     commit: 5953441c0b9ed91db83c7cd824aa13016f3c7940
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [Orchard.Web], library: [Orchard.Core, Orchard.Framework, Themes, Orchard.Users, Orchard.Azure], tool: [Orchard, MSBuild.Orchard.Tasks]}
     notes: >-
       Orchard 1.x CMS: .NET Framework 4.8 ASP.NET MVC5 host (Orchard.Web) + ~70 module projects that use the web
@@ -582,7 +586,7 @@ repos:
   - name: rw4-dnn
     url: https://github.com/dnnsoftware/Dnn.Platform
     commit: 4565538dad3d3bb0010c757754e8d4d9403e876c
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [DotNetNuke.Website], library: [DotNetNuke.Library, DotNetNuke.Web, DotNetNuke.Modules.Html, Dnn.ContactList.Mvc, DotNetNuke.Abstractions, Dnn.PersonaBar.UI], tool: [Build, DotNetNuke.BulkInstall.DeployClient]}
     notes: >-
       DNN Platform 10: .NET Framework 4.8 WebForms host (DNN Platform/Website, Global.asax, Default.aspx) + ~70 modules /
@@ -594,7 +598,7 @@ repos:
   - name: rw4-mojoportal
     url: https://github.com/i7media/mojoportal
     commit: 31b4fb1efd121dba2aab58af5ad6b0f30161259e
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [mojoPortal.Web], library: [mojoPortal.Business, mojoPortal.Data.MSSQL, mojoPortal.Features.UI, SuperFlexiUI, mojoPortal.Web.Framework]}
     notes: >-
       mojoPortal CMS: .NET Framework 4.8.1 WebForms site (Web/, AuthenticationService.svc / RoleService.svc ASP.NET
@@ -605,7 +609,7 @@ repos:
   - name: rw4-rock
     url: https://github.com/SparkDevNetwork/Rock
     commit: 7c77ea1e6bd577bf6e4d591e6ff8c4f7cab2ed6b
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [RockWeb], worker: [Rock.CloudPrint.Service], desktop: [Rock.CloudPrint.Desktop, CheckScannerUtility, StatementGenerator], tool: [Rock.CodeGeneration, BlockGenerator, RockDbBackupManager], library: [Rock, Rock.Rest, Rock.Blocks, Rock.Common, Rock.ViewModels]}
     notes: >-
       Rock RMS (church CRM/ERP), mixed solution: RockWeb is an ASP.NET Web Site project (no csproj; Rock.sln line 6,
@@ -631,7 +635,7 @@ repos:
   - name: rw4-systemweb-adapters
     url: https://github.com/dotnet/systemweb-adapters
     commit: 036fcaae67314d6837cac9c0f0d649a800832af4
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [AppConfigCore, AuthRemoteFormsAuthCore, AuthRemoteIdentityCore, AuthWindowsCore, MachineKeyCore, ModulesCore, SessionLocalCore, SessionRemoteCore, WebFormsToBlazorCore, AppConfigFramework, AuthRemoteFormsAuthFramework, AuthRemoteIdentityFramework, DependencyInjectionFramework, MachineKeyFramework, ModulesFramework, SessionRemoteFramework, WebFormsToBlazorFramework], tool: ["*AppHost"], library: [Microsoft.AspNetCore.SystemWebAdapters, Microsoft.AspNetCore.SystemWebAdapters.FrameworkServices, MachineKeyShared, ModulesLibrary, Samples.ServiceDefaults]}
     notes: >-
       Incremental-migration shape: each sample pairs a net481 ASP.NET (MSBuild.SDK.SystemWeb, MVC/WebForms, OWIN)
@@ -645,7 +649,7 @@ repos:
   - name: rw5-webjea
     url: https://github.com/MarkDomansky/WebJEA
     commit: 8f7415271eb3d7f958ea92c8a72a4084d5b5e413
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [WebJEA], test: [WebJEA-UnitTests-VBNET]}
     notes: >-
       VB.NET ASP.NET WebForms site (WebJEA.vbproj, net48, web-application GUID, Global.asax, default.aspx/command.aspx)
@@ -708,7 +712,7 @@ repos:
   - name: rw5-smarthotel-backend
     url: https://github.com/microsoft/SmartHotel360-Backend
     commit: 533e8c3a76aec61a8e86fe8609b55de287f14516
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [SmartHotel.Services.Bookings, SmartHotel.Services.Hotels, SmartHotel.Services.Configuration, SmartHotel.Services.Discount, SmartHotel.Services.Notifications, SmartHotel.Services.Profiles, SmartHotel.Services.ReviewsNet], worker: [SmartHotel.Services.BookingProcesor], library: [SmartHotel.Services.Seedwork]}
     notes: >-
       Archived AKS backend: seven ASP.NET Core 2.0 APIs (netcoreapp2.0, Microsoft.AspNetCore.All 2.0.0, EF Core 2.0,
@@ -731,7 +735,7 @@ repos:
   - name: rw5-smarthotel-registration
     url: https://github.com/microsoft/SmartHotel360-Registration
     commit: 061502718ca25767d30307ca9504e3cf4f6f71fe
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [SmartHotel360.Registration.Web, SmartHotel360.Registration.WCF]}
     notes: >-
       .NET Framework 4.7 WebForms site (Default/Register/Checkin.aspx, Site.Master) calling a WCF service
@@ -788,7 +792,7 @@ repos:
   - name: rw5-powerwallservice
     url: https://github.com/BJReplay/PowerwallService
     commit: 1310337c6948ffd483a74d9e8d3be949500c7ae1
-    expected_rating: C
+    expected_rating: D
     expected_roles: {worker: [PowerwallService]}
     notes: >-
       VB.NET Windows service (ServiceBase, WinExe, ProjectInstaller, .NET 4.8.1) polling a Tesla Powerwall gateway
@@ -801,7 +805,7 @@ repos:
   - name: rw6-jabbr
     url: https://github.com/JabbR/JabbR
     commit: eb5b4e2f1e5bdbb1ea91230f1884716170a6976d
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [JabbR], test: [JabbR.Tests], library: [JabbR.Client]}
     notes: >-
       JabbR chat: .NET 4.5 web application project (OWIN on System.Web via Microsoft.Owin.Host.SystemWeb) with
@@ -830,7 +834,7 @@ repos:
   - name: rw6-quicksilver
     url: https://github.com/episerver/Quicksilver
     commit: 859eccd2d20a4487edd9d46319701ff4d980e19f
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [EPiServer.Reference.Commerce.Site, EPiServer.Reference.Commerce.Manager], library: [EPiServer.Reference.Commerce.Shared], test: [EPiServer.Reference.Commerce.Site.Tests]}
     notes: >-
       Episerver Quicksilver: Commerce 13 / CMS 11 reference site on .NET 4.6.1 (MVC5 site with Global.asax,
@@ -861,7 +865,7 @@ repos:
   - name: rw6-dinnerparty
     url: https://github.com/NancyFx/DinnerParty
     commit: d4286f36c96ac655774d138916279583d5966eba
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [DinnerParty]}
     notes: >-
       Nancy port of NerdDinner: .NET 4.0 web application hosted by Nancy.Hosting.Aspnet on System.Web, Razor
@@ -872,7 +876,7 @@ repos:
   - name: rw6-sf-quickstart
     url: https://github.com/Azure-Samples/service-fabric-dotnet-quickstart
     commit: 41a9c858f81f9c6c8c2f510982e5da6c556529d2
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [VotingWeb, VotingData]}
     notes: >-
       Service Fabric Voting app on net8.0: VotingWeb is a StatelessService with a Kestrel communication
@@ -905,7 +909,7 @@ repos:
   - name: rw6-license-manager
     url: https://github.com/dnauck/License.Manager
     commit: cf70f5d19045ebbcdacbd251d68d3077ca647bea
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [License.Manager], library: [License.Manager.Core]}
     notes: >-
       Portable.Licensing license manager: ServiceStack v3 AppHostBase on ASP.NET (.NET 4.5, Global.asax) with an
@@ -916,7 +920,7 @@ repos:
   - name: rw6-ddd-enterprise
     url: https://github.com/charlessolar/DDD.Enterprise.Example
     commit: 692ac2e810bfac0c0486b00a7bdf438eab325588
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [ServiceStack], worker: [Domain, Riak, Elastic]}
     notes: >-
       CQRS/ES example on .NET 4.6.1: ServiceStack web API (web application project) that sends commands over
@@ -937,7 +941,7 @@ repos:
   - name: rw6-controleestoque
     url: https://github.com/ribeiromatheus/ControleEstoque
     commit: 8ca2feb4736c4930f53b93ad852522729a71c335
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [ControleEstoque.Web], library: [Rotativa]}
     notes: >-
       Stock-control line-of-business app: ASP.NET MVC 5 + EF6 on .NET 4.6.1 (Global.asax, LocalDB attached .mdf
@@ -961,7 +965,7 @@ repos:
   - name: rw7-atspm
     url: https://github.com/udotdevelopment/ATSPM
     commit: cfc01e88e513190403f8c9dce479257cf8d1577a
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [SPM, AtspmApi, ATSPM.Application.Reports, LeftTurnReport, LeftTurnAnalysisReportAPI], worker: [FTPTimerService, WavetronicsSpeedListener], desktop: [FTPFromOneController, InrixConfigurationTool], console: ["Aggregate*", SPMWatchDog], library: [MOE.Common, MOEWcfServiceLibrary, WcfVolumeExport]}
     notes: >-
       Utah DOT Automated Traffic Signal Performance Measures v4 (deprecated; 1 GB clone with committed packages/).
@@ -977,7 +981,7 @@ repos:
   - name: rw7-openwaters
     url: https://github.com/open-environment/open-waters
     commit: e2cd705ed68b322808b46225b90ae86fc71a7e70
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [OpenWaters], worker: [OpenWatersSvc]}
     notes: >-
       EPA water-quality data management (Open Waters): ASP.NET Web Forms on .NET 4.6.1 (web GUID, ~100 .aspx) with
@@ -1048,7 +1052,7 @@ repos:
   - name: rw7-enterpriseworkflow
     url: https://github.com/PeteGoo/Demo.EnterpriseWorkflow
     commit: dac2478bcb2d4c281bc5a1eea6e606b182928978
-    expected_rating: C
+    expected_rating: D
     expected_roles: {web: [MagicEightBall.Web, BasicMagicEightBall, HumanEightBall, MildlyOffensiveMagicEightBall, StandardWorkflowService], library: [EightBallLibrary]}
     notes: >-
       Windows Workflow Foundation 4 workflow services on .NET 4.0: IIS-hosted .xamlx / Web.config serviceActivations
@@ -1115,7 +1119,7 @@ repos:
   - name: rw7-captive
     url: https://github.com/Devisket/captive-api
     commit: c23bf67f46e3893afbdcbe4d2f78d76d6d9d3b9a
-    expected_rating: D
+    expected_rating: C
     expected_roles: {web: [Captive.Commands, Captive.Queries, Captive.MdbAPI], worker: [Captive.Orchestrator, Captive.Barcode], console: [MBTC.BarcodeGenerator]}
     notes: >-
       Bank cheque-order processing backend on net8.0: Commands/Queries APIs (MySQL, Linux Dockerfiles, docker-compose)
