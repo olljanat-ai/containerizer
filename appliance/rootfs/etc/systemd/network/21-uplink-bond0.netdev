@@ -1,0 +1,12 @@
+# The bond of every wired interface (20-uplink.network).
+[NetDev]
+Name=bond0
+Kind=bond
+# the MAC of its first interface, not one made up from the machine-id: hypervisors (Hyper-V, vSphere port
+# groups that reject forged transmits) drop frames from a MAC they did not assign to the VM
+MACAddress=none
+
+[Bond]
+Mode=active-backup
+MIIMonitorSec=100ms
+MinLinks=1

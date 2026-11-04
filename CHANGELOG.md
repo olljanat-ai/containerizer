@@ -15,6 +15,13 @@ qcow2 and VHDX images as release assets.
   with its credentials from a secret (`ConnectionStrings__<Name>`). In the lab, field-service and
   document-control lost every edit of a round this way. An edit whose search lines end with a space the file
   does not have (`using System; `) applies too, where it said the line is not in the file and showed the same line.
+- Appliance on a physical server: every wired interface joins one active-backup bond (`bond0`), with the
+  address on it, as olljanat/nomad-qemu-node does. Cable several NICs and the appliance stays reachable when
+  one link fails ([Network](docs/appliance-admin.md#network)). The bond keeps its first NIC's MAC, so VMs on
+  Hyper-V and vSphere work as before, and NICs without a cable no longer hold up the boot. LLDP tells the
+  switch which port the appliance is on. A static address now goes on `bond0`; a file that names a NIC keeps that
+  NIC out of the bond. The DHCP client ID is now that of `bond0`, so the DHCP server may hand out a new
+  address after the upgrade unless it is reserved.
 - The appliance's configuration files (`/etc/containerizer`: the `.env` files, `egress.json`, `network/`) are copied
   without their secrets to `.appliance/<CZ_HOSTNAME>/config/` of every output repository at every boot, in one commit
   when something changed: their history is in Git ([backup](docs/appliance-admin.md#backup)).

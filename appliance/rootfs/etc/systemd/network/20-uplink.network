@@ -1,13 +1,18 @@
-# Every wired interface: DHCP (IPv4 and IPv6). Static addressing: drop a .network file with a lower number
-# into /etc/containerizer/network/ (see docs/appliance.md).
+# Every wired interface joins bond0 (active-backup, as olljanat/nomad-qemu-node does with netplan): on a server
+# with several NICs the appliance stays reachable when a cable, a NIC or a switch port fails; on a VM with one
+# NIC it works as that NIC. The address is
+# on bond0 (21-uplink-bond0.network). Static addressing: drop a .network file with a lower number for
+# Name=bond0 into /etc/containerizer/network/ (docs/appliance-admin.md#network).
 [Match]
-Name=en* eth*
+Name=e*
 
 [Network]
-DHCP=yes
-IPv6AcceptRA=yes
-LLMNR=no
-MulticastDNS=no
+Bond=bond0
+# the switch sees which port the appliance is on (and it sees the switch: networkctl lldp)
+LLDP=yes
+EmitLLDP=nearest-bridge
+LinkLocalAddressing=no
 
-[DHCPv4]
-UseDomains=no
+[Link]
+# a port without a cable does not hold up the boot: bond0 is what has to come up
+RequiredForOnline=no

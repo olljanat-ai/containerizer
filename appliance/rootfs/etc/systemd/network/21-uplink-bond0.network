@@ -1,0 +1,13 @@
+# DHCP (IPv4 and IPv6) on the bond of every wired interface (20-uplink.network). The lease belongs to the
+# appliance (DHCP client ID from its machine-id), not to whichever NIC joined the bond first.
+[Match]
+Name=bond0
+
+[Network]
+DHCP=yes
+IPv6AcceptRA=yes
+LLMNR=no
+MulticastDNS=no
+
+[DHCPv4]
+UseDomains=no
