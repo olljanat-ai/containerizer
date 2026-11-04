@@ -130,7 +130,7 @@ YAML
 }
 
 git_token flux-system--cz-git
-cz_store_grant flux-system flux-system--cz-git
+cz_store_grant flux-system flux-system--cz-git flux-system--cz-webhook
 k apply -f - >/dev/null <<YAML
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
@@ -211,6 +211,44 @@ k get gitrepositories.source.toolkit.fluxcd.io -A -l app.kubernetes.io/managed-b
       legacy_secret "$ns" "$name"
     fi
   done
+
+# The Flux webhook (containerizer/fluxhook.py, docs/scheduled-scans.md#flux-webhook): Flux polls the output
+# repository every 5 minutes; the scan worker and the LLM queue runner call this Receiver after each push so the
+# root sync and every app's GitRepository reconcile at once. Its token is made once and kept in the store
+# (flux-system--cz-webhook, read by the ExternalSecret containerizer-sandbox-webhook); the Receiver lists the
+# GitRepositories containerizer generated in every app namespace (Flux's default flags allow references to other
+# namespaces). The URL (the webhook-receiver Service's ClusterIP, reachable from this host only, and the path Flux
+# derives from the token) goes to /run/containerizer/flux-webhook (root:containerizer 0640): it is the secret.
+WEBHOOK=/run/containerizer/flux-webhook
+flux_webhook() {
+  local nss ready path ip url tmp
+  k get crd receivers.notification.toolkit.fluxcd.io >/dev/null 2>&1 || return 0
+  if ! k -n "$CZ_STORE_NS" get secret flux-system--cz-webhook >/dev/null 2>&1; then
+    cz_store_put flux-system--cz-webhook token="$(head -c 32 /dev/urandom | sha256sum | cut -d' ' -f1)"
+  fi
+  nss=$(k get gitrepositories.source.toolkit.fluxcd.io -A -l app.kubernetes.io/managed-by=containerizer \
+    -o jsonpath='{.items[*].metadata.namespace}')
+  # shellcheck disable=SC2086 # one argument per namespace
+  /usr/lib/containerizer/venv/bin/python -I -c 'import sys, yaml
+from containerizer.fluxhook import receiver_manifests
+print("---\n".join(yaml.safe_dump(d, sort_keys=False) for d in receiver_manifests(sys.argv[1:])))' $nss \
+    | k apply -f - >/dev/null
+  ready=$(k -n flux-system get receivers.notification.toolkit.fluxcd.io containerizer-sandbox \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
+  path=$(k -n flux-system get receivers.notification.toolkit.fluxcd.io containerizer-sandbox \
+    -o jsonpath='{.status.webhookPath}')
+  ip=$(k -n flux-system get service webhook-receiver -o jsonpath='{.spec.clusterIP}')
+  if [ "$ready" != True ] || [ -z "$path" ] || [ -z "$ip" ] || [ "$ip" = None ]; then
+    rm -f "$WEBHOOK"; return 0      # not ready yet (the ExternalSecret's first read): Flux polls meanwhile
+  fi
+  url="http://$ip$path"
+  [ "$(cat "$WEBHOOK" 2>/dev/null)" != "$url" ] || return 0
+  install -d -m 0755 /run/containerizer
+  tmp=$(mktemp "$WEBHOOK.XXXXXX")
+  printf '%s\n' "$url" > "$tmp"
+  chown root:containerizer "$tmp" && chmod 0640 "$tmp" && mv -f "$tmp" "$WEBHOOK"
+}
+flux_webhook || echo "containerizer: the Flux webhook is not ready yet (Flux polls every 5 minutes meanwhile); retrying in 2 minutes" >&2
 
 # The sandbox identity provider (docs/sandbox-idp.md): once Flux has deployed sandbox/idp, its admin and
 # keystore passwords, the test users' passwords and the OIDC client secrets go into the store (made

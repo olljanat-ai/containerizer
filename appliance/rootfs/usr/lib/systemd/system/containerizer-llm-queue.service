@@ -36,6 +36,8 @@ Environment=DOCKER_CONFIG=/var/lib/containerizer/refactor/.docker
 # assesses newer code of its application, or until someone removes it
 Environment=CONTAINERIZER_LAB_SERVICES=/var/lib/containerizer/system/lab-services.json
 Environment=CONTAINERIZER_SANDBOX_KUBECONFIG=/run/containerizer/sandbox-verifier.kubeconfig
+# after each push to the output repository: the Flux webhook URL cz-sandbox writes (containerizer/fluxhook.py)
+Environment=CONTAINERIZER_FLUX_WEBHOOK=/run/containerizer/flux-webhook
 # results database (CZ_SQL_SCANNER_CS): the appliance's own or CZ_SQL_SERVER (cz-firstboot)
 EnvironmentFile=/run/containerizer/sql.env
 LoadCredential=sql-scanner:/etc/containerizer/secrets/cz-scanner

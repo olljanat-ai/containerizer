@@ -18,7 +18,7 @@ k get crd gitrepositories.source.toolkit.fluxcd.io kustomizations.kustomize.tool
 git_token() { cz_store_put "$1" username="$GIT_ADMIN" password="$LAB_GIT_READ_TOKEN" ca.crt=@"$CA"; }
 
 git_token flux-system--cz-git
-cz_store_grant flux-system flux-system--cz-git
+cz_store_grant flux-system flux-system--cz-git flux-system--cz-webhook
 k apply -f - >/dev/null <<YAML
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
@@ -72,6 +72,31 @@ k get gitrepositories.source.toolkit.fluxcd.io -A -l app.kubernetes.io/managed-b
     [ -z "$new" ] || k -n "$ns" annotate --overwrite externalsecrets.external-secrets.io "$name" \
       "force-sync=$(date +%s)" >/dev/null
   done
+
+# ---------------------------------------------------------------- the Flux webhook (as cz-sandbox)
+# The Receiver containerizer-sandbox (containerizer/fluxhook.py) over the root sync and every app's GitRepository;
+# its token made once in the store; the URL (ClusterIP + webhook path) in $LAB_DIR/flux-webhook (600), which
+# env.sh exports as CONTAINERIZER_FLUX_WEBHOOK for a scan or a runner.
+if k get crd receivers.notification.toolkit.fluxcd.io >/dev/null 2>&1; then
+  k -n "$CZ_STORE_NS" get secret flux-system--cz-webhook >/dev/null 2>&1 \
+    || cz_store_put flux-system--cz-webhook token="$(head -c 32 /dev/urandom | sha256sum | cut -d' ' -f1)"
+  # shellcheck disable=SC2046 # one argument per namespace
+  "$PY" -c 'import sys, yaml
+from containerizer.fluxhook import receiver_manifests
+print("---\n".join(yaml.safe_dump(d, sort_keys=False) for d in receiver_manifests(sys.argv[1:])))' \
+    $(k get gitrepositories.source.toolkit.fluxcd.io -A -l app.kubernetes.io/managed-by=containerizer \
+      -o jsonpath='{.items[*].metadata.namespace}') | k apply -f - >/dev/null
+  hook_ready=$(k -n flux-system get receivers.notification.toolkit.fluxcd.io containerizer-sandbox \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
+  hook_path=$(k -n flux-system get receivers.notification.toolkit.fluxcd.io containerizer-sandbox \
+    -o jsonpath='{.status.webhookPath}')
+  hook_ip=$(k -n flux-system get service webhook-receiver -o jsonpath='{.spec.clusterIP}')
+  if [ "$hook_ready" = True ] && [ -n "$hook_path" ] && [ -n "$hook_ip" ]; then
+    (umask 077; printf 'http://%s%s\n' "$hook_ip" "$hook_path" > "$LAB_DIR/flux-webhook")
+  else
+    rm -f "$LAB_DIR/flux-webhook"
+  fi
+fi
 
 # ---------------------------------------------------------------- the egress observer (egress-observer.sh)
 # its Roles in new app namespaces, when it is installed

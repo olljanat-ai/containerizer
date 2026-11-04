@@ -26,6 +26,8 @@ Environment=CONTAINERIZER_WORK=/var/lib/containerizer/worker/work
 # the sandbox check at the end of a scan (results pages, "Sandbox cluster"): the read-only verifier kubeconfig
 # cz-sandbox writes (containerizer-sandbox.timer); off while it is missing or the sandbox is not connected
 Environment=CONTAINERIZER_SANDBOX_KUBECONFIG=/run/containerizer/sandbox-verifier.kubeconfig
+# after each push to the output repository: the Flux webhook URL cz-sandbox writes (containerizer/fluxhook.py)
+Environment=CONTAINERIZER_FLUX_WEBHOOK=/run/containerizer/flux-webhook
 # results database (CZ_SQL_SCANNER_CS): the appliance's own or CZ_SQL_SERVER (cz-firstboot)
 EnvironmentFile=/run/containerizer/sql.env
 LoadCredential=sql-scanner:/etc/containerizer/secrets/cz-scanner
