@@ -248,7 +248,11 @@ Techniques used to avoid application changes:
 - `global.json` SDK pins are removed inside the build stage only;
 - Kestrel endpoints from `appsettings.json` are re-pointed with `Kestrel__Endpoints__X__Url`;
 - connection strings and secret settings become `ConnectionStrings__X` env vars from a Secret;
-- folders the app writes to (logs, App_Data, Data Protection keys) become volumes;
+- folders the app writes to (logs, App_Data) become volumes;
+- the ASP.NET Core Data Protection key folder (when the code does not persist the keys itself) gets one key,
+  read-only, from a Secret that External Secrets Operator generates once in the cluster (Password generator, no
+  secret store): cookies and antiforgery tokens survive restarts and work on every replica;
+- every web component runs one replica: more need shared state first (sessions, caches; the findings say which);
 - Windows paths in configuration (`D:\\Archive`, `\\\\fs01\\share`) are re-pointed to `/data/...` volumes
   with `Section__Key` env vars; key and certificate files go to `/secrets` from a Kubernetes Secret;
 - Serilog file-only sinks are switched to the console (logs to stdout) with `Serilog__WriteTo__N__Name`;

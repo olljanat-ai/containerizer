@@ -418,3 +418,33 @@ def test_gitops_hardening_keeps_platform_policies_out_of_sync(tmp_path):
     assert {d["kind"] for d in store} == {"Namespace", "ResourceQuota", "ClusterSecretStore", "Role", "RoleBinding"}
     md = (out / "HARDENING.md").read_text()
     assert "| Each namespace reads only its own keys from the secret store | cluster action |" in md
+
+
+def test_dataprotection_key_is_shared_and_generated_in_the_cluster(tmp_path):
+    """A Razor Pages app that does not persist its Data Protection keys: one replica, and the key folder is a
+    read-only Secret that External Secrets Operator generates once (Password generator, no secret store), so
+    antiforgery tokens and cookies survive restarts and work across replicas."""
+    web_app(tmp_path, "builder.Services.AddRazorPages();")
+    docs, plan = _manifests(tmp_path)
+    dep = next(d for d in docs if d["kind"] == "Deployment")
+    assert dep["spec"]["replicas"] == 1
+    pod = dep["spec"]["template"]["spec"]
+    vol = next(v for v in pod["volumes"] if "dataprotection" in v["name"] or "secret" in v
+               and v["secret"]["secretName"].endswith("-dataprotection"))
+    name = vol["secret"]["secretName"]
+    mount = next(m for m in pod["containers"][0]["volumeMounts"] if m["name"] == vol["name"])
+    assert mount == {"name": vol["name"], "mountPath": "/home/app/.aspnet/DataProtection-Keys", "readOnly": True}
+    gen = next(d for d in docs if d["kind"] == "Password")
+    es = next(d for d in docs if d["kind"] == "ExternalSecret" and d["metadata"]["name"] == name)
+    assert gen["metadata"]["name"] == name and gen["spec"]["symbols"] == 0
+    spec = es["spec"]
+    assert spec["refreshPolicy"] == "CreatedOnce" and "secretStoreRef" not in spec
+    assert spec["dataFrom"] == [{"sourceRef": {"generatorRef": {
+        "apiVersion": "generators.external-secrets.io/v1alpha1", "kind": "Password", "name": name}}}]
+    (key, xml), = spec["target"]["template"]["data"].items()
+    assert key.startswith("key-") and key.endswith(".xml") and key[4:-4] in xml
+    assert "<value>{{ .password | b64enc }}</value>" in xml and "<expirationDate>2126-" in xml
+    assert [v for v in lint_manifests(docs) if v.severity == "error"] == []
+    # nothing for the secret store to hold
+    from containerizer.eso import remote_keys
+    assert not any(k.endswith("dataprotection") for k in remote_keys(docs))

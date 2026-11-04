@@ -328,10 +328,55 @@ def externalize_secrets(docs: list[dict], component: str, labels: dict, plan: di
                     wanted[sec["secretName"]] = keys
     docs[:] = keep
     app = labels.get("app.kubernetes.io/part-of", component)
+    from .generate import DATAPROTECTION_SUFFIX
+    for name in [n for n in wanted if n.endswith(DATAPROTECTION_SUFFIX)]:
+        del wanted[name]
+        docs.extend(dataprotection_docs(name, labels))
     for name, keys in sorted(wanted.items()):
         # unknown keys: the whole remote secret of that name
         remote = eso.remote_key(app, component if keys else name)
         docs.append(eso.external_secret(name, app, remote, keys, labels))
+
+
+DP_KEY_XML = """<?xml version="1.0" encoding="utf-8"?>
+<key id="{kid}" version="1">
+  <creationDate>2026-01-01T00:00:00Z</creationDate>
+  <activationDate>2026-01-01T00:00:00Z</activationDate>
+  <expirationDate>2126-01-01T00:00:00Z</expirationDate>
+  <descriptor deserializerType="Microsoft.AspNetCore.DataProtection.AuthenticatedEncryption.ConfigurationModel.AuthenticatedEncryptorDescriptorDeserializer, Microsoft.AspNetCore.DataProtection">
+    <descriptor>
+      <encryption algorithm="AES_256_CBC" />
+      <validation algorithm="HMACSHA256" />
+      <masterKey p4:requiresEncryption="true" xmlns:p4="http://schemas.asp.net/2015/03/dataProtection">
+        <value>{{{{ .password | b64enc }}}}</value>
+      </masterKey>
+    </descriptor>
+  </descriptor>
+</key>
+"""
+
+
+def dataprotection_docs(name: str, labels: dict) -> list[dict]:
+    """The ASP.NET Core Data Protection key ring of a component that does not persist its keys in code: one key,
+    valid for 100 years, made by External Secrets Operator's Password generator once (no secret store, no value
+    outside the cluster) and mounted read-only at the key folder. Every replica and every restart then decrypts
+    the others' cookies and antiforgery tokens, and the key manager never needs to write a new key. The key id
+    is fixed by the name (not secret); the key material is the generated password."""
+    import uuid
+    kid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"containerizer:dataprotection:{name}"))
+    gen = {"apiVersion": "generators.external-secrets.io/v1alpha1", "kind": "Password", "name": name}
+    return [{"apiVersion": "generators.external-secrets.io/v1alpha1", "kind": "Password",
+             "metadata": {"name": name, "labels": dict(labels)},
+             "spec": {"length": 64, "digits": 10, "symbols": 0, "noUpper": False, "allowRepeat": True}},
+            {"apiVersion": "external-secrets.io/v1", "kind": "ExternalSecret",
+             "metadata": {"name": name, "labels": dict(labels)},
+             "spec": {"refreshPolicy": "CreatedOnce", "refreshInterval": "0",   # generated once, never rotated
+                      "target": {"name": name, "creationPolicy": "Owner", "deletionPolicy": "Retain",
+                                 "template": {"engineVersion": "v2",
+                                              "data": {f"key-{kid}.xml": DP_KEY_XML.format(kid=kid)}}},
+                      "dataFrom": [{"sourceRef": {"generatorRef": gen}}]},
+             "_comment": "ASP.NET Core Data Protection key, generated in the cluster once (no secret store); "
+                         "replace with your own key ring or PersistKeysTo* in code if you prefer"}]
 
 
 def _basename(p: str) -> str:
