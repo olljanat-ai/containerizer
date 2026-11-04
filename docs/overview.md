@@ -160,15 +160,15 @@ Later files override earlier rules with the same id; `rules/learned/` is loaded 
 ### Migration plan
 
 The components of an application do not have to move together. The results page of every application that
-does not rate A has a **Migration plan**, right after the main obstacles, that splits it into generations:
+does not rate A has a **Migration plan**, right after the main obstacles, that splits it into waves:
 
-- **Generation 1, now** (to Kubernetes): the server components that rate A on their own (the application rating
+- **Wave 1, now** (to Kubernetes): the server components that rate A on their own (the application rating
   rule applied to the one component: configuration only, no data of their own) and did not fail to build and
   run. These are the components an organization scan deploys to the sandbox, so each shows whether it is there:
   the sandbox check's result, *deployed, not checked yet* (the scan deployed it, no check has a result yet), or
   *not deployed* with why (the application's sandbox is turned off, the scan left it out, or no organization
   scan deploys the application).
-- **Generation 2, after code changes**: components whose findings can be fixed in code (targeted changes, data
+- **Wave 2, after code changes**: components whose findings can be fixed in code (targeted changes, data
   moved to an external service, a failed build or run), with what to fix, and what the part that can run in
   Linux containers rates once they are fixed. Where the page has the Refactoring box,
   [Make it A](refactoring.md#make-it-a) makes these changes.
@@ -183,7 +183,7 @@ does not rate A has a **Migration plan**, right after the main obstacles, that s
 A line at the top sums it up: *2 of 6 components can run in Linux containers now; 1 more after code changes;
 3 stay on Windows.* (or *Nothing runs in a Linux container until the framework port is done.*). The part that can
 run in Linux containers is rated with the same rule as the application (`assess.rating_of`), as it is and with
-the changes made. The front page shows the first generation next to the rating of such an application,
+the changes made. The front page shows the first wave next to the rating of such an application,
 *2/6 ready now*.
 
 ![Migration plan of an application with components that must stay on Windows: two components ready and in the sandbox, one after code changes, three that stay on Windows, and the calls between the parts](images/results-migration-plan.png#only-light){ .cz-shot }

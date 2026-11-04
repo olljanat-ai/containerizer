@@ -172,15 +172,15 @@ to change, why, and where to read more. Everything links back to the rule that d
 ### Start with what is ready
 
 An application rated for the parts that must stay on Windows often has components that can run in Linux
-containers today. Its migration plan splits it into generations: what runs now (and is in the sandbox already),
+containers today. Its migration plan splits it into waves: what runs now (and is in the sandbox already),
 what follows after code changes, what stays on Windows, and the calls between the parts.
 
 [Migration plan :octicons-arrow-right-24:](overview.md#migration-plan)
 
 </div>
 
-![Migration plan: generation 1 in the sandbox, generation 2 after code changes, the components that stay on Windows and the calls between the parts](images/results-migration-plan.png#only-light){ .cz-shot }
-![Migration plan: generation 1 in the sandbox, generation 2 after code changes, the components that stay on Windows and the calls between the parts](images/results-migration-plan-dark.png#only-dark){ .cz-shot }
+![Migration plan: wave 1 in the sandbox, wave 2 after code changes, the components that stay on Windows and the calls between the parts](images/results-migration-plan.png#only-light){ .cz-shot }
+![Migration plan: wave 1 in the sandbox, wave 2 after code changes, the components that stay on Windows and the calls between the parts](images/results-migration-plan-dark.png#only-dark){ .cz-shot }
 
 </div>
 
