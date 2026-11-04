@@ -6,7 +6,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.9.5 (2026-11-04)
 
 - **Browse and fix the sandbox databases** (appliance): Admin → Dev databases now opens each application's
   database in the sandbox, a lab-service database (SQL Server, PostgreSQL, MySQL) or a restored dev database, in
