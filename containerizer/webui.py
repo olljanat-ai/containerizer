@@ -782,11 +782,13 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag
                 f"<a href='/admin'>admin pages</a>.</p>") if nav else (
                 f"<p class='note'>{e('; '.join(parts))}.</p>")
     empty = "<p>No assessments yet. Run <code>containerizer assess --sql …</code> to add some.</p>" if not all_apps else ""
+    meta = " · ".join(([f"Last assessed {_date(last)}"] if last else [])
+                      + ([f"<a href='{e(_trends_href(bu_filter))}'>Trends over time</a>"] if all_apps else []))
     return page("Containerization readiness", f"""{_nav(nav)}
-<header><h1>Containerization readiness</h1>
-<p class='muted'>How ready our applications are to run in Linux containers{f' · last assessed {_date(last)}' if last else ''}
-{f" · <a href='{e(_trends_href(bu_filter))}'>Trends over time</a>" if all_apps else ''}
-</p></header>
+<header>{BRAND}<h1>Containerization readiness</h1>
+<p class='lead'>How ready are our applications to run in Linux containers?</p>
+{f"<p class='muted small'>{meta}</p>" if meta else ''}
+</header>
 {empty}<nav class='chips'>{''.join(chips) if all_apps else ''}</nav>
 {f"<nav class='chips tags' aria-label='Filter by tag'>{''.join(tag_chips)}</nav>" if tag_chips else ''}
 {f"<p class='muted'>No applications{' in this business unit' if bu_filter is not None else ''} have the tag <b>{e(tag_filter)}</b>.</p>" if tag_filter is not None and not apps and all_apps else ''}
@@ -1131,6 +1133,14 @@ def external_links(html: str) -> str:
     return EXTERNAL_A.sub(add, html)
 
 
+SITE = "https://containerizer.eu"
+# the front page's brand line, above its title: the logo and the name, linking to the project's site
+BRAND = (f"<a class='brand' href='{SITE}/' title='Containerizer: which of your applications can run in containers?'>"
+         f"<img src='/static/favicon.svg' alt='' width='28' height='28'><span>Containerizer</span></a>")
+# every page's last line (no version: the server does not tell it to anyone, see version_string)
+BRAND_FOOTER = (f"<p class='brand-foot'>Assessed with <a href='{SITE}/' target='_blank' rel='noopener noreferrer'>"
+                f"Containerizer</a>, open source containerization assessment, generation and sandbox</p>")
+
 # Set by serve() in development mode (CONTAINERIZER_DEV_NO_AUTH): shown at the top of every page.
 DEV_BANNER = ""
 
@@ -1139,9 +1149,9 @@ def page(title: str, body: str, script: bool = False, refresh: int = 0) -> str:
     """`refresh`: reload the page every so many seconds (a running scan's progress page; no script needed)."""
     return (f"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
             + (f"<meta http-equiv='refresh' content='{int(refresh)}'>" if refresh > 0 else "") +
-            f"<meta name='viewport' content='width=device-width,initial-scale=1'><title>{e(title)}</title>"
+            f"<meta name='viewport' content='width=device-width,initial-scale=1'><title>{e(title)} · Containerizer</title>"
             f"<link rel='stylesheet' href='/static/app.css'><link rel='icon' href='/static/favicon.svg' type='image/svg+xml'></head>"
-            f"<body>{DEV_BANNER}<main>{external_links(body)}</main>{SCRIPT_TAG if script else ''}</body></html>")
+            f"<body>{DEV_BANNER}<main>{external_links(body)}{BRAND_FOOTER}</main>{SCRIPT_TAG if script else ''}</body></html>")
 
 
 CSS = """
@@ -1151,6 +1161,10 @@ CSS = """
 .why-rating{background:var(--card);border-left:4px solid #e0a800;padding:8px 12px;margin:10px 0}section.refactor h3{font-size:16px;margin:16px 0 4px}
 table.make-a tr.under td:first-child{box-shadow:inset 3px 0 0 #2e7d32}
 .notice{padding:10px 14px;border-radius:8px;margin:10px 0;border:1px solid}.notice-ok{background:#e8f5e9;border-color:#2e7d32;color:#1b5e20}.notice-info{background:#e3f2fd;border-color:#1565c0;color:#0d47a1}.notice-bad{background:#fdecea;border-color:#c62828;color:#8e1c1c}@media (prefers-color-scheme:dark){.notice-ok{background:#16301a;color:#b9f6ca}.notice-info{background:#132a40;color:#bbdefb}.notice-bad{background:#3a1715;color:#ffcdd2}}
+a.brand{display:inline-flex;align-items:center;gap:8px;color:var(--fg);text-decoration:none;font-weight:650;font-size:17px;
+letter-spacing:.01em;margin:0 0 10px}a.brand img{display:block}a.brand:hover span{text-decoration:underline}
+.brand-foot{margin:40px 0 0;padding-top:12px;border-top:1px solid var(--line);
+color:var(--muted);font-size:12px;text-align:center}.brand-foot a{color:var(--muted)}
 .devmode{background:#b3261e;color:#fff;padding:8px 16px;text-align:center;font-size:14px}.devmode b{color:#fff}
 :root{--bg:#f9f9f7;--card:#fff;--fg:#0b0b0b;--muted:#5f5e58;--line:#e1e0d9;--link:#1f5fbf;
 --rA:#0ca30c;--rB:#74c476;--rC:#fab219;--rD:#ec835a;--rE:#d03b3b}
