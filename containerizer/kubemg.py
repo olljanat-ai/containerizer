@@ -71,6 +71,15 @@ def wait_up(seconds: int = 600, call=_call) -> None:
             return
         except KubemgError:
             return                      # it answers (401): up
+        except ssl.SSLError as ex:      # it answers, but the TLS handshake fails: waiting does not help
+            raise KubemgError(f"kubemg answers on {API}, but the TLS handshake fails: {ex} (CA {LOOPBACK_CA})") from None
+        except urllib.error.URLError as ex:
+            if isinstance(ex.reason, ssl.SSLError):
+                raise KubemgError(f"kubemg answers on {API}, but the TLS handshake fails: {ex.reason} "
+                                  f"(CA {LOOPBACK_CA})") from None
+            if time.monotonic() > end:
+                raise KubemgError(f"kubemg did not answer on {API} in {seconds} s: {ex.reason}") from None
+            time.sleep(5)
         except OSError:
             if time.monotonic() > end:
                 raise KubemgError(f"kubemg did not answer on {API} in {seconds} s") from None
