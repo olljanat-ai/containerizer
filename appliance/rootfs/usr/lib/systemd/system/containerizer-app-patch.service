@@ -1,0 +1,19 @@
+[Unit]
+Description=containerizer appliance: mount the app update (patch release) when it fits this OS
+# Before every containerizer service: the venv's containerizer.pth lists /run/containerizer/app-patch before
+# the OS image's own code. The system agent restarts this unit to switch the code (its own units have a private
+# mount namespace). Runs the OS image's own code (PYTHONPATH), so a broken update cannot keep itself in place.
+DefaultDependencies=no
+After=local-fs.target containerizer-firstboot.service
+Before=sysinit.target
+ConditionPathExists=!/run/elemental/recovery_mode
+ConditionKernelCommandLine=!cdroot
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PYTHONPATH=/usr/lib/containerizer/app
+ExecStart=/usr/lib/containerizer/venv/bin/python -m containerizer.sysagent app-patch select
+
+[Install]
+WantedBy=sysinit.target

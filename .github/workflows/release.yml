@@ -3,6 +3,10 @@
 # On a release tag (vX.Y.Z) the tested image is pushed to GHCR, signed with cosign (keyless: this
 # workflow's identity, which the appliance checks before it installs an upgrade), its SBOM is attested,
 # and the ISO and disk images are published as release assets.
+# Every release also publishes its application alone (the code and rules) as the small, signed app update image
+# ghcr.io/<owner>/containerizer-app:vX.Y.Z: appliances of the same series (vX.Y) install a patch release from it
+# without an OS upgrade (containerizer/apppatch.py). So a patch release (Z > 0) must not change the OS image:
+# appliance/ci/patch-release-check.sh refuses it otherwise, and such changes go into a minor release.
 #
 # The appliance verifies upgrades against the identity
 #   https://github.com/<owner>/<repo>/.github/workflows/release.yml@refs/tags/vX.Y.Z
@@ -38,6 +42,7 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/containerizer-appliance
+  APP_IMAGE: ghcr.io/${{ github.repository_owner }}/containerizer-app
   COSIGN_VERSION: v3.1.4
   COSIGN_SHA256: 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa
 
@@ -50,6 +55,8 @@ jobs:
       actions: write         # start this workflow on the tag
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0       # the tags: a patch release is checked against its vX.Y.0
       - name: Tag and start the release on the tag
         env:
           INPUT: ${{ inputs.version }}
@@ -63,6 +70,7 @@ jobs:
           if git ls-remote --exit-code --tags origin "refs/tags/v$v" >/dev/null; then
             echo "v$v is already tagged" >&2; exit 1
           fi
+          appliance/ci/patch-release-check.sh "v$v"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "v$v" -m "containerizer $v" "$GITHUB_SHA"
@@ -82,6 +90,8 @@ jobs:
       id-token: write        # keyless signing (tags only)
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0       # the tags: a patch release is checked against its vX.Y.0
 
       - name: Version
         id: v
@@ -90,6 +100,7 @@ jobs:
             [[ "$GITHUB_REF_NAME" =~ ^v[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$ ]] || { echo "tags are vX.Y.Z" >&2; exit 1; }
             v=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' containerizer/__init__.py)
             [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "containerizer/__init__.py says $v, the tag is $GITHUB_REF_NAME" >&2; exit 1; }
+            appliance/ci/patch-release-check.sh "$GITHUB_REF_NAME"
             echo "version=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
             echo "release=true" >> "$GITHUB_OUTPUT"
           else
@@ -115,9 +126,31 @@ jobs:
           build-args: |
             VERSION=${{ steps.v.outputs.version }}
             IMAGE=${{ env.IMAGE }}
+            APP_IMAGE=${{ env.APP_IMAGE }}
             SIGNER_REPO=${{ github.repository }}
           cache-from: type=gha,scope=appliance
           cache-to: type=gha,scope=appliance,mode=max
+
+      - name: App update image
+        env:
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          rm -rf build/app && mkdir -p build/app/app
+          cp -r containerizer rules build/app/app/
+          rm -rf build/app/app/rules/learned
+          find build/app -name __pycache__ -prune -exec rm -rf {} +
+          series=""
+          [[ "$V" =~ ^v([0-9]+)\.([0-9]+)\.[0-9]+$ ]] && series="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          lock=$(sha256sum appliance/requirements.lock | cut -d' ' -f1)
+          printf '{"version": "%s", "series": "%s", "requirements_sha256": "%s"}\n' "$V" "$series" "$lock" \
+            > build/app/app/manifest.json
+          docker build -f appliance/app/Dockerfile -t containerizer-app:build build/app
+          # the update's code imports in the OS image of its series, from its own folder, as the appliance checks
+          docker run --rm -v "$PWD/build/app/app:/patch:ro" --entrypoint /usr/lib/containerizer/venv/bin/python \
+            containerizer-appliance:build -I -c "import sys; sys.path.insert(0, '/patch'); import containerizer, \
+            containerizer.webui, containerizer.admin, containerizer.cli, containerizer.worker, containerizer.sysagent; \
+            assert containerizer.__file__.startswith('/patch'), containerizer.__file__"
+          test "$(docker run --rm --entrypoint cat containerizer-appliance:build /usr/lib/containerizer/requirements.sha256)" = "$lock"
 
       - name: Tools
         run: |
@@ -194,15 +227,24 @@ jobs:
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no digest" >&2; exit 1; }
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           cosign sign --yes "$IMAGE@$digest"
+          # the app update of this release (appliances of the series install a patch release from it)
+          docker tag containerizer-app:build "$APP_IMAGE:$V"
+          docker push "$APP_IMAGE:$V"
+          app_digest=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$APP_IMAGE:$V" | grep -m1 "^$APP_IMAGE@" | cut -d@ -f2)
+          [[ "$app_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no digest for the app update" >&2; exit 1; }
+          echo "app_digest=$app_digest" >> "$GITHUB_OUTPUT"
+          cosign sign --yes "$APP_IMAGE@$app_digest"
 
       - name: Check the signature like the appliance does
         if: steps.v.outputs.release == 'true'
         env:
           V: ${{ steps.v.outputs.version }}
         run: |
-          cosign verify --output json \
-            --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY//./\\.}/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com "$IMAGE:$V" > /dev/null
+          for ref in "$IMAGE:$V" "$APP_IMAGE:$V"; do
+            cosign verify --output json \
+              --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY//./\\.}/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com "$ref" > /dev/null
+          done
 
       - name: Release assets
         if: steps.v.outputs.release == 'true'
@@ -226,7 +268,9 @@ jobs:
           body: |
             Appliance image `${{ env.IMAGE }}:${{ steps.v.outputs.version }}` (`${{ steps.push.outputs.digest }}`),
             signed with cosign by this repository's release workflow; installed appliances can upgrade to it
-            from **Admin → System**. Install: [docs/appliance.md](https://github.com/${{ github.repository }}/blob/${{ steps.v.outputs.version }}/docs/appliance.md).
+            from **Admin → System**. Appliances that run an earlier release of the same series install it as an
+            app update instead (`${{ env.APP_IMAGE }}:${{ steps.v.outputs.version }}`, `${{ steps.push.outputs.app_digest }}`):
+            only their containerizer services restart, the OS does not. Install: [docs/appliance.md](https://github.com/${{ github.repository }}/blob/${{ steps.v.outputs.version }}/docs/appliance.md).
 
             - `containerizer-${{ steps.v.outputs.version }}.iso`: installer (UEFI)
             - `containerizer-${{ steps.v.outputs.version }}.qcow2`: 64 GB disk image for KVM/Proxmox/OpenStack (grow it before the first boot for a larger disk)
