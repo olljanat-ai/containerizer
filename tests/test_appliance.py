@@ -607,13 +607,13 @@ def test_llm_queue_runner_unit():
 
 def test_sandbox_writes_the_read_only_verifier_kubeconfig_for_the_llm_queue():
     """cz-sandbox (root, every 2 minutes) grants the verifier ServiceAccount its read-only Role in each generated
-    namespace (sandbox.verify_rbac: no Secrets, nothing cluster-wide, no Argo CD here) and writes a kubeconfig
+    namespace (sandbox.verify_rbac: no Secrets, nothing cluster-wide, Flux only) and writes a kubeconfig
     with a 24-hour token of it, readable by the containerizer group only, where the LLM queue unit reads it."""
     script = (APPLIANCE / "rootfs/usr/lib/containerizer/bin/cz-sandbox").read_text()
     q = _unit("containerizer-llm-queue.service")
     path = next(e.split("=", 1)[1] for e in q["Environment"] if e.startswith("CONTAINERIZER_SANDBOX_KUBECONFIG="))
     assert f"VERIFIER_KUBECONFIG={path}" in script and path.startswith("/run/containerizer/")
-    assert "verify_rbac(sys.argv[1:], argocd_apps=[])" in script
+    assert "verify_rbac(sys.argv[1:])" in script
     assert "-l app.kubernetes.io/managed-by=containerizer" in script
     assert "create token containerizer-verifier --duration=24h" in script
     assert 'chown root:containerizer "$tmp" && chmod 0640 "$tmp"' in script

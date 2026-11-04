@@ -89,8 +89,8 @@ else
 fi
 rbac=$ro/sandbox/verify-rbac.yaml
 [ -f "$rbac" ] || exit 0
-# The app namespaces must exist first (Flux creates them). The file also grants read access to the Argo CD
-# Applications in namespace argocd: the lab runs Flux only, so that part is left out while there is no argocd.
+# The app namespaces must exist first (Flux creates them). Files written before 0.9.2 also grant read access to
+# Argo CD Applications in namespace argocd, which the lab does not have: that part is left out.
 existing=$(k get ns -o jsonpath='{.items[*].metadata.name}')
 if ! "$PY" - "$rbac" "$existing" > "$STATE/verify-rbac.lab.yaml" <<'PY'
 import sys, yaml

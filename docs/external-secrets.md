@@ -14,7 +14,7 @@ on the appliance a locked-down namespace of the same cluster. Git only holds the
 | Flux commit verification keys | `<namespace>-git-gpg` | `<namespace>--cz-git-gpg` | the public keys |
 | Registry read credential (Flux `OCIRepository`/`ImageRepository`; the image pull secret of an organization scan) | `<namespace>-registry`, the pull secret's name | `<namespace>--cz-registry` | `.dockerconfigjson` |
 | cosign public key for signed OCI artifacts | `<namespace>-cosign-pub` | `<namespace>--cz-cosign-pub` | `cosign.pub` |
-| Sandbox root sync (`sandbox/flux/bootstrap.yaml`, `sandbox/argocd/bootstrap.yaml`) | `containerizer-sandbox-git`, `containerizer-sandbox-repo` | `flux-system--cz-git`, `argocd--cz-git` | `username` + `password` |
+| Sandbox root sync (`sandbox/flux/bootstrap.yaml`) | `containerizer-sandbox-git` | `flux-system--cz-git` | `username` + `password` |
 | Dev database passwords ([dev-databases.md](dev-databases.md)) | `devdb`, `devdb-admin` | none: ESO's Password generator creates them in the cluster | |
 
 `<namespace>` is the app's namespace. Each app's `HARDENING.md` lists the exact remote keys and
@@ -58,8 +58,7 @@ The security gate and `HARDENING.md` (NSA/CISA "Secrets", CIS 5.4.2 and 5.1.2) c
 | `secret-source` | error | a workload references a Secret (env, envFrom, volume, projected volume, imagePullSecrets) that no ExternalSecret of the app produces |
 | `external-secret-store` | error | an ExternalSecret names no SecretStore/ClusterSecretStore (generators excepted), or the app ships its own store |
 
-The Argo CD `AppProject` does not allow the `Secret` kind, so a Secret added to the app repository later
-fails to sync. A component that needs a different Secret source declares a waiver in its exception
+A component that needs a different Secret source declares a waiver in its exception
 (`containerizer.io/waives`), and the waiver appears in the report.
 
 ## The appliance sandbox

@@ -12,7 +12,7 @@ import yaml
 
 from containerizer import sandbox as sb
 from containerizer.sandbox import (FAILING, HEALTHY, NOT_FOUND, PENDING, SCHEDULED, SKIPPED, Kube, KubeError,
-                                   KubeOptions, SandboxOptions, argo_state, flux_state, verify_sandbox)
+                                   KubeOptions, SandboxOptions, flux_state, verify_sandbox)
 
 SHA = "a" * 40
 OLD = "b" * 40
@@ -67,12 +67,6 @@ class Clock:
         self.t += s
 
 
-def argo_app(rev=SHA, status="Synced", health="Healthy", phase="Succeeded", conditions=None, message=""):
-    return {"status": {"sync": {"status": status, "revision": rev}, "health": {"status": health},
-                       "operationState": {"phase": phase, "message": message, "syncResult": {"revision": rev}},
-                       "conditions": conditions or []}}
-
-
 def flux_ks(applied=SHA, attempted=SHA, ready="True", reason="ReconciliationSucceeded", message=""):
     return {"spec": {}, "status": {"lastAppliedRevision": f"main@sha1:{applied}" if applied else "",
                                    "lastAttemptedRevision": f"main@sha1:{attempted}",
@@ -103,8 +97,8 @@ def output_repo(tmp_path, components=(("web", "Deployment"),), app="shop-web", s
     """A minimal output repository as `containerizer org` writes it."""
     root = tmp_path / "out"
     d = root / "Contoso" / "_" / "shop"
-    (d / "gitops" / "argocd").mkdir(parents=True)
-    (d / "gitops" / "argocd" / "kustomization.yaml").write_text("resources: []\n")
+    (d / "gitops" / "flux").mkdir(parents=True)
+    (d / "gitops" / "flux" / "kustomization.yaml").write_text("resources: []\n")
     comps = []
     for name, kind in components:
         (d / name).mkdir()
@@ -179,20 +173,6 @@ def test_kubectl_arguments_carry_no_credentials(tmp_path):
 
 # --------------------------------------------------------------------------- GitOps state
 
-def test_argo_states():
-    assert argo_state(argo_app(), SHA, None)[0] == "synced"
-    assert argo_state(argo_app(rev=OLD), SHA, None)[0] == "waiting"
-    assert argo_state(argo_app(phase="Running"), SHA, None)[0] == "waiting"
-    st, why = argo_state(argo_app(status="OutOfSync", phase="Failed", message="one or more objects failed"), SHA, None)
-    assert st == "failed" and "objects failed" in why
-    # a failed sync of an older commit says nothing about ours
-    assert argo_state(argo_app(rev=OLD, phase="Failed"), SHA, None)[0] == "waiting"
-    st, why = argo_state(argo_app(conditions=[{"type": "InvalidSpecError", "message": "bad path"}]), SHA, None)
-    assert st == "failed" and "bad path" in why
-    st, why = argo_state(argo_app(rev=OLD, conditions=[{"type": "ComparisonError", "message": "repo down"}]), SHA, None)
-    assert st == "waiting" and "repo down" in why            # transient: keep waiting
-
-
 def test_flux_states():
     assert flux_state(flux_ks(), SHA, None)[0] == "synced"
     assert flux_state(flux_ks(applied=OLD, attempted=OLD), SHA, None)[0] == "waiting"
@@ -223,13 +203,13 @@ SEL = "app.kubernetes.io/name=web"
 
 
 def test_healthy_after_settle(tmp_path):
-    k = FakeKube({(sb.ARGO_APP, "argocd", "shop-web"): argo_app(),
+    k = FakeKube({(sb.FLUX_KS, "shop-web", "shop-web"): flux_ks(),
                   ("deployments.apps", "shop-web", "web"): deployment("web"),
                   ("pods", "shop-web", SEL): {"items": [pod("web-1"), pod("web-2")]}})
     doc, clock = run(output_repo(tmp_path), k)
     r = doc["components"][0]
     assert r["status"] == HEALTHY and r["status_text"] == "deployed and healthy" and r["ready"] == "2/2"
-    assert r["gitops"] == "argocd" and clock.t >= 30            # watched for the settle window
+    assert r["gitops"] == "flux" and clock.t >= 30            # watched for the settle window
     assert not any(c[0] == "logs" for c in k.calls)
 
 
@@ -239,7 +219,7 @@ def test_restart_while_watched_is_not_healthy_yet(tmp_path):
     def pods():
         n["i"] += 1
         return {"items": [pod("web-1", restarts=min(n["i"], 2))]}
-    k = FakeKube({(sb.ARGO_APP, "argocd", "shop-web"): argo_app(),
+    k = FakeKube({(sb.FLUX_KS, "shop-web", "shop-web"): flux_ks(),
                   ("deployments.apps", "shop-web", "web"): deployment("web", want=1, ready=1),
                   ("pods", "shop-web", SEL): pods})
     doc, clock = run(output_repo(tmp_path), k, settle=30)
@@ -251,8 +231,7 @@ def test_restart_while_watched_is_not_healthy_yet(tmp_path):
 def test_crash_loop_is_failing_with_log_diagnosis_and_learned(tmp_path):
     log = ("Unhandled exception. System.PlatformNotSupportedException: System.Drawing.Common is not supported "
            "on this platform.\n   at System.Drawing.Image.FromFile(String)\nPassword=hunter2;")
-    k = FakeKube({(sb.ARGO_APP, "argocd", "shop-web"): KubeError("forbidden", "forbidden"),
-                  (sb.FLUX_KS, "shop-web", "shop-web"): flux_ks(applied=OLD, ready="False", reason="HealthCheckFailed"),
+    k = FakeKube({(sb.FLUX_KS, "shop-web", "shop-web"): flux_ks(applied=OLD, ready="False", reason="HealthCheckFailed"),
                   ("deployments.apps", "shop-web", "web"): deployment("web", want=1, ready=0),
                   ("pods", "shop-web", SEL): {"items": [pod("web-1", ready=False, restarts=4, waiting="CrashLoopBackOff",
                                                             last=("Error", 134))]},
@@ -283,7 +262,7 @@ def test_crash_loop_is_failing_with_log_diagnosis_and_learned(tmp_path):
 
 
 def test_image_pull_is_environment_and_never_learned(tmp_path):
-    k = FakeKube({(sb.ARGO_APP, "argocd", "shop-web"): argo_app(health="Degraded"),
+    k = FakeKube({(sb.FLUX_KS, "shop-web", "shop-web"): flux_ks(),
                   ("deployments.apps", "shop-web", "web"): deployment("web", want=1, ready=0),
                   ("pods", "shop-web", SEL): {"items": [pod("web-1", ready=False, waiting="ImagePullBackOff")]},
                   ("events", "shop-web", None): {"items": [
@@ -298,7 +277,7 @@ def test_image_pull_is_environment_and_never_learned(tmp_path):
 
 
 def test_missing_database_is_external(tmp_path):
-    k = FakeKube({(sb.ARGO_APP, "argocd", "shop-web"): argo_app(),
+    k = FakeKube({(sb.FLUX_KS, "shop-web", "shop-web"): flux_ks(),
                   ("deployments.apps", "shop-web", "web"): deployment("web", want=1, ready=0),
                   ("pods", "shop-web", SEL): {"items": [pod("web-1", ready=False, restarts=5, waiting="CrashLoopBackOff")]}},
                  logs={"web-1": "Microsoft.Data.SqlClient.SqlException (0x80131904): A network-related or "
@@ -309,7 +288,7 @@ def test_missing_database_is_external(tmp_path):
 
 
 def test_oom_becomes_a_config_finding(tmp_path):
-    k = FakeKube({(sb.ARGO_APP, "argocd", "shop-web"): argo_app(),
+    k = FakeKube({(sb.FLUX_KS, "shop-web", "shop-web"): flux_ks(),
                   ("deployments.apps", "shop-web", "web"): deployment("web", want=1, ready=0),
                   ("pods", "shop-web", SEL): {"items": [pod("web-1", ready=False, restarts=3, waiting="CrashLoopBackOff",
                                                             last=("OOMKilled", 137))]}})
@@ -319,7 +298,7 @@ def test_oom_becomes_a_config_finding(tmp_path):
 
 
 def test_read_only_filesystem_becomes_a_plan_rule(tmp_path):
-    k = FakeKube({(sb.ARGO_APP, "argocd", "shop-web"): argo_app(),
+    k = FakeKube({(sb.FLUX_KS, "shop-web", "shop-web"): flux_ks(),
                   ("deployments.apps", "shop-web", "web"): deployment("web", want=1, ready=0),
                   ("pods", "shop-web", SEL): {"items": [pod("web-1", ready=False, restarts=3, waiting="CrashLoopBackOff")]}},
                  logs={"web-1": "System.UnauthorizedAccessException: Access to the path '/app/cache/x.bin' is denied."})
@@ -332,7 +311,7 @@ def test_read_only_filesystem_becomes_a_plan_rule(tmp_path):
 
 
 def test_rollout_that_never_finishes_is_pending(tmp_path):
-    k = FakeKube({(sb.ARGO_APP, "argocd", "shop-web"): argo_app(health="Progressing"),
+    k = FakeKube({(sb.FLUX_KS, "shop-web", "shop-web"): flux_ks(),
                   ("deployments.apps", "shop-web", "web"): deployment("web", want=2, ready=1),
                   ("pods", "shop-web", SEL): {"items": [pod("web-1"), pod("web-2", ready=False,
                                                                           unschedulable="0/3 nodes: Insufficient memory")]}})
@@ -355,7 +334,7 @@ def test_rollout_that_never_finishes_is_pending(tmp_path):
 
 
 def test_sync_never_reaches_our_commit(tmp_path):
-    k = FakeKube({(sb.ARGO_APP, "argocd", "shop-web"): argo_app(rev=OLD)})
+    k = FakeKube({(sb.FLUX_KS, "shop-web", "shop-web"): flux_ks(applied=OLD, attempted=OLD)})
     doc, clock = run(output_repo(tmp_path), k, timeout=60)
     r = doc["components"][0]
     assert r["status"] == PENDING and OLD[:12] in r["reason"] and clock.t >= 60
@@ -366,22 +345,21 @@ def test_app_not_found_and_sync_failure(tmp_path):
     doc, _ = run(output_repo(tmp_path), FakeKube({}), timeout=30)
     r = doc["components"][0]
     assert r["status"] == NOT_FOUND and "bootstrap applied?" in r["reason"]
-    k = FakeKube({(sb.ARGO_APP, "argocd", "shop-web"): argo_app(phase="Failed", status="OutOfSync",
-                                                                message="namespaces forbidden")})
+    k = FakeKube({(sb.FLUX_KS, "shop-web", "shop-web"): flux_ks(applied=OLD, ready="False", reason="ReconciliationFailed",
+                                                          message="namespaces forbidden")})
     doc, _ = run(output_repo(tmp_path / "2"), k)
     assert doc["components"][0]["status"] == FAILING and "namespaces forbidden" in doc["components"][0]["reason"]
 
 
 def test_forbidden_points_at_the_rbac_file(tmp_path):
-    k = FakeKube({(sb.ARGO_APP, "argocd", "shop-web"): KubeError("forbidden", "forbidden"),
-                  (sb.FLUX_KS, "shop-web", "shop-web"): KubeError("forbidden", "forbidden")})
+    k = FakeKube({(sb.FLUX_KS, "shop-web", "shop-web"): KubeError("forbidden", "forbidden")})
     doc, _ = run(output_repo(tmp_path), k)
     assert doc["components"][0]["status"] == "error" and "verify-rbac.yaml" in doc["components"][0]["reason"]
 
 
 def test_cronjob_scheduled_and_last_run(tmp_path):
     root = output_repo(tmp_path, components=(("report", "CronJob"),))
-    objs = {(sb.ARGO_APP, "argocd", "shop-web"): argo_app(), ("cronjobs.batch", "shop-web", "report"): {},
+    objs = {(sb.FLUX_KS, "shop-web", "shop-web"): flux_ks(), ("cronjobs.batch", "shop-web", "report"): {},
             ("jobs.batch", "shop-web", None): {"items": []}}
     doc, clock = run(root, FakeKube(objs))
     assert doc["components"][0]["status"] == SCHEDULED and clock.t == 0
@@ -396,7 +374,7 @@ def test_cronjob_scheduled_and_last_run(tmp_path):
 
 
 def test_missing_workload_is_not_found(tmp_path):
-    k = FakeKube({(sb.ARGO_APP, "argocd", "shop-web"): argo_app()})
+    k = FakeKube({(sb.FLUX_KS, "shop-web", "shop-web"): flux_ks()})
     doc, _ = run(output_repo(tmp_path), k)
     assert doc["components"][0]["status"] == NOT_FOUND and "Deployment web" in doc["components"][0]["reason"]
 
@@ -434,14 +412,12 @@ def test_verify_rbac_is_least_privilege():
     assert verbs == {"get", "list"}                                        # read only, not even watch
     resources = {res for r in roles for rule in r["rules"] for res in rule["resources"]}
     assert "secrets" not in resources and "configmaps" not in resources
-    argo = next(r for r in roles if r["metadata"]["namespace"] == "argocd")
-    assert argo["rules"] == [{"apiGroups": ["argoproj.io"], "resources": ["applications"],
-                              "resourceNames": ["billing", "shop-web"], "verbs": ["get"]}]
+    assert not [r for r in roles if r["metadata"]["namespace"] == "argocd"]      # Flux only
     shop = next(r for r in roles if r["metadata"]["namespace"] == "shop-web")
     flux = [x for x in shop["rules"] if x["apiGroups"] == ["kustomize.toolkit.fluxcd.io"]][0]
     assert flux["resourceNames"] == ["shop-web"]
     binds = [d for d in docs if d["kind"] == "RoleBinding"]
-    assert len(binds) == 3 and all(b["subjects"] == [{"kind": "ServiceAccount", "name": sb.VERIFIER,
+    assert len(binds) == 2 and all(b["subjects"] == [{"kind": "ServiceAccount", "name": sb.VERIFIER,
                                                       "namespace": sb.VERIFIER_NS}] for b in binds)
     sa = next(d for d in docs if d["kind"] == "ServiceAccount")
     assert sa["automountServiceAccountToken"] is False
@@ -572,7 +548,7 @@ def test_sandbox_checks_in_sql(tmp_path):
         def doc(when, status, **kw):
             return {"checked_at": when, "revision": SHA, "components": [
                 {"app": "shop", "source_key": "shop", "component": comp.name, "project": comp.project.rel,
-                 "status": status, "reason": kw.get("reason", ""), "gitops": "argocd", "ready": kw.get("ready", ""),
+                 "status": status, "reason": kw.get("reason", ""), "gitops": "flux", "ready": kw.get("ready", ""),
                  "restarts": kw.get("restarts", 0), "workloads": ["Deployment/web"], "image": "reg/shop/web:1",
                  "events": kw.get("events", []), "diagnosis": kw.get("diagnosis"), "log_tail": kw.get("log", ""),
                  "url": "https://web-shop.sandbox.example.com/", "url_check": "HTTP 503"},

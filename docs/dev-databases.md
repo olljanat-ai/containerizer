@@ -83,8 +83,6 @@ scan worker ──reads DevDatabase──> builds <registry>/<app>/devdb:<tag> (
 | `NetworkPolicy devdb` | Ingress on that port only from the application's own pods (`app.kubernetes.io/part-of`); egress to DNS only. |
 | `Password` + `ExternalSecret` `devdb`, `devdb-admin` | External Secrets Operator's [Password generator](https://external-secrets.io/latest/api/generator/password/) creates the `app` and admin (`sa`, `postgres` or `root`) passwords in the cluster, once (`refreshInterval: "0"`). They never leave the cluster and need nothing in the secret store ([external-secrets.md](external-secrets.md)). |
 
-The Argo CD AppProject allows exactly these kinds, because they are part of the generated set.
-
 Two details of the SQL Server image:
 
 - **`setcap -r /opt/mssql/bin/sqlservr`.** The SQL Server binary carries the file capability

@@ -145,8 +145,7 @@ spec:
 - No `ingressClassName` is set, so the cluster's default class applies. On k3s that is Traefik.
 - The component's NetworkPolicy already admits its port from other namespaces, so the ingress controller
   can reach it. The default-deny policy stays.
-- The Argo CD AppProject allows `Ingress` because it is one of the generated kinds. The Flux tenant's
-  `admin` role covers it in the namespace.
+- The Flux tenant's `admin` role covers `Ingress` in the namespace.
 - **On another cluster**, give the ingress controller the wildcard certificate as its default. For
   ingress-nginx, use `--default-ssl-certificate`. For Traefik, use a `default` TLSStore. Redirect HTTP to
   HTTPS at the entry point: the Traefik annotations above put the route on `websecure` only.

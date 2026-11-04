@@ -220,8 +220,6 @@ def test_generated_app_gets_an_ingress_per_web_component(tmp_path):
     assert len(ing) == 1 and ing[0]["spec"]["rules"][0]["host"] == f"{comp}-{k8s_name(a.name)}.sandbox.example.com"
     assert not [d for d in docs if d["kind"] == "Secret" and d.get("type") == "kubernetes.io/tls"]
     assert not [v for v in lint_manifests(docs) if v.check not in ("image-digest",)] or True
-    proj = next(yaml.safe_load_all((out / "gitops" / "argocd" / "project.yaml").read_text()))
-    assert {"group": "networking.k8s.io", "kind": "Ingress"} in proj["spec"]["namespaceResourceWhitelist"]
     out2 = tmp_path / "out2"                         # no domain: no Ingress
     generate_app(a, out2, gitops=GitOpsOptions())
     assert "kind: Ingress" not in (out2 / comp / "k8s.yaml").read_text()
@@ -502,9 +500,9 @@ def test_health_check_opens_the_url(tmp_path, monkeypatch):
     cfg = tmp_path / "kubeconfig"
     cfg.write_text("apiVersion: v1\nkind: Config\n")
     monkeypatch.setenv("KUBECONFIG", str(cfg))
-    from test_sandbox import SEL, Clock, FakeKube, argo_app, deployment, pod
+    from test_sandbox import SEL, Clock, FakeKube, deployment, flux_ks, pod
     root = _repo_with_ingress(tmp_path)
-    k = FakeKube({(sb.ARGO_APP, "argocd", "shop-web"): argo_app(),
+    k = FakeKube({(sb.FLUX_KS, "shop-web", "shop-web"): flux_ks(),
                   ("deployments.apps", "shop-web", "web"): deployment("web"),
                   ("pods", "shop-web", SEL): {"items": [pod("web-1"), pod("web-2")]}})
     asked = []
