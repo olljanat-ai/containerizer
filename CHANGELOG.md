@@ -8,6 +8,13 @@ qcow2 and VHDX images as release assets.
 
 ## Unreleased
 
+- Make it A keeps more of the LLM's work. An answer was applied all or nothing, so one harmless slip threw
+  away all of its edits: an edit that changes nothing, removing a package the project does not reference, or a
+  connection string with `User ID=sa;Password=…` in place of Windows authentication. The first two are now left
+  out, and the credential is cut out of the edit, which then applies: the sandbox gives the connection string
+  with its credentials from a secret (`ConnectionStrings__<Name>`). In the lab, field-service and
+  document-control lost every edit of a round this way. An edit whose search lines end with a space the file
+  does not have (`using System; `) applies too, where it said the line is not in the file and showed the same line.
 - The appliance's configuration files (`/etc/containerizer`: the `.env` files, `egress.json`, `network/`) are copied
   without their secrets to `.appliance/<CZ_HOSTNAME>/config/` of every output repository at every boot, in one commit
   when something changed: their history is in Git ([backup](docs/appliance-admin.md#backup)).
