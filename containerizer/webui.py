@@ -284,15 +284,6 @@ def refactor_estimates(admin, app: dict) -> dict:
         out[(None, "rating-a")] = speed.job({"Kind": rf.KIND, "InputChars": rf.order_chars(pl), "Model": None})
     except rf.RefactorError:
         pass
-    targets = [(None, None)] + [(int(c["ComponentId"]), c["ProjectPath"]) for c in app.get("components") or []]
-    for cid, path in targets:
-        for goal in ("fix", "stateless"):
-            try:
-                pl = rf.build_payload(doc, {"type": "none"}, None, component=path, goal=goal)
-            except rf.RefactorError:
-                continue
-            chars = rf.estimate_chars(pl) + (6000 * len(pl.get("state") or []) if goal == "stateless" else 0)
-            out[(cid, goal)] = speed.job({"Kind": rf.KIND, "InputChars": chars, "Model": None})
     return out
 
 
@@ -355,12 +346,15 @@ def existing_offer(o: dict, ctx: dict, app_id, comp_id, goal: str, speed=None) -
         head = "A patch is ready" if st == "verified" else "A patch was made"
         links = (f" <a href='/admin/refactoring/{jid}'>Open the patch</a> · "
                  f"<a href='/admin/refactoring/{jid}.patch'>Download .patch</a>") if staff else ""
+        # the earlier targeted or data-move orders are not offered again: Make it A does both (one button)
         again = (" " + order_button(app_id, comp_id, goal, ctx["csrf"], "Request a new one", None, small=True)
-                 if staff else "")
+                 if staff and goal == "rating-a" else "")
         return (f"<b>{head}:</b> {chip} <span class='small'>{e(o.get('Summary') or '')}</span>"
                 + (f" <span class='muted small'>{e(eff)}</span>" if eff else "") + links
-                + f"<div class='muted small'>Made for commit {e(str(o.get('SourceCommit') or '')[:12])}; request a new "
-                  f"one when the code has changed.{again}</div>")
+                + f"<div class='muted small'>Made for commit {e(str(o.get('SourceCommit') or '')[:12])}; "
+                  + ("request a new one when the code has changed." if goal == "rating-a" else
+                     "<a href='#refactoring'>Make it A</a> makes these changes and the rest, verified in the sandbox.")
+                  + f"{again}</div>")
     link = f" <a href='/admin/refactoring/{jid}'>Follow it</a>" if staff else ""
     return (f"<b>Already requested:</b> {chip}" + (f" <span class='muted small'>{e(eff)}</span>" if eff else "") + link)
 
@@ -432,16 +426,15 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
                     + (f"<div class='muted'>{e(why)}</div>" if why else "") + "</td>"
                     f"<td class='small nowrap'>{when}</td></tr>")
     out = ["<section class='card refactor' id='refactoring'><h2>Refactoring</h2>" + (ctx or {}).get("notice", "") +
-           "<p class='muted small'>A refactoring patch has the LLM make the targeted code changes this application needs "
-           "(its refactor findings), then applies the patch to the assessed commit, runs the rules on it again and builds "
-           "and runs the changed components. The patch is a download with how to apply it: nothing is written to the "
-           "repository, and every change needs a review.</p>"]
+           "<p class='muted small'>A patch has the LLM make the code changes this application needs, then applies it "
+           "to the assessed commit, runs the rules on it again and builds and runs the changed components. The patch "
+           "is a download with how to apply it: nothing is written to the repository, and every change needs a "
+           "review.</p>"]
     if rows:
         out.append("<table><thead><tr><th>Component</th><th>Status</th><th>Result</th><th>When</th></tr></thead>"
                    f"<tbody>{''.join(rows)}</tbody></table>")
     _, stateful, refactor = rating_why(app)
     if staff and app.get("Rating") == "B":
-        hidden = (f"{ctx['csrf']}<input type='hidden' name='ApplicationId' value='{int(app['ApplicationId'])}'>")
         if refactor or stateful:
             est = (ctx.get("estimates") or {}).get((None, "rating-a"))
             out.append("<h3>Make it A</h3><p class='muted small'>One order for everything that keeps this application "
@@ -455,38 +448,6 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
                           order_button(app["ApplicationId"], None, "rating-a", ctx["csrf"], "Make it A", est)
                           + (" <span class='muted small'>(first pass; repair rounds and a second pass add more)</span>"
                              if est else "")))
-        if refactor:
-            opts = "".join(f"<option value='{int(c['ComponentId'])}'>{e(c['ComponentName'])}</option>" for c in refactor)
-            have = existing_order(ctx.get("orders"), None, "fix")
-            out.append("<h3>Targeted code changes</h3>" + (
-                f"<div class='note offer'>{existing_offer(have, ctx, app['ApplicationId'], None, 'fix', ctx.get('speed'))}</div>"
-                if have else ""))
-            if not have:                     # an order is there already: its patch, and "Request a new one"
-                out.append(f"<form method='post' action='/admin/refactoring/new' class='formrow'>"
-                       f"{hidden}<input type='hidden' name='Goal' value='fix'>"
-                       f"<select name='Component' aria-label='Component'><option value=''>All components that need changes"
-                       f"</option>{opts}</select><label class='check'><input type='checkbox' name='IncludeConfig' value='1'> "
-                       f"also change code for configuration findings</label><button>Request a refactoring patch</button>"
-                       + (f" <span class='muted small'>{e(est_text((ctx.get('estimates') or {}).get((None, 'fix'))))} for all</span>"
-                          if (ctx.get('estimates') or {}).get((None, 'fix')) else "") + "</form>")
-        if stateful:
-            opts = "".join(f"<option value='{int(c['ComponentId'])}'>{e(c['ComponentName'])}</option>" for c in stateful)
-            have = existing_order(ctx.get("orders"), None, "stateless")
-            out.append("<h3>Make it stateless: move the data to SQL Server</h3>" + (
-                f"<div class='note offer'>{existing_offer(have, ctx, app['ApplicationId'], None, 'stateless', ctx.get('speed'))}</div>"
-                if have else ""))
-            if not have:
-                out.append(""
-                       "<p class='muted small'>The LLM changes the database library and its configuration (for example "
-                       "SQLite to SQL Server with Entity Framework Core, the connection string from configuration, logs to "
-                       "the console) and says in the notes how to move the existing data. Without code changes the "
-                       "component already runs as a single replica with its data file on a volume.</p>"
-                       f"<form method='post' action='/admin/refactoring/new' class='formrow'>{hidden}"
-                       f"<input type='hidden' name='Goal' value='stateless'>"
-                       f"<select name='Component' aria-label='Component'><option value=''>All components that keep data"
-                       f"</option>{opts}</select><button>Request a stateless patch</button>"
-                       + (f" <span class='muted small'>{e(est_text((ctx.get('estimates') or {}).get((None, 'stateless'))))} for all</span>"
-                          if (ctx.get('estimates') or {}).get((None, 'stateless')) else "") + "</form>")
         if not refactor and not stateful:
             out.append("<p class='muted small'>No finding of this application can be fixed in code.</p>")
     elif ctx.get("signin") and app.get("Rating") == "B":
@@ -861,6 +822,9 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
     refactor = dict(refactor or {})
     refactor.update(orders=app.get("refactors") or [], speed=app.get("llm_speed"),
                     paths={int(c["ComponentId"]): c.get("ProjectPath") for c in app.get("components") or []})
+    # the components Make it A changes (it is offered for B applications): their "How to fix" points to it
+    _, st_, rf_ = rating_why(app)
+    refactor["fixable"] = {int(c["ComponentId"]) for c in st_ + rf_} if r == "B" else set()
     crumbs = (f"<a href='/'>All</a> › <a href='{e(_bu_href(app['BusinessUnitId']))}'>"
               f"{e(app['BusinessUnitName'] or UNASSIGNED)}</a> › {e(app['ProductName'] or UNASSIGNED)}"
               f"{_info_link(app.get('ProductInfoUrl'))}")
@@ -1013,7 +977,7 @@ def _plan_cell(app_id, c: dict, m: dict | None, ctx: dict | None = None) -> str:
     est = (ctx or {}).get("estimates") or {}
     if m:
         return f"<a href='#m{cid}'>How to fix ↓</a>"
-    if (cid, "fix") in est or (cid, "stateless") in est:
+    if cid in ((ctx or {}).get("fixable") or ()):
         return "<a href='#refactoring'>How to fix ↓</a>"
     return "<span class='muted'>-</span>"
 
@@ -1049,17 +1013,15 @@ def _migration(app_id, m: dict | None, ctx: dict | None = None) -> str:
         out.append("<table><thead><tr><th>Action</th><th>Replace</th><th>With</th>"
                    "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>")
     ctx = ctx or {}
-    est = ctx.get("estimates") or {}
-    goal = "fix" if (cid, "fix") in est else "stateless" if (cid, "stateless") in est else None
-    have = existing_order(ctx.get("orders"), (ctx.get("paths") or {}).get(cid), goal) if goal else None
+    path = (ctx.get("paths") or {}).get(cid)
+    # an order made before Make it A was the only one (one component's targeted changes or data move): still shown
+    have = next(((g, o) for g in ("fix", "stateless") if (o := existing_order(ctx.get("orders"), path, g))), None)
     if have:
-        out.append("<div class='note offer'>" + existing_offer(have, ctx, app_id, cid, goal, ctx.get("speed")) + "</div>")
-    elif goal and ctx.get("csrf"):
-        out.append("<div class='note offer'><b>Or let Containerizer make the change:</b> the LLM writes the patch, "
-                   "Containerizer applies it, checks it with the rules and builds and runs it, and you download "
-                   "a verified patch. "
-                   + order_button(app_id, cid, goal, ctx["csrf"], "Request a refactoring patch", est[(cid, goal)])
-                   + "</div>")
+        out.append("<div class='note offer'>" + existing_offer(have[1], ctx, app_id, cid, have[0], ctx.get("speed")) + "</div>")
+    elif cid in (ctx.get("fixable") or ()) and ctx.get("csrf"):
+        out.append("<div class='note offer'><b>Or let Containerizer make the change:</b> "
+                   "<a href='#refactoring'>Make it A</a> has the LLM make it, with every other change the application "
+                   "needs, verifies the patch by building and running it, and deploys the patched copy to the sandbox.</div>")
     return "".join(out) + "</section>"
 
 

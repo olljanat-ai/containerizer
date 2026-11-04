@@ -17,7 +17,7 @@ credentials stay read only. You review the patch, apply it yourself and open the
 
 | Role | On the application's results page | Admin → Refactoring |
 | --- | --- | --- |
-| Admin, Operator | The **Refactoring** box: the orders and their status, and **Request a refactoring patch** | Every order: the patch, the coloured diff, Download .patch |
+| Admin, Operator | The **Refactoring** box: the orders and their status, and **Make it A** | Every order: the patch, the coloured diff, Download .patch |
 | Product owner, Viewer, anyone without sign-in | The orders and their status only | No access |
 
 Patches contain the application's source code, so only operators and administrators see them, like the
@@ -25,14 +25,16 @@ other pages that act on the source (organization scans, the LLM queue). The orde
 pages (`/admin/refactoring/new`), which check the role and the form's CSRF token; on a results page served
 without sign-in the button does not show.
 
-The box shows on applications rated **B**. Choose **All components that need changes** or one component, and
-whether to **also change code for configuration findings** (below). The order needs the assessment's
+The box shows on applications rated **B**, with one button: [**Make it A**](#make-it-a), one order for every
+change the application needs. The narrower orders it replaced on the page (the targeted changes of one component,
+or moving one component's data to SQL Server) are still there on the command line (`containerizer refactor
+--goal fix|stateless`, with `--component`), and orders made earlier keep showing with their patches. The order needs the assessment's
 commit and the repository's clone on this machine: it works for applications that an
 [organization scan](scheduled-scans.md) assessed here. For anything else, use the command line on a
 checkout.
 
-![The Refactoring box on a B-rated application's results page: the orders and Request a refactoring patch](images/results-refactoring-box.png#only-light){ .cz-shot }
-![The Refactoring box on a B-rated application's results page: the orders and Request a refactoring patch](images/results-refactoring-box-dark.png#only-dark){ .cz-shot }
+![The Refactoring box on a B-rated application's results page: the orders and Make it A](images/results-refactoring-box.png#only-light){ .cz-shot }
+![The Refactoring box on a B-rated application's results page: the orders and Make it A](images/results-refactoring-box-dark.png#only-dark){ .cz-shot }
 
 ## What is sent to the LLM
 
@@ -162,7 +164,7 @@ yourself.
 
 **Make it A** is one order for everything that keeps a B-rated application from A: its refactor findings,
 its configuration findings that name a file, and, for the server components that keep their own data, the
-move of that data to SQL Server (the same guidance as **Make it stateless**). It runs on request only:
+move of that data to SQL Server. It runs on request only:
 **Make it A** in the Refactoring box of the results page (operators, administrators and the application's
 product owners, with the queue's estimate), or **Make it A: every B application** for administrators (below). A scan
 never orders one by itself.
@@ -172,8 +174,8 @@ components that rate A once their code changes are made. For an application with
 a Linux container (no Refactoring box), the plan lists the same changes with the findings to make them by hand,
 and shows the components that are ready already in the sandbox.
 
-![The Refactoring box: an order with its tokens and time, Make it A with its estimate, and a stateless patch that was already made offered instead of a new order](images/results-make-it-a.png#only-light){ .cz-shot }
-![The Refactoring box: an order with its tokens and time, Make it A with its estimate, and a stateless patch that was already made offered instead of a new order](images/results-make-it-a-dark.png#only-dark){ .cz-shot }
+![The Refactoring box: Make it A with its estimate](images/results-make-it-a.png#only-light){ .cz-shot }
+![The Refactoring box: Make it A with its estimate](images/results-make-it-a-dark.png#only-dark){ .cz-shot }
 
 Where an order of the same kind is already waiting, running or has a patch, the box offers that order (its
 status, **Open the patch**, **Download .patch** and the commit it was made for) instead of a new one;

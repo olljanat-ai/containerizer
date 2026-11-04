@@ -63,7 +63,7 @@ Applications not yet mapped to a product appear on the front page for administra
 
 Refactoring patches contain source code: product owners and viewers see an order's status on the
 application's results page, but not the patch, and only administrators and operators see the
-**Request a refactoring patch** button ([who can order one](refactoring.md#who-can-order-one)).
+**Make it A** button ([who can order one](refactoring.md#who-can-order-one)).
 
 Nobody outside these lists gets into `/admin`. One person can have several roles; admin includes all of
 them. The roles are enforced by the web UI and the API, and every change in the change history records
