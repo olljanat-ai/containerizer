@@ -350,12 +350,14 @@ With **Ask the LLM** on, **LLM reviews** chooses when the LLM is asked:
 
 - the jobs waiting, in the order the runner takes them: the repository and component, why it is queued
   (uncertain, or a second opinion on the rules' blocker or rewrite verdict) and the estimated tokens and
-  time. **Top**, **Up**, **Down** and **Bottom** move a job; new jobs still go in by their priority.
-  **Skip** takes one out of the queue. **Cancel** stops a job that is being asked: the runner sees it within a
+  time; for a running job, what it does now: **Asking** an LLM (named) only while one of its calls is answered,
+  **Waiting for an LLM** while a call waits for a free request, else **Running** with its progress (generating,
+  verifying, deploying). **Top**, **Up**, **Down** and **Bottom** move a job; new jobs still go in by their priority.
+  **Skip** takes one out of the queue. **Cancel** stops a running job: the runner sees it within a
   few seconds, its LLM calls stop at once (the connection is closed, so a self-hosted LLM stops generating), a
   refactoring order does not go on to its build, the sandbox or the next order of an LLM-heavy chain, and the job
   is recorded as skipped (*cancelled by …*); **Requeue** starts it again;
-- at the top, the totals: jobs waiting and being asked, by kind (uncertain, second opinion); their
+- at the top, the totals: jobs waiting and running, by kind (uncertain, second opinion); their
   estimated tokens in and out; the LLM time they need at the measured speed with the parallel requests
   set, for example *~7 h 20 min of LLM time (3 in parallel)*, and when they would all be done if the
   queue ran without a pause; what the estimate is learned from; and, outside the hours, when they next
@@ -369,10 +371,14 @@ With **Ask the LLM** on, **LLM reviews** chooses when the LLM is asked:
   day; From and To empty: all day; 22:00 to 06:00 runs past midnight, and the night belongs to the day it
   started); **Only when idle**: no organization scan running and the machine's 1-minute load average per
   CPU below the limit (0: the load is not looked at); **Parallel requests**, as many as the worker's own
-  LLM answers at once (a registered LLM has its own, see [several LLMs at once](source-control.md#the-llm)); and
-  the **built-in LLM's order** and **jobs up to** beside the registered LLMs (the appliance only). The page lists
-  the LLMs in their order, and each job goes to the first that takes its size and has a free request. The runner
-  looks at them before each job; a job it has started finishes.
+  LLM answers at once (a registered LLM has its own, see [several LLMs at once](source-control.md#the-llm));
+  **Jobs at once**, how many jobs the runner works on at the same time, asking an LLM or building and verifying
+  (0, the default: every LLM request at once plus one); and the **built-in LLM's order** and **calls up to** beside
+  the registered LLMs (the appliance only). The page lists the LLMs in their order with the requests in progress on
+  each (**Asking now**): each LLM call of a job goes to the first that takes its size and has a free request, and
+  gives it back once answered, so a job that builds or deploys holds no LLM
+  ([how jobs and LLM requests are scheduled](source-control.md#how-jobs-and-llm-requests-are-scheduled)). The
+  runner looks at the settings before each job; a job it has started finishes.
 - **Approval**: which kinds of job wait for an administrator's approval (component reviews, refactoring orders,
   egress reviews and link reviews; all of them by default), and the rules that approve some by themselves:
   **Approve automatically under** a number of estimated input tokens (0: none, every job of the ticked kinds

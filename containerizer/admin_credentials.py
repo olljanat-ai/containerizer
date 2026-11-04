@@ -285,10 +285,10 @@ and including /v1)</span></label><input id='lApiUrl' name='ApiUrl' type='url' ma
             f"<div class='muted small'>{e(r['ApiUrl'] or r['Host'])}</div></td>"
             f"<td>{e(_size_text(r.get('LlmMaxTokens')))}</td><td>{int(r.get('LlmParallel') or 1)}</td>"
             f"<td>{_chips(status(r, kid, today))}</td></tr>" for r in llms)
-        llm_html = ("<p class='muted'>The LLM queue gives each job to the first LLM in this order that takes its size and "
-                    "has a free request, so several LLMs (a GPU server, a CPU server, the built-in LLM) answer at once. "
+        llm_html = ("<p class='muted'>The LLM queue gives each LLM call of its jobs to the first LLM in this order that "
+                    "takes its size and has a free request, so several LLMs (a GPU server, a CPU server, the built-in LLM) answer at once. "
                     "Scans that ask directly use the first one.</p><table><thead><tr><th>Order</th><th>LLM</th>"
-                    "<th>Jobs up to</th><th>At once</th><th>Key</th></tr></thead><tbody>" + trs + "</tbody></table>"
+                    "<th>Calls up to</th><th>At once</th><th>Key</th></tr></thead><tbody>" + trs + "</tbody></table>"
                     "<div class='meta'><div><span class='label'>Used by</span> "
                     + (", ".join(f"<a href='/admin/scans/{int(x['ScanId'])}'>{e(x['Name'])}</a>" for x in used)
                        or "<span class='muted'>no scan asks the LLM</span>") + "</div></div>")
@@ -361,12 +361,12 @@ def _size_text(n) -> str:
 
 
 def _llm_route_inputs(prefix: str, r: dict | None = None) -> str:
-    """The LLM queue's use of an LLM: its place in the order, the biggest job, requests at once."""
+    """The LLM queue's use of an LLM: its place in the order, the biggest call, requests at once."""
     r = r or {}
     return (f"<label for='{prefix}LlmOrder'>Order <span class='muted'>(the LLM queue tries the LLMs from the lowest number "
             f"up)</span></label><input id='{prefix}LlmOrder' name='LlmOrder' type='number' min='0' max='1000' "
             f"value='{_order(r)}'>"
-            f"<label for='{prefix}LlmMaxTokens'>Jobs up to <span class='muted'>(estimated input tokens; bigger jobs go to "
+            f"<label for='{prefix}LlmMaxTokens'>Calls up to <span class='muted'>(estimated input tokens of one LLM call; bigger calls go to "
             f"the next LLM in the order; 0: any size)</span></label><input id='{prefix}LlmMaxTokens' name='LlmMaxTokens' "
             f"type='number' min='0' max='10000000' value='{int(r.get('LlmMaxTokens') or 0)}'>"
             f"<label for='{prefix}LlmParallel'>Requests at once <span class='muted'>(as many as the server answers "
@@ -376,7 +376,7 @@ def _llm_route_inputs(prefix: str, r: dict | None = None) -> str:
 
 def validate_route(form: dict) -> tuple[dict, list[str]]:
     errors, v = [], {}
-    for k, label, lo, hi, default in (("LlmOrder", "Order", 0, 1000, 10), ("LlmMaxTokens", "Jobs up to", 0, 10_000_000, 0),
+    for k, label, lo, hi, default in (("LlmOrder", "Order", 0, 1000, 10), ("LlmMaxTokens", "Calls up to", 0, 10_000_000, 0),
                                       ("LlmParallel", "Requests at once", 1, 64, 1)):
         raw = form.get(k, [str(default)])[0].strip() or str(default)
         if not re.fullmatch(r"\d{1,8}", raw) or not lo <= int(raw) <= hi:
@@ -508,7 +508,7 @@ def edit_page(adm, conn, s, a, ident: int, flash: str) -> Response:
                          "llm": "the evidence of uncertain components is sent to this server"}[c.purpose]),
              ("Provider", e((cr.LLM_PROVIDERS if llm else cr.PROVIDER_TEXT).get(c.provider, c.provider))),
              ("Model", e(c.model) if llm else ""), ("Host", e(r["Host"])),
-             ("LLM queue", f"order {_order(r)}, jobs up to {e(_size_text(r.get('LlmMaxTokens')))}, "
+             ("LLM queue", f"order {_order(r)}, calls up to {e(_size_text(r.get('LlmMaxTokens')))}, "
                            f"{int(r.get('LlmParallel') or 1)} at once" if llm else ""),
              ("Server", e(r["ApiUrl"] or "")), ("Token", f"{_chips(status(r, kid))} saved {_d(r['TokenSetAt'])} by "
                                                         f"{e(r['TokenSetBy'])}"),

@@ -104,13 +104,16 @@ hands the setting to the AI code for the run only, never through its environment
 docker processes a scan starts never see the key. Allow the server's host on **Admin → Firewall**.
 
 **Several LLMs at once.** More than one LLM can be registered: a GPU server, a CPU server, the Claude API.
-Each one has an **Order**, **Jobs up to** (estimated input tokens; 0: any size) and **Requests at once**.
-The [LLM queue](#queued-llm-reviews) gives each job to the first LLM in the order that takes its size and has
-a free request, and they all answer at the same time: put the small, cheap servers first with a size limit
-and a big one last with any size. A job no LLM takes waits (the LLM queue page warns about it). On the
-appliance the built-in LLM can join the list too (LLM queue → Settings: its order and the biggest job it
-takes), with one request per server it runs. Scans that ask the LLM directly, outside the queue, use the
-first LLM in the order. Two LLMs on the same server need different hosts (one registration per server).
+Each one has an **Order**, **Jobs up to** (the biggest LLM call it takes, in estimated input tokens; 0: any
+size) and **Requests at once**. The [LLM queue](#queued-llm-reviews) gives each LLM call of a job to the first LLM
+in the order that takes the call's size and has a free request, and they all answer at the same time: put the
+small, cheap servers first with a size limit and a big one last with any size. A review, an egress or a link
+review is one call, so the limit is the job's size; a refactoring order makes one call per file (and per repair
+round), each of its own size, which may go to different LLMs. A job whose estimated size no LLM takes waits (the
+LLM queue page warns about it). On the appliance the built-in LLM can join the list too (LLM queue → Settings: its
+order and the biggest call it takes), with one request per server it runs. Scans that ask the LLM directly,
+outside the queue, use the first LLM in the order. Two LLMs on the same server need different hosts (one
+registration per server). See [how jobs and LLM requests are scheduled](#how-jobs-and-llm-requests-are-scheduled).
 
 | Example | Order | Jobs up to | At once |
 | --- | --- | --- | --- |
@@ -257,3 +260,32 @@ made from the size of what it will send, and the output tokens are learned per k
 While it runs, the queue page says how far it is (generating, verifying, deploying; for Make it A also the
 pass and the repair round), and the job links to its patch page (Admin → Refactoring). A Make it A order
 makes up to 16 LLM calls.
+
+#### How jobs and LLM requests are scheduled
+
+The queue holds LLM work and other work side by side: a refactoring order spends most of its time building,
+running and assessing its patched copy and deploying its sandbox variant, and a rebuild or an order whose answers
+are reused from other orders makes no LLM call at all. The runner keeps two limits apart:
+
+- **Jobs at once** (LLM queue → Settings; 0, the default: automatic, every LLM request at once of the LLMs in the
+  order plus one): how many jobs it works on at the same time, whatever they do. A build takes CPU and memory, as
+  does the appliance's built-in LLM on a CPU, so the automatic number stays modest; raise it on a big machine with
+  a GPU LLM elsewhere, lower it when builds and the built-in LLM slow each other down.
+- **Requests at once** of each LLM (Admin → Source control & LLM, and **Parallel requests** for the built-in LLM
+  or the worker's own LLM settings): an LLM call takes one only while it is answered, and gives it back at once. A
+  job that builds, verifies or deploys holds none.
+
+The runner starts the jobs in the queue's order (LLM-heavy first, then priority and the administrators' moves)
+while a job slot is free and the hours, idle check and pause allow it. A job whose estimate needs the LLM starts
+only when an LLM that takes its size has a request no call is waiting for and no job just started is about to use;
+until then the jobs after it that need no LLM start in its place, so work without LLM calls does not wait for an
+LLM, and LLM work does not wait for builds while an LLM is free. Each call of a running job goes to the first LLM
+in the order that takes the call's size and has a free request; when none is free, the call waits, and waiting
+calls are answered in the order their jobs started. An answer already in the cache needs no request.
+
+On the queue page a running job says what it does now: **Asking** and the LLM while one of its calls is answered,
+**Waiting for an LLM** while a call waits for a request, else **Running** with its progress (generating,
+verifying, deploying). The LLMs table shows the requests in progress on each (**Asking now**). The speed
+statistics are learned per call: each LLM's figures come from the calls it answered (their size, tokens and time,
+and the requests at once on it), not from the job's time with its builds.
+
