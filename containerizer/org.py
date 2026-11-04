@@ -1798,8 +1798,11 @@ def sandbox_step(o: OrgOptions, out: "Output", log=print) -> dict:
     """Wait for the sandbox cluster to sync what was pushed and record the health of every component:
     sandbox/HEALTH.md + health.json in the output repository, the results database, the learning loop."""
     from .sandbox import KubeOptions, SandboxOptions, summary, verify_sandbox, write_health
+    # wait_forbidden: the namespaces of apps added in this run appear only when Flux applies the commit, and the
+    # verifier gets its Role in them minutes later (cz-sandbox): until then reading them is forbidden, as for any
+    # namespace that does not exist
     so = SandboxOptions(kube=KubeOptions(kubeconfig=o.kubeconfig, context=o.kube_context),
-                        timeout=o.sandbox_timeout, llm=o.llm_heavy, model=o.model,
+                        timeout=o.sandbox_timeout, llm=o.llm_heavy, model=o.model, wait_forbidden=True,
                         llm_keys=set(o.heavy_windows or {}) if o.ai else set())
     if out.git and not out.push:
         doc = {"checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "revision": "",

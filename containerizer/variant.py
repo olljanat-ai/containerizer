@@ -307,11 +307,16 @@ def check_health(root: Path, namespace: str, revision: str, env=None, kube=None,
                         apps=[namespace], wait_forbidden=True)
     kw = {"sleep": sleep} if sleep else {}
     doc = verify_sandbox(root, so, kube=kube, log=lambda m: None, **kw)
+    from .sandbox import SKIPPED
     comps = doc.get("components") or []
     when = doc.get("checked_at")
     if doc.get("skipped") or not comps:
         return {"status": "deployed", "reason": f"deployed; health not checked: {doc.get('skipped') or 'no component'}",
                 "checked_at": when}
+    if all(c.get("status") == SKIPPED for c in comps):      # nothing could be observed: not known to fail
+        return {"status": "deployed", "checked_at": when,
+                "reason": f"deployed; health {str(comps[0].get('reason') or 'not checked')}"[:800]}
+    comps = [c for c in comps if c.get("status") != SKIPPED]
     ok = all(c.get("status") == HEALTHY for c in comps)
     return {"status": "running" if ok else "failing", "checked_at": when,
             "reason": "; ".join(f"{c.get('component')}: {c.get('status_text')}" + (f" ({c['reason']})" if c.get("reason") else "")

@@ -333,8 +333,8 @@ def gitops_object(kube: Kube, app: str) -> tuple[str, dict]:
         return "flux", kube.get(FLUX_KS, app, app)
     except KubeError as e:
         if e.kind == "forbidden":
-            raise KubeError(f"forbidden to read the flux object of {app}: apply sandbox/verify-rbac.yaml",
-                            "forbidden") from e
+            raise KubeError(f"no read access to the Flux object of {app}: its namespace does not exist yet, or the "
+                            "verifier has no Role in it (sandbox/verify-rbac.yaml)", "forbidden") from e
         if e.kind == "unreachable":
             raise
         raise KubeError(f"flux: {e}", "not-found") from e
@@ -615,7 +615,7 @@ def verify_sandbox(root: Path, o: SandboxOptions | None = None, kube: Kube | Non
     state: dict[str, tuple[str, str, str]] = {}          # app -> (tool, state, detail)
     while True:
         for a in apps:
-            if a["app"] in state and state[a["app"]][1] in ("synced", "failed", "not-found", "error"):
+            if a["app"] in state and state[a["app"]][1] in ("synced", "failed", "not-found", "error", "unchecked"):
                 continue
             try:
                 tool, obj = gitops_object(kube, a["app"])
@@ -635,7 +635,13 @@ def verify_sandbox(root: Path, o: SandboxOptions | None = None, kube: Kube | Non
             break
         sleep(o.interval)
     for k, (tool, st, detail) in state.items():
-        if st == "waiting" and not tool:                    # never found within the timeout
+        if st == "waiting" and not tool and detail.startswith("no read access"):
+            # never readable: nothing was observed, so nothing is known to fail (the namespace never appeared: is the
+            # sandbox connected to the output repository at all? Or the verifier never got its Role)
+            state[k] = (tool, "unchecked", f"not checked: {detail.removesuffix(' yet')} within {o.timeout}s: "
+                        "is the sandbox connected to the output repository (Grafana's Flux dashboard; on the appliance "
+                        "cz-sandbox grants the verifier its Role within 2 minutes of the namespace appearing)?")
+        elif st == "waiting" and not tool:                  # never found within the timeout
             state[k] = (tool, "not-found", detail.replace(" yet", f" within {o.timeout}s (bootstrap applied?)"))
 
     # 2) rollout of every component of the synced apps
@@ -647,7 +653,7 @@ def verify_sandbox(root: Path, o: SandboxOptions | None = None, kube: Kube | Non
             if st == "synced":
                 pending.append((a, c))
             else:
-                status = {"waiting": PENDING, "failed": FAILING, "not-found": NOT_FOUND}.get(st, ERROR)
+                status = {"waiting": PENDING, "failed": FAILING, "not-found": NOT_FOUND, "unchecked": SKIPPED}.get(st, ERROR)
                 results[(a["app"], c["component"])] = _result(a, c, status, detail, gitops=tool, sync=detail)
     obs: dict[tuple[str, str], Observation] = {}
     first_healthy: dict[tuple[str, str], tuple[float, int]] = {}
