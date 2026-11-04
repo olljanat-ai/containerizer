@@ -6,7 +6,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.9.3 (2026-11-04)
 
 - Make it A keeps more of the LLM's work. An answer was applied all or nothing, so one harmless slip threw
   away all of its edits: an edit that changes nothing, removing a package the project does not reference, or a
