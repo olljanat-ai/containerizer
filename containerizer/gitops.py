@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .generate import k8s_name
+from .generate import k8s_name, app_ns
 
 FLUX_NS = "flux-system"
 SOURCE_API = "source.toolkit.fluxcd.io/v1"
@@ -48,7 +48,7 @@ def gitops_manifests(a, kinds: list[tuple[str, str]], images: list[tuple[str, st
     `secret_keys`: remote keys the app's own ExternalSecrets read (granted to the namespace in the tenant)."""
     from . import eso
     o = opts or GitOpsOptions()
-    ns = k8s_name(a.name)
+    ns = app_ns(a.name)
     path = (o.path or f"deploy/{ns}").strip("/")
     oci_url = o.oci_url or f"oci://{registry}/{ns}/manifests"
     labels = {"app.kubernetes.io/part-of": ns, "app.kubernetes.io/managed-by": "containerizer"}
@@ -158,7 +158,7 @@ def image_setters(ns: str, images: list[tuple[str, str]]) -> str:
 
 def readme(a, opts: GitOpsOptions | None = None) -> str:
     o = opts or GitOpsOptions()
-    ns = k8s_name(a.name)
+    ns = app_ns(a.name)
     path = (o.path or f"deploy/{ns}").strip("/")
     return f"""# Deploying {a.name} with GitOps
 

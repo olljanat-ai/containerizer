@@ -95,6 +95,30 @@ def k8s_name(s: str) -> str:
     return s[:63].rstrip("-") or "app"
 
 
+# Namespaces an application must never get: the cluster's, the platform's and Containerizer's own. Its namespace gets
+# a Flux tenant with the `admin` role, default-deny NetworkPolicies and Pod Security labels, and is deleted with the
+# application: a scanned repository called external-secrets or containerizer-secrets must not take over (and later
+# delete) the External Secrets Operator or the secret store.
+RESERVED_NAMESPACES = frozenset({
+    "default", "flux-system", "external-secrets", "cert-manager", "ingress-nginx", "argocd", "kyverno",
+    "gatekeeper-system", "local-path-storage", "monitoring", "traefik", "metallb-system", "longhorn-system",
+    "cattle-system", "istio-system", "linkerd", "calico-system", "tigera-operator"})
+RESERVED_PREFIXES = ("kube-", "openshift", "containerizer-", "cattle-")
+
+
+def reserved_namespace(ns: str) -> bool:
+    return ns in RESERVED_NAMESPACES or ns.startswith(RESERVED_PREFIXES)
+
+
+def app_ns(name: str) -> str:
+    """The Kubernetes name of an application: its namespace, and the first part of its image paths, Ingress hosts
+    and IdP clients. k8s_name, with `app-` in front of a reserved namespace (reserved_namespace). Idempotent."""
+    ns = k8s_name(name)
+    if reserved_namespace(ns):
+        ns = k8s_name(f"app-{ns}")
+    return ns
+
+
 def buildable(c: Component) -> bool:
     """Can we produce a Linux container for this component (perhaps after code changes)?"""
     if c.tier != "server":
@@ -551,7 +575,7 @@ def dockerfile_windows(c: Component) -> str:
 
 def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> list[dict]:
     name = k8s_name(c.name)
-    labels = {"app.kubernetes.io/name": name, "app.kubernetes.io/part-of": k8s_name(a.name)}
+    labels = {"app.kubernetes.io/name": name, "app.kubernetes.io/part-of": app_ns(a.name)}
     env = [{"name": k, "value": v} for k, v in sorted(plan["env"].items())]
     secret_name = f"{name}-secrets"
     secret_keys = []
@@ -651,7 +675,7 @@ def _lab_inject(a: AppAssessment, c: Component, docs: list[dict], devdb, lab: se
     database backup takes the place of the lab SQL Server."""
     from . import labservices
     need = labservices.needs(a.repo, c)
-    ns = k8s_name(a.name)
+    ns = app_ns(a.name)
     for svc, why in need.items():
         plan.needed.setdefault(svc, {})[c.name] = why
         if svc not in lab or (devdb is not None and svc == devdb.engine):
@@ -729,19 +753,19 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
                 df = pin_digests(df)
             (cdir / "Dockerfile").write_text(df)
             (cdir / "Dockerfile.dockerignore").write_text(dockerignore(a.repo))
-            image = f"{registry}/{k8s_name(a.name)}/{k8s_name(c.name)}:{tag}"
+            image = f"{registry}/{app_ns(a.name)}/{k8s_name(c.name)}:{tag}"
             docs = k8s_manifests(a, c, plan, image)
             domain = getattr(gitops, "ingress_domain", "") if gitops is not None else ""
             if domain and plan.get("port"):         # HTTPS at <component>-<app>.<domain> (sandbox_https.py)
                 from .sandbox_https import ingress
                 svc = next(d for d in docs if d.get("kind") == "Service")
-                docs.append(ingress(domain, k8s_name(a.name), svc["metadata"]["name"], dict(svc["metadata"]["labels"])))
+                docs.append(ingress(domain, app_ns(a.name), svc["metadata"]["name"], dict(svc["metadata"]["labels"])))
             if devdb is not None:
                 from .devdb import inject
                 inject(docs, devdb, c.name)
             if idp_sb is not None:
                 from . import idp as _idp
-                clients, notes = _idp.clients_for(k8s_name(a.name), k8s_name(c.name), c.facts or {},
+                clients, notes = _idp.clients_for(app_ns(a.name), k8s_name(c.name), c.facts or {},
                                                   list(c.project.packages), idp_sb)
                 _idp.inject(docs, clients)
                 if clients or notes:
@@ -770,7 +794,7 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
         from .devdb import HOST, manifests
         if HOST in comp_docs:
             raise ValueError(f"a component is named {HOST!r}, the name of the sandbox database")
-        docs = manifests(k8s_name(a.name), devdb)
+        docs = manifests(app_ns(a.name), devdb)
         (out / HOST).mkdir(parents=True, exist_ok=True)
         (out / HOST / "k8s.yaml").write_text(_yaml_docs(docs))
         written.append(out / HOST / "k8s.yaml")
@@ -786,10 +810,10 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
         from . import labservices
         if "lab" in comp_docs:
             raise ValueError("a component is named 'lab', the folder of the lab service credentials")
-        docs = labservices.app_docs(k8s_name(a.name), lab_plan.provided)
+        docs = labservices.app_docs(app_ns(a.name), lab_plan.provided)
         (out / "lab").mkdir(parents=True, exist_ok=True)
         (out / "lab" / "k8s.yaml").write_text(_yaml_docs(docs))
-        (out / "lab" / "README.md").write_text(labservices.readme(k8s_name(a.name), lab_plan))
+        (out / "lab" / "README.md").write_text(labservices.readme(app_ns(a.name), lab_plan))
         written += [out / "lab" / "k8s.yaml", out / "lab" / "README.md"]
         all_k8s += docs
         comp_docs["lab"] = docs
@@ -810,7 +834,7 @@ def _connectivity(a: AppAssessment, out: Path, approved_egress: list[dict] | Non
     try:
         existing = {"outbound": list(approved_egress or []) + list((links or ([], []))[0]),
                     "inbound": list((links or ([], []))[1])}
-        doc = connectivity.model(a.name, a.network(), existing=existing, namespace=k8s_name(a.name))
+        doc = connectivity.model(a.name, a.network(), existing=existing, namespace=app_ns(a.name))
         return connectivity.write_files(out, doc)
     except Exception as ex:  # noqa: BLE001 - documentation only: the manifests stand
         print(f"warning: {a.name}: connectivity.yaml not written: {type(ex).__name__}: {ex}", file=sys.stderr)
@@ -845,7 +869,7 @@ def app_files(a, out: Path, all_k8s: list[dict], comp_docs: dict[str, list[dict]
     from .gitops import gitops_manifests, image_setters, readme
     written: list[Path] = []
     from . import eso
-    ns = k8s_name(a.name)
+    ns = app_ns(a.name)
     extra: list[str] = []
     if gitops is not None and gitops.image_pull_secret:
         # the pull secret the workloads reference (org --image-pull-secret): from the store, never Git
@@ -856,16 +880,16 @@ def app_files(a, out: Path, all_k8s: list[dict], comp_docs: dict[str, list[dict]
         written.append(out / "pull-secret.yaml")
         all_k8s += pull
         extra.append("pull-secret.yaml")
-    ns_doc = namespace_manifest(k8s_name(a.name))
+    ns_doc = namespace_manifest(app_ns(a.name))
     (out / "namespace.yaml").write_text(_yaml_docs([ns_doc]))
     # namespace-level security (default deny, quota, limits), HARDENING.md and the cluster/ kit
-    sec, sec_docs = write_app_security(out, k8s_name(a.name), comp_docs, registry, _yaml_docs)
+    sec, sec_docs = write_app_security(out, app_ns(a.name), comp_docs, registry, _yaml_docs)
     (out / "kustomization.yaml").write_text(yaml.safe_dump(
         {"apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization",
-         "namespace": k8s_name(a.name),
+         "namespace": app_ns(a.name),
          "resources": ["namespace.yaml"] + sec + extra
                       + sorted(f"{d.name}/k8s.yaml" for d in out.iterdir() if (d / "k8s.yaml").exists())},
-        sort_keys=False) + image_setters(k8s_name(a.name), images))
+        sort_keys=False) + image_setters(app_ns(a.name), images))
     written += [out / "namespace.yaml", out / "kustomization.yaml", out / "HARDENING.md"] + [out / r for r in sec]
     kinds = sorted({(d["apiVersion"], d["kind"]) for d in all_k8s + sec_docs if isinstance(d, dict) and d.get("kind")})
     app_keys = eso.remote_keys(all_k8s)

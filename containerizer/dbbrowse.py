@@ -712,7 +712,7 @@ class Agent:
             raise DbError("Unknown kind of database.")
         if engine not in ENGINES:
             raise DbError("Unknown engine.")
-        if not isinstance(ns, str) or not NS_RE.fullmatch(ns) or ns in L.RESERVED_NS:
+        if not isinstance(ns, str) or not NS_RE.fullmatch(ns) or L.reserved(ns):
             raise DbError("Not an application's namespace.")
         if not isinstance(app_id, int) or isinstance(app_id, bool) or app_id <= 0:
             raise DbError("Unknown application.")

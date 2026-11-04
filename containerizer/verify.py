@@ -30,7 +30,7 @@ import yaml
 
 from .assess import AppAssessment, Component
 from .generate import (CONTAINER_PORT, DOCKERIGNORE, add_reason, _writable_abs, hides_app, writable_dirs, buildable, dockerfile_dotnet, dockerfile_for, dockerfile_spa,
-                       images, k8s_name, make_plan, merge_plan)
+                       images, k8s_name, app_ns, make_plan, merge_plan)
 from .rules import RULES_DIR, load_rules
 from .paths import work_dir
 
@@ -210,7 +210,7 @@ def build(a: AppAssessment, c: Component, plan: dict, workdir: Path, timeout: in
     (workdir / "Dockerfile").write_text(df)
     from .generate import dockerignore
     (workdir / "Dockerfile.dockerignore").write_text(dockerignore(a.repo))
-    tag = f"containerizer/{k8s_name(a.name)}-{k8s_name(c.name)}:verify"
+    tag = f"containerizer/{app_ns(a.name)}-{k8s_name(c.name)}:verify"
     readable_context(a.repo.root)
     rc, log = _run(["docker", "build", "--progress=plain", *_build_env_args(), "-f", str(workdir / "Dockerfile"),
                     "-t", tag, str(a.repo.root)], timeout)
@@ -428,7 +428,7 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
     result["plan"] = plan
     if not os.environ.get("CONTAINERIZER_KEEP_IMAGES"):
         # verification images are throw-away; large portfolios would otherwise fill the disk
-        _run(["docker", "rmi", "-f", f"containerizer/{k8s_name(a.name)}-{k8s_name(c.name)}:verify"], 120)
+        _run(["docker", "rmi", "-f", f"containerizer/{app_ns(a.name)}-{k8s_name(c.name)}:verify"], 120)
     result["seconds"] = round(time.time() - t0)
     if learn and result["status"] in ("ok", "ok-external"):
         persist_learning(a, c, plan, learned_patches)

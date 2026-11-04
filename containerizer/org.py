@@ -38,7 +38,6 @@ from .credentials import in_org, same_repo
 from .orgsource import (NO_PROJECT, REDACT, SourceError, SourceRepo, clone, code_summary, existing_dockerfiles, git,
                         head_commit, provider, read_token, strip_userinfo, update_clone)
 
-RESERVED_NS = {"default", "argocd", "flux-system", "cert-manager", "ingress-nginx", "kyverno", "gatekeeper-system"}
 OK_VERIFY = ("ok", "ok-external")
 SANDBOX = "sandbox"
 GIT_USER = ("containerizer", "containerizer@users.noreply.invalid")
@@ -174,7 +173,8 @@ def app_name(project: str, repo: str) -> str:
     """Stable, cluster-unique app name (Kubernetes namespace): <project>-<repo>, or <repo> without a project."""
     base = _dns(repo) if project == NO_PROJECT else _dns(f"{project}-{repo}")
     base = re.sub(r"-{2,}", "-", base) or "app"
-    if base in RESERVED_NS or base.startswith(("kube-", "openshift")):
+    from .generate import reserved_namespace
+    if reserved_namespace(base):
         base = f"app-{base}"
     if len(base) > 63:
         h = hashlib.sha1(f"{project}/{repo}".encode()).hexdigest()[:8]
@@ -349,7 +349,7 @@ def idp_entries(gen: Path, comps: list) -> list[dict]:
     """Rows for the results database from the components' idp.json (written by the generator)."""
     rows = []
     for c in comps:
-        from .generate import k8s_name
+        from .generate import k8s_name, app_ns
         f = gen / k8s_name(c.name) / "idp.json"
         if not f.is_file():
             continue
@@ -429,7 +429,14 @@ def write_sandbox(root: Path, git_url: str, branch: str, off=None) -> list[str]:
     for old in root.glob("*/*/*/gitops/argocd"):
         if old.parts[len(root.parts)] != SANDBOX and old.is_dir():
             shutil.rmtree(old)
-    apps = [x for x in _apps_in(root) if not sandbox_excluded(x[2], off)]
+    from .generate import reserved_namespace
+    apps = []
+    for x in _apps_in(root):
+        ns = str(x[2].get("namespace") or "")
+        if reserved_namespace(ns):          # never deployed into a namespace of the cluster or the platform
+            print(f"warning: {x[0]}: namespace {ns} is reserved; left out of the sandbox", file=sys.stderr)
+        elif not sandbox_excluded(x[2], off):
+            apps.append(x)
     sb = root / SANDBOX
     if sb.exists():
         shutil.rmtree(sb)
@@ -788,7 +795,10 @@ def folder_segments(folders: list[str]) -> dict[str, str]:
 
 def split_app_name(app: str, seg: str) -> str:
     """The application (namespace) of one folder of a split repository: <app>-<folder>, at most 63 characters."""
+    from .generate import reserved_namespace
     base = re.sub(r"-{2,}", "-", _dns(f"{app}-{seg}")) or app
+    if reserved_namespace(base):            # repository flux, folder system: not flux-system
+        base = f"app-{base}"
     if len(base) > 63:
         h = hashlib.sha1(f"{app}/{seg}".encode()).hexdigest()[:8]
         base = f"{base[:54].rstrip('-')}-{h}"
@@ -902,7 +912,7 @@ def _process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, wor
     `split` (OrgRepository.SplitPath): a folder pattern; each folder it matches is assessed and deployed as its own
     application (<app>-<folder>, output folder <repo>@<folder>), and the repository's result sums them up."""
     from .analyze import analyze_app
-    from .generate import generate_app, k8s_name
+    from .generate import generate_app, k8s_name, app_ns
     from .gitops import GitOpsOptions
 
     org_seg, proj_seg, repo_seg = segment(o.org), segment(r.project), segment(r.name)
@@ -1133,7 +1143,7 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
     (buildable, verified when verification is on) through the security gate (or generated without it), their
     images built and pushed under <registry>/<namespace>/<component>:<tag> (or tagged locally: local_images),
     the generated files copied to <output>/<rel> with containerizer.json (RepoResult.to_dict). The namespace,
-    image paths, Ingress hosts and IdP clients derive from k8s_name(a.name), the source folder's name.
+    image paths, Ingress hosts and IdP clients derive from app_ns(a.name), the source folder's name.
     The organization scan calls it for each repository (with its assessment id: IdP clients go to
     the results database); the refactoring runner for a patched copy ("Make it A": no assessment id, no
     uploaded dev database). The caller commits. Returns `res` (status deployed or no-a-components).
@@ -1142,7 +1152,7 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
     (a sandbox variant: the original's folder): its approved entries are kept, as they are, in the new file,
     and its confirmed links stay open in the regenerated NetworkPolicies."""
     from . import connectivity
-    from .generate import generate_app, k8s_name
+    from .generate import generate_app, k8s_name, app_ns
     dest = out.root / rel
     if m := moved_to(dest):
         return moved_result(res, m)
@@ -1201,14 +1211,14 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
     for c in keep:
         cn = k8s_name(c.name)
         cdir = gen / cn
-        local = f"containerizer/{k8s_name(a.name)}-{cn}:gate"
+        local = f"containerizer/{app_ns(a.name)}-{cn}:gate"
         if not o.gate and (o.push_images or local_mode):
             progress.step(progress.BUILD)
             progress.detail(c.name)
             ok, tail = build_image(src, cdir, local, timeout=o.timeout)
             if not ok:
                 raise SourceError(f"{c.name}: image build failed: {tail[-300:]}")
-        ref = f"{o.registry.rstrip('/')}/{k8s_name(a.name)}/{cn}:{tag}"
+        ref = f"{o.registry.rstrip('/')}/{app_ns(a.name)}/{cn}:{tag}"
         entry = {"component": c.name, "folder": cn, "image": ref, "rating": "A", "verdict": c.verdict,
                  "role": c.role, "project": c.project.rel,
                  "project_name": c.project.name,
@@ -1246,7 +1256,7 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
         res.lab_services = lab_report
     if dd is not None and (gen / "devdb").is_dir():
         from .devdb import readme
-        (gen / "devdb" / "README.md").write_text(readme(k8s_name(a.name), dd, dd_row))
+        (gen / "devdb" / "README.md").write_text(readme(app_ns(a.name), dd, dd_row))
     _clean_generated(gen)
     if o.image_pull_secret and (gen / "kustomization.yaml").exists():
         add_pull_secret(gen / "kustomization.yaml", o.image_pull_secret)
@@ -1258,7 +1268,7 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
     shutil.copytree(gen, dest)
     (dest / "containerizer.json").write_text(json.dumps(res.to_dict(), indent=2, default=str) + "\n")
     try:                    # what the scan infers, with the approved and observed entries of the file before
-        doc = connectivity.model(k8s_name(a.name), fa_network(a, keep), existing=existing, namespace=k8s_name(a.name),
+        doc = connectivity.model(app_ns(a.name), fa_network(a, keep), existing=existing, namespace=app_ns(a.name),
                                  sandbox=published_urls(dest, keep))
         connectivity.write_files(dest, doc)
     except Exception as e:  # noqa: BLE001 - documentation: the deployment stands
@@ -1269,7 +1279,7 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
 def published_urls(dest: Path, keep: list) -> list[dict]:
     """The components' HTTPS URLs from their generated Ingresses ([{ComponentName, Url}], the shape of a sandbox row)."""
     import yaml
-    from .generate import k8s_name
+    from .generate import k8s_name, app_ns
     from .sandbox import _published
     out = []
     for c in keep:
@@ -1313,7 +1323,7 @@ def _dev_database(o: OrgOptions, res: RepoResult, a, comps: list, work: Path, re
     (None, None) when there is none, or when it cannot be prepared (the reason is in res.dev_database).
     On the appliance, the engine turned off under Lab services turns these off too."""
     from . import devdb
-    from .generate import k8s_name
+    from .generate import k8s_name, app_ns
     settings = devdb.Settings.from_env(os.environ)
     if settings is None or not (o.sql or os.environ.get("CONTAINERIZER_SQL")) or not res.source_key:
         return None, None
@@ -1330,7 +1340,7 @@ def _dev_database(o: OrgOptions, res: RepoResult, a, comps: list, work: Path, re
         res.dev_database = {"engine": row["Engine"], "database": row["DatabaseName"], "file": row["FileName"],
                             "status": "disabled", "reason": f"{title} is turned off under Admin -> Lab services"}
         return None, None
-    ns = k8s_name(a.name)
+    ns = app_ns(a.name)
     image = f"{o.registry.rstrip('/')}/{ns}/devdb:{tag}"
     local = f"containerizer/{ns}-devdb:gate"
     info = {"engine": row["Engine"], "database": row["DatabaseName"], "file": row["FileName"], "sha256": row["Sha256"],
