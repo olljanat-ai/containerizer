@@ -216,7 +216,9 @@ BUILD_ERROR_RE = re.compile(r"(?:^|\s)/src/(?P<file>[^\s(:]+\.(?:cs|vb|fs|cshtml
 REPAIR_GUIDANCE = """An earlier change (the patch below) was made to fix the findings, but the result does not build
 (or does not run). Fix the errors listed for this file so that the code builds and runs, and keep the intent of
 the earlier change. Often another file of the patch changed something this file uses (a constructor, a method, a
-setting): adapt this file to it, do not undo the earlier change."""
+setting): adapt this file to it, do not undo the earlier change. A NuGet error that a package or version does not
+exist (NU1101, NU1102) is the exception: remove or correct that package reference (on .NET Core 3.0 and later,
+the Microsoft.AspNetCore.* namespaces of ASP.NET Core need no package)."""
 
 
 def error_lines(log: str, limit: int = 1500) -> str:
@@ -296,10 +298,96 @@ def fix_downgrades(app_root: Path, log_text: str, log=print) -> tuple[list[dict]
     return changes, notes, fixed
 
 
+# ASP.NET Core assemblies that are part of the shared framework (Microsoft.AspNetCore.App) since .NET Core 3.0:
+# their NuGet packages end at 2.x, so a reference with a 3.0+ version does not restore (NU1102) and none is needed
+ASPNETCORE_FRAMEWORK_PACKAGES = {p.lower() for p in (
+    "Microsoft.AspNetCore", "Microsoft.AspNetCore.Antiforgery", "Microsoft.AspNetCore.Authentication",
+    "Microsoft.AspNetCore.Authentication.Cookies", "Microsoft.AspNetCore.Authentication.Core",
+    "Microsoft.AspNetCore.Authorization.Policy", "Microsoft.AspNetCore.CookiePolicy", "Microsoft.AspNetCore.Cors",
+    "Microsoft.AspNetCore.Diagnostics", "Microsoft.AspNetCore.Diagnostics.HealthChecks", "Microsoft.AspNetCore.Hosting",
+    "Microsoft.AspNetCore.Hosting.Abstractions", "Microsoft.AspNetCore.Http", "Microsoft.AspNetCore.Http.Abstractions",
+    "Microsoft.AspNetCore.Http.Extensions", "Microsoft.AspNetCore.HttpOverrides", "Microsoft.AspNetCore.HttpsPolicy",
+    "Microsoft.AspNetCore.Localization", "Microsoft.AspNetCore.Mvc", "Microsoft.AspNetCore.Mvc.Abstractions",
+    "Microsoft.AspNetCore.Mvc.Core", "Microsoft.AspNetCore.Mvc.Formatters.Json", "Microsoft.AspNetCore.Mvc.Razor",
+    "Microsoft.AspNetCore.Mvc.ViewFeatures", "Microsoft.AspNetCore.ResponseCaching",
+    "Microsoft.AspNetCore.ResponseCompression", "Microsoft.AspNetCore.Rewrite", "Microsoft.AspNetCore.Routing",
+    "Microsoft.AspNetCore.Routing.Abstractions", "Microsoft.AspNetCore.Server.IISIntegration",
+    "Microsoft.AspNetCore.Server.Kestrel", "Microsoft.AspNetCore.Server.Kestrel.Core", "Microsoft.AspNetCore.Session",
+    "Microsoft.AspNetCore.StaticFiles", "Microsoft.AspNetCore.WebUtilities")}
+
+MISSING_PKG_RE = re.compile(r"(?:^|\s)/src/(?P<file>[^\s(:]+\.(?:cs|vb|fs)proj) ?: error (?P<code>NU110[12]): Unable to find "
+                            r"package (?P<pkg>[\w.\-]+)(?: with version \(>= (?P<want>[\w.\-+]+)\))?"
+                            r"(?:[^\n]*\n[^\n]*?Nearest version: (?P<near>[\w.\-+]+))?")
+
+
+def modern_dotnet(project_text: str) -> bool:
+    """Whether a project targets .NET Core 3.0 or later (net5.0+, netcoreapp3.x): where ASP.NET Core is a framework."""
+    tfms = re.findall(r"<TargetFrameworks?>([^<]+)</TargetFrameworks?>", project_text or "", re.I)
+    found = [t.strip().lower() for v in tfms for t in v.split(";") if t.strip()]
+    return bool(found) and all(re.fullmatch(r"net(?:[5-9]|\d\d)\.\d+(?:-[\w.]+)?|netcoreapp3\.\d", t) for t in found)
+
+
+def framework_package(name: str, project_text: str, want: str | None = None, near: str | None = None) -> bool:
+    """A Microsoft.AspNetCore.* package that a .NET Core 3.0+ project gets from the shared framework: a known one,
+    or one whose newest package (NuGet's nearest version) is 2.x while a 3.0+ version was asked for."""
+    if not name.lower().startswith("microsoft.aspnetcore.") or not modern_dotnet(project_text):
+        return False
+    if name.lower() in ASPNETCORE_FRAMEWORK_PACKAGES:
+        return True
+    w, n = _version_key(want or ""), _version_key(near or "")
+    return bool(w and n and w[0] >= 3 and n[0] < 3)
+
+
+def fix_framework_packages(app_root: Path, log_text: str, log=print) -> tuple[list[dict], list[str], set]:
+    """NuGet's NU1101/NU1102 "Unable to find package Microsoft.AspNetCore.X with version (>= 6.0.0)" for a package
+    that is part of the ASP.NET Core shared framework since .NET Core 3.0: removes the reference (and, outside the
+    Web SDK, references the framework instead), without the LLM. Returns (changes, notes, fixed (project, package))."""
+    changes, notes, fixed = [], [], set()
+    for m in MISSING_PKG_RE.finditer(log_text or ""):
+        rel = safe_rel(m["file"])
+        key = (rel, m["pkg"].lower())
+        if not rel or key in fixed or not (app_root / rel).is_file():
+            continue
+        f = app_root / rel
+        text, how = _read_text(f)
+        if not framework_package(m["pkg"], text, m["want"], m["near"]):
+            continue
+        new, err = _csproj_change(text, "remove", m["pkg"], "")
+        if err or new is None:
+            continue
+        if not re.search(r"<Project\s+Sdk=\"Microsoft\.NET\.Sdk\.Web\"", new, re.I) \
+                and not re.search(r"<FrameworkReference\s+Include=\"Microsoft\.AspNetCore\.App\"", new, re.I) \
+                and "</Project>" in new:
+            i = new.rindex("</Project>")
+            new = new[:i] + '  <ItemGroup>\n    <FrameworkReference Include="Microsoft.AspNetCore.App" />\n  </ItemGroup>\n' + new[i:]
+        _write_text(f, new, how)
+        fixed.add(key)
+        changes.append({"file": rel, "kind": "package", "detail": f"remove {m['pkg']} (part of ASP.NET Core)"})
+        notes.append(f"{rel}: removed the package {m['pkg']}: it is part of the ASP.NET Core shared framework since "
+                     f".NET Core 3.0 and has no package for it ({m['code']}; no LLM call)")
+        log(notes[-1])
+    return changes, notes, fixed
+
+
+def fix_packages(app_root: Path, log_text: str, log=print) -> tuple[list[dict], list[str], set]:
+    """The NuGet errors of a build log that need no LLM: package downgrades and ASP.NET Core framework packages."""
+    c1, n1, f1 = fix_downgrades(app_root, log_text, log)
+    c2, n2, f2 = fix_framework_packages(app_root, log_text, log)
+    return c1 + c2, n1 + n2, f1 | f2
+
+
 def without_fixed(errors: list[dict], fixed: set) -> list[dict]:
-    """The build errors that fix_downgrades did not take care of."""
-    return [e for e in errors if not (e.get("code") == "NU1605" and any(
-        e.get("file") == f and pkg in str(e.get("text") or "").lower() for f, pkg in fixed))]
+    """The build errors that fix_packages did not take care of."""
+    def named(e: dict) -> bool:
+        return any(e.get("file") == f and pkg in str(e.get("text") or "").lower() for f, pkg in fixed)
+    missing = ("NU1101", "NU1102")
+    # NuGet's lines under a missing package ("- Found 39 version(s) ...") name no package: they go with it when
+    # every missing package of that project was taken care of
+    left = {e.get("file") for e in errors if e.get("code") in missing
+            and str(e.get("text") or "").startswith("Unable to find package") and not named(e)}
+    return [e for e in errors if not (e.get("code") in ("NU1605",) + missing and named(e)) and not (
+        e.get("code") in missing and not str(e.get("text") or "").startswith("Unable to find package")
+        and e.get("file") not in left and any(e.get("file") == f for f, _ in fixed))]
 
 
 # an earlier patch a new "Make it A" order starts from (admin_refactor.reusable_patch); the orders that follow it
@@ -524,7 +612,9 @@ INSTRUCTIONS = """Rules for your answer:
 - "new_files": only when a new file is really needed (path relative to the application folder, next to the
   project); otherwise an empty list.
 - "package_changes": NuGet/Maven/npm packages to add or remove for the component's project, with a version
-  that supports its target framework; do not edit the project file for it yourself. Usually empty.
+  that supports its target framework; do not edit the project file for it yourself. Usually empty. On .NET
+  Core 3.0 and later, ASP.NET Core itself (Microsoft.AspNetCore.HttpOverrides, .Http, .Mvc, .Hosting and the
+  other parts of the framework) needs no package: a "using" is enough.
 - "fixed": the rule ids your edits fix. "not_fixed": the ones you did not fix, each with the reason (for
   example: nothing to change in code, it is a deployment setting; or it cannot be fixed safely here).
 - "notes": one or two sentences for the reviewer (what to configure, what to test).
@@ -1036,6 +1126,8 @@ def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | 
                 if not PKG_RE.fullmatch(name) or act not in ("add", "remove") or (act == "add" and not VER_RE.fullmatch(ver)):
                     errors.append(f"package change {i}: {act} {name!r} {ver!r} is not a package name and version")
                     continue
+                if act == "add" and framework_package(name, text, ver):
+                    continue                # in the ASP.NET Core shared framework: no package (it would not restore)
                 new, err = _csproj_change(text, act, name, ver)
                 if err:
                     errors.append(f"package change {i}: {err}")
@@ -1685,7 +1777,7 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
     pre_changes, pre_notes = [], []
     if payload.get("goal") == "repair":
         changed = app_files(repo, app_root, base_patch)
-        pre_changes, pre_notes, fixed = fix_downgrades(app_root, str(payload.get("log_tail") or ""), log)
+        pre_changes, pre_notes, fixed = fix_packages(app_root, str(payload.get("log_tail") or ""), log)
         if fixed:
             payload = {**payload, "errors": without_fixed(payload.get("errors") or [], fixed)}
         if not (pre_changes and not payload.get("errors")):
@@ -1973,12 +2065,12 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
             text = patch.decode("utf-8", errors="replace")
             rp = {**payload, "goal": "repair", "base_patch": text, "errors": build_errors(logs),
                   "log_tail": logs[-4000:], "components": comps}
-            dchanges, dnotes, fixed = fix_downgrades(app_root, logs, log)
+            dchanges, dnotes, fixed = fix_packages(app_root, logs, log)
             if dchanges:
                 notes += dnotes
                 changes_all += dchanges
                 rp["errors"] = without_fixed(rp["errors"], fixed)
-                if not rp["errors"]:            # NuGet's downgrades only: raised without the LLM, verify again
+                if not rp["errors"]:            # NuGet's package errors only: fixed without the LLM, verify again
                     loop.append({"pass": p, "round": rnd, "kind": "repair", "files": len({c["file"] for c in dchanges}),
                                  "calls": 0, "changes": len(dchanges)})
                     continue

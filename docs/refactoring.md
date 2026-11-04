@@ -111,7 +111,11 @@ package reference at a lower version than a project the component references (or
 NuGet refuses that build (NU1605, *Detected package downgrade*). Right after the LLM's edits, a direct reference
 below the version of a referenced project is raised to it. A downgrade the build still reports is raised to the
 version NuGet names in the next repair round, without an LLM call. The patch's notes list each version raised. The
-prompt also lists the packages the referenced projects bring in, so that they are not added again.
+prompt also lists the packages the referenced projects bring in, so that they are not added again. Since .NET Core 3.0,
+ASP.NET Core's own parts (`Microsoft.AspNetCore.HttpOverrides`, `.Mvc`, `.Hosting`, ...) come with the shared
+framework, and their NuGet packages end at 2.x. An answer that adds one to such a project does not add it, and
+when the build cannot find one (NU1101, NU1102), the reference is removed (outside the Web SDK, a
+`FrameworkReference` to `Microsoft.AspNetCore.App` replaces it), without an LLM call.
 
 | Status | Meaning |
 | --- | --- |
