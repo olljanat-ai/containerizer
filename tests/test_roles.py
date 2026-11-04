@@ -124,6 +124,9 @@ def test_roles_end_to_end(idp, tmp_path):  # noqa: F811
         tag_app = re.search(r"<a href='/app/(\d+)'>billing</a>", op.follow("/")[2])[1]
         s, _, page = op.follow(f"/app/{tag_app}")
         assert "action='/admin/tags/" in page
+        # the results page links to the admin pages operators may open, not to the application's settings
+        assert "class='adminlinks small'" in page and "href='/admin/refactoring'>Refactoring orders</a>" in page
+        assert f"href='/admin/applications/{tag_app}'" not in page
         assert op.go(f"/admin/tags/{tag_app}", {"Tags": "pci"})[0] == 403                     # no CSRF token
         s, _, page = op.follow(f"/admin/tags/{tag_app}", {"csrf": op.csrf(page), "Tags": "PCI, wave 1, pci"})
         assert s == 200 and "Tags saved." in page and "<a class='tag' href='/?tag=PCI'>PCI</a>" in page
@@ -182,6 +185,10 @@ def test_roles_end_to_end(idp, tmp_path):  # noqa: F811
         assert fo.follow("/admin/business-units")[0] == 403
         # tags are for administrators and operators: no editor, and a post is refused
         assert "action='/admin/tags/" not in fo.follow(f"/app/{ids['billing']}")[2]
+        # a product owner's results page links to the settings of their own application only
+        assert f"href='/admin/applications/{ids['billing']}'>Application settings</a>" in fo.follow(f"/app/{ids['billing']}")[2]
+        assert f"href='/admin/applications/{ids['freight']}'" not in fo.follow(f"/app/{ids['freight']}")[2]
+        assert f"href='/app/{ids['billing']}' title='Its results page'>results</a>" in fo.follow("/admin/applications?show=all")[2]
         assert fo.go(f"/admin/tags/{ids['billing']}", {"csrf": csrf, "Tags": "x"})[0] == 403
         assert "Not deleted" in fo.follow(f"/admin/products/{freight_pid}/delete", {"csrf": csrf})[2]
         s, _, body = fo.follow(f"/admin/products/{freight_pid}")
