@@ -975,25 +975,33 @@ def _csproj_change(text: str, action: str, package: str, version: str) -> tuple[
 
 def _backslash_match(text: str, search: str, replace: str) -> str | None:
     """LLMs often get backslashes wrong when they write code into JSON (`"LocalMachine\\\\My"` in C# comes
-    back as `LocalMachine\\My`). When the search text matches exactly once with every run of backslashes
-    `k` times as long as in the file (the same k everywhere), the edit applies with the replacement's
-    backslash runs scaled the same way. Returns the new text, or None."""
+    back as `LocalMachine\\My`), and the other way round: escape them once more than the file has them (the
+    JSON-escaped UNC path `"\\\\\\\\fsfile01\\\\Photos"` in appsettings.json came back with every run doubled). When the
+    search text matches exactly once with every run of backslashes `k` times as long as in the file (the same k
+    everywhere: a whole number, or 1/d with every run of the search and of the replacement d times as long as
+    in the file, so that the replacement was evidently escaped the same way), the edit applies with the
+    replacement's backslash runs scaled the same way. Returns the new text, or None."""
     if "\\" not in search:
         return None
-    parts = re.split(r"(\\+)", search)
-    rx = "".join(r"(\\+)" if p.startswith("\\") else re.escape(p) for p in parts if p)
+    parts = [p for p in re.split(r"(\\+)", search) if p]
+    rx = "".join(r"(\\+)" if p.startswith("\\") else re.escape(p) for p in parts)
+    rx = (r"(?<!\\)" if parts[0].startswith("\\") else "") + rx + (r"(?!\\)" if parts[-1].startswith("\\") else "")
     found = list(re.finditer(rx, text))
     if len(found) != 1:
         return None
     m = found[0]
-    runs = [p for p in parts if p.startswith("\\")]
-    factors = {len(g) / len(r) for g, r in zip(m.groups(), runs)}
-    if len(factors) != 1:
+    runs = [len(p) for p in parts if p.startswith("\\")]
+    have = [len(g) for g in m.groups()]
+    if all(g % r == 0 for g, r in zip(have, runs)) and len({g // r for g, r in zip(have, runs)}) == 1:
+        k = have[0] // runs[0]
+        new = re.sub(r"\\+", lambda r: "\\" * (len(r[0]) * k), replace)
+    elif all(r % g == 0 for g, r in zip(have, runs)) and len({r // g for g, r in zip(have, runs)}) == 1:
+        d = runs[0] // have[0]
+        if any(len(r) % d for r in re.findall(r"\\+", replace)):
+            return None                         # the replacement was not escaped the same way: ambiguous
+        new = re.sub(r"\\+", lambda r: "\\" * (len(r[0]) // d), replace)
+    else:
         return None
-    k = factors.pop()
-    if k != int(k) or k < 1:
-        return None
-    new = re.sub(r"\\+", lambda r: "\\" * (len(r[0]) * int(k)), replace)
     return text[:m.start()] + new + text[m.end():]
 
 
@@ -1106,37 +1114,32 @@ def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | 
             continue
         if search == replace:
             continue                # changes nothing: left out, so that the answer's other edits still apply
-        n = text.count(search)
-        if n == 0:
-            fixed = _backslash_match(text, search, replace)
-            if fixed is not None:                  # the same text but for JSON-escaped backslashes
-                files[rel] = (fixed, how)
-                changes.append({"file": rel, "kind": "edit", "detail": "backslashes as in the file"})
-                continue
-            fixed = _trailing_space_match(text, search, replace)
-            if fixed is not None:
-                if harm := harmful_edit(rel, search, replace):
-                    errors += [f"edit {i}: {h}" for h in harm]
-                    continue
-                files[rel] = (fixed, how)          # the same lines but for spaces at their ends
-                changes.append({"file": rel, "kind": "edit", "detail": "trailing spaces as in the file"})
-                continue
-            errors.append(f"edit {i} ({rel}): the search text was not found in the file; copy it exactly from the "
-                          f"file shown ({_first_mismatch(text, search)})")
-            continue
-        if n > 1:
-            errors.append(f"edit {i} ({rel}): the search text occurs {n} times; include more of the surrounding lines "
-                          "so that it occurs exactly once")
-            continue
         how_edit = {}
         harm = harmful_edit(rel, search, replace)
         if harm and (clean := without_credentials(search, replace)) != replace and not harmful_edit(rel, search, clean):
             replace, harm = clean, []
             how_edit = {"detail": "credential left out (it comes from a secret)"}
+        n = text.count(search)
+        if n == 1:
+            fixed = text.replace(search, replace, 1)
+        elif n == 0:
+            if (fixed := _backslash_match(text, search, replace)) is not None:
+                slip = "backslashes as in the file"         # the same text but for JSON escaping
+            elif (fixed := _trailing_space_match(text, search, replace)) is not None:
+                slip = "trailing spaces as in the file"     # the same lines but for spaces at their ends
+            else:
+                errors.append(f"edit {i} ({rel}): the search text was not found in the file; copy it exactly from "
+                              f"the file shown ({_first_mismatch(text, search)})")
+                continue
+            how_edit = {"detail": "; ".join(filter(None, [slip, how_edit.get("detail")]))}
+        else:
+            errors.append(f"edit {i} ({rel}): the search text occurs {n} times; include more of the surrounding lines "
+                          "so that it occurs exactly once")
+            continue
         if harm:
             errors += [f"edit {i}: {h}" for h in harm]
             continue
-        files[rel] = (text.replace(search, replace, 1), how)
+        files[rel] = (fixed, how)
         changes.append({"file": rel, "kind": "edit", **how_edit})
     new_files: dict[str, str] = {}
     for i, nf in enumerate(answer.get("new_files") or [], 1):

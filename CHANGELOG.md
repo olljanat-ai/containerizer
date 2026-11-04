@@ -36,6 +36,15 @@ qcow2 and VHDX images as release assets.
   deployed, whatever commit each was made for, the same way **Remove from the sandbox** does (the folder deleted,
   `sandbox/` regenerated: Flux prunes the namespace), and the order and results pages show them as **Replaced by
   newer code** (by order #N). Variants already deployed twice are cleaned up the same way.
+- Make it A keeps an edit whose search text escapes backslashes once more than the file does. A JSON-escaped
+  path in the file (`"\\\\fsfile01\\FieldService\\Photos"` in appsettings.json) came back with every run of
+  backslashes doubled, so the edit did not apply and the answer was lost: in the lab, field-service lost its
+  appsettings.json edit and with it the findings it fixed (sql-integrated-security, unc-shares). Such an edit now
+  applies when the search text, un-escaped one level, occurs exactly once and the replacement was escaped the same
+  way. It applies with the replacement un-escaped to match. When the match is ambiguous it is still refused with the
+  error that shows the line from the file. An edit that applies only once its backslashes or line-end spaces are
+  corrected goes through the same checks as any other: a credential it adds is cut out, and an edit that removes
+  `Directory.CreateDirectory` is refused.
 
 ## 0.9.3 (2026-11-04)
 

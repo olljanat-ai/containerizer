@@ -224,6 +224,78 @@ def test_json_escaped_backslashes_and_the_retry_hint(tmp_path):
     assert rf._names("cert-store", 2, ["2"]) and not rf._names("cert-store", 1, ["cert-store-localmachine-code"])
 
 
+FS_SETTINGS = r"""{
+  "ConnectionStrings": {
+    "FieldService": "Server=FSSQL01\\FIELDSERVICE;Database=FieldService;Integrated Security=true;TrustServerCertificate=true"
+  },
+  "Portal": {
+    "CompanyName": "Northwind Facilities Services",
+    "PhotoRoot": "\\\\fsfile01\\FieldService\\Photos",
+    "MaxPhotoBytes": 10485760
+  }
+}
+"""
+
+
+def _esc(s):
+    return s.replace("\\", "\\\\")
+
+
+def test_over_escaped_backslashes_apply_once_unescaped(tmp_path):
+    """Seen on field-service: the JSON-escaped UNC path `\\\\fsfile01\\FieldService\\Photos` in appsettings.json
+    came back in the search text with every backslash run doubled, so the edit (and the findings it fixed) was
+    lost. Un-escaped one level it matches exactly once: it applies, with the replacement un-escaped the same way."""
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "appsettings.json").write_text(FS_SETTINGS)
+    search = (r'    "FieldService": "Server=FSSQL01\\FIELDSERVICE;Database=FieldService;Integrated Security=true;'
+              r'TrustServerCertificate=true"' "\n  },\n" r'  "Portal": {' "\n"
+              r'    "CompanyName": "Northwind Facilities Services",' "\n"
+              r'    "PhotoRoot": "\\\\fsfile01\\FieldService\\Photos",' "\n")
+    assert search in FS_SETTINGS
+    replace = (r'    "FieldService": "Server=sql;Database=FieldService;TrustServerCertificate=true"' "\n  },\n"
+               r'  "Portal": {' "\n" r'    "CompanyName": "Northwind Facilities Services",' "\n"
+               r'    "PhotoRoot": "/data/photos",' "\n" r'    "Share": "\\\\fs\\x",' "\n")
+    ch, err = rf.apply_answer(root, {"edits": [{"file": "appsettings.json", "search": _esc(search),
+                                                "replace": _esc(replace)}]}, ["appsettings.json"], None)
+    assert err == [] and ch[0]["detail"] == "backslashes as in the file"
+    assert (root / "appsettings.json").read_text() == FS_SETTINGS.replace(search, replace)
+
+    def fails(name, search, replace):
+        _, err = rf.apply_answer(root, {"edits": [{"file": name, "search": search, "replace": replace}]}, [name], None)
+        return len(err) == 1 and "the search text was not found in the file" in err[0]
+    # the replacement not escaped the same way (an odd run of backslashes): ambiguous, not applied
+    assert fails("appsettings.json", _esc(r'"Share": "\\\\fs\\x"'), r'"Share": "\\\x"')
+    # matches more than once once un-escaped: not applied
+    (root / "B.json").write_text(r'{"a": "x\\y", "b": "x\\y"}' "\n")
+    assert fails("B.json", r'"x\\\\y"', '"z"')
+    # runs that differ by different factors: not applied
+    (root / "C.json").write_text(r'{"a": "\\\\h\\p"}' "\n")
+    assert fails("C.json", r'"\\\\\\\\h\\p"', '"z"')
+    # a run at the end of the search text is a whole run of the file, not part of a longer one
+    assert rf._backslash_match("a\\\\\\b", "a\\\\", "c") is None
+    assert rf._backslash_match("a\\\\b", "a\\", "c\\") == "c\\\\b"   # the reverse slip (k = 2) as before
+
+
+def test_backslash_slip_still_gets_the_rule_checks(tmp_path):
+    """An edit that applies only once its backslashes are scaled goes through the same checks as one that applies
+    as is: a credential it adds is cut out, and taking away Directory.CreateDirectory is refused."""
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "appsettings.json").write_text(r'{"Db": "Server=S\\I;Integrated Security=true"}' "\n")
+    ch, err = rf.apply_answer(root, {"edits": [{"file": "appsettings.json",
+                                                "search": r'"Server=S\\\\I;Integrated Security=true"',
+                                                "replace": r'"Server=S\\\\I;User ID=sa;Password=Secret1;"'}]},
+                              ["appsettings.json"], None)
+    assert err == [] and ch[0]["detail"] == "backslashes as in the file; credential left out (it comes from a secret)"
+    assert (root / "appsettings.json").read_text() == r'{"Db": "Server=S\\I;"}' "\n"
+    (root / "P.cs").write_text('var folder = Path.Combine(root, "a\\\\b");\nDirectory.CreateDirectory(folder);\n')
+    _, err = rf.apply_answer(root, {"edits": [{"file": "P.cs",
+                                               "search": 'var folder = Path.Combine(root, "a\\b");\nDirectory.CreateDirectory(folder);',
+                                               "replace": 'var folder = Path.Combine(root, "a\\b");'}]}, ["P.cs"], None)
+    assert len(err) == 1 and "removes Directory.CreateDirectory" in err[0]
+
+
 def test_package_changes_go_into_the_project_file(tmp_path):
     root = tmp_path / "app"
     (root / "Api").mkdir(parents=True)
