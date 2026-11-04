@@ -692,8 +692,15 @@ def a_patches_html(apps: list[dict], nav: str = "") -> str:
             + "</tbody></table></section>")
 
 
-def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag_filter: str | None = None) -> str:
+def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag_filter: str | None = None,
+                    admin: bool = True) -> str:
+    """`admin`: the reader may see the applications not mapped to a product yet: an administrator, or anyone where
+    there is no sign-in (no admin pages, so nobody else could map them). For everyone else they are left out: nobody
+    has said whose they are."""
     apps = data["apps"]
+    unmapped_apps = [a for a in apps if a.get("ProductId") is None]
+    if not admin:
+        apps = [a for a in apps if a.get("ProductId") is not None]
     all_apps = apps
     if bu_filter is not None:
         apps = [a for a in apps if str(a["BusinessUnitId"] if a["BusinessUnitId"] is not None else "none") == bu_filter]
@@ -772,7 +779,10 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag
 
     um = data.get("unmapped") or {}
     note = a_patches_html(patched, nav)
-    if um.get("Application") or um.get("Product"):
+    if admin and unmapped_apps and nav:
+        note += (f"<p class='note'>{len(unmapped_apps)} application(s) not mapped to a product are shown to administrators "
+                 f"only; <a href='/admin/applications?show=unmapped'>map them</a> to show them to everyone.</p>")
+    elif admin and (um.get("Application") or um.get("Product")):
         parts = []
         if um.get("Application"):
             parts.append(f"{um['Application']} application(s) are not mapped to a product")
@@ -1545,7 +1555,10 @@ def make_handler(connect, admin=None):
                         tag = " ".join(parse_qs(u.query).get("tag", [""])[0].split()) or None
                         if tag is not None and not TAG_RE.fullmatch(tag):
                             tag = None
-                        return self._send(200, render_overview(load_overview(conn), bu, nav, tag), head=head, forms=bool(nav))
+                        s, cookie = admin.dev_session(self.headers) if admin else (None, [])
+                        sees_unmapped = admin is None or bool(s and s.admin)
+                        return self._send(200, render_overview(load_overview(conn), bu, nav, tag, sees_unmapped),
+                                          head=head, forms=bool(nav), extra=cookie or None)
                     finally:
                         conn.close()
                 return self._send(404, page("Not found", "<h1>Not found</h1><p><a href='/'>Back</a></p>"), head=head)
