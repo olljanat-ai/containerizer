@@ -216,8 +216,7 @@ Every 2 minutes `cz-sandbox` puts the read-only token in the secret store for Fl
 every app namespace, and creates the root `GitRepository` + `Kustomization` of the output repository's
 `sandbox/flux/`. Each app reconciles as its own ServiceAccount with its own copy of the token
 ([the sandbox cluster](scheduled-scans.md#the-sandbox-cluster)). Allow the Git server on
-the Firewall page. `kubectl` (as root on the appliance) shows the result. Argo CD is not installed; Flux
-is the supported path on the appliance.
+the Firewall page. `kubectl` (as root on the appliance) shows the result. Flux is the only GitOps tool.
 
 To reach the deployed apps over HTTPS, set up a wildcard domain and certificate on **Admin → Sandbox
 HTTPS**: Caddy answers for `*.<domain>` on the same port 443 and passes the requests to Traefik in k3s,

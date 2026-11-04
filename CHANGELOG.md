@@ -6,6 +6,23 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+- **Build again (no LLM)** on a Make it A order: the same patch is built, run, assessed and deployed to the
+  sandbox again without an LLM call, for a build that failed outside the code (a firewall rule, a package mirror).
+- A Make it A order for newer code starts from the application's earlier working patch: the files it still
+  applies to are kept without asking the LLM, and only the rest are edited again. When the newer code did not touch
+  the patched files, the order makes no LLM call. The order page says which patch it started from.
+- *Made A by a patch* (front page, bulk Make it A) counts only a patch made for the commit the latest scan
+  assessed. Before, an application whose code had changed since stayed marked and was not ordered again.
+- An organization scan writes the build pipeline of its own provider only (GitHub Actions, GitLab CI/CD or Azure
+  Pipelines) into `pipeline/`. Before, a repository whose URL did not name the provider (a self-hosted server)
+  got all three.
+- Argo CD support is removed: Flux is the only GitOps tool, in the output repository and in the sandbox. Each
+  application folder gets `gitops/flux/` only, and `sandbox/` only `flux/`. The `gitops/argocd/` folders and
+  `sandbox/argocd/` of earlier runs are removed at the next scan. `containerizer sandbox verify` reads Flux
+  Kustomizations only, and `sandbox/verify-rbac.yaml` no longer has a Role in `argocd`.
+
 ## 0.9.1 (2026-11-04)
 
 - A Make it A copy, or an application in a scan, that is not deployed because no component qualifies now says why

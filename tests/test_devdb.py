@@ -139,9 +139,8 @@ def test_generate_app_adds_the_database(tmp_path):
     sec = list(yaml.safe_load_all((out / "security.yaml").read_text()))
     quota = next(d for d in sec if d and d["kind"] == "ResourceQuota")
     assert quota["spec"]["hard"]["limits.memory"] != "2048Mi"   # the database counts towards the quota
-    proj = (out / "gitops" / "argocd").rglob("*.yaml")
-    text = "".join(p.read_text() for p in proj)
-    assert "Password" in text and "ExternalSecret" in text       # the AppProject allows the generator
+    tenant = (out / "gitops" / "flux" / "tenant.yaml").read_text()
+    assert "ExternalSecret" in tenant or "app-secrets-reader" in tenant      # the namespace may read its keys
 
 
 # -- the LLM's answer -----------------------------------------------------------------------------

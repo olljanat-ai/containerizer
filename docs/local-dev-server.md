@@ -454,7 +454,7 @@ lab uses HTTPS too.
 - The appliance's k3s settings are kept (`servicelb` off, secrets encryption, no anonymous API access),
   except `resolv-conf`, the audit log and `protect-kernel-defaults`, which depend on the appliance's OS.
 - Traefik is on loopback NodePorts instead of behind Caddy on 443, without the HTTP-to-HTTPS redirect.
-- Flux runs only; there is no Argo CD, so `sync.sh` leaves the Argo CD part out of `verify-rbac.yaml`.
+- Flux is the only GitOps tool, as on the appliance.
 - The k3s system images (pause, CoreDNS, Traefik, metrics-server, local-path, klipper-helm) are pinned
   by the k3s release's tags, as on the appliance, not by digest.
 

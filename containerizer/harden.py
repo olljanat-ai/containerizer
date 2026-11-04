@@ -464,15 +464,13 @@ def _delete_patch(kind: str, name: str, api: str = "v1") -> dict:
 
 
 def harden_gitops(docs: dict[str, list[dict]], a=None) -> dict[str, list[dict]]:
-    """Security post-processing of the Argo CD / Flux manifests from gitops.py.
+    """Security post-processing of the Flux manifests from gitops.py.
 
     - Flux: the tenant ServiceAccount is bound to `admin`, which cannot manage quotas, and the
       default-deny policy should not be removable from the app repository; so the namespace
       policies (default deny, LimitRange, ResourceQuota) move into the platform-owned tenant file
       and are dropped from the synced set.
-    - Argo CD: the controller applies them; the AppProject keeps cluster-scoped kinds to the
-      Namespace that CreateNamespace needs, and denies RBAC objects unless a component needs an API Role.
-    - Both: secrets come from the external store, so the secret CRD is the only Secret source allowed.
+    - Secrets come from the external store, so the secret CRD is the only Secret source allowed.
     """
     from .generate import k8s_name
     ns = k8s_name(a.name) if a is not None else None
@@ -487,24 +485,10 @@ def harden_gitops(docs: dict[str, list[dict]], a=None) -> dict[str, list[dict]]:
     for path, items in docs.items():
         for d in items:
             kind = d.get("kind")
-            if kind not in ("AppProject", "Application", "Kustomization"):
+            if kind != "Kustomization":
                 continue        # no spec to add (a ServiceAccount, Role or Namespace has none)
             spec = d.setdefault("spec", {})
-            if kind == "AppProject":
-                spec["clusterResourceWhitelist"] = [w for w in spec.get("clusterResourceWhitelist") or []
-                                                    if (w.get("group"), w.get("kind")) == ("", "Namespace")]
-                wl = spec.setdefault("namespaceResourceWhitelist", [])
-                # a plain Secret from Git would overwrite the values the external store manages
-                wl[:] = [w for w in wl if (w.get("group"), w.get("kind")) != ("", "Secret")]
-                spec["sourceNamespaces"] = []
-                spec["orphanedResources"] = {"warn": True}
-                spec.setdefault("signatureKeys", [])
-            elif kind == "Application":
-                opts = spec.setdefault("syncPolicy", {}).setdefault("syncOptions", [])
-                for o in ("ServerSideApply=true", "PruneLast=true", "FailOnSharedResource=true"):
-                    if o not in opts:
-                        opts.append(o)
-            elif kind == "Kustomization" and str(d.get("apiVersion", "")).startswith("kustomize.toolkit.fluxcd.io"):
+            if str(d.get("apiVersion", "")).startswith("kustomize.toolkit.fluxcd.io"):
                 patches = spec.setdefault("patches", [])
                 for k, n, api in platform:
                     dp = _delete_patch(k, n, api)

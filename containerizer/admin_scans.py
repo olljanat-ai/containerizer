@@ -259,7 +259,7 @@ def _output_select(current: str, repos: list[str]) -> str:
     sel = next((v for v, _ in opts if v and cur and repo_key(v) == repo_key(cur)), "")
     html = "".join(f"<option value='{e(v)}'{' selected' if v == sel else ''}>{e(t)}</option>" for v, t in opts)
     hint = "" if repos else (" <a href='/admin/source-control'>Register one</a> under Source control with a write token.")
-    return (f"<label for='OutputRepo'>Output repository <span class=muted>(the Dockerfiles, manifests and Argo CD / "
+    return (f"<label for='OutputRepo'>Output repository <span class=muted>(the Dockerfiles, manifests and "
             f"Flux files are committed to it; the repositories with a write token under Source control)</span></label>"
             f"<select id='OutputRepo' name='OutputRepo'>{html}</select>"
             + (f"<p class='muted small'>No repository has a write token yet.{hint}</p>" if hint else ""))

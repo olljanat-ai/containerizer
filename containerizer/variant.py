@@ -6,7 +6,7 @@ patched copy's folder is named `<app>-refactor-<job>` (refactor.variant_name), s
 (`<registry>/<app>-refactor-<job>/<component>:1.<yyyymmdd>.<hhmm>-refactor.<job>`), Ingress hosts, IdP client
 names and lab services (a new, empty lab database) all derive from that name. Its files go to a sibling
 folder of the original in the output repository of the organization scan that assessed the application,
-`<Org>/<Project>/<Repo>-refactor-<job>/`, and sandbox/ is regenerated (org.write_sandbox); Flux (or Argo CD)
+`<Org>/<Project>/<Repo>-refactor-<job>/`, and sandbox/ is regenerated (org.write_sandbox); Flux
 pulls it from there.
 
 - Settings: the organization scan's (cz.OrgScan: Registry, OutputRepo, OutputBranch, ImagePullSecret, Gate,
@@ -36,7 +36,6 @@ from pathlib import Path
 
 KUBECONFIG_ENV = "CONTAINERIZER_SANDBOX_KUBECONFIG"
 CONTEXT_ENV = "CONTAINERIZER_SANDBOX_CONTEXT"
-GITOPS_ENV = "CONTAINERIZER_SANDBOX_GITOPS"
 TIMEOUT_ENV = "CONTAINERIZER_SANDBOX_VARIANT_TIMEOUT"
 DEFAULT_TIMEOUT = 900
 SUFFIX = "-refactor-"
@@ -301,7 +300,7 @@ def check_health(root: Path, namespace: str, revision: str, env=None, kube=None,
     except ValueError:
         timeout = DEFAULT_TIMEOUT
     so = SandboxOptions(kube=KubeOptions(kubeconfig=kc, context=env.get(CONTEXT_ENV) or None),
-                        gitops=env.get(GITOPS_ENV) or "auto", timeout=timeout, revision=revision, learn=False,
+                        timeout=timeout, revision=revision, learn=False,
                         apps=[namespace], wait_forbidden=True)
     kw = {"sleep": sleep} if sleep else {}
     doc = verify_sandbox(root, so, kube=kube, log=lambda m: None, **kw)

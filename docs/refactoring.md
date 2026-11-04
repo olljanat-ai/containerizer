@@ -198,6 +198,22 @@ build or run** means the code changes remove what kept it from A, but the copy i
 errors are under **Verification**; **Fix it with the LLM** orders a repair. **Findings left (they do not keep it
 from A)** are configuration findings an A application may still have.
 
+**Build again (no LLM).** A build or run can fail for a reason outside the code: the appliance's firewall blocks
+a package mirror (`E: Unable to locate package ...`), a registry was down. Once that is fixed, **Build again (no
+LLM)** on the order page (any finished Make it A order with a patch) places a new order with the same patch: it is
+applied, built, run and assessed, and deployed to the sandbox when it rates A and runs, as the first time. It makes
+no LLM call (no repair round either, and no LLM-heavy chain), so it needs no approval; it still waits for its turn in
+the LLM queue (its hours and free requests, as any job). When it still fails, **Fix it with the LLM** on its page is there as usual.
+
+**Newer code starts from the earlier patch.** When the application has a working Make it A patch (it builds,
+runs and rates A) for an older commit, a new order for the newer code starts from it. The patch is applied file by
+file (with a 3-way merge where git can). The files it still applies to are kept as they are and the LLM is not asked
+about them; the files it no longer applies to are put back and edited again, with every file the newer code
+needs. Then the copy is verified and assessed as usual, and a second pass takes what is still found. When the
+newer code did not touch the patched files, the order makes no LLM call at all. The order page says which order's
+patch it started from, how many files were kept and which were edited again. A chain that starts over
+(below) does not use the earlier patch again.
+
 **Until it runs in the sandbox (LLM-heavy mode).** With an [LLM-heavy window](source-control.md#llm-heavy-for-a-while)
 on the whole application (Admin → Applications), a Make it A order may do more (40 LLM calls, 4 passes, 4 repair
 rounds a pass) and stops making LLM calls when the window ends. An order whose copy does not end up running in the
@@ -237,7 +253,8 @@ second pass, when needed, take more, up to the limit of 16 calls.
 changes and its order's estimate (tokens and LLM time), **smallest first**, with the running total of the LLM time
 up to each row, so the LLM's time goes to the cheapest wins first; a local LLM gets the most applications to A for
 its hours. Applications with an order in the queue already say so and link to it. The ones that a verified patch
-makes A already (*Made A by a patch* on the front page: it builds, runs and rates A, merged or not) link to that
+makes A already (*Made A by a patch* on the front page: it builds, runs and rates A, merged or not, for the commit
+the latest scan assessed) link to that
 patch and are not queued again from here (order one on its application page for a new patch). The ones that cannot be ordered
 (no commit recorded, source not kept on this machine) are at the bottom with the reason. **Orders under** a number
 of tokens each (20,000 to begin with) marks the ones that fit, and **Queue … approved** places one order for each of
@@ -259,7 +276,7 @@ rate A on their own, so a B application has only those in the sandbox, often non
   that the original's image automation never picks up.
 - **Where.** A sibling folder of the original in the output repository of the organization scan that
   assessed the application, `<Organization>/<Project>/<Repository>-refactor-<job>/`, with `sandbox/`
-  regenerated, in one commit; Flux (or Argo CD) deploys it from there. Its images go to the appliance's own
+  regenerated, in one commit; Flux deploys it from there. Its images go to the appliance's own
   registry, as the scan's do; the output repository and branch and the security gate are that scan's; the output repository's write
   token is its registered credential. An application that no organization scan with an output repository
   assessed here is not deployed, and the order page says so (`no output repository: ...`).
@@ -279,7 +296,8 @@ rate A on their own, so a B application has only those in the sandbox, often non
   product owners) takes it out sooner. The queue runner takes outdated and requested variants out of the
   output repository within a few minutes (the folder deleted, `sandbox/` regenerated, one commit: the cluster
   removes the namespace) and records it: **replaced by newer code** (with both commits) or **removed**. The
-  patch stays available: order Make it A again for the new code. Variants deployed before 0.9.1 had an expiry
+  patch stays available on its order (in the results database), and a new Make it A order for the new code
+  starts from it (above). Variants deployed before 0.9.1 had an expiry
   date, which no longer applies.
 
 The results page shows the variant's state next to the order, with its URL (**open ↗**) while it runs.

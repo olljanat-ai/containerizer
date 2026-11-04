@@ -90,11 +90,14 @@ SANDBOX_HERE = ("running", "deployed")
 
 def load_a_patches(conn) -> dict[int, dict]:
     """Per application, its best "Make it A" patch that works: verified (it builds and runs) and rated A by the
-    rules (cz.vRefactorOrder). One running in the sandbox comes first, then the newest. Empty before schema 23."""
+    rules (cz.vRefactorOrder), for the commit the application's latest assessment is of (a patch for older code
+    no longer makes it A: a new order starts from it, admin_refactor.reusable_patch). One running in the sandbox
+    comes first, then the newest. Empty before schema 23."""
     try:
-        rows = _rows(conn, "SELECT ApplicationId, JobId, SandboxStatus, SandboxUrl, FinishedAt FROM cz.vRefactorOrder "
-                           "WHERE Goal = N'rating-a' AND Status = N'verified' AND RatingAfter = N'A' "
-                           "AND ApplicationId IS NOT NULL")
+        rows = _rows(conn, "SELECT o.ApplicationId, o.JobId, o.SandboxStatus, o.SandboxUrl, o.FinishedAt "
+                           "FROM cz.vRefactorOrder o JOIN cz.vApplicationLatest l ON l.ApplicationId = o.ApplicationId "
+                           "WHERE o.Goal = N'rating-a' AND o.Status = N'verified' AND o.RatingAfter = N'A' "
+                           "AND (o.SourceCommit = l.SourceCommit OR o.SourceCommit IS NULL OR l.SourceCommit IS NULL)")
     except Exception:
         try:
             conn.rollback()

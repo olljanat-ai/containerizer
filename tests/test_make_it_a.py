@@ -465,8 +465,8 @@ def test_the_variant_is_deployed_beside_the_original_and_removed_again(tmp_path,
     assert (out / "Contoso/_/shop/containerizer.json").read_text() == before
     k = yaml.safe_load((d / "kustomization.yaml").read_text())
     assert k["namespace"] == "shop-refactor-42"
-    argo = yaml.safe_load((d / "gitops/argocd/application.yaml").read_text())
-    assert argo["metadata"]["name"] == "shop-refactor-42" and argo["spec"]["source"]["path"] == "Contoso/_/shop-refactor-42"
+    ks = next(x for x in yaml.safe_load_all((d / "gitops/flux/git/sync.yaml").read_text()) if x and x["kind"] == "Kustomization")
+    assert ks["metadata"]["name"] == "shop-refactor-42" and ks["spec"]["path"] == "./Contoso/_/shop-refactor-42"
     # write_sandbox picked it up next to the original
     assert (out / "sandbox/namespaces.txt").read_text() == "shop\nshop-refactor-42\n"
     flux = yaml.safe_load((out / "sandbox/flux/apps/kustomization.yaml").read_text())["resources"]
@@ -557,8 +557,7 @@ def test_verify_sandbox_filter_and_the_variants_health(tmp_path):
         if calls["n"] == 1:                         # the verifier's Role in the new namespace comes a little later
             raise sbm.KubeError("kustomizations is forbidden", "forbidden")
         return flux_ks()
-    kube = FakeKube({(sbm.ARGO_APP, "argocd", "shop-refactor-4"): sbm.KubeError("forbidden", "forbidden"),
-                     (sbm.FLUX_KS, "shop-refactor-4", "shop-refactor-4"): flux,
+    kube = FakeKube({(sbm.FLUX_KS, "shop-refactor-4", "shop-refactor-4"): flux,
                      ("deployments.apps", "shop-refactor-4", "web"): deployment("web"),
                      ("pods", "shop-refactor-4", "app.kubernetes.io/name=web"): {"items": [pod("web-1")]}})
     cfg = tmp_path / "kc"
@@ -734,7 +733,7 @@ def test_make_it_a_for_every_b_app_smallest_first(adm, stateful, monkeypatch):
     assert "href='/admin/refactoring/42'>in the queue</a>" in b and "<b>1 order(s)</b> can be queued" in b
     # one that a verified patch makes A already is shown with it, not queued again from here
     adm.conn.answers[r"FROM cz.LlmJob WHERE Kind = N'refactor'\s+AND Status IN"] = []
-    adm.conn.answers[r"FROM cz.vRefactorOrder\s+WHERE Goal = N'rating-a' AND Status = N'verified'"] = [
+    adm.conn.answers[r"FROM cz.vRefactorOrder o JOIN cz.vApplicationLatest l"] = [
         {"ApplicationId": 7, "JobId": 77, "SandboxStatus": "skipped", "SandboxUrl": None, "FinishedAt": None}]
     b = _getq(adm, ad, "/admin/refactoring/make-all-a", "limit=99999999").body
     assert "made A by <a href='/admin/refactoring/77'>a patch</a>" in b and "<b>1 order(s)</b> can be queued" in b
@@ -1043,3 +1042,112 @@ def test_the_order_page_says_why_each_component_was_left_out(adm):
     op = adm.sessions.create("o@example.com", "O", False, True, True, [])
     b = _get(adm, op, "/admin/refactoring/42").body
     assert "<li><b>PartsCatalog</b>: security gate: &lt;b&gt;3 fixable&lt;/b&gt; vulnerabilities</li>" in b
+
+
+# --------------------------------------------------------------------------- newer code: the earlier patch reused
+
+def _new_commit(root, path, old, new):
+    f = root / path
+    f.write_text(f.read_text().replace(old, new) if old else f.read_text() + new)
+    _git(root, "commit", "--quiet", "-am", "newer code")
+
+
+def test_newer_code_starts_from_the_earlier_patch_without_the_llm(stateful, tmp_path, builds):
+    first = rf.run_order(_pl(stateful), tmp_path / "w1", ask=Asker(GOOD), name="shop-refactor-30")
+    assert first["status"] == "verified" and first["rating_after"] == "A"
+    _new_commit(stateful, "src/Shop.Api/Bank.cs", "", "// newer code, elsewhere in the file\n")
+    pl = {**_pl(stateful), "reuse_patch": first["patch"], "reuse_job": 30, "reuse_commit": first["commit"]}
+    ask = Asker(GOOD)
+    res = rf.run_order(pl, tmp_path / "w2", ask=ask, name="shop-refactor-31")
+    assert ask.asked == {} and res["calls"] == 0                  # every file of the earlier patch still applies
+    assert res["status"] == "verified" and res["rating_reached"], res.get("reason")
+    assert sorted(res["reused"]["files"]) == ["src/Shop.Api/Bank.cs", "src/Shop.Api/Program.cs",
+                                               "src/Shop.Api/Shop.Api.csproj"] and res["reused"]["edited"] == []
+    assert res["commit"] != first["commit"] and "for the assessment of commit " + res["commit"][:12] in res["patch"]
+    assert any("reused order #30's patch" in n for n in res["notes"])
+
+
+def test_a_file_the_earlier_patch_no_longer_applies_to_is_edited_again(stateful, tmp_path, builds):
+    first = rf.run_order(_pl(stateful), tmp_path / "w1", ask=Asker(GOOD), name="shop-refactor-32")
+    moved = SQLITE_LINE.replace("shop.db", "data/shop.db")
+    _new_commit(stateful, "src/Shop.Api/Program.cs", SQLITE_LINE, moved)
+    pl = {**_pl(stateful), "reuse_patch": first["patch"], "reuse_job": 32, "reuse_commit": first["commit"]}
+    ask = Asker({"src/Shop.Api/Program.cs": edit("src/Shop.Api/Program.cs", moved, SQLSERVER_LINE, ["move-state-out"])})
+    res = rf.run_order(pl, tmp_path / "w2", ask=ask, name="shop-refactor-33")
+    assert list(ask.asked) == ["src/Shop.Api/Program.cs"]          # only the file it did not apply to
+    assert res["reused"]["edited"] == ["src/Shop.Api/Program.cs"] and "src/Shop.Api/Bank.cs" in res["reused"]["files"]
+    assert res["status"] == "verified" and res["rating_reached"], res.get("reason")
+    assert "UseSqlServer" in res["patch"] and "<<<<<<<" not in res["patch"]
+
+
+def test_a_reused_patch_is_not_carried_into_the_orders_after_it(stateful, tmp_path):
+    pl = {**_pl(stateful), "reuse_patch": "P", "reuse_job": 3, "reuse_commit": "c" * 40}
+    rep = rf.repair_payload(pl, {"patch": "P2", "verification": []}, 9)
+    assert rep["base_patch"] == "P2" and not set(rf.REUSE_KEYS) & set(rep)
+    q = Q()
+    rf.heavy_next({"JobId": 41}, {**pl, "heavy_round": 2}, {"patch": "P2", "status": "applies-only"},
+                  datetime.now(timezone.utc) + timedelta(hours=2), tmp_path, queue=q)
+    assert q.jobs[0]["Payload"]["base_patch"] == "P2" and not set(rf.REUSE_KEYS) & set(q.jobs[0]["Payload"])
+
+
+def test_reusable_patch_is_the_newest_working_one_for_another_commit():
+    seen = []
+
+    def rows(params):
+        seen.append(params)
+        return [{"JobId": 12, "SourceCommit": "a" * 40, "Result": json.dumps({"patch": "From x\n"})}]
+    conn = FakeConn({r"FROM cz.vRefactorOrder o JOIN cz.LlmJob j": rows})
+    assert admin_refactor.reusable_patch(conn, 5, "b" * 40) == {"reuse_patch": "From x\n", "reuse_job": 12,
+                                                                "reuse_commit": "a" * 40}
+    assert seen == [(5, "b" * 40)]
+    assert admin_refactor.reusable_patch(FakeConn({}), 5, "b" * 40) == {}
+
+
+def test_a_patch_for_older_code_no_longer_counts_as_made_a():
+    from containerizer import webui
+    conn = FakeConn({r"FROM cz.vRefactorOrder o JOIN cz.vApplicationLatest l": [
+        {"ApplicationId": 1, "JobId": 2, "SandboxStatus": "running", "SandboxUrl": None, "FinishedAt": None}]})
+    assert webui.load_a_patches(conn)[1]["JobId"] == 2
+    assert conn.sql(r"o\.SourceCommit = l\.SourceCommit")
+
+
+# --------------------------------------------------------------------------- Build again (no LLM)
+
+def test_build_again_reuses_the_patch_without_the_llm(stateful, tmp_path, builds):
+    outcomes, _ = builds
+    outcomes[:] = ["build-failed", "build-failed", "build-failed", "ok"]
+    first = rf.run_order({**_pl(stateful), "max_repairs": 0}, tmp_path / "w1", ask=Asker(GOOD), name="shop-refactor-50")
+    assert first["status"] != "verified" and first["patch"]
+    pl = rf.rebuild_payload({**_pl(stateful), "heavy_round": 3, "deadline": "x", "reuse_patch": "P"}, first, 50)
+    assert pl["max_calls"] == 0 and pl["rebuild"] and pl["base_job"] == 50 and pl["base_patch"] == first["patch"]
+    assert not any(k.startswith("heavy_") for k in pl) and "deadline" not in pl and "reuse_patch" not in pl
+    outcomes[:] = ["ok"]                                     # the firewall rule is in now
+    ask = Asker(GOOD)
+    res = rf.run_order(pl, tmp_path / "w2", ask=ask, name="shop-refactor-51")
+    assert ask.asked == {} and res["calls"] == 0
+    assert res["status"] == "verified" and res["rating_reached"], res.get("reason")
+    outcomes[:] = ["build-failed"]                           # still failing: no repair round, still no LLM
+    res = rf.run_order(pl, tmp_path / "w3", ask=ask, name="shop-refactor-52")
+    assert ask.asked == {} and res["status"] != "verified" and [x["kind"] for x in res["loop"]] == ["generate"]
+    with pytest.raises(rf.RefactorError):
+        rf.rebuild_payload({**pl, "goal": "fix"}, first, 50)
+
+
+def test_build_again_button_queues_an_approved_order(adm):
+    from test_refactor import _job, RESULT
+    res = {**RESULT, "status": "applies-only", "goal": "rating-a", "rating_before": "B", "rating_after": "A",
+           "rating_reached": False, "loop": []}
+    job = _job(result=res, Payload=json.dumps({"commit": "a" * 40, "goal": "rating-a", "tasks": [],
+                                                                  "components": [{"name": "Web", "project": "Web"}]}))
+    adm.conn.answers = {r"FROM cz.LlmJob WHERE JobId = %s AND Kind = N'refactor'": [job],
+                        r"SELECT RemoveRequestedAt FROM cz.LlmJob": [{"RemoveRequestedAt": None}],
+                        r"EXEC cz.QueueLlmJob": [{"JobId": 43}]}
+    op = adm.sessions.create("o@example.com", "O", False, True, True, [])
+    b = _get(adm, op, "/admin/refactoring/42").body
+    assert "action='/admin/refactoring/42/rebuild'" in b and "Build again (no LLM)" in b
+    r = _post(adm, op, "/admin/refactoring/42/rebuild")
+    assert "/admin/refactoring/43" in _loc(r)
+    (sql, params), = adm.conn.sql("EXEC cz.QueueLlmJob")
+    pl = json.loads(params[-1])
+    assert pl["rebuild"] and pl["max_calls"] == 0 and pl["base_job"] == 42
+    assert adm.conn.sql(r"SET Status = N'queued', ApprovedBy")                    # no approval wait: no LLM call
