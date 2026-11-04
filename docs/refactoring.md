@@ -305,10 +305,13 @@ rate A on their own, so a B application has only those in the sandbox, often non
 - **How long it stays.** A variant does not expire with time. It stays until a scan assesses newer code of its
   application: another commit than the one its patch was made for, so the patch no longer matches the
   application. Without scheduled scans, the code an order was made for stays the code the scans know, and so does
-  the variant. **Remove from the sandbox** on the order page (administrators, operators, the application's
-  product owners) takes it out sooner. The queue runner takes outdated and requested variants out of the
+  the variant. **One variant per application:** only the variant of an application's latest order stays, so when
+  a newer order's variant is deployed (on the same commit or another), the older ones of that application are
+  replaced. **Remove from the sandbox** on the order page (administrators, operators, the application's
+  product owners) takes it out sooner. The queue runner takes outdated, replaced and requested variants out of the
   output repository within a few minutes (the folder deleted, `sandbox/` regenerated, one commit: the cluster
-  removes the namespace) and records it: **replaced by newer code** (with both commits) or **removed**. The
+  removes the namespace) and records it: **replaced by newer code** (with both commits, or the newer order) or
+  **removed**. The
   patch stays available on its order (in the results database), and a new Make it A order for the new code
   starts from it (above). Variants deployed before 0.9.1 had an expiry
   date, which no longer applies.

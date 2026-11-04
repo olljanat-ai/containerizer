@@ -29,6 +29,13 @@ qcow2 and VHDX images as release assets.
   not persist them (`PersistKeysTo*`), the key folder gets one key, read-only, from a Secret that External Secrets
   Operator generates once in the cluster (Password generator; no secret store, nothing to set up). Before, each pod
   kept its own keys in an `emptyDir`, so every restart or redeploy logged users out and broke open forms.
+- Make it A: only the sandbox variant of an application's latest order stays. Two orders of the same application on
+  the same commit were both deployed and both stayed (in the lab, trade-rebates ran as `...-refactor-168` and
+  `...-refactor-172`), because a variant was retired only when a scan assessed another commit. The queue runner now
+  takes the older variants of an application out of the output repository when a newer order's variant is
+  deployed, whatever commit each was made for, the same way **Remove from the sandbox** does (the folder deleted,
+  `sandbox/` regenerated: Flux prunes the namespace), and the order and results pages show them as **Replaced by
+  newer code** (by order #N). Variants already deployed twice are cleaned up the same way.
 
 ## 0.9.3 (2026-11-04)
 

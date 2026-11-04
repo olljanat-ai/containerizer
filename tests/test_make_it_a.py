@@ -515,7 +515,69 @@ def test_what_the_runner_removes_and_when():
     latest = {7: "a" * 12, 8: "b" * 40}                  # 7: the same commit (written short); 8: newer code; 9: unknown
     assert [(r["JobId"], why, by) for r, why, by in variant.due(rows, latest)] == [
         (2, "outdated", "b" * 40), (3, "removed", "o@example.com"), (6, "outdated", "b" * 40)]
-    assert variant.due(rows, {}) == [(rows[2], "removed", "o@example.com")]       # no scan since: nothing goes
+    # no scan since: nothing is outdated by a commit, but job 6 is the latest order of application 8 and replaces 2
+    assert variant.due(rows, {}) == [(rows[2], "removed", "o@example.com"), (rows[1], "outdated", 6)]
+
+
+def _vrow(jid, app=7, commit="c" * 40, status="running", req=None, of="Contoso/_/shop", name="shop"):
+    return {"JobId": jid, "RemoveRequestedAt": req, "RemoveRequestedBy": "o@example.com" if req else None,
+            "Payload": json.dumps({"application_id": app, "app": name, "commit": commit}),
+            "Result": json.dumps({"status": "verified", "sandbox": {
+                "status": status, "folder": f"{of.rsplit('/', 1)[0]}/{name}-refactor-{jid}",
+                "namespace": f"{name}-refactor-{jid}", "of": of, "commit": commit}})}
+
+
+def test_only_the_latest_orders_variant_of_an_application_stays():
+    """Two orders of one application on the same commit (the lab: jobs 168 and 172 of trade-rebates both ran):
+    the newer order's variant replaces the older ones, whatever commit each was made for; other applications'
+    variants stay; a variant someone asked to remove does not count as the one that stays."""
+    rows = [_vrow(168), _vrow(172), _vrow(150, commit="e" * 40), _vrow(160, app=8, name="crm", of="Contoso/_/crm"),
+            _vrow(175, status="deploying"), _vrow(171, app=9, name="hr", of="Contoso/_/hr"),
+            _vrow(173, app=9, name="hr", of="Contoso/_/hr", req=datetime(2026, 11, 4))]
+    got = [(r["JobId"], why, by) for r, why, by in variant.due(rows, {7: "c" * 12})]
+    assert got == [(150, "outdated", "c" * 12), (173, "removed", "o@example.com"), (168, "outdated", 172)]
+    # without an assessment of the application, the older commit's variant is replaced by the latest order too
+    assert sorted((r["JobId"], by) for r, _, by in variant.due(rows, {}) if r["JobId"] in (150, 168)) == [
+        (150, 172), (168, 172)]
+    # variants without an ApplicationId: one application by the original's folder and its name
+    old = [{**r, "Payload": json.dumps({"app": "shop", "commit": "c" * 40})} for r in (_vrow(3), _vrow(4))]
+    assert [(r["JobId"], by) for r, _, by in variant.due(old)] == [(3, 4)]
+
+
+def test_housekeep_retires_the_older_variant_of_the_same_application(tmp_path, monkeypatch):
+    """Both variants deployed (the duplicate in the lab): the runner deletes the older one's folder and its Flux
+    objects from the output repository (sandbox/ regenerated: the cluster prunes its namespace), as "Remove from the
+    sandbox" does, and records it as replaced by the newer order; the newer one stays."""
+    out, o = _output(tmp_path)
+    monkeypatch.setattr(variant, "_open", lambda connect, key, payload, work, deploying=True: (TARGET, o))
+    monkeypatch.delenv(variant.KUBECONFIG_ENV, raising=False)
+    now = datetime(2026, 11, 4, 9, 5, tzinfo=timezone.utc)
+    rows = []
+    for jid in (168, 172):
+        work = tmp_path / f"job-{jid}"
+        name = rf.variant_name("shop", jid)
+        shutil.copytree(DEMO, work / name)
+        result = {"status": "verified", "rating_reached": True,
+                  "verification": [{"component": "demo-web", "status": "ok"}]}
+        result["sandbox"] = variant.deploy(None, None, PAYLOAD, jid, result, work, name, lambda t: None, now=now)
+        assert result["sandbox"]["status"] == "deployed"
+        rows.append({"JobId": jid, "Payload": json.dumps(PAYLOAD), "Result": json.dumps(result),
+                     "RemoveRequestedAt": None, "RemoveRequestedBy": None})
+    assert (out / "sandbox/namespaces.txt").read_text() == "shop\nshop-refactor-168\nshop-refactor-172\n"
+    conn = FakeConn({r"SELECT JobId, Payload, Result, RemoveRequestedAt": rows,
+                     r"FROM cz.vApplicationLatest": [{"ApplicationId": 7, "SourceCommit": PAYLOAD["commit"]}]})
+    assert variant.housekeep(lambda: conn, None, tmp_path / "hk", log=lambda m: None, now=now) == 1
+    assert not (out / "Contoso/_/shop-refactor-168").exists() and (out / "Contoso/_/shop-refactor-172").is_dir()
+    assert (out / "sandbox/namespaces.txt").read_text() == "shop\nshop-refactor-172\n"
+    flux = yaml.safe_load((out / "sandbox/flux/apps/kustomization.yaml").read_text())["resources"]
+    assert flux == ["../../../Contoso/_/shop/gitops/flux", "../../../Contoso/_/shop-refactor-172/gitops/flux"]
+    assert "sandbox variant Contoso/_/shop-refactor-168 replaced by the variant of order #172" in subprocess.run(
+        ["git", "log", "-1", "--format=%s"], cwd=out, capture_output=True, text=True).stdout
+    (sql, params), = conn.sql(r"UPDATE cz.LlmJob SET Result")
+    sb = json.loads(params[0])["sandbox"]
+    assert params[1] == 168 and sb["status"] == "outdated" and sb["removed_at"] == "2026-11-04T09:05:00"
+    assert sb["removed_by"] is None and sb["reason"].startswith("replaced by newer code: order #172 deployed a newer")
+    assert variant.STATUS_TEXT[sb["status"]] == "Replaced by newer code"
 
 
 def test_housekeep_records_the_removal(monkeypatch, tmp_path):
@@ -849,7 +911,7 @@ def test_schema_23_removal_request_and_the_view():
                             "WHERE Kind = N'refactor' AND Status = N'answered' "
                             "AND JSON_VALUE(Result, '$.sandbox.folder') IS NOT NULL "
                             "AND JSON_VALUE(Result, '$.sandbox.removed_at') IS NULL")
-    assert [r["JobId"] for r, why in variant.due(rows)] == [jid] and rows[0]["RemoveRequestedBy"] == "o@example.com"
+    assert [r["JobId"] for r, why, by in variant.due(rows)] == [jid] and rows[0]["RemoveRequestedBy"] == "o@example.com"
     result["sandbox"].update(status="removed", removed_at="2026-11-02T00:00:00")
     c.execute("UPDATE cz.LlmJob SET Result = %s WHERE JobId = %s", (json.dumps(result), jid))
     w.commit()
