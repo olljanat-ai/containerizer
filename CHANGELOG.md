@@ -8,6 +8,11 @@ qcow2 and VHDX images as release assets.
 
 ## Unreleased
 
+- Sandbox IdP: the sync job (`cz-idp-sync`) trusts the Sandbox HTTPS certificate, also one from an internal CA or
+  self-signed. It calls the IdP through Traefik, which serves that certificate, and failed every 5 minutes with
+  `certificate verify failed: self-signed certificate`, so users, groups and app registrations were not applied.
+  The appliance publishes the certificate's chain (never the key) as ConfigMap `containerizer-sandbox-ca` in
+  `containerizer-idp`, and the job trusts exactly it.
 - Appliance, kubemg: the sandbox cluster gets its kubemg agent again ("No agent tunnel right now"). The loopback
   certificate kubemg serves had no authority key identifier, which Python 3.13 (the appliance's) refuses by default
   (`certificate verify failed: Missing Authority Key Identifier`; kubemg logged `tls: bad record MAC`), so the
