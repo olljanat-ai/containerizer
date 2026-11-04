@@ -306,3 +306,49 @@ def test_wait_up_stops_at_once_on_a_tls_failure(monkeypatch):
     with pytest.raises(kubemg.KubemgError, match="TLS handshake fails: .*bad record mac"):
         kubemg.wait_up(call=bad_mac)
     assert len(calls) == 1
+
+
+def test_loopback_certificate_passes_strict_x509_and_old_ones_are_issued_again(tmp_path):
+    """Python 3.13 checks strictly by default (VERIFY_X509_STRICT): kubemg's certificate must carry an authority key
+    identifier, its CA a subject key identifier ("Missing Authority Key Identifier" on the appliance, while Caddy
+    connected). One made before is issued again with the same keys; a TLS handshake under strict checking works."""
+    import ssl
+    import threading
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    from containerizer import kubemg
+    d = tmp_path / "tls"
+    assert kubemg.loopback_tls(d) is True and kubemg.loopback_tls(d) is False
+    # an old one: no key identifiers
+    ca_key = serialization.load_pem_private_key((d / "ca.key").read_bytes(), None)
+    old = x509.load_pem_x509_certificate((d / "ssl" / "tls.crt").read_bytes())
+    b = (x509.CertificateBuilder().subject_name(old.subject).issuer_name(old.issuer).public_key(old.public_key())
+         .serial_number(1).not_valid_before(old.not_valid_before_utc).not_valid_after(old.not_valid_after_utc))
+    (d / "ssl" / "tls.crt").write_bytes(b.sign(ca_key, hashes.SHA256()).public_bytes(serialization.Encoding.PEM))
+    keys = ((d / "ca.key").read_bytes(), (d / "ssl" / "tls.key").read_bytes())
+    assert not kubemg._strict_ok(d / "ca.crt", d / "ssl" / "tls.crt")
+    assert kubemg.loopback_tls(d) is True                                         # issued again
+    assert keys == ((d / "ca.key").read_bytes(), (d / "ssl" / "tls.key").read_bytes())
+    assert kubemg._strict_ok(d / "ca.crt", d / "ssl" / "tls.crt")
+    assert isinstance(serialization.load_pem_private_key(keys[1], None), ec.EllipticCurvePrivateKey)
+    # a real handshake with strict checking
+    srv = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    srv.load_cert_chain(d / "ssl" / "tls.crt", d / "ssl" / "tls.key")
+    import socket
+    ls = socket.socket()
+    ls.bind(("127.0.0.1", 0))
+    ls.listen(1)
+
+    def serve():
+        conn, _ = ls.accept()
+        with srv.wrap_socket(conn, server_side=True) as s:
+            s.recv(1)
+    threading.Thread(target=serve, daemon=True).start()
+    cli = ssl.create_default_context(cafile=str(d / "ca.crt"))
+    cli.verify_flags |= ssl.VERIFY_X509_STRICT
+    with cli.wrap_socket(socket.create_connection(ls.getsockname()), server_hostname="127.0.0.1") as s:
+        s.sendall(b"x")
+    ls.close()

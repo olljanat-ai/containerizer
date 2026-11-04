@@ -8,6 +8,11 @@ qcow2 and VHDX images as release assets.
 
 ## Unreleased
 
+- Appliance, kubemg: the sandbox cluster gets its kubemg agent again ("No agent tunnel right now"). The loopback
+  certificate kubemg serves had no authority key identifier, which Python 3.13 (the appliance's) refuses by default
+  (`certificate verify failed: Missing Authority Key Identifier`; kubemg logged `tls: bad record MAC`), so the
+  sandbox registration never connected, while Caddy did. The certificates now carry the key identifiers; an
+  existing one is issued again with the same keys when kubemg starts, so Caddy keeps trusting it.
 - Appliance, kubemg: when the sandbox cluster's registration in kubemg cannot complete the TLS handshake with kubemg
   (loopback HTTPS), it stops at once and says why in `journalctl -u containerizer-kubemg-sandbox`, instead of retrying
   every 5 seconds for 10 minutes (a `tls: bad record MAC` line in kubemg's log each time) and starting over.
