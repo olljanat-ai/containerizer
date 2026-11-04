@@ -357,6 +357,18 @@ def test_forbidden_points_at_the_rbac_file(tmp_path):
     assert doc["components"][0]["status"] == "error" and "verify-rbac.yaml" in doc["components"][0]["reason"]
 
 
+def test_a_namespace_never_readable_is_not_checked_rather_than_failing(tmp_path):
+    """A scan's new apps (and a Make it A variant) are forbidden to read until Flux creates their namespace and the
+    verifier gets its Role there. An appliance whose sandbox was not connected (sandbox.env empty) never got there:
+    17 components came back as errors and the variant as 'Failing'. Waited for, then 'not checked', with the hint."""
+    k = FakeKube({(sb.FLUX_KS, "shop-web", "shop-web"): KubeError("forbidden", "forbidden")})
+    doc, clock = run(output_repo(tmp_path), k, timeout=120, wait_forbidden=True)
+    r = doc["components"][0]
+    assert clock.t >= 120 and r["status"] == SKIPPED
+    assert r["reason"].startswith("not checked: no read access to the Flux object of shop-web")
+    assert "within 120s" in r["reason"] and "sandbox connected" in r["reason"]
+
+
 def test_cronjob_scheduled_and_last_run(tmp_path):
     root = output_repo(tmp_path, components=(("report", "CronJob"),))
     objs = {(sb.FLUX_KS, "shop-web", "shop-web"): flux_ks(), ("cronjobs.batch", "shop-web", "report"): {},
