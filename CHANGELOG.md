@@ -13,6 +13,9 @@ qcow2 and VHDX images as release assets.
   the patched files, the order makes no LLM call. The order page says which patch it started from.
 - *Made A by a patch* (front page, bulk Make it A) counts only a patch made for the commit the latest scan
   assessed. Before, an application whose code had changed since stayed marked and was not ordered again.
+- An organization scan writes the build pipeline of its own provider only (GitHub Actions, GitLab CI/CD or Azure
+  Pipelines) into `pipeline/`. Before, a repository whose URL did not name the provider (a self-hosted server)
+  got all three.
 
 ## 0.9.1 (2026-11-04)
 

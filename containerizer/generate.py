@@ -672,8 +672,11 @@ def _yaml_docs(docs: list[dict]) -> str:
 def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, registry: str = "registry.local",
                  plans: dict | None = None, pin: bool = False, gitops=None, tag: str = "latest",
                  devdb=None, lab: set | None = None, lab_report: dict | None = None,
-                 approved_egress: list[dict] | None = None, links: tuple | None = None) -> list[Path]:
-    """`approved_egress`: the approved outbound entries of the application's connectivity.yaml in the output
+                 approved_egress: list[dict] | None = None, links: tuple | None = None,
+                 ci_provider: str | None = None) -> list[Path]:
+    """`ci_provider`: where the application's code is (github, gitlab, azure-devops; an organization scan's
+    provider): the build pipeline is written for that one only (None: from the repository's remote URL).
+    `approved_egress`: the approved outbound entries of the application's connectivity.yaml in the output
     repository (connectivity.approved_entries): kept in the new connectivity.yaml as they are. Approval documents
     a destination for the real environment; it opens nothing in the sandbox (its NetworkPolicies stay as
     inferred, and on the appliance only the administrators' egress rules let anything out).
@@ -781,7 +784,7 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
     (out / "MIGRATION.md").write_text(migration_markdown(a))
     written.append(out / "MIGRATION.md")
     written += write_agent_prompts(a, out)
-    written += _build_pipeline(a, out, registry)
+    written += _build_pipeline(a, out, registry, ci_provider)
     return written
 
 
@@ -799,7 +802,7 @@ def _connectivity(a: AppAssessment, out: Path, approved_egress: list[dict] | Non
         return []
 
 
-def _build_pipeline(a: AppAssessment, out: Path, registry: str) -> list[Path]:
+def _build_pipeline(a: AppAssessment, out: Path, registry: str, provider: str | None = None) -> list[Path]:
     """The image build pipeline for the application's own repository (pipelines.py): `pipeline/` in the
     output (an organization scan commits it to the output repository).
     A failure here never fails the generation."""
@@ -813,7 +816,7 @@ def _build_pipeline(a: AppAssessment, out: Path, registry: str) -> list[Path]:
             print(f"warning: {a.name}: build pipeline not written to {pipelines.OUTPUT_DIR}/, a component's folder",
                   file=sys.stderr)
             return []
-        return pipelines.write_output(out, sp)
+        return pipelines.write_output(out, sp, provider)
     except Exception as ex:  # noqa: BLE001
         print(f"warning: {a.name}: no build pipeline: {type(ex).__name__}: {ex}", file=sys.stderr)
         return []

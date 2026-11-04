@@ -32,8 +32,9 @@ The provider comes from, in this order: the organization scan that has the repos
 GitHub, GitLab or Azure DevOps, also self-hosted ones through its API URL: GitHub Enterprise Server, GitLab
 self-managed, Azure DevOps Server / TFS); then the repository URL: `github.com`, `*.ghe.com` or a host named
 `github`/`ghe`; `gitlab.com` or a host named `gitlab`; `dev.azure.com`, `*.visualstudio.com`, or a URL with
-`/_git/` or `/tfs/`. When neither tells, the output repository gets all three folders. `--provider` overrides
-it on the command line.
+`/_git/` or `/tfs/`. An organization scan always knows its provider, so its output repository gets that one
+pipeline only. When neither tells (the command line, on a folder whose remote is not known), all three folders
+are written. `--provider` overrides it on the command line.
 
 ## What it adds to the repository
 

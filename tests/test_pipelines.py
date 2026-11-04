@@ -180,6 +180,10 @@ def test_unknown_provider_writes_all_three_and_a_subfolder_app_builds_from_its_f
     assert sp["detected"] is None and sp["subdir"] == "apps/shop" and sp["branch"] == "trunk" and sp["gitlab_ci"]
     assert sp["registry"] == ""                           # registry.local: not known
     assert sorted(p.name for p in (out / "pipeline").iterdir()) == ["README.md", "azure-devops", "github", "gitlab"]
+    # an organization scan knows its provider (OrgOptions.provider): that one only, whatever the URL says
+    generate_app(a, tmp_path / "scan", ci_provider="gitlab")
+    assert sorted(p.name for p in (tmp_path / "scan" / "pipeline").iterdir()) == ["README.md", "gitlab"]
+    assert "The application's code is on GitLab" in (tmp_path / "scan" / "pipeline" / "README.md").read_text()
     folder = sp["components"][0]["folder"]
     assert (out / "pipeline/gitlab/containerizer.gitlab-ci.yml").exists()    # the repository has a .gitlab-ci.yml
     assert not (out / "pipeline/gitlab/.gitlab-ci.yml").exists()

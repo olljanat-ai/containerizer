@@ -1157,7 +1157,7 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
         if not o.gate:
             progress.step(progress.GENERATE)
             generate_app(fa, gen, registry=o.registry, pin=o.pin, gitops=gitops, tag=tag, devdb=dd, lab=lab,
-                         lab_report=lab_report, approved_egress=approved, links=linked)
+                         lab_report=lab_report, approved_egress=approved, links=linked, ci_provider=o.provider)
             break
         from .harden import security
         from .imagescan import gate_app
@@ -1166,7 +1166,8 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
                         + (" ..." if len(keep) > 5 else ""))
         g = gate_app(fa, gen, build=True, scan=True, run=True, registry=o.registry, pin=o.pin, gitops=gitops,
                      tag=tag, scanner=o.scanner or security()["scan"].get("default_scanner", "auto"),
-                     fail_on=o.fail_on, devdb=dd, lab=lab, lab_report=lab_report, approved_egress=approved, links=linked)
+                     fail_on=o.fail_on, devdb=dd, lab=lab, lab_report=lab_report, approved_egress=approved, links=linked,
+                     ci_provider=o.provider)
         failed = {c["component"]: gate_failure(c) for c in g["components"] if gate_failure(c)}
         if not failed:
             break
