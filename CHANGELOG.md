@@ -27,7 +27,7 @@ qcow2 and VHDX images as release assets.
     from C to D on a pull request (the PR adds a port to a partial application) now fails `fail-on-rating-drop`.
   - The front page tiles group by meaning: **Need code changes (B, D)** and **Partly or not feasible (C, E)**.
   - The benchmark labels (`bench/labels.yaml`, `bench/realworld.yaml`) are rewritten for the new scale; the
-    benchmark's easy/hard split is now C or E (some components stay on Windows) against A, B or D.
+    benchmark's easy/hard split stays A–C against D–E, which now means a port or not feasible against the rest.
 - The front page leaves out applications not mapped to a product for everyone but administrators: nobody has said
   whose they are yet. Administrators see them with a note and a link to map them. Without sign-in (no admin pages)
   everything is shown as before.
