@@ -324,6 +324,10 @@ def test_store_maps_components_and_keeps_human_mapping(db, tmp_path):
         assert app["Rating"] == a.rating and app["Components"] == len(a.components)
         detail = webui.load_application(rd, app["ApplicationId"])
         assert {c["ProjectPath"] for c in detail["components"]} == {c.project.rel for c in a.components}
+        # the migration plan's data: the deploy record (none: not deployed by a scan) and the ready count
+        assert detail["deploys"] and detail["deploys"][0]["ScanStatus"] is None
+        from containerizer.org import component_rating
+        assert app["ReadyNow"] == sum(1 for c in a.components if c.tier == "server" and component_rating(a, c) == "A")
         assert len(detail["history"]) == 2
         assert "Web Shop" in webui.render_application(detail)
         assert "Retail" in webui.render_overview(ov)
@@ -353,6 +357,57 @@ def test_store_maps_components_and_keeps_human_mapping(db, tmp_path):
 
 
 @needs_sql
+def test_sandbox_deploy_view(db):
+    """vSandboxDeploy (schema 39): the reader sees the sandbox switch and what the latest organization scan deployed
+    and left out, per application (a whole repository, and the folders of a split one), never OrgRepository."""
+    adm = sqlstore.connect(db)
+    cur = adm.cursor()
+    url, split_url = "https://git.example.com/x/loans", "https://git.example.com/x/mono"
+    cur.execute("INSERT cz.Application (SourceKey, Name, RepositoryUrl, SourcePath) VALUES "
+                "(%s, N'loans', %s, N'.'), (%s, N'one', %s, N'apps/one'), (%s, N'two', %s, N'apps/two'), "
+                "(N'cli-only', N'cli-only', NULL, NULL)",
+                (url + "#.", url, split_url + "#apps/one", split_url, split_url + "#apps/two", split_url))
+    cur.execute("UPDATE cz.Application SET SandboxEnabled = 0 WHERE Name = N'two'")
+    cur.execute("INSERT cz.OrgScan (Name, Provider, Organization, Registry) VALUES (N'deploy-view', N'github', N'x', N'r')")
+    cur.execute("SELECT ScanId FROM cz.OrgScan WHERE Name = N'deploy-view'")
+    scan = cur.fetchone()[0]
+    whole = {"components": [{"component": "Portal", "project": "src/Portal/Portal.csproj"}],
+             "excluded": [{"component": "Api", "reason": "rated D (blocker)"}]}
+    split = {"apps": [{"folder": "apps/one", "source_key": split_url + "#apps/one", "status": "deployed"},
+                      {"folder": "apps/two", "source_key": split_url + "#apps/two", "status": "sandbox-off"}],
+             "components": [{"component": "Web", "project": "Web/Web.csproj", "application": "apps/one"}],
+             "excluded": [{"component": "apps/one: Tape", "reason": "keeps local state"}]}
+    for name, u, sp, detail in (("loans", url, None, whole), ("mono", split_url, "apps/*", split)):
+        cur.execute("INSERT cz.OrgRepository (ScanId, ProjectName, Name, CloneUrl, RepositoryUrl, SplitPath, LastStatus, "
+                    "LastScannedAt, LastDetail) VALUES (%s, N'_', %s, %s, %s, %s, N'deployed', SYSUTCDATETIME(), %s)",
+                    (scan, name, u, u, sp, json.dumps(detail)))
+    adm.commit()
+    adm.close()
+    adm = sqlstore.connect(db)
+    c2 = adm.cursor()
+    ids = {}
+    for n in ("loans", "one", "two", "cli-only"):
+        c2.execute("SELECT ApplicationId FROM cz.Application WHERE Name = %s", (n,))
+        ids[n] = c2.fetchone()[0]
+    adm.close()
+    from containerizer.migrationplan import load_deploys
+    rd = sqlstore.connect(_as(db, "cz_t_reader"), password="Test-Passw0rd!x")
+    try:
+        rows = {n: load_deploys(rd, i) for n, i in ids.items()}
+        kinds = lambda n: sorted((r["Kind"], r["ComponentName"], r["Reason"]) for r in rows[n] if r["Kind"])   # noqa: E731
+        assert kinds("loans") == [("deployed", "Portal", None), ("excluded", "Api", "rated D (blocker)")]
+        assert next(r["ProjectPath"] for r in rows["loans"] if r["Kind"] == "deployed") == "src/Portal/Portal.csproj"
+        assert kinds("one") == [("deployed", "Web", None), ("excluded", "Tape", "keeps local state")]
+        assert kinds("two") == [] and not rows["two"][0]["SandboxEnabled"] and rows["two"][0]["ScanStatus"] == "sandbox-off"
+        assert rows["one"][0]["ScanStatus"] == "deployed" and rows["one"][0]["SandboxEnabled"]
+        assert len(rows["cli-only"]) == 1 and rows["cli-only"][0]["ScanStatus"] is None
+        with pytest.raises(Exception):
+            rd.cursor().execute("SELECT LastDetail FROM cz.OrgRepository")
+    finally:
+        rd.close()
+
+
+@needs_sql
 def test_import_json(db, tmp_path):
     web_app(tmp_path / "importme", code='var t = Type.GetTypeFromProgID("Excel.Application");')
     a = assess(tmp_path / "importme")
@@ -365,14 +420,16 @@ def test_import_json(db, tmp_path):
     assert cur.fetchone()["Rating"] == "E"
     cur.execute("SELECT COUNT(*) AS N FROM cz.vFindingLatest WHERE ApplicationName = N'importme' AND Severity = 'blocker'")
     assert cur.fetchone()["N"] >= 1
-    # migration assistant: plan and AI agent prompt, readable by the UI login
+    # migration assistant: the plan, readable by the UI login (the AI agent prompt is stored, not shown)
     cur.execute("SELECT ApplicationId FROM cz.vApplicationLatest WHERE ScanName = N'importme'")
     app_id = cur.fetchone()["ApplicationId"]
     migs = webui.load_migrations(rd, app_id)
     assert len(migs) == 1 and migs[0]["ItemCount"] >= 1
     assert "replace-office-automation" in migs[0]["PlanJson"]
-    assert migs[0]["AgentPrompt"].startswith("# Task: make `Web`")
-    assert "Prompt for an AI coding agent" in webui.render_application(webui.load_application(rd, app_id))
+    cur.execute("SELECT AgentPrompt FROM cz.vComponentMigrationLatest WHERE ApplicationId = %s", (app_id,))
+    assert cur.fetchone()["AgentPrompt"].startswith("# Task: make `Web`")
+    html = webui.render_application(webui.load_application(rd, app_id))
+    assert "Migration assistant" in html and "Prompt for an AI coding agent" not in html
     rd.close()
 
 

@@ -1,7 +1,7 @@
 """Web UI over the results database: business unit -> product -> application -> components.
 
 `python -m containerizer web --sql "<reader connection string>"`. Standard library HTTP server; every
-page is rendered on the server (the only script is the optional copy button of the AI agent prompt) from the v* views with parameterised queries, all
+page is rendered on the server (scripts only on the admin pages) from the v* views with parameterised queries, all
 text is HTML-escaped, and responses carry a strict Content-Security-Policy. The results pages are
 read-only and need no sign-in; the admin pages (admin.py: mapping, products, business units, change
 history) appear when OpenID Connect sign-in is configured (docs/sign-in.md).
@@ -76,11 +76,19 @@ def load_overview(conn) -> dict:
         except Exception:
             pass
         apps = _rows(conn, f"SELECT {cols} FROM cz.vApplicationLatest")
-    comps = _rows(conn, "SELECT ApplicationId, COUNT(*) AS N FROM cz.vComponentLatest GROUP BY ApplicationId")
+    comps = _rows(conn, "SELECT ApplicationId, ComponentId, Tier, Verdict, VerifyStatus FROM cz.vComponentLatest")
+    rules = sorted(state_rules())
+    state_rows = _rows(conn, "SELECT DISTINCT ApplicationId, ComponentId, RuleId, Title FROM cz.vFindingLatest "
+                             f"WHERE RuleId IN ({', '.join(['%s'] * len(rules))}) "
+                             "AND (OnlyCommands IS NULL OR OnlyCommands = N'')", tuple(rules)) if rules else []
     top = _rows(conn, "SELECT ApplicationId, Title, Severity, COUNT(*) AS N FROM cz.vFindingLatest "
                       "WHERE Severity IN ('blocker', 'rewrite') GROUP BY ApplicationId, Title, Severity")
     unmapped = _rows(conn, "SELECT Kind, COUNT(*) AS N FROM cz.vUnmapped GROUP BY Kind")
-    n = {r["ApplicationId"]: r["N"] for r in comps}
+    from .migrationplan import count_ready, stateful
+    by_app: dict = {}
+    for r in comps:
+        by_app.setdefault(r["ApplicationId"], []).append(r)
+    state = stateful(state_rows, set(rules))
     best: dict = {}
     for r in top:
         k = (SEV_ORDER.index(r["Severity"]), -r["N"], r["Title"])
@@ -88,7 +96,8 @@ def load_overview(conn) -> dict:
             best[r["ApplicationId"]] = (k, r["Title"])
     ready = load_a_patches(conn)
     for a in apps:
-        a["Components"] = n.get(a["ApplicationId"], 0)
+        a["Components"] = len(by_app.get(a["ApplicationId"], []))
+        a["ReadyNow"], a["PlanComponents"] = count_ready(by_app.get(a["ApplicationId"], []), state)
         a["MainObstacle"] = best.get(a["ApplicationId"], (None, ""))[1]
         a["APatch"] = ready.get(a["ApplicationId"])
     return {"apps": apps, "unmapped": {r["Kind"]: r["N"] for r in unmapped}}
@@ -144,6 +153,8 @@ def load_application(conn, app_id: int) -> dict | None:
     app["refactors"] = load_refactor_orders(conn, app_id)
     from .connectivityui import load as load_connectivity
     app["connectivity"] = load_connectivity(conn, app_id)
+    from .migrationplan import load_deploys
+    app["deploys"] = load_deploys(conn, app_id)
     try:
         from .llmqueue import load_speed
         app["llm_speed"] = load_speed(conn) if app["refactors"] else None
@@ -398,7 +409,7 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
     The patches themselves are on the admin pages."""
     from .refactor import STATUS_TEXT
     orders = app.get("refactors") or []
-    if app.get("Rating") != "B" and not orders:
+    if not has_refactoring_box(app):
         return ""
     ctx = ctx or {}
     staff = bool(ctx.get("csrf"))
@@ -563,8 +574,8 @@ def _idp_section(rows: list[dict]) -> str:
 
 
 def load_migrations(conn, app_id: int, component_id: int | None = None) -> list[dict]:
-    """Migration plans and AI agent prompts of the latest assessment (empty before `db init` added them)."""
-    sql = ("SELECT ComponentId, ComponentName, Outcome, ItemCount, PlanJson, AgentPrompt "
+    """Migration plans of the latest assessment (empty before `db init` added them)."""
+    sql = ("SELECT ComponentId, ComponentName, Outcome, ItemCount, PlanJson "
            "FROM cz.vComponentMigrationLatest WHERE ApplicationId = %s")
     params: tuple = (app_id,)
     if component_id is not None:
@@ -667,6 +678,17 @@ def _a_patch_mark(a: dict) -> str:
             f"{' and runs in the sandbox' if here else ''}'>→ A</span>")
 
 
+def _ready_mark(a: dict) -> str:
+    """Next to the rating of an application that is not A: how many of its components can run in Linux containers
+    now (rate A on their own: the first generation of its migration plan), when at least one can."""
+    n, total = a.get("ReadyNow") or 0, a.get("PlanComponents") or 0
+    if a.get("Rating") == "A" or not n or not total:
+        return ""
+    tip = (f"{n} of {total} components rate A on their own and can run in Linux containers now (the organization scan "
+           f"deploys them to the sandbox); the rating grades the whole application. See its migration plan.")
+    return f"<span class='ready-now' title='{e(tip)}'>{n}/{total} ready now</span>"
+
+
 def a_patches_html(apps: list[dict], nav: str = "") -> str:
     """The applications a verified "Make it A" patch makes A, the ones running in the sandbox first."""
     if not apps:
@@ -761,7 +783,7 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag
         body = []
         for (prod, pid), lst in sorted(products.items(), key=lambda kv: (kv[0][1] is None, kv[0][0].lower())):
             rows = "".join(
-                f"<tr><td>{badge(a['Rating'])}{_a_patch_mark(a)}</td>"
+                f"<tr><td>{badge(a['Rating'])}{_a_patch_mark(a)}{_ready_mark(a)}</td>"
                 f"<td><a href='/app/{int(a['ApplicationId'])}'>{e(a['ApplicationName'])}</a>{_tag_chips(a.get('Tags'))}"
                 f"<div class='muted small'>{e(RATING_TITLE.get(a['Rating'], ''))}: {e(RATING_TEXT.get(a['Rating'], ''))}</div></td>"
                 f"<td class='num'>{int(a['Score'])}</td>"
@@ -857,13 +879,16 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 
     migs = {m["ComponentId"]: m for m in app.get("migrations") or []}
     reviews = {r["ComponentId"]: r for r in app.get("llm_reviews") or []}
+    from .migrationplan import sandbox_state
+    in_sb = {c["ComponentId"]: sandbox_state(c, sandbox, app.get("deploys")) for c in app["components"]}
+    sb_col = bool(sandbox) or any(x["state"] in ("checked", "deployed") for x in in_sb.values())
     comp_rows = "".join(
         f"<tr><td><a href='#c{int(c['ComponentId'])}'>{e(c['ComponentName'])}</a>"
         f"<div class='muted small'>{e(c['ProjectPath'])}</div></td>"
         f"<td>{e(ROLE_TEXT.get(c['Role'], c['Role'].title()))}</td>"
         f"<td><span class='sev s-{e(c['Verdict'])}'>{e(VERDICT_LABEL.get(c['Verdict'], c['Verdict']))}</span></td>"
         f"<td>{_verify(c)}</td>"
-        + (f"<td>{_sandbox(sandbox.get(c['ComponentId']))}</td>" if sandbox else "")
+        + (f"<td>{_sandbox_cell(in_sb[c['ComponentId']])}</td>" if sb_col else "")
         + f"<td>{_plan_cell(app['ApplicationId'], c, migs.get(c['ComponentId']), refactor)}</td>"
         + "</tr>"
         for c in app["components"])
@@ -909,8 +934,9 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 <div class='meta'>{owner}{src}</div>
 {_tags_section(app, refactor)}
 {f"<h2>Main obstacles</h2><ul class='obstacles'>{obs_html}</ul>" if obs_html else ''}
+{_migration_plan(app, refactor)}
 <h2>Components</h2>
-<table><thead><tr><th>Component</th><th>What it is</th><th>Verdict</th><th>Build and run</th>{"<th>Sandbox cluster</th>" if sandbox else ""}<th>Migration</th></tr></thead>
+<table><thead><tr><th>Component</th><th>What it is</th><th>Verdict</th><th>Build and run</th>{"<th>Sandbox cluster</th>" if sb_col else ""}<th>Migration</th></tr></thead>
 <tbody>{comp_rows}</tbody></table>
 {_idp_section(app.get("idp") or [])}
 {_refactoring(app, refactor)}
@@ -918,7 +944,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 {_connectivity(app, refactor)}
 <h2>History</h2><p class='muted small'><a href='/trends'>Trends of all applications</a></p><table class='narrow'><thead><tr><th>Assessed</th><th>Rating</th><th class='num'>Readiness</th>
 </tr></thead><tbody>{hist}</tbody></table>
-<footer>{legend()}</footer>""", script=any(m.get("AgentPrompt") for m in migs.values()))
+<footer>{legend()}</footer>""")
 
 
 def admin_links(admin, conn, s, app: dict) -> list[tuple[str, str]]:
@@ -978,13 +1004,9 @@ PLAN_OUTCOME_TEXT = {"linux-container": "Can move to a Linux container",
 KIND_TEXT = {"replace": "Replace", "port": "Port", "externalize": "Move out of the process", "isolate": "Keep on Windows"}
 
 
-def _prompt_href(app_id, comp_id) -> str:
-    return f"/app/{int(app_id)}/component/{int(comp_id)}/agent-prompt.md"
-
-
 def _plan_cell(app_id, c: dict, m: dict | None, ctx: dict | None = None) -> str:
-    """One link per component: to its migration section (the steps, the AI agent prompt and the patch the LLM can
-    make, with its estimate), or to the Refactoring box when only a patch is possible."""
+    """One link per component: to its migration section (the steps and the patch the LLM can make, with its
+    estimate), or to the Refactoring box when only a patch is possible."""
     cid = int(c["ComponentId"])
     est = (ctx or {}).get("estimates") or {}
     if m:
@@ -994,7 +1016,7 @@ def _plan_cell(app_id, c: dict, m: dict | None, ctx: dict | None = None) -> str:
     return "<span class='muted'>-</span>"
 
 def _migration(app_id, m: dict | None, ctx: dict | None = None) -> str:
-    """Migration assistant of one component: suggested replacements and the AI coding agent prompt."""
+    """Migration assistant of one component: suggested replacements, and the patch the LLM can make."""
     if not m:
         return ""
     cid = int(m["ComponentId"])
@@ -1036,16 +1058,6 @@ def _migration(app_id, m: dict | None, ctx: dict | None = None) -> str:
                    "a verified patch. "
                    + order_button(app_id, cid, goal, ctx["csrf"], "Request a refactoring patch", est[(cid, goal)])
                    + "</div>")
-    if m.get("AgentPrompt"):
-        out.append(f"<div class='prompt' id='p{cid}'><div class='prompt-head'><b>Prompt for an AI coding agent</b>"
-                   f"<span><button type='button' class='copy' data-copy='pt{cid}'>Copy prompt</button> "
-                   f"<a href='{_prompt_href(app_id, cid)}'>Open as text</a></span></div>"
-                   f"<p class='muted small'>Give this to Claude Code, GitHub Copilot or another coding agent working in "
-                   f"the repository: it lists the findings, the replacements, the constraints and how to verify.</p>"
-                   f"<textarea id='pt{cid}' readonly rows='14' spellcheck='false'>{e(m['AgentPrompt'])}</textarea></div>")
-    else:
-        out.append("<p class='muted'>No code change inside this component makes it run in a Linux container, so there "
-                   "is no agent prompt.</p>")
     return "".join(out) + "</section>"
 
 
@@ -1073,6 +1085,31 @@ def _sandbox(s: dict | None) -> str:
     return f"<span class='v-sb-{e(st)}'>{e(SANDBOX_TEXT.get(st, st))}</span>" + \
         (f" <span class='muted small'>{e(s['Ready'])}</span>" if s.get("Ready") and st == "healthy" else "") + \
         (f"<div class='small'>{_app_url(s)}</div>" if _app_url(s) else "")
+
+
+def _sandbox_cell(x: dict) -> str:
+    """The Components table's Sandbox cluster cell (migrationplan.sandbox_state): the check's result, "deployed,
+    not checked yet" when the latest organization scan deployed it and no check has a result, or not deployed."""
+    if x["state"] == "checked" or x.get("check"):
+        return _sandbox(x["check"])
+    if x["state"] == "deployed":
+        return f"<span class='v-sb-scheduled'>{e(x['text'])}</span>"
+    head, _, why = (x.get("text") or "not deployed").partition(": ")
+    return f"<span class='muted'{' title=' + chr(39) + e(why) + chr(39) if why else ''}>{e(head)}</span>"
+
+
+def has_refactoring_box(app: dict) -> bool:
+    """Whether the page has the Refactoring box (_refactoring): applications rated B, and any with orders."""
+    return app.get("Rating") == "B" or bool(app.get("refactors"))
+
+
+def _migration_plan(app: dict, ctx: dict | None) -> str:
+    from .migrationplan import section
+    try:
+        return section(app, ctx, has_refactoring_box(app))
+    except Exception as ex:  # noqa: BLE001 - one section must not take the page down
+        print(f"migration plan of {app.get('ApplicationId')}: {type(ex).__name__}: {ex}", file=sys.stderr)
+        return ""
 
 
 def _app_url(s: dict | None) -> str:
@@ -1285,9 +1322,6 @@ background:var(--card);color:var(--muted);text-decoration:none;vertical-align:1p
 form.edit h3{margin:14px 0 0;font-size:15px;border-top:1px solid var(--line);padding-top:12px}.days{display:flex;flex-wrap:wrap;gap:4px 14px}
 button.secondary{background:var(--card);color:var(--fg)}.formrow input:not([type=checkbox]):not([type=radio]){width:auto;min-width:240px}
 .migration{border-top:1px solid var(--line);margin-top:12px;padding-top:4px}.migration table{margin:6px 0}
-.prompt{margin-top:12px}.prompt-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
-.prompt p{margin:4px 0}.prompt textarea{font:12.5px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;resize:vertical;
-white-space:pre-wrap;overflow:auto}button.copy{padding:3px 12px;font-size:13px}
 .st{display:inline-block;font-size:12px;font-weight:600;border-radius:999px;padding:1px 9px;border:1px solid currentColor;white-space:nowrap}
 .st-ok{color:#0a7d0a}.st-bad{color:#b42727}.st-off{color:var(--muted)}.st-run{color:#1f5fbf}
 @media (prefers-color-scheme:dark){.st-ok{color:#4fd14f}.st-bad{color:#f07a7a}.st-run{color:#7fb0ff}}
@@ -1323,22 +1357,8 @@ table.dbrows th a{color:inherit}table.dbrows .null{color:var(--muted);font-style
 .dbfield .opts{display:flex;gap:10px;white-space:nowrap;font-size:13px}.pager{display:flex;gap:14px;align-items:center;margin:8px 0}
 """
 
-# The only script: the "Copy prompt" button of the migration assistant (progressive enhancement; without it the
-# prompt is still selectable in its read-only text box and available as plain text).
-JS = """document.addEventListener('click', function (ev) {
-  var b = ev.target.closest && ev.target.closest('button[data-copy]');
-  if (!b) return;
-  var t = document.getElementById(b.getAttribute('data-copy'));
-  if (!t) return;
-  var done = function () { b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy prompt'; }, 2000); };
-  if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(t.value).then(done, function () { t.select(); });
-  } else {
-    t.select();
-    try { if (document.execCommand('copy')) done(); } catch (e) { /* selected for manual copy */ }
-  }
-});
-// a header checkbox with data-select-all='<name>' checks or clears every checkbox of that name in its form
+# The only script (admin pages): a header checkbox that checks or clears the checkboxes of its column.
+JS = """// a header checkbox with data-select-all='<name>' checks or clears every checkbox of that name in its form
 document.addEventListener('change', function (ev) {
   var all = ev.target;
   var name = all.getAttribute && all.getAttribute('data-select-all');
@@ -1469,7 +1489,8 @@ def make_handler(connect, admin=None):
             try:
                 if u.path == "/static/app.css":
                     from .connectivityui import CSS as CONNECTIVITY_CSS
-                    return self._send(200, CSS + CONNECTIVITY_CSS, "text/css; charset=utf-8", head)
+                    from .migrationplan import CSS as PLAN_CSS
+                    return self._send(200, CSS + CONNECTIVITY_CSS + PLAN_CSS, "text/css; charset=utf-8", head)
                 if u.path == "/static/app.js":
                     return self._send(200, JS, "text/javascript; charset=utf-8", head)
                 if u.path in ("/static/favicon.svg", "/favicon.ico"):
@@ -1482,24 +1503,14 @@ def make_handler(connect, admin=None):
                     return self._admin("GET", head)
                 nav = admin.nav(self.headers) if admin else ""
                 m = re.fullmatch(r"/app/(\d{1,9})", u.path)
-                pm = re.fullmatch(r"/app/(\d{1,9})/component/(\d{1,9})/agent-prompt\.md", u.path)
-                if admin and (u.path in ("/", "/trends", "/connectivity") or m or pm):    # sign-in first when CONTAINERIZER_VIEWERS is set
+                if admin and (u.path in ("/", "/trends", "/connectivity") or m):    # sign-in first when CONTAINERIZER_VIEWERS is set
                     keep = _keep_query(u.path, parse_qs(u.query))
                     stop, s = admin.gate(self.headers, u.path, keep)
                     if stop:
                         return self._send(stop.status, stop.body, stop.ctype, head, stop.headers, forms=True)
                     if s and not head and admin.viewers_required:
                         admin.log_access(s.user, s.name, "view", u.path + ("?" + keep if keep else ""),
-                                         int((m or pm)[1]) if (m or pm) else None, self.client_address[0])
-                if pm:
-                    conn = connect()
-                    try:
-                        rows = load_migrations(conn, int(pm[1]), int(pm[2]))
-                    finally:
-                        conn.close()
-                    if not rows or not rows[0].get("AgentPrompt"):
-                        return self._send(404, "No agent prompt for this component.\n", "text/plain; charset=utf-8", head)
-                    return self._send(200, rows[0]["AgentPrompt"], "text/plain; charset=utf-8", head)
+                                         int(m[1]) if m else None, self.client_address[0])
                 if u.path == "/connectivity":      # how the applications connect (connectivityui.py)
                     from . import connectivityui
                     q = parse_qs(u.query)

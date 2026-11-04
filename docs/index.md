@@ -169,6 +169,25 @@ to change, why, and where to read more. Everything links back to the rule that d
 
 <div markdown>
 
+### Start with what is ready
+
+An application rated for the parts that must stay on Windows often has components that can run in Linux
+containers today. Its migration plan splits it into generations: what runs now (and is in the sandbox already),
+what follows after code changes, what stays on Windows, and the calls between the parts.
+
+[Migration plan :octicons-arrow-right-24:](overview.md#migration-plan)
+
+</div>
+
+![Migration plan: generation 1 in the sandbox, generation 2 after code changes, the components that stay on Windows and the calls between the parts](images/results-migration-plan.png#only-light){ .cz-shot }
+![Migration plan: generation 1 in the sandbox, generation 2 after code changes, the components that stay on Windows and the calls between the parts](images/results-migration-plan-dark.png#only-dark){ .cz-shot }
+
+</div>
+
+<div class="cz-feature" markdown>
+
+<div markdown>
+
 ### From blocker to a concrete plan
 
 The migration assistant turns each blocking finding into a Linux-compatible replacement with
@@ -184,7 +203,7 @@ Windows" instead of being forced.
 
 </div>
 
-<div class="cz-feature" markdown>
+<div class="cz-feature cz-reverse" markdown>
 
 <div markdown>
 
@@ -203,7 +222,7 @@ tokens and time, and needs an administrator's approval until you trust it.
 
 </div>
 
-<div class="cz-feature cz-reverse" markdown>
+<div class="cz-feature" markdown>
 
 <div markdown>
 
@@ -222,7 +241,7 @@ a person approves, and `connectivity.yaml` next to the manifests gives the firew
 
 </div>
 
-<div class="cz-feature" markdown>
+<div class="cz-feature cz-reverse" markdown>
 
 <div markdown>
 
@@ -241,7 +260,7 @@ allow it, and both `connectivity.yaml` files document it.
 
 </div>
 
-<div class="cz-feature cz-reverse" markdown>
+<div class="cz-feature" markdown>
 
 <div markdown>
 
@@ -259,7 +278,7 @@ of each fix and each newly learned rule.
 
 </div>
 
-<div class="cz-feature" markdown>
+<div class="cz-feature cz-reverse" markdown>
 
 <div markdown>
 
@@ -277,7 +296,7 @@ filters the front page by a tag: the tiles and bars then count only those applic
 
 </div>
 
-<div class="cz-feature cz-reverse" markdown>
+<div class="cz-feature" markdown>
 
 <div markdown>
 
@@ -297,7 +316,7 @@ the reason, such as "no source code".
 
 </div>
 
-<div class="cz-feature" markdown>
+<div class="cz-feature cz-reverse" markdown>
 
 <div markdown>
 
@@ -316,7 +335,7 @@ many tokens and hours are left, estimated from the speed it has measured on your
 
 </div>
 
-<div class="cz-feature cz-reverse" markdown>
+<div class="cz-feature" markdown>
 
 <div markdown>
 
@@ -335,7 +354,7 @@ runs the container. You get a coloured diff, the result per finding and a `.patc
 
 </div>
 
-<div class="cz-feature" markdown>
+<div class="cz-feature cz-reverse" markdown>
 
 <div markdown>
 
@@ -353,7 +372,7 @@ reject them; approved rules make the next run faster and AI-free.
 
 </div>
 
-<div class="cz-feature cz-reverse" markdown>
+<div class="cz-feature" markdown>
 
 <div markdown>
 
@@ -371,7 +390,7 @@ in the sandbox right now.
 
 </div>
 
-<div class="cz-feature" markdown>
+<div class="cz-feature cz-reverse" markdown>
 
 <div markdown>
 

@@ -148,15 +148,15 @@ def _ui_data(tmp_path):
     return d
 
 
-def test_application_page_shows_migration_and_prompt(tmp_path):
+def test_application_page_shows_migration_without_agent_prompt(tmp_path):
+    """The migration assistant's plan stays; the AI coding agent prompt is gone from the page (Make it A replaces
+    it; the output repository keeps agent-prompts/)."""
     html = webui.render_application(_ui_data(tmp_path))
-    assert "Migration assistant" in html and "Prompt for an AI coding agent" in html
-    assert "SkiaSharp" in html and "data-copy='pt1'" in html
+    assert "Migration assistant" in html and "SkiaSharp" in html
+    assert "Prompt for an AI coding agent" not in html and "data-copy" not in html and "agent-prompt" not in html
     assert "Effort" not in html and "person-day" not in html
     assert "Can move to a Linux container" in html        # the plan outcome in words, not its key
-    assert "/app/7/component/1/agent-prompt.md" in html
-    assert "<script>alert" not in html and "&lt;/textarea&gt;" in html       # prompt text is escaped
-    assert html.count("<script") == 1 and "<script src='/static/app.js'>" in html
+    assert "<script" not in html                         # no script on the results page
 
 
 def test_application_page_without_migrations(tmp_path):
