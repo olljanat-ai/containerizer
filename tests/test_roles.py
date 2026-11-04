@@ -121,7 +121,12 @@ def test_roles_end_to_end(idp, tmp_path):  # noqa: F811
         assert op.go("/admin/applications/bulk", {"csrf": op.csrf(body), "app": ["1"], "ProductId": ""})[0] == 403
         assert op.follow("/")[0] == 200
         # operators tag applications on their results page; everyone filters the front page by the tags
-        tag_app = re.search(r"<a href='/app/(\d+)'>billing</a>", op.follow("/")[2])[1]
+        assert ">billing</a>" not in op.follow("/")[2]          # not mapped to a product yet: administrators only
+        a_ = connect_admin()
+        cr_ = a_.cursor()
+        cr_.execute("SELECT ApplicationId FROM cz.Application WHERE Name = N'billing'")
+        tag_app = str(cr_.fetchone()[0])
+        a_.close()
         s, _, page = op.follow(f"/app/{tag_app}")
         assert "action='/admin/tags/" in page
         # the results page links to the admin pages operators may open, not to the application's settings
@@ -131,8 +136,8 @@ def test_roles_end_to_end(idp, tmp_path):  # noqa: F811
         s, _, page = op.follow(f"/admin/tags/{tag_app}", {"csrf": op.csrf(page), "Tags": "PCI, wave 1, pci"})
         assert s == 200 and "Tags saved." in page and "<a class='tag' href='/?tag=PCI'>PCI</a>" in page
         assert "Not saved" in op.follow(f"/admin/tags/{tag_app}", {"csrf": op.csrf(page), "Tags": "<b>"})[2]
-        s, _, page = op.follow("/?tag=pci")
-        assert "billing</a>" in page and "freight</a>" not in page
+        s, _, page = op.follow(f"/app/{tag_app}")
+        assert "<a class='tag' href='/?tag=PCI'>PCI</a>" in page              # the filter: tests/test_tags.py
         for path in ("/admin/scans", "/admin/repositories", "/admin/scans/new"):
             s, _, page = op.follow(path)
             assert s == 200 and "href='/admin/scans'" in page, path

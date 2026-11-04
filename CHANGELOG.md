@@ -8,6 +8,9 @@ qcow2 and VHDX images as release assets.
 
 ## Unreleased
 
+- The front page leaves out applications not mapped to a product for everyone but administrators: nobody has said
+  whose they are yet. Administrators see them with a note and a link to map them. Without sign-in (no admin pages)
+  everything is shown as before.
 - Sandbox IdP: the sync job (`cz-idp-sync`) trusts the Sandbox HTTPS certificate, also one from an internal CA or
   self-signed. It calls the IdP through Traefik, which serves that certificate, and failed every 5 minutes with
   `certificate verify failed: self-signed certificate`, so users, groups and app registrations were not applied.

@@ -554,7 +554,16 @@ def test_viewer_sign_in_and_access_log(idp, tmp_path):
         return re.sub(r"(?i)(user\s*id|uid)\s*=[^;]*", f"User Id={login}", cs)
     from containerizer.assess import assess
     web_app(tmp_path / "shop")
-    sqlstore.store_results(as_("cz_v_writer"), [assess(tmp_path / "shop")], [tmp_path / "shop"], password="Test-Passw0rd!x")
+    web_app(tmp_path / "draft")
+    sqlstore.store_results(as_("cz_v_writer"), [assess(tmp_path / "shop"), assess(tmp_path / "draft")],
+                           [tmp_path / "shop", tmp_path / "draft"], password="Test-Passw0rd!x")
+    c = sqlstore.connect(cs)                     # shop is mapped to a product; draft is not, so viewers do not see it
+    cur = c.cursor()
+    cur.execute("INSERT cz.Product (Name) VALUES (N'Web shop')")
+    cur.execute("UPDATE cz.Application SET ProductId = (SELECT ProductId FROM cz.Product WHERE Name = N'Web shop') "
+                "WHERE Name = N'shop'")
+    c.commit()
+    c.close()
     port = free_port()
     base = f"http://127.0.0.1:{port}"
     adm = adminmod.Admin(cfg(idp, base, viewers=["group:cz-viewers"], view_audit=True),
@@ -567,6 +576,7 @@ def test_viewer_sign_in_and_access_log(idp, tmp_path):
         idp.claims = {"email": "bob@example.com", "name": "Bob Viewer", "groups": ["cz-viewers"]}
         s, _, body = viewer.follow("/")
         assert s == 200 and "shop" in body and "Bob Viewer" in body and "Sign out" in body
+        assert ">draft<" not in body and "not mapped" not in body          # unmapped: administrators only
         app = re.search(r"href='/app/(\d+)'", body)[1]
         assert viewer.follow(f"/app/{app}")[0] == 200
         assert viewer.follow("/?bu=none")[0] == 200

@@ -52,3 +52,16 @@ def test_application_page_tags_and_editor():
     assert "action='/admin/tags/5'" in html and "value='pci, &lt;x&gt;'" in html and "Tags saved." in html
     assert webui._tags_section({"ApplicationId": 5, "Tags": None}, {}) == ""     # nothing to show to readers
     assert "none" in webui._tags_section({"ApplicationId": 5, "Tags": None}, {"tags_csrf": "c"})
+
+
+def test_unmapped_applications_are_for_administrators_only():
+    """Applications not mapped to a product are left out of the front page for everyone but administrators (and
+    where there is no sign-in at all), with a note for the administrators."""
+    data = {"apps": [_app(1, "billing", 1, None), {**_app(2, "orphan", None, None), "ProductId": None,
+                                                    "ProductName": None, "BusinessUnitName": None}], "unmapped": {"Application": 1}}
+    html = webui.render_overview(data, admin=False, nav="<a href='/admin'>Admin</a>")
+    assert "/app/1" in html and "/app/2" not in html and "not mapped" not in html
+    assert "Applications assessed</div><div class='value'>1<" in html
+    html = webui.render_overview(data, admin=True, nav="<a href='/admin'>Admin</a>")
+    assert "/app/2" in html and "shown to administrators only" in html and "/admin/applications?show=unmapped" in html
+    assert "/app/2" in webui.render_overview(data)                  # no sign-in: everything, as before
