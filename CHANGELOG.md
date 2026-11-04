@@ -6,6 +6,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+- Application tags: administrators and operators tag an application on its results page (`customer-facing, pci,
+  wave 1`), and everyone filters the front page by a tag, alone or with a business unit (`/?bu=3&tag=pci`); the
+  tiles and bars then count only those applications. The change history records the tags, and the API returns
+  them and filters by one (`?tag=`). Needs schema 37 (`containerizer db init`; the appliance runs it at boot)
+  ([Application tags](docs/sign-in.md#application-tags)).
+
 ## 0.9.3 (2026-11-04)
 
 - Make it A keeps more of the LLM's work. An answer was applied all or nothing, so one harmless slip threw

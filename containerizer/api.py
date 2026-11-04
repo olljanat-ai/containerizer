@@ -4,7 +4,7 @@
     GET    /api/v1/business-units/{id}       PATCH  /api/v1/business-units/{id}     DELETE ...
     GET    /api/v1/products[?businessUnitId=] POST  /api/v1/products
     GET    /api/v1/products/{id}             PATCH  /api/v1/products/{id}           DELETE ...
-    GET    /api/v1/applications[?unmapped=true&productId=&name=]
+    GET    /api/v1/applications[?unmapped=true&productId=&name=&tag=]
     GET    /api/v1/applications/{id}         PATCH  /api/v1/applications/{id}
     GET    /api/v1/audit[?table=&rowId=&limit=]
 
@@ -26,6 +26,7 @@ import sys
 from .admin import LIMITS, URL_RE, Response
 from .oidc import OidcError, Provider, allowed, allowed_client
 from .roles import Access, owner_scopes, role_label
+from .tags import has_tag, split_tags
 
 MAX_BODY = 64 * 1024
 FIELDS = {
@@ -53,6 +54,13 @@ def _default(o):
     if hasattr(o, "isoformat"):
         return o.isoformat() + ("Z" if getattr(o, "tzinfo", None) is None else "")
     return float(o) if o.__class__.__name__ == "Decimal" else str(o)
+
+
+def _tags(row: dict) -> dict:
+    """An application's Tags as a list (tags.py); other rows unchanged."""
+    if "Tags" in row:
+        row["Tags"] = split_tags(row["Tags"])
+    return row
 
 
 def _camel(row: dict) -> dict:
@@ -172,7 +180,7 @@ class Api:
                    "b.Name AS BusinessUnitName, p.CreatedAt FROM cz.Product p "
                    "LEFT JOIN cz.BusinessUnit b ON b.BusinessUnitId = p.BusinessUnitId",
         "Application": "SELECT a.ApplicationId AS Id, a.Name, a.DisplayName, a.Owner, a.Description, a.ProductId, "
-                       "p.Name AS ProductName, a.Retired, a.RepositoryUrl, a.SourcePath, a.FirstSeenAt, a.LastSeenAt, "
+                       "p.Name AS ProductName, a.Retired, a.Tags, a.RepositoryUrl, a.SourcePath, a.FirstSeenAt, a.LastSeenAt, "
                        "x.Rating, x.Score, x.AssessedAt FROM cz.Application a "
                        "LEFT JOIN cz.Product p ON p.ProductId = a.ProductId "
                        "OUTER APPLY (SELECT TOP (1) aa.Rating, aa.Score, aa.AssessedAt "
@@ -182,7 +190,7 @@ class Api:
     ALIAS = {"BusinessUnit": "b", "Product": "p", "Application": "a"}
 
     def list(self, conn, table: str, q: dict) -> dict:
-        where, params = [], []
+        where, params, tag = [], [], None
         al = self.ALIAS[table]
         name = q.get("name", [None])[0]
         if name:
@@ -199,10 +207,13 @@ class Api:
                 params.append(_int(q["productId"][0], "productId"))
             if q.get("retired", ["false"])[0].lower() != "true":
                 where.append("a.Retired = 0")
+            if q.get("tag"):                     # tags are matched without regard to case, in Python below
+                tag = q["tag"][0]
         sql = self.SELECT[table] + (" WHERE " + " AND ".join(where) if where else "") + f" ORDER BY {al}.Name"
         cur = conn.cursor(as_dict=True)
         cur.execute(sql, tuple(params) or None)
-        return {"items": [_camel(r) for r in cur.fetchall()]}
+        rows = [r for r in cur.fetchall() if tag is None or has_tag(r.get("Tags"), tag)]
+        return {"items": [_camel(_tags(r)) for r in rows]}
 
     def get(self, conn, table: str, ident: int) -> dict:
         cur = conn.cursor(as_dict=True)
@@ -210,7 +221,7 @@ class Api:
         r = cur.fetchone()
         if not r:
             raise ApiError(404, "not_found", f"no {table} with id {ident}")
-        return _camel(r)
+        return _camel(_tags(r))
 
     def audit(self, conn, q: dict) -> dict:
         where, params = [], []

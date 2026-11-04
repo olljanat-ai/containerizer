@@ -397,8 +397,16 @@ def test_admin_maps_and_audits(idp, tmp_path):
         # results pages show the mapping and the product page link
         body = b.follow("/")[2]
         assert "Retail" in body and "Web Shop" in body and "https://cmdb.example.com/products/42" in body
+        # tags, from the results page; in the change history too
+        s, _, body = b.follow(f"/admin/tags/{app}", {"csrf": csrf, "Tags": "customer-facing, Kärnsystem"})
+        assert "Tags saved." in body and "href='/?tag=K%C3%A4rnsystem'" in body
+        body = b.follow("/?tag=k%C3%A4rnsystem")[2]
+        assert "Web Shop" in body and "No applications" not in body
+        assert "No applications have the tag" in b.follow("/?tag=other")[2]
+        assert b.follow("/admin/tags/999999", {"csrf": csrf, "Tags": "x"})[0] == 404
         # the change history names who changed what
         body = b.follow("/admin/audit")[2]
+        assert "customer-facing,Kärnsystem" in body
         assert body.count("Jane Doe") >= 4 and "<del>(empty)</del> → <ins>Web shop</ins>" in body
         assert "Found by a scan" in body
         # a product still in use cannot be deleted

@@ -54,8 +54,8 @@ Each role is an allow-list of rules, comma separated:
 
 | Role | Variable | Can |
 | --- | --- | --- |
-| Admin | `CONTAINERIZER_ADMINS` | Everything, including business units, Source control & LLM, Rule review, Lab services, Firewall, System and the access log. |
-| Operator | `CONTAINERIZER_OPERATORS` | Read everything, including the change history. Run and schedule organization scans (discovery and full scans), enable and disable projects and repositories, order and pause the LLM queue and set when it runs, order [refactoring patches](refactoring.md) of B-rated applications and download them (Admin → Refactoring), upload dev database backups. Cannot change the mapping. |
+| Admin | `CONTAINERIZER_ADMINS` | Everything, including business units, [application tags](#application-tags), Source control & LLM, Rule review, Lab services, Firewall, System and the access log. |
+| Operator | `CONTAINERIZER_OPERATORS` | Read everything, including the change history. Run and schedule organization scans (discovery and full scans), enable and disable projects and repositories, order and pause the LLM queue and set when it runs, order [refactoring patches](refactoring.md) of B-rated applications and download them (Admin → Refactoring), upload dev database backups, [tag applications](#application-tags). Cannot change the mapping. |
 | Product owner | `CONTAINERIZER_PRODUCT_OWNERS` | Read everything, including the change history. Map applications and change their display name, owner, description, hidden flag and sandbox switch, and change their products, but only within their scope (below). |
 | Viewer | `CONTAINERIZER_VIEWERS` | Read the results pages. Only matters when sign-in for the results pages is on. |
 
@@ -84,6 +84,27 @@ A product owner can take over unmapped applications by mapping them to one of th
 their applications between their products. Everything outside their scope shows as *view only*. Scopes
 are checked on every request, so a product moved to another business unit leaves (or joins) that
 owner's scope at once.
+
+## Application tags
+
+Administrators and operators tag applications on their results page: **Tags**, under the owner and the
+source, takes a comma-separated list such as `customer-facing, pci, wave 1` and **Save tags** replaces the
+application's tags (an empty list removes them). Product owners and viewers see the tags but cannot change
+them. A tag is up to 40 letters, digits, spaces and `- _ . + / & #`; an application has up to 20. Tags are
+compared without regard to case, so `PCI` and `pci` are one tag, and the change history records every change.
+
+![An application's tags on its results page, with the editor administrators and operators see](images/results-tags-edit.png#only-light){ .cz-shot }
+![An application's tags on its results page, with the editor administrators and operators see](images/results-tags-edit-dark.png#only-dark){ .cz-shot }
+
+Everyone who can read the results filters the front page by them: the **Tags** row under the business units
+lists the tags of the applications shown, with how many have each. A tag, on that row or next to an
+application's name, shows only the applications with it, and the tiles, bars and groups count only those;
+**Any** (or the selected tag again) clears it. A tag filter and a business unit filter combine, and the
+address (`/?bu=3&tag=pci`) can be shared or bookmarked. The [API](api.md) returns the tags
+(`"tags": ["pci", "wave 1"]`) and filters by one (`/api/v1/applications?tag=pci`).
+
+![The front page filtered by a tag: only the applications with it, counted in the tiles](images/front-tags.png#only-light){ .cz-shot }
+![The front page filtered by a tag: only the applications with it, counted in the tiles](images/front-tags-dark.png#only-dark){ .cz-shot }
 
 ## Sign-in for the results pages (optional)
 
