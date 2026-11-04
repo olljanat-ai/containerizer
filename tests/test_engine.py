@@ -200,7 +200,7 @@ def test_spa_is_built_before_publish():
     assert df.index("export PATH=/opt/npm-prebuilt:$PATH") < df.index(" && dotnet publish")
 
 
-def test_gitops_examples_for_argo_and_flux(tmp_path):
+def test_gitops_files_are_flux_only(tmp_path):
     import yaml
     from containerizer.generate import generate_app
     from containerizer.gitops import GitOpsOptions
@@ -211,13 +211,8 @@ def test_gitops_examples_for_argo_and_flux(tmp_path):
     generate_app(a, out, gitops=GitOpsOptions(git_url="https://git.example.com/deploy.git", verify_commits=True))
     g = out / "gitops"
     load = lambda p: list(yaml.safe_load_all((g / p).read_text()))
-    proj, = load("argocd/project.yaml")
-    assert proj["spec"]["destinations"] == [{"server": "https://kubernetes.default.svc", "namespace": a.name}]
-    assert {"group": "apps", "kind": "Deployment"} in proj["spec"]["namespaceResourceWhitelist"]
-    assert proj["spec"]["clusterResourceWhitelist"] == [{"group": "", "kind": "Namespace"}]
-    app, = load("argocd/application.yaml")
-    assert "CreateNamespace=true" in app["spec"]["syncPolicy"]["syncOptions"]
-    assert app["spec"]["syncPolicy"]["managedNamespaceMetadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "restricted"
+    assert not (g / "argocd").exists()                  # Flux is the only GitOps tool
+    assert "Argo CD" not in (g / "README.md").read_text()
     git_es, gpg_es, src, ks = load("flux/git/sync.yaml")
     assert src["spec"]["verify"]["mode"] == "HEAD"
     assert ks["spec"]["serviceAccountName"] == f"{a.name}-reconciler" and ks["spec"]["prune"]

@@ -1,4 +1,4 @@
-"""Sandbox verification: read back what Argo CD or Flux deployed from the output repository.
+"""Sandbox verification: read back what Flux deployed from the output repository.
 
 After `containerizer org` has committed and pushed, the sandbox cluster syncs the new commit. This
 step waits for that sync per app, then reads the rollout of every deployed component (Deployment
@@ -9,7 +9,7 @@ records one status per component:
     failing     deployed but failing (reason): crash loop, image pull, probe, scheduling, sync error
     pending     the GitOps tool did not sync the commit (or the rollout did not finish) in time
     scheduled   a CronJob that is deployed but has not run yet (no Job to judge)
-    not-found   the app's Argo CD Application / Flux Kustomization or workload does not exist
+    not-found   the app's Flux Kustomization or workload does not exist
     error       the read-back itself failed (e.g. forbidden: apply sandbox/verify-rbac.yaml)
     skipped     no cluster access (no kubectl, no kubeconfig or the API server is unreachable)
 
@@ -42,7 +42,6 @@ STATUS_TEXT = {
     HEALTHY: "deployed and healthy", FAILING: "deployed but failing", PENDING: "not synced or rolled out in time",
     SCHEDULED: "deployed, scheduled job has not run yet", NOT_FOUND: "not deployed", ERROR: "could not be checked",
     SKIPPED: "not checked (no cluster access)"}
-ARGO_APP = "applications.argoproj.io"
 FLUX_KS = "kustomizations.kustomize.toolkit.fluxcd.io"
 VERIFIER = "containerizer-verifier"
 VERIFIER_NS = "containerizer-verify"
@@ -309,26 +308,6 @@ def is_ours(revision: str, ours: str, root: Path | None) -> bool:
     return False
 
 
-def argo_state(app: dict, ours: str, root: Path | None) -> tuple[str, str]:
-    """('synced'|'waiting'|'failed', detail) of an Argo CD Application."""
-    st = app.get("status") or {}
-    sync, health = st.get("sync") or {}, (st.get("health") or {}).get("status", "")
-    op = st.get("operationState") or {}
-    conds = [c for c in st.get("conditions") or [] if c.get("type", "").endswith("Error") and c["type"] != "SyncError"]
-    for c in conds:
-        if c["type"] == "InvalidSpecError":
-            return "failed", f"Argo CD {c['type']}: {c.get('message', '')[:500]}"
-    op_rev = _rev_of((op.get("syncResult") or {}).get("revision") or (op.get("operation") or {}).get("sync", {}).get("revision"))
-    if op.get("phase") in ("Failed", "Error") and is_ours(op_rev, ours, root):
-        return "failed", f"Argo CD sync {op['phase'].lower()}: {op.get('message', '')}"
-    rev = _rev_of(sync.get("revision"))
-    if sync.get("status") == "Synced" and is_ours(rev, ours, root) and op.get("phase") not in ("Running", "Terminating"):
-        return "synced", f"Argo CD synced {rev[:12]} (health {health or 'unknown'})"
-    return "waiting", f"Argo CD at {rev[:12] or 'no revision'}, sync {sync.get('status', 'unknown')}, " \
-                      f"operation {op.get('phase', 'none')}" + \
-        "".join(f"; {c['type']}: {c.get('message', '')[:300]}" for c in conds)
-
-
 def flux_state(ks: dict, ours: str, root: Path | None) -> tuple[str, str]:
     """('synced'|'waiting'|'failed', detail) of a Flux Kustomization. HealthCheckFailed counts as
     synced: the manifests were applied and the workload inspection says what is wrong."""
@@ -348,24 +327,17 @@ def flux_state(ks: dict, ours: str, root: Path | None) -> tuple[str, str]:
                       f"({ready.get('reason', '')})"
 
 
-def gitops_object(kube: Kube, app: str, gitops: str) -> tuple[str, dict]:
-    """('argocd'|'flux', object). gitops 'auto' tries Argo CD first, then Flux."""
-    from .gitops import ARGO_NS
-    errors = []
-    for tool in (["argocd", "flux"] if gitops == "auto" else [gitops]):
-        try:
-            if tool == "argocd":
-                return tool, kube.get(ARGO_APP, ARGO_NS, app)
-            return tool, kube.get(FLUX_KS, app, app)
-        except KubeError as e:
-            if e.kind in ("unreachable",):
-                raise
-            errors.append((tool, e))
-    forbidden = [t for t, e in errors if e.kind == "forbidden"]
-    if forbidden:
-        raise KubeError(f"forbidden to read the {' / '.join(forbidden)} object of {app}: apply sandbox/verify-rbac.yaml",
-                        "forbidden")
-    raise KubeError("; ".join(f"{t}: {e}" for t, e in errors), "not-found")
+def gitops_object(kube: Kube, app: str) -> tuple[str, dict]:
+    """('flux', the app's Flux Kustomization)."""
+    try:
+        return "flux", kube.get(FLUX_KS, app, app)
+    except KubeError as e:
+        if e.kind == "forbidden":
+            raise KubeError(f"forbidden to read the flux object of {app}: apply sandbox/verify-rbac.yaml",
+                            "forbidden") from e
+        if e.kind == "unreachable":
+            raise
+        raise KubeError(f"flux: {e}", "not-found") from e
 
 
 # --------------------------------------------------------------------------- workloads
@@ -580,7 +552,6 @@ def diagnose_observation(ob: Observation, failures: list[dict] | None = None) ->
 @dataclass
 class SandboxOptions:
     kube: KubeOptions = field(default_factory=KubeOptions)
-    gitops: str = "auto"              # auto | argocd | flux
     timeout: int = 900                # seconds for sync + rollout of all apps together
     settle: int = 60                  # healthy only when no restart appears while watched this long
     interval: int = 10
@@ -626,7 +597,7 @@ def verify_sandbox(root: Path, o: SandboxOptions | None = None, kube: Kube | Non
     ours = o.revision
     if not ours and (root / ".git").exists():
         ours = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
-    doc = {"checked_at": _now(), "revision": ours, "gitops": o.gitops, "cluster": "", "skipped": "", "components": []}
+    doc = {"checked_at": _now(), "revision": ours, "gitops": "flux", "cluster": "", "skipped": "", "components": []}
     if not apps:
         doc["skipped"] = "nothing is deployed"
         return doc
@@ -647,14 +618,14 @@ def verify_sandbox(root: Path, o: SandboxOptions | None = None, kube: Kube | Non
             if a["app"] in state and state[a["app"]][1] in ("synced", "failed", "not-found", "error"):
                 continue
             try:
-                tool, obj = gitops_object(kube, a["app"], o.gitops)
-                st, detail = (argo_state if tool == "argocd" else flux_state)(obj, ours, root)
+                tool, obj = gitops_object(kube, a["app"])
+                st, detail = flux_state(obj, ours, root)
                 state[a["app"]] = (tool, st, detail)
             except KubeError as e:
                 if e.kind == "unreachable":
                     state[a["app"]] = ("", "error", f"cluster unreachable: {e}")
                 elif e.kind == "not-found" or (e.kind == "forbidden" and o.wait_forbidden):   # not there yet: wait
-                    state[a["app"]] = ("", "waiting", f"no Argo CD Application or Flux Kustomization named {a['app']} yet"
+                    state[a["app"]] = ("", "waiting", f"no Flux Kustomization named {a['app']} yet"
                                        if e.kind == "not-found" else f"{e} yet")
                 else:
                     state[a["app"]] = ("", "error", str(e))
@@ -871,11 +842,10 @@ def summary(doc: dict) -> str:
 
 # --------------------------------------------------------------------------- RBAC
 
-def verify_rbac(namespaces: list[str], flux: bool = True, argocd_apps: list[str] | None = None) -> list[dict]:
-    """Least-privilege read-back: a ServiceAccount in its own namespace, a Role per app namespace
-    (get/list workloads, pods, pod logs and events; no Secrets, no write verbs), and a Role in argocd
-    that can only get the generated Applications by name. Nothing cluster-wide."""
-    from .gitops import ARGO_NS
+def verify_rbac(namespaces: list[str]) -> list[dict]:
+    """Least-privilege read-back: a ServiceAccount in its own namespace and a Role per app namespace
+    (get/list workloads, pods, pod logs and events, its own Flux Kustomization; no Secrets, no write verbs).
+    Nothing cluster-wide."""
     labels = {"app.kubernetes.io/part-of": "containerizer-sandbox", "app.kubernetes.io/managed-by": "containerizer"}
     subject = [{"kind": "ServiceAccount", "name": VERIFIER, "namespace": VERIFIER_NS}]
     docs: list[dict] = [
@@ -892,27 +862,13 @@ def verify_rbac(namespaces: list[str], flux: bool = True, argocd_apps: list[str]
         {"apiGroups": [""], "resources": ["pods/log"], "verbs": ["get"]},
     ]
     for ns in namespaces:
-        r = list(rules)
-        if flux:
-            r.append({"apiGroups": ["kustomize.toolkit.fluxcd.io"], "resources": ["kustomizations"],
-                      "resourceNames": [ns], "verbs": ["get"]})
+        r = list(rules) + [{"apiGroups": ["kustomize.toolkit.fluxcd.io"], "resources": ["kustomizations"],
+                            "resourceNames": [ns], "verbs": ["get"]}]
         docs += [
             {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role",
              "metadata": {"name": VERIFIER, "namespace": ns, "labels": labels}, "rules": r},
             {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding",
              "metadata": {"name": VERIFIER, "namespace": ns, "labels": labels},
-             "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": VERIFIER},
-             "subjects": subject},
-        ]
-    apps = sorted(argocd_apps if argocd_apps is not None else namespaces)
-    if apps:
-        docs += [
-            {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role",
-             "metadata": {"name": VERIFIER, "namespace": ARGO_NS, "labels": labels},
-             "rules": [{"apiGroups": ["argoproj.io"], "resources": ["applications"], "resourceNames": apps,
-                        "verbs": ["get"]}]},
-            {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding",
-             "metadata": {"name": VERIFIER, "namespace": ARGO_NS, "labels": labels},
              "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": VERIFIER},
              "subjects": subject},
         ]

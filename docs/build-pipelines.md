@@ -162,7 +162,7 @@ When signing, the SBOM is also attached to the image as a signed CycloneDX attes
 The generated GitOps files follow new images by tag: Flux's `gitops/flux/git/image-automation.yaml`
 (an `ImageRepository` and an `ImagePolicy` per component, semver range `>=1.0.0`, and an
 `ImageUpdateAutomation` that writes the new tag to the `kustomization.yaml` setters of the output
-repository), and the Argo CD Image Updater annotations (semver tags `^v?\d+\.\d+\.\d+$`). The pipeline's
+repository). The pipeline's
 version tag `1.<yyyymmdd>.<hhmm>` is that scheme, the same as the scans' own pushes (`org.default_tag`), so:
 
 1. a merge to the default branch pushes `<registry>/<app>/<component>:1.20261101.1530`;

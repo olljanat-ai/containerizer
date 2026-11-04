@@ -113,7 +113,7 @@ def _gitops(args):
 
 
 def _gitops_args(s) -> None:
-    g = s.add_argument_group("GitOps (Argo CD and Flux examples under <app>/gitops)")
+    g = s.add_argument_group("GitOps (Flux files under <app>/gitops)")
     g.add_argument("--git-url", default="https://git.example.com/platform/deployments.git",
                    help="repository the generated app folder is committed to")
     g.add_argument("--git-branch", default="main")
@@ -241,7 +241,7 @@ def cmd_org(args) -> int:
         work_dir=args.work_dir, keep_work=args.keep_work, cache_dir=args.cache_dir,
         skip_no_code=not args.include_no_code, dry_run=args.dry_run,
         verify_sandbox=args.verify_sandbox, kubeconfig=args.kubeconfig, kube_context=args.kube_context,
-        gitops=args.gitops, sandbox_timeout=args.sandbox_timeout, llm_heavy=args.llm_heavy,
+        sandbox_timeout=args.sandbox_timeout, llm_heavy=args.llm_heavy,
         migrate_containerized=args.migrate_containerized)
     if args.llm_heavy and not args.ai:
         print("error: --llm-heavy needs --ai (docs/platform-migration.md)", file=sys.stderr)
@@ -355,7 +355,7 @@ def cmd_sandbox(args) -> int:
         print(f"error: {root} has no sandbox/ folder: point --output-dir at a checkout of the output repository "
               "of `containerizer org`", file=sys.stderr)
         return 2
-    o = SandboxOptions(kube=KubeOptions(kubeconfig=args.kubeconfig, context=args.kube_context), gitops=args.gitops,
+    o = SandboxOptions(kube=KubeOptions(kubeconfig=args.kubeconfig, context=args.kube_context),
                        timeout=args.timeout, settle=args.settle, revision=args.revision or "", learn=not args.no_learn,
                        ingress_address=args.ingress_address or "", ingress_ca=args.ingress_ca or "")
     doc = verify_sandbox(root, o)
@@ -382,8 +382,8 @@ def _kube_args(s) -> None:
     s.add_argument("--kubeconfig", help="kubeconfig of the sandbox cluster (default KUBECONFIG, ~/.kube/config or "
                    "the in-cluster service account); use a read-only identity, see sandbox/verify-rbac.yaml")
     s.add_argument("--kube-context", help="context in the kubeconfig (default: its current context)")
-    s.add_argument("--gitops", default="auto", choices=["auto", "argocd", "flux"],
-                   help="which GitOps tool deploys the sandbox (auto: Argo CD Application, else Flux Kustomization)")
+    s.add_argument("--gitops", default="flux", choices=["flux"],
+                   help="the GitOps tool that deploys the sandbox: Flux (the only one; kept for older scripts)")
 
 
 def cmd_idp(args) -> int:
@@ -684,7 +684,7 @@ def main(argv=None) -> int:
     s.set_defaults(fn=cmd_check)
 
     s = sub.add_parser("org", help="run analyze on every Git repository of an Azure DevOps, GitHub or GitLab "
-                       "organization; deploy the A-rated components (images, manifests, Argo CD + Flux)")
+                       "organization; deploy the A-rated components (images, manifests, Flux)")
     s.add_argument("--provider", required=True, choices=["azure-devops", "github", "gitlab"])
     s.add_argument("--org", required=True, help="organization (Azure DevOps organization or collection, GitHub "
                    "organization, GitLab group path)")
@@ -744,7 +744,7 @@ def main(argv=None) -> int:
                    "from Docker Swarm, Compose, Nomad, Azure Container Apps or ECS to Kubernetes instead of skipping them")
     s.add_argument("--llm-heavy", action="store_true", help="platform migrations and the sandbox tester ask the LLM as "
                    "often as they need (needs --ai; many more calls)")
-    g = s.add_argument_group("sandbox verification (read back pod health after Argo CD / Flux synced the push)")
+    g = s.add_argument_group("sandbox verification (read back pod health after Flux synced the push)")
     g.add_argument("--verify-sandbox", action="store_true", help="at the end, wait for the sandbox cluster to sync "
                    "the pushed commit and record per component: deployed and healthy / deployed but failing (reason); "
                    "skipped with a message when there is no cluster access")
@@ -770,7 +770,7 @@ def main(argv=None) -> int:
 
     s = sub.add_parser("sandbox", help="sandbox cluster deployed by `org`: read back health of every component")
     ssub = s.add_subparsers(dest="sandbox_cmd", required=True)
-    v = ssub.add_parser("verify", help="wait for the Argo CD / Flux sync, read rollout, readiness, restarts and events; "
+    v = ssub.add_parser("verify", help="wait for the Flux sync, read rollout, readiness, restarts and events; "
                         "write sandbox/HEALTH.md + health.json, the results database and learned rules")
     v.add_argument("--output-dir", default=".", help="checkout of the output repository (default: current folder)")
     _kube_args(v)

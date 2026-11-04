@@ -769,8 +769,8 @@ def readme(spec_: dict, provider: str, paths: list[str], sign: str = "none") -> 
           "", "## Set up", ""]
     L += [f"{i}. {s}" for i, s in enumerate(setup_steps(spec_, provider, sign), 1)]
     L += ["", "## The GitOps sandbox", "",
-          "The generated GitOps files (Flux `gitops/flux/git/image-automation.yaml`, Argo CD Image Updater "
-          "annotations) follow the newest semver tag `>=1.0.0` of each image and write it to the "
+          "The generated Flux image automation (`gitops/flux/git/image-automation.yaml`) follows the newest "
+          "semver tag `>=1.0.0` of each image and writes it to the "
           "`kustomization.yaml` of the output repository. The tags this pipeline pushes are that scheme (the "
           "same as the containerizer scans), so a push to the default branch reaches the sandbox without "
           "another step, as long as both use the same registry.", "",

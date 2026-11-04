@@ -408,10 +408,7 @@ def test_gitops_hardening_keeps_platform_policies_out_of_sync(tmp_path):
     ks = next(d for d in sync if d["kind"] == "Kustomization")
     deleted = {p["target"]["kind"] for p in ks["spec"]["patches"] if "$patch: delete" in p["patch"]}
     assert {"ResourceQuota", "LimitRange", "NetworkPolicy"} <= deleted and ks["spec"]["force"] is False
-    proj = _y.safe_load((out / "gitops/argocd/project.yaml").read_text())
-    assert proj["spec"]["clusterResourceWhitelist"] == [{"group": "", "kind": "Namespace"}]
-    assert {"group": "", "kind": "Secret"} not in proj["spec"]["namespaceResourceWhitelist"]
-    assert proj["spec"]["sourceNamespaces"] == []
+    assert not (out / "gitops/argocd").exists()                  # Flux is the only GitOps tool
     # the store reader is platform-owned on Flux (the source's ExternalSecret needs it before the first sync)
     assert ("ServiceAccount", "app-secrets-reader") in {(d["kind"], d["metadata"]["name"]) for d in tenant}
     assert "ServiceAccount" in deleted

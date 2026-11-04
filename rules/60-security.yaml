@@ -489,4 +489,4 @@ controls:
      title: 'Base images kept patched and supported (images --update, weekly bump workflow, end-of-support warnings)',
      action: 'Keep Kubernetes itself on a supported version; re-run containerizer gate for every release.'}
   - {id: gitops, nsa: 'Authentication and authorization; Upgrading and application security practices', scope: gitops,
-     title: 'GitOps delivery is least privilege: Argo CD AppProject limited to the app namespace and generated kinds; Flux reconciles as a namespace-scoped ServiceAccount, decrypts with SOPS and verifies OCI artifacts with cosign'}
+     title: 'GitOps delivery is least privilege: Flux reconciles as a namespace-scoped ServiceAccount, decrypts with SOPS and verifies OCI artifacts with cosign'}

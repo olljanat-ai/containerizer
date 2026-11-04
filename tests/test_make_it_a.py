@@ -465,8 +465,8 @@ def test_the_variant_is_deployed_beside_the_original_and_removed_again(tmp_path,
     assert (out / "Contoso/_/shop/containerizer.json").read_text() == before
     k = yaml.safe_load((d / "kustomization.yaml").read_text())
     assert k["namespace"] == "shop-refactor-42"
-    argo = yaml.safe_load((d / "gitops/argocd/application.yaml").read_text())
-    assert argo["metadata"]["name"] == "shop-refactor-42" and argo["spec"]["source"]["path"] == "Contoso/_/shop-refactor-42"
+    ks = next(x for x in yaml.safe_load_all((d / "gitops/flux/git/sync.yaml").read_text()) if x and x["kind"] == "Kustomization")
+    assert ks["metadata"]["name"] == "shop-refactor-42" and ks["spec"]["path"] == "./Contoso/_/shop-refactor-42"
     # write_sandbox picked it up next to the original
     assert (out / "sandbox/namespaces.txt").read_text() == "shop\nshop-refactor-42\n"
     flux = yaml.safe_load((out / "sandbox/flux/apps/kustomization.yaml").read_text())["resources"]
@@ -557,8 +557,7 @@ def test_verify_sandbox_filter_and_the_variants_health(tmp_path):
         if calls["n"] == 1:                         # the verifier's Role in the new namespace comes a little later
             raise sbm.KubeError("kustomizations is forbidden", "forbidden")
         return flux_ks()
-    kube = FakeKube({(sbm.ARGO_APP, "argocd", "shop-refactor-4"): sbm.KubeError("forbidden", "forbidden"),
-                     (sbm.FLUX_KS, "shop-refactor-4", "shop-refactor-4"): flux,
+    kube = FakeKube({(sbm.FLUX_KS, "shop-refactor-4", "shop-refactor-4"): flux,
                      ("deployments.apps", "shop-refactor-4", "web"): deployment("web"),
                      ("pods", "shop-refactor-4", "app.kubernetes.io/name=web"): {"items": [pod("web-1")]}})
     cfg = tmp_path / "kc"

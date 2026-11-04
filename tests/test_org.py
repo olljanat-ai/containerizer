@@ -363,12 +363,12 @@ def test_run_org_writes_layout_sandbox_and_commits(tmp_path, monkeypatch):
     assert meta["components"][0]["image"] == "reg.example/sandbox/shop-floor-ci-demo/demo-web:1.2.3"
     k = (app / "kustomization.yaml").read_text()
     assert "newTag: 1.2.3" in k and "regcred" in k
-    argo = yaml.safe_load((app / "gitops" / "argocd" / "application.yaml").read_text())
-    assert argo["spec"]["source"]["path"] == "Contoso/Shop Floor/ci-demo"
-    assert argo["metadata"]["name"] == "shop-floor-ci-demo"
+    ks = next(d for d in yaml.safe_load_all((app / "gitops" / "flux" / "git" / "sync.yaml").read_text())
+              if d and d["kind"] == "Kustomization")
+    assert ks["spec"]["path"] == "./Contoso/Shop Floor/ci-demo" and ks["metadata"]["name"] == "shop-floor-ci-demo"
+    assert not (app / "gitops" / "argocd").exists()            # Flux is the only GitOps tool
     sb = out / "sandbox"
-    assert yaml.safe_load((sb / "argocd" / "apps" / "kustomization.yaml").read_text())["resources"] == [
-        "../../../Contoso/Shop Floor/ci-demo/gitops/argocd"]
+    assert not (sb / "argocd").exists()
     assert yaml.safe_load((sb / "flux" / "apps" / "kustomization.yaml").read_text())["resources"] == [
         "../../../Contoso/Shop Floor/ci-demo/gitops/flux"]
     assert (sb / "namespaces.txt").read_text() == "shop-floor-ci-demo\n"
@@ -382,10 +382,6 @@ def test_run_org_writes_layout_sandbox_and_commits(tmp_path, monkeypatch):
     assert boot["Role"]["rules"][0]["resourceNames"] == ["flux-system--cz-git"]
     assert boot["RoleBinding"]["subjects"] == [{"kind": "ServiceAccount", "name": "app-secrets-reader",
                                                 "namespace": "flux-system"}]
-    argo_boot = {d["kind"]: d for d in yaml.safe_load_all((sb / "argocd" / "bootstrap.yaml").read_text())}
-    assert argo_boot["AppProject"]["spec"]["clusterResourceWhitelist"] == []
-    repo = argo_boot["ExternalSecret"]["spec"]["target"]["template"]
-    assert repo["metadata"]["labels"] == {"argocd.argoproj.io/secret-type": "repository"}
     # --image-pull-secret: an ExternalSecret of type dockerconfigjson, granted to the app's namespace
     pull = yaml.safe_load((app / "pull-secret.yaml").read_text())
     assert (pull["kind"], pull["metadata"]["name"]) == ("ExternalSecret", "regcred")
@@ -814,7 +810,7 @@ def test_run_org_split_repository(tmp_path, monkeypatch, parallel):
         meta = json.loads((out / "acme" / "_" / f"mono@{n}" / "containerizer.json").read_text())
         assert meta["app"] == f"mono-{n}"
     assert not (out / "acme" / "_" / "mono").exists() and not (out / "acme" / "_" / "mono@handbook").exists()
-    assert "../../../acme/_/mono@orders/gitops/argocd" in (out / "sandbox" / "argocd" / "apps" / "kustomization.yaml").read_text()
+    assert "../../../acme/_/mono@orders/gitops/flux" in (out / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text()
     assert res["solo"].status == "deployed" and not res["solo"].apps and (out / "acme" / "_" / "solo").is_dir()
     # back to one application: the per-folder folders go, the hint says what it looks like
     o.splits = None
@@ -834,9 +830,7 @@ def test_the_sandbox_index_leaves_out_applications_whose_sandbox_is_off(tmp_path
 
     def app(rel, doc):
         d = root / rel
-        (d / "gitops" / "argocd").mkdir(parents=True)
         (d / "gitops" / "flux").mkdir(parents=True)
-        (d / "gitops" / "argocd" / "kustomization.yaml").write_text("resources: []\\n")
         (d / "gitops" / "flux" / "kustomization.yaml").write_text("resources: []\\n")
         (d / "containerizer.json").write_text(_json.dumps(doc))
     app("acme/p/shop", {"source_key": "https://x/shop#"})

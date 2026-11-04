@@ -12,8 +12,7 @@ output Git repository at
 GitHub has no project level and GitLab projects can sit directly in the group: those use the
 project folder `_`. GitLab subgroups become one folder (`team/sub` -> `team--sub`).
 
-The output repository also gets `sandbox/`: an Argo CD app-of-apps and a Flux root Kustomization
-that deploy every generated app to a sandbox cluster through the per-app GitOps files.
+The output repository also gets `sandbox/`: a Flux root Kustomization that deploys every generated app to a sandbox cluster through the per-app GitOps files.
 """
 from __future__ import annotations
 
@@ -100,7 +99,6 @@ class OrgOptions:
     verify_sandbox: bool = False        # after the run: wait for the GitOps sync and read back pod health
     kubeconfig: str | None = None
     kube_context: str | None = None
-    gitops: str = "auto"                # auto | argocd | flux
     sandbox_timeout: int = 900
     local_images: bool | None = None    # the cluster shares the builder's image store (local_images); None: the env
     lab: set | None = None              # lab services that are on (labservices.py); None: from CONTAINERIZER_LAB_SERVICES
@@ -324,9 +322,8 @@ def gitops_kustomizations(app_dir: Path) -> None:
     """Kustomizations over the per-app GitOps files, so sandbox/ can include each app as a directory."""
     g = app_dir / "gitops"
     k = {"apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization"}
-    if (g / "argocd" / "application.yaml").exists():
-        (g / "argocd" / "kustomization.yaml").write_text(yaml.safe_dump(
-            {**k, "resources": ["project.yaml", "application.yaml"]}, sort_keys=False))
+    if (g / "argocd").is_dir():          # made before 0.9.2: Flux is the only GitOps tool
+        shutil.rmtree(g / "argocd")
     if (g / "flux" / "tenant.yaml").exists():
         (g / "flux" / "kustomization.yaml").write_text(yaml.safe_dump(
             {**k, "resources": ["tenant.yaml", "git/sync.yaml"]}, sort_keys=False))
@@ -342,7 +339,7 @@ def _apps_in(root: Path) -> list[tuple[str, Path, dict]]:
             doc = json.loads(meta.read_text())
         except ValueError:
             continue
-        if (meta.parent / "gitops" / "argocd" / "kustomization.yaml").exists():
+        if (meta.parent / "gitops" / "flux" / "kustomization.yaml").exists():
             out.append((meta.parent.relative_to(root).as_posix(), meta.parent, doc))
     return out
 
@@ -423,15 +420,18 @@ def load_sandbox_off(conn) -> set:
 
 
 def write_sandbox(root: Path, git_url: str, branch: str, off=None) -> list[str]:
-    """sandbox/: Argo CD app-of-apps and Flux root Kustomization over every app in the repository, except the ones of
-    applications whose sandbox is turned off (`off`, load_sandbox_off): their folders stay, the cluster prunes them,
-    and turning the sandbox on again brings the same manifests and images back without a build."""
-    from .gitops import ARGO_API, ARGO_NS, FLUX_NS, IN_CLUSTER, KUSTOMIZE_API, SOURCE_API
+    """sandbox/: the Flux root Kustomization over every app in the repository, except the ones of applications
+    whose sandbox is turned off (`off`, load_sandbox_off): their folders stay, the cluster prunes them, and turning
+    the sandbox on again brings the same manifests and images back without a build. The Argo CD files of app
+    folders made before 0.9.2 are removed: Flux is the only GitOps tool."""
+    from .gitops import FLUX_NS, KUSTOMIZE_API, SOURCE_API
+    for old in root.glob("*/*/*/gitops/argocd"):
+        if old.parts[len(root.parts)] != SANDBOX and old.is_dir():
+            shutil.rmtree(old)
     apps = [x for x in _apps_in(root) if not sandbox_excluded(x[2], off)]
     sb = root / SANDBOX
     if sb.exists():
         shutil.rmtree(sb)
-    (sb / "argocd" / "apps").mkdir(parents=True)
     (sb / "flux" / "apps").mkdir(parents=True)
     k = {"apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization"}
     labels = {"app.kubernetes.io/part-of": "containerizer-sandbox", "app.kubernetes.io/managed-by": "containerizer"}
@@ -440,33 +440,9 @@ def write_sandbox(root: Path, git_url: str, branch: str, off=None) -> list[str]:
     def dump(docs):
         return "---\n".join(yaml.safe_dump(d, sort_keys=False) for d in docs)
 
-    (sb / "argocd" / "apps" / "kustomization.yaml").write_text(yaml.safe_dump(
-        {**k, "resources": [f"../../../{rel}/gitops/argocd" for rel, _, _ in apps]}, sort_keys=False))
-    (sb / "argocd" / "bootstrap.yaml").write_text(dump(sandbox_credentials(ARGO_NS, name, labels, git_url) + [
-        {"apiVersion": ARGO_API, "kind": "AppProject",
-         "metadata": {"name": name, "namespace": ARGO_NS, "labels": labels},
-         "spec": {"description": "containerizer sandbox: creates only the per-app AppProjects and Applications",
-                  "sourceRepos": [git_url],
-                  "destinations": [{"server": IN_CLUSTER, "namespace": ARGO_NS}],
-                  "clusterResourceWhitelist": [],
-                  "namespaceResourceWhitelist": [{"group": "argoproj.io", "kind": "AppProject"},
-                                                 {"group": "argoproj.io", "kind": "Application"}],
-                  "orphanedResources": {"warn": True}}},
-        {"apiVersion": ARGO_API, "kind": "Application",
-         "metadata": {"name": name, "namespace": ARGO_NS, "labels": labels,
-                      "finalizers": ["resources-finalizer.argocd.argoproj.io"]},
-         "spec": {"project": name,
-                  "source": {"repoURL": git_url, "targetRevision": branch, "path": f"{SANDBOX}/argocd/apps"},
-                  "destination": {"server": IN_CLUSTER, "namespace": ARGO_NS},
-                  "syncPolicy": {"automated": {"prune": True, "selfHeal": True},
-                                 "syncOptions": ["ServerSideApply=true", "PruneLast=true"],
-                                 "retry": {"limit": 5, "backoff": {"duration": "10s", "factor": 2,
-                                                                   "maxDuration": "5m"}}}}},
-    ]))
     idp_url = write_idp(root, apps)
     (sb / "flux" / "apps" / "kustomization.yaml").write_text(yaml.safe_dump(
-        {**k, "resources": [f"../../../{rel}/gitops/flux" for rel, d, _ in apps
-                            if (d / "gitops" / "flux" / "kustomization.yaml").exists()]
+        {**k, "resources": [f"../../../{rel}/gitops/flux" for rel, _, _ in apps]
          + (["../../idp"] if idp_url else [])}, sort_keys=False))
     (sb / "flux" / "bootstrap.yaml").write_text(dump(sandbox_credentials(FLUX_NS, name, labels) + [
         {"apiVersion": SOURCE_API, "kind": "GitRepository",
@@ -488,23 +464,15 @@ def write_sandbox(root: Path, git_url: str, branch: str, off=None) -> list[str]:
     return namespaces
 
 
-def sandbox_credentials(namespace: str, name: str, labels: dict, argocd_repo: str | None = None) -> list[dict]:
+def sandbox_credentials(namespace: str, name: str, labels: dict) -> list[dict]:
     """The read-only Git credential of the root sync, as an ExternalSecret from the secret store (remote
-    key `<namespace>--cz-git`), with the namespace's store reader and its access. Argo CD: a repository
-    Secret (labelled for Argo CD) for `argocd_repo`."""
+    key `<namespace>--cz-git`), with the namespace's store reader and its access."""
     from . import eso
     remote = eso.remote_key(namespace, eso.GIT)
-    es = eso.external_secret(f"{name}-git" if argocd_repo is None else f"{name}-repo", namespace, remote,
-                             labels=labels, set_namespace=True,
+    es = eso.external_secret(f"{name}-git", namespace, remote, labels=labels, set_namespace=True,
                              comment=f"read-only token of the output repository (username + password), "
                                      f"remote key {remote} in the secret store")
     es.pop("_comment")
-    if argocd_repo is not None:
-        # Argo CD finds repositories by label; url and type are not secret
-        es["spec"]["target"]["template"] = {
-            "engineVersion": "v2", "mergePolicy": "Merge",
-            "metadata": {"labels": {"argocd.argoproj.io/secret-type": "repository"}},
-            "data": {"type": "git", "url": argocd_repo}}
     return eso.store_access(namespace, [remote], labels) + \
         [eso.reader_service_account(namespace, labels, set_namespace=True), es]
 
@@ -515,15 +483,14 @@ def sandbox_readme(git_url: str, branch: str, apps, idp_url: str = "") -> str:
     if idp_url:
         idp_text = (f"\nThe components that sign users in with OpenID Connect, SAML 2.0 or WS-Federation are registered at\n"
                     f"the sandbox identity provider (WSO2 Identity Server) at {idp_url}/. Flux applies `{SANDBOX}/idp`\n"
-                    f"with the apps; with Argo CD apply it once with `kubectl apply -k {SANDBOX}/idp`. Clients, test\n"
-                    f"users and passwords: `{SANDBOX}/idp/README.md` (docs/sandbox-idp.md).\n")
+                    f"with the apps. Clients, test users and passwords: `{SANDBOX}/idp/README.md` (docs/sandbox-idp.md).\n")
     else:
         idp_text = ("\nNo component signs users in with OpenID Connect, SAML 2.0 or WS-Federation, or no sandbox domain\n"
                     "was set (`--ingress-domain`), so no identity provider is deployed.\n")
     return f"""# Sandbox deployment
 
 Every app in this repository that has components rated **A** (container-ready, stateless, built,
-run and passed the security gate). Pick Argo CD **or** Flux, not both. Generated by
+run and passed the security gate), deployed with Flux. Generated by
 `containerizer org`; do not edit, the next run rewrites this folder.
 
 | Namespace | Folder | Components |
@@ -537,7 +504,6 @@ token of this repository in the store as `username` + `password` under these rem
 
 | Remote key | For |
 | --- | --- |
-| `argocd--cz-git` | Argo CD: the repository Secret in `argocd` |
 | `flux-system--cz-git` | Flux: the root `GitRepository` |
 | `<namespace>--cz-git`, for every line of `namespaces.txt` | Flux: each app's own `GitRepository` |
 
@@ -550,17 +516,6 @@ kubectl -n containerizer-secrets create secret generic flux-system--cz-git \\
 
 The containerizer appliance does this by itself from `sandbox.env`.
 
-## Argo CD
-
-```sh
-kubectl apply -f {SANDBOX}/argocd/bootstrap.yaml
-```
-
-`bootstrap.yaml` is an app-of-apps: AppProject `containerizer-sandbox` may only create AppProjects and
-Applications in `argocd`, from this repository. Each app then has its own AppProject pinned to its
-namespace and generated kinds (see `<app>/gitops/README.md`). Apply each app's `cluster/secret-store.yaml`
-too: it lets the app's namespace read its own keys.
-
 ## Flux
 
 ```sh
@@ -569,14 +524,15 @@ kubectl apply -f {SANDBOX}/flux/bootstrap.yaml
 
 The root Kustomization applies each app's `gitops/flux/tenant.yaml` (namespace with Pod Security
 "restricted", ServiceAccount, namespace-only RoleBinding) and `gitops/flux/git/sync.yaml`. Image
-automation (`gitops/flux/git/image-automation.yaml`) is left out: it needs a write key.
+automation (`gitops/flux/git/image-automation.yaml`) is left out: it needs a write key. Apply each app's
+`cluster/secret-store.yaml` too: it lets the app's namespace read its own keys.
 
 ## Identity provider
 {idp_text}
 ## Health read-back
 
 `containerizer org --verify-sandbox` (or `containerizer sandbox verify` on a checkout of this repository)
-waits until Argo CD or Flux has synced the commit, reads back rollout, readiness, restarts and Warning
+waits until Flux has synced the commit, reads back rollout, readiness, restarts and Warning
 events of every component and writes `{SANDBOX}/HEALTH.md` and `{SANDBOX}/health.json`. It only reads the
 cluster, as ServiceAccount `containerizer-verifier` with the Roles in `verify-rbac.yaml`:
 
@@ -1778,12 +1734,12 @@ def sandbox_step(o: OrgOptions, out: "Output", log=print) -> dict:
     """Wait for the sandbox cluster to sync what was pushed and record the health of every component:
     sandbox/HEALTH.md + health.json in the output repository, the results database, the learning loop."""
     from .sandbox import KubeOptions, SandboxOptions, summary, verify_sandbox, write_health
-    so = SandboxOptions(kube=KubeOptions(kubeconfig=o.kubeconfig, context=o.kube_context), gitops=o.gitops,
+    so = SandboxOptions(kube=KubeOptions(kubeconfig=o.kubeconfig, context=o.kube_context),
                         timeout=o.sandbox_timeout, llm=o.llm_heavy, model=o.model,
                         llm_keys=set(o.heavy_windows or {}) if o.ai else set())
     if out.git and not out.push:
         doc = {"checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "revision": "",
-               "gitops": o.gitops, "cluster": "", "components": [],
+               "gitops": "flux", "cluster": "", "components": [],
                "skipped": "the output repository was not pushed (--no-push or no remote): the cluster cannot sync it"}
         log(f"sandbox verification skipped: {doc['skipped']}")
     else:

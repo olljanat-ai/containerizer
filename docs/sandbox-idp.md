@@ -100,9 +100,6 @@ groups and users, creates or updates applications, and deletes the applications 
 longer in Git. Applications someone added by hand in the console stay. It uses only the Python standard
 library, talks to the IdP's public HTTPS URL and never prints a secret.
 
-With **Argo CD** the app-of-apps may only create Applications, so apply the IdP once yourself:
-`kubectl apply -k sandbox/idp`.
-
 ## Secrets
 
 Nothing secret is in Git. The remote key `containerizer-idp--cz-idp` in the secret store holds:

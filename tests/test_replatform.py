@@ -165,7 +165,7 @@ def test_replatform_cli_generates_hardened_gitops_output(tmp_path):
     assert main(["replatform", str(EX / "swarm-shop"), "--out", str(out), "--name", "shop",
                  "--ingress-domain", "sandbox.example.com", "--registry", "reg.example/sb", "--tag", "1.0.0"]) == 0
     for f in ("kustomization.yaml", "namespace.yaml", "security.yaml", "HARDENING.md", "MIGRATION.md", "migration.json",
-              "gitops/argocd/application.yaml", "gitops/flux/tenant.yaml", "cluster/secret-store.yaml",
+              "gitops/flux/tenant.yaml", "cluster/secret-store.yaml",
               "api/k8s.yaml", "api/build.json", "api/idp.json", "worker/k8s.yaml"):
         assert (out / f).exists(), f
     assert not (out / "db").exists()                        # backing service: not migrated
@@ -435,13 +435,13 @@ def test_enabled_dockerfile_repo_is_migrated_in_an_org_scan(tmp_path, monkeypatc
     app = out / "acme" / "_" / "shop"
     meta = json.loads((app / "containerizer.json").read_text())
     assert meta["migration"]["platforms"] == ["docker-swarm"] and meta["app"] == "shop"
-    assert (app / "gitops" / "argocd" / "kustomization.yaml").exists()
+    assert (app / "gitops" / "flux" / "kustomization.yaml").exists() and not (app / "gitops" / "argocd").exists()
     # the sandbox app-of-apps includes it, and the sandbox tester finds its workloads
     from containerizer.sandbox import deployed_apps
     [a] = [x for x in deployed_apps(out) if x["app"] == "shop"]
     assert {c["component"]: c["workloads"] for c in a["components"]} == {"api": [("Deployment", "api")],
                                                                          "worker": [("Deployment", "worker")]}
-    assert "acme/_/shop/gitops/argocd" in (out / "sandbox" / "argocd" / "apps" / "kustomization.yaml").read_text()
+    assert "acme/_/shop/gitops/flux" in (out / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text()
 
 
 @pytest.mark.skipif(not __import__("os").environ.get("CONTAINERIZER_TEST_DOCKER"),

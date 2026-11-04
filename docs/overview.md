@@ -231,14 +231,14 @@ Java (Maven/Gradle; Spring Boot, Quarkus, plain JVM programs, WARs on Tomcat) an
 (npm/pnpm/yarn; Express, NestJS, Next.js and others) components get distroless, non-root images
 built on the runtime line they declare; see [Java and Node.js](java-node.md#containers).
 
-GitOps: every app also gets `gitops/` with Argo CD and Flux configuration built from the same data:
+GitOps: every app also gets `gitops/flux/`, its Flux configuration (Flux is the only GitOps tool):
 
-| | Argo CD | Flux |
-| --- | --- | --- |
-| Scope | `AppProject` pinned to the repo, the app namespace and the generated kinds | `tenant.yaml`: namespace, ServiceAccount, `admin` RoleBinding in that namespace only; `Kustomization` applies as that ServiceAccount |
-| Namespace | `CreateNamespace` with the Pod Security "restricted" labels | created by `tenant.yaml` with the same labels |
-| Sync | automated, prune, self-heal, server-side apply, retries | `GitRepository` (read-only key, optional signed-commit check) or cosign-verified `OCIRepository`; prune, wait |
-| Image updates | Argo CD Image Updater annotations (semver, Git write-back) | `ImageRepository`, `ImagePolicy`, `ImageUpdateAutomation` with `$imagepolicy` markers in `kustomization.yaml` |
+| | Flux |
+| --- | --- |
+| Scope | `tenant.yaml`: namespace, ServiceAccount, `admin` RoleBinding in that namespace only; `Kustomization` applies as that ServiceAccount |
+| Namespace | created by `tenant.yaml` with the Pod Security "restricted" labels |
+| Sync | `GitRepository` (read-only key, optional signed-commit check) or cosign-verified `OCIRepository`; prune, wait |
+| Image updates | `ImageRepository`, `ImagePolicy`, `ImageUpdateAutomation` with `$imagepolicy` markers in `kustomization.yaml` |
 
 Techniques used to avoid application changes:
 
@@ -334,10 +334,7 @@ or an action for the cluster operator, with the guide section and CIS number.
   responses for RBAC, every write and every exec) and a Kyverno `verifyImages` policy that only admits images signed with your cosign
   key. These are for the cluster operator to apply. The report also lists the cluster controls the
   generator can't set, such as etcd encryption, kubelet authentication and control plane TLS.
-- **GitOps**: Argo CD's `AppProject` allows only the `Namespace` cluster kind, no plain Secrets and no
-  other source namespaces, and warns on orphaned resources. Applications sync with
-  `ServerSideApply`, `PruneLast` and `FailOnSharedResource`. On Flux, the quota, LimitRange and
-  default-deny policy move into the platform-owned `flux/tenant.yaml`. The synced Kustomization
+- **GitOps**: the quota, LimitRange and default-deny policy move into the platform-owned `flux/tenant.yaml`. The synced Kustomization
   deletes them from its set with `$patch: delete` and doesn't `force`, so the app repository can't
   loosen them under the tenant's impersonated ServiceAccount.
 

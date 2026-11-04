@@ -26,7 +26,7 @@ verifier_access() {
   # shellcheck disable=SC2086 # one argument per namespace
   /usr/lib/containerizer/venv/bin/python -I -c 'import sys, yaml
 from containerizer.sandbox import verify_rbac
-print("---\n".join(yaml.safe_dump(d, sort_keys=False) for d in verify_rbac(sys.argv[1:], argocd_apps=[])))' $nss \
+print("---\n".join(yaml.safe_dump(d, sort_keys=False) for d in verify_rbac(sys.argv[1:])))' $nss \
     | k apply -f - >/dev/null
   if [ -s "$VERIFIER_KUBECONFIG" ] && [ -z "$(find "$VERIFIER_KUBECONFIG" -mmin +720)" ]; then return 0; fi
   token=$(k -n containerizer-verify create token containerizer-verifier --duration=24h)

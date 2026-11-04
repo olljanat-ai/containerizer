@@ -6,6 +6,13 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+- Argo CD support is removed: Flux is the only GitOps tool, in the output repository and in the sandbox. Each
+  application folder gets `gitops/flux/` only, and `sandbox/` only `flux/`. The `gitops/argocd/` folders and
+  `sandbox/argocd/` of earlier runs are removed at the next scan. `containerizer sandbox verify` reads Flux
+  Kustomizations only, and `sandbox/verify-rbac.yaml` no longer has a Role in `argocd`.
+
 ## 0.9.1 (2026-11-04)
 
 - A Make it A copy, or an application in a scan, that is not deployed because no component qualifies now says why

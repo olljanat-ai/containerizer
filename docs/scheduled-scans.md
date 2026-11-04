@@ -212,13 +212,11 @@ note in the change history. A disabled project overrides the settings of its rep
     kustomization.yaml       namespace, security policies, components, image tags
     namespace.yaml security.yaml HARDENING.md SECURITY.md MIGRATION.md cluster/
     containerizer.json       source URL, commit, images, digests, verification
-    gitops/argocd/           AppProject + Application for this app
     gitops/flux/             tenant.yaml, git/sync.yaml, oci/, image automation
     <component>/             Dockerfile, Dockerfile.dockerignore, k8s.yaml, plan.json
     pipeline/<provider>/     the image build pipeline for the application's own repository (build-pipelines.md)
 sandbox/
   README.md namespaces.txt
-  argocd/bootstrap.yaml      app-of-apps
   flux/bootstrap.yaml        GitRepository + root Kustomization
   idp/                       sandbox identity provider, when a component signs users in
 ```
@@ -245,7 +243,7 @@ Apps that need a database, cache or object storage get one from the [lab service
 restored copy of their [development database](dev-databases.md). Apps that sign users in with OpenID
 Connect, SAML 2.0 or WS-Federation are pointed at the [sandbox identity provider](sandbox-idp.md). `kubectl` as root on the appliance shows
 the result. To deploy the same output repository to another cluster, follow `sandbox/README.md` in it
-(Argo CD or Flux).
+(Flux).
 
 ## The LLM queue
 

@@ -259,7 +259,7 @@ rate A on their own, so a B application has only those in the sandbox, often non
   that the original's image automation never picks up.
 - **Where.** A sibling folder of the original in the output repository of the organization scan that
   assessed the application, `<Organization>/<Project>/<Repository>-refactor-<job>/`, with `sandbox/`
-  regenerated, in one commit; Flux (or Argo CD) deploys it from there. Its images go to the appliance's own
+  regenerated, in one commit; Flux deploys it from there. Its images go to the appliance's own
   registry, as the scan's do; the output repository and branch and the security gate are that scan's; the output repository's write
   token is its registered credential. An application that no organization scan with an output repository
   assessed here is not deployed, and the order page says so (`no output repository: ...`).

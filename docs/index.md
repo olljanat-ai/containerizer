@@ -84,7 +84,7 @@ running and deploying them in its own sandbox cluster.
     ---
 
     Schedule scans of Azure DevOps, GitHub and GitLab organizations. New repositories are found
-    automatically, and the A-rated ones are pushed and committed for Argo CD or Flux.
+    automatically, and the A-rated ones are pushed and committed for Flux.
 
     [:octicons-arrow-right-24: Organization scans](scheduled-scans.md)
 
