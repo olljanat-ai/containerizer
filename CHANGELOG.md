@@ -6,6 +6,13 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+- The web UI says it is Containerizer: the front page has the logo and the name above its title, linking to
+  [containerizer.eu](https://containerizer.eu), every page ends with a link to it, and browser tabs read
+  "… · Containerizer". The front page asks "How ready are our applications to run in Linux containers?" (it had
+  no question mark), with the last assessment and Trends over time on a line of their own.
+
 ## 0.9.5 (2026-11-04)
 
 - **Browse and fix the sandbox databases** (appliance): Admin → Dev databases now opens each application's
