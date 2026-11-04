@@ -453,6 +453,16 @@ the clones, images in the local registry and the sandbox apps, but not the rest:
 | Metrics (optional) | `/var/lib/containerizer/prometheus`, `/var/lib/containerizer/grafana` | 90 days of scan and LLM usage metrics, and changes made in Grafana |
 | kubemg (optional) | `/var/lib/containerizer/kubemg` (with `secrets/kubemg-secret-key`) | kubemg's users, SSO settings, audit trail and recorded sessions |
 
+**The configuration without its secrets is also in the output repository.** At every boot the appliance copies
+`appliance.env`, `web.env`, `worker.env`, `sandbox.env`, `grafana.env`, `egress.json` and `network/*.network` to
+`.appliance/<CZ_HOSTNAME>/config/` of every output repository it has a write token for (Admin → Source control), in
+one commit and only when something changed. A setting whose value is a secret (its name has TOKEN, PASSWORD,
+SECRET, KEY, ...) keeps its name and says only whether it is set; passwords inside values (connection strings,
+`user:password@` in URLs) are cut out, and `secrets/` and `tls/` are never copied. So the history of the settings is in
+Git, and a rebuilt appliance can be set up from it, with the secrets from your own backup. The files change only by
+hand and a reboot applies them, so the boot is when they are copied (`cz-firstboot` stages them in
+`/run/containerizer/config-backup`; the LLM queue runner commits them).
+
 The [built-in LLM](#built-in-llm)'s model file (`/var/lib/containerizer/llm`, 16 GB) can be downloaded
 again: leave it out of backups (the archive below does). Its on/off setting is in `/var/lib/containerizer/system`.
 
