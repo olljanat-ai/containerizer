@@ -352,6 +352,8 @@ def agent(tmp_path, monkeypatch):
         if args[:2] == ["get", "crd"]:
             return f"customresourcedefinition.apiextensions.k8s.io/{args[2]}\n" if args[2] in calls.crds else ""
         if args[:2] == ["get", "namespace"]:
+            if args[2] == "containerizer-idp":
+                return "namespace/containerizer-idp\n" if "idp" in calls.crds else ""
             return "namespace/containerizer-secrets\n" if "eso" in calls.crds else ""
         return ""
     monkeypatch.setattr(sysagent, "_caddy", caddy)
@@ -586,3 +588,24 @@ def test_caddy_validate_gets_a_writable_scratch_data_dir(tmp_path, monkeypatch):
     assert seen["home"] == seen["data"] == seen["config"] == seen["cwd"]
     assert "cz-caddy-validate-" in seen["home"] and not Path(seen["home"]).exists()   # thrown away afterwards
     assert restarts == [["systemctl", "restart", "caddy.service"]]
+
+
+def test_agent_publishes_the_chain_for_the_idp_sync_job(agent, good):
+    """With the sandbox IdP deployed, the certificate chain (never the key) goes to ConfigMap containerizer-sandbox-ca
+    in its namespace, so its sync job trusts an internal-CA or self-signed certificate; Turn off removes it."""
+    p, calls = agent
+    calls.crds.add("idp")
+    cert_pem, kpem, _ = good
+    _drop(p, {"do": "set", "domain": "sandbox.example.com", "cert": cert_pem, "key": kpem})
+    assert sysagent.process() == 0
+    cms = [json.loads(i) for a, i in calls.kubectl if a[0] == "apply" and '"ConfigMap"' in (i or "")]
+    assert len(cms) == 1
+    cm = cms[0]
+    assert (cm["metadata"]["name"], cm["metadata"]["namespace"]) == ("containerizer-sandbox-ca", "containerizer-idp")
+    assert cm["data"]["ca.crt"].count("BEGIN CERTIFICATE") == cert_pem.count("BEGIN CERTIFICATE")
+    assert "PRIVATE" not in cm["data"]["ca.crt"]
+    calls.kubectl.clear()
+    _drop(p, {"do": "remove"})
+    assert sysagent.process() == 0
+    assert any(a[:3] == ["-n", "containerizer-idp", "delete"] and "configmap/containerizer-sandbox-ca" in a
+               for a, _ in calls.kubectl)

@@ -1038,6 +1038,9 @@ def sync_sandbox_https() -> str:
         on = False
     eso = _has_crd(ESO_CRD)
     if not on:
+        from .idp import NAMESPACE as IDP_NS
+        from .sandbox_https import CA_CONFIGMAP
+        _kubectl(["-n", IDP_NS, "delete", f"configmap/{CA_CONFIGMAP}", "--ignore-not-found"], check=False)
         if eso:
             _kubectl(["-n", SECRET_NAMESPACE, "delete", f"externalsecrets.external-secrets.io/{SECRET_NAME}",
                       "--ignore-not-found"], check=False)
@@ -1059,9 +1062,25 @@ def sync_sandbox_https() -> str:
                           check=False).strip()
         if exists and owner != "ExternalSecret":
             _kubectl(["-n", SECRET_NAMESPACE, "delete", f"secret/{SECRET_NAME}", "--ignore-not-found"], check=False)
+    publish_sandbox_ca(cert)
     _kubectl(["apply", "--server-side", "--field-manager", "containerizer-appliance", "--force-conflicts", "-f", "-"],
              input=tls_manifests(cert, key, eso))
     return "on (external secrets)" if eso else "on"
+
+
+def publish_sandbox_ca(cert_pem: str) -> None:
+    """The certificate chain (public) as ConfigMap containerizer-sandbox-ca in the IdP's namespace, once Flux made
+    it: the IdP's sync job calls https://containerizer-idp.<domain> through Traefik, and trusts this certificate
+    as Caddy does, whoever issued it (an internal CA, or self-signed in a lab)."""
+    from .idp import NAMESPACE as IDP_NS
+    from .sandbox_https import CA_CONFIGMAP, public_chain
+    if not _kubectl(["get", "namespace", IDP_NS, "-o", "name", "--ignore-not-found"], check=False).strip():
+        return                                  # no sandbox IdP (yet): the next sync, every 2 minutes
+    cm = {"apiVersion": "v1", "kind": "ConfigMap",
+          "metadata": {"name": CA_CONFIGMAP, "namespace": IDP_NS, "labels": APPLIANCE_LABELS},
+          "data": {"ca.crt": public_chain(cert_pem)}}
+    _kubectl(["apply", "--server-side", "--field-manager", "containerizer-appliance", "--force-conflicts", "-f", "-"],
+             input=json.dumps(cm))
 
 
 # =============================================================================== requests

@@ -28,6 +28,9 @@ from datetime import datetime, timedelta, timezone
 DOMAIN_RE = re.compile(r"(?=.{4,200}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]")
 LABEL_MAX = 63
 MAX_CERT_BYTES = 32 * 1024
+# the certificate chain (public, never the key) as a ConfigMap for clients in the cluster that call sandbox URLs
+# (the IdP's sync job): an internal-CA or self-signed certificate is trusted there as it is in Caddy
+CA_CONFIGMAP = "containerizer-sandbox-ca"
 MAX_KEY_BYTES = 16 * 1024
 MAX_CHAIN = 6
 EXPIRY_WARN_DAYS = 30
@@ -333,3 +336,8 @@ def load_settings(env=None) -> dict | None:
 def configured_domain(env=None) -> str:
     s = load_settings(env)
     return s["domain"] if s else ""
+
+
+def public_chain(pem: str) -> str:
+    """Only the certificates of a PEM text (never a key), for clients that must trust them."""
+    return "".join(m.group(0).strip() + "\n" for m in CERT_BLOCK.finditer(pem or ""))

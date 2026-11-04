@@ -661,13 +661,16 @@ def sync_manifests(sb: Sandbox) -> list[dict]:
         "containers": [{
             "name": "sync", "image": config()["images"]["sync"], "imagePullPolicy": "IfNotPresent",
             "command": ["python", "-I", "-B", "/sync/idp_sync.py", "--url", sb.url, "--config", "/sync",
-                        "--secrets", "/secrets"],
+                        "--secrets", "/secrets", "--ca", "/sandbox-ca/ca.crt"],
             "securityContext": {**SEC, "readOnlyRootFilesystem": True},
             "resources": {"requests": {"cpu": "20m", "memory": "64Mi"}, "limits": {"memory": "256Mi"}},
             "volumeMounts": [{"name": "sync", "mountPath": "/sync", "readOnly": True},
-                             {"name": "secrets", "mountPath": "/secrets", "readOnly": True}]}],
+                             {"name": "secrets", "mountPath": "/secrets", "readOnly": True},
+                             {"name": "sandbox-ca", "mountPath": "/sandbox-ca", "readOnly": True}]}],
         "volumes": [{"name": "sync", "configMap": {"name": SYNC}},
-                    {"name": "secrets", "secret": {"secretName": SECRET, "defaultMode": 0o400}}],
+                    {"name": "secrets", "secret": {"secretName": SECRET, "defaultMode": 0o400}},
+                    # the sandbox certificate's chain (system agent, sysagent.publish_sandbox_ca): trusted as is
+                    {"name": "sandbox-ca", "configMap": {"name": "containerizer-sandbox-ca", "optional": True}}],
     }
     labels = {**LABELS, "app.kubernetes.io/name": SYNC}
     return [

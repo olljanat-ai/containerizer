@@ -19,6 +19,9 @@ recorded on its generated Ingress (`containerizer.io/url`).
 
 A certificate from a public CA works in every browser. A certificate from your internal CA works where
 that CA is trusted.
+Inside the cluster, the [sandbox identity provider](sandbox-idp.md)'s sync job trusts the certificate you
+set here whoever issued it, also a self-signed one: the appliance publishes its chain (never the key) as
+ConfigMap `containerizer-sandbox-ca` in namespace `containerizer-idp`.
 
 ## Set it up
 

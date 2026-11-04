@@ -43,12 +43,25 @@ class SyncError(Exception):
     pass
 
 
+def tls_context(cafile: str | None = None) -> ssl.SSLContext:
+    """The system's CAs, and the sandbox certificate's chain when the appliance published it (an internal-CA or
+    self-signed certificate, set by an administrator under Sandbox HTTPS): its certificates are trusted as they
+    are (partial chain), without the strict checks Python 3.13 adds, which a lab's self-signed certificate often
+    fails."""
+    ctx = ssl.create_default_context()
+    if cafile and os.path.isfile(cafile) and os.path.getsize(cafile):
+        ctx.load_verify_locations(cafile)
+        ctx.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
+        ctx.verify_flags &= ~getattr(ssl, "VERIFY_X509_STRICT", 0)
+    return ctx
+
+
 class Api:
-    def __init__(self, base: str, user: str, password: str, timeout: int = 30):
+    def __init__(self, base: str, user: str, password: str, timeout: int = 30, cafile: str | None = None):
         self.base = base.rstrip("/")
         self.auth = "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
         self.timeout = timeout
-        self.ctx = ssl.create_default_context()
+        self.ctx = tls_context(cafile)
 
     def call(self, method: str, path: str, body=None, ok=(200, 201, 202, 204), ctype: str = "application/json"):
         data = None if body is None else json.dumps(body).encode()
@@ -85,8 +98,8 @@ def secret(secrets: Path, name: str) -> str:
     return v
 
 
-def wait_healthy(base: str, timeout: int, log) -> None:
-    ctx = ssl.create_default_context()
+def wait_healthy(base: str, timeout: int, log, cafile: str | None = None) -> None:
+    ctx = tls_context(cafile)
     end = time.monotonic() + timeout
     last = ""
     while time.monotonic() < end:
@@ -248,10 +261,10 @@ def ensure_oidc_claims(api: Api, oidc: dict, log) -> None:
         log(f"OIDC scope {scope}: added {', '.join(missing)}")
 
 
-def sync(base: str, config: Path, secrets: Path, wait: int = 600, log=print) -> dict:
+def sync(base: str, config: Path, secrets: Path, wait: int = 600, log=print, cafile: str | None = None) -> dict:
     cfg = json.loads((config / "idp.json").read_text(encoding="utf-8"))
-    wait_healthy(base, wait, log)
-    api = Api(base, cfg.get("admin", "admin"), secret(secrets, "admin-password"))
+    wait_healthy(base, wait, log, cafile)
+    api = Api(base, cfg.get("admin", "admin"), secret(secrets, "admin-password"), cafile=cafile)
     ensure_oidc_claims(api, cfg.get("oidc") or {}, log)
     gids = ensure_groups(api, cfg.get("groups") or [], log)
     ensure_users(api, cfg.get("users") or [], gids, secrets, log)
@@ -278,12 +291,13 @@ def main(argv=None) -> int:
     ap.add_argument("--config", default="/config")
     ap.add_argument("--secrets", default="/secrets")
     ap.add_argument("--wait", type=int, default=600)
+    ap.add_argument("--ca", default="", help="extra certificates to trust (the sandbox certificate's chain)")
     a = ap.parse_args(argv)
     if not a.url.startswith("https://"):
         print("--url (IDP_URL) must be the https:// URL of the identity provider", file=sys.stderr)
         return 2
     try:
-        r = sync(a.url, Path(a.config), Path(a.secrets), a.wait)
+        r = sync(a.url, Path(a.config), Path(a.secrets), a.wait, cafile=a.ca or None)
     except SyncError as ex:
         print(f"error: {ex}", file=sys.stderr)
         return 1

@@ -380,3 +380,67 @@ def test_application_page_shows_the_registrations():
     assert "<script>" not in html and "sign-in settings only in code" in html
     assert webui._idp_section([]) == ""
     assert "javascript:" not in webui._link("javascript:alert(1)") or "href" not in webui._link("javascript:alert(1)")
+
+
+def test_sync_job_trusts_the_sandbox_certificate(tmp_path):
+    """The sync job calls the IdP through Traefik, which serves the Sandbox HTTPS certificate: a self-signed or
+    internal-CA one fails with the system CAs alone ("self-signed certificate" on an appliance). The chain the
+    appliance publishes (ConfigMap containerizer-sandbox-ca, optional) is trusted as it is."""
+    import datetime
+    import socket
+    import ssl
+    import threading
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    from containerizer import idp, idp_sync
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "*.sandbox.lab")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+            .serial_number(1).not_valid_before(now - datetime.timedelta(days=1))
+            .not_valid_after(now + datetime.timedelta(days=30))
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName("*.sandbox.lab")]), critical=False)
+            .sign(key, hashes.SHA256()))              # a lab's minimal self-signed certificate: no key identifiers
+    (tmp_path / "tls.crt").write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    (tmp_path / "tls.key").write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                                         serialization.NoEncryption()))
+    srv = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    srv.load_cert_chain(tmp_path / "tls.crt", tmp_path / "tls.key")
+
+    def handshake(ctx) -> bool:
+        ls = socket.socket()
+        ls.bind(("127.0.0.1", 0))
+        ls.listen(1)
+
+        def serve():
+            conn, _ = ls.accept()
+            try:
+                with srv.wrap_socket(conn, server_side=True) as s:
+                    s.recv(1)
+            except (ssl.SSLError, OSError):
+                pass
+        threading.Thread(target=serve, daemon=True).start()
+        try:
+            with ctx.wrap_socket(socket.create_connection(ls.getsockname()), server_hostname="containerizer-idp.sandbox.lab") as s:
+                s.sendall(b"x")
+            return True
+        except ssl.SSLCertVerificationError:
+            return False
+        finally:
+            ls.close()
+    assert not handshake(idp_sync.tls_context(None))                         # the system CAs only
+    assert not handshake(idp_sync.tls_context(str(tmp_path / "missing.crt")))
+    strict = idp_sync.tls_context(str(tmp_path / "tls.crt"))
+    assert not strict.verify_flags & getattr(ssl, "VERIFY_X509_STRICT", 0)
+    assert handshake(strict)
+    # the job mounts the optional ConfigMap and passes it
+    job = next(d for d in idp.sync_manifests(idp.Sandbox("sandbox.lab")) if d["kind"] == "CronJob")
+    pod = job["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    assert {"name": "sandbox-ca", "configMap": {"name": "containerizer-sandbox-ca", "optional": True}} in pod["volumes"]
+    c = pod["containers"][0]
+    assert c["command"][-2:] == ["--ca", "/sandbox-ca/ca.crt"]
+    assert {"name": "sandbox-ca", "mountPath": "/sandbox-ca", "readOnly": True} in c["volumeMounts"]
