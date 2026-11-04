@@ -25,7 +25,9 @@ qcow2 and VHDX images as release assets.
     now lets partial applications pass but fails framework ports (it was the other way round); `--max-rating D`
     lets both pass as before. A gate set to C should be set to D to keep passing framework ports. A rating drop
     from C to D on a pull request (the PR adds a port to a partial application) now fails `fail-on-rating-drop`.
-  - The benchmark labels (`bench/labels.yaml`, `bench/realworld.yaml`) are rewritten for the new scale.
+  - The front page tiles group by meaning: **Need code changes (B, D)** and **Partly or not feasible (C, E)**.
+  - The benchmark labels (`bench/labels.yaml`, `bench/realworld.yaml`) are rewritten for the new scale; the
+    benchmark's easy/hard split is now C or E (some components stay on Windows) against A, B or D.
 - The front page leaves out applications not mapped to a product for everyone but administrators: nobody has said
   whose they are yet. Administrators see them with a note and a link to map them. Without sign-in (no admin pages)
   everything is shown as before.

@@ -7,7 +7,7 @@ Run with `python -m containerizer bench [--technique T --model M]`.
 
 | Technique | Model | Rating accuracy | Easy/hard split | Blocker precision | Blocker recall | Feasible components | Claude calls | Cost (USD) | Time (s) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| **rules** | none | **1.00** | 1.00 | 1.00 | 1.00 | 1.00 | 0 | **0** | **32** |
+| **rules** | none | **1.00** | 0.97 | 1.00 | 1.00 | 1.00 | 0 | **0** | **32** |
 | hybrid | claude-haiku-5-5 | 1.00 | 0.97 | 1.00 | 1.00 | 1.00 | 11 | 0.11 | 267 |
 | hybrid | claude-sonnet-5-5 | 1.00 | 0.97 | 1.00 | 1.00 | 1.00 | 11 | 1.00 | 139 |
 | hybrid | claude-opus-5-5 | 1.00 | 0.97 | 1.00 | 1.00 | 1.00 | 10 | 1.91 | 204 |
@@ -30,10 +30,10 @@ Notes:
   labels were rewritten for the new scale and the **rules** row was scored again on it. The LLM rows
   were measured on the old scale (C framework port, D partial) and have not been run again.
 - *Rating accuracy* counts a rating as right when it is one of the labelled ratings (some apps are
-  honestly C-or-D). *Easy/hard split* is whether the app lands in A–C (runs in Linux, fully or in
-  part, after at most minor changes) versus D–E (needs a framework port, or not feasible). On the old
-  scale the one miss was an app labelled C/D (`staff-onboarding`) that both rules and Claude rated a
-  port; a port is D now, so the rules no longer miss it.
+  honestly C-or-D). *Easy/hard split* is whether some components must stay on Windows: the app lands
+  in A, B or D (everything can move, after a port if need be) versus C or E (partial or not feasible;
+  D and E on the old scale). The one miss is an app labelled C/D that both rules and Claude rate as a
+  port (D).
 - The rules-only score was 0.97 until command-aware reachability was added: in `document-control`,
   the Indexer's proprietary `dtzip.dll` is used only by the optional `--import-doctrack` command.
   Hybrid mode with Haiku already caught that. The rule engine now catches it on its own, without Claude.

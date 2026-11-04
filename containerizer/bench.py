@@ -65,8 +65,8 @@ def run_bench(args) -> int:
         ok_total += len(exp_ok)
         ok_correct += len(exp_ok - blocked_pred)
         r_ok = rating in lab["rating"]
-        hard_exp = any(r in "DE" for r in lab["rating"])
-        hard_ok = (rating in "DE") == hard_exp
+        hard_exp = any(r in "CE" for r in lab["rating"])     # some components must stay on Windows: C partial, E
+        hard_ok = (rating in "CE") == hard_exp
         rating_hits += r_ok
         hard_hits += hard_ok
         rows.append({"app": app, "rating": rating, "expected": "/".join(lab["rating"]), "rating_ok": r_ok,

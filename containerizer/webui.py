@@ -741,10 +741,10 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag
     tiles = (f"<div class='tile'><div class='label'>Applications assessed</div><div class='value'>{total}</div></div>"
              f"<div class='tile'><div class='label'>Ready now (A)</div><div class='value'>{c['A']}</div>"
              f"<div class='sub'>{pct(c['A'])} of applications</div></div>"
-             f"<div class='tile'><div class='label'>Small changes, all or part (B, C)</div><div class='value'>{c['B'] + c['C']}</div>"
-             f"<div class='sub'>{pct(c['B'] + c['C'])}</div></div>"
-             f"<div class='tile'><div class='label'>Port needed or not feasible (D, E)</div><div class='value'>{c['D'] + c['E']}</div>"
-             f"<div class='sub'>{pct(c['D'] + c['E'])}</div></div>"
+             f"<div class='tile'><div class='label'>Need code changes (B, D)</div><div class='value'>{c['B'] + c['D']}</div>"
+             f"<div class='sub'>{pct(c['B'] + c['D'])}</div></div>"
+             f"<div class='tile'><div class='label'>Partly or not feasible (C, E)</div><div class='value'>{c['C'] + c['E']}</div>"
+             f"<div class='sub'>{pct(c['C'] + c['E'])}</div></div>"
              + (f"<div class='tile'><div class='label'>A with a patch (B → A)</div><div class='value'>{len(patched)}</div>"
                 f"<div class='sub'>{len(in_sb)} running in the sandbox</div></div>" if patched else ""))
 
