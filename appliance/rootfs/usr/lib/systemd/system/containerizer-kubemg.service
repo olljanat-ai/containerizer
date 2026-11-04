@@ -9,7 +9,8 @@ ConditionPathExists=/run/containerizer/kubemg/kubemg.env
 [Service]
 EnvironmentFile=/usr/lib/containerizer/images.env
 ExecStartPre=-/usr/bin/docker rm -f cz-kubemg
-# the CA that issued Caddy's certificate for kubemg's name, pinned into the agent's manifest (none for Let's Encrypt)
+# kubemg's loopback certificate readable by it (65532); the CA that issued Caddy's certificate for kubemg's name,
+# pinned into the agent's manifest (none for Let's Encrypt)
 ExecStartPre=/usr/lib/containerizer/bin/cz-kubemg ca
 # HTTPS on loopback (a certificate of the local CA that only Caddy trusts, made by cz-firstboot) behind Caddy,
 # which serves https://kubemg.<CZ_HOSTNAME>; kubemg's setup refuses plain HTTP (KUBEMG_TLS_ENABLED=false)

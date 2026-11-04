@@ -1,6 +1,6 @@
 #!/bin/bash
 # kubemg on the appliance (optional, CZ_KUBEMG=true; docs/appliance-admin.md#kubemg).
-#   cz-kubemg ca       before kubemg starts: the CA of the certificate Caddy serves for kubemg's name, for the
+#   cz-kubemg ca       before kubemg starts: its loopback certificate readable by kubemg; the CA of the certificate Caddy serves for kubemg's name, for the
 #                      agent's manifest (KUBEMG_AGENT_CA_BUNDLE): your own CA (tls/ca.pem, else the chain in
 #                      tls/cert.pem), Caddy's own CA, or none for Let's Encrypt
 #   cz-kubemg password the generated password of kubemg's `admin` (until it is changed in kubemg's setup wizard)
@@ -16,6 +16,11 @@ fi
 . "$K/kubemg.env"
 case "${1:-}" in
 ca)
+  # kubemg's loopback certificate (cz-firstboot makes it): its modes and owners set again, so that kubemg (65532)
+  # can read /etc/kubemg/ssl even when it was made with root-only ones (0.9.3: the 077 umask of cz-firstboot)
+  KT=/var/lib/containerizer/kubemg/tls
+  /usr/lib/containerizer/venv/bin/python -m containerizer.kubemg loopback-tls --dir "$KT" --group 65532
+  install -m 0644 "$KT/ca.crt" "$K/loopback-ca.pem"
   install -d -m 0755 "$K/ca"
   rm -f "$K/ca/ca.pem"
   : > "$K/ca.env"
