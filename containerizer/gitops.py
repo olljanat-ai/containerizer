@@ -146,6 +146,74 @@ def gitops_manifests(a, kinds: list[tuple[str, str]], images: list[tuple[str, st
     return out
 
 
+# --------------------------------------------------------------------------- sandbox health checks
+
+HEALTH_KINDS = {"Deployment": "apps/v1", "StatefulSet": "apps/v1"}   # a CronJob has no health to wait for
+ES_API, ES_KIND = "external-secrets.io/v1", "ExternalSecret"
+
+
+def _pods(doc: dict) -> list[dict]:
+    spec = doc.get("spec") or {}
+    if doc.get("kind") == "CronJob":
+        spec = ((spec.get("jobTemplate") or {}).get("spec") or {})
+    elif doc.get("kind") not in ("Deployment", "StatefulSet", "DaemonSet", "Job"):
+        return []
+    pod = (spec.get("template") or {}).get("spec")
+    return [pod] if isinstance(pod, dict) else []
+
+
+def required_secrets(docs: list[dict]) -> set[str]:
+    """Names of the Secrets a workload cannot start without: image pull secrets, and the secret volumes, env
+    and envFrom references that are not `optional: true` (Data Protection keys, say). An Ingress's TLS Secret
+    counts too. The generated settings, connection strings, secret files and keytabs are optional
+    references: a pod starts without them."""
+    need: set[str] = set()
+    for d in docs:
+        if d.get("kind") == "Ingress":
+            need |= {t["secretName"] for t in (d.get("spec") or {}).get("tls") or [] if t.get("secretName")}
+        for pod in _pods(d):
+            need |= {p["name"] for p in pod.get("imagePullSecrets") or [] if p.get("name")}
+            for v in pod.get("volumes") or []:
+                srcs = [v.get("secret")] + [s.get("secret") for s in (v.get("projected") or {}).get("sources") or []]
+                for s in srcs:
+                    if s and s.get("secretName", s.get("name")) and not s.get("optional"):
+                        need.add(s.get("secretName", s.get("name")))
+            for c in (pod.get("containers") or []) + (pod.get("initContainers") or []):
+                for e in c.get("env") or []:
+                    r = (e.get("valueFrom") or {}).get("secretKeyRef")
+                    if r and r.get("name") and not r.get("optional"):
+                        need.add(r["name"])
+                for e in c.get("envFrom") or []:
+                    r = e.get("secretRef")
+                    if r and r.get("name") and not r.get("optional"):
+                        need.add(r["name"])
+    return need
+
+
+def sandbox_health_checks(docs: list[dict], namespace: str) -> list[dict]:
+    """What the sandbox's Flux Kustomization of an app waits for instead of every applied object (`wait: false` +
+    `healthChecks`): its Deployments and StatefulSets, and the ExternalSecrets of Secrets a workload needs
+    (`required_secrets`, and every image pull credential). ExternalSecrets that only optional references read
+    (settings nobody put in the sandbox's secret store) are left out: ESO never syncs a missing remote key, so
+    with `wait: true` the Kustomization never became Ready although its pods ran."""
+    need = required_secrets(docs)
+    checks = []
+    for d in docs:
+        meta = d.get("metadata") or {}
+        if not meta.get("name"):
+            continue
+        if d.get("kind") in HEALTH_KINDS:
+            checks.append({"apiVersion": HEALTH_KINDS[d["kind"]], "kind": d["kind"], "name": meta["name"],
+                           "namespace": namespace})
+        elif d.get("kind") == ES_KIND:
+            target = (d.get("spec") or {}).get("target") or {}
+            pull = (target.get("template") or {}).get("type") == "kubernetes.io/dockerconfigjson"
+            if pull or (target.get("name") or meta["name"]) in need:
+                checks.append({"apiVersion": d.get("apiVersion") or ES_API, "kind": ES_KIND, "name": meta["name"],
+                               "namespace": namespace})
+    return sorted(checks, key=lambda c: (c["kind"], c["name"]))
+
+
 def image_setters(ns: str, images: list[tuple[str, str]]) -> str:
     """kustomization.yaml `images:` block with Flux setter markers."""
     lines = ["images:"]

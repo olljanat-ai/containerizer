@@ -36,6 +36,19 @@ qcow2 and VHDX images as release assets.
   [containerizer.eu](https://containerizer.eu), every page ends with a link to it, and browser tabs read
   "… · Containerizer". The front page asks "How ready are our applications to run in Linux containers?" (it had
   no question mark), with the last assessment and Trends over time on a line of their own.
+- Sandbox apps' Flux Kustomizations become Ready when their workloads are. They waited for every applied object
+  (`wait: true`), including the ExternalSecrets of the components' secret settings, files and keytabs, whose remote
+  keys nobody fills in the sandbox: ESO never synced them, so the health check timed out after 5 minutes at every
+  retry although the pods ran (their references are optional). `sandbox/flux/apps` now sets `wait: false` with
+  `healthChecks` of each app's Deployments and StatefulSets and of the ExternalSecrets of Secrets a pod cannot start
+  without (Data Protection keys, the image pull credential, any reference that is not optional), so those still
+  fail it. The app folder's own `gitops/flux/git/sync.yaml`, for real clusters, keeps `wait: true`. The next scan
+  rewrites `sandbox/` for every app in the output repository, and the root sync applies it.
+- The appliance's scans now check the sandbox at the end: the scan worker never had the read-only verifier
+  kubeconfig, so the sandbox check (`--verify-sandbox`) never ran and the results pages showed nothing about the
+  sandbox. The worker now gets it (`CONTAINERIZER_SANDBOX_KUBECONFIG`, as the LLM queue runner) and checks while
+  `cz-sandbox` finds the sandbox connected to the output repository, up to 15 minutes; **Stop** ends the wait
+  without recording the check.
 
 ## 0.9.5 (2026-11-04)
 

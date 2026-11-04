@@ -286,6 +286,19 @@ Connect, SAML 2.0 or WS-Federation are pointed at the [sandbox identity provider
 the result. To deploy the same output repository to another cluster, follow `sandbox/README.md` in it
 (Flux).
 
+**Health in the sandbox.** Each app's Flux Kustomization waits for its Deployments and StatefulSets and for the
+ExternalSecrets of the Secrets a pod cannot start without (Data Protection keys, the image pull credential), not
+for every object: the ExternalSecrets of a component's secret settings, secret files and keytabs read remote keys
+that nobody fills in the sandbox, and the workloads' references to them are optional. `sandbox/flux/apps` sets
+this (`wait: false` with `healthChecks`) on the sandbox's copy only; the app folder's own `gitops/flux` keeps
+`wait: true`, so a real cluster waits for every secret ([secrets](external-secrets.md#missing-secrets)).
+
+**The sandbox check.** At the end of each scan, while the sandbox is connected to the output repository, the
+worker waits (up to 15 minutes) for Flux to apply the scan's commit and reads back every component's rollout,
+readiness, restarts and Warning events, as the read-only verifier account `cz-sandbox` keeps up to date. The result
+is the **Sandbox cluster** column and details on each application's results page, and `sandbox/HEALTH.md` in the
+output repository. **Stop** on a running scan ends the wait; the check is then not recorded.
+
 ## The LLM queue
 
 With **Ask the LLM** on, **LLM reviews** chooses when the LLM is asked:

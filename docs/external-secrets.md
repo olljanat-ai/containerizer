@@ -47,6 +47,22 @@ definitions. `CONTAINERIZER_SECRET_STORE=kubernetes|vault|azurekv|aws` in `/etc/
 chooses which store the scans write into `cluster/secret-store.yaml` (default `kubernetes`, the
 appliance's own store).
 
+## Missing secrets
+
+A component's settings, connection strings, secret files and keytab are **optional** references in its
+workload: a pod starts without them when the store has no value (or not every property: ESO then creates
+none of that Secret's keys). Their ExternalSecret stays not ready (`SecretSyncedError`) until the values are
+in the store. The Secrets a pod cannot start without are not optional: the Data Protection key ring (made in
+the cluster by ESO's Password generator, no store), the image pull credential, the Flux Git credential.
+
+- **Real clusters**: the app's `gitops/flux/git/sync.yaml` has `wait: true`, so Flux waits for every applied
+  object and the Kustomization stays not ready (health check timeout naming the ExternalSecret) until each
+  secret is in the store. Fill the keys of `HARDENING.md` before the first sync.
+- **The sandbox**: nobody fills the components' own keys there, so `sandbox/flux/apps` patches each app's
+  Kustomization to `wait: false` with `healthChecks` of its Deployments and StatefulSets and the ExternalSecrets
+  of the Secrets a pod needs. The Kustomization is ready when the workloads are; a missing required secret still
+  fails it (the pod never starts, or its ExternalSecret is not ready).
+
 ## Hardening checks
 
 The security gate and `HARDENING.md` (NSA/CISA "Secrets", CIS 5.4.2 and 5.1.2) check:

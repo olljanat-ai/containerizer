@@ -613,6 +613,9 @@ def test_sandbox_writes_the_read_only_verifier_kubeconfig_for_the_llm_queue():
     q = _unit("containerizer-llm-queue.service")
     path = next(e.split("=", 1)[1] for e in q["Environment"] if e.startswith("CONTAINERIZER_SANDBOX_KUBECONFIG="))
     assert f"VERIFIER_KUBECONFIG={path}" in script and path.startswith("/run/containerizer/")
+    # the scan worker reads it too: its sandbox check at the end of a scan fills the results pages' Sandbox cluster
+    w = _unit("containerizer-worker.service")
+    assert f"CONTAINERIZER_SANDBOX_KUBECONFIG={path}" in w["Environment"] and w["Group"] == ["containerizer"]
     assert "verify_rbac(sys.argv[1:])" in script
     assert "-l app.kubernetes.io/managed-by=containerizer" in script
     assert "create token containerizer-verifier --duration=24h" in script
