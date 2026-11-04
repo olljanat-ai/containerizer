@@ -2,13 +2,13 @@
   "__inputs": [],
   "title": "Containerizer: Flux",
   "uid": "containerizer-flux",
-  "description": "Flux in the k3s sandbox cluster: which Kustomizations, sources and Helm releases are ready, failing or suspended, and the controllers' reconciliations. docs/appliance-admin.md#metrics",
+  "description": "Flux in the k3s sandbox cluster: whether the sandbox is connected to the output repository at all (cz-sandbox, the root sync), the applications' containers that do not start, which Kustomizations, sources and Helm releases are ready, failing or suspended, and the controllers' reconciliations. docs/appliance-admin.md#metrics",
   "tags": [
     "containerizer"
   ],
   "timezone": "utc",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "editable": true,
   "graphTooltip": 1,
   "refresh": "30s",
@@ -124,6 +124,635 @@
   "panels": [
     {
       "type": "row",
+      "id": 16,
+      "title": "Sandbox connection: is the output repository synced at all?",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "id": 17,
+      "title": "Connection (cz-sandbox)",
+      "description": "What cz-sandbox (every 2 minutes) found: Connected, or why the sandbox cluster deploys nothing (sandbox.env without a repository, no secret store, no Flux). The table below says why. No data: not an appliance, or cz-sandbox has not run yet.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(containerizer_sandbox_connection{state=\"connected\"}) * 2 + max(containerizer_sandbox_connection{state=\"no-token\"})",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Not connected",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "No token (public repository only)",
+                  "color": "orange",
+                  "index": 1
+                },
+                "2": {
+                  "text": "Connected",
+                  "color": "green",
+                  "index": 2
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "id": 18,
+      "title": "Last check",
+      "description": "Time since cz-sandbox last ran (systemd containerizer-sandbox.timer, every 2 minutes).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "time() - max(containerizer_sandbox_connection_checked_timestamp_seconds)",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 300
+              },
+              {
+                "color": "red",
+                "value": 900
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "id": 19,
+      "title": "Root GitRepository",
+      "description": "flux-system/containerizer-sandbox: Flux reads the output repository with the read-only token of sandbox.env. Missing: cz-sandbox has not created it (see Connection). Not ready: see Reason below (authentication, the firewall, a wrong URL or branch).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(count(gotk_resource_info{exported_namespace=\"flux-system\",name=\"containerizer-sandbox\",customresource_kind=\"GitRepository\",ready=\"True\"}) * 2) or (count(gotk_resource_info{exported_namespace=\"flux-system\",name=\"containerizer-sandbox\",customresource_kind=\"GitRepository\"}) * 1) or vector(0)",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Missing",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "Not ready",
+                  "color": "orange",
+                  "index": 1
+                },
+                "2": {
+                  "text": "Ready",
+                  "color": "green",
+                  "index": 2
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "id": 20,
+      "title": "Root Kustomization",
+      "description": "flux-system/containerizer-sandbox: applies sandbox/flux/apps of the output repository, which lists every application's Flux objects. Missing: see Connection; not ready: see Reason below.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(count(gotk_resource_info{exported_namespace=\"flux-system\",name=\"containerizer-sandbox\",customresource_kind=\"Kustomization\",ready=\"True\"}) * 2) or (count(gotk_resource_info{exported_namespace=\"flux-system\",name=\"containerizer-sandbox\",customresource_kind=\"Kustomization\"}) * 1) or vector(0)",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Missing",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "Not ready",
+                  "color": "orange",
+                  "index": 1
+                },
+                "2": {
+                  "text": "Ready",
+                  "color": "green",
+                  "index": 2
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "type": "table",
+      "id": 21,
+      "title": "Why (cz-sandbox)",
+      "description": "The state cz-sandbox last wrote and what to do about it; journalctl -u containerizer-sandbox logs every change.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 10,
+        "x": 0,
+        "y": 5
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "containerizer_sandbox_connection == 1",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "customresource_group": true,
+              "customresource_version": true,
+              "Value": true,
+              "pod_ip": true,
+              "app": true,
+              "uid": true,
+              "container_id": true
+            },
+            "renameByName": {
+              "state": "State",
+              "detail": "Detail"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "type": "table",
+      "id": 22,
+      "title": "Root sync",
+      "description": "The root GitRepository and Kustomization with their Ready reason and the revision they have: it should be the output repository's latest commit.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 14,
+        "x": 10,
+        "y": 5
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "gotk_resource_info{exported_namespace=\"flux-system\",name=\"containerizer-sandbox\"}",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "customresource_group": true,
+              "customresource_version": true,
+              "Value": true,
+              "pod_ip": true,
+              "app": true,
+              "uid": true,
+              "container_id": true,
+              "exported_namespace": true,
+              "name": true,
+              "namespace": true,
+              "pod": true,
+              "suspended": true
+            },
+            "renameByName": {
+              "customresource_kind": "Kind",
+              "ready": "Ready",
+              "reason": "Reason",
+              "revision": "Revision",
+              "url": "URL",
+              "source_name": "Source"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "type": "row",
+      "id": 23,
+      "title": "Applications: Flux applied them, but do they start?",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
+      "panels": []
+    },
+    {
+      "type": "table",
+      "id": 24,
+      "title": "Containers waiting",
+      "description": "Containers of the application namespaces that do not start, with the reason: ImagePullBackOff / ErrImagePull (the image is not in the appliance's registry), CrashLoopBackOff (it starts and fails: kubectl logs), CreateContainerConfigError (a missing secret or setting).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 14,
+        "x": 0,
+        "y": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "kube_pod_container_status_waiting_reason{namespace=~\"$namespace\"} > 0",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "customresource_group": true,
+              "customresource_version": true,
+              "Value": true,
+              "pod_ip": true,
+              "app": true,
+              "uid": true,
+              "container_id": true
+            },
+            "renameByName": {
+              "namespace": "Namespace",
+              "pod": "Pod",
+              "container": "Container",
+              "reason": "Reason"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "type": "table",
+      "id": 25,
+      "title": "Containers restarting (1 h)",
+      "description": "Restarts in the last hour by container: an application that starts, then fails its health check or exits.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 10,
+        "x": 14,
+        "y": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (namespace, pod, container) (increase(kube_pod_container_status_restarts_total{namespace=~\"$namespace\"}[1h])) > 0",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "instance": true,
+              "customresource_group": true,
+              "customresource_version": true,
+              "pod_ip": true,
+              "app": true,
+              "uid": true,
+              "container_id": true
+            },
+            "renameByName": {
+              "namespace": "Namespace",
+              "pod": "Pod",
+              "container": "Container",
+              "Value": "Restarts"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "type": "row",
       "id": 1,
       "title": "Flux",
       "collapsed": false,
@@ -131,7 +760,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 0
+        "y": 17
       },
       "panels": []
     },
@@ -148,7 +777,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 1
+        "y": 18
       },
       "targets": [
         {
@@ -209,7 +838,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 1
+        "y": 18
       },
       "targets": [
         {
@@ -270,7 +899,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 1
+        "y": 18
       },
       "targets": [
         {
@@ -335,7 +964,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 1
+        "y": 18
       },
       "targets": [
         {
@@ -400,7 +1029,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 1
+        "y": 18
       },
       "targets": [
         {
@@ -465,7 +1094,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 1
+        "y": 18
       },
       "targets": [
         {
@@ -526,7 +1155,7 @@
         "h": 7,
         "w": 24,
         "x": 0,
-        "y": 5
+        "y": 22
       },
       "targets": [
         {
@@ -603,7 +1232,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 12
+        "y": 29
       },
       "targets": [
         {
@@ -682,7 +1311,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 22
+        "y": 39
       },
       "panels": []
     },
@@ -699,7 +1328,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 23
+        "y": 40
       },
       "targets": [
         {
@@ -754,7 +1383,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 23
+        "y": 40
       },
       "targets": [
         {
@@ -809,7 +1438,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 31
+        "y": 48
       },
       "targets": [
         {
@@ -864,7 +1493,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 31
+        "y": 48
       },
       "targets": [
         {
@@ -919,7 +1548,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 31
+        "y": 48
       },
       "targets": [
         {

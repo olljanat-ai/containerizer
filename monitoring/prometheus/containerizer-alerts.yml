@@ -53,3 +53,22 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "Less than 5% memory available on {{ $labels.instance }}"
+
+  # The appliance's sandbox cluster (docs/appliance-admin.md#metrics): nothing deploys while these fire.
+  - name: containerizer-sandbox
+    rules:
+      - alert: ContainerizerSandboxNotConnected
+        expr: max(containerizer_sandbox_connection{state=~"connected|no-token"}) == 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "The sandbox cluster is not connected to the output repository"
+          description: "cz-sandbox: {{ with query \"containerizer_sandbox_connection == 1\" }}{{ . | first | label \"detail\" }}{{ end }}. Grafana's Flux dashboard and journalctl -u containerizer-sandbox say more."
+
+      - alert: ContainerizerSandboxRootSyncNotReady
+        expr: gotk_resource_info{exported_namespace="flux-system",name="containerizer-sandbox",ready!="True"}
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "Flux's {{ $labels.customresource_kind }} of the output repository is not ready ({{ $labels.reason }})"
+          description: "Nothing new reaches the sandbox: kubectl -n flux-system describe {{ $labels.customresource_kind }} containerizer-sandbox."

@@ -83,15 +83,40 @@ if cz_store_ready; then cz_store_setup; fi
 # After the store is set up, so the certificate goes through it; before sandbox.env, which it does not need.
 /usr/lib/containerizer/venv/bin/python -m containerizer.sysagent sandbox-https sync >/dev/null \
   || echo "containerizer: the sandbox certificate is not installed in k3s yet; retrying in 2 minutes" >&2
+# Where the connection to the output repository stands, for the scan worker's metrics (containerizer_sandbox_connection,
+# Grafana's Flux dashboard, alert ContainerizerSandboxNotConnected): one word and why, in a file with no secret in
+# it; a change is also logged, so `journalctl -u containerizer-sandbox` says why nothing deploys.
+STATUS=/run/containerizer/sandbox-status
+sandbox_status() {  # state detail
+  local was tmp
+  was=$(sed -n 's/^state=//p' "$STATUS" 2>/dev/null || true)
+  [ "$was" = "$1" ] || echo "containerizer-sandbox: $1: $2" >&2
+  install -d -m 0755 /run/containerizer
+  tmp=$(mktemp "$STATUS.XXXXXX")
+  printf 'state=%s\nat=%s\ndetail=%s\n' "$1" "$(date +%s)" "$2" > "$tmp"
+  chmod 0644 "$tmp" && mv -f "$tmp" "$STATUS"
+}
 . /etc/containerizer/sandbox.env
-cz_store_ready || exit 0
 
-[ -n "${CZ_SANDBOX_GIT_URL:-}" ] || exit 0
-case "$CZ_SANDBOX_GIT_URL" in https://*) ;; *) echo "CZ_SANDBOX_GIT_URL must be an https:// URL" >&2; exit 1;; esac
-k get crd gitrepositories.source.toolkit.fluxcd.io kustomizations.kustomize.toolkit.fluxcd.io >/dev/null 2>&1 || exit 0
+if [ -z "${CZ_SANDBOX_GIT_URL:-}" ]; then
+  sandbox_status no-repository "CZ_SANDBOX_GIT_URL is empty in /etc/containerizer/sandbox.env: Flux deploys nothing"
+  exit 0
+fi
+case "$CZ_SANDBOX_GIT_URL" in
+  https://*) ;;
+  *) sandbox_status bad-url "CZ_SANDBOX_GIT_URL in /etc/containerizer/sandbox.env must be an https:// URL"; exit 1;;
+esac
+if ! cz_store_ready; then
+  sandbox_status store-not-ready "External Secrets Operator (namespace external-secrets) is not ready yet"
+  exit 0
+fi
+if ! k get crd gitrepositories.source.toolkit.fluxcd.io kustomizations.kustomize.toolkit.fluxcd.io >/dev/null 2>&1; then
+  sandbox_status no-flux "Flux's CRDs are not in k3s yet (namespace flux-system)"
+  exit 0
+fi
 
 git_token() {  # remote key
-  cz_store_put "$1" username="${CZ_SANDBOX_GIT_USERNAME:-git}" password="$CZ_SANDBOX_GIT_TOKEN"
+  cz_store_put "$1" username="${CZ_SANDBOX_GIT_USERNAME:-git}" password="${CZ_SANDBOX_GIT_TOKEN:-}"
 }
 legacy_secret() {  # namespace name: output generated before ExternalSecrets (no ExternalSecret of that name)
   k apply -f - >/dev/null <<YAML
@@ -147,6 +172,11 @@ spec:
   sourceRef: {kind: GitRepository, name: containerizer-sandbox}
   path: ./sandbox/flux/apps
 YAML
+if [ -n "${CZ_SANDBOX_GIT_TOKEN:-}" ]; then
+  sandbox_status connected "the root sync (flux-system: GitRepository and Kustomization containerizer-sandbox) reads $CZ_SANDBOX_GIT_URL"
+else
+  sandbox_status no-token "CZ_SANDBOX_GIT_TOKEN is empty in /etc/containerizer/sandbox.env: only a public output repository can be read"
+fi
 # An application moved to an output repository of its own (Admin -> Applications -> Output repository,
 # containerizer/appoutput.py): the LLM queue runner writes that repository's read token to
 # $SANDBOX_GIT_DIR/<namespace> (url, user name, token on three lines; 0600, its own user), and its

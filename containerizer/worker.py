@@ -372,7 +372,7 @@ class ScanMetrics:
         LISTENERS.append(self.llm)
         from .sqlstore import tool_version
         self.info.set(1, worker=worker, version=tool_version() or "unknown")
-        r.collectors += [m.process_metrics, lambda: m.host_metrics(paths)]
+        r.collectors += [m.process_metrics, lambda: m.host_metrics(paths), m.sandbox_metrics]
 
     def llm(self, u: dict) -> None:
         """One LLM call (ai.record_usage)."""
