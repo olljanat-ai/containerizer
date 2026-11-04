@@ -818,7 +818,7 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag
     meta = " · ".join(([f"Last assessed {_date(last)}"] if last else [])
                       + ([f"<a href='{e(_trends_href(bu_filter))}'>Trends over time</a>"] if all_apps else []))
     return page("Containerization readiness", f"""{_nav(nav)}
-<header>{BRAND}<h1>Containerization readiness</h1>
+<header><h1>Containerization readiness</h1>
 <p class='lead'>How ready are our applications to run in Linux containers?</p>
 {f"<p class='muted small'>{meta}</p>" if meta else ''}
 </header>
@@ -847,7 +847,8 @@ def _ref_label(u: str) -> str:
 
 
 def _nav(nav: str) -> str:
-    return f"<div class='topnav'><span></span><span>{nav}</span></div>" if nav else ""
+    """The results pages' top bar: sign-in links, then Containerizer's logo and name in the right corner."""
+    return f"<div class='topnav'><span></span><span class='topnav-right'><span>{nav}</span>{BRAND}</span></div>"
 
 
 def _info_link(url) -> str:
@@ -1233,8 +1234,9 @@ CSS = """
 .why-rating{background:var(--card);border-left:4px solid #e0a800;padding:8px 12px;margin:10px 0}section.refactor h3{font-size:16px;margin:16px 0 4px}
 table.make-a tr.under td:first-child{box-shadow:inset 3px 0 0 #2e7d32}
 .notice{padding:10px 14px;border-radius:8px;margin:10px 0;border:1px solid}.notice-ok{background:#e8f5e9;border-color:#2e7d32;color:#1b5e20}.notice-info{background:#e3f2fd;border-color:#1565c0;color:#0d47a1}.notice-bad{background:#fdecea;border-color:#c62828;color:#8e1c1c}@media (prefers-color-scheme:dark){.notice-ok{background:#16301a;color:#b9f6ca}.notice-info{background:#132a40;color:#bbdefb}.notice-bad{background:#3a1715;color:#ffcdd2}}
-.adminlinks{margin:2px 0 0}a.brand{display:inline-flex;align-items:center;gap:8px;color:var(--fg);text-decoration:none;font-weight:650;font-size:17px;
-letter-spacing:.01em;margin:0 0 10px}a.brand img{display:block}a.brand:hover span{text-decoration:underline}
+.adminlinks{margin:2px 0 0}.topnav-right{display:inline-flex;align-items:center;gap:14px;flex-wrap:wrap;justify-content:flex-end}
+a.brand{display:inline-flex;align-items:center;gap:6px;color:var(--fg);text-decoration:none;font-weight:650;font-size:15px;
+letter-spacing:.01em}a.brand img{display:block;width:22px;height:22px}a.brand:hover span{text-decoration:underline}
 .brand-foot{margin:40px 0 0;padding-top:12px;border-top:1px solid var(--line);
 color:var(--muted);font-size:12px;text-align:center}.brand-foot a{color:var(--muted)}
 .devmode{background:#b3261e;color:#fff;padding:8px 16px;text-align:center;font-size:14px}.devmode b{color:#fff}
