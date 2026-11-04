@@ -6,6 +6,11 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
+## Unreleased
+
+- The Containerizer logo and name sit in the top bar's right corner of every results page, next to the sign-in links,
+  instead of a line of their own above the front page's title.
+
 ## 0.10.0 (2026-11-04)
 
 - **Breaking: ratings C and D swap meaning.** **C** is now *Partial*: some components must stay on Windows and the
