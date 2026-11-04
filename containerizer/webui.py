@@ -737,7 +737,7 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag
         tag_n[tag_filter.casefold()] = (tag_filter, 0)
     tag_chips = []
     if tag_n:
-        tag_chips.append(f"<span class='muted small'>Tags</span><a class='chip{' on' if tag_filter is None else ''}' "
+        tag_chips.append(f"<span class='muted small'>Tags</span><a class='chip tagchip{' on' if tag_filter is None else ''}' "
                          f"href='{e(_overview_href(bu_filter))}'>Any</a>")
         for k, (t, n) in sorted(tag_n.items()):
             on = tag_filter is not None and tag_filter.casefold() == k
@@ -1225,7 +1225,7 @@ font-size:11px;font-weight:700;border-radius:4px;color:#fff}.cell.rB,.cell.rC{co
 .chips.tags{align-items:center}.chip.tagchip{font-size:13px;padding:2px 10px}
 a.tag{display:inline-block;font-size:12px;line-height:1.5;padding:0 8px;margin-left:4px;border-radius:999px;border:1px solid var(--line);
 background:var(--card);color:var(--muted);text-decoration:none;vertical-align:1px}a.tag:hover{color:var(--fg);border-color:var(--fg)}
-.tags-row{margin:12px 0;font-size:14px}.tags-row .label{margin-right:2px}.tagform{margin:8px 0 0}.tagform input{min-width:320px}
+.tags-row{margin:12px 0;font-size:14px}.tags-row .label{margin-right:2px}.tagform{margin:8px 0 0}.formrow.tagform input:not([type=hidden]):not([type=checkbox]){min-width:340px}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .a-patch{font-size:12px;font-weight:700;color:var(--muted);margin-left:4px;white-space:nowrap}.a-patch.here{color:#0a7d0a}
 @media (prefers-color-scheme:dark){.a-patch.here{color:#4fd14f}}
