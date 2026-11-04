@@ -188,40 +188,30 @@ def sandbox(host: str, password: str, username: str = "admin", call=_call, insta
 def loopback_tls(folder: Path, group: int | None = None, days: int = 7300) -> bool:
     """kubemg's HTTPS certificate on loopback (KUBEMG_TLS_ENABLED=true; its setup refuses plain HTTP): a local CA
     that only Caddy trusts (ca.crt; its key ca.key, root only) and a certificate for 127.0.0.1 it issued
-    (ssl/tls.crt, ssl/tls.key readable by kubemg's group). Made once: returns whether it made them. The modes and
-    owners are set on every call, whatever the umask (cz-firstboot's is 077, which left ssl/ 0700 and kubemg unable
-    to stat /etc/kubemg/ssl/tls.crt): a call heals a folder made with the wrong ones."""
-    import datetime
-    import ipaddress
+    (ssl/tls.crt, ssl/tls.key readable by kubemg's group). Made once: returns whether it made (or issued again) them.
+
+    Both carry the key identifiers strict X.509 checking needs (Python 3.13's default, VERIFY_X509_STRICT: "Missing
+    Authority Key Identifier"): certificates made before 0.9.6 lacked them, so the sandbox registration could not
+    connect while Caddy (Go) could. Those are issued again with the same keys, so Caddy, which still holds the old
+    CA certificate (same name and key), keeps trusting kubemg until it reloads. The modes and owners are set on
+    every call, whatever the umask (cz-firstboot's is 077)."""
     import os
     from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import ec
-    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
     ssl_dir = folder / "ssl"
     files = (folder / "ca.crt", folder / "ca.key", ssl_dir / "tls.crt", ssl_dir / "tls.key")
+    keys = None
     if all(f.is_file() and f.stat().st_size for f in files):
-        _loopback_tls_modes(folder, group)
-        return False
+        if _strict_ok(folder / "ca.crt", ssl_dir / "tls.crt"):
+            _loopback_tls_modes(folder, group)
+            return False
+        load = serialization.load_pem_private_key
+        keys = (load((folder / "ca.key").read_bytes(), None), load((ssl_dir / "tls.key").read_bytes(), None))
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     ssl_dir.mkdir(mode=0o700, exist_ok=True)
-    now = datetime.datetime.now(datetime.timezone.utc)
-    until = now + datetime.timedelta(days=days)
-    ca_key, key = ec.generate_private_key(ec.SECP256R1()), ec.generate_private_key(ec.SECP256R1())
-    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "containerizer kubemg loopback CA")])
-    ca = (x509.CertificateBuilder().subject_name(ca_name).issuer_name(ca_name).public_key(ca_key.public_key())
-          .serial_number(x509.random_serial_number()).not_valid_before(now).not_valid_after(until)
-          .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
-          .add_extension(x509.KeyUsage(False, False, False, False, False, True, True, False, False), critical=True)
-          .sign(ca_key, hashes.SHA256()))
-    cert = (x509.CertificateBuilder()
-            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])).issuer_name(ca_name)
-            .public_key(key.public_key()).serial_number(x509.random_serial_number())
-            .not_valid_before(now).not_valid_after(until)
-            .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), critical=False)
-            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
-            .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
-            .sign(ca_key, hashes.SHA256()))
+    ca_key, key = keys or (ec.generate_private_key(ec.SECP256R1()), ec.generate_private_key(ec.SECP256R1()))
+    ca, cert = _loopback_certs(ca_key, key, days)
 
     def write(path: Path, data: bytes) -> None:
         path.unlink(missing_ok=True)
@@ -231,12 +221,60 @@ def loopback_tls(folder: Path, group: int | None = None, days: int = 7300) -> bo
 
     pem = serialization.Encoding.PEM
     raw = dict(encoding=pem, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption())
-    write(folder / "ca.key", ca_key.private_bytes(**raw))
+    if keys is None:
+        write(folder / "ca.key", ca_key.private_bytes(**raw))
+        write(ssl_dir / "tls.key", key.private_bytes(**raw))
     write(folder / "ca.crt", ca.public_bytes(pem))
     write(ssl_dir / "tls.crt", cert.public_bytes(pem))
-    write(ssl_dir / "tls.key", key.private_bytes(**raw))
     _loopback_tls_modes(folder, group)
     return True
+
+
+def _loopback_certs(ca_key, key, days: int):
+    """The CA certificate and kubemg's, with what strict X.509 checking requires: key identifiers on both (the
+    CA's subject key identifier, kubemg's authority key identifier pointing at it), critical basic constraints and
+    key usage."""
+    import datetime
+    import ipaddress
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+    now = datetime.datetime.now(datetime.timezone.utc)
+    until = now + datetime.timedelta(days=days)
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "containerizer kubemg loopback CA")])
+    ca_ski = x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key())
+    ca = (x509.CertificateBuilder().subject_name(ca_name).issuer_name(ca_name).public_key(ca_key.public_key())
+          .serial_number(x509.random_serial_number()).not_valid_before(now).not_valid_after(until)
+          .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+          .add_extension(x509.KeyUsage(False, False, False, False, False, True, True, False, False), critical=True)
+          .add_extension(ca_ski, critical=False)
+          .add_extension(x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(ca_ski), critical=False)
+          .sign(ca_key, hashes.SHA256()))
+    cert = (x509.CertificateBuilder()
+            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])).issuer_name(ca_name)
+            .public_key(key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now).not_valid_after(until)
+            .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), critical=False)
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(x509.KeyUsage(True, False, False, False, False, False, False, False, False), critical=True)
+            .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+            .add_extension(x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(ca_ski), critical=False)
+            .sign(ca_key, hashes.SHA256()))
+    return ca, cert
+
+
+def _strict_ok(ca_path: Path, cert_path: Path) -> bool:
+    """Whether the certificates carry the key identifiers strict X.509 checking needs."""
+    from cryptography import x509
+    try:
+        ca = x509.load_pem_x509_certificate(ca_path.read_bytes())
+        cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+        ca.extensions.get_extension_for_class(x509.SubjectKeyIdentifier)
+        cert.extensions.get_extension_for_class(x509.AuthorityKeyIdentifier)
+        return True
+    except (x509.ExtensionNotFound, ValueError, OSError):
+        return False
 
 
 def _loopback_tls_modes(folder: Path, group: int | None) -> None:
