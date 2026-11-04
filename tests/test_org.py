@@ -861,3 +861,43 @@ def test_a_scan_of_an_application_whose_sandbox_is_off_builds_nothing_and_keeps_
     r = org.deploy_app(None, tmp_path, "acme/p/shop", o, Out(), None, "1", None, res, tmp_path / "w", "shop")
     assert (r.status, r.reason) == ("sandbox-off", org.SANDBOX_OFF_REASON) and (dest / "containerizer.json").exists()
     assert not org.sandbox_off(o, "other") and not org.sandbox_off(org.OrgOptions(provider="github", org="a", registry="r"), "k")
+
+
+def test_output_repository_git_is_tried_again_after_an_outage_and_a_refused_token_is_said_plainly(monkeypatch):
+    """A Make it A deploy failed with git's 'could not read Username ... terminal prompts disabled' (GitHub refused
+    the token), and a push during a GitHub outage failed at once with '[remote rejected] (Internal Server Error)'."""
+    from containerizer.orgsource import SourceError
+    url = "https://github.com/acme/out.git"
+    calls, slept, pulls = [], [], []
+
+    def flaky(fails):
+        def what():
+            calls.append(1)
+            if len(calls) <= fails:
+                raise SourceError("git push: remote: Internal Server Error\n ! [remote rejected] HEAD -> main "
+                                  "(Internal Server Error)")
+            return "ok"
+        return what
+    assert orgmod._retry(url, flaky(2), sleep=slept.append, before_retry=lambda: pulls.append(1)) == "ok"
+    assert slept == list(orgmod.OUTPUT_RETRY_PAUSES[:2]) and len(pulls) == 2
+    calls.clear()
+    with pytest.raises(SourceError):                     # it stays down: given up after the last pause
+        orgmod._retry(url, flaky(99), sleep=lambda s: None)
+    assert len(calls) == len(orgmod.OUTPUT_RETRY_PAUSES) + 1
+
+    def refused():
+        calls.append(1)
+        raise SourceError("git clone: fatal: could not read Username for 'https://github.com': terminal prompts disabled")
+    calls.clear()
+    with pytest.raises(SourceError) as e:                # not tried again
+        orgmod._retry(url, refused, sleep=slept.append)
+    assert len(calls) == 1
+    assert "github.com refused the write token for https://github.com/acme/out.git" in str(e.value)
+    assert "Admin → Source control" in str(e.value)
+
+    def other():
+        raise SourceError("git clone: Remote branch main not found in upstream origin")
+    with pytest.raises(SourceError) as e:                # another error: as it is, at once
+        orgmod._retry(url, other, sleep=lambda s: pytest.fail("no pause"))
+    assert "not found in upstream" in str(e.value)
+    assert not orgmod.TRANSIENT_RE.search("git clone: timed out after 1800s")     # our own timeout is not tried again

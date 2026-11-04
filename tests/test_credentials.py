@@ -125,6 +125,12 @@ def test_same_repo_and_matching():
     assert creds.read_for("github", None, "sandbox") is None
     assert creds.write_for("https://github.com/acme/sandbox").id == 2
     assert creds.write_for("https://github.com/acme/shop") is None          # same organization, another repository
+    from datetime import datetime
+    twice = cr.Credentials([
+        cr.Credential(4, "write", "github", None, "https://github.com/Acme/sandbox", token_set_at=datetime(2026, 11, 1)),
+        cr.Credential(5, "write", "github", None, "https://github.com/acme/sandbox.git", token_set_at=datetime(2025, 1, 1)),
+    ])
+    assert twice.write_for("https://github.com/acme/sandbox").id == 4       # the token set last, not the first
     assert creds.read_for("gitlab", None, "grp") is None                      # disabled
     expired = cr.Credentials([cr.Credential(1, "read", "github", None, "acme", expires_on=date(2020, 1, 1))])
     assert "expired on 2020-01-01" in expired.problems({"Provider": "github", "Organization": "acme"})[0]

@@ -280,6 +280,7 @@ class Credential:
     llm_order: int = 10              # llm: the LLM queue tries the LLMs in this order (lowest first)
     llm_max_tokens: int = 0          # llm: the biggest job it takes (estimated input tokens; 0: any)
     llm_parallel: int = 1            # llm: requests the LLM queue sends it at once
+    token_set_at: object = None      # when the token was last set (the newest wins among duplicates)
     sealed: str = field(default="", repr=False)
     token: str | None = field(default=None, repr=False)     # opened by the worker; None elsewhere
     error: str = ""                                          # why it did not open
@@ -312,7 +313,7 @@ class Credential:
                    key_id=(r.get("KeyId") or "").strip(), note=r.get("Note") or "", model=r.get("Model") or "",
                    llm_order=int(r.get("LlmOrder") if r.get("LlmOrder") is not None else 10),
                    llm_max_tokens=int(r.get("LlmMaxTokens") or 0), llm_parallel=max(1, int(r.get("LlmParallel") or 1)),
-                   sealed=r.get("TokenSealed") or "")
+                   token_set_at=r.get("TokenSetAt"), sealed=r.get("TokenSealed") or "")
 
     def ai_settings(self) -> dict:
         """ai.configured() settings for this LLM (the worker, with the token opened)."""
@@ -341,10 +342,10 @@ class Credentials:
         if not url:
             return None
         k = repo_key(url)
-        for c in self.items:
-            if c.purpose == "write" and c.enabled and repo_key(c.scope) == k:
-                return c
-        return None
+        found = [c for c in self.items if c.purpose == "write" and c.enabled and repo_key(c.scope) == k]
+        # the same repository registered twice (another spelling of its URL): the token set last, likely the
+        # one that replaced an expired or revoked one, not the first in the alphabet
+        return max(found, key=lambda c: (str(c.token_set_at or ""), c.id), default=None)
 
     def llms(self) -> list[Credential]:
         """The enabled LLMs in their order (the LLM queue's list)."""
