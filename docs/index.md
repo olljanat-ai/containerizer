@@ -11,7 +11,8 @@ hide:
 # Which of your applications can run in containers?
 
 Containerizer scans your whole application portfolio, rates every application from **A** (container-ready: a modern
-stack that moves to containers without code changes) to **E** (not feasible: stays on Windows), explains each obstacle with a fix and references, and generates hardened
+stack that moves to containers without code changes) to **E** (not feasible: stays on Windows), explains each obstacle with a fix and references,
+plans the move in waves (what can run in Linux containers now, what after code changes, what stays on Windows), and generates hardened
 Dockerfiles and Kubernetes manifests for everything that can move. Then it proves them by building,
 running and deploying them in its own sandbox cluster.
 
@@ -27,18 +28,18 @@ running and deploying them in its own sandbox cluster.
 <div class="cz-stats" markdown>
 
 <div markdown>
-**33 / 33**
-<span>challenge applications rated correctly by the rules alone</span>
-</div>
-
-<div markdown>
-**0**
-<span>AI calls needed for that, in 32 seconds</span>
-</div>
-
-<div markdown>
 **A–E**
 <span>a rating per application, with the why behind it</span>
+</div>
+
+<div markdown>
+**Wave 1**
+<span>the components that can run in Linux containers now, even when the rest stays on Windows</span>
+</div>
+
+<div markdown>
+**B → A**
+<span>one LLM order makes the code changes, verified in the sandbox</span>
 </div>
 
 <div markdown>
