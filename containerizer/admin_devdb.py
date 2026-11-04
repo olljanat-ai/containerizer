@@ -1,4 +1,4 @@
-"""Admin pages for dev database backups (/admin/dev-databases), for admins and operators.
+"""Admin pages for dev database backups and the database browser (/admin/dev-databases), for admins and operators.
 
 An operator picks an application, uploads a backup of its development database and writes the
 instructions (the AI prompt) for pointing the application at it. The next scan of the application
@@ -6,6 +6,9 @@ restores the backup into a database next to it in the sandbox (devdb.py, org.py)
 multipart: webui.py streams it here (`upload`) instead of reading it into memory, after the session,
 the role and the Origin header were checked, and the CSRF field (the first in the form) is checked
 before a byte of the file is written.
+
+On the appliance the same pages browse and edit the databases each application has in the sandbox, a restored
+dev database or a lab-service database (admin_dbbrowse.py): /admin/dev-databases/<id>/browse, /row, /sql, /drop.
 """
 from __future__ import annotations
 
@@ -21,7 +24,8 @@ TAB = ("dev-databases", "Dev databases")
 
 
 def enabled(adm, a) -> bool:
-    return adm.devdb is not None and (a.admin or a.operator)
+    """Administrators and operators, where backups can be uploaded or the appliance's agent can browse databases."""
+    return (adm.devdb is not None or bool(adm.system)) and bool(a.admin or a.operator)
 
 
 def _app(conn, app_id: int) -> dict | None:
@@ -44,10 +48,20 @@ def route(adm, conn, s, a, method: str, parts: list[str], q: dict, form: dict) -
     ident = int(parts[1]) if len(parts) > 1 and re.fullmatch(r"\d{1,9}", parts[1]) else None
     if len(parts) > 1 and ident is None:
         return Response(404, page("Not found", "<h1>Not found</h1>"))
+    sub = parts[2] if len(parts) == 3 else None
+    if ident is not None and sub in ("browse", "row", "sql", "drop"):      # the database browser (admin_dbbrowse.py)
+        from . import admin_dbbrowse as B
+        if method == "GET" and sub == "browse":
+            return B.browse(adm, conn, s, a, ident, q, f"/admin/dev-databases/{ident}/browse")
+        if method == "POST" and sub != "browse":
+            return {"row": B.save_row, "sql": B.run_sql, "drop": B.drop}[sub](adm, conn, s, a, ident, form)
+        return Response(404, page("Not found", "<h1>Not found</h1>"))
     if method == "POST":
         if ident is None:                              # the application picker
             pick = adm._id(form, "ApplicationId")
             return redirect(f"/admin/dev-databases/{pick}" if pick else "/admin/dev-databases")
+        if adm.devdb is None:
+            return Response(404, page("Not found", "<h1>Not found</h1>"))
         if len(parts) > 2 and parts[2] == "delete":
             return delete(adm, conn, ident)
         if len(parts) == 2:
@@ -56,11 +70,30 @@ def route(adm, conn, s, a, method: str, parts: list[str], q: dict, form: dict) -
     if len(parts) > 2:
         return Response(404, page("Not found", "<h1>Not found</h1>"))
     if ident is not None:
-        return edit(adm, conn, s, a, ident, flash)
+        return edit(adm, conn, s, a, ident, flash, q.get("notice", [""])[0])
     return listing(adm, conn, s, a, flash)
 
 
+def _browsable(adm, conn) -> str:
+    """Applications with a database in the sandbox (lab service or restored dev database), on the appliance."""
+    if not adm.system:
+        return ""
+    from . import admin_dbbrowse as B
+    apps = B.apps_with_databases(adm, conn)
+    rows = "".join(f"<tr><td><a href='/admin/dev-databases/{int(x['id'])}#databases'>{e(x['name'])}</a></td>"
+                   f"<td>{e(', '.join(sorted(x['dbs'])))}</td><td class='small'>{e(', '.join(sorted(x['ns'])))}</td></tr>"
+                   for x in apps)
+    return ("<h2>Databases in the sandbox</h2><p class='muted'>Applications with a database next to them in the sandbox: a "
+            "lab-service database (SQL Server, PostgreSQL, MySQL) or a restored dev database. Open one to look at and fix its "
+            "tables and rows or run SQL.</p>"
+            f"<table class='audit'><thead><tr><th>Application</th><th>Databases</th><th>Lab namespaces</th></tr></thead>"
+            f"<tbody>{rows or '<tr><td colspan=3 class=muted>None yet.</td></tr>'}</tbody></table>")
+
+
 def listing(adm, conn, s, a, flash: str) -> Response:
+    browse = _browsable(adm, conn)
+    if adm.devdb is None:
+        return Response(200, adm._shell(s, a, "Dev databases", TAB[0], browse, flash))
     cur = conn.cursor(as_dict=True)
     cur.execute("SELECT d.ApplicationId, d.Engine, d.DatabaseName, d.FileName, d.SizeBytes, d.UploadedAt, d.UploadedBy, "
                 "COALESCE(x.DisplayName, x.Name) AS AppName FROM cz.DevDatabase d "
@@ -84,13 +117,22 @@ def listing(adm, conn, s, a, flash: str) -> Response:
             f"<table class='audit'><thead><tr><th>Application</th><th>Engine</th><th>Database</th><th>File</th>"
             f"<th>Uploaded</th></tr></thead><tbody>{rows or '<tr><td colspan=5 class=muted>None yet.</td></tr>'}</tbody></table>"
             f"{picker}")
+    body = browse + ("<h2>Backups</h2>" if browse else "") + body
     return Response(200, adm._shell(s, a, "Dev databases", TAB[0], body, flash))
 
 
-def edit(adm, conn, s, a, app_id: int, flash: str) -> Response:
+def edit(adm, conn, s, a, app_id: int, flash: str, notice: str = "") -> Response:
     app = _app(conn, app_id)
     if not app:
         return Response(404, page("Not found", "<h1>Application not found</h1>"))
+    from . import admin_dbbrowse as B
+    browser = B.notice_html(notice) + B.section(adm, conn, s, app_id)
+    if browser:
+        browser = f"<div id='databases'>{browser}</div>"
+    if adm.devdb is None:
+        title = app["DisplayName"] or app["Name"]
+        body = f"<p class='muted'>Scanned as <b>{e(app['Name'])}</b>. <a href='/app/{app_id}'>View results</a></p>{browser}"
+        return Response(200, adm._shell(s, a, f"Dev database: {title}", TAB[0], body, flash))
     r = _row(conn, app_id)
     name = app["DisplayName"] or app["Name"]
     engine = r["Engine"] if r else "sqlserver"
@@ -130,6 +172,7 @@ def edit(adm, conn, s, a, app_id: int, flash: str) -> Response:
               f"<input id='backup' name='backup' type='file' required accept='{devdb.ACCEPT}'>"
               f"<div><button>Upload</button> <a href='/admin/dev-databases'>Cancel</a></div></form>")
     body = (f"<p class='muted'>Scanned as <b>{e(app['Name'])}</b>. <a href='/app/{app_id}'>View results</a></p>"
+            f"{browser}{'<h2>Backup</h2>' if browser else ''}"
             f"{current}{upload}<h2>Changes</h2>{adm._history(conn, 'DevDatabase', app_id)}")
     return Response(200, adm._shell(s, a, f"Dev database: {name}", TAB[0], body, flash))
 

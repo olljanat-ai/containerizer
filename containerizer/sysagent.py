@@ -22,6 +22,9 @@ request again before acting on it:
             at a set time; from then on no new scan run or LLM job starts, and `restart-check` restarts
             once the work in progress is done or the longest wait allowed is over. Kept on the persistent
             partition and published in status.json (`restart`), where the worker and the LLM runner read it.
+- dbquery / dbdelete: the database browser of Admin -> Dev databases (dbbrowse.py): a statement run as an
+            application's own database login in its own sandbox database, or that database dropped and created
+            again; the answer goes to answers/<id>.json, readable by the web UI's group only.
 - local-llm: the built-in LLM on or off (local_llm.py checks the RAM and the disk again); while its model
             downloads, huggingface.co and hf.co are on the egress allow-list.
 
@@ -1114,6 +1117,10 @@ def process() -> int:
                 run(["systemctl", "start", "--no-block", "containerizer-lab.service"], timeout=60)
             elif action == "local-llm":         # Admin -> Source control & LLM: the built-in LLM
                 local_llm.apply_request(req)
+            elif action in ("dbquery", "dbdelete"):     # Admin -> Dev databases: the database browser
+                from .dbbrowse import Agent, agent_request
+                from .labagent import Kubectl
+                agent_request(req, P.run / "answers", Agent(kube=Kubectl("k3s kubectl", str(P.kubeconfig))))
             elif action == "sandbox-https":
                 save_sandbox_https(req, user, name)
                 publish(https_state=sandbox_https_status())
@@ -1122,8 +1129,8 @@ def process() -> int:
         except (AgentError, RuleError, LocalLlmError, OSError, subprocess.TimeoutExpired, ValueError) as ex:
             rc = 1
             log(f"{action} failed: {ex}")
-            if action in ("lab", "local-llm"):
-                continue                        # their pages show their own status
+            if action in ("lab", "local-llm", "dbquery", "dbdelete"):
+                continue                        # their pages show their own status (or wait for an answer)
             if action in ("plan", "plan-cancel"):
                 task.update(state="failed", finished=now(), message=f"Not planned: {ex}"[:1000])
                 publish(task)

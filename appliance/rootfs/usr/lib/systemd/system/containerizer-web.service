@@ -24,12 +24,12 @@ LoadCredential=credential-public-key:/etc/containerizer/secrets/credential-key.p
 ExecStart=/usr/lib/containerizer/bin/cz-web
 Restart=always
 RestartSec=5
-# hardening: no privileges, read-only system, only the request and dev database folders writable
+# hardening: no privileges, read-only system, only the request, answer and dev database folders writable
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 ProtectSystem=strict
-ReadWritePaths=/run/containerizer/system/requests /var/lib/containerizer/devdb
+ReadWritePaths=/run/containerizer/system/requests -/run/containerizer/system/answers /var/lib/containerizer/devdb
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

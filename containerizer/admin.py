@@ -32,7 +32,7 @@ TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Applicatio
               "DevDatabase": "Dev database", "RuleCandidate": "Learned rule",
               "SourceCredential": "Source control token", "LabService": "Lab service", "ApiKey": "API key",
               "RulesRepository": "Internal rules repository", "LlmJob": "LLM queue job",
-              "LlmQueueSettings": "LLM queue settings"}
+              "LlmQueueSettings": "LLM queue settings", "DatabaseEdit": "Sandbox database"}
 FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
               "Retired": "Hidden", "SandboxEnabled": "Sandbox", "OutputRepo": "Own output repository",
               "OutputBranch": "Its branch", "OutputPath": "Its folder", "Product": "Product", "BusinessUnit": "Business unit", "InfoUrl": "Product page link",
@@ -62,7 +62,10 @@ FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Des
               "Reason": "Why queued", "Priority": "Priority", "AdminRank": "Position set by a person", "Summary": "Answer",
               "Error": "Error", "RequestedBy": "Requested by", "Paused": "Paused", "WindowDays": "Days",
               "WindowStart": "From (UTC)", "WindowEnd": "To (UTC)", "OnlyWhenIdle": "Only when idle",
-              "MaxLoadPerCpu": "Load per CPU below", "Parallel": "Parallel requests"}
+              "MaxLoadPerCpu": "Load per CPU below", "Parallel": "Parallel requests",
+              # the database browser (Admin -> Dev databases)
+              "ApplicationId": "Application", "Namespace": "Namespace", "Source": "Database",
+              "TableName": "Table", "Statement": "Statement"}
 # Who may use the rule review pages: Session attributes, any of which lets a signed-in user in.
 RULE_REVIEW_ROLES = ("admin", "operator")
 UPLOAD_RE = re.compile(r"/admin/dev-databases/(\d{1,9})/upload")
@@ -320,7 +323,7 @@ class Admin:
             tabs += [("refactoring", "Refactoring"), ("egress", "Egress")]
         if a.admin and hasattr(self, "route_scans"):                     # tokens of the organizations (admin_credentials.py)
             tabs += [("source-control", "Source control & LLM")]
-        if self.devdb is not None and (a.admin or a.operator):           # dev database backups (admin_devdb.py)
+        if (self.devdb is not None or self.system) and (a.admin or a.operator):   # dev databases, browser (admin_devdb.py)
             tabs += [("dev-databases", "Dev databases")]
         if a.admin and self.system:                                      # lab services in the sandbox (admin_lab.py)
             tabs += [("lab-services", "Lab services")]
@@ -940,10 +943,12 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
                                       ("SourceCredential", "Source control"),
                                       ("DevDatabase", "Dev databases"), ("LabService", "Lab services"),
                                       ("RuleCandidate", "Rule review"), ("RulesRepository", "Rules repository"),
-                                      ("LlmJob", "LLM queue"), ("LlmQueueSettings", "LLM queue settings")))
+                                      ("LlmJob", "LLM queue"), ("LlmQueueSettings", "LLM queue settings"),
+                                      ("DatabaseEdit", "Sandbox databases")))
         body = (f"<p class='muted'>Every change to business units, products, the application mapping, organization scans, "
                 f"projects and repositories (found by a scan, enabled or disabled, skipped), source control tokens (added, replaced or removed; "
-                f"never the token itself), dev database uploads, lab services turned on or off and the rule review "
+                f"never the token itself), dev database uploads, statements run in the sandbox databases, lab services turned on "
+                f"or off and the rule review "
                 f"(learned rules proposed, approved or rejected): who made it, when, "
                 f"and what changed. Changes made directly in the database are recorded too, under the database login. "
                 f"Latest 200.</p><nav class='chips'>{chips}</nav>{render_audit(self._audit_rows(conn, table))}")
@@ -1051,7 +1056,9 @@ def render_audit(rows: list[dict], show_target: bool = True) -> str:
             vals = new if r["Action"] == "insert" else old
             changes = "".join(f"<li>{e(FIELD_TEXT.get(k, k))}: {e(_fmt(v, k))}</li>" for k, v in vals.items() if v not in (None, "", False))
         action = {"insert": "Added", "update": "Changed", "delete": "Deleted"}.get(r["Action"], r["Action"])
-        if r["Action"] == "insert" and r["Via"] == "scan":
+        if r["TableName"] == "DatabaseEdit":
+            action = DB_EDIT_TEXT.get(new.get("Kind"), "Ran in a sandbox database")
+        elif r["Action"] == "insert" and r["Via"] == "scan":
             action = "Proposed by the learning loop" if r["TableName"] == "RuleCandidate" else "Found by a scan"
         who = e(r["ChangedByName"] or r["ChangedBy"])
         if r["ChangedByName"] and r["ChangedByName"] != r["ChangedBy"]:
@@ -1064,6 +1071,11 @@ def render_audit(rows: list[dict], show_target: bool = True) -> str:
                    f"<td>{e(action)}<ul class='changes'>{changes}</ul></td></tr>")
     head = "<th>When</th><th>Who</th>" + ("<th>What</th>" if show_target else "") + "<th>Change</th>"
     return f"<table class='audit'><thead><tr>{head}</tr></thead><tbody>{''.join(out)}</tbody></table>"
+
+
+DB_EDIT_TEXT = {"update": "Changed a row in a sandbox database", "insert": "Added a row to a sandbox database",
+                "delete": "Deleted a row from a sandbox database", "sql": "Ran SQL in a sandbox database",
+                "drop": "Deleted a sandbox database"}
 
 
 def page(title: str, body: str, script: bool = False, refresh: int = 0) -> str:

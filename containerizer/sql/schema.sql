@@ -2334,3 +2334,49 @@ GO
 -- 37: Application.Tags (above, next to the table)
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 37) INSERT [${schema}].SchemaVersion (Version) VALUES (37);
 GO
+-- 38: the database browser of Admin -> Dev databases (dbbrowse.py, admin_dbbrowse.py): every statement an administrator
+-- or operator runs in an application's sandbox database (a row changed, added or deleted, a SQL statement, the database
+-- deleted), recorded before it runs, with the values: these are lab databases. The trigger copies it to the change
+-- history; Outcome is filled in afterwards (not audited again). The admin login reads the sandbox namespaces of an
+-- application to offer its databases.
+IF OBJECT_ID(N'[${schema}].DatabaseEdit', N'U') IS NULL
+CREATE TABLE [${schema}].DatabaseEdit (
+    DatabaseEditId int IDENTITY(1,1) NOT NULL CONSTRAINT PK_DatabaseEdit PRIMARY KEY,
+    ChangedAt     datetime2(0)   NOT NULL CONSTRAINT DF_DatabaseEdit_ChangedAt DEFAULT SYSUTCDATETIME(),
+    ChangedBy     nvarchar(256)  NOT NULL CONSTRAINT DF_DatabaseEdit_ChangedBy
+                  DEFAULT COALESCE(CAST(SESSION_CONTEXT(N'containerizer.user') AS nvarchar(256)), ORIGINAL_LOGIN()),
+    ApplicationId int            NOT NULL CONSTRAINT FK_DatabaseEdit_Application REFERENCES [${schema}].Application (ApplicationId),
+    Namespace     nvarchar(63)   NOT NULL,
+    Source        nvarchar(10)   NOT NULL,          -- lab: the lab service's shared server; devdb: the restored dev database
+    Engine        nvarchar(20)   NOT NULL,          -- sqlserver, postgres, mysql
+    Kind          nvarchar(10)   NOT NULL,          -- update, insert, delete, sql, drop
+    TableName     nvarchar(300)  NULL,
+    Statement     nvarchar(max)  NOT NULL,
+    Outcome       nvarchar(1000) NULL,              -- rows affected or the error, once the agent answered
+    CONSTRAINT CK_DatabaseEdit_Kind CHECK (Kind IN (N'update', N'insert', N'delete', N'sql', N'drop')),
+    CONSTRAINT CK_DatabaseEdit_Source CHECK (Source IN (N'lab', N'devdb'))
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_DatabaseEdit_App' AND object_id = OBJECT_ID(N'[${schema}].DatabaseEdit'))
+CREATE INDEX IX_DatabaseEdit_App ON [${schema}].DatabaseEdit (ApplicationId, ChangedAt DESC);
+GO
+CREATE OR ALTER TRIGGER [${schema}].trDatabaseEditAudit ON [${schema}].DatabaseEdit
+AFTER INSERT AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'DatabaseEdit', i.DatabaseEditId,
+           LEFT(COALESCE(a.DisplayName, a.Name, N'?') + N': ' + i.Namespace, 200), N'insert', NULL,
+           (SELECT i.ApplicationId, i.Namespace, i.Source, i.Engine, i.Kind, i.TableName, i.Statement
+            FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES)
+    FROM inserted i
+    LEFT JOIN [${schema}].Application a ON a.ApplicationId = i.ApplicationId
+    CROSS JOIN [${schema}].fnAuditWho() w;
+END;
+GO
+GRANT SELECT, INSERT ON [${schema}].DatabaseEdit TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].DatabaseEdit (Outcome) TO [${schema}_admin];
+GRANT SELECT ON [${schema}].vSandboxNamespace TO [${schema}_admin];
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 38) INSERT [${schema}].SchemaVersion (Version) VALUES (38);
+GO

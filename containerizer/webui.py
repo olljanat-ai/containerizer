@@ -1265,6 +1265,14 @@ table.diff .sign{display:inline-block;width:1.2em;color:var(--muted);user-select
 @media (prefers-color-scheme:dark){.diff-add{color:#4fd14f}.diff-del{color:#f07a7a}
 table.diff tr.add td{background:#16351a}table.diff tr.del td{background:#3d1a1a}}
 ol.steps li{margin:6px 0}ol.steps pre.code{margin:4px 0}ul.checks{padding-left:18px}ul.checks li{margin:6px 0}
+.dbwrap{overflow-x:auto;margin:10px 0}table.dbrows{font-size:13px}table.dbrows td{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+white-space:pre;vertical-align:top}table.dbrows th{white-space:nowrap;vertical-align:bottom}
+.dbkey{font-size:10px;font-weight:600;border:1px solid currentColor;border-radius:4px;padding:0 4px;margin-left:4px;color:var(--muted)}
+table.dbrows th a{color:inherit}table.dbrows .null{color:var(--muted);font-style:italic}.dbtype{display:block;font-weight:400;font-size:11px;color:var(--muted)}
+.dbpick select{min-width:340px}form.dbfilter{margin:10px 0}form.dbfilter select{min-width:0}form.dbfilter input:not([type=hidden]){min-width:220px}
+.dbfield{display:grid;grid-template-columns:minmax(160px,220px) 1fr auto;gap:8px;align-items:start;padding:6px 0;border-top:1px solid var(--line)}
+.dbfield label{margin:0}.dbfield .dbval{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px}
+.dbfield .opts{display:flex;gap:10px;white-space:nowrap;font-size:13px}.pager{display:flex;gap:14px;align-items:center;margin:8px 0}
 """
 
 # The only script: the "Copy prompt" button of the migration assistant (progressive enhancement; without it the

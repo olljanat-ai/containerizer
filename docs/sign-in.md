@@ -54,8 +54,8 @@ Each role is an allow-list of rules, comma separated:
 
 | Role | Variable | Can |
 | --- | --- | --- |
-| Admin | `CONTAINERIZER_ADMINS` | Everything, including business units, [application tags](#application-tags), Source control & LLM, Rule review, Lab services, Firewall, System and the access log. |
-| Operator | `CONTAINERIZER_OPERATORS` | Read everything, including the change history. Run and schedule organization scans (discovery and full scans), enable and disable projects and repositories, order and pause the LLM queue and set when it runs, order [refactoring patches](refactoring.md) of B-rated applications and download them (Admin → Refactoring), upload dev database backups, [tag applications](#application-tags). Cannot change the mapping. |
+| Admin | `CONTAINERIZER_ADMINS` | Everything, including business units, [application tags](#application-tags), the [sandbox databases](dev-databases.md#browse-and-fix-the-data), Source control & LLM, Rule review, Lab services, Firewall, System and the access log. |
+| Operator | `CONTAINERIZER_OPERATORS` | Read everything, including the change history. Run and schedule organization scans (discovery and full scans), enable and disable projects and repositories, order and pause the LLM queue and set when it runs, order [refactoring patches](refactoring.md) of B-rated applications and download them (Admin → Refactoring), upload dev database backups, [browse and fix the sandbox databases](dev-databases.md#browse-and-fix-the-data), [tag applications](#application-tags). Cannot change the mapping. |
 | Product owner | `CONTAINERIZER_PRODUCT_OWNERS` | Read everything, including the change history. Map applications and change their display name, owner, description, hidden flag and sandbox switch, and change their products, but only within their scope (below). |
 | Viewer | `CONTAINERIZER_VIEWERS` | Read the results pages. Only matters when sign-in for the results pages is on. |
 

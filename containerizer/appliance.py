@@ -140,6 +140,26 @@ class SystemPage:
             f.write(json.dumps(body))
         tmp.rename(d / f"{int(time.time() * 1000)}-{secrets.token_hex(4)}.json")
 
+    def ask(self, action: str, user: str, name: str, wait: float = 45.0, poll: float = 0.1, **args) -> dict | None:
+        """A request that has an answer (the database browser, dbbrowse.py): the request carries a random id and
+        the time after which the agent must not start it any more; the agent writes answers/<id>.json (for root
+        and the web UI's group only). The answer, or None when none came within `wait` seconds."""
+        ident = secrets.token_hex(16)
+        self.request(action, user, name, id=ident, expires_at=time.time() + wait, **args)
+        path = self.status_dir / "answers" / f"{ident}.json"
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            if path.is_file():
+                try:
+                    data = json.loads(path.read_text())
+                except (OSError, ValueError):
+                    time.sleep(poll)             # still being renamed into place
+                    continue
+                path.unlink(missing_ok=True)
+                return data if isinstance(data, dict) and data.get("id") == ident else None
+            time.sleep(poll)
+        return None
+
     # -- pages ----------------------------------------------------------------------------------
 
     def handle(self, s, method: str, parts: list[str], q: dict, form: dict, shell) -> tuple[int, str, str | None]:
