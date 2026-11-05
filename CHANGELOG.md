@@ -10,6 +10,9 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- The components earlier scans left out for vulnerabilities ("not deployed: security gate: 2 fixable
+  vulnerabilities ...") are deployed without waiting for the schedule: the scan worker queues a full scan of only
+  those repositories (one run per organization scan, again while a run of it is busy, once per repository).
 - Vulnerability scans are off by default when Containerizer deploys (organization scans, Make it A, platform
   migrations): they took long and vulnerabilities are outside its aim. The security gate still lints, builds and
   runs every image with the hardened security context; SECURITY.md says the scans are off. `scan.enabled: true`

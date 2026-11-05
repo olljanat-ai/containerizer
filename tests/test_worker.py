@@ -901,3 +901,33 @@ def test_output_repository_is_chosen_from_the_repositories_with_a_write_token():
     assert html.count("<option") == 1 and "/admin/source-control" in html
     # the value is escaped
     assert "&lt;x&gt;" in admin_scans._output_select("https://e.example/<x>", [])
+
+
+def test_components_left_out_for_vulnerabilities_are_scanned_again(tmp_path, monkeypatch):
+    """Since vulnerabilities no longer keep components out (0.12.9), the repositories whose latest scan left one out
+    for them get a full scan of only those, one run per organization scan, without waiting for the schedule; again
+    while that scan is busy; each repository once per worker process; nothing with scan.block_deploy."""
+    from test_llm_queue import FakeConn
+    from containerizer import worker as wk
+    repos = [{"RepositoryId": 1, "ScanId": 3, "Name": "onek8s/retail-backoffice"},
+             {"RepositoryId": 2, "ScanId": 3, "Name": "onek8s/control-tower"},
+             {"RepositoryId": 5, "ScanId": 4, "Name": "other/app"}]
+    busy = {4}
+    conn = FakeConn({r"FROM cz\.OrgRepository o": lambda p: list(repos),
+                     r"EXEC cz\.QueueOrgScanRun": lambda p: [{"RunId": 0 if p[0] in busy else 70 + p[0]}]})
+    w = wk.Worker(lambda: conn, tmp_path, log=lambda m: None)
+    assert w.rescan_left_out(now=1000.0) == 1
+    (sql, params), = [x for x in conn.sql(r"OPENJSON\(o\.LastDetail, '\$\.excluded'\)")]
+    assert "fixable vulnerabilities" in sql and "scan failed" in sql
+    q = conn.sql(r"EXEC cz\.QueueOrgScanRun")
+    assert [(p[0], json.loads(p[1])) for _, p in q] == [
+        (3, {"projects": [], "repositories": ["onek8s/control-tower", "onek8s/retail-backoffice"]}),
+        (4, {"projects": [], "repositories": ["other/app"]})]
+    assert w.rescan_left_out(now=1100.0) == 0 and len(conn.sql(r"EXEC cz\.QueueOrgScanRun")) == 2   # every 5 min
+    busy.clear()                                                    # scan 4 was busy: queued now; 3 not again
+    assert w.rescan_left_out(now=1400.0) == 1
+    assert [p[0] for _, p in conn.sql(r"EXEC cz\.QueueOrgScanRun")][2:] == [4]
+    assert w.rescan_left_out(now=1800.0) == 0 and len(conn.sql(r"EXEC cz\.QueueOrgScanRun")) == 3
+    w2 = wk.Worker(lambda: conn, tmp_path, log=lambda m: None)
+    monkeypatch.setattr("containerizer.org.vulnerabilities_block", lambda: True)
+    assert w2.rescan_left_out(now=1000.0) == 0
