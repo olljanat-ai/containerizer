@@ -284,6 +284,15 @@ server such as Ollama, vLLM, LM Studio or llama.cpp. It is asked only about comp
 unsure of and failures no failure rule explains. Every answer is validated against its schema before
 it is used or learned, responses are cached, and usage and cost are tracked.
 
+### Light or dark
+
+The web UI follows the system's light or dark setting. The button in the top right corner, next to the sign-in
+details, switches between them; the choice is kept in that browser until it is switched again. (It needs no
+cookie: the browser's local storage keeps it, and the server never sees it.)
+
+![The top right corner of a results page in light mode, with the light/dark button next to the sign-in details](images/theme-toggle.png#only-light){ .cz-shot }
+![The top right corner of a results page in dark mode, with the light/dark button next to the sign-in details](images/theme-toggle-dark.png#only-dark){ .cz-shot }
+
 ## Generated output
 
 Per component: `Dockerfile` (+ `Dockerfile.dockerignore`), `k8s.yaml` (Deployment or CronJob,
