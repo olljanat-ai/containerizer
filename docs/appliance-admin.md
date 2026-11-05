@@ -341,10 +341,11 @@ last upgrade or roll back with its outcome, and checks GHCR for newer releases.
   containerizer services (web UI, scan worker, LLM queue runner, egress observer) restart; when they do not come
   up within 2 minutes, the code that ran before is put back. Planning and waiting for the work in progress work as
   for an OS upgrade, except for the LLM queue: an app update does not wait for its jobs and does not cut them
-  off. The runner is told to drain instead: it starts no new job, finishes the ones in progress on the code they
-  started on (the answer the LLM is working on included), and then restarts with the new code by itself. The System
-  page says so meanwhile. The plan's wait, counted from the planned time, still applies: jobs not done when it
-  is over go back to the queue, as before. (The LLM runner imports all its code when it starts, so the new
+  off. The runner is told to drain instead: it starts no new job, lets the LLM finish the answer it is working on,
+  then puts its jobs back in the queue and restarts with the new code by itself; the jobs continue there with the
+  answers they already had (from the answer cache), and only their work outside the LLM (builds, runs) is done
+  again. The System page says so meanwhile. The plan's wait, counted from the planned time, still applies: a call
+  not answered when it is over is cut off, as before. (The LLM runner imports all its code when it starts, so the new
   version's files under it do not mix with the code it runs.) A minor or major release is always an OS upgrade, and the app update is not used any more
   on its new OS (it was built for the previous series). **Remove the app update** on the System page goes back to
   the OS image's own code; a roll back to a snapshot removes it too. Appliances whose OS image predates app

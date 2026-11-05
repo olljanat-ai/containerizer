@@ -91,7 +91,7 @@ class Paths:
     history: Path = Path("/var/lib/containerizer/system/egress-history.jsonl")
     task: Path = Path("/var/lib/containerizer/system/last-task.json")
     plan: Path = Path("/var/lib/containerizer/system/restart-plan.json")
-    drain: Path = Path("/var/lib/containerizer/system/llm-drain.json")   # the LLM runner finishing its jobs
+    drain: Path = Path("/var/lib/containerizer/system/llm-drain.json")   # the LLM runner finishing its LLM call
     sql_secret: Path = Path("/etc/containerizer/secrets/cz-scanner")
     run: Path = Path("/run/containerizer/system")
     dnsmasq: Path = Path("/run/containerizer/dnsmasq/egress.conf")
@@ -351,7 +351,7 @@ def _finish(task: dict, msg: str, reboot: bool) -> None:
 # the long-running services that run the containerizer code; the one-shot ones take the new code at their next run
 PATCH_SERVICES = ("containerizer-web.service", "containerizer-worker.service", "containerizer-llm-queue.service",
                   "containerizer-egress-observer.service")
-LLM_QUEUE = "containerizer-llm-queue.service"   # drained, not restarted: its jobs finish on the code they started on
+LLM_QUEUE = "containerizer-llm-queue.service"   # drained, not restarted: the LLM's answer in progress is not lost
 PATCH_START_WAIT = 120      # seconds the services may take to come up with the new code
 PATCH_SETTLE = 10           # seconds they must keep running (a crash loop restarts them)
 HEALTHZ = "http://127.0.0.1:8080/healthz"
@@ -437,8 +437,8 @@ def reselect(expect: str | None) -> None:
 
 def restart_services(drain_until: datetime | None = None, version: str | None = None) -> None:
     """The containerizer services restart with the code now selected; the LLM queue runner is drained instead
-    (SIGUSR1: it starts no new job, finishes the ones in progress, the LLM calls they wait for included, on the
-    code they started on, and exits; Restart=on-failure starts it with the new code). `drain_until`: when its
+    (SIGUSR1: it starts no new job, waits until no LLM call is being answered, puts its jobs back in the queue and
+    exits; Restart=on-failure starts it with the new code, which continues them with the answers from the cache). `drain_until`: when its
     jobs are cut off (drain_check: restarted, they go back to the queue); None: when they are done; a time past:
     restarted now."""
     run(["systemctl", "try-restart", *[u for u in PATCH_SERVICES if u != LLM_QUEUE]], timeout=300, check=False)
@@ -498,7 +498,7 @@ def drain_check(current: datetime | None = None) -> str | None:
         save_drain(None)
         publish()
         return "the LLM queue runner restarted (its wait was over)"
-    return "the LLM queue runner finishes its jobs"
+    return "the LLM queue runner finishes its LLM call"
 
 
 def drain_deadline(minutes, start: datetime | None = None) -> datetime | None:

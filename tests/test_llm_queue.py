@@ -1500,16 +1500,17 @@ def test_jobs_at_once_and_the_call_state_in_sql_server():
 
 
 def test_an_app_update_drains_the_runner(monkeypatch):
-    """SIGUSR1 (sysagent.restart_services, an app update): the job in progress finishes on the code it started on
-    (not put back in the queue), no new job starts, housekeeping stops, and the runner leaves (DRAINED_EXIT: systemd
-    starts the new code)."""
+    """SIGUSR1 (sysagent.restart_services, an app update): no new job starts and housekeeping stops; the LLM answer in
+    progress is not lost: once no call is answered, the running jobs go back to the queue (the new code continues them
+    with the answers from the cache) and the runner leaves (DRAINED_EXIT: systemd starts the new code). Since 0.12.5
+    it waited for whole jobs, and an LLM-heavy order held the queue for hours."""
     import threading
     from types import SimpleNamespace
-    started, release = threading.Event(), threading.Event()
+    started, hold = threading.Event(), threading.Event()
 
-    def make_it_a(job):
+    def make_it_a(job):                     # a long job: it would build and ask for a long time
         started.set()
-        assert release.wait(10)
+        hold.wait(30)
         return {"result": {}, "summary": "verified"}
     monkeypatch.setitem(lq.JOB_KINDS, "refactor", SimpleNamespace(name="refactor", feature="refactor-queued",
                                                                     handler=make_it_a))
@@ -1520,6 +1521,8 @@ def test_an_app_update_drains_the_runner(monkeypatch):
     r = _fill_runner(monkeypatch, lanes, jobs, settings={"JobsAtOnce": 1}, conn=conn)
     logs, housekept = [], []
     r.log = logs.append
+    asking = {"built-in": 1}                # the job's LLM call is being answered
+    monkeypatch.setattr(r.slots, "in_progress", lambda: dict(asking))
     monkeypatch.setattr(r, "recover", lambda own=False: None)
     monkeypatch.setattr(r, "housekeep", lambda force=False: housekept.append(1) or 0)
     out = {}
@@ -1531,19 +1534,20 @@ def test_an_app_update_drains_the_runner(monkeypatch):
         r.wake.set()
         n = len(housekept)
         for _ in range(50):                 # the runner looks at the queue again: draining, it takes nothing
-            if any("app update: finishing 1 job(s)" in (m or "") for m in logs):
+            if any("app update: waiting for the LLM call in progress" in (m or "") for m in logs):
                 break
             r.wake.set()
             threading.Event().wait(0.05)
-        assert [j["JobId"] for j in jobs] == [2] and len(housekept) == n
-        assert t.is_alive()
-        release.set()
+        assert [j["JobId"] for j in jobs] == [2] and len(housekept) == n and t.is_alive()
+        asking["built-in"] = 0              # the answer came: the job goes back to the queue, the runner leaves
+        r.wake.set()
         t.join(10)
-        assert not t.is_alive() and out["n"] == 1
-        assert not conn.sql(r"SET Status = N'queued'")                  # finished, not put back
-        assert logs[-1] == "app update: no job left on this code: restarting with the new one"
+        assert not t.is_alive() and out["n"] == 0
+        (sql, params), = conn.sql(r"SET Status = N'queued'")
+        assert 1 in params and "Attempts - 1" in sql                    # the attempt does not count
+        assert any("no LLM call in progress: 1 job(s) go back to the queue" in m for m in logs)
     finally:
-        release.set()
+        hold.set()
         r.stopping.set()
         r.wake.set()
         ai.LISTENERS.remove(r.metrics.llm)

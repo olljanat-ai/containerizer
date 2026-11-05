@@ -901,8 +901,8 @@ def test_system_page_says_the_llm_runner_finishes_its_jobs(page):
                        "until": "2026-11-05T12:00:00+00:00"}
     (page.status_dir / "status.json").write_text(json.dumps(st))
     _, body, _ = page.handle(ADMIN, "GET", ["system"], {}, {}, shell)
-    assert "The LLM queue runner finishes the jobs in progress on the code they started on, then restarts with " \
+    assert "The LLM queue runner lets the LLM finish the answer it is working on, then restarts with " \
            "v1.1.3: at the latest at" in body and "go back to the queue" in body
     st["llm_drain"]["until"] = None
     (page.status_dir / "status.json").write_text(json.dumps(st))
-    assert "restarts with v1.1.3: when they are done" in page.handle(ADMIN, "GET", ["system"], {}, {}, shell)[1]
+    assert "restarts with v1.1.3: when it is answered" in page.handle(ADMIN, "GET", ["system"], {}, {}, shell)[1]
