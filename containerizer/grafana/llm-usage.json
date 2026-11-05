@@ -1,0 +1,925 @@
+{
+  "uid": "containerizer-llm-usage",
+  "title": "Containerizer: LLM token usage",
+  "tags": [
+    "containerizer",
+    "llm"
+  ],
+  "description": "Tokens the LLMs reported in their answers, per business unit, product, application and component (the results database: cz.vLlmUsage, kept for the long run).",
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "timezone": "utc",
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "refresh": "",
+  "templating": {
+    "list": [
+      {
+        "name": "bu",
+        "label": "Business unit",
+        "type": "query",
+        "datasource": {
+          "type": "mssql",
+          "uid": "containerizer-sql"
+        },
+        "query": "SELECT DISTINCT BusinessUnitName FROM containerizer.vLlmUsage ORDER BY 1",
+        "definition": "SELECT DISTINCT BusinessUnitName FROM containerizer.vLlmUsage ORDER BY 1",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1,
+        "options": []
+      },
+      {
+        "name": "product",
+        "label": "Product",
+        "type": "query",
+        "datasource": {
+          "type": "mssql",
+          "uid": "containerizer-sql"
+        },
+        "query": "SELECT DISTINCT ProductName FROM containerizer.vLlmUsage WHERE BusinessUnitName IN ($bu) ORDER BY 1",
+        "definition": "SELECT DISTINCT ProductName FROM containerizer.vLlmUsage WHERE BusinessUnitName IN ($bu) ORDER BY 1",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1,
+        "options": []
+      },
+      {
+        "name": "app",
+        "label": "Application",
+        "type": "query",
+        "datasource": {
+          "type": "mssql",
+          "uid": "containerizer-sql"
+        },
+        "query": "SELECT DISTINCT ApplicationName FROM containerizer.vLlmUsage WHERE BusinessUnitName IN ($bu) AND ProductName IN ($product) ORDER BY 1",
+        "definition": "SELECT DISTINCT ApplicationName FROM containerizer.vLlmUsage WHERE BusinessUnitName IN ($bu) AND ProductName IN ($product) ORDER BY 1",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1,
+        "options": []
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [],
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Tokens",
+      "id": 1,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "Input and output tokens the LLMs reported in their answers (cached answers and failed calls cost nothing).",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT SUM(CAST(Tokens AS bigint)) AS Tokens FROM containerizer.vLlmUsage WHERE $__timeFilter(At) AND BusinessUnitName IN ($bu) AND ProductName IN ($product) AND ApplicationName IN ($app)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Input tokens",
+      "id": 2,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT SUM(CAST(InputTokens AS bigint)) FROM containerizer.vLlmUsage WHERE $__timeFilter(At) AND BusinessUnitName IN ($bu) AND ProductName IN ($product) AND ApplicationName IN ($app)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Output tokens",
+      "id": 3,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT SUM(CAST(OutputTokens AS bigint)) FROM containerizer.vLlmUsage WHERE $__timeFilter(At) AND BusinessUnitName IN ($bu) AND ProductName IN ($product) AND ApplicationName IN ($app)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Answered calls",
+      "id": 4,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT COUNT(*) FROM containerizer.vLlmUsage WHERE $__timeFilter(At) AND BusinessUnitName IN ($bu) AND ProductName IN ($product) AND ApplicationName IN ($app)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Cost (USD)",
+      "id": 5,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "Claude list prices, or the price set for a self-hosted LLM (CONTAINERIZER_LLM_PRICE_INPUT/OUTPUT); 0 when none is known.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT SUM(CostUsd) FROM containerizer.vLlmUsage WHERE $__timeFilter(At) AND BusinessUnitName IN ($bu) AND ProductName IN ($product) AND ApplicationName IN ($app)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Applications",
+      "id": 6,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT COUNT(DISTINCT ApplicationName) FROM containerizer.vLlmUsage WHERE $__timeFilter(At) AND BusinessUnitName IN ($bu) AND ProductName IN ($product) AND ApplicationName IN ($app)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Tokens per day by business unit",
+      "id": 7,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "As the applications are mapped to products and business units now (Admin \u2192 Applications).",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT CAST(Day AS datetime2) AS time, BusinessUnitName AS metric, SUM(Tokens) AS value FROM containerizer.vLlmUsageDaily WHERE $__timeFilter(Day) AND BusinessUnitName IN ($bu) AND ProductName IN ($product) AND ApplicationName IN ($app) GROUP BY Day, BusinessUnitName ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "lineWidth": 1,
+            "barAlignment": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ],
+          "sortBy": "Total",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Tokens per day by product",
+      "id": 8,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT CAST(Day AS datetime2) AS time, ProductName AS metric, SUM(Tokens) AS value FROM containerizer.vLlmUsageDaily WHERE $__timeFilter(Day) AND BusinessUnitName IN ($bu) AND ProductName IN ($product) AND ApplicationName IN ($app) GROUP BY Day, ProductName ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "lineWidth": 1,
+            "barAlignment": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ],
+          "sortBy": "Total",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Tokens per day by application",
+      "id": 9,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT CAST(Day AS datetime2) AS time, ApplicationName AS metric, SUM(Tokens) AS value FROM containerizer.vLlmUsageDaily WHERE $__timeFilter(Day) AND BusinessUnitName IN ($bu) AND ProductName IN ($product) AND ApplicationName IN ($app) GROUP BY Day, ApplicationName ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "lineWidth": 1,
+            "barAlignment": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ],
+          "sortBy": "Total",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Tokens per day by feature",
+      "id": 10,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "assessment: component reviews of scans; refactor-queued: Make it A and other refactoring orders; sandbox-tester, build-diagnosis, platform-migration, egress and link reviews ...",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 31
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT CAST(Day AS datetime2) AS time, Feature AS metric, SUM(Tokens) AS value FROM containerizer.vLlmUsageDaily WHERE $__timeFilter(Day) AND BusinessUnitName IN ($bu) AND ProductName IN ($product) AND ApplicationName IN ($app) GROUP BY Day, Feature ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "lineWidth": 1,
+            "barAlignment": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ],
+          "sortBy": "Total",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Tokens per day by model",
+      "id": 11,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 31
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT CAST(Day AS datetime2) AS time, Model AS metric, SUM(Tokens) AS value FROM containerizer.vLlmUsageDaily WHERE $__timeFilter(Day) AND BusinessUnitName IN ($bu) AND ProductName IN ($product) AND ApplicationName IN ($app) GROUP BY Day, Model ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "lineWidth": 1,
+            "barAlignment": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ],
+          "sortBy": "Total",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "table",
+      "title": "By application",
+      "id": 12,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT BusinessUnitName AS [Business unit], ProductName AS Product, ApplicationName AS Application, SUM(Calls) AS Calls, SUM(InputTokens) AS [Input Tokens], SUM(OutputTokens) AS [Output Tokens], SUM(Tokens) AS [Total Tokens], SUM(CostUsd) AS [Cost (USD)] FROM containerizer.vLlmUsageDaily WHERE $__timeFilter(Day) AND BusinessUnitName IN ($bu) AND ProductName IN ($product) AND ApplicationName IN ($app) GROUP BY BusinessUnitName, ProductName, ApplicationName ORDER BY [Total Tokens] DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*Tokens"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Cost (USD)"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": true,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        }
+      }
+    },
+    {
+      "type": "table",
+      "title": "By component",
+      "id": 13,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "(application): calls made for the whole application, not one component (an application review, a Make it A order).",
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 50
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT ApplicationName AS Application, COALESCE(Component, N'(application)') AS Component, Feature, COUNT(*) AS Calls, SUM(CAST(InputTokens AS bigint)) AS [Input Tokens], SUM(CAST(OutputTokens AS bigint)) AS [Output Tokens], SUM(CAST(Tokens AS bigint)) AS [Total Tokens], SUM(CostUsd) AS [Cost (USD)] FROM containerizer.vLlmUsage WHERE $__timeFilter(At) AND BusinessUnitName IN ($bu) AND ProductName IN ($product) AND ApplicationName IN ($app) GROUP BY ApplicationName, Component, Feature ORDER BY [Total Tokens] DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*Tokens"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Cost (USD)"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": true,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        }
+      }
+    }
+  ]
+}

@@ -1080,7 +1080,8 @@ def egress_status(journal: str | None = None, history_lines: int = 50) -> dict:
 
 # =============================================================================== results database
 
-SQL_LOGINS = (("cz_scanner", "writer", "SCANNER"), ("cz_web", "reader", "WEB"), ("cz_admin", "admin", "ADMIN"))
+SQL_LOGINS = (("cz_scanner", "writer", "SCANNER"), ("cz_web", "reader", "WEB"), ("cz_admin", "admin", "ADMIN"),
+              ("cz_grafana", "usage", "GRAFANA"))      # Grafana: the LLM usage views only (schema 43)
 _SQL_SET = ("server", "datasource", "address", "addr", "networkaddress", "database", "initialcatalog",
             "userid", "uid", "user", "username", "password", "pwd", "cafile", "servercertificate")
 _SQL_SAFE = re.compile(r'[^"$`\\\n\r]*')
@@ -1111,6 +1112,7 @@ def sql_settings(env: dict) -> dict:
     db = external_sql(env)
     if not db:
         base = "Server=127.0.0.1,1433;Database=Containerizer;TrustServerCertificate=yes"
+        grafana = {"CZ_GRAFANA_SQL_SERVER": "127.0.0.1:1433", "CZ_GRAFANA_SQL_DATABASE": "Containerizer"}
         out = {"CZ_SQL_LOCAL": "yes", "CZ_SQL_LOGINS": "create", "CZ_SQL_OWNER_SECRET": "mssql-sa",
                "CZ_SQL_OWNER_CS": base + ";User Id=sa",
                "CZ_SQL_PROBE_CS": base.replace("Database=Containerizer", "Database=master") + ";User Id=sa"}
@@ -1137,10 +1139,12 @@ def sql_settings(env: dict) -> dict:
             options += (";" if options else "") + f"CaFile={P.sql_ca}"
         h = f"[{host}]" if ":" in host else host
         base = f"Server=tcp:{h},{port};Database={database}" + (f";{options}" if options else "")
+        grafana = {"CZ_GRAFANA_SQL_SERVER": f"{h}:{port}", "CZ_GRAFANA_SQL_DATABASE": database}
         out = {"CZ_SQL_LOCAL": "no", "CZ_SQL_LOGINS": logins, "CZ_SQL_OWNER_SECRET": "sql-owner",
                "CZ_SQL_OWNER_CS": f"{base};User Id={user}", "CZ_SQL_PROBE_CS": f"{base};User Id={user}"}
     for login, _, name in SQL_LOGINS:
         out[f"CZ_SQL_{name}_CS"] = f"{base};User Id={login}"
+    out.update(grafana)             # Grafana's SQL Server data source (grafana_usage_sync)
     for k, v in out.items():
         if not _SQL_SAFE.fullmatch(v):
             raise RuleError(f"{k}: the database settings must not contain quotes, $, ` or backslashes")
@@ -1410,6 +1414,142 @@ def publish_sandbox_ca(cert_pem: str) -> None:
              input=json.dumps(cm))
 
 
+# =============================================================================== Grafana: LLM token usage
+
+GRAFANA_API = "http://127.0.0.1:3000/grafana"      # containerizer-grafana: 127.0.0.1:3000, served from /grafana/
+GRAFANA_DS_UID = "containerizer-sql"
+GRAFANA_DASHBOARD = Path(__file__).resolve().parent / "grafana" / "llm-usage.json"
+GRAFANA_LOGIN = "cz_grafana"
+
+
+_LOGGED: dict = {}
+
+
+def _log_once(kind: str, msg: str) -> None:
+    """Log a message unless the last one of its kind was the same (the state survives the oneshot runs)."""
+    f = P.plan.parent / "log-once.json"
+    try:
+        last = json.loads(f.read_text())
+    except (OSError, ValueError):
+        last = {}
+    if last.get(kind) != msg:
+        log(msg)
+        last[kind] = msg
+        try:
+            atomic_write(f, json.dumps(last), 0o600)
+        except OSError:
+            pass
+
+
+def _secret(name: str) -> str:
+    """A generated password in /etc/containerizer/secrets/<name> (made once, as cz-firstboot makes the others)."""
+    import secrets as _s
+    f = P.sql_secret.parent / name
+    if f.is_file() and f.read_text().strip():
+        return f.read_text().strip()
+    pw = "".join(_s.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789") for _ in range(32)) + "Aa1!"
+    atomic_write(f, pw, 0o400)
+    return pw
+
+
+def _grafana(method: str, path: str, body=None, password: str = "", opener=None):
+    """(status, JSON) of a Grafana API call as its admin."""
+    import base64
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(GRAFANA_API + path, method=method,
+                                 data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Content-Type": "application/json", "Accept": "application/json",
+                                          "Authorization": "Basic " + base64.b64encode(f"admin:{password}".encode()).decode()})
+    try:
+        with (opener or urllib.request.urlopen)(req, timeout=20) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as ex:
+        try:
+            return ex.code, json.loads(ex.read() or b"{}")
+        except ValueError:
+            return ex.code, {}
+
+
+def grafana_usage_sync(opener=None, connect=None) -> str:
+    """The "Containerizer: LLM token usage" dashboard (docs/appliance-admin.md#llm-token-usage), set up from the app
+    code so that an app update brings it: the login cz_grafana (role usage: the LLM usage views only; its password
+    in secrets/cz-grafana) made with the results database's owner, and Grafana's data source "Containerizer
+    results" and the dashboard (containerizer/grafana/llm-usage.json, in the provisioned folder "containerizer")
+    made with Grafana's API as its admin. Each step only when it changed or Grafana lost it (state in
+    grafana-usage.json). `status` (every 5 minutes) calls it. Returns what happened."""
+    import hashlib
+    from . import sqlstore
+    state_f = P.plan.parent / "grafana-usage.json"
+    try:
+        state = json.loads(state_f.read_text())
+    except (OSError, ValueError):
+        state = {}
+    done = []
+    env = read_env(P.appliance_env)
+    sql = sql_settings(env)
+    pw = _secret("cz-grafana")
+    # 1. the login, once per password and database
+    mark = hashlib.sha256(f"{sql['CZ_SQL_GRAFANA_CS']}\n{pw}".encode()).hexdigest()[:16]
+    if state.get("login") != mark:
+        owner_pw = (P.sql_secret.parent / sql["CZ_SQL_OWNER_SECRET"]).read_text().strip()
+        conn = (connect or sqlstore.connect)(sql["CZ_SQL_OWNER_CS"], owner_pw)
+        try:
+            if sql["CZ_SQL_LOGINS"] == "existing":     # the DBA makes the logins: only its role, when it is there
+                sqlstore.add_member(conn, GRAFANA_LOGIN, "usage")
+            else:
+                sqlstore.create_login(conn, GRAFANA_LOGIN, pw, "usage")
+            conn.commit()
+        finally:
+            conn.close()
+        state["login"] = mark
+        done.append("login")
+    # 2. Grafana: the data source and the dashboard
+    admin = (P.sql_secret.parent / "grafana-admin").read_text().strip()
+    st, health = _grafana("GET", "/api/health", password=admin, opener=opener)
+    if st != 200:
+        raise AgentError(f"Grafana does not answer ({st})")
+    ds = {"name": "Containerizer results", "uid": GRAFANA_DS_UID, "type": "mssql", "access": "proxy",
+          "url": sql["CZ_GRAFANA_SQL_SERVER"], "user": GRAFANA_LOGIN, "isDefault": False,
+          "jsonData": {"database": sql["CZ_GRAFANA_SQL_DATABASE"], "encrypt": "true", "tlsSkipVerify": True,
+                       "maxOpenConns": 4, "maxIdleConns": 2, "connMaxLifetime": 14400},
+          "secureJsonData": {"password": pw}}
+    ds_mark = hashlib.sha256(json.dumps(ds, sort_keys=True).encode()).hexdigest()[:16]
+    st, _ = _grafana("GET", f"/api/datasources/uid/{GRAFANA_DS_UID}", password=admin, opener=opener)
+    if st == 404:
+        st, r = _grafana("POST", "/api/datasources", ds, admin, opener)
+        if st not in (200, 201):
+            raise AgentError(f"Grafana: the data source not made ({st}: {str(r)[:200]})")
+        state["datasource"] = ds_mark
+        done.append("data source")
+    elif st == 200 and state.get("datasource") != ds_mark:
+        st, r = _grafana("PUT", f"/api/datasources/uid/{GRAFANA_DS_UID}", ds, admin, opener)
+        if st != 200:
+            raise AgentError(f"Grafana: the data source not updated ({st}: {str(r)[:200]})")
+        state["datasource"] = ds_mark
+        done.append("data source")
+    elif st != 200:
+        raise AgentError(f"Grafana: the data source not read ({st})")
+    dash = json.loads(GRAFANA_DASHBOARD.read_text())
+    dash_mark = hashlib.sha256(json.dumps(dash, sort_keys=True).encode()).hexdigest()[:16]
+    st, _ = _grafana("GET", f"/api/dashboards/uid/{dash['uid']}", password=admin, opener=opener)
+    if st == 404 or state.get("dashboard") != dash_mark:
+        st, folders = _grafana("GET", "/api/folders", password=admin, opener=opener)
+        folder = next((f.get("uid") for f in (folders if isinstance(folders, list) else []) if f.get("title") == "containerizer"), None)
+        body = {"dashboard": {**dash, "id": None}, "overwrite": True, "message": "containerizer system agent"}
+        if folder:
+            body["folderUid"] = folder
+        st, r = _grafana("POST", "/api/dashboards/db", body, admin, opener)
+        if st != 200:
+            raise AgentError(f"Grafana: the dashboard not saved ({st}: {str(r)[:200]})")
+        state["dashboard"] = dash_mark
+        done.append("dashboard")
+    if done:
+        atomic_write(state_f, json.dumps(state), 0o600)
+        log(f"Grafana LLM usage: {', '.join(done)} set up")
+    return ", ".join(done) or "up to date"
+
+
 # =============================================================================== the network address
 
 def network_state() -> dict:
@@ -1657,6 +1797,10 @@ def main(argv=None) -> int:
                 network_sync()
             except (AgentError, OSError, subprocess.TimeoutExpired) as ex:
                 log(f"network: {ex}")
+            try:
+                grafana_usage_sync()
+            except Exception as ex:  # noqa: BLE001 - Grafana or the database not up yet: next time (every 5 minutes)
+                _log_once("grafana-usage", f"Grafana LLM usage not set up: {type(ex).__name__}: {str(ex)[:300]}")
             publish(egress_state=egress_status())
             try:
                 local_llm.reconcile()

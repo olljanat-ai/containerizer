@@ -322,8 +322,11 @@ def endpoint(model: str | None = None) -> str:
 def _tags(feature: str | None) -> dict:
     scope = {**_SCOPE.get(), **({"feature": feature} if feature else {})}
     tags = {"feature": scope.get("feature") or "other", "repo": scope.get("repo") or ""}
-    if scope.get("scan"):
-        tags["scan"] = scope["scan"]
+    # what the call was for, for the LLM usage records (llmusage.py): the scan, the application (its SourceKey or
+    # ApplicationId), the component, the LLM queue job
+    for k in ("scan", "source_key", "application_id", "component", "job"):
+        if scope.get(k) not in (None, ""):
+            tags[k] = scope[k]
     return tags
 
 
@@ -833,7 +836,9 @@ def review_prompt(a, c) -> str:
 
 
 def ai_review_component(a, c, model: str | None = None) -> dict:
-    res = ask_json(review_prompt(a, c), REVIEW_SCHEMA, model=model, feature="assessment", max_tokens=SHORT_ANSWER_TOKENS)
+    with usage_scope(component=c.name):
+        res = ask_json(review_prompt(a, c), REVIEW_SCHEMA, model=model, feature="assessment",
+                       max_tokens=SHORT_ANSWER_TOKENS)
     res["model"] = model_name(model)
     return res
 
@@ -955,7 +960,8 @@ def diagnose_failure(a, c, plan: dict, stage: str, log_tail: str, model: str | N
               "external if the container itself is fine and only an external service/config is missing, platform if "
               "a Windows-only API/library is needed, code if the application code must change.")
     try:
-        r = ask_json(prompt, DIAG_SCHEMA, model=model, feature="build-diagnosis", max_tokens=SHORT_ANSWER_TOKENS)
+        with usage_scope(component=c.name):
+            r = ask_json(prompt, DIAG_SCHEMA, model=model, feature="build-diagnosis", max_tokens=SHORT_ANSWER_TOKENS)
         fix = json.loads(r.get("fix_json") or "{}")
         if not isinstance(fix, dict):
             fix = {}

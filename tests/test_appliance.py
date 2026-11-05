@@ -1045,3 +1045,78 @@ def test_the_appliance_network_files_follow_the_bridge_example():
     assert ini("22-uplink-br0.link")["Link"]["MACAddressPolicy"] == "none"
     issue = (net.parent.parent.parent / "etc" / "issue").read_text() if (net.parent.parent.parent / "etc" / "issue").is_file() else (net.parent.parent / "issue").read_text()
     assert "\\4{br0}" in issue and "cz network show" in issue
+
+
+def test_the_llm_usage_dashboard_is_set_up_from_the_app_code(paths, monkeypatch):
+    """An app update brings the LLM token usage dashboard (no OS change): the system agent makes the login
+    cz_grafana (role usage) and, with Grafana's API, its data source and the dashboard; once, again only when one
+    changed or Grafana lost it."""
+    import io
+    import urllib.error
+    from containerizer import sqlstore
+    paths.sql_secret = paths.run.parent / "secrets" / "cz-scanner"
+    paths.sql_secret.parent.mkdir(parents=True)
+    (paths.sql_secret.parent / "mssql-sa").write_text("sa-pw")
+    (paths.sql_secret.parent / "grafana-admin").write_text("admin-pw")
+    paths.plan.parent.mkdir(parents=True, exist_ok=True)
+    logins, grafana = [], {"ds": None, "dash": None, "calls": []}
+    monkeypatch.setattr(sqlstore, "create_login", lambda conn, login, pw, role: logins.append((login, role, pw)))
+
+    class Conn:
+        def commit(self):
+            pass
+
+        def close(self):
+            pass
+
+    class Resp(io.BytesIO):
+        def __init__(self, status, body):
+            super().__init__(json.dumps(body).encode())
+            self.status = status
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+    def opener(req, timeout=0):
+        path, method = req.full_url.split("/grafana", 1)[1], req.get_method()
+        grafana["calls"].append((method, path))
+        assert req.headers["Authorization"].startswith("Basic ")
+        body = json.loads(req.data) if req.data else None
+
+        def err(code):
+            raise urllib.error.HTTPError(req.full_url, code, "x", {}, io.BytesIO(b"{}"))
+        if path == "/api/health":
+            return Resp(200, {"database": "ok"})
+        if path == "/api/datasources/uid/containerizer-sql":
+            if method == "GET":
+                return Resp(200, grafana["ds"]) if grafana["ds"] else err(404)
+            grafana["ds"] = body
+            return Resp(200, {})
+        if path == "/api/datasources":
+            grafana["ds"] = body
+            return Resp(200, {})
+        if path == "/api/dashboards/uid/containerizer-llm-usage":
+            return Resp(200, {}) if grafana["dash"] else err(404)
+        if path == "/api/folders":
+            return Resp(200, [{"uid": "f1", "title": "containerizer"}])
+        if path == "/api/dashboards/db":
+            grafana["dash"] = body
+            return Resp(200, {})
+        raise AssertionError(path)
+    assert sysagent.grafana_usage_sync(opener=opener, connect=lambda cs, pw: Conn()) == "login, data source, dashboard"
+    pw = (paths.sql_secret.parent / "cz-grafana").read_text()
+    assert logins == [("cz_grafana", "usage", pw)] and len(pw) >= 32
+    assert grafana["ds"]["type"] == "mssql" and grafana["ds"]["user"] == "cz_grafana"
+    assert grafana["ds"]["url"] == "127.0.0.1:1433" and grafana["ds"]["jsonData"]["database"] == "Containerizer"
+    assert grafana["ds"]["secureJsonData"]["password"] == pw
+    assert grafana["dash"]["folderUid"] == "f1" and grafana["dash"]["dashboard"]["uid"] == "containerizer-llm-usage"
+    assert grafana["dash"]["overwrite"] is True and grafana["dash"]["dashboard"]["id"] is None
+    # nothing again; a dashboard Grafana lost is saved again
+    grafana["calls"].clear()
+    assert sysagent.grafana_usage_sync(opener=opener, connect=lambda cs, pw: Conn()) == "up to date"
+    assert not [c for c in grafana["calls"] if c[0] != "GET"] and len(logins) == 1
+    grafana["dash"] = None
+    assert sysagent.grafana_usage_sync(opener=opener, connect=lambda cs, pw: Conn()) == "dashboard"

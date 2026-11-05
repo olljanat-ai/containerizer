@@ -293,12 +293,13 @@ Docker Hub, which the default firewall rules allow.
 
 ## Metrics
 
-Grafana (`https://<appliance>/grafana/`, **Grafana ↗** on the admin pages) has three dashboards, in the
+Grafana (`https://<appliance>/grafana/`, **Grafana ↗** on the admin pages) has four dashboards, in the
 **containerizer** folder (the dashboard list at the top of each links to the others):
 
 | Dashboard | Shows |
 | --- | --- |
 | **Containerizer: organization scans** (the home page) | Scans, the scan worker, LLM usage, the LLM queue and the built-in LLM ([scheduled-scans.md](scheduled-scans.md#metrics-and-grafana)) |
+| **Containerizer: LLM token usage** | The tokens the LLMs reported in their answers, for the long run, by business unit, product, application and component, by feature and model, with their cost: from the results database, not Prometheus ([LLM token usage](#llm-token-usage)) |
 | **Containerizer: k3s sandbox cluster** | Whether the API server and kubelet answer, pods running and not running, containers waiting (CrashLoopBackOff, ImagePullBackOff, ...), restarts, deployments short of replicas, CPU, memory and network by namespace and the top pods, volume usage, and the API server's requests and latency |
 | **Containerizer: Flux** | First, whether the sandbox is connected to the output repository at all: what `cz-sandbox` last found (connected, or why not: `sandbox.env` without a repository URL, no token, the secret store or Flux not ready) and when, and the root sync's GitRepository and Kustomization (`flux-system/containerizer-sandbox`: missing, not ready with the reason, or ready at a revision); the applications' containers that do not start (ImagePullBackOff, CrashLoopBackOff, ...) and restart. Then every Flux object (Kustomizations, Git, OCI and Helm sources, Helm releases, image automation) with its Ready state, reason, revision and suspend flag; the ones not ready first; the controllers' reconciliations, errors, reconcile time, work queues, CPU and memory |
 
@@ -307,6 +308,32 @@ Grafana (`https://<appliance>/grafana/`, **Grafana ↗** on the admin pages) has
 
 ![Grafana: the Flux dashboard, every Flux object with its state](images/grafana-flux-dashboard.png#only-light)
 ![Grafana: the Flux dashboard, every Flux object with its state](images/grafana-flux-dashboard-dark.png#only-dark)
+
+### LLM token usage
+
+Every call an LLM answers is recorded in the results database, in the table `LlmUsage`: the input and output tokens
+the LLM reported in its answer (never an estimate; a cached answer and a failed call cost nothing and are not
+recorded), the time, the backend and model, the cost (Claude's list prices, or `CONTAINERIZER_LLM_PRICE_INPUT` /
+`_OUTPUT` for a self-hosted LLM), the feature (`assessment`: the component reviews of scans; `refactor-queued`: Make
+it A and other refactoring orders; `sandbox-tester`, `build-diagnosis`, `platform-migration`, egress and link
+reviews ...), the application, the component, and the LLM queue job or the scan it was for. The scan worker and
+the LLM queue runner write it as the answers come. Unlike Prometheus, which keeps 90 days, it is kept for the long
+run.
+
+The view `vLlmUsage` adds the application's name, product and business unit (as they are mapped now, on Admin →
+Applications), and `vLlmUsageDaily` sums it by day. The **Containerizer: LLM token usage** dashboard reads them
+through its own data source, **Containerizer results**: the login `cz_grafana`, whose role (`usage`) can read
+those two views and nothing else. Filter by business unit, product and application at the top; the tables at the
+bottom sum it per application and per component. The system agent sets the login, the data source and the
+dashboard up (within 5 minutes of the start or of an app update, and again if Grafana loses them), with the results
+database's owner and Grafana's `admin` account: if you changed that account's password in Grafana, they stay as
+they were (`journalctl -u containerizer-sysagent-status` says so). With an external results database whose logins
+your DBA makes (`CZ_SQL_LOGINS=existing`), make `cz_grafana` too (its password is in
+`/etc/containerizer/secrets/cz-grafana`): until then the dashboard stays empty. Report on it with any SQL client that can read the views (the reader and
+admin roles can too).
+
+![Grafana: LLM token usage by business unit, product and application (sample data)](images/grafana-llm-usage.png#only-light)
+![Grafana: LLM token usage by business unit, product and application (sample data)](images/grafana-llm-usage-dark.png#only-dark)
 
 Prometheus keeps 90 days. What it reads from the sandbox cluster:
 

@@ -1191,8 +1191,12 @@ class Runner:
         if row.get("CancelRequestedAt"):
             return self.cancelled(row, row.get("CancelRequestedBy"))
         try:
+            pl = _payload(row)
             with ai.usage_scope(feature=kind.feature, repo=row.get("Repository") or row.get("App"),
-                                scan=row.get("ScanName")), _usage() as used:
+                                scan=row.get("ScanName"), job=row.get("JobId"),
+                                source_key=row.get("SourceKey") or pl.get("source_key") or None,
+                                application_id=row.get("ApplicationId") or pl.get("application_id") or None,
+                                component=row.get("Component") or pl.get("component") or None), _usage() as used:
                 # a refactoring that deploys a sandbox variant reads its organization scan's settings and opens the
                 # output repository's write token (variant.py): the runner's connection and credential key
                 out = kind.handler({**row, "Payload": _payload(row), "_progress": lambda text: self.progress(row, text),
@@ -1760,6 +1764,9 @@ def build(args) -> int:
         return 2
     preload()
     r = Runner(lambda: connect(cs), name=name, poll=args.poll, metrics=QueueMetrics(name), kinds=kinds)
+    from .ai import LISTENERS
+    from .llmusage import Recorder
+    LISTENERS.append(Recorder(lambda: connect(cs), f"llm-queue {name}", r.log))        # cz.LlmUsage (llmusage.py)
     if not args.no_metrics:
         token = os.environ.get("CONTAINERIZER_METRICS_TOKEN") or None
         mm.serve(r.metrics.registry, args.metrics_host, args.metrics_port, token)

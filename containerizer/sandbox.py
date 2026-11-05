@@ -734,7 +734,8 @@ def verify_sandbox(root: Path, o: SandboxOptions | None = None, kube: Kube | Non
             from .ai import usage_scope
             dd = a["doc"]
             label = dd.get("repo", "") if dd.get("project") in (None, "", "_") else f"{dd.get('project')}/{dd.get('repo', '')}"
-            with usage_scope(repo=label or a["app"]):
+            with usage_scope(repo=label or a["app"], source_key=dd.get("source_key") or None,
+                             component=c.get("component") or None):
                 ld = llm_sandbox_diagnosis(r, k8s.read_text() if k8s.is_file() else "", o.model)
             if ld:
                 r["llm"] = ld
