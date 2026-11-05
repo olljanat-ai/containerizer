@@ -887,6 +887,8 @@ def test_dhcp_identity_survives_the_recovery_system_and_the_banner_shows_bond0()
     root = Path(__file__).resolve().parent.parent
     net = (root / "appliance/rootfs/etc/systemd/network/21-uplink-bond0.network").read_text()
     assert "\n[DHCPv4]\nClientIdentifier=mac\n" in net
+    link = (root / "appliance/rootfs/etc/systemd/network/21-uplink-bond0.link").read_text()
+    assert "OriginalName=bond0" in link and "MACAddressPolicy=none" in link   # not a machine-id MAC (99-default.link)
     for f in ("appliance/rootfs/etc/issue", "appliance/oem/03_branding.yaml"):
         text = (root / f).read_text()
         assert "\\4{bond0}" in text and "https://\\4/" not in text, f
