@@ -814,9 +814,9 @@ def test_housekeep_records_the_removal(monkeypatch, tmp_path):
     def away():
         raise RuntimeError("db away")
     r = lq.Runner(away, name="r", log=logs.append, metrics=object.__new__(lq.QueueMetrics))
-    # one line per step (sandbox variants, their state, applications' own output repositories, egress), once a
-    # minute
-    assert r.housekeep() == 0 and r.housekeep() == 0 and len(logs) == 4 and all("db away" in m for m in logs)
+    # one line per step (sandbox variants, their state, the sandbox switch, applications' own output repositories,
+    # egress), once a minute
+    assert r.housekeep() == 0 and r.housekeep() == 0 and len(logs) == 5 and all("db away" in m for m in logs)
 
 
 
@@ -1446,6 +1446,27 @@ def test_the_runner_regenerates_the_sandbox_index_only_when_a_switch_changed(tmp
     off["set"] = set()                                                            # on again
     assert variant.sync_sandbox(Conn, "key", work, log=lambda s: None) == 1 and written[-1][1] == set()
     assert "sandbox switches" in commits[0]
+    # a push that failed (or a repository it could not open) is tried again next time, not recorded as done
+    fail = {"n": 1}
+
+    def commit(self, msg):
+        if fail["n"]:
+            fail["n"] -= 1
+            raise RuntimeError("git push: rejected")
+        commits.append(msg)
+        return True
+    monkeypatch.setattr(Out, "commit", commit)
+    logs = []
+    off["set"] = {7}
+    assert variant.sync_sandbox(Conn, "key", work, log=logs.append) == 0
+    assert any("not updated: RuntimeError: git push: rejected" in m for m in logs)
+    assert variant.sync_sandbox(Conn, "key", work, log=logs.append) == 1 and written[-1][1] == {7}   # again: done
+    assert variant.sync_sandbox(Conn, "key", work, log=logs.append) == 0
+    monkeypatch.setattr(Creds, "write_for", lambda self, repo: None)        # no write token: again next time too
+    off["set"] = {8}
+    assert variant.sync_sandbox(Conn, "key", work, log=logs.append) == 0
+    monkeypatch.setattr(Creds, "write_for", lambda self, repo: Write())
+    assert variant.sync_sandbox(Conn, "key", work, log=logs.append) == 1 and written[-1][1] == {8}
 
 
 def test_a_make_it_a_copy_of_an_application_whose_sandbox_is_off_is_not_deployed():
