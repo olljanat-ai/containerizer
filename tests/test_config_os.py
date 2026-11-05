@@ -133,9 +133,15 @@ def test_machine_name_in_logs_and_health_is_fine(tmp_path):
 
 
 def test_machine_name_switch_is_refactor(tmp_path):
-    web_app(tmp_path, 'class A { bool Prod = Environment.MachineName.ToUpperInvariant() == "PRODWEB01"; }')
+    web_app(tmp_path, 'class A { bool Prod = Environment.MachineName == "PRODWEB01"; }')
     c = assess(tmp_path).components[0]
     assert any(f.rule.id == "os-machine-name-switch" and f.severity == "refactor" for f in c.findings)
+    # upper-cased before comparing: the pod hostname "prodweb01" matches (plan-machine-hostname)
+    other = tmp_path / "b"
+    web_app(other, 'class A { bool Prod = Environment.MachineName.ToUpperInvariant() == "PRODWEB01"; }')
+    c = assess(other).components[0]
+    assert any(f.rule.id == "os-machine-name-switch" and f.rule.severity == "refactor" and f.severity == "config"
+               for f in c.findings)
 
 
 def test_console_input_and_userinteractive_in_service_host(tmp_path):
