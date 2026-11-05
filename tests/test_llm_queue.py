@@ -758,6 +758,23 @@ def test_approval_rules_in_sql_server():
         assert status(big)[0] == "running" and status(link_small)[0] == "queued"     # approved a moment ago
         c2.execute("SELECT Note FROM cz.LlmJob WHERE JobId = %s", (old_q,))
         assert c2.fetchone()[0] == "rejected automatically: waited more than 24 hours"
+        # approved long ago, queued again since (Requeue, or the runner put it back): its wait starts again; before,
+        # it was rejected at once (the lab's product-returns, after a restart, and its Requeue)
+        conn.cursor().execute("UPDATE cz.LlmJob SET ApprovedAt = DATEADD(hour, -30, SYSUTCDATETIME()), "
+                              "QueuedAt = SYSUTCDATETIME() WHERE JobId = %s", (link_small,))
+        conn.commit()
+        assert lq.auto_reject(w2) == 0 and status(link_small)[0] == "queued"
+        # the runner (the writer login) restarts the wait of a job it puts back in the queue
+        c2.execute("UPDATE cz.LlmJob SET QueuedAt = SYSUTCDATETIME() WHERE JobId = %s", (big,))
+        w2.commit()
+        adm.cursor().execute("UPDATE cz.LlmQueueSettings SET RejectAfterHours = 1")
+        adm.commit()
+        conn.cursor().execute("UPDATE cz.LlmJob SET QueuedAt = DATEADD(hour, -2, SYSUTCDATETIME()), ApprovedAt = NULL "
+                              "WHERE JobId = %s", (fresh,))
+        conn.commit()
+        assert lq.auto_reject(w2) == 1
+        c2.execute("SELECT Note FROM cz.LlmJob WHERE JobId = %s", (fresh,))
+        assert c2.fetchone()[0] == "rejected automatically: waited more than 1 hour"
         w2.close()
         adm.close()
         w.close()

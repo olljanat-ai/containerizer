@@ -1143,6 +1143,7 @@ class Runner:
             cur = conn.cursor()
             cur.execute("UPDATE cz.LlmJob SET Status = CASE WHEN Attempts >= %s THEN N'failed' ELSE N'queued' END, "
                         "FinishedAt = CASE WHEN Attempts >= %s THEN SYSUTCDATETIME() END, Runner = NULL, HeartbeatAt = NULL, "
+                        "QueuedAt = SYSUTCDATETIME(), "
                         "Error = N'the queue runner stopped while asking the LLM' "
                         "WHERE Status = N'running' AND (HeartbeatAt < DATEADD(minute, %s, SYSUTCDATETIME()) "
                         "OR (%s = 1 AND Runner = %s))",
@@ -1397,6 +1398,7 @@ class Runner:
         try:
             cur = conn.cursor()
             cur.execute("UPDATE cz.LlmJob SET Status = N'queued', Runner = NULL, HeartbeatAt = NULL, StartedAt = NULL, "
+                        "QueuedAt = SYSUTCDATETIME(), "   # back in the queue: its wait (RejectAfterHours) starts again
                         "Attempts = CASE WHEN Attempts > 0 THEN Attempts - 1 ELSE 0 END WHERE Status = N'running' "
                         f"AND Runner = %s AND JobId IN ({', '.join(['%s'] * len(ids))})", (self.name, *ids))
             conn.commit()
