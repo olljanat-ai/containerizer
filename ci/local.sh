@@ -231,7 +231,7 @@ job_assess() {
   say "rating=$rating unconfirmed=$unconfirmed (summary: $out/summary.md)"
   test -f "$out/portfolio.md" && test -d "$out/parts-catalog" || die "report files missing" || return 1
   python -c "import json,sys; a={x['name']: x for x in json.load(open(sys.argv[1]))}; v=a['parts-catalog'].get('verification') or []; print(v); assert any(r['status'].startswith('ok') for r in v)" "$out/assessment.json" || return 1
-  test "$rating" = D || die "rating $rating, expected D (worst of B, B and D)" || return 1
+  test "$rating" = C || die "rating $rating, expected C (worst of B, B and C: batch-release is partial)" || return 1
   test "$unconfirmed" = 0 || die "$unconfirmed component(s) predicted ready did not build or run"
 }
 
