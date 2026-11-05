@@ -352,8 +352,17 @@ async def _inspect(upstream: str, ref: str) -> dict | None:
 class Guard:
     def __init__(self, upstream: str, cfg: Config):
         self.upstream, self.cfg = upstream, cfg
+        self.tasks: set[asyncio.Task] = set()   # asyncio keeps only weak references to running connections
 
     async def handle(self, cr: asyncio.StreamReader, cw: asyncio.StreamWriter) -> None:
+        task = asyncio.current_task()
+        self.tasks.add(task)
+        try:
+            await self._handle(cr, cw)
+        finally:
+            self.tasks.discard(task)
+
+    async def _handle(self, cr: asyncio.StreamReader, cw: asyncio.StreamWriter) -> None:
         uw = None
         try:
             try:
