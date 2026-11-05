@@ -155,7 +155,7 @@ def test_guard_resolves_symbolic_links_out_of_the_worker_folder(tmp_path):
 
 @pytest.mark.parametrize("method,target", [
     ("POST", "/v1.47/build?networkmode=host"), ("POST", "/build?networkmode=default&networkmode=host"),
-    ("POST", "/build?cgroupparent=/"), ("POST", "/plugins/pull?remote=x"), ("POST", "/v1.47/swarm/init"),
+    ("POST", "/build?cgroupparent=/"), ("POST", "/build?remote=http://127.0.0.1:9090/"), ("POST", "/plugins/pull?remote=x"), ("POST", "/v1.47/swarm/init"),
     ("POST", "/services/create"), ("POST", "/networks/create"), ("POST", "/networks/bridge/connect"),
     ("POST", "/containers/prune"), ("POST", "/v1.47/containers%2Fcreate/../create"),
     ("POST", "/containers//create"), ("POST", "/commit"),

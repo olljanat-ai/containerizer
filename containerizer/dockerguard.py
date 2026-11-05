@@ -122,6 +122,8 @@ def decide(method: str, target: str) -> Decision:
                 raise Denied(f"builds run without the host network (networkmode={v})")
         if any(query.get("cgroupparent", [])):
             raise Denied("builds keep Docker's cgroup parent")
+        if any(query.get("remote", [])):        # fetched by the daemon on the host's network
+            raise Denied("builds send their context; no remote context")
         return Decision()
     if path == "/commit":
         ref = (query.get("container") or [""])[0]
