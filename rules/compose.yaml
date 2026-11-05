@@ -1,0 +1,109 @@
+# Docker Compose output: compose.yaml per application, next to kustomization.yaml (docs/compose.md).
+# It is made from the same hardened pod specs as k8s.yaml, so the security baseline and the
+# component's hardening exceptions (rules/60-security.yaml) carry over where Compose has them.
+
+# address the ingress-facing components' ports are published on (override with BIND_ADDRESS in .env):
+# loopback by default, so nothing is reachable from the network until someone puts a reverse proxy
+# (TLS) in front or chooses 0.0.0.0
+bind_address: 127.0.0.1
+# first host port; each further ingress-facing component gets the next one (override per component in .env)
+first_host_port: 8080
+# Docker sets no process limit by default; Kubernetes nodes do
+pids_limit: 1024
+
+# Healthchecks from the components' HTTP probes. Docker runs the check inside the container, so it
+# needs a program there that can make an HTTP request. `image`: regex on the base image of the
+# Dockerfile's final stage; {url} is the probe's URL on localhost. Images with no such program
+# (chiseled and distroless .NET, Java on distroless) get no healthcheck: the probe is kept as
+# x-containerizer-probe for an orchestrator or a reverse proxy that checks from outside.
+healthchecks:
+  - image: 'nginx-unprivileged|alpine'
+    test: [CMD, wget, -q, -O, /dev/null, '{url}']
+  - image: 'distroless/nodejs\d+'
+    test: [CMD, /nodejs/bin/node, -e, "fetch('{url}').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+  - image: '^(docker\.io/(library/)?)?node:'
+    test: [CMD, node, -e, "fetch('{url}').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+  - image: '^(docker\.io/(library/)?)?python:'
+    test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('{url}', timeout=4)"]
+
+# Lab dependencies for local runs: `docker compose --profile lab up`. Only the ones a component needs
+# (rules/lab-services.yaml) are written. Development and test only (SQL Server is the Developer
+# edition): they run with their images' own users, without the app's hardening. Their one password is
+# LAB_PASSWORD from .env; `connection` is the hint written to the component's secrets.env.example
+# ({password}: LAB_PASSWORD). SFTP has no Compose definition (its users are configured, not set by env).
+lab:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2025-CU10-ubuntu-24.04
+    environment: {ACCEPT_EULA: "Y", MSSQL_PID: Developer, MSSQL_SA_PASSWORD: "${LAB_PASSWORD:-}"}
+    data: /var/opt/mssql
+    port: 1433
+    memory: 3g
+    connection: "Server=sqlserver,1433;Database=master;User Id=sa;Password={password};Encrypt=True;TrustServerCertificate=True"
+  postgres:
+    image: postgres:18.6-alpine
+    environment: {POSTGRES_PASSWORD: "${LAB_PASSWORD:-}", POSTGRES_DB: app}
+    data: /var/lib/postgresql
+    port: 5432
+    memory: 1g
+    connection: "Host=postgres;Port=5432;Database=app;Username=postgres;Password={password}"
+  mysql:
+    image: mysql:8.4.13
+    environment: {MYSQL_ROOT_PASSWORD: "${LAB_PASSWORD:-}", MYSQL_DATABASE: app}
+    data: /var/lib/mysql
+    port: 3306
+    memory: 1g
+    connection: "Server=mysql;Port=3306;Database=app;User ID=root;Password={password}"
+  redis:
+    image: redis:8.8.4-alpine
+    command: [redis-server, --requirepass, "${LAB_PASSWORD:-}", --appendonly, "yes"]
+    data: /data
+    port: 6379
+    memory: 256m
+    connection: "redis:6379,password={password},abortConnect=false"
+  mongodb:
+    image: mongo:8.0.34-noble
+    environment: {MONGO_INITDB_ROOT_USERNAME: root, MONGO_INITDB_ROOT_PASSWORD: "${LAB_PASSWORD:-}"}
+    data: /data/db
+    port: 27017
+    memory: 1g
+    connection: "mongodb://root:{password}@mongodb:27017/app?authSource=admin"
+  rabbitmq:
+    image: rabbitmq:4.4.0-alpine
+    environment: {RABBITMQ_DEFAULT_USER: app, RABBITMQ_DEFAULT_PASS: "${LAB_PASSWORD:-}"}
+    data: /var/lib/rabbitmq
+    port: 5672
+    memory: 768m
+    connection: "amqp://app:{password}@rabbitmq:5672/"
+  kafka:
+    image: apache/kafka:4.4.0
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+    data: /var/lib/kafka/data
+    port: 9092
+    memory: 1g
+    connection: "kafka:9092"
+  azure-blob:
+    image: mcr.microsoft.com/azure-storage/azurite:3.37.0
+    command: [azurite-blob, --blobHost, 0.0.0.0, --location, /data, --skipApiVersionCheck, --disableTelemetry]
+    data: /data
+    port: 10000
+    memory: 512m
+    connection: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=<Azurite's well-known devstoreaccount1 key>;BlobEndpoint=http://azure-blob:10000/devstoreaccount1;"
+  s3:
+    image: versity/versitygw:v1.10.0
+    environment: {ROOT_ACCESS_KEY_ID: lab, ROOT_SECRET_ACCESS_KEY: "${LAB_PASSWORD:-}", VGW_PORT: ":7070", VGW_META_SIDECAR: /data/meta}
+    command: [/bin/sh, -c, "mkdir -p /data/buckets /data/meta && exec /usr/local/bin/versitygw posix /data/buckets"]
+    entrypoint: []
+    data: /data
+    port: 7070
+    memory: 256m
+    connection: "AWS_ENDPOINT_URL_S3=http://s3:7070 AWS_ACCESS_KEY_ID=lab AWS_SECRET_ACCESS_KEY={password}"

@@ -711,6 +711,9 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
         if (cdir / "k8s.yaml").exists():
             lint += lint_manifests(load_yaml_docs((cdir / "k8s.yaml").read_text()), f"{cdir.name}/k8s.yaml: ",
                                    provided)
+        if (out / "compose.yaml").exists():          # the same component in compose.yaml (compose.py)
+            from .compose import lint_file
+            lint += lint_file(out / "compose.yaml", cdir.name)
         lint_all += lint
         comp = {"component": cdir.name, "base": final_base(df), "lint": [v.to_dict() for v in lint], "scans": []}
         bres = None

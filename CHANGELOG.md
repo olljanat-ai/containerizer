@@ -20,6 +20,16 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   `plan.json` (`applied`, `resolved`, `reasons`); the finding keeps its rule severity as `rule_severity` and is
   never sent to a refactoring. An application whose only refactor findings are these goes from B to A at its next
   scan. The page also classifies all 111 refactor rules (platform, partial, code-only) as candidates for more.
+- **Docker Compose output** (#253): next to `kustomization.yaml`, each application gets a `compose.yaml` for teams
+  that run their first containers on one Docker or Podman host, a PaaS that takes Compose, or a developer's machine.
+  It is made from the same hardened pod specs as `k8s.yaml`: non-root `user`, `read_only`, `cap_drop: [ALL]`,
+  `no-new-privileges`, Docker's default seccomp and AppArmor, `tmpfs` with the emptyDir sizes, named volumes for
+  the persistent folders, memory limits, `pids_limit`, healthchecks where the image can run one, published ports
+  only for web components and on loopback by default, and an internal network (no route out) for components
+  without egress. Secret settings come from `<component>/secrets.env` (never in `compose.yaml`;
+  `secrets.env.example` lists the keys); the lab dependencies an app needs (SQL Server, PostgreSQL, Redis,
+  RabbitMQ...) are optional services under the `lab` profile. `containerizer gate` lints it like the manifests
+  (no `privileged`, no host network, no secret values...). No application code changes. Docs: `docs/compose.md`.
 
 ## 0.16.4 (2026-11-05)
 
