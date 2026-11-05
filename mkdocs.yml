@@ -55,6 +55,7 @@ nav:
       - Refactoring patches: refactoring.md
       - Egress and network connectivity: egress.md
       - Build pipelines: build-pipelines.md
+      - Docker Compose (no Kubernetes): compose.md
       - Rule review: rule-review.md
   - Administration:
       - Sign-in and roles: sign-in.md
