@@ -125,6 +125,8 @@ def listing(adm, conn, s, a, flash: str) -> Response:
         used = ", ".join(f"{e(n)}{'' if n in ready or not on else ' <span class=muted>(waiting)</span>'}" for n in apps) \
             or "<span class='muted'>none</span>"
         msg = f"<div class='muted small'>{e(x['message'])}</div>" if x.get("message") else ""
+        # the repository's SQL setup scripts the lab agent ran into the apps' databases (labinit.py)
+        msg += "".join(f"<div class='muted small'>{e(str(n))}</div>" for n in (x.get("init") or [])[:20])
         need = missing.get(svc) or []
         if not on and (need or apps):
             names = sorted(set(need) | set(apps))

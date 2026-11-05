@@ -811,9 +811,27 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
         if "lab" in comp_docs:
             raise ValueError("a component is named 'lab', the folder of the lab service credentials")
         docs = labservices.app_docs(app_ns(a.name), lab_plan.provided)
+        init_md = ""
+        if "sqlserver" in lab_plan.provided:
+            # the repository's own SQL setup scripts, which the lab agent runs once into the app's database
+            from . import labinit
+            scripts, how = labinit.find(Path(a.repo.root))
+            if scripts:
+                cm, notes = labinit.configmap(app_ns(a.name), scripts)
+                if cm:
+                    docs.append(cm)
+                    if lab_report is not None:
+                        lab_report["init_scripts"] = [r for r, _ in scripts]
+                init_md = "\n".join(
+                    ["## SQL Server: the repository's setup scripts", "",
+                     (f"The lab agent runs these once into the app's database ({how}), as the app's own login, and "
+                      "again when they change or the database is made again. A batch that fails is reported on "
+                      "Admin -> Lab services and the rest goes on." if cm else
+                      "Found, but not run:")] + [f"- `{r}`" for r, _ in scripts] + [""]
+                    + ([f"- {n}" for n in notes] + [""] if notes else []))
         (out / "lab").mkdir(parents=True, exist_ok=True)
         (out / "lab" / "k8s.yaml").write_text(_yaml_docs(docs))
-        (out / "lab" / "README.md").write_text(labservices.readme(app_ns(a.name), lab_plan))
+        (out / "lab" / "README.md").write_text(labservices.readme(app_ns(a.name), lab_plan) + ("\n" + init_md if init_md else ""))
         written += [out / "lab" / "k8s.yaml", out / "lab" / "README.md"]
         all_k8s += docs
         comp_docs["lab"] = docs

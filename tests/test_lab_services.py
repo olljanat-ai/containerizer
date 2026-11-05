@@ -463,3 +463,128 @@ def test_ready_for_and_crash_log():
             return subprocess.CompletedProcess(args, 0, "line 1\nchown: Operation not permitted\n", "")
     assert labagent._pod_problem(K(), "mongodb", "mongodb") == \
         "CrashLoopBackOff: back-off - last log: line 1 | chown: Operation not permitted"
+
+
+# --------------------------------------------------------------------------- the repository's SQL setup scripts
+
+def test_setup_scripts_are_found_in_the_order_a_deploy_script_runs_them(tmp_path):
+    """The lab's expense-claims: deploy/install-database.ps1 runs db/01 to 03 with Invoke-Sqlcmd; 04 only after the
+    first HR import (its README), so not here."""
+    from containerizer import labinit
+    for n in ("01-create-database.sql", "02-quartz-tables.sql", "03-schema.sql", "04-reference-data.sql"):
+        write(tmp_path, f"db/{n}", f"-- {n}\nCREATE TABLE t{n[:2]} (id int);\nGO\n")
+    write(tmp_path, "tests/fixtures/seed.sql", "CREATE TABLE x (id int);")
+    write(tmp_path, "deploy/install-database.ps1", "\n".join([
+        "$db = Join-Path $PSScriptRoot '..\\db'",
+        "Invoke-Sqlcmd @common -Database master -InputFile (Join-Path $db '01-create-database.sql') -Variable @()",
+        "Invoke-Sqlcmd @common -Database $DatabaseName -InputFile (Join-Path $db '02-quartz-tables.sql')",
+        "Invoke-Sqlcmd @common -Database $DatabaseName -InputFile (Join-Path $db '03-schema.sql')",
+        "Write-Host 'Database ready. Run 04-reference-data.sql after the first HR import.'"]))
+    scripts, how = labinit.find(tmp_path)
+    assert [r for r, _ in scripts] == ["db/01-create-database.sql", "db/02-quartz-tables.sql", "db/03-schema.sql"]
+    assert how == "in the order deploy/install-database.ps1 runs them"
+    # without a deploy script: every .sql of the folder, by name (10 after 9)
+    (tmp_path / "deploy" / "install-database.ps1").unlink()
+    write(tmp_path, "db/10-late.sql", "SELECT 1;")
+    write(tmp_path, "db/9-early.sql", "SELECT 1;")
+    assert [r for r, _ in labinit.find(tmp_path)[0]] == [
+        "db/01-create-database.sql", "db/02-quartz-tables.sql", "db/03-schema.sql", "db/04-reference-data.sql",
+        "db/9-early.sql", "db/10-late.sql"]
+    assert labinit.find(tmp_path / "tests") == ([], "")                 # test data is not set-up
+
+
+def test_setup_scripts_leave_out_what_the_lab_does_itself():
+    from containerizer import labinit
+    script = """:on error exit
+IF DB_ID(N'$(DatabaseName)') IS NULL
+BEGIN
+    CREATE DATABASE [$(DatabaseName)];
+END
+GO
+CREATE LOGIN [app] WITH PASSWORD = N'$(AppPassword)';
+GO
+USE [$(DatabaseName)];
+GO
+IF SCHEMA_ID(N'exp') IS NULL EXEC (N'CREATE SCHEMA [exp] AUTHORIZATION [dbo]');
+GO
+BEGIN TRANSACTION;
+GO
+CREATE TABLE [exp].[Claims] (Id int, Note nvarchar(20) DEFAULT N'it''s');   -- USE [x] in a comment is fine
+GO
+COMMIT;
+GO
+EXEC sp_configure 'clr enabled', 1;
+RECONFIGURE;
+GO
+"""
+    body, dropped = labinit.prepare(script)
+    assert "CREATE SCHEMA [exp]" in body and "CREATE TABLE [exp].[Claims]" in body
+    assert ":on error" not in body and "CREATE DATABASE" not in body and "CREATE LOGIN" not in body
+    assert "BEGIN TRANSACTION" not in body and "COMMIT" not in body and "sp_configure" not in body
+    assert dropped == ["IF DB_ID(N'$(DatabaseName)') IS NULL", "CREATE LOGIN [app] WITH PASSWORD = N'$(AppPassword)';",
+                       "USE [$(DatabaseName)];", "EXEC sp_configure 'clr enabled', 1;"]
+    run = labinit.script({"001-a.sql": body}, "m1")
+    # each batch on its own, its errors printed, quotes doubled; the marker last
+    assert run.count("BEGIN TRY") == 2 and "N''it''''s''" in run and labinit.ERROR_TAG in run
+    assert run.rstrip().endswith("@value = N'm1';\nGO")
+
+
+def test_the_generated_lab_files_carry_the_setup_scripts(tmp_path):
+    a = _app(tmp_path, packages='<PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.0" />',
+             settings={"ConnectionStrings": {"Main": "Server=sql,1433;Database=L;User Id=x;Password=y"}})
+    write(tmp_path / "app", "db/01-schema.sql", "CREATE TABLE a (id int);\nGO\nCREATE LOGIN x WITH PASSWORD = 'p';\nGO\n")
+    write(tmp_path / "app", "db/02-data.sql", "INSERT a VALUES (1);\n")
+    from containerizer import labinit
+    a = assess(tmp_path / "app")
+    out, rep = tmp_path / "out", {}
+    generate.generate_app(a, out, lab={"sqlserver"}, lab_report=rep)
+    cm = next(d for d in _docs(out / "lab" / "k8s.yaml") if d["kind"] == "ConfigMap")
+    assert cm["metadata"]["name"] == labinit.CONFIGMAP and cm["metadata"]["labels"][labinit.INIT_LABEL] == "sqlserver"
+    assert sorted(cm["data"]) == ["001-01-schema.sql", "002-02-data.sql"] and "CREATE LOGIN" not in cm["data"]["001-01-schema.sql"]
+    assert rep["init_scripts"] == ["db/01-schema.sql", "db/02-data.sql"]
+    md = (out / "lab" / "README.md").read_text()
+    assert "## SQL Server: the repository's setup scripts" in md and "`db/02-data.sql`" in md and "CREATE LOGIN" in md
+    # without the lab's SQL Server: nothing of it
+    generate.generate_app(a, tmp_path / "out2", lab=set())
+    assert not (tmp_path / "out2" / "lab").exists()
+
+
+def test_the_lab_agent_runs_the_setup_scripts_once_as_the_app(tmp_path):
+    from containerizer import labinit
+    data = {"001-a.sql": "CREATE TABLE a (id int);\nGO\n"}
+    mark = labinit.digest(data)
+    kube = FakeKube([_es("shop", "sqlserver")])
+    in_db = {"mark": ""}
+    get = kube._get
+
+    def _get(args):
+        if "configmap" in args:
+            return {"metadata": {"labels": {labinit.INIT_LABEL: "sqlserver"}}, "data": data}
+        return get(args)
+    kube._get = _get
+    run = kube.run
+
+    def run_(args, input=None, check=True, timeout=None, redact=()):
+        if "exec" in args and "-Q" in " ".join(args):
+            kube.calls.append((list(args), input))
+            return subprocess.CompletedProcess(args, 0, in_db["mark"] + "\n", "")
+        if "exec" in args and "/dev/stdin" in " ".join(args) and labinit.MARKER in (input or ""):
+            kube.calls.append((list(args), input))
+            in_db["mark"] = mark
+            return subprocess.CompletedProcess(args, 0, f"{labinit.ERROR_TAG}001-a.sql batch 1: oops\n", "")
+        return run(args, input, check, timeout, redact)
+    kube.run = run_
+    cfg = {"services": {**L.defaults(), "sqlserver": True}}
+    images = {s.image_var: f"img/{s.id}@sha256:{'b' * 64}" for s in L.SERVICES.values()}
+    st = labagent.reconcile(kube, cfg, images, state_path=tmp_path / "state.json", status_path=None)
+    inits = [(a, i) for a, i in kube.calls if "exec" in a and labinit.MARKER in (i or "")]
+    assert len(inits) == 1
+    args, stdin = inits[0]
+    pw = stdin.split("\n", 1)[0]
+    assert '-U "shop"' in " ".join(args) and "-U sa" not in " ".join(args) and pw not in " ".join(args)
+    assert "1 batch(es) failed" in st["services"]["sqlserver"]["init"][0]
+    # the next pass asks nothing: the scripts are the same
+    kube.calls.clear()
+    st = labagent.reconcile(kube, cfg, images, state_path=tmp_path / "state.json", status_path=None)
+    assert not [a for a, _ in kube.calls if "exec" in a]
+    assert "1 batch(es) failed" in st["services"]["sqlserver"]["init"][0]       # still shown: the last run's note

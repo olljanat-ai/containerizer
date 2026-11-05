@@ -8,6 +8,13 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- Lab services: an app's SQL Server database is set up from the repository's own SQL scripts (the DBA's
+  `db/*.sql`, in the order its deploy script runs them), once, as the app's own login; what needs server-wide
+  rights is left out and a failing batch does not stop the rest. Before, an app that does not create its tables
+  itself failed in the sandbox (the lab's expense-claims: Quartz's "Invalid object name 'quartz.QRTZ_JOB_DETAILS'").
+
 ## 0.13.0 (2026-11-05)
 
 - A minor release with the installer ISO and the disk images, for new appliances (physical servers too) with

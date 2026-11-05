@@ -25,6 +25,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -375,7 +376,7 @@ def _shared(kube: Kubectl, svc: str, apps: list[str], image: str, state: dict, s
         return
     uid = pod["metadata"]["uid"]
     done = state.setdefault(svc, {})
-    failed = []
+    failed, fresh = [], set()
     for ns in apps:
         mark = f"{uid}:{hashlib.sha256(creds[ns]['password'].encode()).hexdigest()[:16]}"
         if done.get(ns) == mark:
@@ -385,9 +386,26 @@ def _shared(kube: Kubectl, svc: str, apps: list[str], image: str, state: dict, s
             kube.exec(L.LAB_NS, pod["metadata"]["name"], svc, L.provision_command(svc),
                       L.provision_sql(svc, ns, creds[ns]), timeout=timeout, redact=(creds[ns]["password"],))
             done[ns] = mark
+            fresh.add(ns)
             st["ready"].append(ns)
         except KubeError as ex:
             failed.append(f"{ns}: {ex}{_socket_dir(kube, svc, pod)}")
+    if svc == "sqlserver":
+        ran = state.setdefault("sqlserver-init", {})     # namespace -> the scripts' hash last found in its database
+        notes = state.setdefault("sqlserver-init-notes", {})     # namespace -> what the last run of them did
+        for ns in st["ready"]:
+            try:
+                note, ran[ns] = init_database(kube, pod, ns, creds[ns], timeout,
+                                              known=None if ns in fresh else ran.get(ns))
+            except KubeError as ex:
+                note = f"{ns}: the repository's SQL scripts did not run: {ex}"
+            if note:
+                notes[ns] = f"{now()}: {note}"[:800]
+        for d in (ran, notes):
+            for ns in [n for n in d if n not in apps]:
+                d.pop(ns)
+        if notes:
+            st["init"] = [notes[ns] for ns in sorted(notes)]
     for ns in [n for n in done if n not in apps]:
         done.pop(ns)          # the database stays; a new pod or password provisions it again
     # a server that only just turned ready may still be finishing its first start (MySQL's entry point
@@ -395,6 +413,43 @@ def _shared(kube: Kubectl, svc: str, apps: list[str], image: str, state: dict, s
     young = _ready_for(pod) < READY_GRACE
     st["state"] = ("starting" if young else "error") if failed else "running"
     st["message"] = "; ".join(failed)[:800]
+
+
+def init_database(kube: Kubectl, pod: dict, ns: str, cred: dict, timeout: int = 300,
+                  known: str | None = None) -> tuple[str, str | None]:
+    """The app's database set up from its repository's SQL scripts (labinit.py), when its namespace has the
+    ConfigMap the scan made and the database has not run these scripts yet (the marker in the database: so a
+    database made again, or changed scripts, run them again). As the app's own login, owner of that database
+    only, with sqlcmd's variables off; an error does not stop the rest. `known`: the hash this agent last found in
+    the database (it does not ask the database again while the scripts are the same; None after it provisioned
+    the database). Returns (what happened, "" for nothing; the hash the database has now, None for no scripts)."""
+    from . import labinit
+    cm = kube.get(["configmap", labinit.CONFIGMAP, "-n", ns]) or {}
+    data = {k: v for k, v in (cm.get("data") or {}).items() if isinstance(v, str)}
+    if not data or ((cm.get("metadata") or {}).get("labels") or {}).get(labinit.INIT_LABEL) != "sqlserver":
+        return "", None
+    mark = labinit.digest(data)
+    if known == mark:
+        return "", mark
+    user, db, pw = L._safe(cred["username"]), L._safe(L.db_name(ns)), cred["password"]
+    name = pod["metadata"]["name"]
+
+    def sqlcmd(*args: str) -> list[str]:            # the password on stdin (first line), never on the command line
+        return ["/bin/sh", "-c", 'IFS= read -r SQLCMDPASSWORD; export SQLCMDPASSWORD; exec /opt/mssql-tools18/bin/sqlcmd '
+                f'-C -S localhost -U "{user}" -d "{db}" -x -I ' + " ".join(args)]
+    have = kube.exec(L.LAB_NS, name, "sqlserver", sqlcmd("-h", "-1", "-W", "-Q", f'"{labinit.MARK_QUERY}"'),
+                     pw + "\n", timeout=60, redact=(pw,)).strip()
+    if have == mark:
+        return "", mark
+    out = kube.exec(L.LAB_NS, name, "sqlserver", sqlcmd("-i", "/dev/stdin"), pw + "\n" + labinit.script(data, mark),
+                    timeout=max(timeout, 600), redact=(pw,))
+    errors = [ln.strip()[len(labinit.ERROR_TAG):] for ln in out.splitlines() if ln.strip().startswith(labinit.ERROR_TAG)]
+    errors += [ln.strip() for ln in out.splitlines() if re.match(r"\s*Msg \d+, Level 1[1-9]", ln)]
+    msg = f"{ns}: ran the repository's SQL scripts ({', '.join(sorted(data))})"
+    if errors:
+        msg += f"; {len(errors)} batch(es) failed, the rest ran (first: {errors[0][:300]})"
+    log(msg)
+    return msg, mark
 
 
 def _socket_dir(kube: Kubectl, svc: str, pod: dict) -> str:
