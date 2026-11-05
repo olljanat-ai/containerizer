@@ -72,11 +72,24 @@ def test_a_vulnerability_stop_names_the_packages_to_upgrade():
         return {"id": "CVE-x", "package": pkg, "installed": inst, "fixed": fixed, "origin": origin, "severity": "CRITICAL"}
     comp = {"scans": [{"kind": "image", "passed": False, "blocking": [
         v("Refit", "6.3.2", "7.2.22"), v("System.Drawing.Common", "5.0.0", "4.7.2, 5.0.3"), v("Refit", "6.3.2", "7.2.22")]}]}
-    assert gate_failure(comp) == ("3 fixable vulnerabilities at or above the gate threshold in the application's packages: "
+    assert gate_failure(comp) == "" and gate_failure(comp, vulnerabilities=True) == ("3 fixable vulnerabilities at or above the gate threshold in the application's packages: "
                                   "Refit 6.3.2 (fixed in 7.2.22), System.Drawing.Common 5.0.0 (fixed in 4.7.2, 5.0.3)")
     comp["scans"][0]["blocking"] = [v("openssl", "3.0.2", "3.0.15", "base")]
-    assert gate_failure(comp).endswith("in the base image: openssl 3.0.2 (fixed in 3.0.15)")
+    assert gate_failure(comp, vulnerabilities=True).endswith("in the base image: openssl 3.0.2 (fixed in 3.0.15)")
     comp["scans"][0]["blocking"] = [v(f"Pkg.Number{i}", "1.0.0", "2.0.0", "base" if i % 2 else "app") for i in range(20)]
-    r = gate_failure(comp)
+    r = gate_failure(comp, vulnerabilities=True)
     assert r.startswith("20 fixable vulnerabilities at or above the gate threshold (image): Pkg.Number0 1.0.0")
     assert len(r) <= 320 and r.endswith("more")
+
+
+def test_vulnerabilities_do_not_keep_a_component_out_by_default(monkeypatch):
+    """Getting the application running in containers is the aim; its developers fix vulnerable packages there.
+    scan.block_deploy: true keeps such components out; a build failure always does."""
+    from containerizer import org
+    comp = {"scans": [{"kind": "image", "passed": False, "blocking": [
+        {"package": "Refit", "installed": "6.3.2", "fixed": "7.2.22", "origin": "app"}]}]}
+    assert org.vulnerabilities_block() is False and org.gate_failure(comp) == ""
+    monkeypatch.setattr("containerizer.harden.security", lambda: {"scan": {"block_deploy": True}})
+    assert org.vulnerabilities_block() is True and org.gate_failure(comp).startswith("1 fixable vulnerabilities")
+    monkeypatch.setattr("containerizer.harden.security", lambda: {"scan": {}})
+    assert org.gate_failure({**comp, "build_error": "x"}) == "image build failed"

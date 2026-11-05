@@ -128,7 +128,8 @@ in that run unless their project is disabled.
    rated **A** on its own (including the stateless requirement), a Linux image can be generated for it,
    and it built and ran in the verification (or ran and only lacked its database or broker).
 6. **Security gate**: lint, image build, vulnerability scan and a run with the pod's
-   security context ([security gate](overview.md#security-gate)). A component that fails is dropped, and
+   security context ([security gate](overview.md#security-gate)). Vulnerabilities are reported, not
+   a reason to drop the component (`scan.block_deploy`). A component that fails is dropped, and
    the rest are gated again so the namespace, network policies and GitOps files cover only what is
    deployed.
 7. **Images pushed** to the appliance's own registry as `localhost:5000/sandbox/<app>/<component>:<tag>` and

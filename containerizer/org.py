@@ -235,13 +235,29 @@ def select_components(a, verified: bool) -> tuple[list, list[dict]]:
     return keep, excluded
 
 
-def gate_failure(comp: dict) -> str:
+def vulnerabilities_block() -> bool:
+    """Whether vulnerabilities keep a component out of the sandbox (rules/60-security.yaml scan.block_deploy, off by
+    default). Containerizer's aim is the application running in containers with as few changes as possible; its
+    developers fix vulnerable packages on the new platform, so the scan reports them (SECURITY.md) and the component
+    is deployed. `containerizer gate`, a CI check, still fails on them."""
+    from .harden import security
+    try:
+        return bool((security().get("scan") or {}).get("block_deploy", False))
+    except Exception:  # noqa: BLE001 - the rules cannot be read: as by default
+        return False
+
+
+def gate_failure(comp: dict, vulnerabilities: bool | None = None) -> str:
+    """Why the security gate keeps a component out of the sandbox, or "". `vulnerabilities`: whether a vulnerability
+    scan that did not pass counts (default: vulnerabilities_block)."""
     if comp.get("build_error"):
         return "image build failed"
     errs = [v for v in comp.get("lint", []) if v.get("severity") == "error"]
     if errs:
         return f"manifest/Dockerfile lint: {errs[0].get('check')}: {errs[0].get('message')}"[:300]
-    for s in comp.get("scans", []):
+    if vulnerabilities is None:
+        vulnerabilities = vulnerabilities_block()
+    for s in comp.get("scans", []) if vulnerabilities else []:
         if not s.get("passed"):
             if s.get("error"):
                 return f"{s.get('kind', 'image')} scan failed: {s['error']}"[:300]

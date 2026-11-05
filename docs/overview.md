@@ -357,6 +357,13 @@ OS package with a fix, the gate upgrades just that package in the final stage (`
 `apt-get --only-upgrade`; chiseled images have no package manager and need a newer tag). Results go to
 `SECURITY.md` and `security.json` next to the generated files.
 
+Vulnerabilities do not keep a component out of the sandbox: Containerizer's aim is the application running in
+containers with as few changes as possible, and its developers fix vulnerable packages on the new platform. An
+organization scan, a Make it A order or a platform migration deploys the component and reports them in
+`SECURITY.md`, which names each package to upgrade and its fixed version. Set `scan.block_deploy: true`
+(`rules/60-security.yaml`) to keep such components out instead; `containerizer gate` as a CI check fails on them
+either way.
+
 ### NSA/CISA hardening
 
 The manifests follow the [NSA/CISA Kubernetes Hardening Guide](https://media.defense.gov/2022/Aug/29/2003066362/-1/-1/0/CTR_KUBERNETES_HARDENING_GUIDANCE_1.2_20220829.PDF)
