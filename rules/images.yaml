@@ -12,6 +12,16 @@ dotnet:
   aspnet_full: mcr.microsoft.com/dotnet/aspnet:10.0-noble
   runtime_full: mcr.microsoft.com/dotnet/runtime:10.0-noble
   app_uid: 1654
+  # An app that targets an out-of-support .NET Core / .NET runs on the runtime it targets: its own Microsoft
+  # image, which no longer gets fixes (Debian 9-11, no 'app' user: it runs as app_uid with HOME /home/app).
+  # Without one here (2.2, 3.0), or when the app needs OS packages (those Debian versions are archived), it
+  # rolls forward onto the runtime line above.
+  legacy:
+    "2.1": {aspnet: mcr.microsoft.com/dotnet/aspnet:2.1, runtime: mcr.microsoft.com/dotnet/runtime:2.1}
+    "3.1": {aspnet: mcr.microsoft.com/dotnet/aspnet:3.1, runtime: mcr.microsoft.com/dotnet/runtime:3.1}
+    "5.0": {aspnet: mcr.microsoft.com/dotnet/aspnet:5.0, runtime: mcr.microsoft.com/dotnet/runtime:5.0}
+    "6.0": {aspnet: mcr.microsoft.com/dotnet/aspnet:6.0, runtime: mcr.microsoft.com/dotnet/runtime:6.0}
+    "7.0": {aspnet: mcr.microsoft.com/dotnet/aspnet:7.0, runtime: mcr.microsoft.com/dotnet/runtime:7.0}
 node:
   build: node:20-bookworm-slim
   static: nginxinc/nginx-unprivileged:1.27-alpine

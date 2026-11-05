@@ -110,12 +110,13 @@ rules:
     effort: 0.5
     title: Out-of-support .NET runtime
     why: >-
-      Targets an out-of-support .NET version. It can still be containerized without code
-      changes by rolling forward onto the supported .NET 10 runtime (DOTNET_ROLL_FORWARD=Major).
+      Targets an out-of-support .NET version. It is containerized without code changes: it runs on its own
+      runtime image, which Microsoft no longer patches (or, where there is none, rolls forward onto the
+      supported .NET 10 runtime).
     fix: >-
       Nothing to change in code: the generated Dockerfile builds the project for the framework it targets and runs
-      it on the supported .NET 10 runtime with roll-forward. Keep the target framework; upgrading .NET is a separate
-      project, not part of containerizing the application.
+      it on that framework's runtime image. Keep the target framework; upgrading .NET is a separate project, not
+      part of containerizing the application.
     refs:
       - https://dotnet.microsoft.com/en-us/platform/support/policy/dotnet-core
       - https://learn.microsoft.com/en-us/dotnet/core/versions/selection

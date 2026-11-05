@@ -495,7 +495,7 @@ def test_yaml_markdown_and_svg(tmp_path):
     md = (tmp_path / "CONNECTIVITY.md").read_text()
     assert "![Network connectivity of shop](connectivity.svg)" in md and "| web | api.github.com | 443/TCP |" in md
     page = cy.svg(doc)
-    assert "<script" not in page and "style=" not in page and "<style" not in page and "cf-missing" in page
+    assert not re.search(r"<script(?![^>]*\bsrc=)", page) and "style=" not in page and "<style" not in page and "cf-missing" in page
     assert "Not observed in the sandbox" in page
     file = (tmp_path / "connectivity.svg").read_text()
     assert "<style>" in file and "prefers-color-scheme:dark" in file

@@ -550,7 +550,8 @@ def test_admin_page_gate_and_listing(adm):
     assert "config (0.80)" in r.body and "900 in / 300 out tokens in 5 min (estimated ~1,000 in)" in r.body
     assert "Re-scan now" in r.body and "value='9'" in r.body and "All kinds" in r.body
     assert "/admin/llm-queue/2/up" in r.body and "/admin/llm-queue/1/up" not in r.body   # the first cannot go up
-    assert re.findall(r"<script[^>]*>", r.body) == ["<script src='/static/app.js'>"]    # no inline script
+    assert re.findall(r"<script[^>]*>", r.body) == ["<script src='/static/theme.js'>",
+                                                    "<script src='/static/app.js'>"]    # no inline script
     assert ("llm-queue", "LLM queue") in adm._tabs(adm.sessions.get(operator), __import__(
         "containerizer.roles", fromlist=["Access"]).Access(False, True))
 

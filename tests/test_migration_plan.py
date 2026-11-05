@@ -120,7 +120,7 @@ def test_section_on_the_page():
     assert "Not in the plan: Loans.Database (lives with the database)" in sec
     # no Refactoring box on this page: the plan points to the findings instead of Make it A
     assert "#refactoring" not in sec and "The findings below say what to change" in sec
-    assert " style=" not in sec and "<script" not in html
+    assert " style=" not in sec and not re.search(r"<script(?![^>]*\bsrc=)", html)
 
 
 def test_between_the_parts():

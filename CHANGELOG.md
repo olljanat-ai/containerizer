@@ -17,6 +17,12 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   the framework it targets, rolled forward), the LLM's instructions forbid changing a project's target
   framework, SDK or package versions unless the finding is about the framework itself (a .NET Framework port, a
   -windows framework), and a .NET Core / .NET 5+ project the edits retargeted gets its framework back.
+- An app that targets an out-of-support .NET Core / .NET (2.1, 3.1, 5.0, 6.0, 7.0) runs on its own Microsoft
+  runtime image (`mcr.microsoft.com/dotnet/aspnet:6.0` and so on), as it was built and tested, no longer rolled
+  forward onto .NET 10: no runtime behaviour changes between .NET versions (the lab's retail-backoffice
+  Customers.Api failed on .NET 10 with a `Global\` mutex error and runs on .NET 5). Those images are not patched
+  any more. Same non-root user and home as before; `ASPNETCORE_URLS` sets the port (ASPNETCORE_HTTP_PORTS is
+  .NET 8+). Roll-forward remains for Core 2.2 / 3.0 (no image) and for apps that need OS packages.
 - No security-only changes: **Secrets in configuration files** is information only (the app runs with them, and
   the container overrides each setting through an environment variable), and is not sent to the LLM.
   **Credentials hard-coded in source** is about what blocks the container (it cannot point the app at its own
