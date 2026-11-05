@@ -878,3 +878,17 @@ def test_every_wired_nic_joins_one_active_backup_bond_with_the_address_on_it():
         assert line in bond, line
     addr = (net / "21-uplink-bond0.network").read_text()
     assert "Name=bond0" in addr and "DHCP=yes" in addr
+
+
+def test_dhcp_identity_survives_the_recovery_system_and_the_banner_shows_bond0():
+    """The recovery system that installs the appliance and the installed system have different machine-ids: a
+    DUID client ID gave the installed system a second DHCP address (the boot test could not reach it). The client
+    ID is the bond's MAC; the console banner names bond0, not the first interface (the DNS filter's dummy)."""
+    root = Path(__file__).resolve().parent.parent
+    net = (root / "appliance/rootfs/etc/systemd/network/21-uplink-bond0.network").read_text()
+    assert "\n[DHCPv4]\nClientIdentifier=mac\n" in net
+    link = (root / "appliance/rootfs/etc/systemd/network/21-uplink-bond0.link").read_text()
+    assert "OriginalName=bond0" in link and "MACAddressPolicy=none" in link   # not a machine-id MAC (99-default.link)
+    for f in ("appliance/rootfs/etc/issue", "appliance/oem/03_branding.yaml"):
+        text = (root / f).read_text()
+        assert "\\4{bond0}" in text and "https://\\4/" not in text, f

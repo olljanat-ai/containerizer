@@ -1,0 +1,10 @@
+# bond0 keeps the MAC of its first interface. Without this, udev's default policy (99-default.link,
+# MACAddressPolicy=persistent) gives the bond a MAC made from the machine-id, and the bond then sets it on its
+# interfaces: hypervisors that allow only the MAC they assigned (Hyper-V without MAC spoofing, vSphere port
+# groups that reject forged transmits) drop the traffic, and the recovery system that installs the appliance
+# and the installed system (different machine-ids) get different DHCP leases.
+[Match]
+OriginalName=bond0
+
+[Link]
+MACAddressPolicy=none
