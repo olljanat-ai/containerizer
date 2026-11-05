@@ -1,4 +1,5 @@
 """Small self-contained tests: synthetic projects in a temp folder."""
+import re
 import textwrap
 from pathlib import Path
 
@@ -134,11 +135,14 @@ def test_nlog_and_tool_paths(tmp_path):
 
 
 def test_old_tfm_rolls_forward_to_supported_line(tmp_path):
-    web_app(tmp_path, tfm="net6.0")
-    a = assess(tmp_path)
+    web_app(tmp_path / "c30", tfm="netcoreapp3.0")          # no runtime image of its own: rolled forward
+    a = assess(tmp_path / "c30")
+    assert make_plan(a, a.components[0])["env"]["DOTNET_ROLL_FORWARD"] == "Major"
+    web_app(tmp_path / "n6", tfm="net6.0")
+    a = assess(tmp_path / "n6")
     plan = make_plan(a, a.components[0])
-    assert plan["env"]["DOTNET_ROLL_FORWARD"] == "Major"
-    plan["strategy"] = "retarget"
+    assert plan["runtime_line"] == "6.0" and "DOTNET_ROLL_FORWARD" not in plan["env"]
+    plan["strategy"] = "retarget"                          # the build could not target net6.0 (build-eol-targeting)
     df = dockerfile_dotnet(plan)
     assert ">net10.0</TargetFramework>#" in df and "-p:TargetFramework=net10.0" in df and "aspnet:10.0" in df
 
@@ -274,3 +278,52 @@ def test_windows_sign_in_in_code_needs_a_change_also_with_iis_turned_off(tmp_pat
     f = next(f for f in a.components[0].findings if f.rule.id == "windows-auth-iis")
     assert f.rule.severity == "refactor" and "AddOpenIdConnect" in f.rule.fix and a.rating == "B"
     assert str(f.evidence[0].file).endswith("Program.cs")
+
+
+def test_a_service_with_a_console_switch_gets_it_in_the_container(tmp_path):
+    """The Windows service pattern of the .NET docs: it runs as a service unless it gets --console, and a service
+    stops at once in a container (ServiceBase: PlatformNotSupportedException)."""
+    write(tmp_path / "svc", "src/Feed/Feed.csproj", """
+        <Project Sdk="Microsoft.NET.Sdk">
+          <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+        </Project>""")
+    write(tmp_path / "svc", "src/Feed/Program.cs", """
+        using Microsoft.Extensions.Hosting;
+        var isService = !(System.Diagnostics.Debugger.IsAttached || args.Contains("--console"));
+        var host = Host.CreateDefaultBuilder(args).ConfigureServices(s => s.AddHostedService<Worker>()).Build();
+        if (isService) await host.RunAsServiceAsync(); else await host.RunAsync();
+        """)
+    a = assess(tmp_path / "svc")
+    c = next(c for c in a.components if c.name == "Feed")
+    plan = make_plan(a, c)
+    assert plan["args"] == ["--console"] and any(r["rule"] == "console-switch" for r in plan["reasons"])
+    assert '"--console"]' in dockerfile_dotnet(plan)
+    web_app(tmp_path / "web")
+    w = assess(tmp_path / "web")
+    assert make_plan(w, w.components[0])["args"] == []
+
+
+def test_an_out_of_support_dotnet_runs_on_its_own_runtime(tmp_path):
+    """net6.0 / netcoreapp3.1: the matching Microsoft image, as built and tested (no roll-forward, no retarget);
+    the same user and home as the supported images. OS packages (archived Debian) or no image: roll forward."""
+    for tfm, image in (("net6.0", "mcr.microsoft.com/dotnet/aspnet:6.0"),
+                       ("netcoreapp3.1", "mcr.microsoft.com/dotnet/aspnet:3.1")):
+        web_app(tmp_path / tfm, tfm=tfm)
+        a = assess(tmp_path / tfm)
+        plan = make_plan(a, a.components[0])
+        df = dockerfile_dotnet(plan)
+        assert f"FROM {image} AS final" in df and "DOTNET_ROLL_FORWARD" not in df
+        assert 'HOME="/home/app"' in df and "USER 1654" in df and "own-runtime" in df
+        assert 'ASPNETCORE_URLS="http://+:8080"' in df            # ASPNETCORE_HTTP_PORTS is .NET 8+
+        assert "FROM mcr.microsoft.com/dotnet/sdk:10.0" in df and "TargetFramework=net10.0" not in df
+        full = dockerfile_dotnet({**plan, "base": "full", "add_packages": ["libgdiplus"]})
+        assert re.search(r"aspnet:10\.0[.\d]*-noble AS final", full) and 'DOTNET_ROLL_FORWARD="Major"' in full
+        assert "own-runtime" not in full
+    web_app(tmp_path / "c30", tfm="netcoreapp3.0")
+    a = assess(tmp_path / "c30")
+    df = dockerfile_dotnet(make_plan(a, a.components[0]))
+    assert "chiseled-extra AS final" in df and 'DOTNET_ROLL_FORWARD="Major"' in df and "own-runtime" not in df
+    web_app(tmp_path / "n10", tfm="net10.0")
+    a = assess(tmp_path / "n10")
+    df = dockerfile_dotnet(make_plan(a, a.components[0]))
+    assert "noble-chiseled-extra AS final" in df and "HOME" not in df

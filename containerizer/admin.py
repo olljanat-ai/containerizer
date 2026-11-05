@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 from .oidc import OidcConfig, OidcError, Provider, Session, Sessions, allowed, identity
 from .roles import Access, owner_scopes, role_label
+from .theme import BUTTON as THEME_BUTTON
 
 e = html.escape
 MAX_BODY = 64 * 1024
@@ -460,7 +461,7 @@ class Admin:
         role = role_label(s.admin, s.operator, s.scopes)
         scope = f": {e(', '.join(s.scopes))}" if s.scopes and not s.admin else ""
         return page(title, f"""<div class='topnav'><a href='/'>← Results</a><span>Signed in as <b>{e(s.name)}</b>
-<span class='muted'>({e(s.user)}) · {e(role)}{scope}</span> {self._logout_form(s)}</span></div>
+<span class='muted'>({e(s.user)}) · {e(role)}{scope}</span> {self._logout_form(s)}{THEME_BUTTON}</span></div>
 <header><h1>{e(title)}</h1></header><nav class='chips'>{tabs}</nav>{msg}{body}""", script=True, refresh=refresh)
 
     # -- applications ---------------------------------------------------------------------------

@@ -8,6 +8,32 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.16.2 (2026-11-05)
+
+- Refactoring (LLM orders, Make it A) keeps each project's target framework. The `core-eol` finding of an
+  out-of-support .NET Core / .NET 5-7 app told the LLM to retarget to net10.0, and the lab's local model moved
+  net6.0, net5.0 and netcoreapp3.1 projects to net10.0: a shared library then gave them other package versions,
+  and what built and ran before did not. Now that finding is never sent to the LLM (the container runs the app on
+  the framework it targets, rolled forward), the LLM's instructions forbid changing a project's target
+  framework, SDK or package versions unless the finding is about the framework itself (a .NET Framework port, a
+  -windows framework), and a .NET Core / .NET 5+ project the edits retargeted gets its framework back.
+- An app that targets an out-of-support .NET Core / .NET (2.1, 3.1, 5.0, 6.0, 7.0) runs on its own Microsoft
+  runtime image (`mcr.microsoft.com/dotnet/aspnet:6.0` and so on), as it was built and tested, no longer rolled
+  forward onto .NET 10: no runtime behaviour changes between .NET versions (the lab's retail-backoffice
+  Customers.Api failed on .NET 10 with a `Global\` mutex error and runs on .NET 5). Those images are not patched
+  any more. Same non-root user and home as before; `ASPNETCORE_URLS` sets the port (ASPNETCORE_HTTP_PORTS is
+  .NET 8+). Roll-forward remains for Core 2.2 / 3.0 (no image) and for apps that need OS packages.
+- No security-only changes: **Secrets in configuration files** is information only (the app runs with them, and
+  the container overrides each setting through an environment variable), and is not sent to the LLM.
+  **Credentials hard-coded in source** is about what blocks the container (it cannot point the app at its own
+  server), no longer about rotating secrets.
+- Generated containers pass a Windows service's console switch (`args.Contains("--console")`, the pattern of the
+  .NET docs for running a host as a Windows service): without it such an app starts as a service and stops at once
+  in a container (`ServiceBase`: PlatformNotSupportedException).
+- Web UI: a light/dark button in the top right corner, next to the sign-in details. The pages follow the system's
+  setting until it is used; the choice is kept in the browser (local storage), and pages without the script follow
+  the system as before.
+
 ## 0.16.1 (2026-11-05)
 
 - Results page: a component the organization scan's security gate left out of the sandbox shows **What failed**

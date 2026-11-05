@@ -284,6 +284,15 @@ server such as Ollama, vLLM, LM Studio or llama.cpp. It is asked only about comp
 unsure of and failures no failure rule explains. Every answer is validated against its schema before
 it is used or learned, responses are cached, and usage and cost are tracked.
 
+### Light or dark
+
+The web UI follows the system's light or dark setting. The button in the top right corner, next to the sign-in
+details, switches between them; the choice is kept in that browser until it is switched again. (It needs no
+cookie: the browser's local storage keeps it, and the server never sees it.)
+
+![The top right corner of a results page in light mode, with the light/dark button next to the sign-in details](images/theme-toggle.png#only-light){ .cz-shot }
+![The top right corner of a results page in dark mode, with the light/dark button next to the sign-in details](images/theme-toggle-dark.png#only-dark){ .cz-shot }
+
 ## Generated output
 
 Per component: `Dockerfile` (+ `Dockerfile.dockerignore`), `k8s.yaml` (Deployment or CronJob,
@@ -305,9 +314,15 @@ GitOps: every app also gets `gitops/flux/`, its Flux configuration (Flux is the 
 
 Techniques used to avoid application changes:
 
-- out-of-support .NET (Core 3.1, 5, 6, 7): build with the .NET 10 SDK and run on the supported .NET 10
-  runtime with `DOTNET_ROLL_FORWARD=Major`; if the old target can't be built, retarget with
-  `net10.0` in the build stage's copy of the entry project (its netstandard libraries keep their targets);
+- out-of-support .NET (Core 2.1, 3.1, 5, 6, 7): build for the framework the project targets, with the .NET 10
+  SDK, and run on that framework's own Microsoft runtime image (`mcr.microsoft.com/dotnet/aspnet:6.0` and so on),
+  as the app was built and tested; those images are no longer patched. The image runs as the same non-root user
+  as the supported ones (uid 1654, `HOME=/home/app`) and listens through `ASPNETCORE_URLS` (before .NET 8,
+  `ASPNETCORE_HTTP_PORTS` is ignored). Only when there is no such image (Core 2.2, 3.0) or the app needs OS
+  packages (the old images' Debian versions are archived) does it roll forward onto the .NET 10 runtime
+  (`DOTNET_ROLL_FORWARD=Major`); if the old target can't be built at all, the build stage's copy of the entry
+  project is retargeted to `net10.0` (its netstandard libraries keep their targets). The project itself is never
+  retargeted;
 - `global.json` SDK pins are removed inside the build stage only;
 - Kestrel endpoints from `appsettings.json` are re-pointed with `Kestrel__Endpoints__X__Url`;
 - connection strings and secret settings become `ConnectionStrings__X` env vars from a Secret;

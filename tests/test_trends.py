@@ -78,7 +78,7 @@ def test_page_renders_charts_tables_and_escapes():
     d = trends.compute(history(), NOW, None)
     html = trends.render_trends(d, "all")
     assert "<ledger>" not in html and "&lt;ledger&gt;" in html
-    assert "style=" not in html and "<script" not in html             # the CSP allows neither
+    assert "style=" not in html and not re.search(r"<script(?![^>]*\bsrc=)", html)   # the CSP allows neither
     assert html.count("<svg class='chart'") == 2 and html.count("Show as a table") == 2
     assert "Rating improved" in html and "▲ better" in html and "▼ worse" in html
     assert "/app/1" in html and "Finance" in html and "Oct 2026" in html

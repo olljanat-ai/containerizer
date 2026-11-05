@@ -683,13 +683,13 @@ migrations:
   - id: externalize-credentials
     for: [cfg-hardcoded-credentials]
     kind: externalize
-    replace: Credentials in source code
-    with: Kubernetes Secrets (or a vault) read through configuration
+    replace: Connection strings and credentials in source code
+    with: Configuration, set per environment (a Kubernetes Secret in the container)
     steps:
-      - Remove the literals, read the values from configuration, and supply them as Secret environment variables or mounted files.
-      - Treat the exposed values as compromised: rotate them.
+      - Read the values from configuration with today's values as defaults, so Windows keeps working unchanged.
+      - The container sets its own through environment variables from a Secret.
     verify:
-      - A secret scanner (gitleaks/trufflehog) finds nothing in the changed files.
+      - The app connects to the server its environment variable names.
     refs:
       - https://kubernetes.io/docs/concepts/configuration/secret/
 

@@ -893,7 +893,8 @@ def _ref_label(u: str) -> str:
 
 def _nav(nav: str) -> str:
     """The results pages' top bar: Containerizer's logo and name in the right corner, the sign-in links under it."""
-    return f"<div class='topnav'><span></span><span class='topnav-right'>{BRAND}<span>{nav}</span></span></div>"
+    from .theme import BUTTON
+    return f"<div class='topnav'><span></span><span class='topnav-right'>{BRAND}<span>{nav}{BUTTON}</span></span></div>"
 
 
 def _info_link(url) -> str:
@@ -1330,7 +1331,8 @@ def page(title: str, body: str, script: bool = False, refresh: int = 0) -> str:
     return (f"<!doctype html><html lang='en'><head><meta charset='utf-8'>"
             + (f"<meta http-equiv='refresh' content='{int(refresh)}'>" if refresh > 0 else "") +
             f"<meta name='viewport' content='width=device-width,initial-scale=1'><title>{e(title)} · Containerizer</title>"
-            f"<link rel='stylesheet' href='/static/app.css'><link rel='icon' href='/static/favicon.svg' type='image/svg+xml'></head>"
+            f"<link rel='stylesheet' href='/static/app.css'><link rel='icon' href='/static/favicon.svg' type='image/svg+xml'>"
+            f"<script src='/static/theme.js'></script></head>"
             f"<body>{DEV_BANNER}<main>{external_links(body)}{BRAND_FOOTER}</main>{SCRIPT_TAG if script else ''}</body></html>")
 
 
@@ -1600,7 +1602,12 @@ def make_handler(connect, admin=None):
                 if u.path == "/static/app.css":
                     from .connectivityui import CSS as CONNECTIVITY_CSS
                     from .migrationplan import CSS as PLAN_CSS
-                    return self._send(200, CSS + CONNECTIVITY_CSS + PLAN_CSS, "text/css; charset=utf-8", head)
+                    from . import theme
+                    return self._send(200, theme.themed(CSS + CONNECTIVITY_CSS + PLAN_CSS + theme.CSS),
+                                      "text/css; charset=utf-8", head)
+                if u.path == "/static/theme.js":
+                    from .theme import JS as THEME_JS
+                    return self._send(200, THEME_JS, "text/javascript; charset=utf-8", head)
                 if u.path == "/static/app.js":
                     return self._send(200, JS, "text/javascript; charset=utf-8", head)
                 if u.path in ("/static/favicon.svg", "/favicon.ico"):

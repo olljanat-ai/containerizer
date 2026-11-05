@@ -166,6 +166,10 @@ def default_plan(c: Component) -> dict:
     }
     for d in c.facts.get("writable_dirs", []) or []:
         plan["add_writable"].append(d)
+    if c.facts.get("console_arg"):           # runs as a console app, not as a Windows service (rules/05-facts.yaml)
+        plan["args"].append(str(c.facts["console_arg"]))
+        add_reason(plan, "console-switch", f"The app starts as a Windows service unless it gets "
+                   f"{c.facts['console_arg']}; the container passes it so it runs as a console app.")
     if c.role == "web" and p.kind_hint == "dotnet":
         plan["env"]["ASPNETCORE_HTTP_PORTS"] = str(CONTAINER_PORT)
         for i, ep in enumerate(c.facts.get("kestrel_endpoints", []) or []):
@@ -178,7 +182,15 @@ def default_plan(c: Component) -> dict:
         if c.role == "web":
             plan["env"]["ASPNETCORE_ENVIRONMENT"] = "Production"
         if tfm and _tfm_major(tfm) < _tfm_major(target_tfm()):
-            plan["env"]["DOTNET_ROLL_FORWARD"] = "Major"     # run on the supported runtime line
+            if legacy_runtime(tfm):
+                plan["runtime_line"] = legacy_runtime(tfm)   # its own runtime (dockerfile_dotnet)
+                if c.role == "web":         # before .NET 8 ASPNETCORE_HTTP_PORTS is ignored: the old images listen on 80
+                    plan["env"]["ASPNETCORE_URLS"] = f"http://+:{CONTAINER_PORT}"
+                add_reason(plan, "own-runtime", f"Targets {tfm}, which is out of support: it runs on its own "
+                           f".NET {plan['runtime_line']} runtime image (no longer patched), as built and tested, "
+                           "not rolled forward onto a newer runtime.")
+            else:
+                plan["env"]["DOTNET_ROLL_FORWARD"] = "Major"     # run on the supported runtime line
     return plan
 
 
@@ -384,12 +396,35 @@ def writable_dirs(plan: dict) -> list[str]:
     return sorted({_writable_abs(w) for w in plan["add_writable"] if not hides_app(w)})
 
 
+def legacy_runtime(tfm: str | None) -> str | None:
+    """The out-of-support runtime line ("6.0") a TFM runs on in its own image (rules/images.yaml dotnet.legacy),
+    or None (a supported line, .NET Framework, or no image: the app rolls forward)."""
+    m = re.fullmatch(r"(?:netcoreapp|net)(\d+)\.(\d+)", str(tfm or ""))
+    line = f"{m.group(1)}.{m.group(2)}" if m else None
+    return line if line and line in (images()["dotnet"].get("legacy") or {}) else None
+
+
+def _legacy_line(plan: dict) -> str | None:
+    """The plan's own out-of-support runtime line, unless it runs on the supported one: it needs OS packages (the
+    old images' Debian versions are archived), or it was retargeted."""
+    line = plan.get("runtime_line")
+    if not line or plan["base"] == "full" or plan["strategy"] == "retarget":
+        return None
+    return line if line in (images()["dotnet"].get("legacy") or {}) else None
+
+
 def dockerfile_dotnet(plan: dict) -> str:
     im = images()["dotnet"]
     uid = im["app_uid"]
     worker = plan["role"] != "web" and not plan.get("aspnet_runtime")
     full = plan["base"] == "full"
     base = im[("runtime" if worker else "aspnet") + ("_full" if full else "")]
+    legacy = _legacy_line(plan)
+    if legacy:
+        base = im["legacy"][legacy]["runtime" if worker else "aspnet"]
+    elif plan.get("runtime_line"):           # planned for its own runtime, but it cannot: roll forward
+        plan = {**plan, "env": {**plan["env"], "DOTNET_ROLL_FORWARD": "Major"},
+                "reasons": [r for r in plan.get("reasons") or [] if r.get("rule") != "own-runtime"]}
     proj = plan["project"]
     tfm = plan["tfm"]
     # RID-specific publish keeps the image lean; "portable" avoids RID restore graphs that old
@@ -457,6 +492,8 @@ def dockerfile_dotnet(plan: dict) -> str:
     for w in writable:
         lines.append(f"COPY --from=build --chown={uid}:{uid} /writable{w} {w}")
     env = dict(plan["env"])
+    if legacy:
+        env["HOME"] = "/home/app"           # the old images have no 'app' user: the same home as the new ones
     if env:
         lines.append("ENV " + " \\\n    ".join(f'{k}="{v}"' for k, v in sorted(env.items())))
     lines.append(f"USER {uid}")

@@ -1,6 +1,13 @@
 # Fact extraction rules. Named regex groups become facts of the component.
 # For each fact the first matching rule (highest priority) wins.
 rules:
+  # ---- the switch that makes a Windows service run as a console app: an app that starts as a service unless it
+  # gets it stops at once in a container (ServiceBase: PlatformNotSupportedException). The container passes it.
+  - id: console-switch
+    phase: facts
+    priority: 90
+    when: {code: '\bargs\.(Contains|Any)\(\s*(\w+\s*=>\s*\w+\s*==\s*)?"(?P<console_arg>(--|-|/)(console|interactive|noservice|no-service))"'}
+
   # ---- listening port the app uses today (informational; containers listen on 8080)
   - id: port-code-useurls
     phase: facts

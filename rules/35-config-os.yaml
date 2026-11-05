@@ -744,11 +744,11 @@ rules:
     windows_container: true
     title: Credentials hard-coded in source
     why: >-
-      Passwords and keys in code end up in the image and its layers, cannot be rotated or
-      supplied per environment, and cannot be replaced by Kubernetes Secrets without a rebuild.
+      A connection string or credential written in code cannot be set per environment: the container
+      cannot point the app at its own server (the sandbox's database, a test system) without a rebuild.
     fix: >-
-      Read them from configuration (ConnectionStrings / options) and supply them as Secret
-      environment variables; rotate the exposed values.
+      Read the value from configuration (ConnectionStrings / options) with today's value as the
+      default, so the container can set its own through an environment variable.
     refs:
       - https://kubernetes.io/docs/concepts/configuration/secret/
 
