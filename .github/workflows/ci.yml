@@ -28,7 +28,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt pytest pytest-xdist
-      - run: python -m pytest -q -n auto
+      - run: python -m pytest -q -n auto --dist loadgroup
 
   # Results database and web UI against a real SQL Server (tests/test_sqlstore.py), plus the compose image.
   sql:

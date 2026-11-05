@@ -36,7 +36,7 @@ It was built for the [onek8s containerization challenge](https://github.com/onek
 Issues and pull requests are welcome. To run the web UI and API on your own machine, see
 [local dev server](docs/local-dev-server.md); tests are under `tests/` and the documentation site is built
 from `docs/`. Run the unit tests with `pip install -r requirements.txt pytest pytest-xdist` and
-`python -m pytest -q -n auto`; CI runs them on every pull request. The heavy checks (SQL Server, Kubernetes
+`python -m pytest -q -n auto --dist loadgroup`; CI runs them on every pull request. The heavy checks (SQL Server, Kubernetes
 sandboxes, the action's end-to-end runs) run when you start the **ci** workflow by hand (Actions, ci, Run
 workflow) or label the pull request `full-ci`. Rule changes go in `rules/`, and every refactor, rewrite or blocker rule needs a reference
 link.

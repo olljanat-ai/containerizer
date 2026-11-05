@@ -10,7 +10,7 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
-- CI runs the unit tests (`python -m pytest -q -n auto`) on every pull request and push to `main`, and the
+- CI runs the unit tests (`python -m pytest -q -n auto --dist loadgroup`) on every pull request and push to `main`, and the
   security gate on pull requests that change the generator, hardening or the security and base image rules. The
   heavy jobs (SQL Server, the Kubernetes sandboxes, the action's end-to-end runs) run on a manual run of the
   **ci** workflow or on a pull request labelled `full-ci`. Tests no longer see the machine's AI endpoint and model

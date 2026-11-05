@@ -2,6 +2,11 @@
 GITHUB_TOKEN, a CI job's) never reach the code under test, so local runs behave like CI."""
 import pytest
 
+
+def pytest_configure(config):
+    # pytest-xdist's own mark (--dist loadgroup); declared so runs without xdist do not warn about it
+    config.addinivalue_line("markers", "xdist_group(name): tests that run on the same pytest-xdist worker")
+
 from containerizer.orgsource import TOKEN_ENVS
 
 

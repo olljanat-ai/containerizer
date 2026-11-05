@@ -46,7 +46,14 @@ def docker_ok() -> bool:
         return False
 
 
-needs_docker = pytest.mark.skipif(not docker_ok(), reason="needs Docker")
+_skip_without_docker = pytest.mark.skipif(not docker_ok(), reason="needs Docker")
+# Docker builds share BuildKit's package cache mounts: under pytest -n auto (--dist loadgroup) they run one after
+# the other on one worker, or two restores write the same cache folder at once.
+_one_docker_build_at_a_time = pytest.mark.xdist_group("docker")
+
+
+def needs_docker(f):
+    return _one_docker_build_at_a_time(_skip_without_docker(f))
 
 
 # --------------------------------------------------------------------------- provider detection
