@@ -404,6 +404,35 @@ def test_admin_maps_and_audits(idp, tmp_path):
         assert "Web Shop" in body and "No applications" not in body
         assert "No applications have the tag" in b.follow("/?tag=other")[2]
         assert b.follow("/admin/tags/999999", {"csrf": csrf, "Tags": "x"})[0] == 404
+        # Try again (scanagain.py): a component the latest organization scan left out, with what failed; the button
+        # queues a scan of only the application's repository, and the page says while it is queued
+        u = "https://git.example.com/acme/shop"
+        sa = sqlstore.connect(cs)
+        c = sa.cursor()
+        c.execute("UPDATE cz.Application SET RepositoryUrl = %s WHERE ApplicationId = %s", (u, app))
+        c.execute("INSERT cz.OrgScan (Name, Provider, Organization, Registry) VALUES (N'again', N'github', N'acme', N'r')")
+        c.execute("SELECT ScanId FROM cz.OrgScan WHERE Name = N'again'")
+        scan = c.fetchone()[0]
+        c.execute("INSERT cz.OrgRepository (ScanId, ProjectName, Name, CloneUrl, RepositoryUrl, LastStatus, LastScannedAt, "
+                  "LastDetail) VALUES (%s, N'_', N'shop', %s, %s, N'no-a-components', SYSUTCDATETIME(), %s)",
+                  (scan, u, u, json.dumps({"components": [], "excluded": [
+                      {"component": "Web", "reason": "security gate: image build failed",
+                       "detail": "Image build, the end of its log:\nerror NU1101: Unable to find package <Acme.Core>"}]})))
+        sa.commit()
+        body = b.follow(f"/app/{app}")[2]
+        assert "image build failed" in body and "What failed" in body and "NU1101: Unable to find package &lt;Acme.Core&gt;" in body
+        assert f"action='/admin/scan-again/{app}'" in body and "Try again" in body
+        assert b.go(f"/admin/scan-again/{app}", {})[0] == 403                                  # no CSRF token
+        s, _, body = b.follow(f"/admin/scan-again/{app}", {"csrf": csrf})
+        assert "Scan queued" in body and "of this application is queued" in body and "<button>Try again</button>" not in body
+        c.execute("SELECT Kind, TriggeredBy, Scope FROM cz.OrgScanRun WHERE ScanId = %s", (scan,))
+        runs = c.fetchall()
+        assert [(r[0], r[1], json.loads(r[2])["repositories"]) for r in runs] == [("full", "manual", ["_/shop"])]
+        assert "Not queued" in b.follow(f"/admin/scan-again/{app}", {"csrf": csrf})[2]          # already queued
+        c.execute("UPDATE cz.OrgScanRun SET Status = N'succeeded', FinishedAt = SYSUTCDATETIME() WHERE ScanId = %s", (scan,))
+        sa.commit()
+        sa.close()
+        assert b.follow("/admin/scan-again/999999", {"csrf": csrf})[0] == 404                 # no such application
         # the change history names who changed what
         body = b.follow("/admin/audit")[2]
         assert "customer-facing,Kärnsystem" in body

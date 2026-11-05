@@ -2398,7 +2398,8 @@ GO
 CREATE OR ALTER VIEW [${schema}].vSandboxDeploy AS
 SELECT a.ApplicationId, a.SandboxEnabled, r.ScannedAt,
        CASE WHEN r.SplitPath IS NULL THEN r.LastStatus ELSE s.status END AS ScanStatus,
-       d.Kind, d.ComponentName, d.ProjectPath, d.Reason
+       d.Kind, d.ComponentName, d.ProjectPath, d.Reason, d.Detail,
+       CASE WHEN r.SplitPath IS NULL THEN JSON_QUERY(r.Detail, '$$.lab_services') ELSE s.lab END AS LabServices
 FROM [${schema}].Application a
 OUTER APPLY (SELECT TOP (1) o.LastStatus, o.LastScannedAt AS ScannedAt, o.SplitPath,
                     CASE WHEN ISJSON(o.LastDetail) = 1 THEN o.LastDetail END AS Detail
@@ -2406,29 +2407,30 @@ OUTER APPLY (SELECT TOP (1) o.LastStatus, o.LastScannedAt AS ScannedAt, o.SplitP
              WHERE o.RepositoryUrl = a.RepositoryUrl AND o.RemovedAt IS NULL AND o.LastScannedAt IS NOT NULL
                AND (o.SplitPath IS NOT NULL OR a.SourcePath IS NULL OR a.SourcePath IN (N'', N'.'))
              ORDER BY o.LastScannedAt DESC, o.RepositoryId DESC) r
-OUTER APPLY (SELECT TOP (1) j.status, j.folder FROM OPENJSON(CASE WHEN r.SplitPath IS NOT NULL THEN r.Detail END, '$$.apps')
-             WITH (source_key nvarchar(400), status nvarchar(40), folder nvarchar(400)) j
+OUTER APPLY (SELECT TOP (1) j.status, j.folder, j.lab FROM OPENJSON(CASE WHEN r.SplitPath IS NOT NULL THEN r.Detail END, '$$.apps')
+             WITH (source_key nvarchar(400), status nvarchar(40), folder nvarchar(400), lab nvarchar(max) '$$.lab_services' AS JSON) j
              WHERE j.source_key = a.SourceKey) s
 OUTER APPLY (
-    SELECT N'deployed' AS Kind, j.component AS ComponentName, j.project AS ProjectPath, CAST(NULL AS nvarchar(1000)) AS Reason
+    SELECT N'deployed' AS Kind, j.component AS ComponentName, j.project AS ProjectPath, CAST(NULL AS nvarchar(1000)) AS Reason,
+           CAST(NULL AS nvarchar(max)) AS Detail
     FROM OPENJSON(CASE WHEN r.SplitPath IS NULL THEN r.Detail END, '$$.components')
          WITH (component nvarchar(200), project nvarchar(400)) j
     UNION ALL
-    SELECT N'excluded', j.component, NULL, j.reason
+    SELECT N'excluded', j.component, NULL, j.reason, j.detail
     FROM OPENJSON(CASE WHEN r.SplitPath IS NULL THEN r.Detail END, '$$.excluded')
-         WITH (component nvarchar(200), reason nvarchar(1000)) j
+         WITH (component nvarchar(200), reason nvarchar(1000), detail nvarchar(max)) j
     UNION ALL
-    SELECT N'deployed', j.component, j.project, NULL
+    SELECT N'deployed', j.component, j.project, NULL, NULL
     FROM OPENJSON(CASE WHEN s.folder IS NOT NULL THEN r.Detail END, '$$.components')
          WITH (component nvarchar(200), project nvarchar(400), application nvarchar(400)) j
     WHERE j.application = s.folder
     UNION ALL
-    SELECT N'excluded', SUBSTRING(j.component, LEN(s.folder) + 3, 200), NULL, j.reason
+    SELECT N'excluded', SUBSTRING(j.component, LEN(s.folder) + 3, 200), NULL, j.reason, j.detail
     FROM OPENJSON(CASE WHEN s.folder IS NOT NULL THEN r.Detail END, '$$.excluded')
-         WITH (component nvarchar(400), reason nvarchar(1000)) j
+         WITH (component nvarchar(400), reason nvarchar(1000), detail nvarchar(max)) j
     WHERE LEFT(j.component, LEN(s.folder) + 2) = s.folder + N': '
     UNION ALL
-    SELECT NULL, NULL, NULL, NULL
+    SELECT NULL, NULL, NULL, NULL, NULL
 ) d
 WHERE a.Retired = 0
   AND NOT EXISTS (SELECT 1 FROM [${schema}].vDisabledRepositoryUrl h WHERE h.RepositoryUrl = a.RepositoryUrl);

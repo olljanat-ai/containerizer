@@ -836,7 +836,7 @@ def review_prompt(a, c) -> str:
 
 
 def ai_review_component(a, c, model: str | None = None) -> dict:
-    with usage_scope(component=c.name):
+    with usage_scope(component=getattr(c, "name", None)):
         res = ask_json(review_prompt(a, c), REVIEW_SCHEMA, model=model, feature="assessment",
                        max_tokens=SHORT_ANSWER_TOKENS)
     res["model"] = model_name(model)
@@ -960,7 +960,7 @@ def diagnose_failure(a, c, plan: dict, stage: str, log_tail: str, model: str | N
               "external if the container itself is fine and only an external service/config is missing, platform if "
               "a Windows-only API/library is needed, code if the application code must change.")
     try:
-        with usage_scope(component=c.name):
+        with usage_scope(component=getattr(c, "name", None)):
             r = ask_json(prompt, DIAG_SCHEMA, model=model, feature="build-diagnosis", max_tokens=SHORT_ANSWER_TOKENS)
         fix = json.loads(r.get("fix_json") or "{}")
         if not isinstance(fix, dict):

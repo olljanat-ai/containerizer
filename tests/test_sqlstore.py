@@ -372,8 +372,10 @@ def test_sandbox_deploy_view(db):
     cur.execute("SELECT ScanId FROM cz.OrgScan WHERE Name = N'deploy-view'")
     scan = cur.fetchone()[0]
     whole = {"components": [{"component": "Portal", "project": "src/Portal/Portal.csproj"}],
-             "excluded": [{"component": "Api", "reason": "rated D (blocker)"}]}
-    split = {"apps": [{"folder": "apps/one", "source_key": split_url + "#apps/one", "status": "deployed"},
+             "excluded": [{"component": "Api", "reason": "rated D (blocker)", "detail": "Image build, the end of its log:\nnpm ERR!"}],
+             "lab_services": {"needed": {"rabbitmq": ["Portal"]}, "provided": [], "missing": ["rabbitmq"]}}
+    split = {"apps": [{"folder": "apps/one", "source_key": split_url + "#apps/one", "status": "deployed",
+                       "lab_services": {"needed": {"sftp": ["Web"]}, "provided": [], "missing": ["sftp"]}},
                       {"folder": "apps/two", "source_key": split_url + "#apps/two", "status": "sandbox-off"}],
              "components": [{"component": "Web", "project": "Web/Web.csproj", "application": "apps/one"}],
              "excluded": [{"component": "apps/one: Tape", "reason": "keeps local state"}]}
@@ -398,6 +400,28 @@ def test_sandbox_deploy_view(db):
         assert kinds("loans") == [("deployed", "Portal", None), ("excluded", "Api", "rated D (blocker)")]
         assert next(r["ProjectPath"] for r in rows["loans"] if r["Kind"] == "deployed") == "src/Portal/Portal.csproj"
         assert kinds("one") == [("deployed", "Web", None), ("excluded", "Tape", "keeps local state")]
+        assert next(r["Detail"] for r in rows["loans"] if r["Kind"] == "excluded").endswith("npm ERR!")    # What failed
+        assert next(r["Detail"] for r in rows["one"] if r["Kind"] == "excluded") is None
+        # the application's lab services: the whole repository's, and a split one's own (schema of 0.16.1)
+        assert json.loads(rows["loans"][0]["LabServices"])["missing"] == ["rabbitmq"]
+        assert json.loads(rows["one"][0]["LabServices"])["needed"] == {"sftp": ["Web"]}
+        assert rows["two"][0]["LabServices"] is None
+    finally:
+        rd.close()
+    # the other direction, for Admin -> Lab services (the admin login): per service, the applications that need it
+    from containerizer import admin_lab
+    ed = sqlstore.connect(_as(db, "cz_t_editor"), password="Test-Passw0rd!x")
+    try:
+        by = admin_lab.needed_by(ed)
+        assert by == {"rabbitmq": [{"id": ids["loans"], "name": "loans", "components": ["Portal"], "provided": False}],
+                      "sftp": [{"id": ids["one"], "name": "one", "components": ["Web"], "provided": False}]}
+        html = admin_lab.needed_by_html(by, {"rabbitmq": True})
+        assert f"<a href='/app/{ids['loans']}'>loans</a>" in html and "on · 1 application" in html and "Without it" in html
+    finally:
+        ed.close()
+    rd = sqlstore.connect(_as(db, "cz_t_reader"), password="Test-Passw0rd!x")
+    try:
+        pass
         assert kinds("two") == [] and not rows["two"][0]["SandboxEnabled"] and rows["two"][0]["ScanStatus"] == "sandbox-off"
         assert rows["one"][0]["ScanStatus"] == "deployed" and rows["one"][0]["SandboxEnabled"]
         assert len(rows["cli-only"]) == 1 and rows["cli-only"][0]["ScanStatus"] is None

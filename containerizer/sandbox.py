@@ -527,6 +527,24 @@ def observe_component(kube: Kube, ns: str, workloads: list[tuple[str, str]]) -> 
 
 # --------------------------------------------------------------------------- diagnosis
 
+def lab_services_off(doc: dict, component: str) -> dict | None:
+    """The lab services this component needs and the lab has turned off (containerizer.json lab_services.missing),
+    as a diagnosis: an app without its message broker or database often just stops (control-tower's
+    CarrierGateway: RabbitMQ off, its background services fail and the host exits 0; it logs to a file only, so
+    the pod log is empty and the events only say a secret store key is missing)."""
+    from .labservices import SERVICES
+    ls = (doc or {}).get("lab_services") or {}
+    needed = ls.get("needed") or {}
+    off = [svc for svc in ls.get("missing") or [] if component in (needed.get(svc) or [])]
+    if not off:
+        return None
+    names = ", ".join(SERVICES[x].title if x in SERVICES else x for x in off)
+    return {"rule": "lab-service-off", "outcome": "external", "stage": "cluster", "refs": [],
+            "diagnosis": f"It needs {names}, which the lab has turned off: turn {'it' if len(off) == 1 else 'them'} on "
+                         "under Admin -> Lab services; the next scan points the app at "
+                         f"{'it' if len(off) == 1 else 'them'} (until then the app keeps its own settings)."}
+
+
 def diagnose_observation(ob: Observation, failures: list[dict] | None = None) -> dict | None:
     """Cluster-stage rules on the pod states and events first (image pull, scheduling, OOM ...), then
     the run-stage rules on the application's log (the same rules as the local build-and-run)."""
@@ -724,6 +742,9 @@ def verify_sandbox(root: Path, o: SandboxOptions | None = None, kube: Kube | Non
                 from .verify import load_failures
                 failures = load_failures()
             d = diagnose_observation(ob, failures)
+            off = lab_services_off(a["doc"], comp)
+            if off and (d is None or d.get("outcome") in ("environment", "external")):
+                d = off                     # what the app needs and the lab has not turned on comes first
             if d:
                 r["diagnosis"] = d
                 r["reason"] = f"{r['reason']} - {d['diagnosis']}" if r["reason"] else d["diagnosis"]
