@@ -8,6 +8,12 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- Web UI: a light/dark button in the top right corner, next to the sign-in details. The pages follow the system's
+  setting until it is used; the choice is kept in the browser (local storage), and pages without the script follow
+  the system as before.
+
 ## 0.16.1 (2026-11-05)
 
 - Results page: a component the organization scan's security gate left out of the sandbox shows **What failed**
