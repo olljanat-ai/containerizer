@@ -167,7 +167,8 @@ def cmd_gate(args) -> int:
     for app in _apps(args.paths):
         a = assess(app, rules)
         out = Path(args.out) / a.name if args.out else Path(app) / "containerize"
-        r = gate_app(a, out, build=not args.no_build, scan=not args.no_scan, scanner=scanner, fail_on=args.fail_on,
+        r = gate_app(a, out, build=not args.no_build and not args.no_scan, scan=not args.no_scan, scanner=scanner,
+                     fail_on=args.fail_on,
                      registry=args.registry, pin=args.pin_digests, base_cache=base_cache,
                      run=not args.no_build and not args.no_run, refresh=not args.no_refresh)
         blocking = sum(len(s["blocking"]) for c in r["components"] for s in c["scans"])

@@ -348,7 +348,10 @@ results, and starts it with the docker equivalent of its pod spec (user, read-on
 capabilities, sysctls, `emptyDir` mounts) to prove the exceptions are enough; read-only or permission
 errors in the log fail the gate. A lock older than 14 days is refreshed first.
 
-**Vulnerability scan.** The gate scans the final base image of every component and the built image;
+**Vulnerability scan.** Off by default when Containerizer deploys (organization scans, Make it A, platform
+migrations): vulnerabilities are outside its aim, and the scans took long. `scan.enabled: true` in
+`rules/60-security.yaml` turns them on; `containerizer gate` and `containerizer images --update` scan when they are
+run. When on, the gate scans the final base image of every component and the built image;
 findings missing from the base are attributed to the application's own packages (upgrade them) rather
 than the base (bump it). It fails on vulnerabilities at or above `scan.fail_on` (default `CRITICAL`)
 that have a fix; accepted risks go in `scan.allowlist` with a reason and an expiry date. Trivy and
@@ -357,7 +360,7 @@ OS package with a fix, the gate upgrades just that package in the final stage (`
 `apt-get --only-upgrade`; chiseled images have no package manager and need a newer tag). Results go to
 `SECURITY.md` and `security.json` next to the generated files.
 
-Vulnerabilities do not keep a component out of the sandbox: Containerizer's aim is the application running in
+Even when scans are on, vulnerabilities do not keep a component out of the sandbox: Containerizer's aim is the application running in
 containers with as few changes as possible, and its developers fix vulnerable packages on the new platform. An
 organization scan, a Make it A order or a platform migration deploys the component and reports them in
 `SECURITY.md`, which names each package to upgrade and its fixed version. Set `scan.block_deploy: true`

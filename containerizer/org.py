@@ -1352,7 +1352,8 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
         progress.step(progress.GATE)
         progress.detail(f"{len(keep)} component{'' if len(keep) == 1 else 's'}: " + ", ".join(c.name for c in keep[:5])
                         + (" ..." if len(keep) > 5 else ""))
-        g = gate_app(fa, gen, build=True, scan=True, run=True, registry=o.registry, pin=o.pin, gitops=gitops,
+        from .imagescan import scans_enabled
+        g = gate_app(fa, gen, build=True, scan=scans_enabled(), run=True, registry=o.registry, pin=o.pin, gitops=gitops,
                      tag=tag, scanner=o.scanner or security()["scan"].get("default_scanner", "auto"),
                      fail_on=o.fail_on, devdb=dd, lab=lab, lab_report=lab_report, approved_egress=approved, links=linked,
                      ci_provider=o.provider)

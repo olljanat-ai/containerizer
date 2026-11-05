@@ -659,6 +659,18 @@ def _build_with_retries(a, cdir: Path, tag: str, comp: dict, pin: bool, post) ->
     return ok, tail
 
 
+def scans_enabled() -> bool:
+    """Whether the vulnerability scans run when Containerizer deploys (rules/60-security.yaml scan.enabled, off by
+    default): vulnerabilities are outside its aim (applications running in containers with as few changes as
+    possible; their developers fix them on the new platform), and the scans took long. `containerizer gate` and
+    `containerizer images --update` scan when they are run."""
+    try:
+        sc = security().get("scan") or {}
+        return bool(sc.get("enabled", False) or sc.get("block_deploy", False))
+    except Exception:  # noqa: BLE001 - the rules cannot be read: as by default
+        return False
+
+
 def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str = "auto",
              fail_on: str | None = None, registry: str = "registry.local", pin: bool = False,
              base_cache: dict | None = None, run: bool = False, refresh: bool = True, gitops=None,
@@ -671,6 +683,7 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
     if refresh and scan and age is not None and age > security()["images"].get("lock_max_age_days", 14):
         # the gate runs rarely per repository: pick today's patched base images rather than a stale lock
         update_images(scan=True, scanner=scanner)
+    bres = None
     generate_app(a, out, registry=registry, pin=pin, gitops=gitops, tag=tag, devdb=devdb, lab=lab,
                  lab_report=lab_report, approved_egress=approved_egress, links=links, ci_provider=ci_provider)
     pol = policy(fail_on)
@@ -688,6 +701,7 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
                                    provided)
         lint_all += lint
         comp = {"component": cdir.name, "base": final_base(df), "lint": [v.to_dict() for v in lint], "scans": []}
+        bres = None
         if scan and comp["base"]:
             base = comp["base"]
             if base not in base_cache:
@@ -704,28 +718,30 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
                 bev["blocking"] = [v for v in bev["blocking"] if v.package not in fixed]
                 bev["passed"] = not bev["blocking"] and not bres.error
             comp["scans"].append(_scan_entry(bres, bev, "base"))
-            if build:
-                tag = f"containerizer/{app_ns(a.name)}-{cdir.name}:gate"
-                ok, log = _build_with_retries(a, cdir, tag, comp, pin, lambda d: _apply_os_patch(d, comp))
-                if not ok:
-                    comp["build_error"] = log[-800:]
-                else:
+        # the build and the hardened run do not depend on the vulnerability scan (off by default: scans_enabled)
+        if build and (comp["base"] or not scan):
+            tag = f"containerizer/{app_ns(a.name)}-{cdir.name}:gate"
+            ok, log = _build_with_retries(a, cdir, tag, comp, pin, lambda d: _apply_os_patch(d, comp))
+            if not ok:
+                comp["build_error"] = log[-800:]
+            else:
+                if scan:
                     res = scan_image(tag, scanner, local=True)
-                    base_keys = {v.key for v in bres.vulns}
+                    base_keys = {v.key for v in bres.vulns} if bres is not None else set()
                     for v in res.vulns:
                         v.origin = "base" if v.key in base_keys else "app"
                     comp["scans"].append(_scan_entry(res, evaluate(res, pol), "image"))
-                    if run and (cdir / "k8s.yaml").exists():
-                        comp["run"] = run_as_manifest(tag, load_yaml_docs((cdir / "k8s.yaml").read_text()))
+                if run and (cdir / "k8s.yaml").exists():
+                    comp["run"] = run_as_manifest(tag, load_yaml_docs((cdir / "k8s.yaml").read_text()))
         comp.pop("_os_patch_df", None)
         comps.append(comp)
     lint_errors = [v for v in lint_all if v.severity == "error"]
     scan_fail = [s for c in comps for s in c["scans"] if not s["passed"]]
     age = lock_age_days()
     notes = []
-    if age is not None and age > security()["images"].get("lock_max_age_days", 14):
+    if scan and age is not None and age > security()["images"].get("lock_max_age_days", 14):
         notes.append(f"rules/images.lock.yaml is {age} days old; run `containerizer images --update`")
-    result = {"app": a.name, "policy": {"fail_on": pol["fail_on"], "ignore_unfixed": pol.get("ignore_unfixed", True)},
+    result = {"app": a.name, "scanned": bool(scan), "policy": {"fail_on": pol["fail_on"], "ignore_unfixed": pol.get("ignore_unfixed", True)},
               "passed": not lint_errors and not scan_fail and not any(c.get("build_error") for c in comps)
               and not any((c.get("run") or {}).get("status") == "hardening-failure" for c in comps),
               "lint": summarize(lint_all), "components": comps, "notes": notes}
@@ -748,9 +764,13 @@ def _scan_entry(res: ScanResult, ev: dict, kind: str) -> dict:
 
 def security_markdown(r: dict) -> str:
     p = r["policy"]
-    lines = [f"# Security gate: {r['app']}", "",
-             f"**{'PASSED' if r['passed'] else 'FAILED'}**: fails on fixable {p['fail_on']} or worse "
-             f"vulnerabilities{'' if p['ignore_unfixed'] else ' (including unfixed)'} and on lint errors.", "",
+    if r.get("scanned", True):
+        what = (f"fails on fixable {p['fail_on']} or worse vulnerabilities{'' if p['ignore_unfixed'] else ' (including unfixed)'}"
+                " and on lint errors.")
+    else:
+        what = ("fails on lint errors, a failed image build and a run that fails under the hardened security context. "
+                "Vulnerability scans are off (`scan.enabled` in rules/60-security.yaml); `containerizer gate` scans.")
+    lines = [f"# Security gate: {r['app']}", "", f"**{'PASSED' if r['passed'] else 'FAILED'}**: {what}", "",
              f"Lint: {r['lint'].get('error', 0)} errors, {r['lint'].get('warning', 0)} warnings.", ""]
     for n in r.get("notes") or []:
         lines.append(f"> {n}")

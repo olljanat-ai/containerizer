@@ -54,8 +54,8 @@ where the stack is deployed) is listed in the app's `MIGRATION.md`.
 
 The image is the application's own. A service with a build section, or whose image name matches a folder
 with a Dockerfile, is built from the repository's Dockerfile; any other is pulled from where the platform
-runs it (allow that registry's host on the Firewall page) and mirrored to the appliance's own registry. Then the same gate as for generated images runs: manifest lint, image vulnerability
-scan, and a run with the hardened security context (non-root user, read-only root file system, all
+runs it (allow that registry's host on the Firewall page) and mirrored to the appliance's own registry. Then the same gate as for generated images runs: manifest lint, the image vulnerability
+scan (only with `scan.enabled`, off by default), and a run with the hardened security context (non-root user, read-only root file system, all
 capabilities dropped). Findings in the repository's own Dockerfile are reported as warnings to fix there.
 
 When the hardened run fails because the app writes to a folder, the folder the error names becomes a

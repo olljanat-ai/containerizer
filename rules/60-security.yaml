@@ -330,6 +330,11 @@ lint:
 
 # Image vulnerability gate.
 scan:
+  # Whether the vulnerability scans run when Containerizer deploys (organization scans, Make it A, migrations).
+  # Off: vulnerabilities are outside its aim and the scans took long; the gate still lints, builds and runs the
+  # images with the hardened security context. `containerizer gate` and `images --update` scan when run.
+  # block_deploy: true turns them on as well.
+  enabled: false
   fail_on: CRITICAL           # lowest severity that fails the gate (UNKNOWN LOW MEDIUM HIGH CRITICAL)
   # Whether vulnerabilities keep a component out of the sandbox (organization scans, Make it A, migrations).
   # Off: they are reported in the application's SECURITY.md and the component is deployed; getting applications
