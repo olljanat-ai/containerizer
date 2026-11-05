@@ -309,7 +309,7 @@ def show(adm, conn, s, a, q: dict, flash: str) -> Response:
     settings = {**settings, "Parallel": max(1, sum(int(ln["parallel"]) for ln in ls))}
     parallel = int(settings["Parallel"] or 1)
     now = lq.utcnow()
-    ok, why = lq.gate(settings, now, lq.scans_running(conn), lq.load_per_cpu(), restartplan.holding())
+    ok, why = lq.gate(settings, now, lq.scans_running(conn), lq.load_per_cpu(), restartplan.holding(llm=True))
     state = "<span class='st st-ok'>Open</span>" if ok else f"<span class='st st-off'>Waiting</span> {e(why)}"
     room = lq.jobs_at_once(stored, ls)
     state += f" · {room} job{'s' if room != 1 else ''} at once" + ("" if int(stored.get("JobsAtOnce") or 0) else " (automatic)")

@@ -10,6 +10,11 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- Appliance app updates no longer interrupt LLM jobs. The LLM queue runner is drained instead of restarted: it
+  starts no new job, finishes the ones in progress (the LLM's answer in progress included) on the code they started
+  on, and then restarts with the new code by itself; a planned app update waits only for the scans. The plan's
+  wait still cuts off jobs that take longer (they go back to the queue). This works for updates made from 0.12.5
+  on: the update to 0.12.5 itself still restarts the runner.
 - Release workflow: a patch release no longer builds the OS image. Its OS image tag (`containerizer-appliance:vX.Y.Z`,
   which appliances look for) is the series' `vX.Y.0` image, copied in the registry, so a patch release takes about
   half as long. An appliance of another series that upgrades to it gets the `vX.Y.0` OS and then installs the patch

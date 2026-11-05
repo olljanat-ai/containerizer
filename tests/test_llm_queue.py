@@ -1497,3 +1497,59 @@ def test_jobs_at_once_and_the_call_state_in_sql_server():
         adm.close()
     finally:
         conn.close()
+
+
+def test_an_app_update_drains_the_runner(monkeypatch):
+    """SIGUSR1 (sysagent.restart_services, an app update): the job in progress finishes on the code it started on
+    (not put back in the queue), no new job starts, housekeeping stops, and the runner leaves (DRAINED_EXIT: systemd
+    starts the new code)."""
+    import threading
+    from types import SimpleNamespace
+    started, release = threading.Event(), threading.Event()
+
+    def make_it_a(job):
+        started.set()
+        assert release.wait(10)
+        return {"result": {}, "summary": "verified"}
+    monkeypatch.setitem(lq.JOB_KINDS, "refactor", SimpleNamespace(name="refactor", feature="refactor-queued",
+                                                                    handler=make_it_a))
+    jobs = [{"JobId": 1, "Kind": "refactor", "EstInputTokens": 0, "Attempts": 1, "Payload": "{}"},
+            {"JobId": 2, "Kind": "refactor", "EstInputTokens": 0, "Attempts": 1, "Payload": "{}"}]
+    conn = FakeConn({r"SELECT \* FROM cz.LlmSpeed": []})
+    lanes = [{"name": "built-in", "settings": None, "max_tokens": 0, "parallel": 1, "order": 10}]
+    r = _fill_runner(monkeypatch, lanes, jobs, settings={"JobsAtOnce": 1}, conn=conn)
+    logs, housekept = [], []
+    r.log = logs.append
+    monkeypatch.setattr(r, "recover", lambda own=False: None)
+    monkeypatch.setattr(r, "housekeep", lambda force=False: housekept.append(1) or 0)
+    out = {}
+    t = threading.Thread(target=lambda: out.update(n=r.run()), daemon=True)
+    try:
+        t.start()
+        assert started.wait(10)
+        r.draining.set()
+        r.wake.set()
+        n = len(housekept)
+        for _ in range(50):                 # the runner looks at the queue again: draining, it takes nothing
+            if any("app update: finishing 1 job(s)" in (m or "") for m in logs):
+                break
+            r.wake.set()
+            threading.Event().wait(0.05)
+        assert [j["JobId"] for j in jobs] == [2] and len(housekept) == n
+        assert t.is_alive()
+        release.set()
+        t.join(10)
+        assert not t.is_alive() and out["n"] == 1
+        assert not conn.sql(r"SET Status = N'queued'")                  # finished, not put back
+        assert logs[-1] == "app update: no job left on this code: restarting with the new one"
+    finally:
+        release.set()
+        r.stopping.set()
+        r.wake.set()
+        ai.LISTENERS.remove(r.metrics.llm)
+
+
+def test_the_runner_imports_all_its_code_at_start():
+    import sys
+    assert lq.preload() >= 0
+    assert {"containerizer.variant", "containerizer.refactor", "containerizer.sandbox"} <= set(sys.modules)

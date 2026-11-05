@@ -49,11 +49,14 @@ def starts(plan: dict | None) -> datetime | None:
     return parse_time(plan.get("at")) if plan else None
 
 
-def holding(now: datetime | None = None, path: Path | None = None) -> str | None:
-    """Why new work must wait (a restart is due), or None."""
+def holding(now: datetime | None = None, path: Path | None = None, llm: bool = False) -> str | None:
+    """Why new work must wait (a restart is due), or None. `llm`: the LLM queue runner asks; an app update does not
+    hold it (it finishes its jobs on the code it runs and restarts with the new one: sysagent.restart_services)."""
     plan = planned(path)
     at = starts(plan)
     if at is None or (now or datetime.now(timezone.utc)) < at:
+        return None
+    if llm and plan.get("app_update"):
         return None
     return f"waiting for the planned {describe(plan)}: no new work starts"
 

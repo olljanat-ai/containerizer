@@ -476,6 +476,13 @@ certificate and key from the appliance</label> <button{dis}>Turn off</button></f
                        f"<td class='nowrap'>{e(_when(task.get('finished') or task.get('started')))}</td></tr>"
                        + (f"<tr><td colspan=4 class='muted small'>{e(task.get('message', ''))}</td></tr>" if task.get("message") else "")
                        + "</tbody></table>")
+        drain = st.get("llm_drain")
+        if isinstance(drain, dict):
+            until = f"at the latest at {_when(drain['until'])} (the jobs not done then go back to the queue)" \
+                if drain.get("until") else "when they are done"
+            out.append(f"<p class='note'>The LLM queue runner finishes the jobs in progress on the code they started on, "
+                       f"then restarts with {e(str(drain.get('version') or 'the new code'))}: {e(until)}. "
+                       f"It starts no new job meanwhile.</p>")
         plan = st.get("restart")
         if plan:
             out.append(self.render_plan(plan, s))
@@ -555,6 +562,12 @@ and scans in progress are cut off</label></form>""")
         running = plan.get("running")
         if not holding:
             state = f"Scheduled for <b>{e(_when(plan.get('at')))}</b>. Until then scans and the LLM queue run as usual."
+        elif plan.get("app_update"):        # the LLM runner is drained instead (sysagent.restart_services)
+            state = (f"Due since {e(_when(plan.get('at')))}: no new scan starts. "
+                     + ("Checking the scans in progress..." if running is None and not plan.get("checked") else
+                        "The scans in progress could not be counted (database not reachable)." if running is None else
+                        f"Waiting for <b>{int(running)}</b> scan run(s) in progress.")
+                     + " The LLM queue keeps running: its jobs finish on the code they started on after the update.")
         elif running is None and not plan.get("checked"):
             state = "Due: no new scan or LLM job starts. Checking the work in progress..."
         elif running is None:

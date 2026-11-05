@@ -91,6 +91,7 @@ class Paths:
     history: Path = Path("/var/lib/containerizer/system/egress-history.jsonl")
     task: Path = Path("/var/lib/containerizer/system/last-task.json")
     plan: Path = Path("/var/lib/containerizer/system/restart-plan.json")
+    drain: Path = Path("/var/lib/containerizer/system/llm-drain.json")   # the LLM runner finishing its jobs
     sql_secret: Path = Path("/etc/containerizer/secrets/cz-scanner")
     run: Path = Path("/run/containerizer/system")
     dnsmasq: Path = Path("/run/containerizer/dnsmasq/egress.conf")
@@ -269,7 +270,7 @@ def publish(task: dict | None = None, egress_state: dict | None = None, https_st
           "image": c["CZ_OS_IMAGE"], "signer": c["CZ_SIGNER_REPO"],
           "boot_mode": boot_mode(), "elemental": old.get("elemental") or elemental_version(),
           "hostname": socket.gethostname(), "snapshots": snapshots(), "updated": now(),
-          "task": task if task is not None else last_task(), "restart": load_plan(),
+          "task": task if task is not None else last_task(), "restart": load_plan(), "llm_drain": load_drain(),
           "egress": egress_state if egress_state is not None else (old.get("egress") or egress_status()),
           "sandbox_https": https_state if https_state is not None else (old.get("sandbox_https") or sandbox_https_status())}
     atomic_write(P.run / "status.json", json.dumps(st, indent=1), 0o644)
@@ -350,6 +351,7 @@ def _finish(task: dict, msg: str, reboot: bool) -> None:
 # the long-running services that run the containerizer code; the one-shot ones take the new code at their next run
 PATCH_SERVICES = ("containerizer-web.service", "containerizer-worker.service", "containerizer-llm-queue.service",
                   "containerizer-egress-observer.service")
+LLM_QUEUE = "containerizer-llm-queue.service"   # drained, not restarted: its jobs finish on the code they started on
 PATCH_START_WAIT = 120      # seconds the services may take to come up with the new code
 PATCH_SETTLE = 10           # seconds they must keep running (a crash loop restarts them)
 HEALTHZ = "http://127.0.0.1:8080/healthz"
@@ -433,8 +435,78 @@ def reselect(expect: str | None) -> None:
                          f"see journalctl -u containerizer-app-patch")
 
 
-def restart_services() -> None:
-    run(["systemctl", "try-restart", *PATCH_SERVICES], timeout=300, check=False)
+def restart_services(drain_until: datetime | None = None, version: str | None = None) -> None:
+    """The containerizer services restart with the code now selected; the LLM queue runner is drained instead
+    (SIGUSR1: it starts no new job, finishes the ones in progress, the LLM calls they wait for included, on the
+    code they started on, and exits; Restart=on-failure starts it with the new code). `drain_until`: when its
+    jobs are cut off (drain_check: restarted, they go back to the queue); None: when they are done; a time past:
+    restarted now."""
+    run(["systemctl", "try-restart", *[u for u in PATCH_SERVICES if u != LLM_QUEUE]], timeout=300, check=False)
+    pid = main_pid(LLM_QUEUE)
+    if not pid or (drain_until is not None and drain_until <= datetime.now(timezone.utc)):
+        save_drain(None)
+        run(["systemctl", "try-restart", LLM_QUEUE], timeout=300, check=False)
+        return
+    run(["systemctl", "kill", "--kill-whom=main", "-s", "SIGUSR1", LLM_QUEUE], timeout=60, check=False)
+    save_drain({"pid": pid, "since": now(), "version": version,
+                "until": drain_until.isoformat(timespec="seconds") if drain_until else None})
+
+
+def _drain_until(task: dict) -> datetime | None:
+    """When the drained LLM runner's jobs are cut off: the planned update's (task `drain_until`, None: until they are
+    done), else the default wait from now."""
+    if "drain_until" in task:
+        return restartplan.parse_time(task["drain_until"]) if task["drain_until"] else None
+    return drain_deadline(restartplan.DEFAULT_WAIT)
+
+
+def main_pid(unit: str) -> int:
+    """The unit's main process, 0 when it does not run."""
+    v = run(["systemctl", "show", "-p", "MainPID", "--value", unit], timeout=30, check=False).strip()
+    return int(v) if v.isdigit() else 0
+
+
+def load_drain() -> dict | None:
+    try:
+        d = json.loads(P.drain.read_text())
+    except (OSError, ValueError):
+        return None
+    return d if isinstance(d, dict) and isinstance(d.get("pid"), int) else None
+
+
+def save_drain(d: dict | None) -> None:
+    if d is None:
+        P.drain.unlink(missing_ok=True)
+    else:
+        atomic_write(P.drain, json.dumps(d), 0o644)
+
+
+def drain_check(current: datetime | None = None) -> str | None:
+    """The LLM queue runner drained by an app update (restart_services): done once another process runs the unit
+    (it restarted with the new code); restarted when its time is over (the jobs not done go back to the queue)."""
+    d = load_drain()
+    if not d:
+        return None
+    if main_pid(LLM_QUEUE) != d["pid"]:
+        save_drain(None)
+        publish()
+        return "the LLM queue runner runs the new code"
+    until = restartplan.parse_time(d.get("until")) if d.get("until") else None
+    if until is not None and (current or datetime.now(timezone.utc)) >= until:
+        log("app update: the LLM queue runner's jobs are cut off (the wait is over); it restarts with the new code")
+        run(["systemctl", "try-restart", LLM_QUEUE], timeout=300, check=False)
+        save_drain(None)
+        publish()
+        return "the LLM queue runner restarted (its wait was over)"
+    return "the LLM queue runner finishes its jobs"
+
+
+def drain_deadline(minutes, start: datetime | None = None) -> datetime | None:
+    """When a drain's jobs are cut off: the plan's wait counted from its start (None: until they are done)."""
+    if minutes is None:
+        return None
+    from datetime import timedelta
+    return (start or datetime.now(timezone.utc)) + timedelta(minutes=int(minutes))
 
 
 def services_up(wait: int | None = None) -> str | None:
@@ -443,17 +515,22 @@ def services_up(wait: int | None = None) -> str | None:
     problem = "not checked"
     while True:
         states = {u: run(["systemctl", "is-active", u], timeout=30, check=False).strip() for u in PATCH_SERVICES[:3]}
-        down = [f"{u} is {s or 'unknown'}" for u, s in states.items() if s != "active"]
+        down = [f"{u} is {s or 'unknown'}" for u, s in states.items() if not _up(u, s)]
         problem = "; ".join(down) or web_answers()
         if problem is None:
             time.sleep(PATCH_SETTLE)
-            again = [u for u in states if run(["systemctl", "is-active", u], timeout=30, check=False).strip() != "active"]
+            again = [u for u in states if not _up(u, run(["systemctl", "is-active", u], timeout=30, check=False).strip())]
             if not again:
                 return None
             problem = f"{', '.join(again)} stopped again"
         if time.monotonic() >= deadline:
             return problem
         time.sleep(HEALTH_POLL)
+
+
+def _up(unit: str, state: str) -> bool:
+    # the drained LLM queue runner exits when its jobs are done and waits for its restart (activating) meanwhile
+    return state == "active" or (unit == LLM_QUEUE and state == "activating")
 
 
 def web_answers() -> str | None:
@@ -508,9 +585,10 @@ def install_patch(version: str, task: dict) -> None:
     task.update(message=f"Installed {version} ({digest[:19]}…); restarting the services")
     publish(task)
     set_active_patch(version)
+    until = _drain_until(task)
     try:
         reselect(version)
-        restart_services()
+        restart_services(until, version)
         problem = services_up()
     except AgentError as ex:
         problem = str(ex)
@@ -520,7 +598,7 @@ def install_patch(version: str, task: dict) -> None:
             reselect(previous)
         except AgentError as ex:
             log(str(ex))
-        restart_services()
+        restart_services(until, previous or running_version())
         raise AgentError(f"the services did not come up with {version} ({problem}); back to "
                          f"{previous or 'the OS image code ' + (running_version() or '')}")
     prune_patches(keep={version, previous})
@@ -538,7 +616,7 @@ def remove_patch(task: dict) -> None:
     publish(task)
     set_active_patch(None)
     reselect(None)
-    restart_services()
+    restart_services(_drain_until(task), running_version())
     problem = services_up()
     task.update(state="failed" if problem else "done", finished=now(),
                 message=f"Back to {running_version() or 'the OS image code'}" + (f", but {problem}" if problem else
@@ -582,6 +660,8 @@ def validate_plan(req: dict, current: datetime | None = None) -> dict:
         if not VERSION_RE.fullmatch(str(req.get("version") or "")):
             raise AgentError(f"not a release version: {req.get('version')!r}")
         plan["version"] = req["version"]
+        # an app update does not wait for the LLM jobs: the runner finishes them on its code (restart_services)
+        plan["app_update"] = bool(requirements_sha()) and apppatch.is_patch_of(req["version"], running_version())
     elif action == "rollback":
         sid = req.get("snapshot")
         if not isinstance(sid, int) or isinstance(sid, bool) or sid not in {s["id"] for s in snapshots() if not s["active"]}:
@@ -600,17 +680,17 @@ def validate_plan(req: dict, current: datetime | None = None) -> dict:
     return plan
 
 
-def running_work() -> int | None:
-    """Scan runs and LLM jobs in progress, from the results database (the scan worker's login); None when it
-    cannot be asked."""
+def running_work(llm: bool = True) -> int | None:
+    """Scan runs and LLM jobs in progress (`llm`; else scan runs only), from the results database (the scan
+    worker's login); None when it cannot be asked."""
     try:
         from .sqlstore import connect
         cs = read_env(P.sql_env).get("CZ_SQL_SCANNER_CS")
         conn = connect(cs, P.sql_secret.read_text().strip())
         try:
             cur = conn.cursor()
-            cur.execute("SELECT (SELECT COUNT(*) FROM cz.OrgScanRun WHERE Status = N'running') + "
-                        "(SELECT COUNT(*) FROM cz.LlmJob WHERE Status = N'running')")
+            cur.execute("SELECT (SELECT COUNT(*) FROM cz.OrgScanRun WHERE Status = N'running')"
+                        + (" + (SELECT COUNT(*) FROM cz.LlmJob WHERE Status = N'running')" if llm else ""))
             return int(cur.fetchone()[0])
         finally:
             conn.close()
@@ -621,14 +701,15 @@ def running_work() -> int | None:
 
 def restart_check(current: datetime | None = None) -> str:
     """Carry out the planned restart when it is due; what happened."""
+    drained = drain_check(current)
     plan = load_plan()
     if not plan:
-        return "nothing planned"
+        return drained or "nothing planned"
     current = current or datetime.now(timezone.utc)
     at = restartplan.starts(plan)
     if at is not None and current < at:
         return "scheduled"
-    running = running_work()
+    running = running_work(llm=not plan.get("app_update"))
     go, why = restartplan.due(plan, current, running)
     if not go:
         if plan.get("running") != running or not plan.get("holding_since"):
@@ -640,6 +721,9 @@ def restart_check(current: datetime | None = None) -> str:
     task = {k: plan.get(k) for k in ("action", "version", "snapshot", "requested_by", "requested_by_name",
                                      "requested_at") if plan.get(k) is not None}
     task["planned"] = f"{plan.get('at')}, restarted {why}"
+    if plan.get("app_update"):          # the LLM runner's jobs: the rest of the plan's wait
+        until = drain_deadline(plan.get("max_wait_minutes"), at)
+        task["drain_until"] = until.isoformat(timespec="seconds") if until else None
     log(f"restart: {restartplan.describe(plan)} ({why})")
     try:
         if plan["action"] == "upgrade":

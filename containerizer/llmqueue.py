@@ -58,6 +58,7 @@ REASON_TEXT = {"uncertain": "Uncertain", "second-opinion": "Second opinion", "he
 STATUSES = ("queued", "running", "answered", "failed", "skipped")
 PENDING = ("queued", "running")
 FEATURE = "assessment-queued"           # LLM usage feature of the reviews the runner asks
+DRAINED_EXIT = 75                       # drained for an app update (SIGUSR1): systemd restarts it with the new code
 MAX_ATTEMPTS = 3                        # a job that failed this often stays failed (requeue on the page)
 RETRY_MINUTES = 5                       # wait before the next attempt: this times the attempts so far
 HEARTBEAT = 30                          # seconds between heartbeats of the running jobs
@@ -1101,6 +1102,7 @@ class Runner:
         self.key = key                      # X25519 private key that opens the LLM credential (None: from the env)
         self.load = load
         self.stopping = threading.Event()
+        self.draining = threading.Event()   # an app update (SIGUSR1): no new job; leave when the running ones are done
         self.active: dict[int, dict] = {}   # JobId -> row of a job being worked on
         self.cancelling: dict[int, str] = {}  # JobId -> who pressed Cancel (cz.LlmJob.CancelRequestedBy)
         self.lock = threading.Lock()
@@ -1553,7 +1555,10 @@ class Runner:
             spare = self.slots.spare(reserved)
             # "only when idle" is checked before the first job: the runner's own work loads the machine
             ok, why = gate(settings, utcnow(), scans_running(conn), self.load() if not busy else 0.0,
-                            restartplan.holding())
+                            restartplan.holding(llm=True))
+            if self.draining.is_set():
+                ok, why = False, (f"app update: finishing {busy} job(s) on this code, then restarting with the new one"
+                                  if busy else "app update: restarting with the new code")
             self.metrics.open.set(1 if ok else 0)
             if why != self.status:
                 self.log(why or "open: taking jobs")
@@ -1621,10 +1626,14 @@ class Runner:
         finished = 0
         try:
             while not self.stopping.is_set():
+                if self.draining.is_set() and not futures:
+                    self.log("app update: no job left on this code: restarting with the new one")
+                    break
                 started = []
                 try:
                     self.recover()
-                    self.housekeep()
+                    if not self.draining.is_set():      # an app update: the new code housekeeps
+                        self.housekeep()
                     started = self.fill(pool)
                 except Exception as ex:          # the database may be away for a while: keep trying
                     self.metrics.poll_errors.inc()
@@ -1640,7 +1649,8 @@ class Runner:
                     finished += len(done)
                     futures -= done
                 else:
-                    self.stopping.wait(self.poll)
+                    self.wake.wait(self.poll)           # also woken by a drain (SIGUSR1) or a stop
+                    self.wake.clear()
                 if not futures:
                     self._leave_llm()
             if futures:
@@ -1696,6 +1706,24 @@ def run_file(path: str | Path, log=print) -> int:
     return 1 if failed else 0
 
 
+def preload() -> int:
+    """Import every module of containerizer now. A job imports many of them when it first needs them, and an app
+    update changes the code under a runner that finishes its jobs (SIGUSR1): from then on its imports take what is
+    already loaded, its own version, instead of the new version's files. Returns how many were imported."""
+    import importlib
+    import pkgutil
+    import containerizer
+    n = 0
+    for m in pkgutil.walk_packages(containerizer.__path__, "containerizer."):
+        if m.name.endswith("__main__"):
+            continue
+        try:
+            importlib.import_module(m.name)
+            n += 1
+        except Exception:  # noqa: BLE001 - an optional dependency missing: that module is imported when used, as before
+            pass
+    return n
+
 def build(args) -> int:
     """`containerizer llm-queue` from the command line."""
     if args.file:
@@ -1718,6 +1746,7 @@ def build(args) -> int:
     if unknown:
         print(f"error: unknown job kind(s) {', '.join(unknown)} (known: {', '.join(JOB_KINDS)})", file=sys.stderr)
         return 2
+    preload()
     r = Runner(lambda: connect(cs), name=name, poll=args.poll, metrics=QueueMetrics(name), kinds=kinds)
     if not args.no_metrics:
         token = os.environ.get("CONTAINERIZER_METRICS_TOKEN") or None
@@ -1729,10 +1758,21 @@ def build(args) -> int:
         r.log("stopping")
         r.stopping.set()
         r.wake.set()
+
+    def drain(signum, frame):
+        r.log("app update: no new job; the jobs in progress finish on this code, then the runner restarts")
+        r.draining.set()
+        r.wake.set()
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGUSR1, drain)
     r.log(f"{r.name}: looking at the LLM queue every {args.poll}s (kinds: {', '.join(r.kinds)})")
     r.run(once=args.once)
+    if r.draining.is_set() and not r.stopping.is_set():
+        # drained for an app update: a failure exit, so that systemd (Restart=on-failure) starts the new code
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(DRAINED_EXIT)
     if r.stopping.is_set():
         # Stopped by a signal: unfinished jobs are back in the queue (run's finally), but their threads may still
         # wait for the LLM, and Python waits for pool threads at exit, up to an hour on a CPU LLM. Leave now:

@@ -35,6 +35,7 @@ def paths(tmp_path, monkeypatch):
     p = sysagent.Paths(conf=tmp_path / "appliance.conf", system_rules=tmp_path / "egress-system.json",
                        rules=tmp_path / "etc" / "egress.json", history=tmp_path / "var" / "history.jsonl",
                        task=tmp_path / "var" / "last-task.json", plan=tmp_path / "var" / "restart-plan.json",
+                       drain=tmp_path / "var" / "llm-drain.json",
                        run=tmp_path / "run", dnsmasq=tmp_path / "run" / "dnsmasq.conf", nft=tmp_path / "run" / "fw.nft",
                        os_release=tmp_path / "os-release", snapshots=tmp_path / "snapshots",
                        appliance_env=tmp_path / "appliance.env", resolved=tmp_path / "resolv.conf",
@@ -773,7 +774,7 @@ def test_the_restart_waits_for_the_work_in_progress(paths, monkeypatch):
     plan_request(paths, at=(datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(), max_wait_minutes=60)
     at = restartplan.starts(json.loads(paths.plan.read_text()))
     running = {"n": 2}
-    monkeypatch.setattr(sysagent, "running_work", lambda: running["n"])
+    monkeypatch.setattr(sysagent, "running_work", lambda llm=True: running["n"])
     assert sysagent.restart_check(at - timedelta(minutes=1)) == "scheduled"
     assert sysagent.restart_check(at + timedelta(minutes=1)) == "waiting for the work in progress"
     published = json.loads((paths.run / "status.json").read_text())["restart"]
@@ -794,7 +795,7 @@ def test_a_planned_upgrade_runs_when_the_wait_is_over(paths, monkeypatch):
     r = fake_run(monkeypatch)
     plan_request(paths, then="upgrade", version="v1.2.0", max_wait_minutes=30)
     at = restartplan.starts(json.loads(paths.plan.read_text()))
-    monkeypatch.setattr(sysagent, "running_work", lambda: None)          # the database is away: counted as busy
+    monkeypatch.setattr(sysagent, "running_work", lambda llm=True: None)          # the database is away: counted as busy
     assert sysagent.restart_check(at + timedelta(minutes=29)) == "waiting for the work in progress"
     assert not [c for c in r.calls if c[:2] == ["elemental", "upgrade"]]
     assert sysagent.restart_check(at + timedelta(minutes=31)) == "done"
@@ -892,3 +893,16 @@ def test_dhcp_identity_survives_the_recovery_system_and_the_banner_shows_bond0()
     for f in ("appliance/rootfs/etc/issue", "appliance/oem/03_branding.yaml"):
         text = (root / f).read_text()
         assert "\\4{bond0}" in text and "https://\\4/" not in text, f
+
+
+def test_system_page_says_the_llm_runner_finishes_its_jobs(page):
+    st = json.loads((page.status_dir / "status.json").read_text())
+    st["llm_drain"] = {"pid": 7, "since": "2026-11-05T10:00:00+00:00", "version": "v1.1.3",
+                       "until": "2026-11-05T12:00:00+00:00"}
+    (page.status_dir / "status.json").write_text(json.dumps(st))
+    _, body, _ = page.handle(ADMIN, "GET", ["system"], {}, {}, shell)
+    assert "The LLM queue runner finishes the jobs in progress on the code they started on, then restarts with " \
+           "v1.1.3: at the latest at" in body and "go back to the queue" in body
+    st["llm_drain"]["until"] = None
+    (page.status_dir / "status.json").write_text(json.dumps(st))
+    assert "restarts with v1.1.3: when they are done" in page.handle(ADMIN, "GET", ["system"], {}, {}, shell)[1]
