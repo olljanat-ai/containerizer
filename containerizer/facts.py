@@ -197,6 +197,9 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
     if p.kind_hint in ("java", "node"):
         from .facts_jvm_node import java_facts, node_facts
         (java_facts if p.kind_hint == "java" else node_facts)(repo, comp, facts)
+    if p.kind_hint in ("python", "go"):
+        from .facts_python_go import go_facts, python_facts
+        (python_facts if p.kind_hint == "python" else go_facts)(repo, comp, facts)
     if p.kind_hint == "node":
         scripts = (p.manifest.get("scripts") or {})
         facts["build_script"] = "build" if "build" in scripts else ""
