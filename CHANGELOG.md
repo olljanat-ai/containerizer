@@ -6,7 +6,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 `ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
 qcow2 and VHDX images as release assets.
 
-## Unreleased
+## 0.11.1 (2026-11-05)
 
 - Appliance: one DHCP address from the first boot on. Since 0.9.3 the DHCP client ID came from the machine-id,
   and the recovery system that installs the appliance has another machine-id than the installed system, so a new
