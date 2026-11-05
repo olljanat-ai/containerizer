@@ -8,6 +8,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- Appliance: a static address (`sysagent network static ...`, or a `.network` file in `/etc/containerizer/network`)
+  survives a restart. At boot the file was copied for systemd-networkd readable by root only, so systemd-networkd,
+  which runs as its own user, could not read it and bond0 fell back to DHCP. The system agent now makes the copy
+  readable and configures bond0 again within a minute of the start (the boot script itself is fixed in the next
+  minor release).
+
 ## 0.13.2 (2026-11-05)
 
 - Turning an application's sandbox off or on (Admin → Applications) reaches the output repository reliably: the
