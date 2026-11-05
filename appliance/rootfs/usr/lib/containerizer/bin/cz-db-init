@@ -23,8 +23,7 @@ CONTAINERIZER_SQL_PASSWORD="$(cat "$S/$CZ_SQL_OWNER_SECRET")"
 CZ_CZ_SCANNER_PASSWORD="$(cat $S/cz-scanner)"
 CZ_CZ_WEB_PASSWORD="$(cat $S/cz-web)"
 CZ_CZ_ADMIN_PASSWORD="$(cat $S/cz-admin)"
-CZ_CZ_GRAFANA_PASSWORD="$(cat $S/cz-grafana)"
-export CONTAINERIZER_SQL_PASSWORD CZ_CZ_SCANNER_PASSWORD CZ_CZ_WEB_PASSWORD CZ_CZ_ADMIN_PASSWORD CZ_CZ_GRAFANA_PASSWORD
+export CONTAINERIZER_SQL_PASSWORD CZ_CZ_SCANNER_PASSWORD CZ_CZ_WEB_PASSWORD CZ_CZ_ADMIN_PASSWORD
 i=0
 until err=$(CZ_PROBE="$CZ_SQL_PROBE_CS" $PY -c "
 import os
@@ -46,19 +45,11 @@ export CONTAINERIZER_SQL="$CZ_SQL_OWNER_CS"
 if [ "$CZ_SQL_LOCAL" = yes ]; then
   # the appliance's own server: sa creates the database and the logins
   exec $PY -m containerizer db init --create-database \
-    --login cz_scanner:writer --login cz_web:reader --login cz_admin:admin --login cz_grafana:usage
+    --login cz_scanner:writer --login cz_web:reader --login cz_admin:admin
 elif [ "$CZ_SQL_LOGINS" = existing ]; then
-  # the DBA created the database and the logins (their passwords are in secrets/cz-*): only the role memberships.
-  # Grafana's cz_grafana (role usage) only when the DBA made it too: without it, its LLM usage dashboard stays empty.
-  grafana=""
-  CZ_PROBE="$(printf '%s' "$CZ_SQL_GRAFANA_CS")" CONTAINERIZER_SQL_PASSWORD="$CZ_CZ_GRAFANA_PASSWORD" $PY -c "
-import os
-from containerizer.sqlstore import connect
-connect(os.environ['CZ_PROBE']).close()
-" >/dev/null 2>&1 && grafana="--member cz_grafana:usage"
-  exec $PY -m containerizer db init --member cz_scanner:writer --member cz_web:reader --member cz_admin:admin $grafana
+  # the DBA created the database and the logins (their passwords are in secrets/cz-*): only the role memberships
+  exec $PY -m containerizer db init --member cz_scanner:writer --member cz_web:reader --member cz_admin:admin
 else
   # CZ_SQL_USER owns the database and may create logins (ALTER ANY LOGIN): it sets their generated passwords
-  exec $PY -m containerizer db init --login cz_scanner:writer --login cz_web:reader --login cz_admin:admin \
-    --login cz_grafana:usage
+  exec $PY -m containerizer db init --login cz_scanner:writer --login cz_web:reader --login cz_admin:admin
 fi
