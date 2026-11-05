@@ -578,6 +578,9 @@ class Worker:
     def run_forever(self) -> None:
         self.data.mkdir(parents=True, exist_ok=True)
         os.chmod(self.data, 0o700)
+        from .ai import LISTENERS
+        from .llmusage import Recorder
+        LISTENERS.append(Recorder(self.connect, f"worker {self.name}", self.log))    # cz.LlmUsage (llmusage.py)
         self.recover(own=True)
         threading.Thread(target=self.approvals_forever, name="rule-approvals", daemon=True).start()
         while not self.stopping.is_set():

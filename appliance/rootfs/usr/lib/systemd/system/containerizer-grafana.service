@@ -8,10 +8,13 @@ ConditionPathExists=!/run/elemental/recovery_mode
 [Service]
 EnvironmentFile=/usr/lib/containerizer/images.env
 ExecStartPre=-/usr/bin/docker rm -f cz-grafana
+# the results database's address for the LLM usage data source (sysagent sql-env writes it at boot)
+ExecStartPre=/bin/sh -c 'test -e /run/containerizer/grafana-sql.env || : > /run/containerizer/grafana-sql.env'
 ExecStart=/usr/bin/docker run --rm --name cz-grafana --network host \
   --env-file /etc/containerizer/grafana.env \
   --env-file /etc/containerizer/secrets/grafana.env \
   --env-file /run/containerizer/grafana-url.env \
+  --env-file /run/containerizer/grafana-sql.env \
   --env GF_SERVER_HTTP_ADDR=127.0.0.1 --env GF_SERVER_HTTP_PORT=3000 \
   --env GF_SERVER_SERVE_FROM_SUB_PATH=true \
   --env GF_PATHS_PROVISIONING=/etc/grafana/provisioning \

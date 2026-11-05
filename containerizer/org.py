@@ -1099,6 +1099,13 @@ def _process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, wor
         return stop(status, reason)
 
     def assess_tree(path: Path, name: str, trel: str, tdest: Path, tres: RepoResult, rename: bool) -> RepoResult:
+        """assess_one, with its LLM calls tagged with the application (its SourceKey: llmusage.py)."""
+        from .ai import usage_scope
+        from .sqlstore import source_info
+        with usage_scope(source_key=source_info(path, name)["key"]):
+            return assess_one(path, name, trel, tdest, tres, rename)
+
+    def assess_one(path: Path, name: str, trel: str, tdest: Path, tres: RepoResult, rename: bool) -> RepoResult:
         """One application: the whole repository, or one folder of a split repository (rename: its name is
         <app>-<folder>, not the folder's own)."""
         def tstop(status: str, reason: str) -> RepoResult:

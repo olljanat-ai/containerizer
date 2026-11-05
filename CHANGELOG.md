@@ -8,6 +8,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- LLM token usage for the long run: every call an LLM answers is recorded in the results database (`LlmUsage`) with
+  the tokens it reported (not estimates), the application, the component, the feature, the model and the cost; the
+  views `vLlmUsage` and `vLlmUsageDaily` add the product and business unit. A new Grafana dashboard, **Containerizer:
+  LLM token usage**, shows it by business unit, product, application and component, through a read-only login
+  (`cz_grafana`) that can read only those views.
+
 ## 0.14.0 (2026-11-05)
 
 - Appliance network as olljanat/nomad-qemu-node's `05_network.yaml`: every wired interface in `bond0`

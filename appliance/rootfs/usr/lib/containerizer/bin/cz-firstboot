@@ -20,9 +20,11 @@ done
 
 # SQL Server passwords: 32 random characters plus one of each class its policy asks for
 secret() { [ -s "$S/$1" ] || { printf '%s' "$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)Aa1!" > "$S/$1"; chmod 0400 "$S/$1"; }; }
-for n in mssql-sa cz-scanner cz-web cz-admin grafana-admin; do secret "$n"; done
+for n in mssql-sa cz-scanner cz-web cz-admin cz-grafana grafana-admin; do secret "$n"; done
 printf 'MSSQL_SA_PASSWORD=%s\n' "$(cat $S/mssql-sa)" > "$S/mssql.env"
-printf 'GF_SECURITY_ADMIN_USER=admin\nGF_SECURITY_ADMIN_PASSWORD=%s\n' "$(cat $S/grafana-admin)" > "$S/grafana.env"
+# CZ_GRAFANA_SQL_PASSWORD: Grafana's results database login cz_grafana (role usage: the LLM usage views only)
+printf 'GF_SECURITY_ADMIN_USER=admin\nGF_SECURITY_ADMIN_PASSWORD=%s\nCZ_GRAFANA_SQL_PASSWORD=%s\n' \
+  "$(cat $S/grafana-admin)" "$(cat $S/cz-grafana)" > "$S/grafana.env"
 chmod 0400 "$S/mssql.env" "$S/grafana.env"
 # Source control tokens (Admin → Source control) are sealed for the scan worker's key: the web UI gets only the
 # public key. Never replaced: tokens sealed for the old key would no longer open.

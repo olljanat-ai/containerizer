@@ -1080,7 +1080,8 @@ def egress_status(journal: str | None = None, history_lines: int = 50) -> dict:
 
 # =============================================================================== results database
 
-SQL_LOGINS = (("cz_scanner", "writer", "SCANNER"), ("cz_web", "reader", "WEB"), ("cz_admin", "admin", "ADMIN"))
+SQL_LOGINS = (("cz_scanner", "writer", "SCANNER"), ("cz_web", "reader", "WEB"), ("cz_admin", "admin", "ADMIN"),
+              ("cz_grafana", "usage", "GRAFANA"))      # Grafana: the LLM usage views only (schema 43)
 _SQL_SET = ("server", "datasource", "address", "addr", "networkaddress", "database", "initialcatalog",
             "userid", "uid", "user", "username", "password", "pwd", "cafile", "servercertificate")
 _SQL_SAFE = re.compile(r'[^"$`\\\n\r]*')
@@ -1111,6 +1112,7 @@ def sql_settings(env: dict) -> dict:
     db = external_sql(env)
     if not db:
         base = "Server=127.0.0.1,1433;Database=Containerizer;TrustServerCertificate=yes"
+        grafana = {"CZ_GRAFANA_SQL_SERVER": "127.0.0.1:1433", "CZ_GRAFANA_SQL_DATABASE": "Containerizer"}
         out = {"CZ_SQL_LOCAL": "yes", "CZ_SQL_LOGINS": "create", "CZ_SQL_OWNER_SECRET": "mssql-sa",
                "CZ_SQL_OWNER_CS": base + ";User Id=sa",
                "CZ_SQL_PROBE_CS": base.replace("Database=Containerizer", "Database=master") + ";User Id=sa"}
@@ -1137,10 +1139,12 @@ def sql_settings(env: dict) -> dict:
             options += (";" if options else "") + f"CaFile={P.sql_ca}"
         h = f"[{host}]" if ":" in host else host
         base = f"Server=tcp:{h},{port};Database={database}" + (f";{options}" if options else "")
+        grafana = {"CZ_GRAFANA_SQL_SERVER": f"{h}:{port}", "CZ_GRAFANA_SQL_DATABASE": database}
         out = {"CZ_SQL_LOCAL": "no", "CZ_SQL_LOGINS": logins, "CZ_SQL_OWNER_SECRET": "sql-owner",
                "CZ_SQL_OWNER_CS": f"{base};User Id={user}", "CZ_SQL_PROBE_CS": f"{base};User Id={user}"}
     for login, _, name in SQL_LOGINS:
         out[f"CZ_SQL_{name}_CS"] = f"{base};User Id={login}"
+    out.update(grafana)             # Grafana's SQL Server data source (grafana-sql.env: write_sql_env)
     for k, v in out.items():
         if not _SQL_SAFE.fullmatch(v):
             raise RuleError(f"{k}: the database settings must not contain quotes, $, ` or backslashes")
@@ -1160,6 +1164,9 @@ def write_sql_env() -> dict:
             raise RuleError(f"CZ_SQL_CA: {env['CZ_SQL_CA']} is not a PEM certificate")
         atomic_write(P.sql_ca, ca, 0o644)
     atomic_write(P.sql_env, "".join(f'{k}="{v}"\n' for k, v in out.items()), 0o644)
+    # Grafana's data source (provisioning/datasources/containerizer-sql.yaml), as docker --env-file reads it: no quotes
+    atomic_write(P.sql_env.parent / "grafana-sql.env",
+                 "".join(f"{k}={out[k]}\n" for k in ("CZ_GRAFANA_SQL_SERVER", "CZ_GRAFANA_SQL_DATABASE")), 0o644)
     return out
 
 

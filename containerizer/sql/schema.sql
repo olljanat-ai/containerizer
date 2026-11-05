@@ -2562,3 +2562,69 @@ WHERE y.k = 1;
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 42) INSERT [${schema}].SchemaVersion (Version) VALUES (42);
 GO
+
+-- 43: LLM token usage for the long run (llmusage.py): one row per call an LLM answered, with the tokens the LLM
+-- reported in its answer (not estimates; a cached answer or a failed call costs nothing and has no row), the
+-- application (its ApplicationId, or its SourceKey, resolved in the views), the component, the feature (assessment,
+-- refactor-queued, sandbox-tester, ...), the backend and model, and the LLM queue job or the scan it was made for.
+-- vLlmUsage adds the application's name, product and business unit as they are mapped now; vLlmUsageDaily sums
+-- it by day. The scan worker and the LLM queue runner write it (writer); Grafana reads only the two views
+-- (role usage, login cz_grafana on the appliance), as do the reader and admin roles.
+IF OBJECT_ID(N'[${schema}].LlmUsage', N'U') IS NULL
+CREATE TABLE [${schema}].LlmUsage (
+    UsageId       bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_LlmUsage PRIMARY KEY,
+    At            datetime2(0)   NOT NULL CONSTRAINT DF_LlmUsage_At DEFAULT SYSUTCDATETIME(),
+    SourceKey     nvarchar(400)  NULL,               -- as Application.SourceKey
+    ApplicationId int            NULL,
+    Component     nvarchar(200)  NULL,
+    Repository    nvarchar(400)  NULL,               -- the repository's label, for calls of no known application
+    Feature       nvarchar(60)   NOT NULL,
+    Backend       nvarchar(20)   NULL,               -- api, cli, openai
+    Model         nvarchar(200)  NULL,
+    InputTokens   int            NOT NULL,
+    OutputTokens  int            NOT NULL,
+    CostUsd       decimal(12, 5) NULL,
+    CostKnown     bit            NULL,               -- 0: no price is known for the model (a self-hosted one)
+    Seconds       decimal(9, 1)  NULL,
+    JobId         int            NULL,               -- the LLM queue job (cz.LlmJob) it was asked for
+    ScanName      nvarchar(200)  NULL,
+    Runner        nvarchar(256)  NULL                -- the process: worker, llm-queue (and its name)
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_LlmUsage_At' AND object_id = OBJECT_ID(N'[${schema}].LlmUsage'))
+    CREATE INDEX IX_LlmUsage_At ON [${schema}].LlmUsage (At)
+        INCLUDE (ApplicationId, SourceKey, Feature, Model, InputTokens, OutputTokens, CostUsd);
+GO
+CREATE OR ALTER VIEW [${schema}].vLlmUsage AS
+SELECT u.UsageId, u.At, CAST(u.At AS date) AS Day, ap.ApplicationId,
+       COALESCE(ap.DisplayName, ap.Name, u.Repository, N'(no application)') AS ApplicationName,
+       p.ProductId, COALESCE(p.Name, N'(no product)') AS ProductName,
+       bu.BusinessUnitId, COALESCE(bu.Name, N'(no business unit)') AS BusinessUnitName,
+       u.Component, u.Feature, u.Backend, u.Model, u.InputTokens, u.OutputTokens,
+       u.InputTokens + u.OutputTokens AS Tokens, u.CostUsd, u.CostKnown, u.Seconds, u.JobId, u.ScanName
+FROM [${schema}].LlmUsage u
+LEFT JOIN [${schema}].Application ap
+       ON ap.ApplicationId = COALESCE(u.ApplicationId,
+                                      (SELECT x.ApplicationId FROM [${schema}].Application x WHERE x.SourceKey = u.SourceKey))
+LEFT JOIN [${schema}].Product p ON p.ProductId = ap.ProductId
+LEFT JOIN [${schema}].BusinessUnit bu ON bu.BusinessUnitId = p.BusinessUnitId;
+GO
+CREATE OR ALTER VIEW [${schema}].vLlmUsageDaily AS
+SELECT Day, ApplicationId, ApplicationName, ProductId, ProductName, BusinessUnitId, BusinessUnitName, Feature, Model,
+       COUNT(*) AS Calls, SUM(CAST(InputTokens AS bigint)) AS InputTokens, SUM(CAST(OutputTokens AS bigint)) AS OutputTokens,
+       SUM(CAST(Tokens AS bigint)) AS Tokens, SUM(CostUsd) AS CostUsd, SUM(Seconds) AS Seconds
+FROM [${schema}].vLlmUsage
+GROUP BY Day, ApplicationId, ApplicationName, ProductId, ProductName, BusinessUnitId, BusinessUnitName, Feature, Model;
+GO
+IF DATABASE_PRINCIPAL_ID(N'${schema}_usage') IS NULL CREATE ROLE [${schema}_usage];
+GO
+GRANT INSERT ON [${schema}].LlmUsage TO [${schema}_writer];
+GRANT SELECT ON [${schema}].vLlmUsage TO [${schema}_usage];
+GRANT SELECT ON [${schema}].vLlmUsageDaily TO [${schema}_usage];
+GRANT SELECT ON [${schema}].vLlmUsage TO [${schema}_reader];
+GRANT SELECT ON [${schema}].vLlmUsageDaily TO [${schema}_reader];
+GRANT SELECT ON [${schema}].vLlmUsage TO [${schema}_admin];
+GRANT SELECT ON [${schema}].vLlmUsageDaily TO [${schema}_admin];
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 43) INSERT [${schema}].SchemaVersion (Version) VALUES (43);
+GO
