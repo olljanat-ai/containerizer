@@ -287,8 +287,20 @@ def _repoint_nlog(plan: dict, facts: dict) -> None:
 
 
 def apply_plan_rules(plan: dict, repo, c: Component, rules: list[Rule]) -> dict:
+    from .techniques import technique_patch
     for r in rules:
         if r.phase != "plan":
+            continue
+        if r.resolves:
+            # a platform technique (containerizer/techniques.py): configuration that satisfies findings
+            patch = technique_patch(r, repo, c)
+            if patch is not None:
+                note = patch.pop("_note", "")
+                merge_plan(plan, patch)
+                plan["applied"].append(r.id)
+                add_reason(plan, r.id, f"{r.why} {note}".strip(), getattr(r, "refs", None))
+                plan.setdefault("resolved", {})[r.id] = sorted(
+                    {f.rule.id for f in c.findings if f.resolved_by == r.id})
             continue
         ctx = Context(repo, None if r.scope == "repo" else c.project, c.role)
         if run_rule(r, ctx):
@@ -300,7 +312,8 @@ def apply_plan_rules(plan: dict, repo, c: Component, rules: list[Rule]) -> dict:
 
 def merge_plan(plan: dict, patch: dict) -> dict:
     for k, v in (patch or {}).items():
-        if k in ("add_packages", "add_writable", "publish_args", "remove_files", "args"):
+        if k in ("add_packages", "add_writable", "publish_args", "remove_files", "args", "x509_stores"):
+            plan.setdefault(k, [])
             for x in v:
                 if k == "add_writable" and hides_app(x):
                     continue                    # a mount there hides the app itself
@@ -389,6 +402,8 @@ def hides_app(w: str) -> bool:
 # only when the code does not persist the keys itself), and the Secret that holds the key mounted there
 DATAPROTECTION_DIR = "/home/app/.aspnet/DataProtection-Keys"
 DATAPROTECTION_SUFFIX = "-dataprotection"
+# where .NET on Linux keeps the CurrentUser certificate stores (one folder per store, *.pfx files)
+X509_STORE_DIR = "/home/app/.dotnet/corefx/cryptography/x509stores"
 
 
 def writable_dirs(plan: dict) -> list[str]:
@@ -639,6 +654,11 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
         else:
             volumes.append({"name": vname, "emptyDir": {}})
         mounts.append({"name": vname, "mountPath": w})
+    for store in plan.get("x509_stores") or []:
+        # .NET on Linux reads CurrentUser\<store> from *.pfx files (no password) in this folder (techniques.py)
+        volumes.append({"name": f"x509-{store}", "secret": {"secretName": f"{name}-x509-{store}", "optional": True,
+                                                            "defaultMode": 0o440}})
+        mounts.append({"name": f"x509-{store}", "mountPath": f"{X509_STORE_DIR}/{store}", "readOnly": True})
     if plan.get("secret_files"):
         volumes.append({"name": "secret-files", "secret": {"secretName": f"{name}-files", "optional": True,
                                                            "defaultMode": 0o440}})
@@ -662,6 +682,8 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
     pod = {"securityContext": {"runAsNonRoot": True, "fsGroup": uid,
                                "seccompProfile": {"type": "RuntimeDefault"}},
            "automountServiceAccountToken": False, "containers": [container], "volumes": volumes}
+    if plan.get("hostname"):
+        pod["hostname"] = plan["hostname"]       # Environment.MachineName in the pod (techniques.py)
     docs: list[dict] = []
     oneshot = c.facts.get("oneshot_arg") if c.role == "console" else None
     if c.role == "console" and not oneshot:

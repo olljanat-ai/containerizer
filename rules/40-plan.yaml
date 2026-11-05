@@ -135,3 +135,48 @@ rules:
           - {package: 'Microsoft\.Azure\.Amqp', version: '2\.5\.6'}
     plan:
       rid: portable
+
+  # ---- platform techniques (containerizer/techniques.py): configuration that satisfies a finding, so the code
+  # stays as it is. `resolves` names the findings; while the technique applies they count as `config`.
+  - id: plan-machine-hostname
+    phase: plan
+    applies_to: [dotnet]
+    resolves: [os-machine-name-switch]
+    technique: machine-hostname
+    why: >-
+      The code switches behaviour on Environment.MachineName, which on Linux is the pod's host name. The pod
+      spec's `hostname:` field sets it to the name the code compares with, so the same branch runs as on the
+      old server without a code change.
+    refs:
+      - https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/#pod-s-hostname-and-subdomain-fields
+      - https://learn.microsoft.com/en-us/dotnet/api/system.environment.machinename
+    when: {}
+
+  - id: plan-x509-user-store
+    phase: plan
+    applies_to: [dotnet]
+    resolves: [cert-store]
+    technique: x509-user-store
+    why: >-
+      The code looks certificates up in the CurrentUser\My store. .NET on Linux reads that store from
+      ~/.dotnet/corefx/cryptography/x509stores/my, one password-less .pfx file per certificate, so an optional
+      Secret (<component>-x509-my, keys ending in .pfx) is mounted there read-only and the unchanged lookup
+      (FindByThumbprint, FindBySubjectName) finds the certificate. LocalMachine\Root and \CA are the image's CA bundle.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/standard/security/cross-platform-cryptography
+    when: {}
+
+  - id: plan-special-folder-workdir
+    phase: plan
+    applies_to: [dotnet]
+    resolves: [os-special-folder-windows]
+    technique: special-folder-workdir
+    why: >-
+      Environment.GetFolderPath returns "" for Program Files, Windows and the other Windows-only folders on
+      Linux, so Path.Combine(GetFolderPath(...), "Vendor", ...) becomes the relative path Vendor/... under the
+      working directory /app. A volume is mounted at each of those folders, so the unchanged code finds
+      (and can write) them; the files the app expects there come from a ConfigMap, a Secret or an init container.
+    refs:
+      - https://learn.microsoft.com/en-us/dotnet/api/system.environment.getfolderpath
+      - https://learn.microsoft.com/en-us/dotnet/api/system.io.path.combine
+    when: {}

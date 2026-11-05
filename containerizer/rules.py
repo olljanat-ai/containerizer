@@ -95,6 +95,10 @@ class Rule:
     # database, uploads, a local index) or "memory" (in-process session/job state). Such a
     # component is not stateless, and an app is only rated A when every server component is.
     state: str = ""
+    # plan rules: findings this rule's configuration satisfies without code changes (containerizer/techniques.py),
+    # and the named technique that builds the patch from the code when it is not a fixed `plan`
+    resolves: list[str] = field(default_factory=list)
+    technique: str = ""
     file: str = ""
     meta: dict = field(default_factory=dict)
 

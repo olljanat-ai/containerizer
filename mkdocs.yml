@@ -51,6 +51,7 @@ nav:
   - Using it:
       - Organization scans: scheduled-scans.md
       - Platform migrations: platform-migration.md
+      - Platform fixes for refactor findings: platform-fixes.md
       - Refactoring patches: refactoring.md
       - Egress and network connectivity: egress.md
       - Build pipelines: build-pipelines.md

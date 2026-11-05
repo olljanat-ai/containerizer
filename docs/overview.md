@@ -342,6 +342,10 @@ Techniques used to avoid application changes:
 - workers that use the ASP.NET Core shared framework get the aspnet base image;
 - old netstandard1.x packages that break a linux-x64 restore (NU1605) get a portable publish;
 - corporate TLS-inspecting proxies: an optional `ca` build secret is honoured.
+- code that switches on `Environment.MachineName` gets the pod `hostname:` it compares with; certificates looked up
+  in `CurrentUser\My` come from an optional Secret mounted at `~/.dotnet/corefx/cryptography/x509stores/my`;
+  `Path.Combine(GetFolderPath(ProgramFiles), "Acme", ...)` (`/app/Acme/...` on Linux) gets a volume there. These
+  findings then count as `config` ([Platform fixes for refactor findings](platform-fixes.md)).
 
 ## Security gate
 
