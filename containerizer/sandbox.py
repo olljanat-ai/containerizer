@@ -556,6 +556,7 @@ class SandboxOptions:
     settle: int = 60                  # healthy only when no restart appears while watched this long
     interval: int = 10
     revision: str = ""                # output repository commit to wait for (default: its HEAD)
+    any_revision: bool = False        # whatever the cluster applied counts (a later re-check of what runs there)
     learn: bool = True
     ingress_address: str = ""         # host:port to open the public URLs at (default: their DNS name)
     ingress_ca: str = ""              # extra CA file for the URL check
@@ -595,7 +596,7 @@ def verify_sandbox(root: Path, o: SandboxOptions | None = None, kube: Kube | Non
     kube = kube or Kube(o.kube)
     apps = deployed_apps(root, o.apps)
     ours = o.revision
-    if not ours and (root / ".git").exists():
+    if not ours and not o.any_revision and (root / ".git").exists():
         ours = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
     doc = {"checked_at": _now(), "revision": ours, "gitops": "flux", "cluster": "", "skipped": "", "components": []}
     if not apps:

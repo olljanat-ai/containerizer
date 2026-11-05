@@ -749,9 +749,98 @@ def test_housekeep_records_the_removal(monkeypatch, tmp_path):
     def away():
         raise RuntimeError("db away")
     r = lq.Runner(away, name="r", log=logs.append, metrics=object.__new__(lq.QueueMetrics))
-    # one line per step (sandbox variants, applications' own output repositories, egress), once a minute
-    assert r.housekeep() == 0 and r.housekeep() == 0 and len(logs) == 3 and all("db away" in m for m in logs)
+    # one line per step (sandbox variants, their state, applications' own output repositories, egress), once a
+    # minute
+    assert r.housekeep() == 0 and r.housekeep() == 0 and len(logs) == 4 and all("db away" in m for m in logs)
 
+
+
+def _srow(jid, status="deployed", app=7, req=None, **sb):
+    return {"JobId": jid, "RemoveRequestedAt": req, "Payload": json.dumps({"application_id": app, "app": "shop"}),
+            "Result": json.dumps({"status": "verified", "sandbox": {
+                "status": status, "in_place": True, "folder": "Contoso/_/shop", "of": "Contoso/_/shop",
+                "namespace": "shop", **sb}})}
+
+
+def test_which_sandbox_states_are_looked_at_again():
+    """Health not known: again after 10 minutes; running or failing: hourly; the application's sandbox turned off:
+    off at once (no cluster needed), looked at as soon as it is on again; removed: only the latest order of the
+    application, hourly; asked to be removed, a variant of before: never."""
+    now = datetime(2026, 11, 5, 12, 0, tzinfo=timezone.utc)
+    t = lambda m: variant._iso(now - timedelta(minutes=m))      # noqa: E731
+    rows = [_srow(1, checked_at=t(11)), _srow(2, checked_at=t(5)), _srow(3, "running", app=8, checked_at=t(30)),
+            _srow(4, "failing", app=9, checked_at=t(61)), _srow(5, "running", app=10, deployed_at=t(1)),
+            _srow(6, "removed", app=11, removed_at=t(120)), _srow(7, "removed", app=11, removed_at=t(120)),
+            _srow(8, "running", app=12, req=now), _srow(9, "off", app=13, looked_at=t(1)),
+            _srow(10, "off", app=14), {**_srow(11, app=15), "Payload": "{"}]
+    legacy = json.loads(rows[0]["Result"])
+    legacy["sandbox"].update(in_place=False, folder="Contoso/_/shop-refactor-12")
+    rows.append({**_srow(12, app=16), "Result": json.dumps(legacy)})
+    now_set, look = variant.stale(rows, {10, 14, "https://x#"}, now)
+    assert [(r["JobId"], sb["status"], sb["reason"]) for r, sb in now_set] == [(5, "off", variant.SANDBOX_OFF_TEXT)]
+    assert [(r["JobId"], why) for r, why in look] == [
+        (7, "is it in its application's folder again"), (4, "checked again"), (1, "checked again"),
+        (9, "its application's sandbox is on again")]
+
+
+def test_refresh_keeps_the_sandbox_state_true(tmp_path, monkeypatch):
+    """A copy deployed while the cluster could not be read is checked again; one taken out while its folder still
+    runs it is back; the application's sandbox turned off is shown as such; a folder that runs the scan's output
+    again means the copy is not in the sandbox any more."""
+    out, o = _output(tmp_path)
+    now = datetime(2026, 11, 1, 9, 5, tzinfo=timezone.utc)
+    result = _patched(tmp_path, monkeypatch, 9, out, o, now=now)
+    sb = result["sandbox"]
+    assert sb["status"] == "deployed" and "health not checked" in sb["reason"]
+    monkeypatch.setattr(variant, "_open", lambda connect, key, payload, work, deploying=True: (TARGET, o))
+    state = {"result": result, "off": []}
+
+    def rows(_):
+        return [{"JobId": 9, "Payload": json.dumps(PAYLOAD), "Result": json.dumps(state["result"]),
+                 "RemoveRequestedAt": None}]
+    conn = FakeConn({r"SELECT JobId, Payload, Result, RemoveRequestedAt": rows,
+                     r"FROM cz.Application WHERE SandboxEnabled = 0": lambda _: state["off"]})
+    checks = []
+
+    def health(root, ns, rev, timeout=None):
+        checks.append((ns, rev, timeout))
+        return {"status": "running", "reason": "demo-web: Healthy", "checked_at": "now"}
+
+    def step(at, n=1):
+        before = len(conn.sql(r"UPDATE cz.LlmJob SET Result"))
+        got = variant.refresh(lambda: conn, None, tmp_path / "rf", log=lambda m: None, now=at, health=health)
+        upd = conn.sql(r"UPDATE cz.LlmJob SET Result")
+        if len(upd) > before:
+            state["result"] = json.loads(upd[-1][1][0])
+        assert got == n
+        return state["result"]["sandbox"]
+
+    assert step(now + timedelta(minutes=5), 0) == sb and not checks          # too soon
+    s = step(now + timedelta(minutes=11))
+    assert s["status"] == "running" and checks == [("shop", "", variant.RECHECK_TIMEOUT)]
+    assert step(now + timedelta(minutes=30), 0)["status"] == "running"        # hourly once it is known
+    # taken out (an LLM-heavy chain, a removal that found the folder written since) while the folder runs it
+    state["result"]["sandbox"] = {**s, "status": "removed", "removed_at": variant._iso(now + timedelta(hours=1)),
+                                  "removed_by": "LLM-heavy mode (tried again)"}
+    s = step(now + timedelta(hours=2, minutes=1))
+    assert s["status"] == "running" and "removed_at" not in s and "removed_by" not in s
+    assert s["back_at"] and s["reason"].startswith("in the sandbox again: its application's folder Contoso/_/shop")
+    # the application's sandbox turned off, and on again
+    state["off"] = [{"ApplicationId": 7, "SourceKey": "https://github.com/contoso/shop#"}]
+    n = len(checks)
+    s = step(now + timedelta(hours=2, minutes=2))
+    assert s["status"] == "off" and s["reason"] == variant.SANDBOX_OFF_TEXT and len(checks) == n
+    assert variant.STATUS_TEXT["off"] == "Sandbox turned off" and "off" in variant.ACTIVE
+    assert step(now + timedelta(hours=5), 0)["status"] == "off"
+    state["off"] = []
+    assert step(now + timedelta(hours=5, minutes=1))["status"] == "running" and len(checks) == n + 1
+    # the scan's output back in the folder: not in the sandbox any more
+    variant.remove(None, None, 9, PAYLOAD, sb, tmp_path / "rm")
+    s = step(now + timedelta(hours=7))
+    assert s["status"] == "removed" and s["removed_at"] and s["removed_by"] is None
+    assert s["reason"] == "not in the sandbox any more: its application's folder Contoso/_/shop runs the scan's output now"
+    assert step(now + timedelta(hours=7, minutes=30), 0)["status"] == "removed"
+    assert len(checks) == n + 1
 
 # --------------------------------------------------------------------------- health: this namespace only
 

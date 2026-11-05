@@ -315,6 +315,13 @@ history, one namespace, one set of URLs, IdP clients, lab databases and egress d
   sandbox**, **failing in the sandbox**, or *deployed, health not checked* without a kubeconfig. From then on the
   scan's sandbox checks of the application see the patched copy, and the results page's Migration plan says the
   sandbox runs the patch.
+- **Kept up to date.** The queue runner checks again what runs: a copy whose health is not known yet
+  (*deployed, health not checked*: the cluster could not be read in time, as after a restart) every 10 minutes,
+  one running or failing every hour, a few per pass. While an administrator has the application's sandbox turned
+  off, the order says **sandbox turned off**; when it is on again, the health is read at once. The application's
+  folder in the output repository decides whether the copy is there: when it no longer runs the order's patch
+  (a scan or another order wrote it), the order says **removed from the sandbox**; when the latest removed copy of
+  an application turns out to run there after all, it is back, with the date (**Back**) on the order page.
 - **Scans.** A scan that assesses the commit the patch was made for leaves the folder as it is (the patch is newer
   than what the scan would write) and still records its assessment; its result says the folder runs the patch. A
   scan that assesses **newer code** writes its own output into the folder, and the order's state becomes
