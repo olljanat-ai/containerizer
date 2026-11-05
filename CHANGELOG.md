@@ -8,7 +8,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## Unreleased
+## 0.12.3 (2026-11-05)
 
 - "Make it A" orders: the sandbox state of a patched copy no longer stays as it was when it was deployed. The queue
   runner reads the health again (*In the sandbox (health not checked)*, as after a restart, every 10 minutes;
