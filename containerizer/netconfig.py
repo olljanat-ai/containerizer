@@ -1,7 +1,8 @@
 """The appliance's network address (docs/appliance-admin.md#network): DHCP, the default, or a static address on
-bond0, the bond of every wired interface. A static address is the systemd-networkd file
+br0, the bridge over bond0, the bond of every wired interface (since 0.14.0; 0.13.x had it on bond0 itself:
+`migrate`). A static address is the systemd-networkd file
 /etc/containerizer/network/10-static.network (cz-firstboot copies that folder to /run/systemd/network at every
-boot, and it sorts before the DHCP default 21-uplink-bond0.network). Set on the console or over SSH with
+boot, and it sorts before the DHCP default 22-uplink-br0.network). Set on the console or over SSH with
 `python -m containerizer.sysagent network ...`, which checks it here and applies it (sysagent.apply_network).
 
     python -m containerizer.netconfig render <address/prefix> <gateway> <dns> [<dns> ...]
@@ -15,7 +16,9 @@ import sys
 
 STATIC_FILE = "10-static.network"
 MAX_DNS = 3
-HEADER = "# Containerizer: the appliance's static address (python -m containerizer.sysagent network static ...)."
+HEADER = "# Containerizer: the appliance's static address (cz network static ...)."
+IFACE = "br0"                       # where the address is: the bridge over bond0 (22-uplink-br0.network)
+OLD_HEADER = "# Containerizer: the appliance's static address (python -m containerizer.sysagent network static ...)."
 
 
 class NetworkError(ValueError):
@@ -79,11 +82,19 @@ def validate(mode: str, address: str = "", gateway: str = "", dns=()) -> dict:
 
 def render(cfg: dict) -> str:
     """The systemd-networkd file of a static setting (validate's form)."""
-    lines = [HEADER, "[Match]", "Name=bond0", "", "[Network]", f"Address={cfg['address']}",
+    lines = [HEADER, "[Match]", f"Name={IFACE}", "", "[Network]", f"Address={cfg['address']}",
              f"Gateway={cfg['gateway']}"]
     lines += [f"DNS={d}" for d in cfg["dns"]]
     lines += ["IPv6AcceptRA=yes", "LLMNR=no", "MulticastDNS=no", ""]
     return "\n".join(lines)
+
+
+def migrate(text: str) -> str | None:
+    """A static file `network static` wrote in 0.13.x (for bond0, which is a bridge port since 0.14.0), for br0;
+    None when it is not one of those (a file written by hand is left as it is)."""
+    if not text.startswith(OLD_HEADER) or not re.search(r"(?m)^Name=bond0\s*$", text):
+        return None
+    return HEADER + text[len(OLD_HEADER):].replace("\nName=bond0\n", f"\nName={IFACE}\n", 1)
 
 
 def parse(text: str | None) -> dict | None:

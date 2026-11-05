@@ -93,37 +93,49 @@ The first boot creates `/etc/containerizer/` (mode 700) with:
 
 ## Network
 
-Every wired interface (`e*`) joins one bond, `bond0`, in active-backup mode, and the appliance takes its
-address on `bond0` by DHCP (IPv4 and IPv6). On a physical server, cable every NIC you want to use: when the
-active one loses its link (a cable, a NIC or a switch port), another takes over within a fraction of a second, on
-the same address. Connect them to the same network (VLAN); no switch configuration is needed (no LACP). On a VM
-with one NIC the bond is just that NIC.
+As [olljanat/nomad-qemu-node](https://github.com/olljanat/nomad-qemu-node/blob/master/config/oem/05_network.yaml)
+does with netplan: every wired interface (`e*`) joins one bond, `bond0`, in active-backup mode; the bond is the only
+port of a bridge, `br0`, and the appliance takes its address on `br0` by DHCP (IPv4, and IPv6 router
+advertisements). The interfaces and the bond have no address of their own. On a physical server, cable every NIC
+you want to use: when the active one loses its link (a cable, a NIC or a switch port), another takes over within a
+fraction of a second, on the same address. Connect them to the same network (VLAN); no switch configuration is
+needed (no LACP). On a VM with one NIC the bond is just that NIC. The bridge has STP off and no forward delay (one
+port), and VLAN filtering on with VLAN 1 untagged.
 
-- **MAC address:** the bond uses the MAC of its first interface, so a hypervisor that allows only the MAC it
-  assigned (Hyper-V, vSphere port groups that reject forged transmits) still passes its traffic.
-- **DHCP reservation:** the DHCP client ID is the bond's MAC address (its first NIC's), so the appliance keeps
-  one address from the first boot of the installer on, through installing, reinstalling and upgrading. Reserve
-  the address by that MAC address (`networkctl status bond0` shows it and the lease), or set a static address.
-  The console's sign-in banner shows the address of `bond0`.
-- **Static address:** on the console (or over SSH), as root:
+- **Management controllers:** the USB network interface a server's management controller gives the OS (Dell
+  iDRAC, HPE iLO, Lenovo XCC: drivers `cdc_ether`, `rndis_host`, `cdc_ncm`, `cdc_eem`) never joins the bond. It is
+  always up and leads to the controller only; in the bond, active-backup could choose it, and nothing reached the
+  network (0.13.0).
+- **MAC address:** the bond and the bridge use the MAC of the first interface, so a hypervisor that allows only the
+  MAC it assigned (Hyper-V, vSphere port groups that reject forged transmits) still passes the traffic. Every
+  interface of the bond shows that MAC (its own is in `cat /proc/net/bonding/bond0`, "Permanent HW addr").
+- **DHCP reservation:** the DHCP client ID is that MAC address, so the appliance keeps one address from the first
+  boot of the installer on, through installing, reinstalling and upgrading. Reserve the address by that MAC
+  address (`networkctl status br0` shows it and the lease), or set a static address. The host name is neither sent
+  nor taken from DHCP (it is the sandbox cluster's node name). The console's sign-in banner shows the address of
+  `br0` and the network commands.
+- **Static address:** on the console (or over SSH), as root, with the appliance's `cz` command:
 
     ```sh
-    S="/usr/lib/containerizer/venv/bin/python -m containerizer.sysagent"
-    $S network static 192.0.2.10/24 192.0.2.1 192.0.2.53     # address/prefix, gateway, 1 to 3 DNS servers
-    $S network show                                          # the address, gateway and DNS servers in use
-    $S network dhcp                                          # back to DHCP
+    cz network static 192.0.2.10/24 192.0.2.1 192.0.2.53     # address/prefix, gateway, 1 to 3 DNS servers
+    cz network show                                          # the address, gateway and DNS servers in use
+    cz network dhcp                                          # back to DHCP
     ```
 
   It is checked first (the gateway in the address's network, at least one DNS server, IPv4 or IPv6) and applied
-  at once, without a restart: an SSH session over the old address ends, so change it on the console or from where
-  you can reach the new one. The DNS filter forwards to the DNS servers given (unless `CZ_DNS_SERVERS` in
-  `appliance.env` names others), and the HTTPS certificate from the appliance's own CA gets the new address. The
-  setting is the file `/etc/containerizer/network/10-static.network` (systemd-networkd, for `bond0`), kept over
-  restarts and upgrades; any `.network` file there that sorts before `21-uplink-bond0.network` works the same
-  way, and one that matches a NIC by name (`Name=eno1`) instead keeps that NIC out of the bond.
+  at once, without a restart: an SSH session over the old address ends, so change it on the console (a server's
+  remote console works) or from where you can reach the new one. The DNS filter is rebuilt with the DNS servers
+  given (unless `CZ_DNS_SERVERS` in `appliance.env` names others), and the HTTPS certificate from the appliance's
+  own CA gets the new address. The setting is the file `/etc/containerizer/network/10-static.network`
+  (systemd-networkd, for `br0`), kept over restarts and upgrades; a static file of 0.13.x (for `bond0`) is moved to
+  `br0` at the first start of 0.14.0. Any `.network` file in that folder that sorts before `20-uplink.network`
+  works the same way: one that matches some NICs by name with `Bond=bond0` (`Name=eno1 eno2`) and one with
+  `[Link] Unmanaged=yes` for the others (`Name=e*`) limit the bond to those NICs.
 - **Switches:** the appliance sends and receives LLDP on every port, so the switch shows which port it is on, and
   `networkctl lldp` shows the switch and port of each NIC.
 - `cat /proc/net/bonding/bond0` shows the active interface and each port's link.
+- **`cz`** runs the appliance's administration commands (the system agent, as root): `cz network ...`,
+  `cz upgrade vX.Y.Z`, `cz rollback <snapshot>`, `cz app-patch remove`, `cz firewall show`; `cz` alone lists them.
 
 ## HTTPS certificate
 
@@ -235,8 +247,7 @@ dropped and logged.
 
 The web UI does not change the firewall itself: it asks the system agent (root), which checks the rules
 again, loads the new ruleset in one transaction (checked with `nft -c` first, and the previous ruleset is
-kept if the new one does not load) and restarts the DNS filter. On the console:
-`/usr/lib/containerizer/venv/bin/python -m containerizer.sysagent firewall show`.
+kept if the new one does not load) and restarts the DNS filter. On the console: `cz firewall show`.
 
 ## Local registry and the sandbox cluster
 
@@ -364,8 +375,7 @@ last upgrade or roll back with its outcome, and checks GHCR for newer releases.
 ![Admin → System: a planned upgrade waiting for the scan runs and LLM jobs in progress, the Restart and Upgrade forms](images/admin-system-restart.png#only-light){ .cz-shot }
 ![Admin → System: a planned upgrade waiting for the scan runs and LLM jobs in progress, the Restart and Upgrade forms](images/admin-system-restart-dark.png#only-dark){ .cz-shot }
 
-On the console: `python -m containerizer.sysagent upgrade vX.Y.Z` or `... rollback <snapshot>` (with
-`/usr/lib/containerizer/venv/bin/python`) do it at once, without waiting for the work in progress; `upgrade vX.Y.Z
+On the console: `cz upgrade vX.Y.Z` or `cz rollback <snapshot>` do it at once, without waiting for the work in progress; `upgrade vX.Y.Z
 --full` installs a patch release as a whole OS instead of an app update, and `app-patch remove` removes the app
 update. Should an app update break the agent itself, run the OS image's own code:
 `PYTHONPATH=/usr/lib/containerizer/app /usr/lib/containerizer/venv/bin/python -m containerizer.sysagent app-patch remove`.

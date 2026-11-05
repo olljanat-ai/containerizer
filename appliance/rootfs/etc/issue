@@ -1,4 +1,5 @@
 containerizer appliance \n (\l)
-Web UI: https://\4{bond0}/   SSH: root@\4{bond0}
+Web UI: https://\4{br0}/   SSH: root@\4{br0}
 Sign in as root; the password is "containerizer" until you change it (passwd).
+Network: cz network show | cz network static <address/prefix> <gateway> <dns> | cz network dhcp
 

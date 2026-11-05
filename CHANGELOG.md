@@ -10,11 +10,15 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
-- Appliance: a static address (`sysagent network static ...`, or a `.network` file in `/etc/containerizer/network`)
-  survives a restart. At boot the file was copied for systemd-networkd readable by root only, so systemd-networkd,
-  which runs as its own user, could not read it and bond0 fell back to DHCP. The system agent now makes the copy
-  readable and configures bond0 again within a minute of the start (the boot script itself is fixed in the next
-  minor release).
+- Appliance network as olljanat/nomad-qemu-node's `05_network.yaml`: every wired interface in `bond0`
+  (active-backup), the bond the port of a bridge `br0` that has the address (DHCP, or static). The USB network
+  interface of a server's management controller (Dell iDRAC, HPE iLO, Lenovo XCC) no longer joins the bond: on a
+  Dell server it was the active port and nothing reached the network. A static address of 0.13.x moves to `br0`.
+- The appliance's `cz` command: `cz network show`, `cz network static <address/prefix> <gateway> <dns>`,
+  `cz network dhcp`, `cz upgrade ...` instead of `/usr/lib/containerizer/venv/bin/python -m containerizer.sysagent`;
+  the console's sign-in banner shows the network commands.
+- A static address is read at boot (the boot copy was root's only and systemd-networkd ignored it) and the DNS
+  filter is rebuilt with its DNS servers when it changes.
 
 ## 0.13.2 (2026-11-05)
 

@@ -48,6 +48,14 @@ install -d -m 2750 -o cz-web -g containerizer "$D/devdb"
 
 # static networks: /etc/containerizer/network/*.network take precedence over DHCP
 if compgen -G "$C/network/*.network" >/dev/null; then
+  # a static address 0.13.x wrote for bond0 is for br0 since 0.14.0 (bond0 is the bridge's port; netconfig.migrate)
+  for f in "$C"/network/*.network; do
+    if head -1 "$f" | grep -qF "# Containerizer: the appliance's static address (python -m containerizer.sysagent" \
+        && grep -qx 'Name=bond0' "$f"; then
+      sed -i -e "1s/.*/# Containerizer: the appliance's static address (cz network static ...)./" \
+        -e 's/^Name=bond0$/Name=br0/' "$f"
+    fi
+  done
   install -d /run/systemd/network
   # readable for systemd-networkd, which runs as systemd-network (cp under umask 077 left them 0600: ignored)
   install -m 0644 "$C"/network/*.network /run/systemd/network/

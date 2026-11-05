@@ -1,0 +1,8 @@
+# br0 keeps the MAC of its port (bond0, which has its first NIC's: 21-uplink-bond0.link), not one made from the
+# machine-id (udev's default, MACAddressPolicy=persistent): the recovery system that installs the appliance and
+# the installed system then ask DHCP with the same MAC, keep one address, and a reservation by MAC works.
+[Match]
+OriginalName=br0
+
+[Link]
+MACAddressPolicy=none

@@ -1,0 +1,20 @@
+# DHCP on br0, the bridge over the bond of every wired interface (20-uplink.network, 21-uplink-bond0.network). The
+# DHCP client ID is the bridge's MAC (its first NIC's): the same in the recovery system that installs the appliance
+# and in the installed system, which have different machine-ids, so the appliance keeps one address through
+# installing, reinstalling and upgrading, and a DHCP reservation by MAC address works. The host name is not taken
+# from DHCP (nor sent): it is also the sandbox cluster's node name. A static address: `cz network static ...`
+# (/etc/containerizer/network/10-static.network, for br0, sorts first).
+[Match]
+Name=br0
+
+[Network]
+DHCP=ipv4
+IPv6AcceptRA=yes
+LLMNR=no
+MulticastDNS=no
+
+[DHCPv4]
+ClientIdentifier=mac
+UseDomains=no
+SendHostname=no
+UseHostname=no
