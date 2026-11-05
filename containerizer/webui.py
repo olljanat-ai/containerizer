@@ -85,7 +85,7 @@ def load_overview(conn) -> dict:
     top = _rows(conn, "SELECT ApplicationId, Title, Severity, COUNT(*) AS N FROM cz.vFindingLatest "
                       "WHERE Severity IN ('blocker', 'rewrite') GROUP BY ApplicationId, Title, Severity")
     unmapped = _rows(conn, "SELECT Kind, COUNT(*) AS N FROM cz.vUnmapped GROUP BY Kind")
-    from .migrationplan import count_ready, stateful
+    from .migrationplan import count_ready, ready_now, stateful
     by_app: dict = {}
     for r in comps:
         by_app.setdefault(r["ApplicationId"], []).append(r)
@@ -100,6 +100,8 @@ def load_overview(conn) -> dict:
     for a in apps:
         a["Components"] = len(by_app.get(a["ApplicationId"], []))
         a["ReadyNow"], a["PlanComponents"] = count_ready(by_app.get(a["ApplicationId"], []), state)
+        a["ReadyStateful"] = sum(1 for c in by_app.get(a["ApplicationId"], [])
+                                 if c["ComponentId"] in state and ready_now(c, state))
         a["MainObstacle"] = best.get(a["ApplicationId"], (None, ""))[1]
         a["APatch"] = ready.get(a["ApplicationId"])
         a["Running"] = running.get(a["ApplicationId"])
@@ -729,9 +731,15 @@ def _ready_mark(a: dict) -> str:
     n, total = a.get("ReadyNow") or 0, a.get("PlanComponents") or 0
     if a.get("Rating") == "A" or not n or not total:
         return ""
-    tip = (f"{n} of {total} components rate A on their own and can run in Linux containers now (the organization scan "
-           f"deploys them to the sandbox); the rating grades the whole application. See its migration plan.")
-    return f"<span class='ready-now' title='{e(tip)}'>{n}/{total} ready now</span>"
+    vol = a.get("ReadyStateful") or 0
+    tip = (f"{n} of {total} components can run in Linux containers now without code changes (the organization scan "
+           f"deploys them to the sandbox)"
+           + (f"; {vol} of them keep{'s' if vol == 1 else ''} its own data and run{'s' if vol == 1 else ''} with a "
+              f"persistent volume, one replica" if vol else "")
+           + "; the rating grades the whole application. See its migration plan.")
+    return (f"<span class='ready-now' title='{e(tip)}'>{n}/{total} ready now"
+            + (f"<span class='stateful'>, {'with a volume' if vol == n else f'{vol} with a volume'}</span>" if vol else "")
+            + "</span>")
 
 
 def a_patches_html(apps: list[dict], nav: str = "") -> str:

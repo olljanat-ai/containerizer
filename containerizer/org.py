@@ -210,9 +210,20 @@ def component_rating(a, c) -> str:
     return dataclasses.replace(a, components=[c]).rating
 
 
+def stateful_ready(a, c) -> bool:
+    """A component that would rate A but keeps its own data (the stateless cap made it B): it runs as it is with
+    persistent volumes and one replica (generate.state_plan), no code change."""
+    return (getattr(c, "stateless", True) is False and c.verdict in ("info", "config")
+            and component_rating(a, c) == "B")
+
+
+STATEFUL_NOTE = "runs with a persistent volume, one replica"
+
+
 def select_components(a, verified: bool) -> tuple[list, list[dict]]:
-    """Components rated A that a Linux image can be generated for (and that built and ran, when verified)."""
-    from .generate import buildable
+    """Components rated A, or ready but for the data they keep (stateful_ready: deployed with persistent volumes,
+    one replica), that a Linux image can be generated for (and that built and ran, when verified)."""
+    from .generate import buildable, local_state_unplaced
     ver = {r.get("component"): r for r in (getattr(a, "verification", None) or [])}
     keep, excluded = [], []
     for c in a.components:
@@ -220,10 +231,13 @@ def select_components(a, verified: bool) -> tuple[list, list[dict]]:
             continue
         rating = component_rating(a, c)
         why = ""
-        if rating != "A":
+        if stateful_ready(a, c):
+            if local_state_unplaced(c):     # no folder to put a volume on: the read-only root would fail its writes
+                why = "keeps local state in a folder Containerizer could not find (its findings say what it writes)"
+        elif rating != "A":
             why = f"rated {rating} ({c.verdict})"
-            if rating == "B" and c.verdict in ("info", "config") and getattr(c, "stateless", True) is False:
-                why = "keeps local state"     # otherwise ready: the stateless cap made it B
+        if why:
+            pass
         elif not buildable(c):
             why = "no Linux container build for this component"
         elif verified and (ver.get(c.name) or {}).get("status") not in OK_VERIFY:
@@ -1442,11 +1456,13 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
             if not ok:
                 raise SourceError(f"{c.name}: image build failed: {tail[-300:]}")
         ref = f"{o.registry.rstrip('/')}/{app_ns(a.name)}/{cn}:{tag}"
-        entry = {"component": c.name, "folder": cn, "image": ref, "rating": "A", "verdict": c.verdict,
+        entry = {"component": c.name, "folder": cn, "image": ref, "rating": component_rating(a, c), "verdict": c.verdict,
                  "role": c.role, "project": c.project.rel,
                  "project_name": c.project.name,
                  "verification": next((v.get("status") for v in getattr(a, "verification", None) or [] if v.get("component") == c.name),
                                       "not run")}
+        if stateful_ready(a, c):
+            entry["stateful"] = STATEFUL_NOTE
         if c.name in waived:
             entry["gate_waived"] = (f"{waived[c.name]}: waived, the component is deployed as before (the patch does not "
                                     f"change it, and it passed the gate when the scan deployed it)")
