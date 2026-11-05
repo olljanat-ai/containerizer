@@ -272,3 +272,48 @@ def test_the_plan_says_when_a_make_it_a_patch_runs_in_place():
     assert "The sandbox runs the Make it A patch of order #42 in place of this application's scan output" in sec
     assert mp.patch_in_sandbox(loans(refactors=orders[:1])) is None
     assert "Make it A patch of order" not in _plan_html(webui.render_application(loans(Rating="B")))
+
+
+def test_what_runs_in_the_sandbox_is_shown_on_the_front_page_and_the_app_page():
+    """Applications that run in the sandbox only in part (C: 1 of 6 components) are listed with what runs and the link
+    to open (a UI before an API); the ones a Make it A patch runs for are in their own list."""
+    from test_sqlstore import overview_data
+    data = overview_data()
+    a = data["apps"][0]
+    a.update(Rating="C", ReadyNow=2, PlanComponents=6,
+             Running={"n": 1, "url": "https://customerportal-consumer-loans.sb.example/"})
+    html = webui.render_overview(data)
+    sec = html[html.index("<section class='running'>"):]
+    assert "<h2>Running in the sandbox</h2>" in sec and ">1 of 6 components</span>" in sec
+    assert "href='https://customerportal-consumer-loans.sb.example/' target='_blank'" in sec
+    a.update(Running={"n": 1, "url": "javascript:alert(1)"})                  # never anything but https
+    assert "javascript:" not in webui.render_overview(data)
+    a.update(APatch={"JobId": 9, "SandboxStatus": "running", "SandboxUrl": None, "FinishedAt": None})
+    assert "<section class='running'>" not in webui.render_overview(data)      # in "Made A by a patch" instead
+    a.update(APatch=None, Running=None)
+    assert "<section class='running'>" not in webui.render_overview(data)
+    # the application's page: at the top, with the link and where the plan says the rest
+    app = loans()
+    app["sandbox"][0]["Url"] = "https://customerportal-consumer-loans.sb.example/"
+    html = webui.render_application(app)
+    assert ("<p class='in-sandbox'><span class='st st-ok'>In the sandbox</span> 1 of 6 components run there now "
+            "<a href='https://customerportal-consumer-loans.sb.example/'") in html and "href='#plan'>what runs" in html
+    assert "class='in-sandbox'" not in webui.render_application(loans(sandbox=[]))
+
+
+def test_load_running_prefers_the_ui():
+    class Cur:
+        def execute(self, sql, params=()):
+            assert "FROM cz.vSandboxLatest" in sql
+            self.rows = [{"ApplicationId": 1, "ComponentName": "Shop.Api", "Status": "healthy", "Url": "https://api.x/"},
+                         {"ApplicationId": 1, "ComponentName": "Shop.Web", "Status": "healthy", "Url": "https://web.x/"},
+                         {"ApplicationId": 1, "ComponentName": "Shop.Nightly", "Status": "scheduled", "Url": None},
+                         {"ApplicationId": 2, "ComponentName": "Jobs", "Status": "scheduled", "Url": None}]
+
+        def fetchall(self):
+            return self.rows
+
+    class Conn:
+        def cursor(self, as_dict=False):
+            return Cur()
+    assert webui.load_running(Conn()) == {1: {"n": 3, "url": "https://web.x/"}, 2: {"n": 1, "url": None}}
