@@ -330,6 +330,11 @@ history, one namespace, one set of URLs, IdP clients, lab databases and egress d
 - **One per application.** A newer order's patched copy overwrites the older one in place (on the same commit or
   another; it keeps the scan's commit to go back to), and the older order's state becomes **replaced by newer
   code**, with the newer order.
+- **Try again** on the application's results page (administrators and operators, when a component is not in
+  the sandbox) builds the patched copy again: the same patch on the same commit, generated, built, checked and
+  deployed with the version the appliance runs now (no LLM), within a few minutes by the queue runner. A scan does
+  not: it leaves the patched copy as it is. Use it after an update that lets a component through, such as a gate
+  fix. If the new build cannot be deployed, what ran stays and the page says why.
 - **Remove from the sandbox** on the order page (administrators, operators, the application's product owners)
   puts the scan's output back: the queue runner, within a few minutes, checks the folder out of
   `previous_revision` (no folder there, as when no component rated A on its own: the folder goes), regenerates

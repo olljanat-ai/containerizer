@@ -8,6 +8,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.16.4 (2026-11-05)
+
+- **Try again** on an application whose sandbox runs a Make it A order's patched copy builds that patch again (the
+  same patch on the same commit, no LLM) with this version's generator and gate, and deploys it; before, it queued a
+  scan, which leaves a patched copy as it is. The lab's expense-claims frontend stayed out of its patched copy (made
+  under 0.16.0's gate) even after 0.16.1 fixed the gate. The queue runner does it (`cz.LlmJob.RedeployRequestedAt`);
+  if the new build cannot be deployed, what ran stays and the page says why.
+
 ## 0.16.3 (2026-11-05)
 
 - No checks of application code security: the rules **Secrets in configuration files** and **Credentials

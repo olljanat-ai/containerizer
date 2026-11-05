@@ -15,6 +15,9 @@ from html import escape
 
 NOTICES = {"queued": ("ok", "Scan queued: the scan worker starts it within a minute. This page shows the result when "
                             "it is done."),
+           "rebuild": ("ok", "The sandbox's patched copy is built again: the LLM queue runner does it within a few "
+                             "minutes (the same patch on the same commit, no LLM). This page shows the result when it is "
+                             "done."),
            "busy": ("bad", "Not queued: a scan of this organization is queued or running, or the scan is paused. Try "
                            "again when it is done."),
            "none": ("bad", "No organization scan lists this application's repository: there is nothing to scan again "
@@ -43,13 +46,48 @@ def repositories(conn, app_id: int) -> list[dict]:
     return cur.fetchall()
 
 
+PATCHED_SQL = ("SELECT TOP (1) JobId, Result, RedeployRequestedAt FROM cz.LlmJob WHERE Kind = N'refactor' "
+               "AND Status = N'answered' AND RemoveRequestedAt IS NULL "
+               "AND TRY_CAST(JSON_VALUE(Payload, '$.application_id') AS int) = %s "
+               "AND JSON_VALUE(Result, '$.sandbox.status') IN (N'running', N'failing', N'deployed', N'off') "
+               "AND JSON_VALUE(Result, '$.sandbox.removed_at') IS NULL ORDER BY JobId DESC")
+
+
+def patched(conn, app_id: int) -> dict | None:
+    """The order whose patched copy the application's sandbox runs (variant.py), with the state of a rebuild:
+    {job, pending, error, at}; None when it runs the scan's output. A scan leaves a patched copy as it is, so Try
+    again builds the patch again (variant.redeploy_requested) instead of scanning."""
+    from .variant import _iso
+    try:
+        cur = conn.cursor(as_dict=True)
+        cur.execute(PATCHED_SQL, (app_id,))
+        r = cur.fetchone()
+    except Exception:  # noqa: BLE001 - a database from before 0.16.4
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+    if not r:
+        return None
+    try:
+        sb = (json.loads(r["Result"]) or {}).get("sandbox") or {}
+    except (TypeError, ValueError):
+        sb = {}
+    asked = r.get("RedeployRequestedAt")
+    asked = _iso(asked) if asked is not None and not isinstance(asked, str) else asked
+    return {"job": int(r["JobId"]), "pending": bool(asked) and sb.get("redeploy_of") != asked,
+            "error": sb.get("redeploy_error"), "at": sb.get("redeployed_at")}
+
+
 def state(conn, app_id: int) -> dict:
     """What the page shows next to the button: the runs of the application's repositories queued or running now
     ([{RunId, Status, QueuedAt, StartedAt}]) and when they were last scanned. Needs the admin login (the reader
     reads no OrgRepository)."""
     repos = repositories(conn, app_id)
+    pt = patched(conn, app_id)
     if not repos:
-        return {"repos": 0, "runs": [], "scanned_at": None}
+        return {"repos": 0, "runs": [], "scanned_at": None, "patched": pt}
     cur = conn.cursor(as_dict=True)
     scans = sorted({int(r["ScanId"]) for r in repos})
     cur.execute("SELECT RunId, ScanId, Status, RequestedAt AS QueuedAt, StartedAt, Scope FROM cz.OrgScanRun "
@@ -66,7 +104,7 @@ def state(conn, app_id: int) -> dict:
             continue                    # a run of other repositories of the same scan
         runs.append({k: r[k] for k in ("RunId", "Status", "QueuedAt", "StartedAt")})
     scanned = [r["LastScannedAt"] for r in repos if r.get("LastScannedAt")]
-    return {"repos": len(repos), "runs": runs, "scanned_at": max(scanned) if scanned else None}
+    return {"repos": len(repos), "runs": runs, "scanned_at": max(scanned) if scanned else None, "patched": pt}
 
 
 def route(adm, conn, s, a, method: str, parts: list, form: dict):
@@ -80,6 +118,13 @@ def route(adm, conn, s, a, method: str, parts: list, form: dict):
     def back(code: str):
         return redirect(f"/app/{app_id}?scanagain={code}#components")
     try:
+        pt = patched(conn, app_id)
+        if pt:                          # the sandbox runs an order's patched copy: build it again, no scan
+            cur = conn.cursor()
+            cur.execute("UPDATE cz.LlmJob SET RedeployRequestedAt = SYSUTCDATETIME(), RedeployRequestedBy = %s "
+                        "WHERE JobId = %s", (s.user, pt["job"]))
+            conn.commit()
+            return back("rebuild")
         repos = repositories(conn, app_id)
         if not repos:
             return back("none")
@@ -111,9 +156,23 @@ def section(app: dict, ctx: dict, excluded: list[dict]) -> str:
         return ""
     st = ctx.get("scan_state") or {}
     runs = st.get("runs") or []
+    pt = st.get("patched")
     names = ", ".join(c["ComponentName"] for c in excluded[:6]) + (" ..." if len(excluded) > 6 else "")
     out = [f"<div class='scan-again' id='scan-again'>{notice_html(ctx.get('scan_notice') or '')}"]
-    if runs:
+    if pt and pt.get("error") and not pt.get("pending"):
+        out.append(f"<p class='note small'>The last rebuild of order #{int(pt['job'])}'s patched copy: "
+                   f"{escape(str(pt['error']))}</p>")
+    if pt and pt.get("pending"):
+        out.append(f"<p class='note small'>Order #{int(pt['job'])}'s patched copy is being built again (the LLM queue "
+                   "runner does it within a few minutes): the Sandbox column shows its result when it is done. Reload "
+                   "this page to see it.</p>")
+    elif pt and excluded:
+        out.append(f"<form method='post' action='/admin/scan-again/{int(app['ApplicationId'])}' class='inline'>"
+                   f"{ctx['scan_csrf']}<button>Try again</button></form> <span class='muted small'>Not in the sandbox: "
+                   f"{escape(names)}. The sandbox runs the Make it A patch of order #{int(pt['job'])}, which a scan "
+                   "leaves as it is: this builds that patch again on the same commit with this version (no LLM), "
+                   "checks and deploys it; a component still left out shows what failed.</span>")
+    elif runs:
         r = runs[-1]
         when = r.get("StartedAt") or r.get("QueuedAt")
         out.append(f"<p class='note small'>Scan #{int(r['RunId'])} of this application is {escape(str(r['Status']))} "
