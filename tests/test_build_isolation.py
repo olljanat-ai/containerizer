@@ -251,3 +251,13 @@ def test_guard_in_front_of_a_real_docker(tmp_path):
         subprocess.run(["docker", "rm", "-f", other], env=env, capture_output=True)
         p.terminate()
         p.wait(10)
+
+
+def test_docker_daemon_itself_fetches_nothing_from_the_appliance():
+    """ADD <url> and remote build contexts are fetched by dockerd on the host's network: its own nftables table."""
+    dropin = (ROOT / "appliance/rootfs/etc/systemd/system/docker.service.d/10-containerizer.conf").read_text()
+    assert "ExecStartPost=-/usr/lib/containerizer/bin/cz-docker-egress" in dropin
+    script = (ROOT / "appliance/rootfs/usr/lib/containerizer/bin/cz-docker-egress").read_text()
+    assert 'socket cgroupv2 level 2 "$cg" fib daddr type local tcp dport != { 53, 5000 } drop' in script
+    assert 'cg="system.slice/docker.service"' in script and "10.43.0.0/16" in script
+    assert os.access(ROOT / "appliance/rootfs/usr/lib/containerizer/bin/cz-docker-egress", os.X_OK)

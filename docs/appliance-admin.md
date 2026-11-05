@@ -667,6 +667,7 @@ the application's own); it keeps the platform safe from it instead:
 | SQL Server (results database, 1433), the registry (5000), Grafana, Prometheus, the web UI, kubemg | no: loopback only, and the firewall answers nothing but DNS on Docker's bridges |
 | The k3s API (6443), the kubelet (10250), pods and services of the sandbox cluster (lab services, the IdP, sandboxed apps) | no: Docker's bridges never reach the k3s networks, nor the other way round |
 | The host's network namespace | no: builds never use `--network host` (the scan worker forces `CONTAINERIZER_BUILD_HOST_NETWORK=0`, and Docker refuses the `network.host` and `security.insecure` build entitlements, `/etc/docker/daemon.json`) |
+| The same services through Docker itself (`ADD http://127.0.0.1:9090/...`, a remote build context: the daemon fetches those on the host's network) | no: `cz-docker-egress` (run with each start of Docker) keeps the daemon's own connections off the appliance's addresses, except the registry and DNS, and off the k3s networks |
 | Other networks (your LAN, an external SQL Server) | only what a network rule on the Firewall page allows |
 
 **Docker socket guard.** The scan worker and the LLM queue runner are not in the `docker` group: Docker's own

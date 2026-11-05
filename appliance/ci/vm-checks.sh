@@ -280,6 +280,12 @@ echo "ok: a verification run reaches no appliance service"
 if asworker env DOCKER_BUILDKIT=0 docker build --network host -q "$ctx" >/dev/null 2>&1; then fail "a build got the host network"; fi
 if asworker docker build --network host -q "$ctx" >/dev/null 2>&1; then fail "a BuildKit build got the host network"; fi
 echo "ok: builds never get the host network"
+nft list table inet cz_dockerd | grep -q 'system.slice/docker.service' || fail "Docker's own egress table is not loaded"
+for url in http://127.0.0.1:9090/-/ready http://127.0.0.1:3000/grafana/api/health "http://$host_ip:8080/healthz"; do
+  printf 'FROM %s\nADD %s /x\n' "$CZ_IMAGE_MSSQL" "$url" > "$ctx/Dockerfile.add"; chown containerizer "$ctx/Dockerfile.add"
+  if asworker docker build --no-cache -q -f "$ctx/Dockerfile.add" "$ctx" >/dev/null 2>&1; then fail "a build fetched $url"; fi
+done
+echo "ok: Docker fetches no URL of the appliance's own services for a build"
 asworker docker rmi cz-ci/probe:1 >/dev/null || true
 rm -rf "$ctx"
 
