@@ -8,7 +8,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## Unreleased
+## 0.12.7 (2026-11-05)
 
 - "Make it A": the **Open** link of a patched copy in the sandbox goes to its first component that is not an API by
   its name (the portal of trade-rebates, not its API, whose "/" answers 404). Copies already running get the new
