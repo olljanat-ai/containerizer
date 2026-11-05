@@ -46,6 +46,13 @@ checkout.
 - Never *blocker* or *rewrite* findings (a port, or a part that stays on Windows), findings whose fix is to
   keep the part on Windows, findings in library code the component never reaches, and findings whose
   evidence names no file. The order's page lists them under *Findings not sent to the LLM*.
+- **Platform first.** Never findings that a generator technique or an orchestration option already settles:
+  code changes are the last resort. They are listed under `platform:` in `rules/70-refactor.yaml` with how the
+  platform handles them (today `core-eol`: the container runs the app on the framework it targets, and
+  `dataprotection-default`: the manifests mount a shared Data Protection key). The order's page and the patch
+  list them as *Handled by configuration*. An application whose only findings are such ones has nothing to
+  order, so it is not offered "Make it A" for them. Add a rule there only when the generated output really
+  handles it for every component that has it.
 - **One LLM call per file**, with every finding in that file, never the whole application, and at most 8
   calls per order (`--max-calls` on the command line; 40 in an [LLM-heavy window](#llm-heavy-refactoring-orders)). A call has the rules' *why* and *fix*, the evidence
   lines, the file (or, when it is large, the part around the evidence lines), the component's
@@ -92,6 +99,24 @@ if the edits do not apply, the LLM is asked as usual. Each order still verifies 
 order page says which files had a change reused (*no LLM call*). Changed code, other findings or other packages
 make another key: those are asked about. Start "Make it A" with the smallest orders (Admin → Refactoring) and the
 ones after them reuse what the shared libraries got.
+
+**Only the lines the findings need.** Models like to "improve" what they touch, and every unrelated line is one
+more to review and one more way to break an application that worked. Before an edit is applied, what its findings
+do not need is put back as it was in the file: whitespace-only changes (re-indentation, tabs, another brace style,
+lines joined or split; not in YAML or Python, where indentation is syntax), reordered or duplicated
+`using`/`Imports`/`import` directives (added and removed ones stay), rewritten or removed comments (added ones
+stay), added or removed blank lines, and changed versions of packages the project already references. The
+changed lines left are counted per file: an answer may change at most `max_changed_lines_per_finding` (40) lines
+of existing files per finding it is asked about (`max_changed_lines_by_rule` raises it for the tool's own tasks:
+the stateless move to SQL Server, a repair round), both in `rules/70-refactor.yaml`. An answer over the budget is
+sent back once with the count (it is a rewrite, not a targeted change: renames, refactorings and modernizations
+are other tooling's job); if it is still over, the file is left unchanged and the order page says why. The edits
+may touch only the files shown with the question: the finding's file and the component's `appsettings.json` (in a
+repair round, the files the compiler errors name).
+
+The order page's findings table has **Lines changed** per finding (with how many findings of the file share them,
+and what was put back), and the patch's commit message lists each finding fixed in code with its lines, under
+"Changed in code (no platform alternative)", and the findings handled by configuration.
 
 The changes become one commit in a scratch copy ("Containerizer: &lt;app&gt;: &lt;findings fixed&gt;", author
 `Containerizer <containerizer@localhost>`), and the patch is `git format-patch` of it, so `git am` applies it
