@@ -324,6 +324,20 @@ last upgrade or roll back with its outcome, and checks GHCR for newer releases.
   `.github/workflows/release.yml` on a `vX.Y.Z` tag), then installs exactly the verified digest as a new
   snapshot and restarts. Only release tags of the appliance's own image repository are accepted, whatever
   the web UI sends.
+- **App updates (patch releases)**: a newer patch release of the running series (for example 0.12.3 on an
+  appliance of 0.12.0 to 0.12.2) is installed as an **app update**, not as a new OS: the list marks each release
+  "app update, the OS does not restart" or "OS upgrade". A patch release changes only the application (the code
+  and the rules; the release workflow refuses one that changes the OS image), so the system agent downloads just
+  that, a few MB: the signed image `ghcr.io/olljanat-ai/containerizer-app:vX.Y.Z`, checked with cosign against
+  the same release workflow identity and fetched by its verified digest. It is unpacked on the persistent
+  partition (`/var/lib/containerizer/app-patches/`), its code must import with the OS's Python packages, and it is
+  mounted read-only on `/run/containerizer/app-patch`, which Python reads before the OS image's own code. Only the
+  containerizer services (web UI, scan worker, LLM queue runner, egress observer) restart; when they do not come
+  up within 2 minutes, the code that ran before is put back. Planning and waiting for the work in progress work as
+  for an OS upgrade. A minor or major release is always an OS upgrade, and the app update is not used any more
+  on its new OS (it was built for the previous series). **Remove the app update** on the System page goes back to
+  the OS image's own code; a roll back to a snapshot removes it too. Appliances whose OS image predates app
+  updates (0.11.x and older) take one OS upgrade first.
 - **Automatic fallback**: after an upgrade the boot assessment checks that the firewall is loaded and
   the DNS filter, Docker and k3s run and the application starts. If that fails 5 times, the appliance
   restarts into the previous snapshot, and the System page shows the upgrade as failed.
@@ -336,8 +350,12 @@ last upgrade or roll back with its outcome, and checks GHCR for newer releases.
 ![Admin → System: a planned upgrade waiting for the scan runs and LLM jobs in progress, the Restart and Upgrade forms](images/admin-system-restart-dark.png#only-dark){ .cz-shot }
 
 On the console: `python -m containerizer.sysagent upgrade vX.Y.Z` or `... rollback <snapshot>` (with
-`/usr/lib/containerizer/venv/bin/python`) do it at once, without waiting for the work in progress. The appliance checks GHCR anonymously, so the
-`containerizer-appliance` package must be public.
+`/usr/lib/containerizer/venv/bin/python`) do it at once, without waiting for the work in progress; `upgrade vX.Y.Z
+--full` installs a patch release as a whole OS instead of an app update, and `app-patch remove` removes the app
+update. Should an app update break the agent itself, run the OS image's own code:
+`PYTHONPATH=/usr/lib/containerizer/app /usr/lib/containerizer/venv/bin/python -m containerizer.sysagent app-patch remove`.
+The appliance checks GHCR anonymously, so the `containerizer-appliance` and `containerizer-app` packages must be
+public.
 
 ## Built-in LLM
 

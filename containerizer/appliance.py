@@ -1,5 +1,6 @@
 """The System page of the admin pages on the containerizer appliance: the running version, the OS
-snapshots, newer signed releases on GHCR, and upgrade and roll back.
+snapshots, newer signed releases on GHCR, and upgrade and roll back. A newer patch release of the running OS's
+series is installed as an app update (apppatch.py): only the containerizer services restart, the OS does not.
 
 The web UI runs as an unprivileged user and cannot change the OS. It only reads the status the
 system agent (sysagent.py, root) publishes in /run/containerizer/system/status.json and drops a
@@ -181,6 +182,17 @@ class SystemPage:
                     return 303, "", back + urlencode({"msg": "No restart is planned."})
                 self.request("plan-cancel", s.user, s.name)
                 return 303, "", back + urlencode({"msg": "Planned restart cancelled. Scans and the LLM queue go on."})
+            if what == "app-patch-remove":
+                if not st.get("app_patch"):
+                    return 303, "", back + urlencode({"msg": "No app update is installed."})
+                if form.get("confirm", [""])[0] != "yes":
+                    return 303, "", back + urlencode({"msg": "Tick the box to confirm: the services restart."})
+                if self.busy(st):
+                    return 303, "", back + urlencode({"msg": "A restart is already planned, or an upgrade, roll back or "
+                                                             "firewall change is in progress."})
+                self.request("app-patch-remove", s.user, s.name)
+                return 303, "", back + urlencode({"msg": f"Removing the app update: back to {st.get('os_version') or 'the OS image code'}; "
+                                                         "the services restart."})
             if what not in ("upgrade", "rollback", "restart"):
                 return 404, shell("Not found", kind, "", ""), None
             if form.get("confirm", [""])[0] != "yes":
@@ -210,8 +222,10 @@ class SystemPage:
             self.request("plan", s.user, s.name, **args)
             plan = {"action": args["then"], **args}
             when = f"at {_when(at)}" if at else "now"
+            restarts = "its services restart" if what == "upgrade" and self.app_update(st, args["version"]) \
+                else "the appliance restarts"
             return 303, "", back + urlencode({"msg": f"{rp.describe(plan).capitalize()} planned {when}: from then on no "
-                                                     f"new scan or LLM job starts, and the appliance restarts "
+                                                     f"new scan or LLM job starts, and {restarts} "
                                                      f"{rp.wait_text(wait)}."})
         flash = q.get("msg", [""])[0][:300]
         force = q.get("check", [""])[0] == "1"
@@ -435,13 +449,15 @@ certificate and key from the appliance</label> <button{dis}>Turn off</button></f
             return ("<p class='note'>The system agent has not published its status yet. It runs at start-up; "
                     "check <code>systemctl status containerizer-sysagent</code> on the appliance.</p>")
         version = st.get("version") or "unknown"
+        patch = st.get("app_patch") or {}
+        os_version = st.get("os_version") or version
         mode = {"active": "active system", "passive": "an earlier snapshot (fallback)",
                 "recovery": "the recovery system"}.get(st.get("boot_mode"), st.get("boot_mode") or "unknown")
         busy = self.busy(st)
         task = st.get("task") or {}
         out = [f"""<div class='tiles'>
 <div class='tile'><div class='label'>Running version</div><div class='value small-value'>{e(version)}</div>
-<div class='sub'>{e(st.get('image') or '')}</div></div>
+<div class='sub'>{e(f"app update on OS {os_version}" if patch else (st.get('image') or ''))}</div></div>
 <div class='tile'><div class='label'>Booted from</div><div class='value small-value'>{e(mode)}</div>
 <div class='sub'>Elemental {e(st.get('elemental') or '')}</div></div>
 <div class='tile'><div class='label'>Status updated</div><div class='value small-value'>{e(_when(st.get('updated')))}</div>
@@ -451,7 +467,8 @@ certificate and key from the appliance</label> <button{dis}>Turn off</button></f
                        "failed its start-up check. Roll back to make this version the active one again, or upgrade.</p>")
         if task:
             state = task.get("state", "")
-            what = {"upgrade": f"Upgrade to {task.get('version', '')}",
+            what = {"upgrade": f"{'App update' if task.get('kind') == 'app update' else 'Upgrade'} to {task.get('version', '')}",
+                    "app-patch-remove": "Remove the app update",
                     "rollback": f"Roll back to snapshot {task.get('snapshot', '')}", "reboot": "Restart",
                     "plan": "Plan a restart", "plan-cancel": "Cancel the planned restart"}.get(task.get("action"), task.get("action", ""))
             out.append(f"<h2>Last change</h2><table><tbody><tr><td>{e(what)}</td><td><b>{e(state)}</b></td>"
@@ -479,15 +496,28 @@ certificate and key from the appliance</label> <button{dis}>Turn off</button></f
         elif not newer:
             out.append(f"<p>{e(version)} is the newest release.</p>")
         else:
-            opts = "".join(f"<option value='{e(v)}'>{e(v)}</option>" for v in newer)
+            def label(v):
+                return f"{v}: app update, the OS does not restart" if self.app_update(st, v) else f"{v}: OS upgrade"
+            opts = "".join(f"<option value='{e(v)}'>{e(label(v))}</option>" for v in newer)
             out.append(f"""<form method='post' action='/admin/system/upgrade'>{csrf}
 <div class='formrow'><label for='version'>New release</label><select name='version' id='version'>{opts}</select></div>
 {plan_fields("upgrade")}<button{dis}>Upgrade</button>
-{confirm}</form>
+<label class='small'><input type='checkbox' name='confirm' value='yes' required> I understand that the appliance
+restarts (an app update: its services restart) and is unavailable for a few minutes</label></form>
 <p class='muted small'>The appliance checks that the image was signed by the release workflow of
-<code>{e(st.get('signer') or '')}</code>, writes it as a new snapshot next to the running one and restarts into it.
-If the new version does not pass its start-up check, the appliance goes back to the previous snapshot by itself.</p>""")
+<code>{e(st.get('signer') or '')}</code>. A new minor or major version is an OS upgrade: it is written as a new
+snapshot next to the running one and the appliance restarts into it; if it does not pass its start-up check, the
+appliance goes back to the previous snapshot by itself. A patch release of the running series is an app update:
+only the application is downloaded, and only its services restart (a minute); if they do not come up, the code
+that ran before is put back.</p>""")
         out.append(f"<p class='muted small'>Checked {e(_when(checked))}. <a href='/admin/system?check=1'>Check again</a></p>")
+        if patch:
+            out.append(f"""<h2>App update</h2><p>The application runs from the app update <b>{e(patch.get('version') or '')}</b>
+on the OS of {e(os_version)}. Removing it goes back to the OS image's own code ({e(os_version)}); only the services restart.
+A roll back to a snapshot removes it too.</p>
+<form method='post' action='/admin/system/app-patch-remove'>{csrf}<button{dis}>Remove the app update</button>
+<label class='small'><input type='checkbox' name='confirm' value='yes' required> I understand that the services restart
+and scans in progress are cut off</label></form>""")
         snaps = st.get("snapshots") or []
         rows = []
         for x in snaps:
@@ -510,6 +540,13 @@ If the new version does not pass its start-up check, the appliance goes back to 
 {plan_fields("rollback")}<button{dis}>Roll back</button>
 {confirm}</form>""")
         return "".join(out)
+
+    @staticmethod
+    def app_update(st: dict, version: str) -> bool:
+        """Whether the system agent installs `version` as an app update (no OS restart): a newer patch release of
+        the running OS's series, on an OS image that supports them (sysagent.upgrade decides the same way)."""
+        from .apppatch import is_patch_of
+        return bool(st.get("app_updates")) and is_patch_of(version, st.get("os_version") or st.get("version"))
 
     @staticmethod
     def render_plan(plan: dict, s) -> str:

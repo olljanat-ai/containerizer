@@ -10,6 +10,11 @@ request again before acting on it:
             workflow (keyless, GitHub OIDC), and installed by digest, so the tag cannot be moved between
             the check and the download. Elemental writes it as a new btrfs snapshot; the running system
             is not touched, and the boot assessment falls back to it when the new one fails to start.
+            A newer patch release of the running OS's series (vX.Y.*) is an app update instead
+            (apppatch.py): the signed application image of that release (CZ_APP_IMAGE, the same signer)
+            is unpacked on the persistent partition and mounted over the code, and only the containerizer
+            services restart; the OS does not. If they do not come up, the previous code is put back.
+- app-patch-remove: the app update off again: the OS image's own code runs, the services restart.
 - rollback: only a snapshot that is on the disk; Elemental installs a copy of it as the new active
             system (no download, no registry needed).
 - egress:   the administrators' egress allow-list (validated here, not trusted from the web UI), then
@@ -32,7 +37,10 @@ Commands (also for an administrator on the console or over SSH):
 
     status                     publish status.json (and start or stop the built-in LLM as set)
     process                    handle the queued requests
-    upgrade vX.Y.Z             verify, install and restart
+    upgrade vX.Y.Z [--full]    verify, install and restart (an app update for a patch release of the
+                               running series, unless --full)
+    app-patch select           mount the active app update when it fits the running OS (at start-up)
+    app-patch remove           back to the OS image's own code; the services restart
     rollback <snapshot id>     install a copy of a snapshot and restart
     restart-check              carry out the planned restart when it is due (containerizer-restart.timer)
     firewall apply             (re)build the nftables ruleset and the dnsmasq allow-list
@@ -56,7 +64,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import local_llm, restartplan
+from . import apppatch, local_llm, restartplan
+from .apppatch import PatchError
 from .local_llm import LocalLlmError
 
 VERSION_RE = re.compile(r"v\d{1,4}\.\d{1,4}\.\d{1,4}")
@@ -98,6 +107,10 @@ class Paths:
     kubeconfig: Path = Path("/etc/rancher/k3s/k3s.yaml")
     sql_env: Path = Path("/run/containerizer/sql.env")
     sql_ca: Path = Path("/run/containerizer/sql-ca.pem")
+    patches: Path = Path("/var/lib/containerizer/app-patches")          # app updates, <version>/ and `active`
+    patch_mount: Path = Path("/run/containerizer/app-patch")            # the active one, read-only
+    requirements_sha: Path = Path("/usr/lib/containerizer/requirements.sha256")
+    learned: Path = Path("/var/lib/containerizer/learned")
 
     def https(self, ext: str) -> Path:
         return self.https_dir / f"sandbox-https{ext}"
@@ -145,6 +158,7 @@ def conf() -> dict:
     c = read_env(P.conf)
     c.setdefault("CZ_OS_IMAGE", "ghcr.io/olljanat-ai/containerizer-appliance")
     c.setdefault("CZ_SIGNER_REPO", "olljanat-ai/containerizer")
+    c.setdefault("CZ_APP_IMAGE", apppatch.app_image(c["CZ_OS_IMAGE"]))
     c.setdefault("CZ_SIGNER_ISSUER", "https://token.actions.githubusercontent.com")
     c.setdefault("CZ_SIGNER_IDENTITY_REGEXP", "^https://github\\.com/" + re.escape(c["CZ_SIGNER_REPO"])
                  + "/\\.github/workflows/release\\.yml@refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+$")
@@ -249,7 +263,10 @@ def publish(task: dict | None = None, egress_state: dict | None = None, https_st
     if task is not None:
         save_task(task)
     c = conf()
-    st = {"version": running_version(), "image": c["CZ_OS_IMAGE"], "signer": c["CZ_SIGNER_REPO"],
+    patch = mounted_patch()
+    st = {"version": (patch or {}).get("version") or running_version(), "os_version": running_version(),
+          "app_patch": patch, "app_updates": bool(requirements_sha()),
+          "image": c["CZ_OS_IMAGE"], "signer": c["CZ_SIGNER_REPO"],
           "boot_mode": boot_mode(), "elemental": old.get("elemental") or elemental_version(),
           "hostname": socket.gethostname(), "snapshots": snapshots(), "updated": now(),
           "task": task if task is not None else last_task(), "restart": load_plan(),
@@ -261,12 +278,12 @@ def publish(task: dict | None = None, egress_state: dict | None = None, https_st
 
 # =============================================================================== upgrade / rollback
 
-def verify_signature(version: str, c: dict | None = None) -> str:
+def verify_signature(version: str, c: dict | None = None, image: str | None = None) -> str:
     """`cosign verify` the release tag against the release workflow's identity; the verified digest."""
     c = c or conf()
     if not VERSION_RE.fullmatch(version or ""):
         raise AgentError(f"not a release version: {version!r}")
-    ref = f"{c['CZ_OS_IMAGE']}:{version}"
+    ref = f"{image or c['CZ_OS_IMAGE']}:{version}"
     out = run(["cosign", "verify", "--certificate-identity-regexp", c["CZ_SIGNER_IDENTITY_REGEXP"],
                "--certificate-oidc-issuer", c["CZ_SIGNER_ISSUER"], "--output", "json", ref], timeout=600)
     digests = set()
@@ -286,7 +303,12 @@ def _snapshots_rw() -> None:
         run(["mount", "-o", "remount,rw", str(P.snapshots)], timeout=60, check=False)
 
 
-def upgrade(version: str, task: dict, reboot: bool = True) -> None:
+def upgrade(version: str, task: dict, reboot: bool = True, full: bool = False) -> None:
+    """A newer patch release of the running OS's series is an app update (no OS restart) when this OS image
+    supports them; anything else, or `full`, is a new OS snapshot and a restart."""
+    if not full and requirements_sha() and apppatch.is_patch_of(version, running_version()):
+        install_patch(version, task)
+        return
     c = conf()
     task.update(state="running", started=now(), message="Verifying the image signature")
     publish(task)
@@ -312,6 +334,7 @@ def rollback(snapshot: int, task: dict, reboot: bool = True) -> None:
     _snapshots_rw()
     labels = f"version={s['version'] or 'unknown'},rollback-of={snapshot}"
     run(["elemental", "upgrade", "--system", f"dir:{path}", "--snapshot-labels", labels], timeout=3 * 3600)
+    set_active_patch(None)          # the snapshot as it was: its own code, without the app update
     _finish(task, f"Rolled back to snapshot {snapshot} ({s['version'] or 'unknown version'})", reboot)
 
 
@@ -320,6 +343,214 @@ def _finish(task: dict, msg: str, reboot: bool) -> None:
     publish(task)
     if reboot:
         run(["systemctl", "reboot"], timeout=60, check=False)
+
+
+# =============================================================================== app updates
+
+# the long-running services that run the containerizer code; the one-shot ones take the new code at their next run
+PATCH_SERVICES = ("containerizer-web.service", "containerizer-worker.service", "containerizer-llm-queue.service",
+                  "containerizer-egress-observer.service")
+PATCH_START_WAIT = 120      # seconds the services may take to come up with the new code
+PATCH_SETTLE = 10           # seconds they must keep running (a crash loop restarts them)
+HEALTHZ = "http://127.0.0.1:8080/healthz"
+
+
+def requirements_sha() -> str | None:
+    """The hash of the Python packages' lock this OS image was built with; None for an image without app updates."""
+    try:
+        v = P.requirements_sha.read_text().split()[0]
+    except (OSError, IndexError):
+        return None
+    return v if apppatch.SHA_RE.fullmatch(v) else None
+
+
+def active_patch() -> str | None:
+    try:
+        v = (P.patches / "active").read_text().strip()
+    except OSError:
+        return None
+    return v if VERSION_RE.fullmatch(v) else None
+
+
+def set_active_patch(version: str | None) -> None:
+    if version is None:
+        (P.patches / "active").unlink(missing_ok=True)
+    else:
+        atomic_write(P.patches / "active", version + "\n", 0o644)
+
+
+def mounted_patch() -> dict | None:
+    """The app update the code runs from now: its manifest, or None (the OS image's own code)."""
+    try:
+        m = json.loads((P.patch_mount / "manifest.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return {"version": m.get("version"), "series": m.get("series")} if isinstance(m, dict) else None
+
+
+def check_patch(version: str) -> Path:
+    """The installed update `version`, checked against the running OS: its folder."""
+    root = P.patches / version
+    apppatch.check_manifest(apppatch.read_manifest(root), version, running_version(), requirements_sha())
+    apppatch.check_tree(root, version)
+    return root
+
+
+def mount_patch(version: str | None) -> None:
+    """Mount the update read-only on P.patch_mount (listed before the OS image's code in containerizer.pth), or
+    nothing there. Lazily unmounted: a process still running reads its files until it restarts. Only in the
+    host's mount namespace (containerizer-app-patch.service): the agent's own units have a private one."""
+    P.patch_mount.mkdir(parents=True, exist_ok=True)
+    if os.path.ismount(str(P.patch_mount)):
+        run(["umount", "--lazy", str(P.patch_mount)], timeout=60)
+    if version:
+        run(["mount", "--bind", "-o", "ro", str(P.patches / version), str(P.patch_mount)], timeout=60)
+
+
+def select_patch() -> str:
+    """At start-up, before the containerizer services: mount the active update if it still fits the running OS
+    (after a full upgrade to another series, or another set of Python packages, it does not)."""
+    v = active_patch()
+    if not v:
+        mount_patch(None)
+        return "no app update: the OS image's own code"
+    try:
+        check_patch(v)
+    except PatchError as ex:
+        mount_patch(None)
+        return f"app update {v} not used: {ex}"
+    mount_patch(v)
+    return f"app update {v} mounted"
+
+
+def reselect(expect: str | None) -> None:
+    """Have containerizer-app-patch.service (the host's mount namespace, the OS image's own code) mount the active
+    update again, and check that `expect` (None: none) is what the code now runs from."""
+    run(["systemctl", "restart", "containerizer-app-patch.service"], timeout=120)
+    got = (mounted_patch() or {}).get("version")
+    if got != expect:
+        raise AgentError(f"the code runs from {got or 'the OS image'}, not from {expect or 'the OS image'}: "
+                         f"see journalctl -u containerizer-app-patch")
+
+
+def restart_services() -> None:
+    run(["systemctl", "try-restart", *PATCH_SERVICES], timeout=300, check=False)
+
+
+def services_up(wait: int | None = None) -> str | None:
+    """None when the restarted services run and the web UI answers; else what is wrong."""
+    deadline = time.monotonic() + (PATCH_START_WAIT if wait is None else wait)
+    problem = "not checked"
+    while True:
+        states = {u: run(["systemctl", "is-active", u], timeout=30, check=False).strip() for u in PATCH_SERVICES[:3]}
+        down = [f"{u} is {s or 'unknown'}" for u, s in states.items() if s != "active"]
+        problem = "; ".join(down) or web_answers()
+        if problem is None:
+            time.sleep(PATCH_SETTLE)
+            again = [u for u in states if run(["systemctl", "is-active", u], timeout=30, check=False).strip() != "active"]
+            if not again:
+                return None
+            problem = f"{', '.join(again)} stopped again"
+        if time.monotonic() >= deadline:
+            return problem
+        time.sleep(HEALTH_POLL)
+
+
+def web_answers() -> str | None:
+    import urllib.request
+    try:
+        with urllib.request.urlopen(HEALTHZ, timeout=10) as r:
+            return None if r.status == 200 else f"the web UI answers {r.status}"
+    except OSError as ex:
+        return f"the web UI does not answer: {ex}"
+
+
+def install_patch(version: str, task: dict) -> None:
+    """An app update: verified, fetched by digest, checked, made active; the services restart with it. When they
+    do not come up, the code that ran before is put back."""
+    c = conf()
+    image = c["CZ_APP_IMAGE"]
+    task.update(state="running", started=now(), kind="app update",
+                message=f"Verifying the signature of the app update {image}:{version}")
+    publish(task)
+    if not VERSION_RE.fullmatch(version or ""):
+        raise AgentError(f"not a release version: {version!r}")
+    digest = verify_signature(version, c, image)
+    task.update(message=f"Signature verified ({digest[:19]}…); downloading")
+    publish(task)
+    P.patches.mkdir(parents=True, exist_ok=True)
+    previous = active_patch() if mounted_patch() else None
+    if previous == version:
+        previous = None
+    staging = P.patches / f".{version}.{os.getpid()}"
+    apppatch.remove_tree(staging)
+    try:
+        apppatch.fetch(image, digest, staging)
+        apppatch.check_manifest(apppatch.read_manifest(staging), version, running_version(), requirements_sha())
+        apppatch.check_tree(staging, version)
+        learned = staging / "rules" / "learned"
+        if not learned.exists() and not learned.is_symlink():
+            learned.symlink_to(P.learned)
+        run([sys.executable, "-I", "-m", "compileall", "-q", str(staging / "containerizer")], timeout=600)
+        # the update's code imports, from its own folder, with this OS image's Python packages
+        run([sys.executable, "-I", "-c", "import sys; sys.path.insert(0, sys.argv[1]); import containerizer, "
+             "containerizer.webui, containerizer.admin, containerizer.cli, containerizer.worker, containerizer.sysagent; "
+             "assert containerizer.__file__.startswith(sys.argv[1]), containerizer.__file__", str(staging)], timeout=300)
+        final = P.patches / version
+        if (mounted_patch() or {}).get("version") == version:
+            set_active_patch(None)  # the same version again: its folder is replaced
+            reselect(None)
+        apppatch.remove_tree(final)
+        staging.rename(final)
+    except (PatchError, AgentError, OSError, subprocess.TimeoutExpired):
+        apppatch.remove_tree(staging)
+        raise
+    task.update(message=f"Installed {version} ({digest[:19]}…); restarting the services")
+    publish(task)
+    set_active_patch(version)
+    try:
+        reselect(version)
+        restart_services()
+        problem = services_up()
+    except AgentError as ex:
+        problem = str(ex)
+    if problem:
+        set_active_patch(previous)
+        try:
+            reselect(previous)
+        except AgentError as ex:
+            log(str(ex))
+        restart_services()
+        raise AgentError(f"the services did not come up with {version} ({problem}); back to "
+                         f"{previous or 'the OS image code ' + (running_version() or '')}")
+    prune_patches(keep={version, previous})
+    task.update(state="done", finished=now(), message=f"App update {version} ({digest[:19]}…) installed; the "
+                f"containerizer services restarted, the OS did not")
+    publish(task)
+
+
+def remove_patch(task: dict) -> None:
+    """Back to the OS image's own code; the services restart."""
+    v = active_patch()
+    if not v and not mounted_patch():
+        raise AgentError("no app update is installed")
+    task.update(state="running", started=now(), message=f"Removing the app update {v or ''}".strip())
+    publish(task)
+    set_active_patch(None)
+    reselect(None)
+    restart_services()
+    problem = services_up()
+    task.update(state="failed" if problem else "done", finished=now(),
+                message=f"Back to {running_version() or 'the OS image code'}" + (f", but {problem}" if problem else
+                                                                                 "; the services restarted"))
+    publish(task)
+
+
+def prune_patches(keep: set) -> None:
+    for d in P.patches.iterdir() if P.patches.is_dir() else ():
+        # older updates, and the staging folders of downloads that were cut off
+        if d.is_dir() and d.name not in keep and (VERSION_RE.fullmatch(d.name) or d.name.startswith(".v")):
+            apppatch.remove_tree(d)
 
 
 # =============================================================================== planned restart
@@ -418,7 +649,7 @@ def restart_check(current: datetime | None = None) -> str:
         else:
             task.update(started=now())
             _finish(task, "Restart as planned", True)
-    except (AgentError, OSError, subprocess.TimeoutExpired, ValueError) as ex:
+    except (AgentError, PatchError, OSError, subprocess.TimeoutExpired, ValueError) as ex:
         task.update(state="failed", finished=now(), message=str(ex)[-1000:])
         publish(task)
         raise
@@ -1116,6 +1347,8 @@ def process() -> int:
                     raise AgentError("snapshot must be a number")
                 task["snapshot"] = sid
                 rollback(sid, task)
+            elif action == "app-patch-remove":  # Admin -> System: back to the OS image's own code
+                remove_patch(task)
             elif action == "plan":              # Admin -> System: a planned restart, upgrade or roll back
                 if load_plan():
                     raise AgentError("a restart is already planned: cancel it first")
@@ -1145,7 +1378,7 @@ def process() -> int:
                 publish(https_state=sandbox_https_status())
             else:
                 log(f"unknown action {action!r} ignored")
-        except (AgentError, RuleError, LocalLlmError, OSError, subprocess.TimeoutExpired, ValueError) as ex:
+        except (AgentError, RuleError, LocalLlmError, PatchError, OSError, subprocess.TimeoutExpired, ValueError) as ex:
             rc = 1
             log(f"{action} failed: {ex}")
             if action in ("lab", "local-llm", "dbquery", "dbdelete"):
@@ -1153,7 +1386,7 @@ def process() -> int:
             if action in ("plan", "plan-cancel"):
                 task.update(state="failed", finished=now(), message=f"Not planned: {ex}"[:1000])
                 publish(task)
-            elif action in ("upgrade", "rollback"):
+            elif action in ("upgrade", "rollback", "app-patch-remove"):
                 task.update(state="failed", finished=now(), message=str(ex)[-1000:])
                 publish(task)
             elif action == "sandbox-https":
@@ -1221,9 +1454,15 @@ def main(argv=None) -> int:
             return 0
         if cmd == "process":
             return process()
-        if cmd == "upgrade" and len(argv) == 2:
+        if cmd == "upgrade" and len(argv) >= 2 and set(argv[2:]) <= {"--full", "--no-reboot"}:
             upgrade(argv[1], {"action": "upgrade", "version": argv[1], "requested_by": "console"},
-                    reboot="--no-reboot" not in argv)
+                    reboot="--no-reboot" not in argv, full="--full" in argv)
+            return 0
+        if cmd == "app-patch" and argv[1:] == ["select"]:
+            log(select_patch())
+            return 0
+        if cmd == "app-patch" and argv[1:] == ["remove"]:
+            remove_patch({"action": "app-patch-remove", "requested_by": "console"})
             return 0
         if cmd == "rollback" and len(argv) == 2 and argv[1].isdigit():
             rollback(int(argv[1]), {"action": "rollback", "snapshot": int(argv[1]), "requested_by": "console"})
@@ -1247,7 +1486,7 @@ def main(argv=None) -> int:
         if cmd == "sandbox-https" and argv[1:2] == ["sync"]:
             print(sync_sandbox_https())
             return 0
-    except (AgentError, RuleError, OSError, subprocess.TimeoutExpired) as ex:
+    except (AgentError, RuleError, PatchError, OSError, subprocess.TimeoutExpired) as ex:
         log(f"error: {ex}")
         return 1
     print(__doc__)

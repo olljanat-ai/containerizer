@@ -68,17 +68,21 @@ RUN set -eu; mkdir -p /var/lib/rancher/k3s/server/static/charts; \
 
 COPY --from=elemental /elemental /usr/bin/elemental
 
-# The application: Python packages pinned by hash, the code and rules read-only in /usr
+# The application: Python packages pinned by hash, the code and rules read-only in /usr. An app update (a patch
+# release of this series, sysagent.py/apppatch.py) is mounted on /run/containerizer/app-patch, listed first in
+# containerizer.pth: Python takes the package from there while one is mounted. requirements.sha256 is what an
+# update must have been built for.
 COPY appliance/requirements.lock /tmp/requirements.lock
 RUN python3 -m venv /usr/lib/containerizer/venv \
  && /usr/lib/containerizer/venv/bin/pip install --no-cache-dir --no-compile --require-hashes --only-binary=:all: \
       -r /tmp/requirements.lock \
+ && sha256sum /tmp/requirements.lock | cut -d' ' -f1 > /usr/lib/containerizer/requirements.sha256 \
  && rm /tmp/requirements.lock
 COPY containerizer/ /usr/lib/containerizer/app/containerizer/
 COPY rules/ /usr/lib/containerizer/app/rules/
 RUN mv /usr/lib/containerizer/app/rules/learned /usr/lib/containerizer/learned-seed \
  && ln -s /var/lib/containerizer/learned /usr/lib/containerizer/app/rules/learned \
- && echo /usr/lib/containerizer/app > "$(/usr/lib/containerizer/venv/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/containerizer.pth" \
+ && printf '/run/containerizer/app-patch\n/usr/lib/containerizer/app\n' > "$(/usr/lib/containerizer/venv/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/containerizer.pth" \
  && /usr/lib/containerizer/venv/bin/python -m compileall -q /usr/lib/containerizer/app/containerizer \
  && /usr/lib/containerizer/venv/bin/python -c "import containerizer.webui, containerizer.admin, containerizer.sysagent, yaml, pymssql, jwt"
 
@@ -94,7 +98,7 @@ RUN chmod 0755 /usr/lib/containerizer/bin/* /usr/libexec/elemental-checker/conta
  && systemd-sysusers \
  && test "$(id -u containerizer)" = 900 && test "$(id -u cz-web)" = 901 \
  && systemctl enable systemd-networkd.service systemd-resolved.service ssh.service docker.service caddy.service \
-      containerizer-firstboot.service containerizer-root-password.service containerizer-root-password.path \
+      containerizer-firstboot.service containerizer-app-patch.service containerizer-root-password.service containerizer-root-password.path \
       containerizer-firewall.service containerizer-dns.service \
       containerizer-dns-upstream.path containerizer-addresses.service \
       containerizer-sysagent.path containerizer-sysagent-status.service containerizer-sysagent-status.timer containerizer-restart.timer \
@@ -120,8 +124,9 @@ RUN mkdir -p /usr/lib/elemental/bootloader \
 ARG VERSION=dev
 ARG IMAGE=ghcr.io/olljanat-ai/containerizer-appliance
 ARG SIGNER_REPO=olljanat-ai/containerizer
+ARG APP_IMAGE=ghcr.io/olljanat-ai/containerizer-app
 RUN echo "IMAGE_TAG=\"${VERSION}\"" >> /etc/os-release \
- && printf 'CZ_OS_IMAGE=%s\nCZ_SIGNER_REPO=%s\n' "${IMAGE}" "${SIGNER_REPO}" > /usr/lib/containerizer/appliance.conf \
+ && printf 'CZ_OS_IMAGE=%s\nCZ_APP_IMAGE=%s\nCZ_SIGNER_REPO=%s\n' "${IMAGE}" "${APP_IMAGE}" "${SIGNER_REPO}" > /usr/lib/containerizer/appliance.conf \
  && sed -i "s#oci:ghcr.io/olljanat-ai/containerizer-appliance:latest#oci:${IMAGE}:latest#" /etc/elemental/config.yaml
 
 LABEL org.opencontainers.image.title="containerizer appliance" \

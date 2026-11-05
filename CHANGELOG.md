@@ -3,8 +3,28 @@
 Releases are tagged `vX.Y.Z`: bump `containerizer/__init__.py` and this file, then run the **release** workflow
 by hand on `main` with the version, and it tags the commit and releases from the tag (or push the tag `vX.Y.Z` on `main`
 yourself: a tag push starts the release too). Each release publishes the appliance OS image to
-`ghcr.io/olljanat-ai/containerizer-appliance` (signed with cosign by the release workflow) and the ISO,
-qcow2 and VHDX images as release assets.
+`ghcr.io/olljanat-ai/containerizer-appliance` and its application alone to `ghcr.io/olljanat-ai/containerizer-app`
+(both signed with cosign by the release workflow) and the ISO, qcow2 and VHDX images as release assets. A patch
+release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
+it as an app update, without an OS upgrade. OS changes go into a minor or major release.
+
+## Unreleased
+
+- Appliance: patch releases are installed as **app updates**, without an OS upgrade. A full upgrade downloads the
+  whole OS image, writes a new snapshot and restarts the server, which takes long on a physical server. Within a
+  release series (vX.Y) the OS no longer changes: every release now also publishes its application alone (the code
+  and the rules, a few MB) as `ghcr.io/olljanat-ai/containerizer-app:vX.Y.Z`, signed by the same release
+  workflow, and **Admin → System** installs a newer patch release of the running series from it
+  (`containerizer/apppatch.py`): verified with cosign, fetched by digest, unpacked on the persistent partition,
+  checked to import with the OS's Python packages, mounted read-only over the code
+  (`/run/containerizer/app-patch`, first in the venv's `containerizer.pth`), and only the containerizer services
+  restart; if they do not come up, the previous code is put back. **Remove the app update** goes back to the OS
+  image's code. Minor and major releases stay OS upgrades, and an app update is not used on another series's OS
+  (`containerizer-app-patch.service` checks at every start, with the OS image's own code). The release workflow
+  refuses a patch release that changes the OS image since its vX.Y.0 (`appliance/`, `monitoring/`:
+  `appliance/ci/patch-release-check.sh`); those changes go into a minor release. The first app update can be
+  installed on the OS of the next minor release (older OS images take one OS upgrade first). The new GHCR
+  package `containerizer-app` must be made public, as `containerizer-appliance` is.
 
 ## 0.11.1 (2026-11-05)
 
