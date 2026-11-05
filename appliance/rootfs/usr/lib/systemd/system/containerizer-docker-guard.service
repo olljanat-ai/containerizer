@@ -1,0 +1,44 @@
+[Unit]
+Description=containerizer appliance: Docker socket guard (containerizer/dockerguard.py)
+# Builds and runs of the scanned repositories' code go through it: no privileged containers, no host network or
+# other host namespaces, bind mounts from the worker's folders only, no calls on the appliance's own containers
+# (docs/appliance.md, "Builds of scanned code").
+Requires=containerizer-docker-guard.socket docker.service
+After=containerizer-docker-guard.socket docker.service
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+
+[Service]
+# in the docker group (root-equivalent), so it is small, has no network and nothing to write
+User=cz-dockerguard
+Group=cz-dockerguard
+SupplementaryGroups=docker
+# reads the worker's folders (mode 0700) to resolve the bind mounts it allows
+AmbientCapabilities=CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+# CONTAINERIZER_CA_BUNDLE (a corporate CA the image scanner mounts) is the worker's
+EnvironmentFile=-/etc/containerizer/worker.env
+ExecStart=/usr/lib/containerizer/venv/bin/python -m containerizer.dockerguard \
+  --upstream /var/run/docker.sock --listen /run/containerizer/docker-guard.sock \
+  --bind-root /var/lib/containerizer/worker --bind-root /var/lib/containerizer/refactor
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+UMask=0077

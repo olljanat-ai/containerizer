@@ -1,20 +1,20 @@
 [Unit]
 Description=containerizer appliance: LLM queue runner (queued LLM reviews, refactoring patches; Admin -> LLM queue)
-After=containerizer-db-init.service containerizer-dns.service docker.service containerizer-registry.service
+After=containerizer-db-init.service containerizer-dns.service docker.service containerizer-registry.service containerizer-docker-guard.socket
 Requires=containerizer-db-init.service
 # refactoring patches are built and run before they are offered; without Docker they are "applies only".
 # "Make it A" variants push their images to the appliance's registry, as the scan worker does.
-Wants=docker.service containerizer-registry.service
+Wants=docker.service containerizer-registry.service containerizer-docker-guard.socket
 ConditionKernelCommandLine=!cdroot
 ConditionPathExists=!/run/elemental/recovery_mode
 
 [Service]
 User=containerizer
 Group=containerizer
-# Docker, to build and run a refactoring patch's components (the verify step of the scan worker). The docker
-# group is root-equivalent, as for the scan worker: the patched code is the scanned repositories' own code,
-# built and run in the same hardened containers (docs/refactoring.md#on-the-appliance).
-SupplementaryGroups=docker
+# Docker, to build and run a refactoring patch's components (the verify step of the scan worker): through the
+# Docker socket guard, as the scan worker (containerizer/dockerguard.py), since the patched code is the scanned
+# repositories' own code, built and run in the same hardened containers (docs/refactoring.md#on-the-appliance).
+Environment=DOCKER_HOST=unix:///run/containerizer/docker-guard.sock
 # the scan worker's settings: a self-hosted LLM set in the environment (CONTAINERIZER_LLM_*) applies here too
 EnvironmentFile=/etc/containerizer/worker.env
 EnvironmentFile=-/run/containerizer/llm.env

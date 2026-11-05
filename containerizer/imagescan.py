@@ -87,7 +87,10 @@ def _ca_bundle() -> str | None:
 
 def _docker_tool_args() -> list[str]:
     """Proxy, CA bundle and Docker socket for a scanner that runs as a container."""
-    args = ["-v", "/var/run/docker.sock:/var/run/docker.sock"]
+    # the Docker socket the worker itself uses: on the appliance the guard's (containerizer/dockerguard.py)
+    host = os.environ.get("DOCKER_HOST", "")
+    sock = host[len("unix://"):] if host.startswith("unix://") else "/var/run/docker.sock"
+    args = ["-v", f"{sock}:/var/run/docker.sock"]
     proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
     if proxy:
         args += ["-e", f"HTTPS_PROXY={proxy}", "-e", f"NO_PROXY={os.environ.get('NO_PROXY', '')}"]
