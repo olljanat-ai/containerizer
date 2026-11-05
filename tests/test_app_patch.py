@@ -180,6 +180,7 @@ class Runner:
 
     def __init__(self, p, states=None, fail_import=False):
         self.p, self.calls, self.states, self.fail_import = p, [], states or {}, fail_import
+        self.pids = {}
 
     def __call__(self, cmd, timeout=0, check=True, input=None):
         self.calls.append(cmd)
@@ -201,6 +202,8 @@ class Runner:
             return ""
         if cmd[:2] == ["systemctl", "is-active"]:
             return self.states.get(cmd[2], "active") + "\n"
+        if cmd[:3] == ["systemctl", "show", "-p"] and cmd[3] == "MainPID":
+            return f"{self.pids.get(cmd[-1], 0)}\n"
         if len(cmd) > 2 and cmd[1] == "-I" and cmd[2] == "-c" and self.fail_import:
             raise sysagent.AgentError("ImportError: broken")
         return ""
@@ -227,6 +230,9 @@ def agent(paths, tmp_path, monkeypatch):  # noqa: F811
     return paths, fetch, fetched
 
 
+OTHERS = [u for u in sysagent.PATCH_SERVICES if u != sysagent.LLM_QUEUE]
+
+
 def request(p, **body):
     (p.run / "requests" / f"{len(list((p.run / 'requests').iterdir()))}.json").write_text(json.dumps(body))
 
@@ -247,7 +253,8 @@ def test_patch_release_is_an_app_update_without_os_restart(agent, monkeypatch):
     assert fetched == [("ghcr.io/olljanat-ai/containerizer-app", APP_DIGEST)]   # by the verified digest
     assert not [c for c in r.calls if c[:2] == ["elemental", "upgrade"]]
     assert ["systemctl", "reboot"] not in r.calls
-    assert ["systemctl", "try-restart", *sysagent.PATCH_SERVICES] in r.calls
+    assert ["systemctl", "try-restart", *OTHERS] in r.calls
+    assert ["systemctl", "try-restart", sysagent.LLM_QUEUE] in r.calls             # it did not run: started
     assert (p.patches / "active").read_text().strip() == "v1.1.3"
     assert (p.patches / "v1.1.3" / "rules" / "learned").resolve() == p.learned.resolve()
     assert not [d for d in p.patches.iterdir() if d.name.startswith(".")]      # no staging left
@@ -314,7 +321,7 @@ def test_services_that_do_not_come_up_put_the_previous_code_back(agent, monkeypa
     request(p, action="upgrade", version="v1.1.3")
     assert sysagent.process() == 1
     assert sysagent.active_patch() == "v1.1.2" and sysagent.mounted_patch()["version"] == "v1.1.2"
-    assert r.calls.count(["systemctl", "try-restart", *sysagent.PATCH_SERVICES]) == 2
+    assert r.calls.count(["systemctl", "try-restart", *OTHERS]) == 2
     t = status(p)["task"]
     assert t["state"] == "failed" and "back to v1.1.2" in t["message"]
 
@@ -440,3 +447,50 @@ def test_patch_release_check_refuses_os_changes(tmp_path):
     git(tmp_path, "commit", "-qm", "os change")
     assert check("v1.1.1") == 1
     assert check("v1.2.0") == 0                            # a minor release may change the OS
+
+
+def test_an_app_update_drains_the_llm_runner_instead_of_restarting_it(agent, monkeypatch):
+    """A planned app update does not wait for the LLM jobs: the runner is told to drain (SIGUSR1) and finishes them
+    on its code; the plan's wait, counted from its start, cuts them off (restarted: back in the queue)."""
+    from datetime import datetime, timedelta, timezone
+    from containerizer import restartplan
+    p, fetch, fetched = agent
+    r = Runner(p)
+    r.pids[sysagent.LLM_QUEUE] = 4242
+    monkeypatch.setattr(sysagent, "run", r)
+    asked = []
+    monkeypatch.setattr(sysagent, "running_work", lambda llm=True: asked.append(llm) or 0)
+    fetch.want = "v1.1.3"
+    request(p, action="plan", then="upgrade", version="v1.1.3", max_wait_minutes=60, requested_by="alice@x")
+    assert sysagent.process() == 0
+    plan = json.loads(p.plan.read_text())
+    assert plan["app_update"] is True
+    # the LLM runner is not held by it (the scan worker is)
+    st = p.run / "status.json"
+    assert restartplan.holding(path=st, llm=True) is None and restartplan.holding(path=st)
+    at = restartplan.starts(plan)
+    assert sysagent.restart_check(at + timedelta(minutes=10)) == "done"
+    assert asked == [False]                                      # scans only: the LLM jobs do not hold it
+    assert ["systemctl", "try-restart", *OTHERS] in r.calls
+    assert ["systemctl", "kill", "--kill-whom=main", "-s", "SIGUSR1", sysagent.LLM_QUEUE] in r.calls
+    assert ["systemctl", "try-restart", sysagent.LLM_QUEUE] not in r.calls
+    d = status(p)["llm_drain"]
+    assert d["pid"] == 4242 and d["version"] == "v1.1.3"
+    assert restartplan.parse_time(d["until"]) == at + timedelta(minutes=60)
+    assert status(p)["task"]["state"] == "done"
+    # still draining; then the unit runs another process (the new code): done
+    assert sysagent.restart_check(at + timedelta(minutes=20)) == "the LLM queue runner finishes its jobs"
+    r.pids[sysagent.LLM_QUEUE] = 5000
+    assert sysagent.restart_check(at + timedelta(minutes=21)) == "the LLM queue runner runs the new code"
+    assert status(p)["llm_drain"] is None and not p.drain.exists()
+    # another drain whose wait runs out: restarted, the jobs go back to the queue
+    sysagent.save_drain({"pid": 5000, "since": "x", "version": "v1.1.4",
+                         "until": (at + timedelta(minutes=30)).isoformat()})
+    assert sysagent.restart_check(at + timedelta(minutes=31)) == "the LLM queue runner restarted (its wait was over)"
+    assert ["systemctl", "try-restart", sysagent.LLM_QUEUE] in r.calls and not p.drain.exists()
+    # without waiting: restarted at once, as before
+    r.calls.clear()
+    sysagent.restart_services(datetime.now(timezone.utc) - timedelta(seconds=1), "v1.1.4")
+    assert ["systemctl", "try-restart", sysagent.LLM_QUEUE] in r.calls and not p.drain.exists()
+    # the drained runner waiting for its restart does not fail the update's check
+    assert sysagent._up(sysagent.LLM_QUEUE, "activating") and not sysagent._up("containerizer-web.service", "activating")
