@@ -21,6 +21,16 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   never sent to a refactoring. An application whose only refactor findings are these goes from B to A at its next
   scan. The page also classifies all 111 refactor rules (platform, partial, code-only) as candidates for more.
 
+- Refactoring and **Make it A** change application code only where the platform cannot, and only the lines the
+  findings need (#252). Findings that the generated Dockerfile and manifests already settle (`core-eol`,
+  `dataprotection-default`; the list is data, `platform:` in the new `rules/70-refactor.yaml`) are never sent
+  to the LLM: the order page and the patch list them as *Handled by configuration*, and an app with only such
+  findings is not offered an order for them; findings a platform technique resolves (above) are listed there the same way. Each LLM edit is made minimal before it is applied: reformatting,
+  re-indentation, brace-style changes, reordered usings, rewritten comments, blank lines and package version
+  changes are put back as they were. An answer that still changes more than 40 lines per finding
+  (`max_changed_lines_per_finding`) is asked again, then left out with the reason. The order page shows the
+  lines changed per finding, and the patch header lists them with why a code change was needed.
+
 ## 0.16.4 (2026-11-05)
 
 - **Try again** on an application whose sandbox runs a Make it A order's patched copy builds that patch again (the
