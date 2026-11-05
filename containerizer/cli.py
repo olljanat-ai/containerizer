@@ -132,7 +132,8 @@ def cmd_generate(args) -> int:
     for app in _apps(args.paths):
         a = assess(app, rules)
         out = Path(args.out) / a.name if args.out else Path(app) / "containerize"
-        files = generate_app(a, out, registry=args.registry, pin=args.pin_digests, gitops=_gitops(args))
+        files = generate_app(a, out, registry=args.registry, pin=args.pin_digests, gitops=_gitops(args),
+                             compose_build=True)
         print(f"{a.name}: {len(files)} files -> {out}")
     return 0
 

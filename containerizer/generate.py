@@ -771,8 +771,10 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
                  plans: dict | None = None, pin: bool = False, gitops=None, tag: str = "latest",
                  devdb=None, lab: set | None = None, lab_report: dict | None = None,
                  approved_egress: list[dict] | None = None, links: tuple | None = None,
-                 ci_provider: str | None = None) -> list[Path]:
-    """`ci_provider`: where the application's code is (github, gitlab, azure-devops; an organization scan's
+                 ci_provider: str | None = None, compose_build: bool = False) -> list[Path]:
+    """`compose_build`: compose.yaml builds the images from the application's folder (a relative path from
+    `out`; for a local run, `containerizer generate`); otherwise it uses the images the build pipeline pushes.
+    `ci_provider`: where the application's code is (github, gitlab, azure-devops; an organization scan's
     provider): the build pipeline is written for that one only (None: from the repository's remote URL).
     `approved_egress`: the approved outbound entries of the application's connectivity.yaml in the output
     repository (connectivity.approved_entries): kept in the new connectivity.yaml as they are. Approval documents
@@ -796,6 +798,7 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
     all_k8s = []
     images: list[tuple[str, str]] = []
     comp_docs: dict[str, list[dict]] = {}
+    compose_parts: list[dict] = []
     lab_plan = None
     if lab is not None:
         from . import labservices
@@ -814,6 +817,7 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
             (cdir / "Dockerfile.dockerignore").write_text(dockerignore(a.repo))
             image = f"{registry}/{app_ns(a.name)}/{k8s_name(c.name)}:{tag}"
             docs = k8s_manifests(a, c, plan, image)
+            compose_parts.append(_compose_part(a, c, out, cdir, df, copy.deepcopy(docs), compose_build))
             domain = getattr(gitops, "ingress_domain", "") if gitops is not None else ""
             if domain and plan.get("port"):         # HTTPS at <component>-<app>.<domain> (sandbox_https.py)
                 from .sandbox_https import ingress
@@ -897,11 +901,45 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
     if all_k8s:
         written += app_files(a, out, all_k8s, comp_docs, images, registry, gitops)
         written += _connectivity(a, out, approved_egress, links)
+        written += _compose(a, out, compose_parts)
     (out / "MIGRATION.md").write_text(migration_markdown(a))
     written.append(out / "MIGRATION.md")
     written += write_agent_prompts(a, out)
     written += _build_pipeline(a, out, registry, ci_provider)
     return written
+
+
+def _compose_part(a: AppAssessment, c: Component, out: Path, cdir: Path, dockerfile: str, docs: list[dict],
+                  build: bool) -> dict:
+    """One component's input to compose.yaml: its hardened documents before the sandbox-only additions (lab
+    services, sandbox identity provider, Ingress, dev database), and the lab services it needs."""
+    from . import compose
+    part = {"component": k8s_name(c.name), "docs": docs, "base": compose.final_base(dockerfile),
+            "ingress": c.role in ("web", "spa"), "lab": [], "hints": {}}
+    if build:
+        part["build"] = compose.build_context(Path(a.repo.root).resolve(), out.resolve(), cdir.resolve())
+    try:
+        from . import labservices
+        part["lab"] = list(labservices.needs(a.repo, c))
+        for svc in part["lab"]:
+            part["hints"].update(compose.lab_hints(c, svc))
+    except Exception as ex:  # noqa: BLE001 - lab dependencies are a convenience for local runs
+        print(f"warning: {a.name}: {c.name}: lab services for compose.yaml: {type(ex).__name__}: {ex}", file=sys.stderr)
+    return part
+
+
+def _compose(a: AppAssessment, out: Path, parts: list[dict]) -> list[Path]:
+    """compose.yaml (compose.py): the same hardened components for Docker Compose. A failure here never
+    fails the generation."""
+    from . import compose
+    try:
+        lab = []
+        for p in parts:
+            lab += [s for s in p["lab"] if s not in lab]
+        return compose.write(out, app_ns(a.name), parts, lab)
+    except Exception as ex:  # noqa: BLE001
+        print(f"warning: {a.name}: compose.yaml not written: {type(ex).__name__}: {ex}", file=sys.stderr)
+        return []
 
 
 def _connectivity(a: AppAssessment, out: Path, approved_egress: list[dict] | None, links: tuple | None = None) -> list[Path]:
