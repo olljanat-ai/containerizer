@@ -1439,6 +1439,8 @@ def health() -> int:
 
 
 def main(argv=None) -> int:
+    from . import sqlstore
+    sqlstore.APP_ROLE = "sysagent"            # its SQL Server sessions (sqlstore.app_name)
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(__doc__)

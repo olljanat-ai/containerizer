@@ -267,8 +267,10 @@ HOST = "devdb"
 ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,199}")
 PLACEHOLDERS = ("host", "port", "database", "user", "password")
 CONNECTION = {
-    "sqlserver": "Server={host},{port};Database={database};User Id={user};Password={password};Encrypt=True;TrustServerCertificate=True",
-    "postgres": "Host={host};Port={port};Database={database};Username={user};Password={password}",
+    # Application Name: whose session it is on the database server (not for MySQL: MySql.Data refuses keywords it does
+    # not know)
+    "sqlserver": "Server={host},{port};Database={database};User Id={user};Password={password};Encrypt=True;TrustServerCertificate=True;Application Name={database}",
+    "postgres": "Host={host};Port={port};Database={database};Username={user};Password={password};Application Name={database}",
     "mysql": "Server={host};Port={port};Database={database};User ID={user};Password={password};SslMode=Required",
 }
 BASE_IMAGES = {"sqlserver": "mcr.microsoft.com/mssql/server:2025-latest", "postgres": "postgres:18-alpine",

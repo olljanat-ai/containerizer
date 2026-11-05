@@ -103,8 +103,22 @@ def connect_args(cs: str, password: str | None = None) -> dict:
     return {"server": host.strip(), "port": (port.strip() or "1433"), "user": user, "password": pwd,
             "database": database, "encryption": "require" if encrypt in _TRUE else "off",
             "login_timeout": int(_pick(d, "connecttimeout", "connectiontimeout", "logintimeout", default="30")),
-            "appname": _pick(d, "applicationname", "app", default="containerizer"), "_ca": ca,
+            "appname": _pick(d, "applicationname", "app", default=app_name()), "_ca": ca,
             "_schema": schema_name(_pick(d, "schema"))}
+
+
+# The name every connection gives SQL Server (sys.dm_exec_sessions.program_name, Activity Monitor, the audit), so
+# a DBA sees which part of Containerizer a session belongs to: `containerizer-<role>`, the role being the command
+# that runs (web, worker, llm-queue, org, db, ...; cli.main sets it) or the agent (sysagent, labagent).
+# CONTAINERIZER_SQL_APP_NAME overrides it; `Application Name=` in the connection string overrides both.
+APP_ROLE = ""
+
+
+def app_name() -> str:
+    env = os.environ.get("CONTAINERIZER_SQL_APP_NAME", "").strip()
+    if env:
+        return env[:128]
+    return f"containerizer-{APP_ROLE}"[:128] if APP_ROLE else "containerizer"
 
 
 DEFAULT_SCHEMA = "containerizer"

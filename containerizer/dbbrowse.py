@@ -357,7 +357,7 @@ def client_command(engine: str, user: str, database: str, marker: str, null: str
     """What runs in the server's container. A fixed script reads the password (first line of stdin) into the
     client's environment; user, database and markers are positional arguments, never part of the script."""
     if engine == "postgres":
-        script = (r'IFS= read -r PGPASSWORD; export PGPASSWORD; '
+        script = (r'IFS= read -r PGPASSWORD; export PGPASSWORD PGAPPNAME=containerizer-db-browser; '
                   f'PGOPTIONS="-c statement_timeout={STATEMENT_TIMEOUT * 1000}"; export PGOPTIONS; '
                   r'PGCONNECT_TIMEOUT=10; export PGCONNECT_TIMEOUT; SQL=$(cat); '
                   r'exec psql -X -q -w --csv -v ON_ERROR_STOP=1 -v SHOW_ALL_RESULTS=off -P "null=$3" '

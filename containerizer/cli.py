@@ -895,6 +895,8 @@ def main(argv=None) -> int:
     s.set_defaults(fn=cmd_bench)
 
     args = ap.parse_args(argv)
+    from . import sqlstore
+    sqlstore.APP_ROLE = args.cmd            # SQL Server sees containerizer-<command> (sqlstore.app_name)
     return _run_cmd(args)
 
 
