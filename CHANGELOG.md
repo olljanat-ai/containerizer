@@ -8,7 +8,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## Unreleased
+## 0.12.5 (2026-11-05)
 
 - Appliance app updates no longer interrupt LLM jobs. The LLM queue runner is drained instead of restarted: it
   starts no new job, finishes the ones in progress (the LLM's answer in progress included) on the code they started
