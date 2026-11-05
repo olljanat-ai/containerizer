@@ -133,6 +133,9 @@ def buildable(c: Component) -> bool:
     if c.project.kind_hint == "node":
         from .gen_jvm_node import node_buildable
         return c.role == "spa" or node_buildable(c)
+    if c.project.kind_hint in ("php", "ruby"):
+        from .gen_php_ruby import php_ruby_buildable
+        return php_ruby_buildable(c)
     return False
 
 
@@ -338,6 +341,9 @@ def make_plan(a: AppAssessment, c: Component, rules: list[Rule] | None = None, e
                 node_build_plan(a, c, plan)
         else:
             (java_plan if c.project.kind_hint == "java" else node_plan)(a, c, plan)
+    elif c.project.kind_hint in ("php", "ruby"):
+        from .gen_php_ruby import php_plan, ruby_plan
+        (php_plan if c.project.kind_hint == "php" else ruby_plan)(a, c, plan)
     plan = apply_plan_rules(plan, a.repo, c, rules)
     if extra:
         merge_plan(plan, extra)
@@ -589,6 +595,9 @@ def dockerfile_for(plan: dict, c: Component) -> str:
     if c.project.kind_hint in ("java", "node"):
         from .gen_jvm_node import dockerfile_java, dockerfile_node
         return (dockerfile_java if c.project.kind_hint == "java" else dockerfile_node)(plan)
+    if c.project.kind_hint in ("php", "ruby"):
+        from .gen_php_ruby import dockerfile_php, dockerfile_ruby
+        return (dockerfile_php if c.project.kind_hint == "php" else dockerfile_ruby)(plan)
     return dockerfile_dotnet(plan)
 
 
@@ -648,7 +657,8 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
             volumes.append({"name": vname, "secret": {"secretName": f"{name}{DATAPROTECTION_SUFFIX}"}})
             mounts.append({"name": vname, "mountPath": w, "readOnly": True})
             continue
-        persistent = any(x in w.lower() for x in ("app_data", "data", "keys", "archive", "store", "uploads", "documents"))
+        persistent = w in (plan.get("persistent") or []) or \
+            any(x in w.lower() for x in ("app_data", "data", "keys", "archive", "store", "uploads", "documents"))
         if persistent and plan.get("single_replica"):
             volumes.append({"name": vname, "persistentVolumeClaim": {"claimName": f"{name}-{vname}"}})
         else:
@@ -724,6 +734,9 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
                  "metadata": {"name": f"{name}-ingress", "labels": labels},
                  "spec": {"podSelector": {"matchLabels": labels}, "policyTypes": ["Ingress"],
                           "ingress": [{"ports": [{"port": plan["port"]}]}] if plan.get("port") else []}})
+    if plan.get("processes"):              # a second process from the same image (a Rails app's Sidekiq)
+        from .gen_php_ruby import extra_processes
+        extra_processes(docs, plan, name)
     # security baseline + the exceptions this component needs (rules/60-security.yaml)
     plan["hardening_exceptions"] = harden_manifests(docs, a.repo, c, plan, name)
     return docs
@@ -811,7 +824,11 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
             if pin:
                 df = pin_digests(df)
             (cdir / "Dockerfile").write_text(df)
-            (cdir / "Dockerfile.dockerignore").write_text(dockerignore(a.repo))
+            ignore = dockerignore(a.repo)
+            if c.project.kind_hint in ("php", "ruby"):
+                from .gen_php_ruby import dockerignore_for
+                ignore = dockerignore_for(plan, ignore)
+            (cdir / "Dockerfile.dockerignore").write_text(ignore)
             image = f"{registry}/{app_ns(a.name)}/{k8s_name(c.name)}:{tag}"
             docs = k8s_manifests(a, c, plan, image)
             domain = getattr(gitops, "ingress_domain", "") if gitops is not None else ""

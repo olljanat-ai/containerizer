@@ -154,6 +154,10 @@ def parse_php_project(path: Path, root: Path) -> Project:
         props["Framework"] = _plain_php_framework(d)
         pr.name = d.name if d != root else root.name
     pr.assembly_name = pr.name
+    if props["Framework"] == "wordpress":
+        m = re.search(r"\$wp_version\s*=\s*'([\d.]+)", read_text(d / "wp-includes" / "version.php"))
+        if m:
+            props["WordPressVersion"] = m.group(1)
     if exts:
         props["PhpExtensions"] = ",".join(sorted(exts))
     # the web root: public/ (Laravel, Symfony, Slim, CakePHP webroot), web/ (Drupal composer projects), else the folder
@@ -225,13 +229,14 @@ def parse_gemfile(txt: str) -> tuple[dict[str, str], set[str]]:
     return gems, dev - runtime
 
 
-def parse_gemfile_lock(txt: str) -> tuple[dict[str, str], str | None, str | None]:
-    """(locked gem -> version, RUBY VERSION, BUNDLED WITH)."""
+def parse_gemfile_lock(txt: str) -> tuple[dict[str, str], str | None, str | None, list[str]]:
+    """(locked gem -> version, RUBY VERSION, BUNDLED WITH, PLATFORMS)."""
     specs: dict[str, str] = {}
+    platforms: list[str] = []
     section = ""
     ruby = bundler = None
     lines = txt.splitlines()
-    for i, line in enumerate(lines):
+    for line in lines:
         if line and not line.startswith(" "):
             section = line.strip()
             continue
@@ -243,7 +248,9 @@ def parse_gemfile_lock(txt: str) -> tuple[dict[str, str], str | None, str | None
             ruby = ruby or ruby_version(line)
         elif section == "BUNDLED WITH" and line.strip():
             bundler = bundler or line.strip()
-    return specs, ruby, bundler
+        elif section == "PLATFORMS" and line.strip():
+            platforms.append(line.strip())
+    return specs, ruby, bundler, platforms
 
 
 def parse_ruby_project(path: Path, root: Path) -> Project:
@@ -253,9 +260,11 @@ def parse_ruby_project(path: Path, root: Path) -> Project:
     txt = read_text(path)
     gems, dev = parse_gemfile(txt)
     lock = d / "Gemfile.lock"
-    locked, lruby, bundler = parse_gemfile_lock(_read_big(lock)) if lock.is_file() else ({}, None, None)
+    locked, lruby, bundler, platforms = parse_gemfile_lock(_read_big(lock)) if lock.is_file() else ({}, None, None, [])
     if lock.is_file():
         props["Lockfile"] = str(lock.relative_to(root)).replace("\\", "/")
+        if platforms:
+            props["LockPlatforms"] = ",".join(sorted(platforms))
     pr.packages = {g: locked.get(g) or v for g, v in gems.items()}
     # gems the bundle pulls in (rails -> actionpack, ...) count for rules too, as runtime unless only dev ones need them
     for g, v in locked.items():
