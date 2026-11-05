@@ -519,7 +519,7 @@ def _patched(tmp_path, monkeypatch, jid, out, o, now=None, payload=PAYLOAD, patc
     work = tmp_path / f"job-{jid}"
     name = rf.variant_name("shop", jid)
     shutil.copytree(DEMO, work / name)
-    result = {"status": "verified", "rating_reached": True, "verification": [{"component": "demo-web", "status": "ok"}],
+    result = {"status": "verified", "rating_reached": True, "verification": [{"component": "Demo.Web", "status": "ok"}],
               "patch": patch}
     now = now or datetime(2026, 11, 1, 9, 5, tzinfo=timezone.utc)
     result["sandbox"] = variant.deploy(None, None, payload, jid, result, work, name, lambda t: None, now=now)
