@@ -258,3 +258,19 @@ def test_windows_stopgap_for_aspnet_web_site():
     df = dockerfile_windows(SimpleNamespace(project=p, role="web", name="RockWeb"))
     assert 'msbuild "Rock.sln"' in df and '-p "C:\\src\\RockWeb" -u -fixednames C:\\out' in df
     assert ".website" not in df.split("FROM", 2)[1].split("RUN", 1)[1]
+
+
+def test_windows_sign_in_in_code_needs_a_change_also_with_iis_turned_off(tmp_path):
+    """The lab's trade-rebates portal: a Make it A patch turned windowsAuthentication off in web.config (only IIS
+    reads it) and kept AddNegotiate; it rated A and nobody could sign in in the sandbox. Negotiate in code is the
+    same Windows sign-in: refactor, with OpenID Connect as the fix."""
+    web_app(tmp_path, code="builder.Services.AddAuthentication(NegotiateDefaults.AuthenticationScheme).AddNegotiate();\n",
+            packages='<PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="8.0.0" />')
+    write(tmp_path, "src/Web/web.config", """
+        <configuration><system.webServer><security><authentication>
+          <windowsAuthentication enabled="false" />
+        </authentication></security></system.webServer></configuration>""")
+    a = assess(tmp_path)
+    f = next(f for f in a.components[0].findings if f.rule.id == "windows-auth-iis")
+    assert f.rule.severity == "refactor" and "AddOpenIdConnect" in f.rule.fix and a.rating == "B"
+    assert str(f.evidence[0].file).endswith("Program.cs")

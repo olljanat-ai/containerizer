@@ -8,16 +8,27 @@ rules:
         - config: '<authentication\s+mode="Windows"|windowsAuthentication\s+enabled="true"|"windowsAuthentication"\s*:\s*true'
         - code: 'WindowsPrincipal\b|User\.IsInRole\("[A-Z]+\\\\'
           unguarded: true
+        # the ASP.NET Core Negotiate handler is the same Windows sign-in in code: turning IIS's
+        # windowsAuthentication off in web.config (only IIS reads it) does not change how users sign in
+        # (the lab's trade-rebates portal: a Make it A patch did only that and rated A, nobody could sign in)
+        - code: 'AddNegotiate\(|NegotiateDefaults\.AuthenticationScheme'
     severity: refactor
     category: identity
     effort: 2
     windows_container: true
     title: Windows (Kerberos/NTLM) authentication
     why: >-
-      Users are authenticated by IIS Windows authentication against Active Directory. Linux
-      containers are not domain joined; Negotiate can work with a keytab but is fragile behind
+      Users are authenticated with Windows authentication against Active Directory (IIS, or the Negotiate
+      handler in code). Linux containers are not domain joined: Negotiate needs a keytab, a KDC and LDAP for
+      roles, which neither the sandbox nor most clusters have, so nobody can sign in; it is also fragile behind
       ingress/load balancers.
-    fix: Prefer OIDC (Entra ID/AD FS/Keycloak) at the app or ingress; otherwise use the Negotiate handler with a keytab Secret and an LDAP connection for roles.
+    fix: >-
+      Switch to OpenID Connect in code: AddAuthentication with the cookie scheme and AddOpenIdConnect bound to a
+      configuration section "OpenIdConnect" with Authority, ClientId and ClientSecret (appsettings.json, empty
+      values), mapping roles from the "groups" claim to the policies that used Windows groups; remove AddNegotiate
+      and the Negotiate package. Turning windowsAuthentication off in web.config alone changes nothing. The sandbox
+      identity provider fills that section; keeping Kerberos (a keytab Secret and LDAP for roles) is the other way
+      where a domain is reachable.
     refs:
       - https://learn.microsoft.com/en-us/aspnet/core/security/authentication/windowsauth
 
