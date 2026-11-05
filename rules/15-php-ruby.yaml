@@ -1,0 +1,305 @@
+# PHP and Ruby finding rules: what keeps a PHP or Ruby web application from running unchanged in a
+# Linux container. Both runtimes are portable; what breaks is Windows-only extensions and gems (COM,
+# Windows services), IIS-only configuration, PHP code that needs a PHP line older than the supported
+# ones, and data the application keeps on its own disk (state: rules, same A-rating rule as .NET).
+#
+# Code searches leave out vendor/ (installed dependencies) and tests (rules.TEST_PATH_RE).
+# Properties come from scan_php_ruby.py.
+rules:
+  # ------------------------------------------------------------------ PHP: platform
+  - id: php-windows-extensions
+    applies_to: [php]
+    when:
+      any:
+        - package: 'ext-(com_dotnet|win32service|win32ps|wincache|printer)'
+          runtime: true
+        - code: '\bnew\s+\\?(COM|DOTNET|VARIANT)\s*\(|\bwin32_(create_service|start_service_ctrl_dispatcher|start_service|query_service_status)\s*\(|\bwincache_\w+\s*\(|\bprinter_open\s*\('
+    severity: rewrite
+    category: com
+    windows_container: true
+    effort: 3
+    title: Windows-only PHP extensions (COM, .NET, Windows services)
+    why: >-
+      The application uses PHP extensions that exist only in PHP for Windows: com_dotnet (COM
+      objects and .NET assemblies through new COM / new DOTNET), win32service (running as a Windows
+      service), WinCache or the printer extension. They cannot be built for Linux PHP, so those
+      calls fail in a Linux container.
+    fix: >-
+      Replace the COM/.NET calls with a PHP library or the product's REST API, run the service part
+      as a long-running container process instead of a Windows service, or keep this part on a
+      Windows host behind an API.
+    refs:
+      - https://www.php.net/manual/en/book.com.php
+      - https://www.php.net/manual/en/book.win32service.php
+
+  # mysql_* and ereg* were removed in PHP 7.0: such code only runs on PHP 5.6, which the generator
+  # then uses (images.yaml php.legacy), without touching the code.
+  - id: php-removed-functions
+    applies_to: [php]
+    when:
+      code: '\b(mysql_(connect|pconnect|query|select_db|fetch_(array|assoc|row|object)|num_rows|real_escape_string|result)|eregi?|ereg_replace|eregi_replace)\s*\('
+    severity: config
+    category: runtime
+    effort: 1
+    title: Code needs PHP 5.6 (mysql_* or ereg functions)
+    why: >-
+      The code calls functions removed in PHP 7.0 (the original mysql extension, ereg regular
+      expressions). It runs only on PHP 5.6, so the container image is PHP 5.6 as it was, which has
+      had no security fixes since 2018; the container hardening (non-root, read-only file system,
+      network policies) is what keeps it contained.
+    fix: >-
+      No change is needed to run it. To move to a supported PHP line later, port mysql_* calls to
+      mysqli or PDO and ereg to preg_* (rector can automate much of it).
+    refs:
+      - https://www.php.net/manual/en/migration70.removed-exts-sapis.php
+      - https://www.php.net/supported-versions.php
+
+  - id: php-eol-version
+    applies_to: [php]
+    when:
+      all:
+        - property: {PhpVersionMax: '^(5|7)(\.\d+)?$|^8\.[01]$'}
+        - not: {code: '\b(mysql_(connect|pconnect|query|select_db)|eregi?)\s*\('}
+    severity: config
+    category: runtime
+    effort: 0.5
+    title: PHP version out of support
+    why: >-
+      composer.json allows no PHP line that still gets security fixes (8.2 and newer). The
+      container runs the newest line it allows, as the dependencies were resolved for it, on that
+      line's last official image, which no longer gets fixes.
+    fix: >-
+      No change is needed to run it. Raise the "php" requirement in composer.json (and update the
+      dependencies) to move onto a supported PHP line when the application is next maintained.
+    refs:
+      - https://www.php.net/supported-versions.php
+      - https://getcomposer.org/doc/04-schema.md#package-links
+
+  # IIS URL Rewrite rules in web.config: the image is Apache, where the usual front-controller rule
+  # (everything that is not a file goes to index.php) is FallbackResource in the generated vhost.
+  - id: php-iis-web-config
+    applies_to: [php]
+    when:
+      all:
+        - text: '<rewrite>'
+          in: ['web.config']
+        - not: {file: '.htaccess'}
+    severity: info
+    category: hosting
+    title: IIS rewrite rules (web.config)
+    why: >-
+      The site was hosted on IIS and routes requests with URL Rewrite rules in web.config, which
+      Apache ignores. The generated image sends every request that is not an existing file to
+      index.php (FallbackResource), which is what the usual WordPress, Laravel and front-controller
+      rules do.
+    fix: >-
+      Check web.config for other rules (redirects, rewrites to other scripts) and add them to the
+      generated Apache configuration in the Dockerfile; the application files are not changed.
+    refs:
+      - https://httpd.apache.org/docs/2.4/mod/mod_dir.html#fallbackresource
+      - https://learn.microsoft.com/en-us/iis/extensions/url-rewrite-module/url-rewrite-module-configuration-reference
+
+  # ------------------------------------------------------------------ PHP: state
+  - id: php-wordpress-uploads
+    applies_to: [php]
+    when:
+      all:
+        - property: {Framework: wordpress}
+        - not: {code: 'S3_UPLOADS|as3cf|wp-stateless|WP_STATELESS|ilab_media_tools|AS3CF_SETTINGS'}
+    severity: config
+    category: storage
+    state: local
+    effort: 1
+    title: WordPress media in wp-content/uploads
+    why: >-
+      WordPress keeps uploaded media under wp-content/uploads on its own disk. In the container
+      that folder is a persistent volume, so the site runs as a single replica and is not
+      stateless. Plugin and theme installs from the admin pages fail on the read-only image, which
+      is intended: they are part of the image build.
+    fix: >-
+      To run it as is, nothing: the manifests mount a PersistentVolumeClaim at wp-content/uploads.
+      To make it stateless, offload media to object storage with a plugin (S3 Uploads, WP
+      Offload Media), which is configuration, not code.
+    refs:
+      - https://developer.wordpress.org/advanced-administration/server/wordpress-in-docker/
+      - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+
+  - id: php-drupal-files
+    applies_to: [php]
+    when: {property: {Framework: drupal}}
+    severity: config
+    category: storage
+    state: local
+    effort: 1
+    title: Drupal public files in sites/default/files
+    why: >-
+      Drupal writes uploaded and generated files (public://) under sites/default/files on its own
+      disk. In the container that folder is a persistent volume, so the site runs as one replica
+      and is not stateless.
+    fix: >-
+      To run it as is, nothing: the manifests mount a PersistentVolumeClaim there. To make it
+      stateless, use an object storage stream wrapper module (s3fs) through configuration.
+    refs:
+      - https://www.drupal.org/docs/getting-started/installing-drupal/step-3-create-settingsphp-and-the-files-directory
+      - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+
+  - id: php-laravel-local-disk
+    applies_to: [php]
+    when:
+      all:
+        - property: {Framework: laravel}
+        - code: '->store(As|Publicly|PubliclyAs)?\s*\(|\bStorage::(disk\s*\(\s*[''"](local|public)[''"]\s*\)\s*->\s*)?(put|putFile|putFileAs|write|append|prepend|copy|move)\s*\('
+        - not: {config: '''default''\s*=>\s*env\(\s*''FILESYSTEM_(DISK|DRIVER)''\s*,\s*''s3''', in: ['config/filesystems.php']}
+    severity: config
+    category: storage
+    state: local
+    effort: 1
+    title: Laravel files on the local disk (storage/app)
+    why: >-
+      The code stores files through Laravel's filesystem, whose default disk is the local folder
+      storage/app. In the container that folder is a persistent volume, so the app runs as one
+      replica and is not stateless.
+    fix: >-
+      To run it as is, nothing: the manifests mount a PersistentVolumeClaim at storage/app. To make
+      it stateless, set FILESYSTEM_DISK=s3 (and the AWS_* settings) in the environment: a
+      configuration change when the code uses the default disk.
+    refs:
+      - https://laravel.com/docs/filesystem
+      - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+
+  - id: php-local-uploads
+    applies_to: [php]
+    when:
+      all:
+        - not: {property: {Framework: 'wordpress|drupal|laravel'}}
+        - code: '\bmove_uploaded_file\s*\('
+    severity: config
+    category: storage
+    state: local
+    effort: 1
+    title: Uploaded files saved on the local disk
+    why: >-
+      The code saves uploaded files with move_uploaded_file into a folder of the site. In the
+      container that folder is a persistent volume, so the site runs as one replica and is not
+      stateless.
+    fix: >-
+      To run it as is, nothing: the manifests mount a PersistentVolumeClaim at the upload folder
+      (check that the generated plan names the right one). To make it stateless, store uploads in
+      object storage or the database.
+    refs:
+      - https://www.php.net/manual/en/function.move-uploaded-file.php
+      - https://12factor.net/processes
+
+  # ------------------------------------------------------------------ Ruby
+  - id: ruby-windows-gems
+    applies_to: [ruby]
+    when:
+      any:
+        - package: 'win32ole|win32-service|win32-process|win32-api|windows-pr|win32-eventlog|win32-registry|win32-taskscheduler|ruby-wmi'
+          runtime: true
+        - code: '\brequire\s+[''"](win32ole|win32/(service|daemon|registry|eventlog|process|api)|Win32API)[''"]|\bWIN32OLE\.new\s*\('
+    severity: rewrite
+    category: com
+    windows_container: true
+    effort: 3
+    title: Windows-only Ruby libraries (WIN32OLE, Windows services, registry)
+    why: >-
+      The code uses Ruby libraries that only work on Windows: WIN32OLE (COM automation), the
+      win32-service daemon, the registry or the Windows API. They do not load on Linux Ruby.
+    fix: >-
+      Replace the COM automation with a Ruby library or the product's REST API, run the service as
+      a long-running container process, or keep this part on a Windows host behind an API.
+    refs:
+      - https://ruby-doc.org/3.2.2/exts/win32ole/WIN32OLE.html
+      - https://github.com/chef/win32-service
+
+  - id: ruby-eol-version
+    applies_to: [ruby]
+    when: {property: {RubyVersion: '^(1\.\d+|2\.\d+|3\.[012])$'}}
+    severity: config
+    category: runtime
+    effort: 0.5
+    title: Ruby version out of support
+    why: >-
+      The application is built for a Ruby line that no longer gets security fixes. The container
+      runs that Ruby (Bundler and native gems are tied to it) on its last official image, which no
+      longer gets fixes.
+    fix: >-
+      No change is needed to run it. Move to a supported Ruby line (update .ruby-version, the
+      Gemfile's ruby line and the bundle) when the application is next maintained.
+    refs:
+      - https://www.ruby-lang.org/en/downloads/branches/
+
+  - id: ruby-activestorage-disk
+    applies_to: [ruby]
+    when:
+      all:
+        - text: 'service:\s*Disk'
+          in: ['config/storage.yml']
+        - text: 'active_storage\.service\s*=\s*:(local|disk)\b'
+          in: ['config/environments/production.rb']
+    severity: config
+    category: storage
+    state: local
+    effort: 1
+    title: Active Storage files on the local disk
+    why: >-
+      In production Active Storage keeps uploaded files with the Disk service, under storage/ on
+      the application's own disk. In the container that folder is a persistent volume, so the app
+      runs as one replica and is not stateless.
+    fix: >-
+      To run it as is, nothing: the manifests mount a PersistentVolumeClaim at storage/. To make it
+      stateless, switch production to an object storage service (amazon, google, azure) in
+      config/storage.yml.
+    refs:
+      - https://guides.rubyonrails.org/active_storage_overview.html#disk-service
+      - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+
+  - id: ruby-file-uploads-local
+    applies_to: [ruby]
+    when:
+      all:
+        - package: 'paperclip|kt-paperclip|carrierwave|dragonfly|refile'
+          runtime: true
+        - not: {package: 'fog-aws|fog|aws-sdk-s3|aws-sdk|fog-google|fog-azure-rm|carrierwave-aws', runtime: true}
+    severity: config
+    category: storage
+    state: local
+    effort: 1
+    title: Uploaded files in public/ on the local disk
+    why: >-
+      An upload library (Paperclip, CarrierWave, Dragonfly) stores files under public/system or
+      public/uploads by default, and no object storage gem is in the bundle. In the container that
+      folder is a persistent volume, so the app runs as one replica and is not stateless.
+    fix: >-
+      To run it as is, nothing: the manifests mount a PersistentVolumeClaim there. To make it
+      stateless, configure the library's S3/fog storage.
+    refs:
+      - https://github.com/carrierwaveuploader/carrierwave#using-amazon-s3
+      - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+
+  - id: ruby-sqlite-production
+    applies_to: [ruby]
+    when:
+      all:
+        - package: sqlite3
+          runtime: true
+        - text: 'adapter:\s*sqlite3'
+          in: ['config/database.yml']
+        - not: {text: 'adapter:\s*(postgresql|postgis|mysql2|trilogy|sqlserver|oracle_enhanced)', in: ['config/database.yml']}
+    severity: config
+    category: storage
+    state: local
+    effort: 0.5
+    title: SQLite database file
+    why: >-
+      config/database.yml uses SQLite and names no server database, so the data is a file on the
+      application's own disk. It sits on a persistent volume and only one replica may write it, so
+      the app is not stateless.
+    fix: >-
+      To run it as is, nothing: the manifests mount a PersistentVolumeClaim at db/ and storage/. To
+      make it stateless, set DATABASE_URL to a PostgreSQL or MySQL server (Rails reads it over
+      database.yml).
+    refs:
+      - https://guides.rubyonrails.org/configuring.html#configuring-a-database
+      - https://kubernetes.io/docs/concepts/storage/persistent-volumes/

@@ -53,22 +53,49 @@ PHP_FRAMEWORKS = (   # (framework, composer package that marks it), first match 
 )
 
 
-def php_version(constraint: str) -> str | None:
-    """The highest lower bound among a Composer constraint's alternatives: the newest PHP the app says it
-    supports, as major.minor ("^7.4|^8.0" -> "8.0", ">=7.4" -> "7.4", "~8.2.0" -> "8.2"). The generator
-    rounds it up to an image line."""
-    best = None
-    for alt in re.split(r"\s*\|\|?\s*", str(constraint or "")):
-        vs = re.findall(r"(\^|~|>=|<=|>|<|=)?\s*v?(\d+)(?:\.(\d+|\*|x))?", alt)
-        cand = None
-        for op, major, minor in vs:
+def php_range(constraint: str) -> tuple[str | None, str | None]:
+    """(lowest, highest) PHP version a Composer constraint allows, as major.minor; the highest is a bare
+    major ("8": any 8.x) for ^ and ~X.Y, and None when there is no upper bound.
+    "^7.4|^8.0" -> ("7.4", "8"), ">=7.2" -> ("7.2", None), "~8.2.0" -> ("8.2", "8.2"), "7.4.*" -> ("7.4", "7.4")."""
+    lows, highs, open_top = [], [], False
+    for alt in re.split(r"\s*\|\|?\s*", str(constraint or "").strip()):
+        if not alt:
+            continue
+        lo = hi = None
+        unbounded = True
+        for op, major, minor, patch in re.findall(r"(\^|~|>=|<=|>|<|=)?\s*v?(\d+)(?:\.(\d+|\*|x))?(?:\.(\d+|\*|x))?", alt):
+            mi = minor if minor.isdigit() else None
             if op in ("<", "<="):
+                unbounded = False
+                if op == "<" and (mi in (None, "0")):
+                    top = (int(major) - 1, None)
+                elif op == "<":
+                    top = (int(major), int(mi) - 1)
+                else:
+                    top = (int(major), int(mi) if mi else None)
+                hi = top if hi is None else min(hi, top, key=lambda t: (t[0], t[1] if t[1] is not None else 99))
                 continue
-            mi = int(minor) if minor and minor.isdigit() else 0
-            cand = (int(major), mi) if cand is None else max(cand, (int(major), mi))
-        if cand and (best is None or cand > best):
-            best = cand
-    return f"{best[0]}.{best[1]}" if best else None
+            here = (int(major), int(mi) if mi else 0)
+            lo = here if lo is None else max(lo, here)
+            if op in (">", ">="):
+                continue
+            unbounded = False
+            if op == "^" or op == "~" and not patch or not mi:
+                top = (int(major), None)
+            else:                                   # ~X.Y.Z, X.Y.*, X.Y.Z
+                top = (int(major), int(mi))
+            hi = top if hi is None else min(hi, top, key=lambda t: (t[0], t[1] if t[1] is not None else 99))
+        if lo is not None:
+            lows.append(lo)
+        if unbounded:
+            open_top = True
+        elif hi is not None:
+            highs.append(hi)
+    low = f"{min(lows)[0]}.{min(lows)[1]}" if lows else None
+    if open_top or not highs:
+        return low, None
+    top = max(highs, key=lambda t: (t[0], t[1] if t[1] is not None else 99))
+    return low, (str(top[0]) if top[1] is None else f"{top[0]}.{top[1]}")
 
 
 def _plain_php_framework(d: Path) -> str:
@@ -96,10 +123,11 @@ def parse_php_project(path: Path, root: Path) -> Project:
         props["ComposerType"] = str(m.get("type") or "project")
         if m.get("bin"):
             props["ComposerBin"] = "true"
-        v = php_version(req.get("php", ""))
+        lo, hi = php_range(req.get("php", ""))
         plat = ((m.get("config") or {}).get("platform") or {}) if isinstance(m.get("config"), dict) else {}
         if isinstance(plat, dict) and isinstance(plat.get("php"), str):
-            v = php_version(plat["php"]) or v
+            # config.platform.php: the PHP version the dependencies were resolved for
+            lo, hi = php_range(plat["php"])[0], ".".join(plat["php"].split(".")[:2])
         exts |= {k[4:].lower() for k in req if str(k).lower().startswith("ext-")}
         lock = d / "composer.lock"
         if lock.is_file():
@@ -114,11 +142,10 @@ def parse_php_project(path: Path, root: Path) -> Project:
                 for k in (pk.get("require") or {}):
                     if str(k).lower().startswith("ext-"):
                         exts.add(str(k)[4:].lower())
-            pv = (data.get("platform-overrides") or {}).get("php") if isinstance(data.get("platform-overrides"), dict) else None
-            if not v and isinstance(pv, str):
-                v = php_version(pv)
-        if v:
-            props["PhpVersion"] = v
+        if lo:
+            props["PhpVersion"] = lo
+        if hi:
+            props["PhpVersionMax"] = hi
         fw = next((f for f, pkg in PHP_FRAMEWORKS if pkg in pr.packages and pkg not in pr.dev_packages), None)
         if fw is None and "symfony/http-kernel" in pr.packages and (d / "public" / "index.php").is_file():
             fw = "symfony"
@@ -235,6 +262,16 @@ def parse_ruby_project(path: Path, root: Path) -> Project:
         pr.packages.setdefault(g, v)
     pr.dev_packages = {g: pr.packages[g] for g in dev}
     rv = None
+    # Bundler refuses to run on another Ruby than an exact `ruby "3.2.2"` in the Gemfile (also through
+    # `ruby file: ".ruby-version"`): the image must be that exact version
+    m = re.search(r"""^\s*ruby\s+(?:['"]=?\s*(\d+\.\d+\.\d+)['"]|file:\s*['"]([^'"]+)['"])""", txt, re.M)
+    if m:
+        exact = m.group(1)
+        if m.group(2) and (d / m.group(2)).is_file():
+            mm = re.search(r"(\d+\.\d+\.\d+)", read_text(d / m.group(2)))
+            exact = mm.group(1) if mm else None
+        if exact:
+            props["RubyExact"] = exact
     if (d / ".ruby-version").is_file():
         rv = ruby_version(read_text(d / ".ruby-version").replace("ruby-", ""))
     if rv is None:

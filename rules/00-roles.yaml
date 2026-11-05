@@ -607,6 +607,93 @@ rules:
             - package: 'github\.com/(gin-gonic/gin|labstack/echo.*|gofiber/fiber.*|gorilla/mux|go-chi/chi.*)'
             - code: 'http\.ListenAndServe|net/http'
 
+  # ------------------------------------------------------------------ PHP
+  # A PHP web application: a front controller (index.php in the folder or its web root: public/,
+  # web/, ...) or a framework that serves HTTP (Laravel, Symfony, WordPress, Drupal, ...).
+  - id: role-php-web
+    phase: role
+    role: web
+    priority: 60
+    when:
+      all:
+        - kind: php
+        - any:
+            - property: {IndexPhp: "true"}
+            - property: {Framework: 'laravel|symfony|wordpress|drupal|slim|cakephp|codeigniter|yii'}
+
+  # Composer packages that are installed into other applications: libraries, WordPress/Drupal
+  # plugins and themes, Symfony bundles.
+  - id: role-php-library
+    phase: role
+    role: library
+    priority: 65
+    when:
+      all:
+        - kind: php
+        - property: {ComposerType: 'library|wordpress-(plugin|theme|muplugin)|drupal-(module|theme|profile|library)|symfony-bundle|composer-plugin|metapackage|magento2-module|typo3-cms-extension'}
+        - not: {property: {IndexPhp: "true"}}
+
+  # A command line tool (composer.json "bin") without a web front controller.
+  - id: role-php-cli
+    phase: role
+    role: tool
+    priority: 66
+    when:
+      all:
+        - kind: php
+        - property: {ComposerBin: "true"}
+        - not: {property: {IndexPhp: "true"}}
+
+  # ------------------------------------------------------------------ Ruby
+  # Rails, or a Rack application (config.ru: Sinatra, Hanami, Roda, Grape, plain Rack).
+  - id: role-ruby-web
+    phase: role
+    role: web
+    priority: 60
+    when:
+      all:
+        - kind: ruby
+        - any:
+            - property: {Framework: rails}
+            - property: {ConfigRu: "true"}
+
+  # A background job processor without a web front: Sidekiq, Resque, Sneakers, Shoryuken, GoodJob.
+  # (A Rails app with Sidekiq is web; its job process is the same image, see php-ruby docs.)
+  - id: role-ruby-worker
+    phase: role
+    role: worker
+    priority: 55
+    when:
+      all:
+        - kind: ruby
+        - package: 'sidekiq|resque|sneakers|shoryuken|good_job|delayed_job|que|racecar|karafka'
+          runtime: true
+
+  # A gem (a .gemspec next to the Gemfile) without a Rack application is a library.
+  - id: role-ruby-library
+    phase: role
+    role: library
+    priority: 65
+    when:
+      all:
+        - kind: ruby
+        - property: {Gemspec: "true"}
+        - not: {property: {ConfigRu: "true"}}
+        - not: {property: {Framework: rails}}
+
+  # Gemfiles of build and documentation tooling: static site generators (Jekyll, Middleman, a
+  # GitHub Pages site), fastlane, CocoaPods, Danger, linters only.
+  - id: role-ruby-tooling
+    phase: role
+    role: tool
+    priority: 90
+    when:
+      all:
+        - kind: ruby
+        - not: {property: {ConfigRu: "true"}}
+        - not: {property: {Framework: rails}}
+        - package: 'jekyll|github-pages|middleman|fastlane|cocoapods|danger|rubocop|asciidoctor|nanoc|bridgetown'
+
   - id: role-go-cli
     phase: role
     role: console
