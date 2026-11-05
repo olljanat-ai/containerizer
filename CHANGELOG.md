@@ -8,7 +8,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## Unreleased
+## 0.14.0 (2026-11-05)
 
 - Appliance network as olljanat/nomad-qemu-node's `05_network.yaml`: every wired interface in `bond0`
   (active-backup), the bond the port of a bridge `br0` that has the address (DHCP, or static). The USB network
