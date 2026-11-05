@@ -13,7 +13,9 @@ as it is).
 from __future__ import annotations
 
 import re
+
 from .rules import Context, Rule, run_rule
+
 
 def _evidence_texts(repo, findings) -> list[tuple[str, str]]:
     """(file, text) of every file a finding has evidence in."""
@@ -82,17 +84,14 @@ def machine_names(texts: list[tuple[str, str]]) -> tuple[list[str], list[str]]:
 
 def technique_machine_hostname(repo, c, findings) -> dict | None:
     names, bad = machine_names(_evidence_texts(repo, findings))
-    if not names:
-        return None
+    if not names or bad:
+        return None          # a branch the pod's host name cannot select: that comparison needs the code change
     # the production host when one is recognizable by name, else the first one the code knows
     pick = next((n for n in names if _PROD.search(n)), names[0])
     others = [n for n in names if n != pick]
     note = f"The pod's host name is set to \"{pick}\""
     if others:
         note += f" (the code also knows {', '.join(repr(n) for n in others)}: set hostname to the one of this environment)"
-    if bad:
-        note += (f"; case-sensitive comparisons with {', '.join(repr(b) for b in bad)} cannot match a Kubernetes host "
-                 "name (lower-case only)")
     return {"hostname": pick, "_note": note + "."}
 
 
