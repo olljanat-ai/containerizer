@@ -36,4 +36,4 @@ def test_brand_in_the_top_bar_on_every_results_page():
     bar = html[html.index("<div class='topnav'>"):html.index("</div>", html.index("<div class='topnav'>"))]
     assert "class='brand' href='https://containerizer.eu/'" in bar
     assert "<header><h1>Containerization readiness</h1>" in html
-    assert "class='brand'" in webui._nav("<a href='/admin'>Admin</a>") and webui._nav("x").index("class='brand'") < webui._nav("x").index("<span>x</span>")
+    assert "class='brand'" in webui._nav("<a href='/admin'>Admin</a>") and webui._nav("x").index("class='brand'") < webui._nav("x").index("<span>x")
