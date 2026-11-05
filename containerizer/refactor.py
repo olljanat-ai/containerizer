@@ -152,6 +152,8 @@ def skip_reason(f: dict) -> str | None:
     sev = f.get("severity")
     if f.get("dormant"):
         return "dormant: library code the component never reaches"
+    if f.get("resolved_by"):
+        return f"handled by the generated configuration ({f['resolved_by']}): the code stays as it is"
     if f.get("id") in NO_CODE_CHANGE:
         return "nothing to change in code: the container runs the application on the framework it targets"
     if sev in ("blocker", "rewrite"):

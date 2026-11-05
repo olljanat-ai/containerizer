@@ -38,6 +38,7 @@ class Finding:
     via: str = ""             # library project the finding was inherited from
     dormant: bool = False     # library code that this component never references
     modes: list = field(default_factory=list)   # only reached by these optional commands
+    resolved_by: str = ""     # plan rule whose generated configuration satisfies it (containerizer/techniques.py)
 
     @property
     def severity(self) -> str:
@@ -45,14 +46,18 @@ class Finding:
             return "info"
         if self.modes and self.rule.severity in ("blocker", "rewrite"):
             return "refactor"     # the other commands run; split this one off or keep it on Windows
+        if self.resolved_by and self.rule.severity == "refactor":
+            return "config"       # the generated configuration handles it; the code stays as it is
         return self.rule.severity
 
     def to_dict(self) -> dict:
         r = self.rule
-        return {"id": r.id, "severity": r.severity, "category": r.category, "title": r.title,
+        return {"id": r.id, "severity": "config" if self.resolved_by and r.severity == "refactor" else r.severity,
+                "category": r.category, "title": r.title,
                 "why": " ".join(r.why.split()), "fix": " ".join(r.fix.split()), "refs": list(r.refs),
                 "via": self.via, "dormant": self.dormant, "only_commands": self.modes, "evidence": [str(e) for e in self.evidence[:3]], "source": r.source,
-                "windows_container": r.windows_container}
+                "windows_container": r.windows_container,
+                **({"resolved_by": self.resolved_by, "rule_severity": r.severity} if self.resolved_by else {})}
 
 
 @dataclass
@@ -430,9 +435,11 @@ def assess(path: str | Path, rules: list[Rule] | None = None, repo: Repo | None 
         active = {f.rule.id for f in c.findings if not f.dormant}
         c.findings = [f for f in c.findings if not (f.dormant and f.rule.id in active)]
 
+    from .techniques import resolve_findings
     for c in comps.values():
         if c.role not in NON_DEPLOYABLE:
             c.facts = extract_facts(repo, c, rules)
+            resolve_findings(repo, c, rules)
 
     repo_findings = []
     ctx = Context(repo, None)
