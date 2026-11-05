@@ -444,6 +444,8 @@ def apply_request(req: dict, config_path: Path = L.CONFIG_PATH) -> dict:
 
 
 def main(argv=None) -> int:
+    from . import sqlstore
+    sqlstore.APP_ROLE = "labagent"            # its SQL Server sessions (sqlstore.app_name)
     argv = list(sys.argv[1:] if argv is None else argv)
     cmd = argv[0] if argv else ""
     if cmd == "reconcile":

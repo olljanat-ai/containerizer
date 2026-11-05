@@ -890,14 +890,23 @@ def new_credentials(svc: str, ns: str, keep: dict | None = None) -> dict:
     raise LabError(f"unknown lab service {svc!r}")
 
 
+def _app_name_value(name: str) -> str:
+    """A value that needs no quoting in an ADO.NET connection string."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "-", str(name))[:128] or "app"
+
+
 def connection_string(svc: str, c: dict) -> str:
     """ADO.NET (Microsoft.Data.SqlClient, Npgsql) and StackExchange.Redis connection strings. SQL Server
     encrypts with its own certificate; the lab's other traffic stays on the node (see docs)."""
+    # Application Name: the app's namespace, so the shared lab server shows whose session it is (sys.dm_exec_sessions,
+    # pg_stat_activity); not for MySQL: MySql.Data refuses keywords it does not know
+    app = _app_name_value(c.get("app") or c.get("database") or "")
     if svc == "sqlserver":
         return (f"Server={c['host']},{c['port']};Database={c['database']};User Id={c['username']};"
-                f"Password={c['password']};Encrypt=True;TrustServerCertificate=True")
+                f"Password={c['password']};Encrypt=True;TrustServerCertificate=True;Application Name={app}")
     if svc == "postgres":
-        return f"Host={c['host']};Port={c['port']};Database={c['database']};Username={c['username']};Password={c['password']}"
+        return (f"Host={c['host']};Port={c['port']};Database={c['database']};Username={c['username']};"
+                f"Password={c['password']};Application Name={app}")
     if svc == "mysql":
         # MySQL encrypts with the certificate it made at first start; Required does not check it
         return (f"Server={c['host']};Port={c['port']};Database={c['database']};User ID={c['username']};"

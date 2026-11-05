@@ -186,6 +186,12 @@ appliance's DNS servers (`CZ_DNS_SERVERS`). Named instances (`host\instance`) ar
 port. The login names are fixed, so one SQL Server instance serves one appliance with
 `CZ_SQL_LOGINS=create`.
 
+Every connection names its part of Containerizer as the application name (`program_name` in
+`sys.dm_exec_sessions`, Activity Monitor, audits): `containerizer-web`, `containerizer-worker`, `containerizer-llm-queue`,
+`containerizer-db` (schema upgrades), `containerizer-sysagent`, `containerizer-labagent`, or `containerizer-<command>`
+for the command line. `Application Name=` in `CZ_SQL_OPTIONS` (or `CONTAINERIZER_SQL_APP_NAME`) sets one name
+for all of them, for example to tell several appliances apart on one server.
+
 To move the data of an appliance that already ran scans: back up its database ([Backup](#backup)), restore
 the `.bak` on your server, then set it up as above: the restored database users `cz_scanner`, `cz_web` and
 `cz_admin` are mapped to the logins of that server by themselves. The appliance no longer uses

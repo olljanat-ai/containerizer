@@ -205,7 +205,9 @@ The lab follows the same baseline as the generated apps (NSA/CISA Kubernetes Har
   network, and the same goes for Kafka and SFTP.
 
 **Encryption in transit.** SQL Server connections are encrypted (`Encrypt=True`) with the server's own
-certificate (`TrustServerCertificate=True`, as for the dev databases). MySQL connections are encrypted
+certificate (`TrustServerCertificate=True`, as for the dev databases). The SQL Server and PostgreSQL connection
+strings name the app (`Application Name=<app>`), so the shared server shows whose session it is; the database
+browser's sessions are `containerizer-db-browser` (PostgreSQL; sqlcmd sets none). MySQL connections are encrypted
 too (`SslMode=Required`, with the certificate MySQL makes at first start). SFTP is SSH. PostgreSQL,
 MongoDB, RabbitMQ, Kafka, Redis, S3 and Azurite use plain connections. The sandbox is a single-node cluster, so lab traffic never leaves the appliance:
 it stays on the node's pod network, and the NetworkPolicies limit who can open a connection.

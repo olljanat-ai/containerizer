@@ -8,6 +8,15 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- SQL Server connections name their part of Containerizer (`program_name`): `containerizer-web`, `containerizer-worker`,
+  `containerizer-llm-queue`, `containerizer-db`, `containerizer-sysagent`, `containerizer-labagent` or
+  `containerizer-<command>`, instead of `containerizer` for all of them; `Application Name=` in the connection
+  string or `CONTAINERIZER_SQL_APP_NAME` sets one name. The lab and dev database connection strings Containerizer
+  gives apps name the app (`Application Name=<app>`, SQL Server and PostgreSQL), and the database browser's
+  PostgreSQL sessions are `containerizer-db-browser`.
+
 ## 0.12.1 (2026-11-05)
 
 - The first patch release installed as an app update: appliances on 0.12.0 install it from **Admin → System**

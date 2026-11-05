@@ -484,3 +484,33 @@ def test_create_login_relinks_the_user_of_a_restored_database(db):
     cur.execute("SELECT COUNT(*) FROM cz.vApplicationLatest")   # signed in, and the database's grants apply
     assert cur.fetchone()[0] >= 0
     r.close()
+
+
+def test_connections_name_the_part_of_containerizer(monkeypatch):
+    """SQL Server sees which part of Containerizer a session belongs to (program_name): containerizer-<command>
+    or the agent; CONTAINERIZER_SQL_APP_NAME and Application Name= in the connection string override it."""
+    from containerizer import cli
+    monkeypatch.delenv("CONTAINERIZER_SQL_APP_NAME", raising=False)
+    monkeypatch.setattr(sqlstore, "APP_ROLE", "")
+    cs = "Server=db;Database=D;User Id=u;Password=p"
+    assert connect_args(cs)["appname"] == "containerizer"
+    monkeypatch.setattr(sqlstore, "APP_ROLE", "worker")
+    assert connect_args(cs)["appname"] == "containerizer-worker"
+    monkeypatch.setenv("CONTAINERIZER_SQL_APP_NAME", "cz-prod-web")
+    assert connect_args(cs)["appname"] == "cz-prod-web"
+    assert connect_args(cs + ";Application Name=mine")["appname"] == "mine"
+    monkeypatch.delenv("CONTAINERIZER_SQL_APP_NAME")
+    seen = {}
+    monkeypatch.setattr(cli, "_run_cmd", lambda args: seen.setdefault("role", sqlstore.APP_ROLE) and 0)
+    cli.main(["db", "init"])
+    assert seen["role"] == "db"
+
+
+def test_lab_connection_strings_name_the_app():
+    from containerizer import labservices as L
+    c = {"host": "h", "port": "1433", "database": "shop_web", "username": "shop_web", "password": "x"}
+    assert L.connection_string("sqlserver", c).endswith(";Application Name=shop_web")
+    assert "Application Name=shop_web" in L.connection_string("postgres", {**c, "port": "5432"})
+    assert "Application Name" not in L.connection_string("mysql", {**c, "port": "3306"})   # MySql.Data refuses it
+    from containerizer import devdb
+    assert "Application Name={database}" in devdb.CONNECTION["sqlserver"]
