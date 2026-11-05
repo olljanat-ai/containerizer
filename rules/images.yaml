@@ -41,6 +41,42 @@ node:
   app_uid: 65532
 python:
   runtime: python:3.12-slim-bookworm
+php:
+  # PHP web apps run on the official Apache image (mod_php, .htaccess works) as www-data (33) on port 8080:
+  # the newest supported line composer.json allows. Extensions come from the extension installer image.
+  lines: ["8.2", "8.3", "8.4"]
+  apache_8_2: php:8.2-apache-bookworm
+  apache_8_3: php:8.3-apache-bookworm
+  apache_8_4: php:8.4-apache-bookworm
+  composer: composer:2
+  extension_installer: mlocati/php-extension-installer:2
+  app_uid: 33
+  # An app that allows only an out-of-support PHP line (or calls functions PHP 7 removed: 5.6) runs on that
+  # line's last official image, which no longer gets fixes.
+  legacy:
+    "5.6": php:5.6-apache
+    "7.0": php:7.0-apache
+    "7.1": php:7.1-apache
+    "7.2": php:7.2-apache
+    "7.3": php:7.3-apache
+    "7.4": php:7.4-apache-bullseye
+    "8.0": php:8.0-apache-bullseye
+    "8.1": php:8.1-apache-bookworm
+ruby:
+  # Ruby apps build with Bundler and run with Puma (or the server in their bundle) on the slim image of the
+  # Ruby line they declare, as a numeric non-root user.
+  lines: ["3.3", "3.4"]
+  slim_3_3: ruby:3.3-slim-bookworm
+  slim_3_4: ruby:3.4-slim-bookworm
+  app_uid: 65532
+  # out-of-support lines: their last official images; an exact `ruby "x.y.z"` in the Gemfile (Bundler refuses
+  # any other version) uses the ruby:<x.y.z>-slim image
+  legacy:
+    "2.6": ruby:2.6-slim-bullseye
+    "2.7": ruby:2.7-slim-bullseye
+    "3.0": ruby:3.0-slim-bullseye
+    "3.1": ruby:3.1-slim-bookworm
+    "3.2": ruby:3.2-slim-bookworm
 go:
   build: golang:1.22-bookworm
   runtime: gcr.io/distroless/static-debian12:nonroot

@@ -920,7 +920,7 @@ def no_code_reason(src: Path) -> tuple[str, str]:
         if s["languages"]:
             langs = ", ".join(f"{lang} ({c} file{'s' if c != 1 else ''})" for lang, c in s["languages"][:3])
             return ("skipped-unsupported", f"{langs}, but no project the tool can build (.NET project, package.json, "
-                    f"requirements.txt or pyproject.toml, pom.xml or build.gradle, go.mod); {files}")
+                    f"requirements.txt or pyproject.toml, pom.xml or build.gradle, go.mod, composer.json, Gemfile); {files}")
         return "skipped-no-code", f"{files}, no source code"
     a = assess(src, repo=repo)
     if not a.components:

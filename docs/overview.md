@@ -37,7 +37,8 @@ explains how the assessment works and what it generates. To install and use it, 
 ```
 
 1. **Scan** reads project files (.csproj/.vbproj incl. old-style and imported
-   `.props`, package.json, requirements.txt/pyproject, go.mod, pom.xml/gradle, BizTalk/SQL/SSIS
+   `.props`, package.json, requirements.txt/pyproject, go.mod, pom.xml/gradle, composer.json and PHP sites,
+   Gemfile, BizTalk/SQL/SSIS
    projects, ASP.NET Web Site projects listed in a .sln), source and configuration. Nothing from the scanned repository is executed.
    Java and Node.js have their own parsers (see [Java and Node.js](java-node.md)): Maven parents,
    profiles and modules, Gradle version catalogs and `subprojects {}`, npm/yarn/pnpm workspaces, and
@@ -301,7 +302,9 @@ Service, NetworkPolicy, PVCs where state must persist, ExternalSecrets for every
 containers, a `Dockerfile.windows` stop-gap. Per app: `kustomization.yaml` and `MIGRATION.md`.
 Java (Maven/Gradle; Spring Boot, Quarkus, plain JVM programs, WARs on Tomcat) and Node.js
 (npm/pnpm/yarn; Express, NestJS, Next.js and others) components get distroless, non-root images
-built on the runtime line they declare; see [Java and Node.js](java-node.md#containers).
+built on the runtime line they declare; see [Java and Node.js](java-node.md#containers). PHP (Laravel,
+Symfony, WordPress, Drupal, plain sites) runs on the official Apache image as www-data on 8080, Ruby (Rails,
+Rack apps, Sidekiq) with Bundler and Puma as a non-root user; see [PHP and Ruby](php-ruby.md#containers).
 
 GitOps: every app also gets `gitops/flux/`, its Flux configuration (Flux is the only GitOps tool):
 

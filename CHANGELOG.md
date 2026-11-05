@@ -20,6 +20,16 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   `plan.json` (`applied`, `resolved`, `reasons`); the finding keeps its rule severity as `rule_severity` and is
   never sent to a refactoring. An application whose only refactor findings are these goes from B to A at its next
   scan. The page also classifies all 111 refactor rules (platform, partial, code-only) as candidates for more.
+- PHP and Ruby applications are detected, rated and containerized (#254); before, their repositories had no
+  components and no rating. PHP: composer.json/composer.lock (PHP line, `ext-*` extensions, Laravel, Symfony,
+  WordPress, Drupal, ...) and sites without Composer; Ruby: Gemfile/Gemfile.lock (Rails, Sinatra and other Rack
+  apps, Sidekiq and other job processors). New finding rules (`rules/15-php-ruby.yaml`): Windows-only extensions
+  and gems, PHP code that needs 5.6, out-of-support lines, IIS rewrite rules, and files kept on the app's own
+  disk (WordPress uploads, Laravel storage, Active Storage, ...). Images: PHP on the official Apache image as
+  www-data on 8080 with the extensions it needs, Ruby built with Bundler and run with Puma as uid 65532, both
+  with a read-only root file system and volumes only where the app writes. Configuration comes from
+  environment variables and Secrets (Laravel, Symfony, Rails, WordPress `WORDPRESS_DB_*`); no file of the
+  application is changed. See docs/php-ruby.md.
 
 ## 0.16.4 (2026-11-05)
 

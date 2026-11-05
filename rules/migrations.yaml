@@ -974,6 +974,34 @@ migrations:
     verify:
       - mvn verify (or gradle build) passes on the new JDK.
 
+  # ------------------------------------------------------------------ PHP and Ruby
+  - id: php-replace-windows-extensions
+    for: [php-windows-extensions]
+    kind: replace
+    replace: COM/.NET objects (com_dotnet) and Windows services (win32service) in PHP
+    with: a PHP library or the product's REST API; a long-running container process instead of a service
+    steps:
+      - List every COM ProgID or .NET class the code creates (new COM, new DOTNET) and what each call does for the business.
+      - For Office documents, use PhpSpreadsheet or PHPWord instead of driving Excel or Word; for a vendor COM server, use its REST API or SDK.
+      - If the COM server has no other interface, keep it on a Windows host behind a small HTTP service and call that service.
+      - Replace win32service registration with a plain long-running PHP script; the container runs it as a worker.
+      - Remove ext-com_dotnet / ext-win32service from composer.json.
+    verify:
+      - The documents or results the component produces match those of the COM-based version for the same inputs.
+
+  - id: ruby-replace-windows-gems
+    for: [ruby-windows-gems]
+    kind: replace
+    replace: WIN32OLE automation, win32-service and the Windows API gems
+    with: a Ruby library or the product's REST API; a long-running container process instead of a service
+    steps:
+      - List every WIN32OLE object the code creates and what each call does for the business.
+      - For Office documents, use caxlsx or roo instead of driving Excel; for a vendor COM server, use its REST API or SDK.
+      - If the COM server has no other interface, keep it on a Windows host behind a small HTTP service and call that service.
+      - Replace the win32-service daemon wrapper with a plain long-running process; remove the Windows gems from the Gemfile.
+    verify:
+      - The component starts in the Linux container and the replaced functions pass their tests.
+
   # ------------------------------------------------------------------ Node.js
   - id: node-replace-com-activex
     for: [node-com-activex]

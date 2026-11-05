@@ -1444,6 +1444,12 @@ def scan(root: str | Path) -> Repo:
             projects.append(parse_generic(f, root, "python"))
         elif n == "go.mod":
             projects.append(parse_generic(f, root, "go"))
+        elif n == "composer.json" and not {"vendor", "wp-content"} & set(f.relative_to(root).parts[:-1]):
+            from .scan_php_ruby import parse_php_project
+            projects.append(parse_php_project(f, root))
+        elif f.name == "Gemfile" and "vendor" not in f.relative_to(root).parts[:-1]:
+            from .scan_php_ruby import parse_ruby_project
+            projects.append(parse_ruby_project(f, root))
         elif n == "pom.xml":
             from .scan_java import parse_maven_project
             projects.append(parse_maven_project(f, root))
@@ -1454,6 +1460,8 @@ def scan(root: str | Path) -> Repo:
 
     sln = [f for f in files if f.suffix.lower() in (".sln", ".slnx")]
     projects += _web_site_projects(sln, root, projects)
+    from .scan_php_ruby import plain_php_sites
+    projects += plain_php_sites(files, root, projects)
     from .scan_java import link_java_projects
     from .scan_node import link_node_projects
     link_java_projects(projects, root)

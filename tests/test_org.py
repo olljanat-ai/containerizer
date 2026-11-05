@@ -459,7 +459,7 @@ def test_no_code_reasons(tmp_path):
     assert orgmod.no_code_reason(scripts) == ("skipped-no-code", "2 files (.sh 1, .sql 1), no source code")
     ruby = tmp_path / "ruby"
     (ruby / "app").mkdir(parents=True)
-    for f in ("app/a.rb", "app/b.rb", "app/view.erb", "Gemfile"):
+    for f in ("app/a.rb", "app/b.rb", "app/view.erb", "Rakefile"):        # loose scripts: no Gemfile
         (ruby / f).write_text("x")
     st, why = orgmod.no_code_reason(ruby)
     assert st == "skipped-unsupported" and why.startswith("Ruby (3 files), but no project the tool can build")

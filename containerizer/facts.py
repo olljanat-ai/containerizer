@@ -197,6 +197,9 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
     if p.kind_hint in ("java", "node"):
         from .facts_jvm_node import java_facts, node_facts
         (java_facts if p.kind_hint == "java" else node_facts)(repo, comp, facts)
+    if p.kind_hint in ("php", "ruby"):
+        from .gen_php_ruby import php_ruby_facts
+        php_ruby_facts(repo, comp, facts)
     if p.kind_hint == "node":
         scripts = (p.manifest.get("scripts") or {})
         facts["build_script"] = "build" if "build" in scripts else ""

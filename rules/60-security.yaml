@@ -33,6 +33,8 @@ hardening:
     spa: 101              # nginx-unprivileged
     java: 65532           # 'nonroot' of the distroless images (also set in the Temurin and Tomcat images)
     node: 65532           # 'nonroot' of the distroless Node.js images
+    php: 33               # 'www-data' of the official PHP Apache images (Apache started without root)
+    ruby: 65532           # numeric non-root user of the generated Ruby images
     default: 10001
 
   # Exceptions: added only when `when` (rule conditions, see rules.py) and
