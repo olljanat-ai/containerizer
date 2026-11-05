@@ -274,3 +274,26 @@ def test_windows_sign_in_in_code_needs_a_change_also_with_iis_turned_off(tmp_pat
     f = next(f for f in a.components[0].findings if f.rule.id == "windows-auth-iis")
     assert f.rule.severity == "refactor" and "AddOpenIdConnect" in f.rule.fix and a.rating == "B"
     assert str(f.evidence[0].file).endswith("Program.cs")
+
+
+def test_a_service_with_a_console_switch_gets_it_in_the_container(tmp_path):
+    """The Windows service pattern of the .NET docs: it runs as a service unless it gets --console, and a service
+    stops at once in a container (ServiceBase: PlatformNotSupportedException)."""
+    write(tmp_path / "svc", "src/Feed/Feed.csproj", """
+        <Project Sdk="Microsoft.NET.Sdk">
+          <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+        </Project>""")
+    write(tmp_path / "svc", "src/Feed/Program.cs", """
+        using Microsoft.Extensions.Hosting;
+        var isService = !(System.Diagnostics.Debugger.IsAttached || args.Contains("--console"));
+        var host = Host.CreateDefaultBuilder(args).ConfigureServices(s => s.AddHostedService<Worker>()).Build();
+        if (isService) await host.RunAsServiceAsync(); else await host.RunAsync();
+        """)
+    a = assess(tmp_path / "svc")
+    c = next(c for c in a.components if c.name == "Feed")
+    plan = make_plan(a, c)
+    assert plan["args"] == ["--console"] and any(r["rule"] == "console-switch" for r in plan["reasons"])
+    assert '"--console"]' in dockerfile_dotnet(plan)
+    web_app(tmp_path / "web")
+    w = assess(tmp_path / "web")
+    assert make_plan(w, w.components[0])["args"] == []

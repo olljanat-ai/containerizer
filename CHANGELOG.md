@@ -8,6 +8,12 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- Generated containers pass a Windows service's console switch (`args.Contains("--console")`, the pattern of the
+  .NET docs for running a host as a Windows service): without it such an app starts as a service and stops at once
+  in a container (`ServiceBase`: PlatformNotSupportedException).
+
 ## 0.16.1 (2026-11-05)
 
 - Results page: a component the organization scan's security gate left out of the sandbox shows **What failed**

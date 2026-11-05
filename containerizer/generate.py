@@ -166,6 +166,10 @@ def default_plan(c: Component) -> dict:
     }
     for d in c.facts.get("writable_dirs", []) or []:
         plan["add_writable"].append(d)
+    if c.facts.get("console_arg"):           # runs as a console app, not as a Windows service (rules/05-facts.yaml)
+        plan["args"].append(str(c.facts["console_arg"]))
+        add_reason(plan, "console-switch", f"The app starts as a Windows service unless it gets "
+                   f"{c.facts['console_arg']}; the container passes it so it runs as a console app.")
     if c.role == "web" and p.kind_hint == "dotnet":
         plan["env"]["ASPNETCORE_HTTP_PORTS"] = str(CONTAINER_PORT)
         for i, ep in enumerate(c.facts.get("kestrel_endpoints", []) or []):
