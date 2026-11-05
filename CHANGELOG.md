@@ -20,6 +20,20 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   `plan.json` (`applied`, `resolved`, `reasons`); the finding keeps its rule severity as `rule_severity` and is
   never sent to a refactoring. An application whose only refactor findings are these goes from B to A at its next
   scan. The page also classifies all 111 refactor rules (platform, partial, code-only) as candidates for more.
+- Python and Go components get a container build and deployment (`Dockerfile`, `k8s.yaml`, `plan.json`) with the
+  same hardening as .NET, Java and Node.js components, instead of only `MIGRATION.md`, and organization scans deploy
+  them (#248, [Python and Go](docs/python-go.md)). Python: the dependencies install with the repository's package
+  manager (pip requirements, Poetry, uv or Pipenv lockfiles, else the manifest's list) into a virtual environment on
+  the slim image of the declared Python line, run as uid 65532 by the server the app declares (Procfile, gunicorn,
+  uvicorn, waitress, ...) on the app object found in the code (Flask, FastAPI, Django, ...); gunicorn or uvicorn is
+  added only when the app declares none. Go: a static build of each main package (`cmd/*` each a component) on
+  distroless static (cgo: distroless base). No application file is changed.
+- Python scanning reads every manifest of a folder (`requirements.txt` with includes, `pyproject.toml` PEP 621 and
+  Poetry, `Pipfile`, `setup.py`), keeps development dependencies apart and finds the Python version; folders with a
+  manifest but no Python code (`docs/requirements.txt`) are no longer components. A Go module without a main package
+  is a library.
+- Base images: Python 3.11, 3.12 and 3.13 lines (slim runtime, full build image for native packages), Go builds on
+  `golang:1.26` (the lock already chose it for the old 1.22 line), distroless `base` for cgo.
 
 - Refactoring and **Make it A** change application code only where the platform cannot, and only the lines the
   findings need (#252). Findings that the generated Dockerfile and manifests already settle (`core-eol`,
