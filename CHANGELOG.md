@@ -8,6 +8,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- Rules: Windows sign-in set up in code (the ASP.NET Core Negotiate handler, `AddNegotiate`) is now "Windows
+  (Kerberos/NTLM) authentication" that needs a change (refactor), like IIS Windows authentication in web.config.
+  A "Make it A" patch could turn windowsAuthentication off in web.config (only IIS reads it), keep Negotiate and
+  rate A, and nobody could sign in in the sandbox (the lab's trade-rebates portal). The fix it asks for is
+  OpenID Connect bound to an "OpenIdConnect" configuration section, which the sandbox identity provider fills.
+
 ## 0.12.7 (2026-11-05)
 
 - "Make it A": the **Open** link of a patched copy in the sandbox goes to its first component that is not an API by
