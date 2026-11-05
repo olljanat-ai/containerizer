@@ -235,6 +235,54 @@ echo "ok: egress observer reads the kernel log"
 test "$(awk '{print $1}' /proc/sys/kernel/printk)" -le 4
 echo "ok: console log level $(cat /proc/sys/kernel/printk)"
 
+step "builds of scanned code: the worker has no Docker socket of its own, builds and runs reach nothing on the host"
+# docs/appliance.md "Builds of scanned code" (issue #255)
+if id -nG containerizer | grep -qw docker; then fail "containerizer must not be in the docker group"; fi
+systemctl is-active --quiet containerizer-docker-guard.socket || fail "containerizer-docker-guard.socket is not listening"
+wpid=$(systemctl show -p MainPID --value containerizer-worker.service)
+dgid=$(getent group docker | cut -d: -f3)
+if [ "$wpid" -gt 0 ] && awk '/^Groups:/' "/proc/$wpid/status" | grep -qw "$dgid"; then fail "the scan worker runs in the docker group"; fi
+tr '\0' '\n' < "/proc/$wpid/environ" | grep -qx DOCKER_HOST=unix:///run/containerizer/docker-guard.sock
+ctx=$(mktemp -d); export ctx; chown containerizer "$ctx"
+asworker() { runuser -u containerizer -- env HOME="$ctx" DOCKER_CONFIG="$ctx/.docker" DOCKER_HOST=unix:///run/containerizer/docker-guard.sock "$@"; }
+if runuser -u containerizer -- docker -H unix:///var/run/docker.sock ps >/dev/null 2>&1; then fail "the worker user reaches Docker's own socket"; fi
+for bad in "run --rm --privileged $CZ_IMAGE_MSSQL true" "run --rm --network host $CZ_IMAGE_MSSQL true" \
+           "run --rm -v /:/host $CZ_IMAGE_MSSQL true" "exec cz-mssql true" "inspect cz-mssql"; do
+  # shellcheck disable=SC2086
+  if asworker docker $bad >/dev/null 2>&1; then fail "the guard let 'docker $bad' through"; fi
+done
+echo "ok: the guard refuses privileged, host-network, host-mount and appliance-container calls"
+. /usr/lib/containerizer/images.env
+host_ip=$(ip -4 -o addr show scope global | awk '$2 !~ /^(docker|br-|cni|flannel|veth|cz-)/ {sub(/\/.*/, "", $4); print $4; exit}')
+gw=$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')
+# the results database, the k3s API (node and service address), the kubelet, the registry, Grafana, Prometheus, the web UI
+targets="$host_ip:1433 $gw:1433 $host_ip:6443 $gw:6443 10.43.0.1:443 $host_ip:10250 $gw:5000 $gw:3000 $gw:9090 $gw:8080 $host_ip:22"
+cat > "$ctx/probe.sh" <<'SH'
+#!/bin/bash
+# DNS works (the positive control), every appliance port is closed
+getent hosts ghcr.io >/dev/null || { echo "no DNS from the build"; exit 2; }
+for t in "$@"; do
+  if timeout 4 bash -c "</dev/tcp/${t%:*}/${t##*:}" 2>/dev/null; then echo "REACHED $t"; exit 1; fi
+  echo "closed: $t"
+done
+SH
+printf 'FROM %s\nCOPY probe.sh /probe.sh\nUSER 0\nRUN bash /probe.sh %s\n' "$CZ_IMAGE_MSSQL" "$targets" > "$ctx/Dockerfile"
+chown -R containerizer "$ctx"
+if ! asworker docker build --no-cache --progress=plain -t cz-ci/probe:1 "$ctx" > "$ctx/build.log" 2>&1; then
+  tail -30 "$ctx/build.log"; fail "a build step reached an appliance service (see REACHED above)"
+fi
+grep -E "closed:|REACHED" "$ctx/build.log" || true
+echo "ok: a build's RUN step reaches no appliance service"
+# shellcheck disable=SC2086
+asworker docker run --rm --cap-drop ALL --security-opt no-new-privileges cz-ci/probe:1 bash /probe.sh $targets \
+  || fail "a verification run reached an appliance service"
+echo "ok: a verification run reaches no appliance service"
+if asworker env DOCKER_BUILDKIT=0 docker build --network host -q "$ctx" >/dev/null 2>&1; then fail "a build got the host network"; fi
+if asworker docker build --network host -q "$ctx" >/dev/null 2>&1; then fail "a BuildKit build got the host network"; fi
+echo "ok: builds never get the host network"
+asworker docker rmi cz-ci/probe:1 >/dev/null || true
+rm -rf "$ctx"
+
 step "no failed units"
 systemctl --failed --no-legend
 test -z "$(systemctl --failed --no-legend)"
