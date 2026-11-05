@@ -1,5 +1,4 @@
 ---
-title: Containerizer for Kubernetes
 description: Find out which of your applications can run as Linux containers on Kubernetes, why, and get hardened builds and manifests for the ones that can.
 hide:
   - navigation
