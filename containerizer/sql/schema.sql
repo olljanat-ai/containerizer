@@ -2000,6 +2000,14 @@ IF COL_LENGTH(N'[${schema}].LlmJob', N'RemoveRequestedAt') IS NULL
 GO
 GRANT UPDATE ON [${schema}].LlmJob (RemoveRequestedAt, RemoveRequestedBy) TO [${schema}_admin];
 GO
+-- Try again on an application whose sandbox runs an order's patched copy (scanagain.py, 0.16.4): the request
+-- (RedeployRequestedAt/By, admin login); the queue runner builds the same patch again (variant.redeploy_requested)
+-- and records it in Result (sandbox.redeploy_of).
+IF COL_LENGTH(N'[${schema}].LlmJob', N'RedeployRequestedAt') IS NULL
+    ALTER TABLE [${schema}].LlmJob ADD RedeployRequestedAt datetime2(0) NULL, RedeployRequestedBy nvarchar(256) NULL;
+GO
+GRANT UPDATE ON [${schema}].LlmJob (RedeployRequestedAt, RedeployRequestedBy) TO [${schema}_admin];
+GO
 -- 33: Cancel on a job being asked (Admin -> LLM queue): an administrator asks (CancelRequestedAt/By, admin login); the
 -- queue runner that holds the job sees it at its next heartbeat, stops the job's LLM calls and records it as skipped,
 -- "cancelled by ..." (writer login: Status, Note)

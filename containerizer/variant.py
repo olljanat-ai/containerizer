@@ -830,6 +830,75 @@ def housekeep(connect, key, work: Path, log=print, now: datetime | None = None) 
 
 
 
+# --------------------------------------------------------------------------- Try again: the patched copy built again
+
+def redeploy(connect, key, job: int, payload: dict, result: dict, work: Path, now: datetime | None = None,
+             health=None) -> dict:
+    """Try again on the results page of an application whose sandbox runs an order's patched copy: the same patch on
+    the same commit, built, checked and deployed again with this version's generator and gate (no LLM), the way it
+    was when the order finished (deploy). A scan leaves the patched copy as it is (org.kept_patch), so without this
+    a component this version would deploy stays out (the lab's expense-claims frontend, left out by 0.16.0's gate).
+    Returns the new result["sandbox"]; Skip when it cannot be built."""
+    from . import refactor as rf
+    patch = _patch_text(result)
+    if not patch:
+        raise Skip("the order has no patch")
+    name = rf.variant_name(payload.get("app"), job)
+    try:
+        top, _ = rf.checkout(payload["source"], payload.get("commit"), work / name)
+    except (rf.RefactorError, KeyError) as ex:
+        raise Skip(f"the source is not there: {ex}") from None
+    ok, _ = rf.apply_patch(top, patch)
+    if not ok:
+        raise Skip("the patch no longer applies to its commit")
+    return deploy(connect, key, payload, job, result, work, name, lambda text: None, now=now, health=health)
+
+
+def redeploy_requested(connect, key, work: Path, log=print, now: datetime | None = None, health=None) -> int:
+    """The queue runner's periodic step: the patched copies someone asked to build again (cz.LlmJob.
+    RedeployRequestedAt, scanagain.py), one per pass. Done once per request: the request's time is kept in the
+    sandbox state (`redeploy_of`). Returns how many were built."""
+    from .orgsource import REDACT
+    now = now or utcnow()
+    conn = connect()
+    try:
+        rows = _rows(conn, "SELECT TOP (5) JobId, Payload, Result, RedeployRequestedAt, RedeployRequestedBy "
+                           "FROM cz.LlmJob WHERE Kind = N'refactor' AND Status = N'answered' "
+                           "AND RedeployRequestedAt IS NOT NULL AND RemoveRequestedAt IS NULL "
+                           "AND JSON_VALUE(Result, '$.sandbox.folder') IS NOT NULL ORDER BY RedeployRequestedAt")
+    finally:
+        conn.close()
+    for r in rows:
+        x = _parse(r)
+        if x is None:
+            continue
+        pl, result, sb = x
+        asked = _iso(r["RedeployRequestedAt"]) if isinstance(r["RedeployRequestedAt"], datetime) \
+            else str(r["RedeployRequestedAt"])
+        if sb.get("redeploy_of") == asked or sb.get("status") not in ACTIVE or sb.get("removed_at"):
+            continue
+        jid = int(r["JobId"])
+        log(f"#{jid}: building the patched copy again (asked by {r.get('RedeployRequestedBy') or 'someone'})")
+        try:
+            new = redeploy(connect, key, jid, pl, result, work / f"redeploy-{jid}", now, health)
+        except Skip as ex:
+            new = {**sb, "redeploy_error": f"not built again: {ex}"[:600]}
+        except Exception as ex:  # noqa: BLE001 - recorded; asked again with Try again
+            new = {**sb, "redeploy_error": REDACT(f"not built again: {type(ex).__name__}: {ex}")[:600]}
+        finally:
+            shutil.rmtree(work / f"redeploy-{jid}", ignore_errors=True)
+        if new.get("status") == "skipped":            # not deployed: what ran before stays (the folder was restored)
+            new = {**sb, "redeploy_error": str(new.get("reason") or "not deployed")[:600],
+                   "excluded": new.get("excluded") or sb.get("excluded")}
+        new.update(redeploy_of=asked, redeployed_at=_iso(now), redeployed_by=r.get("RedeployRequestedBy"))
+        result["sandbox"] = new
+        _save(connect, jid, result)
+        log(f"#{jid}: patched copy built again: {new.get('status')}"
+            + (f" ({new['redeploy_error']})" if new.get("redeploy_error") else ""))
+        return 1
+    return 0
+
+
 # --------------------------------------------------------------------------- what runs in the sandbox now
 
 SANDBOX_OFF_TEXT = ("the application's sandbox is turned off (Admin → Applications): the patched copy stays in its "

@@ -433,6 +433,33 @@ def test_admin_maps_and_audits(idp, tmp_path):
         sa.commit()
         sa.close()
         assert b.follow("/admin/scan-again/999999", {"csrf": csrf})[0] == 404                 # no such application
+        # an application whose sandbox runs an order's patched copy: Try again builds that patch again (no scan)
+        sa = sqlstore.connect(cs)
+        c = sa.cursor()
+        c.execute("INSERT cz.LlmJob (Kind, Priority, DedupeKey, Status, Payload, Result) VALUES (N'refactor', 1, N'p', "
+                  "N'answered', %s, %s)", (json.dumps({"application_id": app, "app": "shop"}),
+                                           json.dumps({"sandbox": {"status": "running", "folder": "acme/_/shop"}})))
+        c.execute("SELECT MAX(JobId) FROM cz.LlmJob")
+        job = c.fetchone()[0]
+        sa.commit()
+        body = b.follow(f"/app/{app}")[2]
+        assert f"runs the Make it A patch of order #{job}" in body and "<button>Try again</button>" in body
+        s, _, body = b.follow(f"/admin/scan-again/{app}", {"csrf": csrf})
+        assert "patched copy is built again" in body and f"Order #{job}'s patched copy is being built again" in body
+        c.execute("SELECT RedeployRequestedBy FROM cz.LlmJob WHERE JobId = %s", (job,))
+        assert c.fetchone()[0] and not c.execute("SELECT 1 FROM cz.OrgScanRun WHERE Status = N'queued'") \
+            and c.fetchone() is None                                                           # no scan queued
+        # the runner did it: the page offers it again, with what failed if it did
+        from containerizer import variant
+        c.execute("SELECT RedeployRequestedAt FROM cz.LlmJob WHERE JobId = %s", (job,))
+        asked = variant._iso(c.fetchone()[0])
+        c.execute("UPDATE cz.LlmJob SET Result = %s WHERE JobId = %s", (json.dumps({"sandbox": {
+            "status": "running", "folder": "acme/_/shop", "redeploy_of": asked,
+            "redeploy_error": "not deployed: none of 1 server components qualifies"}}), job))
+        sa.commit()
+        sa.close()
+        body = b.follow(f"/app/{app}")[2]
+        assert "<button>Try again</button>" in body and "The last rebuild of order" in body and "none of 1 server" in body
         # the change history names who changed what
         body = b.follow("/admin/audit")[2]
         assert "customer-facing,Kärnsystem" in body

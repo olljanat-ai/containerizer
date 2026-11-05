@@ -1652,3 +1652,57 @@ def test_the_open_link_goes_to_the_ui_not_the_api():
     assert main_url([api, worker]) == "https://api.example/"                      # only an API: that one
     assert main_url([{"component": "Shop.WebApi", "url": "u1"}, {"component": "shop-web", "url": "u2"}]) == "u2"
     assert main_url([{"component": "Rapid", "url": "u1"}]) == "u1" and main_url([worker]) is None
+
+
+def test_try_again_builds_the_patched_copy_again_once_per_request(tmp_path, monkeypatch):
+    """Try again on an application whose sandbox runs an order's patched copy (scanagain.py): the runner builds the
+    same patch again (variant.redeploy), once per request; when it cannot deploy, what ran stays and the reason is
+    kept for the page."""
+    import json as _json
+    from datetime import datetime as _dt
+    from containerizer import variant as vt
+    asked_at = _dt(2026, 11, 5, 20, 0, 0)
+    row = {"JobId": 206, "Payload": _json.dumps({"application_id": 7, "app": "expense-claims"}),
+           "Result": _json.dumps({"sandbox": {"status": "running", "folder": "acme/_/x", "excluded": [
+               {"component": "expenses-web", "reason": "security gate: image build failed"}]}}),
+           "RedeployRequestedAt": asked_at, "RedeployRequestedBy": "john.doe@example.com"}
+    saved = []
+
+    class Cur:
+        def execute(self, sql, params=()):
+            self.sql, self.params = sql, params
+
+        def fetchall(self):
+            return [dict(row)]
+
+    class Conn:
+        def cursor(self, as_dict=False):
+            return Cur()
+
+        def commit(self):
+            pass
+
+        def close(self):
+            pass
+    monkeypatch.setattr(vt, "_save", lambda connect, jid, result: saved.append((jid, result)))
+    built = []
+
+    def ok(connect, key, job, payload, result, work, now=None, health=None):
+        built.append(job)
+        return {"status": "running", "folder": "acme/_/x", "deployed_at": "2026-11-05T20:05:00", "excluded": []}
+    monkeypatch.setattr(vt, "redeploy", ok)
+    assert vt.redeploy_requested(lambda: Conn(), None, tmp_path, log=lambda m: None) == 1
+    jid, res = saved[-1]
+    sb = res["sandbox"]
+    assert jid == 206 and built == [206] and sb["excluded"] == [] and sb["redeploy_of"] == vt._iso(asked_at)
+    assert sb["redeployed_by"] == "john.doe@example.com" and not sb.get("redeploy_error")
+    row["Result"] = _json.dumps(res)                                         # done: not again for this request
+    assert vt.redeploy_requested(lambda: Conn(), None, tmp_path, log=lambda m: None) == 0 and built == [206]
+    # asked again, and it cannot deploy: what ran stays, with why
+    row["RedeployRequestedAt"] = _dt(2026, 11, 5, 21, 0, 0)
+    monkeypatch.setattr(vt, "redeploy", lambda *a, **k: {"status": "skipped", "reason": "not deployed: gate",
+                                                         "excluded": [{"component": "expenses-web"}]})
+    assert vt.redeploy_requested(lambda: Conn(), None, tmp_path, log=lambda m: None) == 1
+    sb = saved[-1][1]["sandbox"]
+    assert sb["status"] == "running" and sb["redeploy_error"] == "not deployed: gate"
+    assert sb["deployed_at"] == "2026-11-05T20:05:00"                        # the earlier build still runs
