@@ -38,7 +38,7 @@ BASE = "/admin/refactoring"
 STATUS_CSS = {"queued": "st-run", "generating": "st-run", "verifying": "st-run", "deploying": "st-run",
               "verified": "st-ok", "applies-only": "st-warn", "failed": "st-bad", "cancelled": "st-off",
               "approval": "st-wait"}
-SANDBOX_CSS = {"deploying": "st-run", "running": "st-ok", "failing": "st-bad", "deployed": "st-warn",
+SANDBOX_CSS = {"deploying": "st-run", "running": "st-ok", "failing": "st-bad", "deployed": "st-warn", "off": "st-off",
                "skipped": "st-off", "error": "st-bad", "removed": "st-off", "outdated": "st-off", "expired": "st-off"}
 URL_RE = re.compile(r"https://[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::\d{1,5})?/[A-Za-z0-9._~/-]{0,200}")
 # what the order page says after an action: fixed texts chosen by a code in the URL
@@ -509,10 +509,11 @@ def _sandbox_section(adm, s, ident: int, sb: dict, requested) -> str:
     if moved.get("namespace"):
         out.append(f"<div><span class='label'>Before</span> <code>{e(str(moved['namespace']))}</code></div>")
     url = safe_url(sb.get("url"))
-    if url and st in ACTIVE:
+    if url and st in ACTIVE and st != "off":
         out.append(f"<div><span class='label'>URL</span> <a href='{e(url)}' target='_blank' rel='noopener noreferrer'>"
                    f"{e(url)} ↗</a></div>")
-    for label, key in (("Deployed", "deployed_at"), ("Checked", "checked_at"), ("Removed", "removed_at")):
+    for label, key in (("Deployed", "deployed_at"), ("Checked", "checked_at"), ("Removed", "removed_at"),
+                       ("Back", "back_at")):
         if sb.get(key):
             out.append(f"<div><span class='label'>{label}</span> {e(str(sb[key]).replace('T', ' ')[:16])} UTC</div>")
     out.append("</div>")

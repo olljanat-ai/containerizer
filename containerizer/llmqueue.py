@@ -1453,6 +1453,11 @@ class Runner:
                 n += variant.sync_sandbox(self.connect, self.key, base, log=self.log)
             except Exception as ex:             # a database from before schema 23, the output repository away: next time
                 self.log(f"sandbox variants: {type(ex).__name__}: {ex}"[:400])
+            try:                                # their state as the cluster and the output repository say now
+                base = Path(os.environ.get(refactor.WORK_ENV) or tempfile.gettempdir()) / "variants"
+                n += variant.refresh(self.connect, self.key, base, log=self.log)
+            except Exception as ex:             # a database from before schema 23, the cluster away: next time
+                self.log(f"sandbox variant state: {type(ex).__name__}: {ex}"[:400])
             try:                                # /etc/containerizer without secrets, once per change (at boot)
                 from . import configbackup
                 base = Path(os.environ.get(refactor.WORK_ENV) or tempfile.gettempdir()) / "config-backup"

@@ -370,7 +370,7 @@ def order_button(app_id, comp_id, goal: str, csrf: str, label: str, est: dict | 
             + (f" <span class='muted small'>{e(tip)}</span>" if tip else "") + "</form>")
 
 
-VARIANT_CSS = {"deploying": "st-run", "running": "st-ok", "failing": "st-bad", "deployed": "st-warn",
+VARIANT_CSS = {"deploying": "st-run", "running": "st-ok", "failing": "st-bad", "deployed": "st-warn", "off": "st-off",
                "removed": "st-off", "outdated": "st-off", "expired": "st-off", "error": "st-bad"}
 VARIANT_URL_RE = re.compile(r"https://[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::\d{1,5})?/[A-Za-z0-9._~/-]{0,200}")
 
@@ -625,6 +625,7 @@ def _trends_href(bu) -> str:
 
 
 VARIANT_TEXT = {"running": "Running in the sandbox", "deployed": "In the sandbox (health not checked)",
+                "off": "Sandbox turned off",
                 "failing": "Failing in the sandbox", "deploying": "Deploying", "removed": "Removed from the sandbox",
                 "outdated": "Replaced by newer code", "expired": "Expired in the sandbox", "skipped": "Not deployed",
                 "error": "Deploy failed"}

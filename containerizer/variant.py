@@ -52,12 +52,17 @@ CONTEXT_ENV = "CONTAINERIZER_SANDBOX_CONTEXT"
 TIMEOUT_ENV = "CONTAINERIZER_SANDBOX_VARIANT_TIMEOUT"
 DEFAULT_TIMEOUT = 900
 SUFFIX = "-refactor-"                          # the folders and namespaces of the variants of before (migrate)
-STATUSES = ("deploying", "running", "failing", "deployed", "skipped", "error", "removed", "outdated", "expired")
+STATUSES = ("deploying", "running", "failing", "deployed", "off", "skipped", "error", "removed", "outdated", "expired")
 STATUS_TEXT = {"deploying": "Deploying", "running": "Running in the sandbox", "failing": "Failing in the sandbox",
-               "deployed": "Deployed, health not checked", "skipped": "Not deployed", "error": "Deploy failed",
+               "deployed": "Deployed, health not checked", "off": "Sandbox turned off", "skipped": "Not deployed",
+               "error": "Deploy failed",
                "removed": "Removed from the sandbox", "outdated": "Replaced by newer code",
                "expired": "Expired"}                    # (expired: variants removed by the old 7-day expiry)
-ACTIVE = ("running", "failing", "deployed")         # in the output repository: can be removed
+ACTIVE = ("running", "failing", "deployed", "off")  # in the output repository: can be removed
+RECHECK_UNCHECKED = 600                             # refresh: a copy whose health is not known, checked again after
+RECHECK_CHECKED = 3600                              # ... one running or failing, and a removed one (is it back?)
+RECHECK_PER_PASS = 3                                # at most this many cluster checks per housekeeping pass
+RECHECK_TIMEOUT = 180                               # seconds one re-check waits for the cluster
 HOUSEKEEP_SECONDS = 300                             # how often the runner looks for outdated variants
 
 
@@ -433,22 +438,25 @@ def _head(root: Path) -> str:
     return p.stdout.strip() if p.returncode == 0 else ""
 
 
-def check_health(root: Path, namespace: str, revision: str, env=None, kube=None, sleep=None) -> dict:
+def check_health(root: Path, namespace: str, revision: str, env=None, kube=None, sleep=None,
+                 timeout: int | None = None) -> dict:
     """The variant's health from the cluster (read only, this namespace only): status running, failing or
-    deployed (not checked), the reason, the URL check and when."""
+    deployed (not checked), the reason, the URL check and when. No `revision`: whatever the cluster applied
+    counts (refresh: a copy deployed earlier, checked again)."""
     from .sandbox import HEALTHY, SCHEDULED, KubeOptions, SandboxOptions, verify_sandbox
     env = os.environ if env is None else env
     kc = env.get(KUBECONFIG_ENV)
     if not kc and kube is None:
         return {"status": "deployed", "reason": "deployed; health not checked (no cluster access configured: "
                                                 f"{KUBECONFIG_ENV})"}
-    try:
-        timeout = int(env.get(TIMEOUT_ENV) or DEFAULT_TIMEOUT)
-    except ValueError:
-        timeout = DEFAULT_TIMEOUT
+    if timeout is None:
+        try:
+            timeout = int(env.get(TIMEOUT_ENV) or DEFAULT_TIMEOUT)
+        except ValueError:
+            timeout = DEFAULT_TIMEOUT
     so = SandboxOptions(kube=KubeOptions(kubeconfig=kc, context=env.get(CONTEXT_ENV) or None),
-                        timeout=timeout, revision=revision, learn=False,
-                        apps=[namespace], wait_forbidden=True)
+                        timeout=timeout, revision=revision, any_revision=not revision, learn=False,
+                        apps=[namespace], wait_forbidden=bool(revision))
     kw = {"sleep": sleep} if sleep else {}
     doc = verify_sandbox(root, so, kube=kube, log=lambda m: None, **kw)
     from .sandbox import SKIPPED
@@ -769,6 +777,152 @@ def housekeep(connect, key, work: Path, log=print, now: datetime | None = None) 
         n += 1
     return n
 
+
+
+# --------------------------------------------------------------------------- what runs in the sandbox now
+
+SANDBOX_OFF_TEXT = ("the application's sandbox is turned off (Admin → Applications): the patched copy stays in its "
+                    "folder and runs again when it is turned on")
+
+
+def _parse_iso(v) -> datetime | None:
+    try:
+        t = datetime.fromisoformat(str(v).replace("Z", ""))
+    except (TypeError, ValueError):
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def _last_look(sb: dict) -> datetime | None:
+    """When the order's sandbox state was last compared with the cluster or the output repository."""
+    ts = [t for t in (_parse_iso(sb.get(k)) for k in ("checked_at", "looked_at", "deployed_at", "moved_at",
+                                                      "removed_at")) if t]
+    return max(ts) if ts else None
+
+
+def stale(rows: list[dict], off: set, now: datetime) -> tuple[list[tuple[dict, dict]], list[tuple[dict, str]]]:
+    """(the rows whose sandbox state the cluster or the output repository says something else about by now: (row,
+    the new state) with no Git or cluster access needed, the rows to look at in the output repository and the
+    cluster: (row, why)). Copies in their application's folder only; an active one is checked again after
+    RECHECK_UNCHECKED (health not known) or RECHECK_CHECKED; the latest removed copy of an application hourly, in
+    case its folder runs it again (taken out by an LLM-heavy chain, a removal that found the folder written since);
+    one whose application's sandbox is turned off is `off` until it is turned on again."""
+    latest: dict = {}
+    for r in rows:
+        x = _parse(r)
+        if x is None:
+            continue
+        pl, _, sb = x
+        k = _app_key(pl, sb)
+        if k is not None and in_place(sb) and int(r["JobId"]) > latest.get(k, -1):
+            latest[k] = int(r["JobId"])
+    now_set, look = [], []
+    for r in rows:
+        x = _parse(r)
+        if x is None or r.get("RemoveRequestedAt"):
+            continue
+        pl, _, sb = x
+        if not in_place(sb) or not valid_app_folder(str(sb.get("folder") or "")):
+            continue
+        st, aid = sb.get("status"), pl.get("application_id")
+        is_off = aid is not None and str(aid).isdigit() and int(aid) in off
+        last = _last_look(sb)
+        age = (now - last).total_seconds() if last else float("inf")
+        if st in ACTIVE and not sb.get("removed_at"):
+            if is_off:
+                if st != "off":
+                    now_set.append((r, {**sb, "status": "off", "reason": SANDBOX_OFF_TEXT, "looked_at": _iso(now)}))
+            elif st == "off":
+                look.append((r, "its application's sandbox is on again"))
+            elif age >= (RECHECK_UNCHECKED if st == "deployed" else RECHECK_CHECKED):
+                look.append((r, "checked again"))
+        elif st == "removed" and sb.get("removed_at") and latest.get(_app_key(pl, sb)) == int(r["JobId"]) \
+                and age >= RECHECK_CHECKED:
+            look.append((r, "is it in its application's folder again"))
+    look.sort(key=lambda x: _last_look(_parse(x[0])[2]) or datetime.min.replace(tzinfo=timezone.utc))
+    return now_set, look
+
+
+def refresh(connect, key, work: Path, log=print, now: datetime | None = None, health=None,
+            limit: int = RECHECK_PER_PASS) -> int:
+    """The queue runner's periodic step after housekeep: the sandbox state of the orders' patched copies kept true
+    (stale): the health read again from the cluster (a deploy's check may have found nothing yet, the copy may break
+    or recover later), `off` while the application's sandbox is turned off, and the state taken from the output
+    repository, whose application folder says which order's patch runs there: removed when it no longer runs this
+    one, active again when it does. Returns how many changed."""
+    from .orgsource import REDACT
+    from .org import Output, load_sandbox_off
+    now = now or utcnow()
+    conn = connect()
+    try:
+        rows = _rows(conn, "SELECT JobId, Payload, Result, RemoveRequestedAt FROM cz.LlmJob "
+                           "WHERE Kind = N'refactor' AND Status = N'answered' "
+                           "AND JSON_VALUE(Result, '$.sandbox.folder') IS NOT NULL "
+                           "AND JSON_VALUE(Result, '$.sandbox.status') IN (N'running', N'failing', N'deployed', N'off', "
+                           "N'removed')")
+        off = load_sandbox_off(conn) if rows else set()
+    finally:
+        conn.close()
+    if not rows:
+        return 0
+    now_set, look = stale(rows, off, now)
+    n = 0
+    for r, sb in now_set:
+        res = _parse(r)[1]
+        res["sandbox"] = sb
+        _save(connect, int(r["JobId"]), res)
+        log(f"#{r['JobId']}: sandbox copy in {sb.get('namespace')} off (its application's sandbox is turned off)")
+        n += 1
+    outs: dict = {}
+    try:
+        for r, why in look[:max(0, limit)]:
+            jid = int(r["JobId"])
+            pl, res, sb = _parse(r)
+            try:
+                target, o = _open(connect, key, pl, work / f"look-{jid}", deploying=False)
+                repo = target["scan"]["OutputRepo"]
+                if repo not in outs:
+                    d = work / f"look-out-{len(outs)}"
+                    d.mkdir(parents=True, exist_ok=True)
+                    outs[repo] = Output(o, d)
+                out = outs[repo]
+                folder = str(sb.get("folder") or "")
+                m = marker(out.root / folder)
+                mine = bool(m) and int(m.get("job") or -1) == jid
+                if not mine:
+                    if sb.get("status") == "removed":
+                        new = {**sb, "looked_at": _iso(now)}
+                    else:
+                        ran = f"the patch of order #{m['job']}" if m else "the scan's output"
+                        new = {**sb, "status": "removed", "removed_at": _iso(now), "removed_by": None,
+                               "looked_at": _iso(now),
+                               "reason": f"not in the sandbox any more: its application's folder {folder} runs {ran} now"}
+                else:
+                    h = (health or check_health)(out.root, sb.get("namespace") or "", "", timeout=RECHECK_TIMEOUT)
+                    new = {k: v for k, v in sb.items() if k not in ("removed_at", "removed_by")}
+                    new.update(h)
+                    new["looked_at"] = _iso(now)
+                    if sb.get("status") == "removed":
+                        new["back_at"] = _iso(now)
+                        new["reason"] = (f"in the sandbox again: its application's folder {folder} runs this patch; "
+                                         f"{h.get('reason') or ''}")[:800]
+            except Skip as ex:
+                new = {**sb, "looked_at": _iso(now)}
+                log(f"#{jid}: sandbox state not refreshed: {ex}"[:400])
+            except Exception as ex:  # noqa: BLE001 - tried again next time
+                log(f"#{jid}: sandbox state not refreshed: {REDACT(f'{type(ex).__name__}: {ex}')[:300]}")
+                continue
+            changed = {k: new.get(k) for k in ("status", "reason", "removed_at")} != \
+                {k: sb.get(k) for k in ("status", "reason", "removed_at")}
+            res["sandbox"] = new
+            _save(connect, jid, res)
+            if changed:
+                log(f"#{jid}: sandbox copy in {new.get('namespace')} {new['status']} ({why})")
+                n += 1
+    finally:
+        for i in range(len(outs)):
+            shutil.rmtree(work / f"look-out-{i}", ignore_errors=True)
+    return n
 
 
 # --------------------------------------------------------------------------- the applications' sandbox switch
