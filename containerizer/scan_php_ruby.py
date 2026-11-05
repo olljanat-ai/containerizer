@@ -98,6 +98,11 @@ def php_range(constraint: str) -> tuple[str | None, str | None]:
     return low, (str(top[0]) if top[1] is None else f"{top[0]}.{top[1]}")
 
 
+def _top_key(v: str) -> tuple:
+    parts = [int(x) for x in v.split(".")]
+    return (parts[0], parts[1] if len(parts) > 1 else 99)
+
+
 def _plain_php_framework(d: Path) -> str:
     if (d / "wp-includes").is_dir() or (d / "wp-config.php").is_file() or (d / "wp-config-sample.php").is_file():
         return "wordpress"
@@ -139,9 +144,15 @@ def parse_php_project(path: Path, root: Path) -> Project:
                 name = str(pk.get("name") or "").lower()
                 if name and name in pr.packages:
                     pr.packages[name] = str(pk.get("version") or pr.packages[name])
-                for k in (pk.get("require") or {}):
+                for k, kv in (pk.get("require") or {}).items():
                     if str(k).lower().startswith("ext-"):
                         exts.add(str(k)[4:].lower())
+                    elif str(k).lower() == "php" and name not in pr.dev_packages:
+                        # a locked package that supports only older PHP lines caps the line (composer
+                        # install refuses a PHP its lockfile was not resolved for)
+                        top = php_range(str(kv))[1]
+                        if top and (hi is None or _top_key(top) < _top_key(hi)):
+                            hi = top
         if lo:
             props["PhpVersion"] = lo
         if hi:

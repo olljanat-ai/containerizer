@@ -347,7 +347,7 @@ def dockerfile_php(plan: dict) -> str:
                   f"    {CA_ENV}; \\",
                   "    composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader --no-progress \\",
                   "    || composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader --no-progress --no-scripts"]
-    writable = writable_dirs(plan)
+    writable = [w for w in writable_dirs(plan) if w != "/tmp"]
     lines += ["", "FROM base AS final", f"WORKDIR {PHP_ROOT}",
               "# application files stay owned by root: read-only for the app user",
               f"COPY --from=build {PHP_ROOT} {PHP_ROOT}"]
@@ -527,7 +527,7 @@ def dockerfile_ruby(plan: dict) -> str:
     lines += [f"WORKDIR {RUBY_ROOT}", "# application files stay owned by root: read-only for the app user",
               "COPY --from=build /usr/local/bundle /usr/local/bundle",
               f"COPY --from=build {RUBY_ROOT} {RUBY_ROOT}"]
-    writable = writable_dirs(plan)
+    writable = [w for w in writable_dirs(plan) if w != "/tmp"]
     if writable:
         lines.append("RUN mkdir -p " + " ".join(writable) + f" && chown -R {uid}:{uid} " + " ".join(writable))
     env = {**plan["env"], "BUNDLE_PATH": "/usr/local/bundle"}
