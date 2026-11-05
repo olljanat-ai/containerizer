@@ -103,8 +103,10 @@ jobs:
             appliance/ci/patch-release-check.sh "$GITHUB_REF_NAME"
             echo "version=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
             echo "release=true" >> "$GITHUB_OUTPUT"
-            # a patch release (Z > 0) ships the app update only: no installer or disk images (those of vX.Y.0 install
-            # the same OS); the OS image is still pushed, for appliances of another series that upgrade to it
+            # a patch release (Z > 0) ships the app update only: no OS build, no installer or disk images (those of
+            # vX.Y.0 install the same OS). The OS image tag vX.Y.Z is the series' vX.Y.0 image, copied in the registry:
+            # appliances find releases by the OS image's tags, and one of another series that upgrades to it gets
+            # the vX.Y.0 OS, which then installs this release as an app update
             if [[ "$GITHUB_REF_NAME" =~ \.0$ ]]; then echo "patch=false" >> "$GITHUB_OUTPUT"; else
               echo "patch=true" >> "$GITHUB_OUTPUT"
               echo "series_base=$(sed -E 's/\.[0-9]+$/.0/' <<< "$GITHUB_REF_NAME")" >> "$GITHUB_OUTPUT"
@@ -123,6 +125,7 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Build the OS image
+        if: steps.v.outputs.patch != 'true' || inputs.boot_test
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -137,6 +140,19 @@ jobs:
             SIGNER_REPO=${{ github.repository }}
           cache-from: type=gha,scope=appliance
           cache-to: type=gha,scope=appliance,mode=max
+
+      - name: "The series' OS image (patch release: not built)"
+        if: steps.v.outputs.patch == 'true' && !inputs.boot_test
+        id: base
+        env:
+          BASE: ${{ steps.v.outputs.series_base }}
+        run: |
+          # the OS image of vX.Y.0, by digest: the app update's import check runs in it, and vX.Y.Z tags it
+          digest=$(docker buildx imagetools inspect "$IMAGE:$BASE" --format '{{json .Manifest}}' | jq -r .digest)
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no digest for $IMAGE:$BASE" >&2; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          docker pull -q "$IMAGE@$digest"
+          docker tag "$IMAGE@$digest" containerizer-appliance:build
 
       - name: App update image
         env:
@@ -226,13 +242,22 @@ jobs:
         env:
           V: ${{ steps.v.outputs.version }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_DIGEST: ${{ steps.base.outputs.digest }}
         run: |
           echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker tag containerizer-appliance:build "$IMAGE:$V"
-          docker tag containerizer-appliance:build "$IMAGE:latest"
-          docker push "$IMAGE:$V"
-          docker push "$IMAGE:latest"
-          digest=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE:$V" | grep -m1 "^$IMAGE@" | cut -d@ -f2)
+          if [ -n "$BASE_DIGEST" ]; then
+            # a patch release: the series' OS image under this tag, copied in the registry (nothing is pushed)
+            # (--prefer-index=false: the manifest itself, the digest the series' appliances verified; not an index)
+            docker buildx imagetools create --prefer-index=false --tag "$IMAGE:$V" --tag "$IMAGE:latest" "$IMAGE@$BASE_DIGEST"
+            digest=$(docker buildx imagetools inspect "$IMAGE:$V" --format '{{json .Manifest}}' | jq -r .digest)
+            [ "$digest" = "$BASE_DIGEST" ] || { echo "$IMAGE:$V is $digest, not the series' $BASE_DIGEST" >&2; exit 1; }
+          else
+            docker tag containerizer-appliance:build "$IMAGE:$V"
+            docker tag containerizer-appliance:build "$IMAGE:latest"
+            docker push "$IMAGE:$V"
+            docker push "$IMAGE:latest"
+            digest=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE:$V" | grep -m1 "^$IMAGE@" | cut -d@ -f2)
+          fi
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no digest" >&2; exit 1; }
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           cosign sign --yes "$IMAGE@$digest"
@@ -249,10 +274,15 @@ jobs:
         env:
           V: ${{ steps.v.outputs.version }}
         run: |
+          # GHCR shows a signature just pushed a little later at times ("no signatures found"): a few tries
           for ref in "$IMAGE:$V" "$APP_IMAGE:$V"; do
-            cosign verify --output json \
-              --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY//./\\.}/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$" \
-              --certificate-oidc-issuer https://token.actions.githubusercontent.com "$ref" > /dev/null
+            for try in 1 2 3 4 5 6; do
+              cosign verify --output json \
+                --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY//./\\.}/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$" \
+                --certificate-oidc-issuer https://token.actions.githubusercontent.com "$ref" > /dev/null && break
+              [ "$try" = 6 ] && exit 1
+              sleep 20
+            done
           done
 
       - name: Release assets

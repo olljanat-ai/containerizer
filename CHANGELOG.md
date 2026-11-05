@@ -8,6 +8,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- Release workflow: a patch release no longer builds the OS image. Its OS image tag (`containerizer-appliance:vX.Y.Z`,
+  which appliances look for) is the series' `vX.Y.0` image, copied in the registry, so a patch release takes about
+  half as long. An appliance of another series that upgrades to it gets the `vX.Y.0` OS and then installs the patch
+  release as an app update. The signature check after signing tries again for up to two minutes (GHCR sometimes
+  shows a new signature late: 0.12.4's release stopped there).
+
 ## 0.12.4 (2026-11-05)
 
 - The front page loads faster (about 0.3 s less per view, also when filtered by business unit or tag): the "Made

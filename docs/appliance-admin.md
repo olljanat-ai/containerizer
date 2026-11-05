@@ -343,7 +343,9 @@ last upgrade or roll back with its outcome, and checks GHCR for newer releases.
   for an OS upgrade. A minor or major release is always an OS upgrade, and the app update is not used any more
   on its new OS (it was built for the previous series). **Remove the app update** on the System page goes back to
   the OS image's own code; a roll back to a snapshot removes it too. Appliances whose OS image predates app
-  updates (0.11.x and older) take one OS upgrade first.
+  updates (0.11.x and older) take one OS upgrade first. A patch release's OS image is its series' `vX.Y.0` image
+  (the release workflow does not build the OS for a patch release), so an appliance of another series that
+  upgrades to 0.12.3, say, runs 0.12.0 after the restart and then lists 0.12.3 as an app update.
 - **Automatic fallback**: after an upgrade the boot assessment checks that the firewall is loaded and
   the DNS filter, Docker and k3s run and the application starts. If that fails 5 times, the appliance
   restarts into the previous snapshot, and the System page shows the upgrade as failed.
