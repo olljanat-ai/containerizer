@@ -808,7 +808,11 @@ def lint_manifests(docs: list[dict], where: str = "", provided: set[str] | None 
 
 
 def _looks_like_path(v: str) -> bool:
-    return v.startswith(("/", "FILE:", "file:")) or v.lower() in ("true", "false")
+    """A file or folder, a flag, or an embedded database file on a volume ("Data Source=/data/app.db",
+    generate.state_plan): no secret in it."""
+    return (v.startswith(("/", "FILE:", "file:")) or v.lower() in ("true", "false")
+            or bool(re.fullmatch(r"(Data\s*Source|DataSource|Filename)\s*=\s*/[\w\-./]+(\s*;\s*(Cache|Mode|Pooling|"
+                                 r"Foreign\s*Keys|Connection)\s*=\s*\w+)*\s*;?", v, re.I)))
 
 
 def _selects(selector: dict, labels: dict) -> bool:
