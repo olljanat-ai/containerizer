@@ -908,6 +908,34 @@ def _scan_again(app: dict, ctx: dict | None) -> str:
     return section(app, ctx or {}, excluded)
 
 
+def _lab_needs(app: dict, ctx: dict | None) -> str:
+    """What the application needs from the sandbox lab (labservices.py) and whether the lab gives it: from the
+    latest organization scan (cz.vSandboxDeploy LabServices). A service turned off names the components that run
+    without it (they keep their own settings, and often stop)."""
+    from .migrationplan import lab_report
+    from .labservices import SERVICES
+    rep = lab_report(app.get("deploys"))
+    needed = rep.get("needed") or {}
+    if not needed:
+        return ""
+    title = lambda x: SERVICES[x].title if x in SERVICES else x          # noqa: E731
+    on = [title(x) for x in rep.get("provided") or [] if x in needed]
+    off = [x for x in rep.get("missing") or [] if x in needed]
+    parts = []
+    if on:
+        parts.append(f"<span class='st st-ok'>provided</span> {e(', '.join(on))}")
+    if off:
+        comps = sorted({c for x in off for c in needed.get(x) or []})
+        where = ("<a href='/admin/lab-services'>Admin → Lab services</a>" if (ctx or {}).get("lab_admin")
+                 else "Admin → Lab services (administrators)")
+        parts.append(f"<span class='st st-bad'>turned off</span> {e(', '.join(title(x) for x in off))}: "
+                     f"{e(', '.join(comps))} run{'s' if len(comps) == 1 else ''} without "
+                     f"{'it' if len(off) == 1 else 'them'} (their own settings). Turn {'it' if len(off) == 1 else 'them'} "
+                     f"on under {where}; the next scan points the app at {'it' if len(off) == 1 else 'them'}.")
+    return ("<p class='lab-needs small'><span class='label'>Lab services</span> Needs in the sandbox: "
+            + "; ".join(parts) + " <a href='https://containerizer.eu/lab-services/'>About lab services</a></p>")
+
+
 def _in_sandbox(app: dict) -> str:
     """What of the application runs in the sandbox by its latest check, with the link to open, at the top of its page."""
     from .sandbox import URL_RE, main_url
@@ -995,7 +1023,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 <p class='crumbs'>{crumbs}</p>{_admin_links_html(refactor.get("admin_links"))}
 <header class='app'>{badge(r, True)}<div><h1>{e(app['ApplicationName'])}</h1>
 <p class='lead'><b>{e(RATING_TITLE.get(r, ''))}</b>: {e(RATING_TEXT.get(r, ''))}</p>
-{f"<p>{e(app['Description'])}</p>" if app.get('Description') else ''}<p>{e(app['Summary'])}</p>{rating_why(app)[0]}{_in_sandbox(app)}</div></header>
+{f"<p>{e(app['Description'])}</p>" if app.get('Description') else ''}<p>{e(app['Summary'])}</p>{rating_why(app)[0]}{_in_sandbox(app)}{_lab_needs(app, refactor)}</div></header>
 <div class='tiles'>
 <div class='tile'><div class='label'>Readiness</div><div class='value'>{int(app['Score'])}<span class='unit'>/100</span></div></div>
 <div class='tile'><div class='label'>Confidence</div><div class='value'>{_confidence(app['Confidence'])}</div>
@@ -1158,8 +1186,15 @@ def _sandbox(s: dict | None) -> str:
 
 
 def _sandbox_cell(x: dict) -> str:
-    """The Components table's Sandbox cluster cell (migrationplan.sandbox_state): the check's result, "deployed,
-    not checked yet" when the latest organization scan deployed it and no check has a result, or not deployed."""
+    """The Components table's Sandbox cluster cell (migrationplan.sandbox_state), and the lab services it needs
+    that are turned off."""
+    from .migrationplan import lab_off_html
+    return _sandbox_cell_state(x) + lab_off_html(x)
+
+
+def _sandbox_cell_state(x: dict) -> str:
+    """The check's result, "deployed, not checked yet" when the latest organization scan deployed it and no check
+    has a result, or not deployed."""
     if x["state"] == "checked" or x.get("check"):
         return _sandbox(x["check"])
     if x["state"] == "deployed":
@@ -1634,6 +1669,7 @@ def make_handler(connect, admin=None):
                             if s and (s.admin or s.operator):                   # may scan it again (scanagain.py)
                                 ctx.update(scan_again_ctx(admin, app))
                                 ctx["scan_csrf"] = admin._csrf(s)
+                            ctx["lab_admin"] = bool(s and s.admin)              # may turn lab services on
                             ctx["scan_notice"] = parse_qs(u.query).get("scanagain", [""])[0]
                             if s and (s.admin or s.operator or s.scopes):
                                 ctx["admin_links"] = admin_links(admin, conn, s, app)

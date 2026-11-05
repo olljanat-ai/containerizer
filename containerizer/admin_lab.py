@@ -50,9 +50,17 @@ def needs_off(conn) -> dict[str, list[str]]:
             lab = (json.loads(r["LastDetail"]) or {}).get("lab_services") or {}
         except ValueError:
             continue
-        for svc in lab.get("missing") or []:
-            if svc in L.SERVICES:
-                out.setdefault(svc, set()).add(r["AppName"] or "?")
+        try:
+            apps = (json.loads(r["LastDetail"]) or {}).get("apps") or []
+        except ValueError:
+            apps = []
+        # a repository split into applications: each one by its own name (before 0.16.1 only the whole repository)
+        per = [((x.get("app") or x.get("folder") or "?"), x.get("lab_services") or {}) for x in apps
+               if isinstance(x, dict) and x.get("lab_services")] or [(r["AppName"] or "?", lab)]
+        for name, rep in per:
+            for svc in rep.get("missing") or []:
+                if svc in L.SERVICES:
+                    out.setdefault(svc, set()).add(name)
     return {k: sorted(v) for k, v in out.items()}
 
 

@@ -1037,12 +1037,32 @@ def suggest_split(src: Path, limit: int = 20000) -> dict:
     return best
 
 
+def merge_lab_services(reports: list) -> dict:
+    """The lab services of a repository split into applications: what any of them needs, was given or went
+    without (Admin -> Lab services lists the applications that need a service that is off; each application's
+    own report stays in LastDetail apps[].lab_services)."""
+    needed: dict[str, set] = {}
+    provided, missing = set(), set()
+    for r in reports:
+        r = r or {}
+        for svc, comps in (r.get("needed") or {}).items():
+            needed.setdefault(svc, set()).update(comps or [])
+        provided.update(r.get("provided") or [])
+        missing.update(r.get("missing") or [])
+    if not (needed or provided or missing):
+        return {}
+    return {"needed": {k: sorted(v) for k, v in sorted(needed.items())}, "provided": sorted(provided),
+            "missing": sorted(missing)}
+
+
 def combine_split(res: RepoResult, subs: list, pattern: str) -> RepoResult:
     """The repository's result from its applications: deployed when one is, the best rating, every component."""
     order = "ABCDE"
     res.apps = [{"folder": f, "app": s.app, "status": s.status, "reason": s.reason, "rating": s.rating,
-                 "path": s.path, "source_key": s.source_key, "components": [c["component"] for c in s.components]}
+                 "path": s.path, "source_key": s.source_key, "components": [c["component"] for c in s.components],
+                 "lab_services": s.lab_services or {}}
                 for f, s in subs]
+    res.lab_services = merge_lab_services([s.lab_services for _, s in subs])
     res.components = [{**c, "application": f} for f, s in subs for c in s.components]
     res.excluded = [{**x, "component": f"{f}: {x.get('component', '')}"} for f, s in subs for x in s.excluded]
     statuses = [s.status for _, s in subs]

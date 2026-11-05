@@ -14,6 +14,12 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   (the end of the image build's log, the lint errors, or the errors and log of the hardened run) under its
   reason, and administrators and operators get **Try again**: a full scan of only this application's repository,
   with its state on the page until it is done (`cz.vSandboxDeploy` has the new column `Detail`).
+- Results page: **Lab services** at the top says what the application needs in the sandbox lab, what the lab
+  provides and what is turned off, with the components that run without it; the Sandbox column marks those
+  components (`cz.vSandboxDeploy` has the new column `LabServices`).
+- Lab services of a repository split into applications (such as containerization-challenge) were dropped from
+  the scan's record: Admin -> Lab services did not list those applications under "Needed but off". Each
+  application's are now kept, and the list names them.
 - Sandbox check: a component that fails and needs a lab service the lab has turned off is diagnosed as such
   ("It needs RabbitMQ, which the lab has turned off"), before the cluster-setting guesses. The lab's control-tower
   CarrierGateway stopped without RabbitMQ and was put down to a missing secret.

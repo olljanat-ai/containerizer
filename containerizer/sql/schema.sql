@@ -2398,7 +2398,8 @@ GO
 CREATE OR ALTER VIEW [${schema}].vSandboxDeploy AS
 SELECT a.ApplicationId, a.SandboxEnabled, r.ScannedAt,
        CASE WHEN r.SplitPath IS NULL THEN r.LastStatus ELSE s.status END AS ScanStatus,
-       d.Kind, d.ComponentName, d.ProjectPath, d.Reason, d.Detail
+       d.Kind, d.ComponentName, d.ProjectPath, d.Reason, d.Detail,
+       CASE WHEN r.SplitPath IS NULL THEN JSON_QUERY(r.Detail, '$$.lab_services') ELSE s.lab END AS LabServices
 FROM [${schema}].Application a
 OUTER APPLY (SELECT TOP (1) o.LastStatus, o.LastScannedAt AS ScannedAt, o.SplitPath,
                     CASE WHEN ISJSON(o.LastDetail) = 1 THEN o.LastDetail END AS Detail
@@ -2406,8 +2407,8 @@ OUTER APPLY (SELECT TOP (1) o.LastStatus, o.LastScannedAt AS ScannedAt, o.SplitP
              WHERE o.RepositoryUrl = a.RepositoryUrl AND o.RemovedAt IS NULL AND o.LastScannedAt IS NOT NULL
                AND (o.SplitPath IS NOT NULL OR a.SourcePath IS NULL OR a.SourcePath IN (N'', N'.'))
              ORDER BY o.LastScannedAt DESC, o.RepositoryId DESC) r
-OUTER APPLY (SELECT TOP (1) j.status, j.folder FROM OPENJSON(CASE WHEN r.SplitPath IS NOT NULL THEN r.Detail END, '$$.apps')
-             WITH (source_key nvarchar(400), status nvarchar(40), folder nvarchar(400)) j
+OUTER APPLY (SELECT TOP (1) j.status, j.folder, j.lab FROM OPENJSON(CASE WHEN r.SplitPath IS NOT NULL THEN r.Detail END, '$$.apps')
+             WITH (source_key nvarchar(400), status nvarchar(40), folder nvarchar(400), lab nvarchar(max) '$$.lab_services' AS JSON) j
              WHERE j.source_key = a.SourceKey) s
 OUTER APPLY (
     SELECT N'deployed' AS Kind, j.component AS ComponentName, j.project AS ProjectPath, CAST(NULL AS nvarchar(1000)) AS Reason,

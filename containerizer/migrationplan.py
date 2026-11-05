@@ -17,6 +17,7 @@ Everything here is a pure function of webui.load_application's data (plus vSandb
 from __future__ import annotations
 
 import html
+import json
 import re
 from types import SimpleNamespace
 
@@ -34,7 +35,8 @@ def load_deploys(conn, app_id: int) -> list[dict] | None:
     None before that schema (the page then knows only the sandbox checks)."""
     try:
         cur = conn.cursor(as_dict=True)
-        cur.execute("SELECT SandboxEnabled, ScanStatus, ScannedAt, Kind, ComponentName, ProjectPath, Reason, Detail "
+        cur.execute("SELECT SandboxEnabled, ScanStatus, ScannedAt, Kind, ComponentName, ProjectPath, Reason, Detail, "
+                    "LabServices "
                     "FROM cz.vSandboxDeploy WHERE ApplicationId = %s", (app_id,))
         return cur.fetchall()
     except Exception:  # noqa: BLE001 - a database from before schema 39
@@ -85,7 +87,41 @@ def count_ready(comps: list[dict], state: dict) -> tuple[int, int]:
     return sum(1 for c in plan if ready_now(c, state)), len(plan)
 
 
+def lab_report(deploys: list[dict] | None) -> dict:
+    """The application's lab services from its latest organization scan ({needed: {service: [component]},
+    provided, missing}), or {}."""
+    raw = next((d.get("LabServices") for d in deploys or [] if d.get("LabServices")), None)
+    try:
+        rep = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except ValueError:
+        return {}
+    return rep if isinstance(rep, dict) else {}
+
+
+def lab_off(c: dict, deploys: list[dict] | None) -> list[str]:
+    """The lab services this component needs and the lab has turned off."""
+    rep = lab_report(deploys)
+    needed = rep.get("needed") or {}
+    names = {c.get("ComponentName"), c.get("Name")} - {None}
+    return [x for x in rep.get("missing") or [] if names & set(needed.get(x) or [])]
+
+
+def lab_off_html(sb: dict) -> str:
+    if not sb.get("lab_off"):
+        return ""
+    from .labservices import SERVICES
+    names = ", ".join(SERVICES[x].title if x in SERVICES else x for x in sb["lab_off"])
+    return f"<div class='small lab-off'>needs {e(names)}: turned off in the lab</div>"
+
+
 def sandbox_state(c: dict, checks: dict, deploys: list[dict] | None) -> dict:
+    """sandbox_state_of, with the lab services the component needs that are turned off (lab_off)."""
+    st = sandbox_state_of(c, checks, deploys)
+    off = lab_off(c, deploys)
+    return {**st, "lab_off": off} if off else st
+
+
+def sandbox_state_of(c: dict, checks: dict, deploys: list[dict] | None) -> dict:
     """Is the component in the sandbox? {state, text, check}: state 'checked' (a sandbox check has a result for it),
     'deployed' (the latest organization scan put it in the output repository, no check result yet), 'off' (the
     application's sandbox switch is off), 'excluded' (the scan left it out: reason), 'none' (not deployed), or
@@ -240,6 +276,10 @@ def _rated(r: str | None) -> str:
 
 
 def _sandbox_html(sb: dict) -> str:
+    return _sandbox_html_state(sb) + lab_off_html(sb)
+
+
+def _sandbox_html_state(sb: dict) -> str:
     from .webui import SANDBOX_TEXT, _app_url
     if sb["state"] == "checked":       # the status, and the URL as a short link (the Components table has it in full)
         s = sb["check"]
@@ -392,6 +432,7 @@ def section(app: dict, ctx: dict | None = None, refactoring_box: bool = False) -
 
 
 CSS = """
+.lab-off{color:#8a5a00}@media (prefers-color-scheme:dark){.lab-off{color:#ffc857}}.lab-needs{margin:6px 0}
 .gate-detail summary{cursor:pointer}.gate-detail pre{white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto;font-size:12px;margin:4px 0;min-width:340px;max-width:560px}
 .scan-again{margin:8px 0}.scan-again form.inline{display:inline}
 section.plan .plan-sum{font-size:16px;margin:8px 0 4px}section.plan .plan-rating{margin:6px 0}

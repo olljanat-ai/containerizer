@@ -33,8 +33,17 @@ Administrators turn each service on or off under **Admin → Lab services**, wit
 history. A service that is on starts only when the first app asks for it, so a service nobody uses costs
 nothing. Turning off a service that apps use takes it from them at once (the page asks first), and the
 next scan generates them without it. **Needed but off** lists the apps whose latest scan found that they
-need a service that is off, and the repository's page shows the same warning: turn the service on, then
-scan again.
+need a service that is off (each application of a repository split into several, since 0.16.1), and the
+repository's page shows the same warning: turn the service on, then scan again.
+
+Everyone sees it on the application's results page too: **Lab services** at the top lists what the application
+needs in the sandbox, what the lab provides and what is turned off, with the components that run without it
+(they keep their own settings, and an app without its message broker or database often just stops). The
+Sandbox column marks those components ("needs RabbitMQ: turned off in the lab"), and the sandbox check of a
+component that fails says first that it needs a service the lab has turned off.
+
+![The top of an application's results page: Lab services, SQL Server provided, RabbitMQ and SFTP turned off, and the Sandbox column marking the components that need them](images/results-lab-services.png#only-light){ .cz-shot }
+![The top of an application's results page: Lab services, SQL Server provided, RabbitMQ and SFTP turned off, and the Sandbox column marking the components that need them](images/results-lab-services-dark.png#only-dark){ .cz-shot }
 
 ## What the scan changes in an app
 

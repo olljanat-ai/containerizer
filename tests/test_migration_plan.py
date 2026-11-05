@@ -1,5 +1,6 @@
 """The results page's Migration plan (migrationplan.py), the Sandbox cluster column of the Components table and the
 front page's "ready now" marker. No SQL Server needed (vSandboxDeploy on SQL Server: test_sqlstore.py)."""
+import json
 import re
 from datetime import datetime
 from types import SimpleNamespace
@@ -107,7 +108,7 @@ def test_build_failure_keeps_a_ready_component_out_of_wave_1():
 
 def test_section_on_the_page():
     html = webui.render_application(loans())
-    assert html.index("Main obstacles") < html.index("Migration plan") < html.index("<h2>Components</h2>")
+    assert html.index("Main obstacles") < html.index("Migration plan") < html.index("<h2 id='components'>Components</h2>")
     sec = _plan_html(html)
     assert "2 of 6 components can run in Linux containers now; 1 more after code changes; 3 stay on Windows." in sec
     assert "Wave 1, now" in sec and "to Kubernetes" in sec and "Wave 2, after code changes" in sec
@@ -195,7 +196,7 @@ def test_components_table_sandbox_column():
     app = loans(sandbox=[])                 # deployed by the scan, no check has a result yet
     html = webui.render_application(app)
     assert "<th>Sandbox cluster</th>" in html
-    table = html[html.index("<h2>Components</h2>"):html.index("What needs to change")]
+    table = html[html.index("<h2 id='components'>Components</h2>"):html.index("What needs to change")]
     assert table.count("deployed, not checked yet") == 2
     assert "title='keeps local state'>not deployed</span>" in table
     # nothing deployed and no check: no column
@@ -339,3 +340,54 @@ def test_what_failed_is_shown_for_a_component_the_gate_left_out():
     for html in (mp._sandbox_html(sb), webui._sandbox_cell(sb)):
         assert "<summary>What failed</summary>" in html and "npm ERR! &lt;404&gt;" in html
     assert "What failed" not in webui._sandbox_cell(mp.sandbox_state(c, {}, [{**deploys[0], "Detail": None}]))
+
+
+def test_the_lab_services_the_application_needs_are_on_its_page():
+    """control-tower: RabbitMQ and SFTP needed and turned off, SQL Server provided. The page says so at the top,
+    and the Sandbox cells of the components that run without them say which."""
+    lab = json.dumps({"needed": {"sqlserver": ["CustomerPortal", "Documents"], "rabbitmq": ["Documents"],
+                                 "sftp": ["Documents", "LoanTape"]},
+                      "provided": ["sqlserver"], "missing": ["rabbitmq", "sftp"]})
+    app = loans()
+    app["deploys"] = [{**d, "LabServices": lab} for d in app["deploys"]]
+    html = webui.render_application(app, "", {"lab_admin": True})
+    top = html[html.index("class='lab-needs"):]
+    top = top[:top.index("</p>")]
+    assert "<span class='st st-ok'>provided</span> SQL Server" in top
+    assert "<span class='st st-bad'>turned off</span> RabbitMQ, SFTP: Documents, LoanTape run without them" in top
+    assert "href='/admin/lab-services'" in top
+    assert "href='/admin/lab-services'" not in webui.render_application(app, "", {})
+    assert "needs RabbitMQ, SFTP: turned off in the lab" in html and "needs SFTP: turned off in the lab" in html
+    assert "class='lab-needs" not in webui.render_application(loans())
+
+
+def test_a_split_repository_keeps_each_applications_lab_services():
+    from containerizer.org import merge_lab_services
+    a = {"needed": {"sqlserver": ["A.Api"], "rabbitmq": ["A.Api"]}, "provided": ["sqlserver"], "missing": ["rabbitmq"]}
+    b = {"needed": {"sftp": ["B.Jobs"]}, "provided": [], "missing": ["sftp"]}
+    assert merge_lab_services([a, b, {}]) == {"needed": {"rabbitmq": ["A.Api"], "sftp": ["B.Jobs"], "sqlserver": ["A.Api"]},
+                                              "provided": ["sqlserver"], "missing": ["rabbitmq", "sftp"]}
+    assert merge_lab_services([{}, None]) == {}
+
+
+def test_admin_lab_services_names_each_application_of_a_split_repository():
+    from containerizer import admin_lab
+
+    class Cur:
+        def execute(self, *a):
+            pass
+
+        def fetchall(self):
+            return [{"AppName": "containerization-challenge", "LastDetail": json.dumps({
+                "lab_services": {"missing": ["rabbitmq", "sftp"]},
+                "apps": [{"app": "containerization-challenge-control-tower",
+                          "lab_services": {"missing": ["rabbitmq", "sftp"]}},
+                         {"app": "containerization-challenge-expense-claims", "lab_services": {"missing": []}},
+                         {"app": "containerization-challenge-trade-rebates"}]})},
+                    {"AppName": "shop", "LastDetail": json.dumps({"lab_services": {"missing": ["rabbitmq"]}})}]
+
+    class Conn:
+        def cursor(self, as_dict=False):
+            return Cur()
+    assert admin_lab.needs_off(Conn()) == {"rabbitmq": ["containerization-challenge-control-tower", "shop"],
+                                           "sftp": ["containerization-challenge-control-tower"]}
