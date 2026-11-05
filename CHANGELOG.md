@@ -8,8 +8,10 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## Unreleased
+## 0.13.0 (2026-11-05)
 
+- A minor release with the installer ISO and the disk images, for new appliances (physical servers too) with
+  everything since 0.12.0. Appliances on 0.12.x install it as an OS upgrade (a restart), not as an app update.
 - Appliance: a static address from the console, `python -m containerizer.sysagent network static <address/prefix>
   <gateway> <dns> [...]` (also `network show` and `network dhcp`): checked, applied at once without a restart, and
   kept over restarts and upgrades; the DNS filter and the HTTPS certificate follow. Before, a static address
