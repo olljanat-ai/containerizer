@@ -282,7 +282,7 @@ def test_secret_placeholders_are_not_secrets(tmp_path):
         write(tmp_path, "src/Web/appsettings.json", '{"ApiKey": "%s"}' % value)
         assert sev(assess(tmp_path).components[0], "secrets-in-config") is None, value
     write(tmp_path, "src/Web/appsettings.json", '{"ApiKey": "9f8e7d6c5b4a"}')
-    assert sev(assess(tmp_path).components[0], "secrets-in-config") == "config"
+    assert sev(assess(tmp_path).components[0], "secrets-in-config") == "info"        # reported, nothing to change
 
 
 # ------------------------------------------------------------------ 12 winrt tfm

@@ -1324,3 +1324,44 @@ def test_an_answer_that_adds_an_aspnetcore_framework_package_does_not_add_it(tmp
     changes, errors = rf.apply_answer(app, answer, ["src/Api/Program.cs"], "src/Api/Api.csproj")
     assert errors == [] and [c["detail"] for c in changes] == ["add Polly 7.2.4"]
     assert "HttpOverrides" not in proj.read_text()
+
+
+def test_the_target_framework_is_kept(tmp_path):
+    """Order #207 of the lab (retail-backoffice, a local 30B model): the LLM moved net6.0, net5.0 and netcoreapp3.1
+    projects to net10.0. A shared library then gave them other package versions (Gateway: FluentValidation 10
+    against Ocelot's 9) and what built and ran before did not. The framework is put back; a .NET Framework or a
+    -windows project, which a port finding may move, is left as the LLM changed it."""
+    def proj(rel, tfm, multi=False):
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        el = "TargetFrameworks" if multi else "TargetFramework"
+        f.write_text(f'<Project Sdk="Microsoft.NET.Sdk">\n  <PropertyGroup>\n    <{el}>{tfm}</{el}>\n'
+                     f'  </PropertyGroup>\n</Project>\n')
+        return f
+    gw = proj("src/Gateway/Gateway.csproj", "netcoreapp3.1")
+    inv = proj("src/Inventory/Inventory.csproj", "net5.0")
+    bb = proj("src/BuildingBlocks/BuildingBlocks.csproj", "netcoreapp3.1;net5.0;net6.0", multi=True)
+    old = proj("src/Legacy/Legacy.csproj", "net48")
+    win = proj("src/Desk/Desk.csproj", "net8.0-windows")
+    proj("src/Gateway/obj/x.csproj", "net5.0")                              # build output: not looked at
+    before = rf.target_frameworks(tmp_path)
+    assert "src/Gateway/obj/x.csproj" not in before
+    for f, a, b in ((gw, "netcoreapp3.1", "net10.0"), (inv, "net5.0", "net10.0"), (old, "net48", "net10.0"),
+                    (win, "net8.0-windows", "net8.0"), (bb, "netcoreapp3.1;net5.0;net6.0", "net10.0")):
+        f.write_text(f.read_text().replace(a, b) + "<!-- other edit -->\n")
+    kept = rf.keep_target_frameworks(tmp_path, before)
+    assert sorted(kept) == ["src/BuildingBlocks/BuildingBlocks.csproj", "src/Gateway/Gateway.csproj",
+                            "src/Inventory/Inventory.csproj"]
+    assert "<TargetFramework>netcoreapp3.1</TargetFramework>" in gw.read_text() and "other edit" in gw.read_text()
+    assert "<TargetFrameworks>netcoreapp3.1;net5.0;net6.0</TargetFrameworks>" in bb.read_text()
+    assert "net10.0" in old.read_text() and "<TargetFramework>net8.0</TargetFramework>" in win.read_text()
+    assert rf.keep_target_frameworks(tmp_path, rf.target_frameworks(tmp_path)) == []
+
+
+def test_an_out_of_support_dotnet_is_not_sent_to_the_llm():
+    comps = [{"name": "Api", "project": "src/Api/Api.csproj", "findings": [
+        {"id": "core-eol", "severity": "config", "title": "Out-of-support .NET runtime", "fix": "Nothing to change",
+         "evidence": ["src/Api/Api.csproj:3: <TargetFramework>net6.0</TargetFramework>"]}]}]
+    tasks, skipped = rf.plan_tasks(comps, include_config=True)
+    assert tasks == [] and skipped[0]["rule"] == "core-eol" and "nothing to change in code" in skipped[0]["reason"]
+    assert "Never change a project's target framework" in rf.INSTRUCTIONS

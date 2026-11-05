@@ -90,11 +90,70 @@ def keeps_windows(fix: str) -> bool:
     return bool(KEEP_ON_WINDOWS.search(" ".join(str(fix or "").split())))
 
 
+# findings that a container settles without a code change: never sent to the LLM (core-eol: an out-of-support
+# .NET Core / .NET 5-7 app runs as it is, rolled forward; retargeting it is an upgrade, not a containerization)
+NO_CODE_CHANGE = frozenset({"core-eol", "secrets-in-config"})
+
+# project files whose target framework a refactoring keeps (keep_target_frameworks)
+PROJECT_FILES = ("*.csproj", "*.vbproj", "*.fsproj", "Directory.Build.props")
+TFM_ELEMENT = re.compile(r"<(TargetFrameworks?)>([^<]*)</\1>")
+# .NET Framework and Windows-only targets: a port away from them is what some findings ask for
+NETFX_OR_WINDOWS = re.compile(r"^(net[1-4]\d{1,2}|v\d\.\d.*|net\d+\.\d+-windows.*)$", re.I)
+
+
+def target_frameworks(app_root: Path) -> dict[str, list[str]]:
+    """{project file (relative): [its TargetFramework(s) element texts]} of the application."""
+    out: dict[str, list[str]] = {}
+    for pat in PROJECT_FILES:
+        for f in app_root.rglob(pat):
+            if any(part in ("bin", "obj", "node_modules") for part in f.relative_to(app_root).parts):
+                continue
+            try:
+                out[f.relative_to(app_root).as_posix()] = [m.group(0) for m in TFM_ELEMENT.finditer(f.read_text(
+                    encoding="utf-8-sig", errors="replace"))]
+            except OSError:
+                pass
+    return out
+
+
+def keep_target_frameworks(app_root: Path, before: dict[str, list[str]]) -> list[str]:
+    """Puts back the target framework of each project the edits retargeted, unless it targeted .NET Framework or a
+    -windows framework (a port the findings may ask for). A .NET Core / .NET 5+ project keeps its framework: it
+    runs in a Linux container as it is (rolled forward when out of support), and moving it to a newer .NET
+    changes its packages (a shared library's per-framework package versions) and breaks what worked. Returns
+    the project files put back."""
+    kept = []
+    for rel, old in before.items():
+        if not old:
+            continue
+        f = app_root / rel
+        try:
+            raw = f.read_bytes()
+        except OSError:
+            continue
+        text = raw.decode("utf-8-sig", errors="replace")
+        now = [m.group(0) for m in TFM_ELEMENT.finditer(text)]
+        if now == old:
+            continue
+        old_tfms = [t.strip() for el in old for t in TFM_ELEMENT.match(el).group(2).split(";") if t.strip()]
+        if any(NETFX_OR_WINDOWS.match(t) for t in old_tfms):
+            continue
+        if len(now) != len(old):
+            continue                    # elements added or removed: not a plain retarget, left to the verification
+        for a, b in zip(now, old):
+            text = text.replace(a, b, 1)
+        f.write_bytes((b"\xef\xbb\xbf" if raw.startswith(b"\xef\xbb\xbf") else b"") + text.encode("utf-8"))
+        kept.append(rel)
+    return kept
+
+
 def skip_reason(f: dict) -> str | None:
     """Why a finding is not sent to the LLM (None: it is)."""
     sev = f.get("severity")
     if f.get("dormant"):
         return "dormant: library code the component never reaches"
+    if f.get("id") in NO_CODE_CHANGE:
+        return "nothing to change in code: the container runs the application on the framework it targets"
     if sev in ("blocker", "rewrite"):
         return f"severity {sev}: a port or a component that stays on Windows, not a targeted change"
     if sev not in ELIGIBLE:
@@ -623,6 +682,10 @@ INSTRUCTIONS = """Rules for your answer:
 - "notes": one or two sentences for the reviewer (what to configure, what to test).
 - Use only APIs that exist in the component's target framework and packages (for example no .NET 9 API in a
   net6.0 project, even when the Fix names one: then use the older equivalent).
+- Never change a project's target framework (TargetFramework, TargetFrameworks), its SDK or the versions of the
+  packages it already uses: the application runs in the container on the framework it targets today, even an
+  out-of-support one, and upgrading it is a separate project. Only a finding that is itself about the target
+  framework (a .NET Framework port, a -windows framework) may change it.
 - Never remove functionality, never disable security checks, never add secrets or passwords to code.
 - If unsure, change less and explain in not_fixed."""
 
@@ -1703,6 +1766,7 @@ def generate(payload: dict, tasks: list[dict], app_root: Path, ask, limit: int, 
     changes_all: list[dict] = []
     calls = 0
     deadline = _deadline(payload.get("deadline"))
+    tfms_before = target_frameworks(app_root)
     for n, t in enumerate(tasks, 1):
         rows = [{"rule": f["rule"], "title": f["title"], "severity": f["severity"], "component": f["component"],
                  "file": t["file"], "status": "not-fixed", "reason": ""} for f in t["findings"]]
@@ -1780,6 +1844,11 @@ def generate(payload: dict, tasks: list[dict], app_root: Path, ask, limit: int, 
     for c in changes_all:
         if c["kind"] == "package-manual":
             notes.append(f"package change to make by hand in {c['file'] or 'the project'}: {c['detail']}")
+    kept = keep_target_frameworks(app_root, tfms_before)
+    if kept:
+        notes.append("kept the target framework of " + ", ".join(kept) + ": the LLM changed it, but a container runs "
+                     "the application on the framework it targets (an upgrade is a separate project)")
+        log("refactoring: kept the target framework of " + ", ".join(kept))
     return findings, calls, changes_all, notes
 
 
