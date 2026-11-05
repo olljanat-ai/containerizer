@@ -103,9 +103,16 @@ jobs:
             appliance/ci/patch-release-check.sh "$GITHUB_REF_NAME"
             echo "version=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
             echo "release=true" >> "$GITHUB_OUTPUT"
+            # a patch release (Z > 0) ships the app update only: no installer or disk images (those of vX.Y.0 install
+            # the same OS); the OS image is still pushed, for appliances of another series that upgrade to it
+            if [[ "$GITHUB_REF_NAME" =~ \.0$ ]]; then echo "patch=false" >> "$GITHUB_OUTPUT"; else
+              echo "patch=true" >> "$GITHUB_OUTPUT"
+              echo "series_base=$(sed -E 's/\.[0-9]+$/.0/' <<< "$GITHUB_REF_NAME")" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "version=ci-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
             echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "patch=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Free disk space
@@ -153,6 +160,7 @@ jobs:
           test "$(docker run --rm --entrypoint cat containerizer-appliance:build /usr/lib/containerizer/requirements.sha256)" = "$lock"
 
       - name: Tools
+        if: steps.v.outputs.patch != 'true' || inputs.boot_test
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils ovmf zstd expect
@@ -161,6 +169,7 @@ jobs:
           ls -l /dev/kvm
 
       - name: Disk images and ISO
+        if: steps.v.outputs.patch != 'true' || inputs.boot_test
         env:
           V: ${{ steps.v.outputs.version }}
         run: |
@@ -247,7 +256,7 @@ jobs:
           done
 
       - name: Release assets
-        if: steps.v.outputs.release == 'true'
+        if: steps.v.outputs.release == 'true' && steps.v.outputs.patch != 'true'
         env:
           V: ${{ steps.v.outputs.version }}
         run: |
@@ -261,7 +270,7 @@ jobs:
           ls -la
 
       - name: GitHub release
-        if: steps.v.outputs.release == 'true'
+        if: steps.v.outputs.release == 'true' && steps.v.outputs.patch != 'true'
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
@@ -280,3 +289,19 @@ jobs:
             build/containerizer-${{ steps.v.outputs.version }}.qcow2
             build/SHA256SUMS
             build/SHA256SUMS.sigstore.json
+
+      - name: "GitHub release (patch release: the app update only)"
+        if: steps.v.outputs.release == 'true' && steps.v.outputs.patch == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: |
+            A patch release: appliances of this series install it as an app update from **Admin → System**
+            (`${{ env.APP_IMAGE }}:${{ steps.v.outputs.version }}`, `${{ steps.push.outputs.app_digest }}`): only their
+            containerizer services restart, the OS does not. Appliances of an earlier series upgrade to the appliance
+            image `${{ env.IMAGE }}:${{ steps.v.outputs.version }}` (`${{ steps.push.outputs.digest }}`), both signed with
+            cosign by this repository's release workflow.
+
+            No installer or disk images: install a new appliance from
+            [${{ steps.v.outputs.series_base }}](https://github.com/${{ github.repository }}/releases/tag/${{ steps.v.outputs.series_base }}),
+            which has the same OS, and it updates itself to this release.

@@ -21,7 +21,9 @@ appliance runs and how to operate it is in [Running the appliance](appliance-adm
 
 ## Install
 
-Every [release](https://github.com/olljanat-ai/containerizer/releases) has:
+Every minor or major [release](https://github.com/olljanat-ai/containerizer/releases) (`vX.Y.0`) has the files
+below. A patch release (`vX.Y.Z`, Z > 0) has none: it is an app update that appliances of its series install
+from **Admin → System**, so install a new appliance from the series' `vX.Y.0` and let it update itself.
 
 | File | For |
 | --- | --- |

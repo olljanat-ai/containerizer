@@ -10,6 +10,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- Patch releases (`vX.Y.Z`, Z > 0) publish only the app update and the appliance image, no ISO, qcow2 or
+  checksums (built for nothing: the series' `vX.Y.0` has the same OS); the release workflow is faster for them.
 - SQL Server connections name their part of Containerizer (`program_name`): `containerizer-web`, `containerizer-worker`,
   `containerizer-llm-queue`, `containerizer-db`, `containerizer-sysagent`, `containerizer-labagent` or
   `containerizer-<command>`, instead of `containerizer` for all of them; `Application Name=` in the connection
