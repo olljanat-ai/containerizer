@@ -47,9 +47,28 @@ def _external_links(html, site):
     return EXTERNAL_A.sub(add, html)
 
 
+def _esc(text):
+    return (str(text or "").replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _preview(page, config):
+    """Open Graph and Twitter card tags: a link pasted into an e-mail, Teams or Slack shows "Containerizer" (the
+    front page) or "<page> - Containerizer" and the page's description, rather than whatever the client guesses."""
+    site = config.get("site_name") or ""
+    title = site if page.is_homepage else f"{page.title} - {site}"
+    desc = (page.meta or {}).get("description") or config.get("site_description") or ""
+    url = (config.get("site_url") or "").rstrip("/") + "/" + (page.url or "")
+    tags = [("property", "og:type", "website"), ("property", "og:site_name", site), ("property", "og:title", title),
+            ("property", "og:description", desc), ("property", "og:url", url),
+            ("name", "twitter:card", "summary"), ("name", "twitter:title", title),
+            ("name", "twitter:description", desc)]
+    return "".join(f'<meta {k}="{n}" content="{_esc(v)}">' for k, n, v in tags if v)
+
+
 def on_post_page(output, page, config):
     # Material shows the site name in the header as plain text; make it a link to the front page.
     home = page.url.count("/") * "../" or "./"
+    output = output.replace("</head>", _preview(page, config) + "</head>", 1)
     output = _external_links(output, (config.get("site_url") or "").rstrip("/"))
     return HEADER_NAME.sub(lambda m: f'{m.group(1)}<a href="{home}" class="cz-home-link">{m.group(2)}</a>{m.group(3)}',
                            output, count=1)
