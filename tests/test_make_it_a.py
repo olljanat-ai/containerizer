@@ -815,9 +815,9 @@ def test_housekeep_records_the_removal(monkeypatch, tmp_path):
     def away():
         raise RuntimeError("db away")
     r = lq.Runner(away, name="r", log=logs.append, metrics=object.__new__(lq.QueueMetrics))
-    # one line per step (sandbox variants, their state, the sandbox switch, applications' own output repositories,
-    # egress), once a minute
-    assert r.housekeep() == 0 and r.housekeep() == 0 and len(logs) == 5 and all("db away" in m for m in logs)
+    # one line per step (sandbox variants, Try again's rebuilds, their state, the sandbox switch, applications' own
+    # output repositories, egress), once a minute
+    assert r.housekeep() == 0 and r.housekeep() == 0 and len(logs) == 6 and all("db away" in m for m in logs)
 
 
 
