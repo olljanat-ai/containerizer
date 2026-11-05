@@ -273,3 +273,16 @@ def test_stateless_app_keeps_rolling_updates(tmp_path):
     docs = k8s_manifests(a, c, make_plan(a, c), "reg.example/app/web:1.0.0")
     dep = next(d for d in docs if d["kind"] == "Deployment")
     assert dep["spec"]["strategy"] == {"type": "RollingUpdate"} and not any(d["kind"] == "PersistentVolumeClaim" for d in docs)
+
+
+def test_hardening_and_migration_notes_name_the_volumes(tmp_path):
+    from containerizer.harden import hardening_markdown
+    from containerizer.report import migration_markdown
+    web_app(tmp_path, packages=pkg("Microsoft.EntityFrameworkCore.Sqlite"))
+    write(tmp_path, "src/Web/appsettings.json", '{"ConnectionStrings": {"Default": "Data Source=app.db"}}')
+    a, plan, docs, spec, errors = _deployed(tmp_path)
+    md = hardening_markdown("app", {"web": docs})
+    assert "## Application data (persistent volumes)" in md and "| web | `web-w0-data` |" in md
+    assert "backup" in md
+    mig = migration_markdown(a)
+    assert "## Application data on persistent volumes" in mig and "the operator owns their backup" in mig
