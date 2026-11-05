@@ -204,6 +204,17 @@ def deployed_apps(root: Path, only: set | list | None = None) -> list[dict]:
     return [a for a in apps if a["app"]]
 
 
+API_NAME_RE = re.compile(r"(?:^|[.\-_ ])(?:web)?api$|webapi$", re.I)
+
+
+def main_url(comps: list[dict]) -> str | None:
+    """The URL a person opens for an application (the "Open" link): its first published component that is not an API
+    by its name (TradeRebates.Portal before TradeRebates.Api, whose "/" answers 404), else the first one."""
+    published = [c for c in comps if c.get("url")]
+    ui = [c for c in published if not API_NAME_RE.search(str(c.get("component") or c.get("folder") or ""))]
+    return (ui or published or [{}])[0].get("url")
+
+
 def _published(docs: list[dict]) -> tuple[str, str]:
     """(https URL of the component's Ingress, path its readiness probe asks) from its k8s.yaml."""
     from .sandbox_https import URL_ANNOTATION

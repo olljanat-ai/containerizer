@@ -1618,3 +1618,15 @@ def test_which_components_a_patch_leaves_unchanged():
     assert variant.unchanged(a, None) == set()
     assert variant.changed_files({"patch": patch}, {"source": {"subdir": "apps/other"}}) is None
     assert variant.changed_files({}, pl) is None
+
+
+def test_the_open_link_goes_to_the_ui_not_the_api():
+    """trade-rebates: "Open" went to TradeRebates.Api, whose "/" answers 404 (only /ping and /api/v1/...)."""
+    from containerizer.sandbox import main_url
+    api = {"component": "TradeRebates.Api", "url": "https://api.example/"}
+    portal = {"component": "TradeRebates.Portal", "url": "https://portal.example/"}
+    worker = {"component": "TradeRebates.StatementWorker"}
+    assert main_url([api, portal, worker]) == "https://portal.example/"
+    assert main_url([api, worker]) == "https://api.example/"                      # only an API: that one
+    assert main_url([{"component": "Shop.WebApi", "url": "u1"}, {"component": "shop-web", "url": "u2"}]) == "u2"
+    assert main_url([{"component": "Rapid", "url": "u1"}]) == "u1" and main_url([worker]) is None
