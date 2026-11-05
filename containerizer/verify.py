@@ -149,6 +149,14 @@ def _http(url: str, timeout: float = 3.0) -> int | None:
         return None
 
 
+def host_network_allowed() -> bool:
+    """Builds and scanner containers never get the host's network namespace (it would let a repository's `RUN`
+    step reach the results database, the k3s API and every service on the host's loopback), unless a developer
+    opts in with CONTAINERIZER_BUILD_HOST_NETWORK=1 for a proxy that listens only on 127.0.0.1. The appliance's
+    worker forces it off (cz-worker)."""
+    return os.environ.get("CONTAINERIZER_BUILD_HOST_NETWORK", "").strip().lower() in ("1", "true", "yes")
+
+
 def _build_env_args() -> list[str]:
     """Pass the host's proxy and extra CA bundle to builds (corporate proxies)."""
     args: list[str] = []
@@ -161,7 +169,8 @@ def _build_env_args() -> list[str]:
     http = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
     if http:        # apt (Debian/Ubuntu package sources) uses plain HTTP
         args += ["--build-arg", f"HTTP_PROXY={http}", "--build-arg", f"http_proxy={http}"]
-        if "127.0.0.1" in proxy or "localhost" in proxy:
+        local = proxy or http
+        if ("127.0.0.1" in local or "localhost" in local) and host_network_allowed():
             args += ["--network", "host"]
     ca = os.environ.get("CONTAINERIZER_CA_BUNDLE") or next(
         (p for p in ("/root/.ccr/ca-bundle.crt",) if os.path.isfile(p)), None)

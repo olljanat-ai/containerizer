@@ -91,7 +91,8 @@ def _docker_tool_args() -> list[str]:
     proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
     if proxy:
         args += ["-e", f"HTTPS_PROXY={proxy}", "-e", f"NO_PROXY={os.environ.get('NO_PROXY', '')}"]
-        if "127.0.0.1" in proxy or "localhost" in proxy:
+        from .verify import host_network_allowed
+        if ("127.0.0.1" in proxy or "localhost" in proxy) and host_network_allowed():
             args += ["--network", "host"]
     ca = _ca_bundle()
     if ca:
