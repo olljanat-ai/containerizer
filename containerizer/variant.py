@@ -988,7 +988,8 @@ def sync_sandbox(connect, key, work: Path, log=print) -> int:
     """The queue runner's periodic step: when an administrator turned an application's sandbox off or on, regenerate
     sandbox/ in every output repository (org.write_sandbox leaves those applications out; their folders and images
     stay, so on again deploys them as they were, without a build). Only when the set changed since the last sync
-    (work/sandbox-off.json). Returns the commits made."""
+    (work/sandbox-off.json), which is recorded only once every output repository has it: one that could not be
+    opened or written is tried again at the next step. Returns the commits made."""
     from .credentials import load, private_key_from_env
     from .org import Output, host_allowed, load_sandbox_off, write_sandbox
     from .orgsource import REDACT
@@ -1004,7 +1005,7 @@ def sync_sandbox(connect, key, work: Path, log=print) -> int:
     state = work / SYNC_STATE
     if state.is_file() and state.read_text() == sig:
         return 0
-    n, seen = 0, set()
+    n, seen, missed = 0, set(), []
     hosts = allowed_hosts() | (creds.hosts() if creds else set())
     for scan in scans:
         repo = scan["OutputRepo"]
@@ -1014,6 +1015,7 @@ def sync_sandbox(connect, key, work: Path, log=print) -> int:
         write = creds.write_for(repo) if creds else None
         if write is None or not write.token or not host_allowed(repo, hosts):
             log(f"sandbox switch: {repo} not updated: no write token for it, or its host is not allowed")
+            missed.append(repo)
             continue
         REDACT.add(write.token, write.username)
         d = work / f"sync-{len(seen)}"
@@ -1025,9 +1027,13 @@ def sync_sandbox(connect, key, work: Path, log=print) -> int:
             if out.commit("containerizer: sandbox/ follows the applications' sandbox switches (Admin → Applications)"):
                 n += 1
                 log(f"sandbox switch: {repo}: sandbox/ regenerated")
+        except Exception as ex:  # noqa: BLE001 - this repository next time; the others now
+            log(f"sandbox switch: {repo} not updated: {REDACT(f'{type(ex).__name__}: {ex}')[:300]}")
+            missed.append(repo)
         finally:
             shutil.rmtree(d, ignore_errors=True)
-    work.mkdir(parents=True, exist_ok=True)
-    state.write_text(sig)
+    if not missed:
+        work.mkdir(parents=True, exist_ok=True)
+        state.write_text(sig)
     return n
 

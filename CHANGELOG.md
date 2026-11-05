@@ -8,6 +8,13 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- Turning an application's sandbox off or on (Admin → Applications) reaches the output repository reliably: the
+  LLM queue runner applies the switches in a step of its own (a failure of the step before it held them up every
+  time), and an output repository it could not open or push to is tried again a minute later; before, the switch
+  was recorded as applied and waited for the next change of any switch.
+
 ## 0.13.1 (2026-11-05)
 
 - Lab services: an app's SQL Server database is set up from the repository's own SQL scripts (the DBA's
