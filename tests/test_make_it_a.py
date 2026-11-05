@@ -1085,8 +1085,11 @@ def test_make_it_a_for_every_b_app_smallest_first(adm, stateful, monkeypatch):
     assert "href='/admin/refactoring/42'>in the queue</a>" in b and "<b>1 order(s)</b> can be queued" in b
     # one that a verified patch makes A already is shown with it, not queued again from here
     adm.conn.answers[r"FROM cz.LlmJob WHERE Kind = N'refactor'\s+AND Status IN"] = []
-    adm.conn.answers[r"FROM cz.vRefactorOrder o JOIN cz.vApplicationLatest l"] = [
-        {"ApplicationId": 7, "JobId": 77, "SandboxStatus": "skipped", "SandboxUrl": None, "FinishedAt": None}]
+    adm.conn.answers[r"FROM cz.vRefactorOrder\s+WHERE Goal = N'rating-a'"] = [
+        {"ApplicationId": 7, "JobId": 77, "SandboxStatus": "skipped", "SandboxUrl": None, "FinishedAt": None,
+         "SourceCommit": None}]
+    adm.conn.answers[r"SELECT ApplicationId, SourceCommit FROM cz.vApplicationLatest$"] = [
+        {"ApplicationId": 7, "SourceCommit": APP["SourceCommit"]}]
     b = _getq(adm, ad, "/admin/refactoring/make-all-a", "limit=99999999").body
     assert "made A by <a href='/admin/refactoring/77'>a patch</a>" in b and "<b>1 order(s)</b> can be queued" in b
     assert b.index(">Big<") < b.index(">Shop<") and "Queue 1 order(s) under 99,999,999 tokens" in b
@@ -1295,9 +1298,13 @@ def test_the_front_page_lists_the_apps_a_patch_makes_a():
     assert "/admin/refactoring/9" in webui.render_overview({"apps": apps, "unmapped": {}}, nav="<nav></nav>")
     assert "Made A by a patch" not in webui.render_overview({"apps": [apps[2]], "unmapped": {}})
     conn = FakeConn({r"FROM cz.vRefactorOrder": [
-        {"ApplicationId": 1, "JobId": 3, "SandboxStatus": "failing", "SandboxUrl": None, "FinishedAt": None},
-        {"ApplicationId": 1, "JobId": 2, "SandboxStatus": "running", "SandboxUrl": None, "FinishedAt": None},
-        {"ApplicationId": 1, "JobId": 4, "SandboxStatus": "removed", "SandboxUrl": None, "FinishedAt": None}]})
+        {"ApplicationId": 1, "JobId": 3, "SandboxStatus": "failing", "SandboxUrl": None, "FinishedAt": None,
+         "SourceCommit": None},
+        {"ApplicationId": 1, "JobId": 2, "SandboxStatus": "running", "SandboxUrl": None, "FinishedAt": None,
+         "SourceCommit": None},
+        {"ApplicationId": 1, "JobId": 4, "SandboxStatus": "removed", "SandboxUrl": None, "FinishedAt": None,
+         "SourceCommit": None}],
+        r"FROM cz.vApplicationLatest": [{"ApplicationId": 1, "SourceCommit": "a" * 40}]})
     assert webui.load_a_patches(conn)[1]["JobId"] == 2                 # the one running in the sandbox
 
 
@@ -1471,10 +1478,16 @@ def test_reusable_patch_is_the_newest_working_one_for_another_commit():
 
 def test_a_patch_for_older_code_no_longer_counts_as_made_a():
     from containerizer import webui
-    conn = FakeConn({r"FROM cz.vRefactorOrder o JOIN cz.vApplicationLatest l": [
-        {"ApplicationId": 1, "JobId": 2, "SandboxStatus": "running", "SandboxUrl": None, "FinishedAt": None}]})
-    assert webui.load_a_patches(conn)[1]["JobId"] == 2
-    assert conn.sql(r"o\.SourceCommit = l\.SourceCommit")
+    def o(jid, commit, app=1):
+        return {"ApplicationId": app, "JobId": jid, "SandboxStatus": "running", "SandboxUrl": None, "FinishedAt": None,
+                "SourceCommit": commit}
+    latest = [{"ApplicationId": 1, "SourceCommit": "a" * 40}, {"ApplicationId": 2, "SourceCommit": None}]
+    conn = FakeConn({r"FROM cz.vRefactorOrder": [o(5, "b" * 40), o(2, "a" * 40), o(3, None, app=2), o(4, "c" * 40, app=3)],
+                     r"FROM cz.vApplicationLatest": latest})
+    got = webui.load_a_patches(conn)
+    # the newer order (5) was made for older code; application 3 has no latest assessment (retired, hidden)
+    assert {k: v["JobId"] for k, v in got.items()} == {1: 2, 2: 3} and "SourceCommit" not in got[1]
+    assert not conn.sql(r"JOIN cz.vApplicationLatest")         # no join: SQL Server parsed every Payload per pair
 
 
 # --------------------------------------------------------------------------- Build again (no LLM)
