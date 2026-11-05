@@ -918,7 +918,7 @@ def test_components_left_out_for_vulnerabilities_are_scanned_again(tmp_path, mon
     w = wk.Worker(lambda: conn, tmp_path, log=lambda m: None)
     assert w.rescan_left_out(now=1000.0) == 1
     (sql, params), = [x for x in conn.sql(r"OPENJSON\(o\.LastDetail, '\$\.excluded'\)")]
-    assert "fixable vulnerabilities" in sql and "scan failed" in sql
+    assert "security gate: %" in sql
     q = conn.sql(r"EXEC cz\.QueueOrgScanRun")
     assert [(p[0], json.loads(p[1])) for _, p in q] == [
         (3, {"projects": [], "repositories": ["onek8s/control-tower", "onek8s/retail-backoffice"]}),
@@ -928,6 +928,8 @@ def test_components_left_out_for_vulnerabilities_are_scanned_again(tmp_path, mon
     assert w.rescan_left_out(now=1400.0) == 1
     assert [p[0] for _, p in conn.sql(r"EXEC cz\.QueueOrgScanRun")][2:] == [4]
     assert w.rescan_left_out(now=1800.0) == 0 and len(conn.sql(r"EXEC cz\.QueueOrgScanRun")) == 3
+    # a new worker process of the same release: not again (the state file); nothing with scan.block_deploy
     w2 = wk.Worker(lambda: conn, tmp_path, log=lambda m: None)
+    assert w2.rescan_left_out(now=1000.0) == 0 and len(conn.sql(r"EXEC cz\.QueueOrgScanRun")) == 3
     monkeypatch.setattr("containerizer.org.vulnerabilities_block", lambda: True)
-    assert w2.rescan_left_out(now=1000.0) == 0
+    assert wk.Worker(lambda: conn, tmp_path / "other", log=lambda m: None).rescan_left_out(now=1000.0) == 0

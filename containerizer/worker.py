@@ -621,12 +621,13 @@ class Worker:
         return True
 
     def rescan_left_out(self, now: float | None = None) -> int:
-        """Repositories whose latest scan left a component out of the sandbox for vulnerabilities (or a failed
-        vulnerability scan), while vulnerabilities no longer keep components out (org.vulnerabilities_block, since
-        0.12.9): a full scan of only those is queued, one run per organization scan, so the components are deployed
-        without waiting for the schedule. Again while a run of that scan is queued or running; each repository once
-        per worker process, so one whose scan leaves it out again for another reason is not scanned over and over.
-        At most every RESCAN_CHECK seconds. Returns the runs queued."""
+        """Repositories whose latest scan left a component out of the sandbox at the security gate: a full scan of only
+        those is queued, one run per organization scan, so what a newer release lets through (vulnerabilities no
+        longer keep components out since 0.12.9 and are not scanned since 0.14.1; a start-up script's information line
+        is no longer a hardening failure since 0.16.1) is deployed without waiting for the schedule. Again while a
+        run of that scan is queued or running; each repository once per release (rescan-left-out.json), so one the
+        gate leaves out again is not scanned over and over. At most every RESCAN_CHECK seconds. Returns the runs
+        queued."""
         now = _time.monotonic() if now is None else now
         if now - getattr(self, "_rescan_checked", -RESCAN_CHECK) < RESCAN_CHECK:
             return 0
@@ -634,17 +635,24 @@ class Worker:
         from .org import vulnerabilities_block
         if vulnerabilities_block():
             return 0
+        # once per repository and release: a gate that leaves it out again (a real failure) is not scanned again
+        # until the next version, whose fixes may let it through (state in the worker's data folder)
+        from . import __version__
+        state_f = self.data / "rescan-left-out.json"
         done = getattr(self, "_rescanned", None)
         if done is None:
-            done = self._rescanned = set()
+            try:
+                st = json.loads(state_f.read_text())
+            except (OSError, ValueError):
+                st = {}
+            done = self._rescanned = set(st.get(__version__) or [])
         conn = self.connect()
         try:
             cur = conn.cursor(as_dict=True)
             cur.execute("SELECT o.RepositoryId, o.ScanId, o.ProjectName + N'/' + o.Name AS Name FROM cz.OrgRepository o "
                         "WHERE o.RemovedAt IS NULL AND ISJSON(o.LastDetail) = 1 AND EXISTS (SELECT 1 FROM "
                         "OPENJSON(o.LastDetail, '$.excluded') WITH (reason nvarchar(1000)) j WHERE "
-                        "j.reason LIKE N'security gate: %fixable vulnerabilities%' "
-                        "OR j.reason LIKE N'security gate: %scan failed%')")
+                        "j.reason LIKE N'security gate: %')")
             rows = [r for r in cur.fetchall() if int(r["RepositoryId"]) not in done]
             by_scan: dict = {}
             for r in rows:
@@ -659,6 +667,10 @@ class Worker:
                 conn.commit()
                 if rid:
                     done.update(int(r["RepositoryId"]) for r in repos)
+                    try:
+                        state_f.write_text(json.dumps({__version__: sorted(done)}))
+                    except OSError:
+                        pass
                     n += 1
                     self.log(f"scan run #{rid} queued for {len(repos)} repositories whose components were left out "
                              f"for vulnerabilities, which no longer keep them out: {', '.join(scope['repositories'])[:300]}")

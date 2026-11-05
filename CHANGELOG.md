@@ -8,6 +8,16 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- Security gate: a line a container's start-up script marks as information is no longer a hardening failure. The
+  nginx image's entrypoint says it cannot modify `default.conf` on the read-only root file system and nginx then
+  serves; the lab's expense-claims frontend was left out of the sandbox for it ("does not run with the hardened pod
+  security context").
+- The scan worker rescans the repositories whose components the security gate left out, once per release, so what a
+  newer release lets through is deployed without waiting for the schedule (before: only components left out for
+  vulnerabilities).
+
 ## 0.16.0 (2026-11-05)
 
 - (0.15.0 was not released: its tag was made on the wrong commit and its build stopped before publishing anything.)

@@ -528,6 +528,18 @@ def cluster_filled_secrets(k8s_docs: list[dict]) -> set:
     return out
 
 
+# a line the image's start-up script marks as information (the nginx image's entrypoint: "10-listen-on-ipv6-by-
+# default.sh: info: can not modify /etc/nginx/conf.d/default.conf (read-only file system?)", after which nginx serves
+# as it should): not a hardening failure (the lab's expense-claims frontend was left out of the sandbox for it)
+INFO_LINE = re.compile(r"(?i)(?:^|[\s:])(?:info|notice)\s*:\s")
+
+
+def hardening_hits(log: str) -> list[str]:
+    """The hardening errors of a container's log, not counting the lines its start-up scripts mark as information."""
+    lines = [ln for ln in log.splitlines() if not INFO_LINE.search(ln)]
+    return sorted({m.group(0)[:160] for m in HARDENING_ERRORS.finditer("\n".join(lines))})
+
+
 def run_as_manifest(tag: str, k8s_docs: list[dict], wait: int = 40) -> dict:
     """Start an image with the docker equivalent of its generated pod spec (user, read-only root,
     capabilities, sysctls, emptyDir mounts, env, memory limit) and look for hardening failures.
@@ -608,7 +620,7 @@ def run_as_manifest(tag: str, k8s_docs: list[dict], wait: int = 40) -> dict:
         _, log, lerr = _run(["docker", "logs", name], 30)
         _run(["docker", "rm", "-f", name], 30)
     log = log + lerr
-    hits = sorted({m.group(0)[:160] for m in HARDENING_ERRORS.finditer(log)})
+    hits = hardening_hits(log)
     if hits:
         status = "hardening-failure"
     return {"status": status, "http": http, "errors": hits[:5], "log": log[-1500:]}
