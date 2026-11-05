@@ -264,21 +264,69 @@ def after_order(job: dict, payload: dict, result: dict, work: Path, name: str, p
         return {"status": "error", "reason": REDACT(f"{type(ex).__name__}: {ex}")[:600]}
 
 
-def _assessed(src: Path, name: str, result: dict, work: Path):
+def changed_files(result: dict, payload: dict) -> list[str] | None:
+    """The files the order's patch changes, relative to the application folder; None when not known."""
+    from .refactor import parse_patch
+    text = result.get("patch")
+    if not text:
+        return None
+    sub = ((payload.get("source") or {}).get("subdir") or ".").strip("/")
+    out = []
+    for f in parse_patch(str(text))["files"]:
+        for path in {f.get("old"), f.get("new")} - {None, "", "/dev/null"}:
+            path = str(path)
+            if sub not in ("", "."):
+                if not path.startswith(sub + "/"):
+                    return None             # outside the application: nothing is known to be unchanged
+                path = path[len(sub) + 1:]
+            out.append(path)
+    return out
+
+
+def unchanged(a, files: list[str] | None) -> set:
+    """The server components the patch does not change: every file it changes is in the project folder of another
+    server component (one file in a shared library, or outside every project, and none counts as unchanged)."""
+    if files is None:
+        return set()
+    dirs = []
+    for c in a.components:
+        rel = str(getattr(getattr(c, "project", None), "rel", "") or "")
+        d = Path(rel).parent.as_posix() if rel else ""
+        dirs.append((c, "" if d == "." else d))
+    owners = set()
+    for f in files:
+        best = max(((c, d) for c, d in dirs if not d or f.startswith(d + "/")), key=lambda x: len(x[1]), default=None)
+        if best is None or best[0].tier != "server" or not best[1]:
+            return set()
+        owners.add(best[0].name)
+    return {c.name for c in a.components if c.tier == "server" and c.name not in owners}
+
+
+def _assessed(src: Path, name: str, result: dict, work: Path, before: dict | None = None,
+              files: list[str] | None = None):
     """The patched copy assessed with every rule, named `name`, with a verification for every buildable server
-    component: the order's own for the changed ones, a build and run of the others."""
+    component: the order's own for the changed ones, a build and run of the others. `before`: the components the
+    application's folder deploys now (its containerizer.json); one the patch does not change keeps its deployment
+    (no build and run here, the security gate's hardened run waived: the gate passed it when the scan deployed it,
+    and it is the same code). Returns (assessment, the names of those components)."""
     from .assess import assess
     from .generate import buildable
+    from .org import OK_VERIFY
     from .rules import load_rules
     from . import verify as vf
     a = assess(src)
     a.repo.name = name
     done = {v.get("component"): v for v in result.get("verification") or []}
+    keep = {n for n in unchanged(a, files) if n in (before or {}) and n not in done}
     ver = []
     rules = None
     for c in a.components:
         if c.name in done:
             ver.append({"component": c.name, "status": done[c.name].get("status")})
+        elif c.name in keep:
+            was = (before or {}).get(c.name) or {}
+            ver.append({"component": c.name, "status": was.get("verification") if was.get("verification") in OK_VERIFY
+                        else "ok"})
         elif c.tier == "server" and buildable(c):
             rules = rules or load_rules()
             try:
@@ -287,7 +335,7 @@ def _assessed(src: Path, name: str, result: dict, work: Path):
             except Exception as ex:  # noqa: BLE001
                 ver.append({"component": c.name, "status": "error", "detail": f"{type(ex).__name__}: {ex}"[:300]})
     a.verification = ver
-    return a
+    return a, keep
 
 
 def _git(root: Path, args: list[str], check: bool = True, url: str | None = None, header: str = "") -> str:
@@ -335,7 +383,7 @@ def _repoint(folder: Path, new_ref: str, old_ref: str) -> None:
 
 def _write_in_place(connect, target: dict, o, out, payload: dict, job: int, a, src: Path, rel: str, app: str, tag: str,
                     now: datetime, work: Path, patch: str | None = None, images: dict | None = None,
-                    also: tuple = (), message: str = ""):
+                    also: tuple = (), message: str = "", gate_waive: set | None = None):
     """The patched copy (assessed `a`, named `app`) into the application's folder `rel`, in place of what is there, and
     one commit. `images` (migrate): component -> its entry of before, whose image the manifests keep (nothing is
     built). `also`: folders deleted in the same commit. Returns the RepoResult; when it is not deployed, the folder is
@@ -358,7 +406,8 @@ def _write_in_place(connect, target: dict, o, out, payload: dict, job: int, a, s
                      source_key=str(payload.get("source_key") or old.get("source_key") or ""))
     reg = Registry(o.registry) if o.push_images and not images else None
     try:
-        res = deploy_app(a, src, rel, o, out, reg, tag, gitops, res, work, app, dev_database=False, keep_patched=False)
+        res = deploy_app(a, src, rel, o, out, reg, tag, gitops, res, work, app, dev_database=False, keep_patched=False,
+                         gate_waive=gate_waive)
     except BaseException:
         if head:
             restore(out, rel, head)
@@ -405,16 +454,18 @@ def deploy(connect, key, payload: dict, job: int, result: dict, work: Path, name
     if not src.is_dir():
         raise Skip("not deployed: the patched copy is gone")
     tag = variant_tag(now, job)
-    progress("deploying: building and running the components that did not change")
-    a = _assessed(src, name, result, work / "deploy-verify")
     (work / "deploy").mkdir(parents=True, exist_ok=True)
     out = Output(o, work / "deploy")
     rel, app = app_folder(out.root, scan["Organization"], repo["ProjectName"], repo["Name"], repo.get("AppName"), payload)
+    before = {x["component"]: x for x in _doc(out.root / rel).get("components") or []
+              if isinstance(x, dict) and x.get("component")}
+    progress("deploying: building and running the components that did not change")
+    a, keep = _assessed(src, name, result, work / "deploy-verify", before, changed_files(result, payload))
     a.repo.name = app                       # the application's namespace, image paths, hosts and IdP clients
     ns = app_ns(app)
     progress("deploying: building the images and writing the GitOps files")
     res = _write_in_place(connect, target, o, out, payload, job, a, src, rel, app, tag, now, work / "deploy",
-                          patch=result.get("patch"))
+                          patch=result.get("patch"), gate_waive=keep)
     if res.status != "deployed":
         return {"status": "skipped", "namespace": ns, "folder": rel, "in_place": True,
                 "reason": f"not deployed: {res.reason}", "excluded": res.excluded}

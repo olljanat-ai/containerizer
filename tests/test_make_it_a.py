@@ -367,6 +367,41 @@ def _deploy(tmp_path, monkeypatch, **opts):
     return res, out.root / rel, builds, tags
 
 
+
+def test_the_gate_waives_the_hardened_run_only_for_the_components_named(tmp_path, monkeypatch):
+    """variant.deploy names the components a patch does not change (the lab's trade-rebates: the API ran in the
+    sandbox, the patch changed only the portal, and the patched copy's gate dropped the API on its hardened run).
+    Their hardened run is waived, nothing else: a build error, lint or vulnerabilities still exclude them."""
+    from containerizer.gitops import GitOpsOptions
+    from containerizer import imagescan
+    from containerizer.generate import generate_app, k8s_name
+    monkeypatch.delenv(orgmod.LOCAL_IMAGES_ENV, raising=False)
+    failure = {"run": {"status": "hardening-failure"}}
+
+    def gate_app(fa, gen, **kw):
+        generate_app(fa, gen, registry=kw["registry"], gitops=kw["gitops"], tag=kw["tag"])
+        return {"components": [{"component": k8s_name(c.name), "lint": [], "scans": [], **failure}
+                               for c in fa.components]}
+    monkeypatch.setattr(imagescan, "gate_app", gate_app)
+
+    def deploy(waive, n):
+        src, a = _a_app(tmp_path / f"d{n}", "shop-web")
+        o = orgmod.OrgOptions(provider="github", org="acme", registry="reg.example/sandbox", verify=True, gate=True)
+        out = _Out(tmp_path / f"out{n}")
+        res = orgmod.RepoResult(provider="github", org="acme", project="_", repo="shop", status="error", app="shop-web")
+        return orgmod.deploy_app(a, src, "acme/_/shop", o, out, None, "1.2.3", GitOpsOptions(git_url=out.url,
+                                 path="acme/_/shop"), res, tmp_path / f"work{n}", "shop-web", gate_waive=waive), a
+    res, a = deploy(None, 1)
+    name = a.components[0].name
+    assert res.status == "no-a-components" and res.excluded == [
+        {"component": name, "reason": "security gate: does not run with the hardened pod security context"}]
+    res, _ = deploy({name}, 2)
+    assert res.status == "deployed" and not res.excluded
+    assert res.components[0]["gate_waived"].startswith("does not run with the hardened pod security context: waived")
+    failure = {"run": {"status": "ok"}, "build_error": "boom"}                  # not waived
+    res, _ = deploy({name}, 3)
+    assert res.status == "no-a-components" and res.excluded[0]["reason"] == "security gate: image build failed"
+
 def test_deploy_app_pushes_as_before(tmp_path, monkeypatch):
     class Reg:
         pushed = []
@@ -1560,3 +1595,26 @@ def test_build_again_button_queues_an_approved_order(adm):
     pl = json.loads(params[-1])
     assert pl["rebuild"] and pl["max_calls"] == 0 and pl["base_job"] == 42
     assert adm.conn.sql(r"SET Status = N'queued', ApprovedBy")                    # no approval wait: no LLM call
+
+
+def test_which_components_a_patch_leaves_unchanged():
+    """trade-rebates: the patch changed only the portal, so the API and the worker are deployed as they were. A file
+    of a shared library, or outside every project, and no component counts as unchanged."""
+    from types import SimpleNamespace as NS
+
+    def comp(name, rel, tier="server"):
+        return NS(name=name, tier=tier, project=NS(rel=rel))
+    a = NS(components=[comp("Api", "src/Api/Api.csproj"), comp("Portal", "src/Portal/Portal.csproj"),
+                       comp("Worker", "src/Worker/Worker.csproj"), comp("Data", "src/Data/Data.csproj", "library")])
+    patch = ("From 1 Mon Sep 17 00:00:00 2001\nSubject: [PATCH] x\n\n---\n"
+             "diff --git a/apps/tr/src/Portal/web.config b/apps/tr/src/Portal/web.config\n"
+             "--- a/apps/tr/src/Portal/web.config\n+++ b/apps/tr/src/Portal/web.config\n@@ -1 +1 @@\n-a\n+b\n")
+    pl = {"source": {"subdir": "apps/tr"}}
+    files = variant.changed_files({"patch": patch}, pl)
+    assert files == ["src/Portal/web.config"]
+    assert variant.unchanged(a, files) == {"Api", "Worker"}
+    assert variant.unchanged(a, files + ["src/Data/Repo.cs"]) == set()          # a shared library changed
+    assert variant.unchanged(a, files + ["Directory.Build.props"]) == set()     # outside every project
+    assert variant.unchanged(a, None) == set()
+    assert variant.changed_files({"patch": patch}, {"source": {"subdir": "apps/other"}}) is None
+    assert variant.changed_files({}, pl) is None
