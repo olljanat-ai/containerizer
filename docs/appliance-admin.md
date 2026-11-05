@@ -101,9 +101,10 @@ with one NIC the bond is just that NIC.
 
 - **MAC address:** the bond uses the MAC of its first interface, so a hypervisor that allows only the MAC it
   assigned (Hyper-V, vSphere port groups that reject forged transmits) still passes its traffic.
-- **DHCP reservation:** the DHCP client ID comes from the appliance's machine-id, so the lease stays the same
-  whichever NIC is active. Reserve the address by that client ID (`networkctl status bond0` shows the lease), or
-  set a static address.
+- **DHCP reservation:** the DHCP client ID is the bond's MAC address (its first NIC's), so the appliance keeps
+  one address from the first boot of the installer on, through installing, reinstalling and upgrading. Reserve
+  the address by that MAC address (`networkctl status bond0` shows it and the lease), or set a static address.
+  The console's sign-in banner shows the address of `bond0`.
 - **Static address:** a `.network` file for `bond0` in `/etc/containerizer/network/`, named so it sorts before
   `21-uplink-bond0.network`, then reboot:
 

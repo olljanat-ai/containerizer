@@ -242,5 +242,5 @@ jobs:
           ls -R "$REPORT" | head -100
           test -f "$REPORT/portfolio.md" && test -d "$REPORT/parts-catalog"
           python3 -c "import json,sys; a={x['name']: x for x in json.load(open(sys.argv[1]))}; v=a['parts-catalog'].get('verification') or []; print(v); assert any(r['status'].startswith('ok') for r in v)" "$REPORT/assessment.json"
-          test "${{ steps.assess.outputs.rating }}" = D        # worst of B, B and D
+          test "${{ steps.assess.outputs.rating }}" = C        # worst of B, B and C (batch-release is partial)
           test "${{ steps.assess.outputs.unconfirmed }}" = 0

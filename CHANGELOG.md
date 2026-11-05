@@ -25,6 +25,17 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   `appliance/ci/patch-release-check.sh`); those changes go into a minor release. The first app update can be
   installed on the OS of the next minor release (older OS images take one OS upgrade first). The new GHCR
   package `containerizer-app` must be made public, as `containerizer-appliance` is.
+
+## 0.11.1 (2026-11-05)
+
+- Appliance: one DHCP address from the first boot on. Since 0.9.3 the DHCP client ID came from the machine-id,
+  and the recovery system that installs the appliance has another machine-id than the installed system, so a new
+  appliance moved to a second address after installing itself (and a reservation by MAC address did not apply).
+  The client ID is the bond's MAC address again, and that is its first NIC's MAC: udev's default policy
+  (`MACAddressPolicy=persistent`) gave the bond a MAC made from the machine-id, which the bond then set on the NIC,
+  so hypervisors that allow only the MAC they assigned (Hyper-V without MAC spoofing, vSphere rejecting forged
+  transmits) could drop the appliance's traffic. The console's sign-in banner shows `bond0`'s address, not the
+  DNS filter's internal 169.254.53.53. Found by the appliance boot test, which could not reach the installed system.
 - The cluster-level kit (`cluster/`: the API server audit policy, the `ClusterSecretStore`, the Kyverno policy that
   admits only signed images) is written once at the root of an organization scan's output repository, for every
   app, instead of a copy in every app folder: the audit policy and the store were the same everywhere, the store

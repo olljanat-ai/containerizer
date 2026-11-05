@@ -15,7 +15,7 @@ stages:
           content: |
             containerizer appliance \n (\l): PREVIOUS SNAPSHOT
             The active system did not boot, so this is an earlier OS snapshot.
-            Web UI: https://\4/   SSH: root@\4
+            Web UI: https://\4{bond0}/   SSH: root@\4{bond0}
 
           permissions: 0644
           owner: 0
