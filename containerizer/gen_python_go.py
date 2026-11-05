@@ -195,7 +195,7 @@ def python_plan(a, c, plan: dict) -> None:
     build_root = root if _outside_refs(p) else p.dir
     plan.update({"python": line, "pm": pm, "install": install, "uid": im["app_uid"], "base": "slim",
                  "native_build": native, "apt_packages": apt, "build_root": _rel(build_root, root),
-                 "module": _rel(p.dir, build_root), "add_python_packages": [], "deps": _dep_list(p) if install == "deps" else []})
+                 "module": _rel(p.dir, build_root), "add_python_packages": [], "deps": _dep_list(p)})
     if why:
         _reason(plan, "python-line", f"The project {why}; it runs on Python {line}.",
                 ["https://devguide.python.org/versions/"])
@@ -324,7 +324,7 @@ def dockerfile_python(plan: dict) -> str:
         lines.append(f"RUN find . -name '{fn}' -delete")
     if plan.get("build_env"):
         lines.append("ENV " + " ".join(f"{k}={json.dumps(str(v))}" for k, v in sorted(plan["build_env"].items())))
-    if plan.get("deps"):
+    if plan["install"] == "deps":
         lines.append("COPY <<'EOF' /tmp/cz-requirements.txt\n" + "\n".join(plan["deps"]) + "\nEOF")
     cd = f"cd {_q(mod)} && " if mod else ""
     cmds = _python_install(plan)

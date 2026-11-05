@@ -159,3 +159,32 @@ images:
         MEDIUM: 0
         LOW: 0
       blocking: 0
+  python:3.11-slim-bookworm:
+    tag: python:3.11.18-slim-bookworm
+    slot: python.build_3.11
+    digest: sha256:a83ba18aef0f865b1a4a611c2cf460fe446f2795673bbb9fe43be570439e3b39
+    eol: '2027-10-31'
+  python:3.13-slim-bookworm:
+    tag: python:3.13.18-slim-bookworm
+    slot: python.build_3.13
+    digest: sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72
+    eol: '2029-10-31'
+  python:3.11-bookworm:
+    tag: python:3.11.18-bookworm
+    slot: python.build_native_3.11
+    digest: sha256:a78ac56989e704fadc8e9be30b3fe78e7bf8a52572a726911e525c30468604f8
+    eol: '2027-10-31'
+  python:3.12-bookworm:
+    tag: python:3.12.16-bookworm
+    slot: python.build_native_3.12
+    digest: sha256:1bc6cb484acf8d7b0393d547ab55c3f147d641bef8adafbf7dfec5ba4d2d99e0
+    eol: '2028-10-31'
+  python:3.13-bookworm:
+    tag: python:3.13.18-bookworm
+    slot: python.build_native_3.13
+    digest: sha256:6ca1b0fd55c7bcf79c915d8a27277ee74fb42b0288efdd528b030599a7c1aab0
+    eol: '2029-10-31'
+  gcr.io/distroless/base-debian12:nonroot:
+    tag: gcr.io/distroless/base-debian12:nonroot
+    slot: go.runtime_cgo
+    digest: sha256:7f0c72cd138b442ae0deeb69c08b1acf5525439ba251a49ad93c320a061567e5
