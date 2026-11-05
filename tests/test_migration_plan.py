@@ -83,26 +83,37 @@ def test_rating_of_is_the_application_rule(tmp_path):
 
 def test_plan_splits_into_waves():
     p = mp.build(loans())
-    assert [x["c"]["ComponentName"] for x in p["now"]] == ["CustomerPortal", "Documents"]
-    assert [c["ComponentName"] for c in p["after"]] == ["LoanTape"]
+    # LoanTape keeps its own data but is otherwise ready: wave 1, with a persistent volume (no code change)
+    assert [x["c"]["ComponentName"] for x in p["now"]] == ["CustomerPortal", "Documents", "LoanTape"]
+    assert p["after"] == []
     assert [c["ComponentName"] for c in p["windows"]] == ["Lending.Api", "BackOffice", "Collections"]
     assert [c["ComponentName"] for c in p["other"]] == ["Loans.Database"]
     # the Linux part rated by the application rule: as it is, and with LoanTape's data moved out
+    # the rating stays honest: the Linux part keeps data on a volume, so it is B, not A
     stand = lambda c, keeps: SimpleNamespace(tier="server", verdict=c, stateless=not keeps)   # noqa: E731
-    assert p["linux_now"] == rating_of([stand("config", False), stand("config", False), stand("config", True)])
-    assert p["linux_after"] == rating_of([stand("config", False)] * 3) == "A"
-    assert p["linux_now"] != p["linux_after"]
-    assert mp.summary(p) == ("2 of 6 components can run in Linux containers now; 1 more after code changes; "
-                             "3 stay on Windows.")
+    assert p["linux_now"] == rating_of([stand("config", False), stand("config", False), stand("config", True)]) == "B"
+    assert p["linux_after"] is None
+    assert mp.summary(p) == "3 of 6 components can run in Linux containers now; 3 stay on Windows."
     states = {x["c"]["ComponentName"]: x["sandbox"] for x in p["now"]}
     assert states["CustomerPortal"]["state"] == "checked" and states["Documents"]["state"] == "deployed"
+    assert mp.stateful_note(p["now"][2]["c"], p["state"]) == (
+        "runs with a persistent volume, one replica (keeps its own data: Application data written to its own disk)")
+    assert mp.stateful_note(p["now"][0]["c"], p["state"]) == ""
+
+
+def test_stateful_component_that_needs_code_changes_stays_in_wave_2():
+    app = loans()
+    app["components"][5]["Verdict"] = "refactor"
+    p = mp.build(app)
+    assert [c["ComponentName"] for c in p["after"]] == ["LoanTape"]
+    assert "keeps its own data: Application data written to its own disk" in mp._fixes(app["components"][5], p)
 
 
 def test_build_failure_keeps_a_ready_component_out_of_wave_1():
     app = loans()
     app["components"][4]["VerifyStatus"] = "run-failed"
     p = mp.build(app)
-    assert [x["c"]["ComponentName"] for x in p["now"]] == ["CustomerPortal"]
+    assert [x["c"]["ComponentName"] for x in p["now"]] == ["CustomerPortal", "LoanTape"]
     assert "it did not run" in mp._fixes(app["components"][4], p)
 
 
@@ -110,15 +121,20 @@ def test_section_on_the_page():
     html = webui.render_application(loans())
     assert html.index("Main obstacles") < html.index("Migration plan") < html.index("<h2 id='components'>Components</h2>")
     sec = _plan_html(html)
-    assert "2 of 6 components can run in Linux containers now; 1 more after code changes; 3 stay on Windows." in sec
-    assert "Wave 1, now" in sec and "to Kubernetes" in sec and "Wave 2, after code changes" in sec
+    assert "3 of 6 components can run in Linux containers now; 3 stay on Windows." in sec
+    assert "Wave 1, now" in sec and "to Kubernetes" in sec and "Wave 2, after code changes" not in sec
+    assert "Components that keep their own data run as they are, with a persistent volume and one replica" in sec
     assert "Stays on Windows" in sec and "OLE DB / Access database engine" in sec
     assert "a Windows container is a workable stop-gap" in sec          # Api: WindowsContainerOk
     assert "Deployed and healthy" in sec and "deployed, not checked yet" in sec
-    assert "keeps its own data: Application data written to its own disk" in sec
-    assert f"{webui.RATING_TITLE['A']}" in sec and "The part that can run in Linux containers (3 components)" in sec
+    assert ("<div class='muted small stateful'>runs with a persistent volume, one replica (keeps its own data: "
+            "Application data written to its own disk)</div>") in sec
+    assert f"{webui.RATING_TITLE['B']}" in sec and "The part that can run in Linux containers (3 components)" in sec
     assert "Not in the plan: Loans.Database (lives with the database)" in sec
     # no Refactoring box on this page: the plan points to the findings instead of Make it A
+    app = loans()
+    app["components"][5]["Verdict"] = "refactor"
+    sec = _plan_html(webui.render_application(app))
     assert "#refactoring" not in sec and "The findings below say what to change" in sec
     assert " style=" not in sec and not re.search(r"<script(?![^>]*\bsrc=)", html)
 
@@ -142,6 +158,7 @@ def test_between_the_parts_omitted_without_data():
 def test_make_it_a_link_when_the_box_is_there():
     app = loans(Rating="B")
     app["components"] = [c for c in app["components"] if c["Verdict"] != "blocker"]
+    app["components"][2]["Verdict"] = "refactor"        # LoanTape needs a code change: wave 2
     sec = _plan_html(webui.render_application(app))
     assert "<a href='#refactoring'>Make it A ↓</a>" in sec and "id='refactoring'" in webui.render_application(app)
     assert "Stays on Windows" not in sec and "Between the parts" not in sec
@@ -211,7 +228,15 @@ def test_front_page_marker():
     a = data["apps"][0]
     a.update(Rating="C", ReadyNow=2, PlanComponents=6)
     html = webui.render_overview(data)
-    assert "<span class='ready-now' title='2 of 6 components rate A on their own" in html and ">2/6 ready now</span>" in html
+    assert ("<span class='ready-now' title='2 of 6 components can run in Linux containers now without code changes"
+            in html and ">2/6 ready now</span>" in html)
+    a.update(ReadyNow=3, ReadyStateful=1)
+    html = webui.render_overview(data)
+    assert ("; 1 of them keeps its own data and runs with a persistent volume, one replica;" in html
+            and ">3/6 ready now<span class='stateful'>, 1 with a volume</span></span>" in html)
+    a.update(ReadyNow=1, ReadyStateful=1)
+    assert ">1/6 ready now<span class='stateful'>, with a volume</span></span>" in webui.render_overview(data)
+    a.update(ReadyNow=2, ReadyStateful=0)
     a.update(ReadyNow=0)
     assert "ready now</span>" not in webui.render_overview(data)
     a.update(Rating="A", ReadyNow=6)
@@ -246,7 +271,7 @@ def test_load_overview_counts_ready_components():
         def rollback(self):
             pass
     a = webui.load_overview(Conn())["apps"][0]
-    assert (a["ReadyNow"], a["PlanComponents"], a["Components"]) == (2, 6, 7)
+    assert (a["ReadyNow"], a["PlanComponents"], a["Components"], a["ReadyStateful"]) == (3, 6, 7, 1)
 
 
 def test_agent_prompt_route_is_gone():
