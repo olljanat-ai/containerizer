@@ -68,3 +68,10 @@ def test_docker_bridges_never_reach_the_k3s_networks():
     assert not any("ip saddr { 10.42.0.0/16, 10.43.0.0/16, 172.16.0.0/12 }" in r for r in rules)
     # and what is left goes through the egress allow-list
     assert rules[-1] == "jump egress"
+
+
+def test_docker_daemon_defaults_to_no_new_privileges():
+    import json
+    from pathlib import Path
+    cfg = json.loads((Path(__file__).resolve().parent.parent / "appliance/rootfs/etc/docker/daemon.json").read_text())
+    assert cfg["no-new-privileges"] is True

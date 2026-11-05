@@ -4,6 +4,6 @@
   "log-opts": { "max-size": "20m", "max-file": "3" },
   "live-restore": true,
   "userland-proxy": false,
-  "no-new-privileges": false,
+  "no-new-privileges": true,
   "features": { "buildkit": true }
 }
