@@ -8,7 +8,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## Unreleased
+## 0.12.4 (2026-11-05)
 
 - The front page loads faster (about 0.3 s less per view, also when filtered by business unit or tag): the "Made
   A by a patch" list no longer joins the orders to the applications in SQL, which made SQL Server parse every
