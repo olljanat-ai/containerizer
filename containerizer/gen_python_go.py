@@ -424,7 +424,7 @@ def dockerfile_go(plan: dict) -> str:
               "RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build "
               "--mount=type=secret,id=ca,required=false \\",
               "    if [ -f /run/secrets/ca ]; then export SSL_CERT_FILE=/run/secrets/ca; fi; \\",
-              f"    {cd}go build -trimpath -ldflags='-s -w' {' '.join(plan['publish_args'])} -o /out/{plan['binary']} {_q(pkg)}"
+              "    " + f"{cd}go build -trimpath -ldflags='-s -w' {' '.join(plan['publish_args'])} -o /out/{plan['binary']} {_q(pkg)}"
               .replace("  ", " ")]
     if plan.get("go_assets"):
         lines.append(f"RUN mkdir -p /out/files && cp -a {_q(mod) if mod else '.'}/. /out/files/ \\\n"

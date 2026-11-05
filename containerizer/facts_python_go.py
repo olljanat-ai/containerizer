@@ -133,6 +133,14 @@ def python_facts(repo, c, facts: dict) -> None:
             stx = p.text(pdir / "settings.py") if (pdir / "settings.py").is_file() else ""
             if re.search(r"^\s*STATIC_ROOT\s*=", stx, re.M):
                 st["collectstatic"] = True
+            # a health route of the root URLconf (a probe path cannot know an include()'s prefix)
+            m = re.search(r"""^\s*ROOT_URLCONF\s*=\s*['"]([\w.]+)['"]""", stx, re.M)
+            urls = (p.dir / st_base / Path(*m.group(1).split("."))).with_suffix(".py") if m else None
+            if urls is not None and urls.is_file():
+                h = re.search(r"""\b(?:re_)?path\(\s*r?['"]\^?((?:api/)?(?:health|healthz|healthcheck|ping|livez|readyz|alive)/?)\$?['"]""",
+                              p.text(urls))
+                if h:
+                    facts.setdefault("health", "/" + h.group(1))
     if not st:
         for kind, rx in (("asgi", ASGI_RE), ("wsgi", WSGI_RE)):
             for f, t in texts.items():
