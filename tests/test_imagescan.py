@@ -143,3 +143,18 @@ def test_scans_are_off_by_default_but_the_build_and_the_hardened_run_stay(tmp_pa
     assert isc.scans_enabled() is True
     monkeypatch.setattr("containerizer.imagescan.security", lambda: {"scan": {"block_deploy": True}})
     assert isc.scans_enabled() is True
+
+
+def test_an_informational_start_up_line_is_not_a_hardening_failure():
+    """expense-claims' frontend (nginx image): its entrypoint says it cannot modify default.conf on the read-only root
+    and nginx then serves (HTTP 200): it was left out of the sandbox as "does not run with the hardened pod security
+    context"."""
+    from containerizer import imagescan as isc
+    log = ("/docker-entrypoint.sh: Launching /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh\n"
+           "10-listen-on-ipv6-by-default.sh: info: can not modify /etc/nginx/conf.d/default.conf (read-only file system?)\n"
+           "2026/11/05 16:55:37 [notice] 1#1: start worker process 39\n")
+    assert isc.hardening_hits(log) == []
+    assert isc.hardening_hits(log + "nginx: [emerg] open() \"/var/run/nginx.pid\" failed (30: Read-only file system)\n") \
+        == ["Read-only file system"]
+    assert isc.hardening_hits("Unhandled exception. System.UnauthorizedAccessException: Access to the path '/app/x' is denied.") \
+        == ["Access to the path '/app/x' is denied", "UnauthorizedAccessException"]
