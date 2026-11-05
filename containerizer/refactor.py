@@ -191,7 +191,7 @@ def skip_reason(f: dict) -> str | None:
     if f.get("dormant"):
         return "dormant: library code the component never reaches"
     if f.get("resolved_by"):                # a platform technique of this component settles it (techniques.py)
-        return HANDLED_PREFIX + f"{f['resolved_by']}: the code stays as it is"
+        return HANDLED_PREFIX + f"the generated configuration ({f['resolved_by']}) settles it: the code stays as it is"
     if (how := platform_fixes().get(f.get("id"))) is not None:
         return HANDLED_PREFIX + (how or "the generated container configuration settles it")
     if sev in ("blocker", "rewrite"):
