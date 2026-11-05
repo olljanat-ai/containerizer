@@ -10,7 +10,7 @@ ConditionPathExists=!/run/elemental/recovery_mode
 User=containerizer
 Group=containerizer
 # Docker through the guard (containerizer/dockerguard.py), not Docker's own socket: the docker group is
-# root-equivalent, and the worker builds and runs the scanned repositories' code (docs/appliance.md)
+# root-equivalent, and the worker builds and runs the scanned repositories' code (docs/appliance-admin.md#builds-of-scanned-code)
 Environment=DOCKER_HOST=unix:///run/containerizer/docker-guard.sock
 EnvironmentFile=/etc/containerizer/worker.env
 # LLM-heavy mode from appliance.env (cz-firstboot), off by default
@@ -45,7 +45,7 @@ Restart=on-failure
 RestartSec=30
 # The worker builds and runs the scanned repositories' images through the Docker socket guard (no privileged
 # containers, no host network, mounts from its own folder only); builds and runs sit on Docker's bridges, which the
-# firewall keeps away from the appliance's services and the k3s networks (docs/appliance.md).
+# firewall keeps away from the appliance's services and the k3s networks (docs/appliance-admin.md#builds-of-scanned-code).
 NoNewPrivileges=yes
 ProtectSystem=full
 ProtectKernelTunables=yes

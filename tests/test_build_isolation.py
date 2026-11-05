@@ -1,5 +1,5 @@
-"""Builds and runs of scanned repositories are isolated from the appliance (issue #255, docs/appliance.md
-"Builds of scanned code"): no host network for builds and scanner containers, and the firewall keeps Docker's
+"""Builds and runs of scanned repositories are isolated from the appliance (issue #255,
+docs/appliance-admin.md#builds-of-scanned-code): no host network for builds and scanner containers, and the firewall keeps Docker's
 bridges (where builds and verification runs live) away from the appliance's own services and the k3s networks."""
 from containerizer import imagescan, verify
 

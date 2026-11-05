@@ -1,5 +1,5 @@
-"""Docker socket guard: the scan worker's only way to Docker on the appliance (docs/appliance.md, "Builds of scanned
-code"; issue #255).
+"""Docker socket guard: the scan worker's only way to Docker on the appliance
+(docs/appliance-admin.md#builds-of-scanned-code; issue #255).
 
 The worker builds and runs the scanned repositories' images. Docker's own socket is root on the host: whoever can
 call it can start a privileged container, mount `/`, join the host's network namespace or `docker exec` into the
@@ -335,6 +335,20 @@ async def _pump(r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
             pass
 
 
+async def _linger(r: asyncio.StreamReader, limit: int = 1 << 30, idle: float = 5.0) -> None:
+    """Read and drop what the client still sends (a refused build's context), so that it reads the refusal
+    instead of a connection reset."""
+    seen = 0
+    try:
+        while seen < limit:
+            data = await asyncio.wait_for(r.read(65536), idle)
+            if not data:
+                return
+            seen += len(data)
+    except (asyncio.TimeoutError, ConnectionError):
+        pass
+
+
 async def _inspect(upstream: str, ref: str) -> dict | None:
     r, w = await asyncio.open_unix_connection(upstream)
     try:
@@ -391,6 +405,7 @@ class Guard:
             except Denied as e:
                 cw.write(_response(403, "Forbidden", str(e)))
                 await cw.drain()
+                await _linger(cr)
                 return
             ur, uw = await asyncio.open_unix_connection(self.upstream)
             keep = [(k, v) for k, v in headers if k.lower() not in HOP | ({"content-length", "transfer-encoding"}

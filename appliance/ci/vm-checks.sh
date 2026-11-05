@@ -236,7 +236,7 @@ test "$(awk '{print $1}' /proc/sys/kernel/printk)" -le 4
 echo "ok: console log level $(cat /proc/sys/kernel/printk)"
 
 step "builds of scanned code: the worker has no Docker socket of its own, builds and runs reach nothing on the host"
-# docs/appliance.md "Builds of scanned code" (issue #255)
+# docs/appliance-admin.md#builds-of-scanned-code (issue #255)
 if id -nG containerizer | grep -qw docker; then fail "containerizer must not be in the docker group"; fi
 systemctl is-active --quiet containerizer-docker-guard.socket || fail "containerizer-docker-guard.socket is not listening"
 wpid=$(systemctl show -p MainPID --value containerizer-worker.service)

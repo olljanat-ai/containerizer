@@ -9,7 +9,7 @@ export CONTAINERIZER_CREDENTIAL_KEY_FILE="$CREDENTIALS_DIRECTORY/credential-key"
 CONTAINERIZER_WORKER_HOSTS="localhost${CONTAINERIZER_WORKER_HOSTS:+,$CONTAINERIZER_WORKER_HOSTS}"
 export CONTAINERIZER_WORKER_HOSTS
 export HOME=/var/lib/containerizer/worker
-# builds of scanned code never get the host network, whatever worker.env says (docs/appliance.md)
+# builds of scanned code never get the host network, whatever worker.env says (docs/appliance-admin.md#builds-of-scanned-code)
 export CONTAINERIZER_BUILD_HOST_NETWORK=0
 exec /usr/lib/containerizer/venv/bin/python -m containerizer worker --data-dir /var/lib/containerizer/worker \
   --metrics-host 127.0.0.1 --metrics-port 9464

@@ -10,6 +10,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+The OS image changes (`appliance/`, #255): release as a minor version.
+
 - **Platform fixes for refactor findings** ([docs](docs/platform-fixes.md)): findings that the generated
   configuration can satisfy no longer need code changes, and count as `config` in the rating. A plan rule names the
   findings it `resolves`; three techniques are new: code that switches on `Environment.MachineName` gets the pod
@@ -30,6 +32,17 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   changes are put back as they were. An answer that still changes more than 40 lines per finding
   (`max_changed_lines_per_finding`) is asked again, then left out with the reason. The order page shows the
   lines changed per finding, and the patch header lists them with why a code change was needed.
+
+- **Builds of scanned code are isolated from the appliance** ([builds of scanned code](docs/appliance-admin.md#builds-of-scanned-code), #255).
+  The scan worker and the LLM queue runner are no longer in the root-equivalent `docker` group: they reach Docker
+  through a guard (`containerizer-docker-guard`, `containerizer/dockerguard.py`) that refuses privileged containers,
+  host namespaces, devices, extra capabilities, bind mounts outside the worker's folders, non-loopback ports and any
+  call on the appliance's own containers. The firewall answers only DNS on Docker's bridges (no SQL Server, registry,
+  Grafana, k3s API or kubelet) and keeps them off the k3s networks; builds never use the host network (Docker refuses
+  the `network.host` build entitlement too) and Docker runs every container with `no-new-privileges`. No scanned
+  application changes; a build that reached an appliance service on purpose (none is known) now fails to connect.
+  Outside the appliance, `CONTAINERIZER_BUILD_HOST_NETWORK=1` brings back the host network for builds behind a proxy
+  on `127.0.0.1` (it was automatic before).
 
 ## 0.16.4 (2026-11-05)
 

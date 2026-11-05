@@ -6,6 +6,6 @@ export CONTAINERIZER_SQL_PASSWORD
 # opens the LLM administrators register on the admin pages
 export CONTAINERIZER_CREDENTIAL_KEY_FILE="$CREDENTIALS_DIRECTORY/credential-key"
 export HOME=/var/lib/containerizer/worker
-# builds of scanned code never get the host network, whatever worker.env says (docs/appliance.md)
+# builds of scanned code never get the host network, whatever worker.env says (docs/appliance-admin.md#builds-of-scanned-code)
 export CONTAINERIZER_BUILD_HOST_NETWORK=0
 exec /usr/lib/containerizer/venv/bin/python -m containerizer llm-queue --metrics-host 127.0.0.1 --metrics-port 9465

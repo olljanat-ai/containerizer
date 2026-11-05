@@ -88,7 +88,7 @@ INBOUND_TCP = (22, 443)           # SSH and HTTPS; nothing else is reachable fro
 K3S4 = ("10.42.0.0/16", "10.43.0.0/16")
 K3S_IFACES = ("cni0", "flannel.1", "veth*")
 # Docker's bridges: only builds and verification runs of scanned repositories live there (the appliance's own
-# containers use the host network), so they are untrusted (docs/appliance.md, "Builds of scanned code"): from them
+# containers use the host network), so they are untrusted (docs/appliance-admin.md#builds-of-scanned-code): from them
 # the host answers only DNS, they never reach the k3s networks, and everything else goes through the egress list
 DOCKER4 = ("172.16.0.0/12",)
 DOCKER_IFACES = ("docker0", "br-*")

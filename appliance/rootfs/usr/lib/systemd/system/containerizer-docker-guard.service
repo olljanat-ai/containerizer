@@ -2,7 +2,7 @@
 Description=containerizer appliance: Docker socket guard (containerizer/dockerguard.py)
 # Builds and runs of the scanned repositories' code go through it: no privileged containers, no host network or
 # other host namespaces, bind mounts from the worker's folders only, no calls on the appliance's own containers
-# (docs/appliance.md, "Builds of scanned code").
+# (docs/appliance-admin.md#builds-of-scanned-code).
 Requires=containerizer-docker-guard.socket docker.service
 After=containerizer-docker-guard.socket docker.service
 ConditionKernelCommandLine=!cdroot
