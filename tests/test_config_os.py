@@ -278,12 +278,6 @@ def test_aws_profile(tmp_path):
     assert "cfg-aws-profile-credentials" in ids(tmp_path)
 
 
-def test_hardcoded_credentials(tmp_path):
-    web_app(tmp_path, '''
-        class A { string Cs = "Server=sql01;Database=App;User Id=app;Password=Sup3rSecret!;";
-                  NetworkCredential N = new NetworkCredential("svc-app", "P@ssw0rd"); }''')
-    c = assess(tmp_path).components[0]
-    assert any(f.rule.id == "cfg-hardcoded-credentials" and f.severity == "refactor" for f in c.findings)
 
 
 def test_credentials_from_config_are_not_hardcoded(tmp_path):

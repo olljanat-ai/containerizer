@@ -732,26 +732,6 @@ rules:
       - https://docs.aws.amazon.com/sdk-for-net/v3/developer-guide/sdk-store.html
       - https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html
 
-  - id: cfg-hardcoded-credentials
-    applies_to: [dotnet]
-    when:
-      all:
-        - not: {role: 'test'}
-        - code: '"[^"\n;]*(Server|Data Source|Host|Address)\s*=[^"\n]*;\s*(Password|Pwd)\s*=\s*(?!(your\w*|my\w*|password|passwd|pwd|pass|x{3,}|\*+|<[^>]*>|\[[^\]]*\]|changeme|secret|test|sample|example|dummy)\s*[;"])[^;"\n{\s][^;"\n{]{2,}|new\s+NetworkCredential\(\s*"[^"\n]+"\s*,\s*"(?!(your\w*|my\w*|password|passwd|pwd|pass|x{3,}|\*+|<[^>]*>|\[[^\]]*\]|changeme|secret|test|sample|example|dummy)\s*[;"])[^"\n]{3,}"|"(?-i:AKIA[0-9A-Z]{16})"'
-    severity: refactor
-    category: secrets
-    effort: 0.5
-    windows_container: true
-    title: Credentials hard-coded in source
-    why: >-
-      A connection string or credential written in code cannot be set per environment: the container
-      cannot point the app at its own server (the sandbox's database, a test system) without a rebuild.
-    fix: >-
-      Read the value from configuration (ConnectionStrings / options) with today's value as the
-      default, so the container can set its own through an environment variable.
-    refs:
-      - https://kubernetes.io/docs/concepts/configuration/secret/
-
   - id: cfg-localhost-endpoint-in-code
     applies_to: [dotnet]
     confidence: 0.8

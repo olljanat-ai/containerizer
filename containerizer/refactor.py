@@ -92,7 +92,7 @@ def keeps_windows(fix: str) -> bool:
 
 # findings that a container settles without a code change: never sent to the LLM (core-eol: an out-of-support
 # .NET Core / .NET 5-7 app runs as it is, rolled forward; retargeting it is an upgrade, not a containerization)
-NO_CODE_CHANGE = frozenset({"core-eol", "secrets-in-config"})
+NO_CODE_CHANGE = frozenset({"core-eol"})
 
 # project files whose target framework a refactoring keeps (keep_target_frameworks)
 PROJECT_FILES = ("*.csproj", "*.vbproj", "*.fsproj", "Directory.Build.props")

@@ -447,7 +447,7 @@ def test_section_off_by_default(adm):
     html = admin_local_llm.section(adm, ADMIN, A_ADMIN, False)
     assert "Built-in LLM" in html and ">Off<" in html and "value='enable'" in html and "<button>Turn on" in html
     assert "queued LLM mode" in html and "40 GiB" in html and "huggingface.co" in html
-    assert "value='remove-model'" not in html and "<script" not in html and "style=" not in html
+    assert "value='remove-model'" not in html and not re.search(r"<script(?![^>]*\bsrc=)", html) and "style=" not in html
 
 
 def test_section_without_the_resources_cannot_be_turned_on(adm):

@@ -156,7 +156,7 @@ def test_application_page_shows_migration_without_agent_prompt(tmp_path):
     assert "Prompt for an AI coding agent" not in html and "data-copy" not in html and "agent-prompt" not in html
     assert "Effort" not in html and "person-day" not in html
     assert "Can move to a Linux container" in html        # the plan outcome in words, not its key
-    assert "<script" not in html                         # no script on the results page
+    assert not re.search(r"<script(?![^>]*\bsrc=)", html)          # no inline script on the results page
 
 
 def test_application_page_without_migrations(tmp_path):

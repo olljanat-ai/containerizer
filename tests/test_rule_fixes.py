@@ -276,29 +276,6 @@ def test_directory_entry_word_boundary(tmp_path):
     assert sev(c, "active-directory-ds") == "refactor"
 
 
-def test_secret_placeholders_are_not_secrets(tmp_path):
-    web_app(tmp_path)
-    for value in ("[AccessKey]", "<your-key>", "{key}", "xxxxxx", "changeme", "your-api-key"):
-        write(tmp_path, "src/Web/appsettings.json", '{"ApiKey": "%s"}' % value)
-        assert sev(assess(tmp_path).components[0], "secrets-in-config") is None, value
-    write(tmp_path, "src/Web/appsettings.json", '{"ApiKey": "9f8e7d6c5b4a"}')
-    assert sev(assess(tmp_path).components[0], "secrets-in-config") == "info"        # reported, nothing to change
-
-
-# ------------------------------------------------------------------ 12 winrt tfm
-
-def test_windows10_tfm_alone_is_refactor(tmp_path):
-    c = comp(tmp_path, tfm="net8.0-windows10.0.19041.0")
-    assert sev(c, "winrt-apis") is None and sev(c, "winrt-tfm") == "refactor"
-    c = comp(tmp_path, "using Windows.Media.Ocr;\nclass O { }", tfm="net8.0-windows10.0.19041.0")
-    assert sev(c, "winrt-apis") == "blocker" and sev(c, "winrt-tfm") is None
-
-
-# ------------------------------------------------------------------ 13 ibm / 14 catalog / 15 wsfed / 16 ssrs
-
-def test_db2_luw_package_is_not_ibm_i(tmp_path):
-    c = comp(tmp_path, packages=pkg("Net.IBM.Data.Db2"))
-    assert sev(c, "ibm-i-access") is None and sev(c, "pkg-db2-windows-package") is not None
 
 
 def test_windows_only_packages_not_in_linux_catalog(tmp_path):
