@@ -8,7 +8,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## Unreleased
+## 0.12.2 (2026-11-05)
 
 - Patch releases (`vX.Y.Z`, Z > 0) publish only the app update and the appliance image, no ISO, qcow2 or
   checksums (built for nothing: the series' `vX.Y.0` has the same OS); the release workflow is faster for them.
