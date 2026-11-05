@@ -13,6 +13,10 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 - Verification and the security gate's hardened run name their containers uniquely: jobs of one LLM queue runner
   that verified in the same second got "Conflict. The container name ... is already in use" (Make it A of the lab's
   control-tower, "Run failed ... unexplained").
+- LLM queue: **Requeue** of a job rejected for waiting too long works: "Reject automatically after" counted from the
+  job's approval when it had one, so an approved job requeued was rejected again at once. It counts from the later
+  of the approval and the (last) queueing now, and a job the runner puts back in the queue (a restart, an app update)
+  starts its wait again too: the lab's product-returns order was rejected that way after a restart.
 
 ## 0.12.9 (2026-11-05)
 

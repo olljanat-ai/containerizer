@@ -1933,7 +1933,7 @@ GRANT EXECUTE ON [${schema}].AutoApproveLlmJobs TO [${schema}_writer];
 GRANT EXECUTE ON [${schema}].AutoApproveLlmJobs TO [${schema}_admin];
 GO
 -- Reject what waited too long (LlmQueueSettings.RejectAfterHours): waiting for approval or queued (never running)
--- for longer than that since it was queued, or approved. Called with AutoApproveLlmJobs, before it. Returns how many.
+-- for longer than that since it was queued (again), or approved, whichever was later. Called with AutoApproveLlmJobs, before it. Returns how many.
 CREATE OR ALTER PROCEDURE [${schema}].AutoRejectLlmJobs
 AS
 BEGIN
@@ -1941,11 +1941,14 @@ BEGIN
     DECLARE @hours int = (SELECT RejectAfterHours FROM [${schema}].LlmQueueSettings WHERE SettingsId = 1), @n int = 0;
     IF COALESCE(@hours, 0) > 0
     BEGIN
+        -- from the later of the approval and the (last) queueing: Requeue and a job back in the queue (a runner
+        -- restarted) start the wait again; before, an approved job requeued was rejected again at once
         UPDATE [${schema}].LlmJob
         SET Status = N'skipped', FinishedAt = SYSUTCDATETIME(),
-            Note = N'rejected automatically: waited more than ' + CAST(@hours AS nvarchar(10)) + N' hours'
+            Note = N'rejected automatically: waited more than ' + CAST(@hours AS nvarchar(10))
+                   + CASE WHEN @hours = 1 THEN N' hour' ELSE N' hours' END
         WHERE Status IN (N'approval', N'queued')
-          AND COALESCE(ApprovedAt, QueuedAt) < DATEADD(hour, -@hours, SYSUTCDATETIME());
+          AND CASE WHEN ApprovedAt > QueuedAt THEN ApprovedAt ELSE QueuedAt END < DATEADD(hour, -@hours, SYSUTCDATETIME());
         SET @n = @@ROWCOUNT;
     END;
     SELECT @n AS Rejected;
@@ -1955,6 +1958,10 @@ GRANT EXECUTE ON [${schema}].AutoRejectLlmJobs TO [${schema}_writer];
 GRANT EXECUTE ON [${schema}].AutoRejectLlmJobs TO [${schema}_admin];
 -- requeueing a job starts its wait again (RejectAfterHours counts from QueuedAt)
 GRANT UPDATE ON [${schema}].LlmJob (QueuedAt) TO [${schema}_admin];
+GO
+-- ... and so does a job the runner puts back in the queue (stopped, restarted for an app update, or found without a
+-- runner): llmqueue.Runner.release and recover
+GRANT UPDATE ON [${schema}].LlmJob (QueuedAt) TO [${schema}_writer];
 GO
 GRANT UPDATE ON [${schema}].LlmJob (ApprovedBy, ApprovedAt) TO [${schema}_admin];
 GO
