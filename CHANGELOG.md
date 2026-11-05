@@ -8,7 +8,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## Unreleased
+## 0.15.0 (2026-11-05)
 
 - LLM token usage for the long run: every call an LLM answers is recorded in the results database (`LlmUsage`) with
   the tokens it reported (not estimates), the application, the component, the feature, the model and the cost; the
