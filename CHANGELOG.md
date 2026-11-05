@@ -10,6 +10,14 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- Security gate: the hardened run no longer fails ASP.NET Core components on their Data Protection key ring.
+  Since the key ring became a Secret the cluster makes, the run mounted that folder empty and read-only, the app
+  wrote a key there and was denied, and the gate dropped the component ("does not run with the hardened pod
+  security context"): scans and Make it A patched copies lost working components (the lab's trade-rebates lost
+  its API). The run now gives that folder to the app writable; other Secrets stay empty and read-only.
+- "Make it A": the patched copy deploys the components the patch does not change as the application's folder
+  deployed them (no new build-and-run; the gate's hardened run is waived for them, not the build, lint or
+  vulnerability checks), so a patch for one component cannot take another one out of the sandbox.
 - "Make it A": a NuGet error that needs no LLM (an ASP.NET Core framework package such as
   `Microsoft.AspNetCore.HttpOverrides` that an LLM added, a package downgrade) is fixed also when the order's repair
   rounds or LLM calls are used up, with up to two more builds. Before, an order whose last build failed only on

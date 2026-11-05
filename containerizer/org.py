@@ -247,8 +247,11 @@ def gate_failure(comp: dict) -> str:
                 return f"{s.get('kind', 'image')} scan failed: {s['error']}"[:300]
             return f"{len(s.get('blocking', []))} fixable vulnerabilities at or above the gate threshold ({s.get('kind')})"
     if (comp.get("run") or {}).get("status") == "hardening-failure":
-        return "does not run with the hardened pod security context"
+        return HARDENED_RUN
     return ""
+
+
+HARDENED_RUN = "does not run with the hardened pod security context"
 
 
 # --------------------------------------------------------------------------- images
@@ -1253,7 +1256,7 @@ def tag_local(local: str, ref: str) -> None:
 def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Registry | None", tag: str, gitops,
                res: RepoResult, work: Path, app: str, assessment_id: int | None = None,
                dev_database: bool = True, connectivity_from: Path | None = None,
-               keep_patched: bool = True) -> RepoResult:
+               keep_patched: bool = True, gate_waive: set | None = None) -> RepoResult:
     """Deploy an assessed application to the sandbox through the output repository: the components rated A
     (buildable, verified when verification is on) through the security gate (or generated without it), their
     images built and pushed under <registry>/<namespace>/<component>:<tag> (or tagged locally: local_images),
@@ -1289,6 +1292,7 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
     dd, dd_row = (_dev_database(o, res, a, keep, work, reg, tag, lab) if keep and dev_database else (None, None))
     gen = work / "gen" / app
     names = {k8s_name(c.name): c for c in keep}
+    waived: dict = {}
     g = None
     while keep:
         if gen.exists():
@@ -1309,6 +1313,10 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
                      fail_on=o.fail_on, devdb=dd, lab=lab, lab_report=lab_report, approved_egress=approved, links=linked,
                      ci_provider=o.provider)
         failed = {c["component"]: gate_failure(c) for c in g["components"] if gate_failure(c)}
+        for c in g["components"]:       # gate_waive: the hardened run of a component deployed as it is (variant.py)
+            cname = c["component"]
+            if cname in failed and failed[cname] == HARDENED_RUN and cname in names and names[cname].name in (gate_waive or ()):
+                waived[names[cname].name] = failed.pop(cname)
         if not failed:
             break
         for cname, why in failed.items():
@@ -1343,6 +1351,9 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
                  "project_name": c.project.name,
                  "verification": next((v.get("status") for v in getattr(a, "verification", None) or [] if v.get("component") == c.name),
                                       "not run")}
+        if c.name in waived:
+            entry["gate_waived"] = (f"{waived[c.name]}: waived, the component is deployed as before (the patch does not "
+                                    f"change it, and it passed the gate when the scan deployed it)")
         if o.push_images and reg:
             progress.step(progress.PUSH)
             progress.detail(f"{c.name} to {o.registry}")

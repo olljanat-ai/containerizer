@@ -513,6 +513,20 @@ HARDENING_ERRORS = re.compile(r"Read-only file system|Permission denied|Unauthor
                               r"Access to the path .{0,200} is denied|\bEACCES\b|\bEROFS\b|Operation not permitted", re.I)
 
 
+def cluster_filled_secrets(k8s_docs: list[dict]) -> set:
+    """The Secrets the cluster makes with content from these manifests: an ExternalSecret's target with a template
+    (the ASP.NET Core Data Protection key ring from a generated password). Mounted read-only and empty, the app would
+    find no key and write one there, which the hardened run took for a failure; the run gives it the folder
+    writable instead, as an emptyDir (in the cluster the key is there and the app only reads it)."""
+    out = set()
+    for d in k8s_docs or []:
+        if isinstance(d, dict) and d.get("kind") == "ExternalSecret":
+            target = ((d.get("spec") or {}).get("target") or {})
+            if (target.get("template") or {}).get("data") and target.get("name"):
+                out.add(target["name"])
+    return out
+
+
 def run_as_manifest(tag: str, k8s_docs: list[dict], wait: int = 40) -> dict:
     """Start an image with the docker equivalent of its generated pod spec (user, read-only root,
     capabilities, sysctls, emptyDir mounts, env, memory limit) and look for hardening failures.
@@ -544,9 +558,10 @@ def run_as_manifest(tag: str, k8s_docs: list[dict], wait: int = 40) -> dict:
         cmd += ["--memory", mem.replace("Mi", "m").replace("Gi", "g")]
     vols = {v["name"]: v for v in pod.get("volumes") or []}
     fs = psc.get("fsGroup", gid)
+    filled = cluster_filled_secrets(k8s_docs)
     for m in c.get("volumeMounts") or []:
         v = vols.get(m["name"], {})
-        if "secret" in v:
+        if "secret" in v and (v["secret"] or {}).get("secretName") not in filled:
             cmd += ["--tmpfs", f"{m['mountPath']}:ro,mode=0550"]      # empty: the Secret is optional
         else:   # emptyDir / PVC: writable for the pod's fsGroup, like Kubernetes does
             cmd += ["--tmpfs", f"{m['mountPath']}:rw,exec,uid={uid or 0},gid={fs or 0},mode=1777"]
