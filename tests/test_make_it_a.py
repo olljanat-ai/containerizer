@@ -393,8 +393,9 @@ def test_the_gate_waives_the_hardened_run_only_for_the_components_named(tmp_path
                                  path="acme/_/shop"), res, tmp_path / f"work{n}", "shop-web", gate_waive=waive), a
     res, a = deploy(None, 1)
     name = a.components[0].name
-    assert res.status == "no-a-components" and res.excluded == [
+    assert res.status == "no-a-components" and [{k: x[k] for k in ("component", "reason")} for x in res.excluded] == [
         {"component": name, "reason": "security gate: does not run with the hardened pod security context"}]
+    assert res.excluded[0]["detail"].startswith("Run with the pod's security context")      # What failed
     res, _ = deploy({name}, 2)
     assert res.status == "deployed" and not res.excluded
     assert res.components[0]["gate_waived"].startswith("does not run with the hardened pod security context: waived")
