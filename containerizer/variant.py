@@ -470,12 +470,12 @@ def deploy(connect, key, payload: dict, job: int, result: dict, work: Path, name
         return {"status": "skipped", "namespace": ns, "folder": rel, "in_place": True,
                 "reason": f"not deployed: {res.reason}", "excluded": res.excluded}
     rev = _head(out.root)
-    from .sandbox import deployed_apps
+    from .sandbox import deployed_apps, main_url
     comps = next((x["components"] for x in deployed_apps(out.root, {ns})), [])
     sb = {"status": "deployed", "in_place": True, "namespace": ns, "folder": rel, "of": rel, "scan_id": int(scan["ScanId"]),
           "tag": tag, "images": [c.get("image") for c in res.components], "revision": rev,
           "previous_revision": res.patched.get("previous_revision"), "replaced_job": res.patched.get("replaced_job"),
-          "url": next((c.get("url") for c in comps if c.get("url")), None), "url_check": None, "checked_at": None,
+          "url": main_url(comps), "url_check": None, "checked_at": None,
           "deployed_at": _iso(now), "commit": payload.get("commit"), "excluded": res.excluded,
           "local_images": any(c.get("image_source") == "local" for c in res.components),
           "reason": "deployed"}
@@ -721,12 +721,12 @@ def migrate(connect, key, job: int, payload: dict, result: dict, work: Path, als
                                   f"{old} (patched copies run in their application's folder now)")
     if res.status != "deployed":
         raise Skip(f"not moved: {res.reason}")
-    from .sandbox import deployed_apps
+    from .sandbox import deployed_apps, main_url
     comps = next((x["components"] for x in deployed_apps(out.root, {ns})), [])
     return {**sb, "status": "deployed", "in_place": True, "namespace": ns, "folder": rel, "of": rel,
             "images": [c.get("image") for c in res.components], "revision": _head(out.root),
             "previous_revision": res.patched.get("previous_revision"), "replaced_job": res.patched.get("replaced_job"),
-            "url": next((c.get("url") for c in comps if c.get("url")), None), "url_check": None, "checked_at": None,
+            "url": main_url(comps), "url_check": None, "checked_at": None,
             "health": None, "moved_at": _iso(now),
             "moved_from": {"folder": old, "namespace": sb.get("namespace"), "url": sb.get("url")},
             "reason": f"moved from {old} into the application's own folder and namespace {ns} (patched copies run in "
@@ -952,6 +952,9 @@ def refresh(connect, key, work: Path, log=print, now: datetime | None = None, he
                     h = (health or check_health)(out.root, sb.get("namespace") or "", "", timeout=RECHECK_TIMEOUT)
                     new = {k: v for k, v in sb.items() if k not in ("removed_at", "removed_by")}
                     new.update(h)
+                    from .sandbox import deployed_apps, main_url
+                    comps = next((x["components"] for x in deployed_apps(out.root, {sb.get("namespace")})), [])
+                    new["url"] = main_url(comps) or sb.get("url")
                     new["looked_at"] = _iso(now)
                     if sb.get("status") == "removed":
                         new["back_at"] = _iso(now)
