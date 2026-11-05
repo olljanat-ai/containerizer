@@ -104,6 +104,19 @@ For each service that the component needs and that is on, the scan writes the fo
   gives each app a connection string, not an identity. `lab/README.md` says when no setting was found.
 - **Database schema.** The databases start empty. Run the app's migrations at start-up, as most EF Core
   apps do, or upload a [dev database backup](dev-databases.md) for SQL Server, PostgreSQL or MySQL.
+- **The repository's SQL setup scripts (SQL Server).** Many apps are set up by a DBA with scripts in the
+  repository rather than by migrations. The scan finds them: in the order a deploy script runs them
+  (`Invoke-Sqlcmd -InputFile ...`, `sqlcmd -i ...`), else every `.sql` file of a folder named `db`, `database`,
+  `sql`, `sqlscripts` or `schema`, by name. It leaves out what the lab does itself or what needs server-wide rights
+  (a database, a login, server configuration, another database, `sqlcmd` directives such as `:on error exit`) and
+  a script's own `BEGIN TRANSACTION` / `COMMIT` batches, and puts the rest into the ConfigMap
+  `cz-lab-sqlserver-init` of the app's namespace (`lab/k8s.yaml`; `lab/README.md` lists the scripts and what was
+  left out). The lab agent runs them once into the app's database, as the app's own login (the owner of that
+  database only), batch by batch: a batch that fails (a user for a production login, say) is reported on
+  **Admin -> Lab services** and the rest goes on. They run again when they change, or when the database is made
+  again (Admin -> Dev databases -> Delete); the database keeps the hash of what ran (extended property
+  `containerizer.lab-init`). A script that only some deploy step runs later (reference data "after the first
+  import") is not picked up: run it yourself if the app needs it.
 
 ## How it works
 
