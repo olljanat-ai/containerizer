@@ -706,7 +706,11 @@ def running_work(llm: bool = True) -> int | None:
 
 
 def restart_check(current: datetime | None = None) -> str:
-    """Carry out the planned restart when it is due; what happened."""
+    """Carry out the planned restart when it is due; what happened. (Also, every minute: network_sync.)"""
+    try:
+        network_sync()
+    except (AgentError, OSError, subprocess.TimeoutExpired) as ex:
+        log(f"network: {ex}")
     drained = drain_check(current)
     plan = load_plan()
     if not plan:
@@ -1447,6 +1451,33 @@ def apply_network(cfg: dict) -> dict:
     return network_state()
 
 
+def network_sync() -> list[str]:
+    """systemd-networkd's copies of /etc/containerizer/network/*.network made readable for it: cz-firstboot copies
+    them at every boot with `cp` under umask 077, so they were root's only (0600), and systemd-networkd, which runs
+    as systemd-network, could not read them and used the DHCP default: a static address was lost at the first
+    restart (0.13.0). A copy that is missing, differs or is not 0644 is written again, and the network reloaded and
+    bond0 configured again. `restart-check` (every minute) and `status` call it. Returns the files fixed."""
+    if not P.network.is_dir():
+        return []
+    fixed = []
+    for f in sorted(P.network.glob("*.network")):
+        dst = P.network_run / f.name
+        try:
+            text = f.read_text()
+            if not dst.is_file() or dst.read_text() != text or (dst.stat().st_mode & 0o777) != 0o644:
+                P.network_run.mkdir(parents=True, exist_ok=True)
+                atomic_write(dst, text, 0o644)
+                fixed.append(f.name)
+        except OSError as ex:
+            log(f"network: {f.name} not given to systemd-networkd: {ex}")
+    if fixed:
+        run(["networkctl", "reload"], timeout=60, check=False)
+        run(["networkctl", "reconfigure", "bond0"], timeout=60, check=False)
+        run(["systemctl", "restart", "--no-block", "containerizer-addresses.service"], timeout=60, check=False)
+        log(f"network: {', '.join(fixed)} made readable for systemd-networkd; bond0 configured again")
+    return fixed
+
+
 def network_text(st: dict) -> str:
     c = st.get("configured") or {}
     lines = [f"mode:      {st['mode']}" + (f" ({P.network}/10-static.network)" if c else " (the default)")]
@@ -1591,6 +1622,10 @@ def main(argv=None) -> int:
     cmd = argv[0]
     try:
         if cmd == "status":
+            try:
+                network_sync()
+            except (AgentError, OSError, subprocess.TimeoutExpired) as ex:
+                log(f"network: {ex}")
             publish(egress_state=egress_status())
             try:
                 local_llm.reconcile()

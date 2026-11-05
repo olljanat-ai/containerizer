@@ -960,3 +960,24 @@ def test_network_command_sets_a_static_address_and_back_to_dhcp(paths, monkeypat
     assert not (paths.network / "10-static.network").exists() and not (paths.network_run / "10-static.network").exists()
     assert "mode:      dhcp (the default)" in capsys.readouterr().out
     assert sysagent.main(["network", "static", "192.0.2.10/24"]) == 2          # the usage
+
+
+def test_a_static_address_survives_a_restart(paths, monkeypatch):
+    """0.13.0 on a Dell server: after a restart bond0 used DHCP: cz-firstboot copies the static file with `cp` under
+    umask 077 (0600), and systemd-networkd (user systemd-network) cannot read it. restart-check (every minute) and
+    status make the copy readable and configure bond0 again; nothing when it is fine."""
+    import os
+    r = fake_run(monkeypatch)
+    paths.network.mkdir(parents=True)
+    (paths.network / "10-static.network").write_text("[Match]\nName=bond0\n[Network]\nAddress=10.0.0.5/24\n")
+    paths.network_run.mkdir(parents=True)
+    copy = paths.network_run / "10-static.network"
+    copy.write_text((paths.network / "10-static.network").read_text())
+    os.chmod(copy, 0o600)                                   # as cz-firstboot leaves it
+    assert sysagent.restart_check() == "nothing planned"
+    assert (copy.stat().st_mode & 0o777) == 0o644
+    assert ["networkctl", "reload"] in r.calls and ["networkctl", "reconfigure", "bond0"] in r.calls
+    r.calls.clear()
+    assert sysagent.network_sync() == [] and r.calls == []           # fine now: nothing done
+    (paths.network / "10-static.network").write_text("[Match]\nName=bond0\n[Network]\nAddress=10.0.0.6/24\n")
+    assert sysagent.network_sync() == ["10-static.network"] and "10.0.0.6" in copy.read_text()
