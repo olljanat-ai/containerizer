@@ -36,6 +36,7 @@ def paths(tmp_path, monkeypatch):
                        rules=tmp_path / "etc" / "egress.json", history=tmp_path / "var" / "history.jsonl",
                        task=tmp_path / "var" / "last-task.json", plan=tmp_path / "var" / "restart-plan.json",
                        drain=tmp_path / "var" / "llm-drain.json",
+                       network=tmp_path / "etc" / "network", network_run=tmp_path / "run" / "systemd-network",
                        run=tmp_path / "run", dnsmasq=tmp_path / "run" / "dnsmasq.conf", nft=tmp_path / "run" / "fw.nft",
                        os_release=tmp_path / "os-release", snapshots=tmp_path / "snapshots",
                        appliance_env=tmp_path / "appliance.env", resolved=tmp_path / "resolv.conf",
@@ -906,3 +907,56 @@ def test_system_page_says_the_llm_runner_finishes_its_jobs(page):
     st["llm_drain"]["until"] = None
     (page.status_dir / "status.json").write_text(json.dumps(st))
     assert "restarts with v1.1.3: when it is answered" in page.handle(ADMIN, "GET", ["system"], {}, {}, shell)[1]
+
+
+
+# ------------------------------------------------------------------------------- network: a static address
+
+def test_static_address_is_checked():
+    from containerizer.netconfig import NetworkError, render, validate
+    cfg = validate("static", "192.0.2.10/24", "192.0.2.1", "192.0.2.53, 192.0.2.54")
+    assert cfg == {"mode": "static", "address": "192.0.2.10/24", "gateway": "192.0.2.1",
+                   "dns": ["192.0.2.53", "192.0.2.54"]}
+    text = render(cfg)
+    assert "[Match]\nName=bond0" in text and "Address=192.0.2.10/24\nGateway=192.0.2.1\nDNS=192.0.2.53\nDNS=192.0.2.54" in text
+    assert validate("static", "2001:db8::10/64", "fe80::1", ["2001:db8::53"])["gateway"] == "fe80::1"
+    assert validate("DHCP") == {"mode": "dhcp"}
+    for bad, why in ((("192.0.2.10", "192.0.2.1", "1.1.1.1"), "prefix length"),
+                     (("192.0.2.0/24", "192.0.2.1", "1.1.1.1"), "network address"),
+                     (("192.0.2.255/24", "192.0.2.1", "1.1.1.1"), "broadcast address"),
+                     (("192.0.2.10/24", "198.51.100.1", "1.1.1.1"), "not in 192.0.2.0/24"),
+                     (("192.0.2.10/24", "192.0.2.10", "1.1.1.1"), "own address"),
+                     (("192.0.2.10/24", "2001:db8::1", "1.1.1.1"), "IP version"),
+                     (("192.0.2.10/24", "192.0.2.1", ""), "at least one DNS"),
+                     (("192.0.2.10/24", "192.0.2.1", "dns.example"), "DNS server"),
+                     (("127.0.0.2/8", "127.0.0.1", "1.1.1.1"), "cannot be"),
+                     (("192.0.2.10/24", "192.0.2.1", "1.1.1.1 1.0.0.1 8.8.8.8 9.9.9.9"), "at most 3")):
+        with pytest.raises(NetworkError, match=why):
+            validate("static", *bad[:2], bad[2])
+
+
+def test_network_command_sets_a_static_address_and_back_to_dhcp(paths, monkeypatch, capsys):
+    """On the console or over SSH: `network static ...` writes the file where it is kept (and copied from at every
+    boot by cz-firstboot) and where systemd-networkd reads it, and configures bond0 again at once."""
+    addr = json.dumps([{"ifname": "bond0", "addr_info": [
+        {"family": "inet", "local": "192.0.2.10", "prefixlen": 24, "scope": "global"},
+        {"family": "inet6", "local": "fe80::1", "prefixlen": 64, "scope": "link"}]}])
+    r = fake_run(monkeypatch, **{"ip -j addr": addr, "ip -j -4 route": json.dumps([{"dst": "default", "gateway": "192.0.2.1"}]),
+                                 "ip -j -6 route": "[]", "resolvectl dns": "Link 3 (bond0): 192.0.2.53\n"})
+    assert sysagent.main(["network", "static", "192.0.2.10/24", "192.0.2.1", "192.0.2.53"]) == 0
+    for d in (paths.network, paths.network_run):
+        assert "Address=192.0.2.10/24" in (d / "10-static.network").read_text()
+    assert ["networkctl", "reload"] in r.calls and ["networkctl", "reconfigure", "bond0"] in r.calls
+    assert ["systemctl", "restart", "--no-block", "containerizer-addresses.service"] in r.calls
+    out = capsys.readouterr().out
+    assert "mode:      static" in out and "addresses: 192.0.2.10/24" in out and "DNS:       192.0.2.53" in out
+    st = sysagent.network_state()
+    assert st["configured"]["gateway"] == "192.0.2.1" and st["gateways"] == ["192.0.2.1"]
+    # a wrong one changes nothing
+    n = len(r.calls)
+    assert sysagent.main(["network", "static", "192.0.2.10/24", "198.51.100.1", "192.0.2.53"]) == 1
+    assert len(r.calls) == n and "Address=192.0.2.10/24" in (paths.network / "10-static.network").read_text()
+    assert sysagent.main(["network", "dhcp"]) == 0
+    assert not (paths.network / "10-static.network").exists() and not (paths.network_run / "10-static.network").exists()
+    assert "mode:      dhcp (the default)" in capsys.readouterr().out
+    assert sysagent.main(["network", "static", "192.0.2.10/24"]) == 2          # the usage

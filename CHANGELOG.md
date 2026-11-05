@@ -8,6 +8,13 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- Appliance: a static address from the console, `python -m containerizer.sysagent network static <address/prefix>
+  <gateway> <dns> [...]` (also `network show` and `network dhcp`): checked, applied at once without a restart, and
+  kept over restarts and upgrades; the DNS filter and the HTTPS certificate follow. Before, a static address
+  meant writing a systemd-networkd file by hand and restarting.
+
 ## 0.12.10 (2026-11-05)
 
 - The components earlier scans left out for vulnerabilities ("not deployed: security gate: 2 fixable
