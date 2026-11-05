@@ -93,3 +93,28 @@ def test_vulnerabilities_do_not_keep_a_component_out_by_default(monkeypatch):
     assert org.vulnerabilities_block() is True and org.gate_failure(comp).startswith("1 fixable vulnerabilities")
     monkeypatch.setattr("containerizer.harden.security", lambda: {"scan": {}})
     assert org.gate_failure({**comp, "build_error": "x"}) == "image build failed"
+
+
+def test_verification_containers_get_unique_names(monkeypatch, tmp_path):
+    """Jobs of one LLM queue runner verify at once: two runs in the same second got the same container name
+    ("Conflict. The container name /cz-verify-833680-1793882057 is already in use", Make it A of control-tower)."""
+    from types import SimpleNamespace
+    from containerizer import imagescan as isc, verify as vf
+    names = []
+
+    def run(cmd, timeout=0):
+        if cmd[:2] == ["docker", "run"]:
+            names.append(cmd[cmd.index("--name") + 1])
+            return (1, "boom") if len(cmd) else (0, "")
+        return 0, ""
+    monkeypatch.setattr(vf, "_run", run)
+    monkeypatch.setattr("time.time", lambda: 1793882057)
+    c = SimpleNamespace(role="web", facts={}, project=SimpleNamespace(dir=tmp_path))
+    for _ in range(2):
+        vf.run(c, {"uid": 1654, "add_writable": [], "port": None}, "img", tmp_path)
+    monkeypatch.setattr(isc, "_run", lambda cmd, timeout=0: (names.append(cmd[cmd.index("--name") + 1]) or (1, "", "x"))
+                        if cmd[:2] == ["docker", "run"] else (0, "", ""))
+    docs = [{"kind": "Deployment", "spec": {"template": {"spec": {"containers": [{"name": "a", "image": "x"}]}}}}]
+    for _ in range(2):
+        isc.run_as_manifest("img", docs)
+    assert len(names) == 4 and len(set(names)) == 4 and all("-1793882057-" in n for n in names)

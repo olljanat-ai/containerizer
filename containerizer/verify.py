@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import re
 import socket
 import subprocess
@@ -221,7 +222,7 @@ def build(a: AppAssessment, c: Component, plan: dict, workdir: Path, timeout: in
 def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | None = None,
         wait: int = 90) -> tuple[str, str, dict]:
     """Returns (status, log, details). status: ok | exited | unhealthy"""
-    name = f"cz-verify-{os.getpid()}-{int(time.time())}"
+    name = f"cz-verify-{os.getpid()}-{int(time.time())}-{secrets.token_hex(3)}"   # unique: jobs run at once
     uid = 101 if c.role == "spa" else plan.get("uid") or images()["dotnet"]["app_uid"]
     cmd = ["docker", "run", "-d", "--name", name, "--read-only", "--cap-drop", "ALL",
            "--security-opt", "no-new-privileges", "--memory", "768m", "--add-host", "sql01.corp.local:127.0.0.1"]

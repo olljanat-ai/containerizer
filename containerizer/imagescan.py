@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import re
 import shutil
 import subprocess
@@ -540,7 +541,7 @@ def run_as_manifest(tag: str, k8s_docs: list[dict], wait: int = 40) -> dict:
     c = pod["containers"][0]
     psc, csc = pod.get("securityContext") or {}, c.get("securityContext") or {}
     uid, gid = csc.get("runAsUser", psc.get("runAsUser")), csc.get("runAsGroup", psc.get("runAsGroup"))
-    name = f"cz-gate-{os.getpid()}-{int(time.time())}"
+    name = f"cz-gate-{os.getpid()}-{int(time.time())}-{secrets.token_hex(3)}"   # unique: jobs run at once
     cmd = ["docker", "run", "-d", "--name", name, "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
            "--add-host", "sql01.corp.local:203.0.113.1"]
     if csc.get("readOnlyRootFilesystem"):

@@ -8,6 +8,12 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- Verification and the security gate's hardened run name their containers uniquely: jobs of one LLM queue runner
+  that verified in the same second got "Conflict. The container name ... is already in use" (Make it A of the lab's
+  control-tower, "Run failed ... unexplained").
+
 ## 0.12.9 (2026-11-05)
 
 - App updates: the drained LLM queue runner waits only for the LLM call in progress, not for whole jobs, then puts
