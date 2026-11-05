@@ -39,7 +39,8 @@ The OS image changes (`appliance/`, #255): release as a minor version.
   host namespaces, devices, extra capabilities, bind mounts outside the worker's folders, non-loopback ports and any
   call on the appliance's own containers. The firewall answers only DNS on Docker's bridges (no SQL Server, registry,
   Grafana, k3s API or kubelet) and keeps them off the k3s networks; builds never use the host network (Docker refuses
-  the `network.host` build entitlement too) and Docker runs every container with `no-new-privileges`. No scanned
+  the `network.host` build entitlement too), Docker itself fetches no URL of the appliance's own services for a
+  build (`ADD <url>`: `cz-docker-egress`), and Docker runs every container with `no-new-privileges`. No scanned
   application changes; a build that reached an appliance service on purpose (none is known) now fails to connect.
   Outside the appliance, `CONTAINERIZER_BUILD_HOST_NETWORK=1` brings back the host network for builds behind a proxy
   on `127.0.0.1` (it was automatic before).
