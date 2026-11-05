@@ -680,19 +680,6 @@ migrations:
     refs:
       - https://learn.microsoft.com/en-us/dotnet/core/extensions/configuration
 
-  - id: externalize-credentials
-    for: [cfg-hardcoded-credentials]
-    kind: externalize
-    replace: Connection strings and credentials in source code
-    with: Configuration, set per environment (a Kubernetes Secret in the container)
-    steps:
-      - Read the values from configuration with today's values as defaults, so Windows keeps working unchanged.
-      - The container sets its own through environment variables from a Secret.
-    verify:
-      - The app connects to the server its environment variable names.
-    refs:
-      - https://kubernetes.io/docs/concepts/configuration/secret/
-
   # ------------------------------------------------------------------ libraries
   - id: replace-binaryformatter
     for: [mig-binaryformatter]

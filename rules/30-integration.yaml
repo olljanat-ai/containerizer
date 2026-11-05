@@ -277,22 +277,6 @@ rules:
       - https://learn.microsoft.com/en-us/dotnet/standard/security/cross-platform-cryptography#x509store
       - https://kubernetes.io/docs/concepts/configuration/secret/
 
-  - id: secrets-in-config
-    when:
-      config: '("?(password|pwd|secret|apikey|api_key|clientsecret|accesskey)"?\s*[:=]\s*"(?!\s*"|\$\{|#\{|__|%|<|\*{3}|changeme|change_me|{{|\[[^"\]]*\]"|\{[^"}]*\}"|[x*\-]{3,}"|(your|enter[-_ ])[^"]*"|placeholder|todo)[^"]{4,}")|(Password\s*=\s*(?!\s*;|\$\{|#\{|__|<|\[|\{|[x*]{3,}\s*;|changeme|(your|my)[-_ ]?\w*\s*;)[^;"]{3,};)'
-    # information only: the app runs with them; where secrets are kept is the application developers' call
-    severity: info
-    category: secrets
-    effort: 0
-    title: Secrets in configuration files
-    why: >-
-      Passwords or keys are in config files. The app runs with them; in the container, each setting can be
-      overridden by an environment variable (Section__Key) from a Kubernetes Secret.
-    fix: Nothing to change for the container.
-    refs:
-      - https://learn.microsoft.com/en-us/aspnet/core/security/app-secrets
-      - https://kubernetes.io/docs/concepts/configuration/secret/
-
   # ---------------------------------------------------------------- data
   - id: sqlserver
     when:

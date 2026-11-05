@@ -8,6 +8,13 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.16.3 (2026-11-05)
+
+- No checks of application code security: the rules **Secrets in configuration files** and **Credentials
+  hard-coded in source** (and its migration entry) are removed. Containerizer secures what it generates (non-root,
+  no capabilities, read-only root file system, secrets only from the secret store), not the application's code;
+  ratings of applications that had those findings go up at their next scan.
+
 ## 0.16.2 (2026-11-05)
 
 - Refactoring (LLM orders, Make it A) keeps each project's target framework. The `core-eol` finding of an
