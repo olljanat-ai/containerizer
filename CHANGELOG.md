@@ -8,6 +8,13 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- "Make it A": a NuGet error that needs no LLM (an ASP.NET Core framework package such as
+  `Microsoft.AspNetCore.HttpOverrides` that an LLM added, a package downgrade) is fixed also when the order's repair
+  rounds or LLM calls are used up, with up to two more builds. Before, an order whose last build failed only on
+  that stopped as "Does not build".
+
 ## 0.12.5 (2026-11-05)
 
 - Appliance app updates no longer interrupt LLM jobs. The LLM queue runner is drained instead of restarted: it

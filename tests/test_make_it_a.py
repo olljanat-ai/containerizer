@@ -211,6 +211,36 @@ def test_repair_rounds_are_capped(stateful, tmp_path, builds):
     assert "Rating A reached" not in rf.summary(res) and "B → A by the rules, but not verified" in rf.summary(res)
 
 
+
+def test_a_framework_package_is_fixed_without_the_llm_also_in_the_last_round(stateful, tmp_path, monkeypatch):
+    """The lab's expense-claims: the LLM wrote Microsoft.AspNetCore.HttpOverrides into the project file itself (no
+    package exists for it since .NET Core 3.0), and the last round's build failed only on that (NU1102). Before, the
+    order stopped as "Does not build": the fix that needs no LLM ran only while repair rounds were left."""
+    monkeypatch.setattr(vf, "_run", lambda cmd, timeout, cwd=None: (0, ""))
+    builds = []
+
+    def fake(a, c, rules, timeout=900, work=None, **kw):
+        bad = "HttpOverrides" in (Path(a.repo.root) / "src/Shop.Api/Shop.Api.csproj").read_text()
+        builds.append(bad)
+        log = ("#12 3.620 /src/src/Shop.Api/Shop.Api.csproj : error NU1102: Unable to find package "
+               "Microsoft.AspNetCore.HttpOverrides with version (>= 8.0.0)\n#12 3.620 /src/src/Shop.Api/Shop.Api.csproj"
+               " : error NU1102:   - Found 39 version(s) in nuget.org [ Nearest version: 2.3.13 ]") if bad else ""
+        st = "build-failed" if bad else "ok"
+        return {"status": st, "attempts": [{"stage": "build", "status": st, "log_tail": log}], "seconds": 30}
+    monkeypatch.setattr(vf, "verify_component", fake)
+    serilog = '<PackageReference Include="Serilog.AspNetCore" Version="8.0.0" />'
+    csproj = {**edit("src/Shop.Api/Shop.Api.csproj", serilog,
+                     serilog + '\n    <PackageReference Include="Microsoft.AspNetCore.HttpOverrides" Version="8.0.0" />',
+                     ["sqlite-local"]), "package_changes": PACKAGES}
+    ask = Asker({**GOOD, "src/Shop.Api/Shop.Api.csproj": csproj})
+    res = rf.run_order({**_pl(stateful), "max_repairs": 0}, tmp_path / "w", ask=ask, name="shop-refactor-12")
+    assert builds == [True, False]                      # the free fix, then a build that works
+    assert res["status"] == "verified" and res["rating_reached"], res.get("reason")
+    assert [(x["round"], x["kind"], x["calls"]) for x in res["loop"]] == [(0, "generate", 3), (1, "repair", 0)]
+    assert '+    <PackageReference Include="Microsoft.AspNetCore.HttpOverrides"' not in res["patch"]
+    assert any("removed the package Microsoft.AspNetCore.HttpOverrides" in n for n in res["notes"])
+    assert not [p for p in ask.prompts if "An earlier change" in p]                  # no LLM repair asked
+
 def test_still_b_gets_a_second_pass_on_what_remains(stateful, tmp_path, builds):
     # pass 1: the LLM leaves the project file and the database code alone; pass 2 does them
     answers = {**GOOD, "src/Shop.Api/Shop.Api.csproj": lambda n: NOTHING if n == 1 else GOOD["src/Shop.Api/Shop.Api.csproj"],

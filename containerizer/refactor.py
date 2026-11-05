@@ -369,6 +369,9 @@ def fix_framework_packages(app_root: Path, log_text: str, log=print) -> tuple[li
     return changes, notes, fixed
 
 
+FREE_ROUNDS = 2         # build rounds a Make it A order adds for fixes without the LLM (fix_packages)
+
+
 def fix_packages(app_root: Path, log_text: str, log=print) -> tuple[list[dict], list[str], set]:
     """The NuGet errors of a build log that need no LLM: package downgrades and ASP.NET Core framework packages."""
     c1, n1, f1 = fix_downgrades(app_root, log_text, log)
@@ -2084,7 +2087,9 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
         if not changes_all or (p > 1 and not changes):
             break                                 # nothing changed in this pass: the last verification stands
         all_payload = {**payload, "components": comps, "tasks": attempted}
-        for rnd in range(1, repairs + 2):
+        rnd, free = 0, 0                # free: rounds after a fix without the LLM (NuGet), beyond the repair rounds
+        while rnd < repairs + 1 + free:
+            rnd += 1
             patch = _combined_patch(repo, base, payload, list(rows.values()), notes, model)
             if patch is None:
                 break
@@ -2108,12 +2113,14 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
             if not broken and sandbox_errors and p == 1 and rnd == 1:
                 logs = sandbox_errors                 # it runs here, but failed in the sandbox: repair that once
                 broken = [{"component": "sandbox"}]
-            if not broken or rnd > repairs or calls >= budget or late():
+            if not broken or late():
                 break
             # a repair round, in this job: the errors of the build or the run, the files they are in, the patch
             text = patch.decode("utf-8", errors="replace")
             rp = {**payload, "goal": "repair", "base_patch": text, "errors": build_errors(logs),
                   "log_tail": logs[-4000:], "components": comps}
+            # NuGet's package errors need no LLM: fixed also when the repair rounds or the LLM calls are used up (the
+            # last round's build failed only on a framework package an LLM added: verify again, at most FREE_ROUNDS)
             dchanges, dnotes, fixed = fix_packages(app_root, logs, log)
             if dchanges:
                 notes += dnotes
@@ -2122,7 +2129,11 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
                 if not rp["errors"]:            # NuGet's package errors only: fixed without the LLM, verify again
                     loop.append({"pass": p, "round": rnd, "kind": "repair", "files": len({c["file"] for c in dchanges}),
                                  "calls": 0, "changes": len(dchanges)})
+                    if rnd >= repairs + 1 + free and free < FREE_ROUNDS:
+                        free += 1
                     continue
+            if rnd > repairs + free or calls >= budget:
+                break
             rtasks = repair_tasks(rp, app_root, app_files(repo, app_root, text))
             for t in rtasks:
                 c = _component_of(comps, t["file"])
