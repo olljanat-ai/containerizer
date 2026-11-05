@@ -287,6 +287,31 @@ def test_missing_database_is_external(tmp_path):
     assert d["outcome"] == "external" and d["rule"] == "run-sql-unreachable"
 
 
+def test_a_lab_service_turned_off_comes_before_a_cluster_guess(tmp_path):
+    """control-tower's CarrierGateway: RabbitMQ is off in the lab, the app stops (exit 0) and logs to a file only;
+    the events say a secret store key is missing. The diagnosis names the lab service to turn on."""
+    root = output_repo(tmp_path)
+    f = next(root.rglob("containerizer.json"))
+    doc = json.loads(f.read_text())
+    doc["lab_services"] = {"needed": {"sqlserver": ["Shop.Web"], "rabbitmq": ["Shop.Web"], "sftp": ["Shop.Other"]},
+                           "provided": ["sqlserver"], "missing": ["rabbitmq", "sftp"]}
+    f.write_text(json.dumps(doc))
+    k = FakeKube({(sb.FLUX_KS, "shop-web", "shop-web"): flux_ks(),
+                  ("deployments.apps", "shop-web", "web"): deployment("web", want=1, ready=0),
+                  ("pods", "shop-web", SEL): {"items": [pod("web-1", ready=False, restarts=5, waiting="CrashLoopBackOff",
+                                                            last=("Completed", 0))]},
+                  ("events", "shop-web", None): {"items": [
+                      {"type": "Warning", "reason": "UpdateFailed", "message": "could not get secret data from provider",
+                       "involvedObject": {"name": "web-1"}},
+                      {"type": "Warning", "reason": "Failed", "message": 'secret "web-files" not found',
+                       "involvedObject": {"name": "web-1"}}]}})
+    out, _ = run(root, k)
+    d = out["components"][0]["diagnosis"]
+    assert d["rule"] == "lab-service-off" and d["outcome"] == "external"
+    assert "It needs RabbitMQ, which the lab has turned off" in d["diagnosis"] and "SFTP" not in d["diagnosis"]
+    assert sb.lab_services_off(doc, "Shop.Api") is None and sb.lab_services_off({}, "Shop.Web") is None
+
+
 def test_oom_becomes_a_config_finding(tmp_path):
     k = FakeKube({(sb.FLUX_KS, "shop-web", "shop-web"): flux_ks(),
                   ("deployments.apps", "shop-web", "web"): deployment("web", want=1, ready=0),

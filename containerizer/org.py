@@ -268,6 +268,29 @@ def gate_failure(comp: dict, vulnerabilities: bool | None = None) -> str:
 
 
 HARDENED_RUN = "does not run with the hardened pod security context"
+DETAIL_MAX = 3000           # characters of a left-out component's gate output kept for its results page
+
+
+def gate_detail(comp: dict) -> str:
+    """What the gate saw of a component it left out, for the results page's "What failed": the end of the build
+    log, the lint errors, the hardened run's errors and the end of its log (secrets are not in them: the gate runs
+    the image with the manifests' plain settings only)."""
+    from .orgsource import REDACT
+    parts = []
+    if comp.get("build_error"):
+        parts.append("Image build, the end of its log:\n" + str(comp["build_error"])[-2000:])
+    errs = [v for v in comp.get("lint") or [] if v.get("severity") == "error"]
+    if errs:
+        parts.append("Lint errors:\n" + "\n".join(f"- {v.get('check')}: {v.get('message')}" for v in errs[:10]))
+    run = comp.get("run") or {}
+    if run.get("status") == "hardening-failure":
+        parts.append("Run with the pod's security context (non-root, read-only root file system, no capabilities): "
+                     + "; ".join(str(x) for x in run.get("errors") or []) + ("\n" + str(run.get("log") or "")[-1500:]
+                                                                         if run.get("log") else ""))
+    for sc in comp.get("scans") or []:
+        if not sc.get("passed") and sc.get("error"):
+            parts.append(f"{sc.get('kind', 'image')} scan: {sc['error']}")
+    return REDACT("\n\n".join(parts))[-DETAIL_MAX:]
 
 
 def vulnerability_reason(scan: dict) -> str:
@@ -1371,9 +1394,10 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
                 waived[names[cname].name] = failed.pop(cname)
         if not failed:
             break
+        comps_by = {c["component"]: c for c in g["components"]}
         for cname, why in failed.items():
             res.excluded.append({"component": names[cname].name if cname in names else cname,
-                                 "reason": f"security gate: {why}"})
+                                 "reason": f"security gate: {why}", "detail": gate_detail(comps_by.get(cname) or {})})
         keep = [c for c in keep if k8s_name(c.name) not in failed]
     if not keep:
         res.status = "no-a-components"

@@ -317,3 +317,25 @@ def test_load_running_prefers_the_ui():
         def cursor(self, as_dict=False):
             return Cur()
     assert webui.load_running(Conn()) == {1: {"n": 3, "url": "https://web.x/"}, 2: {"n": 1, "url": None}}
+
+
+def test_what_failed_is_shown_for_a_component_the_gate_left_out():
+    """org.gate_detail keeps what the security gate saw (the build log's end, the hardened run's errors) next to its
+    reason; the plan's and the Components table's Sandbox cells show it under What failed."""
+    from containerizer import migrationplan as mp, webui
+    from containerizer.org import gate_detail
+    d = gate_detail({"build_error": "x" * 5000 + "\nerror NU1101: Unable to find package Acme.Core",
+                     "lint": [{"severity": "error", "check": "DL3006", "message": "pin the base image"},
+                              {"severity": "warning", "check": "DL3008", "message": "pin versions"}],
+                     "run": {"status": "hardening-failure", "errors": ["read-only file system"], "log": "boom <x>"}})
+    assert "Image build, the end of its log:" in d and d.endswith("boom <x>") and len(d) <= 3000
+    assert "DL3006: pin the base image" in d and "DL3008" not in d and "read-only file system" in d
+    assert gate_detail({"run": {"status": "ok"}}) == ""
+    c = {"ComponentId": 1, "ComponentName": "web", "ProjectPath": None}
+    deploys = [{"SandboxEnabled": True, "ScanStatus": "deployed", "Kind": "excluded", "ComponentName": "web",
+                "Reason": "security gate: image build failed", "Detail": "npm ERR! <404>"}]
+    sb = mp.sandbox_state(c, {}, deploys)
+    assert sb["state"] == "excluded" and sb["detail"] == "npm ERR! <404>"
+    for html in (mp._sandbox_html(sb), webui._sandbox_cell(sb)):
+        assert "<summary>What failed</summary>" in html and "npm ERR! &lt;404&gt;" in html
+    assert "What failed" not in webui._sandbox_cell(mp.sandbox_state(c, {}, [{**deploys[0], "Detail": None}]))

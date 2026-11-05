@@ -200,6 +200,21 @@ sandbox. Whether it is comes from the latest sandbox check (`cz.vSandboxLatest`)
 from what the latest organization scan put in the output repository and left out (`cz.vSandboxDeploy`, read from
 the scan's record of the repository) together with the application's sandbox switch.
 
+A component the scan left out at its security gate shows the reason and **What failed**: what the gate saw, such
+as the end of the image build's log, the lint errors, or the errors and log of the run with the pod's hardened
+security context (non-root, read-only root file system, no capabilities). Administrators and operators get
+**Try again** under the table: it queues a full scan of only this application's repository, the page says while
+that scan is queued or running, and afterwards the Sandbox column shows the new result, with what failed if a
+component is still left out.
+
+![Components table with a component the security gate left out: the reason, What failed with the hardened run's error, and the Try again button](images/results-try-again.png#only-light){ .cz-shot }
+![Components table with a component the security gate left out: the reason, What failed with the hardened run's error, and the Try again button](images/results-try-again-dark.png#only-dark){ .cz-shot }
+
+When a component that crashes in the sandbox needs a [lab service](lab-services.md) the lab has turned off, its
+sandbox result says so first ("It needs RabbitMQ, which the lab has turned off: turn it on under Admin -> Lab
+services"): an app without its message broker often just stops, and its other symptoms (an empty log, a secret
+store key that is not there) point elsewhere.
+
 ### Migration assistant
 
 For every component that is not ready (verdict refactor, rewrite or blocker), each blocking finding is

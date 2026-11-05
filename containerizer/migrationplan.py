@@ -34,7 +34,7 @@ def load_deploys(conn, app_id: int) -> list[dict] | None:
     None before that schema (the page then knows only the sandbox checks)."""
     try:
         cur = conn.cursor(as_dict=True)
-        cur.execute("SELECT SandboxEnabled, ScanStatus, ScannedAt, Kind, ComponentName, ProjectPath, Reason "
+        cur.execute("SELECT SandboxEnabled, ScanStatus, ScannedAt, Kind, ComponentName, ProjectPath, Reason, Detail "
                     "FROM cz.vSandboxDeploy WHERE ApplicationId = %s", (app_id,))
         return cur.fetchall()
     except Exception:  # noqa: BLE001 - a database from before schema 39
@@ -107,7 +107,8 @@ def sandbox_state(c: dict, checks: dict, deploys: list[dict] | None) -> dict:
         return {"state": "deployed", "text": "deployed, not checked yet"}
     ex = next((d for d in rows if d["Kind"] == "excluded"), None)
     if ex:
-        return {"state": "excluded", "text": f"not deployed: {ex.get('Reason') or 'left out by the scan'}"}
+        return {"state": "excluded", "text": f"not deployed: {ex.get('Reason') or 'left out by the scan'}",
+                "detail": ex.get("Detail") or ""}
     st = base.get("ScanStatus")
     if st == "sandbox-off":
         return {"state": "off", "text": "not deployed: the application's sandbox is turned off (Admin → Applications)"}
@@ -253,7 +254,10 @@ def _sandbox_html(sb: dict) -> str:
     if sb["state"] == "unknown":
         return "<span class='muted'>no sandbox check yet</span>"
     head, _, why = sb["text"].partition(": ")
-    return f"<span class='muted'>{e(head)}</span>" + (f"<div class='muted small'>{e(why)}</div>" if why else "")
+    # what the gate saw (the build log's end, the hardened run's errors): org.gate_detail
+    more = (f"<details class='small gate-detail'><summary>What failed</summary><pre>{e(sb['detail'])}</pre></details>"
+            if sb.get("detail") else "")
+    return f"<span class='muted'>{e(head)}</span>" + (f"<div class='muted small'>{e(why)}</div>" if why else "") + more
 
 
 def _fixes(c: dict, plan: dict) -> str:
@@ -388,6 +392,8 @@ def section(app: dict, ctx: dict | None = None, refactoring_box: bool = False) -
 
 
 CSS = """
+.gate-detail summary{cursor:pointer}.gate-detail pre{white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto;font-size:12px;margin:4px 0;min-width:340px;max-width:560px}
+.scan-again{margin:8px 0}.scan-again form.inline{display:inline}
 section.plan .plan-sum{font-size:16px;margin:8px 0 4px}section.plan .plan-rating{margin:6px 0}
 section.plan .plan-rating .badge{width:22px;height:22px;line-height:22px;font-size:13px;border-radius:5px;vertical-align:-4px}
 .gens{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;margin:12px 0}

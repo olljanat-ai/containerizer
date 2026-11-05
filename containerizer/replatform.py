@@ -828,7 +828,8 @@ def migrate_repo(src: Path, o, res, app: str, rel: str, dest: Path, gen: Path, r
             results[cn] = {"result": f"excluded: {why}" if why else f"gate passed, hardened run {comp['run'].get('status')}",
                            "fixes": fixes}
             if why:
-                plan.excluded.append({"component": sv.name, "reason": f"security gate: {why}"})
+                from .org import gate_detail
+                plan.excluded.append({"component": sv.name, "reason": f"security gate: {why}", "detail": gate_detail(comp)})
                 keep.remove(sv)
                 comp_docs.pop(cn, None)
                 shutil.rmtree(cdir, ignore_errors=True)

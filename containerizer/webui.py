@@ -323,6 +323,24 @@ def rating_why(app: dict) -> tuple[str, list[dict], list[dict]]:
     return f"<p class='why-rating'><b>Why {e(r)}:</b> {e(' '.join(parts))}</p>", stateful, refactor
 
 
+def scan_again_ctx(admin, app: dict) -> dict:
+    """The Try again button's state (scanagain.state), read with the admin login; nothing when it cannot be read."""
+    from .scanagain import state
+    try:
+        conn = admin.connect_admin()
+    except Exception:  # noqa: BLE001
+        return {}
+    try:
+        return {"scan_state": state(conn, int(app["ApplicationId"]))}
+    except Exception:  # noqa: BLE001 - a database from before the organization scans
+        return {}
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def refactor_estimates(admin, app: dict) -> dict:
     """What each refactoring order of the application would cost, as the LLM queue estimates it (the order
     built as when it is placed; the speed learned from earlier answers). Key (component id or None, goal).
@@ -883,6 +901,13 @@ def _info_link(url) -> str:
     return info_link(url)
 
 
+def _scan_again(app: dict, ctx: dict | None) -> str:
+    """Try again (scanagain.py) for administrators and operators, when the latest scan left a component out."""
+    from .scanagain import section
+    excluded = [d for d in app.get("deploys") or [] if d.get("Kind") == "excluded"]
+    return section(app, ctx or {}, excluded)
+
+
 def _in_sandbox(app: dict) -> str:
     """What of the application runs in the sandbox by its latest check, with the link to open, at the top of its page."""
     from .sandbox import URL_RE, main_url
@@ -927,7 +952,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
     reviews = {r["ComponentId"]: r for r in app.get("llm_reviews") or []}
     from .migrationplan import sandbox_state
     in_sb = {c["ComponentId"]: sandbox_state(c, sandbox, app.get("deploys")) for c in app["components"]}
-    sb_col = bool(sandbox) or any(x["state"] in ("checked", "deployed") for x in in_sb.values())
+    sb_col = bool(sandbox) or any(x["state"] in ("checked", "deployed", "excluded") for x in in_sb.values())
     comp_rows = "".join(
         f"<tr><td><a href='#c{int(c['ComponentId'])}'>{e(c['ComponentName'])}</a>"
         f"<div class='muted small'>{e(c['ProjectPath'])}</div></td>"
@@ -981,9 +1006,10 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 {_tags_section(app, refactor)}
 {f"<h2>Main obstacles</h2><ul class='obstacles'>{obs_html}</ul>" if obs_html else ''}
 {_migration_plan(app, refactor)}
-<h2>Components</h2>
+<h2 id='components'>Components</h2>
 <table><thead><tr><th>Component</th><th>What it is</th><th>Verdict</th><th>Build and run</th>{"<th>Sandbox cluster</th>" if sb_col else ""}<th>Migration</th></tr></thead>
 <tbody>{comp_rows}</tbody></table>
+{_scan_again(app, refactor)}
 {_idp_section(app.get("idp") or [])}
 {_refactoring(app, refactor)}
 <h2>What needs to change, and why</h2>{''.join(details)}
@@ -1139,6 +1165,10 @@ def _sandbox_cell(x: dict) -> str:
     if x["state"] == "deployed":
         return f"<span class='v-sb-scheduled'>{e(x['text'])}</span>"
     head, _, why = (x.get("text") or "not deployed").partition(": ")
+    more = (f"<details class='small gate-detail'><summary>What failed</summary><pre>{e(x['detail'])}</pre></details>"
+            if x.get("detail") else "")
+    if more:                        # left out with what failed: the reason in full, then the details
+        return f"<span class='muted'>{e(head)}</span><div class='muted small'>{e(why)}</div>{more}"
     return f"<span class='muted'{' title=' + chr(39) + e(why) + chr(39) if why else ''}>{e(head)}</span>"
 
 
@@ -1601,6 +1631,10 @@ def make_handler(connect, admin=None):
                             if s and (s.admin or s.operator):                   # may tag it (tags.py)
                                 ctx["tags_csrf"] = admin._csrf(s)
                             ctx["tags_notice"] = parse_qs(u.query).get("tags", [""])[0]
+                            if s and (s.admin or s.operator):                   # may scan it again (scanagain.py)
+                                ctx.update(scan_again_ctx(admin, app))
+                                ctx["scan_csrf"] = admin._csrf(s)
+                            ctx["scan_notice"] = parse_qs(u.query).get("scanagain", [""])[0]
                             if s and (s.admin or s.operator or s.scopes):
                                 ctx["admin_links"] = admin_links(admin, conn, s, app)
                             return self._send(200, render_application(app, nav, ctx), head=head, forms=bool(nav),

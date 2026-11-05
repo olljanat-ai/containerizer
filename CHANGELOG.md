@@ -8,8 +8,15 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## Unreleased
+## 0.16.1 (2026-11-05)
 
+- Results page: a component the organization scan's security gate left out of the sandbox shows **What failed**
+  (the end of the image build's log, the lint errors, or the errors and log of the hardened run) under its
+  reason, and administrators and operators get **Try again**: a full scan of only this application's repository,
+  with its state on the page until it is done (`cz.vSandboxDeploy` has the new column `Detail`).
+- Sandbox check: a component that fails and needs a lab service the lab has turned off is diagnosed as such
+  ("It needs RabbitMQ, which the lab has turned off"), before the cluster-setting guesses. The lab's control-tower
+  CarrierGateway stopped without RabbitMQ and was put down to a missing secret.
 - Security gate: a line a container's start-up script marks as information is no longer a hardening failure. The
   nginx image's entrypoint says it cannot modify `default.conf` on the read-only root file system and nginx then
   serves; the lab's expense-claims frontend was left out of the sandbox for it ("does not run with the hardened pod
