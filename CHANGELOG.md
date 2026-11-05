@@ -8,7 +8,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## Unreleased
+## 0.12.6 (2026-11-05)
 
 - Security gate: the hardened run no longer fails ASP.NET Core components on their Data Protection key ring.
   Since the key ring became a Secret the cluster makes, the run mounted that folder empty and read-only, the app
