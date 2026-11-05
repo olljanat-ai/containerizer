@@ -45,7 +45,7 @@ Every curated `severity: refactor` rule, classified (a test keeps this table com
 `config` rules need no code change by definition; the generator already applies many of them automatically
 (Kestrel endpoints, connection strings and secret settings from Secrets, Windows paths in configuration,
 Serilog/NLog sinks, Data Protection keys, writable folders, wkhtmltopdf paths; see
-[Techniques used to avoid application changes](overview.md#techniques-used-to-avoid-application-changes)), and the
+[Techniques used to avoid application changes](overview.md#generated-output)), and the
 others say in their `fix` what to set.
 
 | Rule | File | Finding | Platform fix | Mechanism, or why not |

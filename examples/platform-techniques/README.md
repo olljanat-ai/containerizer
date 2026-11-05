@@ -1,7 +1,7 @@
 # platform-techniques
 
 A small ASP.NET Core app written the way many Windows-hosted apps are, used to check that Containerizer's platform
-techniques ([docs/overview.md](../../docs/overview.md#techniques-used-to-avoid-application-changes)) let it run in a
+techniques ([docs/overview.md](../../docs/overview.md#generated-output)) let it run in a
 container **without code changes**:
 
 - it switches to production settings when `Environment.MachineName` is `prodweb01` (the pod's `hostname:` is set);
