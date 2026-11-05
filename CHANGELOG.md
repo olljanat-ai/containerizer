@@ -10,6 +10,10 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- Vulnerability scans are off by default when Containerizer deploys (organization scans, Make it A, platform
+  migrations): they took long and vulnerabilities are outside its aim. The security gate still lints, builds and
+  runs every image with the hardened security context; SECURITY.md says the scans are off. `scan.enabled: true`
+  (`rules/60-security.yaml`) turns them on; `containerizer gate` and `images --update` scan when run.
 - Verification and the security gate's hardened run name their containers uniquely: jobs of one LLM queue runner
   that verified in the same second got "Conflict. The container name ... is already in use" (Make it A of the lab's
   control-tower, "Run failed ... unexplained").

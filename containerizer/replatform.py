@@ -716,8 +716,10 @@ def _gate_component(src: Path, sv: Service, cdir: Path, docs: list[dict], local:
         except OSError:
             pass
     comp = {"component": cn, "base": None, "lint": lint, "scans": []}
-    res = scan_image(local, scanner, local=True)
-    comp["scans"].append(_scan_entry(res, evaluate(res, pol), "image"))
+    from .imagescan import scans_enabled
+    if scans_enabled():                 # off by default (rules/60-security.yaml scan.enabled)
+        res = scan_image(local, scanner, local=True)
+        comp["scans"].append(_scan_entry(res, evaluate(res, pol), "image"))
     comp["run"] = run_as_manifest(local, docs)
     return comp
 

@@ -118,3 +118,28 @@ def test_verification_containers_get_unique_names(monkeypatch, tmp_path):
     for _ in range(2):
         isc.run_as_manifest("img", docs)
     assert len(names) == 4 and len(set(names)) == 4 and all("-1793882057-" in n for n in names)
+
+
+def test_scans_are_off_by_default_but_the_build_and_the_hardened_run_stay(tmp_path, monkeypatch):
+    """Vulnerability scans took long and are outside Containerizer's aim: off unless scan.enabled (or block_deploy).
+    The gate still lints, builds and runs each image with the hardened security context."""
+    from containerizer import imagescan as isc
+    from test_engine import web_app
+    from containerizer.assess import assess
+    assert isc.scans_enabled() is False
+    monkeypatch.setattr(isc, "scan_image", lambda *a, **k: (_ for _ in ()).throw(AssertionError("scanned")))
+    monkeypatch.setattr(isc, "update_images", lambda *a, **k: (_ for _ in ()).throw(AssertionError("refreshed")))
+    built, ran = [], []
+    monkeypatch.setattr(isc, "_build_with_retries", lambda a, cdir, tag, comp, pin, post: built.append(tag) or (True, ""))
+    monkeypatch.setattr(isc, "run_as_manifest", lambda tag, docs: ran.append(tag) or {"status": "ok"})
+    web_app(tmp_path / "app")
+    a = assess(tmp_path / "app")
+    r = isc.gate_app(a, tmp_path / "out", build=True, scan=False, run=True)
+    assert built and ran == built and r["passed"] and r["scanned"] is False
+    assert all(c["scans"] == [] for c in r["components"])
+    md = (tmp_path / "out" / "SECURITY.md").read_text()
+    assert "Vulnerability scans are off (`scan.enabled`" in md and "fixable CRITICAL" not in md
+    monkeypatch.setattr("containerizer.imagescan.security", lambda: {"scan": {"enabled": True}})
+    assert isc.scans_enabled() is True
+    monkeypatch.setattr("containerizer.imagescan.security", lambda: {"scan": {"block_deploy": True}})
+    assert isc.scans_enabled() is True
