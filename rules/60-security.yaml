@@ -331,6 +331,11 @@ lint:
 # Image vulnerability gate.
 scan:
   fail_on: CRITICAL           # lowest severity that fails the gate (UNKNOWN LOW MEDIUM HIGH CRITICAL)
+  # Whether vulnerabilities keep a component out of the sandbox (organization scans, Make it A, migrations).
+  # Off: they are reported in the application's SECURITY.md and the component is deployed; getting applications
+  # running in containers with as few changes as possible is the aim, and their developers fix vulnerable
+  # packages on the new platform. `containerizer gate` (a CI check) fails on them either way.
+  block_deploy: false
   ignore_unfixed: true        # only vulnerabilities with a fixed version count against the gate
   # `all` scans with every available scanner and merges the findings (their
   # databases differ, so the union misses less); `auto` uses the first one.

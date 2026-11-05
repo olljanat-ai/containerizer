@@ -8,6 +8,15 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- Vulnerabilities no longer keep a component out of the sandbox. Containerizer's aim is the application running
+  in containers with as few changes as possible; its developers fix vulnerable packages on the new platform. Scans,
+  Make it A orders and platform migrations deploy the component and report the vulnerabilities in `SECURITY.md`
+  (with the packages to upgrade). `scan.block_deploy: true` in `rules/60-security.yaml` brings the old behaviour
+  back; `containerizer gate` as a CI check still fails on them. Build failures, lint errors and the hardened run
+  still keep a component out.
+
 ## 0.12.8 (2026-11-05)
 
 - Security gate: a component stopped by vulnerabilities says what to upgrade and where: "2 fixable vulnerabilities
