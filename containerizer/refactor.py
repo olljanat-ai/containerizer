@@ -1223,19 +1223,11 @@ def minimal_edit(rel: str, search: str, replace: str) -> tuple[str, list[str]]:
             if old != new:
                 back.add("whitespace")
             continue
-        if old and all(not l.strip() or COMMENT_RE.match(l) for l in old) \
-                and all(not l.strip() or COMMENT_RE.match(l) for l in new) \
-                and any(l.strip() for l in old):
-            out += old                              # a comment rewritten or removed: as it was
-            back.add("comments")
-            continue
-        if not old and all(not l.strip() for l in new):
+        head, old, new, tail = _trim(old, new, keep_ws, back)
+        out += head
+        if not old and new and all(not l.strip() for l in new):
             back.add("blank lines")                 # only blank lines added
-            continue
-        if old and not new and all(not l.strip() for l in old):
-            out += old                              # only blank lines removed
-            back.add("blank lines")
-            continue
+            new = []
         kept = [l for l in old if USING_RE.match(l) and _key(l) in new_usings]
         if kept:
             back.add("using directives")            # moved (reordered): it stays where it was
@@ -1249,8 +1241,77 @@ def minimal_edit(rel: str, search: str, replace: str) -> tuple[str, list[str]]:
                 l = l[:m.start("ver")] + was + l[m.end("ver"):]
                 back.add("package versions")
             new_kept.append(l)
-        out += kept + new_kept
+        out += kept + new_kept + tail
     return "\n".join(out), sorted(back)
+
+
+def _comment_run(lines: list[str]) -> int:
+    """Leading lines that are comments or blank, when at least one is a comment (0: none)."""
+    n = 0
+    while n < len(lines) and (not lines[n].strip() or COMMENT_RE.match(lines[n])):
+        n += 1
+    return n if any(COMMENT_RE.match(l) for l in lines[:n]) else 0
+
+
+def _trim(old: list[str], new: list[str], keep_ws: bool, back: set) -> tuple[list, list, list, list]:
+    """Strips from both ends of a differing block what is churn, keeping the old lines for it: comments rewritten or
+    removed (a leading/trailing comment run on the old side; added comments stay), lines joined or split
+    differently (brace style, wrapping), and the new lines' indentation where it differs from the old block's.
+    Returns (old lines to keep before, old, new, old lines to keep after)."""
+    head: list[str] = []
+    tail: list[str] = []
+    for rev in (False, True):
+        o, n = (old[::-1], new[::-1]) if rev else (old, new)
+        kept: list[str] = []
+        while o:
+            if k := _comment_run(o):                # rewritten (the new side's comments go) or removed: kept
+                kept += o[:k]
+                o, n = o[k:], n[_comment_run(n):]
+                back.add("comments")
+                continue
+            if not keep_ws and n:
+                same, o2, n2 = _rewrapped(o, n, reverse=rev)
+                if same:
+                    kept += same
+                    o, n = o2, n2
+                    back.add("whitespace")
+                    continue
+            break
+        if rev:
+            old, new, tail = o[::-1], n[::-1], kept[::-1]
+        else:
+            old, new, head = o, n, kept
+    if not keep_ws and old and new:             # the new lines indented as the old ones they replace
+        ind_o = old[0][:len(old[0]) - len(old[0].lstrip())]
+        ind_n = new[0][:len(new[0]) - len(new[0].lstrip())]
+        if ind_o != ind_n and all(l.startswith(ind_n) or not l.strip() for l in new):
+            new = [ind_o + l[len(ind_n):] if l.strip() else l for l in new]
+            back.add("whitespace")
+    return head, old, new, tail
+
+
+def _rewrapped(old: list[str], new: list[str], reverse: bool = False) -> tuple[list[str], list[str], list[str]]:
+    """The longest leading run of `old` lines that `new` has the same but for whitespace and line breaks (the
+    lines joined or split differently): (that run of old lines, the old lines after it, the new lines after it).
+    With `reverse` the lists are given backwards (a trailing run), so each line's text is reversed too."""
+    best = (0, 0)
+    acc_a, acc_b, i, j = "", "", 0, 0
+    flat = (lambda l: "".join(l.split())[::-1]) if reverse else (lambda l: "".join(l.split()))
+    while i < len(old) or j < len(new):
+        if acc_a and acc_a == acc_b:
+            best = (i, j)
+        if (len(acc_a) <= len(acc_b) and i < len(old)) or j >= len(new):
+            acc_a += flat(old[i])
+            i += 1
+        else:
+            acc_b += flat(new[j])
+            j += 1
+        if not (acc_a.startswith(acc_b) or acc_b.startswith(acc_a)):
+            break
+    else:
+        if acc_a and acc_a == acc_b:
+            best = (i, j)
+    return old[:best[0]], old[best[0]:], new[best[1]:]
 
 
 def without_credentials(search: str, replace: str) -> str:
