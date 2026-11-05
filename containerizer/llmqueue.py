@@ -1102,7 +1102,7 @@ class Runner:
         self.key = key                      # X25519 private key that opens the LLM credential (None: from the env)
         self.load = load
         self.stopping = threading.Event()
-        self.draining = threading.Event()   # an app update (SIGUSR1): no new job; leave when the running ones are done
+        self.draining = threading.Event()   # an app update (SIGUSR1): no new job; leave when no LLM call is answered
         self.active: dict[int, dict] = {}   # JobId -> row of a job being worked on
         self.cancelling: dict[int, str] = {}  # JobId -> who pressed Cancel (cz.LlmJob.CancelRequestedBy)
         self.lock = threading.Lock()
@@ -1557,8 +1557,8 @@ class Runner:
             ok, why = gate(settings, utcnow(), scans_running(conn), self.load() if not busy else 0.0,
                             restartplan.holding(llm=True))
             if self.draining.is_set():
-                ok, why = False, (f"app update: finishing {busy} job(s) on this code, then restarting with the new one"
-                                  if busy else "app update: restarting with the new code")
+                ok, why = False, (f"app update: waiting for the LLM call in progress, then {busy} job(s) go back to the "
+                                  f"queue and continue on the new code" if busy else "app update: restarting with the new code")
             self.metrics.open.set(1 if ok else 0)
             if why != self.status:
                 self.log(why or "open: taking jobs")
@@ -1629,6 +1629,12 @@ class Runner:
                 if self.draining.is_set() and not futures:
                     self.log("app update: no job left on this code: restarting with the new one")
                     break
+                if self.draining.is_set() and not any(self.slots.in_progress().values()):
+                    # no LLM answer is lost: the jobs go back to the queue (run's finally) and the new code continues
+                    # them, with the answers they had from the cache; only their work outside the LLM is done again
+                    self.log(f"app update: no LLM call in progress: {len(futures)} job(s) go back to the queue and "
+                             f"continue on the new code")
+                    break
                 started = []
                 try:
                     self.recover()
@@ -1653,7 +1659,7 @@ class Runner:
                     self.wake.clear()
                 if not futures:
                     self._leave_llm()
-            if futures:
+            if futures and not self.draining.is_set():
                 self.log(f"stopping: waiting up to {grace:.0f} s for {len(futures)} job(s)")
                 done, _ = wait(futures, timeout=grace)
                 finished += len(done)
@@ -1708,7 +1714,7 @@ def run_file(path: str | Path, log=print) -> int:
 
 def preload() -> int:
     """Import every module of containerizer now. A job imports many of them when it first needs them, and an app
-    update changes the code under a runner that finishes its jobs (SIGUSR1): from then on its imports take what is
+    update changes the code under a runner that lets the LLM finish its answer (SIGUSR1): from then on its imports take what is
     already loaded, its own version, instead of the new version's files. Returns how many were imported."""
     import importlib
     import pkgutil
@@ -1760,7 +1766,8 @@ def build(args) -> int:
         r.wake.set()
 
     def drain(signum, frame):
-        r.log("app update: no new job; the jobs in progress finish on this code, then the runner restarts")
+        r.log("app update: no new job; once no LLM call is in progress, the jobs go back to the queue and the "
+              "runner restarts with the new code")
         r.draining.set()
         r.wake.set()
     signal.signal(signal.SIGTERM, stop)

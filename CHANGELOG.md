@@ -10,6 +10,10 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- App updates: the drained LLM queue runner waits only for the LLM call in progress, not for whole jobs, then puts
+  its jobs back in the queue and restarts with the new code; they continue there with the answers they already had.
+  Since 0.12.5 it waited for its jobs to finish, and an LLM-heavy Make it A order kept every other job in the
+  queue for up to the plan's wait (2 hours by default).
 - Vulnerabilities no longer keep a component out of the sandbox. Containerizer's aim is the application running
   in containers with as few changes as possible; its developers fix vulnerable packages on the new platform. Scans,
   Make it A orders and platform migrations deploy the component and report the vulnerabilities in `SECURITY.md`

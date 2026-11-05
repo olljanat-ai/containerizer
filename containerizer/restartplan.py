@@ -51,7 +51,7 @@ def starts(plan: dict | None) -> datetime | None:
 
 def holding(now: datetime | None = None, path: Path | None = None, llm: bool = False) -> str | None:
     """Why new work must wait (a restart is due), or None. `llm`: the LLM queue runner asks; an app update does not
-    hold it (it finishes its jobs on the code it runs and restarts with the new one: sysagent.restart_services)."""
+    hold it (it lets the LLM finish the answer in progress and restarts with the new code: sysagent.restart_services)."""
     plan = planned(path)
     at = starts(plan)
     if at is None or (now or datetime.now(timezone.utc)) < at:

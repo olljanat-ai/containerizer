@@ -479,7 +479,7 @@ def test_an_app_update_drains_the_llm_runner_instead_of_restarting_it(agent, mon
     assert restartplan.parse_time(d["until"]) == at + timedelta(minutes=60)
     assert status(p)["task"]["state"] == "done"
     # still draining; then the unit runs another process (the new code): done
-    assert sysagent.restart_check(at + timedelta(minutes=20)) == "the LLM queue runner finishes its jobs"
+    assert sysagent.restart_check(at + timedelta(minutes=20)) == "the LLM queue runner finishes its LLM call"
     r.pids[sysagent.LLM_QUEUE] = 5000
     assert sysagent.restart_check(at + timedelta(minutes=21)) == "the LLM queue runner runs the new code"
     assert status(p)["llm_drain"] is None and not p.drain.exists()
