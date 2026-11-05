@@ -2,12 +2,25 @@ name: security
 
 # Security gate for what the tool generates, and a weekly refresh of the patched base image tags.
 # Documentation-only changes skip this workflow: docs.yml builds and publishes them.
+# The gate runs on pull requests that change what the generated containers and manifests look like;
+# the weekly image refresh stays manual (Actions -> security -> Run workflow).
 on:
-  # manual only for now (Actions -> Run workflow); the pull request, push and schedule triggers are off
+  pull_request:
+    paths:
+      - containerizer/generate.py
+      - containerizer/gen_jvm_node.py
+      - containerizer/harden.py
+      - rules/60-security.yaml
+      - "rules/images*.yaml"
+      - .github/workflows/security.yml
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # Generate, build and scan the example app: hardened manifests must lint clean and the image must

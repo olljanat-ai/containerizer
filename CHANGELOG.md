@@ -8,6 +8,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- CI runs the unit tests (`python -m pytest -q -n auto`) on every pull request and push to `main`, and the
+  security gate on pull requests that change the generator, hardening or the security and base image rules. The
+  heavy jobs (SQL Server, the Kubernetes sandboxes, the action's end-to-end runs) run on a manual run of the
+  **ci** workflow or on a pull request labelled `full-ci`. Tests no longer see the machine's AI endpoint and model
+  settings (`ANTHROPIC_*`, `OPENAI_*`, `CONTAINERIZER_MODEL`, ...), so they pass in sandboxes that set them.
+
 ## 0.16.4 (2026-11-05)
 
 - **Try again** on an application whose sandbox runs a Make it A order's patched copy builds that patch again (the
