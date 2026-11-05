@@ -49,7 +49,8 @@ install -d -m 2750 -o cz-web -g containerizer "$D/devdb"
 # static networks: /etc/containerizer/network/*.network take precedence over DHCP
 if compgen -G "$C/network/*.network" >/dev/null; then
   install -d /run/systemd/network
-  cp "$C"/network/*.network /run/systemd/network/
+  # readable for systemd-networkd, which runs as systemd-network (cp under umask 077 left them 0600: ignored)
+  install -m 0644 "$C"/network/*.network /run/systemd/network/
 fi
 
 set -a
