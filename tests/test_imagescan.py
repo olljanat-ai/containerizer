@@ -61,3 +61,22 @@ spec:
     mounts = [cmd[i + 1] for i, x in enumerate(cmd) if x == "--tmpfs"]
     assert "/home/app/.aspnet/DataProtection-Keys:rw,exec,uid=1654,gid=1654,mode=1777" in mounts
     assert "/run/secrets/app:ro,mode=0550" in mounts
+
+
+def test_a_vulnerability_stop_names_the_packages_to_upgrade():
+    """The lab's retail-backoffice: wave-1 components were "not deployed: security gate: 2 fixable vulnerabilities at
+    or above the gate threshold (image)"; the packages were the application's own, so the reason names them."""
+    from containerizer.org import gate_failure
+
+    def v(pkg, inst, fixed, origin="app"):
+        return {"id": "CVE-x", "package": pkg, "installed": inst, "fixed": fixed, "origin": origin, "severity": "CRITICAL"}
+    comp = {"scans": [{"kind": "image", "passed": False, "blocking": [
+        v("Refit", "6.3.2", "7.2.22"), v("System.Drawing.Common", "5.0.0", "4.7.2, 5.0.3"), v("Refit", "6.3.2", "7.2.22")]}]}
+    assert gate_failure(comp) == ("3 fixable vulnerabilities at or above the gate threshold in the application's packages: "
+                                  "Refit 6.3.2 (fixed in 7.2.22), System.Drawing.Common 5.0.0 (fixed in 4.7.2, 5.0.3)")
+    comp["scans"][0]["blocking"] = [v("openssl", "3.0.2", "3.0.15", "base")]
+    assert gate_failure(comp).endswith("in the base image: openssl 3.0.2 (fixed in 3.0.15)")
+    comp["scans"][0]["blocking"] = [v(f"Pkg.Number{i}", "1.0.0", "2.0.0", "base" if i % 2 else "app") for i in range(20)]
+    r = gate_failure(comp)
+    assert r.startswith("20 fixable vulnerabilities at or above the gate threshold (image): Pkg.Number0 1.0.0")
+    assert len(r) <= 320 and r.endswith("more")

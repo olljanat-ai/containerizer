@@ -10,6 +10,9 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- Security gate: a component stopped by vulnerabilities says what to upgrade and where: "2 fixable vulnerabilities
+  at or above the gate threshold in the application's packages: Refit 6.3.2 (fixed in 7.2.22),
+  System.Drawing.Common 5.0.0 (fixed in 4.7.2, 5.0.3)" instead of only the count (the lab's retail-backoffice).
 - Front page: **Running in the sandbox** lists every application that runs there by its latest check, whole or in
   part ("12 of 16 components"), with a link to open it (a component with a user interface before an API); the
   application's page says the same at the top. Before, what ran of an application that still needs changes was

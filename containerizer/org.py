@@ -245,13 +245,41 @@ def gate_failure(comp: dict) -> str:
         if not s.get("passed"):
             if s.get("error"):
                 return f"{s.get('kind', 'image')} scan failed: {s['error']}"[:300]
-            return f"{len(s.get('blocking', []))} fixable vulnerabilities at or above the gate threshold ({s.get('kind')})"
+            return vulnerability_reason(s)
     if (comp.get("run") or {}).get("status") == "hardening-failure":
         return HARDENED_RUN
     return ""
 
 
 HARDENED_RUN = "does not run with the hardened pod security context"
+
+
+def vulnerability_reason(scan: dict) -> str:
+    """Why a scan stops a component, with what to upgrade: "2 fixable vulnerabilities at or above the gate threshold
+    in the application's packages: Refit 6.3.2 (fixed in 7.2.22), ..." (the lab's retail-backoffice: the reason
+    named only the count, and the packages to upgrade were in the application, not in a stale base image)."""
+    blocking = [b for b in scan.get("blocking") or [] if isinstance(b, dict)]
+    where = {"app": "in the application's packages", "base": "in the base image"}
+    origins = {b.get("origin") for b in blocking}
+    head = f"{len(blocking)} fixable vulnerabilities at or above the gate threshold"
+    if len(origins) == 1 and next(iter(origins)) in where:
+        head += f" {where[next(iter(origins))]}"
+    else:
+        head += f" ({scan.get('kind')})"
+    pkgs: dict = {}
+    for b in blocking:
+        name = str(b.get("package") or b.get("pkg") or "").strip()
+        if name and name not in pkgs:
+            pkgs[name] = f"{name} {b.get('installed') or ''}".strip() + (f" (fixed in {b['fixed']})" if b.get("fixed") else "")
+    if not pkgs:
+        return head
+    out, more = head + ": ", 0
+    for i, text in enumerate(pkgs.values()):
+        if len(out) + len(text) > 290:
+            more = len(pkgs) - i
+            break
+        out += ("" if out.endswith(": ") else ", ") + text
+    return out + (f" and {more} more" if more else "")
 
 
 # --------------------------------------------------------------------------- images
