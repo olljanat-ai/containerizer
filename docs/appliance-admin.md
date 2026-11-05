@@ -324,9 +324,12 @@ The view `vLlmUsage` adds the application's name, product and business unit (as 
 Applications), and `vLlmUsageDaily` sums it by day. The **Containerizer: LLM token usage** dashboard reads them
 through its own data source, **Containerizer results**: the login `cz_grafana`, whose role (`usage`) can read
 those two views and nothing else. Filter by business unit, product and application at the top; the tables at the
-bottom sum it per application and per component. With an external results database whose logins your DBA makes
-(`CZ_SQL_LOGINS=existing`), make `cz_grafana` too (its password is in `/etc/containerizer/secrets/cz-grafana`):
-until then the dashboard stays empty. Report on it with any SQL client that can read the views (the reader and
+bottom sum it per application and per component. The system agent sets the login, the data source and the
+dashboard up (within 5 minutes of the start or of an app update, and again if Grafana loses them), with the results
+database's owner and Grafana's `admin` account: if you changed that account's password in Grafana, they stay as
+they were (`journalctl -u containerizer-sysagent-status` says so). With an external results database whose logins
+your DBA makes (`CZ_SQL_LOGINS=existing`), make `cz_grafana` too (its password is in
+`/etc/containerizer/secrets/cz-grafana`): until then the dashboard stays empty. Report on it with any SQL client that can read the views (the reader and
 admin roles can too).
 
 ![Grafana: LLM token usage by business unit, product and application (sample data)](images/grafana-llm-usage.png#only-light)
