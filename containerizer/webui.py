@@ -112,12 +112,20 @@ def load_a_patches(conn) -> dict[int, dict]:
     """Per application, its best "Make it A" patch that works: verified (it builds and runs) and rated A by the
     rules (cz.vRefactorOrder), for the commit the application's latest assessment is of (a patch for older code
     no longer makes it A: a new order starts from it, admin_refactor.reusable_patch). One running in the sandbox
-    comes first, then the newest. Empty before schema 23."""
+    comes first, then the newest. Empty before schema 23.
+
+    Two queries, the commits compared here: joined in SQL, the commit comparison made SQL Server parse every
+    order's Payload (JSON with the LLM prompts) for each pair, about 300 ms on the front page."""
     try:
-        rows = _rows(conn, "SELECT o.ApplicationId, o.JobId, o.SandboxStatus, o.SandboxUrl, o.FinishedAt "
-                           "FROM cz.vRefactorOrder o JOIN cz.vApplicationLatest l ON l.ApplicationId = o.ApplicationId "
-                           "WHERE o.Goal = N'rating-a' AND o.Status = N'verified' AND o.RatingAfter = N'A' "
-                           "AND (o.SourceCommit = l.SourceCommit OR o.SourceCommit IS NULL OR l.SourceCommit IS NULL)")
+        orders = _rows(conn, "SELECT ApplicationId, JobId, SandboxStatus, SandboxUrl, FinishedAt, SourceCommit "
+                             "FROM cz.vRefactorOrder "
+                             "WHERE Goal = N'rating-a' AND Status = N'verified' AND RatingAfter = N'A'")
+        latest = {r["ApplicationId"]: r["SourceCommit"] for r in _rows(
+            conn, "SELECT ApplicationId, SourceCommit FROM cz.vApplicationLatest")} if orders else {}
+        rows = [{k: v for k, v in o.items() if k != "SourceCommit"} for o in orders
+                if o["ApplicationId"] in latest
+                and (o["SourceCommit"] is None or latest[o["ApplicationId"]] is None
+                     or o["SourceCommit"] == latest[o["ApplicationId"]])]
     except Exception:
         try:
             conn.rollback()
