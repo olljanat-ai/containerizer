@@ -10,6 +10,10 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- Front page: **Running in the sandbox** lists every application that runs there by its latest check, whole or in
+  part ("12 of 16 components"), with a link to open it (a component with a user interface before an API); the
+  application's page says the same at the top. Before, what ran of an application that still needs changes was
+  only in its migration plan.
 - Rules: Windows sign-in set up in code (the ASP.NET Core Negotiate handler, `AddNegotiate`) is now "Windows
   (Kerberos/NTLM) authentication" that needs a change (refactor), like IIS Windows authentication in web.config.
   A "Make it A" patch could turn windowsAuthentication off in web.config (only IIS reads it), keep Negotiate and

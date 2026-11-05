@@ -96,12 +96,68 @@ def load_overview(conn) -> dict:
         if r["ApplicationId"] not in best or k < best[r["ApplicationId"]][0]:
             best[r["ApplicationId"]] = (k, r["Title"])
     ready = load_a_patches(conn)
+    running = load_running(conn)
     for a in apps:
         a["Components"] = len(by_app.get(a["ApplicationId"], []))
         a["ReadyNow"], a["PlanComponents"] = count_ready(by_app.get(a["ApplicationId"], []), state)
         a["MainObstacle"] = best.get(a["ApplicationId"], (None, ""))[1]
         a["APatch"] = ready.get(a["ApplicationId"])
+        a["Running"] = running.get(a["ApplicationId"])
     return {"apps": apps, "unmapped": {r["Kind"]: r["N"] for r in unmapped}}
+
+
+RUNNING = ("healthy", "scheduled")      # a component the latest sandbox check found running (or a job waiting to run)
+
+
+def load_running(conn) -> dict[int, dict]:
+    """Per application, what of it runs in the sandbox by its latest check: {"n": components running, "url": the
+    link to open (sandbox.main_url: a UI before an API)}. Applications without one running are left out."""
+    from .sandbox import URL_RE, main_url
+    try:
+        rows = _rows(conn, "SELECT ApplicationId, ComponentName, Status, Url FROM cz.vSandboxLatest "
+                           "WHERE Status IN (N'healthy', N'scheduled')")
+    except Exception:  # noqa: BLE001 - a database without sandbox checks
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {}
+    out: dict[int, dict] = {}
+    for r in rows:
+        x = out.setdefault(r["ApplicationId"], {"n": 0, "comps": []})
+        x["n"] += 1
+        if URL_RE.fullmatch(r.get("Url") or "") and r.get("Status") == "healthy":
+            x["comps"].append({"component": r.get("ComponentName") or "", "url": r["Url"]})
+    return {k: {"n": v["n"], "url": main_url(v["comps"])} for k, v in out.items()}
+
+
+def _open_link(url) -> str:
+    from .sandbox import URL_RE
+    return (f" <a href='{e(url)}' target='_blank' rel='noopener noreferrer'>Open</a>"
+            if isinstance(url, str) and URL_RE.fullmatch(url) else "")
+
+
+def running_html(apps: list[dict]) -> str:
+    """The applications that run in the sandbox, whole or in part, by its latest check: try them there. The ones a
+    "Make it A" patch runs for are in their own list (a_patches_html)."""
+    rows = []
+    for a in sorted(apps, key=lambda a: (a["Rating"], a["ApplicationName"].lower())):
+        run = a.get("Running")
+        ap = a.get("APatch") or {}
+        if not run or (a.get("Rating") != "A" and ap.get("SandboxStatus") in SANDBOX_HERE):
+            continue
+        total = int(a.get("PlanComponents") or 0) or int(a.get("Components") or 0)
+        part = f"{int(run['n'])} of {total} components" if total and run["n"] < total else "all of it"
+        rows.append(f"<tr><td>{badge(a['Rating'])}</td>"
+                    f"<td><a href='/app/{int(a['ApplicationId'])}#plan'>{e(a['ApplicationName'])}</a></td>"
+                    f"<td><span class='st st-ok'>{e(part)}</span>{_open_link(run.get('url'))}</td></tr>")
+    if not rows:
+        return ""
+    return ("<section class='running'><h2>Running in the sandbox</h2><p class='muted'>What of these applications runs in "
+            "the sandbox now, by its latest check: the components that are ready, also where the rest of the application "
+            "still needs changes. Open one to try it; the application's migration plan says what runs and what does "
+            "not yet.</p><table><thead><tr><th>Rating</th><th>Application</th><th>In the sandbox</th></tr></thead>"
+            "<tbody>" + "".join(rows) + "</tbody></table></section>")
 
 
 # a sandbox variant's state as the front page groups it: running there, deployed without a health check, or not there
@@ -772,7 +828,7 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag
                         f"{segmented(bc, len(bu_apps), f'Ratings in {bu or UNASSIGNED}', 10)}{''.join(body)}</section>")
 
     um = data.get("unmapped") or {}
-    note = a_patches_html(patched, nav)
+    note = a_patches_html(patched, nav) + running_html(apps)
     if admin and unmapped_apps and nav:
         note += (f"<p class='note'>{len(unmapped_apps)} application(s) not mapped to a product are shown to administrators "
                  f"only; <a href='/admin/applications?show=unmapped'>map them</a> to show them to everyone.</p>")
@@ -825,6 +881,20 @@ def _nav(nav: str) -> str:
 def _info_link(url) -> str:
     from .admin import info_link
     return info_link(url)
+
+
+def _in_sandbox(app: dict) -> str:
+    """What of the application runs in the sandbox by its latest check, with the link to open, at the top of its page."""
+    from .sandbox import URL_RE, main_url
+    up = [s for s in app.get("sandbox") or [] if s.get("Status") in RUNNING]
+    if not up:
+        return ""
+    total = sum(1 for c in app.get("components") or [] if c.get("Tier") == "server") or len(app.get("sandbox") or [])
+    url = main_url([{"component": s.get("ComponentName") or "", "url": s["Url"]} for s in up
+                    if s.get("Status") == "healthy" and URL_RE.fullmatch(s.get("Url") or "")])
+    part = f"{len(up)} of {total} components run" if len(up) < total else "it runs"
+    plan = " · <a href='#plan'>what runs and what does not yet</a>" if len(up) < total else ""
+    return f"<p class='in-sandbox'><span class='st st-ok'>In the sandbox</span> {e(part)} there now{_open_link(url)}{plan}</p>"
 
 
 def render_application(app: dict, nav: str = "", refactor: dict | None = None) -> str:
@@ -900,7 +970,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 <p class='crumbs'>{crumbs}</p>{_admin_links_html(refactor.get("admin_links"))}
 <header class='app'>{badge(r, True)}<div><h1>{e(app['ApplicationName'])}</h1>
 <p class='lead'><b>{e(RATING_TITLE.get(r, ''))}</b>: {e(RATING_TEXT.get(r, ''))}</p>
-{f"<p>{e(app['Description'])}</p>" if app.get('Description') else ''}<p>{e(app['Summary'])}</p>{rating_why(app)[0]}</div></header>
+{f"<p>{e(app['Description'])}</p>" if app.get('Description') else ''}<p>{e(app['Summary'])}</p>{rating_why(app)[0]}{_in_sandbox(app)}</div></header>
 <div class='tiles'>
 <div class='tile'><div class='label'>Readiness</div><div class='value'>{int(app['Score'])}<span class='unit'>/100</span></div></div>
 <div class='tile'><div class='label'>Confidence</div><div class='value'>{_confidence(app['Confidence'])}</div>
@@ -1289,7 +1359,7 @@ background:var(--card);color:var(--muted);text-decoration:none;vertical-align:1p
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .a-patch{font-size:12px;font-weight:700;color:var(--muted);margin-left:4px;white-space:nowrap}.a-patch.here{color:#0a7d0a}
 @media (prefers-color-scheme:dark){.a-patch.here{color:#4fd14f}}
-.a-patches{margin:18px 0}.a-patches table{margin-top:6px}
+.a-patches,.running{margin:18px 0}.a-patches table,.running table{margin-top:6px}.in-sandbox{margin:8px 0 0}
 @media (forced-colors:active){.bar,.badge,.key,.cell,.chart{forced-color-adjust:none;border:1px solid CanvasText}}
 .st{display:inline-block;font-size:12px;font-weight:600;border-radius:999px;padding:1px 9px;border:1px solid currentColor;white-space:nowrap}
 .st-ok{color:#0a7d0a}.st-bad{color:#b42727}.st-off{color:var(--muted)}.st-run{color:#1f5fbf}

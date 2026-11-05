@@ -162,7 +162,10 @@ Later files override earlier rules with the same id; `rules/learned/` is loaded 
 
 ### Migration plan
 
-The components of an application do not have to move together. The results page of every application that
+The components of an application do not have to move together. What of an application runs in the sandbox now, by its latest
+check, is shown at the top of its results page ("4 of 9 components run there now", with a link to open it: a
+component with a user interface before an API) and on the front page under **Running in the sandbox**, for every
+application, also the ones that need changes for the rest. The results page of every application that
 does not rate A has a **Migration plan**, right after the main obstacles, that splits it into waves:
 
 - **Wave 1, now** (to Kubernetes): the server components that rate A on their own (the application rating

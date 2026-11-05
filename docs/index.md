@@ -395,6 +395,25 @@ in the sandbox right now.
 
 <div markdown>
 
+### Try what already runs
+
+The parts of an application that are ready run in the sandbox before the rest is changed. The front page lists
+every application that runs there, whole or in part ("12 of 16 components"), with a link to open it, and the
+application's page says the same at the top.
+
+[Migration plan :octicons-arrow-right-24:](overview.md#migration-plan)
+
+</div>
+
+![The front page: applications running in the sandbox, whole or in part, with a link to open each](images/front-running.png#only-light){ .cz-shot }
+![The front page: applications running in the sandbox, whole or in part, with a link to open each](images/front-running-dark.png#only-dark){ .cz-shot }
+
+</div>
+
+<div class="cz-feature" markdown>
+
+<div markdown>
+
 ### Operations you can see
 
 The scan worker exports Prometheus metrics about scans, the process and the VM, with a Grafana
