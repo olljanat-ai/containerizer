@@ -159,8 +159,7 @@ def technique_special_folder_workdir(repo, c, findings) -> dict | None:
         return None
     mounts = [f"{APP_DIR}/{d}" for d in dirs]
     return {"add_writable": mounts,
-            "_note": "Folders mounted: " + ", ".join(mounts) + " (put the files the app expects there, e.g. from a "
-                     "ConfigMap or an init container)."}
+            "_note": "Folders mounted: " + ", ".join(mounts) + "."}
 
 
 TECHNIQUES = {
