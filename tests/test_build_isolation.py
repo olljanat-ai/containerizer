@@ -37,3 +37,34 @@ def test_plain_http_proxy_alone_does_not_break_the_build_args(monkeypatch):
     monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:3128")
     args = verify._build_env_args()
     assert "HTTP_PROXY=http://127.0.0.1:3128" in args and "--network" not in args
+
+
+def _rendered():
+    from containerizer.sysagent import render
+    system = {"rules": [{"host": "api.nuget.org", "ports": ["tcp/443"]}]}
+    return render(system, {"mode": "enforce", "rules": []}, ["10.0.0.1"])[0]
+
+
+def _chain(nft: str, name: str) -> list[str]:
+    body = nft.split(f"chain {name} {{")[1].split("\n  }")[0]
+    return [ln.strip() for ln in body.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+
+
+def test_docker_bridges_reach_only_dns_on_the_host():
+    rules = _chain(_rendered(), "input")
+    drop = rules.index('iifname { "docker0", "br-*" } drop')
+    dns = next(i for i, r in enumerate(rules) if "th dport 53 accept" in r)
+    api = next(i for i, r in enumerate(rules) if "6443" in r)
+    assert dns < drop < api                         # DNS before the drop, the k3s API after it
+    assert '"docker0"' not in rules[api] and '"cni0"' in rules[api]
+    assert not any("1433" in r or "5000" in r or "3000" in r for r in rules)   # no appliance service is opened
+
+
+def test_docker_bridges_never_reach_the_k3s_networks():
+    rules = _chain(_rendered(), "forward")
+    assert "ip saddr { 172.16.0.0/12 } ip daddr { 10.42.0.0/16, 10.43.0.0/16 } drop" in rules
+    assert "ip saddr { 10.42.0.0/16, 10.43.0.0/16 } ip daddr { 172.16.0.0/12 } drop" in rules
+    # no blanket accept between the k3s and the Docker networks any more
+    assert not any("ip saddr { 10.42.0.0/16, 10.43.0.0/16, 172.16.0.0/12 }" in r for r in rules)
+    # and what is left goes through the egress allow-list
+    assert rules[-1] == "jump egress"
