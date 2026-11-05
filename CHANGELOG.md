@@ -20,6 +20,7 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   `plan.json` (`applied`, `resolved`, `reasons`); the finding keeps its rule severity as `rule_severity` and is
   never sent to a refactoring. An application whose only refactor findings are these goes from B to A at its next
   scan. The page also classifies all 111 refactor rules (platform, partial, code-only) as candidates for more.
+- PHP and Ruby applications are detected, rated and containerized (work in progress, #254).
 
 ## 0.16.4 (2026-11-05)
 
