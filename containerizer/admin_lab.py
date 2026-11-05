@@ -64,6 +64,62 @@ def needs_off(conn) -> dict[str, list[str]]:
     return {k: sorted(v) for k, v in out.items()}
 
 
+def needed_by(conn) -> dict[str, list[dict]]:
+    """{service: [{id, name, components, provided}]}: the applications whose latest organization scan found that
+    they need the service (cz.vSandboxDeploy LabServices, each application of a split repository on its own),
+    with the components that need it and whether the scan pointed them at the lab's service. {} before 0.16.1's
+    view."""
+    try:
+        cur = conn.cursor(as_dict=True)
+        cur.execute("SELECT DISTINCT d.ApplicationId, COALESCE(a.DisplayName, a.Name) AS Name, d.LabServices "
+                    "FROM cz.vSandboxDeploy d JOIN cz.Application a ON a.ApplicationId = d.ApplicationId "
+                    "WHERE d.LabServices IS NOT NULL")
+        found = cur.fetchall()
+    except Exception:  # noqa: BLE001 - a database from before the LabServices column
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return {}
+    out: dict[str, list[dict]] = {}
+    for r in found:
+        try:
+            rep = json.loads(r["LabServices"]) or {}
+        except (TypeError, ValueError):
+            continue
+        provided = set(rep.get("provided") or [])
+        for svc, comps in (rep.get("needed") or {}).items():
+            if svc in L.SERVICES and comps:
+                out.setdefault(svc, []).append({"id": int(r["ApplicationId"]), "name": str(r["Name"] or "?"),
+                                                "components": sorted(comps), "provided": svc in provided})
+    return {k: sorted(v, key=lambda x: x["name"].lower()) for k, v in out.items()}
+
+
+def needed_by_html(by: dict[str, list[dict]], on: dict[str, bool]) -> str:
+    """The other direction of an application's Lab services line: per service, the applications that need it."""
+    if not by:
+        return ("<h2>Applications that need each service</h2><p class='muted'>No organization scan has found an "
+                "application that needs a lab service yet (or none since 0.16.1: the next scan of each repository "
+                "fills this in).</p>")
+    out = ["<h2>Applications that need each service</h2><p class='muted small'>From each application's latest "
+           "organization scan. <b>Provided</b>: the scan pointed the application at the lab's service. <b>Without "
+           "it</b>: the service was off at that scan, and the application kept its own settings; turn the service "
+           "on and scan again.</p><table class='audit'><thead><tr><th>Service</th><th>Application</th>"
+           "<th>Components that need it</th><th></th></tr></thead><tbody>"]
+    for svc in L.ORDER:
+        apps = by.get(svc) or []
+        for i, x in enumerate(apps):
+            head = (f"<td rowspan='{len(apps)}'><b>{e(L.SERVICES[svc].title)}</b><div class='muted small'>"
+                    f"{'on' if on.get(svc) else 'off'} · {len(apps)} application{'s' if len(apps) != 1 else ''}</div></td>"
+                    if i == 0 else "")
+            st = ("<span class='st st-ok'>Provided</span>" if x["provided"] else
+                  "<span class='st st-bad'>Without it</span>")
+            out.append(f"<tr>{head}<td><a href='/app/{x['id']}'>{e(x['name'])}</a></td>"
+                       f"<td class='small'>{e(', '.join(x['components']))}</td><td>{st}</td></tr>")
+    out.append("</tbody></table>")
+    return "".join(out)
+
+
 def route(adm, conn, s, a, method: str, parts: list[str], q: dict, form: dict) -> Response:
     if not enabled(adm, a):
         return Response(403, adm._shell(s, a, "Not allowed", "", "<p>Only administrators can change the lab services.</p>"))
@@ -122,10 +178,12 @@ def listing(adm, conn, s, a, flash: str) -> Response:
     missing = needs_off(conn)
     trs = []
     warnings = []
+    state_on = {}
     for svc in L.ORDER:
         sv = L.SERVICES[svc]
         r = db.get(svc)
         on = bool(r["Enabled"]) if r else sv.default
+        state_on[svc] = on
         x = seen.get(svc) or {}
         pending = pending_req or (bool(applied) and applied.get(svc) != on)
         apps = x.get("apps") or []
@@ -166,5 +224,6 @@ def listing(adm, conn, s, a, flash: str) -> Response:
         f"<th></th></tr></thead><tbody>{''.join(trs)}</tbody></table>"
         + (f"<p class='muted small'>Checked {e(str(when))}. The lab agent checks every 2 minutes and right after a change.</p>"
            if when else "<p class='muted small'>The lab agent has not reported yet.</p>")
+        + needed_by_html(needed_by(conn), state_on)
         + "<h2>Changes</h2>" + render_audit(adm._audit_rows(conn, "LabService", None, 50), show_target=True))
     return Response(200, adm._shell(s, a, "Lab services", TAB[0], body, flash))

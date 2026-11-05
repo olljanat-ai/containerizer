@@ -45,6 +45,14 @@ component that fails says first that it needs a service the lab has turned off.
 ![The top of an application's results page: Lab services, SQL Server provided, RabbitMQ and SFTP turned off, and the Sandbox column marking the components that need them](images/results-lab-services.png#only-light){ .cz-shot }
 ![The top of an application's results page: Lab services, SQL Server provided, RabbitMQ and SFTP turned off, and the Sandbox column marking the components that need them](images/results-lab-services-dark.png#only-dark){ .cz-shot }
 
+The other direction is on **Admin → Lab services**: **Applications that need each service** lists, per service,
+every application whose latest scan found that it needs it, with the components that do and whether the scan
+gave it the lab's service (**Provided**) or the service was off (**Without it**). Each application links to its
+results page. Use it to see what turning a service on brings into the sandbox, or what turning it off takes away.
+
+![Admin -> Lab services: per service, the applications that need it, their components, and Provided or Without it](images/admin-lab-services-needed-by.png#only-light){ .cz-shot }
+![Admin -> Lab services: per service, the applications that need it, their components, and Provided or Without it](images/admin-lab-services-needed-by-dark.png#only-dark){ .cz-shot }
+
 ## What the scan changes in an app
 
 The scan decides, for each component, which services the component needs:

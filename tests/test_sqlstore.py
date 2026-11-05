@@ -406,6 +406,22 @@ def test_sandbox_deploy_view(db):
         assert json.loads(rows["loans"][0]["LabServices"])["missing"] == ["rabbitmq"]
         assert json.loads(rows["one"][0]["LabServices"])["needed"] == {"sftp": ["Web"]}
         assert rows["two"][0]["LabServices"] is None
+    finally:
+        rd.close()
+    # the other direction, for Admin -> Lab services (the admin login): per service, the applications that need it
+    from containerizer import admin_lab
+    ed = sqlstore.connect(_as(db, "cz_t_editor"), password="Test-Passw0rd!x")
+    try:
+        by = admin_lab.needed_by(ed)
+        assert by == {"rabbitmq": [{"id": ids["loans"], "name": "loans", "components": ["Portal"], "provided": False}],
+                      "sftp": [{"id": ids["one"], "name": "one", "components": ["Web"], "provided": False}]}
+        html = admin_lab.needed_by_html(by, {"rabbitmq": True})
+        assert f"<a href='/app/{ids['loans']}'>loans</a>" in html and "on · 1 application" in html and "Without it" in html
+    finally:
+        ed.close()
+    rd = sqlstore.connect(_as(db, "cz_t_reader"), password="Test-Passw0rd!x")
+    try:
+        pass
         assert kinds("two") == [] and not rows["two"][0]["SandboxEnabled"] and rows["two"][0]["ScanStatus"] == "sandbox-off"
         assert rows["one"][0]["ScanStatus"] == "deployed" and rows["one"][0]["SandboxEnabled"]
         assert len(rows["cli-only"]) == 1 and rows["cli-only"][0]["ScanStatus"] is None

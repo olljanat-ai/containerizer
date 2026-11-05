@@ -17,6 +17,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 - Results page: **Lab services** at the top says what the application needs in the sandbox lab, what the lab
   provides and what is turned off, with the components that run without it; the Sandbox column marks those
   components (`cz.vSandboxDeploy` has the new column `LabServices`).
+- Admin -> Lab services: **Applications that need each service**, per service the applications whose latest scan
+  needs it, with their components and whether they got it (Provided) or went without it (the service was off).
 - Lab services of a repository split into applications (such as containerization-challenge) were dropped from
   the scan's record: Admin -> Lab services did not list those applications under "Needed but off". Each
   application's are now kept, and the list names them.
