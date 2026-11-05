@@ -20,6 +20,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   `plan.json` (`applied`, `resolved`, `reasons`); the finding keeps its rule severity as `rule_severity` and is
   never sent to a refactoring. An application whose only refactor findings are these goes from B to A at its next
   scan. The page also classifies all 111 refactor rules (platform, partial, code-only) as candidates for more.
+- Python and Go components get a container build and deployment (Dockerfile, `k8s.yaml`, plan) like .NET, Java
+  and Node.js components, instead of only `MIGRATION.md` (work in progress, #248).
 
 ## 0.16.4 (2026-11-05)
 
