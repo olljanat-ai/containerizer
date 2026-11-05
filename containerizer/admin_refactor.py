@@ -352,13 +352,18 @@ def _findings_table(res: dict) -> str:
                     f"<div class='small'>{e(f.get('title') or '')}</div></td>"
                     f"<td class='small'><code>{e(f.get('file') or '')}</code><div class='muted'>{e(f.get('component') or '')}</div></td>"
                     f"<td class='small'>{e(after) or '<span class=muted>-</span>'}</td>"
+                    f"<td class='small'>{e(rf.lines_text(f)) or '<span class=muted>-</span>'}"
+                    + (f"<div class='muted'>{e(f.get('put_back'))}</div>" if f.get("put_back") else "") + "</td>"
                     f"<td class='small'>{e(f.get('reason') or '')}"
                     + ("<span class='muted'>the LLM did not name it; the rules confirm it is gone</span>"
                        if f.get("confirmed_by") == "rules" else "") + "</td></tr>")
     if not rows:
         return ""
     return ("<h2>Findings</h2><table><thead><tr><th>Result</th><th>Finding</th><th>File</th><th>Rules on the patched "
-            "copy</th><th>Why not</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table>")
+            "copy</th><th>Lines changed</th><th>Why not</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+            "<p class='muted small'>Code is changed only for findings without a platform alternative, and only the "
+            "lines they need: reformatting, using-directive churn, comment rewrites and package version changes are "
+            "put back, and an answer over the line budget (rules/70-refactor.yaml) is not applied.</p>")
 
 
 def _verification(res: dict, st: str) -> str:
@@ -641,6 +646,13 @@ def show_order(adm, conn, s, a, ident: int, flash: str) -> Response:
             body.append("<h2>What it will change</h2><ul>" + "".join(
                 f"<li><code>{e(t.get('file'))}</code>: " + ", ".join(e(f.get("rule")) for f in t.get("findings") or [])
                 + "</li>" for t in tasks) + "</ul>")
+    handled = [x for x in skipped if x.get("handled") == "configuration"]
+    skipped = [x for x in skipped if x.get("handled") != "configuration"]
+    if handled:
+        body.append("<h2>Handled by configuration</h2><p class='muted small'>No code change: the generated "
+                    "container configuration settles these, so they are not sent to the LLM.</p><ul>" + "".join(
+            f"<li class='small'><b>{e(x.get('rule'))}</b> ({e(x.get('component'))}): "
+            f"{e(str(x.get('reason') or '').removeprefix(rf.HANDLED_PREFIX))}</li>" for x in handled) + "</ul>")
     if skipped:
         body.append("<details><summary>Findings not sent to the LLM</summary><ul>" + "".join(
             f"<li class='small'><b>{e(x.get('rule'))}</b> ({e(x.get('component'))}): {e(x.get('reason'))}</li>" for x in skipped)
