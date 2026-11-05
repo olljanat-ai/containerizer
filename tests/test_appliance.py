@@ -868,32 +868,41 @@ def test_sandbox_says_why_nothing_deploys():
     assert "containerizer_sandbox_connection" in exprs and 'name="containerizer-sandbox"' in exprs
 
 
-def test_every_wired_nic_joins_one_active_backup_bond_with_the_address_on_it():
-    """As olljanat/nomad-qemu-node (netplan's output for its bond), without the bridge it needs for VMs."""
+def test_every_wired_nic_joins_one_active_backup_bond_with_the_bridge_on_it():
+    """As olljanat/nomad-qemu-node's 05_network.yaml (netplan): every e* NIC in bond0, bond0 the port of br0, which
+    has the address. Not a management controller's USB NIC (iDRAC: the bond chose it, 0.13.0 on a Dell server)."""
     net = Path(__file__).resolve().parent.parent / "appliance/rootfs/etc/systemd/network"
     nic = (net / "20-uplink.network").read_text()
-    assert "Name=e*" in nic and "Bond=bond0" in nic and "LinkLocalAddressing=no" in nic and "DHCP" not in nic
+    assert "Name=e*" in nic and "Bond=bond0" in nic and "LinkLocalAddressing=no" in nic and "\nDHCP=" not in nic
+    assert "Driver=!cdc_ether rndis_host cdc_ncm cdc_eem" in nic
     assert "RequiredForOnline=no" in nic                    # a port without a cable does not hold up the boot
     bond = (net / "21-uplink-bond0.netdev").read_text()
     for line in ("Kind=bond", "Mode=active-backup", "MIIMonitorSec=100ms", "MinLinks=1",
                  "MACAddress=none"):                        # the first NIC's MAC: hypervisors drop a made-up one
         assert line in bond, line
-    addr = (net / "21-uplink-bond0.network").read_text()
-    assert "Name=bond0" in addr and "DHCP=yes" in addr
+    port = (net / "21-uplink-bond0.network").read_text()
+    assert "Name=bond0" in port and "Bridge=br0" in port and "\nDHCP=" not in port
+    br = (net / "22-uplink-br0.netdev").read_text()
+    for line in ("Kind=bridge", "STP=no", "ForwardDelaySec=0", "VLANFiltering=yes", "DefaultPVID=1", "MACAddress=none"):
+        assert line in br, line
+    addr = (net / "22-uplink-br0.network").read_text()
+    assert "Name=br0" in addr and "DHCP=ipv4" in addr
 
 
-def test_dhcp_identity_survives_the_recovery_system_and_the_banner_shows_bond0():
+def test_dhcp_identity_survives_the_recovery_system_and_the_banner_shows_the_bridge():
     """The recovery system that installs the appliance and the installed system have different machine-ids: a
     DUID client ID gave the installed system a second DHCP address (the boot test could not reach it). The client
-    ID is the bond's MAC; the console banner names bond0, not the first interface (the DNS filter's dummy)."""
+    ID is the bridge's MAC, its port's, the first NIC's (neither the bond nor the bridge gets a machine-id MAC); the
+    console banner names br0, not the first interface (the DNS filter's dummy)."""
     root = Path(__file__).resolve().parent.parent
-    net = (root / "appliance/rootfs/etc/systemd/network/21-uplink-bond0.network").read_text()
-    assert "\n[DHCPv4]\nClientIdentifier=mac\n" in net
-    link = (root / "appliance/rootfs/etc/systemd/network/21-uplink-bond0.link").read_text()
-    assert "OriginalName=bond0" in link and "MACAddressPolicy=none" in link   # not a machine-id MAC (99-default.link)
+    net = (root / "appliance/rootfs/etc/systemd/network/22-uplink-br0.network").read_text()
+    assert "\n[DHCPv4]\nClientIdentifier=mac\n" in net and "UseHostname=no" in net
+    for name, orig in (("21-uplink-bond0.link", "bond0"), ("22-uplink-br0.link", "br0")):
+        link = (root / f"appliance/rootfs/etc/systemd/network/{name}").read_text()
+        assert f"OriginalName={orig}" in link and "MACAddressPolicy=none" in link   # not a machine-id MAC (99-default.link)
     for f in ("appliance/rootfs/etc/issue", "appliance/oem/03_branding.yaml"):
         text = (root / f).read_text()
-        assert "\\4{bond0}" in text and "https://\\4/" not in text, f
+        assert "\\4{br0}" in text and "https://\\4/" not in text, f
 
 
 def test_system_page_says_the_llm_runner_finishes_its_jobs(page):
@@ -918,7 +927,7 @@ def test_static_address_is_checked():
     assert cfg == {"mode": "static", "address": "192.0.2.10/24", "gateway": "192.0.2.1",
                    "dns": ["192.0.2.53", "192.0.2.54"]}
     text = render(cfg)
-    assert "[Match]\nName=bond0" in text and "Address=192.0.2.10/24\nGateway=192.0.2.1\nDNS=192.0.2.53\nDNS=192.0.2.54" in text
+    assert "[Match]\nName=br0" in text and "Address=192.0.2.10/24\nGateway=192.0.2.1\nDNS=192.0.2.53\nDNS=192.0.2.54" in text
     assert validate("static", "2001:db8::10/64", "fe80::1", ["2001:db8::53"])["gateway"] == "fe80::1"
     assert validate("DHCP") == {"mode": "dhcp"}
     for bad, why in ((("192.0.2.10", "192.0.2.1", "1.1.1.1"), "prefix length"),
@@ -936,18 +945,23 @@ def test_static_address_is_checked():
 
 
 def test_network_command_sets_a_static_address_and_back_to_dhcp(paths, monkeypatch, capsys):
-    """On the console or over SSH: `network static ...` writes the file where it is kept (and copied from at every
-    boot by cz-firstboot) and where systemd-networkd reads it, and configures bond0 again at once."""
-    addr = json.dumps([{"ifname": "bond0", "addr_info": [
+    """On the console or over SSH (`cz network static ...`): writes the file where it is kept (and copied from at
+    every boot by cz-firstboot) and where systemd-networkd reads it, configures br0 again at once and rebuilds the
+    DNS filter with the new DNS servers."""
+    monkeypatch.setattr(sysagent, "DNS_WAIT", 0)
+    rebuilt = []
+    monkeypatch.setattr(sysagent, "apply_firewall", lambda reload_dns=True: rebuilt.append(1))
+    addr = json.dumps([{"ifname": "br0", "addr_info": [
         {"family": "inet", "local": "192.0.2.10", "prefixlen": 24, "scope": "global"},
         {"family": "inet6", "local": "fe80::1", "prefixlen": 64, "scope": "link"}]}])
     r = fake_run(monkeypatch, **{"ip -j addr": addr, "ip -j -4 route": json.dumps([{"dst": "default", "gateway": "192.0.2.1"}]),
-                                 "ip -j -6 route": "[]", "resolvectl dns": "Link 3 (bond0): 192.0.2.53\n"})
+                                 "ip -j -6 route": "[]", "resolvectl dns": "Link 3 (br0): 192.0.2.53\n"})
     assert sysagent.main(["network", "static", "192.0.2.10/24", "192.0.2.1", "192.0.2.53"]) == 0
     for d in (paths.network, paths.network_run):
         assert "Address=192.0.2.10/24" in (d / "10-static.network").read_text()
-    assert ["networkctl", "reload"] in r.calls and ["networkctl", "reconfigure", "bond0"] in r.calls
-    assert ["systemctl", "restart", "--no-block", "containerizer-addresses.service"] in r.calls
+    assert ["networkctl", "reload"] in r.calls and ["networkctl", "reconfigure", "br0"] in r.calls
+    assert ["systemctl", "restart", "--no-block", "containerizer-addresses.service"] in r.calls and rebuilt
+    assert ["ip", "-j", "addr", "show", "dev", "br0"] in r.calls
     out = capsys.readouterr().out
     assert "mode:      static" in out and "addresses: 192.0.2.10/24" in out and "DNS:       192.0.2.53" in out
     st = sysagent.network_state()
@@ -968,6 +982,8 @@ def test_a_static_address_survives_a_restart(paths, monkeypatch):
     status make the copy readable and configure bond0 again; nothing when it is fine."""
     import os
     r = fake_run(monkeypatch)
+    monkeypatch.setattr(sysagent, "DNS_WAIT", 0)
+    monkeypatch.setattr(sysagent, "apply_firewall", lambda reload_dns=True: None)
     paths.network.mkdir(parents=True)
     (paths.network / "10-static.network").write_text("[Match]\nName=bond0\n[Network]\nAddress=10.0.0.5/24\n")
     paths.network_run.mkdir(parents=True)
@@ -976,8 +992,56 @@ def test_a_static_address_survives_a_restart(paths, monkeypatch):
     os.chmod(copy, 0o600)                                   # as cz-firstboot leaves it
     assert sysagent.restart_check() == "nothing planned"
     assert (copy.stat().st_mode & 0o777) == 0o644
-    assert ["networkctl", "reload"] in r.calls and ["networkctl", "reconfigure", "bond0"] in r.calls
+    assert ["networkctl", "reload"] in r.calls and ["networkctl", "reconfigure", "br0"] in r.calls
     r.calls.clear()
     assert sysagent.network_sync() == [] and r.calls == []           # fine now: nothing done
     (paths.network / "10-static.network").write_text("[Match]\nName=bond0\n[Network]\nAddress=10.0.0.6/24\n")
     assert sysagent.network_sync() == ["10-static.network"] and "10.0.0.6" in copy.read_text()
+
+
+
+def test_a_static_address_of_0_13_moves_to_the_bridge(paths, monkeypatch):
+    """0.14.0: the address is on br0 (bond0 is the bridge's port, as olljanat/nomad-qemu-node's netplan); a static
+    file `network static` wrote in 0.13.x for bond0 is moved to br0 (cz-firstboot at boot, network_sync after);
+    one written by hand is left as it is."""
+    from containerizer import netconfig
+    monkeypatch.setattr(sysagent, "DNS_WAIT", 0)
+    monkeypatch.setattr(sysagent, "apply_firewall", lambda reload_dns=True: None)
+    fake_run(monkeypatch)
+    old = (netconfig.OLD_HEADER + "\n[Match]\nName=bond0\n\n[Network]\nAddress=10.0.0.5/24\nGateway=10.0.0.1\n"
+           "DNS=10.0.0.53\n")
+    paths.network.mkdir(parents=True)
+    (paths.network / "10-static.network").write_text(old)
+    (paths.network / "05-mine.network").write_text("[Match]\nName=bond0\n[Network]\nAddress=10.9.9.9/24\n")
+    assert sysagent.network_sync() == ["05-mine.network", "10-static.network"]
+    text = (paths.network / "10-static.network").read_text()
+    assert text.startswith(netconfig.HEADER) and "\nName=br0\n" in text and "bond0" not in text
+    assert netconfig.parse(text)["gateway"] == "10.0.0.1"
+    assert "Name=bond0" in (paths.network / "05-mine.network").read_text()            # by hand: as it is
+    assert netconfig.migrate(text) is None
+
+
+def test_the_appliance_network_files_follow_the_bridge_example():
+    """rootfs: every e* NIC (not a management controller's USB NIC) in bond0, bond0 the port of br0, which has the
+    address (DHCP), as olljanat/nomad-qemu-node's 05_network.yaml."""
+    import configparser
+    from pathlib import Path as P_
+    net = P_(__file__).resolve().parent.parent / "appliance" / "rootfs" / "etc" / "systemd" / "network"
+
+    def ini(name):
+        c = configparser.ConfigParser(strict=False, interpolation=None)
+        c.optionxform = str
+        c.read(net / name)
+        return c
+    ports = ini("20-uplink.network")
+    assert ports["Match"]["Name"] == "e*" and "cdc_ether" in ports["Match"]["Driver"] and ports["Match"]["Driver"].startswith("!")
+    assert ports["Network"]["Bond"] == "bond0" and ports["Network"]["LinkLocalAddressing"] == "no"
+    bond = ini("21-uplink-bond0.network")
+    assert bond["Network"]["Bridge"] == "br0" and "DHCP" not in bond["Network"]
+    br = ini("22-uplink-br0.netdev")
+    assert br["NetDev"]["Kind"] == "bridge" and br["Bridge"]["STP"] == "no" and br["Bridge"]["VLANFiltering"] == "yes"
+    assert ini("22-uplink-br0.network")["Network"]["DHCP"] == "ipv4"
+    assert ini("22-uplink-br0.network")["DHCPv4"]["UseHostname"] == "no"
+    assert ini("22-uplink-br0.link")["Link"]["MACAddressPolicy"] == "none"
+    issue = (net.parent.parent.parent / "etc" / "issue").read_text() if (net.parent.parent.parent / "etc" / "issue").is_file() else (net.parent.parent / "issue").read_text()
+    assert "\\4{br0}" in issue and "cz network show" in issue

@@ -1,10 +1,14 @@
-# Every wired interface joins bond0 (active-backup, as olljanat/nomad-qemu-node does with netplan): on a server
-# with several NICs the appliance stays reachable when a cable, a NIC or a switch port fails; on a VM with one
-# NIC it works as that NIC. The address is
-# on bond0 (21-uplink-bond0.network). Static addressing: drop a .network file with a lower number for
-# Name=bond0 into /etc/containerizer/network/ (docs/appliance-admin.md#network).
+# Every wired interface joins bond0 (active-backup, as olljanat/nomad-qemu-node's 05_network.yaml does with
+# netplan): on a server with several NICs the appliance stays reachable when a cable, a NIC or a switch port fails;
+# on a VM with one NIC it works as that NIC. The bond is the only port of the bridge br0, which has the address
+# (22-uplink-br0.network). No address, DHCP or link-local address on the interfaces themselves.
+# Not the USB network interfaces of a server's management controller (Dell iDRAC, HPE iLO, Lenovo XCC: an
+# always-up link to the BMC, named idrac/enx<MAC>): in the bond, active-backup chose it and nothing reached the
+# network (0.13.0 on a Dell server).
+# Static addressing, or only some interfaces: `cz network ...` (docs/appliance-admin.md#network).
 [Match]
 Name=e*
+Driver=!cdc_ether rndis_host cdc_ncm cdc_eem
 
 [Network]
 Bond=bond0
@@ -12,7 +16,8 @@ Bond=bond0
 LLDP=yes
 EmitLLDP=nearest-bridge
 LinkLocalAddressing=no
+IPv6AcceptRA=no
 
 [Link]
-# a port without a cable does not hold up the boot: bond0 is what has to come up
+# a port without a cable does not hold up the boot: br0 is what has to come up
 RequiredForOnline=no

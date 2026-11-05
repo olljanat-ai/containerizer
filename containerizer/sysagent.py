@@ -48,10 +48,12 @@ Commands (also for an administrator on the console or over SSH):
     sandbox-https sync         install the sandbox certificate in k3s (containerizer-sandbox runs it)
     health                     boot-assessment check (exit 1 when the appliance is not up)
     sql-env                    write the results database settings from appliance.env (cz-firstboot)
-    network show               the address of bond0, its gateway and DNS servers, and whether they are static
+    network show               the appliance's address (on br0), its gateway and DNS servers, and whether static
     network static <address/prefix> <gateway> <dns> [<dns> ...]
-                               a static address on bond0 (netconfig.py), applied at once and kept over restarts
+                               a static address (netconfig.py), applied at once and kept over restarts
     network dhcp               back to DHCP (the default)
+
+On the appliance the command `cz` runs these (/usr/bin/cz, root): `cz network show`.
 """
 from __future__ import annotations
 
@@ -1411,13 +1413,13 @@ def publish_sandbox_ca(cert_pem: str) -> None:
 # =============================================================================== the network address
 
 def network_state() -> dict:
-    """What bond0 has now (addresses, default gateway, DNS servers) and the static setting, if any."""
-    from .netconfig import STATIC_FILE, parse
+    """What br0 has now (addresses, default gateway, DNS servers) and the static setting, if any."""
+    from .netconfig import IFACE, STATIC_FILE, parse
     f = P.network / STATIC_FILE
     configured = parse(f.read_text()) if f.is_file() else None
     addrs, gws, dns = [], [], []
     try:
-        for x in json.loads(run(["ip", "-j", "addr", "show", "dev", "bond0"], timeout=30, check=False) or "[]"):
+        for x in json.loads(run(["ip", "-j", "addr", "show", "dev", IFACE], timeout=30, check=False) or "[]"):
             addrs += [f"{a['local']}/{a['prefixlen']}" for a in x.get("addr_info") or []
                       if a.get("scope") == "global" and a.get("local")]
         for fam in ("-4", "-6"):
@@ -1425,7 +1427,7 @@ def network_state() -> dict:
                                                          check=False) or "[]") if r.get("gateway")]
     except ValueError:
         pass
-    out = run(["resolvectl", "dns", "bond0"], timeout=30, check=False)
+    out = run(["resolvectl", "dns", IFACE], timeout=30, check=False)
     dns = out.split(":", 1)[1].split() if ":" in out else []
     return {"mode": "static" if configured else "dhcp", "configured": configured, "addresses": addrs,
             "gateways": gws, "dns": dns}
@@ -1433,9 +1435,9 @@ def network_state() -> dict:
 
 def apply_network(cfg: dict) -> dict:
     """A setting of netconfig.validate made the appliance's: the static file written (or removed for DHCP) where it
-    is kept and where systemd-networkd reads it, bond0 configured again at once, and the HTTPS certificate's
-    addresses (cz-addresses) and the DNS filter's upstreams (from systemd-resolved) follow. Returns the new state."""
-    from .netconfig import STATIC_FILE, render
+    is kept and where systemd-networkd reads it, br0 configured again at once, and the HTTPS certificate's
+    addresses (cz-addresses) and the DNS filter's upstreams (reload_dns) follow. Returns the new state."""
+    from .netconfig import IFACE, STATIC_FILE, render
     P.network.mkdir(parents=True, exist_ok=True)
     P.network_run.mkdir(parents=True, exist_ok=True)
     for d in (P.network, P.network_run):
@@ -1445,21 +1447,48 @@ def apply_network(cfg: dict) -> dict:
         else:
             f.unlink(missing_ok=True)
     run(["networkctl", "reload"], timeout=60)
-    run(["networkctl", "reconfigure", "bond0"], timeout=60)
+    run(["networkctl", "reconfigure", IFACE], timeout=60)
     run(["systemctl", "restart", "--no-block", "containerizer-addresses.service"], timeout=60, check=False)
+    reload_dns(cfg.get("dns") or [])
     log(f"network: {'static ' + cfg['address'] + ' via ' + cfg['gateway'] if cfg['mode'] == 'static' else 'DHCP'}")
     return network_state()
 
 
+DNS_WAIT = 15                   # seconds reload_dns waits for systemd-resolved to have the new DNS servers
+
+
+def reload_dns(expect: list[str], wait: int | None = None) -> None:
+    """The DNS filter rebuilt with the DNS servers the network has now (firewall apply), once systemd-resolved
+    lists them (`expect`; at most DNS_WAIT seconds: it learns them a moment after networkd). The path unit
+    containerizer-dns-upstream.path does the same when resolved's file changes; this does not depend on it."""
+    deadline = time.monotonic() + (DNS_WAIT if wait is None else wait)
+    while expect and not set(expect) <= set(upstream_servers()) and time.monotonic() < deadline:
+        time.sleep(1)
+    try:
+        apply_firewall()
+    except (AgentError, RuleError, OSError, subprocess.TimeoutExpired) as ex:
+        log(f"network: the DNS filter not rebuilt: {ex}")
+
+
 def network_sync() -> list[str]:
-    """systemd-networkd's copies of /etc/containerizer/network/*.network made readable for it: cz-firstboot copies
-    them at every boot with `cp` under umask 077, so they were root's only (0600), and systemd-networkd, which runs
-    as systemd-network, could not read them and used the DHCP default: a static address was lost at the first
-    restart (0.13.0). A copy that is missing, differs or is not 0644 is written again, and the network reloaded and
-    bond0 configured again. `restart-check` (every minute) and `status` call it. Returns the files fixed."""
+    """systemd-networkd's copies of /etc/containerizer/network/*.network, readable for it: 0.13.x's cz-firstboot
+    copied them with `cp` under umask 077 (0600, root only), and systemd-networkd, which runs as systemd-network,
+    could not read them and used the DHCP default: a static address was lost at the first restart. A static file of
+    0.13.x for bond0 is moved to br0 first (netconfig.migrate). A copy that is missing, differs or is not 0644 is
+    written again, the network reloaded, br0 configured again and the DNS filter rebuilt. `restart-check` (every
+    minute) and `status` call it. Returns the files fixed."""
+    from .netconfig import IFACE, migrate, parse
     if not P.network.is_dir():
         return []
     fixed = []
+    for f in sorted(P.network.glob("*.network")):
+        try:
+            new = migrate(f.read_text())        # 0.13.x wrote it for bond0, a bridge port since 0.14.0
+            if new is not None:
+                atomic_write(f, new, 0o644)
+                log(f"network: {f.name} is for {IFACE} now (bond0 is the bridge's port since 0.14.0)")
+        except OSError as ex:
+            log(f"network: {f.name} not moved to {IFACE}: {ex}")
     for f in sorted(P.network.glob("*.network")):
         dst = P.network_run / f.name
         try:
@@ -1472,9 +1501,11 @@ def network_sync() -> list[str]:
             log(f"network: {f.name} not given to systemd-networkd: {ex}")
     if fixed:
         run(["networkctl", "reload"], timeout=60, check=False)
-        run(["networkctl", "reconfigure", "bond0"], timeout=60, check=False)
+        run(["networkctl", "reconfigure", IFACE], timeout=60, check=False)
         run(["systemctl", "restart", "--no-block", "containerizer-addresses.service"], timeout=60, check=False)
-        log(f"network: {', '.join(fixed)} made readable for systemd-networkd; bond0 configured again")
+        static = parse((P.network / "10-static.network").read_text()) if (P.network / "10-static.network").is_file() else None
+        reload_dns((static or {}).get("dns") or [])
+        log(f"network: {', '.join(fixed)} given to systemd-networkd; {IFACE} configured again")
     return fixed
 
 

@@ -1,0 +1,10 @@
+#!/bin/sh
+# cz: the appliance's administration commands on the console or over SSH (the system agent, containerizer.sysagent):
+#   cz network show | cz network static <address/prefix> <gateway> <dns>... | cz network dhcp
+#   cz upgrade vX.Y.Z | cz rollback <snapshot> | cz app-patch remove | cz firewall show | cz status
+# Without arguments: every command.
+if [ "$(id -u)" != 0 ]; then
+  echo "cz: run it as root (sudo -i)" >&2
+  exit 1
+fi
+exec /usr/lib/containerizer/venv/bin/python -m containerizer.sysagent "$@"

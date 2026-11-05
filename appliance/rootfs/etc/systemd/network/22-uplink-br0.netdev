@@ -1,0 +1,14 @@
+# The bridge over bond0 that has the appliance's address (as olljanat/nomad-qemu-node's 05_network.yaml): STP off
+# and no forward delay (one port: no loop to detect, no 15 s wait for traffic), VLAN filtering on with VLAN 1
+# untagged, so VLANs can be added for guests later without changing the untagged traffic.
+[NetDev]
+Name=br0
+Kind=bridge
+# the MAC of its port (the bond's, its first NIC's): see 22-uplink-br0.link
+MACAddress=none
+
+[Bridge]
+STP=no
+ForwardDelaySec=0
+VLANFiltering=yes
+DefaultPVID=1

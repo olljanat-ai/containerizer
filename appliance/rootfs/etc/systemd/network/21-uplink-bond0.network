@@ -1,17 +1,14 @@
-# DHCP (IPv4 and IPv6) on the bond of every wired interface (20-uplink.network). The DHCP client ID is the
-# bond's MAC (its first NIC's, 21-uplink-bond0.netdev): the same in the recovery system that installs the
-# appliance and in the installed system, which have different machine-ids, so the appliance keeps one address
-# through installing, reinstalling and upgrading, and a DHCP reservation by MAC address works. (A machine-id
-# based ID, 0.9.3-0.11.0, gave the installed system a second address after the recovery system's.)
+# bond0, the bond of every wired interface (20-uplink.network), is the port of the bridge br0, which has the
+# address (22-uplink-br0.network): no address, DHCP or link-local address of its own.
 [Match]
 Name=bond0
 
 [Network]
-DHCP=yes
-IPv6AcceptRA=yes
+Bridge=br0
+LinkLocalAddressing=no
+IPv6AcceptRA=no
 LLMNR=no
 MulticastDNS=no
 
-[DHCPv4]
-ClientIdentifier=mac
-UseDomains=no
+[Link]
+RequiredForOnline=no
