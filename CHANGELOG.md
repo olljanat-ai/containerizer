@@ -8,7 +8,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## Unreleased
+## 0.12.8 (2026-11-05)
 
 - Security gate: a component stopped by vulnerabilities says what to upgrade and where: "2 fixable vulnerabilities
   at or above the gate threshold in the application's packages: Refit 6.3.2 (fixed in 7.2.22),
