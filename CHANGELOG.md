@@ -8,6 +8,19 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- **Platform fixes for refactor findings** ([docs](docs/platform-fixes.md)): findings that the generated
+  configuration can satisfy no longer need code changes, and count as `config` in the rating. A plan rule names the
+  findings it `resolves`; three techniques are new: code that switches on `Environment.MachineName` gets the pod
+  `hostname:` it compares with (`plan-machine-hostname`), certificates looked up in `CurrentUser\My` come from an
+  optional Secret mounted where .NET on Linux reads that store (`plan-x509-user-store`), and
+  `Path.Combine(GetFolderPath(ProgramFiles), "Acme", ...)`, which is `/app/Acme/...` on Linux, gets a volume there
+  (`plan-special-folder-workdir`). Each one is listed with its reason and references in the Dockerfile header and
+  `plan.json` (`applied`, `resolved`, `reasons`); the finding keeps its rule severity as `rule_severity` and is
+  never sent to a refactoring. An application whose only refactor findings are these goes from B to A at its next
+  scan. The page also classifies all 111 refactor rules (platform, partial, code-only) as candidates for more.
+
 ## 0.16.4 (2026-11-05)
 
 - **Try again** on an application whose sandbox runs a Make it A order's patched copy builds that patch again (the

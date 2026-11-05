@@ -115,3 +115,14 @@ def test_special_folder_backslash_literal_stays_refactor(tmp_path):
     web_app(tmp_path, r'''
         class A { string P() => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Acme\\x.xml"); }''')
     assert not _found(tmp_path)["os-special-folder-windows"].resolved_by
+
+
+def test_audit_table_lists_every_refactor_rule():
+    doc = (Path(__file__).resolve().parent.parent / "docs" / "platform-fixes.md").read_text()
+    rows = {line.split("`")[1] for line in doc.splitlines() if line.startswith("| `")}
+    refactor = {r.id for r in load_rules()
+                if r.phase == "finding" and r.severity == "refactor" and not r.file.startswith("rules/learned/")}
+    assert refactor <= rows, sorted(refactor - rows)
+    # the techniques' own findings are marked done
+    for rid in ("os-machine-name-switch", "os-special-folder-windows"):
+        assert next(line for line in doc.splitlines() if line.startswith(f"| `{rid}`")).count("| platform |") == 1

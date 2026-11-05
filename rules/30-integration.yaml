@@ -242,7 +242,11 @@ rules:
     why: >-
       Certificates are looked up in the Windows certificate store (LocalMachine\My). On Linux
       the .NET X509Store is a per-user directory, empty in a fresh container.
-    fix: Mount the certificate (PFX/PEM) from a Secret and load it from a file path; use cert-manager for TLS at the ingress.
+    fix: >-
+      For CurrentUser stores the generated manifests mount an optional Secret (<component>-x509-my) at the folder
+      .NET on Linux reads CurrentUser\My from (plan-x509-user-store): add each certificate as a password-less .pfx
+      key and the code finds it unchanged. LocalMachine\My does not exist on Linux: load the certificate from a
+      file there. Use cert-manager for TLS at the ingress.
     refs:
       - https://learn.microsoft.com/en-us/dotnet/standard/security/cross-platform-cryptography
 

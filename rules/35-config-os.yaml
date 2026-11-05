@@ -178,8 +178,10 @@ rules:
       similar folders on Linux, so Path.Combine silently turns them into relative paths and
       vendor tools, data files or configuration are not found.
     fix: >-
-      Read the location from configuration, or ship the files with the application and use
-      AppContext.BaseDirectory.
+      On Linux the folder is "" and Path.Combine(folder, "Vendor", ...) is Vendor/... under the working directory
+      /app: the generated manifests mount a volume there (plan-special-folder-workdir) when the code names the
+      folder literally; put the files the app expects in it. Otherwise read the location from configuration, or
+      ship the files with the application and use AppContext.BaseDirectory.
     refs:
       - https://learn.microsoft.com/en-us/dotnet/api/system.environment.getfolderpath
 
@@ -351,7 +353,10 @@ rules:
       Code that picks settings or enables features when the host is called "PRODWEB01" never
       matches in a pod (the host name is the pod name), so production silently runs with the
       default (often development) behaviour.
-    fix: Select behaviour with configuration (ASPNETCORE_ENVIRONMENT, a setting or a feature flag).
+    fix: >-
+      The generated pod spec sets `hostname:` to the name the code compares with (plan-machine-hostname), so the
+      code runs unchanged; that needs a lower-case name or a case-insensitive comparison, since Kubernetes host
+      names are lower-case. Otherwise select behaviour with configuration (ASPNETCORE_ENVIRONMENT, a setting).
     refs:
       - https://kubernetes.io/docs/concepts/containers/container-environment/
       - https://learn.microsoft.com/en-us/aspnet/core/fundamentals/environments
