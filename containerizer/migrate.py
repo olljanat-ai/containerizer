@@ -284,9 +284,10 @@ def agent_prompt(a, c, plan: dict) -> str:
         L += ["In Kubernetes the container's file system is read-only and pods are replaced at any time, so:",
               f"- Make every such folder part of the {lang['config']}." if c.project.kind_hint in ("java", "node") else
               f"- Make every such folder {lang['config']}.",
-              "- Data that must survive a restart or be shared between replicas (uploads, generated documents, "
-              "queues, SQLite/LiteDB files) belongs in an external store: the database, object storage "
-              "(S3/Azure Blob) or a cache (Redis). Change the code to use it.",
+              "- Data that must survive a restart (uploads, generated documents, SQLite/LiteDB files) needs no code "
+              "change: the generated manifests run the component with one replica and that folder on a "
+              "PersistentVolumeClaim (back it up). Only to scale out does it have to move to an external store "
+              "(the database, object storage, a cache).",
               "- " + lang["logs"], ""]
     if isolate:
         L += ["## Out of scope: keep on Windows", "",
@@ -344,7 +345,7 @@ def plan_markdown(plan: dict, heading: str = "###") -> list[str]:
     L.append("")
     if plan.get("state") and plan["state"].get("writable_dirs"):
         L += [f"Local state: writes to {', '.join('`' + d + '`' for d in plan['state']['writable_dirs'])}; "
-              "move what must persist to an external store.", ""]
+              "the generated manifests keep what must persist on a persistent volume (one replica).", ""]
     return L
 
 

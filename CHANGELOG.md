@@ -22,6 +22,18 @@ The OS image changes (`appliance/`, #255): release as a minor version.
   `plan.json` (`applied`, `resolved`, `reasons`); the finding keeps its rule severity as `rule_severity` and is
   never sent to a refactoring. An application whose only refactor findings are these goes from B to A at its next
   scan. The page also classifies all 111 refactor rules (platform, partial, code-only) as candidates for more.
+- **Apps that keep their own data run as they are, with a persistent volume.** A component that is ready in every
+  other way but keeps local data (a SQLite/LiteDB file, uploads under the web root or App_Data, a local index,
+  in-memory session or Hangfire storage) was left out of the sandbox ("keeps local state") and pointed at Make it
+  A, an LLM rewrite that moves the data to SQL Server. Now the organization scan deploys it unchanged: one
+  replica with `strategy: Recreate`, a PersistentVolumeClaim on each folder it keeps data in, `fsGroup` so the
+  non-root user can write it, the root file system still read-only. An embedded database file in the app folder
+  (`Data Source=app.db`) moves to `/data`, a volume, with an environment variable over its connection string; no
+  file of the application changes and no LLM is called. The rating stays B (not stateless); the migration plan
+  puts the component in wave 1 marked *runs with a persistent volume, one replica*, the front page counts it as
+  ready now (*, 1 with a volume*), and the Refactoring box says Make it A is optional for it. Local data in a
+  folder Containerizer cannot find still keeps the component out. `HARDENING.md` and `MIGRATION.md` list the
+  volumes: the operator owns their backup, StorageClass and size.
 
 - Refactoring and **Make it A** change application code only where the platform cannot, and only the lines the
   findings need (#252). Findings that the generated Dockerfile and manifests already settle (`core-eol`,

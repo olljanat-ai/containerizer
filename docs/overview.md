@@ -70,6 +70,10 @@ explains how the assessment works and what it generates. To install and use it, 
    Lucene/Examine index, uploads or data files written under the content root or App_Data,
    ASP.NET Core session without a distributed cache, and Hangfire in-memory storage. An app that is
    otherwise ready but keeps such data is rated **B**, and the report lists what keeps it stateful.
+   The rating stays **B**, but such a component is **not** sent to a code change: it is deployed as it is,
+   with its data on a persistent volume (see [Application data on persistent volumes](#application-data-on-persistent-volumes))
+   and sits in wave 1 of the migration plan. B here means "runs now, one replica"; A means "stateless,
+   scales out".
    Not counted: SQLite next to a server database provider (`sqlite-optional`), a read-only SQLite
    file shipped with the app, Lucene used only for text analysis, temp files and logs, and the
    ASP.NET Core Data Protection key ring (one `PersistKeysTo*` line; reported separately).
@@ -169,13 +173,14 @@ application, also the ones that need changes for the rest. The results page of e
 does not rate A has a **Migration plan**, right after the main obstacles, that splits it into waves:
 
 - **Wave 1, now** (to Kubernetes): the server components that rate A on their own (the application rating
-  rule applied to the one component: configuration only, no data of their own) and did not fail to build and
-  run. These are the components an organization scan deploys to the sandbox, so each shows whether it is there:
+  rule applied to the one component: configuration only), or would but for the data they keep, and did not
+  fail to build and run. A component that keeps its own data is marked *runs with a persistent volume, one
+  replica* with what it keeps; it needs no code change. These are the components an organization scan deploys to the sandbox, so each shows whether it is there:
   the sandbox check's result, *deployed, not checked yet* (the scan deployed it, no check has a result yet), or
   *not deployed* with why (the application's sandbox is turned off, the scan left it out, or no organization
   scan deploys the application).
-- **Wave 2, after code changes**: components whose findings can be fixed in code (targeted changes, data
-  moved to an external service, a failed build or run), with what to fix, and what the part that can run in
+- **Wave 2, after code changes**: components whose findings can be fixed in code (targeted changes, a failed
+  build or run), with what to fix, and what the part that can run in
   Linux containers rates once they are fixed. Where the page has the Refactoring box,
   [Make it A](refactoring.md#make-it-a) makes these changes.
 - **After a framework port or rewrite**: components that need one, with their main obstacle.
@@ -190,7 +195,33 @@ A line at the top sums it up: *2 of 6 components can run in Linux containers now
 3 stay on Windows.* (or *Nothing runs in a Linux container until the framework port is done.*). The part that can
 run in Linux containers is rated with the same rule as the application (`assess.rating_of`), as it is and with
 the changes made. The front page shows the first wave next to the rating of such an application,
-*2/6 ready now*.
+*2/6 ready now* (*, 1 with a volume* when wave 1 has components that keep their own data).
+
+### Application data on persistent volumes
+
+A component that is ready in every other way but keeps its own data (a SQLite/LiteDB file, a local Lucene index,
+uploads under the web root or App_Data, in-memory session or Hangfire storage) is deployed as it is: keeping
+data is an orchestration concern, not a reason to change the application's code. The generator
+(`generate.state_plan`):
+
+- runs it as **one replica** with `strategy: Recreate`, so two pods never write the same files;
+- mounts a **PersistentVolumeClaim** (`ReadWriteOnce`, 1Gi from the cluster's default StorageClass) on each folder
+  the component keeps data in: folders its code and configuration write to (`Path.Combine(ContentRootPath, ...)`,
+  `Path.Combine(env.WebRootPath, "uploads")`, folder settings, a SQLite `Data Source=data/app.db`), and App_Data
+  when the code names data folders under it;
+- moves an embedded database file that sits in the app folder (`"Data Source=app.db"`, `"Filename=app.litedb"`)
+  to `/data`, a volume, with an environment variable that overrides the connection string
+  (`ConnectionStrings__Default=Data Source=/data/app.db`): no file of the application changes;
+- keeps the root file system read-only and the user non-root; `fsGroup` (with `fsGroupChangePolicy:
+  OnRootMismatch`) lets that user write the volumes.
+
+State kept only in memory (session, Hangfire in-memory storage) gets one replica and no volume. A component that
+writes local data to a folder the generator cannot find is still left out ("keeps local state in a folder
+Containerizer could not find"): with a read-only root file system its writes would fail. The volumes hold
+application data: `HARDENING.md` and `MIGRATION.md` in the output say so, and the operator owns their backup,
+StorageClass and size. A volume starts empty: data shipped in that folder of the image (a seed database) is not
+copied into it. [Make it A](refactoring.md#make-it-a) still moves the data to SQL Server on request (to scale out),
+but it is no longer the default path for these applications.
 
 ![Migration plan of an application with components that must stay on Windows: two components ready and in the sandbox, one after code changes, three that stay on Windows, and the calls between the parts](images/results-migration-plan.png#only-light){ .cz-shot }
 ![Migration plan of an application with components that must stay on Windows: two components ready and in the sandbox, one after code changes, three that stay on Windows, and the calls between the parts](images/results-migration-plan-dark.png#only-dark){ .cz-shot }
