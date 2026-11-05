@@ -190,6 +190,10 @@ def test_why_the_rating(monkeypatch):
     html, stateful, refactor = webui.rating_why(app)
     assert "Why B:</b> Not stateless: Parts keeps its own data (Embedded file database)" in html
     assert [c["ComponentName"] for c in stateful] == ["Parts"] and refactor == []
+    assert "It runs as it is, with a persistent volume and one replica (no code change)" in html
+    # the Refactoring box presents the volume as the default path, Make it A as optional
+    box = webui._refactoring(app, {})
+    assert "No code change needed to run it:" in box and "Make it A is optional" in box
     app = {"Rating": "B", "components": [{"ComponentName": "Jobs", "Verdict": "refactor", "Tier": "server"}], "findings": []}
     assert "Jobs need targeted code changes." in webui.rating_why(app)[0]
     assert "configuration only and keeps no data" in webui.rating_why({"Rating": "A", "components": [], "findings": []})[0]

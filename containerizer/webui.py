@@ -316,8 +316,9 @@ def rating_why(app: dict) -> tuple[str, list[dict], list[dict]]:
     if stateful and r in ("A", "B"):
         parts.append("Not stateless: " + "; ".join(f"{c['ComponentName']} keeps its own data "
                                                    f"({', '.join(state[c['ComponentName']])})" for c in stateful)
-                     + ". A needs every server component to keep its data in external services, so that replicas can "
-                       "come and go." + ("" if refactor else " Everything else needs configuration only."))
+                     + ". It runs as it is, with a persistent volume and one replica (no code change); A needs every "
+                       "server component to keep its data in external services, so that replicas can come and go."
+                     + ("" if refactor else " Everything else needs configuration only."))
     if r == "A":
         parts = ["Every server component runs in Linux containers with configuration only and keeps no data of its own."]
     if not parts:
@@ -518,6 +519,12 @@ def _refactoring(app: dict, ctx: dict | None) -> str:
         out.append("<table><thead><tr><th>Component</th><th>Status</th><th>Result</th><th>When</th></tr></thead>"
                    f"<tbody>{''.join(rows)}</tbody></table>")
     _, stateful, refactor = rating_why(app)
+    if stateful and not refactor and app.get("Rating") == "B":
+        # the default path: deployed as it is with a volume (org.select_components); Make it A only on request
+        out.append("<p class='note small stateful-default'><b>No code change needed to run it:</b> the components that "
+                   "keep their own data run in containers as they are, with a persistent volume and one replica (see "
+                   "the migration plan). Make it A is optional: only to make them stateless, so they can scale out, "
+                   "by moving their data to SQL Server, a code change.</p>")
     if staff and app.get("Rating") == "B":
         if refactor or stateful:
             est = (ctx.get("estimates") or {}).get((None, "rating-a"))
