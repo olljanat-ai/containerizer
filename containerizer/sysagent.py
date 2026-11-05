@@ -48,6 +48,10 @@ Commands (also for an administrator on the console or over SSH):
     sandbox-https sync         install the sandbox certificate in k3s (containerizer-sandbox runs it)
     health                     boot-assessment check (exit 1 when the appliance is not up)
     sql-env                    write the results database settings from appliance.env (cz-firstboot)
+    network show               the address of bond0, its gateway and DNS servers, and whether they are static
+    network static <address/prefix> <gateway> <dns> [<dns> ...]
+                               a static address on bond0 (netconfig.py), applied at once and kept over restarts
+    network dhcp               back to DHCP (the default)
 """
 from __future__ import annotations
 
@@ -91,6 +95,8 @@ class Paths:
     history: Path = Path("/var/lib/containerizer/system/egress-history.jsonl")
     task: Path = Path("/var/lib/containerizer/system/last-task.json")
     plan: Path = Path("/var/lib/containerizer/system/restart-plan.json")
+    network: Path = Path("/etc/containerizer/network")                # .network files: a static address (netconfig)
+    network_run: Path = Path("/run/systemd/network")                  # where systemd-networkd reads them (cz-firstboot)
     drain: Path = Path("/var/lib/containerizer/system/llm-drain.json")   # the LLM runner finishing its LLM call
     sql_secret: Path = Path("/etc/containerizer/secrets/cz-scanner")
     run: Path = Path("/run/containerizer/system")
@@ -1398,6 +1404,59 @@ def publish_sandbox_ca(cert_pem: str) -> None:
              input=json.dumps(cm))
 
 
+# =============================================================================== the network address
+
+def network_state() -> dict:
+    """What bond0 has now (addresses, default gateway, DNS servers) and the static setting, if any."""
+    from .netconfig import STATIC_FILE, parse
+    f = P.network / STATIC_FILE
+    configured = parse(f.read_text()) if f.is_file() else None
+    addrs, gws, dns = [], [], []
+    try:
+        for x in json.loads(run(["ip", "-j", "addr", "show", "dev", "bond0"], timeout=30, check=False) or "[]"):
+            addrs += [f"{a['local']}/{a['prefixlen']}" for a in x.get("addr_info") or []
+                      if a.get("scope") == "global" and a.get("local")]
+        for fam in ("-4", "-6"):
+            gws += [r["gateway"] for r in json.loads(run(["ip", "-j", fam, "route", "show", "default"], timeout=30,
+                                                         check=False) or "[]") if r.get("gateway")]
+    except ValueError:
+        pass
+    out = run(["resolvectl", "dns", "bond0"], timeout=30, check=False)
+    dns = out.split(":", 1)[1].split() if ":" in out else []
+    return {"mode": "static" if configured else "dhcp", "configured": configured, "addresses": addrs,
+            "gateways": gws, "dns": dns}
+
+
+def apply_network(cfg: dict) -> dict:
+    """A setting of netconfig.validate made the appliance's: the static file written (or removed for DHCP) where it
+    is kept and where systemd-networkd reads it, bond0 configured again at once, and the HTTPS certificate's
+    addresses (cz-addresses) and the DNS filter's upstreams (from systemd-resolved) follow. Returns the new state."""
+    from .netconfig import STATIC_FILE, render
+    P.network.mkdir(parents=True, exist_ok=True)
+    P.network_run.mkdir(parents=True, exist_ok=True)
+    for d in (P.network, P.network_run):
+        f = d / STATIC_FILE
+        if cfg["mode"] == "static":
+            atomic_write(f, render(cfg), 0o644)
+        else:
+            f.unlink(missing_ok=True)
+    run(["networkctl", "reload"], timeout=60)
+    run(["networkctl", "reconfigure", "bond0"], timeout=60)
+    run(["systemctl", "restart", "--no-block", "containerizer-addresses.service"], timeout=60, check=False)
+    log(f"network: {'static ' + cfg['address'] + ' via ' + cfg['gateway'] if cfg['mode'] == 'static' else 'DHCP'}")
+    return network_state()
+
+
+def network_text(st: dict) -> str:
+    c = st.get("configured") or {}
+    lines = [f"mode:      {st['mode']}" + (f" ({P.network}/10-static.network)" if c else " (the default)")]
+    if c:
+        lines.append(f"set:       {c.get('address')} via {c.get('gateway')}, DNS {' '.join(c.get('dns') or [])}")
+    lines += [f"addresses: {' '.join(st['addresses']) or '-'}", f"gateways:  {' '.join(st['gateways']) or '-'}",
+              f"DNS:       {' '.join(st['dns']) or '-'}"]
+    return "\n".join(lines)
+
+
 # =============================================================================== requests
 
 def process() -> int:
@@ -1571,6 +1630,18 @@ def main(argv=None) -> int:
             return 0
         if cmd == "sandbox-https" and argv[1:2] == ["sync"]:
             print(sync_sandbox_https())
+            return 0
+        if cmd == "network" and argv[1:] == ["show"]:
+            print(network_text(network_state()))
+            return 0
+        if cmd == "network" and (argv[1:] == ["dhcp"] or (argv[1:2] == ["static"] and len(argv) >= 5)):
+            from .netconfig import NetworkError, validate
+            try:
+                cfg = validate(argv[1], *(argv[2:4] if argv[1] == "static" else ()), dns=argv[4:])
+            except NetworkError as ex:
+                log(f"not changed: {ex}")
+                return 1
+            print(network_text(apply_network(cfg)))
             return 0
     except (AgentError, RuleError, PatchError, OSError, subprocess.TimeoutExpired) as ex:
         log(f"error: {ex}")

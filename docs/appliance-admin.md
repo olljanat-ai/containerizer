@@ -105,21 +105,22 @@ with one NIC the bond is just that NIC.
   one address from the first boot of the installer on, through installing, reinstalling and upgrading. Reserve
   the address by that MAC address (`networkctl status bond0` shows it and the lease), or set a static address.
   The console's sign-in banner shows the address of `bond0`.
-- **Static address:** a `.network` file for `bond0` in `/etc/containerizer/network/`, named so it sorts before
-  `21-uplink-bond0.network`, then reboot:
+- **Static address:** on the console (or over SSH), as root:
 
-    ```ini
-    # /etc/containerizer/network/10-static.network
-    [Match]
-    Name=bond0
-
-    [Network]
-    Address=192.0.2.10/24
-    Gateway=192.0.2.1
-    DNS=192.0.2.53
+    ```sh
+    S="/usr/lib/containerizer/venv/bin/python -m containerizer.sysagent"
+    $S network static 192.0.2.10/24 192.0.2.1 192.0.2.53     # address/prefix, gateway, 1 to 3 DNS servers
+    $S network show                                          # the address, gateway and DNS servers in use
+    $S network dhcp                                          # back to DHCP
     ```
 
-  A file that matches a NIC by name (`Name=eno1`) instead keeps that NIC out of the bond.
+  It is checked first (the gateway in the address's network, at least one DNS server, IPv4 or IPv6) and applied
+  at once, without a restart: an SSH session over the old address ends, so change it on the console or from where
+  you can reach the new one. The DNS filter forwards to the DNS servers given (unless `CZ_DNS_SERVERS` in
+  `appliance.env` names others), and the HTTPS certificate from the appliance's own CA gets the new address. The
+  setting is the file `/etc/containerizer/network/10-static.network` (systemd-networkd, for `bond0`), kept over
+  restarts and upgrades; any `.network` file there that sorts before `21-uplink-bond0.network` works the same
+  way, and one that matches a NIC by name (`Name=eno1`) instead keeps that NIC out of the bond.
 - **Switches:** the appliance sends and receives LLDP on every port, so the switch shows which port it is on, and
   `networkctl lldp` shows the switch and port of each NIC.
 - `cat /proc/net/bonding/bond0` shows the active interface and each port's link.
