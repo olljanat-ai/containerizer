@@ -581,7 +581,11 @@ def test_llm_queue_runner_unit():
     assert q["ExecStart"] == ["/usr/lib/containerizer/bin/cz-llm-queue"]
     # refactoring patches: Docker to build and run them (as the scan worker), the worker's clones read only,
     # writes only to the answer cache and the refactoring scratch space
-    assert q["SupplementaryGroups"] == w["SupplementaryGroups"] == ["docker"]
+    # through the Docker socket guard, not in the root-equivalent docker group (docs/appliance.md)
+    guard = "DOCKER_HOST=unix:///run/containerizer/docker-guard.sock"
+    assert "SupplementaryGroups" not in q and "SupplementaryGroups" not in w
+    assert guard in q["Environment"] and guard in w["Environment"]
+    assert "containerizer-docker-guard.socket" in q["Wants"][0].split()
     assert "docker.service" in q["Wants"][0].split() and "docker.service" in q["After"][0].split()
     # "Make it A" variants: images to the appliance's registry, the lab services, read-only cluster access
     assert "containerizer-registry.service" in q["Wants"][0].split()

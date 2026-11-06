@@ -1,7 +1,7 @@
 [Unit]
 Description=containerizer appliance: scan worker (scheduled organization scans)
-After=containerizer-db-init.service docker.service containerizer-dns.service containerizer-registry.service
-Requires=containerizer-db-init.service docker.service
+After=containerizer-db-init.service docker.service containerizer-dns.service containerizer-registry.service containerizer-docker-guard.socket
+Requires=containerizer-db-init.service docker.service containerizer-docker-guard.socket
 Wants=containerizer-registry.service
 ConditionKernelCommandLine=!cdroot
 ConditionPathExists=!/run/elemental/recovery_mode
@@ -9,7 +9,9 @@ ConditionPathExists=!/run/elemental/recovery_mode
 [Service]
 User=containerizer
 Group=containerizer
-SupplementaryGroups=docker
+# Docker through the guard (containerizer/dockerguard.py), not Docker's own socket: the docker group is
+# root-equivalent, and the worker builds and runs the scanned repositories' code (docs/appliance-admin.md#builds-of-scanned-code)
+Environment=DOCKER_HOST=unix:///run/containerizer/docker-guard.sock
 EnvironmentFile=/etc/containerizer/worker.env
 # LLM-heavy mode from appliance.env (cz-firstboot), off by default
 EnvironmentFile=-/run/containerizer/llm.env
@@ -41,8 +43,9 @@ KillSignal=SIGTERM
 TimeoutStopSec=2min
 Restart=on-failure
 RestartSec=30
-# The docker group is root-equivalent: the worker builds and runs the scanned repositories' images,
-# which is why the appliance is a dedicated machine with an egress allow-list (docs/appliance.md).
+# The worker builds and runs the scanned repositories' images through the Docker socket guard (no privileged
+# containers, no host network, mounts from its own folder only); builds and runs sit on Docker's bridges, which the
+# firewall keeps away from the appliance's services and the k3s networks (docs/appliance-admin.md#builds-of-scanned-code).
 NoNewPrivileges=yes
 ProtectSystem=full
 ProtectKernelTunables=yes

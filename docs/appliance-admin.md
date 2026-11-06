@@ -10,8 +10,8 @@ image, and upgraded from the admin pages. To install it, see [Getting started](a
 | Part | How | Reached at |
 | --- | --- | --- |
 | Web UI and API (results, admin pages, System, Firewall and Sandbox HTTPS pages) | systemd service, user `cz-web`, no privileges | `https://<appliance>/` |
-| Scan worker ([organization scans](scheduled-scans.md)) | systemd service, user `containerizer` + Docker | - |
-| LLM queue runner ([queued LLM reviews](scheduled-scans.md#the-llm-queue), [refactoring patches](refactoring.md)) | systemd service `containerizer-llm-queue`, user `containerizer` + Docker (to build and run refactoring patches), reads the scan worker's clones, writes only its answer cache and `/var/lib/containerizer/refactor` | Admin → LLM queue, Admin → Refactoring |
+| Scan worker ([organization scans](scheduled-scans.md)) | systemd service, user `containerizer`; Docker only through the [Docker socket guard](#builds-of-scanned-code) | - |
+| LLM queue runner ([queued LLM reviews](scheduled-scans.md#the-llm-queue), [refactoring patches](refactoring.md)) | systemd service `containerizer-llm-queue`, user `containerizer`, Docker through the [guard](#builds-of-scanned-code) (to build and run refactoring patches), reads the scan worker's clones, writes only its answer cache and `/var/lib/containerizer/refactor` | Admin → LLM queue, Admin → Refactoring |
 | [Egress observer](egress.md#the-egress-observer): what the sandbox blocks (its NetworkPolicies, the firewall, the DNS filter) | systemd service `containerizer-egress-observer`, user `containerizer` with CAP_NET_ADMIN (the NFLOG drop log) and CAP_SYSLOG (the kernel log, for the firewall's drops) only, its own read-only Kubernetes account | Admin → Egress, the results pages' Network connectivity |
 | SQL Server 2025 (results database), or your own SQL Server ([external database](#external-database)) | container, non-root, data on the persistent partition | `127.0.0.1:1433` only |
 | Sandbox cluster: k3s (single node) with Flux and Traefik | systemd service | `kubectl` on the appliance; apps at `https://<component>-<app>.<domain>/` with [Sandbox HTTPS](sandbox-https.md) |
@@ -633,9 +633,10 @@ scan worker get the passwords of the backup and are linked to their users in the
 - SQL Server: non-root, every capability dropped except binding its port, loopback only. An external
   database is reached encrypted, with the server certificate checked, and with the same three logins.
   Edition: Express by default (free, 10 GB per database); Developer is not licensed for production.
-- The scan worker is in the `docker` group, which is equivalent to root: it builds and runs the scanned
-  repositories' images. That is why the appliance is a dedicated machine, and why the egress allow-list
-  applies to every build. Give it no credentials beyond the scans' tokens.
+- The scan worker and the LLM queue runner are not in the `docker` group (equivalent to root): they build and
+  run the scanned repositories' images through the Docker socket guard, and those builds and runs reach nothing
+  on the appliance ([Builds of scanned code](#builds-of-scanned-code)). Give them no credentials beyond the
+  scans' tokens.
 - k3s: secrets encrypted at rest, delivered by External Secrets Operator from a namespace without pods, audit log (`/var/lib/rancher/k3s/server/logs/audit.log`), kernel
   defaults protected, API reachable only from the appliance and its pods. Each app's namespace runs
   under Pod Security "restricted".
@@ -651,6 +652,53 @@ scan worker get the passwords of the backup and are linked to their users in the
   nothing else; the query log is on for that reason (`coredns-custom`). It changes no firewall rule.
 - Containers of the appliance's own services are pinned by digest in the OS image
   (`/usr/lib/containerizer/images.env`).
+
+## Builds of scanned code
+
+Verification, the security gate and refactoring patches build and run the scanned repositories' code on the
+appliance, and to the appliance that code is untrusted: `npm install` runs a package's scripts, `dotnet restore`
+and MSBuild run a repository's targets, Maven and Gradle run plugins. Containerizer does not change that code (it is
+the application's own); it keeps the platform safe from it instead:
+
+| A build step (`RUN`) or a verification run can reach | |
+| --- | --- |
+| Allowed names on the [Firewall](#firewall) page (package feeds, registries), through the DNS filter | yes, as everything else on the appliance |
+| The DNS filter (169.254.53.53:53) | yes |
+| SQL Server (results database, 1433), the registry (5000), Grafana, Prometheus, the web UI, kubemg | no: loopback only, and the firewall answers nothing but DNS on Docker's bridges |
+| The k3s API (6443), the kubelet (10250), pods and services of the sandbox cluster (lab services, the IdP, sandboxed apps) | no: Docker's bridges never reach the k3s networks, nor the other way round |
+| The host's network namespace | no: builds never use `--network host` (the scan worker forces `CONTAINERIZER_BUILD_HOST_NETWORK=0`, and Docker refuses the `network.host` and `security.insecure` build entitlements, `/etc/docker/daemon.json`) |
+| The same services through Docker itself (`ADD http://127.0.0.1:9090/...`, a remote build context: the daemon fetches those on the host's network) | no: `cz-docker-egress` (run with each start of Docker) keeps the daemon's own connections off the appliance's addresses, except the registry and DNS, and off the k3s networks |
+| Other networks (your LAN, an external SQL Server) | only what a network rule on the Firewall page allows |
+
+**Docker socket guard.** The scan worker and the LLM queue runner are not in the `docker` group: Docker's own
+socket is root on the host. They use `DOCKER_HOST=unix:///run/containerizer/docker-guard.sock`
+(`containerizer-docker-guard.socket`, group `containerizer`), served by `containerizer-docker-guard.service`
+(`python -m containerizer.dockerguard`, user `cz-dockerguard`, no network, read-only system). It forwards
+what builds, verification runs, the security gate and the image scanner need, and refuses:
+
+- privileged containers, the host's network, PID, IPC, UTS, user or cgroup namespace, devices, capabilities
+  beyond Docker's default set, sysctls that are not namespaced, seccomp/AppArmor/SELinux opt-outs and
+  `no-new-privileges=false`;
+- bind mounts from anywhere but `/var/lib/containerizer/worker` and `/var/lib/containerizer/refactor` (symbolic
+  links resolved first), and the CA bundle (`CONTAINERIZER_CA_BUNDLE`) and the guard's own socket for the image scanner;
+- ports published on anything but loopback;
+- any call on a container it did not create (each one gets the label `io.containerizer.owner=worker`): no
+  `docker exec`, `inspect`, `logs`, `cp`, `commit` or `rm` on SQL Server, the registry, Grafana or kubemg;
+- builds with the host network or a cgroup parent, plugins, swarm, network creation, volumes with driver
+  options, `docker container prune`.
+
+A refused call fails with `containerizer docker guard: <reason>` in the scan's log. Docker's daemon also runs
+every container with `no-new-privileges` by default.
+
+What is left, by design: the guard itself is in the `docker` group, so it is kept small (one file, no
+network, `CAP_DAC_READ_SEARCH` only, to resolve bind mounts in the worker's folders); a container the worker
+starts can still bind-mount the worker's own folders (its clones and scratch space, which it can read anyway); and
+the builds and runs of different scans share Docker's bridges. The boot test (`appliance/ci/vm-checks.sh`)
+builds an image whose `RUN` step tries SQL Server, the k3s API (node and service address), the kubelet, the
+registry, Grafana, Prometheus, the web UI and SSH on the host, and fails if any of them answers.
+
+For local development outside the appliance, `CONTAINERIZER_BUILD_HOST_NETWORK=1` lets builds and scanner containers
+use the host network again, for a proxy that listens only on `127.0.0.1`.
 
 ## Troubleshooting
 

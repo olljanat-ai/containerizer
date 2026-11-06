@@ -416,10 +416,10 @@ The LLM queue runner (`containerizer-llm-queue`) carries out the orders. For the
   write to besides the LLM answer cache. It reads no other folder: a job that names another source is
   refused (`CONTAINERIZER_REFACTOR_SOURCES`), so a row in the database cannot make it read the machine's
   files;
-- is in the **docker** group, like the scan worker, to build and run the patched components. The docker
-  group is root-equivalent: the runner builds the same repositories' code in the same hardened containers
-  as the scan worker, which is why the appliance is a dedicated machine with an egress allow-list
-  ([appliance](appliance.md)). Without Docker the patches are *applies only*.
+- reaches Docker through the [Docker socket guard](appliance-admin.md#builds-of-scanned-code), like the scan worker,
+  to build and run the patched components: it is not in the root-equivalent docker group, and the patched code
+  is built and run in the same hardened, isolated containers as the scan worker's. Without Docker the patches
+  are *applies only*.
 - for the [sandbox deployment](#the-sandbox-variant) of patched copies: clones the scan's output repository into its scratch space
   with the registered write token, pushes the patched copy's images to the appliance's registry, reads the lab
   services that are on, and reads its health with the kubeconfig of the read-only verifier
