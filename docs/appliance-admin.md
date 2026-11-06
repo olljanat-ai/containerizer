@@ -705,6 +705,7 @@ use the host network again, for a proxy that listens only on `127.0.0.1`.
 | | |
 | --- | --- |
 | Something does not start | `systemctl --failed`, `journalctl -b -u <unit>`; units are `containerizer-*`, `k3s`, `caddy`, `docker` |
+| `systemctl start containerizer-web` hangs, its journal is empty | It waits for a unit it starts after: `systemctl list-jobs` shows which (usually `containerizer-db-init`, waiting for SQL Server); then `journalctl -b -u containerizer-db-init -u containerizer-mssql -u docker` |
 | A scan cannot reach a host | Admin → Firewall → Refused names; or `journalctl -u containerizer-dns \| grep REFUSED` |
 | The firewall did not load | the SSH-only fallback ruleset is active; `systemctl status containerizer-firewall` shows why |
 | Status of the system agent | `/run/containerizer/system/status.json`, `journalctl -u containerizer-sysagent` |

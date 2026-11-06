@@ -15,7 +15,7 @@ PY=/usr/lib/containerizer/venv/bin/python
 i=0
 # external database: the password of CZ_SQL_USER is written by the administrator (docs/appliance-admin.md)
 until [ -s "$S/$CZ_SQL_OWNER_SECRET" ]; do
-  [ $i -gt 0 ] || echo "waiting for $S/$CZ_SQL_OWNER_SECRET (the password of CZ_SQL_USER)" >&2
+  [ $((i % 30)) -ne 0 ] || echo "waiting for $S/$CZ_SQL_OWNER_SECRET (the password of CZ_SQL_USER)" >&2
   i=$((i + 1))
   sleep 10
 done
@@ -38,7 +38,17 @@ connect(os.environ['CZ_PROBE']).close()
       "and the DNS filter (journalctl -u containerizer-dns | grep REFUSED)" >&2
     exit 1
   fi
-  [ $((i % 30)) -ne 1 ] || [ "$CZ_SQL_LOCAL" = yes ] || echo "waiting for SQL Server: $err" >&2
+  # every 5 minutes, also for the appliance's own server: containerizer-web and -worker wait for this unit, so
+  # `systemctl start containerizer-web` waits too, and without this line nothing would say why
+  if [ $((i % 30)) -eq 1 ]; then
+    if [ "$CZ_SQL_LOCAL" = yes ]; then
+      st=$(systemctl is-active containerizer-mssql.service 2>/dev/null || true)
+      echo "waiting for the appliance's SQL Server (containerizer-mssql is $st;" \
+        "journalctl -u containerizer-mssql -u docker says why it is not up): $err" >&2
+    else
+      echo "waiting for SQL Server: $err" >&2
+    fi
+  fi
   sleep 10
 done
 export CONTAINERIZER_SQL="$CZ_SQL_OWNER_CS"

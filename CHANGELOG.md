@@ -50,6 +50,13 @@ The OS image changes (`appliance/`, #255): release as a minor version.
   Outside the appliance, `CONTAINERIZER_BUILD_HOST_NETWORK=1` brings back the host network for builds behind a proxy
   on `127.0.0.1` (it was automatic before).
 
+- **`systemctl start containerizer-web` no longer waits without a word.** The web UI starts after the database
+  schema (`containerizer-db-init`), which waits up to 40 minutes for SQL Server; with the appliance's own SQL Server it
+  logged nothing meanwhile, so the start hung with an empty journal. It now says every 5 minutes what it waits for and
+  the state of `containerizer-mssql`. The status refresh (`containerizer-sysagent-status`), which the web UI also
+  starts after, gets a 10-minute limit; before, a hung run held the web UI's start forever. Troubleshooting:
+  `systemctl list-jobs` ([docs](docs/appliance-admin.md)).
+
 ## 0.16.4 (2026-11-05)
 
 - **Try again** on an application whose sandbox runs a Make it A order's patched copy builds that patch again (the
