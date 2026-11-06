@@ -56,6 +56,11 @@ The OS image changes (`appliance/`, #255): release as a minor version.
   the state of `containerizer-mssql`. The status refresh (`containerizer-sysagent-status`), which the web UI also
   starts after, gets a 10-minute limit; before, a hung run held the web UI's start forever. Troubleshooting:
   `systemctl list-jobs` ([docs](docs/appliance-admin.md)).
+- **The results database is no longer closed and opened again around every connection** (app code only, no OS
+  change). SQL Server Express, the appliance's default edition, creates databases with `AUTO_CLOSE` on; its log
+  then shows *Starting up database 'Containerizer'* and *Database Containerizer ... is deleted* several times a
+  second, and each connection waits for the database to open. `containerizer db init --create-database` (each start
+  of `containerizer-db-init` on the appliance's own SQL Server) turns it off, also on existing appliances.
 - The appliance's services start their containers with `docker run --quiet`: the first start's image download no
   longer fills the journal with progress bars (shown as `[NNB blob data]` lines).
 

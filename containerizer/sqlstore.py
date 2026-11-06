@@ -571,7 +571,9 @@ def add_member(conn, login: str, role: str) -> None:
 
 
 def create_database(cs: str | None, password: str | None = None) -> None:
-    """CREATE DATABASE when it does not exist (connects to master with the same credentials)."""
+    """CREATE DATABASE when it does not exist (connects to master with the same credentials), with AUTO_CLOSE off:
+    Express turns it on for every new database, and then SQL Server closes and opens the database again around each
+    connection (its log fills with "Starting up database" several times a second, and each connection pays for it)."""
     args = parse_connection_string(cs or os.environ.get("CONTAINERIZER_SQL") or "")
     db = _pick(args, "database", "initialcatalog") or ""
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", db):
@@ -579,6 +581,8 @@ def create_database(cs: str | None, password: str | None = None) -> None:
     master = re.sub(r"(?i)(^|;)\s*(database|initial\s*catalog)\s*=[^;]*", r"\1Database=master", cs or os.environ["CONTAINERIZER_SQL"])
     conn = connect(master, password, autocommit=True)
     try:
-        conn.cursor().execute(f"IF DB_ID(N'{db}') IS NULL CREATE DATABASE [{db}]")
+        cur = conn.cursor()
+        cur.execute(f"IF DB_ID(N'{db}') IS NULL CREATE DATABASE [{db}]")
+        cur.execute(f"IF DATABASEPROPERTYEX(N'{db}', 'IsAutoClose') = 1 ALTER DATABASE [{db}] SET AUTO_CLOSE OFF")
     finally:
         conn.close()

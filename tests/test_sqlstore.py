@@ -284,6 +284,18 @@ def _as(cs, login):
 
 
 @needs_sql
+def test_created_database_is_not_auto_closed(db):
+    # Express creates databases with AUTO_CLOSE on: closed and opened again around every connection
+    name = re.search(r"Database=(\w+)", db).group(1)
+    sqlstore.create_database(db)        # again: idempotent, and turns it off on a database that has it on
+    conn = sqlstore.connect(db)
+    cur = conn.cursor()
+    cur.execute("SELECT CONVERT(int, DATABASEPROPERTYEX(%s, 'IsAutoClose'))", (name,))
+    assert cur.fetchone()[0] == 0
+    conn.close()
+
+
+@needs_sql
 def test_store_maps_components_and_keeps_human_mapping(db, tmp_path):
     web_app(tmp_path / "shop")
     write(tmp_path / "shop", "src/Worker/Worker.csproj", """
