@@ -12,6 +12,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 The OS image changes (`appliance/`, #255): release as a minor version.
 
+- **Build-stage techniques for three more partial findings** ([docs](docs/platform-fixes.md), #282): work in progress.
+
 - **Platform fixes for refactor findings** ([docs](docs/platform-fixes.md)): findings that the generated
   configuration can satisfy no longer need code changes, and count as `config` in the rating. A plan rule names the
   findings it `resolves`; three techniques are new: code that switches on `Environment.MachineName` gets the pod
