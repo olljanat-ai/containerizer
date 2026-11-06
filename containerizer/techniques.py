@@ -161,8 +161,22 @@ def technique_special_folder_workdir(repo, c, findings) -> dict | None:
             "_note": "Folders mounted: " + ", ".join(mounts) + "."}
 
 
+# ------------------------------------------------------------------ local time zone
+
+def technique_local_timezone(repo, c, findings) -> dict | None:
+    """TZ=<the organization's zone> (site.py): .NET, Java, Node.js and Python read TZ for local time, and the
+    runtime images have tzdata (.NET chiseled-extra and full images, distroless, Temurin). No zone set: UTC stays
+    and so does the finding."""
+    from .site import timezone
+    tz = timezone()
+    if not tz:
+        return None
+    return {"env": {"TZ": tz}, "_note": f"Runs in {tz} (site setting)."}
+
+
 TECHNIQUES = {
     "machine-hostname": technique_machine_hostname,
+    "local-timezone": technique_local_timezone,
     "x509-user-store": technique_x509_user_store,
     "special-folder-workdir": technique_special_folder_workdir,
 }
