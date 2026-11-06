@@ -584,3 +584,29 @@ rules:
     refs:
       - https://hibernate.org/search/documentation/
       - https://12factor.net/processes
+
+  # ------------------------------------------------------------------ reverse proxy
+  - id: java-forwarded-headers-missing
+    applies_to: [java]
+    when:
+      all:
+        - role: web
+        - property: {SpringBoot: "true"}
+        - any:
+            - closure: {package: 'org\.springframework\.boot:spring-boot-starter-oauth2-client|org\.springframework\.security:spring-security-oauth2-client|org\.springframework\.security:spring-security-saml2-service-provider', runtime: true}
+            - code: '\bServletUriComponentsBuilder\s*\.\s*fromCurrent(Request|ContextPath|ServletMapping)(Uri)?\b|\bMvcUriComponentsBuilder\b|\.isSecure\s*\(\s*\)'
+        - not: {code: '\bForwardedHeaderFilter\b|\bRemoteIpValve\b|(?-i:SERVER_FORWARD_HEADERS_STRATEGY|SERVER_USE_FORWARD_HEADERS)'}
+        - not: {config: 'server\.(forward-headers-strategy|use-forward-headers)|(?-i:SERVER_FORWARD_HEADERS_STRATEGY|SERVER_USE_FORWARD_HEADERS)'}
+    severity: config
+    category: networking
+    effort: 0.25
+    title: Behind the ingress without forwarded headers
+    why: >-
+      TLS ends at the ingress, so the app sees plain HTTP from the proxy. Without forwarded headers
+      Spring Security builds http:// redirect URIs for the OAuth2/OIDC or SAML identity provider (login
+      fails) and the app generates wrong absolute links.
+    fix: >-
+      Set SERVER_FORWARD_HEADERS_STRATEGY=native (server.forward-headers-strategy; on Spring Boot
+      before 2.2 server.use-forward-headers=true) and keep HTTPS redirection at the ingress.
+    refs:
+      - https://docs.spring.io/spring-boot/how-to/webserver.html#howto.webserver.use-behind-a-proxy-server

@@ -610,6 +610,17 @@ def hardening_markdown(app: str, comp_docs: dict[str, list[dict]]) -> str:
                   "| Component | Allowed external dependencies |", "| --- | --- |"]
         lines += [f"| {c} | {e or 'none (DNS and sibling components only)'} |" for c, e in sorted(egress.items())]
         lines.append("")
+    proxied = _forwarded_header_components(comp_docs)
+    if proxied:
+        lines += ["## Forwarded headers from the ingress", "",
+                  "These components take the scheme and client address from the ingress's X-Forwarded-* headers "
+                  "(set by configuration, the code is unchanged), so sign-in redirects are https://. They trust the "
+                  "headers from any peer that reaches them, and their NetworkPolicy admits only pods of this cluster "
+                  "(`network.ingress_from` in rules/60-security.yaml), never a direct outside client. Narrow "
+                  "`ingress_from` to the ingress controller's namespace so that only it can set them.", "",
+                  "| Component | Setting |", "| --- | --- |"]
+        lines += [f"| {c} | `{s}` |" for c, s in sorted(proxied.items())]
+        lines.append("")
     if exceptions:
         lines += ["## Hardening exceptions", "", "| Exception | Components |", "| --- | --- |"]
         lines += [f"| {e} | {', '.join(sorted(c))} |" for e, c in sorted(exceptions.items())]
@@ -640,6 +651,23 @@ def hardening_markdown(app: str, comp_docs: dict[str, list[dict]]) -> str:
               "- `cluster/audit-policy.yaml`, `cluster/verify-images.yaml`, `cluster/secret-store.yaml` (the secret "
               "store and this namespace's read access): for the cluster operator, not applied with the app", ""]
     return "\n".join(lines)
+
+
+FORWARDED_HEADER_ENV = ("ASPNETCORE_FORWARDEDHEADERS_ENABLED", "SERVER_FORWARD_HEADERS_STRATEGY")
+
+
+def _forwarded_header_components(comp_docs: dict) -> dict[str, str]:
+    """Component -> the forwarded-headers setting its containers get (rules/40-plan.yaml plan-forwarded-headers,
+    41-plan-java-node.yaml plan-spring-forward-headers)."""
+    out = {}
+    for comp, docs in comp_docs.items():
+        for d in docs:
+            for _, spec in _pod_specs(d):
+                for ctr in spec.get("containers") or []:
+                    for e in ctr.get("env") or []:
+                        if e.get("name") in FORWARDED_HEADER_ENV and e.get("value"):
+                            out[comp] = f"{e['name']}={e['value']}"
+    return out
 
 
 # --------------------------------------------------------------------------- lint

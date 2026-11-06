@@ -346,6 +346,9 @@ Techniques used to avoid application changes:
   in `CurrentUser\My` come from an optional Secret mounted at `~/.dotnet/corefx/cryptography/x509stores/my`;
   `Path.Combine(GetFolderPath(ProgramFiles), "Acme", ...)` (`/app/Acme/...` on Linux) gets a volume there. These
   findings then count as `config` ([Platform fixes for refactor findings](platform-fixes.md)).
+- web apps that sign in through an identity provider behind the TLS-terminating ingress get forwarded headers
+  through configuration: `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` (ASP.NET Core) or `SERVER_FORWARD_HEADERS_STRATEGY=native`
+  (Spring Boot), so redirect URIs are `https://`.
 
 ## Security gate
 

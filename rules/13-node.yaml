@@ -593,3 +593,27 @@ rules:
     refs:
       - https://12factor.net/processes
       - https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+
+  # ------------------------------------------------------------------ reverse proxy
+  - id: node-trust-proxy-missing
+    applies_to: [node]
+    when:
+      all:
+        - not: {role: 'test|tool|spa|desktop'}
+        - package: 'express'
+          runtime: true
+        - package: 'passport-openidconnect|passport-oauth2|passport-saml|@node-saml/passport-saml|passport-azure-ad|passport-google-oauth20|express-openid-connect|openid-client'
+          runtime: true
+        - not: {code: '\.(set|enable)\s*\(\s*[''"]trust proxy[''"]'}
+    severity: info
+    category: networking
+    title: Behind the ingress without trust proxy
+    why: >-
+      TLS ends at the ingress, so Express sees plain HTTP. Without `trust proxy` req.protocol is
+      http, so callback URLs built from the request are http:// (the identity provider rejects
+      them) and cookies marked secure are not sent. There is no environment variable for it.
+    fix: >-
+      One line after the app is created: app.set('trust proxy', 1) (one proxy hop: the ingress),
+      or configure absolute https:// callback URLs.
+    refs:
+      - https://expressjs.com/en/guide/behind-proxies.html

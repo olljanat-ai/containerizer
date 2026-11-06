@@ -180,3 +180,21 @@ rules:
       - https://learn.microsoft.com/en-us/dotnet/api/system.environment.getfolderpath
       - https://learn.microsoft.com/en-us/dotnet/api/system.io.path.combine
     when: {}
+
+  - id: plan-forwarded-headers
+    phase: plan
+    applies_to: [dotnet]
+    resolves: [host-forwarded-headers-missing]
+    why: >-
+      TLS ends at the ingress, so the app sees plain HTTP and builds http:// redirect URIs for the identity
+      provider. ASPNETCORE_FORWARDEDHEADERS_ENABLED=true makes ASP.NET Core (3.0+) run the forwarded headers
+      middleware first and honour X-Forwarded-For and X-Forwarded-Proto from the ingress, with no code change.
+      The variable trusts any proxy (it clears KnownNetworks/KnownProxies); the pod's NetworkPolicy, which
+      admits only pods of the cluster to the web port (narrow network.ingress_from to the ingress controller's
+      namespace), is what makes that acceptable. It is set only where
+      the finding is, so an app that configures UseForwardedHeaders itself keeps its own proxy list.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/host-and-deploy/proxy-load-balancer#forward-the-scheme-for-linux-and-non-iis-reverse-proxies
+    when: {}
+    plan:
+      env: {ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"}

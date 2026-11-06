@@ -23,6 +23,15 @@ The OS image changes (`appliance/`, #255): release as a minor version.
   never sent to a refactoring. An application whose only refactor findings are these goes from B to A at its next
   scan. The page also classifies all 111 refactor rules (platform, partial, code-only) as candidates for more.
 
+- **Forwarded headers behind the ingress** through configuration (#276): an ASP.NET Core web app with
+  `host-forwarded-headers-missing` (OpenID Connect and other external sign-in, `Request.Scheme`) gets
+  `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` (`plan-forwarded-headers`), so the identity provider gets `https://` redirect
+  URIs; the finding is `resolved_by` the rule. Spring Boot web apps with OAuth2 client, SAML or links built from the
+  current request get the new `java-forwarded-headers-missing` finding, resolved with
+  `SERVER_FORWARD_HEADERS_STRATEGY=native` (`plan-spring-forward-headers`). Express apps with an SSO package and no
+  `trust proxy` get an `info` finding with the one-line fix (`node-trust-proxy-missing`). `HARDENING.md` lists the
+  components that trust the forwarded headers.
+
 - Refactoring and **Make it A** change application code only where the platform cannot, and only the lines the
   findings need (#252). Findings that the generated Dockerfile and manifests already settle (`core-eol`,
   `dataprotection-default`; the list is data, `platform:` in the new `rules/70-refactor.yaml`) are never sent
