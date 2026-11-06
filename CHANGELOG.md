@@ -45,6 +45,17 @@ The OS image changes (`appliance/`, #255): release as a minor version.
   Outside the appliance, `CONTAINERIZER_BUILD_HOST_NETWORK=1` brings back the host network for builds behind a proxy
   on `127.0.0.1` (it was automatic before).
 
+- The **WCF port plan** fits the service it was found in (#267). The CoreWCF packages come from the bindings found:
+  `CoreWCF.NetTcp` for netTcpBinding, `CoreWCF.WebHttp` for webHttpBinding and `[WebGet]`/`[WebInvoke]`,
+  `CoreWCF.Http` for HTTP bindings and `.svc` endpoints, and `CoreWCF.ConfigurationManager` with a step to keep the
+  `<system.serviceModel>` services section instead of rewriting the endpoints in code. The plan no longer says
+  "change the using to CoreWCF": contract assemblies that clients also reference keep their `System.ServiceModel`
+  attributes, which CoreWCF hosts. `WorkflowServiceHost` and `.xamlx` count as WCF service hosts (`wcf-server`
+  instead of `wcf-client`), and the WF4 plan says that CoreWF has no workflow-service hosting. A .NET Framework
+  client of a netTcpBinding service no longer gets `wcf-nettcp-msmq`. Migrations can now have `variants`
+  (`rules/migrations.yaml`) and rules `superseded_by` (a component that hosts WCF services no longer also gets the
+  `wcf-client` info finding).
+
 ## 0.16.4 (2026-11-05)
 
 - **Try again** on an application whose sandbox runs a Make it A order's patched copy builds that patch again (the
