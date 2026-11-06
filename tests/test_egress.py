@@ -889,3 +889,31 @@ def test_cluster_dns_drops_are_no_destination():
            "Verdict": "in-cluster", "Status": "reported", "Reason": "r", "Evidence": "[]"}
     doc = cy.model("shop", NET, [dns, {**dns, "Destination": "8.8.8.8", "DestinationIp": "8.8.8.8"}], [dec], appliance=None)
     assert [e["destination"] for e in doc["outbound"] if e["port"] == 53] == ["8.8.8.8"]
+
+
+def test_scan_destinations_reads_wcf_net_tcp_and_skips_contract_namespaces(tmp_path):
+    from containerizer.assess import assess
+    from containerizer.harden import egress_for
+    p = tmp_path / "app" / "src" / "Admin"
+    p.mkdir(parents=True)
+    (p / "Admin.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup><TargetFramework>net8.0'
+                                    '</TargetFramework></PropertyGroup></Project>')
+    (p / "Program.cs").write_text('var app = WebApplication.CreateBuilder(args).Build(); app.Run();\n')
+    (p / "Contracts.cs").write_text(
+        'public static class OnboardingNamespaces {\n'
+        '    public const string Service = "http://schemas.litware.com/onboarding/2019/04";\n}\n'
+        '[ServiceContract(Namespace = "http://contracts.wingtip.fi/invoices/2019/control")]\n'
+        'public interface IControl { }\n'
+        'var pipe = "net.pipe://localhost/StaffOnboarding/control";\n')
+    (p / "appsettings.json").write_text(json.dumps({
+        "ControlAddress": "net.tcp://invoices-proc.corp.local:8096/InvoiceProcessor/Control",
+        "Legacy": "net.tcp://legacy.corp.local/Service"}))
+    (p / "app.config").write_text('<configuration><system.serviceModel><services><service name="X"><host>'
+                                  '<baseAddresses><add baseAddress="net.tcp://self.corp.local:9000/X" />'
+                                  '</baseAddresses></host></service></services></system.serviceModel></configuration>')
+    a = assess(tmp_path / "app")
+    c, = a.to_dict()["network"]["components"]
+    assert {(d["host"], d["port"], d["scheme"]) for d in c["destinations"]} == {
+        ("invoices-proc.corp.local", 8096, "net.tcp"), ("legacy.corp.local", 808, "net.tcp")}
+    dep, = [d for d in egress_for(a.repo, a.components[0]) if d["id"] == "wcf-net-tcp"]
+    assert dep["ports"] == [{"port": 808, "protocol": "TCP"}, {"port": 8096, "protocol": "TCP"}]

@@ -37,7 +37,7 @@ not. It shows what the application needs from the network, from every source, ea
 
 | Source | What |
 | --- | --- |
-| Configuration, code | URLs and connection strings in the configuration (`appsettings.json`, `web.config`, `.properties`, `.yaml`, `.env`) and the code, with the file and line. Development settings, comments, documentation and schema URLs are left out. |
+| Configuration, code | URLs and connection strings in the configuration (`appsettings.json`, `web.config`, `.properties`, `.yaml`, `.env`) and the code, with the file and line. WCF `net.tcp://host:port` addresses count (port 808 when none is given) and the NetworkPolicy opens their port; `net.pipe://` stays inside the pod and opens nothing. Development settings, comments, documentation and schema URLs are left out, and so are URLs that are names, not addresses: XML and WCF contract namespaces (`Namespace = "http://..."`, `xmlns`, `targetNamespace`, hosts named `schemas.*`) and a WCF service's own `baseAddress`. |
 | Package | A dependency the generated NetworkPolicy opens a port for (a SQL Server client, an HTTP client, a message broker) when no configuration names its destination. |
 | NetworkPolicy | What the generated policy allows: the inferred ports to any address but the blocked ranges, the application's own pods, DNS. |
 | Lab service | The [lab services](lab-services.md) the components need. |
