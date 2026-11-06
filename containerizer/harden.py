@@ -242,10 +242,12 @@ def egress_for(repo, c) -> list[dict]:
                     txt = ctx.text(f, True)
                     for rx in rxs:
                         for m in re.finditer(rx, txt):
-                            host = re.search(r"(?:://|=\s*)(?:[^@/\s]*@)?([\w.\-\[\]:*+]+?)(?::\d+|,\d+)", m.group(0))
+                            host = re.search(r"(?:://|=\s*)(?:[^@/\s]*@)?([\w.\-\[\]:*+]+?)(?::\d+|,\d+|$)", m.group(0))
                             if host and re.match(net.get("local_hosts", "$^"), host.group(1), re.I):
                                 continue
-                            found.add(int(m.group("port")))
+                            port = m.group("port") or dep.get("default_port")
+                            if port:
+                                found.add(int(port))
             ports = sorted(x for x in found if 0 < x < 65536)
         else:
             r = Rule.from_dict({"id": dep["id"], "when": dep["when"], "phase": "network"})
