@@ -434,6 +434,9 @@ def assess(path: str | Path, rules: list[Rule] | None = None, repo: Repo | None 
         # if the same rule was found both dormant and active, keep the active one
         active = {f.rule.id for f in c.findings if not f.dormant}
         c.findings = [f for f in c.findings if not (f.dormant and f.rule.id in active)]
+        # a rule's `superseded_by`: the finding says less than another one the component has (a WCF
+        # client reference in a library of a component that hosts WCF services: wcf-client vs wcf-server)
+        c.findings = [f for f in c.findings if not (set(f.rule.meta.get("superseded_by") or ()) & active)]
 
     from .techniques import resolve_findings
     for c in comps.values():
