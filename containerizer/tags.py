@@ -5,7 +5,8 @@ A tag is 1-40 letters, digits, spaces and `- _ . + / & #`, compared without rega
 has up to 20, stored comma-separated in Application.Tags (schema 37; the change history records them).
 
 - POST /admin/tags/<application id>: Tags = "pci, customer-facing" replaces the application's tags
-  (empty: none). Plain HTML form with the session's CSRF token (admin.py checks every POST), fixed notice
+  (empty: none). Automatic tags (AUTO_TAGS: `stateful`, an application with a component that keeps its own data)
+  come from the assessment: the editor neither shows nor stores them. Plain HTML form with the session's CSRF token (admin.py checks every POST), fixed notice
   texts, back to the results page.
 """
 from __future__ import annotations
@@ -15,6 +16,10 @@ import sys
 from html import escape
 
 TAG_RE = re.compile(r"[\w .+/&#-]{1,40}")
+# tags Containerizer sets from the assessment: shown and filtered by like the others, never stored in
+# Application.Tags, so nobody can add or remove them (the editor drops them)
+STATEFUL = "stateful"
+AUTO_TAGS = {STATEFUL: "Set automatically: a component keeps its own data and runs with a persistent volume, one replica"}
 MAX_TAGS = 20
 NOTICES = {"saved": ("ok", "Tags saved."),
            "bad": ("bad", "Not saved: a tag is 1-40 letters, digits, spaces and - _ . + / & #, separated by commas."),
@@ -37,11 +42,19 @@ def parse_tags(text: str) -> tuple[list[str] | None, str | None]:
             continue
         if not TAG_RE.fullmatch(t):
             return None, "bad"
+        if t.casefold() in AUTO_TAGS:
+            continue                    # set from the assessment only (with_auto)
         if t.casefold() not in {x.casefold() for x in out}:
             out.append(t)
     if len(out) > MAX_TAGS:
         return None, "many"
     return out, None
+
+
+def with_auto(stored, auto) -> str | None:
+    """Application.Tags with the automatic tags `auto` (AUTO_TAGS) first, as stored tags are (comma-separated)."""
+    tags = [t for t in auto if t in AUTO_TAGS] + [t for t in split_tags(stored) if t.casefold() not in AUTO_TAGS]
+    return ",".join(tags) or None
 
 
 def has_tag(stored, tag: str) -> bool:

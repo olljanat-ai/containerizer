@@ -23,7 +23,7 @@ VERDICT_TEXT = {
     "blocker": "Not feasible in a Linux container",
 }
 APP_RATINGS = {
-    "A": "Container-ready - modern, stateless stack; containers with configuration only, no code changes",
+    "A": "Container-ready - modern stack; containers with configuration only, no code changes",
     "B": "Minor refactoring - small code changes",
     "C": "Partial - some components must stay on Windows, the rest need at most minor changes",
     "D": "Major refactoring - framework port needed",
@@ -96,6 +96,15 @@ class Component:
     @property
     def stateless(self) -> bool:
         return not self.state_findings
+
+    @property
+    def state_unplaced(self) -> bool:
+        """Keeps data on its own disk (`state: local`) in a folder the generator does not know, so it cannot get a
+        persistent volume and does not run as it is (generate.local_state_unplaced)."""
+        if self.stateless:
+            return False
+        from .generate import local_state_unplaced
+        return local_state_unplaced(self)
 
     @property
     def weight(self) -> float:
@@ -174,9 +183,10 @@ class AppAssessment:
             return "C"        # the movable part runs in Linux now with at most minor changes
         worst = max((c.verdict for c in server), key=lambda s: SEV_RANK[s])
         rating = {"info": "A", "config": "A", "refactor": "B"}[worst]
-        # A means stateless: data only in external services (SQL, Redis, blob storage, queues),
-        # none on a component's own disk or in its memory, so replicas can come and go
-        if rating == "A" and any(not c.stateless for c in server):
+        # A means it runs in containers as it is. A component that keeps its own data runs with a persistent volume
+        # and one replica (generate.state_plan), still A (stateful(): the UI marks it); only local data in a folder
+        # the generator cannot find, so no volume can hold it, keeps it at B
+        if rating == "A" and any(getattr(c, "state_unplaced", False) for c in server):
             return "B"
         return rating
 
@@ -215,7 +225,8 @@ class AppAssessment:
         if stateful:
             what = "; ".join(f"{c.name}: " + ", ".join(dict.fromkeys(f.rule.title for f in c.state_findings))
                              for c in stateful)
-            parts.append(f"{len(stateful)} keep their own data, so the app is not stateless ({what})")
+            parts.append(f"{len(stateful)} keep their own data and run with a persistent volume, one replica, so the app "
+                         f"is not stateless ({what})")
         clients = [c.name for c in self.components if c.tier == "client"]
         if clients:
             parts.append(f"desktop clients stay on PCs ({', '.join(clients)})")

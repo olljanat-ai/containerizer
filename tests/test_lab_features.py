@@ -188,12 +188,12 @@ def test_why_the_rating(monkeypatch):
     app = {"Rating": "B", "components": [{"ComponentName": "Parts", "Verdict": "config", "Tier": "server", "ComponentId": 1}],
            "findings": [{"ComponentName": "Parts", "RuleId": "sqlite-local", "Title": "Embedded file database"}]}
     html, stateful, refactor = webui.rating_why(app)
-    assert "Why B:</b> Not stateless: Parts keeps its own data (Embedded file database)" in html
+    # B with nothing else to fix: the data is in a folder Containerizer could not find
+    assert "Why B:</b> Parts keeps its own data (Embedded file database), in a folder Containerizer could not find" in html
     assert [c["ComponentName"] for c in stateful] == ["Parts"] and refactor == []
-    assert "It runs as it is, with a persistent volume and one replica (no code change)" in html
-    # the Refactoring box presents the volume as the default path, Make it A as optional
-    box = webui._refactoring(app, {})
-    assert "No code change needed to run it:" in box and "Make it A is optional" in box
+    html = webui.rating_why({**app, "Rating": "A"})[0]
+    assert ("Why A:</b> Every server component runs in Linux containers with configuration only. Stateful: Parts keeps "
+            "its own data (Embedded file database), and runs as it is with a persistent volume and one replica") in html
     app = {"Rating": "B", "components": [{"ComponentName": "Jobs", "Verdict": "refactor", "Tier": "server"}], "findings": []}
     assert "Jobs need targeted code changes." in webui.rating_why(app)[0]
     assert "configuration only and keeps no data" in webui.rating_why({"Rating": "A", "components": [], "findings": []})[0]

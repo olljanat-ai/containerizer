@@ -4,6 +4,16 @@
 # a component with such a finding is reported as stateful and the app is not rated A (see
 # AppAssessment.rating). Embedded databases and local search indexes are in 30-integration.yaml
 # (sqlite-local, lucene-local-index).
+#
+# `stateful:` (below the rules is how the generator runs such a component as it is, generate.state_plan): one
+# replica, its data folders on PersistentVolumeClaims, and these platform settings so operators can find,
+# back up and place stateful workloads without editing the manifests.
+stateful:
+  labels: {stateful: "true"}   # on the workload and its pods (not in the selector): backup and scheduling target them
+  storage_class: ""            # PVC storageClassName; empty: the cluster's default StorageClass
+  size: 1Gi                    # PVC request per data folder
+  node_selector: {}            # e.g. {node-pool: stateful}: a dedicated node pool for workloads that keep data
+  tolerations: []              # e.g. [{key: stateful, operator: Exists, effect: NoSchedule}]
 rules:
   # Files the application writes under its own content/web root or App_Data: uploads, generated
   # documents, data files. The write and the app-relative root must be in the same file, so a

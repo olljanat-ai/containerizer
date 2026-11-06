@@ -89,9 +89,9 @@ def test_plan_splits_into_waves():
     assert [c["ComponentName"] for c in p["windows"]] == ["Lending.Api", "BackOffice", "Collections"]
     assert [c["ComponentName"] for c in p["other"]] == ["Loans.Database"]
     # the Linux part rated by the application rule: as it is, and with LoanTape's data moved out
-    # the rating stays honest: the Linux part keeps data on a volume, so it is B, not A
+    # data on a volume does not lower the rating: the Linux part is A, LoanTape marked stateful
     stand = lambda c, keeps: SimpleNamespace(tier="server", verdict=c, stateless=not keeps)   # noqa: E731
-    assert p["linux_now"] == rating_of([stand("config", False), stand("config", False), stand("config", True)]) == "B"
+    assert p["linux_now"] == rating_of([stand("config", False), stand("config", False), stand("config", True)]) == "A"
     assert p["linux_after"] is None
     assert mp.summary(p) == "3 of 6 components can run in Linux containers now; 3 stay on Windows."
     states = {x["c"]["ComponentName"]: x["sandbox"] for x in p["now"]}
@@ -129,7 +129,7 @@ def test_section_on_the_page():
     assert "Deployed and healthy" in sec and "deployed, not checked yet" in sec
     assert ("<div class='muted small stateful'>runs with a persistent volume, one replica (keeps its own data: "
             "Application data written to its own disk)</div>") in sec
-    assert f"{webui.RATING_TITLE['B']}" in sec and "The part that can run in Linux containers (3 components)" in sec
+    assert f"{webui.RATING_TITLE['A']}" in sec and "The part that can run in Linux containers (3 components)" in sec
     assert "Not in the plan: Loans.Database (lives with the database)" in sec
     # no Refactoring box on this page: the plan points to the findings instead of Make it A
     app = loans()

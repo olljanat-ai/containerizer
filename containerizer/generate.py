@@ -352,6 +352,18 @@ NOT_STATE = re.compile(r"(^|/)(te?mp|logs?|cache|\.cache)(/|$)", re.I)
 PV_DOCS = "https://kubernetes.io/docs/concepts/storage/persistent-volumes/"
 
 
+def stateful_settings() -> dict:
+    """rules/36-state.yaml `stateful:`: labels, storage_class, size, node_selector, tolerations."""
+    try:
+        cfg = (yaml.safe_load((RULES_DIR / "36-state.yaml").read_text()) or {}).get("stateful") or {}
+    except OSError:
+        cfg = {}
+    return {"labels": {str(k): str(v) for k, v in (cfg.get("labels") or {}).items()},
+            "storage_class": str(cfg.get("storage_class") or ""), "size": str(cfg.get("size") or "1Gi"),
+            "node_selector": {str(k): str(v) for k, v in (cfg.get("node_selector") or {}).items()},
+            "tolerations": list(cfg.get("tolerations") or [])}
+
+
 def state_dirs(c: Component) -> list[str]:
     """The folders a component that keeps its own data (findings of rules with `state: local`) keeps it in,
     absolute: the folders its code and configuration write to (facts writable_dirs, without temp, logs and
@@ -384,6 +396,7 @@ def state_plan(c: Component, plan: dict) -> None:
     if getattr(c, "stateless", True):
         return
     plan["single_replica"] = True
+    plan["stateful"] = True
     dirs = state_dirs(c)
     for key, val in sorted(((c.facts or {}).get("embedded_db_files") or {}).items()):
         name = re.sub(r"[\w\s]*=\s*([\w\-.]+).*", r"\1", val.strip(), count=1)
@@ -776,11 +789,26 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
     if plan.get("port"):
         docs.append({"apiVersion": "v1", "kind": "Service", "metadata": {"name": name, "labels": labels},
                      "spec": {"selector": labels, "ports": [{"name": "http", "port": 80, "targetPort": "http"}]}})
+    st = stateful_settings() if plan.get("stateful") else None
+    if st:
+        # the stateful label on the workload and its pods (never in the selector: it is immutable), a node pool
+        for d in docs:
+            if d["kind"] in ("Deployment", "CronJob"):
+                d["metadata"]["labels"] = {**labels, **st["labels"]}
+                tpl = d["spec"]["template"] if d["kind"] == "Deployment" else d["spec"]["jobTemplate"]["spec"]["template"]
+                tpl["metadata"]["labels"] = {**labels, **st["labels"]}
+                if st["node_selector"]:
+                    tpl["spec"]["nodeSelector"] = dict(st["node_selector"])
+                if st["tolerations"]:
+                    tpl["spec"]["tolerations"] = copy.deepcopy(st["tolerations"])
     for v in volumes:
         if "persistentVolumeClaim" in v:
             docs.append({"apiVersion": "v1", "kind": "PersistentVolumeClaim",
-                         "metadata": {"name": v["persistentVolumeClaim"]["claimName"], "labels": labels},
-                         "spec": {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": "1Gi"}}},
+                         "metadata": {"name": v["persistentVolumeClaim"]["claimName"],
+                                      "labels": {**labels, **(st["labels"] if st else {})}},
+                         "spec": {"accessModes": ["ReadWriteOnce"],
+                                  **({"storageClassName": st["storage_class"]} if st and st["storage_class"] else {}),
+                                  "resources": {"requests": {"storage": st["size"] if st else "1Gi"}}},
                          "_comment": "the application's own data: back it up; the cluster's default StorageClass "
                                      "provides it (set storageClassName and the size for production)"})
     if secret_keys:

@@ -65,3 +65,32 @@ def test_unmapped_applications_are_for_administrators_only():
     html = webui.render_overview(data, admin=True, nav="<a href='/admin'>Admin</a>")
     assert "/app/2" in html and "shown to administrators only" in html and "/admin/applications?show=unmapped" in html
     assert "/app/2" in webui.render_overview(data)                  # no sign-in: everything, as before
+
+
+# --------------------------------------------------------------------------- automatic tags
+
+def test_stateful_is_an_automatic_tag_nobody_edits():
+    from containerizer.tags import with_auto
+    assert parse_tags("pci, Stateful, wave 1") == (["pci", "wave 1"], None)       # the editor drops it
+    assert with_auto("pci,stateful", ["stateful"]) == "stateful,pci"
+    assert with_auto("pci", []) == "pci" and with_auto(None, []) is None
+
+
+def test_overview_filters_by_the_stateful_tag():
+    apps = [_app(1, "billing", 1, "stateful,PCI"), _app(2, "ledger", 1, "pci"), _app(3, "freight", 2, None)]
+    apps[0]["AutoTags"] = ["stateful"]
+    apps[0]["Rating"] = "A"
+    html = webui.render_overview({"apps": apps, "unmapped": {}}, tag_filter="stateful")
+    assert "/app/1" in html and "/app/2" not in html and "/app/3" not in html
+    assert "<a class='tag auto' href='/?tag=stateful' title='Set automatically" in html
+    assert "<span class='stateful-mark' title='Set automatically" in html
+
+
+def test_results_page_shows_the_automatic_tag_outside_the_editor(monkeypatch):
+    monkeypatch.setattr(webui, "_STATE_RULES", {"sqlite-local": "local"})
+    app = {"ApplicationId": 5, "Tags": "pci",
+           "components": [{"ComponentId": 1, "ComponentName": "Parts", "Tier": "server"}],
+           "findings": [{"ComponentId": 1, "ComponentName": "Parts", "RuleId": "sqlite-local", "Title": "db",
+                         "OnlyCommands": None}]}
+    html = webui._tags_section(app, {"tags_csrf": "<input type='hidden'>"})
+    assert "class='tag auto' href='/?tag=stateful'" in html and "value='pci'" in html

@@ -1,6 +1,8 @@
-"""Stateless scoring: an app is only rated A when no server component keeps its own data (local
-SQLite or Lucene files, uploads under the app folder, in-memory session or Hangfire storage).
-Data kept in managed services (SQL Server, PostgreSQL, Redis, blob storage, ...) is stateless."""
+"""Stateful components: a server component that keeps its own data (local SQLite or Lucene files, uploads under
+the app folder, in-memory session or Hangfire storage) is reported as stateful and still rates A: it runs as it
+is with a persistent volume and one replica. Only local data in a folder the generator cannot find (so no volume
+can hold it) keeps it at B. Data kept in managed services (SQL Server, PostgreSQL, Redis, blob storage, ...) is
+stateless."""
 import json
 
 from containerizer.assess import assess
@@ -25,7 +27,8 @@ def test_plain_web_is_stateless_and_a(tmp_path):
     assert a.to_dict()["stateless"] is True
 
 
-def test_sqlite_only_is_stateful_b(tmp_path):
+def test_sqlite_without_a_known_file_is_stateful_b(tmp_path):
+    """No connection string or folder names the database file: no volume can hold it, so B."""
     web_app(tmp_path, packages=pkg("Microsoft.EntityFrameworkCore.Sqlite"))
     a, c = comp(tmp_path)
     assert sev(tmp_path, "sqlite-local") == "config"
@@ -66,7 +69,8 @@ def test_uploads_under_webroot_are_stateful(tmp_path):
         }""")
     a, c = comp(tmp_path)
     assert sev(tmp_path, "state-local-files") == "config"
-    assert not c.stateless and a.rating == "B"
+    assert not c.stateless and a.rating == "A"
+    assert "persistent volume" in a.summary()
 
 
 def test_temp_files_are_stateless(tmp_path):
@@ -105,7 +109,7 @@ def test_in_memory_session_is_stateful(tmp_path):
     web_app(tmp_path, code="builder.Services.AddSession();")
     a, c = comp(tmp_path)
     assert sev(tmp_path, "state-session-in-memory") == "config"
-    assert not c.stateless and a.rating == "B"
+    assert not c.stateless and a.rating == "A"                   # in memory: one replica, no volume needed
 
 
 def test_redis_backed_session_is_stateless(tmp_path):
@@ -119,7 +123,7 @@ def test_hangfire_memory_storage_is_stateful(tmp_path):
     web_app(tmp_path, packages=pkg("Hangfire.MemoryStorage", "1.8.0"))
     a, c = comp(tmp_path)
     assert sev(tmp_path, "state-hangfire-memory") == "config"
-    assert a.rating == "B"
+    assert a.rating == "A" and not c.stateless
 
 
 def test_state_rules_have_valid_flags():
@@ -167,7 +171,7 @@ def test_app_data_media_folder_is_stateful(tmp_path):
     web_app(tmp_path, code="""
         static class Perms { static string[] Dirs = { "App_Data", $"App_Data/Tenants/{Name}/Media" }; static string Name = "Default"; }""")
     assert sev(tmp_path, "state-app-data-folders") == "config"
-    assert rating(tmp_path) == "B"
+    assert rating(tmp_path) == "A"                               # App_Data on a persistent volume
 
 
 def test_projects_in_top_level_build_folder_are_tools(tmp_path):
@@ -215,7 +219,7 @@ def test_sqlite_app_is_deployed_with_a_volume_and_one_replica(tmp_path):
     write(tmp_path, "src/Web/appsettings.json", '{"ConnectionStrings": {"Default": "Data Source=app.db"}}')
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     a, plan, docs, spec, errors = _deployed(tmp_path)
-    assert a.rating == "B"                          # the rating stays honest: not stateless
+    assert a.rating == "A" and a.to_dict()["stateless"] is False   # runs as it is; marked stateful
     assert errors == []
     assert spec["replicas"] == 1 and spec["strategy"] == {"type": "Recreate"}
     assert _mounts(spec) == {"/data": "web-w0-data"}
@@ -243,7 +247,7 @@ def test_uploads_app_is_deployed_with_a_volume_on_the_uploads_folder(tmp_path):
             }
         }""")
     a, plan, docs, spec, errors = _deployed(tmp_path)
-    assert a.rating == "B" and errors == []
+    assert a.rating == "A" and errors == []
     assert spec["replicas"] == 1 and spec["strategy"] == {"type": "Recreate"}
     assert _mounts(spec) == {"/app/wwwroot/uploads": "web-w0-uploads"}
     assert plan["state_dirs"] == ["/app/wwwroot/uploads"]
@@ -286,3 +290,33 @@ def test_hardening_and_migration_notes_name_the_volumes(tmp_path):
     assert "backup" in md
     mig = migration_markdown(a)
     assert "## Application data on persistent volumes" in mig and "the operator owns their backup" in mig
+
+
+def test_stateful_label_storage_class_and_node_pool(tmp_path, monkeypatch):
+    from containerizer import generate
+    web_app(tmp_path, packages=pkg("Microsoft.EntityFrameworkCore.Sqlite"))
+    write(tmp_path, "src/Web/appsettings.json", '{"ConnectionStrings": {"Default": "Data Source=app.db"}}')
+    a, plan, docs, spec, errors = _deployed(tmp_path)
+    # default: the label on the workload, its pods and the volume, never in the (immutable) selector
+    dep = next(d for d in docs if d["kind"] == "Deployment")
+    assert dep["metadata"]["labels"]["stateful"] == "true" and spec["template"]["metadata"]["labels"]["stateful"] == "true"
+    assert "stateful" not in spec["selector"]["matchLabels"]
+    pvc = next(d for d in docs if d["kind"] == "PersistentVolumeClaim")
+    assert pvc["metadata"]["labels"]["stateful"] == "true" and "storageClassName" not in pvc["spec"]
+    assert "nodeSelector" not in spec["template"]["spec"]
+    monkeypatch.setattr(generate, "stateful_settings", lambda: {
+        "labels": {"stateful": "true"}, "storage_class": "backed-up", "size": "5Gi",
+        "node_selector": {"node-pool": "stateful"}, "tolerations": [{"key": "stateful", "operator": "Exists"}]})
+    a, plan, docs, spec, errors = _deployed(tmp_path)
+    pvc = next(d for d in docs if d["kind"] == "PersistentVolumeClaim")
+    assert pvc["spec"]["storageClassName"] == "backed-up" and pvc["spec"]["resources"]["requests"]["storage"] == "5Gi"
+    assert spec["template"]["spec"]["nodeSelector"] == {"node-pool": "stateful"}
+    assert spec["template"]["spec"]["tolerations"] == [{"key": "stateful", "operator": "Exists"}]
+    assert errors == []
+    # a stateless component gets none of it
+    from containerizer.generate import k8s_manifests, make_plan
+    plain = tmp_path / "plain"
+    web_app(plain)
+    b = assess(plain)
+    docs = k8s_manifests(b, b.components[0], make_plan(b, b.components[0]), "reg.example/app/web:1.0.0")
+    assert "stateful" not in next(d for d in docs if d["kind"] == "Deployment")["metadata"]["labels"]
