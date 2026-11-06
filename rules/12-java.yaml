@@ -594,7 +594,7 @@ rules:
         - property: {SpringBoot: "true"}
         - any:
             - closure: {package: 'org\.springframework\.boot:spring-boot-starter-oauth2-client|org\.springframework\.security:spring-security-oauth2-client|org\.springframework\.security:spring-security-saml2-service-provider', runtime: true}
-            - code: '\bServletUriComponentsBuilder\.fromCurrent(Request|ContextPath|ServletMapping)(Uri)?\b|\bMvcUriComponentsBuilder\b|\.isSecure\s*\(\s*\)'
+            - code: '\bServletUriComponentsBuilder\s*\.\s*fromCurrent(Request|ContextPath|ServletMapping)(Uri)?\b|\bMvcUriComponentsBuilder\b|\.isSecure\s*\(\s*\)'
         - not: {code: '\bForwardedHeaderFilter\b|\bRemoteIpValve\b|(?-i:SERVER_FORWARD_HEADERS_STRATEGY|SERVER_USE_FORWARD_HEADERS)'}
         - not: {config: 'server\.(forward-headers-strategy|use-forward-headers)|(?-i:SERVER_FORWARD_HEADERS_STRATEGY|SERVER_USE_FORWARD_HEADERS)'}
     severity: config
