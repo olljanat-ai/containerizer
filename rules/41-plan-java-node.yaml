@@ -51,7 +51,7 @@ rules:
       the identity provider. SERVER_FORWARD_HEADERS_STRATEGY=native makes the embedded server (Tomcat's
       RemoteIpValve, Jetty, Undertow, Reactor Netty) take the scheme and client address from X-Forwarded-Proto
       and X-Forwarded-For, with no code change. Tomcat trusts those headers only from private addresses (its
-      default internal proxies), and the pod's NetworkPolicy admits only the ingress controller to the web port.
+      default internal proxies), and the pod's NetworkPolicy admits only pods of the cluster to the web port.
     refs:
       - https://docs.spring.io/spring-boot/how-to/webserver.html#howto.webserver.use-behind-a-proxy-server
     when: {}

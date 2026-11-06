@@ -1,5 +1,4 @@
 """Behind the ingress (#276): forwarded headers come from configuration, the code stays as it is."""
-import json
 
 import yaml
 
@@ -95,3 +94,12 @@ def test_express_sso_without_trust_proxy_is_info(tmp_path):
     plain = tmp_path / "plain"
     node(plain, "", EXPRESS, {"server.js": SERVER})
     assert "node-trust-proxy-missing" not in ids(comp(assess(plain), "api"))
+
+
+def test_hardening_report_names_the_trusted_proxy_headers(tmp_path):
+    web_app(tmp_path, OIDC)
+    out = tmp_path / "out"
+    generate_app(assess(tmp_path), out)
+    md = (out / "HARDENING.md").read_text()
+    assert "## Forwarded headers from the ingress" in md
+    assert "| web | `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` |" in md
