@@ -25,7 +25,7 @@ rules:
     fix: >-
       Replace the COM component with a Node.js library or the product's REST API (for example
       exceljs/docx for Office files), or keep this part on a Windows host and call it over the
-      network. A Windows container with the COM server installed is a stop-gap.
+      network.
     refs:
       - https://github.com/durs/node-activex
 

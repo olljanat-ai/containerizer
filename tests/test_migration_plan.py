@@ -113,7 +113,7 @@ def test_section_on_the_page():
     assert "2 of 6 components can run in Linux containers now; 1 more after code changes; 3 stay on Windows." in sec
     assert "Wave 1, now" in sec and "to Kubernetes" in sec and "Wave 2, after code changes" in sec
     assert "Stays on Windows" in sec and "OLE DB / Access database engine" in sec
-    assert "a Windows container is a workable stop-gap" in sec          # Api: WindowsContainerOk
+    assert "stop-gap" not in sec                                        # Linux-only (#271)
     assert "Deployed and healthy" in sec and "deployed, not checked yet" in sec
     assert "keeps its own data: Application data written to its own disk" in sec
     assert f"{webui.RATING_TITLE['A']}" in sec and "The part that can run in Linux containers (3 components)" in sec

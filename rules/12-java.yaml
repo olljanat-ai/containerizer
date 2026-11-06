@@ -26,7 +26,6 @@ rules:
     fix: >-
       Replace the COM component with a Java library (Apache POI for Office documents, a REST/SOAP
       API of the vendor product), or keep this part on a Windows host and call it over the network.
-      A Windows container with the COM server installed is a stop-gap.
     refs:
       - https://github.com/freemansoft/jacob-project
       - https://github.com/kohsuke/com4j
