@@ -14,7 +14,7 @@ ExecStartPre=-/usr/bin/docker rm -f cz-kubemg
 ExecStartPre=/usr/lib/containerizer/bin/cz-kubemg ca
 # HTTPS on loopback (a certificate of the local CA that only Caddy trusts, made by cz-firstboot) behind Caddy,
 # which serves https://kubemg.<CZ_HOSTNAME>; kubemg's setup refuses plain HTTP (KUBEMG_TLS_ENABLED=false)
-ExecStart=/usr/bin/docker run --rm --name cz-kubemg --network host \
+ExecStart=/usr/bin/docker run --quiet --rm --name cz-kubemg --network host \
   --env-file /run/containerizer/kubemg/kubemg.env \
   --env-file /etc/containerizer/secrets/kubemg.env \
   --env-file /run/containerizer/kubemg/ca.env \

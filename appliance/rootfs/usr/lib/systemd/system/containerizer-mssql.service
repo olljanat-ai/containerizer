@@ -14,7 +14,7 @@ ExecStartPre=-/usr/bin/docker rm -f cz-mssql
 # MSSQL_PID: Express by default (free for production, 10 GB per database); Developer is not licensed for
 # production; Standard/Enterprise need a product key (CZ_MSSQL_EDITION in /etc/containerizer/appliance.env)
 # sqlservr carries the file capability cap_net_bind_service, so exec needs it in the bounding set
-ExecStart=/usr/bin/docker run --rm --name cz-mssql \
+ExecStart=/usr/bin/docker run --quiet --rm --name cz-mssql \
   --publish 127.0.0.1:1433:1433 \
   --env ACCEPT_EULA=Y --env MSSQL_PID=${CZ_MSSQL_EDITION} \
   --env-file /etc/containerizer/secrets/mssql.env \

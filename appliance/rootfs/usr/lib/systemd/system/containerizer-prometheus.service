@@ -13,7 +13,7 @@ ExecStartPre=/usr/bin/install -d -m 0750 -o root -g 65534 /run/containerizer/pro
 # the built-in LLM's servers (one per NUMA node; containerizer/local_llm.py writes the list, empty while it is off)
 ExecStartPre=/usr/bin/install -d -m 0755 /run/containerizer/prometheus-sd
 ExecStartPre=/bin/sh -c 'test -e /run/containerizer/prometheus-sd/local-llm.json || echo [] > /run/containerizer/prometheus-sd/local-llm.json'
-ExecStart=/usr/bin/docker run --rm --name cz-prometheus --network host \
+ExecStart=/usr/bin/docker run --quiet --rm --name cz-prometheus --network host \
   --volume /usr/lib/containerizer/prometheus:/etc/prometheus:ro \
   --volume /var/lib/containerizer/prometheus:/prometheus \
   --volume /run/containerizer/prometheus-k8s:/etc/prometheus-k8s:ro \

@@ -11,7 +11,7 @@ ConditionPathExists=/run/containerizer/kubemg/kubemg.env
 EnvironmentFile=/usr/lib/containerizer/images.env
 ExecStartPre=-/usr/bin/docker rm -f cz-kubemg-db
 # loopback only (kubemg runs on the host network too); data on the persistent partition
-ExecStart=/usr/bin/docker run --rm --name cz-kubemg-db --network host \
+ExecStart=/usr/bin/docker run --quiet --rm --name cz-kubemg-db --network host \
   --env-file /etc/containerizer/secrets/kubemg-db.env \
   --env POSTGRES_USER=kubemg --env POSTGRES_DB=kubemg \
   --volume /var/lib/containerizer/kubemg/postgres:/var/lib/postgresql/data \

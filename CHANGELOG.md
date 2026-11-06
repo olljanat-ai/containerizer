@@ -56,6 +56,8 @@ The OS image changes (`appliance/`, #255): release as a minor version.
   the state of `containerizer-mssql`. The status refresh (`containerizer-sysagent-status`), which the web UI also
   starts after, gets a 10-minute limit; before, a hung run held the web UI's start forever. Troubleshooting:
   `systemctl list-jobs` ([docs](docs/appliance-admin.md)).
+- The appliance's services start their containers with `docker run --quiet`: the first start's image download no
+  longer fills the journal with progress bars (shown as `[NNB blob data]` lines).
 
 ## 0.16.4 (2026-11-05)
 

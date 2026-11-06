@@ -22,7 +22,7 @@ ExecStartPre=-/usr/bin/docker rm -f cz-llm-%i
 # and the model pages count against --memory here, so the default would push the server towards its limit.
 # $CZ_LLM_PIN: --cpuset-cpus/--cpuset-mems of its NUMA node (the model is then locked in that node's memory), and
 # $CZ_LLM_THREADS as many threads as the node has CPUs; both empty with one server (the whole machine).
-ExecStart=/usr/bin/docker run --rm --name cz-llm-%i --network host $CZ_LLM_PIN \
+ExecStart=/usr/bin/docker run --quiet --rm --name cz-llm-%i --network host $CZ_LLM_PIN \
   --volume /var/lib/containerizer/llm:/models:ro \
   --memory ${CZ_LLM_MEMORY} --cpu-shares 256 --pids-limit 1024 \
   --user 65534:65534 --read-only --tmpfs /tmp:size=64m \

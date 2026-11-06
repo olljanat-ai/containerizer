@@ -10,7 +10,7 @@ EnvironmentFile=/usr/lib/containerizer/images.env
 ExecStartPre=-/usr/bin/docker rm -f cz-registry
 # host network, loopback only: Docker (the worker's pushes) and k3s (pulls, /etc/rancher/k3s/registries.yaml)
 # reach it on 127.0.0.1; nothing outside the appliance can
-ExecStart=/usr/bin/docker run --rm --name cz-registry --network host \
+ExecStart=/usr/bin/docker run --quiet --rm --name cz-registry --network host \
   --env REGISTRY_HTTP_ADDR=127.0.0.1:5000 \
   --env REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY=/var/lib/registry \
   --env REGISTRY_STORAGE_DELETE_ENABLED=true \

@@ -8,7 +8,7 @@ ConditionPathExists=!/run/elemental/recovery_mode
 [Service]
 EnvironmentFile=/usr/lib/containerizer/images.env
 ExecStartPre=-/usr/bin/docker rm -f cz-grafana
-ExecStart=/usr/bin/docker run --rm --name cz-grafana --network host \
+ExecStart=/usr/bin/docker run --quiet --rm --name cz-grafana --network host \
   --env-file /etc/containerizer/grafana.env \
   --env-file /etc/containerizer/secrets/grafana.env \
   --env-file /run/containerizer/grafana-url.env \
