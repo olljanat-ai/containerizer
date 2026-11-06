@@ -1,0 +1,2322 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Can this application run as a Linux container on Kubernetes? Assessment, hardened builds and manifests.">
+      
+      
+      
+        <link rel="canonical" href="https://containerizer.eu/platform-fixes/">
+      
+      
+        <link rel="prev" href="../platform-migration/">
+      
+      
+        <link rel="next" href="../refactoring/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../images/favicon.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>Platform fixes for refactor findings - Containerizer</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/landing.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  <meta property="og:type" content="website"><meta property="og:site_name" content="Containerizer"><meta property="og:title" content="Platform fixes for refactor findings - Containerizer"><meta property="og:description" content="Can this application run as a Linux container on Kubernetes? Assessment, hardened builds and manifests."><meta property="og:url" content="https://containerizer.eu/platform-fixes/"><meta name="twitter:card" content="summary"><meta name="twitter:title" content="Platform fixes for refactor findings - Containerizer"><meta name="twitter:description" content="Can this application run as a Linux container on Kubernetes? Assessment, hardened builds and manifests."></head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#platform-fixes-for-refactor-findings" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Containerizer" class="md-header__button md-logo" aria-label="Containerizer" data-md-component="logo">
+      
+  <img src="../images/favicon.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis"><a href="../" class="cz-home-link">Containerizer</a></span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Platform fixes for refactor findings
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/olljanat-ai/containerizer" title="Go to repository" class="md-source" data-md-component="source" target="_blank" rel="noopener noreferrer">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    olljanat-ai/containerizer
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../appliance/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../overview/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  How it works
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../scheduled-scans/" class="md-tabs__link">
+          
+  
+  
+  Using it
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../sign-in/" class="md-tabs__link">
+          
+  
+  
+  Administration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../sandbox-https/" class="md-tabs__link">
+          
+  
+  
+  Sandbox
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../java-node/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Containerizer" class="md-nav__button md-logo" aria-label="Containerizer" data-md-component="logo">
+      
+  <img src="../images/favicon.svg" alt="logo">
+
+    </a>
+    Containerizer
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/olljanat-ai/containerizer" title="Go to repository" class="md-source" data-md-component="source" target="_blank" rel="noopener noreferrer">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    olljanat-ai/containerizer
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../appliance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using it
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Using it
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scheduled-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Organization scans
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platform-migration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform migrations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform fixes for refactor findings
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform fixes for refactor findings
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#how-a-technique-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How a technique works
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#audit-of-the-refactor-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audit of the refactor rules
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../refactoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Refactoring patches
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../egress/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Egress and network connectivity
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../build-pipelines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build pipelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rule-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rule review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Administration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Administration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sign-in/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sign-in and roles
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../source-control/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Source control tokens and the LLM
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../appliance-admin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Running the appliance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sandbox
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-https/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox HTTPS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../lab-services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lab services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-idp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox identity provider
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dev-databases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dev databases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../external-secrets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Secrets (External Secrets)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../java-node/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Java and Node.js
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../local-dev-server/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local dev server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#how-a-technique-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How a technique works
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#audit-of-the-refactor-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audit of the refactor rules
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="platform-fixes-for-refactor-findings">Platform fixes for refactor findings<a class="headerlink" href="#platform-fixes-for-refactor-findings" title="Permanent link">&para;</a></h1>
+<p>Containerizer's job is to move as many applications as possible into containers with as few application code
+changes as possible. Some findings that look like code problems can be satisfied by the platform instead: a pod
+setting, a volume, a Secret mounted where the runtime already looks. When such a <strong>platform technique</strong> applies,
+the finding counts as <code>config</code> (the code stays as it is), the application's rating goes up, and the generated
+<code>plan.json</code> and Dockerfile header say what was done and why.</p>
+<h2 id="how-a-technique-works">How a technique works<a class="headerlink" href="#how-a-technique-works" title="Permanent link">&para;</a></h2>
+<p>A plan rule in <a href="https://github.com/olljanat-ai/containerizer/blob/main/rules/40-plan.yaml" target="_blank" rel="noopener noreferrer"><code>rules/40-plan.yaml</code></a>
+names the findings it satisfies with <code>resolves:</code>, and, when the configuration depends on the code, a <code>technique:</code>
+implemented in <code>containerizer/techniques.py</code>. During the assessment, a finding that a technique resolves gets
+<code>resolved_by</code> (shown in <code>assessment.json</code> with <code>rule_severity</code>, the rule's own severity) and counts as <code>config</code>.
+A resolved finding is never sent to a refactoring ("Make it A"). During generation the rule's patch is applied;
+<code>plan.json</code> lists it in <code>applied</code>, in <code>resolved</code> (rule → findings) and in <code>reasons</code>, and the Dockerfile header
+carries the reason and references.</p>
+<p>A technique only resolves a finding when the code is within its reach; otherwise the finding stays as it is, so a
+rating never goes up for code the configuration cannot fix.</p>
+<table>
+<thead>
+<tr>
+<th>Technique</th>
+<th>Resolves</th>
+<th>Generated configuration</th>
+<th>Stays a finding when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>plan-machine-hostname</code></td>
+<td><code>os-machine-name-switch</code></td>
+<td><code>hostname:</code> in the pod spec, set to the host name the code compares <code>Environment.MachineName</code> with (a production-looking one when there are several; the others are listed in the reason)</td>
+<td>the comparison is case-sensitive with an upper-case name (<code>== "PRODWEB01"</code>): Kubernetes host names are lower-case</td>
+</tr>
+<tr>
+<td><code>plan-x509-user-store</code></td>
+<td><code>cert-store</code></td>
+<td>an optional Secret <code>&lt;component&gt;-x509-my</code> (External Secrets) mounted read-only at <code>/home/app/.dotnet/corefx/cryptography/x509stores/my</code>, where .NET on Linux reads <code>CurrentUser\My</code>: put each certificate in it as a <strong>password-less <code>.pfx</code></strong> key (the name must end in <code>.pfx</code>)</td>
+<td>the code opens a <code>LocalMachine</code> store other than Root/CA (<code>cert-store-localmachine-code</code>): it does not exist on Linux</td>
+</tr>
+<tr>
+<td><code>plan-special-folder-workdir</code></td>
+<td><code>os-special-folder-windows</code></td>
+<td>a volume at <code>/app/&lt;Folder&gt;</code> for each <code>Path.Combine(GetFolderPath(ProgramFiles), "&lt;Folder&gt;", ...)</code>: <code>GetFolderPath</code> returns <code>""</code> for Windows-only folders on Linux, so the path is relative to the working directory <code>/app</code></td>
+<td>the folder is kept in a variable, joined with <code>\</code>, is a file name, or already ships with the app</td>
+</tr>
+</tbody>
+</table>
+<p><code>LocalMachine\Root</code> and <code>LocalMachine\CA</code> need nothing: on Linux they are the image's CA bundle.</p>
+<p>The three techniques were checked with <a href="https://github.com/olljanat-ai/containerizer/tree/main/examples/platform-techniques" target="_blank" rel="noopener noreferrer">examples/platform-techniques</a>:
+the image Containerizer generates for it, run as uid 1654 with a read-only root file system and the generated
+host name and mounts, takes the production branch, finds the certificate by subject name and reads the vendor
+file; the same image without them does none of that. Without the techniques the example is rated B, with them A.</p>
+<h2 id="audit-of-the-refactor-rules">Audit of the refactor rules<a class="headerlink" href="#audit-of-the-refactor-rules" title="Permanent link">&para;</a></h2>
+<p>Every curated <code>severity: refactor</code> rule, classified (a test keeps this table complete):</p>
+<ul>
+<li><strong>platform</strong>: generated configuration satisfies it; done by a technique above.</li>
+<li><strong>partial</strong>: a platform mechanism exists for some cases or with a trade-off (an unpatched image, a sidecar,
+  one replica); candidates for further techniques.</li>
+<li><strong>code-only</strong>: no configuration reaches it on Linux (the component can still run in a Windows container where
+  the rule says so).</li>
+</ul>
+<p><code>config</code> rules need no code change by definition; the generator already applies many of them automatically
+(Kestrel endpoints, connection strings and secret settings from Secrets, Windows paths in configuration,
+Serilog/NLog sinks, Data Protection keys, writable folders, wkhtmltopdf paths; see
+<a href="../overview/#generated-output">Techniques used to avoid application changes</a>), and the
+others say in their <code>fix</code> what to set.</p>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>File</th>
+<th>Finding</th>
+<th>Platform fix</th>
+<th>Mechanism, or why not</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>aspnetcore-on-netfx</code></td>
+<td>10-runtime.yaml</td>
+<td>ASP.NET Core 2.x app on .NET Framework</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>netfx-library</code></td>
+<td>10-runtime.yaml</td>
+<td>Shared library targets .NET Framework</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>core-windows-tfm</code></td>
+<td>10-runtime.yaml</td>
+<td>Windows-specific target framework (-windows)</td>
+<td>partial</td>
+<td>Build-stage retarget to plain <code>netX.0</code> (never in the repository) when no Windows-only API is called.</td>
+</tr>
+<tr>
+<td><code>linq-to-sql</code></td>
+<td>10-runtime.yaml</td>
+<td>LINQ to SQL</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>system-web-apis-in-core</code></td>
+<td>10-runtime.yaml</td>
+<td>System.Web HttpContext usage in .NET Core code</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>http-sys</code></td>
+<td>10-runtime.yaml</td>
+<td>HTTP.sys server</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>windows-service-netfx</code></td>
+<td>10-runtime.yaml</td>
+<td>Windows Service host (ServiceBase/Topshelf)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>system-drawing-core</code></td>
+<td>10-runtime.yaml</td>
+<td>System.Drawing on .NET 6+</td>
+<td>partial</td>
+<td>On .NET 6 only: <code>System.Drawing.EnableUnixSupport</code> in runtimeconfig plus <code>libgdiplus</code>, on the unpatched .NET 6 image. Removed in .NET 7.</td>
+</tr>
+<tr>
+<td><code>java-process-windows-commands</code></td>
+<td>12-java.yaml</td>
+<td>Starts Windows programs (cmd, PowerShell, .exe)</td>
+<td>partial</td>
+<td>As <code>process-start-exe</code>: the Linux tool under the same name, when one exists.</td>
+</tr>
+<tr>
+<td><code>java-waffle-windows-auth</code></td>
+<td>12-java.yaml</td>
+<td>Windows integrated authentication with WAFFLE</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>java-unsupported-version</code></td>
+<td>12-java.yaml</td>
+<td>Java 7 or older</td>
+<td>partial</td>
+<td>Run on an archived JDK image of that line (unpatched), as done for out-of-support .NET.</td>
+</tr>
+<tr>
+<td><code>java-ee-application-server</code></td>
+<td>12-java.yaml</td>
+<td>Needs a full Jakarta EE application server (EJB, EAR)</td>
+<td>partial</td>
+<td>The vendor's Linux image (Open Liberty, WildFly, Payara) with the server configuration as files/env.</td>
+</tr>
+<tr>
+<td><code>java-vendor-app-server-api</code></td>
+<td>12-java.yaml</td>
+<td>Vendor application server APIs (WebLogic, WebSphere, JBoss)</td>
+<td>partial</td>
+<td>The vendor's Linux image of the same server, when the vendor publishes one.</td>
+</tr>
+<tr>
+<td><code>node-edge-dotnet</code></td>
+<td>13-node.yaml</td>
+<td>.NET code run in-process with Edge.js</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>node-windows-sspi</code></td>
+<td>13-node.yaml</td>
+<td>Windows integrated authentication (SSPI, NTLM)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>node-windows-registry</code></td>
+<td>13-node.yaml</td>
+<td>Reads or writes the Windows registry</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>node-windows-only-tools</code></td>
+<td>13-node.yaml</td>
+<td>Windows-only helper packages (printing, WMI, event log)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>node-windows-only-dependency</code></td>
+<td>13-node.yaml</td>
+<td>Dependency that installs only on Windows</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>node-process-windows-commands</code></td>
+<td>13-node.yaml</td>
+<td>Starts Windows programs (cmd, PowerShell, .exe)</td>
+<td>partial</td>
+<td>As <code>process-start-exe</code>: the Linux tool under the same name, when one exists.</td>
+</tr>
+<tr>
+<td><code>node-unsupported-version</code></td>
+<td>13-node.yaml</td>
+<td>Pinned to an end-of-life Node.js line</td>
+<td>partial</td>
+<td>Run on the archived Node.js image of that line (unpatched), as done for out-of-support .NET.</td>
+</tr>
+<tr>
+<td><code>node-sass-libsass</code></td>
+<td>13-node.yaml</td>
+<td>node-sass (LibSass) native build</td>
+<td>partial</td>
+<td>Build stage on a Node.js line that node-sass has binaries for; the runtime image is unaffected.</td>
+</tr>
+<tr>
+<td><code>pinvoke-kernel32</code></td>
+<td>20-platform.yaml</td>
+<td>Win32 kernel/OLE/system DLL native calls</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>native-dll-shipped</code></td>
+<td>20-platform.yaml</td>
+<td>Binary DLLs checked into the source tree</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>registry</code></td>
+<td>20-platform.yaml</td>
+<td>Windows Registry</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>eventlog-write</code></td>
+<td>20-platform.yaml</td>
+<td>Writes to the Windows Event Log</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>perf-counters</code></td>
+<td>20-platform.yaml</td>
+<td>Windows performance counters</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>wmi</code></td>
+<td>20-platform.yaml</td>
+<td>WMI</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>windows-service-control</code></td>
+<td>20-platform.yaml</td>
+<td>Controls Windows services</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>process-start-exe</code></td>
+<td>20-platform.yaml</td>
+<td>Starts Windows executables</td>
+<td>partial</td>
+<td>Install the Linux build of the tool under the same name on <code>PATH</code> (as done for wkhtmltopdf paths in configuration); a Windows-only tool cannot.</td>
+</tr>
+<tr>
+<td><code>efs-ntfs</code></td>
+<td>20-platform.yaml</td>
+<td>NTFS ACLs / EFS encryption</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>winrt-tfm</code></td>
+<td>20-platform.yaml</td>
+<td>Targets the Windows 10 SDK TFM (WinRT projections)</td>
+<td>partial</td>
+<td>As <code>core-windows-tfm</code>.</td>
+</tr>
+<tr>
+<td><code>supported-os-windows</code></td>
+<td>20-platform.yaml</td>
+<td>Code marked Windows-only by its authors</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>winforms-reference-library</code></td>
+<td>20-platform.yaml</td>
+<td>References Windows Desktop assemblies</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>windows-auth-iis</code></td>
+<td>30-integration.yaml</td>
+<td>Windows (Kerberos/NTLM) authentication</td>
+<td>partial</td>
+<td>Negotiate with a keytab (<code>plan-negotiate-krb5</code>) when the app registers the Negotiate handler; IIS-hosted Windows authentication itself needs code.</td>
+</tr>
+<tr>
+<td><code>active-directory-ds</code></td>
+<td>30-integration.yaml</td>
+<td>Active Directory via System.DirectoryServices</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>dpapi</code></td>
+<td>30-integration.yaml</td>
+<td>DPAPI (Windows data protection)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>cert-store-localmachine-code</code></td>
+<td>30-integration.yaml</td>
+<td>Code opens a LocalMachine certificate store that does not exist on Linux</td>
+<td>code-only</td>
+<td>LocalMachine\My does not exist on Linux (<code>X509Store.Open</code> throws); no folder or variable changes that. Windows container, or load from a file. (CurrentUser stores: <code>cert-store</code>, <strong>done</strong> by <code>plan-x509-user-store</code>.)</td>
+</tr>
+<tr>
+<td><code>conn-string-compiled-in</code></td>
+<td>30-integration.yaml</td>
+<td>Database connection string compiled into the code</td>
+<td>partial</td>
+<td>The server name can be resolved by an <code>ExternalName</code> Service or <code>hostAliases</code>; the credentials stay in the code (a secret in the image), which is the reason it stays refactor.</td>
+</tr>
+<tr>
+<td><code>msdtc</code></td>
+<td>30-integration.yaml</td>
+<td>Distributed transactions (MSDTC)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>sql-filestream</code></td>
+<td>30-integration.yaml</td>
+<td>SQL Server FILESTREAM / FileTable</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>ssrs-reportviewercore</code></td>
+<td>30-integration.yaml</td>
+<td>Local RDLC reports with ReportViewerCore.NETCore</td>
+<td>partial</td>
+<td>Fonts the reports use installed in a full image (an image change, no code); every report still needs a test run.</td>
+</tr>
+<tr>
+<td><code>ibm-i-access</code></td>
+<td>30-integration.yaml</td>
+<td>IBM i Access Client (cwbx/iSeries provider)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>msmq</code></td>
+<td>30-integration.yaml</td>
+<td>MSMQ</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>named-pipes</code></td>
+<td>30-integration.yaml</td>
+<td>Named pipes IPC</td>
+<td>partial</td>
+<td>.NET named pipes are Unix domain sockets under <code>/tmp</code> on Linux: two processes in one pod sharing <code>/tmp</code> work; pipes to another host (<code>\\server\pipe</code>) do not.</td>
+</tr>
+<tr>
+<td><code>os-drive-path-hardcoded</code></td>
+<td>35-config-os.yaml</td>
+<td>Windows drive paths hard-coded in code</td>
+<td>code-only</td>
+<td>On Linux <code>C:\data\x.txt</code> is one relative file name (with backslashes) in the working directory <code>/app</code>; no mount can give it folders. Windows container, or configuration in code.</td>
+</tr>
+<tr>
+<td><code>os-backslash-path-join</code></td>
+<td>35-config-os.yaml</td>
+<td>File paths built with backslashes</td>
+<td>code-only</td>
+<td><code>\</code> is part of a file name on Linux; a case-insensitive or backslash-aware file system is not available to pods.</td>
+</tr>
+<tr>
+<td><code>os-special-folder-windows</code></td>
+<td>35-config-os.yaml</td>
+<td>Uses Windows-only special folders (Program Files, Windows, System32)</td>
+<td>platform</td>
+<td><strong>Done</strong> (<code>plan-special-folder-workdir</code>): <code>GetFolderPath</code> is <code>""</code> on Linux, so <code>Path.Combine(GetFolderPath(ProgramFiles), "Acme", ...)</code> is <code>/app/Acme/...</code>; a volume is mounted there. Stays refactor when the folder is kept in a variable, joined with <code>\</code>, or ships with the app.</td>
+</tr>
+<tr>
+<td><code>os-drive-letters</code></td>
+<td>35-config-os.yaml</td>
+<td>Uses drive letters (DriveInfo("C"), GetLogicalDrives)</td>
+<td>code-only</td>
+<td><code>DriveInfo("C")</code> / <code>GetLogicalDrives</code> have no drive letters to report on Linux.</td>
+</tr>
+<tr>
+<td><code>os-exe-location</code></td>
+<td>35-config-os.yaml</td>
+<td>Locates application files from the process executable</td>
+<td>partial</td>
+<td>Publish with the app host (<code>UseAppHost=true</code>) and start <code>/app/&lt;App&gt;</code> instead of <code>dotnet &lt;App&gt;.dll</code>, so the process executable is in the app folder. Proposed follow-up.</td>
+</tr>
+<tr>
+<td><code>os-machine-name-switch</code></td>
+<td>35-config-os.yaml</td>
+<td>Behaviour switched on the server's machine name</td>
+<td>platform</td>
+<td><strong>Done</strong> (<code>plan-machine-hostname</code>): pod <code>hostname:</code> set to the name the code compares with. Stays refactor when the comparison is case-sensitive with an upper-case name (Kubernetes host names are lower-case).</td>
+</tr>
+<tr>
+<td><code>os-named-sync-objects</code></td>
+<td>35-config-os.yaml</td>
+<td>Named semaphores or wait handles</td>
+<td>code-only</td>
+<td>Named <code>Semaphore</code>/<code>EventWaitHandle</code> throw <code>PlatformNotSupportedException</code> on Linux (verified on .NET 10; same on every .NET Core line), so pinning the runtime image does not help. Named <code>Mutex</code> works (finding <code>os-named-mutex</code>, info).</td>
+</tr>
+<tr>
+<td><code>cfg-smtp-pickup-iis</code></td>
+<td>35-config-os.yaml</td>
+<td>Sends mail through the IIS SMTP pickup directory</td>
+<td>partial</td>
+<td>A sidecar that watches the pickup folder (shared <code>emptyDir</code>) and relays the <code>.eml</code> files over SMTP. Proposed follow-up.</td>
+</tr>
+<tr>
+<td><code>cfg-localhost-endpoint-in-code</code></td>
+<td>35-config-os.yaml</td>
+<td>Service endpoint on localhost hard-coded in code</td>
+<td>partial</td>
+<td>A sidecar proxy in the same pod listening on <code>localhost:&lt;port&gt;</code> and forwarding to the Service. Proposed follow-up.</td>
+</tr>
+<tr>
+<td><code>host-azure-functions-inprocess</code></td>
+<td>35-hosting.yaml</td>
+<td>Azure Functions in-process model</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>host-service-fabric-stateless</code></td>
+<td>35-hosting.yaml</td>
+<td>Service Fabric Reliable Services (stateless)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>host-app-service-easyauth</code></td>
+<td>35-hosting.yaml</td>
+<td>Relies on App Service Authentication (Easy Auth)</td>
+<td>partial</td>
+<td>An auth proxy at the ingress (oauth2-proxy) that sets the <code>X-MS-CLIENT-PRINCIPAL*</code> headers the app reads, and strips client-sent ones.</td>
+</tr>
+<tr>
+<td><code>host-aws-lambda-handler</code></td>
+<td>35-hosting.yaml</td>
+<td>AWS Lambda function handlers</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>host-orleans-localhost-clustering</code></td>
+<td>35-hosting.yaml</td>
+<td>Orleans localhost/development clustering only</td>
+<td>partial</td>
+<td>Works with exactly one replica (localhost clustering); more replicas need a clustering provider.</td>
+</tr>
+<tr>
+<td><code>mig-binaryformatter</code></td>
+<td>35-migration.yaml</td>
+<td>BinaryFormatter-family serializers</td>
+<td>partial</td>
+<td>Up to .NET 8: <code>EnableUnsafeBinaryFormatterSerialization</code> (runtimeconfig) on that runtime image; .NET 9+ removed it. A security trade-off, so not applied automatically.</td>
+</tr>
+<tr>
+<td><code>mig-javascriptserializer</code></td>
+<td>35-migration.yaml</td>
+<td>JavaScriptSerializer (System.Web.Extensions)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-thread-abort</code></td>
+<td>35-migration.yaml</td>
+<td>Thread.Abort / Suspend / Resume</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-delegate-begininvoke</code></td>
+<td>35-migration.yaml</td>
+<td>Asynchronous delegate invocation (BeginInvoke/EndInvoke)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-reflection-only-load</code></td>
+<td>35-migration.yaml</td>
+<td>Reflection-only assembly loading</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-codedom-compile</code></td>
+<td>35-migration.yaml</td>
+<td>Runtime compilation with CodeDom</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-xslt-script</code></td>
+<td>35-migration.yaml</td>
+<td>XSLT with embedded script blocks</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-crypto-pnse</code></td>
+<td>35-migration.yaml</td>
+<td>Windows CSP-only cryptography</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-oracleclient</code></td>
+<td>35-migration.yaml</td>
+<td>System.Data.OracleClient</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-http-modules-handlers</code></td>
+<td>35-migration.yaml</td>
+<td>Custom IIS/ASP.NET modules and handlers</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-session-out-of-proc</code></td>
+<td>35-migration.yaml</td>
+<td>Out-of-process ASP.NET session state (StateServer/SQLServer)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-system-web-cache</code></td>
+<td>35-migration.yaml</td>
+<td>System.Web cache (HttpRuntime.Cache / CacheDependency)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-membership-providers</code></td>
+<td>35-migration.yaml</td>
+<td>ASP.NET Membership / Role / Profile providers</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-apiauthorization-identityserver</code></td>
+<td>35-migration.yaml</td>
+<td>ASP.NET Core ApiAuthorization with IdentityServer (SPA template auth)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-wif</code></td>
+<td>35-migration.yaml</td>
+<td>Windows Identity Foundation (WIF) on System.Web</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-aspnet-signalr</code></td>
+<td>35-migration.yaml</td>
+<td>ASP.NET SignalR 2 (classic) server</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-asmx-client</code></td>
+<td>35-migration.yaml</td>
+<td>ASMX web reference client (SoapHttpClientProtocol)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-wcf-message-security</code></td>
+<td>35-migration.yaml</td>
+<td>WCF WS-* message security / reliable sessions</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-enterprise-library</code></td>
+<td>35-migration.yaml</td>
+<td>Microsoft Enterprise Library (Data/Logging/Exception Handling blocks)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-vb-compatibility</code></td>
+<td>35-migration.yaml</td>
+<td>VB6 compatibility libraries</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-vb-my-namespace</code></td>
+<td>35-migration.yaml</td>
+<td>VB.NET My namespace features unsupported on .NET Core</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-httpcontext-in-library</code></td>
+<td>35-migration.yaml</td>
+<td>HttpContext.Current in a shared library</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>mig-ef6-edmx</code></td>
+<td>35-migration.yaml</td>
+<td>Entity Framework EDMX designer model</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-activereports-legacy</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>Old ActiveReports version (.NET Framework)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-stimulsoft-netfx</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>Stimulsoft Reports .NET Framework edition</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-fastreport-gdi</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>FastReport on System.Drawing</td>
+<td>partial</td>
+<td>As <code>system-drawing-core</code> (.NET 6 switch + libgdiplus).</td>
+</tr>
+<tr>
+<td><code>pkg-qrcoder-gdi</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>QRCoder renderer drawing with System.Drawing</td>
+<td>partial</td>
+<td>As <code>system-drawing-core</code> (.NET 6 switch + libgdiplus).</td>
+</tr>
+<tr>
+<td><code>pkg-spire-netfx</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>Spire.* (e-iceblue) on System.Drawing</td>
+<td>code-only</td>
+<td>.NET Framework edition; needs the .NET Standard package.</td>
+</tr>
+<tr>
+<td><code>pkg-imaging-sdk</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>Commercial imaging/OCR SDK with native engine (GdPicture, LEADTOOLS)</td>
+<td>partial</td>
+<td>Linux native packages and fonts in the image, licence from a Secret; needs a Linux-capable release.</td>
+</tr>
+<tr>
+<td><code>pkg-desktop-ui-library-ref</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>References WinForms/WPF component suite packages</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-web-ui-suite-systemweb</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>Vendor controls for ASP.NET WebForms/MVC 5 (System.Web)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-windows-browser-engine</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>Windows-only browser engine / HTML-to-PDF converter</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-telerik-documents-netfx</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>Telerik Document Processing for .NET Framework</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-mschart</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>Microsoft Chart Controls (MSChart / DataVisualization)</td>
+<td>code-only</td>
+<td>System.Web/WinForms chart controls.</td>
+</tr>
+<tr>
+<td><code>pkg-winrt-packages</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>WinRT / Windows App SDK packages</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-system-speech</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>System.Speech / Microsoft Speech Platform</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-web-administration</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>Manages IIS (Microsoft.Web.Administration)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-taskscheduler-api</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>Creates Windows scheduled tasks (TaskScheduler library)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-mmi-cim</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>CIM/WMI through Microsoft.Management.Infrastructure</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-powershell-windows</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>Hosts Windows PowerShell 5.1</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-naudio-windows</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>NAudio Windows audio APIs</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-windows-service-hosts</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>Windows Service host library</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-winscp</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>WinSCP .NET assembly</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-ews-managed-api</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>Exchange Web Services (EWS) Managed API</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-sap-nco</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>SAP .NET Connector (NCo)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-legacy-azure-servicebus</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>Legacy Azure Service Bus SDK (WindowsAzure.ServiceBus)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-oracle-unmanaged</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>Unmanaged ODP.NET (Oracle.DataAccess)</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-db2-netfx-provider</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>IBM Db2 provider from the Db2 client install</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-sybase-ase</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>SAP/Sybase ASE ADO.NET provider</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-informix</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>IBM Informix .NET provider</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-pdfiumviewer</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>PdfiumViewer</td>
+<td>code-only</td>
+<td>Replaces a Windows-only or removed API; no configuration reaches it (Windows container or code change).</td>
+</tr>
+<tr>
+<td><code>pkg-ghostscript-net</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>Ghostscript.NET (native Ghostscript)</td>
+<td>partial</td>
+<td>Install <code>ghostscript</code> in the image; older wrappers need the library path from configuration.</td>
+</tr>
+<tr>
+<td><code>pkg-tesseract-native</code></td>
+<td>35-vendor-packages.yaml</td>
+<td>Tesseract OCR wrapper with Windows native DLLs</td>
+<td>partial</td>
+<td>Install <code>tesseract-ocr</code>/<code>leptonica</code> in the image; works when the wrapper can load the Linux libraries.</td>
+</tr>
+</tbody>
+</table>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../platform-migration/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Platform migrations">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Platform migrations
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../refactoring/" class="md-footer__link md-footer__link--next" aria-label="Next: Refactoring patches">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Refactoring patches
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.tabs", "navigation.top", "navigation.footer", "search.highlight", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>

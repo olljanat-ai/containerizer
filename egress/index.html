@@ -1,0 +1,2163 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Can this application run as a Linux container on Kubernetes? Assessment, hardened builds and manifests.">
+      
+      
+      
+        <link rel="canonical" href="https://containerizer.eu/egress/">
+      
+      
+        <link rel="prev" href="../refactoring/">
+      
+      
+        <link rel="next" href="../build-pipelines/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../images/favicon.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>Egress and network connectivity - Containerizer</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/landing.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  <meta property="og:type" content="website"><meta property="og:site_name" content="Containerizer"><meta property="og:title" content="Egress and network connectivity - Containerizer"><meta property="og:description" content="Can this application run as a Linux container on Kubernetes? Assessment, hardened builds and manifests."><meta property="og:url" content="https://containerizer.eu/egress/"><meta name="twitter:card" content="summary"><meta name="twitter:title" content="Egress and network connectivity - Containerizer"><meta name="twitter:description" content="Can this application run as a Linux container on Kubernetes? Assessment, hardened builds and manifests."></head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#egress-and-network-connectivity" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Containerizer" class="md-header__button md-logo" aria-label="Containerizer" data-md-component="logo">
+      
+  <img src="../images/favicon.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis"><a href="../" class="cz-home-link">Containerizer</a></span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Egress and network connectivity
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/olljanat-ai/containerizer" title="Go to repository" class="md-source" data-md-component="source" target="_blank" rel="noopener noreferrer">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    olljanat-ai/containerizer
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../appliance/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../overview/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  How it works
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../scheduled-scans/" class="md-tabs__link">
+          
+  
+  
+  Using it
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../sign-in/" class="md-tabs__link">
+          
+  
+  
+  Administration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../sandbox-https/" class="md-tabs__link">
+          
+  
+  
+  Sandbox
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../java-node/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Containerizer" class="md-nav__button md-logo" aria-label="Containerizer" data-md-component="logo">
+      
+  <img src="../images/favicon.svg" alt="logo">
+
+    </a>
+    Containerizer
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/olljanat-ai/containerizer" title="Go to repository" class="md-source" data-md-component="source" target="_blank" rel="noopener noreferrer">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    olljanat-ai/containerizer
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../appliance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using it
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Using it
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scheduled-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Organization scans
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platform-migration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform migrations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platform-fixes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform fixes for refactor findings
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../refactoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Refactoring patches
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Egress and network connectivity
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Egress and network connectivity
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#network-connectivity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Network connectivity
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-egress-observer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The egress observer
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The egress observer">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#on-the-appliance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        On the appliance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#in-the-lab" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        In the lab
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-egress-review" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The egress review
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#approving" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Approving
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Approving">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-approving-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What approving changes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#connectivityyaml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        connectivity.yaml
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#links-between-applications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Links between applications
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limits
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../build-pipelines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build pipelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rule-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rule review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Administration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Administration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sign-in/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sign-in and roles
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../source-control/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Source control tokens and the LLM
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../appliance-admin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Running the appliance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sandbox
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-https/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox HTTPS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../lab-services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lab services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-idp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox identity provider
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dev-databases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dev databases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../external-secrets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Secrets (External Secrets)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../java-node/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Java and Node.js
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../local-dev-server/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local dev server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#network-connectivity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Network connectivity
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-egress-observer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The egress observer
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The egress observer">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#on-the-appliance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        On the appliance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#in-the-lab" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        In the lab
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-egress-review" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The egress review
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#approving" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Approving
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Approving">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-approving-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What approving changes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#connectivityyaml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        connectivity.yaml
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#links-between-applications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Links between applications
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limits
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="egress-and-network-connectivity">Egress and network connectivity<a class="headerlink" href="#egress-and-network-connectivity" title="Permanent link">&para;</a></h1>
+<p>The sandbox is isolated. Containerizer generates a default-deny NetworkPolicy for every component that opens
+egress only on the ports it can infer from packages, code and configuration (a SQL Server client opens 1433, an
+HTTP client 443 and 80, a configured <code>Server=db,14330</code> its port), and on the appliance nothing leaves the sandbox
+at all unless an administrators' egress rule allows it (<strong>Admin → Firewall</strong>: its firewall drops everything else and
+its DNS filter refuses every other name), whatever a NetworkPolicy says. A dependency of an application is then
+blocked in the sandbox, and someone has to find out what the application needs, and write the real environment's
+firewall rules for it.</p>
+<p>Containerizer finds and documents it; agents only propose, people approve:</p>
+<ol>
+<li>The <strong>egress observer</strong> records what the sandbox blocks, at every layer: the NetworkPolicies, the appliance's
+   firewall and its DNS filter, with the name a pod looked up just before.</li>
+<li>The <strong>egress review</strong> (an <a href="../scheduled-scans/#the-llm-queue">LLM queue</a> job) looks at the new ones of
+   applications rated <strong>A</strong> that run in the sandbox. A deterministic pre-filter decides first, then the LLM: is the
+   destination named by the application's configuration or code (it quotes the file and line), and why does the
+   application need it? It proposes, reports or flags it as suspicious.</li>
+<li>Administrators, operators and the application's product owners <strong>approve or reject</strong> each proposal. Approving
+   <strong>documents</strong> the destination for the real environment: the queue runner writes it to the application's
+   <strong><code>connectivity.yaml</code></strong> in the output repository. It opens nothing in the sandbox.</li>
+</ol>
+<p><a href="#links-between-applications">Links between applications</a> connect the components that call each other across
+repositories and products; those calls stay inside the sandbox cluster, and a confirmed link opens them there.</p>
+<p><strong>Network connectivity</strong> brings everything together: on the application's results page as a diagram with the
+details, and next to the manifests in the output repository as <code>connectivity.yaml</code>, <code>CONNECTIVITY.md</code> and
+<code>connectivity.svg</code>, which the platform or firewall team uses to write the real environment's rules.</p>
+<p><img alt="The Network connectivity section of an application in the sandbox: the diagram, a suspicious paste site, a proposed API with its evidence, and Approve and Reject" class="cz-shot" src="../images/results-connectivity-proposed.png#only-light" />
+<img alt="The Network connectivity section of an application in the sandbox: the diagram, a suspicious paste site, a proposed API with its evidence, and Approve and Reject" class="cz-shot" src="../images/results-connectivity-proposed-dark.png#only-dark" /></p>
+<h2 id="network-connectivity">Network connectivity<a class="headerlink" href="#network-connectivity" title="Permanent link">&para;</a></h2>
+<p>Every application has a <strong>Network connectivity</strong> section on its results page, whether it runs in the sandbox or
+not. It shows what the application needs from the network, from every source, each marked by where it comes from:</p>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>What</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Configuration, code</td>
+<td>URLs and connection strings in the configuration (<code>appsettings.json</code>, <code>web.config</code>, <code>.properties</code>, <code>.yaml</code>, <code>.env</code>) and the code, with the file and line. Development settings, comments, documentation and schema URLs are left out.</td>
+</tr>
+<tr>
+<td>Package</td>
+<td>A dependency the generated NetworkPolicy opens a port for (a SQL Server client, an HTTP client, a message broker) when no configuration names its destination.</td>
+</tr>
+<tr>
+<td>NetworkPolicy</td>
+<td>What the generated policy allows: the inferred ports to any address but the blocked ranges, the application's own pods, DNS.</td>
+</tr>
+<tr>
+<td>Lab service</td>
+<td>The <a href="../lab-services/">lab services</a> the components need.</td>
+</tr>
+<tr>
+<td>Observed in the sandbox</td>
+<td>Connections the sandbox blocked (the egress observer), with the dropped packets, when, and from which pods.</td>
+</tr>
+<tr>
+<td>Approved</td>
+<td>A destination a person approved for the real environment (documented; the sandbox stays as it is).</td>
+</tr>
+<tr>
+<td>Ingress, service port</td>
+<td>Who reaches the components: the sandbox HTTPS host, the service port.</td>
+</tr>
+</tbody>
+</table>
+<p>The diagram has the inbound side on the left, the components in the middle and the destinations on the right, one
+line per connection, styled by its status:</p>
+<table>
+<thead>
+<tr>
+<th>Status</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Allowed</strong></td>
+<td>The generated NetworkPolicy allows it.</td>
+</tr>
+<tr>
+<td><strong>Approved (documented)</strong></td>
+<td>A person approved it for the real environment after the egress review. The sandbox still blocks it unless its NetworkPolicy and, on the appliance, an egress rule allow it (the <strong>Sandbox</strong> column).</td>
+</tr>
+<tr>
+<td><strong>Proposed</strong></td>
+<td>The egress review proposes it: waiting for a person.</td>
+</tr>
+<tr>
+<td><strong>Blocked</strong></td>
+<td>The sandbox blocked it; not reviewed yet, or reported (nothing to propose: an IP address without a name, a platform service).</td>
+</tr>
+<tr>
+<td><strong>Not allowed (will time out)</strong></td>
+<td>The configuration or code names it, and nothing allows it.</td>
+</tr>
+<tr>
+<td><strong>Suspicious</strong></td>
+<td>The review flagged it (a paste or file-sharing site, a tunnel, a metadata endpoint, ...): never proposed.</td>
+</tr>
+<tr>
+<td><strong>Rejected</strong></td>
+<td>A person rejected it.</td>
+</tr>
+</tbody>
+</table>
+<p>The table under the diagram has the details: the component, the destination with port and protocol, the status,
+the sources, why (the review's reason, or the dependency the policy opens the port for), the evidence (the quoted
+lines, the flows and pods), <strong>Sandbox</strong> (below) and, for staff, Approve and Reject. A destination whose name the
+appliance's DNS filter refused has no port (nothing was connected): it is shown with <em>port unknown</em>, or on the
+entry of the same name that the configuration names with its port.</p>
+<p><strong>Sandbox</strong>: whether the sandbox can reach a destination, and what blocks it:</p>
+<ul>
+<li>the component's <strong>NetworkPolicy</strong>: it allows the ports the assessment inferred (and confirmed links), nothing else;</li>
+<li>on the appliance, its <strong>egress rules</strong> (Admin → Firewall: the system rules of the OS image and the administrators'
+  rules, read from the same files, the same way as the firewall itself, and never changed from here): <em>allowed by</em>
+  the rule that covers it, <em>refused by the appliance's DNS filter</em> (a name no rule covers), or <em>dropped by the
+  appliance firewall</em> (an address or port no rule covers); in log mode everything is allowed and logged;</li>
+<li>without an appliance (a lab): <em>no appliance firewall (lab)</em>.</li>
+</ul>
+<p>In the diagram, an allowed or approved destination the sandbox cannot reach is drawn with a thin dotted line.</p>
+<p><strong>Findings</strong> under the table point at what to look at:</p>
+<ul>
+<li><strong>Missing</strong>: the configuration or code names a destination that nothing allows. The connection fails in the
+  sandbox, and behind a default-deny firewall in the real environment, until a rule allows it.</li>
+<li><strong>Unexplained</strong>: a port the NetworkPolicy opens to any address for a package or code pattern, but no configuration
+  names a destination on it; or an approved destination that the configuration no longer names. Keep it only if the
+  application needs it.</li>
+</ul>
+<p>An application that is not in the sandbox (yet) shows what the assessment inferred, and says that nothing was
+observed. Assessments made before this version have no inferred network: scan the application again.</p>
+<h2 id="the-egress-observer">The egress observer<a class="headerlink" href="#the-egress-observer" title="Permanent link">&para;</a></h2>
+<p><code>containerizer egress-observe</code> runs on the sandbox node. It is deterministic: no LLM.</p>
+<ul>
+<li><strong>What it reads</strong>, the three places the sandbox blocks a connection:</li>
+<li><strong>NetworkPolicies.</strong> k3s's network policy controller (kube-router) logs every packet a NetworkPolicy drops to the
+    netlink log group 100 with the prefix <code>DROP by policy &lt;namespace&gt;/&lt;policy&gt;</code>, at most <strong>10 packets a minute per
+    policy</strong>. The observer binds to that group (NFLOG over a <code>NETLINK_NETFILTER</code> socket, no packages and no tcpdump),
+    asks for the first 128 bytes of each packet and reads the IPv4 or IPv6 header and the TCP or UDP ports. Nothing
+    else of the packet is kept. A drop of a cluster address on port 53 is the controller catching up with a pod that
+    just started (every generated policy allows the cluster's DNS): it is left out.</li>
+<li><strong>The appliance firewall.</strong> Its egress chain logs what it drops to the kernel log
+    (<code>cz-egress-drop: IN=cni0 OUT=eth0 ... SRC=&lt;pod&gt; DST=&lt;address&gt; ... PROTO=TCP ... DPT=443</code>, at most 30 a minute).
+    The observer reads those lines from <code>/dev/kmsg</code> (<code>--kernel-log</code>), takes the ones whose source is an application
+    pod (looked up across the application namespaces) and ignores the rest.</li>
+<li><strong>The appliance's DNS filter.</strong> It refuses every name no egress rule covers; CoreDNS passes the refusal on and
+    logs it. A name an application pod asked for and was refused is a blocked destination by itself, with no port
+    (nothing was connected).</li>
+<li><strong>Egress only.</strong> A drop counts when its source is a pod of the namespace; a drop of a pod's incoming traffic is
+  not a dependency. Drops in the platform's namespaces (<code>kube-system</code>, <code>flux-system</code>, <code>containerizer-*</code>, ...) are
+  left out.</li>
+<li><strong>Names.</strong> CoreDNS logs every query (<code>log</code> in the <code>coredns-custom</code> ConfigMap: the appliance ships it, the lab script
+  turns it on). The observer follows that log and remembers which names each pod looked up in the last 10 minutes.
+  When a pod's connection to an address is dropped, the address is matched to a name the same pod, or another pod
+  of the namespace, looked up: the observer resolves those names (through the cluster's DNS on the appliance) and
+  takes the one that resolves to the address. A destination without such a name stays an IP address, which the
+  review reports and never proposes. An address a named flow had is explained by it and left out.</li>
+<li><strong>Which pod.</strong> The pods of the namespace through the Kubernetes API (address, pod name, the component from its
+  <code>app.kubernetes.io/name</code> label).</li>
+<li><strong>Stored</strong> every minute in the results database, added up per namespace, component, destination, port and
+  protocol: the dropped packets, first and last seen, a few pods, the policy, and the layer that blocked it
+  (<code>network-policy</code>, <code>appliance-firewall</code>, <code>dns-filter</code>; <code>cz.EgressFlow</code>, through the
+  procedure <code>cz.RecordEgressFlow</code>, with the scanner's writer login). Because kube-router logs at most 10 packets a
+  minute per policy, the count is a lower bound.</li>
+<li><strong>Which application.</strong> A namespace belongs to the application whose sandbox check last read it, or to the "Make
+  it A" order whose <a href="../refactoring/#the-sandbox-variant">patched copy</a> runs in it, in place (<code>cz.vSandboxNamespace</code>).</li>
+</ul>
+<p><code>--dry-run</code> prints each blocked connection (with its layer) and stores nothing:</p>
+<div class="highlight"><pre><span></span><code>sudo<span class="w"> </span>-E<span class="w"> </span>containerizer<span class="w"> </span>egress-observe<span class="w"> </span>--dry-run<span class="w"> </span>--kubeconfig<span class="w"> </span>~/.kube/config<span class="w"> </span>--seconds<span class="w"> </span><span class="m">60</span>
+</code></pre></div>
+<h3 id="on-the-appliance">On the appliance<a class="headerlink" href="#on-the-appliance" title="Permanent link">&para;</a></h3>
+<p><code>containerizer-egress-observer.service</code> runs it with the least it needs:</p>
+<ul>
+<li><strong>User</strong> <code>containerizer</code>, not root, with two capabilities: <strong>CAP_NET_ADMIN</strong>, which binding to an NFLOG group needs
+  (the socket only reads), and <strong>CAP_SYSLOG</strong>, which reading the kernel log needs (<code>kernel.dmesg_restrict=1</code>): the
+  appliance firewall's drops. Of the devices, only <code>/dev/kmsg</code> is visible (read only); <code>ProtectKernelLogs</code> is off for
+  that reason, since it would hide it. <code>NoNewPrivileges</code>, a read-only system, no home directories, and only the address
+  families it uses (netlink, IPv4, IPv6, Unix). It changes no firewall rule.</li>
+<li><strong>Kubernetes</strong>: its own ServiceAccount, <code>containerizer-egress-observer</code> (in <code>containerizer-verify</code>), with get and
+  list on pods and get on <code>pods/log</code> in <code>kube-system</code> (the CoreDNS query log) and get and list on pods in every
+  namespace Containerizer generated. No Secrets, no write verbs, nothing cluster-wide. <code>cz-sandbox</code> applies the Roles
+  every 2 minutes and writes the kubeconfig (<code>/run/containerizer/egress-observer.kubeconfig</code>, <code>root:containerizer</code>
+  0640, a 24-hour token renewed every 12 hours).</li>
+<li><strong>CoreDNS query log</strong>: <code>/var/lib/rancher/k3s/server/manifests/containerizer-coredns-log.yaml</code> (the <code>coredns-custom</code>
+  ConfigMap, <code>log.override</code>). The log has the names pods look up and their addresses in the cluster, no answers and
+  no payloads; it stays in the cluster's log (<code>kubectl -n kube-system logs</code>).</li>
+<li><strong>Database</strong>: the scanner's writer login (<code>cz.RecordEgressFlow</code>).</li>
+</ul>
+<h3 id="in-the-lab">In the lab<a class="headerlink" href="#in-the-lab" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>ci/lab-sandbox/egress-observer.sh<span class="w"> </span>install<span class="w">    </span><span class="c1"># Roles and kubeconfig, CoreDNS query log, systemd unit lab-egress-observer</span>
+ci/lab-sandbox/egress-observer.sh<span class="w"> </span>remove
+</code></pre></div>
+<p>The unit runs as the lab user with CAP_NET_ADMIN only, writes to the lab's results database with the scanner login
+(<code>results/.env</code>) and restarts every 12 hours with a fresh token; <code>sync.sh</code> gives it the Roles of new namespaces. The lab
+has no appliance firewall or DNS filter: only NetworkPolicy drops are seen there.</p>
+<h2 id="the-egress-review">The egress review<a class="headerlink" href="#the-egress-review" title="Permanent link">&para;</a></h2>
+<p>The LLM queue runner looks for new blocked flows every minute (part of its housekeeping, with the job kind <code>egress</code>;
+<code>containerizer llm-queue --kinds</code> chooses the kinds a runner takes). A flow is new when no decision exists for its
+application, component, destination, port and protocol. Only applications rated <strong>A</strong> whose namespace is healthy
+in the sandbox, and applications a "Make it A" patch runs for (in their own namespace), are reviewed.</p>
+<p><strong>The pre-filter</strong> decides first and is never overruled by the LLM. Its lists are in
+<a href="https://github.com/olljanat-ai/containerizer/blob/main/rules/60-security.yaml" target="_blank" rel="noopener noreferrer"><code>rules/60-security.yaml</code></a>
+(<code>network.egress_review</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Verdict</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Suspicious</td>
+<td>A metadata endpoint or one of the <code>blocked_cidrs</code> (169.254.169.254, ...), a wildcard name, a paste, file-sharing, tunnelling or request-capture service (<code>suspicious_domains</code>: pastebin, transfer.sh, ngrok, webhook.site, ...)</td>
+</tr>
+<tr>
+<td>Reported: platform</td>
+<td>A drop in a platform namespace, a service of the cloud platform (<code>platform_domains</code>: Key Vault, the container registry, ...)</td>
+</tr>
+<tr>
+<td>Reported: IP address</td>
+<td>No pod of the namespace looked the address up by name</td>
+</tr>
+<tr>
+<td>Reported: in the cluster</td>
+<td>A pod or service address of the cluster (a call to another namespace: allow it with a NetworkPolicy, not egress)</td>
+</tr>
+<tr>
+<td>Reported: unusual port</td>
+<td>A port that is not in <code>ports</code> (443, 80, the usual database and broker ports, ...): a person decides</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The LLM</strong> gets the rest, one job per application (at most 10 destinations a call): each destination with its
+port, protocol, component, the dropped packets and when, the pods, and the lines of the application's source that
+name it, from the <strong>assessed commit</strong> (the source is loaded as for a <a href="../refactoring/">refactoring patch</a>: the scan
+worker's clone). Without the source, the lines the assessment recorded. It answers per destination, in a fixed JSON
+schema:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span><span class="nt">"destinations"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">"destination"</span><span class="p">:</span><span class="w"> </span><span class="s2">"api.github.com"</span><span class="p">,</span><span class="w"> </span><span class="nt">"port"</span><span class="p">:</span><span class="w"> </span><span class="mi">443</span><span class="p">,</span><span class="w"> </span><span class="nt">"verdict"</span><span class="p">:</span><span class="w"> </span><span class="s2">"propose"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"reason"</span><span class="p">:</span><span class="w"> </span><span class="s2">"The application configures its upstream API URL (Upstream:Url) ..."</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"file"</span><span class="p">:</span><span class="w"> </span><span class="s2">"src/Egress.Demo/appsettings.json"</span><span class="p">,</span><span class="w"> </span><span class="nt">"line"</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w"> </span><span class="nt">"quote"</span><span class="p">:</span><span class="w"> </span><span class="s2">"\"Upstream\": { \"Url\": \"https://api.github.com/zen\" }"</span><span class="p">}]}</span>
+</code></pre></div>
+<ul>
+<li><strong>propose</strong>: the configuration or code names it, or it is an ordinary public API the application plainly uses
+  with a steady flow;</li>
+<li><strong>report</strong>: nothing explains it, or a person should decide;</li>
+<li><strong>suspicious</strong>: exfiltration, command and control, a hard-coded destination unrelated to what the application does.</li>
+</ul>
+<p>The answer is checked: a quoted line must be in the source (near the line it names), else the evidence is dropped
+and the reason says so; a proposal with no such line and fewer than 3 dropped packets is reported instead. A
+destination the LLM did not answer for is reported. The job goes through the queue's
+<a href="../scheduled-scans/#the-llm-queue">approval policy</a> like the other kinds (<code>egress</code> in <em>Jobs that wait for approval</em>).</p>
+<h2 id="approving">Approving<a class="headerlink" href="#approving" title="Permanent link">&para;</a></h2>
+<p><strong>Admin → Egress</strong> lists the decisions of the applications one may decide for, open ones first; the results page
+has the same buttons in its Network connectivity table.</p>
+<p><img alt="Admin → Egress: a suspicious paste site, an IP address without a name, and an approved API with who approved it and the commit" class="cz-shot" src="../images/admin-egress.png#only-light" />
+<img alt="Admin → Egress: a suspicious paste site, an IP address without a name, and an approved API with who approved it and the commit" class="cz-shot" src="../images/admin-egress-dark.png#only-dark" /></p>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Approve, Reject</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Administrator, Operator</td>
+<td>Every application</td>
+</tr>
+<tr>
+<td>Product owner</td>
+<td>The applications of their products</td>
+</tr>
+<tr>
+<td>Viewer, anyone without sign-in</td>
+<td>Sees the decisions, not the buttons</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Approve</strong> is possible for named destinations the review proposed or reported, never for suspicious ones, the
+  platform's or IP addresses. A rejected proposal can be approved later.</li>
+<li><strong>Reject</strong>: connectivity.yaml records the decision.</li>
+<li>An approved destination stays approved: Containerizer never rewrites or removes it. To take one back, remove it
+  from connectivity.yaml in a commit of your own.</li>
+</ul>
+<p>Every decision records who made it and when (<code>DecidedBy</code>, <code>DecidedAt</code>, and the change history).</p>
+<h3 id="what-approving-changes">What approving changes<a class="headerlink" href="#what-approving-changes" title="Permanent link">&para;</a></h3>
+<p><strong>Approving documents; it opens nothing.</strong> Within a minute the LLM queue runner, which holds the output repository's
+write token (the one registered for the organization scan's output repository, as for
+<a href="../refactoring/#the-sandbox-variant">Make it A patched copies</a>), commits the application's <code>connectivity.yaml</code>,
+<code>CONNECTIVITY.md</code> and <code>connectivity.svg</code> with the approved destination: the FQDN, port and protocol, why, the
+evidence and who approved it. That is what the real environment's firewall rules are written from.</p>
+<p>The sandbox stays isolated. The NetworkPolicies keep allowing only what the assessment inferred, and on the
+appliance only the administrators' egress rules let anything out of the sandbox. If an application must reach a
+destination in the sandbox too, an administrator adds an egress rule on <strong>Admin → Firewall</strong>; the <strong>Sandbox</strong>
+column then shows the rule (the NetworkPolicy still has to allow the port: it allows the inferred ones).</p>
+<p><img alt="After approving: the API is approved for the real environment, with who approved it; the paste site stays suspicious" class="cz-shot" src="../images/results-connectivity-approved.png#only-light" />
+<img alt="After approving: the API is approved for the real environment, with who approved it; the paste site stays suspicious" class="cz-shot" src="../images/results-connectivity-approved-dark.png#only-dark" /></p>
+<p>Later organization scans keep approved entries: the generator reads the application's connectivity.yaml from the
+output repository and the new connectivity.yaml keeps every approved entry as it was (its sandbox status is
+computed again). A Make it A patched copy runs in the application's folder and keeps them too. New decisions (also reported and suspicious ones) and
+rejections are written to connectivity.yaml the same way.</p>
+<h2 id="connectivityyaml">connectivity.yaml<a class="headerlink" href="#connectivityyaml" title="Permanent link">&para;</a></h2>
+<p>Next to the application's manifests in the output repository (<code>&lt;Org&gt;/&lt;Project&gt;/&lt;Repo&gt;/connectivity.yaml</code>), written by
+every organization scan with the manifests, and refreshed by the queue runner when there are new decisions,
+approvals or rejections. <code>CONNECTIVITY.md</code> is the same as a page, with the diagram (<code>connectivity.svg</code>, light and
+dark).</p>
+<div class="highlight"><pre><span></span><code><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">containerizer.eu/v1</span>
+<span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Connectivity</span>
+<span class="nt">application</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">egress-demo</span>
+<span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">egress-demo</span><span class="w">                </span><span class="c1"># in the sandbox</span>
+<span class="nt">generatedAt</span><span class="p">:</span><span class="w"> </span><span class="s">'2026-11-02T03:45:01Z'</span>
+<span class="nt">observed</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">                        </span><span class="c1"># false: inferred only, nothing observed in the sandbox</span>
+<span class="nt">note</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Approved destinations are documented for the real environment ...</span>
+<span class="nt">components</span><span class="p">:</span>
+<span class="p p-Indicator">-</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="nv">egress-demo</span><span class="p p-Indicator">,</span><span class="nt"> component</span><span class="p">:</span><span class="w"> </span><span class="nv">Egress.Demo</span><span class="p p-Indicator">,</span><span class="nt"> role</span><span class="p">:</span><span class="w"> </span><span class="nv">web</span><span class="p p-Indicator">,</span><span class="nt"> port</span><span class="p">:</span><span class="w"> </span><span class="nv">8080</span><span class="p p-Indicator">,</span><span class="nt"> service_port</span><span class="p">:</span><span class="w"> </span><span class="nv">80</span><span class="p p-Indicator">}</span>
+<span class="nt">inbound</span><span class="p">:</span>
+<span class="p p-Indicator">-</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">component</span><span class="p">:</span><span class="w"> </span><span class="nv">egress-demo</span><span class="p p-Indicator">,</span><span class="nt"> from</span><span class="p">:</span><span class="w"> </span><span class="s">'https://egress-demo.sandbox.lab.test/'</span><span class="p p-Indicator">,</span><span class="nt"> port</span><span class="p">:</span><span class="w"> </span><span class="nv">80</span><span class="p p-Indicator">,</span><span class="nt"> protocol</span><span class="p">:</span><span class="w"> </span><span class="nv">TCP</span><span class="p p-Indicator">,</span><span class="nt"> source</span><span class="p">:</span><span class="w"> </span><span class="nv">ingress</span><span class="p p-Indicator">,</span><span class="nt"> target_port</span><span class="p">:</span><span class="w"> </span><span class="nv">8080</span><span class="p p-Indicator">}</span>
+<span class="p p-Indicator">-</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">component</span><span class="p">:</span><span class="w"> </span><span class="nv">egress-demo</span><span class="p p-Indicator">,</span><span class="nt"> from</span><span class="p">:</span><span class="w"> </span><span class="nv">any namespace (Service)</span><span class="p p-Indicator">,</span><span class="nt"> port</span><span class="p">:</span><span class="w"> </span><span class="nv">80</span><span class="p p-Indicator">,</span><span class="nt"> protocol</span><span class="p">:</span><span class="w"> </span><span class="nv">TCP</span><span class="p p-Indicator">,</span><span class="nt"> source</span><span class="p">:</span><span class="w"> </span><span class="nv">service</span><span class="p p-Indicator">,</span><span class="nt"> target_port</span><span class="p">:</span><span class="w"> </span><span class="nv">8080</span><span class="p p-Indicator">}</span>
+<span class="nt">internal</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]</span><span class="w">                          </span><span class="c1"># component to component, lab services</span>
+<span class="nt">outbound</span><span class="p">:</span>
+<span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">component</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">egress-demo</span>
+<span class="w">  </span><span class="nt">destination</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">api.github.com</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">fqdn</span><span class="w">                          </span><span class="c1"># fqdn, ip, any (a port open to any address), component (another application)</span>
+<span class="w">  </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">443</span>
+<span class="w">  </span><span class="nt">protocol</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">TCP</span>
+<span class="w">  </span><span class="nt">status</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">approved</span><span class="w">                    </span><span class="c1"># allowed, approved, proposed, blocked, not-allowed, suspicious, rejected, reported</span>
+<span class="w">  </span><span class="nt">sources</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">config</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">observed</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">approved</span><span class="p p-Indicator">]</span>
+<span class="w">  </span><span class="nt">reason</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">The application configures its upstream API URL ...</span>
+<span class="w">  </span><span class="nt">evidence</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">file</span><span class="p">:</span><span class="w"> </span><span class="nv">src/Egress.Demo/appsettings.json</span><span class="p p-Indicator">,</span><span class="nt"> line</span><span class="p">:</span><span class="w"> </span><span class="nv">4</span><span class="p p-Indicator">,</span><span class="nt"> quote</span><span class="p">:</span><span class="w"> </span><span class="s">'"Upstream":</span><span class="nv"> </span><span class="s">{</span><span class="nv"> </span><span class="s">"Url":</span><span class="nv"> </span><span class="s">"https://api.github.com/zen"</span><span class="nv"> </span><span class="s">}'</span><span class="p p-Indicator">}</span>
+<span class="w">  </span><span class="nt">observed</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">packets</span><span class="p">:</span><span class="w"> </span><span class="nv">3</span><span class="p p-Indicator">,</span><span class="nt"> first_seen</span><span class="p">:</span><span class="w"> </span><span class="s">'2026-11-02T03:38:59Z'</span><span class="p p-Indicator">,</span><span class="nt"> last_seen</span><span class="p">:</span><span class="w"> </span><span class="s">'2026-11-02T03:38:59Z'</span><span class="p p-Indicator">,</span><span class="nt"> pods</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">...</span><span class="p p-Indicator">],</span><span class="nt"> ips</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">140.82.121.6</span><span class="p p-Indicator">]}</span>
+<span class="w">  </span><span class="nt">approved_by</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">john.doe@example.com</span>
+<span class="w">  </span><span class="nt">approved_at</span><span class="p">:</span><span class="w"> </span><span class="s">'2026-11-02T03:43:46Z'</span>
+<span class="w">  </span><span class="nt">blocked_by</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">network-policy</span><span class="p p-Indicator">]</span><span class="w">        </span><span class="c1"># the layers the sandbox blocked it at: network-policy, appliance-firewall, dns-filter</span>
+<span class="w">  </span><span class="nt">sandbox</span><span class="p">:</span><span class="w">                            </span><span class="c1"># whether the sandbox can reach it (computed on every write)</span>
+<span class="w">    </span><span class="nt">network_policy</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">blocks port 443</span>
+<span class="w">    </span><span class="nt">appliance</span><span class="p">:</span><span class="w"> </span><span class="s">'refused</span><span class="nv"> </span><span class="s">by</span><span class="nv"> </span><span class="s">the</span><span class="nv"> </span><span class="s">appliance</span><span class="se">''</span><span class="s">s</span><span class="nv"> </span><span class="s">DNS</span><span class="nv"> </span><span class="s">filter:</span><span class="nv"> </span><span class="s">no</span><span class="nv"> </span><span class="s">egress</span><span class="nv"> </span><span class="s">rule</span><span class="nv"> </span><span class="s">allows</span><span class="nv"> </span><span class="s">it'</span><span class="w">   </span><span class="c1"># lab: no appliance firewall (lab)</span>
+<span class="w">    </span><span class="nt">reachable</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+<span class="w">    </span><span class="nt">blocked_by</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">network-policy</span>
+<span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">component</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">egress-demo</span>
+<span class="w">  </span><span class="nt">destination</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">orders-demo.orders-demo</span><span class="w">     </span><span class="c1"># as the configuration names it</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">component</span><span class="w">                          </span><span class="c1"># another application's component (links between applications)</span>
+<span class="w">  </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">80</span>
+<span class="w">  </span><span class="nt">protocol</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">TCP</span>
+<span class="w">  </span><span class="nt">status</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">linked</span><span class="w">                           </span><span class="c1"># linked, link-proposed</span>
+<span class="w">  </span><span class="nt">sources</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">config</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">link-config</span><span class="p p-Indicator">]</span>
+<span class="w">  </span><span class="nt">target</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">application</span><span class="p">:</span><span class="w"> </span><span class="nv">orders-demo</span><span class="p p-Indicator">,</span><span class="nt"> application_id</span><span class="p">:</span><span class="w"> </span><span class="nv">1011</span><span class="p p-Indicator">,</span><span class="nt"> component</span><span class="p">:</span><span class="w"> </span><span class="nv">orders-demo</span><span class="p p-Indicator">,</span><span class="nt"> namespace</span><span class="p">:</span><span class="w"> </span><span class="nv">orders-demo</span><span class="p p-Indicator">,</span>
+<span class="nt">           service</span><span class="p">:</span><span class="w"> </span><span class="nv">orders-demo.orders-demo.svc.cluster.local</span><span class="p p-Indicator">,</span><span class="nt"> port</span><span class="p">:</span><span class="w"> </span><span class="nv">8080</span><span class="p p-Indicator">}</span>
+<span class="w">  </span><span class="nt">link</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="nv">1</span><span class="p p-Indicator">,</span><span class="nt"> status</span><span class="p">:</span><span class="w"> </span><span class="nv">confirmed</span><span class="p p-Indicator">,</span><span class="nt"> method</span><span class="p">:</span><span class="w"> </span><span class="nv">config</span><span class="p p-Indicator">,</span><span class="nt"> confidence</span><span class="p">:</span><span class="w"> </span><span class="nv">0.95</span><span class="p p-Indicator">,</span><span class="nt"> reason</span><span class="p">:</span><span class="w"> </span><span class="nv">the configuration names ...</span><span class="p p-Indicator">}</span>
+<span class="w">  </span><span class="nt">linked_by</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">john.doe@example.com</span>
+<span class="w">  </span><span class="nt">linked_at</span><span class="p">:</span><span class="w"> </span><span class="s">'2026-11-02T04:12:59Z'</span>
+<span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">component</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">egress-demo</span>
+<span class="w">  </span><span class="nt">destination</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pastebin.com</span>
+<span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">fqdn</span>
+<span class="w">  </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">443</span>
+<span class="w">  </span><span class="nt">protocol</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">TCP</span>
+<span class="w">  </span><span class="nt">status</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">suspicious</span>
+<span class="w">  </span><span class="nt">category</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">file-sharing</span>
+<span class="w">  </span><span class="nt">sources</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">code</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">observed</span><span class="p p-Indicator">]</span>
+<span class="w">  </span><span class="nt">reason</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pastebin.com is a paste, file-sharing, tunnelling or request-capture service ...</span>
+<span class="nt">findings</span><span class="p">:</span>
+<span class="p p-Indicator">-</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="nv">unexplained</span><span class="p p-Indicator">,</span><span class="nt"> component</span><span class="p">:</span><span class="w"> </span><span class="nv">...</span><span class="p p-Indicator">,</span><span class="nt"> text</span><span class="p">:</span><span class="w"> </span><span class="nv">...</span><span class="p p-Indicator">}</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>outbound[].destination</code>, <code>port</code>, <code>protocol</code></td>
+<td>What a firewall rule needs. <code>type: any</code> is a port the generated policy opens to any address (a package needs it; name the destination for production).</td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td>As on the results page (table above). <code>approved</code> entries are never rewritten or dropped by Containerizer.</td>
+</tr>
+<tr>
+<td><code>sources</code></td>
+<td><code>config</code>, <code>code</code>, <code>package</code>, <code>policy</code>, <code>observed</code>, <code>approved</code>, <code>lab-service</code>.</td>
+</tr>
+<tr>
+<td><code>evidence</code></td>
+<td>The lines that name the destination (file, line, the line itself).</td>
+</tr>
+<tr>
+<td><code>observed</code></td>
+<td>What the sandbox blocked: dropped packets (a lower bound), first and last seen, pods, addresses.</td>
+</tr>
+<tr>
+<td><code>blocked_by</code></td>
+<td>The layers the sandbox blocked it at: <code>network-policy</code>, <code>appliance-firewall</code>, <code>dns-filter</code>.</td>
+</tr>
+<tr>
+<td><code>sandbox</code></td>
+<td>Whether the sandbox can reach it: what its NetworkPolicy does, the appliance's egress rule that allows it (<code>rule</code>) or what blocks it (<code>blocked_by</code>), <code>reachable</code>.</td>
+</tr>
+<tr>
+<td><code>port_unknown</code></td>
+<td>The appliance's DNS filter refused the name, so no port was seen and the configuration names none (<code>port: 0</code>).</td>
+</tr>
+<tr>
+<td><code>approved_by</code>, <code>approved_at</code>, <code>rejected_by</code>, <code>rejected_at</code></td>
+<td>Who decided, when.</td>
+</tr>
+<tr>
+<td><code>inbound</code>, <code>internal</code></td>
+<td>Who reaches the components (the Ingress host, the service port, and confirmed callers from other applications: <code>source: link</code>, with their application, component and namespace), component to component and lab services.</td>
+</tr>
+<tr>
+<td><code>target</code> (<code>type: component</code>)</td>
+<td>The other application's component a destination is: application, component, namespace, service name and container port.</td>
+</tr>
+<tr>
+<td><code>findings</code></td>
+<td><code>missing</code> and <code>unexplained</code>, as on the results page.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="links-between-applications">Links between applications<a class="headerlink" href="#links-between-applications" title="Permanent link">&para;</a></h2>
+<p>A real application is often several Containerizer applications: components in different repositories, owned by
+different teams or products, calling each other. An outbound destination can then be <strong>another component assessed
+here</strong>, and connectivity says so: the destination is linked to that component (<code>type: component</code> in
+connectivity.yaml), the diagram draws it as a teal box with the other application's name, and the table links to
+its page.</p>
+<p><img alt="A link to another application: egress-demo calls orders-demo through a configured URL, linked and allowed in both NetworkPolicies" class="cz-shot" src="../images/results-connectivity-linked.png#only-light" />
+<img alt="A link to another application: egress-demo calls orders-demo through a configured URL, linked and allowed in both NetworkPolicies" class="cz-shot" src="../images/results-connectivity-linked-dark.png#only-dark" /></p>
+<p><strong>How links are found</strong> (<code>cz.ComponentLink</code>, every minute by the LLM queue runner's housekeeping), each recorded with
+how it was found and its evidence:</p>
+<table>
+<thead>
+<tr>
+<th>Found by</th>
+<th>When</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Configuration matches (<code>config</code>)</td>
+<td>A configured host is another application's component: its service in the sandbox (<code>&lt;component&gt;.&lt;namespace&gt;</code>, <code>...svc</code>, <code>...svc.cluster.local</code>) or its sandbox Ingress host. Confidence 0.95.</td>
+</tr>
+<tr>
+<td>Observed in the sandbox (<code>observed</code>)</td>
+<td>The sandbox blocked a call from one application's pod to another application's pod (the observer names such a destination <code>&lt;component&gt;.&lt;namespace&gt;.svc.cluster.local</code>). Not recorded again when the configuration already links it.</td>
+</tr>
+<tr>
+<td>LLM (<code>llm</code>)</td>
+<td>A configured destination that looks internal (one label, or <code>.local</code>, <code>.internal</code>, <code>.corp</code>, <code>.lan</code>, <code>.intranet</code>, <code>.svc</code>, ...) and that nothing matched. A <code>link</code> job of the <a href="../scheduled-scans/#the-llm-queue">LLM queue</a> (with its approval policy) gives the LLM the destination, its configuration lines and a shortlist of 15 candidate components of other applications (name, application, product, project, role, repository) and asks for the best match, its confidence and why, or none. Answers below 0.5 or outside the shortlist are not taken.</td>
+</tr>
+<tr>
+<td>By hand (<code>manual</code>)</td>
+<td><strong>Link manually</strong> on the results page: pick one of the components assessed here.</td>
+</tr>
+</tbody>
+</table>
+<p>Every link is a <strong>proposal</strong> until a person confirms it: <strong>Confirm</strong> and <strong>Reject</strong> on the calling application's
+results page, for administrators, operators and the calling application's product owners; a link made by hand is
+confirmed at once. A destination that looks internal and is not linked shows as <em>Looks internal, not linked</em>, with
+<em>Link manually</em>. Every decision is recorded with who made it (and in the change history).</p>
+<p><strong>A confirmed link</strong> is written by the queue runner to <strong>both</strong> applications in the output repository, in one commit:</p>
+<ul>
+<li>the caller's connectivity.yaml names the other application, component, namespace, service and port
+  (<code>type: component</code>, <code>target</code>), and the caller's NetworkPolicy gets an egress rule to that namespace and those pods
+  on the component's container port;</li>
+<li>the callee's connectivity.yaml lists the caller under <code>inbound</code> (<code>source: link</code>), and its NetworkPolicy gets an
+  ingress rule from the caller's namespace and pods.</li>
+</ul>
+<p>Later scans keep both (the generator reads them from connectivity.yaml), as they keep approved egress.</p>
+<p>The callee's page shows its callers:</p>
+<p><img alt="The called application's page: its callers from other applications under Inbound" class="cz-shot" src="../images/results-connectivity-callee.png#only-light" />
+<img alt="The called application's page: its callers from other applications under Inbound" class="cz-shot" src="../images/results-connectivity-callee-dark.png#only-dark" /></p>
+<p><strong>How the applications connect</strong> (<code>/connectivity</code>, linked from each application's section; <code>?product=&lt;id&gt;</code> or
+<code>?bu=&lt;id&gt;</code> for one product or business unit): the applications as groups of their components, the links between them
+(confirmed solid, proposed dashed), each application's decided outbound destinations summed up, and the links in a
+table. The other side of a link outside the product is shown too, with a dashed frame.</p>
+<p><img alt="How the applications connect: two applications, their components and a confirmed link" class="cz-shot" src="../images/connectivity-portfolio.png#only-light" />
+<img alt="How the applications connect: two applications, their components and a confirmed link" class="cz-shot" src="../images/connectivity-portfolio-dark.png#only-dark" /></p>
+<h2 id="limits">Limits<a class="headerlink" href="#limits" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Only what is blocked is seen.</strong> The observer reads the drop log; allowed traffic is not recorded, so
+  Containerizer cannot tell whether an allowed or approved destination is still used.</li>
+<li><strong>Names come from DNS.</strong> A connection to an address no pod of the namespace looked up (a hard-coded IP, a name
+  looked up more than 10 minutes before, a DNS-over-HTTPS client) stays an address. Shared CDN addresses can serve
+  several names; the observer takes the name the namespace's own pods looked up.</li>
+<li><strong>Rate limit.</strong> kube-router logs at most 10 packets a minute per policy: a burst is counted as at most 10.</li>
+<li><strong>The LLM can be wrong.</strong> It only proposes; the quoted line is checked against the source, and a person approves.</li>
+<li><strong>The appliance's signals are rate limited too</strong>: its firewall logs at most 30 drops a minute.</li>
+<li><strong>Approval is documentation.</strong> It never changes the sandbox: a destination an application needs in the sandbox
+  as well needs an administrators' egress rule (and a port its NetworkPolicy allows).</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../refactoring/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Refactoring patches">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Refactoring patches
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../build-pipelines/" class="md-footer__link md-footer__link--next" aria-label="Next: Build pipelines">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Build pipelines
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.tabs", "navigation.top", "navigation.footer", "search.highlight", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>
