@@ -212,6 +212,13 @@ network:
           - config: '(?i)(?:Server|Data Source|Address|Host)\s*=\s*[\w.\-]+,(?P<port>\d{2,5})'
           - config: '(?i)\bPort\s*=\s*(?P<port>\d{2,5})'
           - config: '(?i)\b(?:https?|amqps?|redis|mongodb|ldaps?|smtp)://[\w.\-@]+:(?P<port>\d{2,5})'
+    # WCF NetTcp clients: "net.tcp://host:8096/Service"; no port means 808. A service's own
+    # <add baseAddress="net.tcp://..."/> is where it listens, not a dependency. net.pipe:// never
+    # leaves the pod, so it opens nothing.
+    - id: wcf-net-tcp
+      captures_port: true
+      default_port: 808
+      when: {config: '(?i)(?<!baseAddress=")\bnet\.tcp://[\w.\-@]+(?::(?P<port>\d{2,5}))?'}
 
 # Namespace resource policies (NSA/CISA "Resource policies"): a LimitRange
 # gives defaults to anything added by hand, a ResourceQuota caps the namespace

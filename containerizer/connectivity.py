@@ -45,9 +45,9 @@ SCHEME_PORTS = {"https": 443, "http": 80, "wss": 443, "ws": 80, "amqps": 5671, "
                 "rediss": 6380, "mongodb": 27017, "mongodb+srv": 27017, "ldaps": 636, "ldap": 389, "smtps": 465,
                 "smtp": 587, "sftp": 22, "ftp": 21, "ftps": 990, "grpc": 443, "nats": 4222, "mqtt": 1883,
                 "mqtts": 8883, "kafka": 9092, "postgres": 5432, "postgresql": 5432, "mysql": 3306,
-                "sqlserver": 1433, "jdbc:sqlserver": 1433}
+                "sqlserver": 1433, "jdbc:sqlserver": 1433, "net.tcp": 808}
 URL_RE = re.compile(r"\b(?P<scheme>https?|wss?|amqps?|rediss?|mongodb(?:\+srv)?|ldaps?|smtps?|sftp|ftps?|grpc|nats|"
-                    r"mqtts?|kafka|postgres(?:ql)?|mysql|jdbc:sqlserver)://(?:[^@/\s\"'<>]*@)?"
+                    r"mqtts?|kafka|postgres(?:ql)?|mysql|jdbc:sqlserver|net\.tcp)://(?:[^@/\s\"'<>]*@)?"
                     r"(?P<host>\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)"
                     r"(?::(?P<port>\d{1,5}))?", re.I)
 # connection strings: "Server=db.example.com,1433", "Data Source=tcp:db,1433", "Host=pg;Port=5433"
@@ -60,7 +60,13 @@ NOISE_HOSTS = re.compile(r"(?i)^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*
                          r"(?:[\w-]+\.)*(?:w3\.org|xmlsoap\.org|schemas\.microsoft\.com|schemas\.openxmlformats\.org|"
                          r"json-schema\.org|schema\.org|aka\.ms|go\.microsoft\.com|learn\.microsoft\.com|"
                          r"docs\.microsoft\.com|msdn\.microsoft\.com|xmlns\.oracle\.com|apache\.org|"
-                         r"example\.(?:com|org|net)|tempuri\.org|purl\.org|opensource\.org|spdx\.org))$")
+                         r"example\.(?:com|org|net)|tempuri\.org|purl\.org|opensource\.org|spdx\.org)|"
+                         r"(?:schemas?|xmlns)\.[\w.-]+)$")       # an organisation's own XML/contract namespace host
+# what comes right before a URL that is a name, not a destination: WCF/XML contract namespaces
+# ([ServiceContract(Namespace = "http://...")], xmlns="...", targetNamespace) and a WCF service's own
+# listen address (<add baseAddress="net.tcp://..."/>)
+NOT_A_DESTINATION = re.compile(r"(?i)(?:\b(?:Namespace|targetNamespace|xmlns(?::[\w.-]+)?|baseAddress)\s*[=:]\s*"
+                               r"(?:@|\$)?[\"']?|\bXNamespace\.Get\(\s*@?\")$")
 CODE_COMMENT = re.compile(r"^\s*(?://|/\*|\*|#|<!--|'|--|REM\b)")
 SKIP_FILE = re.compile(r"(?i)(\.Development\.|launchSettings|(^|/)\.vscode/|(^|/)\.idea/|(^|/)(bin|obj|node_modules|"
                        r"dist|build|target|wwwroot/lib)/|\.min\.js$|swagger|openapi|package(-lock)?\.json$)")
@@ -127,6 +133,8 @@ def _scan_destinations(repo, c) -> list[dict]:
                         continue
                     hits = []
                     for m in URL_RE.finditer(line):
+                        if NOT_A_DESTINATION.search(line, 0, m.start()):
+                            continue
                         sch = m["scheme"].lower()
                         hits.append((m["host"], int(m["port"]) if m["port"] else SCHEME_PORTS.get(sch), sch))
                     for rx in (CONN_RE, HOSTPORT_RE):

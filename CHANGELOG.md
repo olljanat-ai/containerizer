@@ -12,6 +12,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 The OS image changes (`appliance/`, #255): release as a minor version.
 
+- **WCF in the connectivity map and NetworkPolicy** (#265): `net.tcp://host:port` addresses in configuration and code are destinations like any other (port 808 when none is given), so a WCF NetTcp client's server shows in `CONNECTIVITY.md` and `connectivity.yaml` and its port is opened by the generated NetworkPolicy (`wcf-net-tcp`); a service's own `<add baseAddress="net.tcp://..."/>` is not. XML and WCF contract namespace URIs (`[ServiceContract(Namespace = "http://schemas.contoso.com/...")]`, `xmlns`, `targetNamespace`, constants on `schemas.*` hosts) are no longer reported as outbound HTTP or as missing egress.
+
 - **Platform fixes for refactor findings** ([docs](docs/platform-fixes.md)): findings that the generated
   configuration can satisfy no longer need code changes, and count as `config` in the rating. A plan rule names the
   findings it `resolves`; three techniques are new: code that switches on `Environment.MachineName` gets the pod
