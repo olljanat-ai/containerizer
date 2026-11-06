@@ -194,10 +194,11 @@ move of that data to SQL Server. It runs on request only:
 product owners, with the queue's estimate), or **Make it A: every B application** for administrators (below). A scan
 never orders one by itself.
 
-A component that is B only because it keeps its own data does not need Make it A to run: the organization scan
-deploys it as it is, with its data on a persistent volume and one replica
-([Application data on persistent volumes](overview.md#application-data-on-persistent-volumes)), and the Refactoring
-box says so first. Make it A's data move is for when it has to be stateless (to scale out), and it is a code change.
+Keeping its own data does not make an application B: it rates A, marked stateful, and the organization scan
+deploys it as it is with its data on a persistent volume and one replica
+([Application data on persistent volumes](overview.md#application-data-on-persistent-volumes)). Make it A moves
+the data of a B application's stateful components to SQL Server only along with the code changes that make it B
+in the first place, or when the data is in a folder Containerizer could not find.
 
 The results page's [migration plan](overview.md#migration-plan) points here from its second wave: the
 components that rate A once their code changes are made. For an application with components that cannot run in

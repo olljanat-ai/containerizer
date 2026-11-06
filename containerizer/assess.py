@@ -148,6 +148,7 @@ class Component:
                 "score": self.score, "windows_container_ok": self.windows_container_ok,
                 "confidence": round(self.confidence, 2), "uncertain": self.uncertain,
                 "rule_verdict": self.rule_verdict, "ai": self.ai, "stateless": self.stateless,
+                "state_unplaced": self.state_unplaced,
                 "state": [{"id": f.rule.id, "title": f.rule.title, "state": f.rule.state}
                           for f in {f.rule.id: f for f in self.state_findings}.values()],
                 "facts": self.facts, "findings": [f.to_dict() for f in sorted(

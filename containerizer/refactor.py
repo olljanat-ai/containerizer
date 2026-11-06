@@ -578,11 +578,19 @@ def stateful_components(doc: dict) -> list[dict]:
             and c.get("tier") in ("server", "platform", None) and c.get("verdict") in ("info", "config", "refactor")]
 
 
+def unplaced_components(doc: dict) -> list[dict]:
+    """Stateful components whose data is in a folder the generator cannot put a volume on (`state_unplaced`): the
+    only ones whose data keeps the application from A (one with a volume rates A, marked stateful)."""
+    return [c for c in stateful_components(doc) if c.get("state_unplaced")]
+
+
 def rating_a_components(doc: dict) -> list[dict]:
     """What keeps a B-rated application from A, by component: those with refactor or config findings to change
-    in code, and the server components that keep their own data (in assessment.json order, once each)."""
+    in code, and the server components that keep their own data in a folder no volume can be put on (in
+    assessment.json order, once each). Data a volume holds is not moved: that would be a code change A does
+    not need."""
     seen, out = set(), []
-    for c in [*eligible_components(doc), *stateful_components(doc)]:
+    for c in [*eligible_components(doc), *unplaced_components(doc)]:
         if c.get("name") not in seen:
             seen.add(c.get("name"))
             out.append(c)
@@ -621,7 +629,7 @@ def build_payload(doc: dict, source: dict, commit: str | None, component: str | 
             raise RefactorError(f"no component {component!r} in {doc.get('name')}"
                                 + (" that keeps its own data" if goal == "stateless" else ""))
     tasks, skipped = plan_tasks(comps, include_config)
-    if not tasks and goal == "rating-a" and not any(c.get("stateless") is False for c in comps):
+    if not tasks and goal == "rating-a" and not any(c.get("state_unplaced") for c in comps):
         raise RefactorError("nothing to change: no finding of this application can be fixed in code")
     if not tasks and goal not in ("stateless", "rating-a"):
         raise RefactorError("nothing to change: no refactor finding (or configuration finding with a file) "
@@ -637,7 +645,8 @@ def build_payload(doc: dict, source: dict, commit: str | None, component: str | 
             "tasks": tasks, "skipped": skipped, "include_config": bool(include_config), "verify": bool(verify),
             "max_calls": int(max_calls), "goal": goal,
             "state": [{"component": c.get("name"), "state": [s.get("title") for s in c.get("state") or []]}
-                      for c in comps if c.get("stateless") is False],
+                      for c in comps if c.get("stateless") is False
+                      and (goal != "rating-a" or c.get("state_unplaced"))],
             **({"max_passes": MAX_PASSES_A, "max_repairs": MAX_REPAIRS_A, "deploy": True} if goal == "rating-a" else {})}
 
 
@@ -2237,9 +2246,10 @@ def _broken(verification: list[dict]) -> list[dict]:
 
 
 def still_stateful(doc: dict) -> list[dict]:
-    """[{"component", "state": [titles]}] of the components of an assessment that still keep their own data."""
+    """[{"component", "state": [titles]}] of the components of an assessment that still keep their own data where no
+    volume can hold it (what still keeps it from A)."""
     return [{"component": c.get("name"), "state": [s.get("title") for s in c.get("state") or []]}
-            for c in stateful_components(doc)]
+            for c in unplaced_components(doc)]
 
 
 def remaining_findings(doc: dict) -> list[dict]:
