@@ -117,7 +117,7 @@ migrations:
           any:
             - file: "*.svc"
             - config: '\b(basicHttps?Binding|wsHttpBinding|ws2007HttpBinding|wsFederationHttpBinding|ws2007FederationHttpBinding|webHttpBinding)\b'
-            - code: '\b(BasicHttps?Binding|WSHttpBinding|WS2007HttpBinding|WSFederationHttpBinding|WebHttpBinding|WebServiceHost)\b|[\[<]\s*(WebGet|WebInvoke)\b'
+            - code: '\b(BasicHttps?Binding|WSHttpBinding|WS2007HttpBinding|WSFederationHttpBinding|WebHttpBinding|WebServiceHost)\b|\b(WebGet|WebInvoke)(Attribute)?\b'
             - not:
                 any:
                   - config: '\bnetTcpBinding\b'
@@ -135,7 +135,7 @@ migrations:
       - when:
           any:
             - config: '\bwebHttpBinding\b|<webHttp\b'
-            - code: '\bWebHttpBinding\b|\bWebServiceHost|[\[<]\s*(WebGet|WebInvoke)\b'
+            - code: '\bWebHttpBinding\b|\bWebServiceHost|\b(WebGet|WebInvoke)(Attribute)?\b'
         packages:
           add: [CoreWCF.WebHttp]
         steps:
