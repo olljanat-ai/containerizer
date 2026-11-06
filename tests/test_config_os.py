@@ -319,3 +319,45 @@ def test_localhost_listen_address_is_not_a_client_endpoint(tmp_path):
     from tests.test_engine import web_app
     web_app(tmp_path, 'class W { void M(IWebHostBuilder b) { b.UseUrls("http://localhost:5000"); } }')
     assert "cfg-localhost-endpoint-in-code" not in {f.rule.id for f in assess(tmp_path).components[0].findings}
+
+
+# ---------------------------------------------------------------- WCF clients with Windows credentials (#266)
+WCF_PKG = '<PackageReference Include="System.ServiceModel.NetTcp" Version="8.0.0" />'
+
+
+def test_wcf_windows_client_credentials(tmp_path):
+    web_app(tmp_path, '''
+        class P { ChannelFactory<IX> F(string a, string spn) {
+            var b = new NetTcpBinding(SecurityMode.Transport);
+            b.Security.Transport.ClientCredentialType = TcpClientCredentialType.Windows;
+            return new ChannelFactory<IX>(b, new EndpointAddress(new Uri(a), new SpnEndpointIdentity(spn))); } }''',
+            packages=WCF_PKG)
+    c = assess(tmp_path).components[0]
+    f = next(f for f in c.findings if f.rule.id == "wcf-windows-client-credentials")
+    assert f.severity == "config" and f.resolved_by == "plan-kerberos-client"
+    assert any("TcpClientCredentialType.Windows" in str(e) for e in f.evidence)
+
+
+def test_wcf_windows_client_credentials_from_config(tmp_path):
+    web_app(tmp_path, packages=WCF_PKG)
+    write(tmp_path, "src/Web/app.config", '''<configuration><system.serviceModel><bindings><netTcpBinding><binding>
+        <security mode="Transport"><transport clientCredentialType="Windows" /></security>
+        </binding></netTcpBinding></bindings></system.serviceModel></configuration>''')
+    assert "wcf-windows-client-credentials" in ids(tmp_path)
+
+
+def test_wcf_client_with_basic_or_certificate_credentials_needs_no_kerberos(tmp_path):
+    web_app(tmp_path, '''
+        class P { void M(BasicHttpBinding a, BasicHttpBinding b) {
+            a.Security.Transport.ClientCredentialType = HttpClientCredentialType.Basic;
+            b.Security.Transport.ClientCredentialType = HttpClientCredentialType.Certificate; } }''',
+            packages=WCF_PKG)
+    assert "wcf-windows-client-credentials" not in ids(tmp_path)
+
+
+def test_wcf_service_host_is_not_a_windows_client(tmp_path):
+    worker(tmp_path, '''
+        class W { void M(WSHttpBinding b) {
+            b.Security.Transport.ClientCredentialType = HttpClientCredentialType.Windows;
+            new WorkflowServiceHost(null, new Uri("http://x")); } }''')
+    assert "wcf-windows-client-credentials" not in ids(tmp_path)

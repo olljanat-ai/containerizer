@@ -12,6 +12,16 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 The OS image changes (`appliance/`, #255): release as a minor version.
 
+- **WCF clients that call with Windows credentials** (#266): `TcpClientCredentialType.Windows`,
+  `HttpClientCredentialType.Windows`, SPN/UPN endpoint identities, `Credentials.Windows.*` and `clientCredentialType="Windows"`
+  in configuration are a new `config` finding, `wcf-windows-client-credentials` (they were only the `wcf-client` info
+  note, and the image built and started but every call failed: a Linux container has no Windows logon). The platform
+  technique `plan-kerberos-client` resolves it without a code change: GSSAPI packages, a client keytab mounted from the
+  optional Secret `<component>-client-keytab` with `KRB5_CLIENT_KTNAME` (and `krb5.conf` through `KRB5_CONFIG` when given),
+  a writable ticket cache, and NetworkPolicy egress to the KDC (88/TCP+UDP, `kerberos-kdc`). Verification reports such a
+  component as `ok-external` with *external: needs a Kerberos client identity*, not as a plain pass. WCF hosts and
+  clients with basic, certificate or no credentials are not affected. See [platform fixes](docs/platform-fixes.md).
+
 - **Platform fixes for refactor findings** ([docs](docs/platform-fixes.md)): findings that the generated
   configuration can satisfy no longer need code changes, and count as `config` in the rating. A plan rule names the
   findings it `resolves`; three techniques are new: code that switches on `Environment.MachineName` gets the pod

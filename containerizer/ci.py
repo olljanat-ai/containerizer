@@ -338,6 +338,8 @@ def verify_markdown(results: list[dict]) -> str:
             note, mismatches = "**static verdict not confirmed**", mismatches + 1
         elif st.startswith("ok") and pred not in READY:
             note = "runs, but the static findings still apply"
+        if r.get("external"):
+            note = (note + "; " if note else "") + f"external: {r['external']}"
         detail = (r.get("detail") or "").replace("|", "\\|")
         if detail and st != "skipped":
             note = (note + "; " if note else "") + f"attempts: {detail}"

@@ -448,3 +448,47 @@ def test_dataprotection_key_is_shared_and_generated_in_the_cluster(tmp_path):
     # nothing for the secret store to hold
     from containerizer.eso import remote_keys
     assert not any(k.endswith("dataprotection") for k in remote_keys(docs))
+
+
+def test_wcf_windows_client_gets_client_keytab_and_kdc_egress(tmp_path):
+    web_app(tmp_path, 'class P { void M(BasicHttpBinding b) { b.Security.Transport.ClientCredentialType = HttpClientCredentialType.Windows; } }',
+            packages='<PackageReference Include="System.ServiceModel.Http" Version="8.0.0" />')
+    docs, plan = _manifests(tmp_path)
+    assert "plan-kerberos-client" in plan["applied"] and "libgssapi-krb5-2" in plan["add_packages"]
+    assert plan["env"]["KRB5_CLIENT_KTNAME"] == "/etc/krb5/client/client.keytab"
+    assert plan["needs_external"]
+    df = generate.dockerfile_dotnet(plan)
+    assert 'KRB5_CLIENT_KTNAME="/etc/krb5/client/client.keytab"' in df and "libkrb5-3" in df
+    pod = _pods(docs)[0]["spec"]
+    c = pod["containers"][0]
+    mount = next(m for m in c["volumeMounts"] if m["mountPath"] == "/etc/krb5/client")
+    vol = next(v for v in pod["volumes"] if v["name"] == mount["name"])
+    assert mount["readOnly"] and vol["secret"]["secretName"].endswith("-client-keytab") and vol["secret"]["optional"]
+    assert {"name": "KRB5CCNAME", "value": "FILE:/tmp/krb5cc_app"} in c["env"]
+    assert any(e["id"] == "kerberos-client-keytab" for e in plan["hardening_exceptions"])
+    [np] = _kind(docs, "NetworkPolicy")
+    assert any(p == {"port": 88, "protocol": "UDP"} for r in np["spec"]["egress"] for p in r.get("ports", []))
+    assert "kerberos-kdc" in {e["id"] for e in plan["egress"]}
+    # the whole remote secret <namespace>--<component>-client-keytab: client.keytab and, if needed, krb5.conf
+    es = next(d for d in _kind(docs, "ExternalSecret") if d["metadata"]["name"].endswith("-client-keytab"))
+    assert es["spec"]["dataFrom"][0]["extract"]["key"].endswith("-client-keytab")
+    assert [v for v in lint_manifests(docs) if v.severity == "error"] == []
+
+
+def test_inbound_negotiate_alone_gets_no_client_keytab(tmp_path):
+    web_app(tmp_path, packages='<PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="8.0.0" />')
+    docs, plan = _manifests(tmp_path)
+    assert "KRB5_CLIENT_KTNAME" not in plan["env"]
+    assert not any(d["metadata"]["name"].endswith("-client-keytab") for d in _kind(docs, "ExternalSecret"))
+
+
+def test_verify_reports_kerberos_client_as_external(tmp_path, monkeypatch):
+    from containerizer import verify as vf
+    web_app(tmp_path, 'class P { void M(NetTcpBinding b) { b.Security.Transport.ClientCredentialType = TcpClientCredentialType.Windows; } }',
+            packages='<PackageReference Include="System.ServiceModel.NetTcp" Version="8.0.0" />')
+    a = assess(tmp_path)
+    monkeypatch.setattr(vf, "build", lambda *x, **k: (True, "", "tag"))
+    monkeypatch.setattr(vf, "run", lambda *x, **k: ("ok", "", {"http": 200}))
+    monkeypatch.setattr(vf, "_run", lambda *x, **k: None)
+    r = vf.verify_component(a, a.components[0], None, work=tmp_path / "w")
+    assert r["status"] == "ok-external" and "Kerberos client identity" in r["external"]
