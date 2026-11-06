@@ -583,7 +583,7 @@ rules:
         - not: {role: 'test|desktop'}
         # a WCF service authenticating its own callers is inbound Windows authentication, not this
         - not: {file: "*.svc"}
-        - not: {code: '\bServiceHost\b|\bAddServiceModelServices\b'}
+        - not: {code: '\b\w*ServiceHost\b|\bAddServiceModelServices\b'}
         - any:
             - code: '\b(?:Tcp|Http)ClientCredentialType\.Windows\b|\bMessageCredentialType\.Windows\b'
             - code: '\b(?:Spn|Upn)EndpointIdentity\b|EndpointIdentity\.Create(?:Spn|Upn)Identity\b'
