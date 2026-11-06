@@ -18,6 +18,13 @@ appliance runs and how to operate it is in [Running the appliance](appliance-adm
   once.
 - Outbound HTTPS to the hosts on the Firewall page (the image registries the appliance uses are allowed
   by default) and DNS servers from DHCP or `CZ_DNS_SERVERS`.
+  **Needed already at the first start**: the appliance's own SQL Server is downloaded then (about 1.5 GB from
+  `mcr.microsoft.com` and `data.mcr.microsoft.com`), and the web UI starts only after it. Without it
+  `systemctl start containerizer-web` waits and the web UI does not answer; `journalctl -u containerizer-mssql`
+  shows the failed download. Grafana, Prometheus and the registry come from Docker Hub
+  (`registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com`), upgrades and patches from
+  `ghcr.io` and `pkg-containers.githubusercontent.com`. With an [external SQL Server](appliance-admin.md#external-database) the
+  web UI does not wait for the download.
 
 ## Install
 
