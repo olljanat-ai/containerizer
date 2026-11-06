@@ -166,6 +166,21 @@ rules:
       - https://learn.microsoft.com/en-us/dotnet/standard/security/cross-platform-cryptography
     when: {}
 
+  - id: plan-local-timezone
+    phase: plan
+    applies_to: [dotnet]
+    resolves: [os-local-timezone]
+    technique: local-timezone
+    why: >-
+      The code works in local time (DateTime.Today, TimeZoneInfo.Local, dates printed on documents, local
+      schedules), and containers run in UTC. TZ is set to the organization's time zone (the site setting
+      `timezone`), so the unchanged code gets the same dates and day boundaries as on the old servers. The
+      runtime images carry tzdata (.NET chiseled-extra and full images).
+    refs:
+      - https://github.com/dotnet/dotnet-docker/blob/main/documentation/image-variants.md
+      - https://learn.microsoft.com/en-us/dotnet/api/system.timezoneinfo.local
+    when: {}
+
   - id: plan-special-folder-workdir
     phase: plan
     applies_to: [dotnet]

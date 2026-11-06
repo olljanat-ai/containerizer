@@ -1,0 +1,8 @@
+# Organization-wide values the generator uses for every application (containerizer/site.py). Your own
+# internal rules repository (CONTAINERIZER_REVIEWED_RULES) can carry a site.yaml of its own, which wins over
+# this one; CONTAINERIZER_TIMEZONE, and on the appliance Admin -> Source control & LLM -> Site, win over both.
+
+# IANA time zone the old Windows servers ran in (Europe/Helsinki, America/New_York). Components that use local
+# time (finding os-local-timezone: DateTime.Today, TimeZoneInfo.Local, dates on documents) get TZ=<zone>, so the
+# code keeps working in the business's zone without a change (rule plan-local-timezone). Empty: UTC.
+timezone: ""
