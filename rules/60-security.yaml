@@ -213,6 +213,83 @@ network:
           - config: '(?i)\bPort\s*=\s*(?P<port>\d{2,5})'
           - config: '(?i)\b(?:https?|amqps?|redis|mongodb|ldaps?|smtp)://[\w.\-@]+:(?P<port>\d{2,5})'
 
+# Ingress per web component (containerizer/ingress.py): HTTPS only, at
+# <component>-<app>.<domain> (--ingress-domain; one DNS label, so a wildcard
+# certificate covers every host). Without a domain the Ingress is written to
+# <component>/ingress.example.yaml with the host under `placeholder_domain`
+# and is not applied. `--gateway-api` writes a Gateway API HTTPRoute instead.
+# The settings below are data: edit them to fit the cluster's controller.
+ingress:
+  class: ""                    # ingressClassName ("": the cluster's default class); --ingress-class
+  cluster_issuer: ""           # cert-manager ClusterIssuer: adds cert-manager.io/cluster-issuer and a TLS secretName
+  placeholder_domain: example.invalid
+  gateway:                     # --gateway-api: the HTTPRoute's parentRef (the platform owns the Gateway and its TLS listener)
+    name: platform-gateway
+    namespace: gateway-system
+    section: https
+  # On every Ingress. HTTP is redirected to HTTPS; the TLS certificate is the
+  # controller's default (the wildcard) unless cluster_issuer is set. HSTS comes
+  # from the controller (ingress-nginx: on by default; Traefik: the websecure
+  # entry point's headers middleware; the appliance's Caddy adds it).
+  # proxy-body-size: IIS and Kestrel both accept about 30 MB request bodies by
+  # default (maxAllowedContentLength 30000000), ingress-nginx only 1 MB: keep
+  # what the app accepted before, unless web.config sets its own limit.
+  defaults:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: 30m
+    nginx.ingress.kubernetes.io/proxy-buffer-size: 16k
+  default_body_size_mb: 30
+  max_body_size_mb: 4096       # a larger web.config limit is capped here (and said so)
+  max_timeout_seconds: 3600    # a longer IIS timeout is capped here (and said so)
+  # Annotations the findings call for. `findings`: finding ids (any one of them);
+  # `annotations` go on the Ingress, `service_annotations` on the Service
+  # (Traefik reads stickiness from the Service). {timeout} is the longest IIS
+  # request timeout from web.config, in seconds (at least `min_timeout`).
+  findings:
+    - id: long-requests
+      findings: [host-long-request-timeout]
+      annotations:
+        nginx.ingress.kubernetes.io/proxy-read-timeout: "{timeout}"
+        nginx.ingress.kubernetes.io/proxy-send-timeout: "{timeout}"
+      termination_grace: true  # the pod's terminationGracePeriodSeconds = {timeout}
+      why: IIS let requests run for {timeout} s (web.config); ingress-nginx cuts an idle upstream after 60 s and a stopping pod gets 30 s.
+    - id: session-affinity
+      findings: [in-memory-session-scaleout, state-session-in-memory, host-arr-affinity, signalr-scaleout, host-blazor-server]
+      annotations:
+        nginx.ingress.kubernetes.io/affinity: cookie
+        nginx.ingress.kubernetes.io/affinity-mode: persistent
+        nginx.ingress.kubernetes.io/session-cookie-name: CZAFFINITY
+        nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+        nginx.ingress.kubernetes.io/session-cookie-samesite: Lax
+        nginx.ingress.kubernetes.io/session-cookie-path: /
+      service_annotations:
+        traefik.ingress.kubernetes.io/service.sticky.cookie: "true"
+        traefik.ingress.kubernetes.io/service.sticky.cookie.name: CZAFFINITY
+        traefik.ingress.kubernetes.io/service.sticky.cookie.secure: "true"
+        traefik.ingress.kubernetes.io/service.sticky.cookie.httponly: "true"
+        traefik.ingress.kubernetes.io/service.sticky.cookie.samesite: lax
+      why: The component keeps per-user state in memory (session, SignalR/Blazor circuits, ARR affinity), so a user must stay on one pod when it is scaled out.
+    - id: long-lived-connections
+      findings: [signalr-scaleout, host-blazor-server]
+      min_timeout: 3600
+      annotations:
+        nginx.ingress.kubernetes.io/proxy-read-timeout: "{timeout}"
+        nginx.ingress.kubernetes.io/proxy-send-timeout: "{timeout}"
+      why: SignalR and Blazor Server hold WebSocket connections open; ingress-nginx closes them after 60 s without traffic.
+  # Annotations a generated Ingress never carries: they inject controller
+  # configuration (code) or turn the host into a regex match. The gate's
+  # ingress lint refuses them on any Ingress in the manifests.
+  forbidden_annotations:
+    - nginx.ingress.kubernetes.io/server-snippet
+    - nginx.ingress.kubernetes.io/configuration-snippet
+    - nginx.ingress.kubernetes.io/auth-snippet
+    - nginx.ingress.kubernetes.io/stream-snippet
+    - nginx.ingress.kubernetes.io/modsecurity-snippet
+    - nginx.ingress.kubernetes.io/mirror-target
+
 # Namespace resource policies (NSA/CISA "Resource policies"): a LimitRange
 # gives defaults to anything added by hand, a ResourceQuota caps the namespace
 # at the sum of the generated limits times `headroom`.
@@ -310,6 +387,9 @@ lint:
     df-base-digest:      {severity: info,    title: Base images are pinned to a digest}
     df-remote-add:       {severity: error,   title: No ADD from URLs or curl|sh in the build}
     df-base-eol:         {severity: warning, title: Base image line is supported by its vendor}
+    ingress-tls:         {severity: error,   title: Every Ingress host is served over TLS only (no plain HTTP)}
+    ingress-snippet:     {severity: error,   title: No configuration-snippet/server-snippet or other injected controller configuration}
+    ingress-wildcard:    {severity: error,   title: No wildcard or missing Ingress host, no default backend}
   allowed_capabilities: [NET_BIND_SERVICE]
   safe_sysctls:
     - kernel.shm_rmid_forced
