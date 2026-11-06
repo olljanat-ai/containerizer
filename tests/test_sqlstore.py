@@ -176,7 +176,7 @@ def test_application_page():
     assert "href='javascript" not in html             # only http(s) links
     assert "Low" in html and "confirmed by building and running" not in html   # its build failed
     assert "the build or run failed for 1 component" in html
-    assert "Windows container is a workable stop-gap" in html
+    assert "stop-gap" not in html
 
 
 class FakeConn:

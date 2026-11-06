@@ -53,11 +53,11 @@ def migration_markdown(a: AppAssessment) -> str:
         for b in tb:
             L.append(f"- **{b['title']}** ({b['severity']}): {', '.join(b['components'])}")
         L.append("")
-    L += ["## Components", "", "| Component | Role | Target | Verdict | Score | Windows container stop-gap |",
-          "| --- | --- | --- | --- | --- | --- |"]
+    L += ["## Components", "", "| Component | Role | Target | Verdict | Score |",
+          "| --- | --- | --- | --- | --- |"]
     for c in a.components:
         L.append(f"| {c.name} | {c.role} | {';'.join(c.project.tfms) or c.project.kind_hint} | {VERDICT_TEXT[c.verdict]} | "
-                 f"{c.score} | {'yes' if c.windows_container_ok and c.project.is_netfx else '-'} |")
+                 f"{c.score} |")
     L.append("")
     for c in a.components:
         L += [f"### {c.name}", "", f"`{c.project.rel}` · {c.role} · {VERDICT_TEXT[c.verdict]}", ""]

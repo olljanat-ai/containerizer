@@ -203,7 +203,7 @@ and no LLM is asked: the files come from what the scan generated.
 
 ## What it does not do
 
-- It does not run on Windows runners: Windows containers (`Dockerfile.windows`) are not included.
+- It does not run on Windows runners: containerizer generates Linux images only.
 - It does not include the scan's last-minute changes that are not in the generated Dockerfile at
   assessment time (the security gate's OS package upgrades); the output repository's
   `pipeline/` copy does have them. The pipeline's own scan catches what they fixed.

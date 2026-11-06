@@ -416,9 +416,7 @@ def section(app: dict, ctx: dict | None = None, refactoring_box: bool = False) -
                    f"<table><thead><tr><th>Component</th><th>Main obstacle</th></tr></thead><tbody>{rows}</tbody></table></div>")
     if plan["windows"]:
         rows = "".join(f"<tr><td><a href='#c{int(c['ComponentId'])}'>{e(c['ComponentName'])}</a></td>"
-                       f"<td class='small'>{e(_obstacle(c, plan, ('blocker',)))}"
-                       + ("<div class='muted'>a Windows container is a workable stop-gap</div>" if c.get("WindowsContainerOk") else "")
-                       + "</td></tr>" for c in plan["windows"])
+                       f"<td class='small'>{e(_obstacle(c, plan, ('blocker',)))}</td></tr>" for c in plan["windows"])
         out.append("<div class='gen gw'><h3>Stays on Windows <span class='muted small'>VMs</span></h3>"
                    "<p class='muted small'>Cannot run in a Linux container: Windows-only technology.</p>"
                    f"<table><thead><tr><th>Component</th><th>Main obstacle</th></tr></thead><tbody>{rows}</tbody></table></div>")

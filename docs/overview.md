@@ -49,7 +49,9 @@ explains how the assessment works and what it generates. To install and use it, 
 4. **Finding rules** (`rules/10-runtime.yaml`, `20-platform.yaml`, `30-integration.yaml`) detect
    blockers and work items with a severity:
    `info < config < refactor < rewrite < blocker`, an explanation, a fix, and
-   whether a Windows container would be a workable stop-gap.
+   `windows_container` (whether the technology would run on Windows Server at all; a hint for
+   the migration plan and the SARIF output, not an output target: containerizer generates Linux
+   images only, and components that must stay on Windows stay on VMs).
 5. **Reachability**: findings in shared libraries only count for components whose code actually
    reaches the offending types (a type/extension-method mention graph) and that it compiles for its
    target framework, and Windows-only calls guarded by `OperatingSystem.IsWindows()` (directly, through
@@ -343,8 +345,9 @@ cookie: the browser's local storage keeps it, and the server never sees it.)
 
 Per component: `Dockerfile` (+ `Dockerfile.dockerignore`), `k8s.yaml` (Deployment or CronJob,
 Service, NetworkPolicy, PVCs where state must persist, ExternalSecrets for every credential),
-`plan.json` (the build plan). For .NET Framework components that could work in Windows Server
-containers, a `Dockerfile.windows` stop-gap. Per app: `kustomization.yaml` and `MIGRATION.md`.
+`plan.json` (the build plan). Linux only: .NET Framework components that are not ported get no
+container files (they stay on Windows VMs, see the migration plan). Per app: `kustomization.yaml`
+and `MIGRATION.md`.
 Java (Maven/Gradle; Spring Boot, Quarkus, plain JVM programs, WARs on Tomcat) and Node.js
 (npm/pnpm/yarn; Express, NestJS, Next.js and others) components get distroless, non-root images
 built on the runtime line they declare; see [Java and Node.js](java-node.md#containers).

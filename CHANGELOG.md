@@ -8,6 +8,15 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- **No more `Dockerfile.windows`** (#271): the project is Linux-only and Windows applications stay in VMs.
+  `containerizer generate` no longer writes the Windows Server Core stop-gap (`Dockerfile.windows` and its
+  `.dockerignore`) for .NET Framework components, `rules/images.yaml` drops the `windows:` images, `MIGRATION.md`
+  drops the "Windows container stop-gap" column, and finding fixes, the migration plan and the application page no
+  longer suggest a Windows container. The `windows_container` rule attribute and `WindowsContainerOk` stay (the
+  migration plan and SARIF output read them).
+
 ## 0.20.0 (2026-11-09)
 
 - (The version jumps from 0.16 to 0.20: Containerizer is getting ready for use in real environments. 0.17 to 0.19

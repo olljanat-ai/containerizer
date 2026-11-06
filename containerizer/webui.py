@@ -1038,7 +1038,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
         details.append(f"<details id='c{int(c['ComponentId'])}'{' open' if len(app['components']) == 1 else ''}>"
                        f"<summary><b>{e(c['ComponentName'])}</b> · {e(VERDICT_LABEL.get(c['Verdict'], c['Verdict']))}"
                        f" <span class='muted'>({len(fs)} item{'s' if len(fs) != 1 else ''})</span></summary>"
-                       f"<div class='muted small'>{e(c['VerdictText'])}{'; a Windows container is a workable stop-gap' if c['WindowsContainerOk'] and c['Verdict'] in ('rewrite', 'blocker') else ''}"
+                       f"<div class='muted small'>{e(c['VerdictText'])}"
                        f"{'; targets ' + e(c['TargetFramework']) if c['TargetFramework'] else ''}</div>"
                        f"{_llm_review(reviews.get(c['ComponentId']), app.get('AssessedAt'))}"
                        f"{_verify_detail(c)}{_sandbox_detail(sandbox.get(c['ComponentId']))}{items}"
