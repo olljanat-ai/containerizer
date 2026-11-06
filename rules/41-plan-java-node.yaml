@@ -40,3 +40,20 @@ rules:
         - property: {ParentPlugins: '(.*,)?(git-commit-id-maven-plugin|git-commit-id-plugin)(,.*)?'}
     plan:
       publish_args: ["-Dmaven.gitcommitid.skip=true"]
+
+  # ---- platform techniques (containerizer/techniques.py; see 40-plan.yaml)
+  - id: plan-spring-forward-headers
+    phase: plan
+    applies_to: [java]
+    resolves: [java-forwarded-headers-missing]
+    why: >-
+      TLS ends at the ingress, so the app sees plain HTTP and Spring Security builds http:// redirect URIs for
+      the identity provider. SERVER_FORWARD_HEADERS_STRATEGY=native makes the embedded server (Tomcat's
+      RemoteIpValve, Jetty, Undertow, Reactor Netty) take the scheme and client address from X-Forwarded-Proto
+      and X-Forwarded-For, with no code change. Tomcat trusts those headers only from private addresses (its
+      default internal proxies), and the pod's NetworkPolicy admits only the ingress controller to the web port.
+    refs:
+      - https://docs.spring.io/spring-boot/how-to/webserver.html#howto.webserver.use-behind-a-proxy-server
+    when: {}
+    plan:
+      env: {SERVER_FORWARD_HEADERS_STRATEGY: native}
