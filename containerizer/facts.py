@@ -9,6 +9,11 @@ from pathlib import Path
 from .rules import Context, Rule, run_rule
 
 FOLDER_KEY = re.compile(r"(folder|path|dir|directory|root|location|store|share|inbox|outbox|archive)$", re.I)
+# a connection string that is only an embedded database file in the app folder (no folder, no password)
+EMBEDDED_DB = re.compile(r"(Data\s*Source|DataSource|Filename)\s*=\s*[\w\-.]+\.(db|sqlite3?|litedb)\s*;?\s*"
+                         r"(;\s*(Cache|Mode|Pooling|Foreign\s*Keys|Connection)\s*=\s*[\w]+\s*)*;?", re.I)
+EMBEDDED_PKGS = re.compile(r"Microsoft\.EntityFrameworkCore\.Sqlite|Microsoft\.Data\.Sqlite|System\.Data\.SQLite|LiteDB",
+                           re.I)
 SECRET_KEY = re.compile(r"(password|secret|apikey|api_key|clientsecret|token|connectionstring|key)$", re.I)
 
 
@@ -71,6 +76,11 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
         cs = cfg.get("ConnectionStrings") or {}
         if isinstance(cs, dict) and cs:
             facts["connection_strings"] = sorted(cs.keys())
+            # embedded databases (SQLite, LiteDB) whose file is in the app folder: "Data Source=app.db". The
+            # generator re-points them to a persistent volume with an environment variable (generate.state_plan)
+            files = {k: v for k, v in cs.items() if isinstance(v, str) and EMBEDDED_DB.fullmatch(v.strip())}
+            if files and any(EMBEDDED_PKGS.match(n) for n in p.packages):
+                facts["embedded_db_files"] = files
         ep = ((cfg.get("Kestrel") or {}).get("Endpoints") or {}) if isinstance(cfg.get("Kestrel"), dict) else {}
         names = set(ep.keys()) if isinstance(ep, dict) else set()
         for f in p.files:   # appsettings.<Environment>.json may add endpoints, override those too
@@ -176,6 +186,9 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
             writable.add(m.group(2))
         for m in re.finditer(r'\?\?\s*"(App_Data|logs?|Logs|data|Data|temp|tmp|uploads|Uploads)"', txt):
             writable.add(m.group(1))
+        # files saved under the web root: Path.Combine(env.WebRootPath, "uploads", name)
+        for m in re.finditer(r'Path\.Combine\([^,()]*WebRootPath[^,()]*,\s*"([\w\-]+)"', txt):
+            writable.add("wwwroot/" + m.group(1))
     writable |= set(facts.get("nlog_basedir_dirs") or [])
     for key, val in (facts.get("folder_settings") or {}).items():
         if re.fullmatch(r"[\w\-./]+", val) and not val.startswith("/"):

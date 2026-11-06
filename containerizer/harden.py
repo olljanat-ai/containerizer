@@ -614,6 +614,16 @@ def hardening_markdown(app: str, comp_docs: dict[str, list[dict]]) -> str:
         lines += ["## Hardening exceptions", "", "| Exception | Components |", "| --- | --- |"]
         lines += [f"| {e} | {', '.join(sorted(c))} |" for e, c in sorted(exceptions.items())]
         lines.append("")
+    pvcs = sorted((comp, d["metadata"]["name"]) for comp, docs in comp_docs.items() for d in docs
+                  if d.get("kind") == "PersistentVolumeClaim")
+    if pvcs:
+        lines += ["## Application data (persistent volumes)", "",
+                  "These PersistentVolumeClaims hold the application's own data (the components run as they are, "
+                  "one replica). The operator owns their backup and restore, StorageClass, size and encryption at "
+                  "rest; deleting the namespace deletes them with the default reclaim policy.", "",
+                  "| Component | PersistentVolumeClaim |", "| --- | --- |"]
+        lines += [f"| {c} | `{n}` |" for c, n in pvcs]
+        lines.append("")
     remote = []
     for comp, docs in sorted(comp_docs.items()):
         for d in docs:
@@ -808,7 +818,11 @@ def lint_manifests(docs: list[dict], where: str = "", provided: set[str] | None 
 
 
 def _looks_like_path(v: str) -> bool:
-    return v.startswith(("/", "FILE:", "file:")) or v.lower() in ("true", "false")
+    """A file or folder, a flag, or an embedded database file on a volume ("Data Source=/data/app.db",
+    generate.state_plan): no secret in it."""
+    return (v.startswith(("/", "FILE:", "file:")) or v.lower() in ("true", "false")
+            or bool(re.fullmatch(r"(Data\s*Source|DataSource|Filename)\s*=\s*/[\w\-./]+(\s*;\s*(Cache|Mode|Pooling|"
+                                 r"Foreign\s*Keys|Connection)\s*=\s*\w+)*\s*;?", v, re.I)))
 
 
 def _selects(selector: dict, labels: dict) -> bool:

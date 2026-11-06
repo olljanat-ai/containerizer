@@ -40,6 +40,13 @@ def migration_markdown(a: AppAssessment) -> str:
          "Stateless: " + ("yes" if not a.stateful() else "no - " + "; ".join(
              f"{c.name}: {', '.join(sorted({f.rule.title for f in c.state_findings}))}" for c in a.stateful())), "",
          a.summary(), ""]
+    if a.stateful():
+        L += ["## Application data on persistent volumes", "",
+              "The components that keep their own data run as they are, without code changes: one replica, replaced "
+              "rather than rolled on update, and their data folders on PersistentVolumeClaims (`<component>/k8s.yaml`). "
+              "Those volumes hold the application's data: the operator owns their backup, StorageClass and size "
+              "(1Gi from the cluster's default StorageClass as generated). Scaling out needs the data in a shared "
+              "service first (the findings below say which).", ""]
     tb = a.top_blockers()
     if tb:
         L += ["## Main obstacles", ""]

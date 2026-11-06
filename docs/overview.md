@@ -62,14 +62,17 @@ explains how the assessment works and what it generates. To install and use it, 
    containers now), **D** major refactoring (a framework port is needed, also when other components must
    stay on Windows), **E** not feasible (no server component, or three quarters or more of them must stay
    on Windows).
-   **A** also requires every server component to be **stateless**: persistent data may live in
-   services that are available as managed cloud services (SQL Server, PostgreSQL, MySQL, MongoDB,
-   Redis, blob storage, queues), but not on the component's own disk or in its process memory. Rules
-   that find such data carry `state: local` or `state: memory` (`rules/36-state.yaml`, `sqlite-local`,
+   **Stateful** is shown next to the rating, not taken from it: a server component that keeps its own
+   data on its disk or in its process memory still rates **A** when it runs with configuration only,
+   because it runs as it is with that data on a persistent volume and one replica (see
+   [Application data on persistent volumes](#application-data-on-persistent-volumes)). Rules that find
+   such data carry `state: local` or `state: memory` (`rules/36-state.yaml`, `sqlite-local`,
    `lucene-local-index`): a local SQLite/LiteDB file with no server database wired up, a local
    Lucene/Examine index, uploads or data files written under the content root or App_Data,
-   ASP.NET Core session without a distributed cache, and Hangfire in-memory storage. An app that is
-   otherwise ready but keeps such data is rated **B**, and the report lists what keeps it stateful.
+   ASP.NET Core session without a distributed cache, and Hangfire in-memory storage. The application is
+   marked **stateful** (next to its rating, an automatic `stateful` tag the front page filters by) and the
+   report lists what it keeps; scaling it out needs that data in a shared service first. Only data on its
+   own disk in a folder Containerizer cannot find (so no volume can hold it) keeps a component at **B**.
    Not counted: SQLite next to a server database provider (`sqlite-optional`), a read-only SQLite
    file shipped with the app, Lucene used only for text analysis, temp files and logs, and the
    ASP.NET Core Data Protection key ring (one `PersistKeysTo*` line; reported separately).
@@ -169,13 +172,13 @@ application, also the ones that need changes for the rest. The results page of e
 does not rate A has a **Migration plan**, right after the main obstacles, that splits it into waves:
 
 - **Wave 1, now** (to Kubernetes): the server components that rate A on their own (the application rating
-  rule applied to the one component: configuration only, no data of their own) and did not fail to build and
-  run. These are the components an organization scan deploys to the sandbox, so each shows whether it is there:
+  rule applied to the one component: configuration only) and did not fail to build and run. A component that keeps its own data is marked *runs with a persistent volume, one
+  replica* with what it keeps; it needs no code change. These are the components an organization scan deploys to the sandbox, so each shows whether it is there:
   the sandbox check's result, *deployed, not checked yet* (the scan deployed it, no check has a result yet), or
   *not deployed* with why (the application's sandbox is turned off, the scan left it out, or no organization
   scan deploys the application).
-- **Wave 2, after code changes**: components whose findings can be fixed in code (targeted changes, data
-  moved to an external service, a failed build or run), with what to fix, and what the part that can run in
+- **Wave 2, after code changes**: components whose findings can be fixed in code (targeted changes, a failed
+  build or run), with what to fix, and what the part that can run in
   Linux containers rates once they are fixed. Where the page has the Refactoring box,
   [Make it A](refactoring.md#make-it-a) makes these changes.
 - **After a framework port or rewrite**: components that need one, with their main obstacle.
@@ -190,7 +193,7 @@ A line at the top sums it up: *2 of 6 components can run in Linux containers now
 3 stay on Windows.* (or *Nothing runs in a Linux container until the framework port is done.*). The part that can
 run in Linux containers is rated with the same rule as the application (`assess.rating_of`), as it is and with
 the changes made. The front page shows the first wave next to the rating of such an application,
-*2/6 ready now*.
+*2/6 ready now* (*, 1 with a volume* when wave 1 has components that keep their own data).
 
 ![Migration plan of an application with components that must stay on Windows: two components ready and in the sandbox, one after code changes, three that stay on Windows, and the calls between the parts](images/results-migration-plan.png#only-light){ .cz-shot }
 ![Migration plan of an application with components that must stay on Windows: two components ready and in the sandbox, one after code changes, three that stay on Windows, and the calls between the parts](images/results-migration-plan-dark.png#only-dark){ .cz-shot }
@@ -214,6 +217,40 @@ When a component that crashes in the sandbox needs a [lab service](lab-services.
 sandbox result says so first ("It needs RabbitMQ, which the lab has turned off: turn it on under Admin -> Lab
 services"): an app without its message broker often just stops, and its other symptoms (an empty log, a secret
 store key that is not there) point elsewhere.
+
+### Application data on persistent volumes
+
+A component that is ready in every other way but keeps its own data (a SQLite/LiteDB file, a local Lucene index,
+uploads under the web root or App_Data, in-memory session or Hangfire storage) is deployed as it is: keeping
+data is an orchestration concern, not a reason to change the application's code. The generator
+(`generate.state_plan`):
+
+- runs it as **one replica** with `strategy: Recreate`, so two pods never write the same files;
+- mounts a **PersistentVolumeClaim** (`ReadWriteOnce`, 1Gi from the cluster's default StorageClass) on each folder
+  the component keeps data in: folders its code and configuration write to (`Path.Combine(ContentRootPath, ...)`,
+  `Path.Combine(env.WebRootPath, "uploads")`, folder settings, a SQLite `Data Source=data/app.db`), and App_Data
+  when the code names data folders under it;
+- moves an embedded database file that sits in the app folder (`"Data Source=app.db"`, `"Filename=app.litedb"`)
+  to `/data`, a volume, with an environment variable that overrides the connection string
+  (`ConnectionStrings__Default=Data Source=/data/app.db`): no file of the application changes;
+- keeps the root file system read-only and the user non-root; `fsGroup` (with `fsGroupChangePolicy:
+  OnRootMismatch`) lets that user write the volumes;
+- labels the workload, its pods and its volumes `stateful: "true"` (not in the selector), so the platform can
+  find them for backup and scheduling.
+
+`stateful:` in `rules/36-state.yaml` sets the platform side without editing manifests: the labels, the
+StorageClass (`storage_class`, empty for the cluster's default) and size of the volumes, and a `node_selector`
+and `tolerations` for a dedicated node pool. A separate cluster is not needed: a stateful component is still
+application tier (with an embedded database its data tier is in the same process), and what it needs from the
+platform is storage with backups. A `ReadWriteOnce` volume ties the pod to the node or zone that holds it.
+
+State kept only in memory (session, Hangfire in-memory storage) gets one replica and no volume. A component that
+writes local data to a folder the generator cannot find rates B and is left out ("keeps local state in a folder
+Containerizer could not find"): with a read-only root file system its writes would fail. The volumes hold
+application data: `HARDENING.md` and `MIGRATION.md` in the output say so, and the operator owns their backup,
+StorageClass and size. A volume starts empty: data shipped in that folder of the image (a seed database) is not
+copied into it. Moving the data to SQL Server, to scale out, is a code
+change and left to the application's developers (or a refactoring order, on request).
 
 ### Migration assistant
 

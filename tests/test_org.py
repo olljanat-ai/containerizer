@@ -242,11 +242,25 @@ def test_select_components_requires_a_and_confirmed_run():
     assert [c.name for c in select_components(a, verified=True)[0]] == ["Demo.Web"]
 
 
-def test_select_components_honours_stateless_flag(monkeypatch):
+def test_select_components_deploys_stateful_with_a_volume(monkeypatch):
+    """Keeps its own data: rated A and deployed with a volume, one replica."""
     a = assess(DEMO, load_rules())
-    monkeypatch.setattr(type(a.components[0]), "stateless", property(lambda self: False), raising=False)
+    cls = type(a.components[0])
+    monkeypatch.setattr(cls, "stateless", property(lambda self: False), raising=False)
+    monkeypatch.setattr(cls, "state_findings", property(lambda self: []), raising=False)
+    assert orgmod.component_rating(a, a.components[0]) == "A" and orgmod.stateful_ready(a, a.components[0])
     keep, exc = select_components(a, verified=False)
-    assert keep == [] and exc == [{"component": "Demo.Web", "reason": "keeps local state"}]
+    assert [c.name for c in keep] == ["Demo.Web"] and exc == []
+
+
+def test_select_components_leaves_out_local_state_without_a_folder(monkeypatch):
+    a = assess(DEMO, load_rules())
+    cls = type(a.components[0])
+    monkeypatch.setattr(cls, "stateless", property(lambda self: False), raising=False)
+    monkeypatch.setattr(cls, "state_unplaced", property(lambda self: True), raising=False)
+    assert orgmod.component_rating(a, a.components[0]) == "B"
+    keep, exc = select_components(a, verified=False)
+    assert keep == [] and exc[0]["reason"].startswith("keeps local state in a folder Containerizer could not find")
 
 
 def test_component_rating_is_per_component():

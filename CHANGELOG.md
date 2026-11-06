@@ -22,16 +22,21 @@ The OS image changes (`appliance/`, #255): release as a minor version.
   `plan.json` (`applied`, `resolved`, `reasons`); the finding keeps its rule severity as `rule_severity` and is
   never sent to a refactoring. An application whose only refactor findings are these goes from B to A at its next
   scan. The page also classifies all 111 refactor rules (platform, partial, code-only) as candidates for more.
-
-- Refactoring and **Make it A** change application code only where the platform cannot, and only the lines the
-  findings need (#252). Findings that the generated Dockerfile and manifests already settle (`core-eol`,
-  `dataprotection-default`; the list is data, `platform:` in the new `rules/70-refactor.yaml`) are never sent
-  to the LLM: the order page and the patch list them as *Handled by configuration*, and an app with only such
-  findings is not offered an order for them; findings a platform technique resolves (above) are listed there the same way. Each LLM edit is made minimal before it is applied: reformatting,
-  re-indentation, brace-style changes, reordered usings, rewritten comments, blank lines and package version
-  changes are put back as they were. An answer that still changes more than 40 lines per finding
-  (`max_changed_lines_per_finding`) is asked again, then left out with the reason. The order page shows the
-  lines changed per finding, and the patch header lists them with why a code change was needed.
+- **Apps that keep their own data run as they are, with a persistent volume, and rate A (stateful).** A component
+  that is ready in every other way but keeps local data (a SQLite/LiteDB file, uploads under the web root or
+  App_Data, a local index, in-memory session or Hangfire storage) was capped at B, left out of the sandbox ("keeps
+  local state") and pointed at Make it A, an LLM rewrite that moves the data to SQL Server. Now it rates **A**,
+  marked **stateful** next to the rating, and the organization scan deploys it unchanged: one replica with
+  `strategy: Recreate`, a PersistentVolumeClaim on each folder it keeps data in, `fsGroup` so the non-root user can
+  write it, the root file system still read-only. An embedded database file in the app folder (`Data Source=app.db`)
+  moves to `/data`, a volume, with an environment variable over its connection string; no file of the application
+  changes and no LLM is called. Local data in a folder Containerizer cannot find still keeps the component at B and
+  out of the sandbox. The workload, its pods and volumes get the label `stateful: "true"`; `stateful:` in
+  `rules/36-state.yaml` sets the label, StorageClass, size and a node pool (node selector, tolerations). The front
+  page and results page show an automatic `stateful` tag that the tag filter finds and nobody can add or remove;
+  the migration plan marks such components *runs with a persistent volume, one replica*. `HARDENING.md` and
+  `MIGRATION.md` list the volumes: the operator owns their backup, StorageClass and size. Ratings of such
+  applications go from B to A at their next scan.
 
 - **Builds of scanned code are isolated from the appliance** ([builds of scanned code](docs/appliance-admin.md#builds-of-scanned-code), #255).
   The scan worker and the LLM queue runner are no longer in the root-equivalent `docker` group: they reach Docker
