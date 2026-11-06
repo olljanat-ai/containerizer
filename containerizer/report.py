@@ -88,6 +88,8 @@ def migration_markdown(a: AppAssessment) -> str:
             res = text.get(r["status"], r["status"])
             if r.get("mode") == "smoke" or r.get("smoke") == "ok":
                 res += " (proven in Development mode without production services)"
+            if r.get("external"):
+                res += f"; external: {r['external']}"
             if r.get("finding"):
                 res += f": {r['finding'].get('title', '')}"
             L.append(f"| {r['component']} | {res} | {r.get('detail', '')} |")

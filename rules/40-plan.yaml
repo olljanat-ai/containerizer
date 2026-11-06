@@ -138,6 +138,28 @@ rules:
 
   # ---- platform techniques (containerizer/techniques.py): configuration that satisfies a finding, so the code
   # stays as it is. `resolves` names the findings; while the technique applies they count as `config`.
+  - id: plan-kerberos-client
+    phase: plan
+    applies_to: [dotnet]
+    resolves: [wcf-windows-client-credentials]
+    why: >-
+      The WCF client calls with Windows credentials. The image gets the GSSAPI libraries, and
+      KRB5_CLIENT_KTNAME points at a client keytab mounted read-only from an optional Secret
+      (<component>-client-keytab): MIT krb5 then gets an initial ticket for the keytab's principal on its
+      own, so the unchanged binding authenticates as that account. KRB5_CONFIG reads krb5.conf from the same
+      Secret when it is there (the realm's KDCs are otherwise found through DNS SRV records), and the
+      NetworkPolicy allows Kerberos to the KDC.
+    refs:
+      - https://web.mit.edu/kerberos/krb5-latest/doc/basic/keytab_def.html
+      - https://web.mit.edu/kerberos/krb5-latest/doc/admin/env_variables.html
+    when: {}
+    plan:
+      add_packages: [libkrb5-3, libgssapi-krb5-2, gss-ntlmssp]
+      env:
+        KRB5_CLIENT_KTNAME: /etc/krb5/client/client.keytab
+        KRB5_CONFIG: /etc/krb5/client/krb5.conf:/etc/krb5.conf
+      needs_external: a Kerberos client identity (client keytab and a reachable KDC)
+
   - id: plan-machine-hostname
     phase: plan
     applies_to: [dotnet]

@@ -63,6 +63,14 @@ hardening:
         secret_mounts: [{name: keytab, path: /etc/krb5/keytab}]
       why: Windows authentication on Linux needs the service keytab (from a Secret, never the image) and a writable credential cache.
 
+    - id: kerberos-client-keytab
+      if_plan: {env: KRB5_CLIENT_KTNAME}
+      patch:
+        writable: [/tmp]
+        env: {KRB5CCNAME: 'FILE:/tmp/krb5cc_app'}
+        secret_mounts: [{name: client-keytab, path: /etc/krb5/client}]
+      why: A WCF client with Windows credentials authenticates as the account in a client keytab (from a Secret, never the image); the tickets it gets go to a writable credential cache.
+
     - id: native-rendering-memory
       when:
         any:
@@ -192,6 +200,10 @@ network:
         any:
           - package: 'Microsoft\.AspNetCore\.Authentication\.Negotiate|System\.DirectoryServices.*|Novell\.Directory\.Ldap.*'
       ports: [{port: 88, protocol: TCP}, {port: 88, protocol: UDP}, 389, 636, 464, 3268, 3269]
+    # Kerberos initiator (plan-kerberos-client): the component asks the KDC for its own tickets
+    - id: kerberos-kdc
+      findings: [wcf-windows-client-credentials]
+      ports: [{port: 88, protocol: TCP}, {port: 88, protocol: UDP}]
     - id: sftp
       when: {package: 'SSH\.NET|Renci\.SshNet.*|WinSCP'}
       ports: [22]

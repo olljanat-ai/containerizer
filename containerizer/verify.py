@@ -357,6 +357,10 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
                 result["status"] = "ok"
                 if env_override:
                     result["mode"] = "smoke"     # proven without the production services
+                if plan.get("needs_external"):
+                    # it answers, but the calls that need this (WCF with Windows credentials) cannot be tried here
+                    result["status"] = "ok-external"
+                    result["external"] = f"needs {plan['needs_external']}"
                 break
         msgs = _messages(log) if stage == "run" else log
         # deep stack traces would push the exception message itself out of a raw tail

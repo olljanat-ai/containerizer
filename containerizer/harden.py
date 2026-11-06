@@ -247,6 +247,10 @@ def egress_for(repo, c) -> list[dict]:
                                 continue
                             found.add(int(m.group("port")))
             ports = sorted(x for x in found if 0 < x < 65536)
+        elif dep.get("findings"):
+            # a dependency that a finding implies (the Kerberos KDC of a WCF client with Windows credentials)
+            if any(f.rule.id in dep["findings"] and not f.dormant for f in getattr(c, "findings", None) or []):
+                ports = dep["ports"]
         else:
             r = Rule.from_dict({"id": dep["id"], "when": dep["when"], "phase": "network"})
             if any(run_rule(r, Context(repo, p, c.role)) is not None for p in _projects(repo, c)):
@@ -323,7 +327,9 @@ def externalize_secrets(docs: list[dict], component: str, labels: dict, plan: di
                     keys = [i["key"] for i in sec.get("items") or []]
                     if not keys and sec["secretName"].endswith("-files"):
                         keys = list(plan.get("secret_files") or [])
-                    if not keys and sec["secretName"].endswith("-keytab"):
+                    if not keys and sec["secretName"].endswith("-client-keytab"):
+                        pass            # the whole remote secret: client.keytab, and krb5.conf when the realm needs one
+                    elif not keys and sec["secretName"].endswith("-keytab"):
                         keys = [_basename(plan.get("env", {}).get("KRB5_KTNAME") or "service.keytab")]
                     wanted[sec["secretName"]] = keys
     docs[:] = keep
