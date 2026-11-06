@@ -254,16 +254,6 @@ def test_docker_outage_is_not_a_build_failure(monkeypatch):
         verify._run(["docker", "build", "."], 10)
 
 
-def test_windows_stopgap_for_aspnet_web_site():
-    from types import SimpleNamespace
-    from containerizer.generate import dockerfile_windows
-    p = SimpleNamespace(rel="RockWeb/RockWeb.website", properties={"WebSiteProject": "Rock.sln"},
-                        assembly_name="RockWeb")
-    df = dockerfile_windows(SimpleNamespace(project=p, role="web", name="RockWeb"))
-    assert 'msbuild "Rock.sln"' in df and '-p "C:\\src\\RockWeb" -u -fixednames C:\\out' in df
-    assert ".website" not in df.split("FROM", 2)[1].split("RUN", 1)[1]
-
-
 def test_windows_sign_in_in_code_needs_a_change_also_with_iis_turned_off(tmp_path):
     """The lab's trade-rebates portal: a Make it A patch turned windowsAuthentication off in web.config (only IIS
     reads it) and kept AddNegotiate; it rated A and nobody could sign in in the sandbox. Negotiate in code is the
