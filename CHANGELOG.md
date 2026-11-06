@@ -10,6 +10,11 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- **Compose and Kubernetes parity test** ([docs](docs/compose.md#kubernetes-to-compose)): `tests/test_compose.py`
+  generates both outputs for every example and for synthetic plans that use every plan key, and checks that each
+  Kubernetes feature has its Compose counterpart. A plan key, hardening patch key, pod or container field, volume
+  source or document kind that `rules/compose.yaml` (`parity:`) does not map or declare not applicable fails the
+  test with its name. (work in progress)
 - **Platform fixes for refactor findings** ([docs](docs/platform-fixes.md)): findings that the generated
   configuration can satisfy no longer need code changes, and count as `config` in the rating. A plan rule names the
   findings it `resolves`; three techniques are new: code that switches on `Environment.MachineName` gets the pod
