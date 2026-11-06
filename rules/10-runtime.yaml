@@ -4,8 +4,8 @@
 #   refactor - needs targeted code changes
 #   rewrite  - needs a port of the component (e.g. .NET Framework -> modern .NET)
 #   blocker  - cannot run in a Linux container; keep on Windows/VM or replace
-# windows_container: whether a Windows Server container would be a workable
-# stop-gap (null = unknown / not applicable).
+# windows_container: whether the technology would run on Windows Server at all (null = unknown /
+# not applicable); read by the migration plan and SARIF output. Only Linux images are generated.
 rules:
   - id: netfx-target
     applies_to: [dotnet]
@@ -27,17 +27,14 @@ rules:
     title: Targets .NET Framework
     why: >-
       .NET Framework only runs on Windows, so this component cannot run in a Linux container
-      as it is. It must be ported to modern .NET (or kept in a Windows Server Core container on
-      Windows nodes as a stop-gap).
+      as it is. It must be ported to modern .NET (or kept on a Windows VM until then).
     fix: >-
       Port to net10.0 (GitHub Copilot app modernization, which replaces the deprecated .NET
       Upgrade Assistant, can drive it; retarget shared libraries to netstandard2.0 or
-      multi-target them with net10.0 first). Windows container stop-gap:
-      mcr.microsoft.com/dotnet/framework/aspnet:4.8.1-windowsservercore-ltsc2022.
+      multi-target them with net10.0 first).
     refs:
       - https://learn.microsoft.com/en-us/dotnet/core/porting/
       - https://learn.microsoft.com/en-us/dotnet/standard/net-standard
-      - https://hub.docker.com/r/microsoft/dotnet-framework-aspnet
 
   - id: aspnetcore-on-netfx
     applies_to: [dotnet]
@@ -305,7 +302,7 @@ rules:
       ASP.NET Web Forms (.aspx pages, .ascx controls, ViewState, postbacks) is part of System.Web
       on .NET Framework and was not brought to ASP.NET Core, so the pages must be rewritten
       (Razor Pages or Blazor).
-    fix: Rewrite UI in Razor Pages or Blazor; consider a Windows container stop-gap.
+    fix: Rewrite UI in Razor Pages or Blazor; the component stays on its Windows VM until then.
     refs:
       - https://learn.microsoft.com/en-us/dotnet/architecture/blazor-for-web-forms-developers/
 

@@ -352,13 +352,13 @@ def candidates(ref: str, tags: list[str]) -> list[str]:
     return [f"{name}:{t}" for t in out]
 
 
-def image_refs(include_windows: bool = False) -> list[tuple[str, str]]:
+def image_refs() -> list[tuple[str, str]]:
     """(slot, reference) of every base image in rules/images.yaml (without the lock)."""
     from .rules import RULES_DIR
     data = yaml.safe_load((RULES_DIR / "images.yaml").read_text())
     out = []
     for group, d in data.items():
-        if not isinstance(d, dict) or (group == "windows" and not include_windows):
+        if not isinstance(d, dict):
             continue
         for k, v in d.items():
             if isinstance(v, str) and ":" in v:

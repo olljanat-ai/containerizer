@@ -175,7 +175,7 @@ def test_application_page():
     assert "href='https://learn.microsoft.com/x'" in html
     assert "href='javascript" not in html             # only http(s) links
     assert "Low" in html and "confirmed by building and running" in html
-    assert "Windows container is a workable stop-gap" in html
+    assert "stop-gap" not in html
 
 
 class FakeConn:

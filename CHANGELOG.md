@@ -12,6 +12,12 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 The OS image changes (`appliance/`, #255): release as a minor version.
 
+- **No more `Dockerfile.windows`** (#271): the project is Linux-only and Windows applications stay in VMs.
+  `containerizer generate` no longer writes the Windows Server Core stop-gap (`Dockerfile.windows` and its
+  `.dockerignore`) for .NET Framework components, `rules/images.yaml` drops the `windows:` images, `MIGRATION.md`
+  drops the "Windows container stop-gap" column, and finding fixes, the migration plan and the application page no
+  longer suggest a Windows container. The `windows_container` rule attribute and `WindowsContainerOk` stay (the
+  migration plan and SARIF output read them).
 - **Platform fixes for refactor findings** ([docs](docs/platform-fixes.md)): findings that the generated
   configuration can satisfy no longer need code changes, and count as `config` in the rating. A plan rule names the
   findings it `resolves`; three techniques are new: code that switches on `Environment.MachineName` gets the pod

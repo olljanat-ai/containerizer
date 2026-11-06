@@ -89,7 +89,7 @@ migrations:
       - Map master pages to Razor layouts, user controls to Razor components or partials, code-behind event handlers to page handlers (OnGet/OnPost) or component events.
       - Replace ViewState and postback-dependent logic with explicit form models and server state (session over a distributed cache only where needed).
       - Replace vendor Web Forms controls with their ASP.NET Core/Blazor editions or plain components.
-      - Run the old and new UI side by side behind YARP with the System.Web adapters until every page is moved; until then a Windows container is a workable stop-gap.
+      - Run the old and new UI side by side behind YARP with the System.Web adapters until every page is moved; until then the old UI stays on its Windows VM.
     verify:
       - Each ported page passes a UI test (Playwright) of its main flows, recorded against the old page first.
     refs:
