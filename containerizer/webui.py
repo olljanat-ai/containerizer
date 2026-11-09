@@ -653,6 +653,14 @@ def _date(d) -> str:
     return d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else e(str(d or ""))
 
 
+def _confidence_source(app: dict) -> str:
+    """Where the confidence comes from: a build and run confirms it only when none of them failed."""
+    failed = sum(1 for c in app.get("components") or [] if c.get("VerifyStatus") in VERIFY_FAILED)
+    if failed:
+        return f"from source analysis; the build or run failed for {failed} component{'s' if failed != 1 else ''}"
+    return "confirmed by building and running" if app.get("Verified") else "from source analysis"
+
+
 def _confidence(c) -> str:
     c = float(c or 0)
     return "High" if c >= 0.8 else "Medium" if c >= 0.5 else "Low"
@@ -1033,7 +1041,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
                        f"<div class='muted small'>{e(c['VerdictText'])}{'; a Windows container is a workable stop-gap' if c['WindowsContainerOk'] and c['Verdict'] in ('rewrite', 'blocker') else ''}"
                        f"{'; targets ' + e(c['TargetFramework']) if c['TargetFramework'] else ''}</div>"
                        f"{_llm_review(reviews.get(c['ComponentId']), app.get('AssessedAt'))}"
-                       f"{_sandbox_detail(sandbox.get(c['ComponentId']))}{items}"
+                       f"{_verify_detail(c)}{_sandbox_detail(sandbox.get(c['ComponentId']))}{items}"
                        f"{_migration(app['ApplicationId'], migs.get(c['ComponentId']), refactor)}</details>")
     repo = by_comp.get(None, [])
     if repo:
@@ -1054,11 +1062,11 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 <p class='crumbs'>{crumbs}</p>{_admin_links_html(refactor.get("admin_links"))}
 <header class='app'>{badge(r, True)}{_stateful_mark(app_auto_tags(app))}<div><h1>{e(app['ApplicationName'])}</h1>
 <p class='lead'><b>{e(RATING_TITLE.get(r, ''))}</b>: {e(RATING_TEXT.get(r, ''))}</p>
-{f"<p>{e(app['Description'])}</p>" if app.get('Description') else ''}<p>{e(app['Summary'])}</p>{rating_why(app)[0]}{_in_sandbox(app)}{_lab_needs(app, refactor)}</div></header>
+{f"<p>{e(app['Description'])}</p>" if app.get('Description') else ''}<p>{e(app['Summary'])}</p>{rating_why(app)[0]}{_verify_failed_note(app)}{_in_sandbox(app)}{_lab_needs(app, refactor)}</div></header>
 <div class='tiles'>
 <div class='tile'><div class='label'>Readiness</div><div class='value'>{int(app['Score'])}<span class='unit'>/100</span></div></div>
 <div class='tile'><div class='label'>Confidence</div><div class='value'>{_confidence(app['Confidence'])}</div>
-<div class='sub'>{'confirmed by building and running' if app['Verified'] else 'from source analysis'}</div></div>
+<div class='sub'>{_confidence_source(app)}</div></div>
 <div class='tile'><div class='label'>Last assessed</div><div class='value small-value'>{_date(app['AssessedAt'])}</div></div>
 </div>
 <div class='meta'>{owner}{src}</div>
@@ -1191,13 +1199,47 @@ def _migration(app_id, m: dict | None, ctx: dict | None = None) -> str:
     return "".join(out) + "</section>"
 
 
+VERIFY_TEXT = {"ok": "Runs", "ok-external": "Runs (stops only at missing external services)",
+               "finding": "Runs with a finding", "build-failed": "Build failed", "run-failed": "Run failed"}
+VERIFY_FAILED = ("build-failed", "run-failed")
+
+
 def _verify(c: dict) -> str:
     s = c.get("VerifyStatus")
     if not s:
         return "<span class='muted'>not run</span>"
-    text = {"ok": "Runs", "ok-external": "Runs (stops only at missing external services)",
-            "finding": "Runs with a finding", "build-failed": "Build failed", "run-failed": "Run failed"}.get(s, s)
-    return f"<span class='v-{e(s)}'>{e(text)}</span>"
+    out = f"<span class='v-{e(s)}'>{e(VERIFY_TEXT.get(s, s))}</span>"
+    if s in VERIFY_FAILED and c.get("ComponentId") is not None:
+        out += f" <a class='small' href='#c{int(c['ComponentId'])}'>why</a>"
+    return out
+
+
+def _verify_detail(c: dict) -> str:
+    """Why a component's build or run failed, with the end of its log (VerifyDetail), in its details."""
+    s = c.get("VerifyStatus")
+    if s not in VERIFY_FAILED:
+        return ""
+    detail = (c.get("VerifyDetail") or "").strip()
+    if "\n" in detail:
+        body = f"<pre class='code'>{e(detail)}</pre>"
+    else:                                   # a scan before the log was kept: only the steps it tried
+        body = ((f"<p class='small'><span class='label'>Steps</span> {e(detail)}</p>" if detail else "")
+                + "<p class='muted small'>This scan kept no log; the next scan shows the end of it here.</p>")
+    return (f"<div class='sandbox'><div><span class='label'>Build and run</span> {_verify(dict(c, ComponentId=None))}"
+            " <span class='muted small'>(in the scan's verification, before anything is generated)</span></div>"
+            f"{body}<p class='muted small'>A component whose build or run failed is left out of the generated files "
+            "and the sandbox; its rating comes from its source code.</p></div>")
+
+
+def _verify_failed_note(app: dict) -> str:
+    """At the top of the page: the rating comes from the source code, but the build or run failed."""
+    bad = [c for c in app.get("components") or [] if c.get("VerifyStatus") in VERIFY_FAILED]
+    if not bad:
+        return ""
+    names = ", ".join(f"<a href='#c{int(c['ComponentId'])}'>{e(c['ComponentName'])}</a>" for c in bad)
+    return (f"<p class='note'><b>Not confirmed:</b> building or running {names} failed in the scan's "
+            "verification. The rating comes from the source code; the failed components are not deployed until the "
+            "next scan builds and runs them.</p>")
 
 
 SANDBOX_TEXT = {"healthy": "Deployed and healthy", "failing": "Deployed but failing", "pending": "Not ready in time",
