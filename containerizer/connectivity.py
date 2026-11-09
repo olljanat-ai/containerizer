@@ -52,7 +52,10 @@ URL_RE = re.compile(r"\b(?P<scheme>https?|wss?|amqps?|rediss?|mongodb(?:\+srv)?|
                     r"(?::(?P<port>\d{1,5}))?", re.I)
 # connection strings: "Server=db.example.com,1433", "Data Source=tcp:db,1433", "Host=pg;Port=5433"
 CONN_RE = re.compile(r"(?i)\b(?:Server|Data Source|Address|Addr|Network Address)\s*=\s*(?:tcp:)?"
-                     r"(?P<host>[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)(?:\\[\w$]+)?(?:\s*,\s*(?P<port>\d{1,5}))?")
+                     # not code: `address = configuration["Proxy:Address"]` names no host (no [ or ( after it, and
+                     # the whole word, so backtracking cannot shorten it into one)
+                     r"(?P<host>[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)(?![A-Za-z0-9.\-\[(])"
+                     r"(?:\\[\w$]+)?(?:\s*,\s*(?P<port>\d{1,5}))?")
 HOSTPORT_RE = re.compile(r"(?i)\bHost\s*=\s*(?P<host>[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)\s*;"
                          r"(?:[^;\"]*;)*?\s*Port\s*=\s*(?P<port>\d{1,5})")
 # names in configuration that are documentation, schemas or placeholders, not destinations

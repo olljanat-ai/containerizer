@@ -87,3 +87,12 @@ def test_a_run_stopped_by_external_services_names_what_it_needs(tmp_path, monkey
     assert r["attempts"][0]["mapped_hosts"] == sorted(seen[0])
     assert sorted(r["needs"]) == ["mq.corp.example:5671", "orders.corp.example:8081", "pg.corp.example:5433",
                                   "sql.corp.example"]
+
+
+def test_code_that_reads_a_setting_names_no_host():
+    """`var address = configuration["Proxy:Address"];` is code, not a connection string: no host `configuration`."""
+    from containerizer.connectivity import line_hosts
+    assert line_hosts('var address = configuration["Proxy:Address"];') == []
+    assert line_hosts("var server = GetServer(name);") == []
+    assert [h for h, *_ in line_hosts('"Server=sql.corp.local\\INST,1433;Database=x"')] == ["sql.corp.local"]
+    assert [h for h, *_ in line_hosts("Data Source=db01;Initial Catalog=x")] == ["db01"]
