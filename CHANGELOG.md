@@ -19,6 +19,11 @@ The OS image changes (`appliance/`, #255): release as a minor version.
   ends the repositories in progress with every tool they started (git, builds): each repository of a run an
   administrator can cancel is scanned in a process of its own, also with one repository at a time. The ended
   ones are not recorded: they keep their previous result and the next run scans them again.
+- **A failed build or run is shown with its log.** An application rated from its source code (for example **A**)
+  whose component failed to build or run said only *Build failed*, and its confidence still read *confirmed by
+  building and running*. Now the page says the rating is not confirmed, the confidence says the build or run
+  failed, and the component's details show why and the end of the build or run log (kept in
+  `ComponentAssessment.VerifyDetail` by the next scan) ([docs](docs/overview.md#self-learning-loop)).
 - **A static address is kept after a restart.** systemd-networkd could start before `cz-firstboot` had copied
   `/etc/containerizer/network/10-static.network` to `/run/systemd/network`; br0 then got the DHCP default, and
   without a DHCP server the appliance had no address (seen on a Dell server). `cz-firstboot` now runs before

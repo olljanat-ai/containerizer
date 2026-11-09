@@ -416,3 +416,32 @@ def test_admin_lab_services_names_each_application_of_a_split_repository():
             return Cur()
     assert admin_lab.needs_off(Conn()) == {"rabbitmq": ["containerization-challenge-control-tower", "shop"],
                                            "sftp": ["containerization-challenge-control-tower"]}
+
+
+def test_a_failed_build_is_shown_with_its_log():
+    """A component whose build failed: the page says the rating is not confirmed, the confidence is not 'confirmed by
+    building and running', and the component's details show why with the end of the build log (VerifyDetail)."""
+    from containerizer.sqlstore import verify_detail
+    log = "\n".join(f"#{i} step" for i in range(400)) + "\nerror NU1101: Unable to find package Acme.Internal"
+    v = {"component": "CustomerPortal", "status": "build-failed", "detail": "unexplained",
+         "attempts": [{"attempt": 1, "stage": "build", "status": "unexplained", "log_tail": log[-1500:]}]}
+    detail = verify_detail(v)
+    assert len(detail) <= 2000 and detail.startswith("Why: no known cause")
+    assert detail.endswith("Unable to find package Acme.Internal")
+    assert verify_detail({"status": "ok", "detail": "ok"}) == "ok"
+    app = loans()
+    app["Verified"] = True
+    app["components"][3].update(VerifyStatus="build-failed", VerifyDetail=detail)
+    html = webui.render_application(app)
+    assert "confirmed by building and running" not in html
+    assert "the build or run failed for 1 component" in html
+    assert "Not confirmed:" in html and "href='#c4'>CustomerPortal</a>" in html
+    assert "Unable to find package Acme.Internal" in html and "<pre class='code'>Why: no known cause" in html
+    # an older scan kept only the steps: no log, said so
+    app["components"][3]["VerifyDetail"] = "unexplained"
+    html = webui.render_application(app)
+    assert "This scan kept no log" in html
+    # nothing failed: confirmed as before
+    app["components"][3].update(VerifyStatus="ok", VerifyDetail=None)
+    html = webui.render_application(app)
+    assert "confirmed by building and running" in html and "Not confirmed:" not in html
