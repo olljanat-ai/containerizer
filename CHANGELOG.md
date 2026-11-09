@@ -12,6 +12,11 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 The OS image changes (`appliance/`, #255): release as a minor version.
 
+- **A static address is kept after a restart.** systemd-networkd could start before `cz-firstboot` had copied
+  `/etc/containerizer/network/10-static.network` to `/run/systemd/network`; br0 then got the DHCP default, and
+  without a DHCP server the appliance had no address (seen on a Dell server). `cz-firstboot` now runs before
+  systemd-networkd itself, and the status check (every 5 minutes) reloads the network when br0 has a file of the
+  image although a static file is there. Until then: `networkctl reload && networkctl reconfigure br0`.
 - **Platform fixes for refactor findings** ([docs](docs/platform-fixes.md)): findings that the generated
   configuration can satisfy no longer need code changes, and count as `config` in the rating. A plan rule names the
   findings it `resolves`; three techniques are new: code that switches on `Environment.MachineName` gets the pod
