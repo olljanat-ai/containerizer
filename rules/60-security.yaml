@@ -173,8 +173,12 @@ network:
   # well-known public services: the build-and-run verification leaves these to DNS; every other configured host
   # name resolves to 127.0.0.1 there, so a missing service fails fast as "connection refused" (verify.hosts_to_map)
   public_hosts: '(^|\.)(microsoftonline\.com|microsoft\.com|live\.com|googleapis\.com|google\.com|github\.com|githubusercontent\.com|nuget\.org|npmjs\.org|pypi\.org|maven\.org)$'
-  # who may call a component's service port: any namespace (ingress controllers live elsewhere)
-  ingress_from: [{namespaceSelector: {}}]
+  # Who may call a component's service port: the ingress controller's namespace (namespaceSelector on
+  # kubernetes.io/metadata.name); sibling components and confirmed links between applications have their own rules.
+  # A site setting: CONTAINERIZER_INGRESS_NAMESPACE or `containerizer generate --ingress-from <namespace>` overrides
+  # it (the appliance's sandbox: kube-system, where k3s runs Traefik). `any` allows every namespace (a controller in
+  # the host network: replace the rule with an ipBlock of the node CIDR, docs/egress.md#inbound).
+  ingress_namespace: ingress-nginx
   # The egress review (egress.py, docs/egress.md): the deterministic pre-filter that runs before the LLM is
   # asked. Nothing it matches is ever proposed: it is reported (platform, unnamed, in-cluster) or suspicious.
   egress_review:
@@ -345,6 +349,7 @@ lint:
     image-digest-setter: {severity: info,    title: 'Workload image is pinned to a digest by Flux image automation (a :digest setter in kustomization.yaml)'}
     network-policy:      {severity: warning, title: Every workload is selected by a NetworkPolicy}
     egress-policy:       {severity: warning, title: Egress is restricted by a NetworkPolicy}
+    ingress-namespace:   {severity: warning, title: Service ports are open to the ingress controller's namespace, not every namespace}
     service-account:     {severity: warning, title: Workload uses its own ServiceAccount, not default}
     apparmor:            {severity: info,    title: AppArmor profile set}
     plain-secret:        {severity: error,   title: No Secret objects in the manifests; ExternalSecrets only}
@@ -508,7 +513,7 @@ controls:
   - {id: namespaces, nsa: 'Network separation and hardening > Namespaces', cis: '5.7.1, 5.7.4', scope: namespace,
      title: 'One namespace per application; nothing in default'}
   - {id: network-policies, nsa: 'Network separation and hardening > Network policies', cis: '5.3.2', scope: namespace,
-     checks: [network-policy, egress-policy],
+     checks: [network-policy, egress-policy, ingress-namespace],
      title: 'Default-deny ingress and egress; only DNS, sibling components and inferred dependencies allowed',
      action: 'Needs a CNI that enforces NetworkPolicy (CIS 5.3.1): Calico, Cilium, Antrea, ... Review the inferred egress ports below.'}
   - {id: resource-policies, nsa: 'Network separation and hardening > Resource policies', scope: namespace, checks: [resources],

@@ -17,6 +17,9 @@ EnvironmentFile=/etc/containerizer/worker.env
 EnvironmentFile=-/run/containerizer/llm.env
 # the built-in LLM (Admin -> Source control & LLM): used while it is on and no LLM is registered
 Environment=CONTAINERIZER_LOCAL_LLM=/run/containerizer/system/local-llm-status.json
+# the sandbox's ingress controller (k3s' Traefik, var/lib/rancher/k3s/server/manifests/containerizer-traefik.yaml)
+# runs in kube-system: the generated NetworkPolicies let that namespace call the service ports (docs/egress.md#inbound)
+Environment=CONTAINERIZER_INGRESS_NAMESPACE=kube-system
 # lab services that are on (Admin -> Lab services): the scans point the apps at them
 Environment=CONTAINERIZER_LAB_SERVICES=/var/lib/containerizer/system/lab-services.json
 # dev database backups the web UI stored (read through the group of the folder)

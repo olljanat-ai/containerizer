@@ -61,6 +61,16 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   well-known public services (`public_hosts` in `rules/60-security.yaml`) are left alone. The run's details list
   the mapped names, and a component that runs but stops at missing services lists what it needs
   (`needs: sql.corp.example:1433`) in the report.
+- **Service ports are open to the ingress controller's namespace, not to every namespace.** The generated
+  NetworkPolicies let any pod of the cluster call a component's service port; on a shared cluster another tenant's
+  pod could call the application directly, around the ingress. Now only the ingress controller's namespace
+  can (`network.ingress_namespace` in `rules/60-security.yaml`, default `ingress-nginx`; the environment variable
+  `CONTAINERIZER_INGRESS_NAMESPACE` or `--ingress-from` overrides it), besides the sibling components and confirmed
+  links as before. The appliance sets `kube-system`, where the sandbox's Traefik runs. `--ingress-from any` keeps
+  the old rule; for a controller in the host network, use it with an `ipBlock` of the node CIDR
+  ([docs/egress.md](docs/egress.md#inbound)). `CONNECTIVITY.md` and `HARDENING.md` name the namespace, the
+  gate's lint warns about a rule open to every namespace, and the egress observer proposes a link for a call from
+  another application that a service port now drops.
 
 ## 0.20.0 (2026-11-09)
 

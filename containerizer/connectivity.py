@@ -329,6 +329,9 @@ def model(app: str, network: dict | None, flows: list[dict] | None = None, decis
         return e
 
     internal, inbound, findings = [], [], []
+    from .harden import ANY_NAMESPACE, ingress_namespace
+    ns = ingress_namespace()
+    ingress_from = "any namespace (Service)" if ns == ANY_NAMESPACE else f"namespace {ns} (Service)"
     siblings = {c["k8s"] for c in comps}
     urls = {}
     for s in sandbox or []:
@@ -341,7 +344,7 @@ def model(app: str, network: dict | None, flows: list[dict] | None = None, decis
             if urls.get(k):
                 inbound.append({"component": k, "from": urls[k], "port": c.get("service_port") or 80,
                                 "protocol": "TCP", "source": "ingress", "target_port": c["port"]})
-            inbound.append({"component": k, "from": "any namespace (Service)", "port": c.get("service_port") or 80,
+            inbound.append({"component": k, "from": ingress_from, "port": c.get("service_port") or 80,
                             "protocol": "TCP", "source": "service", "target_port": c["port"]})
         for d in c.get("destinations") or []:
             host, port = d["host"], int(d["port"])

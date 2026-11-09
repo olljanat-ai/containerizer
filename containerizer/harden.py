@@ -11,6 +11,7 @@ reason, and `lint_manifests` checks the result against Pod Security
 from __future__ import annotations
 
 import copy
+import os
 import re
 from dataclasses import asdict, dataclass
 from datetime import date
@@ -298,15 +299,34 @@ def egress_for(repo, c) -> list[dict]:
     return out
 
 
+INGRESS_ENV = "CONTAINERIZER_INGRESS_NAMESPACE"
+ANY_NAMESPACE = "any"
+
+
+def ingress_namespace() -> str:
+    """The ingress controller's namespace, the only one that may call a component's service port (siblings and
+    confirmed links have their own rules): CONTAINERIZER_INGRESS_NAMESPACE (`containerizer generate --ingress-from`)
+    or rules/60-security.yaml `network.ingress_namespace`; `any` allows every namespace."""
+    return (os.environ.get(INGRESS_ENV) or security()["network"].get("ingress_namespace") or ANY_NAMESPACE).strip()
+
+
+def ingress_sources(ns: str | None = None) -> list[dict]:
+    ns = ns or ingress_namespace()
+    if ns == ANY_NAMESPACE:
+        return [{"namespaceSelector": {}}]
+    return [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": ns}}}]
+
+
 def network_policy(component: str, labels: dict, port, egress: list[dict]) -> dict:
-    """Least-privilege NetworkPolicy: the service port in, siblings + DNS + inferred dependencies out."""
+    """Least-privilege NetworkPolicy: the service port in from the ingress controller's namespace, siblings + DNS +
+    inferred dependencies out."""
     net = security()["network"]
     app = labels.get("app.kubernetes.io/part-of")
     siblings = [{"podSelector": {"matchLabels": {"app.kubernetes.io/part-of": app}}}] if app else []
     ingress = []
+    ns = ingress_namespace()
     if port:
-        ingress.append({"from": copy.deepcopy(net.get("ingress_from") or [{"namespaceSelector": {}}]),
-                        "ports": [{"port": port, "protocol": "TCP"}]})
+        ingress.append({"from": ingress_sources(ns), "ports": [{"port": port, "protocol": "TCP"}]})
     dns = net["dns"]
     rules = [{"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": dns["namespace"]}},
                       "podSelector": {"matchLabels": dns["pod_labels"]}}],
@@ -323,7 +343,8 @@ def network_policy(component: str, labels: dict, port, egress: list[dict]) -> di
                       "ports": ports})
     doc = {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
            "metadata": {"name": component, "labels": labels,
-                        "annotations": {f"{ANNOTATION}/egress": ",".join(d["id"] for d in egress) or "none"}},
+                        "annotations": {f"{ANNOTATION}/egress": ",".join(d["id"] for d in egress) or "none",
+                                        f"{ANNOTATION}/ingress-from": ns}},
            "spec": {"podSelector": {"matchLabels": labels}, "policyTypes": ["Ingress", "Egress"],
                     "ingress": ingress, "egress": rules}}
     if siblings:
@@ -592,12 +613,21 @@ def harden_gitops(docs: dict[str, list[dict]], a=None) -> dict[str, list[dict]]:
 
 # --------------------------------------------------------------------------- report
 
+def _inbound_note(namespaces: set[str]) -> str:
+    """Who may call the service ports (the NetworkPolicies' ingress-from annotation)."""
+    if ANY_NAMESPACE in namespaces:
+        return "Inbound: service ports open to every namespace (--ingress-from any)."
+    return (f"Inbound: service ports from namespace {', '.join(sorted(namespaces))} (the ingress controller), "
+            "sibling components and confirmed links only.")
+
+
 def hardening_markdown(app: str, comp_docs: dict[str, list[dict]], digest_setters: set[str] | None = None) -> str:
     """Each NSA/CISA and CIS control: applied, applied with exception, not applied, not applicable,
     or an action for the cluster operator / pipeline, with the guide section."""
     viol: dict[str, list[Violation]] = {}
     exceptions: dict[str, set] = {}
     egress: dict[str, str] = {}
+    inbound: set[str] = set()
     provided = external_secret_targets([d for docs in comp_docs.values() for d in docs])
     for comp, docs in comp_docs.items():
         for v in lint_manifests(docs, f"{comp}: ", provided, digest_setters):
@@ -609,6 +639,8 @@ def hardening_markdown(app: str, comp_docs: dict[str, list[dict]], digest_setter
                         exceptions.setdefault(e, set()).add(comp)
             if d.get("kind") == "NetworkPolicy":
                 egress[comp] = (d["metadata"].get("annotations") or {}).get(f"{ANNOTATION}/egress", "")
+                if (d["metadata"].get("annotations") or {}).get(f"{ANNOTATION}/ingress-from"):
+                    inbound.add(d["metadata"]["annotations"][f"{ANNOTATION}/ingress-from"])
     rows = []
     counts: dict[str, int] = {}
     for ctl in security().get("controls") or []:
@@ -640,6 +672,8 @@ def hardening_markdown(app: str, comp_docs: dict[str, list[dict]], digest_setter
                 note = ("pinned by Flux after the first automation run (`$imagepolicy` digest setters in "
                         "kustomization.yaml, gitops/flux/git/image-automation.yaml); without the image automation: "
                         + note)
+        if ctl["id"] == "network-policies" and inbound:
+            note = f"{_inbound_note(inbound)} {note}".strip()
         counts[status] = counts.get(status, 0) + 1
         rows.append(f"| {ctl['title']} | {status} | {ctl.get('nsa', '')} | {ctl.get('cis', '')} | {note} |")
     lines = [f"# Hardening report: {app}", "",
@@ -819,6 +853,9 @@ def lint_manifests(docs: list[dict], where: str = "", provided: set[str] | None 
         if kind == "ExternalSecret":
             _lint_external_secret(L, d, tgt)
             continue
+        if kind == "NetworkPolicy":
+            _lint_ingress_namespace(L, d, tgt)
+            continue
         for meta, pod in _pod_specs(d):
             waived = {w.strip() for w in ((meta.get("annotations") or {}).get(f"{ANNOTATION}/waives") or "").split(",") if w.strip()}
             spec = d.get("spec") or {}
@@ -931,6 +968,18 @@ def _image_repo(img: str) -> str:
     """An image reference without its tag and digest."""
     img = img.split("@", 1)[0]
     return img.rsplit(":", 1)[0] if ":" in img.rsplit("/", 1)[-1] else img
+
+
+def _lint_ingress_namespace(L: _Lint, d: dict, tgt: str) -> None:
+    """An ingress rule from every namespace (`namespaceSelector: {}`) that `--ingress-from any` did not ask for."""
+    if ((d.get("metadata") or {}).get("annotations") or {}).get(f"{ANNOTATION}/ingress-from") == ANY_NAMESPACE:
+        return
+    for rule in (d.get("spec") or {}).get("ingress") or []:
+        if any(isinstance(p, dict) and "namespaceSelector" in p and not (p["namespaceSelector"] or {}).get("matchLabels")
+               and not (p["namespaceSelector"] or {}).get("matchExpressions") for p in rule.get("from") or []):
+            L.add("ingress-namespace", tgt, "an ingress rule allows every namespace (namespaceSelector: {}); select "
+                  "the ingress controller's namespace (network.ingress_namespace), or generate with --ingress-from any")
+            return
 
 
 def _looks_like_path(v: str) -> bool:
