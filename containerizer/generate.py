@@ -764,6 +764,44 @@ def workload_lifecycle(c: Component, plan: dict) -> dict:
     return {"strategy": strategy, "grace": grace, "scale_out": scale_out}
 
 
+MEMORY_DOCS = "https://kubernetes.io/docs/tasks/configure-pod-container/assign-memory-resource/"
+
+
+def measured_usage(a: AppAssessment, c: Component) -> dict | None:
+    """What the verification run of this component measured (verify.run: `usage`), None when it measured nothing."""
+    v = next((r for r in getattr(a, "verification", None) or [] if r.get("component") == c.name), None)
+    u = (v or {}).get("usage") or {}
+    return u if (u.get("memory_peak_mib") or 0) > 0 else None
+
+
+def measured_memory(plan: dict, usage: dict | None) -> None:
+    """Memory requests and limits from the peak the verification run measured (rules/60-security.yaml
+    hardening.measured_memory); nothing measured: the baseline stays. A size a plan rule set is only raised."""
+    from .harden import _fmt_qty, _qty, security
+    if not usage or not (usage.get("memory_peak_mib") or 0) > 0:
+        return
+    sec = security()
+    m = sec["hardening"].get("measured_memory") or {}
+    if not m:
+        return
+    peak = float(usage["memory_peak_mib"]) * 2**20
+    step = _qty(m.get("round_to", "64Mi")) or 2**20
+    floor = _qty(m.get("floor", "128Mi"))
+    ceiling = _qty((sec.get("namespace_policy", {}).get("limit_range", {}).get("max") or {}).get("memory", 0)) or None
+
+    def size(factor) -> float:
+        v = max(-(-peak * float(factor) // step) * step, floor)
+        return min(v, ceiling) if ceiling else v
+    req, lim = size(m.get("request_factor", 1.25)), size(m.get("limit_factor", 2))
+    have = plan.get("memory") or {}
+    req = max(req, _qty(have.get("request", 0)))
+    lim = max(lim, _qty(have.get("limit", 0)), req)
+    plan["memory"] = {"request": _fmt_qty(req, "mem"), "limit": _fmt_qty(lim, "mem")}
+    plan["memory_measured"] = f"{-(-peak // 2**20):.0f}Mi"
+    add_reason(plan, "measured-memory", f"measured {plan['memory_measured']} peak in the verification run: "
+               f"requests {plan['memory']['request']}, limits {plan['memory']['limit']}.", [MEMORY_DOCS])
+
+
 def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> list[dict]:
     name = k8s_name(c.name)
     labels = {"app.kubernetes.io/name": name, "app.kubernetes.io/part-of": app_ns(a.name)}
@@ -977,6 +1015,7 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
         cdir = out / k8s_name(c.name)
         if buildable(c):
             plan = (plans or {}).get(c.name) or make_plan(a, c, rules)
+            measured_memory(plan, measured_usage(a, c))
             cdir.mkdir(parents=True, exist_ok=True)
             if c.role == "spa":
                 plan["port"], plan["health"] = 8080, "/healthz"

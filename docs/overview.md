@@ -315,6 +315,15 @@ For each component that can be containerized the scan:
    Approved rules go to your internal (private) rules repository, never into this public one
    ([rule review](rule-review.md)).
 
+While the container runs and its probes are answered, the run samples its memory and CPU (`docker stats`, every
+few seconds) and records the peak in the verification result (`usage` in `assessment.json`). The generated
+manifests size the component from it: `requests.memory` is the peak × 1.25 and `limits.memory` the peak × 2, both
+rounded up to 64Mi, never below 128Mi nor above the namespace LimitRange's max (`hardening.measured_memory` in
+`rules/60-security.yaml`), with the reason in `plan.json` (*measured 310Mi peak in the verification run*). A
+component that was not measured keeps the fixed 256Mi/512Mi, and exceptions such as `native-rendering-memory` only
+ever raise the sizes. `containerizer generate --verification DIR` takes the measurement from a folder that
+`containerizer verify --out DIR` wrote.
+
 When the build or the run still fails, the rating stays the one the source code gives (a build can fail for a
 reason outside the application, such as a package feed the scan cannot reach), but the application's page says it
 is not confirmed, the confidence is not counted as confirmed by building and running, and the component is left out

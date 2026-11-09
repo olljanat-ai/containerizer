@@ -132,6 +132,9 @@ def cmd_generate(args) -> int:
     for app in _apps(args.paths):
         a = assess(app, rules)
         out = Path(args.out) / a.name if args.out else Path(app) / "containerize"
+        vj = Path(args.verification) / f"{a.name}.verify.json" if args.verification else None
+        if vj and vj.exists():      # what `verify --out` measured sizes the memory (generate.measured_memory)
+            a.verification = json.loads(vj.read_text())
         files = generate_app(a, out, registry=args.registry, pin=args.pin_digests, gitops=_gitops(args))
         print(f"{a.name}: {len(files)} files -> {out}")
     return 0
@@ -554,6 +557,8 @@ def main(argv=None) -> int:
     s.add_argument("--out")
     s.add_argument("--registry", default="registry.local", help="image registry used in the manifests")
     s.add_argument("--pin-digests", action="store_true", help="pin base images to their current digests")
+    s.add_argument("--verification", metavar="DIR", help="folder of `verify --out`: memory requests and limits "
+                   "from the peak its run measured (<app>.verify.json)")
     _gitops_args(s)
     s.set_defaults(fn=cmd_generate)
 

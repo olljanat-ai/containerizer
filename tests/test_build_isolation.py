@@ -169,6 +169,8 @@ def test_guard_routes_calls_on_one_container_through_the_owner_check():
     assert dg.decide("GET", "/v1.47/containers/cz-mssql/json").owned == "cz-mssql"
     assert dg.decide("POST", "/containers/abc/exec").body == "exec"
     assert dg.decide("GET", "/containers/abc/archive?path=/etc").owned == "abc"
+    # `docker stats --no-stream` of a verification run (verify._sample): its own containers only
+    assert dg.decide("GET", "/v1.47/containers/cz-verify-1/stats?stream=0").owned == "cz-verify-1"
     assert dg.decide("POST", "/commit?container=cz-mssql&repo=x").owned == "cz-mssql"
     assert dg.decide("POST", "/v1.47/containers/create?name=x").body == "create"
     assert dg.decide("POST", "/build?networkmode=default").owned is None

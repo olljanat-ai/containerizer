@@ -45,6 +45,13 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   job output, for `kustomize edit set image $(cat digests.txt)` in a deploy pipeline. HARDENING.md's *Images are
   deployed by digest* is now *applied* (pinned by Flux after the first automation run); a lint check
   `image-digest-setter` (info) replaces `image-digest` for these images.
+- **Memory requests and limits come from what the verification run measured.** Every component got the same
+  256Mi request and 512Mi limit, so a large API could be killed for its memory in the sandbox while a small worker
+  reserved too much. The build-and-run now samples the container's memory and CPU while its probes are answered and
+  records the peak; the generated manifests then ask for the peak × 1.25 and limit it to the peak × 2 (rounded up
+  to 64Mi, between 128Mi and the namespace's LimitRange max), with the reason in `plan.json`. A component that was
+  not measured keeps the old sizes; exceptions such as `native-rendering-memory` only raise them
+  ([docs](docs/overview.md#self-learning-loop)).
 
 ## 0.20.0 (2026-11-09)
 
