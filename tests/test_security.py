@@ -563,3 +563,104 @@ def test_default_key_folder_without_persist_keys():
     a = assess(Path(__file__).resolve().parent.parent / "examples" / "ci-demo")
     webs = [c for c in a.components if c.role == "web" and c.project.kind_hint == "dotnet"]
     assert webs and all("plan-dataprotection-keys" in make_plan(a, c)["applied"] for c in webs)
+
+# ---------------------------------------------------------------- workload lifecycle (#291)
+
+def _worker_app(root):
+    write(root, "src/Poller/Poller.csproj", """
+        <Project Sdk="Microsoft.NET.Sdk.Worker"><PropertyGroup><OutputType>Exe</OutputType>
+          <TargetFramework>net8.0</TargetFramework></PropertyGroup>
+          <ItemGroup><PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.0" /></ItemGroup></Project>""")
+    write(root, "src/Poller/Program.cs", """
+        var b = Host.CreateApplicationBuilder(args); b.Services.AddHostedService<W>(); b.Build().Run();
+        class W : BackgroundService { protected override async Task ExecuteAsync(CancellationToken t) { } }""")
+
+
+def _dep(docs):
+    return next(d for d in docs if d["kind"] == "Deployment")
+
+
+def test_worker_is_recreated_with_a_longer_grace_period_web_keeps_rolling(tmp_path):
+    _worker_app(tmp_path / "w")
+    docs, plan = _manifests(tmp_path / "w")
+    assert plan["role"] == "worker"
+    dep = _dep(docs)
+    assert dep["spec"]["strategy"] == {"type": "Recreate"}
+    assert dep["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 120
+    assert "worker-recreate" in {r["rule"] for r in plan["reasons"]}
+    assert not [v for v in lint_manifests(docs) if v.check in ("worker-strategy", "cronjob-limits")]
+
+    web_app(tmp_path / "web")
+    docs, plan = _manifests(tmp_path / "web")
+    dep = _dep(docs)
+    assert dep["spec"]["strategy"] == {"type": "RollingUpdate"}
+    assert dep["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 30
+    assert "worker-recreate" not in {r["rule"] for r in plan.get("reasons") or []}
+
+
+def test_worker_marked_safe_to_run_twice_keeps_rolling_updates(tmp_path):
+    _worker_app(tmp_path)
+    a = assess(tmp_path)
+    c = a.components[0]
+    docs = k8s_manifests(a, c, make_plan(a, c, extra={"scale_out": True}), "registry.local/x/y:1.0")
+    dep = _dep(docs)
+    assert dep["spec"]["strategy"] == {"type": "RollingUpdate"}
+    assert "containerizer.io/scale-out" in dep["metadata"]["annotations"]
+    assert not [v for v in lint_manifests(docs) if v.check == "worker-strategy"]
+
+
+def test_lint_flags_a_rolling_worker(tmp_path):
+    _worker_app(tmp_path)
+    docs, _ = _manifests(tmp_path)
+    _dep(docs)["spec"]["strategy"] = {"type": "RollingUpdate"}
+    v = [v for v in lint_manifests(docs) if v.check == "worker-strategy"]
+    assert v and v[0].severity == "warning"
+    del _dep(docs)["spec"]["strategy"]          # the Kubernetes default is RollingUpdate
+    assert [v for v in lint_manifests(docs) if v.check == "worker-strategy"]
+
+
+def test_cronjobs_are_bounded_and_the_gate_warns_without_limits(tmp_path):
+    write(tmp_path, "src/Jobs/Jobs.csproj", """
+        <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType>
+          <TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>""")
+    write(tmp_path, "src/Jobs/Program.cs", 'Console.WriteLine("run");')
+    docs, _ = _manifests(tmp_path)
+    cj = next(d for d in docs if d["kind"] == "CronJob")
+    spec, job = cj["spec"], cj["spec"]["jobTemplate"]["spec"]
+    assert spec["concurrencyPolicy"] == "Forbid" and spec["startingDeadlineSeconds"] == 300
+    assert spec["successfulJobsHistoryLimit"] == 3 and spec["failedJobsHistoryLimit"] == 3
+    assert job["backoffLimit"] == 2 and job["activeDeadlineSeconds"] == 3600 and job["ttlSecondsAfterFinished"] == 86400
+    assert job["template"]["spec"]["terminationGracePeriodSeconds"] == 120
+    assert not [v for v in lint_manifests(docs) if v.check == "cronjob-limits"]
+
+    del job["activeDeadlineSeconds"], spec["failedJobsHistoryLimit"]
+    v = [v for v in lint_manifests(docs) if v.check == "cronjob-limits"]
+    assert len(v) == 1 and v[0].severity == "warning"
+    assert "activeDeadlineSeconds" in v[0].message and "failedJobsHistoryLimit" in v[0].message
+
+
+def test_long_iis_requests_raise_the_grace_period(tmp_path):
+    web_app(tmp_path)
+    write(tmp_path, "src/Web/web.config", '<configuration><system.web><httpRuntime executionTimeout="300" />'
+                                          '</system.web></configuration>')
+    docs, plan = _manifests(tmp_path)
+    assert _dep(docs)["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 315
+    assert "long-request-grace" in {r["rule"] for r in plan["reasons"]}
+    assert _dep(docs)["spec"]["strategy"] == {"type": "RollingUpdate"}
+
+    long = tmp_path / "long"
+    web_app(long)
+    write(long, "src/Web/web.config", '<configuration><aspNetCore processPath="dotnet" requestTimeout="01:00:00" />'
+                                      '</configuration>')
+    docs, _ = _manifests(long)
+    assert _dep(docs)["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 600     # max_seconds
+
+
+def test_hardening_report_has_a_lifecycle_line_per_workload(tmp_path):
+    from containerizer.harden import hardening_markdown
+    _worker_app(tmp_path)
+    docs, _ = _manifests(tmp_path)
+    md = hardening_markdown("app", {"poller": docs})
+    assert "## Workload lifecycle" in md
+    assert "| poller | Deployment/poller | Recreate | 120 s |" in md
+    assert "Workers replaced, not rolled" in md

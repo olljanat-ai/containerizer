@@ -47,6 +47,35 @@ def _k8s_name(s: str) -> str:
     return s[:63].rstrip("-") or "x"
 
 
+# --------------------------------------------------------------------------- workload lifecycle
+
+# CronJob limits (rules/60-security.yaml hardening.workloads.cronjob): on the CronJob spec, on its Job spec
+CRONJOB_KEYS = ("startingDeadlineSeconds", "successfulJobsHistoryLimit", "failedJobsHistoryLimit")
+JOB_KEYS = ("backoffLimit", "activeDeadlineSeconds", "ttlSecondsAfterFinished")
+
+
+def workloads() -> dict:
+    return security()["hardening"].get("workloads") or {}
+
+
+def role_lifecycle(role: str) -> dict:
+    """Rollout strategy and terminationGracePeriodSeconds of a role (`default` fills what the role leaves out)."""
+    roles = workloads().get("roles") or {}
+    return {**(roles.get("default") or {}), **(roles.get(role) or {})}
+
+
+def cronjob_limits(spec: dict) -> None:
+    """Retry, deadline and history limits on a CronJob spec; values already set stay."""
+    cfg = workloads().get("cronjob") or {}
+    for k in CRONJOB_KEYS:
+        if k in cfg:
+            spec.setdefault(k, cfg[k])
+    job = spec.setdefault("jobTemplate", {}).setdefault("spec", {})
+    for k in JOB_KEYS:
+        if k in cfg:
+            job.setdefault(k, cfg[k])
+
+
 # --------------------------------------------------------------------------- exceptions
 
 def exceptions_for(repo, c, plan: dict) -> list[dict]:
@@ -614,6 +643,36 @@ def hardening_markdown(app: str, comp_docs: dict[str, list[dict]]) -> str:
         lines += ["## Hardening exceptions", "", "| Exception | Components |", "| --- | --- |"]
         lines += [f"| {e} | {', '.join(sorted(c))} |" for e, c in sorted(exceptions.items())]
         lines.append("")
+    life = []
+    for comp, docs in sorted(comp_docs.items()):
+        for d in docs:
+            if d.get("kind") not in ("Deployment", "CronJob"):
+                continue
+            spec = d.get("spec") or {}
+            grace = next((p.get("terminationGracePeriodSeconds") for _, p in _pod_specs(d)), None)
+            grace = f"{grace} s" if grace is not None else "30 s (Kubernetes default)"
+            if d["kind"] == "Deployment":
+                how = (spec.get("strategy") or {}).get("type", "RollingUpdate")
+                if f"{ANNOTATION}/scale-out" in ((d.get("metadata") or {}).get("annotations") or {}):
+                    how += " (safe to run twice)"
+                limits = ""
+            else:
+                job = (spec.get("jobTemplate") or {}).get("spec") or {}
+                how = f"concurrency {spec.get('concurrencyPolicy', 'Allow')}"
+                parts = [("retries", job.get("backoffLimit"), ""), ("run deadline", job.get("activeDeadlineSeconds"), " s"),
+                         ("start deadline", spec.get("startingDeadlineSeconds"), " s"),
+                         ("history kept", f"{spec.get('successfulJobsHistoryLimit')}/{spec.get('failedJobsHistoryLimit')}"
+                          if spec.get("successfulJobsHistoryLimit") is not None else None, ""),
+                         ("finished Jobs deleted after", job.get("ttlSecondsAfterFinished"), " s")]
+                limits = ", ".join(f"{k} {v}{u}" for k, v, u in parts if v is not None) or "none"
+            life.append(f"| {comp} | {d['kind']}/{d['metadata'].get('name', '')} | {how} | {grace} | {limits} |")
+    if life:
+        lines += ["## Workload lifecycle", "",
+                  "Workers are replaced (Recreate), never rolled, so two copies never run the same job; CronJob runs "
+                  "are bounded; the grace period is how long a pod may finish its work after SIGTERM "
+                  "(rules/60-security.yaml `hardening.workloads`).", "",
+                  "| Component | Workload | Rollout | Grace period | CronJob limits |", "| --- | --- | --- | --- | --- |",
+                  *life, ""]
     pvcs = sorted((comp, d["metadata"]["name"]) for comp, docs in comp_docs.items() for d in docs
                   if d.get("kind") == "PersistentVolumeClaim")
     if pvcs:
@@ -746,6 +805,18 @@ def lint_manifests(docs: list[dict], where: str = "", provided: set[str] | None 
             continue
         for meta, pod in _pod_specs(d):
             waived = {w.strip() for w in ((meta.get("annotations") or {}).get(f"{ANNOTATION}/waives") or "").split(",") if w.strip()}
+            spec = d.get("spec") or {}
+            if kind == "CronJob":
+                job = (spec.get("jobTemplate") or {}).get("spec") or {}
+                missing = [k for k in CRONJOB_KEYS if spec.get(k) is None] + \
+                    [k for k in ("backoffLimit", "activeDeadlineSeconds") if job.get(k) is None]
+                if missing:
+                    L.add("cronjob-limits", tgt, f"no {', '.join(missing)}: a hung or failing run is not bounded", waived)
+            if kind == "Deployment" and not any(c.get("ports") for c in pod.get("containers") or []) \
+                    and (spec.get("strategy") or {}).get("type", "RollingUpdate") != "Recreate" \
+                    and f"{ANNOTATION}/scale-out" not in ((d.get("metadata") or {}).get("annotations") or {}):
+                L.add("worker-strategy", tgt, "a worker (no ports) rolls out with two copies running; use strategy "
+                      f"Recreate, or annotate {ANNOTATION}/scale-out when it is safe to run twice", waived)
             psc = pod.get("securityContext") or {}
             for hk in ("hostNetwork", "hostPID", "hostIPC"):
                 if pod.get(hk):

@@ -109,6 +109,33 @@ hardening:
   # no RBAC bindings (NSA/CISA "Authentication and authorization", CIS 5.1.5/5.1.6).
   service_account: true
 
+  # Workload lifecycle (generate.py k8s_manifests). A worker (queue consumer,
+  # folder poller, scheduler, Windows service) was one process on one server:
+  # its Deployment is replaced (Recreate), never rolled, so two copies never
+  # poll the same folder or run the same recurring job during a rollout. A
+  # plan rule that sets `scale_out: true` marks a component safe to run twice
+  # (it keeps RollingUpdate). terminationGracePeriodSeconds is how long a pod
+  # may finish its work after SIGTERM (.NET's host default is 30 s).
+  workloads:
+    roles:
+      web: {strategy: RollingUpdate, terminationGracePeriodSeconds: 30}
+      worker: {strategy: Recreate, terminationGracePeriodSeconds: 120}
+      console: {terminationGracePeriodSeconds: 120}       # runs as CronJobs
+      default: {strategy: RollingUpdate, terminationGracePeriodSeconds: 30}
+    # raised IIS request timeouts: the grace period covers the longest request
+    # (timeout + margin, at most max_seconds)
+    long_requests:
+      finding: host-long-request-timeout
+      margin_seconds: 15
+      max_seconds: 600
+    cronjob:
+      backoffLimit: 2                   # retries of a failed run (Kubernetes default 6)
+      activeDeadlineSeconds: 3600       # a hung run is stopped (with Forbid it would skip every later run)
+      startingDeadlineSeconds: 300      # a run missed by more than this is skipped, not started late
+      successfulJobsHistoryLimit: 3
+      failedJobsHistoryLimit: 3
+      ttlSecondsAfterFinished: 86400    # finished Jobs and their pods are deleted after a day
+
 # Network separation (NSA/CISA "Network policies", CIS 5.3.2): the namespace
 # denies all ingress and egress by default; each component may only
 #   - receive traffic on its own service port,
@@ -306,6 +333,8 @@ lint:
     plain-secret:        {severity: error,   title: No Secret objects in the manifests; ExternalSecrets only}
     secret-source:       {severity: error,   title: Every Secret a workload uses is produced by an ExternalSecret}
     external-secret-store: {severity: error, title: ExternalSecrets read a platform-defined (Cluster)SecretStore}
+    cronjob-limits:      {severity: warning, title: 'CronJobs have retry, deadline and history limits'}
+    worker-strategy:     {severity: warning, title: 'Workers (no ports) are replaced, not rolled (strategy Recreate)'}
     df-user:             {severity: error,   title: Final image stage runs as a non-root user}
     df-base-tag:         {severity: error,   title: Base images have an explicit, non-latest tag}
     df-base-digest:      {severity: info,    title: Base images are pinned to a digest}
@@ -496,6 +525,8 @@ controls:
   - {id: audit-logging, nsa: 'Audit logging and threat detection > Kubernetes native audit logging configuration', cis: '3.2.1, 3.2.2', scope: cluster,
      title: API server audit logging,
      action: 'Cluster operator: enable audit logging with cluster/audit-policy.yaml (metadata for everything, request bodies for RBAC changes, never Secret payloads) and ship it to a SIEM.'}
+  - {id: workload-lifecycle, scope: workload, checks: [cronjob-limits, worker-strategy],
+     title: 'Workers replaced, not rolled (Recreate); CronJobs bounded (retries, deadline, history); graceful stop period per role'}
   - {id: container-logging, nsa: 'Audit logging and threat detection > Worker node and container logging', scope: workload,
      title: 'Applications log to stdout for central collection (file-only log sinks are re-pointed to the console)'}
   - {id: threat-detection, nsa: 'Audit logging and threat detection > Threat detection, Alerting', scope: cluster,

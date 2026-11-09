@@ -208,6 +208,7 @@ def test_nomad_and_aca_cron_jobs(tmp_path):
     nightly = load_yaml_docs((tmp_path / "aca" / "billing-nightly" / "k8s.yaml").read_text())
     cj = next(d for d in nightly if d["kind"] == "CronJob")
     assert cj["spec"]["schedule"] == "0 3 * * *"
+    assert cj["spec"]["startingDeadlineSeconds"] == 300 and cj["spec"]["jobTemplate"]["spec"]["backoffLimit"] == 2
     pod = cj["spec"]["jobTemplate"]["spec"]["template"]["spec"]
     assert pod["restartPolicy"] == "OnFailure" and pod["containers"][0]["args"] == ["--nightly"]
     orders = load_yaml_docs((tmp_path / "aca" / "orders" / "k8s.yaml").read_text())

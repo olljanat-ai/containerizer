@@ -26,6 +26,16 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   (ReadWriteOnce, one replica). `plan.json` and the Dockerfile header say why, and the new lint check
   `dataprotection-volatile` fails a key ring folder setting that points into an `emptyDir`
   ([docs](docs/overview.md#generated-output)).
+- **Workers are replaced, not rolled, and CronJobs cannot run forever** ([docs](docs/overview.md#generated-output)).
+  A worker (queue consumer, folder poller, scheduler, Windows service) was one process on one server, but its
+  Deployment rolled out with the new pod started while the old one still ran: two copies polled the same folder or
+  ran the same recurring job. Workers now get `strategy: Recreate` (web components keep `RollingUpdate`; a plan
+  rule with `scale_out: true` marks a worker safe to run twice). Pods get a stop grace period per role (web 30 s,
+  worker and console 120 s), longer when IIS let requests run for minutes. CronJobs get a retry limit (2), a run
+  deadline (1 hour), a start deadline (5 minutes), history limits (3/3) and a TTL for finished Jobs: before, a hung
+  run went on forever and, with `Forbid`, every later run was skipped. The values are in `rules/60-security.yaml`
+  (`hardening.workloads`), the reasons in `plan.json`, a line per workload in `HARDENING.md`, and the gate warns
+  about CronJobs without these limits and workers that roll.
 
 ## 0.20.0 (2026-11-09)
 
