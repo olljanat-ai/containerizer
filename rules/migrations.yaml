@@ -13,8 +13,8 @@
 #   kind      replace     swap a Windows-only API or library for a cross-platform one (code change)
 #             port        move the component to a different framework/host model (larger code change)
 #             externalize move state, configuration, secrets or a capability out of the process
-#             isolate     no Linux replacement inside this component: keep that part on Windows (VM,
-#                         Windows container, desktop) and integrate over the network; an agent must
+#             isolate     no Linux replacement inside this component: keep that part on Windows (VM or
+#                         desktop) and integrate over the network; an agent must
 #                         not try to "fix" it in code
 #   replace   what is being replaced (short)
 #   with      the recommended replacement (short; alternatives in `steps`)
@@ -89,7 +89,7 @@ migrations:
       - Map master pages to Razor layouts, user controls to Razor components or partials, code-behind event handlers to page handlers (OnGet/OnPost) or component events.
       - Replace ViewState and postback-dependent logic with explicit form models and server state (session over a distributed cache only where needed).
       - Replace vendor Web Forms controls with their ASP.NET Core/Blazor editions or plain components.
-      - Run the old and new UI side by side behind YARP with the System.Web adapters until every page is moved; until then a Windows container is a workable stop-gap.
+      - Run the old and new UI side by side behind YARP with the System.Web adapters until every page is moved; until then the old UI stays on its Windows VM.
     verify:
       - Each ported page passes a UI test (Playwright) of its main flows, recorded against the old page first.
     refs:
@@ -858,7 +858,7 @@ migrations:
     with: the vendor's Linux SDK or network API if one exists; otherwise a small Windows-hosted service that wraps the dependency
     steps:
       - Ask the vendor for a Linux SDK, a REST/gRPC API or a cross-platform successor (OPC UA for OPC DA, AIF/OData for AX).
-      - If there is none, move the calls that need the dependency into a separate small service on a Windows host (VM or Windows container) and call it over HTTP/gRPC from the containerized component.
+      - If there is none, move the calls that need the dependency into a separate small service on a Windows VM and call it over HTTP/gRPC from the containerized component.
       - Keep everything else of this component in the Linux container.
     refs:
       - https://learn.microsoft.com/en-us/dotnet/standard/native-interop/cross-platform

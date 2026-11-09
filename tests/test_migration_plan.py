@@ -125,7 +125,7 @@ def test_section_on_the_page():
     assert "Wave 1, now" in sec and "to Kubernetes" in sec and "Wave 2, after code changes" not in sec
     assert "Components that keep their own data run as they are, with a persistent volume and one replica" in sec
     assert "Stays on Windows" in sec and "OLE DB / Access database engine" in sec
-    assert "a Windows container is a workable stop-gap" in sec          # Api: WindowsContainerOk
+    assert "stop-gap" not in sec                                        # Linux-only (#271)
     assert "Deployed and healthy" in sec and "deployed, not checked yet" in sec
     assert ("<div class='muted small stateful'>runs with a persistent volume, one replica (keeps its own data: "
             "Application data written to its own disk)</div>") in sec

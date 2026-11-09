@@ -626,7 +626,7 @@ rules:
     effort: 0
     title: Windows container definition already present
     why: The repository already builds a Windows container image; it shows how the app is run but targets Windows nodes.
-    fix: Use it as a reference (installed features, env vars, ports) for the Linux image; keep it as the stop-gap for components that must stay on Windows.
+    fix: Use it as a reference (installed features, env vars, ports) for the Linux image; components that must stay on Windows stay on VMs.
 
   - id: host-linux-container-present
     scope: repo
