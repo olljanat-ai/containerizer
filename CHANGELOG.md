@@ -4,7 +4,7 @@ Releases are tagged `vX.Y.Z`: bump `containerizer/__init__.py` and this file, th
 by hand on `main` with the version, and it tags the commit and releases from the tag (or push the tag `vX.Y.Z` on `main`
 yourself: a tag push starts the release too). Each release publishes the appliance OS image to
 `ghcr.io/olljanat-ai/containerizer-appliance` and its application alone to `ghcr.io/olljanat-ai/containerizer-app`
-(both signed with cosign by the release workflow) and the ISO, qcow2 and VHDX images as release assets. A patch
+(both signed with cosign by the release workflow) and the installer ISO as a release asset. A patch
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
@@ -12,6 +12,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 The OS image changes (`appliance/`, #255): release as a minor version.
 
+- **Releases have only the installer ISO.** The qcow2 disk image is no longer published (nor built); install on
+  KVM, Proxmox and OpenStack from the ISO like everywhere else. SHA256SUMS covers the ISO.
 - **Cancel stops a scan run at once.** Before, it waited for the repositories in progress (*cancelling after
   the current repository*). Now the worker sees the cancel within 3 seconds (was the 30-second heartbeat) and
   ends the repositories in progress with every tool they started (git, builds): each repository of a run an
