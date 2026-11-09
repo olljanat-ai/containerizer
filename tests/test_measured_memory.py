@@ -69,7 +69,7 @@ def test_generate_sizes_memory_from_the_measured_peak(tmp_path):
 
 
 def test_measured_memory_stays_within_the_floor_and_the_limit_range_max(tmp_path):
-    assert _generated(tmp_path, 20, name="tiny")[:2] == ("128Mi", "128Mi")          # floor
+    assert _generated(tmp_path, 20, name="tiny")[:2] == ("128Mi", "512Mi")          # request floor; the limit never below the baseline
     req, lim, _ = _generated(tmp_path, 3000, name="big")
     assert (req, lim) == ("3776Mi", "4096Mi")                                        # LimitRange max 4Gi
 

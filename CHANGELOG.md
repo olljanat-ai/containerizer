@@ -49,7 +49,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   256Mi request and 512Mi limit, so a large API could be killed for its memory in the sandbox while a small worker
   reserved too much. The build-and-run now samples the container's memory and CPU while its probes are answered and
   records the peak; the generated manifests then ask for the peak × 1.25 and limit it to the peak × 2 (rounded up
-  to 64Mi, between 128Mi and the namespace's LimitRange max), with the reason in `plan.json`. A component that was
+  to 64Mi, at most the namespace's LimitRange max; the request at least 128Mi, the limit never below the 512Mi
+  baseline, as a few seconds of probes understate real load), with the reason in `plan.json`. A component that was
   not measured keeps the old sizes; exceptions such as `native-rendering-memory` only raise them
   ([docs](docs/overview.md#self-learning-loop)).
 

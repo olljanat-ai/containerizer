@@ -36,6 +36,9 @@ hardening:
     limit_factor: 2
     round_to: 64Mi
     floor: 128Mi
+    # a peak from a few seconds of probes understates real load: the limit never falls below the baseline's, so a
+    # measurement shrinks the request (what the scheduler reserves) and only ever raises the limit
+    limit_floor: 512Mi
 
   # UID/GID the final image runs as (runAsUser/runAsGroup/fsGroup).
   run_as:

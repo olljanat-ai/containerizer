@@ -793,6 +793,7 @@ def measured_memory(plan: dict, usage: dict | None) -> None:
         v = max(-(-peak * float(factor) // step) * step, floor)
         return min(v, ceiling) if ceiling else v
     req, lim = size(m.get("request_factor", 1.25)), size(m.get("limit_factor", 2))
+    lim = max(lim, _qty(m.get("limit_floor", 0)) or 0)
     have = plan.get("memory") or {}
     req = max(req, _qty(have.get("request", 0)))
     lim = max(lim, _qty(have.get("limit", 0)), req)

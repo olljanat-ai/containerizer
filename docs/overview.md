@@ -318,7 +318,8 @@ For each component that can be containerized the scan:
 While the container runs and its probes are answered, the run samples its memory and CPU (`docker stats`, every
 few seconds) and records the peak in the verification result (`usage` in `assessment.json`). The generated
 manifests size the component from it: `requests.memory` is the peak × 1.25 and `limits.memory` the peak × 2, both
-rounded up to 64Mi, never below 128Mi nor above the namespace LimitRange's max (`hardening.measured_memory` in
+rounded up to 64Mi, never above the namespace LimitRange's max; the request never below 128Mi and the limit never
+below the 512Mi baseline, because a few seconds of probes understate real load (`hardening.measured_memory` in
 `rules/60-security.yaml`), with the reason in `plan.json` (*measured 310Mi peak in the verification run*). A
 component that was not measured keeps the fixed 256Mi/512Mi, and exceptions such as `native-rendering-memory` only
 ever raise the sizes. `containerizer generate --verification DIR` takes the measurement from a folder that
