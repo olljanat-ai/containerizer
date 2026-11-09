@@ -28,12 +28,10 @@ from **Admin → System**, so install a new appliance from the series' `vX.Y.0` 
 | File | For |
 | --- | --- |
 | `containerizer-vX.Y.Z.iso` | Installer: boot it, answer the questions on the console. |
-| `containerizer-vX.Y.Z.qcow2` | KVM, Proxmox, OpenStack: a 64 GB thin disk. For a larger one, grow it before the first boot (`qemu-img resize`). |
 | `SHA256SUMS`, `SHA256SUMS.sigstore.json` | Check the downloads (command in the release notes). |
 
-On its first boot a disk image partitions the whole disk and installs itself, then restarts. If the disk was
-too small, it stops at a `recovery login:` prompt, and the next boot fails with `no such device: COS_STATE`.
-Start again from a fresh copy of the image on a disk of 64 GB or more.
+Every hypervisor installs from the ISO, KVM, Proxmox and OpenStack too (releases before 0.17.0 also had a
+qcow2 disk image).
 
 Check what you downloaded:
 
@@ -44,11 +42,8 @@ cosign verify-blob --bundle SHA256SUMS.sigstore.json \
 sha256sum -c SHA256SUMS --ignore-missing
 ```
 
-**From the ISO**: the console (screen or serial) shows the installer: the disk to install to (it is
+Boot the ISO: the console (screen or serial) shows the installer: the disk to install to (it is
 erased), an SSH public key for `root` (optional), and a host name. It installs and restarts; remove the ISO.
-
-**From a disk image**: the first start installs the system to the whole disk (it takes a few minutes and
-restarts once), then shows the login prompt.
 
 For unattended installs, see [Running the appliance](appliance-admin.md#unattended-installs).
 

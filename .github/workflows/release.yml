@@ -196,10 +196,9 @@ jobs:
             docker run --rm --privileged -v /dev:/dev -v /var/run/docker.sock:/var/run/docker.sock \
               -v "$PWD/build:/build" --entrypoint /usr/bin/elemental containerizer-appliance:build --debug "$@"
           }
-          # an expandable disk holds only the recovery system; on its first boot it installs itself to the
-          # whole disk (the persistent partition takes what the OS snapshots leave)
-          run_elemental build-disk --expandable --local --system containerizer-appliance:build \
-            -n "containerizer-$V" -o /build
+          # the boot test's disk: an expandable disk holds only the recovery system; on its first boot it installs
+          # itself to the whole disk (the persistent partition takes what the OS snapshots leave). Releases ship
+          # only the ISO.
           if [ "${{ inputs.boot_test }}" = true ]; then
             run_elemental build-disk --expandable --local --system containerizer-appliance:build \
               --cloud-init /build/test-login.yaml -n test -o /build/test
@@ -291,11 +290,7 @@ jobs:
           V: ${{ steps.v.outputs.version }}
         run: |
           cd build
-          # A 64 GB thin disk (the minimum): the expandable image partitions the whole disk on its first boot, and
-          # the shipped 1 GB would leave it in recovery with no COS_STATE to boot next time.
-          qemu-img convert -c -O qcow2 "containerizer-$V.raw" "containerizer-$V.qcow2"
-          qemu-img resize "containerizer-$V.qcow2" 64G
-          sha256sum "containerizer-$V.iso" "containerizer-$V.qcow2" > SHA256SUMS
+          sha256sum "containerizer-$V.iso" > SHA256SUMS
           cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
           ls -la
 
@@ -312,11 +307,9 @@ jobs:
             only their containerizer services restart, the OS does not. Install: [docs/appliance.md](https://github.com/${{ github.repository }}/blob/${{ steps.v.outputs.version }}/docs/appliance.md).
 
             - `containerizer-${{ steps.v.outputs.version }}.iso`: installer (UEFI)
-            - `containerizer-${{ steps.v.outputs.version }}.qcow2`: 64 GB disk image for KVM/Proxmox/OpenStack (grow it before the first boot for a larger disk)
             - `SHA256SUMS` + `SHA256SUMS.sigstore.json`: verify with `cosign verify-blob --bundle SHA256SUMS.sigstore.json --certificate-identity-regexp '^https://github\.com/${{ github.repository }}/\.github/workflows/release\.yml@refs/tags/' --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS`
           files: |
             build/containerizer-${{ steps.v.outputs.version }}.iso
-            build/containerizer-${{ steps.v.outputs.version }}.qcow2
             build/SHA256SUMS
             build/SHA256SUMS.sigstore.json
 
