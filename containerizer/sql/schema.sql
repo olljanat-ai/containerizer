@@ -1097,6 +1097,43 @@ BEGIN
 END;
 GO
 
+-- 44: package feeds (Purpose feed, Provider nuget / npm / maven): a token for the builds of scanned code, sent by the
+-- worker's feed proxy with the requests under the feed's URL (Scope), with FeedUser when the feed wants a user name
+IF COL_LENGTH(N'[${schema}].SourceCredential', N'FeedUser') IS NULL
+    ALTER TABLE [${schema}].SourceCredential ADD FeedUser nvarchar(200) NULL;
+GO
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_SourceCredential_Purpose'
+           AND parent_object_id = OBJECT_ID(N'[${schema}].SourceCredential') AND definition NOT LIKE N'%feed%')
+    ALTER TABLE [${schema}].SourceCredential DROP CONSTRAINT CK_SourceCredential_Purpose;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_SourceCredential_Purpose'
+               AND parent_object_id = OBJECT_ID(N'[${schema}].SourceCredential'))
+    ALTER TABLE [${schema}].SourceCredential ADD CONSTRAINT CK_SourceCredential_Purpose
+        CHECK (Purpose IN (N'read', N'write', N'llm', N'feed'));
+GO
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_SourceCredential_Provider'
+           AND parent_object_id = OBJECT_ID(N'[${schema}].SourceCredential') AND definition NOT LIKE N'%nuget%')
+    ALTER TABLE [${schema}].SourceCredential DROP CONSTRAINT CK_SourceCredential_Provider;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_SourceCredential_Provider'
+               AND parent_object_id = OBJECT_ID(N'[${schema}].SourceCredential'))
+    ALTER TABLE [${schema}].SourceCredential ADD CONSTRAINT CK_SourceCredential_Provider
+        CHECK (Provider IN (N'azure-devops', N'github', N'gitlab', N'anthropic', N'openai', N'nuget', N'npm', N'maven'));
+GO
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_SourceCredential_Kind'
+           AND parent_object_id = OBJECT_ID(N'[${schema}].SourceCredential') AND definition NOT LIKE N'%feed%')
+    ALTER TABLE [${schema}].SourceCredential DROP CONSTRAINT CK_SourceCredential_Kind;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_SourceCredential_Kind'
+               AND parent_object_id = OBJECT_ID(N'[${schema}].SourceCredential'))
+    ALTER TABLE [${schema}].SourceCredential ADD CONSTRAINT CK_SourceCredential_Kind CHECK (
+        (Purpose = N'read' AND Provider IN (N'azure-devops', N'github', N'gitlab'))
+        OR (Purpose = N'write' AND Provider IN (N'azure-devops', N'github', N'gitlab') AND Scope LIKE N'https://_%' AND ApiUrl IS NULL)
+        OR (Purpose = N'llm' AND Provider IN (N'anthropic', N'openai') AND Scope = N'llm' AND Model IS NOT NULL)
+        OR (Purpose = N'feed' AND Provider IN (N'nuget', N'npm', N'maven') AND Scope LIKE N'https://_%' AND ApiUrl IS NULL
+            AND Scope NOT LIKE N'%[<>"'' ?#]%'));
+GO
+
 CREATE OR ALTER TRIGGER [${schema}].trSourceCredentialAudit ON [${schema}].SourceCredential
 AFTER INSERT, UPDATE, DELETE AS
 BEGIN
@@ -1106,16 +1143,16 @@ BEGIN
            LEFT(COALESCE(i.Purpose, d.Purpose) + N': ' + COALESCE(i.Scope, d.Scope), 200),
            CASE WHEN d.CredentialId IS NULL THEN N'insert' WHEN i.CredentialId IS NULL THEN N'delete' ELSE N'update' END,
            CASE WHEN d.CredentialId IS NOT NULL THEN (SELECT d.Purpose, d.Provider, d.ApiUrl, d.Host, d.Scope, d.Model, d.Note, d.Enabled,
-                d.ExpiresOn, d.TokenSetAt, d.LlmOrder, d.LlmMaxTokens, d.LlmParallel FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+                d.ExpiresOn, d.TokenSetAt, d.LlmOrder, d.LlmMaxTokens, d.LlmParallel, d.FeedUser FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
            CASE WHEN i.CredentialId IS NOT NULL THEN (SELECT i.Purpose, i.Provider, i.ApiUrl, i.Host, i.Scope, i.Model, i.Note, i.Enabled,
-                i.ExpiresOn, i.TokenSetAt, i.LlmOrder, i.LlmMaxTokens, i.LlmParallel FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+                i.ExpiresOn, i.TokenSetAt, i.LlmOrder, i.LlmMaxTokens, i.LlmParallel, i.FeedUser FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
     FROM inserted i FULL OUTER JOIN deleted d ON d.CredentialId = i.CredentialId
     CROSS JOIN [${schema}].fnAuditWho() w
     WHERE d.CredentialId IS NULL OR i.CredentialId IS NULL
        OR EXISTS (SELECT i.Purpose, i.Provider, i.ApiUrl, i.Host, i.Scope, i.Model, i.Note, i.Enabled, i.ExpiresOn, i.TokenSetAt, i.KeyId,
-                         i.LlmOrder, i.LlmMaxTokens, i.LlmParallel
+                         i.LlmOrder, i.LlmMaxTokens, i.LlmParallel, i.FeedUser
                   EXCEPT SELECT d.Purpose, d.Provider, d.ApiUrl, d.Host, d.Scope, d.Model, d.Note, d.Enabled, d.ExpiresOn, d.TokenSetAt, d.KeyId,
-                         d.LlmOrder, d.LlmMaxTokens, d.LlmParallel);
+                         d.LlmOrder, d.LlmMaxTokens, d.LlmParallel, d.FeedUser);
 END;
 GO
 
@@ -1222,10 +1259,10 @@ GRANT SELECT ON [${schema}].RuleEvidence TO [${schema}_admin];
 -- source control tokens: the admin pages add, replace and remove them but cannot read the sealed token back;
 -- the worker reads them and records their use
 GRANT SELECT ON [${schema}].SourceCredential (CredentialId, Purpose, Provider, ApiUrl, Host, Scope, Model, Note, Enabled, ExpiresOn, KeyId,
-    TokenSetAt, TokenSetBy, CreatedAt, LastUsedAt, LastResult, LlmOrder, LlmMaxTokens, LlmParallel) TO [${schema}_admin];
+    TokenSetAt, TokenSetBy, CreatedAt, LastUsedAt, LastResult, LlmOrder, LlmMaxTokens, LlmParallel, FeedUser) TO [${schema}_admin];
 GRANT INSERT, DELETE ON [${schema}].SourceCredential TO [${schema}_admin];
 GRANT UPDATE ON [${schema}].SourceCredential (Model, Note, Enabled, ExpiresOn, TokenSealed, KeyId, TokenSetAt, TokenSetBy,
-    LlmOrder, LlmMaxTokens, LlmParallel) TO [${schema}_admin];
+    LlmOrder, LlmMaxTokens, LlmParallel, FeedUser) TO [${schema}_admin];
 GRANT SELECT ON [${schema}].SourceCredential TO [${schema}_writer];
 GRANT UPDATE ON [${schema}].SourceCredential (LastUsedAt, LastResult) TO [${schema}_writer];
 -- lab services: administrators turn them on or off; the system agent applies it
@@ -2637,4 +2674,6 @@ GRANT SELECT ON [${schema}].vLlmUsage TO [${schema}_admin];
 GRANT SELECT ON [${schema}].vLlmUsageDaily TO [${schema}_admin];
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 43) INSERT [${schema}].SchemaVersion (Version) VALUES (43);
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 44) INSERT [${schema}].SchemaVersion (Version) VALUES (44);
 GO

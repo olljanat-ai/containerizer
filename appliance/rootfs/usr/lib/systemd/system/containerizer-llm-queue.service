@@ -39,6 +39,9 @@ Environment=CONTAINERIZER_SANDBOX_KUBECONFIG=/run/containerizer/sandbox-verifier
 # after each push to the output repository: the Flux webhook URL cz-sandbox writes (containerizer/fluxhook.py)
 Environment=CONTAINERIZER_FLUX_WEBHOOK=/run/containerizer/flux-webhook
 # results database (CZ_SQL_SCANNER_CS): the appliance's own or CZ_SQL_SERVER (cz-firstboot)
+# package feeds that need a sign-in (Admin -> Source control): its builds reach them through its feed proxy, which
+# adds the tokens; the firewall lets Docker's bridges reach this port only (containerizer/feedproxy.py)
+Environment=CONTAINERIZER_FEED_PROXY_LISTEN=169.254.53.53:3129
 EnvironmentFile=/run/containerizer/sql.env
 LoadCredential=sql-scanner:/etc/containerizer/secrets/cz-scanner
 # opens the LLM registered under Admin -> Source control & LLM, as the scan worker does

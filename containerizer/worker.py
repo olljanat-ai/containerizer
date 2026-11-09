@@ -927,6 +927,7 @@ class Worker:
             for c in (read, write, llm):
                 if c and c.token:
                     REDACT.add(c.token, c.username)
+            proxy = self.use_feeds(creds)
             self.sync_reviewed_rules(conn, creds)
             hooks._update(ImageTag=tag)
             o = self.options(scan, store, hooks, creds)
@@ -949,6 +950,9 @@ class Worker:
                 results = run_org(o, log=lambda msg: self.log(f"{name}: {msg}"))
             if write:
                 self._mark(write, "ok: pushed the generated files" if o.push else "ok")
+            for c in (proxy.feeds if proxy else []):
+                if c.cred is not None and proxy.results.get(c.cred.id):
+                    self._mark(c.cred, proxy.results[c.cred.id])
             c = hooks.counts
             stopped = len(results) < hooks.total
             if stopped:
@@ -987,6 +991,20 @@ class Worker:
             self.log(f"{name}: run #{run_id} {status}: {message}")
         return status
 
+
+    def use_feeds(self, creds):
+        """The registered package feeds, for this run's builds: the feed proxy adds their tokens (feedproxy.py)."""
+        from . import feedproxy
+        from .orgsource import REDACT
+        feeds = []
+        for c in creds.items:
+            if c.purpose == "feed" and c.enabled and c.error:
+                self.log(f"package feed {c.scope}: {c.error}; its builds get no credentials")
+        for c in creds.feeds():
+            if c.token:
+                REDACT.add(c.token, c.username)
+                feeds.append(feedproxy.Feed(c.provider, c.scope, c.token, c.username, c))
+        return feedproxy.use(feeds, self.data, log=self.log)
 
     def discover(self, scan: dict, store, hooks, creds, read, name: str) -> tuple[str, str]:
         """A discovery run: projects, repositories and their latest commits, nothing cloned."""

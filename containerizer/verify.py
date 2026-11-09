@@ -158,13 +158,20 @@ def host_network_allowed() -> bool:
 
 
 def _build_env_args() -> list[str]:
-    """Pass the host's proxy and extra CA bundle to builds (corporate proxies)."""
+    """Pass the host's proxy and extra CA bundle to builds (corporate proxies). With registered package feeds the
+    builds' HTTPS goes through the feed proxy (feedproxy.py), which adds the feeds' credentials and passes the rest on
+    (through the corporate proxy, if any); its CA comes in the `ca` bundle."""
+    from . import feedproxy
     args: list[str] = []
     proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
-    if proxy:
-        args += ["--build-arg", f"HTTPS_PROXY={proxy}", "--build-arg", f"https_proxy={proxy}"]
     no = os.environ.get("NO_PROXY") or os.environ.get("no_proxy")
-    if (proxy or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")) and no:
+    feeds = feedproxy.build_proxy_env(no)
+    build_proxy = feeds["proxy"] if feeds else proxy
+    if build_proxy:
+        args += ["--build-arg", f"HTTPS_PROXY={build_proxy}", "--build-arg", f"https_proxy={build_proxy}"]
+    if feeds:
+        no = feeds["no_proxy"]
+    if (build_proxy or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")) and no:
         args += ["--build-arg", f"NO_PROXY={no}", "--build-arg", f"no_proxy={no}"]
     http = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
     if http:        # apt (Debian/Ubuntu package sources) uses plain HTTP
@@ -172,7 +179,7 @@ def _build_env_args() -> list[str]:
         local = proxy or http
         if ("127.0.0.1" in local or "localhost" in local) and host_network_allowed():
             args += ["--network", "host"]
-    ca = os.environ.get("CONTAINERIZER_CA_BUNDLE") or next(
+    ca = (feeds or {}).get("ca") or os.environ.get("CONTAINERIZER_CA_BUNDLE") or next(
         (p for p in ("/root/.ccr/ca-bundle.crt",) if os.path.isfile(p)), None)
     if ca:
         args += ["--secret", f"id=ca,src={ca}"]
