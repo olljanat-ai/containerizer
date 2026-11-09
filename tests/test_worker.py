@@ -307,7 +307,7 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
         tokens_used.append((name, org, token))
         return prov
     monkeypatch.setattr(orgmod, "provider", make_provider)
-    fetched = []
+    fetched = _SharedList(tmp_path / "fetched.log")    # appended to by the scan's repository processes
 
     def fake_update(url, dest, branch="", header=""):
         n = url.rsplit("/", 1)[1].removesuffix(".git")
@@ -600,6 +600,9 @@ class _SharedList:
 
     def __iter__(self):
         return iter(self.items())
+
+    def count(self, x) -> int:
+        return self.items().count(x)
 
     def __eq__(self, other):
         return self.items() == list(other)

@@ -45,6 +45,7 @@ from . import restartplan
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 DEFAULT_HOSTS = {"api.github.com", "github.com", "gitlab.com", "dev.azure.com", "*.visualstudio.com"}
 HEARTBEAT = 30              # seconds between heartbeats of a running run
+CANCEL_POLL = 3             # seconds between looks for an administrator's cancel of a running run
 STALE_MINUTES = 10          # a running run without a heartbeat for this long has lost its worker
 APPROVAL_POLL = 15          # seconds between looks for rules a reviewer approved
 ACTIVE = ("queued", "running")
@@ -552,6 +553,10 @@ class RunHooks:
     def should_stop(self) -> bool:
         return self.w.stopping.is_set() or self.w.cancel.is_set()
 
+    def should_abort(self) -> bool:
+        """An administrator cancelled the run: the repositories in progress end now (org._run_parallel)."""
+        return self.w.cancel.is_set()
+
 
 # --------------------------------------------------------------------------- the worker
 
@@ -785,12 +790,18 @@ class Worker:
     # -- one run -------------------------------------------------------------------------------
 
     def _heartbeat(self, run_id: int, done: threading.Event) -> None:
-        while not done.wait(HEARTBEAT):
+        """The run's heartbeat every HEARTBEAT seconds, and a look for an administrator's cancel every CANCEL_POLL."""
+        last = _time.monotonic()
+        while not done.wait(CANCEL_POLL):
             try:
+                beat = _time.monotonic() - last >= HEARTBEAT
                 conn = self.connect()
                 try:
                     cur = conn.cursor()
-                    cur.execute("UPDATE cz.OrgScanRun SET HeartbeatAt = SYSUTCDATETIME() WHERE RunId = %s", (run_id,))
+                    if beat:
+                        cur.execute("UPDATE cz.OrgScanRun SET HeartbeatAt = SYSUTCDATETIME() WHERE RunId = %s",
+                                    (run_id,))
+                        last = _time.monotonic()
                     cur.execute("SELECT CancelRequested FROM cz.OrgScanRun WHERE RunId = %s", (run_id,))
                     row = cur.fetchone()
                     conn.commit()

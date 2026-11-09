@@ -12,6 +12,11 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 The OS image changes (`appliance/`, #255): release as a minor version.
 
+- **Cancel stops a scan run at once.** Before, it waited for the repositories in progress (*cancelling after
+  the current repository*). Now the worker sees the cancel within 3 seconds (was the 30-second heartbeat) and
+  ends the repositories in progress with every tool they started (git, builds): each repository of a run an
+  administrator can cancel is scanned in a process of its own, also with one repository at a time. The ended
+  ones are not recorded: they keep their previous result and the next run scans them again.
 - **A static address is kept after a restart.** systemd-networkd could start before `cz-firstboot` had copied
   `/etc/containerizer/network/10-static.network` to `/run/systemd/network`; br0 then got the DHCP default, and
   without a DHCP server the appliance had no address (seen on a Dell server). `cz-firstboot` now runs before

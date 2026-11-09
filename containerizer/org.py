@@ -1708,8 +1708,11 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
     parallel = 1 if o.dry_run else max(1, min(int(o.parallel or 1), MAX_PARALLEL))
     _phase(hooks, "Scanning the repositories")
     try:
-        if parallel > 1 and len(repos) > 1:
-            log(f"{o.org}: {parallel} repositories at a time")
+        # a run an administrator can cancel (the worker's) scans each repository in a process of its own, even one
+        # at a time: Cancel ends that process and every tool it started (git, builds) at once
+        if (parallel > 1 and len(repos) > 1) or (_abortable(hooks) and not o.dry_run):
+            if parallel > 1:
+                log(f"{o.org}: {parallel} repositories at a time")
             stopped = _run_parallel(repos, parallel, o, prov, out, work, reg, tag, cutoff, reset_cache, admin, names,
                                     finish, log, splits)
         else:
@@ -1742,6 +1745,15 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
         _phase(hooks, "Checking the sandbox")
         sandbox_step(o, out, log)
     return results
+
+
+def _abortable(hooks) -> bool:
+    return bool(hooks and hasattr(hooks, "should_abort"))
+
+
+def _abort_requested(hooks) -> bool:
+    """An administrator cancelled the run: the repositories in progress are ended now, not finished."""
+    return _abortable(hooks) and bool(hooks.should_abort())
 
 
 def _stop_requested(hooks) -> bool:
@@ -1789,6 +1801,10 @@ def _child(send, stop, r: SourceRepo, prov, o: OrgOptions, app: str, out, work: 
     from . import ai
     signal.signal(signal.SIGTERM, signal.SIG_DFL)      # a stopping machine ends it at once
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        os.setpgid(0, 0)                                # its own process group: a cancel ends the tools it started
+    except OSError:
+        pass
     usage: list = []
     ai.LISTENERS[:] = [usage.append]                    # the run's listeners (metrics) live in the parent
     git_events = _GitEvents()
@@ -1813,8 +1829,10 @@ def _run_parallel(repos: list, n: int, o: OrgOptions, prov, out, work: Path, reg
     """Up to n repositories at a time, each in its own forked process with its own work and staging folders.
     Results are handled in the order they finish: the staged files replace the repository's folder in the output
     repository, then `finish` records and commits it (one at a time, so a commit never holds another repository's
-    half-written files). A stop request starts nothing more and stops the running ones' LLM calls; they finish
-    the step they are on. Returns True when the run was stopped."""
+    half-written files). A stop request (the worker stopping) starts nothing more and stops the running ones' LLM
+    calls; they finish the step they are on. An administrator's cancel (hooks.should_abort) ends the running ones at
+    once, with the tools they started: they are not recorded, so they keep the result of their previous scan and
+    the next run scans them again. Returns True when the run was stopped."""
     import multiprocessing as mp
     import time as _time
     import warnings
@@ -1856,6 +1874,16 @@ def _run_parallel(repos: list, n: int, o: OrgOptions, prov, out, work: Path, reg
 
     try:
         while pending or running:
+            if _abort_requested(hooks):
+                stop.set()
+                log(f"cancelled: {done} of {len(repos)} repositories done, "
+                    f"{len(running)} in progress ended without a result")
+                for recv, (p, r, rel, stage) in list(running.items()):
+                    _end_group(p)
+                    recv.close()
+                    shutil.rmtree(stage, ignore_errors=True)
+                running.clear()
+                return True
             if not stopped and hooks and hasattr(hooks, "should_stop") and hooks.should_stop():
                 stopped = True
                 stop.set()
@@ -1908,6 +1936,22 @@ def _run_parallel(repos: list, n: int, o: OrgOptions, prov, out, work: Path, reg
             if p.is_alive():
                 p.kill()
     return stopped
+
+
+def _end_group(p) -> None:
+    """End a repository's process and everything it started (its process group): git, docker, the build tools."""
+    import signal
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(p.pid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        p.join(timeout=3)
+        if not p.is_alive():
+            break
+    if p.is_alive():
+        p.kill()
+        p.join(timeout=3)
 
 
 # automatic skips that only need the provider's API (discovery records them); the others need the clone
