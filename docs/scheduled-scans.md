@@ -144,9 +144,12 @@ A repository that is skipped or has no A component loses its folder in the outpu
 sandbox stops deploying it. A repository that fails keeps its previous folder and is reported as failed.
 
 A scan runs at most once at a time, and a paused scan does not run at all. If the worker was down at the
-scheduled time, the scan runs once when it is back. **Cancel** stops a running scan: no further repository
-is started, its LLM calls stop at once (the connection to the LLM server is closed, so a self-hosted LLM stops
-generating), and the repositories in progress end after the step they are on. A scan that has run cannot be
+scheduled time, the scan runs once when it is back. **Cancel** stops a running scan at once (the worker sees it
+within a few seconds): no further repository is started, its LLM calls stop (the connection to the LLM server is
+closed, so a self-hosted LLM stops generating), and the repositories in progress are ended with every tool they
+started (git, builds). Those are not recorded: they keep the result of their previous scan, and the next run scans
+them again. Stopping the worker (a restart, an update) still lets the repositories in progress finish the step they
+are on. A scan that has run cannot be
 deleted (its history is kept): pause it.
 
 **Repositories in parallel** (the scan's settings, 1 to 8, default 1): how many repositories a full scan or
