@@ -104,9 +104,22 @@ def _placeholder(host: str) -> bool:
 
 # --------------------------------------------------------------------------- inferred at assessment time
 
-def _scan_destinations(repo, c) -> list[dict]:
+def line_hosts(line: str) -> list[tuple[str, int | None, str]]:
+    """(host, port or None, scheme) of every URL and connection string on one line."""
+    hits = []
+    for m in URL_RE.finditer(line):
+        sch = m["scheme"].lower()
+        hits.append((m["host"], int(m["port"]) if m["port"] else SCHEME_PORTS.get(sch), sch))
+    for rx in (CONN_RE, HOSTPORT_RE):
+        for m in rx.finditer(line):
+            hits.append((m["host"], int(m["port"]) if m["port"] else None, "connection-string"))
+    return hits
+
+
+def _scan_destinations(repo, c, any_port: bool = False) -> list[dict]:
     """Destinations the component's configuration and code name: {host, port, protocol, scheme, source, file,
-    line, quote}. Development settings, comments, documentation and schema URLs are left out."""
+    line, quote}. Development settings, comments, documentation and schema URLs are left out. `any_port` keeps
+    names without a known port too ("Server=db;Database=x"; port None)."""
     from .harden import _projects
     from .rules import Context, _candidate_files
     out: list[dict] = []
@@ -125,16 +138,10 @@ def _scan_destinations(repo, c) -> list[dict]:
                 for n, line in enumerate(text.splitlines(), 1):
                     if len(line) > 2000 or (kind == "code" and CODE_COMMENT.match(line)):
                         continue
-                    hits = []
-                    for m in URL_RE.finditer(line):
-                        sch = m["scheme"].lower()
-                        hits.append((m["host"], int(m["port"]) if m["port"] else SCHEME_PORTS.get(sch), sch))
-                    for rx in (CONN_RE, HOSTPORT_RE):
-                        for m in rx.finditer(line):
-                            hits.append((m["host"], int(m["port"]) if m["port"] else None, "connection-string"))
-                    for host, port, sch in hits:
+                    for host, port, sch in line_hosts(line):
                         host = host.lower().rstrip(".")
-                        if NOISE_HOSTS.match(host) or _placeholder(host) or not port or not 0 < port < 65536:
+                        if NOISE_HOSTS.match(host) or _placeholder(host) or \
+                                (port is None and not any_port) or port is not None and not 0 < port < 65536:
                             continue
                         key = (host, port)
                         if key in seen:

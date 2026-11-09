@@ -170,6 +170,9 @@ network:
   no_egress_roles: [spa]
   # configured URLs pointing here are not dependencies
   local_hosts: '^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*|\+)$'
+  # well-known public services: the build-and-run verification leaves these to DNS; every other configured host
+  # name resolves to 127.0.0.1 there, so a missing service fails fast as "connection refused" (verify.hosts_to_map)
+  public_hosts: '(^|\.)(microsoftonline\.com|microsoft\.com|live\.com|googleapis\.com|google\.com|github\.com|githubusercontent\.com|nuget\.org|npmjs\.org|pypi\.org|maven\.org)$'
   # who may call a component's service port: any namespace (ingress controllers live elsewhere)
   ingress_from: [{namespaceSelector: {}}]
   # The egress review (egress.py, docs/egress.md): the deterministic pre-filter that runs before the LLM is

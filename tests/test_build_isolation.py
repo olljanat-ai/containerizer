@@ -138,7 +138,7 @@ def test_guard_allows_what_verification_and_the_gate_use_and_labels_it(tmp_path)
     out = _create({"CapDrop": ["ALL"], "CapAdd": ["NET_BIND_SERVICE"], "SecurityOpt": ["no-new-privileges"],
                    "ReadonlyRootfs": True, "Binds": [f"{work}:/app/data:rw"], "Memory": 768 << 20,
                    "Tmpfs": {"/tmp": "rw,mode=1777"}, "Sysctls": {"net.ipv4.ip_unprivileged_port_start": "0"},
-                   "ExtraHosts": ["sql01.corp.local:127.0.0.1"], "MaskedPaths": None,
+                   "ExtraHosts": ["db.corp.example:127.0.0.1", "mq.corp.example:127.0.0.1"], "MaskedPaths": None,
                    "PortBindings": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "40001"}]}},
                   tmp_path, Labels={"a": "b"})
     assert out["Labels"] == {"a": "b", dg.OWNER_LABEL: dg.OWNER}

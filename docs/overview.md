@@ -295,14 +295,20 @@ For each component that can be containerized the scan:
 1. builds the generated Dockerfile (application folder as context);
 2. runs it hardened (read-only root filesystem, all capabilities dropped, no new privileges, non-root,
    only the writable folders mounted) and probes the health endpoint. Writable folders are host
-   directories during the test, so apps that log only to files can still be diagnosed;
+   directories during the test, so apps that log only to files can still be diagnosed. Every host name
+   the component's connection strings and configured URLs name (the [connectivity](egress.md#network-connectivity)
+   scan; well-known public services in `public_hosts` of `rules/60-security.yaml` excepted) resolves to
+   `127.0.0.1` in the run, so a missing database or broker fails fast with *connection refused* instead
+   of a DNS lookup that hangs; the run's details list them (`mapped_hosts`), and a run stopped only by
+   external services reports what it needs (`needs: sql.corp.example:1433`);
 3. matches the log against `rules/50-failures.yaml`:
    - `retry`: patch the build plan (e.g. remove a pinned `global.json`, retarget an out-of-support
      TFM to net10.0, add Kerberos libraries, make a folder writable) and try again;
    - `external`: the container works, it only lacks a database/broker/directory/identity provider —
      then the tool retries in a dependency-free smoke mode (`Development` environment, which many apps
      map to SQLite and simulators) to prove the app actually serves requests. For the smoke run only,
-     `appsettings.Development.json` is mounted read-only (the image never contains it), relative
+     `appsettings.Development.json` is mounted read-only (the image never contains it), its host names
+     resolve to `127.0.0.1` too, relative
      SQLite paths are made absolute and writable, and sample input files are mounted from the repo.
      An app that never answers HTTP gets the same smoke retry;
    - `platform` / `code`: a runtime finding the static rules missed;
