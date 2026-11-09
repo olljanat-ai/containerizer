@@ -600,7 +600,7 @@ rules:
     fix: >-
       Run RavenDB 4+ as its own container (ravendb/ravendb image, data on a volume), move the
       code to the current RavenDB.Client (DocumentStore) and migrate the data with export/import
-      (Smuggler). Keep the app on a Windows container meanwhile if the port must wait.
+      (Smuggler). Keep the app on its Windows VM meanwhile if the port must wait.
     refs:
       - https://www.nuget.org/packages/RavenDB.Embedded/2.0.2370
       - https://www.nuget.org/packages/RavenDB.Database/3.5.9

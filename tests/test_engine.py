@@ -254,6 +254,24 @@ def test_docker_outage_is_not_a_build_failure(monkeypatch):
         verify._run(["docker", "build", "."], 10)
 
 
+def test_netfx_component_gets_no_windows_container_files(tmp_path):
+    """Linux-only (#271): a .NET Framework component that a Windows container could run gets no Dockerfile.windows
+    and no stop-gap column in MIGRATION.md; it stays on a Windows VM until it is ported."""
+    from containerizer.generate import generate_app
+
+    web_app(tmp_path / "src-app", tfm="net48")
+    a = assess(tmp_path / "src-app")
+    c = a.components[0]
+    assert c.project.is_netfx and c.windows_container_ok and c.verdict != "blocker"
+    out = tmp_path / "out"
+    generate_app(a, out)
+    assert not [p for p in out.rglob("Dockerfile.windows*")]
+    migration = [p.read_text() for p in out.rglob("MIGRATION.md")]
+    assert migration and not any("stop-gap" in m for m in migration)
+    from containerizer.imagescan import image_refs
+    assert not [ref for _, ref in image_refs() if "windows" in ref]    # `images --update` cannot re-add them
+
+
 def test_windows_sign_in_in_code_needs_a_change_also_with_iis_turned_off(tmp_path):
     """The lab's trade-rebates portal: a Make it A patch turned windowsAuthentication off in web.config (only IIS
     reads it) and kept AddNegotiate; it rated A and nobody could sign in in the sandbox. Negotiate in code is the

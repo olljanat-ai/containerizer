@@ -14,8 +14,9 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   `containerizer generate` no longer writes the Windows Server Core stop-gap (`Dockerfile.windows` and its
   `.dockerignore`) for .NET Framework components, `rules/images.yaml` drops the `windows:` images, `MIGRATION.md`
   drops the "Windows container stop-gap" column, and finding fixes, the migration plan and the application page no
-  longer suggest a Windows container. The `windows_container` rule attribute and `WindowsContainerOk` stay (the
-  migration plan and SARIF output read them).
+  longer suggest a Windows container (components that cannot run on Linux stay on Windows VMs). The
+  `windows_container` rule attribute and `Component.WindowsContainerOk` stay (`containerizer migrate` and the SARIF
+  output read the attribute; no schema change).
 
 ## 0.20.0 (2026-11-09)
 
