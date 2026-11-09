@@ -25,7 +25,7 @@ def feed_server(tmp_path):
             auth = self.headers.get("Authorization")
             seen.append((self.path, auth, self.headers.get("Connection")))
             ok = auth == "Basic " + base64.b64encode(b"builder:s3cret-token").decode() or not self.path.startswith("/feed")
-            body = b"package" if ok else b"no"
+            body = (b"x" * (2 * 1024 * 1024) if self.path.endswith("/big") else b"package") if ok else b"no"
             self.send_response(200 if ok else 401)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -68,6 +68,11 @@ def test_the_proxy_adds_the_feed_token_only_under_the_feed(tmp_path, feed_server
         assert feed_server.seen[0][1].startswith("Basic ") and feed_server.seen[0][2] == "close"
         assert feed_server.seen[1] == ("/other/thing", None, "close")       # not under the feed: no token
         assert p.results == {7: "ok: used by the builds"}
+        # big answers, many at once (Maven downloads in parallel): complete, never cut short
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(8) as pool:
+            got = list(pool.map(lambda i: _get(p, feed_server.port, f"/feed/{i}/big", str(p.bundle)), range(16)))
+        assert all(code == 200 and len(body) == 2 * 1024 * 1024 for code, body in got)
         # a wrong token: recorded as failed
         p.set_feeds([fp.Feed("nuget", f"https://localhost:{feed_server.port}/feed", "wrong-token-x", "builder", cred)])
         assert _get(p, feed_server.port, "/feed/x", str(p.bundle))[0] == 401

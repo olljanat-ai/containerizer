@@ -396,9 +396,11 @@ class FeedProxy:
             req, more = _read_head(client)
             if not req:
                 return
+            method = req.split(b" ", 1)[0].upper()
             req, feed = rewrite(req, feeds)
-            upstream.sendall(req + more)
-            self._relay(client, upstream, feed, host)
+            body = _body(client, req, more)
+            upstream.sendall(req + body)
+            self._relay(client, upstream, feed, host, method)
         except (Denied, OSError, ssl.SSLError) as ex:
             if not isinstance(ex, (ConnectionResetError, BrokenPipeError, TimeoutError)):
                 self.log(f"feed proxy: {type(ex).__name__}: {str(ex)[:200]}")
@@ -410,19 +412,74 @@ class FeedProxy:
                 except OSError:
                     pass
 
-    def _relay(self, client, upstream, feed: Feed | None, host: str) -> None:
-        first = upstream.recv(65536)
+    def _relay(self, client, upstream, feed: Feed | None, host: str, method: bytes = b"GET") -> None:
+        """The answer, in this thread only (an SSL socket is not used from two threads): its head with
+        Connection: close, then its body by its length, or until the server closes."""
+        head, rest = _read_head(upstream)
+        m = re.match(rb"HTTP/1\.[01] (\d{3})", head)
+        code = int(m.group(1)) if m else 0
         if feed is not None and feed.cred is not None:
-            m = re.match(rb"HTTP/1\.[01] (\d{3})", first or b"")
-            code = int(m.group(1)) if m else 0
             with self._lock:
                 if code in (401, 403):
                     self.results[feed.cred.id] = f"failed: HTTP {code} from {host}"
                 elif code and not self.results.get(feed.cred.id, "").startswith("failed"):
                     self.results[feed.cred.id] = "ok: used by the builds"
-        if first:
-            client.sendall(first)
-        _splice(client, upstream)
+        if not m:
+            client.sendall(head + rest)
+            return _drain(upstream, client, None)
+        lines = head.rstrip(b"\r\n").split(b"\r\n")
+        keep = [ln for ln in lines[1:] if ln and not ln.lower().startswith(HOP_HEADERS)]
+        client.sendall(b"\r\n".join([lines[0], *keep, b"Connection: close"]) + b"\r\n\r\n")
+        length = _header(keep, b"content-length")
+        if method == b"HEAD" or code in (204, 304) or 100 <= code < 200:
+            return
+        chunked = b"chunked" in (_header(keep, b"transfer-encoding") or b"").lower()
+        _drain(upstream, client, None if chunked or length is None or not length.isdigit() else int(length), rest)
+
+
+def _header(lines: list, name: bytes) -> bytes | None:
+    for ln in lines:
+        k, _, v = ln.partition(b":")
+        if k.strip().lower() == name:
+            return v.strip()
+    return None
+
+
+def _body(sock, head: bytes, more: bytes) -> bytes:
+    """A request's body: Content-Length bytes (requests here are GETs, sometimes a small POST)."""
+    lines = head.rstrip(b"\r\n").split(b"\r\n")[1:]
+    n = _header(lines, b"content-length")
+    if n is None or not n.isdigit():
+        return more
+    n = int(n)
+    if n > 64 * 1024 * 1024:
+        raise Denied("request body too large")
+    while len(more) < n:
+        chunk = sock.recv(min(65536, n - len(more)))
+        if not chunk:
+            break
+        more += chunk
+    return more
+
+
+def _drain(src, dst, length: int | None, first: bytes = b"") -> None:
+    """Copy src to dst: `length` bytes, or until src closes (a chunked answer: the server closes after it, as the
+    request asked)."""
+    sent, data = 0, first
+    while True:
+        if data:
+            if length is not None:
+                data = data[:length - sent]
+            dst.sendall(data)
+            sent += len(data)
+            if length is not None and sent >= length:
+                return
+        try:
+            data = src.recv(65536)
+        except (OSError, ssl.SSLError):
+            return
+        if not data:
+            return
 
 
 def _splice(a, b) -> None:
