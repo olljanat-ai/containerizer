@@ -376,9 +376,13 @@ Techniques used to avoid application changes:
 - Kestrel endpoints from `appsettings.json` are re-pointed with `Kestrel__Endpoints__X__Url`;
 - connection strings and secret settings become `ConnectionStrings__X` env vars from a Secret;
 - folders the app writes to (logs, App_Data) become volumes;
-- the ASP.NET Core Data Protection key folder (when the code does not persist the keys itself) gets one key,
-  read-only, from a Secret that External Secrets Operator generates once in the cluster (Password generator, no
-  secret store): cookies and antiforgery tokens survive restarts and work on every replica;
+- the ASP.NET Core Data Protection key folder gets one key, read-only, from a Secret that External Secrets Operator
+  generates once in the cluster (Password generator, no secret store): cookies and antiforgery tokens survive
+  restarts and work on every replica. That is the default folder under `/home/app` when no code (the component or
+  a library it references) persists the keys, or the folder the code reads from configuration for
+  `PersistKeysToFileSystem` (`DataProtection:KeyFolder`, re-pointed under `/data`; set when the configuration does
+  not). A folder written in the code itself is a persistent volume (ReadWriteOnce, one replica). The lint check
+  `dataprotection-volatile` fails a key ring folder setting that points into an `emptyDir`;
 - every web component runs one replica: more need shared state first (sessions, caches; the findings say which);
 - Windows paths in configuration (`D:\\Archive`, `\\\\fs01\\share`) are re-pointed to `/data/...` volumes
   with `Section__Key` env vars; key and certificate files go to `/secrets` from a Kubernetes Secret;
@@ -422,7 +426,7 @@ service links, CPU/memory/ephemeral-storage requests and limits, and a `sizeLimi
 **Lint.** The gate checks the manifests against Pod Security `restricted` (host namespaces, privileged,
 capabilities, volume types, host ports, privilege escalation, non-root, seccomp, sysctls) plus read-only
 root FS, resources, secret literals (in env, `ENV` and Secrets), the service account token, `emptyDir`
-limits, image tags and NetworkPolicies, and the Dockerfiles for a non-root final stage, tagged base
+limits, no Data Protection key ring on an `emptyDir` (`dataprotection-volatile`), image tags and NetworkPolicies, and the Dockerfiles for a non-root final stage, tagged base
 images, `ADD <url>`/`curl | sh` and base image end of support. Errors fail the gate. A pod annotation
 `containerizer.io/waives: "check,check"` relaxes named checks for hand-made exceptions.
 

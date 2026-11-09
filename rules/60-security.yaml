@@ -296,6 +296,7 @@ lint:
     secret-literals:     {severity: error,   title: No secret values in manifests or images}
     sa-token:            {severity: warning, title: Service account token not mounted}
     empty-dir-limit:     {severity: warning, title: emptyDir volumes have a sizeLimit}
+    dataprotection-volatile: {severity: error, title: A Data Protection key ring folder is not an emptyDir}
     image-tag:           {severity: warning, title: Workload image has an explicit, non-latest tag or digest}
     image-digest:        {severity: info,    title: Workload image is pinned to a digest}
     network-policy:      {severity: warning, title: Every workload is selected by a NetworkPolicy}
@@ -325,6 +326,11 @@ lint:
   allowed_volume_types: [configMap, csi, downwardAPI, emptyDir, ephemeral, persistentVolumeClaim, projected, secret]
   # names that must never carry a literal value (env, ENV, Secret stringData)
   secret_names: '(?i)(password|passwd|pwd|secret|token|api[_-]?key|private[_-]?key|connectionstrings?__)'
+  # configuration keys (DataProtection:KeyFolder) and environment variables (DataProtection__KeyFolder) that name the
+  # folder of a Data Protection key ring: on an emptyDir the keys change at every restart and every user is signed
+  # out (dataprotection-volatile; facts.dataprotection_folder also finds the folder setting by this name). A bare
+  # KeysFolder is not enough: SSH or signing key folders are named so too
+  keyring_names: '(?i)(^|[:_])(DataProtection|KeyRing)\w*?[:_]+(Keys?|KeyRing)?(Folder|Path|Dir|Directory|Location)$|(^|[:_])KeyRing(Folder|Path|Dir|Directory)?$'
   # final-stage base images that already run as non-root without a USER line
   nonroot_bases: ['nginx-unprivileged', 'distroless/.*:nonroot', 'chiseled']
 

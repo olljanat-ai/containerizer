@@ -178,6 +178,7 @@ def default_plan(c: Component) -> dict:
     if p.kind_hint == "dotnet":
         _repoint_config(plan, c.facts)
         _repoint_nlog(plan, c.facts)
+        dataprotection_plan(plan, c.facts)
         plan["env"]["DOTNET_ENVIRONMENT"] = "Production"
         if c.role == "web":
             plan["env"]["ASPNETCORE_ENVIRONMENT"] = "Production"
@@ -244,6 +245,54 @@ def _repoint_config(plan: dict, facts: dict) -> None:
                 add_reason(plan, "config-windows-paths", "Windows paths in configuration (drive letters, UNC shares) are "
                            "overridden with environment variables to folders under /data, which the manifests mount as "
                            "volumes; the application code is not changed.", [CONFIG_DOCS])
+
+
+DATAPROTECTION_DOCS = "https://learn.microsoft.com/en-us/aspnet/core/security/data-protection/configuration/overview"
+
+
+def dataprotection_plan(plan: dict, facts: dict) -> None:
+    """The Data Protection key ring folder the code persists the keys to (facts.dataprotection_folder). A folder
+    from configuration gets the cluster-generated key Secret mounted read-only there (plan["dataprotection_dirs"],
+    k8s_manifests), like the default folder of plan-dataprotection-keys: one key on every replica and restart,
+    no code change. An unset setting is pointed at DATAPROTECTION_DIR. A folder that is a literal in code is a
+    persistent volume (plan["dataprotection_pvc"], ReadWriteOnce: one replica)."""
+    dirs = []
+    for key, val in sorted((facts.get("dataprotection_key_settings") or {}).items()):
+        var = key.replace(":", "__")
+        folder = plan["env"].get(var) or val        # a Windows path is re-pointed under /data (_repoint_config)
+        if not folder or re.match(r"^([A-Za-z]:|\\\\)", folder) or hides_app(folder):
+            folder = DATAPROTECTION_DIR
+        if folder != val:
+            plan["env"][var] = folder
+        folder = _writable_abs(folder)
+        if folder not in [_writable_abs(w) for w in plan["add_writable"]]:
+            plan["add_writable"].append(folder)
+        if folder not in dirs:
+            dirs.append(folder)
+    if dirs:
+        plan["dataprotection_dirs"] = dirs
+        names = ", ".join(sorted(facts["dataprotection_key_settings"]))
+        add_reason(plan, "dataprotection-key-folder", f"The code keeps the Data Protection key ring in the folder "
+                   f"configured by {names}: the manifests mount one key at {', '.join(dirs)}, read-only, from a "
+                   "Secret that External Secrets Operator generates once in the cluster, so every replica and restart "
+                   "shares it (cookies and antiforgery tokens stay valid); the application code is not changed.",
+                   [DATAPROTECTION_DOCS])
+        return
+    lit = facts.get("dataprotection_key_literal")
+    if lit:
+        # relative to the working folder (/app) on Linux, where a drive path (D:\keys) is a relative name too
+        folder = _writable_abs(lit) if lit.startswith("/") else APP_DIR + "/" + lit.strip("/")
+        if hides_app(folder):
+            return
+        plan["dataprotection_pvc"] = folder
+        plan["single_replica"] = True
+        if re.fullmatch(r"[\w\-./]+", folder) and folder not in [_writable_abs(w) for w in plan["add_writable"]]:
+            plan["add_writable"].append(folder)
+        add_reason(plan, "dataprotection-key-volume", f"The code keeps the Data Protection key ring in a folder "
+                   f"written in the code ({lit}), which configuration cannot re-point: the folder is a persistent "
+                   "volume (ReadWriteOnce) so the keys survive restarts, with one replica, replaced rather than rolled "
+                   "on update. Reading the folder from configuration would let the manifests mount one shared key "
+                   "there instead.", [DATAPROTECTION_DOCS, PV_DOCS])
 
 
 def linux_path(plan: dict, val: str) -> str | None:
@@ -683,15 +732,16 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
         secret_keys.append(key)
         env.append({"name": key, "valueFrom": {"secretKeyRef": {"name": secret_name, "key": key, "optional": True}}})
     volumes, mounts = [], []
+    dp_pvc = plan.get("dataprotection_pvc")     # a key ring folder written in code (dataprotection_plan)
     for i, w in enumerate(writable_dirs(plan)):
         vname = f"w{i}-" + k8s_name(w.split("/")[-1] or "root")[:40]
-        if w == DATAPROTECTION_DIR:
+        if w == DATAPROTECTION_DIR or w in (plan.get("dataprotection_dirs") or ()):
             # one Data Protection key for every replica and restart, generated in the cluster (harden.py
             # dataprotection_docs): cookies and antiforgery tokens of one pod decrypt in the others
             volumes.append({"name": vname, "secret": {"secretName": f"{name}{DATAPROTECTION_SUFFIX}"}})
             mounts.append({"name": vname, "mountPath": w, "readOnly": True})
             continue
-        persistent = w in (plan.get("state_dirs") or ()) or (
+        persistent = w == dp_pvc or w in (plan.get("state_dirs") or ()) or (
             plan.get("single_replica")
             and any(x in w.lower() for x in ("app_data", "data", "keys", "archive", "store", "uploads", "documents")))
         if persistent:
@@ -699,6 +749,11 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
         else:
             volumes.append({"name": vname, "emptyDir": {}})
         mounts.append({"name": vname, "mountPath": w})
+    if dp_pvc and dp_pvc not in writable_dirs(plan):
+        # a path the Dockerfile cannot create (a drive path is a relative name on Linux: /app/D:\Keys)
+        volumes.append({"name": "dataprotection-keys",
+                        "persistentVolumeClaim": {"claimName": f"{name}-dataprotection-keys"}})
+        mounts.append({"name": "dataprotection-keys", "mountPath": dp_pvc})
     for store in plan.get("x509_stores") or []:
         # .NET on Linux reads CurrentUser\<store> from *.pfx files (no password) in this folder (techniques.py)
         volumes.append({"name": f"x509-{store}", "secret": {"secretName": f"{name}-x509-{store}", "optional": True,

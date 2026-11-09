@@ -17,6 +17,15 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   longer suggest a Windows container (components that cannot run on Linux stay on Windows VMs). The
   `windows_container` rule attribute and `Component.WindowsContainerOk` stay (`containerizer migrate` and the SARIF
   output read the attribute; no schema change).
+- **A Data Protection key folder from configuration gets the shared key.** An app that keeps its key ring in a
+  configured folder (`PersistKeysToFileSystem(new DirectoryInfo(configuration["DataProtection:KeyFolder"]))`, also
+  in a library it references) had that folder on an `emptyDir`, so every restart or rollout signed every user out,
+  and the generated key was mounted under `/home/app`, where the app never looked. Now the key Secret that External
+  Secrets Operator generates is mounted read-only at the configured folder (re-pointed under `/data`, or set when the
+  configuration leaves it empty), with no code change; a folder written in the code is a persistent volume
+  (ReadWriteOnce, one replica). `plan.json` and the Dockerfile header say why, and the new lint check
+  `dataprotection-volatile` fails a key ring folder setting that points into an `emptyDir`
+  ([docs](docs/overview.md#generated-output)).
 
 ## 0.20.0 (2026-11-09)
 
