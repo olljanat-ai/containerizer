@@ -53,6 +53,14 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   baseline, as a few seconds of probes understate real load), with the reason in `plan.json`. A component that was
   not measured keeps the old sizes; exceptions such as `native-rendering-memory` only raise them
   ([docs](docs/overview.md#self-learning-loop)).
+- **Verification resolves every host the application is configured to reach to 127.0.0.1.** The build-and-run
+  check used to map one fixed name from an example application; now it takes every host name from the
+  component's connection strings and configured URLs (the same scan the connectivity model uses, plus
+  `appsettings.Development.json` in the smoke run) and maps it to loopback, so a missing database, broker or
+  service fails fast with "connection refused" instead of a DNS lookup that hangs. IP addresses and
+  well-known public services (`public_hosts` in `rules/60-security.yaml`) are left alone. The run's details list
+  the mapped names, and a component that runs but stops at missing services lists what it needs
+  (`needs: sql.corp.example:1433`) in the report.
 
 ## 0.20.0 (2026-11-09)
 

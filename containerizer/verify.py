@@ -220,6 +220,41 @@ def _free_disk(min_gb: float = 15.0) -> None:
         pass
 
 
+# a name `docker run --add-host` may map: DNS labels, the last starting with a letter (never an address)
+HOST_NAME = re.compile(r"(?=[a-z0-9.-]{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
+                       r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+def _mappable(hits, into: dict | None = None) -> dict:
+    """{host: [ports]} of the (host, port) pairs that are host names and not well-known public services."""
+    from .connectivity import NOISE_HOSTS, _placeholder
+    from .harden import security
+    public = security()["network"].get("public_hosts") or "$^"
+    out = dict(into or {})
+    for host, port in hits:
+        host = str(host).lower().rstrip(".")
+        if not HOST_NAME.fullmatch(host) or NOISE_HOSTS.match(host) or _placeholder(host) or re.search(public, host, re.I):
+            continue
+        ports = out[host] = list(out.get(host, []))
+        if port and port not in ports:
+            ports.append(port)
+    return out
+
+
+def hosts_to_map(a: AppAssessment, c: Component) -> dict:
+    """{host: [ports]}: the names the component's configuration and code connect to (connection strings and URLs,
+    as the connectivity model reads them), resolved to 127.0.0.1 in the verification run, so a missing service
+    fails fast with "connection refused" (an external service) instead of a DNS lookup that hangs."""
+    if c.role == "spa":
+        return {}
+    from .connectivity import _scan_destinations
+    try:
+        found = _scan_destinations(a.repo, c, any_port=True)
+    except Exception:  # noqa: BLE001 - unreadable configuration: nothing to map
+        return {}
+    return _mappable((d["host"], d["port"]) for d in found)
+
+
 def build(a: AppAssessment, c: Component, plan: dict, workdir: Path, timeout: int) -> tuple[bool, str, str]:
     workdir.mkdir(parents=True, exist_ok=True)
     df = dockerfile_for(plan, c)
@@ -261,12 +296,13 @@ def _track(usage: dict, name: str) -> None:
 
 
 def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | None = None,
-        wait: int = 90) -> tuple[str, str, dict]:
-    """Returns (status, log, details). status: ok | exited | unhealthy"""
+        wait: int = 90, hosts: dict | None = None) -> tuple[str, str, dict]:
+    """Returns (status, log, details). status: ok | exited | unhealthy. `hosts` (hosts_to_map) resolve to
+    127.0.0.1; details["mapped_hosts"] names them."""
     name = f"cz-verify-{os.getpid()}-{int(time.time())}-{secrets.token_hex(3)}"   # unique: jobs run at once
     uid = 101 if c.role == "spa" else plan.get("uid") or images()["dotnet"]["app_uid"]
     cmd = ["docker", "run", "-d", "--name", name, "--read-only", "--cap-drop", "ALL",
-           "--security-opt", "no-new-privileges", "--memory", f"{RUN_MEMORY_MIB}m", "--add-host", "sql01.corp.local:127.0.0.1"]
+           "--security-opt", "no-new-privileges", "--memory", f"{RUN_MEMORY_MIB}m"]
     # writable folders are host directories during verification, so log files the app writes
     # (apps that log only to files print nothing to stdout) can be read for the diagnosis
     import shutil
@@ -292,6 +328,9 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
         dev = c.project.dir / "appsettings.Development.json"
         if dev.exists():
             cmd += ["-v", f"{dev.resolve()}:/app/appsettings.Development.json:ro"]
+            from .connectivity import line_hosts      # a stray production host there fails fast too
+            hosts = _mappable(((h, p) for line in dev.read_text(errors="replace").splitlines()
+                               for h, p, _ in line_hosts(line)), hosts)
             # dev settings often point at ../../App_Data etc.; give those folders a scratch tmpfs
             from .facts import _flatten, _load_json
             for key, val in _flatten(_load_json(dev)):
@@ -314,6 +353,9 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
                             cmd += ["-v", f"{src}:{target}:ro"]       # sample input files from the repo
                         else:
                             cmd += ["--tmpfs", f"{target}:rw,exec,uid={uid},gid={uid},mode=1777"]
+    mapped = sorted(h for h in (hosts or {}) if HOST_NAME.fullmatch(h))
+    for h in mapped:
+        cmd += ["--add-host", f"{h}:127.0.0.1"]
     cmd.append(tag)
     if c.role == "console":
         first = c.facts.get("oneshot_arg") or (c.facts.get("commands") or [None])[0]
@@ -322,8 +364,8 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
     rc, out = _run(cmd, 60)
     if rc != 0:
         (workdir / "run.log").write_text(out)
-        return "exited", out, {}
-    details: dict = {}
+        return "exited", out, {"mapped_hosts": mapped} if mapped else {}
+    details: dict = {"mapped_hosts": mapped} if mapped else {}
     usage: dict = {}
     status = "unhealthy"
     deadline = time.time() + wait
@@ -383,6 +425,7 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
               "predicted": c.verdict, "time": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     env_override: dict = {}
     learned_patches: list[tuple[dict, dict, dict]] = []
+    hosts = hosts_to_map(a, c)
     pruned = False
     t0 = time.time()
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -390,7 +433,7 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
         stage, details = "build", {}
         if ok:
             stage = "run"
-            status, log, details = run(c, plan, tag, workdir, env_override)
+            status, log, details = run(c, plan, tag, workdir, env_override, hosts=hosts)
             if status == "exited" and c.role == "console" and details.get("exit_code") == "0":
                 status = "ok"                    # a batch job that ran to completion
                 details["note"] = "job completed"
@@ -424,7 +467,7 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
         fr, caps = d
         caps.setdefault("tfm", plan.get("tfm") or "")
         entry = {"attempt": attempt, "stage": stage, "rule": fr["id"], "outcome": fr["outcome"],
-                 "diagnosis": _fmt(fr.get("diagnosis", ""), caps), **{k: v for k, v in details.items() if k == "exit_code"},
+                 "diagnosis": _fmt(fr.get("diagnosis", ""), caps), **{k: v for k, v in details.items() if k in ("exit_code", "mapped_hosts")},
                  "log_tail": tail[-1500:]}                    # evidence for the rule review of what is learned
         history.append(entry)
         if fr["outcome"] == "retry":
@@ -476,6 +519,9 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
             entry["note"] = "finding recorded; smoke-testing the rest in Development mode"
             continue
         break
+    if hosts and (result.get("mode") == "smoke" or result["status"] == "ok-external" or result.get("finding")):
+        # what the real environment must provide: these names resolved to loopback in the sandbox
+        result["needs"] = [f"{h}:{p}" for h, ps in hosts.items() for p in ps] + [h for h, ps in hosts.items() if not ps]
     if result.get("finding"):
         result["smoke"] = result["status"]
         result["status"] = "finding"
