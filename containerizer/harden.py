@@ -158,7 +158,14 @@ def harden_pod(meta: dict, pod: dict, uid: int, component: str, exceptions: list
         for k, v in base["container"]["resources"].items():
             for rk, rv in v.items():
                 res.setdefault(k, {}).setdefault(rk, rv)
-        _merge(res, patch.get("resources") or {})
+        for k, v in (patch.get("resources") or {}).items():
+            sect = res.setdefault(k, {})
+            for rk, rv in v.items():     # exceptions only raise (a measured size may already be higher)
+                if rk not in sect or _qty(rv) > _qty(sect[rk]):
+                    sect[rk] = rv
+        for rk, rv in (res.get("requests") or {}).items():
+            if rk in (res.get("limits") or {}) and _qty(rv) > _qty(res["limits"][rk]):
+                res["limits"][rk] = rv   # a raised request never exceeds its limit
         mounts = c.setdefault("volumeMounts", [])
         mounted = {m["mountPath"]: m for m in mounts}
         for w in patch.get("writable") or []:

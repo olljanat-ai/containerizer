@@ -27,6 +27,19 @@ hardening:
     # every emptyDir gets a size limit so a runaway writer can't fill the node
     empty_dir_size_limit: 256Mi
 
+  # Memory sized from the verification run, when it measured the component (verify.run samples
+  # `docker stats` while the probes are answered): requests = peak x request_factor, limits = peak x
+  # limit_factor, both rounded up to `round_to`, never below `floor` nor above namespace_policy.limit_range.max.
+  # Without a measurement the baseline above stays. Exceptions (native-rendering-memory, ...) only raise.
+  measured_memory:
+    request_factor: 1.25
+    limit_factor: 2
+    round_to: 64Mi
+    floor: 128Mi
+    # a peak from a few seconds of probes understates real load: the limit never falls below the baseline's, so a
+    # measurement shrinks the request (what the scheduler reserves) and only ever raises the limit
+    limit_floor: 512Mi
+
   # UID/GID the final image runs as (runAsUser/runAsGroup/fsGroup).
   run_as:
     dotnet: 1654          # 'app' user of the Microsoft .NET 8+ images
@@ -42,7 +55,7 @@ hardening:
   #   sysctls: [{name, value}]     pod sysctls (only the Kubernetes "safe" set passes the lint)
   #   capabilities_add: [..]       container capabilities (only NET_BIND_SERVICE passes the lint)
   #   automount_token: true        mount the service account token
-  #   resources: {...}             merged over the baseline resources
+  #   resources: {...}             merged over the baseline resources (only raises a value set before)
   #   env: {K: V}                  extra environment variables
   #   secret_mounts: [{name, path, items?}]  Secret `<component>-<name>` mounted read-only at path
   #   waives: [check ids]          lint checks this exception is allowed to relax

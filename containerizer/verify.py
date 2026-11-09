@@ -235,13 +235,38 @@ def build(a: AppAssessment, c: Component, plan: dict, workdir: Path, timeout: in
     return rc == 0, log, tag
 
 
+RUN_MEMORY_MIB = 768           # --memory of the verification run
+PEAK_ROUNDS = 2                # probe-and-sample rounds after the app first answers
+_SIZE = {"b": 1, "kib": 2**10, "mib": 2**20, "gib": 2**30, "kb": 1e3, "mb": 1e6, "gb": 1e9}
+
+
+def _sample(name: str) -> tuple[float, float] | None:
+    """(memory in MiB, CPU %) of a running container from `docker stats --no-stream`, None when unreadable."""
+    rc, out = _run(["docker", "stats", "--no-stream", "--format", "{{.MemUsage}}|{{.CPUPerc}}", name], 20)
+    m = re.search(r"([\d.]+)\s*([KMG]i?B|B)\s*/[^|]*\|\s*([\d.]+)%", out or "", re.I)
+    if rc != 0 or not m:
+        return None
+    return float(m.group(1)) * _SIZE[m.group(2).lower()] / 2**20, float(m.group(3))
+
+
+def _track(usage: dict, name: str) -> None:
+    """Keep the peak memory and CPU of the container seen so far (generate.measured_memory sizes from it)."""
+    s = _sample(name)
+    if s is None:
+        return
+    usage["samples"] = usage.get("samples", 0) + 1
+    usage["memory_peak_mib"] = round(max(usage.get("memory_peak_mib", 0.0), s[0]), 1)
+    usage["cpu_peak_percent"] = round(max(usage.get("cpu_peak_percent", 0.0), s[1]), 1)
+    usage["run_limit_mib"] = RUN_MEMORY_MIB
+
+
 def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | None = None,
         wait: int = 90) -> tuple[str, str, dict]:
     """Returns (status, log, details). status: ok | exited | unhealthy"""
     name = f"cz-verify-{os.getpid()}-{int(time.time())}-{secrets.token_hex(3)}"   # unique: jobs run at once
     uid = 101 if c.role == "spa" else plan.get("uid") or images()["dotnet"]["app_uid"]
     cmd = ["docker", "run", "-d", "--name", name, "--read-only", "--cap-drop", "ALL",
-           "--security-opt", "no-new-privileges", "--memory", "768m", "--add-host", "sql01.corp.local:127.0.0.1"]
+           "--security-opt", "no-new-privileges", "--memory", f"{RUN_MEMORY_MIB}m", "--add-host", "sql01.corp.local:127.0.0.1"]
     # writable folders are host directories during verification, so log files the app writes
     # (apps that log only to files print nothing to stdout) can be read for the diagnosis
     import shutil
@@ -299,6 +324,7 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
         (workdir / "run.log").write_text(out)
         return "exited", out, {}
     details: dict = {}
+    usage: dict = {}
     status = "unhealthy"
     deadline = time.time() + wait
     try:
@@ -320,13 +346,22 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
                         if code < 500:
                             status = "ok"
                             break
+                _track(usage, name)     # after the probes were answered: what serving them took
                 if status == "ok":
+                    for _ in range(PEAK_ROUNDS):    # a few more requests: one sample right at start-up is thin
+                        for path in details.get("http") or {}:
+                            _http(f"http://127.0.0.1:{hp}{path}")
+                        _track(usage, name)
                     break
-            elif time.time() > deadline - wait + 20:
-                status = "ok"           # worker stayed up for 20 s
-                details["note"] = "worker running"
-                break
+            else:
+                _track(usage, name)
+                if time.time() > deadline - wait + 20:
+                    status = "ok"           # worker stayed up for 20 s
+                    details["note"] = "worker running"
+                    break
     finally:
+        if usage:
+            details["usage"] = usage
         _, log = _run(["docker", "logs", name], 30)
         _run(["docker", "rm", "-f", name], 30)
         for f in sorted(fsroot.rglob("*")) if fsroot.exists() else []:
@@ -362,6 +397,8 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
             if status == "ok":
                 history.append({"attempt": attempt, "stage": "run", "status": "ok", **details})
                 result["status"] = "ok"
+                if details.get("usage"):
+                    result["usage"] = details["usage"]   # sizes the memory requests and limits (generate.py)
                 if env_override:
                     result["mode"] = "smoke"     # proven without the production services
                 break

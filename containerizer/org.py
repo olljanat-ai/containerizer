@@ -1403,6 +1403,7 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
         if gen.exists():
             shutil.rmtree(gen)
         fa = dataclasses.replace(a, components=keep)
+        fa.verification = getattr(a, "verification", None)    # the measured memory (generate.measured_memory)
         if not o.gate:
             progress.step(progress.GENERATE)
             generate_app(fa, gen, registry=o.registry, pin=o.pin, gitops=gitops, tag=tag, devdb=dd, lab=lab,
