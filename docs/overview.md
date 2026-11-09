@@ -384,6 +384,13 @@ Techniques used to avoid application changes:
   not). A folder written in the code itself is a persistent volume (ReadWriteOnce, one replica). The lint check
   `dataprotection-volatile` fails a key ring folder setting that points into an `emptyDir`;
 - every web component runs one replica: more need shared state first (sessions, caches; the findings say which);
+- workers (queue consumers, folder pollers, schedulers, Windows services) are replaced on update (`strategy:
+  Recreate`), not rolled, so two copies never run the same job; web components keep `RollingUpdate`. A plan rule
+  with `scale_out: true` marks a worker safe to run twice. Pods get a stop grace period per role (web 30 s, worker
+  and console 120 s), raised to cover raised IIS request timeouts (`host-long-request-timeout`, at most 600 s).
+  CronJobs retry twice, stop a run after an hour, skip a run that could not start within 5 minutes, keep 3
+  succeeded and 3 failed Jobs and delete finished ones after a day. All of it is data in
+  `rules/60-security.yaml` (`hardening.workloads`), and each decision has its reason in `plan.json`;
 - Windows paths in configuration (`D:\\Archive`, `\\\\fs01\\share`) are re-pointed to `/data/...` volumes
   with `Section__Key` env vars; key and certificate files go to `/secrets` from a Kubernetes Secret;
 - Serilog file-only sinks are switched to the console (logs to stdout) with `Serilog__WriteTo__N__Name`;
@@ -426,7 +433,10 @@ service links, CPU/memory/ephemeral-storage requests and limits, and a `sizeLimi
 **Lint.** The gate checks the manifests against Pod Security `restricted` (host namespaces, privileged,
 capabilities, volume types, host ports, privilege escalation, non-root, seccomp, sysctls) plus read-only
 root FS, resources, secret literals (in env, `ENV` and Secrets), the service account token, `emptyDir`
-limits, no Data Protection key ring on an `emptyDir` (`dataprotection-volatile`), image tags and NetworkPolicies, and the Dockerfiles for a non-root final stage, tagged base
+limits, no Data Protection key ring on an `emptyDir` (`dataprotection-volatile`), image tags, NetworkPolicies, CronJob
+limits and worker rollouts (warnings: a CronJob without `backoffLimit`, `activeDeadlineSeconds`,
+`startingDeadlineSeconds` or history limits; a Deployment without ports that is not `Recreate`, unless annotated
+`containerizer.io/scale-out`), and the Dockerfiles for a non-root final stage, tagged base
 images, `ADD <url>`/`curl | sh` and base image end of support. Errors fail the gate. A pod annotation
 `containerizer.io/waives: "check,check"` relaxes named checks for hand-made exceptions.
 

@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath
 import yaml
 
 from .assess import AppAssessment, Component
-from .harden import harden_manifests, namespace_manifest, write_app_security
+from .harden import cronjob_limits, harden_manifests, namespace_manifest, write_app_security
 from .rules import RULES_DIR, Context, Rule, load_rules, run_rule
 
 CONTAINER_PORT = 8080
@@ -391,6 +391,7 @@ def make_plan(a: AppAssessment, c: Component, rules: list[Rule] | None = None, e
     state_plan(c, plan)
     if extra:
         merge_plan(plan, extra)
+    workload_lifecycle(c, plan)         # its reasons (k8s_manifests applies it)
     return plan
 
 
@@ -715,6 +716,54 @@ def dockerfile_for(plan: dict, c: Component) -> str:
 
 # --------------------------------------------------------------------------- Kubernetes
 
+def _timeout_seconds(snippet: str) -> int | None:
+    """The longest request time from IIS configuration: executionTimeout (seconds) or an ANCM requestTimeout
+    ([d.]hh:mm:ss)."""
+    best = None
+    for m in re.finditer(r'executionTimeout="(\d+)"', snippet):
+        best = max(best or 0, int(m.group(1)))
+    for m in re.finditer(r'requestTimeout="(?:(\d+)\.)?(\d+):(\d\d):(\d\d)"', snippet):
+        d, h, mi, se = (int(x or 0) for x in m.groups())
+        best = max(best or 0, ((d * 24 + h) * 60 + mi) * 60 + se)
+    return best
+
+
+def workload_lifecycle(c: Component, plan: dict) -> dict:
+    """Rollout strategy and stop grace period of the component (rules/60-security.yaml hardening.workloads),
+    with the reasons in plan.json: a worker is replaced, not rolled, unless a plan rule set `scale_out`;
+    raised IIS request timeouts raise the grace period."""
+    from .harden import role_lifecycle, workloads
+    cfg = role_lifecycle(c.role)
+    strategy = cfg.get("strategy") or "RollingUpdate"
+    grace = int(cfg.get("terminationGracePeriodSeconds") or 30)
+    scale_out = False
+    if plan.get("single_replica"):
+        strategy = "Recreate"           # state_plan: two pods never write the same files
+    elif strategy == "Recreate" and plan.get("scale_out"):
+        strategy, scale_out = "RollingUpdate", True
+    elif strategy == "Recreate":
+        add_reason(plan, "worker-recreate", f"A {c.role} was one process on one server: its Deployment is replaced "
+                   "(strategy Recreate), not rolled, so two copies never poll the same queue or folder or run the "
+                   "same recurring job during a rollout. A plan rule with scale_out: true marks it safe to run twice.",
+                   ["https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#recreate-deployment"])
+    lr = workloads().get("long_requests") or {}
+    found = [f for f in c.findings if f.rule.id == lr.get("finding")]
+    if found:
+        longest = max((_timeout_seconds(str(e)) or 0 for f in found for e in f.evidence), default=0)
+        want = min(int(lr.get("max_seconds") or 600),
+                   longest + int(lr.get("margin_seconds") or 0) if longest else int(lr.get("max_seconds") or 600))
+        if want > grace:
+            grace = want
+            add_reason(plan, "long-request-grace", f"IIS let requests run for {longest or 'several minutes'}"
+                       f"{' s' if longest else ''}: the pod gets {grace} s after SIGTERM to finish them "
+                       "(terminationGracePeriodSeconds).",
+                       ["https://kubernetes.io/docs/concepts/containers/container-lifecycle-hooks/"])
+    if grace != 30 and not any(r["rule"] == "long-request-grace" for r in plan.get("reasons") or []):
+        add_reason(plan, "grace-period", f"terminationGracePeriodSeconds {grace}: the {c.role} gets that long to "
+                   "finish its work after SIGTERM (Kubernetes and the .NET host default to 30 s).")
+    return {"strategy": strategy, "grace": grace, "scale_out": scale_out}
+
+
 def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> list[dict]:
     name = k8s_name(c.name)
     labels = {"app.kubernetes.io/name": name, "app.kubernetes.io/part-of": app_ns(a.name)}
@@ -786,6 +835,8 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
            "automountServiceAccountToken": False, "containers": [container], "volumes": volumes}
     if plan.get("hostname"):
         pod["hostname"] = plan["hostname"]       # Environment.MachineName in the pod (techniques.py)
+    life = workload_lifecycle(c, plan)          # rollout strategy, stop grace period (rules/60-security.yaml)
+    pod["terminationGracePeriodSeconds"] = life["grace"]
     docs: list[dict] = []
     oneshot = c.facts.get("oneshot_arg") if c.role == "console" else None
     if c.role == "console" and not oneshot:
@@ -801,15 +852,18 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
             docs.append({"apiVersion": "batch/v1", "kind": "CronJob", "metadata": {"name": jname, "labels": labels},
                          "spec": {"schedule": "0 2 * * *", "concurrencyPolicy": "Forbid",
                                   "jobTemplate": {"spec": {"template": {"metadata": {"labels": labels}, "spec": jpod}}}}})
+            cronjob_limits(docs[-1]["spec"])     # retries, run deadline, history (rules/60-security.yaml)
     else:
         docs.append({"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": name, "labels": labels},
                      # one replica: the goal is a container that runs, not scaling out. A second replica needs shared
                      # state first (Data Protection keys, sessions, caches: the findings say which), which is a code
                      # change; with per-pod keys, two replicas failed every form post that landed on the other pod.
                      "spec": {"replicas": 1,
-                              "strategy": {"type": "Recreate"} if plan.get("single_replica") else {"type": "RollingUpdate"},
+                              "strategy": {"type": life["strategy"]},
                               "selector": {"matchLabels": labels},
                               "template": {"metadata": {"labels": labels}, "spec": pod}}})
+        if life["scale_out"]:
+            docs[-1]["metadata"]["annotations"] = {"containerizer.io/scale-out": "a plan rule marks it safe to run twice"}
     if plan.get("port"):
         docs.append({"apiVersion": "v1", "kind": "Service", "metadata": {"name": name, "labels": labels},
                      "spec": {"selector": labels, "ports": [{"name": "http", "port": 80, "targetPort": "http"}]}})
