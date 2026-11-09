@@ -24,6 +24,14 @@ The OS image changes (`appliance/`, #255): release as a minor version.
   building and running*. Now the page says the rating is not confirmed, the confidence says the build or run
   failed, and the component's details show why and the end of the build or run log (kept in
   `ComponentAssessment.VerifyDetail` by the next scan) ([docs](docs/overview.md#self-learning-loop)).
+- **Package feeds that need a sign-in** ([docs](docs/source-control.md#package-feeds)). Admin → Source control has
+  a new section, **Package feeds**: a NuGet, npm or Maven/Gradle feed's URL, an optional user name and a token,
+  sealed for the worker like the source control tokens. The token never enters a build: the scan worker and the
+  LLM queue runner run a feed proxy that the builds use as `HTTPS_PROXY`; it opens only the connections to the
+  registered feeds' hosts (its CA reaches the builds through the existing `ca` build secret) and adds the token to
+  the requests under the feed's URL, passes everything else through untouched, and refuses the appliance's own
+  addresses and container networks. The appliance firewall lets Docker's bridges reach the proxies (ports 3128 and
+  3129 on 169.254.53.53). Schema 44: `SourceCredential.FeedUser`, Purpose `feed`.
 - **A static address is kept after a restart.** systemd-networkd could start before `cz-firstboot` had copied
   `/etc/containerizer/network/10-static.network` to `/run/systemd/network`; br0 then got the DHCP default, and
   without a DHCP server the appliance had no address (seen on a Dell server). `cz-firstboot` now runs before

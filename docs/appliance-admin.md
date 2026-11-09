@@ -664,6 +664,7 @@ the application's own); it keeps the platform safe from it instead:
 | --- | --- |
 | Allowed names on the [Firewall](#firewall) page (package feeds, registries), through the DNS filter | yes, as everything else on the appliance |
 | The DNS filter (169.254.53.53:53) | yes |
+| The feed proxies (169.254.53.53:3128 and 3129) | yes: they add the tokens of [package feeds](source-control.md#package-feeds) to requests to those feeds, refuse the appliance's own addresses and its container networks, and pass everything else on under the same allow-list |
 | SQL Server (results database, 1433), the registry (5000), Grafana, Prometheus, the web UI, kubemg | no: loopback only, and the firewall answers nothing but DNS on Docker's bridges |
 | The k3s API (6443), the kubelet (10250), pods and services of the sandbox cluster (lab services, the IdP, sandboxed apps) | no: Docker's bridges never reach the k3s networks, nor the other way round |
 | The host's network namespace | no: builds never use `--network host` (the scan worker forces `CONTAINERIZER_BUILD_HOST_NETWORK=0`, and Docker refuses the `network.host` and `security.insecure` build entitlements, `/etc/docker/daemon.json`) |

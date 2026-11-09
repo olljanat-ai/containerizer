@@ -92,6 +92,9 @@ K3S_IFACES = ("cni0", "flannel.1", "veth*")
 # the host answers only DNS, they never reach the k3s networks, and everything else goes through the egress list
 DOCKER4 = ("172.16.0.0/12",)
 DOCKER_IFACES = ("docker0", "br-*")
+# the feed proxies of the scan worker and the LLM queue runner (feedproxy.py, CONTAINERIZER_FEED_PROXY_LISTEN in their
+# units): the one thing on the host builds may reach besides DNS; they add registered feed tokens, nothing else
+FEED_PROXY_PORTS = (3128, 3129)
 INTERNAL4 = K3S4 + DOCKER4
 INTERNAL_IFACES = K3S_IFACES + DOCKER_IFACES
 
@@ -962,8 +965,9 @@ table inet {TABLE} {{
     udp sport 547 udp dport 546 accept
     tcp dport {{ {", ".join(str(p) for p in INBOUND_TCP)} }} accept
     # containers and pods: the DNS filter; pods also the k3s API and the kubelet. Builds and verification runs
-    # (Docker's bridges) nothing else: not the results database, the registry, Grafana or the k3s API
+    # (Docker's bridges) only the feed proxies besides: not the results database, the registry, Grafana or the k3s API
     iifname {{ {ifaces} }} ip daddr {DNS_ADDR} meta l4proto {{ tcp, udp }} th dport 53 accept
+    iifname {{ {docker_ifaces} }} ip daddr {DNS_ADDR} tcp dport {{ {", ".join(str(p) for p in FEED_PROXY_PORTS)} }} accept
     iifname {{ {docker_ifaces} }} limit rate 10/minute burst 20 packets log prefix "cz-build-drop: " level info
     iifname {{ {docker_ifaces} }} drop
     iifname {{ {k3s_ifaces} }} tcp dport {{ 6443, 10250 }} accept

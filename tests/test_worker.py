@@ -398,6 +398,27 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
         assert got.token == llm_key and got.ai_settings()["CONTAINERIZER_LLM_BASE_URL"] == "https://llm.example/v1"
         s, _, body = b.follow(f"/admin/source-control/{llm_id}/delete", {"csrf": csrf})
         assert "removed" in body
+        # a package feed: the token is never shown; the user name can change; a bad URL is refused
+        feed_tok = "feed-pat-0123456789abcdef"
+        s, _, body = b.follow("/admin/source-control/feed", {"csrf": csrf, "Provider": "nuget", "FeedUser": "builder",
+                                                             "Scope": "https://user@pkgs.example.com/x", "Token": feed_tok})
+        assert "Feed URL must be a plain https:// address" in body and feed_tok not in body
+        s, _, body = b.follow("/admin/source-control/feed", {"csrf": csrf, "Provider": "nuget", "FeedUser": "builder",
+                                                             "Scope": "https://pkgs.example.com/contoso/", "Token": feed_tok})
+        assert "Feed token saved for https://pkgs.example.com/contoso/" in body and feed_tok not in body
+        assert "Packaging: Read" in body and "User name" in body and "builder" in body
+        feed_id = int(re.search(r"/admin/source-control/(\d+)/token", body)[1])
+        s, _, body = b.follow(f"/admin/source-control/{feed_id}", {"csrf": csrf, "FeedUser": "ci-reader", "Enabled": "1"})
+        assert "Saved." in body and "ci-reader" in body
+        body = b.follow("/admin/source-control")[2]
+        assert "Package feeds" in body and "https://pkgs.example.com/contoso/" in body and feed_tok not in body
+        c = sqlstore.connect(writer, PW)
+        feeds = crm.load(c, cr.load_private(tmp_path / "worker.key")).feeds()
+        c.close()
+        assert [(f.provider, f.scope, f.username, f.token) for f in feeds] == \
+            [("nuget", "https://pkgs.example.com/contoso/", "ci-reader", feed_tok)]
+        monkeypatch.setenv("CONTAINERIZER_FEED_PROXY_LISTEN", "127.0.0.1:0")
+
         # no worker has run yet: it computes the next run
         w.queue_due()
         c = sqlstore.connect(writer, PW)
@@ -424,6 +445,15 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
         assert w.tick() is True
         assert w.tick() is False                         # nothing more queued
         assert tokens_used == [("github", "acme", secret)], logs   # opened by the worker, for this organization only
+        # the run's builds go through the feed proxy, which holds the feed's token (the builds never see it)
+        from containerizer import feedproxy, verify
+        proxy = feedproxy.active()
+        assert proxy is not None and [(f.url, f.username, f.token) for f in proxy.feeds] == \
+            [("https://pkgs.example.com/contoso/", "ci-reader", feed_tok)]
+        args = verify._build_env_args()
+        assert f"HTTPS_PROXY={proxy.url}" in args and f"id=ca,src={proxy.bundle}" in args
+        assert not any(feed_tok in a for a in args)
+        assert feed_tok not in "".join(logs)
         body = b.follow(f"/admin/source-control/{cred_id}")[2]
         assert "ok: 4 repositories listed" in body and "Working" in body and secret not in body, logs
 
