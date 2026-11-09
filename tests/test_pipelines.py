@@ -571,3 +571,25 @@ def test_the_scans_own_registry_is_not_the_real_environments():
         assert pl._sandbox_only(reg), reg
     for reg in ("acr.example.io/team", "ghcr.io/acme", "registry.example.com:5000/x"):
         assert not pl._sandbox_only(reg), reg
+
+
+def test_publish_jobs_output_the_pushed_digest():
+    """#292: digests.txt (<image>:<version>@sha256:...) as an artifact and a job output, for a deploy pipeline."""
+    assert 'echo "$IMAGE:$VERSION@$DIGEST" > digests.txt' in pl._sh_push()
+    _, wf = gh(spec())
+    pub = wf["jobs"]["publish"]["steps"]
+    push = next(s for s in pub if s.get("id") == "push")
+    assert 'echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"' in push["run"]
+    up = next(s for s in pub if s.get("name") == "Pushed digest")
+    assert up["with"] == {"name": "digests-${{ matrix.folder }}", "path": "digests.txt"}
+    assert "digests.txt" not in json.dumps(wf["jobs"]["check"])               # nothing pushed in pull requests
+    gl = yaml.safe_load(pl.files(spec(), "gitlab")[".gitlab-ci.yml"])[".containerizer-publish"]
+    assert "digests.txt" in gl["artifacts"]["paths"] and gl["artifacts"]["reports"] == {"dotenv": "digest.env"}
+    assert "DIGEST_%s=%s" in gl["script"][-1]
+    az = yaml.safe_load(pl.files(spec(), "azure-devops")[pl.AZURE_FILE])["jobs"][1]["steps"]
+    push = next(s for s in az if s.get("name") == "push")
+    assert "task.setvariable variable=DIGEST;isOutput=true" in push["bash"]
+    assert any(s.get("publish") == "digests.txt" for s in az)
+    for provider in pl.PROVIDERS:
+        readme = pl.files(spec(), provider)["containerizer/README.md"]
+        assert "kustomize edit set image $(cat digests.txt)" in readme

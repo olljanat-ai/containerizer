@@ -709,12 +709,15 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
     from .harden import external_secret_targets
     provided = external_secret_targets([d for f in [*out.glob("*/k8s.yaml"), *out.glob("pull-secret.yaml")]
                                         for d in load_yaml_docs(f.read_text())])
+    from .gitops import digest_setter_images
+    setters = digest_setter_images((out / "kustomization.yaml").read_text()) if (out / "kustomization.yaml").exists() \
+        else set()
     for cdir in sorted(d for d in out.iterdir() if (d / "Dockerfile").exists()):
         df = (cdir / "Dockerfile").read_text()
         lint = lint_dockerfile(df, f"{cdir.name}/Dockerfile")
         if (cdir / "k8s.yaml").exists():
             lint += lint_manifests(load_yaml_docs((cdir / "k8s.yaml").read_text()), f"{cdir.name}/k8s.yaml: ",
-                                   provided)
+                                   provided, setters)
         lint_all += lint
         comp = {"component": cdir.name, "base": final_base(df), "lint": [v.to_dict() for v in lint], "scans": []}
         bres = None

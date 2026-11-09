@@ -664,3 +664,22 @@ def test_hardening_report_has_a_lifecycle_line_per_workload(tmp_path):
     assert "## Workload lifecycle" in md
     assert "| poller | Deployment/poller | Recreate | 120 s |" in md
     assert "Workers replaced, not rolled" in md
+
+
+def test_image_digest_lint_with_a_flux_digest_setter():
+    """#292: an image the kustomization pins through a Flux :digest setter is reported as pinned by Flux."""
+    from containerizer.harden import hardening_markdown, lint_manifests
+    pod = {"containers": [{"name": "c", "image": "r.local/ns/web:1.2.3"}]}
+    docs = [{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "web"},
+             "spec": {"template": {"metadata": {}, "spec": pod}}}]
+    checks = {v.check: v for v in lint_manifests(docs)}
+    assert "image-digest" in checks and "image-digest-setter" not in checks
+    checks = {v.check: v for v in lint_manifests(docs, digest_setters={"r.local/ns/web"})}
+    assert "image-digest" not in checks
+    assert checks["image-digest-setter"].message.endswith("pinned by Flux after the first automation run "
+                                                          "(digest setter in kustomization.yaml)")
+    assert "Images are deployed by digest | not applied" in hardening_markdown("ns", {"web": docs})
+    md = hardening_markdown("ns", {"web": docs}, {"r.local/ns/web"})
+    assert "| Images are deployed by digest | applied | " in md and "pinned by Flux" in md
+    pod["containers"][0]["image"] = "r.local/ns/web:1.2.3@sha256:" + "a" * 64
+    assert not {"image-digest", "image-digest-setter"} & {v.check for v in lint_manifests(docs)}

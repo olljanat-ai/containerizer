@@ -513,8 +513,10 @@ def cluster_kit(app: str | None, registry: str, image_refs: list[str] | None = N
     return {"cluster/audit-policy.yaml": [audit], "cluster/verify-images.yaml": [verify]}
 
 
-def write_app_security(out, app: str, comp_docs: dict[str, list[dict]], registry: str, dump) -> list[str]:
-    """Write security.yaml (kustomization resource), the cluster/ kit and HARDENING.md.
+def write_app_security(out, app: str, comp_docs: dict[str, list[dict]], registry: str, dump,
+                       digest_setters: set[str] | None = None) -> list[str]:
+    """Write security.yaml (kustomization resource), the cluster/ kit and HARDENING.md. `digest_setters`: the
+    images (without tag) the kustomization pins by digest through Flux `:digest` setters (gitops.image_setters).
     Returns (resources to add to the app's kustomization, the namespace policy docs)."""
     from pathlib import Path
     out = Path(out)
@@ -527,7 +529,7 @@ def write_app_security(out, app: str, comp_docs: dict[str, list[dict]], registry
     for rel, docs in cluster_kit(app, registry).items():
         (out / rel).parent.mkdir(parents=True, exist_ok=True)
         (out / rel).write_text(dump(docs))
-    (out / "HARDENING.md").write_text(hardening_markdown(app, comp_docs))
+    (out / "HARDENING.md").write_text(hardening_markdown(app, comp_docs, digest_setters))
     return ["security.yaml"], ns_docs
 
 
@@ -583,7 +585,7 @@ def harden_gitops(docs: dict[str, list[dict]], a=None) -> dict[str, list[dict]]:
 
 # --------------------------------------------------------------------------- report
 
-def hardening_markdown(app: str, comp_docs: dict[str, list[dict]]) -> str:
+def hardening_markdown(app: str, comp_docs: dict[str, list[dict]], digest_setters: set[str] | None = None) -> str:
     """Each NSA/CISA and CIS control: applied, applied with exception, not applied, not applicable,
     or an action for the cluster operator / pipeline, with the guide section."""
     viol: dict[str, list[Violation]] = {}
@@ -591,7 +593,7 @@ def hardening_markdown(app: str, comp_docs: dict[str, list[dict]]) -> str:
     egress: dict[str, str] = {}
     provided = external_secret_targets([d for docs in comp_docs.values() for d in docs])
     for comp, docs in comp_docs.items():
-        for v in lint_manifests(docs, f"{comp}: ", provided):
+        for v in lint_manifests(docs, f"{comp}: ", provided, digest_setters):
             viol.setdefault(v.check, []).append(v)
         for d in docs:
             for meta, _ in _pod_specs(d):
@@ -627,6 +629,10 @@ def hardening_markdown(app: str, comp_docs: dict[str, list[dict]]) -> str:
                 note = "no component calls the Kubernetes API"
             if ctl["id"] == "network-policies":
                 note = ctl.get("action", "")
+            if ctl["id"] == "digest-pinning" and viol.get("image-digest-setter"):
+                note = ("pinned by Flux after the first automation run (`$imagepolicy` digest setters in "
+                        "kustomization.yaml, gitops/flux/git/image-automation.yaml); without the image automation: "
+                        + note)
         counts[status] = counts.get(status, 0) + 1
         rows.append(f"| {ctl['title']} | {status} | {ctl.get('nsa', '')} | {ctl.get('cis', '')} | {note} |")
     lines = [f"# Hardening report: {app}", "",
@@ -779,9 +785,12 @@ def _lint_external_secret(L: "_Lint", d: dict, tgt: str) -> None:
             L.add("secret-literals", tgt, f"template key {k} carries a literal value; read it from the store")
 
 
-def lint_manifests(docs: list[dict], where: str = "", provided: set[str] | None = None) -> list[Violation]:
+def lint_manifests(docs: list[dict], where: str = "", provided: set[str] | None = None,
+                   digest_setters: set[str] | None = None) -> list[Violation]:
     """`provided`: Secret names that ExternalSecrets elsewhere in the app produce (another component's
-    folder, pull-secret.yaml)."""
+    folder, pull-secret.yaml). `digest_setters`: images (without tag) the app's kustomization.yaml pins by
+    digest through a Flux `:digest` setter (gitops.digest_setter_images): not pinned in the manifest itself,
+    but by the image automation."""
     L = _Lint()
     cfg = L.cfg
     docs = [d for d in docs if isinstance(d, dict)]
@@ -884,7 +893,12 @@ def lint_manifests(docs: list[dict], where: str = "", provided: set[str] | None 
                 img = c.get("image") or ""
                 if "@sha256:" not in img and (":" not in img.rsplit("/", 1)[-1] or img.endswith(":latest")):
                     L.add("image-tag", ct, f"image {img} uses latest or no tag", waived)
-                if "@sha256:" not in img:
+                if "@sha256:" in img:
+                    pass
+                elif _image_repo(img) in (digest_setters or ()):
+                    L.add("image-digest-setter", ct, f"image {img}: pinned by Flux after the first automation run "
+                                                     "(digest setter in kustomization.yaml)", waived)
+                else:
                     L.add("image-digest", ct, f"image {img} is not pinned to a digest", waived)
     return L.out
 
@@ -904,6 +918,12 @@ def _lint_keyring_volume(L: "_Lint", ct: str, c: dict, pod: dict, waived: set) -
         if m and vtype.get(m.get("name")) == "emptyDir":
             L.add("dataprotection-volatile", ct, f"env {e['name']} puts the Data Protection key ring on emptyDir "
                                                  f"{m['name']} ({m['mountPath']}): new keys at every restart", waived)
+
+
+def _image_repo(img: str) -> str:
+    """An image reference without its tag and digest."""
+    img = img.split("@", 1)[0]
+    return img.rsplit(":", 1)[0] if ":" in img.rsplit("/", 1)[-1] else img
 
 
 def _looks_like_path(v: str) -> bool:

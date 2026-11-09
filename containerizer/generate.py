@@ -1128,7 +1128,8 @@ def app_files(a, out: Path, all_k8s: list[dict], comp_docs: dict[str, list[dict]
     ns_doc = namespace_manifest(app_ns(a.name))
     (out / "namespace.yaml").write_text(_yaml_docs([ns_doc]))
     # namespace-level security (default deny, quota, limits), HARDENING.md and the cluster/ kit
-    sec, sec_docs = write_app_security(out, app_ns(a.name), comp_docs, registry, _yaml_docs)
+    sec, sec_docs = write_app_security(out, app_ns(a.name), comp_docs, registry, _yaml_docs,
+                                       {img.rsplit(":", 1)[0] for _, img in images})
     (out / "kustomization.yaml").write_text(yaml.safe_dump(
         {"apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization",
          "namespace": app_ns(a.name),

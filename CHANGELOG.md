@@ -36,6 +36,15 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   run went on forever and, with `Forbid`, every later run was skipped. The values are in `rules/60-security.yaml`
   (`hardening.workloads`), the reasons in `plan.json`, a line per workload in `HARDENING.md`, and the gate warns
   about CronJobs without these limits and workers that roll.
+- **Images are deployed by digest** ([docs](docs/build-pipelines.md#the-sandbox-and-gitops)). Tags can be moved in
+  the registry; a digest cannot. The generated Flux `ImagePolicy` now reflects the digest of the tag it picks
+  (`digestReflectionPolicy: Always`, Flux 2.5+), and `kustomization.yaml` has a name, tag **and** digest setter per
+  image, so the image automation writes `<image>:<tag>@sha256:...`. An organization scan writes the digest of
+  each image it pushed straight into the kustomization, so the sandbox runs by digest from the first deploy,
+  without the image automation. The build pipelines keep the pushed digest as `digests.txt` (an artifact) and a
+  job output, for `kustomize edit set image $(cat digests.txt)` in a deploy pipeline. HARDENING.md's *Images are
+  deployed by digest* is now *applied* (pinned by Flux after the first automation run); a lint check
+  `image-digest-setter` (info) replaces `image-digest` for these images.
 
 ## 0.20.0 (2026-11-09)
 
