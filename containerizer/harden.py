@@ -809,12 +809,30 @@ def lint_manifests(docs: list[dict], where: str = "", provided: set[str] | None 
                     if "value" in e and e.get("value") not in ("", None) and _secret_name(e.get("name", "")) \
                             and not _looks_like_path(str(e["value"])):
                         L.add("secret-literals", ct, f"env {e['name']} has a literal value; use a secretKeyRef", waived)
+                _lint_keyring_volume(L, ct, c, pod, waived)
                 img = c.get("image") or ""
                 if "@sha256:" not in img and (":" not in img.rsplit("/", 1)[-1] or img.endswith(":latest")):
                     L.add("image-tag", ct, f"image {img} uses latest or no tag", waived)
                 if "@sha256:" not in img:
                     L.add("image-digest", ct, f"image {img} is not pinned to a digest", waived)
     return L.out
+
+
+def _lint_keyring_volume(L: "_Lint", ct: str, c: dict, pod: dict, waived: set) -> None:
+    """An environment variable that names a Data Protection key ring folder (lint.keyring_names) must not point
+    into an emptyDir: the key ring would be new after every restart, and every user signed out."""
+    names = re.compile(L.cfg["keyring_names"])
+    vtype = {v.get("name"): next((k for k in v if k != "name"), None) for v in pod.get("volumes") or []}
+    for e in c.get("env") or []:
+        val = str(e.get("value") or "")
+        if not val.startswith("/") or not names.search(e.get("name", "")):
+            continue
+        under = [m for m in c.get("volumeMounts") or []
+                 if val == m.get("mountPath") or val.startswith(str(m.get("mountPath", "")).rstrip("/") + "/")]
+        m = max(under, key=lambda m: len(m.get("mountPath", "")), default=None)
+        if m and vtype.get(m.get("name")) == "emptyDir":
+            L.add("dataprotection-volatile", ct, f"env {e['name']} puts the Data Protection key ring on emptyDir "
+                                                 f"{m['name']} ({m['mountPath']}): new keys at every restart", waived)
 
 
 def _looks_like_path(v: str) -> bool:

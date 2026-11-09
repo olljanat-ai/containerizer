@@ -448,3 +448,118 @@ def test_dataprotection_key_is_shared_and_generated_in_the_cluster(tmp_path):
     # nothing for the secret store to hold
     from containerizer.eso import remote_keys
     assert not any(k.endswith("dataprotection") for k in remote_keys(docs))
+
+
+def _keys_in_library(root, lib_code: str, settings: str = ""):
+    """A web app whose referenced hosting library persists the Data Protection keys (PersistKeysToFileSystem)."""
+    write(root, "src/Web/Web.csproj", """
+        <Project Sdk="Microsoft.NET.Sdk.Web">
+          <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+          <ItemGroup><ProjectReference Include="../Hosting/Hosting.csproj" /></ItemGroup>
+        </Project>""")
+    write(root, "src/Web/Program.cs", "var b = WebApplication.CreateBuilder(args);\nb.Services.AddRazorPages();\n"
+          'var app = b.Build(); app.MapGet("/healthz", () => "ok"); app.Run();')
+    if settings:
+        write(root, "src/Web/appsettings.json", settings)
+    write(root, "src/Hosting/Hosting.csproj",
+          '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>')
+    write(root, "src/Hosting/HostingExtensions.cs", "public static class H { public static void Add(IServiceCollection "
+          "services, IConfiguration configuration) {\n" + lib_code + "\n} }")
+
+
+def _dp_mounts(docs):
+    """mountPath -> (readOnly, volume type, volume) of the Deployment's container."""
+    pod = next(d for d in docs if d["kind"] == "Deployment")["spec"]["template"]["spec"]
+    vols = {v["name"]: v for v in pod["volumes"]}
+    return {m["mountPath"]: (m.get("readOnly", False), next(k for k in vols[m["name"]] if k != "name"),
+                             vols[m["name"]]) for m in pod["containers"][0]["volumeMounts"]}
+
+
+def test_configured_key_folder_gets_the_generated_key(tmp_path):
+    """A key ring folder from configuration (a Windows path, re-pointed under /data) that a referenced library passes
+    to PersistKeysToFileSystem: the generated key Secret is mounted read-only there, not an emptyDir, and nothing
+    is mounted at the default folder under /home/app (plan-dataprotection-keys does not apply)."""
+    _keys_in_library(tmp_path, 'var folder = configuration["DataProtection:KeyFolder"] ?? Path.Combine(@"D:\\Keys", "web");\n'
+                     "services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(folder));",
+                     '{"DataProtection": {"KeyFolder": "D:\\\\AppData\\\\keys\\\\web"}}')
+    docs, plan = _manifests(tmp_path)
+    assert "plan-dataprotection-keys" not in plan["applied"]
+    assert plan["env"]["DataProtection__KeyFolder"] == "/data/appdata/keys/web"
+    mounts = _dp_mounts(docs)
+    ro, kind, vol = mounts["/data/appdata/keys/web"]
+    assert ro and kind == "secret" and vol["secret"]["secretName"].endswith("-dataprotection")
+    assert not any(m.startswith("/home/app/.aspnet") for m in mounts)
+    assert any(d["kind"] == "Password" for d in docs)          # the key is generated in the cluster
+    why = next(r["why"] for r in plan["reasons"] if r["rule"] == "dataprotection-key-folder")
+    assert "DataProtection:KeyFolder" in why and "/data/appdata/keys/web" in why
+    assert "dataprotection-key-folder:" in generate.dockerfile_dotnet(plan)
+    assert [v for v in lint_manifests(docs) if v.severity == "error"] == []
+
+
+def test_unset_key_folder_setting_points_at_the_generated_key(tmp_path):
+    """The code reads the folder from a setting that configuration does not set: the generator sets it to the
+    folder where it mounts the generated key."""
+    _keys_in_library(tmp_path, 'var keys = configuration["Security:KeyRingPath"];\n'
+                     "if (!string.IsNullOrEmpty(keys)) services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keys));")
+    docs, plan = _manifests(tmp_path)
+    assert plan["env"]["Security__KeyRingPath"] == generate.DATAPROTECTION_DIR
+    assert "plan-dataprotection-keys" not in plan["applied"]
+    assert _dp_mounts(docs)[generate.DATAPROTECTION_DIR][:2] == (True, "secret")
+
+
+def test_key_folder_found_by_setting_name(tmp_path):
+    """Options binding hides the configuration key from the code; the setting's name says it is the key ring."""
+    _keys_in_library(tmp_path, "services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(opts.Folder));",
+                     '{"DataProtection": {"KeysFolder": "/var/lib/web/keys"}}')
+    docs, plan = _manifests(tmp_path)
+    assert plan["dataprotection_dirs"] == ["/var/lib/web/keys"]
+    assert _dp_mounts(docs)["/var/lib/web/keys"][:2] == (True, "secret")
+
+
+def test_key_folder_literal_in_code_is_a_persistent_volume(tmp_path):
+    """A folder written in code cannot be re-pointed: a ReadWriteOnce volume keeps the keys, with one replica."""
+    _keys_in_library(tmp_path, 'services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(@"D:\\Keys\\web"));')
+    docs, plan = _manifests(tmp_path)
+    folder = "/app/D:\\Keys\\web"           # a drive path is a relative name on Linux, under the working folder
+    assert plan["dataprotection_pvc"] == folder and plan["single_replica"]
+    assert "plan-dataprotection-keys" not in plan["applied"]
+    ro, kind, vol = _dp_mounts(docs)[folder]
+    assert not ro and kind == "persistentVolumeClaim"
+    pvc = next(d for d in docs if d["kind"] == "PersistentVolumeClaim")
+    assert pvc["metadata"]["name"] == vol["persistentVolumeClaim"]["claimName"]
+    assert pvc["spec"]["accessModes"] == ["ReadWriteOnce"]
+    assert next(d for d in docs if d["kind"] == "Deployment")["spec"]["strategy"] == {"type": "Recreate"}
+    assert any(r["rule"] == "dataprotection-key-volume" for r in plan["reasons"])
+    df = generate.dockerfile_dotnet(plan)       # the volume creates the folder, not the Dockerfile
+    assert "D:\\Keys" in df and not [x for x in df.splitlines() if x.startswith(("RUN", "COPY")) and "D:" in x]
+    # a Linux-style literal is a writable folder of the image as well
+    _keys_in_library(tmp_path / "b", 'services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo("keys"));')
+    docs, plan = _manifests(tmp_path / "b")
+    assert _dp_mounts(docs)["/app/keys"][1] == "persistentVolumeClaim"
+
+
+def test_lint_key_ring_on_empty_dir(tmp_path):
+    """dataprotection-volatile: a setting that names the key ring folder must not point into an emptyDir."""
+    web_app(tmp_path)
+    docs, _ = _manifests(tmp_path)
+    pod = next(d for d in docs if d["kind"] == "Deployment")["spec"]["template"]["spec"]
+    pod["volumes"].append({"name": "keys", "emptyDir": {"sizeLimit": "1Mi"}})
+    ct = pod["containers"][0]
+    ct["volumeMounts"].append({"name": "keys", "mountPath": "/data/keys"})
+    ct["env"].append({"name": "DataProtection__KeysFolder", "value": "/data/keys/web"})
+    bad = [v for v in lint_manifests(docs) if v.check == "dataprotection-volatile"]
+    assert len(bad) == 1 and bad[0].severity == "error"
+    pod["volumes"][-1] = {"name": "keys", "persistentVolumeClaim": {"claimName": "keys"}}
+    assert not [v for v in lint_manifests(docs) if v.check == "dataprotection-volatile"]
+    pod["volumes"][-1] = {"name": "keys", "emptyDir": {"sizeLimit": "1Mi"}}
+    for other in ("Upload__Folder", "Sftp__KeysFolder"):        # not a key ring
+        ct["env"][-1] = {"name": other, "value": "/data/keys/web"}
+        assert not [v for v in lint_manifests(docs) if v.check == "dataprotection-volatile"]
+
+
+def test_default_key_folder_without_persist_keys():
+    """An app without PersistKeysTo* in its closure keeps the default key mount (examples/ci-demo)."""
+    from pathlib import Path
+    a = assess(Path(__file__).resolve().parent.parent / "examples" / "ci-demo")
+    webs = [c for c in a.components if c.role == "web" and c.project.kind_hint == "dotnet"]
+    assert webs and all("plan-dataprotection-keys" in make_plan(a, c)["applied"] for c in webs)
