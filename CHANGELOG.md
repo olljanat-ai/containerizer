@@ -8,9 +8,10 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## Unreleased
+## 0.20.0 (2026-11-09)
 
-The OS image changes (`appliance/`, #255): release as a minor version.
+- (The version jumps from 0.16 to 0.20: Containerizer is getting ready for use in real environments. 0.17 to 0.19
+  were not released.)
 
 - **Releases have only the installer ISO.** The qcow2 disk image is no longer published (nor built); install on
   KVM, Proxmox and OpenStack from the ISO like everywhere else. SHA256SUMS covers the ISO.

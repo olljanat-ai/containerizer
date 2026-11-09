@@ -30,7 +30,7 @@ from **Admin → System**, so install a new appliance from the series' `vX.Y.0` 
 | `containerizer-vX.Y.Z.iso` | Installer: boot it, answer the questions on the console. |
 | `SHA256SUMS`, `SHA256SUMS.sigstore.json` | Check the downloads (command in the release notes). |
 
-Every hypervisor installs from the ISO, KVM, Proxmox and OpenStack too (releases before 0.17.0 also had a
+Every hypervisor installs from the ISO, KVM, Proxmox and OpenStack too (releases before 0.20.0 also had a
 qcow2 disk image).
 
 Check what you downloaded:
