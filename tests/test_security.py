@@ -264,6 +264,40 @@ def test_network_policy_default_deny_with_inferred_egress(tmp_path):
     assert [v for v in lint_manifests(docs) if v.check in ("network-policy", "egress-policy")] == []
 
 
+def test_ingress_from_the_ingress_controllers_namespace(tmp_path, monkeypatch):
+    from containerizer import cli
+    from containerizer.harden import INGRESS_ENV, hardening_markdown, network_policy
+    labels = {"app.kubernetes.io/name": "web", "app.kubernetes.io/part-of": "shop"}
+    monkeypatch.delenv(INGRESS_ENV, raising=False)
+    np = network_policy("web", labels, 8080, [])
+    service, siblings = np["spec"]["ingress"]
+    assert service["from"] == [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "ingress-nginx"}}}]
+    assert siblings == {"from": [{"podSelector": {"matchLabels": {"app.kubernetes.io/part-of": "shop"}}}]}
+    assert np["metadata"]["annotations"]["containerizer.io/ingress-from"] == "ingress-nginx"
+    assert not [v for v in lint_manifests([np]) if v.check == "ingress-namespace"]
+    assert "from namespace ingress-nginx (the ingress controller)" in hardening_markdown("shop", {"web": [np]})
+    # the site setting (the appliance: k3s' Traefik in kube-system)
+    monkeypatch.setenv(INGRESS_ENV, "kube-system")
+    np = network_policy("web", labels, 8080, [])
+    assert np["spec"]["ingress"][0]["from"][0]["namespaceSelector"]["matchLabels"] == {
+        "kubernetes.io/metadata.name": "kube-system"}
+    # `any`: the old rule, on purpose: no warning
+    monkeypatch.setenv(INGRESS_ENV, "any")
+    np = network_policy("web", labels, 8080, [])
+    assert np["spec"]["ingress"][0]["from"] == [{"namespaceSelector": {}}]
+    assert not [v for v in lint_manifests([np]) if v.check == "ingress-namespace"]
+    assert "open to every namespace" in hardening_markdown("shop", {"web": [np]})
+    # an empty namespaceSelector nobody asked for (hand-made, or an older generation) is a warning
+    del np["metadata"]["annotations"]["containerizer.io/ingress-from"]
+    [v] = [v for v in lint_manifests([np]) if v.check == "ingress-namespace"]
+    assert v.severity == "warning" and v.target == "NetworkPolicy/web"
+    # the CLI option sets it for the run
+    monkeypatch.delenv(INGRESS_ENV)
+    args = cli.argparse.Namespace(ingress_from="traefik", fn=lambda a: 0)
+    assert cli._run_cmd(args) == 0
+    assert cli.os.environ[INGRESS_ENV] == "traefik"
+
+
 def test_spa_gets_no_external_egress(tmp_path):
     web_app(tmp_path, packages='<PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.0" />')
     docs, _ = _manifests(tmp_path, role="spa")

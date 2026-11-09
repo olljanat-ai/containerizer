@@ -29,4 +29,6 @@ export LAB_REGISTRY=localhost/lab
 export LAB_INGRESS_DOMAIN=sandbox.lab.test
 export LAB_INGRESS_ADDRESS=127.0.0.1:30443            # containerizer sandbox verify --ingress-address
 export LAB_CA=$_lab_dir/state/pki/ca.crt              # --ingress-ca; git trusts it for lab-git (~/.gitconfig)
+# Traefik runs in kube-system (as k3s ships it): the generated NetworkPolicies open the service ports to it
+export CONTAINERIZER_INGRESS_NAMESPACE=kube-system
 unset _lab_dir

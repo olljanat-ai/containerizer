@@ -11,6 +11,9 @@ ConditionPathExists=!/run/elemental/recovery_mode
 [Service]
 User=containerizer
 Group=containerizer
+# the sandbox's ingress controller (k3s' Traefik, var/lib/rancher/k3s/server/manifests/containerizer-traefik.yaml)
+# runs in kube-system: the generated NetworkPolicies let that namespace call the service ports (docs/egress.md#inbound)
+Environment=CONTAINERIZER_INGRESS_NAMESPACE=kube-system
 # Docker, to build and run a refactoring patch's components (the verify step of the scan worker): through the
 # Docker socket guard, as the scan worker (containerizer/dockerguard.py), since the patched code is the scanned
 # repositories' own code, built and run in the same hardened containers (docs/refactoring.md#on-the-appliance).

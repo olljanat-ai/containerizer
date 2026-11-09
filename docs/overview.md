@@ -449,10 +449,11 @@ service links, CPU/memory/ephemeral-storage requests and limits, and a `sizeLimi
 **Lint.** The gate checks the manifests against Pod Security `restricted` (host namespaces, privileged,
 capabilities, volume types, host ports, privilege escalation, non-root, seccomp, sysctls) plus read-only
 root FS, resources, secret literals (in env, `ENV` and Secrets), the service account token, `emptyDir`
-limits, no Data Protection key ring on an `emptyDir` (`dataprotection-volatile`), image tags, NetworkPolicies, CronJob
-limits and worker rollouts (warnings: a CronJob without `backoffLimit`, `activeDeadlineSeconds`,
-`startingDeadlineSeconds` or history limits; a Deployment without ports that is not `Recreate`, unless annotated
-`containerizer.io/scale-out`), and the Dockerfiles for a non-root final stage, tagged base
+limits, no Data Protection key ring on an `emptyDir` (`dataprotection-volatile`), image tags, NetworkPolicies (warning
+on a service port open to every namespace, `namespaceSelector: {}`, unless generated with `--ingress-from any`:
+[inbound](egress.md#inbound)), CronJob limits and worker rollouts (warnings: a CronJob without `backoffLimit`,
+`activeDeadlineSeconds`, `startingDeadlineSeconds` or history limits; a Deployment without ports that is not
+`Recreate`, unless annotated `containerizer.io/scale-out`), and the Dockerfiles for a non-root final stage, tagged base
 images, `ADD <url>`/`curl | sh` and base image end of support. Errors fail the gate. A pod annotation
 `containerizer.io/waives: "check,check"` relaxes named checks for hand-made exceptions.
 
