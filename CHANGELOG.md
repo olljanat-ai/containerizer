@@ -8,7 +8,9 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## Unreleased
+## 0.21.0 (2026-11-10)
+
+The OS image changes (`appliance/`: the worker, LLM queue and web units set the ingress namespace): a minor release.
 
 - **No more `Dockerfile.windows`** (#271): the project is Linux-only and Windows applications stay in VMs.
   `containerizer generate` no longer writes the Windows Server Core stop-gap (`Dockerfile.windows` and its
