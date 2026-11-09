@@ -1497,6 +1497,12 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
         from .devdb import readme
         (gen / "devdb" / "README.md").write_text(readme(app_ns(a.name), dd, dd_row))
     _clean_generated(gen)
+    # the pushed digests into kustomization.yaml: the sandbox runs by digest from the first deploy
+    pushed = {e["image"].rsplit(":", 1)[0]: e["digest"] for e in comps + [res.dev_database or {}]
+              if e.get("image") and e.get("digest")}
+    if pushed and (gen / "kustomization.yaml").exists():
+        from .gitops import set_image_digests
+        set_image_digests(gen / "kustomization.yaml", pushed)
     if o.image_pull_secret and (gen / "kustomization.yaml").exists():
         add_pull_secret(gen / "kustomization.yaml", o.image_pull_secret)
     gitops_kustomizations(gen)

@@ -958,3 +958,38 @@ def test_cancel_ends_repositories_in_progress(tmp_path, monkeypatch, parallel):
         else:
             raise AssertionError(f"process {pid} of {f.name} still runs")
     assert not (tmp_path / "work" / "parallel" / "one").exists()
+
+
+def test_deploy_app_writes_the_pushed_digest_into_the_kustomization(tmp_path, monkeypatch):
+    """#292: the sandbox runs by digest from the first deploy (the sandbox runs no image automation)."""
+    from containerizer import imagescan
+    from containerizer.gitops import GitOpsOptions, digest_setter_images
+    from tests.test_make_it_a import _a_app, _Out
+    digest = "sha256:" + "d" * 64
+
+    class FakeRegistry:
+        def push(self, local, ref, extra=()):
+            return digest
+    monkeypatch.setattr(imagescan, "build_image", lambda src, cdir, tag, timeout=1800: (True, ""))
+    src, a = _a_app(tmp_path, "shop-web")
+    o = OrgOptions(provider="github", org="acme", registry="reg.example/sandbox", verify=True, gate=False,
+                   push_images=True, image_pull_secret="regcred")
+    out = _Out(tmp_path / "out")
+    res = orgmod.RepoResult(provider="github", org="acme", project="_", repo="shop", status="error", app="shop-web")
+    res = orgmod.deploy_app(a, src, "acme/_/shop", o, out, FakeRegistry(), "1.2.3", GitOpsOptions(path="acme/_/shop"),
+                            res, tmp_path / "work", "shop-web")
+    assert res.status == "deployed"
+    text = (out.root / "acme/_/shop/kustomization.yaml").read_text()
+    k = yaml.safe_load(text)
+    [img] = k["images"]
+    assert img == {"name": "reg.example/sandbox/shop-web/demo-web", "newName": "reg.example/sandbox/shop-web/demo-web",
+                   "newTag": "1.2.3", "digest": digest}
+    assert f'digest: "{digest}" # {{"$imagepolicy": "shop-web:demo-web:digest"}}' in text   # the setter stays
+    assert digest_setter_images(text) == {img["name"]}
+    assert k["patches"]                                                       # the pull secret patches still follow
+    if shutil.which("kubectl"):                                               # what the sandbox's Flux applies
+        p = subprocess.run(["kubectl", "kustomize", str(out.root / "acme/_/shop")], capture_output=True, text=True)
+        assert p.returncode == 0, p.stderr
+        assert f"image: reg.example/sandbox/shop-web/demo-web:1.2.3@{digest}" in p.stdout
+    hardening = (out.root / "acme/_/shop/HARDENING.md").read_text()
+    assert "| Images are deployed by digest | applied |" in hardening and "pinned by Flux" in hardening

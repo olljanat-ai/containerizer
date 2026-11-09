@@ -326,6 +326,7 @@ lint:
     dataprotection-volatile: {severity: error, title: A Data Protection key ring folder is not an emptyDir}
     image-tag:           {severity: warning, title: Workload image has an explicit, non-latest tag or digest}
     image-digest:        {severity: info,    title: Workload image is pinned to a digest}
+    image-digest-setter: {severity: info,    title: 'Workload image is pinned to a digest by Flux image automation (a :digest setter in kustomization.yaml)'}
     network-policy:      {severity: warning, title: Every workload is selected by a NetworkPolicy}
     egress-policy:       {severity: warning, title: Egress is restricted by a NetworkPolicy}
     service-account:     {severity: warning, title: Workload uses its own ServiceAccount, not default}
@@ -478,7 +479,7 @@ controls:
      action: 'Sign each pushed image (cosign sign --yes <registry>/<image>@<digest>) and enforce it with cluster/verify-images.yaml (Kyverno) or your admission controller.'}
   - {id: digest-pinning, nsa: 'Pod security > Building secure container images', scope: pipeline, checks: [image-digest],
      title: Images are deployed by digest,
-     action: 'In the deploy pipeline: kustomize edit set image <image>=<registry>/<image>@sha256:<digest>; base images: generate --pin-digests.'}
+     action: 'In the deploy pipeline: kustomize edit set image <registry>/<image>:<tag>@sha256:<digest> (the build pipeline''s digests.txt); base images: generate --pin-digests.'}
   - {id: pod-security, nsa: 'Pod security > Pod security enforcement', cis: '5.2.1-5.2.13', scope: namespace,
      checks: [host-namespaces, privileged, capabilities, volume-types, host-ports, privilege-escalation, sysctls, seccomp],
      title: 'Pod Security Admission "restricted" enforced on the namespace; workloads comply'}

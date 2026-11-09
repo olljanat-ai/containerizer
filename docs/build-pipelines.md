@@ -170,6 +170,28 @@ version tag `1.<yyyymmdd>.<hhmm>` is that scheme, the same as the scans' own pus
 2. Flux sees it within the `ImageRepository` interval (10 minutes) and commits the tag to the output
    repository within the automation interval (30 minutes); the sandbox then rolls it out.
 
+The automation pins by digest: the `ImagePolicy` has `digestReflectionPolicy: Always` (Flux 2.5 or newer), and
+each image in `kustomization.yaml` has a name, a tag and a digest setter:
+
+```yaml
+images:
+  - name: registry.local/shop/web
+    newName: registry.local/shop/web # {"$imagepolicy": "shop:web:name"}
+    newTag: 1.20261101.1530 # {"$imagepolicy": "shop:web:tag"}
+    digest: "sha256:…" # {"$imagepolicy": "shop:web:digest"}
+```
+
+so the workloads run `<image>:<tag>@sha256:<digest>`, and a tag moved in the registry later does not change
+what runs. Until the automation first ran, `digest` is empty and kustomize deploys by tag; an organization scan
+writes the digest of each image it pushed into it itself, so the sandbox runs by digest from the first deploy.
+HARDENING.md reports *Images are deployed by digest* as applied for these images (lint check
+`image-digest-setter` instead of `image-digest`).
+
+Each publish job also keeps the pushed digest: `digests.txt` (`<image>:<version>@sha256:<digest>`) as the
+artifact `digests-<component>`, and the step output `digest` (GitHub, step `push`), the dotenv variable
+`DIGEST_<COMPONENT>` (GitLab) or the output variable `push.DIGEST` (Azure Pipelines). A deploy pipeline that
+does not use the Flux image automation pins by digest with `kustomize edit set image $(cat digests.txt)`.
+
 This needs the pipeline and the generated manifests to use the same registry. The sandbox runs the scans' images
 from the appliance's own registry, so for the real environment set the manifests' images to the registry the
 pipeline pushes to (`CONTAINERIZER_REGISTRY`). The `sha-<commit>` tag does not match the policy and is

@@ -12,7 +12,9 @@ They deploy the app folder that `generate` writes (its kustomization.yaml) with 
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from .generate import k8s_name, app_ns
 
@@ -123,7 +125,11 @@ def gitops_manifests(a, kinds: list[tuple[str, str]], images: list[tuple[str, st
                           "secretRef": {"name": f"{ns}-registry"}}},
                 {"apiVersion": IMAGE_API, "kind": "ImagePolicy",
                  "metadata": {"name": name, "namespace": ns, "labels": labels},
-                 "spec": {"imageRepositoryRef": {"name": name}, "policy": {"semver": {"range": o.tag_range}}}},
+                 # the digest of the elected tag goes to kustomization.yaml too (the :digest setter): deployed
+                 # by digest, a tag moved in the registry does not change what runs (Flux 2.5+; interval is
+                 # required with Always, which re-reads the digest of the elected tag)
+                 "spec": {"imageRepositoryRef": {"name": name}, "policy": {"semver": {"range": o.tag_range}},
+                          "digestReflectionPolicy": "Always", "interval": "10m"}},
             ]
         auto.append(
             {"apiVersion": IMAGE_API, "kind": "ImageUpdateAutomation",
@@ -214,14 +220,64 @@ def sandbox_health_checks(docs: list[dict], namespace: str) -> list[dict]:
     return sorted(checks, key=lambda c: (c["kind"], c["name"]))
 
 
-def image_setters(ns: str, images: list[tuple[str, str]]) -> str:
-    """kustomization.yaml `images:` block with Flux setter markers."""
+SETTER_RE = re.compile(r'#\s*\{"\$imagepolicy":\s*"[^"]*:(name|tag|digest)"\}')
+
+
+def image_setters(ns: str, images: list[tuple[str, str]], digests: dict[str, str] | None = None) -> str:
+    """kustomization.yaml `images:` block with Flux setter markers: name, tag and digest. The image automation
+    writes the digest of the tag it elects (ImagePolicy digestReflectionPolicy), so the workloads run
+    `<image>:<tag>@sha256:...`; until it ran, `digest` is empty (kustomize then deploys by tag) unless
+    `digests` ({image without tag: sha256:...}, an organization scan's push) has it."""
     lines = ["images:"]
     for c, img in images:
         repo, tag = img.rsplit(":", 1)
+        marker = f'{{"$imagepolicy": "{ns}:{k8s_name(c)}'
         lines += [f"  - name: {repo}",
-                  f'    newTag: {tag} # {{"$imagepolicy": "{ns}:{k8s_name(c)}:tag"}}']
+                  f'    newName: {repo} # {marker}:name"}}',
+                  f'    newTag: {tag} # {marker}:tag"}}',
+                  f'    digest: "{(digests or {}).get(repo, "")}" # {marker}:digest"}}']
     return "\n".join(lines) + "\n"
+
+
+def _image_entries(text: str) -> list[tuple[str, int, int]]:
+    """(name, first line, end line) of each entry of a kustomization.yaml's top-level `images:` list."""
+    lines = text.splitlines()
+    starts, ends, inside = [], [], False
+    for i, ln in enumerate(lines):
+        top = bool(re.match(r"^\S", ln))
+        m = re.match(r"^\s*-\s+name:\s*(\S+)", ln) if inside and not top else None
+        if (top or m) and len(ends) < len(starts):
+            ends.append(i)
+        if top:
+            inside = ln.startswith("images:")
+        elif m:
+            starts.append((m.group(1), i))
+    ends += [len(lines)] * (len(starts) - len(ends))
+    return [(n, a, b) for (n, a), b in zip(starts, ends)]
+
+
+def digest_setter_images(text: str) -> set[str]:
+    """The images (without tag) a kustomization.yaml pins by digest through a Flux `:digest` setter."""
+    lines = text.splitlines()
+    return {name for name, a, b in _image_entries(text)
+            if any(re.match(r"^\s*digest:", ln) and (m := SETTER_RE.search(ln)) and m.group(1) == "digest"
+                   for ln in lines[a:b])}
+
+
+def set_image_digests(kustomization: Path, digests: dict[str, str]) -> None:
+    """Write pushed digests ({image without tag: sha256:...}) into the `digest` fields of a kustomization.yaml,
+    keeping the setter markers (an organization scan: the sandbox runs by digest from the first deploy)."""
+    text = kustomization.read_text()
+    lines = text.splitlines()
+    for name, a, b in _image_entries(text):
+        d = digests.get(name)
+        if not (d and re.fullmatch(r"sha256:[0-9a-f]{64}", d)):
+            continue
+        for i in range(a, b):
+            m = re.match(r'^(\s*digest:\s*)(?:"[^"]*"|\S*)(.*)$', lines[i])
+            if m:
+                lines[i] = f'{m.group(1)}"{d}"{m.group(2)}'
+    kustomization.write_text("\n".join(lines) + "\n")
 
 
 def readme(a, opts: GitOpsOptions | None = None) -> str:
@@ -261,8 +317,11 @@ kubectl apply -f flux/git/image-automation.yaml   # optional
   (prune, wait, health checks).{" Commits must be signed with a key in Secret `" + ns + "-git-gpg`." if o.verify_commits else " Set commit verification (`spec.verify`) when your commits are signed."}
 - `oci/sync.yaml`: the same, from an OCI artifact (`flux push artifact {o.oci_url or f"oci://<registry>/{ns}/manifests"}:1.0.0
   --path={path}`), accepted only when signed with the cosign key in Secret `{ns}-cosign-pub`.
-- `git/image-automation.yaml`: `ImageRepository`, `ImagePolicy` (semver `{o.tag_range}`) and
-  `ImageUpdateAutomation`; the `$imagepolicy` markers in `kustomization.yaml` say what it may change.
+- `git/image-automation.yaml`: `ImageRepository`, `ImagePolicy` (semver `{o.tag_range}`, digest reflection
+  `Always`) and `ImageUpdateAutomation`; the `$imagepolicy` markers in `kustomization.yaml` say what it may
+  change: the image's name, tag and digest, so the workloads run `<image>:<tag>@sha256:...` (by digest) once
+  it ran. Without it, pin by hand: `kustomize edit set image <image>:<tag>@sha256:<digest>` (the build
+  pipeline's `digests.txt`).
   It needs a deploy key with write access, so keep it separate from the read-only sync key if you
   can.
 

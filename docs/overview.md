@@ -359,7 +359,7 @@ GitOps: every app also gets `gitops/flux/`, its Flux configuration (Flux is the 
 | Scope | `tenant.yaml`: namespace, ServiceAccount, `admin` RoleBinding in that namespace only; `Kustomization` applies as that ServiceAccount |
 | Namespace | created by `tenant.yaml` with the Pod Security "restricted" labels |
 | Sync | `GitRepository` (read-only key, optional signed-commit check) or cosign-verified `OCIRepository`; prune, wait |
-| Image updates | `ImageRepository`, `ImagePolicy`, `ImageUpdateAutomation` with `$imagepolicy` markers in `kustomization.yaml` |
+| Image updates | `ImageRepository`, `ImagePolicy` (digest reflection `Always`), `ImageUpdateAutomation` with `$imagepolicy` name, tag and digest markers in `kustomization.yaml`: deployed as `<image>:<tag>@sha256:...` (an organization scan writes the pushed digest itself) |
 
 Techniques used to avoid application changes:
 
