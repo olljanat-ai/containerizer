@@ -289,7 +289,7 @@ failures:
 
   - id: run-cert-store
     stage: run
-    match: "certificate .*(not found|could not be found) in (the )?(store|LocalMachine)|X509Store.*(PlatformNotSupported|not supported)|LocalMachine X509Store is limited"
+    match: "(certificate|thumbprint)[^\n]*(not found|could not be found|cannot be found)[^\n]*(store|LocalMachine|CurrentUser)|X509Store.*(PlatformNotSupported|not supported)|LocalMachine X509Store is limited"
     outcome: code
     refs: [https://learn.microsoft.com/en-us/dotnet/standard/security/cross-platform-cryptography, https://kubernetes.io/docs/concepts/configuration/secret/]
     diagnosis: The app loads a certificate from the Windows certificate store.
@@ -324,7 +324,7 @@ failures:
 
   - id: run-dns-unreachable
     stage: run
-    match: "Name or service not known|No such host is known|nodename nor servname|Resource temporarily unavailable \\(\\w+\\.(corp|local)|Connection refused|BrokerUnreachableException|RedisConnectionException|ElasticsearchClientException|MongoDB\\.Driver.*Timeout|SocketException"
+    match: "Name or service not known|No such host is known|nodename nor servname|Resource temporarily unavailable \\([\\w.-]+|Connection refused|BrokerUnreachableException|RedisConnectionException|ElasticsearchClientException|MongoDB\\.Driver.*Timeout|SocketException"
     outcome: external
     diagnosis: An external service (broker, cache, API, directory) is not reachable from the test container.
 
@@ -374,7 +374,7 @@ failures:
 
   - id: run-missing-config-value
     stage: run
-    match: "(OptionsValidationException|ArgumentNullException: Value cannot be null.*(Parameter '(connectionString|path|uriString)')|InvalidOperationException: .*(not configured|is missing|must be configured|is required|not found in))"
+    match: "(OptionsValidationException|ArgumentNullException: Value cannot be null.*(Parameter '(connectionString|path|uriString)')|InvalidOperationException: [^\\n]*((connection ?string|setting|configuration|option|section|\\b\\w+(:\\w+)+)[^\\n]*(not configured|is missing|must be configured|is required|not found|could not be found)|No connection string named))"
     outcome: external
     refs: [https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/]
     diagnosis: A required setting has no value in the test container (environment-specific configuration).

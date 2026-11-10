@@ -64,7 +64,7 @@ rules:
     priority: 99
     when:
       any:
-        - name: '[.\-](LabStubs|LabTools|Lab|Simulators?|TestTools|Seed(er)?|DevTools|Benchmarks?|Fuzz(ing)?)$'
+        - name: '[.\-](\w*(Stubs|Mocks|Fakes)|TestTools|Seed(er)?|DevTools|Benchmarks?|Fuzz(ing)?)$'
         # a project that lives in a repository tools/ folder (tools/X/X.csproj, src/Tools/X/X.csproj);
         # a Tools/ subfolder *inside* a project (Areas/Mcp/Tools, admin/settings/tools) says nothing
         # (also 'Dev Tools/', 'DevTools/', 'BuildTools/', 'build-tools/': folders of developer utilities)

@@ -59,7 +59,8 @@ current Docker, and of all three pipelines) reads `<Dockerfile>.dockerignore` in
 `containerizer/` folder and the settings of environments the container does not run as: it runs as Production, so
 `appsettings.Development.json`, `appsettings.Release.json`, `appsettings.Staging.json` and the like stay out, unless
 the code or a project file names one (`AddJsonFile("appsettings.Release.json")`) or builds the name
-(`$"appsettings.{env}.json"`, `appsettings.$(Configuration).json`), when they are all kept. Build locally the same way:
+(`$"appsettings.{env}.json"`, `appsettings.$(Configuration).json`), when they are all kept. PowerShell scripts
+(`*.ps1`) stay out as well, unless a project file or the code names one. Build locally the same way:
 
 ```sh
 DOCKER_BUILDKIT=1 docker build -f containerizer/<component>/Dockerfile .

@@ -117,7 +117,7 @@ rules:
     applies_to: [dotnet]
     when:
       any:
-        - text: 'gMSA|Group Managed Service Account|New-ADServiceAccount|svc-[\w\-]+\$'
+        - text: 'gMSA|Group Managed Service Account|(New|Install)-ADServiceAccount'
           in: ["*.ps1", "*.psm1", "README.md", "*.md"]
     severity: config
     category: identity
@@ -339,7 +339,7 @@ rules:
         - code: &dtc_code 'EnterpriseServicesInteropOption|TransactionInterop|DependentTransaction|EnlistDistributedTransaction|\.EnlistDurable\(|\bIPromotableSinglePhaseNotification\b'
         - config: &dtc_config '<system\.transactions>|\bMSDTC\b'
         - text: &dtc_text 'MSDTC|Distributed Transaction Coordinator'
-          in: ["README.md", "*.ps1", "*.md"]
+          in: ["*.ps1", "*.psm1"]
         # one transaction scope spanning two connections (or a connection and a queue) escalates to MSDTC
         - &dtc_multi
           all:
@@ -386,7 +386,7 @@ rules:
       any:
         - code: '(?-i:SqlFileStream|FILESTREAM|\.PathName\(\)|GET_FILESTREAM_TRANSACTION_CONTEXT)'
         - text: '(?-i:FILESTREAM|FileTable)'
-          in: ["*.sql", "README.md"]
+          in: ["*.sql"]
     severity: refactor
     category: data
     effort: 2
@@ -862,13 +862,13 @@ rules:
 
   - id: ftp-server-iis
     when:
-      text: 'IIS FTP|Web-Ftp-Server|New-WebFtpSite|FTP Server'
+      text: 'IIS FTP|Web-Ftp-Server|New-WebFtpSite'
       in: ["README.md", "*.ps1", "*.psm1"]
     severity: config
     category: networking
     effort: 1
     title: IIS FTP site for inbound files
-    why: Partners upload files to an IIS FTP site; that becomes a separate SFTP/FTP service in the cluster.
+    why: Files come in through an IIS FTP site; that becomes a separate SFTP/FTP service in the cluster.
     fix: Run an SFTP server container (e.g. atmoz/sftp) or managed SFTP, sharing a volume with the processor.
 
   - id: in-memory-session-scaleout
@@ -922,7 +922,7 @@ rules:
   # ---------------------------------------------------------------- third-party binaries
   - id: vendor-install-required
     when:
-      text: '\.msi\b|Install-[A-Za-z]+\.ps1|licen[cs]e (file|key)|\.mrl\b|dongle'
+      text: '\.msi\b|msiexec|licen[cs]e (file|key)|dongle'
       in: ["README.md"]
     scope: repo
     severity: info

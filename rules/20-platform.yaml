@@ -53,13 +53,15 @@ rules:
   - id: dcom-opc
     applies_to: [dotnet]
     when:
-      code: 'OPC(DA|Server)|IOPCServer|GetTypeFromProgID\([^)]*,\s*\w*[Hh]ost'
+      # GetTypeFromProgID/GetTypeFromCLSID with a server name (a second argument that is not throwOnError): activation
+      # on another machine
+      code: 'OPC(DA|Server)|IOPCServer|GetTypeFrom(ProgID|CLSID)\(\s*[^,()]+,\s*(?!true\b|false\b|throwOnError\b)[\w."]'
     severity: blocker
     category: com
     effort: 0
     windows_container: false
-    title: OPC DA over DCOM
-    why: Classic OPC DA uses DCOM, which only works between Windows hosts.
+    title: OPC DA / remote COM over DCOM
+    why: Classic OPC DA and COM objects activated on another machine use DCOM, which only works between Windows hosts.
     fix: Use OPC UA (cross-platform) through a gateway, or keep the collector on Windows.
     refs:
       - https://github.com/OPCFoundation/UA-.NETStandard
@@ -384,7 +386,7 @@ rules:
     effort: 0
     windows_container: false
     title: Serial port hardware
-    why: Reads a device on a local serial/COM port. A pod in a cluster has no access to a badge reader on a desk.
+    why: Reads a device on a local serial/COM port. A pod in a cluster has no access to a device plugged into a machine.
     fix: Keep the device-facing part on the edge device; send events to the cluster over the network.
 
   - id: hardware-sdk
@@ -397,7 +399,7 @@ rules:
     category: hardware
     effort: 0
     windows_container: false
-    title: Local hardware (TPM, data acquisition boards, USB/HID)
+    title: Local hardware (TPM, GPIO, USB/HID)
     why: Depends on hardware attached to a specific server, with Windows drivers.
     fix: Keep the hardware-facing service on its host (edge) and integrate over the network; use a KMS/HSM service instead of the TPM.
 

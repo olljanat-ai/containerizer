@@ -526,6 +526,10 @@ def dockerignore(repo) -> str:
         text = text.replace("**/appsettings.Development.json\n", "**/appsettings.Development.json\n"
                             "# settings of environments the container does not run as (it runs as Production)\n"
                             + "".join(f"**/{n}\n" for n in unused))
+    if _git(repo, "grep", "-I", "-l", "-i", "-F", ".ps1", "--", *SETTINGS_CODE).strip():
+        # a project that ships or runs PowerShell scripts (a Content item, an <Exec> of build.ps1, a script the code
+        # starts): they stay in the context
+        text = text.replace("**/*.ps1\n!**/ClientApp/**/*.ps1\n", "")
     return text
 
 
