@@ -38,6 +38,12 @@ Issues and pull requests are welcome. To run the web UI and API on your own mach
 from `docs/`. Rule changes go in `rules/`, and every refactor, rewrite or blocker rule needs a reference
 link.
 
+Pull requests run the unit tests (`python -m pytest -q -n auto`, with pytest-xdist) and the action's gate
+automatically, and the security gate when they change the generators or the security rules. The heavy jobs (SQL
+Server, the kind sandbox clusters, the one-shot assessment of the challenge apps) run by hand from the Actions tab
+(**ci**, Run workflow) or on a pull request with the `full-ci` label; `ci/local.sh` runs all of them on one machine
+([local dev server](docs/local-dev-server.md)).
+
 ## Licence
 
 [MIT](LICENSE)

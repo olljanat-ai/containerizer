@@ -1,9 +1,21 @@
 name: ci
 
 # Documentation-only changes skip this workflow: docs.yml builds and publishes them.
+# Pull requests and pushes to main run the fast jobs (unit tests, the action's gate). The heavy ones (SQL Server,
+# the kind clusters, the one-shot assessment) run by hand (Actions -> Run workflow), or on a pull request with
+# the `full-ci` label.
 on:
-  # manual only for now (Actions -> Run workflow); the pull request, push and schedule triggers are off
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths-ignore: ["docs/**", "**.md", "mkdocs.yml"]
+  push:
+    branches: [main]
+    paths-ignore: ["docs/**", "**.md", "mkdocs.yml"]
   workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -16,11 +28,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt pytest
-      - run: python -m pytest -q
+      - run: pip install -r requirements.txt pytest pytest-xdist
+      - run: python -m pytest -q -n auto
 
   # Results database and web UI against a real SQL Server (tests/test_sqlstore.py), plus the compose image.
   sql:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
     services:
       mssql:
@@ -67,6 +80,7 @@ jobs:
   # (tcmalloc rseq bug, SERVER-121912) that ubuntu-24.04 runners now have. The appliance runs Debian 13's
   # kernel, which the boot test covers.
   sandbox:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-22.04
     timeout-minutes: 40
     steps:
@@ -104,6 +118,7 @@ jobs:
   # Sandbox HTTPS end to end (appliance/ci/sandbox-https-e2e.py): k3s with the appliance's Traefik settings,
   # the appliance's Caddyfile on Caddy 2.6 (as in Debian 13), the system agent's own code, a generated Ingress.
   sandbox-https:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -218,6 +233,7 @@ jobs:
   # One-shot assessment, the main way the tool is used: assess, generate, then build and run every
   # generated container on the runner. Apps rated ready must actually build and serve.
   assess-oneshot:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:

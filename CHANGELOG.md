@@ -8,6 +8,16 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- **Tests run on every pull request, in parallel and without the developer's settings.** The `ci` workflow runs the
+  unit tests and the action's gate on pull requests and pushes to `main` (documentation-only changes skip it, and a
+  newer push cancels the run before it); the SQL Server, sandbox cluster and one-shot assessment jobs run by hand or
+  with the `full-ci` label. The security gate runs on pull requests that change the generators or the security
+  rules. The unit tests run with pytest-xdist (`-n auto`): about 3 minutes instead of 23 on the local dev server,
+  where `ci/local.sh` also runs the `sql` job next to the others. LLM settings of the machine running the tests
+  (`ANTHROPIC_BASE_URL`, API keys, `CONTAINERIZER_LLM_*`) no longer reach them (#256).
+
 ## 0.31.1 (2026-11-10)
 
 A patch release: an app update for appliances (no ISO).

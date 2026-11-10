@@ -521,7 +521,8 @@ def _patched(tmp_path, monkeypatch, jid, out, o, now=None, payload=PAYLOAD, patc
     work = tmp_path / f"job-{jid}"
     name = rf.variant_name("shop", jid)
     shutil.copytree(DEMO, work / name)
-    result = {"status": "verified", "rating_reached": True, "verification": [{"component": "demo-web", "status": "ok"}],
+    # the order verified the component it patched (its name as the assessment gives it): the deploy builds nothing
+    result = {"status": "verified", "rating_reached": True, "verification": [{"component": "Demo.Web", "status": "ok"}],
               "patch": patch}
     now = now or datetime(2026, 11, 1, 9, 5, tzinfo=timezone.utc)
     result["sandbox"] = variant.deploy(None, None, payload, jid, result, work, name, lambda t: None, now=now)
@@ -592,7 +593,7 @@ def test_an_application_without_scan_output_goes_back_to_no_folder(tmp_path, mon
     orgmod.write_sandbox(out, "https://git.example/x.git", "main")
     subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "nothing A"], cwd=out, check=True)
     sb = _patched(tmp_path, monkeypatch, 43, out, o)["sandbox"]
-    assert sb["status"] == "deployed" and sb["folder"] == "Contoso/_/shop" and sb["namespace"] == "shop"
+    assert sb["status"] == "deployed" and sb["folder"] == "Contoso/_/shop" and sb["namespace"] == "shop", sb.get("reason")
     assert (out / "sandbox/namespaces.txt").read_text() == "shop\n"
     variant.remove(None, None, 43, PAYLOAD, sb, tmp_path / "rm")
     assert not (out / "Contoso/_/shop").exists() and (out / "sandbox/namespaces.txt").read_text() == ""
