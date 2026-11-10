@@ -2,7 +2,9 @@
 Description=containerizer appliance: configuration, secrets and data folders
 DefaultDependencies=no
 After=local-fs.target systemd-sysusers.service systemd-tmpfiles-setup.service
-Before=containerizer-firewall.service network-pre.target sysinit.target
+# systemd-networkd itself too, not only through network-pre.target: a boot that had already reached it started
+# networkd before this copied the static address file (/etc/containerizer/network), and br0 got DHCP instead
+Before=containerizer-firewall.service network-pre.target sysinit.target systemd-networkd.service
 Wants=network-pre.target
 ConditionPathExists=!/run/elemental/recovery_mode
 ConditionKernelCommandLine=!cdroot

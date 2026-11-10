@@ -68,6 +68,7 @@ nav:
       - Secrets (External Secrets): external-secrets.md
   - Reference:
       - Java and Node.js: java-node.md
+      - Python and Go: python-go.md
       - API: api.md
       - Local dev server: local-dev-server.md
 

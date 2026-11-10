@@ -40,6 +40,7 @@ class Migration:
     steps: list[str] = field(default_factory=list)
     verify: list[str] = field(default_factory=list)
     refs: list[str] = field(default_factory=list)
+    variants: list[dict] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict) -> "Migration":
@@ -48,7 +49,11 @@ class Migration:
                 packages={k: list(v or []) for k, v in (d.get("packages") or {}).items()},
                 steps=[" ".join(str(s).split()) for s in d.get("steps") or []],
                 verify=[" ".join(str(s).split()) for s in d.get("verify") or []],
-                refs=list(d.get("refs") or []))
+                refs=list(d.get("refs") or []),
+                variants=[{"when": v["when"],
+                           "packages": {k: list(x or []) for k, x in (v.get("packages") or {}).items()},
+                           "steps": [" ".join(str(s).split()) for s in v.get("steps") or []]}
+                          for v in d.get("variants") or []])
         if m.kind not in KINDS:
             raise ValueError(f"migration {m.id}: unknown kind {m.kind}")
         return m
@@ -86,17 +91,31 @@ def _refs(*lists) -> list[str]:
     return out
 
 
-def _packages(m: Migration, c) -> dict:
+def _variants(m: Migration, a, c) -> list[dict]:
+    """The variants of the migration whose `when` matches the component's project (bindings found, ...)."""
+    if not m.variants:
+        return []
+    from .rules import Context, evaluate
+    ctx = Context(a.repo, c.project, c.role)
+    return [v for v in m.variants if evaluate(v["when"], ctx)[0]]
+
+
+def _packages(m: Migration, c, variants: list[dict] = ()) -> dict:
     """Packages to add, and those of the listed removals the project actually references."""
     import fnmatch
     have = [*c.project.packages, *c.project.references]
     have = {h.split(",")[0].strip() for h in have}
     out = {}
-    if m.packages.get("add"):
+    add = list(m.packages.get("add") or [])
+    remove = list(m.packages.get("remove") or [])
+    for v in variants:
+        add += [p for p in v["packages"].get("add") or [] if p not in add]
+        remove += [p for p in v["packages"].get("remove") or [] if p not in remove]
+    if add:
         shared = ASPNETCORE_SHARED if "Microsoft.AspNetCore.App" in c.project.framework_refs or \
             (c.project.sdk or "").endswith(".Web") else set()
-        out["add"] = [p for p in m.packages["add"] if p not in have and p not in shared]
-    rm = [p for p in m.packages.get("remove") or [] if any(fnmatch.fnmatchcase(h.lower(), p.lower()) for h in have)]
+        out["add"] = [p for p in add if p not in have and p not in shared]
+    rm = [p for p in remove if any(fnmatch.fnmatchcase(h.lower(), p.lower()) for h in have)]
     if rm:
         out["remove"] = rm
     return {k: v for k, v in out.items() if v}
@@ -123,8 +142,9 @@ def component_plan(a, c, index: dict[str, Migration] | None = None) -> dict | No
                    "via": f.via, "only_commands": list(f.modes), "evidence": [str(e) for e in f.evidence[:3]]}
         if it is None:
             if m:
+                vs = _variants(m, a, c)
                 it = {"id": m.id, "kind": m.kind, "replace": m.replace, "with": m.with_,
-                      "packages": _packages(m, c), "steps": list(m.steps),
+                      "packages": _packages(m, c, vs), "steps": [*m.steps, *(s for v in vs for s in v["steps"])],
                       "verify": list(m.verify), "refs": _refs(m.refs, r.refs), "curated": True, "findings": []}
             else:
                 it = {"id": key, "kind": "isolate" if r.severity == "blocker" and r.windows_container is False
@@ -284,9 +304,10 @@ def agent_prompt(a, c, plan: dict) -> str:
         L += ["In Kubernetes the container's file system is read-only and pods are replaced at any time, so:",
               f"- Make every such folder part of the {lang['config']}." if c.project.kind_hint in ("java", "node") else
               f"- Make every such folder {lang['config']}.",
-              "- Data that must survive a restart or be shared between replicas (uploads, generated documents, "
-              "queues, SQLite/LiteDB files) belongs in an external store: the database, object storage "
-              "(S3/Azure Blob) or a cache (Redis). Change the code to use it.",
+              "- Data that must survive a restart (uploads, generated documents, SQLite/LiteDB files) needs no code "
+              "change: the generated manifests run the component with one replica and that folder on a "
+              "PersistentVolumeClaim (back it up). Only to scale out does it have to move to an external store "
+              "(the database, object storage, a cache).",
               "- " + lang["logs"], ""]
     if isolate:
         L += ["## Out of scope: keep on Windows", "",
@@ -344,7 +365,7 @@ def plan_markdown(plan: dict, heading: str = "###") -> list[str]:
     L.append("")
     if plan.get("state") and plan["state"].get("writable_dirs"):
         L += [f"Local state: writes to {', '.join('`' + d + '`' for d in plan['state']['writable_dirs'])}; "
-              "move what must persist to an external store.", ""]
+              "the generated manifests keep what must persist on a persistent volume (one replica).", ""]
     return L
 
 

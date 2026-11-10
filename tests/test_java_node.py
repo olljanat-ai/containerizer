@@ -196,7 +196,7 @@ def test_h2_only_is_in_memory_state(tmp_path):
     boot_app(tmp_path, WEB + dep("org.springframework.boot", "spring-boot-starter-data-jpa") + dep("com.h2database", "h2"))
     a = assess(tmp_path)
     assert "java-embedded-db-memory" in ids(comp(a, "orders"))
-    assert a.rating == "B"
+    assert a.rating == "A" and not a.to_dict()["stateless"]      # in memory: one replica, still A
 
 
 def test_h2_next_to_server_driver_is_optional(tmp_path):
@@ -384,7 +384,7 @@ def test_express_session_memory_store_is_state(tmp_path):
     m = {**EXPRESS, "dependencies": {**EXPRESS["dependencies"], "express-session": "^1.18"}}
     node(tmp_path, "", m, {"server.js": SERVER + "\napp.use(require('express-session')({secret: process.env.S}));"})
     a = assess(tmp_path)
-    assert "node-session-memory" in ids(comp(a, "api")) and a.rating == "B"
+    assert "node-session-memory" in ids(comp(a, "api")) and a.rating == "A" and not a.to_dict()["stateless"]
     m["dependencies"]["connect-redis"] = "^7"
     node(tmp_path, "", m)
     assert "node-session-memory" not in ids(comp(assess(tmp_path), "api"))

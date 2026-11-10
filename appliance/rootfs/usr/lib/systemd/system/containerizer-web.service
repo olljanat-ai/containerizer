@@ -15,6 +15,9 @@ EnvironmentFile=/etc/containerizer/web.env
 EnvironmentFile=-/run/containerizer/llm.env
 # results database (CZ_SQL_WEB_CS, CZ_SQL_ADMIN_CS): the appliance's own or CZ_SQL_SERVER (cz-firstboot)
 EnvironmentFile=/run/containerizer/sql.env
+# the sandbox's ingress controller (k3s' Traefik, var/lib/rancher/k3s/server/manifests/containerizer-traefik.yaml)
+# runs in kube-system: the generated NetworkPolicies let that namespace call the service ports (docs/egress.md#inbound)
+Environment=CONTAINERIZER_INGRESS_NAMESPACE=kube-system
 Environment=CONTAINERIZER_SYSTEM_DIR=/run/containerizer/system
 # dev database backups (Admin -> Dev databases), read by the scan worker
 Environment=CONTAINERIZER_DEV_DB_DIR=/var/lib/containerizer/devdb

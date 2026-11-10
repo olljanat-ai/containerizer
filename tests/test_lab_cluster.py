@@ -297,3 +297,36 @@ def test_brokers_and_sftp_per_app(lab):
     assert "AMQP hi" in log and "AMQP-OTHER-REFUSED" in log, log
     assert "KAFKA hello" in log and "SFTP files" in log, log
     assert "KAFKA-OTHER-BLOCKED" in log and "SFTP-OTHER-BLOCKED" in log, log
+
+
+PY_MAIL = r'''
+import os, smtplib, socket
+from email.message import EmailMessage
+m = EmailMessage(); m["From"] = "Shop <noreply@example.com>"; m["To"] = "John Doe <john@example.com>"
+m["Subject"] = "Order 42"; m.set_content("Thank you for your order.")
+with smtplib.SMTP(os.environ["HOST"], int(os.environ["PORT"]), timeout=20) as s:
+    s.ehlo(); s.login("anyone", "anything"); s.send_message(m)
+with smtplib.SMTP(os.environ["HOST"], int(os.environ["PORT"]), timeout=20) as s:
+    s.send_message(m)                                   # without a login too
+print("MAIL sent")
+try:
+    socket.create_connection((os.environ["OTHER"], 25), timeout=5); print("MAIL-OTHER-OPEN")
+except OSError:
+    print("MAIL-OTHER-BLOCKED")
+'''
+
+
+def test_mail_is_caught_per_app(lab, tmp_path):
+    from containerizer import labmail
+    m, mb = secret(A, "lab-smtp"), secret(B, "lab-smtp")
+    phase, log = run_pod(A, "mail", "python:3.12-alpine", "python - <<'EOF'\n" + PY_MAIL + "\nEOF",
+                         {"HOST": m["host"], "PORT": m["port"], "OTHER": mb["host"]})
+    assert "MAIL sent" in log and "MAIL-OTHER-BLOCKED" in log, log
+    status = tmp_path / "lab-status.json"
+    status.write_text(json.dumps({"services": {"smtp": {"ready": [A, B]}}}))
+    agent = labmail.Agent(kube=lab["kube"], lab_status=status)
+    got = agent.list({"namespace": A})
+    assert [x["subject"] for x in got["messages"]] == ["Order 42", "Order 42"], got
+    one = agent.show({"namespace": A, "message": got["messages"][0]["id"]})["message"]
+    assert "Thank you for your order." in one["text"] and one["to"][0]["address"] == "john@example.com"
+    assert agent.list({"namespace": B})["messages"] == []           # the other app's mailbox is its own

@@ -75,7 +75,9 @@ rules:
     when:
       all:
         - role: web
-        - not: {code: 'PersistKeysTo'}
+        # a library the component references may persist the keys (PersistKeysToFileSystem in a shared hosting
+        # project): then the key ring is where that code puts it, not under the home folder
+        - not: {closure: {code: 'PersistKeysTo'}}
     plan:
       add_writable: [/home/app/.aspnet/DataProtection-Keys]
 

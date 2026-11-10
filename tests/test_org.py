@@ -242,11 +242,25 @@ def test_select_components_requires_a_and_confirmed_run():
     assert [c.name for c in select_components(a, verified=True)[0]] == ["Demo.Web"]
 
 
-def test_select_components_honours_stateless_flag(monkeypatch):
+def test_select_components_deploys_stateful_with_a_volume(monkeypatch):
+    """Keeps its own data: rated A and deployed with a volume, one replica."""
     a = assess(DEMO, load_rules())
-    monkeypatch.setattr(type(a.components[0]), "stateless", property(lambda self: False), raising=False)
+    cls = type(a.components[0])
+    monkeypatch.setattr(cls, "stateless", property(lambda self: False), raising=False)
+    monkeypatch.setattr(cls, "state_findings", property(lambda self: []), raising=False)
+    assert orgmod.component_rating(a, a.components[0]) == "A" and orgmod.stateful_ready(a, a.components[0])
     keep, exc = select_components(a, verified=False)
-    assert keep == [] and exc == [{"component": "Demo.Web", "reason": "keeps local state"}]
+    assert [c.name for c in keep] == ["Demo.Web"] and exc == []
+
+
+def test_select_components_leaves_out_local_state_without_a_folder(monkeypatch):
+    a = assess(DEMO, load_rules())
+    cls = type(a.components[0])
+    monkeypatch.setattr(cls, "stateless", property(lambda self: False), raising=False)
+    monkeypatch.setattr(cls, "state_unplaced", property(lambda self: True), raising=False)
+    assert orgmod.component_rating(a, a.components[0]) == "B"
+    keep, exc = select_components(a, verified=False)
+    assert keep == [] and exc[0]["reason"].startswith("keeps local state in a folder Containerizer could not find")
 
 
 def test_component_rating_is_per_component():
@@ -901,3 +915,81 @@ def test_output_repository_git_is_tried_again_after_an_outage_and_a_refused_toke
         orgmod._retry(url, other, sleep=lambda s: pytest.fail("no pause"))
     assert "not found in upstream" in str(e.value)
     assert not orgmod.TRANSIENT_RE.search("git clone: timed out after 1800s")     # our own timeout is not tried again
+
+
+@pytest.mark.parametrize("parallel", [1, 2])
+def test_cancel_ends_repositories_in_progress(tmp_path, monkeypatch, parallel):
+    """An administrator's cancel (hooks.should_abort) ends the repositories in progress at once, with the tools they
+    started, and records nothing for them; the worker stopping (should_stop alone) lets them finish."""
+    import os
+    import subprocess as sp
+    import time as _t
+    pids = tmp_path / "pids"
+    pids.mkdir()
+
+    def slow(r, *a, **k):
+        p = sp.Popen(["sleep", "60"])                  # a tool the scan started (git, docker build)
+        (pids / r.name).write_text(str(p.pid))
+        p.wait()
+        return orgmod.RepoResult(provider=r.provider, org="acme", project=r.project, repo=r.name, status="deployed")
+    monkeypatch.setattr(orgmod, "_repo_job", slow)
+    repos = [SourceRepo("github", "acme", NO_PROJECT, n, f"https://github.com/acme/{n}.git", id=str(i))
+             for i, n in enumerate(("one", "two", "three"))]
+
+    class Hooks:
+        def should_stop(self):
+            return len(list(pids.iterdir())) >= parallel
+        should_abort = should_stop
+    o = OrgOptions(provider="github", org="acme", registry="r.example/x", token="t", hooks=Hooks(), parallel=parallel)
+    finished = []
+    t0 = _t.monotonic()
+    stopped = orgmod._run_parallel(repos, parallel, o, None, None, tmp_path / "work", None, "1.0.0", None, False, {},
+                                   {r.key: r.name for r in repos}, lambda *a: finished.append(a), lambda m: None)
+    assert stopped and finished == [] and _t.monotonic() - t0 < 30
+    assert len(list(pids.iterdir())) == parallel
+    for f in pids.iterdir():                           # the tools are gone too
+        pid = int(f.read_text())
+        for _ in range(50):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            _t.sleep(0.1)
+        else:
+            raise AssertionError(f"process {pid} of {f.name} still runs")
+    assert not (tmp_path / "work" / "parallel" / "one").exists()
+
+
+def test_deploy_app_writes_the_pushed_digest_into_the_kustomization(tmp_path, monkeypatch):
+    """#292: the sandbox runs by digest from the first deploy (the sandbox runs no image automation)."""
+    from containerizer import imagescan
+    from containerizer.gitops import GitOpsOptions, digest_setter_images
+    from tests.test_make_it_a import _a_app, _Out
+    digest = "sha256:" + "d" * 64
+
+    class FakeRegistry:
+        def push(self, local, ref, extra=()):
+            return digest
+    monkeypatch.setattr(imagescan, "build_image", lambda src, cdir, tag, timeout=1800: (True, ""))
+    src, a = _a_app(tmp_path, "shop-web")
+    o = OrgOptions(provider="github", org="acme", registry="reg.example/sandbox", verify=True, gate=False,
+                   push_images=True, image_pull_secret="regcred")
+    out = _Out(tmp_path / "out")
+    res = orgmod.RepoResult(provider="github", org="acme", project="_", repo="shop", status="error", app="shop-web")
+    res = orgmod.deploy_app(a, src, "acme/_/shop", o, out, FakeRegistry(), "1.2.3", GitOpsOptions(path="acme/_/shop"),
+                            res, tmp_path / "work", "shop-web")
+    assert res.status == "deployed"
+    text = (out.root / "acme/_/shop/kustomization.yaml").read_text()
+    k = yaml.safe_load(text)
+    [img] = k["images"]
+    assert img == {"name": "reg.example/sandbox/shop-web/demo-web", "newName": "reg.example/sandbox/shop-web/demo-web",
+                   "newTag": "1.2.3", "digest": digest}
+    assert f'digest: "{digest}" # {{"$imagepolicy": "shop-web:demo-web:digest"}}' in text   # the setter stays
+    assert digest_setter_images(text) == {img["name"]}
+    assert k["patches"]                                                       # the pull secret patches still follow
+    if shutil.which("kubectl"):                                               # what the sandbox's Flux applies
+        p = subprocess.run(["kubectl", "kustomize", str(out.root / "acme/_/shop")], capture_output=True, text=True)
+        assert p.returncode == 0, p.stderr
+        assert f"image: reg.example/sandbox/shop-web/demo-web:1.2.3@{digest}" in p.stdout
+    hardening = (out.root / "acme/_/shop/HARDENING.md").read_text()
+    assert "| Images are deployed by digest | applied |" in hardening and "pinned by Flux" in hardening

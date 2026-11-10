@@ -40,10 +40,47 @@ node:
   server_slim_24: node:24-bookworm-slim
   app_uid: 65532
 python:
-  runtime: python:3.12-slim-bookworm
+  # Python runs on the line it declares (.python-version, runtime.txt, requires-python), or the next
+  # line above an older one; without a declaration on `default`. Dependencies install into a virtual
+  # environment in the build stage; the slim image runs it as uid 65532 (no compilers, no pip cache).
+  lines: ["3.11", "3.12", "3.13"]
+  default: "3.12"
+  build_3.11: python:3.11-slim-bookworm
+  build_3.12: python:3.12-slim-bookworm
+  build_3.13: python:3.13-slim-bookworm
+  # full Debian images (buildpack-deps): gcc and the -dev headers for packages built from source
+  build_native_3.11: python:3.11-bookworm
+  build_native_3.12: python:3.12-bookworm
+  build_native_3.13: python:3.13-bookworm
+  runtime_3.11: python:3.11-slim-bookworm
+  runtime_3.12: python:3.12-slim-bookworm
+  runtime_3.13: python:3.13-slim-bookworm
+  app_uid: 65532
+  # packages that compile against system libraries (no manylinux wheel), and the shared libraries the
+  # runtime stage then needs (installed with apt before USER, the app's files are not touched)
+  native_build: [psycopg2, mysqlclient, python-ldap, uwsgi, pyodbc, pycurl, gssapi, pykerberos, python-gssapi]
+  native_runtime:
+    psycopg2: [libpq5]
+    psycopg: [libpq5]
+    mysqlclient: [libmariadb3]
+    python-ldap: [libldap-2.5-0, libsasl2-2]
+    pyodbc: [unixodbc]
+    pycurl: [libcurl4]
+    uwsgi: [libxml2]
+    gssapi: [libgssapi-krb5-2]
+    pykerberos: [libgssapi-krb5-2]
+    python-gssapi: [libgssapi-krb5-2]
+  # production servers added to the image when the app declares none (the app's files are not changed)
+  servers: {gunicorn: "gunicorn>=22", uvicorn: "uvicorn>=0.30"}
+  # package managers installed in the build stage only
+  tools: {poetry: "poetry>=1.8", uv: "uv>=0.4", pipenv: "pipenv>=2023.10"}
 go:
-  build: golang:1.22-bookworm
+  # Go builds with the newest toolchain (Go 1 compatibility: go.mod's go line is a minimum) into a static
+  # binary on distroless static; an app that needs cgo runs on distroless base (glibc). uid 65532.
+  build: golang:1.26-bookworm
   runtime: gcr.io/distroless/static-debian12:nonroot
+  runtime_cgo: gcr.io/distroless/base-debian12:nonroot
+  app_uid: 65532
 java:
   # Java runs on the LTS line it is built for (8 and 11 are still supported by Temurin); the build
   # uses the same JDK. Maven builds use the image's Maven; Gradle builds use the repository's wrapper
@@ -68,10 +105,6 @@ java:
   tomcat10_17: tomcat:10.1-jre17-temurin-noble
   tomcat10_21: tomcat:10.1-jre21-temurin-noble
   app_uid: 65532
-windows:
-  framework_sdk: mcr.microsoft.com/dotnet/framework/sdk:4.8.1-windowsservercore-ltsc2022
-  framework_aspnet: mcr.microsoft.com/dotnet/framework/aspnet:4.8.1-windowsservercore-ltsc2022
-  framework_runtime: mcr.microsoft.com/dotnet/framework/runtime:4.8.1-windowsservercore-ltsc2022
 # Native packages to add (full images only) when a fact is set
 native_packages:
   needs_kerberos: [libkrb5-3, libgssapi-krb5-2, gss-ntlmssp]

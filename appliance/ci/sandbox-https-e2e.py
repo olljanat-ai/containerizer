@@ -28,6 +28,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from containerizer import sandbox, sysagent
+from containerizer.harden import INGRESS_ENV, default_deny_policy, network_policy
 from containerizer.sandbox_https import TRAEFIK_ADDR, ingress
 
 DOMAIN = "sandbox.test"
@@ -146,7 +147,8 @@ print(json.dumps({k: v for k, v in settings.items() if k != "cert"}))
 assert sysagent.P.https(".key").stat().st_mode & 0o077 in (0, 0o040)
 kubectl("-n", "kube-system", "get", "secret/containerizer-sandbox-tls", "tlsstores.traefik.io/default")
 
-step("an app with the generated Ingress")
+step("an app with the generated Ingress and NetworkPolicies (service port open to kube-system, Traefik's namespace)")
+os.environ[INGRESS_ENV] = "kube-system"             # as the appliance's worker (containerizer-worker.service)
 labels = {"app.kubernetes.io/name": "web", "app.kubernetes.io/part-of": "ci"}
 docs = [{"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": "ci"}},
         {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "web", "namespace": "ci", "labels": labels},
@@ -156,8 +158,12 @@ docs = [{"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": "ci"}},
                              "readinessProbe": {"httpGet": {"path": "/health", "port": "http"}}}]}}}},
         {"apiVersion": "v1", "kind": "Service", "metadata": {"name": "web", "namespace": "ci", "labels": labels},
          "spec": {"selector": labels, "ports": [{"name": "http", "port": 80, "targetPort": "http"}]}},
+        default_deny_policy(), network_policy("web", labels, 8080, []),
         {**ingress(DOMAIN, "ci", "web", labels)}]
-docs[-1]["metadata"]["namespace"] = "ci"
+assert docs[-2]["spec"]["ingress"][0]["from"] == [
+    {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}}], docs[-2]
+for d in docs[1:]:
+    d["metadata"]["namespace"] = "ci"
 kubectl("apply", "-f", "-", input=json.dumps({"apiVersion": "v1", "kind": "List", "items": docs}))
 kubectl("-n", "ci", "rollout", "status", "deploy/web", "--timeout=300s")
 

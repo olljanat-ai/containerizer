@@ -158,13 +158,20 @@ def host_network_allowed() -> bool:
 
 
 def _build_env_args() -> list[str]:
-    """Pass the host's proxy and extra CA bundle to builds (corporate proxies)."""
+    """Pass the host's proxy and extra CA bundle to builds (corporate proxies). With registered package feeds the
+    builds' HTTPS goes through the feed proxy (feedproxy.py), which adds the feeds' credentials and passes the rest on
+    (through the corporate proxy, if any); its CA comes in the `ca` bundle."""
+    from . import feedproxy
     args: list[str] = []
     proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
-    if proxy:
-        args += ["--build-arg", f"HTTPS_PROXY={proxy}", "--build-arg", f"https_proxy={proxy}"]
     no = os.environ.get("NO_PROXY") or os.environ.get("no_proxy")
-    if (proxy or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")) and no:
+    feeds = feedproxy.build_proxy_env(no)
+    build_proxy = feeds["proxy"] if feeds else proxy
+    if build_proxy:
+        args += ["--build-arg", f"HTTPS_PROXY={build_proxy}", "--build-arg", f"https_proxy={build_proxy}"]
+    if feeds:
+        no = feeds["no_proxy"]
+    if (build_proxy or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")) and no:
         args += ["--build-arg", f"NO_PROXY={no}", "--build-arg", f"no_proxy={no}"]
     http = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
     if http:        # apt (Debian/Ubuntu package sources) uses plain HTTP
@@ -172,7 +179,7 @@ def _build_env_args() -> list[str]:
         local = proxy or http
         if ("127.0.0.1" in local or "localhost" in local) and host_network_allowed():
             args += ["--network", "host"]
-    ca = os.environ.get("CONTAINERIZER_CA_BUNDLE") or next(
+    ca = (feeds or {}).get("ca") or os.environ.get("CONTAINERIZER_CA_BUNDLE") or next(
         (p for p in ("/root/.ccr/ca-bundle.crt",) if os.path.isfile(p)), None)
     if ca:
         args += ["--secret", f"id=ca,src={ca}"]
@@ -213,6 +220,41 @@ def _free_disk(min_gb: float = 15.0) -> None:
         pass
 
 
+# a name `docker run --add-host` may map: DNS labels, the last starting with a letter (never an address)
+HOST_NAME = re.compile(r"(?=[a-z0-9.-]{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
+                       r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+def _mappable(hits, into: dict | None = None) -> dict:
+    """{host: [ports]} of the (host, port) pairs that are host names and not well-known public services."""
+    from .connectivity import NOISE_HOSTS, _placeholder
+    from .harden import security
+    public = security()["network"].get("public_hosts") or "$^"
+    out = dict(into or {})
+    for host, port in hits:
+        host = str(host).lower().rstrip(".")
+        if not HOST_NAME.fullmatch(host) or NOISE_HOSTS.match(host) or _placeholder(host) or re.search(public, host, re.I):
+            continue
+        ports = out[host] = list(out.get(host, []))
+        if port and port not in ports:
+            ports.append(port)
+    return out
+
+
+def hosts_to_map(a: AppAssessment, c: Component) -> dict:
+    """{host: [ports]}: the names the component's configuration and code connect to (connection strings and URLs,
+    as the connectivity model reads them), resolved to 127.0.0.1 in the verification run, so a missing service
+    fails fast with "connection refused" (an external service) instead of a DNS lookup that hangs."""
+    if c.role == "spa":
+        return {}
+    from .connectivity import _scan_destinations
+    try:
+        found = _scan_destinations(a.repo, c, any_port=True)
+    except Exception:  # noqa: BLE001 - unreadable configuration: nothing to map
+        return {}
+    return _mappable((d["host"], d["port"]) for d in found)
+
+
 def build(a: AppAssessment, c: Component, plan: dict, workdir: Path, timeout: int) -> tuple[bool, str, str]:
     workdir.mkdir(parents=True, exist_ok=True)
     df = dockerfile_for(plan, c)
@@ -228,13 +270,39 @@ def build(a: AppAssessment, c: Component, plan: dict, workdir: Path, timeout: in
     return rc == 0, log, tag
 
 
+RUN_MEMORY_MIB = 768           # --memory of the verification run
+PEAK_ROUNDS = 2                # probe-and-sample rounds after the app first answers
+_SIZE = {"b": 1, "kib": 2**10, "mib": 2**20, "gib": 2**30, "kb": 1e3, "mb": 1e6, "gb": 1e9}
+
+
+def _sample(name: str) -> tuple[float, float] | None:
+    """(memory in MiB, CPU %) of a running container from `docker stats --no-stream`, None when unreadable."""
+    rc, out = _run(["docker", "stats", "--no-stream", "--format", "{{.MemUsage}}|{{.CPUPerc}}", name], 20)
+    m = re.search(r"([\d.]+)\s*([KMG]i?B|B)\s*/[^|]*\|\s*([\d.]+)%", out or "", re.I)
+    if rc != 0 or not m:
+        return None
+    return float(m.group(1)) * _SIZE[m.group(2).lower()] / 2**20, float(m.group(3))
+
+
+def _track(usage: dict, name: str) -> None:
+    """Keep the peak memory and CPU of the container seen so far (generate.measured_memory sizes from it)."""
+    s = _sample(name)
+    if s is None:
+        return
+    usage["samples"] = usage.get("samples", 0) + 1
+    usage["memory_peak_mib"] = round(max(usage.get("memory_peak_mib", 0.0), s[0]), 1)
+    usage["cpu_peak_percent"] = round(max(usage.get("cpu_peak_percent", 0.0), s[1]), 1)
+    usage["run_limit_mib"] = RUN_MEMORY_MIB
+
+
 def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | None = None,
-        wait: int = 90) -> tuple[str, str, dict]:
-    """Returns (status, log, details). status: ok | exited | unhealthy"""
+        wait: int = 90, hosts: dict | None = None) -> tuple[str, str, dict]:
+    """Returns (status, log, details). status: ok | exited | unhealthy. `hosts` (hosts_to_map) resolve to
+    127.0.0.1; details["mapped_hosts"] names them."""
     name = f"cz-verify-{os.getpid()}-{int(time.time())}-{secrets.token_hex(3)}"   # unique: jobs run at once
     uid = 101 if c.role == "spa" else plan.get("uid") or images()["dotnet"]["app_uid"]
     cmd = ["docker", "run", "-d", "--name", name, "--read-only", "--cap-drop", "ALL",
-           "--security-opt", "no-new-privileges", "--memory", "768m", "--add-host", "sql01.corp.local:127.0.0.1"]
+           "--security-opt", "no-new-privileges", "--memory", f"{RUN_MEMORY_MIB}m"]
     # writable folders are host directories during verification, so log files the app writes
     # (apps that log only to files print nothing to stdout) can be read for the diagnosis
     import shutil
@@ -260,6 +328,9 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
         dev = c.project.dir / "appsettings.Development.json"
         if dev.exists():
             cmd += ["-v", f"{dev.resolve()}:/app/appsettings.Development.json:ro"]
+            from .connectivity import line_hosts      # a stray production host there fails fast too
+            hosts = _mappable(((h, p) for line in dev.read_text(errors="replace").splitlines()
+                               for h, p, _ in line_hosts(line)), hosts)
             # dev settings often point at ../../App_Data etc.; give those folders a scratch tmpfs
             from .facts import _flatten, _load_json
             for key, val in _flatten(_load_json(dev)):
@@ -282,6 +353,9 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
                             cmd += ["-v", f"{src}:{target}:ro"]       # sample input files from the repo
                         else:
                             cmd += ["--tmpfs", f"{target}:rw,exec,uid={uid},gid={uid},mode=1777"]
+    mapped = sorted(h for h in (hosts or {}) if HOST_NAME.fullmatch(h))
+    for h in mapped:
+        cmd += ["--add-host", f"{h}:127.0.0.1"]
     cmd.append(tag)
     if c.role == "console":
         first = c.facts.get("oneshot_arg") or (c.facts.get("commands") or [None])[0]
@@ -290,8 +364,9 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
     rc, out = _run(cmd, 60)
     if rc != 0:
         (workdir / "run.log").write_text(out)
-        return "exited", out, {}
-    details: dict = {}
+        return "exited", out, {"mapped_hosts": mapped} if mapped else {}
+    details: dict = {"mapped_hosts": mapped} if mapped else {}
+    usage: dict = {}
     status = "unhealthy"
     deadline = time.time() + wait
     try:
@@ -313,13 +388,22 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
                         if code < 500:
                             status = "ok"
                             break
+                _track(usage, name)     # after the probes were answered: what serving them took
                 if status == "ok":
+                    for _ in range(PEAK_ROUNDS):    # a few more requests: one sample right at start-up is thin
+                        for path in details.get("http") or {}:
+                            _http(f"http://127.0.0.1:{hp}{path}")
+                        _track(usage, name)
                     break
-            elif time.time() > deadline - wait + 20:
-                status = "ok"           # worker stayed up for 20 s
-                details["note"] = "worker running"
-                break
+            else:
+                _track(usage, name)
+                if time.time() > deadline - wait + 20:
+                    status = "ok"           # worker stayed up for 20 s
+                    details["note"] = "worker running"
+                    break
     finally:
+        if usage:
+            details["usage"] = usage
         _, log = _run(["docker", "logs", name], 30)
         _run(["docker", "rm", "-f", name], 30)
         for f in sorted(fsroot.rglob("*")) if fsroot.exists() else []:
@@ -341,6 +425,7 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
               "predicted": c.verdict, "time": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     env_override: dict = {}
     learned_patches: list[tuple[dict, dict, dict]] = []
+    hosts = hosts_to_map(a, c)
     pruned = False
     t0 = time.time()
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -348,13 +433,15 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
         stage, details = "build", {}
         if ok:
             stage = "run"
-            status, log, details = run(c, plan, tag, workdir, env_override)
+            status, log, details = run(c, plan, tag, workdir, env_override, hosts=hosts)
             if status == "exited" and c.role == "console" and details.get("exit_code") == "0":
                 status = "ok"                    # a batch job that ran to completion
                 details["note"] = "job completed"
             if status == "ok":
                 history.append({"attempt": attempt, "stage": "run", "status": "ok", **details})
                 result["status"] = "ok"
+                if details.get("usage"):
+                    result["usage"] = details["usage"]   # sizes the memory requests and limits (generate.py)
                 if env_override:
                     result["mode"] = "smoke"     # proven without the production services
                 break
@@ -380,7 +467,7 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
         fr, caps = d
         caps.setdefault("tfm", plan.get("tfm") or "")
         entry = {"attempt": attempt, "stage": stage, "rule": fr["id"], "outcome": fr["outcome"],
-                 "diagnosis": _fmt(fr.get("diagnosis", ""), caps), **{k: v for k, v in details.items() if k == "exit_code"},
+                 "diagnosis": _fmt(fr.get("diagnosis", ""), caps), **{k: v for k, v in details.items() if k in ("exit_code", "mapped_hosts")},
                  "log_tail": tail[-1500:]}                    # evidence for the rule review of what is learned
         history.append(entry)
         if fr["outcome"] == "retry":
@@ -432,6 +519,9 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
             entry["note"] = "finding recorded; smoke-testing the rest in Development mode"
             continue
         break
+    if hosts and (result.get("mode") == "smoke" or result["status"] == "ok-external" or result.get("finding")):
+        # what the real environment must provide: these names resolved to loopback in the sandbox
+        result["needs"] = [f"{h}:{p}" for h, ps in hosts.items() for p in ps] + [h for h, ps in hosts.items() if not ps]
     if result.get("finding"):
         result["smoke"] = result["status"]
         result["status"] = "finding"

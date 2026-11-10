@@ -264,6 +264,40 @@ def test_network_policy_default_deny_with_inferred_egress(tmp_path):
     assert [v for v in lint_manifests(docs) if v.check in ("network-policy", "egress-policy")] == []
 
 
+def test_ingress_from_the_ingress_controllers_namespace(tmp_path, monkeypatch):
+    from containerizer import cli
+    from containerizer.harden import INGRESS_ENV, hardening_markdown, network_policy
+    labels = {"app.kubernetes.io/name": "web", "app.kubernetes.io/part-of": "shop"}
+    monkeypatch.delenv(INGRESS_ENV, raising=False)
+    np = network_policy("web", labels, 8080, [])
+    service, siblings = np["spec"]["ingress"]
+    assert service["from"] == [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "ingress-nginx"}}}]
+    assert siblings == {"from": [{"podSelector": {"matchLabels": {"app.kubernetes.io/part-of": "shop"}}}]}
+    assert np["metadata"]["annotations"]["containerizer.io/ingress-from"] == "ingress-nginx"
+    assert not [v for v in lint_manifests([np]) if v.check == "ingress-namespace"]
+    assert "from namespace ingress-nginx (the ingress controller)" in hardening_markdown("shop", {"web": [np]})
+    # the site setting (the appliance: k3s' Traefik in kube-system)
+    monkeypatch.setenv(INGRESS_ENV, "kube-system")
+    np = network_policy("web", labels, 8080, [])
+    assert np["spec"]["ingress"][0]["from"][0]["namespaceSelector"]["matchLabels"] == {
+        "kubernetes.io/metadata.name": "kube-system"}
+    # `any`: the old rule, on purpose: no warning
+    monkeypatch.setenv(INGRESS_ENV, "any")
+    np = network_policy("web", labels, 8080, [])
+    assert np["spec"]["ingress"][0]["from"] == [{"namespaceSelector": {}}]
+    assert not [v for v in lint_manifests([np]) if v.check == "ingress-namespace"]
+    assert "open to every namespace" in hardening_markdown("shop", {"web": [np]})
+    # an empty namespaceSelector nobody asked for (hand-made, or an older generation) is a warning
+    del np["metadata"]["annotations"]["containerizer.io/ingress-from"]
+    [v] = [v for v in lint_manifests([np]) if v.check == "ingress-namespace"]
+    assert v.severity == "warning" and v.target == "NetworkPolicy/web"
+    # the CLI option sets it for the run
+    monkeypatch.delenv(INGRESS_ENV)
+    args = cli.argparse.Namespace(ingress_from="traefik", fn=lambda a: 0)
+    assert cli._run_cmd(args) == 0
+    assert cli.os.environ[INGRESS_ENV] == "traefik"
+
+
 def test_spa_gets_no_external_egress(tmp_path):
     web_app(tmp_path, packages='<PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.0" />')
     docs, _ = _manifests(tmp_path, role="spa")
@@ -448,3 +482,238 @@ def test_dataprotection_key_is_shared_and_generated_in_the_cluster(tmp_path):
     # nothing for the secret store to hold
     from containerizer.eso import remote_keys
     assert not any(k.endswith("dataprotection") for k in remote_keys(docs))
+
+
+def _keys_in_library(root, lib_code: str, settings: str = ""):
+    """A web app whose referenced hosting library persists the Data Protection keys (PersistKeysToFileSystem)."""
+    write(root, "src/Web/Web.csproj", """
+        <Project Sdk="Microsoft.NET.Sdk.Web">
+          <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+          <ItemGroup><ProjectReference Include="../Hosting/Hosting.csproj" /></ItemGroup>
+        </Project>""")
+    write(root, "src/Web/Program.cs", "var b = WebApplication.CreateBuilder(args);\nb.Services.AddRazorPages();\n"
+          'var app = b.Build(); app.MapGet("/healthz", () => "ok"); app.Run();')
+    if settings:
+        write(root, "src/Web/appsettings.json", settings)
+    write(root, "src/Hosting/Hosting.csproj",
+          '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>')
+    write(root, "src/Hosting/HostingExtensions.cs", "public static class H { public static void Add(IServiceCollection "
+          "services, IConfiguration configuration) {\n" + lib_code + "\n} }")
+
+
+def _dp_mounts(docs):
+    """mountPath -> (readOnly, volume type, volume) of the Deployment's container."""
+    pod = next(d for d in docs if d["kind"] == "Deployment")["spec"]["template"]["spec"]
+    vols = {v["name"]: v for v in pod["volumes"]}
+    return {m["mountPath"]: (m.get("readOnly", False), next(k for k in vols[m["name"]] if k != "name"),
+                             vols[m["name"]]) for m in pod["containers"][0]["volumeMounts"]}
+
+
+def test_configured_key_folder_gets_the_generated_key(tmp_path):
+    """A key ring folder from configuration (a Windows path, re-pointed under /data) that a referenced library passes
+    to PersistKeysToFileSystem: the generated key Secret is mounted read-only there, not an emptyDir, and nothing
+    is mounted at the default folder under /home/app (plan-dataprotection-keys does not apply)."""
+    _keys_in_library(tmp_path, 'var folder = configuration["DataProtection:KeyFolder"] ?? Path.Combine(@"D:\\Keys", "web");\n'
+                     "services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(folder));",
+                     '{"DataProtection": {"KeyFolder": "D:\\\\AppData\\\\keys\\\\web"}}')
+    docs, plan = _manifests(tmp_path)
+    assert "plan-dataprotection-keys" not in plan["applied"]
+    assert plan["env"]["DataProtection__KeyFolder"] == "/data/appdata/keys/web"
+    mounts = _dp_mounts(docs)
+    ro, kind, vol = mounts["/data/appdata/keys/web"]
+    assert ro and kind == "secret" and vol["secret"]["secretName"].endswith("-dataprotection")
+    assert not any(m.startswith("/home/app/.aspnet") for m in mounts)
+    assert any(d["kind"] == "Password" for d in docs)          # the key is generated in the cluster
+    why = next(r["why"] for r in plan["reasons"] if r["rule"] == "dataprotection-key-folder")
+    assert "DataProtection:KeyFolder" in why and "/data/appdata/keys/web" in why
+    assert "dataprotection-key-folder:" in generate.dockerfile_dotnet(plan)
+    assert [v for v in lint_manifests(docs) if v.severity == "error"] == []
+
+
+def test_unset_key_folder_setting_points_at_the_generated_key(tmp_path):
+    """The code reads the folder from a setting that configuration does not set: the generator sets it to the
+    folder where it mounts the generated key."""
+    _keys_in_library(tmp_path, 'var keys = configuration["Security:KeyRingPath"];\n'
+                     "if (!string.IsNullOrEmpty(keys)) services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keys));")
+    docs, plan = _manifests(tmp_path)
+    assert plan["env"]["Security__KeyRingPath"] == generate.DATAPROTECTION_DIR
+    assert "plan-dataprotection-keys" not in plan["applied"]
+    assert _dp_mounts(docs)[generate.DATAPROTECTION_DIR][:2] == (True, "secret")
+
+
+def test_key_folder_found_by_setting_name(tmp_path):
+    """Options binding hides the configuration key from the code; the setting's name says it is the key ring."""
+    _keys_in_library(tmp_path, "services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(opts.Folder));",
+                     '{"DataProtection": {"KeysFolder": "/var/lib/web/keys"}}')
+    docs, plan = _manifests(tmp_path)
+    assert plan["dataprotection_dirs"] == ["/var/lib/web/keys"]
+    assert _dp_mounts(docs)["/var/lib/web/keys"][:2] == (True, "secret")
+
+
+def test_key_folder_literal_in_code_is_a_persistent_volume(tmp_path):
+    """A folder written in code cannot be re-pointed: a ReadWriteOnce volume keeps the keys, with one replica."""
+    _keys_in_library(tmp_path, 'services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(@"D:\\Keys\\web"));')
+    docs, plan = _manifests(tmp_path)
+    folder = "/app/D:\\Keys\\web"           # a drive path is a relative name on Linux, under the working folder
+    assert plan["dataprotection_pvc"] == folder and plan["single_replica"]
+    assert "plan-dataprotection-keys" not in plan["applied"]
+    ro, kind, vol = _dp_mounts(docs)[folder]
+    assert not ro and kind == "persistentVolumeClaim"
+    pvc = next(d for d in docs if d["kind"] == "PersistentVolumeClaim")
+    assert pvc["metadata"]["name"] == vol["persistentVolumeClaim"]["claimName"]
+    assert pvc["spec"]["accessModes"] == ["ReadWriteOnce"]
+    assert next(d for d in docs if d["kind"] == "Deployment")["spec"]["strategy"] == {"type": "Recreate"}
+    assert any(r["rule"] == "dataprotection-key-volume" for r in plan["reasons"])
+    df = generate.dockerfile_dotnet(plan)       # the volume creates the folder, not the Dockerfile
+    assert "D:\\Keys" in df and not [x for x in df.splitlines() if x.startswith(("RUN", "COPY")) and "D:" in x]
+    # a Linux-style literal is a writable folder of the image as well
+    _keys_in_library(tmp_path / "b", 'services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo("keys"));')
+    docs, plan = _manifests(tmp_path / "b")
+    assert _dp_mounts(docs)["/app/keys"][1] == "persistentVolumeClaim"
+
+
+def test_lint_key_ring_on_empty_dir(tmp_path):
+    """dataprotection-volatile: a setting that names the key ring folder must not point into an emptyDir."""
+    web_app(tmp_path)
+    docs, _ = _manifests(tmp_path)
+    pod = next(d for d in docs if d["kind"] == "Deployment")["spec"]["template"]["spec"]
+    pod["volumes"].append({"name": "keys", "emptyDir": {"sizeLimit": "1Mi"}})
+    ct = pod["containers"][0]
+    ct["volumeMounts"].append({"name": "keys", "mountPath": "/data/keys"})
+    ct["env"].append({"name": "DataProtection__KeysFolder", "value": "/data/keys/web"})
+    bad = [v for v in lint_manifests(docs) if v.check == "dataprotection-volatile"]
+    assert len(bad) == 1 and bad[0].severity == "error"
+    pod["volumes"][-1] = {"name": "keys", "persistentVolumeClaim": {"claimName": "keys"}}
+    assert not [v for v in lint_manifests(docs) if v.check == "dataprotection-volatile"]
+    pod["volumes"][-1] = {"name": "keys", "emptyDir": {"sizeLimit": "1Mi"}}
+    for other in ("Upload__Folder", "Sftp__KeysFolder"):        # not a key ring
+        ct["env"][-1] = {"name": other, "value": "/data/keys/web"}
+        assert not [v for v in lint_manifests(docs) if v.check == "dataprotection-volatile"]
+
+
+def test_default_key_folder_without_persist_keys():
+    """An app without PersistKeysTo* in its closure keeps the default key mount (examples/ci-demo)."""
+    from pathlib import Path
+    a = assess(Path(__file__).resolve().parent.parent / "examples" / "ci-demo")
+    webs = [c for c in a.components if c.role == "web" and c.project.kind_hint == "dotnet"]
+    assert webs and all("plan-dataprotection-keys" in make_plan(a, c)["applied"] for c in webs)
+
+# ---------------------------------------------------------------- workload lifecycle (#291)
+
+def _worker_app(root):
+    write(root, "src/Poller/Poller.csproj", """
+        <Project Sdk="Microsoft.NET.Sdk.Worker"><PropertyGroup><OutputType>Exe</OutputType>
+          <TargetFramework>net8.0</TargetFramework></PropertyGroup>
+          <ItemGroup><PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.0" /></ItemGroup></Project>""")
+    write(root, "src/Poller/Program.cs", """
+        var b = Host.CreateApplicationBuilder(args); b.Services.AddHostedService<W>(); b.Build().Run();
+        class W : BackgroundService { protected override async Task ExecuteAsync(CancellationToken t) { } }""")
+
+
+def _dep(docs):
+    return next(d for d in docs if d["kind"] == "Deployment")
+
+
+def test_worker_is_recreated_with_a_longer_grace_period_web_keeps_rolling(tmp_path):
+    _worker_app(tmp_path / "w")
+    docs, plan = _manifests(tmp_path / "w")
+    assert plan["role"] == "worker"
+    dep = _dep(docs)
+    assert dep["spec"]["strategy"] == {"type": "Recreate"}
+    assert dep["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 120
+    assert "worker-recreate" in {r["rule"] for r in plan["reasons"]}
+    assert not [v for v in lint_manifests(docs) if v.check in ("worker-strategy", "cronjob-limits")]
+
+    web_app(tmp_path / "web")
+    docs, plan = _manifests(tmp_path / "web")
+    dep = _dep(docs)
+    assert dep["spec"]["strategy"] == {"type": "RollingUpdate"}
+    assert dep["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 30
+    assert "worker-recreate" not in {r["rule"] for r in plan.get("reasons") or []}
+
+
+def test_worker_marked_safe_to_run_twice_keeps_rolling_updates(tmp_path):
+    _worker_app(tmp_path)
+    a = assess(tmp_path)
+    c = a.components[0]
+    docs = k8s_manifests(a, c, make_plan(a, c, extra={"scale_out": True}), "registry.local/x/y:1.0")
+    dep = _dep(docs)
+    assert dep["spec"]["strategy"] == {"type": "RollingUpdate"}
+    assert "containerizer.io/scale-out" in dep["metadata"]["annotations"]
+    assert not [v for v in lint_manifests(docs) if v.check == "worker-strategy"]
+
+
+def test_lint_flags_a_rolling_worker(tmp_path):
+    _worker_app(tmp_path)
+    docs, _ = _manifests(tmp_path)
+    _dep(docs)["spec"]["strategy"] = {"type": "RollingUpdate"}
+    v = [v for v in lint_manifests(docs) if v.check == "worker-strategy"]
+    assert v and v[0].severity == "warning"
+    del _dep(docs)["spec"]["strategy"]          # the Kubernetes default is RollingUpdate
+    assert [v for v in lint_manifests(docs) if v.check == "worker-strategy"]
+
+
+def test_cronjobs_are_bounded_and_the_gate_warns_without_limits(tmp_path):
+    write(tmp_path, "src/Jobs/Jobs.csproj", """
+        <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType>
+          <TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>""")
+    write(tmp_path, "src/Jobs/Program.cs", 'Console.WriteLine("run");')
+    docs, _ = _manifests(tmp_path)
+    cj = next(d for d in docs if d["kind"] == "CronJob")
+    spec, job = cj["spec"], cj["spec"]["jobTemplate"]["spec"]
+    assert spec["concurrencyPolicy"] == "Forbid" and spec["startingDeadlineSeconds"] == 300
+    assert spec["successfulJobsHistoryLimit"] == 3 and spec["failedJobsHistoryLimit"] == 3
+    assert job["backoffLimit"] == 2 and job["activeDeadlineSeconds"] == 3600 and job["ttlSecondsAfterFinished"] == 86400
+    assert job["template"]["spec"]["terminationGracePeriodSeconds"] == 120
+    assert not [v for v in lint_manifests(docs) if v.check == "cronjob-limits"]
+
+    del job["activeDeadlineSeconds"], spec["failedJobsHistoryLimit"]
+    v = [v for v in lint_manifests(docs) if v.check == "cronjob-limits"]
+    assert len(v) == 1 and v[0].severity == "warning"
+    assert "activeDeadlineSeconds" in v[0].message and "failedJobsHistoryLimit" in v[0].message
+
+
+def test_long_iis_requests_raise_the_grace_period(tmp_path):
+    web_app(tmp_path)
+    write(tmp_path, "src/Web/web.config", '<configuration><system.web><httpRuntime executionTimeout="300" />'
+                                          '</system.web></configuration>')
+    docs, plan = _manifests(tmp_path)
+    assert _dep(docs)["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 315
+    assert "long-request-grace" in {r["rule"] for r in plan["reasons"]}
+    assert _dep(docs)["spec"]["strategy"] == {"type": "RollingUpdate"}
+
+    long = tmp_path / "long"
+    web_app(long)
+    write(long, "src/Web/web.config", '<configuration><aspNetCore processPath="dotnet" requestTimeout="01:00:00" />'
+                                      '</configuration>')
+    docs, _ = _manifests(long)
+    assert _dep(docs)["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 600     # max_seconds
+
+
+def test_hardening_report_has_a_lifecycle_line_per_workload(tmp_path):
+    from containerizer.harden import hardening_markdown
+    _worker_app(tmp_path)
+    docs, _ = _manifests(tmp_path)
+    md = hardening_markdown("app", {"poller": docs})
+    assert "## Workload lifecycle" in md
+    assert "| poller | Deployment/poller | Recreate | 120 s |" in md
+    assert "Workers replaced, not rolled" in md
+
+
+def test_image_digest_lint_with_a_flux_digest_setter():
+    """#292: an image the kustomization pins through a Flux :digest setter is reported as pinned by Flux."""
+    from containerizer.harden import hardening_markdown, lint_manifests
+    pod = {"containers": [{"name": "c", "image": "r.local/ns/web:1.2.3"}]}
+    docs = [{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "web"},
+             "spec": {"template": {"metadata": {}, "spec": pod}}}]
+    checks = {v.check: v for v in lint_manifests(docs)}
+    assert "image-digest" in checks and "image-digest-setter" not in checks
+    checks = {v.check: v for v in lint_manifests(docs, digest_setters={"r.local/ns/web"})}
+    assert "image-digest" not in checks
+    assert checks["image-digest-setter"].message.endswith("pinned by Flux after the first automation run "
+                                                          "(digest setter in kustomization.yaml)")
+    assert "Images are deployed by digest | not applied" in hardening_markdown("ns", {"web": docs})
+    md = hardening_markdown("ns", {"web": docs}, {"r.local/ns/web"})
+    assert "| Images are deployed by digest | applied | " in md and "pinned by Flux" in md
+    pod["containers"][0]["image"] = "r.local/ns/web:1.2.3@sha256:" + "a" * 64
+    assert not {"image-digest", "image-digest-setter"} & {v.check for v in lint_manifests(docs)}

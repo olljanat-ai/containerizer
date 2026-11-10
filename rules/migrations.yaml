@@ -13,8 +13,8 @@
 #   kind      replace     swap a Windows-only API or library for a cross-platform one (code change)
 #             port        move the component to a different framework/host model (larger code change)
 #             externalize move state, configuration, secrets or a capability out of the process
-#             isolate     no Linux replacement inside this component: keep that part on Windows (VM,
-#                         Windows container, desktop) and integrate over the network; an agent must
+#             isolate     no Linux replacement inside this component: keep that part on Windows (VM or
+#                         desktop) and integrate over the network; an agent must
 #                         not try to "fix" it in code
 #   replace   what is being replaced (short)
 #   with      the recommended replacement (short; alternatives in `steps`)
@@ -23,6 +23,9 @@
 #   steps     ordered, concrete steps
 #   verify    how to prove the change works (in addition to build, tests and a re-assessment)
 #   refs      extra https links; the finding rule's own refs are always added
+#   variants  optional list of {when, packages, steps}: `when` is a condition like a finding rule's
+#             `when`, evaluated against the component's project; when it matches, its packages are
+#             added and its steps appended (e.g. the CoreWCF binding packages for the bindings found)
 #
 # A finding without an entry here still gets a plan item built from its rule (`fix`, `refs`).
 # tests/test_migrations.py checks that every blocker and rewrite rule has an entry and that every id in
@@ -89,7 +92,7 @@ migrations:
       - Map master pages to Razor layouts, user controls to Razor components or partials, code-behind event handlers to page handlers (OnGet/OnPost) or component events.
       - Replace ViewState and postback-dependent logic with explicit form models and server state (session over a distributed cache only where needed).
       - Replace vendor Web Forms controls with their ASP.NET Core/Blazor editions or plain components.
-      - Run the old and new UI side by side behind YARP with the System.Web adapters until every page is moved; until then a Windows container is a workable stop-gap.
+      - Run the old and new UI side by side behind YARP with the System.Web adapters until every page is moved; until then the old UI stays on its Windows VM.
     verify:
       - Each ported page passes a UI test (Playwright) of its main flows, recorded against the old page first.
     refs:
@@ -102,12 +105,47 @@ migrations:
     replace: WCF service host (System.ServiceModel)
     with: CoreWCF (keeps the service contracts) or gRPC/REST for new clients
     packages:
-      add: [CoreWCF.Primitives, CoreWCF.Http]
+      add: [CoreWCF.Primitives]
     steps:
-      - Keep the [ServiceContract]/[OperationContract] interfaces and implementations; change the using to CoreWCF.
-      - Host in ASP.NET Core with AddServiceModelServices() and UseServiceModel(), configuring BasicHttpBinding/WSHttpBinding (or NetTcpBinding without port sharing) in code; move the system.serviceModel config there.
+      - Keep the [ServiceContract]/[OperationContract] interfaces and implementations. CoreWCF hosts contracts declared with the System.ServiceModel attributes, so leave contract assemblies that clients also reference (netstandard2.0 or multi-targeted) on System.ServiceModel; switching their namespaces to CoreWCF breaks those clients. Use the CoreWCF namespaces only in service-side code.
+      - Host in ASP.NET Core with AddServiceModelServices() and UseServiceModel(), adding each service and its endpoints; the binding packages listed here match the bindings found in this component.
       - Replace bindings that do not exist on Linux (NetNamedPipe across machines, MSMQ, WS-* message security with Windows credentials) with BasicHttp/NetTcp over TLS, or with gRPC for new consumers; agree the change with every client team.
       - Serve WSDL with UseServiceMetadata when clients generate proxies from it.
+    variants:
+      # HTTP bindings (.svc endpoints default to basicHttpBinding), or no other transport found
+      - when:
+          any:
+            - file: "*.svc"
+            - config: '\b(basicHttps?Binding|wsHttpBinding|ws2007HttpBinding|wsFederationHttpBinding|ws2007FederationHttpBinding|webHttpBinding)\b'
+            - code: '\b(BasicHttps?Binding|WSHttpBinding|WS2007HttpBinding|WSFederationHttpBinding|WebHttpBinding|WebServiceHost)\b|\b(WebGet|WebInvoke)(Attribute)?\b'
+            - not:
+                any:
+                  - config: '\bnetTcpBinding\b'
+                  - code: '\bNetTcpBinding\b'
+        packages:
+          add: [CoreWCF.Http]
+      - when:
+          any:
+            - config: '\bnetTcpBinding\b'
+            - code: '\bNetTcpBinding\b'
+        packages:
+          add: [CoreWCF.NetTcp]
+        steps:
+          - Keep the netTcpBinding endpoints with CoreWCF.NetTcp, listening on a fixed port through UseNetTcp(port) on the WebHost (no port sharing, no WAS activation); publish that port in the container and Service.
+      - when:
+          any:
+            - config: '\bwebHttpBinding\b|<webHttp\b'
+            - code: '\bWebHttpBinding\b|\bWebServiceHost|\b(WebGet|WebInvoke)(Attribute)?\b'
+        packages:
+          add: [CoreWCF.WebHttp]
+        steps:
+          - Keep the [WebGet]/[WebInvoke] REST endpoints with CoreWCF.WebHttp (WebHttpBinding plus the WebHttpBehavior), so their URLs and formats stay the same.
+      - when:
+          config: '<system\.serviceModel\b(?:(?!</system\.serviceModel>)[\s\S])*?<services>\s*<service\s'
+        packages:
+          add: [CoreWCF.ConfigurationManager]
+        steps:
+          - Keep the <system.serviceModel> services, bindings and behaviors configuration and load it with AddServiceModelConfigurationManagerFile("<the .config file>") instead of rewriting the endpoints in code; set the base addresses there to what the container listens on.
     verify:
       - Existing clients (or a dotnet-svcutil generated test client) call every operation successfully against the container.
     refs:
@@ -171,6 +209,14 @@ migrations:
     steps:
       - For WF4 workflows, load the existing XAML with CoreWF and port custom activities; WF3 workflows have no runtime on .NET and must be re-implemented.
       - Move persistence (SqlWorkflowInstanceStore) to the new engine's store and plan how in-flight instances finish on the old system.
+    variants:
+      # WF4 workflow services: the workflows are also WCF endpoints that other components call
+      - when:
+          any:
+            - file: "*.xamlx"
+            - code: '\bWorkflowServiceHost\b'
+        steps:
+          - These workflows are also WCF service endpoints (WorkflowServiceHost or .xamlx with Receive/SendReply activities) that other components call over SOAP. CoreWF has no workflow-service hosting, so put a CoreWCF (or HTTP) service in front that starts or resumes the workflow for each Receive operation, keeping the contract name, namespace and address so the callers do not change.
     verify:
       - Each workflow runs end to end with the same inputs and outcome as on the old host.
     refs:
@@ -858,7 +904,7 @@ migrations:
     with: the vendor's Linux SDK or network API if one exists; otherwise a small Windows-hosted service that wraps the dependency
     steps:
       - Ask the vendor for a Linux SDK, a REST/gRPC API or a cross-platform successor (OPC UA for OPC DA, AIF/OData for AX).
-      - If there is none, move the calls that need the dependency into a separate small service on a Windows host (VM or Windows container) and call it over HTTP/gRPC from the containerized component.
+      - If there is none, move the calls that need the dependency into a separate small service on a Windows VM and call it over HTTP/gRPC from the containerized component.
       - Keep everything else of this component in the Linux container.
     refs:
       - https://learn.microsoft.com/en-us/dotnet/standard/native-interop/cross-platform

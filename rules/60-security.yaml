@@ -27,12 +27,27 @@ hardening:
     # every emptyDir gets a size limit so a runaway writer can't fill the node
     empty_dir_size_limit: 256Mi
 
+  # Memory sized from the verification run, when it measured the component (verify.run samples
+  # `docker stats` while the probes are answered): requests = peak x request_factor, limits = peak x
+  # limit_factor, both rounded up to `round_to`, never below `floor` nor above namespace_policy.limit_range.max.
+  # Without a measurement the baseline above stays. Exceptions (native-rendering-memory, ...) only raise.
+  measured_memory:
+    request_factor: 1.25
+    limit_factor: 2
+    round_to: 64Mi
+    floor: 128Mi
+    # a peak from a few seconds of probes understates real load: the limit never falls below the baseline's, so a
+    # measurement shrinks the request (what the scheduler reserves) and only ever raises the limit
+    limit_floor: 512Mi
+
   # UID/GID the final image runs as (runAsUser/runAsGroup/fsGroup).
   run_as:
     dotnet: 1654          # 'app' user of the Microsoft .NET 8+ images
     spa: 101              # nginx-unprivileged
     java: 65532           # 'nonroot' of the distroless images (also set in the Temurin and Tomcat images)
     node: 65532           # 'nonroot' of the distroless Node.js images
+    python: 65532         # set by the generated Dockerfile (USER 65532) on the slim Python images
+    go: 65532             # 'nonroot' of the distroless static/base images
     default: 10001
 
   # Exceptions: added only when `when` (rule conditions, see rules.py) and
@@ -42,7 +57,7 @@ hardening:
   #   sysctls: [{name, value}]     pod sysctls (only the Kubernetes "safe" set passes the lint)
   #   capabilities_add: [..]       container capabilities (only NET_BIND_SERVICE passes the lint)
   #   automount_token: true        mount the service account token
-  #   resources: {...}             merged over the baseline resources
+  #   resources: {...}             merged over the baseline resources (only raises a value set before)
   #   env: {K: V}                  extra environment variables
   #   secret_mounts: [{name, path, items?}]  Secret `<component>-<name>` mounted read-only at path
   #   waives: [check ids]          lint checks this exception is allowed to relax
@@ -109,6 +124,33 @@ hardening:
   # no RBAC bindings (NSA/CISA "Authentication and authorization", CIS 5.1.5/5.1.6).
   service_account: true
 
+  # Workload lifecycle (generate.py k8s_manifests). A worker (queue consumer,
+  # folder poller, scheduler, Windows service) was one process on one server:
+  # its Deployment is replaced (Recreate), never rolled, so two copies never
+  # poll the same folder or run the same recurring job during a rollout. A
+  # plan rule that sets `scale_out: true` marks a component safe to run twice
+  # (it keeps RollingUpdate). terminationGracePeriodSeconds is how long a pod
+  # may finish its work after SIGTERM (.NET's host default is 30 s).
+  workloads:
+    roles:
+      web: {strategy: RollingUpdate, terminationGracePeriodSeconds: 30}
+      worker: {strategy: Recreate, terminationGracePeriodSeconds: 120}
+      console: {terminationGracePeriodSeconds: 120}       # runs as CronJobs
+      default: {strategy: RollingUpdate, terminationGracePeriodSeconds: 30}
+    # raised IIS request timeouts: the grace period covers the longest request
+    # (timeout + margin, at most max_seconds)
+    long_requests:
+      finding: host-long-request-timeout
+      margin_seconds: 15
+      max_seconds: 600
+    cronjob:
+      backoffLimit: 2                   # retries of a failed run (Kubernetes default 6)
+      activeDeadlineSeconds: 3600       # a hung run is stopped (with Forbid it would skip every later run)
+      startingDeadlineSeconds: 300      # a run missed by more than this is skipped, not started late
+      successfulJobsHistoryLimit: 3
+      failedJobsHistoryLimit: 3
+      ttlSecondsAfterFinished: 86400    # finished Jobs and their pods are deleted after a day
+
 # Network separation (NSA/CISA "Network policies", CIS 5.3.2): the namespace
 # denies all ingress and egress by default; each component may only
 #   - receive traffic on its own service port,
@@ -130,8 +172,15 @@ network:
   no_egress_roles: [spa]
   # configured URLs pointing here are not dependencies
   local_hosts: '^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*|\+)$'
-  # who may call a component's service port: any namespace (ingress controllers live elsewhere)
-  ingress_from: [{namespaceSelector: {}}]
+  # well-known public services: the build-and-run verification leaves these to DNS; every other configured host
+  # name resolves to 127.0.0.1 there, so a missing service fails fast as "connection refused" (verify.hosts_to_map)
+  public_hosts: '(^|\.)(microsoftonline\.com|microsoft\.com|live\.com|googleapis\.com|google\.com|github\.com|githubusercontent\.com|nuget\.org|npmjs\.org|pypi\.org|maven\.org)$'
+  # Who may call a component's service port: the ingress controller's namespace (namespaceSelector on
+  # kubernetes.io/metadata.name); sibling components and confirmed links between applications have their own rules.
+  # A site setting: CONTAINERIZER_INGRESS_NAMESPACE or `containerizer generate --ingress-from <namespace>` overrides
+  # it (the appliance's sandbox: kube-system, where k3s runs Traefik). `any` allows every namespace (a controller in
+  # the host network: replace the rule with an ipBlock of the node CIDR, docs/egress.md#inbound).
+  ingress_namespace: ingress-nginx
   # The egress review (egress.py, docs/egress.md): the deterministic pre-filter that runs before the LLM is
   # asked. Nothing it matches is ever proposed: it is reported (platform, unnamed, in-cluster) or suspicious.
   egress_review:
@@ -296,15 +345,20 @@ lint:
     secret-literals:     {severity: error,   title: No secret values in manifests or images}
     sa-token:            {severity: warning, title: Service account token not mounted}
     empty-dir-limit:     {severity: warning, title: emptyDir volumes have a sizeLimit}
+    dataprotection-volatile: {severity: error, title: A Data Protection key ring folder is not an emptyDir}
     image-tag:           {severity: warning, title: Workload image has an explicit, non-latest tag or digest}
     image-digest:        {severity: info,    title: Workload image is pinned to a digest}
+    image-digest-setter: {severity: info,    title: 'Workload image is pinned to a digest by Flux image automation (a :digest setter in kustomization.yaml)'}
     network-policy:      {severity: warning, title: Every workload is selected by a NetworkPolicy}
     egress-policy:       {severity: warning, title: Egress is restricted by a NetworkPolicy}
+    ingress-namespace:   {severity: warning, title: Service ports are open to the ingress controller's namespace, not every namespace}
     service-account:     {severity: warning, title: Workload uses its own ServiceAccount, not default}
     apparmor:            {severity: info,    title: AppArmor profile set}
     plain-secret:        {severity: error,   title: No Secret objects in the manifests; ExternalSecrets only}
     secret-source:       {severity: error,   title: Every Secret a workload uses is produced by an ExternalSecret}
     external-secret-store: {severity: error, title: ExternalSecrets read a platform-defined (Cluster)SecretStore}
+    cronjob-limits:      {severity: warning, title: 'CronJobs have retry, deadline and history limits'}
+    worker-strategy:     {severity: warning, title: 'Workers (no ports) are replaced, not rolled (strategy Recreate)'}
     df-user:             {severity: error,   title: Final image stage runs as a non-root user}
     df-base-tag:         {severity: error,   title: Base images have an explicit, non-latest tag}
     df-base-digest:      {severity: info,    title: Base images are pinned to a digest}
@@ -325,6 +379,11 @@ lint:
   allowed_volume_types: [configMap, csi, downwardAPI, emptyDir, ephemeral, persistentVolumeClaim, projected, secret]
   # names that must never carry a literal value (env, ENV, Secret stringData)
   secret_names: '(?i)(password|passwd|pwd|secret|token|api[_-]?key|private[_-]?key|connectionstrings?__)'
+  # configuration keys (DataProtection:KeyFolder) and environment variables (DataProtection__KeyFolder) that name the
+  # folder of a Data Protection key ring: on an emptyDir the keys change at every restart and every user is signed
+  # out (dataprotection-volatile; facts.dataprotection_folder also finds the folder setting by this name). A bare
+  # KeysFolder is not enough: SSH or signing key folders are named so too
+  keyring_names: '(?i)(^|[:_])(DataProtection|KeyRing)\w*?[:_]+(Keys?|KeyRing)?(Folder|Path|Dir|Directory|Location)$|(^|[:_])KeyRing(Folder|Path|Dir|Directory)?$'
   # final-stage base images that already run as non-root without a USER line
   nonroot_bases: ['nginx-unprivileged', 'distroless/.*:nonroot', 'chiseled']
 
@@ -416,6 +475,7 @@ images:
     - {match: '(^|/)python:3\.10\b', eol: 2026-10-31, next: '3.12'}
     - {match: '(^|/)python:3\.11\b', eol: 2027-10-31}
     - {match: '(^|/)python:3\.12\b', eol: 2028-10-31}
+    - {match: '(^|/)python:3\.13\b', eol: 2029-10-31}
     - {match: '(^|/)golang:1\.2[0-3]\b', eol: 2025-08-12, next: '1.26'}
     - {match: '(^|/)golang:1\.24\b', eol: 2026-02-11, next: '1.26'}
     - {match: '(^|/)golang:1\.25\b', eol: 2026-08-12, next: '1.26'}
@@ -443,7 +503,7 @@ controls:
      action: 'Sign each pushed image (cosign sign --yes <registry>/<image>@<digest>) and enforce it with cluster/verify-images.yaml (Kyverno) or your admission controller.'}
   - {id: digest-pinning, nsa: 'Pod security > Building secure container images', scope: pipeline, checks: [image-digest],
      title: Images are deployed by digest,
-     action: 'In the deploy pipeline: kustomize edit set image <image>=<registry>/<image>@sha256:<digest>; base images: generate --pin-digests.'}
+     action: 'In the deploy pipeline: kustomize edit set image <registry>/<image>:<tag>@sha256:<digest> (the build pipeline''s digests.txt); base images: generate --pin-digests.'}
   - {id: pod-security, nsa: 'Pod security > Pod security enforcement', cis: '5.2.1-5.2.13', scope: namespace,
      checks: [host-namespaces, privileged, capabilities, volume-types, host-ports, privilege-escalation, sysctls, seccomp],
      title: 'Pod Security Admission "restricted" enforced on the namespace; workloads comply'}
@@ -456,7 +516,7 @@ controls:
   - {id: namespaces, nsa: 'Network separation and hardening > Namespaces', cis: '5.7.1, 5.7.4', scope: namespace,
      title: 'One namespace per application; nothing in default'}
   - {id: network-policies, nsa: 'Network separation and hardening > Network policies', cis: '5.3.2', scope: namespace,
-     checks: [network-policy, egress-policy],
+     checks: [network-policy, egress-policy, ingress-namespace],
      title: 'Default-deny ingress and egress; only DNS, sibling components and inferred dependencies allowed',
      action: 'Needs a CNI that enforces NetworkPolicy (CIS 5.3.1): Calico, Cilium, Antrea, ... Review the inferred egress ports below.'}
   - {id: resource-policies, nsa: 'Network separation and hardening > Resource policies', scope: namespace, checks: [resources],
@@ -490,6 +550,8 @@ controls:
   - {id: audit-logging, nsa: 'Audit logging and threat detection > Kubernetes native audit logging configuration', cis: '3.2.1, 3.2.2', scope: cluster,
      title: API server audit logging,
      action: 'Cluster operator: enable audit logging with cluster/audit-policy.yaml (metadata for everything, request bodies for RBAC changes, never Secret payloads) and ship it to a SIEM.'}
+  - {id: workload-lifecycle, scope: workload, checks: [cronjob-limits, worker-strategy],
+     title: 'Workers replaced, not rolled (Recreate); CronJobs bounded (retries, deadline, history); graceful stop period per role'}
   - {id: container-logging, nsa: 'Audit logging and threat detection > Worker node and container logging', scope: workload,
      title: 'Applications log to stdout for central collection (file-only log sinks are re-pointed to the console)'}
   - {id: threat-detection, nsa: 'Audit logging and threat detection > Threat detection, Alerting', scope: cluster,

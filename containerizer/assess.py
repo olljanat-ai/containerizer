@@ -23,7 +23,7 @@ VERDICT_TEXT = {
     "blocker": "Not feasible in a Linux container",
 }
 APP_RATINGS = {
-    "A": "Container-ready - modern, stateless stack; containers with configuration only, no code changes",
+    "A": "Container-ready - modern stack; containers with configuration only, no code changes",
     "B": "Minor refactoring - small code changes",
     "C": "Partial - some components must stay on Windows, the rest need at most minor changes",
     "D": "Major refactoring - framework port needed",
@@ -98,6 +98,15 @@ class Component:
         return not self.state_findings
 
     @property
+    def state_unplaced(self) -> bool:
+        """Keeps data on its own disk (`state: local`) in a folder the generator does not know, so it cannot get a
+        persistent volume and does not run as it is (generate.local_state_unplaced)."""
+        if self.stateless:
+            return False
+        from .generate import local_state_unplaced
+        return local_state_unplaced(self)
+
+    @property
     def weight(self) -> float:
         """Sum of the rule weights (`effort` in the rules), which lowers the readiness score. Internal only:
         it is not a work estimate and is not shown or stored."""
@@ -139,6 +148,7 @@ class Component:
                 "score": self.score, "windows_container_ok": self.windows_container_ok,
                 "confidence": round(self.confidence, 2), "uncertain": self.uncertain,
                 "rule_verdict": self.rule_verdict, "ai": self.ai, "stateless": self.stateless,
+                "state_unplaced": self.state_unplaced,
                 "state": [{"id": f.rule.id, "title": f.rule.title, "state": f.rule.state}
                           for f in {f.rule.id: f for f in self.state_findings}.values()],
                 "facts": self.facts, "findings": [f.to_dict() for f in sorted(
@@ -174,9 +184,10 @@ class AppAssessment:
             return "C"        # the movable part runs in Linux now with at most minor changes
         worst = max((c.verdict for c in server), key=lambda s: SEV_RANK[s])
         rating = {"info": "A", "config": "A", "refactor": "B"}[worst]
-        # A means stateless: data only in external services (SQL, Redis, blob storage, queues),
-        # none on a component's own disk or in its memory, so replicas can come and go
-        if rating == "A" and any(not c.stateless for c in server):
+        # A means it runs in containers as it is. A component that keeps its own data runs with a persistent volume
+        # and one replica (generate.state_plan), still A (stateful(): the UI marks it); only local data in a folder
+        # the generator cannot find, so no volume can hold it, keeps it at B
+        if rating == "A" and any(getattr(c, "state_unplaced", False) for c in server):
             return "B"
         return rating
 
@@ -215,7 +226,8 @@ class AppAssessment:
         if stateful:
             what = "; ".join(f"{c.name}: " + ", ".join(dict.fromkeys(f.rule.title for f in c.state_findings))
                              for c in stateful)
-            parts.append(f"{len(stateful)} keep their own data, so the app is not stateless ({what})")
+            parts.append(f"{len(stateful)} keep their own data and run with a persistent volume, one replica, so the app "
+                         f"is not stateless ({what})")
         clients = [c.name for c in self.components if c.tier == "client"]
         if clients:
             parts.append(f"desktop clients stay on PCs ({', '.join(clients)})")
@@ -253,7 +265,16 @@ class AppAssessment:
                                "findings": [f.to_dict() for f in c.findings]} for c in self.libraries],
                 "tests": [c.project.rel for c in self.tests],
                 "repo_findings": [f.to_dict() for f in self.repo_findings],
-                "network": self.network()}
+                "network": self.network(), "scheduled_tasks": self.scheduled_tasks()}
+
+    def scheduled_tasks(self) -> list[dict]:
+        """The repository's Windows Task Scheduler jobs, their cron schedule and the CronJob each became
+        (schedules.report)."""
+        from .schedules import report
+        try:
+            return report(self)
+        except Exception:  # noqa: BLE001 - the assessment never fails over it
+            return []
 
     def network(self) -> dict:
         """What the application needs from the network, as far as code and configuration tell
@@ -434,6 +455,9 @@ def assess(path: str | Path, rules: list[Rule] | None = None, repo: Repo | None 
         # if the same rule was found both dormant and active, keep the active one
         active = {f.rule.id for f in c.findings if not f.dormant}
         c.findings = [f for f in c.findings if not (f.dormant and f.rule.id in active)]
+        # a rule's `superseded_by`: the finding says less than another one the component has (a WCF
+        # client reference in a library of a component that hosts WCF services: wcf-client vs wcf-server)
+        c.findings = [f for f in c.findings if not (set(f.rule.meta.get("superseded_by") or ()) & active)]
 
     from .techniques import resolve_findings
     for c in comps.values():

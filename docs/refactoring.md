@@ -194,6 +194,12 @@ move of that data to SQL Server. It runs on request only:
 product owners, with the queue's estimate), or **Make it A: every B application** for administrators (below). A scan
 never orders one by itself.
 
+Keeping its own data does not make an application B: it rates A, marked stateful, and the organization scan
+deploys it as it is with its data on a persistent volume and one replica
+([Application data on persistent volumes](overview.md#application-data-on-persistent-volumes)). Make it A moves
+the data of a B application's stateful components to SQL Server only along with the code changes that make it B
+in the first place, or when the data is in a folder Containerizer could not find.
+
 The results page's [migration plan](overview.md#migration-plan) points here from its second wave: the
 components that rate A once their code changes are made. For an application with components that cannot run in
 a Linux container (no Refactoring box), the plan lists the same changes with the findings to make them by hand,

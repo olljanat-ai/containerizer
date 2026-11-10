@@ -1513,7 +1513,9 @@ class Runner:
             if self.key is None and os.environ.get(PRIVATE_KEY_ENV):
                 self.key = private_key_from_env()
             if self.key is not None:
-                for c in load(conn, self.key).llms():
+                creds = load(conn, self.key)
+                self.use_feeds(creds)
+                for c in creds.llms():
                     if c.error:
                         self.log(f"LLM {c.label} cannot be opened ({c.error}): not used")
                         continue
@@ -1524,6 +1526,22 @@ class Runner:
             self.log(f"the registered LLMs cannot be opened ({ex}); using the built-in or the environment's LLM")
         self._llms = (now, out)
         return out
+
+    def use_feeds(self, creds) -> None:
+        """The registered package feeds, for the builds of refactoring orders (feedproxy.py; looked up with the LLMs)."""
+        from . import feedproxy
+        from .orgsource import REDACT
+        try:
+            feeds = []
+            for c in creds.feeds():
+                if c.token:
+                    REDACT.add(c.token, c.username)
+                    feeds.append(feedproxy.Feed(c.provider, c.scope, c.token, c.username, c))
+            import tempfile
+            base = Path(os.environ.get("CONTAINERIZER_REFACTOR_WORK") or tempfile.gettempdir())
+            feedproxy.use(feeds, base, log=self.log)
+        except Exception as ex:  # noqa: BLE001 - the builds go on without feed credentials
+            self.log(f"package feeds: {type(ex).__name__}: {str(ex)[:300]}")
 
     def lanes(self, conn, settings: dict) -> list[dict]:
         from . import local_llm

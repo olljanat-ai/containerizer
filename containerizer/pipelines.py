@@ -292,7 +292,9 @@ def _sh_push() -> str:
             'if [ -z "$DIGEST" ]; then echo "no digest in the output of docker push" >&2; exit 1; fi\n'
             'DIGEST_REF="$IMAGE@$DIGEST"\n'
             'echo "pushed $IMAGE:$VERSION and sha-$SHORT: $DIGEST_REF"\n'
-            'echo "$DIGEST_REF" > "image-$FOLDER.txt"\n')
+            'echo "$DIGEST_REF" > "image-$FOLDER.txt"\n'
+            # for a deploy pipeline: kustomize edit set image $(cat digests.txt) pins <image>:<tag>@sha256:...
+            'echo "$IMAGE:$VERSION@$DIGEST" > digests.txt\n')
 
 
 def _sh_sign(sign: str, fetch: str, key_ref: str, tlog: bool) -> str:
@@ -472,9 +474,12 @@ def github(spec_: dict, sign: str = "none") -> str:
                      "REGISTRY_USERNAME": "${{ secrets.CONTAINERIZER_REGISTRY_USERNAME }}",
                      "REGISTRY_PASSWORD": "${{ secrets.CONTAINERIZER_REGISTRY_PASSWORD }}",
                      "GITHUB_TOKEN": "${{ github.token }}"}, "run": login},
-                 {"name": "Push" + (" and sign" if sign != "none" else ""), "env": {**push_env, **sign_env},
+                 {"name": "Push" + (" and sign" if sign != "none" else ""), "id": "push", "env": {**push_env, **sign_env},
                   "run": "set -eu\n" + _sh_push() + 'echo "$DIGEST_REF" >> "$GITHUB_STEP_SUMMARY"\n'
+                         'echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"\n'
                          + _sh_sign(sign, "curl", "env://COSIGN_PRIVATE_KEY", spec_["tlog"])},
+                 {"name": "Pushed digest", "uses": f"actions/upload-artifact@{ACTIONS['actions/upload-artifact'][0]}",
+                  "with": {"name": "digests-${{ matrix.folder }}", "path": "digests.txt"}},
                  {"name": "Log out", "if": "always()", "run": 'docker logout "${REGISTRY%%/*}" || true'}]
     doc = {
         "name": f"containerizer images ({spec_['app']})",
@@ -544,8 +549,11 @@ def gitlab(spec_: dict, sign: str = "none", include: bool = False) -> str:
     }
     publish = {"extends": ".containerizer-image", "interruptible": False,
                "script": ["set -eu\n" + _sh_build() + _sh_sbom_scan(trivy, syft), "set -eu\n" + version + login + _sh_push()
+                          + 'printf \'DIGEST_%s=%s\\n\' "$(printf %s "$FOLDER" | tr a-z- A-Z_)" "$DIGEST" > digest.env\n'
                           + _sh_sign(sign, "wget", '"$COSIGN_PRIVATE_KEY"', spec_["tlog"])],
-               "artifacts": {"when": "always", "expire_in": "90 days", "paths": ["sbom-$FOLDER.cdx.json", "image-$FOLDER.txt"]}}
+               "artifacts": {"when": "always", "expire_in": "90 days",
+                             "paths": ["sbom-$FOLDER.cdx.json", "image-$FOLDER.txt", "digests.txt"],
+                             "reports": {"dotenv": "digest.env"}}}
     if sign == "keyless":
         publish["id_tokens"] = {"SIGSTORE_ID_TOKEN": {"aud": "sigstore"}}
     doc: dict = {}
@@ -590,6 +598,7 @@ def azure(spec_: dict, sign: str = "none") -> str:
             'case "$REGISTRY" in *REPLACE-ME*) echo "##vso[task.logissue type=error]set the CONTAINERIZER_REGISTRY '
             'variable to your registry (and the containerizer-registry service connection)"; exit 1 ;; esac\n'
             + _sh_push()
+            + 'echo "##vso[task.setvariable variable=DIGEST;isOutput=true]$DIGEST"\n'
             + _sh_sign(key, "curl", "\"$COSIGN_KEY_FILE\"", spec_["tlog"]))
     steps = [{"checkout": "self", "fetchDepth": "1", "persistCredentials": "false"},
              {"bash": "set -eu\n" + _sh_build() + _sh_sbom_scan(trivy, syft),
@@ -606,7 +615,9 @@ def azure(spec_: dict, sign: str = "none") -> str:
     if key == "key":
         push_env.update({"COSIGN_KEY_FILE": "$(cosignKey.secureFilePath)", "COSIGN_PASSWORD": "$(COSIGN_PASSWORD)"})
     steps += [{"bash": "set -eu\n" + push, "displayName": "Push" + (" and sign" if key != "none" else ""),
-               "condition": publish_if, "env": push_env},
+               "name": "push", "condition": publish_if, "env": push_env},
+              {"publish": "digests.txt", "artifact": "digests-$(FOLDER)", "displayName": "Pushed digest",
+               "condition": publish_if},
               {"task": "Docker@2", "displayName": "Log out", "condition": publish_if.replace("succeeded()", "always()", 1),
                "inputs": {"command": "logout", "containerRegistry": "${{ variables.registryConnection }}"}}]
     doc = {
@@ -773,7 +784,15 @@ def readme(spec_: dict, provider: str, paths: list[str], sign: str = "none") -> 
           "semver tag `>=1.0.0` of each image and writes it to the "
           "`kustomization.yaml` of the output repository. The tags this pipeline pushes are that scheme (the "
           "same as the containerizer scans), so a push to the default branch reaches the sandbox without "
-          "another step, as long as both use the same registry.", "",
+          "another step, as long as both use the same registry. It writes the tag and its digest "
+          "(`<image>:<tag>@sha256:...`), so what runs is the image that was pushed, whatever happens to the tag later.", "",
+          "## Pushed digests", "",
+          "Each publish job keeps `digests.txt` (`<image>:<version>@sha256:<digest>`) as an artifact (`digests-<component>`)"
+          + {"github": " and sets the step output `digest` (step `push`)",
+             "gitlab": " and the dotenv variable `DIGEST_<COMPONENT>` for later jobs",
+             "azure-devops": " and the output variable `push.DIGEST`"}[provider]
+          + ". A deploy pipeline without the Flux image automation pins by digest with it:", "",
+          "```sh", "kustomize edit set image $(cat digests.txt)", "```", "",
           "## Pins", "",
           "Scanner images are pinned by version and digest, GitHub actions by commit SHA (the tag in the "
           "comment), cosign by its release checksum. Update them by generating the pipeline again with a newer "

@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath
 import yaml
 
 from .assess import AppAssessment, Component
-from .harden import harden_manifests, namespace_manifest, write_app_security
+from .harden import cronjob_limits, harden_manifests, namespace_manifest, write_app_security
 from .rules import RULES_DIR, Context, Rule, load_rules, run_rule
 
 CONTAINER_PORT = 8080
@@ -133,6 +133,9 @@ def buildable(c: Component) -> bool:
     if c.project.kind_hint == "node":
         from .gen_jvm_node import node_buildable
         return c.role == "spa" or node_buildable(c)
+    if c.project.kind_hint in ("python", "go"):
+        from .gen_python_go import go_buildable, python_buildable
+        return (python_buildable if c.project.kind_hint == "python" else go_buildable)(c)
     return False
 
 
@@ -178,6 +181,7 @@ def default_plan(c: Component) -> dict:
     if p.kind_hint == "dotnet":
         _repoint_config(plan, c.facts)
         _repoint_nlog(plan, c.facts)
+        dataprotection_plan(plan, c.facts)
         plan["env"]["DOTNET_ENVIRONMENT"] = "Production"
         if c.role == "web":
             plan["env"]["ASPNETCORE_ENVIRONMENT"] = "Production"
@@ -244,6 +248,54 @@ def _repoint_config(plan: dict, facts: dict) -> None:
                 add_reason(plan, "config-windows-paths", "Windows paths in configuration (drive letters, UNC shares) are "
                            "overridden with environment variables to folders under /data, which the manifests mount as "
                            "volumes; the application code is not changed.", [CONFIG_DOCS])
+
+
+DATAPROTECTION_DOCS = "https://learn.microsoft.com/en-us/aspnet/core/security/data-protection/configuration/overview"
+
+
+def dataprotection_plan(plan: dict, facts: dict) -> None:
+    """The Data Protection key ring folder the code persists the keys to (facts.dataprotection_folder). A folder
+    from configuration gets the cluster-generated key Secret mounted read-only there (plan["dataprotection_dirs"],
+    k8s_manifests), like the default folder of plan-dataprotection-keys: one key on every replica and restart,
+    no code change. An unset setting is pointed at DATAPROTECTION_DIR. A folder that is a literal in code is a
+    persistent volume (plan["dataprotection_pvc"], ReadWriteOnce: one replica)."""
+    dirs = []
+    for key, val in sorted((facts.get("dataprotection_key_settings") or {}).items()):
+        var = key.replace(":", "__")
+        folder = plan["env"].get(var) or val        # a Windows path is re-pointed under /data (_repoint_config)
+        if not folder or re.match(r"^([A-Za-z]:|\\\\)", folder) or hides_app(folder):
+            folder = DATAPROTECTION_DIR
+        if folder != val:
+            plan["env"][var] = folder
+        folder = _writable_abs(folder)
+        if folder not in [_writable_abs(w) for w in plan["add_writable"]]:
+            plan["add_writable"].append(folder)
+        if folder not in dirs:
+            dirs.append(folder)
+    if dirs:
+        plan["dataprotection_dirs"] = dirs
+        names = ", ".join(sorted(facts["dataprotection_key_settings"]))
+        add_reason(plan, "dataprotection-key-folder", f"The code keeps the Data Protection key ring in the folder "
+                   f"configured by {names}: the manifests mount one key at {', '.join(dirs)}, read-only, from a "
+                   "Secret that External Secrets Operator generates once in the cluster, so every replica and restart "
+                   "shares it (cookies and antiforgery tokens stay valid); the application code is not changed.",
+                   [DATAPROTECTION_DOCS])
+        return
+    lit = facts.get("dataprotection_key_literal")
+    if lit:
+        # relative to the working folder (/app) on Linux, where a drive path (D:\keys) is a relative name too
+        folder = _writable_abs(lit) if lit.startswith("/") else APP_DIR + "/" + lit.strip("/")
+        if hides_app(folder):
+            return
+        plan["dataprotection_pvc"] = folder
+        plan["single_replica"] = True
+        if re.fullmatch(r"[\w\-./]+", folder) and folder not in [_writable_abs(w) for w in plan["add_writable"]]:
+            plan["add_writable"].append(folder)
+        add_reason(plan, "dataprotection-key-volume", f"The code keeps the Data Protection key ring in a folder "
+                   f"written in the code ({lit}), which configuration cannot re-point: the folder is a persistent "
+                   "volume (ReadWriteOnce) so the keys survive restarts, with one replica, replaced rather than rolled "
+                   "on update. Reading the folder from configuration would let the manifests mount one shared key "
+                   "there instead.", [DATAPROTECTION_DOCS, PV_DOCS])
 
 
 def linux_path(plan: dict, val: str) -> str | None:
@@ -338,10 +390,86 @@ def make_plan(a: AppAssessment, c: Component, rules: list[Rule] | None = None, e
                 node_build_plan(a, c, plan)
         else:
             (java_plan if c.project.kind_hint == "java" else node_plan)(a, c, plan)
+    elif c.project.kind_hint in ("python", "go"):
+        from .gen_python_go import go_plan, python_plan
+        (python_plan if c.project.kind_hint == "python" else go_plan)(a, c, plan)
     plan = apply_plan_rules(plan, a.repo, c, rules)
+    state_plan(c, plan)
     if extra:
         merge_plan(plan, extra)
+    workload_lifecycle(c, plan)         # its reasons (k8s_manifests applies it)
     return plan
+
+
+# --------------------------------------------------------------------------- local state
+
+STATE_DIR = "/data"                 # where an embedded database file from the app folder goes (a volume)
+NOT_STATE = re.compile(r"(^|/)(te?mp|logs?|cache|\.cache)(/|$)", re.I)
+PV_DOCS = "https://kubernetes.io/docs/concepts/storage/persistent-volumes/"
+
+
+def stateful_settings() -> dict:
+    """rules/36-state.yaml `stateful:`: labels, storage_class, size, node_selector, tolerations."""
+    try:
+        cfg = (yaml.safe_load((RULES_DIR / "36-state.yaml").read_text()) or {}).get("stateful") or {}
+    except OSError:
+        cfg = {}
+    return {"labels": {str(k): str(v) for k, v in (cfg.get("labels") or {}).items()},
+            "storage_class": str(cfg.get("storage_class") or ""), "size": str(cfg.get("size") or "1Gi"),
+            "node_selector": {str(k): str(v) for k, v in (cfg.get("node_selector") or {}).items()},
+            "tolerations": list(cfg.get("tolerations") or [])}
+
+
+def state_dirs(c: Component) -> list[str]:
+    """The folders a component that keeps its own data (findings of rules with `state: local`) keeps it in,
+    absolute: the folders its code and configuration write to (facts writable_dirs, without temp, logs and
+    caches), App_Data when the code names data folders under it, and STATE_DIR for an embedded database file
+    that sits in the app folder. Empty for a stateless component, or when the folder is not known."""
+    if getattr(c, "stateless", True):
+        return []
+    facts = c.facts or {}
+    out = {_writable_abs(w) for w in facts.get("writable_dirs") or [] if not NOT_STATE.search(_writable_abs(w))}
+    ids = {f.rule.id for f in c.state_findings}
+    if "state-app-data-folders" in ids:
+        out.add(_writable_abs("App_Data"))
+    if facts.get("embedded_db_files"):
+        out.add(STATE_DIR)
+    return sorted(w for w in out if not hides_app(w))
+
+
+def local_state_unplaced(c: Component) -> bool:
+    """A component that keeps data on its own disk (`state: local`) in a folder the generator does not know, so
+    no volume can be mounted for it (state in memory needs none: one replica is enough)."""
+    return any(f.rule.state == "local" for f in c.state_findings) and not state_dirs(c)
+
+
+def state_plan(c: Component, plan: dict) -> None:
+    """A component that keeps its own data runs as it is, without code changes: one replica, replaced rather than
+    rolled (Recreate: two pods never write the same files), its data folders on PersistentVolumeClaims
+    (plan["state_dirs"]), an embedded database file of the app folder re-pointed to STATE_DIR by an
+    environment variable that overrides its connection string (plan["state_env"]: those keys do not come from
+    the secret store). The root file system stays read-only; fsGroup lets the non-root user write the volumes."""
+    if getattr(c, "stateless", True):
+        return
+    plan["single_replica"] = True
+    plan["stateful"] = True
+    dirs = state_dirs(c)
+    for key, val in sorted(((c.facts or {}).get("embedded_db_files") or {}).items()):
+        name = re.sub(r"[\w\s]*=\s*([\w\-.]+).*", r"\1", val.strip(), count=1)
+        var = "ConnectionStrings__" + key
+        plan["env"][var] = re.sub(r"=\s*[\w\-.]+", f"={STATE_DIR}/{name}", val.strip(), count=1)
+        plan.setdefault("state_env", []).append(var)
+    for d in dirs:
+        if d not in [_writable_abs(w) for w in plan["add_writable"]]:
+            plan["add_writable"].append(d)
+    plan["state_dirs"] = dirs
+    titles = ", ".join(dict.fromkeys(f.rule.title for f in c.state_findings))
+    where = (f" on a persistent volume at {', '.join(dirs)}" if dirs else "")
+    add_reason(plan, "state-volume", f"The component keeps its own data ({titles}). It runs as it is, without code "
+               f"changes: one replica, replaced rather than rolled on update{where}"
+               + ("; the embedded database file is moved there with an environment variable that overrides its "
+                  "connection string" if plan.get("state_env") else "")
+               + ". Scaling out needs the data in a shared service first.", [PV_DOCS])
 
 
 # --------------------------------------------------------------------------- Dockerfiles
@@ -365,6 +493,12 @@ DOCKERIGNORE = """# generated by containerizer - build context is the applicatio
 **/.turbo/
 **/*.ps1
 !**/ClientApp/**/*.ps1
+**/__pycache__/
+**/*.py[co]
+**/.venv/
+**/.tox/
+**/.pytest_cache/
+**/.mypy_cache/
 """
 
 
@@ -589,41 +723,100 @@ def dockerfile_for(plan: dict, c: Component) -> str:
     if c.project.kind_hint in ("java", "node"):
         from .gen_jvm_node import dockerfile_java, dockerfile_node
         return (dockerfile_java if c.project.kind_hint == "java" else dockerfile_node)(plan)
+    if c.project.kind_hint in ("python", "go"):
+        from .gen_python_go import dockerfile_go, dockerfile_python
+        return (dockerfile_python if c.project.kind_hint == "python" else dockerfile_go)(plan)
     return dockerfile_dotnet(plan)
 
 
-def dockerfile_windows(c: Component) -> str:
-    w = images()["windows"]
-    p = c.project
-    web = c.role == "web"
-    proj = p.rel.replace("/", "\\")
-    lines = ["# escape=`",
-             f"# Generated by containerizer: Windows Server Core stop-gap for {c.name} (.NET Framework)",
-             "# Runs on Windows nodes only. Prefer porting to modern .NET for Linux.",
-             f"FROM {w['framework_sdk']} AS build",
-             "WORKDIR C:\\src", "COPY . ."]
-    sln = (p.properties or {}).get("WebSiteProject")
-    if sln:
-        # ASP.NET Web Site (no .csproj): building the solution fills the site's Bin with its project
-        # references, then aspnet_compiler precompiles the folder (as "Publish Web Site" does)
-        site = str(PurePosixPath(p.rel).parent).replace("/", "\\")
-        sln = sln.replace("/", "\\")
-        lines += [f'RUN nuget restore "{sln}" ; msbuild "{sln}" /p:Configuration=Release /m',
-                  f'RUN C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\aspnet_compiler.exe -v / '
-                  f'-p "C:\\src\\{site}" -u -fixednames C:\\out']
-    else:
-        lines.append(f'RUN nuget restore "{proj}" ; msbuild "{proj}" /p:Configuration=Release /p:DeployOnBuild={str(web).lower()} '
-                     f'/p:WebPublishMethod=FileSystem /p:PublishUrl=C:\\out /p:OutDir=C:\\out\\ /m')
-    lines += ["", f"FROM {w['framework_aspnet' if web else 'framework_runtime']}"]
-    if web:
-        lines += ["WORKDIR C:\\inetpub\\wwwroot", "COPY --from=build C:\\out .", "EXPOSE 80"]
-    else:
-        lines += ["WORKDIR C:\\app", "COPY --from=build C:\\out .",
-                  f'ENTRYPOINT ["C:\\\\app\\\\{p.assembly_name}.exe"]']
-    return "\n".join(lines) + "\n"
-
-
 # --------------------------------------------------------------------------- Kubernetes
+
+def _timeout_seconds(snippet: str) -> int | None:
+    """The longest request time from IIS configuration: executionTimeout (seconds) or an ANCM requestTimeout
+    ([d.]hh:mm:ss)."""
+    best = None
+    for m in re.finditer(r'executionTimeout="(\d+)"', snippet):
+        best = max(best or 0, int(m.group(1)))
+    for m in re.finditer(r'requestTimeout="(?:(\d+)\.)?(\d+):(\d\d):(\d\d)"', snippet):
+        d, h, mi, se = (int(x or 0) for x in m.groups())
+        best = max(best or 0, ((d * 24 + h) * 60 + mi) * 60 + se)
+    return best
+
+
+def workload_lifecycle(c: Component, plan: dict) -> dict:
+    """Rollout strategy and stop grace period of the component (rules/60-security.yaml hardening.workloads),
+    with the reasons in plan.json: a worker is replaced, not rolled, unless a plan rule set `scale_out`;
+    raised IIS request timeouts raise the grace period."""
+    from .harden import role_lifecycle, workloads
+    cfg = role_lifecycle(c.role)
+    strategy = cfg.get("strategy") or "RollingUpdate"
+    grace = int(cfg.get("terminationGracePeriodSeconds") or 30)
+    scale_out = False
+    if plan.get("single_replica"):
+        strategy = "Recreate"           # state_plan: two pods never write the same files
+    elif strategy == "Recreate" and plan.get("scale_out"):
+        strategy, scale_out = "RollingUpdate", True
+    elif strategy == "Recreate":
+        add_reason(plan, "worker-recreate", f"A {c.role} was one process on one server: its Deployment is replaced "
+                   "(strategy Recreate), not rolled, so two copies never poll the same queue or folder or run the "
+                   "same recurring job during a rollout. A plan rule with scale_out: true marks it safe to run twice.",
+                   ["https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#recreate-deployment"])
+    lr = workloads().get("long_requests") or {}
+    found = [f for f in c.findings if f.rule.id == lr.get("finding")]
+    if found:
+        longest = max((_timeout_seconds(str(e)) or 0 for f in found for e in f.evidence), default=0)
+        want = min(int(lr.get("max_seconds") or 600),
+                   longest + int(lr.get("margin_seconds") or 0) if longest else int(lr.get("max_seconds") or 600))
+        if want > grace:
+            grace = want
+            add_reason(plan, "long-request-grace", f"IIS let requests run for {longest or 'several minutes'}"
+                       f"{' s' if longest else ''}: the pod gets {grace} s after SIGTERM to finish them "
+                       "(terminationGracePeriodSeconds).",
+                       ["https://kubernetes.io/docs/concepts/containers/container-lifecycle-hooks/"])
+    if grace != 30 and not any(r["rule"] == "long-request-grace" for r in plan.get("reasons") or []):
+        add_reason(plan, "grace-period", f"terminationGracePeriodSeconds {grace}: the {c.role} gets that long to "
+                   "finish its work after SIGTERM (Kubernetes and the .NET host default to 30 s).")
+    return {"strategy": strategy, "grace": grace, "scale_out": scale_out}
+
+
+MEMORY_DOCS = "https://kubernetes.io/docs/tasks/configure-pod-container/assign-memory-resource/"
+
+
+def measured_usage(a: AppAssessment, c: Component) -> dict | None:
+    """What the verification run of this component measured (verify.run: `usage`), None when it measured nothing."""
+    v = next((r for r in getattr(a, "verification", None) or [] if r.get("component") == c.name), None)
+    u = (v or {}).get("usage") or {}
+    return u if (u.get("memory_peak_mib") or 0) > 0 else None
+
+
+def measured_memory(plan: dict, usage: dict | None) -> None:
+    """Memory requests and limits from the peak the verification run measured (rules/60-security.yaml
+    hardening.measured_memory); nothing measured: the baseline stays. A size a plan rule set is only raised."""
+    from .harden import _fmt_qty, _qty, security
+    if not usage or not (usage.get("memory_peak_mib") or 0) > 0:
+        return
+    sec = security()
+    m = sec["hardening"].get("measured_memory") or {}
+    if not m:
+        return
+    peak = float(usage["memory_peak_mib"]) * 2**20
+    step = _qty(m.get("round_to", "64Mi")) or 2**20
+    floor = _qty(m.get("floor", "128Mi"))
+    ceiling = _qty((sec.get("namespace_policy", {}).get("limit_range", {}).get("max") or {}).get("memory", 0)) or None
+
+    def size(factor) -> float:
+        v = max(-(-peak * float(factor) // step) * step, floor)
+        return min(v, ceiling) if ceiling else v
+    req, lim = size(m.get("request_factor", 1.25)), size(m.get("limit_factor", 2))
+    lim = max(lim, _qty(m.get("limit_floor", 0)) or 0)
+    have = plan.get("memory") or {}
+    req = max(req, _qty(have.get("request", 0)))
+    lim = max(lim, _qty(have.get("limit", 0)), req)
+    plan["memory"] = {"request": _fmt_qty(req, "mem"), "limit": _fmt_qty(lim, "mem")}
+    plan["memory_measured"] = f"{-(-peak // 2**20):.0f}Mi"
+    add_reason(plan, "measured-memory", f"measured {plan['memory_measured']} peak in the verification run: "
+               f"requests {plan['memory']['request']}, limits {plan['memory']['limit']}.", [MEMORY_DOCS])
+
 
 def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> list[dict]:
     name = k8s_name(c.name)
@@ -633,6 +826,8 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
     secret_keys = []
     for cs in c.facts.get("connection_strings", []) or []:
         key = f"ConnectionStrings__{cs}"
+        if key in (plan.get("state_env") or ()):
+            continue            # an embedded database file on the volume (state_plan): set in plan["env"]
         secret_keys.append(key)
         env.append({"name": key, "valueFrom": {"secretKeyRef": {"name": secret_name, "key": key, "optional": True}}})
     for s in c.facts.get("secret_settings", []) or []:
@@ -640,20 +835,28 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
         secret_keys.append(key)
         env.append({"name": key, "valueFrom": {"secretKeyRef": {"name": secret_name, "key": key, "optional": True}}})
     volumes, mounts = [], []
+    dp_pvc = plan.get("dataprotection_pvc")     # a key ring folder written in code (dataprotection_plan)
     for i, w in enumerate(writable_dirs(plan)):
         vname = f"w{i}-" + k8s_name(w.split("/")[-1] or "root")[:40]
-        if w == DATAPROTECTION_DIR:
+        if w == DATAPROTECTION_DIR or w in (plan.get("dataprotection_dirs") or ()):
             # one Data Protection key for every replica and restart, generated in the cluster (harden.py
             # dataprotection_docs): cookies and antiforgery tokens of one pod decrypt in the others
             volumes.append({"name": vname, "secret": {"secretName": f"{name}{DATAPROTECTION_SUFFIX}"}})
             mounts.append({"name": vname, "mountPath": w, "readOnly": True})
             continue
-        persistent = any(x in w.lower() for x in ("app_data", "data", "keys", "archive", "store", "uploads", "documents"))
-        if persistent and plan.get("single_replica"):
+        persistent = w == dp_pvc or w in (plan.get("state_dirs") or ()) or (
+            plan.get("single_replica")
+            and any(x in w.lower() for x in ("app_data", "data", "keys", "archive", "store", "uploads", "documents")))
+        if persistent:
             volumes.append({"name": vname, "persistentVolumeClaim": {"claimName": f"{name}-{vname}"}})
         else:
             volumes.append({"name": vname, "emptyDir": {}})
         mounts.append({"name": vname, "mountPath": w})
+    if dp_pvc and dp_pvc not in writable_dirs(plan):
+        # a path the Dockerfile cannot create (a drive path is a relative name on Linux: /app/D:\Keys)
+        volumes.append({"name": "dataprotection-keys",
+                        "persistentVolumeClaim": {"claimName": f"{name}-dataprotection-keys"}})
+        mounts.append({"name": "dataprotection-keys", "mountPath": dp_pvc})
     for store in plan.get("x509_stores") or []:
         # .NET on Linux reads CurrentUser\<store> from *.pfx files (no password) in this folder (techniques.py)
         volumes.append({"name": f"x509-{store}", "secret": {"secretName": f"{name}-x509-{store}", "optional": True,
@@ -680,42 +883,77 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
         container["startupProbe"] = {**probe, "periodSeconds": 5, "failureThreshold": 30}
     uid = 101 if c.role == "spa" else plan.get("uid") or images()["dotnet"]["app_uid"]
     pod = {"securityContext": {"runAsNonRoot": True, "fsGroup": uid,
+                               **({"fsGroupChangePolicy": "OnRootMismatch"}
+                                  if any("persistentVolumeClaim" in v for v in volumes) else {}),
                                "seccompProfile": {"type": "RuntimeDefault"}},
            "automountServiceAccountToken": False, "containers": [container], "volumes": volumes}
     if plan.get("hostname"):
         pod["hostname"] = plan["hostname"]       # Environment.MachineName in the pod (techniques.py)
+    life = workload_lifecycle(c, plan)          # rollout strategy, stop grace period (rules/60-security.yaml)
+    pod["terminationGracePeriodSeconds"] = life["grace"]
     docs: list[dict] = []
     oneshot = c.facts.get("oneshot_arg") if c.role == "console" else None
     if c.role == "console" and not oneshot:
         oneshot = ""
     if c.role == "console":
         pod["restartPolicy"] = "OnFailure"
-        # one CronJob per sub-command (schedules are placeholders: take them from the old Task Scheduler)
-        for cmd in (c.facts.get("commands") or [oneshot]):
+        # one CronJob per sub-command, with the schedule and arguments of the repository's Task Scheduler job that
+        # starts it (schedules.py); a command no job starts keeps a placeholder schedule, annotated for review
+        from .schedules import cronjobs, find
+        tasks = find(a.repo)
+        for job in cronjobs(a.repo, c, name):
             jpod = copy.deepcopy(pod)
-            if cmd:
-                jpod["containers"][0]["args"] = [cmd]
-            jname = name if cmd == oneshot else k8s_name(f"{name}-{cmd}")
-            docs.append({"apiVersion": "batch/v1", "kind": "CronJob", "metadata": {"name": jname, "labels": labels},
-                         "spec": {"schedule": "0 2 * * *", "concurrencyPolicy": "Forbid",
+            if job["args"]:
+                jpod["containers"][0]["args"] = list(job["args"])
+            meta = {"name": job["name"], "labels": labels}
+            if job["placeholder"]:
+                meta["annotations"] = {"containerizer.io/schedule": "placeholder"}
+                note = "the schedule is a placeholder: no Task Scheduler job of the repository starts this command"
+            else:
+                t = tasks[job["task"]]
+                note = (f"schedule from the Task Scheduler job {t['name'] or '(unnamed)'} ({t['file']}:{t['line']}: "
+                        f"{t['trigger']}, the server's local time)" + (f"; {t['note']}" if t["note"] else ""))
+                meta["annotations"] = {"containerizer.io/schedule-source": f"{t['file']}:{t['line']}"}
+            docs.append({"apiVersion": "batch/v1", "kind": "CronJob", "metadata": meta, "_comment": note,
+                         "spec": {"schedule": job["schedule"], "concurrencyPolicy": "Forbid",
                                   "jobTemplate": {"spec": {"template": {"metadata": {"labels": labels}, "spec": jpod}}}}})
+            cronjob_limits(docs[-1]["spec"])     # retries, run deadline, history (rules/60-security.yaml)
     else:
         docs.append({"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": name, "labels": labels},
                      # one replica: the goal is a container that runs, not scaling out. A second replica needs shared
                      # state first (Data Protection keys, sessions, caches: the findings say which), which is a code
                      # change; with per-pod keys, two replicas failed every form post that landed on the other pod.
                      "spec": {"replicas": 1,
-                              "strategy": {"type": "Recreate"} if plan.get("single_replica") else {"type": "RollingUpdate"},
+                              "strategy": {"type": life["strategy"]},
                               "selector": {"matchLabels": labels},
                               "template": {"metadata": {"labels": labels}, "spec": pod}}})
+        if life["scale_out"]:
+            docs[-1]["metadata"]["annotations"] = {"containerizer.io/scale-out": "a plan rule marks it safe to run twice"}
     if plan.get("port"):
         docs.append({"apiVersion": "v1", "kind": "Service", "metadata": {"name": name, "labels": labels},
                      "spec": {"selector": labels, "ports": [{"name": "http", "port": 80, "targetPort": "http"}]}})
+    st = stateful_settings() if plan.get("stateful") else None
+    if st:
+        # the stateful label on the workload and its pods (never in the selector: it is immutable), a node pool
+        for d in docs:
+            if d["kind"] in ("Deployment", "CronJob"):
+                d["metadata"]["labels"] = {**labels, **st["labels"]}
+                tpl = d["spec"]["template"] if d["kind"] == "Deployment" else d["spec"]["jobTemplate"]["spec"]["template"]
+                tpl["metadata"]["labels"] = {**labels, **st["labels"]}
+                if st["node_selector"]:
+                    tpl["spec"]["nodeSelector"] = dict(st["node_selector"])
+                if st["tolerations"]:
+                    tpl["spec"]["tolerations"] = copy.deepcopy(st["tolerations"])
     for v in volumes:
         if "persistentVolumeClaim" in v:
             docs.append({"apiVersion": "v1", "kind": "PersistentVolumeClaim",
-                         "metadata": {"name": v["persistentVolumeClaim"]["claimName"], "labels": labels},
-                         "spec": {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": "1Gi"}}}})
+                         "metadata": {"name": v["persistentVolumeClaim"]["claimName"],
+                                      "labels": {**labels, **(st["labels"] if st else {})}},
+                         "spec": {"accessModes": ["ReadWriteOnce"],
+                                  **({"storageClassName": st["storage_class"]} if st and st["storage_class"] else {}),
+                                  "resources": {"requests": {"storage": st["size"] if st else "1Gi"}}},
+                         "_comment": "the application's own data: back it up; the cluster's default StorageClass "
+                                     "provides it (set storageClassName and the size for production)"})
     if secret_keys:
         docs.append({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": secret_name, "labels": labels},
                      "type": "Opaque", "stringData": {k: "" for k in secret_keys},
@@ -804,6 +1042,7 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
         cdir = out / k8s_name(c.name)
         if buildable(c):
             plan = (plans or {}).get(c.name) or make_plan(a, c, rules)
+            measured_memory(plan, measured_usage(a, c))
             cdir.mkdir(parents=True, exist_ok=True)
             if c.role == "spa":
                 plan["port"], plan["health"] = 8080, "/healthz"
@@ -844,11 +1083,6 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
             (cdir / "k8s.yaml").write_text(_yaml_docs(docs))
             (cdir / "plan.json").write_text(json.dumps(plan, indent=2))
             written += [cdir / "Dockerfile", cdir / "Dockerfile.dockerignore", cdir / "k8s.yaml", cdir / "plan.json"]
-        elif c.tier == "server" and c.project.is_netfx and c.windows_container_ok and c.verdict != "blocker":
-            cdir.mkdir(parents=True, exist_ok=True)
-            (cdir / "Dockerfile.windows").write_text(dockerfile_windows(c))
-            (cdir / "Dockerfile.windows.dockerignore").write_text(DOCKERIGNORE)
-            written += [cdir / "Dockerfile.windows"]
     if all_k8s and devdb is not None:
         from .devdb import HOST, manifests
         if HOST in comp_docs:
@@ -960,7 +1194,8 @@ def app_files(a, out: Path, all_k8s: list[dict], comp_docs: dict[str, list[dict]
     ns_doc = namespace_manifest(app_ns(a.name))
     (out / "namespace.yaml").write_text(_yaml_docs([ns_doc]))
     # namespace-level security (default deny, quota, limits), HARDENING.md and the cluster/ kit
-    sec, sec_docs = write_app_security(out, app_ns(a.name), comp_docs, registry, _yaml_docs)
+    sec, sec_docs = write_app_security(out, app_ns(a.name), comp_docs, registry, _yaml_docs,
+                                       {img.rsplit(":", 1)[0] for _, img in images})
     (out / "kustomization.yaml").write_text(yaml.safe_dump(
         {"apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization",
          "namespace": app_ns(a.name),

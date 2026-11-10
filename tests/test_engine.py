@@ -254,14 +254,22 @@ def test_docker_outage_is_not_a_build_failure(monkeypatch):
         verify._run(["docker", "build", "."], 10)
 
 
-def test_windows_stopgap_for_aspnet_web_site():
-    from types import SimpleNamespace
-    from containerizer.generate import dockerfile_windows
-    p = SimpleNamespace(rel="RockWeb/RockWeb.website", properties={"WebSiteProject": "Rock.sln"},
-                        assembly_name="RockWeb")
-    df = dockerfile_windows(SimpleNamespace(project=p, role="web", name="RockWeb"))
-    assert 'msbuild "Rock.sln"' in df and '-p "C:\\src\\RockWeb" -u -fixednames C:\\out' in df
-    assert ".website" not in df.split("FROM", 2)[1].split("RUN", 1)[1]
+def test_netfx_component_gets_no_windows_container_files(tmp_path):
+    """Linux-only (#271): a .NET Framework component that a Windows container could run gets no Dockerfile.windows
+    and no stop-gap column in MIGRATION.md; it stays on a Windows VM until it is ported."""
+    from containerizer.generate import generate_app
+
+    web_app(tmp_path / "src-app", tfm="net48")
+    a = assess(tmp_path / "src-app")
+    c = a.components[0]
+    assert c.project.is_netfx and c.windows_container_ok and c.verdict != "blocker"
+    out = tmp_path / "out"
+    generate_app(a, out)
+    assert not [p for p in out.rglob("Dockerfile.windows*")]
+    migration = [p.read_text() for p in out.rglob("MIGRATION.md")]
+    assert migration and not any("stop-gap" in m for m in migration)
+    from containerizer.imagescan import image_refs
+    assert not [ref for _, ref in image_refs() if "windows" in ref]    # `images --update` cannot re-add them
 
 
 def test_windows_sign_in_in_code_needs_a_change_also_with_iis_turned_off(tmp_path):
@@ -327,3 +335,77 @@ def test_an_out_of_support_dotnet_runs_on_its_own_runtime(tmp_path):
     a = assess(tmp_path / "n10")
     df = dockerfile_dotnet(make_plan(a, a.components[0]))
     assert "noble-chiseled-extra AS final" in df and "HOME" not in df
+
+
+# The ImagePolicy spec schema of Flux v2.10.0 (install.yaml, imagepolicies.image.toolkit.fluxcd.io v1, the version
+# the appliance and the lab sandbox run), descriptions removed; its two CEL rules are checked by hand below.
+FLUX_IMAGEPOLICY_SPEC = """
+type: object
+required: [imageRepositoryRef, policy]
+properties:
+  digestReflectionPolicy: {type: string, enum: [Always, IfNotPresent, Never]}
+  filterTags: {type: object, properties: {extract: {type: string}, pattern: {type: string}}}
+  imageRepositoryRef: {type: object, required: [name], properties: {name: {type: string}, namespace: {type: string}}}
+  interval: {type: string, pattern: '^([0-9]+(\\.[0-9]+)?(ms|s|m|h))+$'}
+  policy:
+    type: object
+    properties:
+      alphabetical: {type: object, properties: {order: {type: string, enum: [asc, desc]}}}
+      numerical: {type: object, properties: {order: {type: string, enum: [asc, desc]}}}
+      semver: {type: object, required: [range], properties: {range: {type: string}}}
+  suspend: {type: boolean}
+"""
+
+
+def _schema_errors(value, schema, at="spec") -> list[str]:
+    """Just enough of OpenAPI v3 validation for a CRD schema: type, required, enum, pattern, unknown fields
+    (pruned by the API server: a typo would silently do nothing)."""
+    import re
+    types = {"object": dict, "string": str, "boolean": bool, "integer": int, "array": list}
+    if not isinstance(value, types[schema["type"]]):
+        return [f"{at}: not {schema['type']}"]
+    errs = []
+    if "enum" in schema and value not in schema["enum"]:
+        errs.append(f"{at}: {value!r} not in {schema['enum']}")
+    if "pattern" in schema and not re.search(schema["pattern"], value):
+        errs.append(f"{at}: {value!r} does not match {schema['pattern']}")
+    if schema["type"] == "object":
+        props = schema.get("properties") or {}
+        errs += [f"{at}.{k}: required" for k in schema.get("required", []) if k not in value]
+        errs += [f"{at}.{k}: unknown field" for k in value if k not in props]
+        errs += [e for k, v in value.items() if k in props for e in _schema_errors(v, props[k], f"{at}.{k}")]
+    return errs
+
+
+def test_image_policy_reflects_digests_and_the_kustomization_has_digest_setters(tmp_path):
+    """#292: the image automation pins by digest (Flux 2.5+ digestReflectionPolicy, :digest setters)."""
+    import yaml
+    from containerizer.generate import generate_app
+    from containerizer.gitops import GitOpsOptions, digest_setter_images
+
+    web_app(tmp_path / "src-app")
+    a = assess(tmp_path / "src-app")
+    out = tmp_path / "out"
+    generate_app(a, out, gitops=GitOpsOptions(git_url="https://git.example.com/deploy.git"))
+    docs = list(yaml.safe_load_all((out / "gitops/flux/git/image-automation.yaml").read_text()))
+    policies = [d for d in docs if d["kind"] == "ImagePolicy"]
+    assert policies
+    schema = yaml.safe_load(FLUX_IMAGEPOLICY_SPEC)
+    for p in policies:
+        spec = p["spec"]
+        assert p["apiVersion"] == "image.toolkit.fluxcd.io/v1"
+        assert _schema_errors(spec, schema) == []
+        assert spec["digestReflectionPolicy"] == "Always"
+        # the CRD's x-kubernetes-validations: interval only with Always, and required with it
+        assert "interval" in spec
+    text = (out / "kustomization.yaml").read_text()
+    images = yaml.safe_load(text)["images"]
+    assert images and all(i["digest"] == "" and i["newName"] == i["name"] for i in images)  # no digest before a push
+    assert digest_setter_images(text) == {i["name"] for i in images}
+    for p in policies:
+        for field in ("name", "tag", "digest"):
+            assert f'{{"$imagepolicy": "{p["metadata"]["namespace"]}:{p["metadata"]["name"]}:{field}"}}' in text
+    # HARDENING.md: applied, by Flux; the gate's lint says the same (image-digest-setter, not image-digest)
+    hardening = (out / "HARDENING.md").read_text()
+    assert "| Images are deployed by digest | applied |" in hardening and "pinned by Flux" in hardening
+    assert "image-digest:" not in hardening
