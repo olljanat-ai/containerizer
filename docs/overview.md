@@ -430,6 +430,8 @@ Techniques used to avoid application changes:
   by env var, and `${basedir}/logs` becomes a writable folder;
 - installed Windows tools (`C:\\Program Files\\wkhtmltopdf\\bin\\wkhtmltopdf.exe`) map to the Linux binary on PATH;
 - console tools with sub-commands (usage text, verb arrays, `case "x":`) get one CronJob per command;
+- each CronJob gets the schedule and arguments of the repository's Windows Task Scheduler job that starts it
+  ([below](#scheduled-tasks));
 - workers that use the ASP.NET Core shared framework get the aspnet base image;
 - old netstandard1.x packages that break a linux-x64 restore (NU1605) get a portable publish;
 - corporate TLS-inspecting proxies: an optional `ca` build secret is honoured.
@@ -437,6 +439,34 @@ Techniques used to avoid application changes:
   in `CurrentUser\My` come from an optional Secret mounted at `~/.dotnet/corefx/cryptography/x509stores/my`;
   `Path.Combine(GetFolderPath(ProgramFiles), "Acme", ...)` (`/app/Acme/...` on Linux) gets a volume there. These
   findings then count as `config` ([Platform fixes for refactor findings](platform-fixes.md)).
+
+### Scheduled tasks
+
+A console tool that the Windows Task Scheduler started gets its schedule and arguments from the repository's own
+deploy scripts and exports instead of a placeholder (`containerizer/schedules.py`; which files are read is data in
+`rules/20-platform.yaml`, `task_scheduler:`). Three shapes are read:
+
+| Shape | Schedule | Command |
+| --- | --- | --- |
+| PowerShell (`*.ps1`, `*.psm1`, `*.psd1`) | `New-ScheduledTaskTrigger -Daily` or `-Weekly [-DaysOfWeek ...]`, with `-At HH:mm`; optionally a repetition (`-RepetitionInterval`/`-RepetitionDuration`, or `$t.Repetition = (New-ScheduledTaskTrigger -Once ...).Repetition`) | `New-ScheduledTaskAction -Execute ... -Argument ...`, paired by `Register-ScheduledTask`, also from a table of jobs (`@{ Name = ...; Verb = ...; Trigger = ... }`) registered in a `foreach` |
+| `schtasks /create` (in `*.cmd`, `*.bat` or PowerShell, also splatted `schtasks.exe @taskArgs`) | `/sc` (`DAILY`, `WEEKLY`, `MONTHLY`, `MINUTE`, `HOURLY`) with `/st HH:mm [/d MON,TUE] [/mo n] [/ri n /du HH:mm]` | `/tr` |
+| Task Scheduler XML export (`*.xml`) | `CalendarTrigger` (`StartBoundary`, `ScheduleByDay`, `ScheduleByWeek`, `ScheduleByMonth`), `Repetition` (`Interval`, `Duration`) | `Exec` (`Command`, `Arguments`) |
+
+Each trigger becomes a cron schedule: weekdays 06:30 is `30 6 * * 1-5`, every 30 minutes from 06:00 for 14 hours
+`*/30 6-19 * * *`. A job belongs to the component whose executable or assembly it starts (`Jobs.exe`, `dotnet
+Jobs.dll`), and to the CronJob of the sub-command (`commands` fact) or run-once switch (`oneshot_arg`) in its
+arguments; the CronJob runs with the job's own arguments. Several triggers of one command become several CronJobs
+(`<name>-2`, ...); a tool without sub-commands whose jobs pass different arguments gets one CronJob per argument
+(`<name>-<first argument>`). The CronJob says where its schedule came from (a comment and the
+`containerizer.io/schedule-source: <file>:<line>` annotation). A CronJob that no job matched keeps the placeholder
+`0 2 * * *` and the annotation `containerizer.io/schedule: placeholder`, so a reviewer sees it. Logon and startup
+triggers (`-AtLogOn`, `-AtStartup`, `ONLOGON`, `BootTrigger`) never become CronJobs: they are reported ("runs at
+logon: a Deployment, or not a server job"). Task Scheduler runs at the server's local time and the schedule keeps
+those hours; no `timeZone:` is set, so the CronJob runs in the cluster's time zone (usually UTC) until an
+organization time zone setting sets it.
+
+`MIGRATION.md` (section "Windows Task Scheduler jobs") and the application page of the results web UI ("Scheduled
+tasks") list every job found, its trigger, its schedule and the CronJob it became, or why it did not become one.
 
 ## Security gate
 

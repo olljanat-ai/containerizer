@@ -498,7 +498,8 @@ INSERT [${schema}].LabService (Name, Title, Enabled)
 SELECT v.Name, v.Title, v.Enabled
 FROM (VALUES (N'sqlserver', N'SQL Server', 1), (N'postgres', N'PostgreSQL', 0), (N'redis', N'Redis', 0),
              (N's3', N'S3 object storage', 0), (N'azure-blob', N'Azure Blob storage', 0), (N'mysql', N'MySQL', 0),
-             (N'mongodb', N'MongoDB', 0), (N'rabbitmq', N'RabbitMQ', 0), (N'kafka', N'Kafka', 0), (N'sftp', N'SFTP', 0)
+             (N'mongodb', N'MongoDB', 0), (N'rabbitmq', N'RabbitMQ', 0), (N'kafka', N'Kafka', 0), (N'sftp', N'SFTP', 0),
+             (N'smtp', N'Mail (SMTP)', 1)
      ) v (Name, Title, Enabled)
 WHERE NOT EXISTS (SELECT 1 FROM [${schema}].LabService x WHERE x.Name = v.Name);
 GO
@@ -2676,4 +2677,17 @@ GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 43) INSERT [${schema}].SchemaVersion (Version) VALUES (43);
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 44) INSERT [${schema}].SchemaVersion (Version) VALUES (44);
+GO
+
+-- 45: the Windows Task Scheduler jobs the latest assessment of each application found in its repository, their cron
+-- schedule and the CronJob each became (assessment.json "scheduled_tasks", schedules.report), for the results page
+CREATE OR ALTER VIEW [${schema}].vScheduledTaskLatest AS
+SELECT aa.ApplicationId, aa.AssessmentId, aa.AssessedAt, JSON_QUERY(aa.ReportJson, '$$.scheduled_tasks') AS ScheduledTasksJson
+FROM [${schema}].ApplicationAssessment aa
+WHERE aa.AssessmentId = (SELECT MAX(x.AssessmentId) FROM [${schema}].ApplicationAssessment x WHERE x.ApplicationId = aa.ApplicationId);
+GO
+GRANT SELECT ON [${schema}].vScheduledTaskLatest TO [${schema}_reader];
+GRANT SELECT ON [${schema}].vScheduledTaskLatest TO [${schema}_writer];
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 45) INSERT [${schema}].SchemaVersion (Version) VALUES (45);
 GO

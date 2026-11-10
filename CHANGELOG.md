@@ -10,6 +10,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+The OS image changes (`appliance/`: the Mailpit image pin): a minor release.
+
 - The **WCF port plan** fits the service it was found in (#267). The CoreWCF packages come from the bindings found:
   `CoreWCF.NetTcp` for netTcpBinding, `CoreWCF.WebHttp` for webHttpBinding and `[WebGet]`/`[WebInvoke]`,
   `CoreWCF.Http` for HTTP bindings and `.svc` endpoints, and `CoreWCF.ConfigurationManager` with a step to keep the
@@ -20,6 +22,33 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   client of a netTcpBinding service no longer gets `wcf-nettcp-msmq`. Migrations can now have `variants`
   (`rules/migrations.yaml`) and rules `superseded_by` (a component that hosts WCF services no longer also gets the
   `wcf-client` info finding).
+- **Lab mail** (#280): a new lab service, **Mail (SMTP)**, on by default, gives each application that sends mail
+  its own catch-all mailbox in the sandbox ([Mailpit](https://github.com/axllent/mailpit), MIT, pinned by digest;
+  never relays). The scan finds mail senders (MailKit, FluentEmail, `SmtpClient`, `SmtpDeliveryMethod`) and their
+  SMTP settings in `appsettings.json` and overrides them: host and port from the lab's Secret, TLS off, a pickup
+  folder emptied, `DeliveryMethod`/`Mode: Pickup` set to network delivery, so mail written to a pickup folder is
+  sent and caught too, with no code change. Administrators and operators read it under the new **Admin → Lab mail**
+  (one inbox over all applications, HTML shown as text, never rendered); the results page links to it. The page
+  reads the mailboxes through the system agent (`labmail` request), whose only command is `wget` against the
+  mailbox's loopback API. Docs: [Lab services → Mail](https://containerizer.eu/lab-services/#mail).
+- **Lab services added in a later version** get their default when `lab-services.json` was written before them,
+  instead of the lab agent refusing the file.
+- Kafka and SFTP no longer get a `ConnectionStrings__DefaultConnection` override (to a Secret key they do not have)
+  when no setting of theirs was found.
+- **CronJob schedules from the Windows Task Scheduler** (#288). Console tools got one CronJob per sub-command at
+  the placeholder `0 2 * * *`, so a job the old server ran on weekdays at 06:30 ran every night at 02:00 until
+  someone read the PowerShell. The repository's deploy scripts and exports are now read
+  (`containerizer/schedules.py`; the files are data in `rules/20-platform.yaml`, `task_scheduler:`):
+  `New-ScheduledTaskTrigger -Daily|-Weekly [-DaysOfWeek] -At` with its repetition and the
+  `New-ScheduledTaskAction -Execute -Argument` that `Register-ScheduledTask` pairs it with (also from a table of jobs
+  registered in a loop), `schtasks /create /sc /st /d /mo /ri /du /tr` (also splatted `schtasks.exe @taskArgs`) and
+  Task Scheduler XML. Each job is matched to the component whose executable it starts and to the CronJob of the
+  sub-command in its arguments, which then gets its cron schedule (`30 6 * * 1-5`; a 30-minute repetition for 14 h
+  from 06:00 is `*/30 6-19 * * *`) and arguments; several triggers of one command become several CronJobs. A CronJob
+  no job matched keeps the placeholder with the annotation `containerizer.io/schedule: placeholder`; logon and
+  startup triggers are reported, not scheduled. `MIGRATION.md` and the results page ("Scheduled tasks", from the new
+  view `vScheduledTaskLatest`: schema 45, run `containerizer db init`) list each job, its schedule and the CronJob it
+  became ([docs](docs/overview.md#scheduled-tasks)).
 - Python and Go components get a container build and deployment (`Dockerfile`, `k8s.yaml`, `plan.json`) with the
   same hardening as .NET, Java and Node.js components, instead of only `MIGRATION.md`, and organization scans deploy
   them (#248, [Python and Go](docs/python-go.md)). Python: the dependencies install with the repository's package

@@ -30,6 +30,8 @@ request again before acting on it:
 - dbquery / dbdelete: the database browser of Admin -> Dev databases (dbbrowse.py): a statement run as an
             application's own database login in its own sandbox database, or that database dropped and created
             again; the answer goes to answers/<id>.json, readable by the web UI's group only.
+- labmail: Admin -> Lab mail (labmail.py): the mail an application in the sandbox sent, read from its
+            lab mailbox; answered the same way.
 - local-llm: the built-in LLM on or off (local_llm.py checks the RAM and the disk again); while its model
             downloads, huggingface.co and hf.co are on the egress allow-list.
 
@@ -1757,6 +1759,11 @@ def process() -> int:
                 from .dbbrowse import Agent, agent_request
                 from .labagent import Kubectl
                 agent_request(req, P.run / "answers", Agent(kube=Kubectl("k3s kubectl", str(P.kubeconfig))))
+            elif action == "labmail":           # Admin -> Lab mail: the lab's caught mail
+                from .labagent import Kubectl
+                from .labmail import Agent as MailAgent, agent_request as mail_request
+                mail_request(req, P.run / "answers", MailAgent(kube=Kubectl("k3s kubectl", str(P.kubeconfig)),
+                                                               lab_status=P.run / "lab-status.json"))
             elif action == "sandbox-https":
                 save_sandbox_https(req, user, name)
                 publish(https_state=sandbox_https_status())
@@ -1765,7 +1772,7 @@ def process() -> int:
         except (AgentError, RuleError, LocalLlmError, PatchError, OSError, subprocess.TimeoutExpired, ValueError) as ex:
             rc = 1
             log(f"{action} failed: {ex}")
-            if action in ("lab", "local-llm", "dbquery", "dbdelete"):
+            if action in ("lab", "local-llm", "dbquery", "dbdelete", "labmail"):
                 continue                        # their pages show their own status (or wait for an answer)
             if action in ("plan", "plan-cancel"):
                 task.update(state="failed", finished=now(), message=f"Not planned: {ex}"[:1000])
