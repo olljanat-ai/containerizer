@@ -8,9 +8,9 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## Unreleased
+## 0.22.0 (2026-11-10)
 
-The OS image changes (`appliance/`: the Mailpit image pin): a minor release.
+The OS image changes (`appliance/`: the Mailpit image pin for the new Mail lab service): a minor release.
 
 - **State detection: three false positives fixed** (#273). A file whose only reference to the application folder
   loads configuration (`AddJsonFile`/`SetBasePath(AppContext.BaseDirectory)`) is no longer `state-local-files`
@@ -74,6 +74,26 @@ The OS image changes (`appliance/`: the Mailpit image pin): a minor release.
   is a library.
 - Base images: Python 3.11, 3.12 and 3.13 lines (slim runtime, full build image for native packages), Go builds on
   `golang:1.26` (the lock already chose it for the old 1.22 line), distroless `base` for cgo.
+- **Gateway API routes** (#278): `containerizer generate` writes an HTTPRoute (`gateway.networking.k8s.io/v1`)
+  for every web component into its `k8s.yaml`. The host is `<component>.<app>.<domain>` (`--ingress-domain`, else
+  `example.invalid`), and the route attaches to the HTTPS listener of the platform's Gateway (`--gateway
+  <namespace>/<name>`, `--gateway-listener`; default `gateway-system/platform-gateway`, `https`). The platform owns
+  the Gateway, its certificate and an HTTP listener that only redirects. What IIS did maps to standard fields:
+  raised request timeouts set `timeouts` (the grace period follows as before), and HSTS and web.config custom
+  headers set `ResponseHeaderModifier`. In-memory session, ARR affinity, SignalR and Blazor Server need cookie
+  session affinity: by default `MIGRATION.md` and `HARDENING.md` ask for it at the Gateway implementation (cookie
+  name, findings), so every route deploys on the standard-channel CRDs. `gateway.session_persistence.emit: true`
+  puts a cookie `sessionPersistence` (experimental channel) on the route instead. Simple `<rewrite>` rules and `<httpRedirect>` become `URLRewrite`
+  and `RequestRedirect` filters; HTTP to HTTPS rules are left to the Gateway. Request body and URL limits and
+  `<ipSecurity>` lists have no standard field: `MIGRATION.md` and `HARDENING.md` list them with their values, as
+  settings of the Gateway implementation. Rules that do not translate are listed in `MIGRATION.md` with their XML.
+  `web-config-rewrite` is resolved (`gateway-httproute`) only when everything translated. The mapping is data in
+  `rules/60-security.yaml` (`gateway:`). The gate's lint checks every route (`route-parent`, `route-listener`,
+  `route-hostname`). The NetworkPolicy admits the Gateway's namespace, and the Flux tenant gets a Role for
+  `httproutes`, which `admin` does not cover. The sandbox keeps its Traefik Ingress: the appliance's Traefik has no
+  Gateway API provider, so the sandbox drops the routes ([Gateway API routes](docs/gateway-api.md)).
+- CI: the check that the results UI serves the assessment no longer fails now and then (`curl | grep -q` under
+  `pipefail`); `ci/local.sh` and `ci.yml` read the whole page first.
 
 ## 0.21.0 (2026-11-10)
 

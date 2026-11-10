@@ -102,6 +102,10 @@ variable `CONTAINERIZER_INGRESS_NAMESPACE` or `--ingress-from <namespace>` (`con
 queue runner and web UI, `containerizer-*.service`); so does the [lab sandbox](local-dev-server.md#lab-sandbox-k3s-flux-git-server)
 (`ci/lab-sandbox/env.sh`).
 
+A web component's port is also open to **the Gateway's namespace**, where its [HTTPRoute](gateway-api.md)
+traffic comes from: `gateway.parent.namespace` (`--gateway <namespace>/<name>`), or `gateway.proxy_namespace`
+when the implementation runs its proxies elsewhere (Envoy Gateway: `envoy-gateway-system`).
+
 `--ingress-from any` keeps the old rule (`namespaceSelector: {}`, every namespace) and says so in the
 NetworkPolicy (`containerizer.io/ingress-from: any`). Without it, the gate's lint warns about an ingress rule with
 an empty `namespaceSelector` (check `ingress-namespace`). Where the controller runs in the **host network**

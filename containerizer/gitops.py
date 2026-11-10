@@ -86,6 +86,17 @@ def gitops_manifests(a, kinds: list[tuple[str, str]], images: list[tuple[str, st
     flux_keys = eso.remote_keys(git_secrets + oci_secrets) + list(secret_keys)
     out["flux/tenant.yaml"] += [eso.reader_service_account(ns, labels, set_namespace=True)] + \
         eso.store_access(ns, flux_keys, labels)
+    if any(k == "HTTPRoute" for _, k in kinds):
+        # `admin` does not cover Gateway API resources (their CRDs aggregate nothing to it): the app's own routes
+        out["flux/tenant.yaml"] += [
+            {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role",
+             "metadata": {"name": f"{sa}-routes", "namespace": ns, "labels": labels},
+             "rules": [{"apiGroups": ["gateway.networking.k8s.io"], "resources": ["httproutes"],
+                        "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]}]},
+            {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding",
+             "metadata": {"name": f"{sa}-routes", "namespace": ns, "labels": labels},
+             "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": f"{sa}-routes"},
+             "subjects": [{"kind": "ServiceAccount", "name": sa, "namespace": ns}]}]
 
     def kustomization(source_kind: str) -> dict:
         return {"apiVersion": KUSTOMIZE_API, "kind": "Kustomization",

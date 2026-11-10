@@ -56,9 +56,9 @@ jobs:
             --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp \
             containerizer-results web --host 127.0.0.1 --port 8080
           for i in $(seq 30); do curl -fsS http://127.0.0.1:8080/healthz && break; sleep 1; done
-          curl -fsS http://127.0.0.1:8080/ | grep -q ci-demo || { docker logs web; exit 1; }
-          curl -fsS http://127.0.0.1:8080/trends | grep -q ci-demo || { docker logs web; exit 1; }
-          curl -fsS http://127.0.0.1:8080/sbom | grep -q "Components with an SBOM" || { docker logs web; exit 1; }
+          page=$(curl -fsS http://127.0.0.1:8080/) && grep -q ci-demo <<<"$page" || { docker logs web; exit 1; }
+          page=$(curl -fsS http://127.0.0.1:8080/trends) && grep -q ci-demo <<<"$page" || { docker logs web; exit 1; }
+          page=$(curl -fsS http://127.0.0.1:8080/sbom) && grep -q "Components with an SBOM" <<<"$page" || { docker logs web; exit 1; }
 
   # Sandbox verification against a real Kubernetes cluster (tests/test_sandbox_cluster.py): rollouts, crash
   # loop, image pull failure, CronJob, the generated least-privilege RBAC and a short-lived SA token; and

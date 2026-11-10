@@ -387,7 +387,8 @@ cookie: the browser's local storage keeps it, and the server never sees it.)
 ## Generated output
 
 Per component: `Dockerfile` (+ `Dockerfile.dockerignore`), `k8s.yaml` (Deployment or CronJob,
-Service, NetworkPolicy, PVCs where state must persist, ExternalSecrets for every credential),
+Service, NetworkPolicy, PVCs where state must persist, ExternalSecrets for every credential, and for web
+components an HTTPRoute at the platform's Gateway, see [Gateway API routes](gateway-api.md)),
 `plan.json` (the build plan). Linux only: .NET Framework components that are not ported get no
 container files (they stay on Windows VMs, see the migration plan). Per app: `kustomization.yaml`
 and `MIGRATION.md`.

@@ -158,9 +158,10 @@ job_sql() {
         -e CONTAINERIZER_SQL="Server=127.0.0.1,$SQL_PORT;Database=Containerizer;User Id=cz_web;TrustServerCertificate=yes" \
         --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp \
         containerizer-results web --host 127.0.0.1 --port 18080 >/dev/null
-      for _ in $(seq 30); do curl -fsS http://127.0.0.1:18080/healthz >/dev/null && break; sleep 1; done
-      curl -fsS http://127.0.0.1:18080/ | grep -q ci-demo || { docker logs cz-ci-web; exit 1; }
-      curl -fsS http://127.0.0.1:18080/trends | grep -q ci-demo || { docker logs cz-ci-web; exit 1; }
+      for _ in $(seq 30); do curl -fsS http://127.0.0.1:18080/healthz >/dev/null 2>&1 && break; sleep 1; done
+      # the whole page first: `curl | grep -q` fails under pipefail when grep stops reading early (SIGPIPE)
+      page=$(curl -fsS http://127.0.0.1:18080/) && grep -q ci-demo <<<"$page" || { docker logs cz-ci-web; exit 1; }
+      page=$(curl -fsS http://127.0.0.1:18080/trends) && grep -q ci-demo <<<"$page" || { docker logs cz-ci-web; exit 1; }
     )
     rc=$?   # not "( ... ) || rc=1": that would switch off set -e inside the subshell
   fi
