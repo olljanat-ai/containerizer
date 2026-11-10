@@ -290,15 +290,19 @@ finish() {  # job, rc, start
   TIME[$1]=$((SECONDS - $3))
   if [ "$2" = 0 ]; then RESULT[$1]="${c_green}pass${c_off}"; else RESULT[$1]="${c_red}FAIL${c_off}"; failed=1; fi
 }
-# sql (SQL Server in its own container, about 10 minutes) runs next to the others: they use none of its
-# container, port or image. CI_LOCAL_PARALLEL=0 runs every job in turn.
+# sql (SQL Server in its own container, about 10 minutes) runs in the background next to the other jobs: they use
+# none of its container, port or image. It starts after test, whose parallel workers take every CPU (SQL Server's
+# queries time out under that load). CI_LOCAL_PARALLEL=0 runs every job in turn.
 bg=
-if [ "${CI_LOCAL_PARALLEL:-1}" = 1 ] && [ ${#jobs[@]} -gt 1 ] && [[ " ${jobs[*]} " == *" sql "* ]]; then
-  bg=sql
-  say "=== sql: ${MIRRORS[sql]}  (in the background, log: ${WORK#"$ROOT"/}/logs/sql.log)"
+start_bg() {
   bg_start=$SECONDS
+  say "=== sql: ${MIRRORS[sql]}  (in the background, log: ${WORK#"$ROOT"/}/logs/sql.log)"
   ( job_sql ) > "$WORK/logs/sql.log" 2>&1 &
   bg_pid=$!
+}
+if [ "${CI_LOCAL_PARALLEL:-1}" = 1 ] && [ ${#jobs[@]} -gt 1 ] && [[ " ${jobs[*]} " == *" sql "* ]]; then
+  bg=sql
+  [[ " ${jobs[*]} " == *" test "* ]] || start_bg
 fi
 for j in "${jobs[@]}"; do
   [ "$j" = "$bg" ] && continue
@@ -307,6 +311,7 @@ for j in "${jobs[@]}"; do
   start=$SECONDS
   ( "job_$j" ) 2>&1 | tee "$log"
   finish "$j" "${PIPESTATUS[0]}" "$start"
+  [ "$j" = test ] && [ -n "$bg" ] && start_bg
 done
 if [ -n "$bg" ]; then
   say "waiting for sql"
