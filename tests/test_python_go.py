@@ -67,6 +67,22 @@ def test_examples_get_full_output_and_stay_unchanged(tmp_path):
         assert tree_hash(src) == before          # no file of the application changes
 
 
+def test_examples_are_deployed_by_org_and_pass_the_gate_lint():
+    from containerizer import org
+    from containerizer.harden import lint_dockerfile, lint_manifests
+    for name, comps in (("flask", ["flask"]), ("fastapi", ["fastapi"]), ("django", ["django"]),
+                        ("go-http", ["api", "cleanup"])):
+        a = assess(EXAMPLES / name)
+        keep, excluded = org.select_components(a, verified=False)
+        assert sorted(c.name for c in keep) == sorted(comps) and excluded == [], (name, excluded)
+        for c in keep:
+            plan = make_plan(a, c)
+            docs = k8s_manifests(a, c, plan, f"reg.example/{name}/{c.name}:1.0.0")
+            errors = [v for v in lint_manifests(docs) + lint_dockerfile(dockerfile_for(plan, c))
+                      if v.severity == "error"]
+            assert errors == [], (name, c.name, errors)
+
+
 def test_flask_runs_its_declared_gunicorn():
     a, c, plan, df = plan_and_df(EXAMPLES / "flask", "flask")
     assert c.role == "web" and plan["install"] == "requirements" and plan["add_python_packages"] == []
