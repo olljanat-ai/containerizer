@@ -499,12 +499,22 @@ def route_docs(c, app: str, component: str, labels: dict, domain: str, repo_root
                                "connections open")
     sp = g.get("session_persistence") or {}
     persistence = None
-    if ids & set(sp.get("findings") or ()) and sp.get("value"):
-        persistence = copy.deepcopy(sp["value"])
+    if ids & set(sp.get("findings") or ()):
+        value = sp.get("value") or {}
         why = ", ".join(sorted(ids & set(sp["findings"])))
-        notes["fields"].append(f"sessionPersistence {persistence.get('type', 'Cookie')} "
-                               f"{persistence.get('sessionName', '')}: per-user state in memory ({why})")
-        notes["session_persistence"] = True
+        cookie = value.get("sessionName") or "a cookie"
+        if sp.get("emit") and value:
+            persistence = copy.deepcopy(value)
+            notes["fields"].append(f"sessionPersistence {value.get('type', 'Cookie')} {cookie}: per-user state "
+                                   f"in memory ({why})")
+            notes["session_persistence"] = True
+        else:
+            # not in the route (experimental channel): the implementation's own affinity policy
+            notes["gateway_settings"].append(
+                f"needs cookie session affinity at the Gateway implementation (cookie `{cookie}`, session "
+                f"lifetime): per-user state in memory ({why}); "
+                "or set `gateway.session_persistence.emit: true` in `rules/60-security.yaml` on a cluster with "
+                "Gateway API's experimental CRDs, and the route carries `sessionPersistence`")
     uploads = any(e.get("id") == "file-uploads" for e in (plan or {}).get("hardening_exceptions") or [])
     if uploads and not any("request body" in s for s in r.gateway_settings):
         b = int(g.get("default_body_bytes") or 30_000_000)
@@ -571,10 +581,9 @@ def migration_markdown(notes: dict[str, dict]) -> str:
         L += [f"- {x}" for x in n["fields"]]
         L += [f"- {x}" for x in n["translated"]]
         if n.get("session_persistence"):
-            L.append("- `sessionPersistence` is in Gateway API's experimental channel: with only the standard-channel "
-                     "CRDs installed, server-side apply (Flux) rejects the route (`field not declared in schema`). "
-                     "Install the experimental CRDs, or set `gateway.session_persistence.value: null` in "
-                     "`rules/60-security.yaml` and keep users on one pod with the implementation's own policy")
+            L.append("- `sessionPersistence` is in Gateway API's experimental channel (`gateway.session_persistence.emit: "
+                     "true`): with only the standard-channel CRDs installed, server-side apply (Flux) rejects the route "
+                     "(`field not declared in schema`)")
         if n["gateway_settings"]:
             L += ["", "Set at the Gateway implementation (Gateway API has no standard field for these):", ""]
             L += [f"- {x}" for x in n["gateway_settings"]]

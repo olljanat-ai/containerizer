@@ -291,11 +291,13 @@ gateway:
   timeouts: {finding: host-long-request-timeout, max_seconds: 3600}
   # WebSocket connections (SignalR, Blazor Server circuits) stay open: at least this request timeout
   long_lived: {findings: [signalr-scaleout, host-blazor-server], seconds: 3600}
-  # per-user state in one pod's memory: the Gateway keeps a user on one pod. sessionPersistence is in Gateway
-  # API's experimental channel; a cluster with only the standard-channel CRDs rejects it under server-side apply
-  # (Flux): there set `value: null` and use the implementation's own affinity policy
-
+  # per-user state in one pod's memory: the Gateway must keep a user on one pod (cookie session affinity).
+  # sessionPersistence is in Gateway API's experimental channel, and a cluster with only the standard-channel CRDs
+  # rejects it under server-side apply (Flux). So it is opt-in: with `emit: false` (default) the route has no such
+  # field, and MIGRATION.md and HARDENING.md ask for cookie affinity at the Gateway implementation (`value` names
+  # the cookie). Set `emit: true` on clusters with the experimental CRDs.
   session_persistence:
+    emit: false
     findings: [in-memory-session-scaleout, state-session-in-memory, host-arr-affinity, signalr-scaleout, host-blazor-server]
     value: {sessionName: CZAFFINITY, type: Cookie, cookieConfig: {lifetimeType: Session}}
   # the request body limit a component with file uploads (IFormFile) needs at least: IIS and Kestrel's default

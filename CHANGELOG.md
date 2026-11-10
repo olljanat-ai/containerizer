@@ -29,9 +29,11 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   `example.invalid`), and the route attaches to the HTTPS listener of the platform's Gateway (`--gateway
   <namespace>/<name>`, `--gateway-listener`; default `gateway-system/platform-gateway`, `https`). The platform owns
   the Gateway, its certificate and an HTTP listener that only redirects. What IIS did maps to standard fields:
-  raised request timeouts set `timeouts` (the grace period follows as before), in-memory session, ARR affinity,
-  SignalR and Blazor Server set a cookie `sessionPersistence` (experimental channel), and HSTS and web.config
-  custom headers set `ResponseHeaderModifier`. Simple `<rewrite>` rules and `<httpRedirect>` become `URLRewrite`
+  raised request timeouts set `timeouts` (the grace period follows as before), and HSTS and web.config custom
+  headers set `ResponseHeaderModifier`. In-memory session, ARR affinity, SignalR and Blazor Server need cookie
+  session affinity: by default `MIGRATION.md` and `HARDENING.md` ask for it at the Gateway implementation (cookie
+  name, findings), so every route deploys on the standard-channel CRDs. `gateway.session_persistence.emit: true`
+  puts a cookie `sessionPersistence` (experimental channel) on the route instead. Simple `<rewrite>` rules and `<httpRedirect>` become `URLRewrite`
   and `RequestRedirect` filters; HTTP to HTTPS rules are left to the Gateway. Request body and URL limits and
   `<ipSecurity>` lists have no standard field: `MIGRATION.md` and `HARDENING.md` list them with their values, as
   settings of the Gateway implementation. Rules that do not translate are listed in `MIGRATION.md` with their XML.

@@ -72,7 +72,7 @@ certificate per application (`*.shop.apps.example.com`), or change `gateway.host
 | --- | --- |
 | `host-long-request-timeout` (`executionTimeout`, ANCM `requestTimeout`) | `rules[].timeouts.request` and `backendRequest` (the longest timeout, at most 3600 s). The pod's `terminationGracePeriodSeconds` covers it too (at most 600 s). |
 | `signalr-scaleout`, `host-blazor-server` | timeouts of at least 3600 s for the long-lived connections |
-| `in-memory-session-scaleout`, `state-session-in-memory`, `host-arr-affinity`, `signalr-scaleout`, `host-blazor-server` | `sessionPersistence` with a session cookie on the rule |
+| `in-memory-session-scaleout`, `state-session-in-memory`, `host-arr-affinity`, `signalr-scaleout`, `host-blazor-server` | cookie session affinity at the Gateway implementation (listed in `MIGRATION.md`), or `sessionPersistence` on the rule with `gateway.session_persistence.emit: true` |
 | `<rewrite>` rule, HTTP to HTTPS (`{HTTPS}` off, `X-Forwarded-Proto`, port 80) | nothing: the Gateway's HTTP listener does it |
 | `<rewrite>` rule, prefix rewrite or redirect (`^old/(.*)` to `new/{R:1}`) | `URLRewrite` or `RequestRedirect` with `ReplacePrefixMatch` on a `PathPrefix` match |
 | `<rewrite>` rule, one path (`^about$` to `about/`, so trailing slashes too) | `ReplaceFullPath` on an `Exact` match |
@@ -81,10 +81,16 @@ certificate per application (`*.shop.apps.example.com`), or change `gateway.host
 | `<httpProtocol><customHeaders>` | `ResponseHeaderModifier` (`set`, `remove`) |
 | HSTS | `ResponseHeaderModifier` sets `Strict-Transport-Security` on every rule that reaches the app |
 
-Redirects use 301 or 302, the codes in the standard channel. `sessionPersistence` is in Gateway API's
-**experimental channel**. With only the standard-channel CRDs installed, server-side apply (Flux) rejects the
-route with `field not declared in schema`. Install the experimental CRDs, or set
-`gateway.session_persistence.value: null` and use the implementation's own affinity policy.
+Redirects use 301 or 302, the codes in the standard channel, so every generated route deploys on a cluster with
+the standard-channel CRDs.
+
+`sessionPersistence` is in Gateway API's **experimental channel**. With only the standard-channel CRDs
+installed, server-side apply (Flux) rejects a route that has it (`field not declared in schema`). So it is
+opt-in. By default the route has no such field, and `MIGRATION.md` and `HARDENING.md` say the component needs
+cookie session affinity at the Gateway implementation. They name the cookie (`CZAFFINITY`) and the findings
+that call for it. On a cluster with the experimental CRDs, set `gateway.session_persistence.emit: true` in the
+rules, and the route carries the cookie `sessionPersistence` itself. The findings are not marked resolved
+either way: one replica keeps working, but scaling out needs the affinity.
 
 ## What the Gateway implementation sets
 

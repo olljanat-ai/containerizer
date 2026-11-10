@@ -121,13 +121,33 @@ def test_long_requests_get_route_timeouts_and_grace(tmp_path):
     assert dep["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 600
 
 
-def test_in_memory_session_gets_cookie_session_persistence(tmp_path):
+def test_in_memory_session_needs_affinity_at_the_gateway(tmp_path):
+    # default: no sessionPersistence (experimental channel), so the route deploys on standard-channel CRDs
+    web_app(tmp_path / "src-app", code="builder.Services.AddSession();")
+    a, out, comp, docs = generate(tmp_path)
+    [r] = routes(docs)
+    assert not any("sessionPersistence" in rule for rule in r["spec"]["rules"])
+    for md in ("MIGRATION.md", "HARDENING.md"):
+        text = (out / md).read_text()
+        assert "needs cookie session affinity at the Gateway implementation" in text
+        assert "CZAFFINITY" in text and "state-session-in-memory" in text and "emit: true" in text
+    assert not any(f.resolved_by for f in a.components[0].findings if f.rule.id == "state-session-in-memory")
+
+
+def test_session_persistence_opt_in(tmp_path, monkeypatch):
+    import copy
+
+    from containerizer import gateway
+    g = copy.deepcopy(gateway.settings())
+    g["session_persistence"]["emit"] = True
+    monkeypatch.setattr(gateway, "settings", lambda: g)
     web_app(tmp_path / "src-app", code="builder.Services.AddSession();")
     a, out, comp, docs = generate(tmp_path)
     [r] = routes(docs)
     sp = r["spec"]["rules"][-1]["sessionPersistence"]
-    assert sp["type"] == "Cookie" and sp["sessionName"]
-    assert "experimental channel" in (out / "MIGRATION.md").read_text()
+    assert sp == {"sessionName": "CZAFFINITY", "type": "Cookie", "cookieConfig": {"lifetimeType": "Session"}}
+    md = (out / "MIGRATION.md").read_text()
+    assert "experimental channel" in md and "needs cookie session affinity" not in md
 
 
 def test_web_config_rewrite_translates(tmp_path):
