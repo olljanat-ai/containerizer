@@ -320,3 +320,31 @@ def test_relative_mkdir_failure_becomes_a_writable_app_folder():
     from containerizer.generate import _writable_abs
     r = diagnose("Error: ENOENT: no such file or directory, mkdir './data/'", "run", load_failures())
     assert r[0]["id"] == "run-readonly-path-node-java" and _writable_abs(r[1]["dir"]) == "/app/data"
+
+
+def test_settings_of_other_environments_stay_out_of_the_image(tmp_path):
+    import subprocess
+    from types import SimpleNamespace
+    from containerizer.generate import dockerignore
+    repo = SimpleNamespace(root=tmp_path)
+    files = {"Web/appsettings.json": "{}", "Web/appsettings.Production.json": "{}", "Web/appsettings.Release.json": "{}",
+             "Web/appsettings.Staging.json": "{}", "Web/appsettings.Development.json": "{}",
+             "Web/Program.cs": 'builder.Configuration.AddJsonFile("appsettings.Staging.json");'}
+    for name, text in files.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(text)
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+    ignore = dockerignore(repo).splitlines()
+    # the container runs as Production: Release is never loaded; Staging is, by name, from the code
+    assert "**/appsettings.Release.json" in ignore and "**/appsettings.Development.json" in ignore
+    assert not any(x in ignore for x in ("**/appsettings.Staging.json", "**/appsettings.Production.json",
+                                         "**/appsettings.json"))
+    # a name built from the build configuration keeps them all
+    (tmp_path / "Web/Web.csproj").write_text('<Content Include="appsettings.$(Configuration).json" />')
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+    assert "**/appsettings.Release.json" not in dockerignore(repo)
+    (tmp_path / "Web/Web.csproj").unlink()
+    (tmp_path / "Web/Program.cs").write_text('var f = $"appsettings.{env}.json";')
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+    assert "**/appsettings.Release.json" not in dockerignore(repo)

@@ -278,8 +278,9 @@ rejections are written to connectivity.yaml the same way.
 
 Next to the application's manifests in the output repository (`<Org>/<Project>/<Repo>/connectivity.yaml`), written by
 every organization scan with the manifests, and refreshed by the queue runner when there are new decisions,
-approvals or rejections. `CONNECTIVITY.md` is the same as a page, with the diagram (`connectivity.svg`, light and
-dark).
+approvals or rejections. `CONNECTIVITY.md` is the same as a page, with the diagram as a Mermaid block (Azure Repos, GitHub and
+GitLab draw it in the file preview; Azure Repos does not show SVG images there) and as an image, `connectivity.svg`
+(light and dark), linked from it.
 
 ```yaml
 apiVersion: containerizer.eu/v1

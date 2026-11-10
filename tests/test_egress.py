@@ -509,7 +509,10 @@ def test_yaml_markdown_and_svg(tmp_path):
     assert back["kind"] == "Connectivity" and back["apiVersion"] == "containerizer.eu/v1"
     assert "decision" not in (tmp_path / "connectivity.yaml").read_text()
     md = (tmp_path / "CONNECTIVITY.md").read_text()
-    assert "![Network connectivity of shop](connectivity.svg)" in md and "| web | api.github.com | 443/TCP |" in md
+    assert "[connectivity.svg](connectivity.svg)" in md and "| web | api.github.com | 443/TCP |" in md
+    # the diagram as Mermaid: Azure Repos does not show an SVG image in the markdown preview
+    assert "```mermaid\ngraph LR\n" in md and '"api.github.com :443/TCP"' in md and "![" not in md
+    assert re.search(r'c0 -->\|"Not allowed \(will time out\)"\| d\d', md) and "stroke-dasharray:2 4" in md
     page = cy.svg(doc)
     assert not re.search(r"<script(?![^>]*\bsrc=)", page) and "style=" not in page and "<style" not in page and "cf-missing" in page
     assert "Not observed in the sandbox" in page
@@ -520,6 +523,11 @@ def test_yaml_markdown_and_svg(tmp_path):
                                              "destinations": [{"host": "a.example", "port": 443, "source": "config",
                                                                "file": "f", "line": 1, "quote": "<script>"}]}]})
     assert "<x>" not in cy.svg(evil) and "&lt;x&gt;" in cy.svg(evil)
+    odd = cy.model("shop", {"components": [{"name": "W", "k8s": "w", "role": "worker", "egress": [], "lab_services": {},
+                                             "destinations": [{"host": "a.example", "port": 443, "source": "config",
+                                                               "file": "f", "line": 1, "quote": "x"}]}]})
+    odd["outbound"][0]["destination"] = 'a"]|<x>'
+    assert '"a#quot;]|#lt;x#gt; :443/TCP"' in cy.mermaid(odd)
 
 
 def test_generate_keeps_approved_entries_and_opens_nothing(tmp_path):
