@@ -229,7 +229,8 @@ def default_prompt(app: dict, engine: str, dbname: str) -> str:
     return (f"The development database of {app.get('DisplayName') or app.get('Name')} is a {eng} database named "
             f"{dbname or '<name>'}, restored from the uploaded backup.\n"
             "Configure the application to use it:\n"
-            "- Connection string / setting to set: <e.g. ConnectionStrings:Default>\n"
+            "- Connection string / setting to set: <e.g. ConnectionStrings:Default, SPRING_DATASOURCE_URL, "
+            "DATABASE_URL>\n"
             "- Read the connection string from an environment variable or secret, never from a committed file.\n"
             "- Test users or API keys in this database: <none / where to find them>\n"
             "- Anything to run after the restore (migrations, seed scripts): <none>\n")
@@ -509,6 +510,34 @@ def default_env(engine: str, keys: list[str]) -> list[dict]:
     return [{"name": f"ConnectionStrings__{k.replace(':', '__')}", "value": CONNECTION[engine]} for k in keys]
 
 
+def stack_default_env(engine: str, c) -> list[dict]:
+    """Without the LLM, for a Java, Node.js, Python or Go component: the variables its framework binds or its code
+    reads (labservices.stack_names), as templates; DATABASE_URL when nothing says which."""
+    from . import labservices as lab
+    part = {"host": "{host}", "port": "{port}", "database": "{database}", "username": "{user}",
+            "password": "{password}"}
+    out = []
+    for name, kind in lab.stack_names(engine, c, {engine: []})[0]:
+        if kind in ("url", "jdbc"):
+            out.append({"name": name, "value": lab.db_url(engine, c, "{host}", "{port}", "{database}", "{user}",
+                                                          "{password}", jdbc=kind == "jdbc")})
+        elif kind in part:
+            out.append({"name": name, "value": part[kind]})
+    return out
+
+
+# what the LLM is told about the settings of each stack (the .NET line is the one it always had)
+STACK_HINTS = {
+    "dotnet": "use .NET configuration names with __ for nesting (ConnectionStrings__Default); a typical connection "
+              "string: {dotnet}",
+    "java": "use the variables its framework binds (Spring Boot: SPRING_DATASOURCE_URL, SPRING_DATASOURCE_USERNAME, "
+            "SPRING_DATASOURCE_PASSWORD; Quarkus: QUARKUS_DATASOURCE_JDBC_URL, QUARKUS_DATASOURCE_USERNAME, "
+            "QUARKUS_DATASOURCE_PASSWORD) or the ones its code reads, with a JDBC URL: {url}",
+    "other": "use the environment variables its code reads (listed with the component; DATABASE_URL when none is), "
+             "with a URL in the form its database client takes: {url}",
+}
+
+
 AI_SCHEMA = {
     "type": "object", "additionalProperties": False, "required": ["components", "notes"],
     "properties": {
@@ -527,19 +556,29 @@ def ai_env(a, comps: list, engine: str, database: str, prompt: str, model: str |
     """Ask the LLM which settings each component needs; every answer is validated, anything
     invalid is dropped (the caller falls back to default_env for components left without)."""
     from .ai import ask_json
-    lines = []
+    from . import labservices as lab
+    lines, hints = [], {}
     for c in comps:
         f = c.facts or {}
-        lines.append(f"- component {c.name!r} (role {c.role}, project {c.project.rel}): connection strings found "
-                     f"{f.get('connection_strings') or []}, secret settings {f.get('secret_settings') or []}, "
-                     f"database packages {[p for p in (f.get('packages') or []) if re.search(r'(?i)sql|entityframework|npgsql|mysql|pomelo', str(p))][:15]}")
+        kind = lab.stack(c)
+        line = (f"- component {c.name!r} ({kind}, role {c.role}, project {c.project.rel}): connection strings found "
+                f"{f.get('connection_strings') or []}, secret settings {f.get('secret_settings') or []}, "
+                f"database packages {[p for p in (f.get('packages') or []) if re.search(r'(?i)sql|entityframework|npgsql|mysql|pomelo', str(p))][:15]}")
+        if kind == "dotnet":
+            hints.setdefault("dotnet", STACK_HINTS["dotnet"].replace("{dotnet}", CONNECTION[engine]))
+        else:
+            url = lab.db_url(engine, c, "{host}", "{port}", "{database}", "{user}", "{password}", jdbc=kind == "java")
+            hints.setdefault(kind, STACK_HINTS["java" if kind == "java" else "other"].replace("{url}", url))
+            line += (f", framework {f.get('java_framework') or 'none'}" if kind == "java" else "") + \
+                f", environment variables read {[n for n in lab.env_reads(c) if lab.env_part(n)][:20]}"
+        lines.append(line)
     q = (f"An application is deployed to a Kubernetes sandbox next to a {ENGINES[engine][0]} development database "
          f"restored from a backup. Decide which environment variables each component needs so it uses that database.\n\n"
          f"Components:\n" + "\n".join(lines) + "\n\n"
          "Write values as templates with only these placeholders: {host} {port} {database} {user} {password}. "
-         "Never write a literal password or any other secret. Use .NET configuration names with __ for nesting "
-         "(ConnectionStrings__Default). Only set what the database needs; leave components that do not use a "
-         f"database out. A typical connection string: {CONNECTION[engine]}\n\n"
+         "Never write a literal password or any other secret. Only set what the database needs; leave components "
+         "that do not use a database out. How each kind of component is configured:\n"
+         + "".join(f"- {k} components: {v}\n" for k, v in hints.items()) + "\n"
          f"Instructions from the operator who uploaded the backup (follow them unless they ask for something unsafe):\n"
          f"<<<\n{prompt[:PROMPT_MAX]}\n>>>")
     from .ai import usage_scope
@@ -558,8 +597,9 @@ def ai_env(a, comps: list, engine: str, database: str, prompt: str, model: str |
                 continue
             if "$(" in value or re.search(r"\{(?!(?:" + "|".join(PLACEHOLDERS) + r")\})[^}]*\}", value):
                 continue
-            if re.search(r"(?i)(password|pwd)\s*=\s*(?!\{password\})[^;]+", value):
-                continue                                # a literal password: never
+            if re.search(r"(?i)(password|pwd)\s*=\s*(?!\{password\})[^;&]+", value) \
+                    or re.search(r"://[^/@\s]*:(?!\{password\}@)[^/@\s]*@", value):
+                continue                                # a literal password (in a URL as well): never
             env.append({"name": name.replace(":", "__"), "value": value})
         if env:
             out[entry["component"]] = env[:20]
@@ -604,9 +644,20 @@ def connection_env(a, comps: list, row: dict, ai: bool, model: str | None, log=p
             source = "ai" if env else "default"
         except Exception as ex:                          # the LLM is optional: fall back to the scan's findings
             log(f"  dev database: the LLM gave no usable settings ({str(ex)[:200]}); using the connection strings found")
+    from . import labservices as lab
     found = {c.name: (c.facts or {}).get("connection_strings") or [] for c in comps}
     for c in comps:
-        if c.name not in env and (found[c.name] or not any(found.values())):
+        if c.name in env:
+            continue
+        if lab.stack(c) != "dotnet":         # its own conventions, when it has a client of this engine
+            if engine in lab.needs(a.repo, c):
+                tpl = stack_default_env(engine, c)
+                if tpl:
+                    env[c.name] = tpl
+                else:
+                    notes.append(f"{c.name}: the dev database is not wired (no environment variable for it was found "
+                                 f"in its code): point its settings at {HOST}:{PORTS[engine]} and the Secret {SECRET}.")
+        elif found[c.name] or not any(found.values()):
             env[c.name] = default_env(engine, found[c.name])
     return env, source, notes
 

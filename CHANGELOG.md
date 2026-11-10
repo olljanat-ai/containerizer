@@ -10,6 +10,21 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- **Lab services for Java, Node.js, Python and Go.** A component is found by the client packages of its own ecosystem
+  (`org.postgresql:postgresql`, `pg`, `psycopg`, `pgx`, `spring-boot-starter-amqp`, `kafkajs`, `pymongo`, ...) and
+  pointed at the lab through the variables its framework binds (Spring Boot `SPRING_DATASOURCE_URL`/`_USERNAME`/
+  `_PASSWORD`, `SPRING_RABBITMQ_*`, `SPRING_DATA_REDIS_*`, `SPRING_DATA_MONGODB_URI`, `SPRING_KAFKA_BOOTSTRAP_SERVERS`;
+  Quarkus and Micronaut datasources), else the ones its code reads (`process.env.X`, `os.environ`, `os.Getenv`,
+  `System.getenv`, `.env.example`), else a common name (`DATABASE_URL`, `REDIS_URL`, `MONGODB_URI`, `AMQP_URL`,
+  `KAFKA_BROKERS`) with a note in `lab/README.md`. URLs are written in the form the stack's client takes (JDBC,
+  `postgresql://`, Go DSNs), with the user name and password as Secret references. When the scan cannot tell which
+  setting to use, `lab/README.md` says the service is not wired for the component and names the Secret and its keys.
+  Before, these components were not detected at all.
+- **Dev databases for the same stacks.** Without the LLM, a Java, Node.js, Python or Go component with a client of the
+  database's engine gets its own variables instead of `ConnectionStrings__DefaultConnection`; the LLM is told each
+  component's conventions and the variables it reads; a literal password inside a URL is dropped like one in a
+  connection string.
+
 - **Rules that fitted the sample applications are general.** A review of the rules and the code against the
   [containerization challenge](https://github.com/onek8s/containerization-challenge) apps they were first written for:
   - Projects named `*.Lab` or `*.Simulator` are applications again, not tools (`*Stubs`, `*Mocks` and `*Fakes` are
