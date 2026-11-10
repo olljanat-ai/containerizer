@@ -8,6 +8,10 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.30.0 (2026-11-10)
+
+An installer release with the ISO for new and re-installed appliances; the application is the same as 0.23.1.
+
 ## 0.23.1 (2026-11-10)
 
 A patch release: no OS image changes, appliances install it as an app update.
