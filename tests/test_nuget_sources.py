@@ -56,8 +56,8 @@ def test_plan_adds_registered_names_and_lists_unknown(tmp_path):
     root = _repo(tmp_path, more='<packageSource key="Shared"><package pattern="Shared.*" /></packageSource>')
     known = {"contoso": ("Contoso", MAIN)}
     got = nugetsources.plan_sources(root, "src/Web/Web.csproj", known)
-    assert got == {"config": "NuGet.Config", "add": [["Contoso", MAIN]], "missing": ["Shared"],
-                   "same": []}
+    # not cleared: the user-level NuGet.Config, as on a developer's machine
+    assert got == {"config": "", "add": [["Contoso", MAIN]], "machine": [], "missing": ["Shared"], "same": []}
 
 
 def test_defined_sources_need_nothing(tmp_path):
@@ -84,9 +84,10 @@ def test_a_url_is_added_once(tmp_path):
 
 def test_nearest_config_gets_the_sources(tmp_path):
     root = _repo(tmp_path)
-    write(root, "src/nuget.config", "<configuration><packageSources /></configuration>")
+    write(root, "src/nuget.config", "<configuration><packageSources><clear /></packageSources></configuration>")
     got = nugetsources.plan_sources(root, "src/Web/Web.csproj", {"contoso": ("Contoso", MAIN)})
-    assert got["config"] == "src/nuget.config" and got["add"] == [["Contoso", MAIN]]
+    # cleared: the user-level config does not count, the nearest config gets them
+    assert got["config"] == "src/nuget.config" and got["add"][-1] == ["Contoso", MAIN]
 
 
 def test_broken_config_is_ignored(tmp_path):
@@ -107,11 +108,11 @@ def test_generated_dockerfile_and_migration(tmp_path, monkeypatch):
     generate_app(a, out)
     comp = k8s_name(a.components[0].name)
     df = (out / comp / "Dockerfile").read_text()
-    add = f"RUN dotnet nuget add source {MAIN} -n Contoso --configfile NuGet.Config"
+    add = f"RUN dotnet nuget add source {MAIN} -n Contoso --configfile {nugetsources.USER_CONFIG}"
     assert add in df and df.index(add) < df.index("dotnet restore")
     assert "nuget-sources: NuGet.Config maps packages to Contoso" in df and "tok" not in df
     md = (out / "MIGRATION.md").read_text()
-    assert "## NuGet package sources" in md and f"`Contoso`: added as {MAIN}" in md
+    assert "## NuGet package sources" in md and f"`Contoso`: {MAIN} (mapped by packageSourceMapping)" in md
     # an npm feed's names are not NuGet sources
     assert "`Old feed`: **not defined**" in md
 
@@ -125,3 +126,44 @@ def test_no_mapping_no_change(tmp_path, monkeypatch):
     generate_app(a, out)
     assert "nuget add source" not in (out / k8s_name(a.components[0].name) / "Dockerfile").read_text()
     assert "NuGet package sources" not in (out / "MIGRATION.md").read_text()
+
+
+KNOWN = {"internal": ("internal", MAIN), "contoso": ("Contoso", MAIN),
+         "legacy": ("legacy", "https://pkgs.dev.azure.com/contoso/_packaging/legacy/nuget/v3/index.json")}
+
+
+def test_no_config_gets_the_machine_sources(tmp_path):
+    # NU1101 "No packages exist with this id in source(s): nuget.org": the internal feed is only in the developers'
+    # own NuGet.Config, and the repository names it nowhere
+    root = tmp_path / "app"
+    web_app(root)
+    got = nugetsources.plan_sources(root, "src/Web/Web.csproj", KNOWN)
+    assert got["config"] == "" and got["add"] == [] and got["machine"] == [
+        ["internal", MAIN], ["legacy", KNOWN["legacy"][1]]]          # each URL once, under its first name
+    lines = nugetsources.dockerfile_lines({"nuget_sources": got})
+    assert f"-n internal --configfile {nugetsources.USER_CONFIG}" in lines[1] and "Contoso" not in lines[1]
+
+
+def test_config_without_mapping_gets_the_ones_it_lacks(tmp_path):
+    root = tmp_path / "app"
+    web_app(root)
+    write(root, "nuget.config", f'<configuration><packageSources><add key="corp" value="{MAIN}" />'
+                                "</packageSources></configuration>")
+    got = nugetsources.plan_sources(root, "src/Web/Web.csproj", KNOWN)
+    assert got["machine"] == [["legacy", KNOWN["legacy"][1]]]
+
+
+def test_cleared_or_mapped_repositories_get_no_machine_sources(tmp_path):
+    root = tmp_path / "app"
+    web_app(root)
+    write(root, "NuGet.Config", '<configuration><packageSources><clear /><add key="nuget.org" '
+                                'value="https://api.nuget.org/v3/index.json" /></packageSources></configuration>')
+    assert nugetsources.plan_sources(root, "src/Web/Web.csproj", KNOWN) is None
+    root2 = _repo(tmp_path / "b", sources=f'<add key="Contoso" value="{MAIN}" />')
+    assert nugetsources.plan_sources(root2, "src/Web/Web.csproj", KNOWN) is None
+
+
+def test_no_registered_sources_no_change(tmp_path):
+    root = tmp_path / "app"
+    web_app(root)
+    assert nugetsources.plan_sources(root, "src/Web/Web.csproj", {}) is None
