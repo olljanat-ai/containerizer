@@ -41,7 +41,8 @@ explains how the assessment works and what it generates. To install and use it, 
    projects, ASP.NET Web Site projects listed in a .sln), source and configuration. Nothing from the scanned repository is executed.
    Java and Node.js have their own parsers (see [Java and Node.js](java-node.md)): Maven parents,
    profiles and modules, Gradle version catalogs and `subprojects {}`, npm/yarn/pnpm workspaces, and
-   the lockfile's Windows-only and native packages.
+   the lockfile's Windows-only and native packages. Python and Go too (see [Python and Go](python-go.md)):
+   every manifest and lockfile of a Python folder, and one component per Go main package.
 2. **Role rules** (`rules/00-roles.yaml`) decide what each project is: web, worker, console, spa,
    desktop, library, test, tool, BizTalk, SharePoint, Sitecore XP, SQL CLR, SSIS.
 3. **Fact rules** (`rules/05-facts.yaml`) extract ports, health endpoints, run-once arguments,
@@ -367,6 +368,8 @@ and `MIGRATION.md`.
 Java (Maven/Gradle; Spring Boot, Quarkus, plain JVM programs, WARs on Tomcat) and Node.js
 (npm/pnpm/yarn; Express, NestJS, Next.js and others) components get distroless, non-root images
 built on the runtime line they declare; see [Java and Node.js](java-node.md#containers).
+Python (pip, Poetry, uv, Pipenv; Flask, FastAPI, Django and others, on the server they declare) and Go
+(static builds on distroless) components too; see [Python and Go](python-go.md#containers).
 
 GitOps: every app also gets `gitops/flux/`, its Flux configuration (Flux is the only GitOps tool):
 

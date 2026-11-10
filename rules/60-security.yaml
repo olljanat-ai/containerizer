@@ -46,6 +46,8 @@ hardening:
     spa: 101              # nginx-unprivileged
     java: 65532           # 'nonroot' of the distroless images (also set in the Temurin and Tomcat images)
     node: 65532           # 'nonroot' of the distroless Node.js images
+    python: 65532         # set by the generated Dockerfile (USER 65532) on the slim Python images
+    go: 65532             # 'nonroot' of the distroless static/base images
     default: 10001
 
   # Exceptions: added only when `when` (rule conditions, see rules.py) and
@@ -473,6 +475,7 @@ images:
     - {match: '(^|/)python:3\.10\b', eol: 2026-10-31, next: '3.12'}
     - {match: '(^|/)python:3\.11\b', eol: 2027-10-31}
     - {match: '(^|/)python:3\.12\b', eol: 2028-10-31}
+    - {match: '(^|/)python:3\.13\b', eol: 2029-10-31}
     - {match: '(^|/)golang:1\.2[0-3]\b', eol: 2025-08-12, next: '1.26'}
     - {match: '(^|/)golang:1\.24\b', eol: 2026-02-11, next: '1.26'}
     - {match: '(^|/)golang:1\.25\b', eol: 2026-08-12, next: '1.26'}

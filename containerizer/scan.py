@@ -25,6 +25,7 @@ CONFIG_PATTERNS = ["*.config", "appsettings*.json", "launchSettings.json", "*.se
 MAX_FILE_BYTES = 512 * 1024
 WEB_APP_GUID = "349c5851-65df-11da-9384-00065b846f21"
 DOTNET_PROJ_EXT = (".csproj", ".vbproj", ".fsproj")
+PY_MANIFESTS = ("requirements.txt", "pyproject.toml", "Pipfile", "setup.py")
 OTHER_PROJ_EXT = (".btproj", ".sqlproj", ".dtproj", ".wixproj", ".rptproj", ".ccproj", ".sfproj")
 
 
@@ -1440,10 +1441,12 @@ def scan(root: str | Path) -> Repo:
             projects.append(p)
         elif n == "package.json":
             projects.append(parse_node_project(f, root))
-        elif n in ("requirements.txt", "pyproject.toml") and not any(p.kind_hint == "python" and p.dir == f.parent for p in projects):
-            projects.append(parse_generic(f, root, "python"))
+        elif f.name in PY_MANIFESTS and not any(p.kind_hint == "python" and p.dir == f.parent for p in projects):
+            from .scan_python_go import parse_python_project
+            projects.append(parse_python_project(f, root))
         elif n == "go.mod":
-            projects.append(parse_generic(f, root, "go"))
+            from .scan_python_go import parse_go_projects
+            projects += parse_go_projects(f, root, files)
         elif n == "pom.xml":
             from .scan_java import parse_maven_project
             projects.append(parse_maven_project(f, root))
