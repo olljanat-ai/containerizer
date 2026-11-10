@@ -8,6 +8,19 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- **Settings of other environments stay out of the image.** The generated `Dockerfile.dockerignore` left out
+  `appsettings.Development.json` but kept `appsettings.Release.json`, `appsettings.Staging.json` and the like. The
+  container runs as Production, so .NET never loads them; they only brought another environment's hosts and secrets
+  into the image. They are now left out too, unless the code or a project file names the file or builds its name
+  (`$"appsettings.{env}.json"`, `appsettings.$(Configuration).json`).
+
+- **The connectivity diagram shows in Azure Repos.** `CONNECTIVITY.md` in the output repository embedded the diagram
+  as `connectivity.svg`, which Azure Repos does not show in the markdown preview. The diagram is now a Mermaid block
+  in `CONNECTIVITY.md` (Azure Repos, GitHub and GitLab draw it), with the same columns and line colours; the SVG is
+  still written and linked.
+
 ## 0.31.0 (2026-11-10)
 
 A minor release with the ISO for new and re-installed appliances.

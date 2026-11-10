@@ -55,8 +55,11 @@ folder is `containerizer-build/`.
 <generated>/<component>/Dockerfile <application folder>`): the generated Dockerfiles copy paths relative to
 it. `Dockerfile.dockerignore` next to the Dockerfile is the context filter: BuildKit (the default builder of
 current Docker, and of all three pipelines) reads `<Dockerfile>.dockerignore` instead of the context's
-`.dockerignore`. It leaves out `bin/`, `obj/`, `node_modules/`, secrets files and the pipeline's own
-`containerizer/` folder. Build locally the same way:
+`.dockerignore`. It leaves out `bin/`, `obj/`, `node_modules/`, secrets files, the pipeline's own
+`containerizer/` folder and the settings of environments the container does not run as: it runs as Production, so
+`appsettings.Development.json`, `appsettings.Release.json`, `appsettings.Staging.json` and the like stay out, unless
+the code or a project file names one (`AddJsonFile("appsettings.Release.json")`) or builds the name
+(`$"appsettings.{env}.json"`, `appsettings.$(Configuration).json`), when they are all kept. Build locally the same way:
 
 ```sh
 DOCKER_BUILDKIT=1 docker build -f containerizer/<component>/Dockerfile .
