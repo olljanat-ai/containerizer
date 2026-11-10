@@ -12,6 +12,16 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 The OS image changes (`appliance/`: the Mailpit image pin): a minor release.
 
+- The **WCF port plan** fits the service it was found in (#267). The CoreWCF packages come from the bindings found:
+  `CoreWCF.NetTcp` for netTcpBinding, `CoreWCF.WebHttp` for webHttpBinding and `[WebGet]`/`[WebInvoke]`,
+  `CoreWCF.Http` for HTTP bindings and `.svc` endpoints, and `CoreWCF.ConfigurationManager` with a step to keep the
+  `<system.serviceModel>` services section instead of rewriting the endpoints in code. The plan no longer says
+  "change the using to CoreWCF": contract assemblies that clients also reference keep their `System.ServiceModel`
+  attributes, which CoreWCF hosts. `WorkflowServiceHost` and `.xamlx` count as WCF service hosts (`wcf-server`
+  instead of `wcf-client`), and the WF4 plan says that CoreWF has no workflow-service hosting. A .NET Framework
+  client of a netTcpBinding service no longer gets `wcf-nettcp-msmq`. Migrations can now have `variants`
+  (`rules/migrations.yaml`) and rules `superseded_by` (a component that hosts WCF services no longer also gets the
+  `wcf-client` info finding).
 - **Lab mail** (#280): a new lab service, **Mail (SMTP)**, on by default, gives each application that sends mail
   its own catch-all mailbox in the sandbox ([Mailpit](https://github.com/axllent/mailpit), MIT, pinned by digest;
   never relays). The scan finds mail senders (MailKit, FluentEmail, `SmtpClient`, `SmtpDeliveryMethod`) and their

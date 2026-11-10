@@ -129,6 +129,9 @@ has callers that cannot be followed, so the hit counts. `unguarded: callers` app
 check (for an annotation on the type itself, as `supported-os-windows` does). `same_file: true` next to
 an `all` requires its `code`/`config`/`text` conditions to match in the same file (e.g. an assembly
 loader *and* an install path probe, not two unrelated files).
+`superseded_by: [<rule id>, ...]` drops a finding when the component also has an active finding of one of
+those rules, because that finding says more (`wcf-client` gives way to `wcf-server` in a component that
+hosts WCF services and reaches client code through its libraries).
 
 The scanner evaluates the target-framework part of MSBuild conditions: an item under
 `Condition="'$(TargetFramework)' == 'net472'"` (also `TargetFrameworkIdentifier`,
@@ -275,6 +278,15 @@ instead of being forced into a code change.
   steps: [...]
   verify: [...]
 ```
+
+An entry can have `variants`, each a `when` condition (as a finding rule's) with its own packages and
+steps, added when the condition holds for the component. The WCF port plan uses them to pick the CoreWCF
+packages from the bindings found (`CoreWCF.NetTcp` for netTcpBinding, `CoreWCF.WebHttp` for
+webHttpBinding and `[WebGet]`/`[WebInvoke]`, `CoreWCF.Http` for HTTP bindings and `.svc` endpoints) and to
+keep a `<system.serviceModel>` services section with `CoreWCF.ConfigurationManager` instead of rewriting
+it in code. The plan keeps the `System.ServiceModel` attributes in contract assemblies that clients also
+reference, since CoreWCF hosts them as they are; WF4 workflow services (`WorkflowServiceHost`, `.xamlx`)
+count as WCF services, and their plan says that CoreWF does not host them as endpoints.
 
 The plan is also rendered as a self-contained **prompt for AI coding agents** (Claude Code, GitHub
 Copilot, ...): the findings with their evidence, the replacements in order, constraints (minimal
