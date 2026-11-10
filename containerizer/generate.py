@@ -173,6 +173,15 @@ def default_plan(c: Component) -> dict:
         plan["args"].append(str(c.facts["console_arg"]))
         add_reason(plan, "console-switch", f"The app starts as a Windows service unless it gets "
                    f"{c.facts['console_arg']}; the container passes it so it runs as a console app.")
+    if getattr(c, "role_rule", "") == "role-runs-until-stopped":
+        add_reason(plan, "workload-deployment", "A console program that runs until it is stopped (it sleeps "
+                   "forever, blocks on its host's Run() or polls in a loop until cancelled): it runs as a Deployment, "
+                   "not as a CronJob.")
+    elif c.role == "console" and p.kind_hint == "dotnet":
+        add_reason(plan, "workload-cronjob", "A console program that does its work and exits: it runs as a CronJob "
+                   "(one per sub-command), on the schedule of the repository's Task Scheduler job when there is "
+                   "one. A program that should keep running is a Deployment: say so with a plan rule or change the "
+                   "manifest.")
     if c.role == "web" and p.kind_hint == "dotnet":
         plan["env"]["ASPNETCORE_HTTP_PORTS"] = str(CONTAINER_PORT)
         for i, ep in enumerate(c.facts.get("kestrel_endpoints", []) or []):
@@ -301,11 +310,15 @@ def dataprotection_plan(plan: dict, facts: dict) -> None:
 def linux_path(plan: dict, val: str) -> str | None:
     """The Linux replacement of a Windows path from configuration: an installed tool becomes its
     Linux binary name (from PATH), a key or certificate file comes from the Secret volume at
-    /secrets, anything else moves under /data (made writable; the manifests mount it)."""
+    /secrets, anything else moves under /data (made writable; the manifests mount it). The drive or the
+    \\\\server\\share is dropped; when two of them have the same folder (\\\\fs1\\in\\orders and \\\\fs2\\in\\orders), the
+    second one keeps its drive or server and share in the path (/data/fs2-in/orders), so they stay two folders."""
     segs = [s for s in re.split(r"[\\/]+", val) if s]
     if not segs:
         return None
-    segs = segs[1:] if re.fullmatch(r"[A-Za-z]:", segs[0]) else segs[2:]   # drop drive or \\server\share
+    drive = bool(re.fullmatch(r"[A-Za-z]:", segs[0]))
+    origin = segs[0][0].lower() if drive else "-".join(k8s_name(x) for x in segs[:2])
+    segs = segs[1:] if drive else segs[2:]   # drop drive or \\server\share
     is_file = bool(re.search(r"\.[A-Za-z]\w{0,7}$", segs[-1])) if segs else False
     if any(x.lower() in ("program files", "program files (x86)") for x in segs[:1]) or val.lower().endswith(".exe"):
         if not is_file:
@@ -321,6 +334,10 @@ def linux_path(plan: dict, val: str) -> str | None:
         return f"/secrets/{segs[-1]}"
     folder = "/data/" + "/".join(k8s_name(s) for s in (segs[:-1] if is_file else segs)) if segs else "/data"
     folder = folder.rstrip("/") or "/data"
+    origins = plan.setdefault("data_origins", {})
+    if origins.setdefault(folder, origin) != origin:      # another drive or share already has this folder
+        folder = "/data/" + origin + folder[len("/data"):]
+        origins.setdefault(folder, origin)
     if folder not in plan["add_writable"]:
         plan["add_writable"].append(folder)
     return f"{folder}/{segs[-1]}" if is_file else folder

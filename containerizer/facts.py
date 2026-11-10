@@ -8,6 +8,13 @@ from pathlib import Path
 
 from .rules import Context, Rule, run_rule
 
+# sub-commands declared with a command-line library: System.CommandLine `new Command("import", ...)`,
+# CommandLineParser `[Verb("import")]`, Spectre.Console.Cli `AddCommand<T>("import")` / `AddBranch("import", ...)`,
+# McMaster.Extensions.CommandLineUtils `[Command("import")]` / `app.Command("import", ...)`
+CLI_VERB_RE = re.compile(r'(?:\bnew\s+Command\s*\(|\[\s*(?:Verb|Command)\s*\((?:\s*Name\s*[=:])?'
+                         r'|\.AddCommand\s*<[\w.<>, ]+>\s*\(|\.AddBranch\s*(?:<[\w.<>, ]+>)?\s*\(|\.Command\s*\()'
+                         r'\s*"([a-z][\w-]*)"')
+
 FOLDER_KEY = re.compile(r"(folder|path|dir|directory|root|location|store|share|inbox|outbox|archive)$", re.I)
 # a connection string that is only an embedded database file in the app folder (no folder, no password)
 EMBEDDED_DB = re.compile(r"(Data\s*Source|DataSource|Filename)\s*=\s*[\w\-.]+\.(db|sqlite3?|litedb)\s*;?\s*"
@@ -190,13 +197,16 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
             sections = find_sections(cfg)
             if sections:
                 facts["auth_sections"] = sections
-    # sub-commands of a console tool: "Usage: Jobs <refunds|reminders|purge>" or case "refunds": in Program.cs
+    # sub-commands of a console tool: "Usage: Tool <import|export|purge>", an array of verbs, case "import": in
+    # Program.cs, or the commands declared with a command-line library
     if comp.role == "console" and "oneshot_arg" not in facts:
         cmds: list[str] = []
+        declared: list[str] = []
         for f in p.source_files():
             if f.suffix.lower() != ".cs":
                 continue
             txt = p.text(f)
+            declared += [m.group(1) for m in CLI_VERB_RE.finditer(txt)]
             m = re.search(r"Usage:[^\"\n]*?[<\[]((?:[\w-]+\|)+[\w-]+)[>\]]", txt)
             if m:
                 cmds = m.group(1).split("|")
@@ -207,6 +217,9 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
                 break
             if f.name == "Program.cs":
                 cmds = [x for x in re.findall(r'^\s*case\s+"([a-z][\w-]*)"\s*:', txt, re.M)]
+        if len(cmds) < 2:
+            own = {str(x).lower() for x in (p.name, p.assembly_name, p.path.stem) if x}   # the tool's own name
+            cmds = [x for x in dict.fromkeys(declared) if x.lower() not in own]
         if len(cmds) >= 2:
             facts["commands"] = cmds
     # NLog folders taken from configuration with a Windows default:

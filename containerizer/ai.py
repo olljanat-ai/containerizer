@@ -996,10 +996,10 @@ APP_SCHEMA = {
 RATING_HELP = ("Ratings: A container-ready (modern stack: all server components run in Linux containers with "
                "configuration only, no code changes); "
                "B minor refactoring; C partial (some server components cannot run in Linux containers and must stay "
-               "on Windows, at least a quarter of them can, and those need at most minor changes); "
+               "on Windows, the rest can, and those need at most minor changes); "
                "D major refactoring (framework port, e.g. .NET Framework to .NET 8, or a Java EE "
                "server application to an embedded server, also when other components must stay on Windows); "
-               "E not feasible (three quarters or more of the server components cannot, or there is "
+               "E not feasible ({share:.0%} or more of the server components cannot, or there is "
                "no server component). Desktop clients, test tools and database-tier code (SQL CLR, SSIS) do not count "
                "as server components.")
 
@@ -1019,7 +1019,8 @@ def app_inventory(a, with_rules: bool) -> str:
 
 
 def ai_only_assess(a, model: str | None = None, with_rules: bool = False) -> dict:
-    prompt = (app_inventory(a, with_rules) + "\n\n" + RATING_HELP +
+    from .assess import not_feasible_share
+    prompt = (app_inventory(a, with_rules) + "\n\n" + RATING_HELP.format(share=not_feasible_share()) +
               "\n\nTask: rate this application and give a verdict for every deployable server component "
               "(use the project names above).")
     r = ask_json(prompt, APP_SCHEMA, model=model, feature="assessment")

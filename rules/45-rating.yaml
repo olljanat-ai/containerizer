@@ -1,0 +1,5 @@
+# The application's rating (containerizer/assess.py AppAssessment.rating, docs/overview.md).
+rating:
+  # E (not feasible) when at least this share of the server components cannot run in Linux containers (verdict
+  # blocker); below it the application is C, partial (or D when a component needs a framework port).
+  not_feasible_share: 0.75
