@@ -247,7 +247,8 @@ def list_page(adm, conn, s, a, flash: str) -> Response:
             kind = cr.FEED_KINDS.get(r["Provider"]) if purpose == "feed" else None
             out.append(f"<tr><td><a href='/admin/source-control/{int(r['CredentialId'])}'>{e(r['Scope'])}</a>"
                        f"<div class='muted small'>{e(kind or cr.PROVIDER_TEXT.get(r['Provider'], r['Provider']))}"
-                       f"{' · user ' + e(r['FeedUser']) if r.get('FeedUser') else ''}</div></td>"
+                       f"{' · user ' + e(r['FeedUser']) if r.get('FeedUser') else ''}"
+                       f"{_names(r)}</div></td>"
                        f"<td>{where}</td><td>{_chips(status(r, kid, today))}<div class='muted small'>token saved "
                        f"{_d(r['TokenSetAt'])} by {e(r['TokenSetBy'])}</div></td><td>{used_html}</td><td>{last}</td></tr>")
         what = {"read": "Organization", "feed": "Feed"}.get(purpose, "Repository")
@@ -297,6 +298,7 @@ worker's feed proxy adds it to the builds' requests under this URL, and only to 
 <input id='fScope' name='Scope' type='url' required maxlength='400' placeholder='https://pkgs.dev.azure.com/contoso/'>
 <label for='fFeedUser'>User name <span class='muted'>(empty: the token is sent alone, as a bearer token)</span></label>
 <input id='fFeedUser' name='FeedUser' maxlength='200' autocomplete='off' spellcheck='false'>
+{_sources_input('f')}
 {_token_input('fToken')}{_common_inputs('f')}
 <div><button>Add</button></div></form>"""
         from .ai import CLAUDE_DEFAULT_MODEL
@@ -452,6 +454,48 @@ def validate_llm(form: dict) -> tuple[dict, list[str]]:
     return v, errors
 
 
+def _names(r: dict) -> str:
+    """The NuGet source names of a feed row, for the feeds table."""
+    names = [n.strip() for line in (r.get("NuGetSources") or "").splitlines()
+             for n in line.partition("=")[0].split(",") if n.strip() and not line.strip().startswith("#")]
+    return f" · NuGet names {e(', '.join(names))}" if names else ""
+
+
+def _sources_input(prefix: str, value: str = "") -> str:
+    return (f"<label for='{prefix}NuGetSources'>NuGet source names <span class='muted'>(NuGet only, optional: the "
+            f"names projects' NuGet.Config packageSourceMapping uses for this feed, one source per line as "
+            f"<code>name, other name = source URL</code> under the feed URL; a line of names alone means the feed "
+            f"URL)</span></label>"
+            f"<textarea id='{prefix}NuGetSources' name='NuGetSources' rows='3' maxlength='2000' spellcheck='false' "
+            f"placeholder='internal, Contoso = https://pkgs.dev.azure.com/contoso/_packaging/main/nuget/v3/index.json'>"
+            f"{e(value)}</textarea>")
+
+
+def validate_sources(form: dict, feed_url: str, conn=None, ident: int | None = None) -> tuple[str | None, list[str]]:
+    """A NuGet feed's source names text (nugetsources.parse), unique across the NuGet feeds: (text or None, errors)."""
+    from . import nugetsources
+    text = form.get("NuGetSources", [""])[0].replace("\r\n", "\n").strip()
+    try:
+        mine = nugetsources.parse(text, feed_url)
+    except ValueError as ex:
+        return None, [str(ex)]
+    if mine and conn is not None:
+        cur = conn.cursor()
+        cur.execute("SELECT Scope, NuGetSources FROM cz.SourceCredential WHERE Purpose = N'feed' AND Provider = N'nuget' "
+                    "AND NuGetSources IS NOT NULL" + (" AND CredentialId <> %s" if ident is not None else ""),
+                    (ident,) if ident is not None else None)
+        others = []
+        for scope, t in cur.fetchall():
+            try:
+                others.append(nugetsources.parse(t, scope))
+            except ValueError:
+                pass
+        taken = nugetsources.clashes(mine, others)
+        if taken:
+            return None, ["NuGet source names already given to another feed: " + ", ".join(taken)]
+    return text or None, []
+
+
 def validate_feed(form: dict) -> tuple[dict, list[str]]:
     v, errors = _common(form)
     prov = form.get("Provider", [""])[0]
@@ -470,6 +514,10 @@ def validate_feed(form: dict) -> tuple[dict, list[str]]:
     if user and not FEED_USER_RE.fullmatch(user):
         errors.append("User name: letters, digits and . @ + - _ only")
     v["FeedUser"] = user or None
+    v["NuGetSources"] = None
+    if prov == "nuget" and url and not errors:
+        v["NuGetSources"], more = validate_sources(form, url)
+        errors += more
     tok = form.get("Token", [""])[0].strip()
     err = cr.check_token_text(tok)
     errors += [err] if err else []
@@ -526,17 +574,19 @@ def add(adm, conn, s, purpose: str, form: dict) -> Response:
     if pub is None:
         return _back("/admin/source-control", "Not saved: the web UI has no worker public key.")
     v, errors = validate(purpose, form)
+    if not errors and v.get("NuGetSources"):
+        v["NuGetSources"], errors = validate_sources(form, v["Scope"], conn)
     if errors:
         return _back("/admin/source-control", "Not saved: " + "; ".join(errors))
     sealed = cr.seal(pub, v.pop("Token"), cr.binding(purpose, v["Provider"], v["ApiUrl"], v["Scope"]))
     cur = conn.cursor()
     try:
         cur.execute("INSERT cz.SourceCredential (Purpose, Provider, ApiUrl, Host, Scope, Model, Note, ExpiresOn, TokenSealed, "
-                    "KeyId, TokenSetBy, LlmOrder, LlmMaxTokens, LlmParallel, FeedUser) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, "
-                    "%s, %s, %s, %s, %s, %s, %s); SELECT CAST(SCOPE_IDENTITY() AS int)",
+                    "KeyId, TokenSetBy, LlmOrder, LlmMaxTokens, LlmParallel, FeedUser, NuGetSources) VALUES (%s, %s, %s, %s, %s, %s, %s, "
+                    "%s, %s, %s, %s, %s, %s, %s, %s, %s); SELECT CAST(SCOPE_IDENTITY() AS int)",
                     (purpose, v["Provider"], v["ApiUrl"], v["Host"], v["Scope"], v.get("Model"), v["Note"], v["ExpiresOn"],
                      sealed, kid, s.user[:256], v.get("LlmOrder", 10), v.get("LlmMaxTokens", 0), v.get("LlmParallel", 1),
-                     v.get("FeedUser")))
+                     v.get("FeedUser"), v.get("NuGetSources")))
         ident = cur.fetchone()[0]
         conn.commit()
     except Exception as ex:
@@ -600,7 +650,8 @@ def edit_page(adm, conn, s, a, ident: int, flash: str) -> Response:
                 f"value='{e(c.model)}'>{_llm_route_inputs('s', r)}") if llm else ""
     if feed:
         model_in = (f"<label for='sFeedUser'>User name <span class='muted'>(empty: the token is sent alone, as a bearer "
-                    f"token)</span></label><input id='sFeedUser' name='FeedUser' maxlength='200' value='{e(c.username)}'>")
+                    f"token)</span></label><input id='sFeedUser' name='FeedUser' maxlength='200' value='{e(c.username)}'>"
+                    + (_sources_input('s', c.nuget_sources) if c.provider == "nuget" else ""))
     settings = (f"<form method='post' action='/admin/source-control/{ident}' class='edit'>{adm._csrf(s)}"
                 f"{model_in}{_common_inputs('s', r)}<label class='check'><input type='checkbox' name='Enabled' value='1'"
                 f"{' checked' if r['Enabled'] else ''}> Enabled (unchecked: scans that need it do not run)</label>"
@@ -662,11 +713,17 @@ def save_settings(adm, conn, s, ident: int, form: dict) -> Response:
         feed_user = form.get("FeedUser", [""])[0].strip()
         if feed_user and not FEED_USER_RE.fullmatch(feed_user):
             errors.append("User name: letters, digits and . @ + - _ only")
+    sources = None
+    if r["Purpose"] == "feed" and r["Provider"] == "nuget":
+        sources, more = validate_sources(form, r["Scope"], conn, ident)
+        errors += more
     if errors:
         return _back(back, "Not saved: " + "; ".join(errors))
     cur = conn.cursor()
     if feed_user is not None:
         cur.execute("UPDATE cz.SourceCredential SET FeedUser = %s WHERE CredentialId = %s", (feed_user or None, ident))
+    if r["Purpose"] == "feed" and r["Provider"] == "nuget":
+        cur.execute("UPDATE cz.SourceCredential SET NuGetSources = %s WHERE CredentialId = %s", (sources, ident))
     extra = ", Model = %s, LlmOrder = %s, LlmMaxTokens = %s, LlmParallel = %s" if model is not None else ""
     cur.execute("UPDATE cz.SourceCredential SET Note = %s, ExpiresOn = %s, Enabled = %s" + extra + " WHERE CredentialId = %s",
                 (v["Note"], v["ExpiresOn"], form.get("Enabled", [""])[0] == "1",

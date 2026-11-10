@@ -410,6 +410,18 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
         feed_id = int(re.search(r"/admin/source-control/(\d+)/token", body)[1])
         s, _, body = b.follow(f"/admin/source-control/{feed_id}", {"csrf": csrf, "FeedUser": "ci-reader", "Enabled": "1"})
         assert "Saved." in body and "ci-reader" in body
+        # NuGet source names: under the feed's URL, unique across feeds
+        names = "internal, Contoso = https://pkgs.example.com/contoso/_packaging/main/nuget/v3/index.json\nlegacy"
+        s, _, body = b.follow(f"/admin/source-control/{feed_id}", {"csrf": csrf, "FeedUser": "ci-reader", "Enabled": "1",
+                                                                   "NuGetSources": "x = https://other.example.com/index.json"})
+        assert "is not under the feed&#x27;s URL" in body or "is not under the feed's URL" in body
+        s, _, body = b.follow(f"/admin/source-control/{feed_id}", {"csrf": csrf, "FeedUser": "ci-reader", "Enabled": "1",
+                                                                   "NuGetSources": names})
+        assert "Saved." in body and "internal, Contoso" in body
+        s, _, body = b.follow("/admin/source-control/feed", {"csrf": csrf, "Provider": "nuget",
+                                                             "Scope": "https://nuget.example.org/v3/", "Token": feed_tok,
+                                                             "NuGetSources": "CONTOSO"})
+        assert "already given to another feed: CONTOSO" in body
         body = b.follow("/admin/source-control")[2]
         assert "Package feeds" in body and "https://pkgs.example.com/contoso/" in body and feed_tok not in body
         c = sqlstore.connect(writer, PW)
@@ -417,6 +429,9 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
         c.close()
         assert [(f.provider, f.scope, f.username, f.token) for f in feeds] == \
             [("nuget", "https://pkgs.example.com/contoso/", "ci-reader", feed_tok)]
+        assert feeds[0].sources() == [("internal", "https://pkgs.example.com/contoso/_packaging/main/nuget/v3/index.json"),
+                                      ("Contoso", "https://pkgs.example.com/contoso/_packaging/main/nuget/v3/index.json"),
+                                      ("legacy", "https://pkgs.example.com/contoso/")]
         monkeypatch.setenv("CONTAINERIZER_FEED_PROXY_LISTEN", "127.0.0.1:0")
 
         # no worker has run yet: it computes the next run

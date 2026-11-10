@@ -1104,6 +1104,11 @@ GO
 IF COL_LENGTH(N'[${schema}].SourceCredential', N'FeedUser') IS NULL
     ALTER TABLE [${schema}].SourceCredential ADD FeedUser nvarchar(200) NULL;
 GO
+-- 47: a NuGet feed's source names (`name[, name] = source URL` lines): the build adds the sources a repository's
+-- packageSourceMapping names but does not define (nugetsources.py)
+IF COL_LENGTH(N'[${schema}].SourceCredential', N'NuGetSources') IS NULL
+    ALTER TABLE [${schema}].SourceCredential ADD NuGetSources nvarchar(2000) NULL;
+GO
 IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_SourceCredential_Purpose'
            AND parent_object_id = OBJECT_ID(N'[${schema}].SourceCredential') AND definition NOT LIKE N'%feed%')
     ALTER TABLE [${schema}].SourceCredential DROP CONSTRAINT CK_SourceCredential_Purpose;
@@ -1145,16 +1150,16 @@ BEGIN
            LEFT(COALESCE(i.Purpose, d.Purpose) + N': ' + COALESCE(i.Scope, d.Scope), 200),
            CASE WHEN d.CredentialId IS NULL THEN N'insert' WHEN i.CredentialId IS NULL THEN N'delete' ELSE N'update' END,
            CASE WHEN d.CredentialId IS NOT NULL THEN (SELECT d.Purpose, d.Provider, d.ApiUrl, d.Host, d.Scope, d.Model, d.Note, d.Enabled,
-                d.ExpiresOn, d.TokenSetAt, d.LlmOrder, d.LlmMaxTokens, d.LlmParallel, d.FeedUser FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+                d.ExpiresOn, d.TokenSetAt, d.LlmOrder, d.LlmMaxTokens, d.LlmParallel, d.FeedUser, d.NuGetSources FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
            CASE WHEN i.CredentialId IS NOT NULL THEN (SELECT i.Purpose, i.Provider, i.ApiUrl, i.Host, i.Scope, i.Model, i.Note, i.Enabled,
-                i.ExpiresOn, i.TokenSetAt, i.LlmOrder, i.LlmMaxTokens, i.LlmParallel, i.FeedUser FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+                i.ExpiresOn, i.TokenSetAt, i.LlmOrder, i.LlmMaxTokens, i.LlmParallel, i.FeedUser, i.NuGetSources FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
     FROM inserted i FULL OUTER JOIN deleted d ON d.CredentialId = i.CredentialId
     CROSS JOIN [${schema}].fnAuditWho() w
     WHERE d.CredentialId IS NULL OR i.CredentialId IS NULL
        OR EXISTS (SELECT i.Purpose, i.Provider, i.ApiUrl, i.Host, i.Scope, i.Model, i.Note, i.Enabled, i.ExpiresOn, i.TokenSetAt, i.KeyId,
-                         i.LlmOrder, i.LlmMaxTokens, i.LlmParallel, i.FeedUser
+                         i.LlmOrder, i.LlmMaxTokens, i.LlmParallel, i.FeedUser, i.NuGetSources
                   EXCEPT SELECT d.Purpose, d.Provider, d.ApiUrl, d.Host, d.Scope, d.Model, d.Note, d.Enabled, d.ExpiresOn, d.TokenSetAt, d.KeyId,
-                         d.LlmOrder, d.LlmMaxTokens, d.LlmParallel, d.FeedUser);
+                         d.LlmOrder, d.LlmMaxTokens, d.LlmParallel, d.FeedUser, d.NuGetSources);
 END;
 GO
 
@@ -1261,10 +1266,10 @@ GRANT SELECT ON [${schema}].RuleEvidence TO [${schema}_admin];
 -- source control tokens: the admin pages add, replace and remove them but cannot read the sealed token back;
 -- the worker reads them and records their use
 GRANT SELECT ON [${schema}].SourceCredential (CredentialId, Purpose, Provider, ApiUrl, Host, Scope, Model, Note, Enabled, ExpiresOn, KeyId,
-    TokenSetAt, TokenSetBy, CreatedAt, LastUsedAt, LastResult, LlmOrder, LlmMaxTokens, LlmParallel, FeedUser) TO [${schema}_admin];
+    TokenSetAt, TokenSetBy, CreatedAt, LastUsedAt, LastResult, LlmOrder, LlmMaxTokens, LlmParallel, FeedUser, NuGetSources) TO [${schema}_admin];
 GRANT INSERT, DELETE ON [${schema}].SourceCredential TO [${schema}_admin];
 GRANT UPDATE ON [${schema}].SourceCredential (Model, Note, Enabled, ExpiresOn, TokenSealed, KeyId, TokenSetAt, TokenSetBy,
-    LlmOrder, LlmMaxTokens, LlmParallel, FeedUser) TO [${schema}_admin];
+    LlmOrder, LlmMaxTokens, LlmParallel, FeedUser, NuGetSources) TO [${schema}_admin];
 GRANT SELECT ON [${schema}].SourceCredential TO [${schema}_writer];
 GRANT UPDATE ON [${schema}].SourceCredential (LastUsedAt, LastResult) TO [${schema}_writer];
 -- lab services: administrators turn them on or off; the system agent applies it
@@ -2779,4 +2784,6 @@ GRANT SELECT, INSERT, DELETE ON [${schema}].RoleAssignment TO [${schema}_admin];
 GRANT UPDATE ON [${schema}].RoleAssignment (UserAccountId, PendingEmail, Note) TO [${schema}_admin];
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 46) INSERT [${schema}].SchemaVersion (Version) VALUES (46);
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 47) INSERT [${schema}].SchemaVersion (Version) VALUES (47);
 GO

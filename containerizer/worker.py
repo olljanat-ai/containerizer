@@ -1003,7 +1003,7 @@ class Worker:
         for c in creds.feeds():
             if c.token:
                 REDACT.add(c.token, c.username)
-                feeds.append(feedproxy.Feed(c.provider, c.scope, c.token, c.username, c))
+                feeds.append(feedproxy.Feed(c.provider, c.scope, c.token, c.username, c, c.sources()))
         return feedproxy.use(feeds, self.data, log=self.log)
 
     def discover(self, scan: dict, store, hooks, creds, read, name: str) -> tuple[str, str]:

@@ -393,6 +393,12 @@ def make_plan(a: AppAssessment, c: Component, rules: list[Rule] | None = None, e
     elif c.project.kind_hint in ("python", "go"):
         from .gen_python_go import go_plan, python_plan
         (python_plan if c.project.kind_hint == "python" else go_plan)(a, c, plan)
+    elif c.project.kind_hint == "dotnet":
+        from .nugetsources import plan_sources, reason
+        ns = plan_sources(Path(a.repo.root), plan["project"])
+        if ns:
+            plan["nuget_sources"] = ns
+            reason(plan)
     plan = apply_plan_rules(plan, a.repo, c, rules)
     state_plan(c, plan)
     if extra:
@@ -617,6 +623,8 @@ def dockerfile_dotnet(plan: dict) -> str:
                   "      mkdir -p /opt/npm-prebuilt && printf '#!/bin/sh\\necho \"npm $*: skipped, the front end was built before dotnet publish\" >&2\\n' \\",
                   "        > /opt/npm-prebuilt/npm && chmod +x /opt/npm-prebuilt/npm; fi"]
     restore_tfm = " $TFP" if retarget else ""
+    from .nugetsources import dockerfile_lines
+    lines += dockerfile_lines(plan)
     lines += ["# optional build secret 'ca': CA bundle for TLS-inspecting corporate proxies",
               'RUN --mount=type=cache,target=/root/.nuget/packages --mount=type=secret,id=ca,required=false \\',
               '    if [ -f /run/secrets/ca ]; then export SSL_CERT_FILE=/run/secrets/ca NODE_EXTRA_CA_CERTS=/run/secrets/ca; fi; \\',
@@ -709,6 +717,8 @@ def dockerfile_blazor_wasm(plan: dict) -> str:
              f"FROM {im['sdk']} AS build", "WORKDIR /src", "COPY . ."]
     for f in plan["remove_files"]:
         lines.append(f"RUN find . -name '{f}' -not -path '*/node_modules/*' -delete")
+    from .nugetsources import dockerfile_lines
+    lines += dockerfile_lines(plan)
     lines += ["RUN --mount=type=cache,target=/root/.nuget/packages --mount=type=secret,id=ca,required=false \\",
               "    if [ -f /run/secrets/ca ]; then export SSL_CERT_FILE=/run/secrets/ca; fi; \\",
               f'    dotnet publish "{proj}" -c Release -o /out {" ".join(plan["publish_args"])}'.rstrip(), ""]
@@ -1035,6 +1045,7 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
     images: list[tuple[str, str]] = []
     comp_docs: dict[str, list[dict]] = {}
     route_notes: dict[str, dict] = {}
+    nuget_notes: dict[str, dict] = {}
     lab_plan = None
     if lab is not None:
         from . import labservices
@@ -1044,6 +1055,8 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
         if buildable(c):
             plan = (plans or {}).get(c.name) or make_plan(a, c, rules)
             measured_memory(plan, measured_usage(a, c))
+            if plan.get("nuget_sources"):
+                nuget_notes[k8s_name(c.name)] = plan["nuget_sources"]
             cdir.mkdir(parents=True, exist_ok=True)
             if c.role == "spa":
                 plan["port"], plan["health"] = 8080, "/healthz"
@@ -1143,7 +1156,9 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
     if route_notes and (out / "HARDENING.md").exists():
         (out / "HARDENING.md").write_text((out / "HARDENING.md").read_text() + "\n"
                                           + gateway.hardening_markdown(route_notes))
-    (out / "MIGRATION.md").write_text(migration_markdown(a) + gateway.migration_markdown(route_notes))
+    from .nugetsources import migration_markdown as nuget_markdown
+    (out / "MIGRATION.md").write_text(migration_markdown(a) + gateway.migration_markdown(route_notes)
+                                      + nuget_markdown(nuget_notes))
     written.append(out / "MIGRATION.md")
     written += write_agent_prompts(a, out)
     written += _build_pipeline(a, out, registry, ci_provider)

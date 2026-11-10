@@ -293,6 +293,7 @@ class Credential:
     llm_max_tokens: int = 0          # llm: the biggest LLM call it takes (estimated input tokens; 0: any)
     llm_parallel: int = 1            # llm: requests the LLM queue sends it at once
     feed_user: str = ""              # feed: the user name sent with the token (empty: the token alone, Bearer)
+    nuget_sources: str = ""          # NuGet feed: `name[, name] = source URL` lines (nugetsources.py)
     token_set_at: object = None      # when the token was last set (the newest wins among duplicates)
     sealed: str = field(default="", repr=False)
     token: str | None = field(default=None, repr=False)     # opened by the worker; None elsewhere
@@ -315,6 +316,16 @@ class Credential:
         where = f" ({self.host})" if self.purpose == "read" and self.api_url else ""
         return f"{PROVIDER_TEXT.get(self.provider, self.provider)} {self.scope}{where}"
 
+    def sources(self) -> list[tuple[str, str]]:
+        """A NuGet feed's (source name, URL) list (nugetsources.py); a text that no longer parses gives none."""
+        if self.purpose != "feed" or self.provider != "nuget" or not self.nuget_sources:
+            return []
+        from .nugetsources import parse
+        try:
+            return parse(self.nuget_sources, self.scope)
+        except ValueError:
+            return []
+
     def expired(self, today: date | None = None) -> bool:
         return bool(self.expires_on) and self.expires_on < (today or date.today())
 
@@ -329,6 +340,7 @@ class Credential:
                    llm_order=int(r.get("LlmOrder") if r.get("LlmOrder") is not None else 10),
                    llm_max_tokens=int(r.get("LlmMaxTokens") or 0), llm_parallel=max(1, int(r.get("LlmParallel") or 1)),
                    feed_user=r.get("FeedUser") or "",
+                   nuget_sources=r.get("NuGetSources") or "",
                    token_set_at=r.get("TokenSetAt"), sealed=r.get("TokenSealed") or "")
 
     def ai_settings(self) -> dict:
@@ -445,7 +457,7 @@ def llm_for_run(llm: Credential | None, env=None) -> RunLlm:
 
 
 SELECT_COLS = ("CredentialId, Purpose, Provider, ApiUrl, Host, Scope, Model, Note, Enabled, ExpiresOn, KeyId, TokenSetAt, "
-               "TokenSetBy, CreatedAt, LastUsedAt, LastResult, LlmOrder, LlmMaxTokens, LlmParallel, FeedUser")
+               "TokenSetBy, CreatedAt, LastUsedAt, LastResult, LlmOrder, LlmMaxTokens, LlmParallel, FeedUser, NuGetSources")
 
 
 def load(conn, private_key=None, include_disabled: bool = False) -> Credentials:

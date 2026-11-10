@@ -8,6 +8,15 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- **NuGet source names for package source mapping.** A NuGet feed on Admin → Source control → Package feeds gets the
+  names projects use for it (`internal, Contoso = <source URL>` per line; several names per feed, each name on one
+  feed). When a repository's NuGet.Config maps packages to a source it does not define (on developer machines it
+  comes from their own NuGet.Config), the generated Dockerfile adds the source registered under that name before
+  restore, and MIGRATION.md lists it, along with mapped names no feed has. `nuget.org` is added when `<clear/>`
+  removed it. Database schema version 47 (`SourceCredential.NuGetSources`).
+
 ## 0.23.0 (2026-11-10)
 
 The OS image changes (`appliance/`: new role settings in the `web.env` defaults): a minor release.
