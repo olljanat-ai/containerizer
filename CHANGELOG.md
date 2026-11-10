@@ -15,9 +15,10 @@ The OS image changes (`appliance/`: the Mailpit image pin): a minor release.
 - **State detection: three false positives fixed** (#273). A file whose only reference to the application folder
   loads configuration (`AddJsonFile`/`SetBasePath(AppContext.BaseDirectory)`) is no longer `state-local-files`
   when it also writes an export to a path the operator gives. `lucene-local-index`, `sqlite-local` and
-  `state-hangfire-memory` point at the code that opens the index, database file or storage instead of the package
-  line (new rule flag `evidence: code`; the package line stays when no such code is found), so a component that
-  gets them from a shared library is stateful only when it reaches that code. Reachability is finer: a library
+  `state-hangfire-memory` point first at the code that opens the index, database file or storage, then at the
+  package line (new rule flag `evidence_from: code`), and that code decides: a component that gets them from a
+  shared library is stateful only when it reaches it (without such code the finding counts as before). "Make it
+  A" sends that file with the `sqlite-local` finding instead of a separate `move-state-out` task. Reachability is finer: a library
   file reached only through some of its extension methods no longer brings in the bodies of the others
   (`AddDocuments()` next to `AddSearchIndex()` in one registration class), and a plain static method no longer
   counts as mentioned by a property or method of the same name elsewhere (it is reached through its type).

@@ -414,13 +414,14 @@ def test_library_lucene_index_counts_only_for_components_that_reach_it(tmp_path)
     assert by["Portal"].stateless
 
 
-def test_state_findings_point_at_code_not_at_package_lines(tmp_path):
+def test_state_findings_point_at_code_before_package_lines(tmp_path):
     _shared_library_app(tmp_path)
     a = assess(tmp_path)
     search = next(c for c in a.components if c.name == "Search")
     f = next(f for f in search.findings if f.rule.id == "lucene-local-index")
-    assert f.evidence and all(e.file == "src/Docs/LuceneDocumentIndex.cs" and e.line for e in f.evidence)
-    assert "FSDirectory.Open" in str(f.evidence[0])
+    assert [(e.file, bool(e.line)) for e in f.evidence] == [("src/Docs/LuceneDocumentIndex.cs", True),
+                                                            ("src/Docs/Docs.csproj", False)]
+    assert "FSDirectory" in str(f.evidence[0])
 
 
 def test_sqlite_and_hangfire_evidence_is_the_code_that_opens_the_storage(tmp_path):
@@ -434,8 +435,10 @@ def test_sqlite_and_hangfire_evidence_is_the_code_that_opens_the_storage(tmp_pat
         }""")
     a, c = comp(tmp_path)
     ev = {f.rule.id: [str(e) for e in f.evidence] for f in c.findings}
-    assert len(ev["sqlite-local"]) == 1 and "UseSqlite(" in ev["sqlite-local"][0] and "Program.cs" in ev["sqlite-local"][0]
-    assert len(ev["state-hangfire-memory"]) == 1 and "UseMemoryStorage()" in ev["state-hangfire-memory"][0]
+    assert "UseSqlite(" in ev["sqlite-local"][0] and "Program.cs" in ev["sqlite-local"][0]
+    assert ev["sqlite-local"][1:] == ["src/Web/Web.csproj: package Microsoft.EntityFrameworkCore.Sqlite 8.0.0"]
+    assert "UseMemoryStorage()" in ev["state-hangfire-memory"][0]
+    assert ev["state-hangfire-memory"][1:] == ["src/Web/Web.csproj: package Hangfire.MemoryStorage 1.8.0"]
 
 
 def test_package_evidence_stays_when_no_code_opens_the_storage(tmp_path):

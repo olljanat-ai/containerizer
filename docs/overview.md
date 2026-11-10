@@ -85,11 +85,12 @@ explains how the assessment works and what it generates. To install and use it, 
    reference to the app folder loads configuration (`AddJsonFile`/`SetBasePath(AppContext.BaseDirectory)`
    next to an export to a path the operator gives), and the
    ASP.NET Core Data Protection key ring (one `PersistKeysTo*` line; reported separately).
-   The evidence of these findings is the code that opens the index, database file or storage
-   (`FSDirectory.Open`, `UseSqlite`, `UseMemoryStorage`; rule flag `evidence: code`), not the package line,
-   so a component that gets the finding from a shared library is stateful only when it reaches that code
-   (step 5); without such code the package line stays the evidence and the finding counts, marked
-   *via* the library.
+   The evidence of these findings starts with the code that opens the index, database file or storage
+   (`FSDirectory.Open`, `UseSqlite`, `UseMemoryStorage`; rule flag `evidence_from: code`), before the
+   package line, and that code decides: a component that gets the finding from a shared library is
+   stateful only when it reaches it (step 5). Without such code the package line is the evidence and the
+   finding counts, marked *via* the library. ("Make it A" therefore also sends the file that opens the
+   database, with the finding, instead of adding it as a separate data-move task.)
 
    The letter grades the **whole application's end state**: an application with one component that must stay
    on Windows is rated for that, even when its other components run in Linux containers today. What can go
@@ -140,8 +141,8 @@ has callers that cannot be followed, so the hit counts. `unguarded: callers` app
 check (for an annotation on the type itself, as `supported-os-windows` does). `same_file: true` next to
 an `all` requires its `code`/`config`/`text` conditions to match in the same file (e.g. an assembly
 loader *and* an install path probe, not two unrelated files).
-`evidence: code` keeps only the source-code evidence of a match when it has some (the project-file
-lines such as `package Lucene.Net 4.8.0` are dropped), so reachability decides for a library finding.
+`evidence_from: code` lists the source-code evidence of a match first, before the project-file lines such
+as `package Lucene.Net 4.8.0`, and lets the code alone decide whether a library finding is reached.
 `superseded_by: [<rule id>, ...]` drops a finding when the component also has an active finding of one of
 those rules, because that finding says more (`wcf-client` gives way to `wcf-server` in a component that
 hosts WCF services and reaches client code through its libraries).

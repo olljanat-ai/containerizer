@@ -88,7 +88,7 @@ class Asker:
 
 GOOD = {"src/Shop.Api/Bank.cs": edit("src/Shop.Api/Bank.cs", SEARCH, REPLACE, ["cert-store-localmachine-code", "cert-store"]),
         "src/Shop.Api/Shop.Api.csproj": {**NOTHING, "package_changes": PACKAGES, "fixed": ["sqlite-local"]},
-        "src/Shop.Api/Program.cs": edit("src/Shop.Api/Program.cs", SQLITE_LINE, SQLSERVER_LINE, ["move-state-out"])}
+        "src/Shop.Api/Program.cs": edit("src/Shop.Api/Program.cs", SQLITE_LINE, SQLSERVER_LINE, ["sqlite-local"])}
 
 
 @pytest.fixture
@@ -117,11 +117,13 @@ def test_the_plan_takes_every_finding_and_the_state_move(stateful):
     assert (pl["max_calls"], pl["max_passes"], pl["max_repairs"]) == (rf.MAX_CALLS_A, rf.MAX_PASSES_A, rf.MAX_REPAIRS_A)
     assert [(t["file"], [f["rule"] for f in t["findings"]]) for t in pl["tasks"]] == [
         ("src/Shop.Api/Bank.cs", ["cert-store-localmachine-code", "cert-store"]),
+        ("src/Shop.Api/Program.cs", ["sqlite-local"]),
         ("src/Shop.Api/Shop.Api.csproj", ["sqlite-local"])]
     assert pl["state"] == [{"component": "Shop.Api", "state": ["Embedded file database (SQLite/LiteDB)"]}]
-    # the runner adds the file that opens the embedded database, with the stateless guidance in its prompt
-    (t,) = rf.state_tasks(pl, stateful)
-    assert t["file"] == "src/Shop.Api/Program.cs" and t["findings"][0]["rule"] == "move-state-out"
+    # the finding names the file that opens the embedded database (#273: code evidence before the package
+    # line), so the runner adds no move-state-out task for it; its prompt has the stateless guidance
+    assert rf.state_tasks(pl, stateful) == []
+    t = pl["tasks"][1]
     assert "Move the embedded database (SQLite or LiteDB) to Microsoft SQL Server" in rf.task_prompt(pl, t, stateful)[0]
     # and to the stateful component's other files too (the certificate fix needs no data move, but it is the
     # same component: the guidance is shown)
@@ -157,7 +159,7 @@ def test_one_pass_reaches_a(stateful, tmp_path, builds):
     assert {f["file"] for f in res["files"]} == {"src/Shop.Api/Bank.cs", "src/Shop.Api/Program.cs",
                                                  "src/Shop.Api/Shop.Api.csproj"}
     st = {(f["rule"], f["file"]): (f["status"], f.get("rules_after")) for f in res["findings"]}
-    assert st[("move-state-out", "src/Shop.Api/Program.cs")] == ("fixed", "resolved")
+    assert st[("sqlite-local", "src/Shop.Api/Program.cs")] == ("fixed", "resolved")
     assert st[("sqlite-local", "src/Shop.Api/Shop.Api.csproj")] == ("fixed", "resolved")
     # the clean copy is named after the job: the verify step's image tags are unique per order
     _, seen = builds
@@ -990,7 +992,7 @@ def test_make_it_a_is_ordered_from_the_results_page(adm, stateful):
     adm.conn.answers = _answers(_doc(stateful))
     op = adm.sessions.create("o@example.com", "O", False, True, True, [])
     r = _post(adm, op, "/admin/refactoring/new", ApplicationId="7", Goal="rating-a")
-    assert _loc(r) == "/app/7?refactor=ordered-a&job=42&files=2#refactoring"
+    assert _loc(r) == "/app/7?refactor=ordered-a&job=42&files=3#refactoring"
     (sql, params), = adm.conn.sql("EXEC cz.QueueLlmJob")
     pl = json.loads(params[-1])
     assert pl["goal"] == "rating-a" and pl["deploy"] is True and pl["source"]["scan_id"] == 3

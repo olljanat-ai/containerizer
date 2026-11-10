@@ -742,7 +742,7 @@ rules:
     when:
       all:
         - package: &sqlite_pkgs 'Microsoft\.EntityFrameworkCore\.Sqlite(\.Core)?|Microsoft\.Data\.Sqlite(\.Core)?|System\.Data\.SQLite.*|LiteDB(\.Async)?|dbup-sqlite|sqlite-net-pcl|Hangfire\.(LiteDB|SQLite|Storage\.SQLite)'
-        # evidence: the code that opens the database file when there is one (evidence: code), so
+        # evidence: the code that opens the database file when there is one (evidence_from: code), so
         # reachability decides for a component that gets the finding from a library
         - any:
             - closure: {code: '\bUseSqlite\s*\(|\bnew\s+(Sqlite|SQLite|SQLiteAsync)Connection\s*\(|\bnew\s+Lite(Database|Repository)\s*\(|\bUse(SQLite|Sqlite|LiteDb)Storage\s*\('}
@@ -758,7 +758,7 @@ rules:
     severity: config
     category: storage
     state: local
-    evidence: code
+    evidence_from: code
     effort: 0.25
     title: Embedded file database (SQLite/LiteDB)
     why: >-
@@ -821,7 +821,7 @@ rules:
     when:
       all:
         - package: Lucene\.Net.*|Examine
-        # the code that opens the index first: it is the evidence (evidence: code), so a component
+        # the code that opens the index first: it is the evidence (evidence_from: code), so a component
         # that inherits the finding from a library only keeps it when it reaches that code
         - any: &lucene_index
             - closure: {code: '\b(FSDirectory|SimpleFSDirectory|MMapDirectory|NIOFSDirectory)\b|\bnew\s+IndexWriter\s*\('}
@@ -829,7 +829,7 @@ rules:
     severity: config
     category: storage
     state: local
-    evidence: code
+    evidence_from: code
     effort: 0.5
     title: Local Lucene index
     why: >-
