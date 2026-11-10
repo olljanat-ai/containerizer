@@ -95,6 +95,11 @@ class Rule:
     # database, uploads, a local index) or "memory" (in-process session/job state). Such a
     # component is not stateless, and an app is only rated A when every server component is.
     state: str = ""
+    # "code": when the match has evidence in source code (a `code` condition), show only that and
+    # drop the project-file lines (`package Lucene.Net 4.8.0`). A finding a component inherits from
+    # a library then points at the library code, so reachability decides whether it counts
+    # (assess: a library finding whose code the component never reaches is dormant).
+    evidence: str = ""
     # plan rules: findings this rule's configuration satisfies without code changes (containerizer/techniques.py),
     # and the named technique that builds the patch from the code when it is not a fixed `plan`
     resolves: list[str] = field(default_factory=list)
@@ -111,6 +116,8 @@ class Rule:
             raise ValueError(f"rule {r.id}: unknown severity {r.severity}")
         if r.state not in ("", "local", "memory"):
             raise ValueError(f"rule {r.id}: unknown state {r.state}")
+        if r.evidence not in ("", "code"):
+            raise ValueError(f"rule {r.id}: unknown evidence {r.evidence}")
         return r
 
 
@@ -1354,4 +1361,8 @@ def run_rule(rule: Rule, ctx: Context) -> Match | None:
     ok, ev, caps = evaluate(rule.when, ctx)
     if not ok:
         return None
+    if rule.evidence == "code":
+        code_ev = [e for e in ev if e.line and Path(e.file).suffix.lower() in SOURCE_EXT]
+        seen: set[str] = set()
+        ev = [e for e in code_ev or ev if not (str(e) in seen or seen.add(str(e)))]
     return Match(rule, ev, caps)

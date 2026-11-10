@@ -12,6 +12,16 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 The OS image changes (`appliance/`: the Mailpit image pin): a minor release.
 
+- **State detection: three false positives fixed** (#273). A file whose only reference to the application folder
+  loads configuration (`AddJsonFile`/`SetBasePath(AppContext.BaseDirectory)`) is no longer `state-local-files`
+  when it also writes an export to a path the operator gives. `lucene-local-index`, `sqlite-local` and
+  `state-hangfire-memory` point at the code that opens the index, database file or storage instead of the package
+  line (new rule flag `evidence: code`; the package line stays when no such code is found), so a component that
+  gets them from a shared library is stateful only when it reaches that code. Reachability is finer: a library
+  file reached only through some of its extension methods no longer brings in the bodies of the others
+  (`AddDocuments()` next to `AddSearchIndex()` in one registration class), and a plain static method no longer
+  counts as mentioned by a property or method of the same name elsewhere (it is reached through its type).
+  Library findings that only such name clashes attached to a component are now shown as not referenced.
 - The **WCF port plan** fits the service it was found in (#267). The CoreWCF packages come from the bindings found:
   `CoreWCF.NetTcp` for netTcpBinding, `CoreWCF.WebHttp` for webHttpBinding and `[WebGet]`/`[WebInvoke]`,
   `CoreWCF.Http` for HTTP bindings and `.svc` endpoints, and `CoreWCF.ConfigurationManager` with a step to keep the

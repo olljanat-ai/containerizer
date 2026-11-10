@@ -56,7 +56,11 @@ explains how the assessment works and what it generates. To install and use it, 
 5. **Reachability**: findings in shared libraries only count for components whose code actually
    reaches the offending types (a type/extension-method mention graph) and that it compiles for its
    target framework, and Windows-only calls guarded by `OperatingSystem.IsWindows()` (directly, through
-   a helper, or at every caller) are ignored.
+   a helper, or at every caller) are ignored. A library file reached only through some of its extension
+   methods brings in what those methods use, not the bodies of the others: a component that calls
+   `AddDocuments()` does not reach the search index that `AddSearchIndex()`, next to it in the same
+   registration class, opens. A plain static method is reached through its type name, so a property
+   of the same name elsewhere is not a mention.
 6. **Confidence**: packages and references unknown to `rules/packages*.yaml`, and uncertain rules,
    lower a component's confidence. Low confidence triggers verification and, optionally, Claude.
 7. **Rating** per application: **A** container-ready (built on a modern stack and libraries, runs in
@@ -77,8 +81,15 @@ explains how the assessment works and what it generates. To install and use it, 
    report lists what it keeps; scaling it out needs that data in a shared service first. Only data on its
    own disk in a folder Containerizer cannot find (so no volume can hold it) keeps a component at **B**.
    Not counted: SQLite next to a server database provider (`sqlite-optional`), a read-only SQLite
-   file shipped with the app, Lucene used only for text analysis, temp files and logs, and the
+   file shipped with the app, Lucene used only for text analysis, temp files and logs, a file whose only
+   reference to the app folder loads configuration (`AddJsonFile`/`SetBasePath(AppContext.BaseDirectory)`
+   next to an export to a path the operator gives), and the
    ASP.NET Core Data Protection key ring (one `PersistKeysTo*` line; reported separately).
+   The evidence of these findings is the code that opens the index, database file or storage
+   (`FSDirectory.Open`, `UseSqlite`, `UseMemoryStorage`; rule flag `evidence: code`), not the package line,
+   so a component that gets the finding from a shared library is stateful only when it reaches that code
+   (step 5); without such code the package line stays the evidence and the finding counts, marked
+   *via* the library.
 
    The letter grades the **whole application's end state**: an application with one component that must stay
    on Windows is rated for that, even when its other components run in Linux containers today. What can go
@@ -129,6 +140,8 @@ has callers that cannot be followed, so the hit counts. `unguarded: callers` app
 check (for an annotation on the type itself, as `supported-os-windows` does). `same_file: true` next to
 an `all` requires its `code`/`config`/`text` conditions to match in the same file (e.g. an assembly
 loader *and* an install path probe, not two unrelated files).
+`evidence: code` keeps only the source-code evidence of a match when it has some (the project-file
+lines such as `package Lucene.Net 4.8.0` are dropped), so reachability decides for a library finding.
 `superseded_by: [<rule id>, ...]` drops a finding when the component also has an active finding of one of
 those rules, because that finding says more (`wcf-client` gives way to `wcf-server` in a component that
 hosts WCF services and reaches client code through its libraries).

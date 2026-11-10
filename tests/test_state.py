@@ -320,3 +320,129 @@ def test_stateful_label_storage_class_and_node_pool(tmp_path, monkeypatch):
     b = assess(plain)
     docs = k8s_manifests(b, b.components[0], make_plan(b, b.components[0]), "reg.example/app/web:1.0.0")
     assert "stateful" not in next(d for d in docs if d["kind"] == "Deployment")["metadata"]["labels"]
+
+
+# ---- #273: three false-positive patterns
+
+def test_config_read_from_the_base_directory_is_not_a_local_write(tmp_path):
+    """AddJsonFile/SetBasePath(AppContext.BaseDirectory) loads configuration; an export to a path the operator
+    passes, in the same file, is not application data under the app folder."""
+    web_app(tmp_path, code="""
+        class Export {
+            static async Task Run(string outFile, string script) {
+                var cfg = new ConfigurationBuilder().SetBasePath(AppContext.BaseDirectory).Build();
+                var b = WebApplication.CreateBuilder();
+                b.Configuration.AddJsonFile(Path.Combine(AppContext.BaseDirectory, "appsettings.json"), optional: true);
+                await File.WriteAllTextAsync(outFile, script);
+            }
+        }""")
+    assert sev(tmp_path, "state-local-files") is None
+    a, c = comp(tmp_path)
+    assert c.stateless
+
+
+def test_write_under_the_base_directory_next_to_a_config_read_is_still_stateful(tmp_path):
+    web_app(tmp_path, code="""
+        class Store {
+            void Save(string json) {
+                var cfg = new ConfigurationBuilder().SetBasePath(AppContext.BaseDirectory).Build();
+                File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "data", "state.json"), json);
+            }
+        }""")
+    assert sev(tmp_path, "state-local-files") == "config"
+
+
+def _shared_library_app(root):
+    """Two web apps on a shared hosting library that references a documents library with a Lucene index.
+    Its registration class has two extension methods side by side: AddDocuments (no index), called by the
+    hosting library for every app, and AddSearchIndex (opens the index), called only by the Search app."""
+    def proj(name, sdk, refs="", packages=""):
+        write(root, f"src/{name}/{name}.csproj", f"""
+            <Project Sdk="{sdk}">
+              <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+              <ItemGroup>{refs}{packages}</ItemGroup>
+            </Project>""")
+    ref = lambda n: f'<ProjectReference Include="../{n}/{n}.csproj" />'
+    proj("Docs", "Microsoft.NET.Sdk", packages=pkg("Lucene.Net", "4.8.0-beta00016"))
+    write(root, "src/Docs/Registration.cs", """
+        public static class DocsRegistration {
+            public static IServiceCollection AddDocuments(this IServiceCollection services) {
+                services.AddSingleton<ILetters, Letters>();
+                return services;
+            }
+            public static IServiceCollection AddSearchIndex(this IServiceCollection services, string folder) {
+                services.AddSingleton<IDocumentIndex>(_ => new LuceneDocumentIndex(folder));
+                return services;
+            }
+        }""")
+    write(root, "src/Docs/Letters.cs", "public interface ILetters { }\npublic class Letters : ILetters { }")
+    write(root, "src/Docs/LuceneDocumentIndex.cs", """
+        public interface IDocumentIndex { }
+        public class LuceneDocumentIndex : IDocumentIndex {
+            private readonly FSDirectory _directory;
+            public LuceneDocumentIndex(string folder) { _directory = FSDirectory.Open(new DirectoryInfo(folder)); }
+            public static string Snippet(string text) => text;
+        }""")
+    proj("Hosting", "Microsoft.NET.Sdk", refs=ref("Docs"))
+    write(root, "src/Hosting/Core.cs", """
+        public static class CoreRegistration {
+            public static IServiceCollection AddCore(this IServiceCollection services) => services.AddDocuments();
+        }""")
+    for name, call in (("Portal", "builder.Services.AddCore();"),
+                       ("Search", 'builder.Services.AddCore(); builder.Services.AddSearchIndex("/data/index");')):
+        proj(name, "Microsoft.NET.Sdk.Web", refs=ref("Hosting"))
+        write(root, f"src/{name}/Program.cs", f"""
+            var builder = WebApplication.CreateBuilder(args);
+            {call}
+            var app = builder.Build();
+            app.MapGet("/healthz", () => "ok");
+            app.Run();
+            class Hit {{ public string Snippet {{ get; set; }} }}""")
+
+
+def test_library_lucene_index_counts_only_for_components_that_reach_it(tmp_path):
+    _shared_library_app(tmp_path)
+    a = assess(tmp_path)
+    by = {c.name: c for c in a.components}
+    search = [f for f in by["Search"].findings if f.rule.id == "lucene-local-index"]
+    assert search and not search[0].dormant and search[0].via == "Docs"
+    assert not by["Search"].stateless
+    # the Portal reaches the registration class only through AddDocuments, and a property named like the
+    # index's static Snippet method is not a call of it: the finding is in the library, not reached
+    portal = [f for f in by["Portal"].findings if f.rule.id == "lucene-local-index"]
+    assert all(f.dormant for f in portal)
+    assert by["Portal"].stateless
+
+
+def test_state_findings_point_at_code_not_at_package_lines(tmp_path):
+    _shared_library_app(tmp_path)
+    a = assess(tmp_path)
+    search = next(c for c in a.components if c.name == "Search")
+    f = next(f for f in search.findings if f.rule.id == "lucene-local-index")
+    assert f.evidence and all(e.file == "src/Docs/LuceneDocumentIndex.cs" and e.line for e in f.evidence)
+    assert "FSDirectory.Open" in str(f.evidence[0])
+
+
+def test_sqlite_and_hangfire_evidence_is_the_code_that_opens_the_storage(tmp_path):
+    web_app(tmp_path, packages=pkg("Microsoft.EntityFrameworkCore.Sqlite") + pkg("Hangfire.MemoryStorage", "1.8.0"),
+            code="""
+        class Setup {
+            void Configure(IServiceCollection s) {
+                s.AddDbContext<AppDb>(o => o.UseSqlite("Data Source=app.db"));
+                s.AddHangfire(c => c.UseMemoryStorage());
+            }
+        }""")
+    a, c = comp(tmp_path)
+    ev = {f.rule.id: [str(e) for e in f.evidence] for f in c.findings}
+    assert len(ev["sqlite-local"]) == 1 and "UseSqlite(" in ev["sqlite-local"][0] and "Program.cs" in ev["sqlite-local"][0]
+    assert len(ev["state-hangfire-memory"]) == 1 and "UseMemoryStorage()" in ev["state-hangfire-memory"][0]
+
+
+def test_package_evidence_stays_when_no_code_opens_the_storage(tmp_path):
+    """Where the code does not tell (the storage is set up by a framework or by configuration), the package
+    line stays the evidence and the finding stays, also for a component that gets it through a library."""
+    web_app(tmp_path, packages=pkg("Hangfire.MemoryStorage", "1.8.0"))
+    a, c = comp(tmp_path)
+    f = next(f for f in c.findings if f.rule.id == "state-hangfire-memory")
+    assert [str(e) for e in f.evidence] == ["src/Web/Web.csproj: package Hangfire.MemoryStorage 1.8.0"]
+    assert not c.stateless

@@ -116,10 +116,17 @@ rules:
   - id: state-hangfire-memory
     applies_to: [dotnet]
     when:
-      package: 'Hangfire\.MemoryStorage|Hangfire\.InMemory'
+      all:
+        - package: 'Hangfire\.MemoryStorage|Hangfire\.InMemory'
+        # evidence: the line that selects the storage when there is one (evidence: code), so
+        # reachability decides for a component that gets the finding from a library
+        - any:
+            - closure: {code: '\bUse(InMemory|Memory)Storage\s*\('}
+            - package: 'Hangfire\.MemoryStorage|Hangfire\.InMemory'
     severity: config
     category: storage
     state: memory
+    evidence: code
     effort: 0.5
     title: Background jobs stored in process memory
     why: >-
