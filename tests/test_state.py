@@ -7,7 +7,7 @@ import json
 
 from containerizer.assess import assess
 from tests.test_engine import web_app, write
-from tests.test_round7 import RULES, rating, sev
+from tests.test_vb_fsharp_references_and_heads import RULES, rating, sev
 
 
 def pkg(name, version="8.0.0"):
@@ -175,7 +175,7 @@ def test_app_data_media_folder_is_stateful(tmp_path):
 
 
 def test_projects_in_top_level_build_folder_are_tools(tmp_path):
-    from tests.test_round11 import role_of, sdk_proj
+    from tests.test_stray_test_packages_and_hosts import role_of, sdk_proj
     sdk_proj(tmp_path, "build/smoke/Probe/Probe.csproj", props="<OutputType>Exe</OutputType>")
     write(tmp_path, "build/smoke/Probe/Program.cs", "class P { static void Main() { } }")
     assert role_of(tmp_path, "Probe") == "tool"

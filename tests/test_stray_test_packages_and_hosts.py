@@ -8,7 +8,7 @@ import struct
 from containerizer.assess import classify_role
 from containerizer.scan import scan
 from tests.test_engine import web_app, write
-from tests.test_round7 import RULES, rating, sev
+from tests.test_vb_fsharp_references_and_heads import RULES, rating, sev
 
 WEB_GUID = "{349c5851-65df-11da-9384-00065b846f21};{fae04ec0-301f-11d3-bf4b-00c04f79efbc}"
 

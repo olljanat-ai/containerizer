@@ -7,7 +7,7 @@ from containerizer.rules import load_rules
 from containerizer.scan import (_tfm_vars, eval_condition, nearest_tfms, preprocessor_symbol, scan,
                                 strip_inactive_branches)
 from tests.test_engine import web_app, write
-from tests.test_round3 import oldstyle, proj
+from tests.test_role_false_positives import oldstyle, proj
 
 RULES = load_rules()
 
