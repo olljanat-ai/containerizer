@@ -8,7 +8,9 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## Unreleased
+## 0.31.0 (2026-11-10)
+
+A minor release with the ISO for new and re-installed appliances.
 
 - **NuGet: the registered sources are the build's machine-level sources.** A repository that does not name its
   internal feed at all (no NuGet.Config, or one without package source mapping, and no `<clear/>`) restores it on the
@@ -25,7 +27,7 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## 0.30.0 (2026-11-10)
 
-An installer release with the ISO for new and re-installed appliances; the application is the same as 0.23.1.
+Not published: its release was cancelled for the fixes in 0.31.0.
 
 ## 0.23.1 (2026-11-10)
 
