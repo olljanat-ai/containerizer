@@ -126,6 +126,39 @@ failures:
     fix: {native_build: true}
     learn: {when: {}}
 
+  - id: build-python-native-toolchain
+    stage: build
+    match: "error: command '[\\w./-]*(gcc|cc|g\\+\\+)' failed|pg_config executable not found|mysql_config: not found|Python\\.h: No such file or directory|Failed building wheel for (?P<pkg>[\\w.-]+)"
+    outcome: retry
+    refs: [https://packaging.python.org/en/latest/guides/installing-using-linux-tools/]
+    diagnosis: >-
+      A Python dependency compiles C code at install time (no wheel for this platform); the build stage uses the
+      full Python image with gcc and the -dev headers.
+    fix: {native_build: true}
+    learn: {when: {}}
+
+  - id: build-python-version
+    stage: build
+    match: "requires a different Python: [\\d.]+ not in|Requires-Python [^\\n]*(not|doesn't) match"
+    outcome: retry
+    refs: [https://packaging.python.org/en/latest/specifications/core-metadata/#requires-python]
+    diagnosis: >-
+      A dependency does not support the Python line of the image (pinned versions of old packages); the build
+      uses the oldest supported Python line. Declare the version in .python-version or requires-python.
+    fix: {python: "3.11"}
+    learn: {when: {}}
+
+  - id: build-python-lock-out-of-sync
+    stage: build
+    match: 'pyproject\.toml changed significantly since poetry\.lock was last generated|poetry\.lock is not consistent with pyproject\.toml|Pipfile\.lock \([\w]+\) out of date'
+    outcome: retry
+    refs: [https://python-poetry.org/docs/basic-usage/#committing-your-poetrylock-file-to-version-control]
+    diagnosis: >-
+      The lockfile does not match the project's manifest, so a reproducible install from it fails; the
+      dependencies listed in the manifest are installed and resolved at build time. Update and commit the lockfile.
+    fix: {install: deps}
+    learn: {when: {}}
+
   - id: build-node-heap
     stage: build
     match: 'JavaScript heap out of memory|Reached heap limit Allocation failed'

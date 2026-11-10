@@ -604,14 +604,35 @@ rules:
       all:
         - kind: go
         - any:
+            # a main package whose own code or module packages it imports listen (scan_python_go.py)
+            - property: {GoServer: 'true'}
             - package: 'github\.com/(gin-gonic/gin|labstack/echo.*|gofiber/fiber.*|gorilla/mux|go-chi/chi.*)'
-            - code: 'http\.ListenAndServe|net/http'
 
   - id: role-go-cli
     phase: role
     role: console
     priority: 10
     when: {kind: go}
+
+  # a Go module without a main package is a library: the main packages that use it are the deployables
+  - id: role-go-library
+    phase: role
+    role: library
+    priority: 20
+    when:
+      all:
+        - kind: go
+        - property: {GoMain: 'false'}
+
+  # a folder with a Python manifest but no Python code (documentation tooling: docs/requirements.txt)
+  - id: role-python-no-code
+    phase: role
+    role: tool
+    priority: 20
+    when:
+      all:
+        - kind: python
+        - not: {file: '*.py'}
 
   - id: role-python-app
     phase: role
