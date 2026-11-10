@@ -8,6 +8,19 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- The **WCF port plan** fits the service it was found in (#267). The CoreWCF packages come from the bindings found:
+  `CoreWCF.NetTcp` for netTcpBinding, `CoreWCF.WebHttp` for webHttpBinding and `[WebGet]`/`[WebInvoke]`,
+  `CoreWCF.Http` for HTTP bindings and `.svc` endpoints, and `CoreWCF.ConfigurationManager` with a step to keep the
+  `<system.serviceModel>` services section instead of rewriting the endpoints in code. The plan no longer says
+  "change the using to CoreWCF": contract assemblies that clients also reference keep their `System.ServiceModel`
+  attributes, which CoreWCF hosts. `WorkflowServiceHost` and `.xamlx` count as WCF service hosts (`wcf-server`
+  instead of `wcf-client`), and the WF4 plan says that CoreWF has no workflow-service hosting. A .NET Framework
+  client of a netTcpBinding service no longer gets `wcf-nettcp-msmq`. Migrations can now have `variants`
+  (`rules/migrations.yaml`) and rules `superseded_by` (a component that hosts WCF services no longer also gets the
+  `wcf-client` info finding).
+
 ## 0.21.0 (2026-11-10)
 
 The OS image changes (`appliance/`: the worker, LLM queue and web units set the ingress namespace): a minor release.
@@ -141,17 +154,6 @@ The OS image changes (`appliance/`: the worker, LLM queue and web units set the 
   application changes; a build that reached an appliance service on purpose (none is known) now fails to connect.
   Outside the appliance, `CONTAINERIZER_BUILD_HOST_NETWORK=1` brings back the host network for builds behind a proxy
   on `127.0.0.1` (it was automatic before).
-
-- The **WCF port plan** fits the service it was found in (#267). The CoreWCF packages come from the bindings found:
-  `CoreWCF.NetTcp` for netTcpBinding, `CoreWCF.WebHttp` for webHttpBinding and `[WebGet]`/`[WebInvoke]`,
-  `CoreWCF.Http` for HTTP bindings and `.svc` endpoints, and `CoreWCF.ConfigurationManager` with a step to keep the
-  `<system.serviceModel>` services section instead of rewriting the endpoints in code. The plan no longer says
-  "change the using to CoreWCF": contract assemblies that clients also reference keep their `System.ServiceModel`
-  attributes, which CoreWCF hosts. `WorkflowServiceHost` and `.xamlx` count as WCF service hosts (`wcf-server`
-  instead of `wcf-client`), and the WF4 plan says that CoreWF has no workflow-service hosting. A .NET Framework
-  client of a netTcpBinding service no longer gets `wcf-nettcp-msmq`. Migrations can now have `variants`
-  (`rules/migrations.yaml`) and rules `superseded_by` (a component that hosts WCF services no longer also gets the
-  `wcf-client` info finding).
 
 ## 0.16.4 (2026-11-05)
 
