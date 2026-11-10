@@ -92,6 +92,9 @@ K3S_IFACES = ("cni0", "flannel.1", "veth*")
 # the host answers only DNS, they never reach the k3s networks, and everything else goes through the egress list
 DOCKER4 = ("172.16.0.0/12",)
 DOCKER_IFACES = ("docker0", "br-*")
+# the feed proxies of the scan worker and the LLM queue runner (feedproxy.py, CONTAINERIZER_FEED_PROXY_LISTEN in their
+# units): the one thing on the host builds may reach besides DNS; they add registered feed tokens, nothing else
+FEED_PROXY_PORTS = (3128, 3129)
 INTERNAL4 = K3S4 + DOCKER4
 INTERNAL_IFACES = K3S_IFACES + DOCKER_IFACES
 
@@ -962,8 +965,9 @@ table inet {TABLE} {{
     udp sport 547 udp dport 546 accept
     tcp dport {{ {", ".join(str(p) for p in INBOUND_TCP)} }} accept
     # containers and pods: the DNS filter; pods also the k3s API and the kubelet. Builds and verification runs
-    # (Docker's bridges) nothing else: not the results database, the registry, Grafana or the k3s API
+    # (Docker's bridges) only the feed proxies besides: not the results database, the registry, Grafana or the k3s API
     iifname {{ {ifaces} }} ip daddr {DNS_ADDR} meta l4proto {{ tcp, udp }} th dport 53 accept
+    iifname {{ {docker_ifaces} }} ip daddr {DNS_ADDR} tcp dport {{ {", ".join(str(p) for p in FEED_PROXY_PORTS)} }} accept
     iifname {{ {docker_ifaces} }} limit rate 10/minute burst 20 packets log prefix "cz-build-drop: " level info
     iifname {{ {docker_ifaces} }} drop
     iifname {{ {k3s_ifaces} }} tcp dport {{ 6443, 10250 }} accept
@@ -1634,9 +1638,10 @@ def network_sync() -> list[str]:
     copied them with `cp` under umask 077 (0600, root only), and systemd-networkd, which runs as systemd-network,
     could not read them and used the DHCP default: a static address was lost at the first restart. A static file of
     0.13.x for bond0 is moved to br0 first (netconfig.migrate). A copy that is missing, differs or is not 0644 is
-    written again, the network reloaded, br0 configured again and the DNS filter rebuilt. `restart-check` (every
+    written again, the network reloaded, br0 configured again and the DNS filter rebuilt; the same when br0 has a
+    file of the image although the static file is there (networkd read its files before cz-firstboot copied it). `restart-check` (every
     minute) and `status` call it. Returns the files fixed."""
-    from .netconfig import IFACE, migrate, parse
+    from .netconfig import IFACE, STATIC_FILE, migrate, parse
     if not P.network.is_dir():
         return []
     fixed = []
@@ -1658,14 +1663,29 @@ def network_sync() -> list[str]:
                 fixed.append(f.name)
         except OSError as ex:
             log(f"network: {f.name} not given to systemd-networkd: {ex}")
-    if fixed:
+    used = _network_file(IFACE)
+    stale = bool(used) and (P.network_run / STATIC_FILE).is_file() and Path(used).parent != P.network_run
+    if stale:
+        # systemd-networkd read its configuration before cz-firstboot copied the static file (0.14.x: it was
+        # ordered only through network-pre.target, which a boot already had reached) and gave br0 the DHCP default
+        log(f"network: {IFACE} configured with {used}, not with {STATIC_FILE}")
+    if fixed or stale:
         run(["networkctl", "reload"], timeout=60, check=False)
         run(["networkctl", "reconfigure", IFACE], timeout=60, check=False)
         run(["systemctl", "restart", "--no-block", "containerizer-addresses.service"], timeout=60, check=False)
         static = parse((P.network / "10-static.network").read_text()) if (P.network / "10-static.network").is_file() else None
         reload_dns((static or {}).get("dns") or [])
-        log(f"network: {', '.join(fixed)} given to systemd-networkd; {IFACE} configured again")
-    return fixed
+        log(f"network: {', '.join(fixed) or STATIC_FILE} given to systemd-networkd; {IFACE} configured again")
+    return fixed or ([STATIC_FILE] if stale else [])
+
+
+def _network_file(iface: str) -> str:
+    """The .network file systemd-networkd configured `iface` with ("" when it cannot tell)."""
+    try:
+        return str(json.loads(run(["networkctl", "--json=short", "status", iface], timeout=30, check=False)
+                              or "{}").get("NetworkFile") or "")
+    except (ValueError, AttributeError):
+        return ""
 
 
 def network_text(st: dict) -> str:

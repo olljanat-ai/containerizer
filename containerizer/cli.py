@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -112,6 +113,13 @@ def _gitops(args):
                          sandbox_idp=not args.no_sandbox_idp)
 
 
+def _ingress_arg(s) -> None:
+    s.add_argument("--ingress-from", metavar="NAMESPACE|any",
+                   help="the ingress controller's namespace, the only one the NetworkPolicies let call a component's "
+                        "service port (default CONTAINERIZER_INGRESS_NAMESPACE, else network.ingress_namespace in "
+                        "rules/60-security.yaml: ingress-nginx); any: every namespace (docs/egress.md#inbound)")
+
+
 def _gitops_args(s) -> None:
     g = s.add_argument_group("GitOps (Flux files under <app>/gitops)")
     g.add_argument("--git-url", default="https://git.example.com/platform/deployments.git",
@@ -132,6 +140,9 @@ def cmd_generate(args) -> int:
     for app in _apps(args.paths):
         a = assess(app, rules)
         out = Path(args.out) / a.name if args.out else Path(app) / "containerize"
+        vj = Path(args.verification) / f"{a.name}.verify.json" if args.verification else None
+        if vj and vj.exists():      # what `verify --out` measured sizes the memory (generate.measured_memory)
+            a.verification = json.loads(vj.read_text())
         files = generate_app(a, out, registry=args.registry, pin=args.pin_digests, gitops=_gitops(args))
         print(f"{a.name}: {len(files)} files -> {out}")
     return 0
@@ -521,6 +532,9 @@ def cmd_rules(args) -> int:
 
 def _run_cmd(args) -> int:
     from .verify import DockerUnavailable
+    if getattr(args, "ingress_from", None):
+        from .harden import INGRESS_ENV
+        os.environ[INGRESS_ENV] = args.ingress_from.strip()
     try:
         return args.fn(args)
     except DockerUnavailable as e:
@@ -554,7 +568,10 @@ def main(argv=None) -> int:
     s.add_argument("--out")
     s.add_argument("--registry", default="registry.local", help="image registry used in the manifests")
     s.add_argument("--pin-digests", action="store_true", help="pin base images to their current digests")
+    s.add_argument("--verification", metavar="DIR", help="folder of `verify --out`: memory requests and limits "
+                   "from the peak its run measured (<app>.verify.json)")
     _gitops_args(s)
+    _ingress_arg(s)
     s.set_defaults(fn=cmd_generate)
 
     s = sub.add_parser("verify", help="build and run generated containers; learn from failures")
@@ -582,6 +599,7 @@ def main(argv=None) -> int:
     s.add_argument("--sql", help="also write the results to SQL Server: an ADO.NET-style connection string "
                    "(default CONTAINERIZER_SQL; password in CONTAINERIZER_SQL_PASSWORD)")
     _gitops_args(s)
+    _ingress_arg(s)
     s.set_defaults(fn=cmd_analyze)
 
     s = sub.add_parser("db", help="results database on SQL Server: create or upgrade the schema, import reports")
@@ -659,6 +677,7 @@ def main(argv=None) -> int:
     s.add_argument("--fail-on", default=None, help="lowest failing severity (default from rules/60-security.yaml)")
     s.add_argument("--registry", default="registry.local")
     s.add_argument("--pin-digests", action="store_true")
+    _ingress_arg(s)
     s.set_defaults(fn=cmd_gate)
 
     s = sub.add_parser("images", help="show base images, or pick patched tags with --update")
@@ -751,6 +770,7 @@ def main(argv=None) -> int:
                    "skipped with a message when there is no cluster access")
     _kube_args(g)
     g.add_argument("--sandbox-timeout", type=int, default=900, help="seconds to wait for sync and rollout (default 900)")
+    _ingress_arg(s)
     s.set_defaults(fn=cmd_org)
 
     s = sub.add_parser("replatform", help="move an already containerized app (Docker Swarm, Compose, Nomad, Azure "

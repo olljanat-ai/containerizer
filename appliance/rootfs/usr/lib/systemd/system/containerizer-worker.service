@@ -17,6 +17,9 @@ EnvironmentFile=/etc/containerizer/worker.env
 EnvironmentFile=-/run/containerizer/llm.env
 # the built-in LLM (Admin -> Source control & LLM): used while it is on and no LLM is registered
 Environment=CONTAINERIZER_LOCAL_LLM=/run/containerizer/system/local-llm-status.json
+# the sandbox's ingress controller (k3s' Traefik, var/lib/rancher/k3s/server/manifests/containerizer-traefik.yaml)
+# runs in kube-system: the generated NetworkPolicies let that namespace call the service ports (docs/egress.md#inbound)
+Environment=CONTAINERIZER_INGRESS_NAMESPACE=kube-system
 # lab services that are on (Admin -> Lab services): the scans point the apps at them
 Environment=CONTAINERIZER_LAB_SERVICES=/var/lib/containerizer/system/lab-services.json
 # dev database backups the web UI stored (read through the group of the folder)
@@ -31,6 +34,9 @@ Environment=CONTAINERIZER_SANDBOX_KUBECONFIG=/run/containerizer/sandbox-verifier
 # after each push to the output repository: the Flux webhook URL cz-sandbox writes (containerizer/fluxhook.py)
 Environment=CONTAINERIZER_FLUX_WEBHOOK=/run/containerizer/flux-webhook
 # results database (CZ_SQL_SCANNER_CS): the appliance's own or CZ_SQL_SERVER (cz-firstboot)
+# package feeds that need a sign-in (Admin -> Source control): its builds reach them through its feed proxy, which
+# adds the tokens; the firewall lets Docker's bridges reach this port only (containerizer/feedproxy.py)
+Environment=CONTAINERIZER_FEED_PROXY_LISTEN=169.254.53.53:3128
 EnvironmentFile=/run/containerizer/sql.env
 LoadCredential=sql-scanner:/etc/containerizer/secrets/cz-scanner
 LoadCredential=credential-key:/etc/containerizer/secrets/credential-key

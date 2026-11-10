@@ -10,6 +10,9 @@ Two kinds, never mixed:
   Claude API (or a gateway in front of it) or a self-hosted OpenAI-compatible server, its URL, model
   and key. One at a time. The worker hands it to ai.py for the run only (never through os.environ,
   so the processes a scan starts do not see the key).
+- **feed**: a token for a package feed the builds of scanned code restore from (NuGet, npm, Maven or Gradle),
+  for every request under the feed's URL. The token never enters a build: the worker's feed proxy (feedproxy.py)
+  adds it to the builds' requests to that feed.
 - **write**: a token that can push to one output repository, where the generated Dockerfiles,
   manifests and GitOps files are committed. It is chosen by the repository's URL, never by its host or
   organization, so it can live in the same organization as the scanned repositories; it is never used
@@ -38,7 +41,8 @@ from pathlib import Path
 
 PRIVATE_KEY_ENV = "CONTAINERIZER_CREDENTIAL_KEY_FILE"            # the scan worker
 PUBLIC_KEY_ENV = "CONTAINERIZER_CREDENTIAL_PUBLIC_KEY_FILE"      # the web UI
-PURPOSES = ("read", "write", "llm")
+PURPOSES = ("read", "write", "llm", "feed")
+FEED_KINDS = {"nuget": "NuGet", "npm": "npm", "maven": "Maven or Gradle"}
 LLM_PROVIDERS = {"anthropic": "Claude API", "openai": "OpenAI-compatible server"}
 LLM_SCOPE = "llm"                                                   # the Scope of the (single) LLM row
 MAGIC = b"CZ1"
@@ -202,7 +206,15 @@ def server_key(provider: str, api_url: str | None) -> str:
 def scope_key(purpose: str, scope: str) -> str:
     if purpose == "llm":
         return LLM_SCOPE                    # bound to the server, not the model: the model can be changed
+    if purpose == "feed":
+        return feed_key(scope)
     return repo_key(scope) if purpose == "write" else scope.strip().strip("/").casefold()
+
+
+def feed_key(url: str) -> str:
+    """A feed URL in a comparable form: https://host[:port]/path (no trailing slash, case folded)."""
+    s, h, p = _split(url)
+    return f"{s}://{h}{p}".casefold()
 
 
 def repo_key(url: str) -> str:
@@ -280,6 +292,7 @@ class Credential:
     llm_order: int = 10              # llm: the LLM queue tries the LLMs in this order (lowest first)
     llm_max_tokens: int = 0          # llm: the biggest LLM call it takes (estimated input tokens; 0: any)
     llm_parallel: int = 1            # llm: requests the LLM queue sends it at once
+    feed_user: str = ""              # feed: the user name sent with the token (empty: the token alone, Bearer)
     token_set_at: object = None      # when the token was last set (the newest wins among duplicates)
     sealed: str = field(default="", repr=False)
     token: str | None = field(default=None, repr=False)     # opened by the worker; None elsewhere
@@ -287,16 +300,18 @@ class Credential:
 
     @property
     def host(self) -> str:
-        return host_of(self.provider, self.api_url) if self.purpose != "write" else _split(self.scope)[1]
+        return host_of(self.provider, self.api_url) if self.purpose not in ("write", "feed") else _split(self.scope)[1]
 
     @property
     def username(self) -> str:
-        return GIT_USERNAMES.get(self.provider, "")
+        return self.feed_user if self.purpose == "feed" else GIT_USERNAMES.get(self.provider, "")
 
     @property
     def label(self) -> str:
         if self.purpose == "llm":
             return f"{LLM_PROVIDERS.get(self.provider, self.provider)} {self.model} ({self.host})"
+        if self.purpose == "feed":
+            return f"{FEED_KINDS.get(self.provider, self.provider)} feed {self.scope}"
         where = f" ({self.host})" if self.purpose == "read" and self.api_url else ""
         return f"{PROVIDER_TEXT.get(self.provider, self.provider)} {self.scope}{where}"
 
@@ -313,6 +328,7 @@ class Credential:
                    key_id=(r.get("KeyId") or "").strip(), note=r.get("Note") or "", model=r.get("Model") or "",
                    llm_order=int(r.get("LlmOrder") if r.get("LlmOrder") is not None else 10),
                    llm_max_tokens=int(r.get("LlmMaxTokens") or 0), llm_parallel=max(1, int(r.get("LlmParallel") or 1)),
+                   feed_user=r.get("FeedUser") or "",
                    token_set_at=r.get("TokenSetAt"), sealed=r.get("TokenSealed") or "")
 
     def ai_settings(self) -> dict:
@@ -356,8 +372,12 @@ class Credentials:
         return next(iter(self.llms()), None)
 
     def hosts(self) -> set[str]:
-        """Source control hosts (not the LLM's): registered servers may receive their own tokens."""
-        return {c.host.split(":")[0] for c in self.items if c.enabled and c.purpose != "llm"}
+        """Source control hosts (not the LLM's or the feeds'): registered servers may receive their own tokens."""
+        return {c.host.split(":")[0] for c in self.items if c.enabled and c.purpose not in ("llm", "feed")}
+
+    def feeds(self) -> list[Credential]:
+        """The enabled package feeds whose tokens opened (the worker), or all enabled ones (elsewhere)."""
+        return [c for c in self.items if c.purpose == "feed" and c.enabled and not c.error]
 
     def problems(self, scan: dict, public_key_id: str | None = None, today: date | None = None) -> list[str]:
         """What keeps a scan from getting the tokens it needs (empty when it has them)."""
@@ -425,7 +445,7 @@ def llm_for_run(llm: Credential | None, env=None) -> RunLlm:
 
 
 SELECT_COLS = ("CredentialId, Purpose, Provider, ApiUrl, Host, Scope, Model, Note, Enabled, ExpiresOn, KeyId, TokenSetAt, "
-               "TokenSetBy, CreatedAt, LastUsedAt, LastResult, LlmOrder, LlmMaxTokens, LlmParallel")
+               "TokenSetBy, CreatedAt, LastUsedAt, LastResult, LlmOrder, LlmMaxTokens, LlmParallel, FeedUser")
 
 
 def load(conn, private_key=None, include_disabled: bool = False) -> Credentials:

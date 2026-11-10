@@ -572,8 +572,20 @@ class Observer:
             return None
         pods = self.pods.of(d.namespace, d.src)
         if d.src not in pods:
-            self.agg.stats["ingress"] += 1      # the pod is the destination: incoming traffic, not egress
-            return None
+            # the pod is the destination: incoming traffic, not egress; unless another application's pod called it
+            # (service ports are open to the ingress controller's namespace only): the caller's call to another
+            # application, a link to propose (links.py)
+            caller = self.pod_of(d.src)
+            callee = self.pods.of(d.namespace, d.dst).get(d.dst)
+            if caller is None or caller[0] == d.namespace or not callee or not callee[1]:
+                self.agg.stats["ingress"] += 1
+                return None
+            ns, pod, comp = caller
+            name = f"{callee[1]}.{d.namespace}.svc.cluster.local"
+            self.agg.stats["named"] += 1
+            self.agg.stats["egress"] += 1
+            return self._print(self.agg.add(ns, comp, name, True, d.dport or 0, d.protocol, d.dst, pod, d.src,
+                                            f"{d.namespace}/{d.policy}", when), pod, d.dst)
         pod, comp = pods[d.src]
         name = self.in_cluster_name(d.dst, d.namespace) or name_for(d.dst, d.src, list(pods), self.memory, self.resolver)
         if name:

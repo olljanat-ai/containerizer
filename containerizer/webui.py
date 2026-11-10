@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
-from .tags import TAG_RE, has_tag, split_tags
+from .tags import AUTO_TAGS, STATEFUL, TAG_RE, has_tag, split_tags, with_auto
 
 RATINGS = ["A", "B", "C", "D", "E"]
 RATING_TITLE = {"A": "Container-ready", "B": "Minor refactoring", "C": "Partial", "D": "Major refactoring",
@@ -85,7 +85,7 @@ def load_overview(conn) -> dict:
     top = _rows(conn, "SELECT ApplicationId, Title, Severity, COUNT(*) AS N FROM cz.vFindingLatest "
                       "WHERE Severity IN ('blocker', 'rewrite') GROUP BY ApplicationId, Title, Severity")
     unmapped = _rows(conn, "SELECT Kind, COUNT(*) AS N FROM cz.vUnmapped GROUP BY Kind")
-    from .migrationplan import count_ready, stateful
+    from .migrationplan import count_ready, ready_now, stateful
     by_app: dict = {}
     for r in comps:
         by_app.setdefault(r["ApplicationId"], []).append(r)
@@ -100,6 +100,11 @@ def load_overview(conn) -> dict:
     for a in apps:
         a["Components"] = len(by_app.get(a["ApplicationId"], []))
         a["ReadyNow"], a["PlanComponents"] = count_ready(by_app.get(a["ApplicationId"], []), state)
+        a["ReadyStateful"] = sum(1 for c in by_app.get(a["ApplicationId"], [])
+                                 if c["ComponentId"] in state and ready_now(c, state))
+        a["AutoTags"] = [STATEFUL] if any(c["ComponentId"] in state and (c.get("Tier") or "server") in ("server", "platform")
+                                          for c in by_app.get(a["ApplicationId"], [])) else []
+        a["Tags"] = with_auto(a.get("Tags"), a["AutoTags"])
         a["MainObstacle"] = best.get(a["ApplicationId"], (None, ""))[1]
         a["APatch"] = ready.get(a["ApplicationId"])
         a["Running"] = running.get(a["ApplicationId"])
@@ -290,7 +295,7 @@ def state_rules() -> dict:
 
 def rating_why(app: dict) -> tuple[str, list[dict], list[dict]]:
     """Why the application has its rating, in a sentence; and its stateful and refactor components.
-    A needs every server component to run with configuration only and to keep no data of its own."""
+    A needs every server component to run with configuration only; data of its own is on a persistent volume."""
     comps = [c for c in app.get("components") or [] if (c.get("Tier") or "server") in ("server", "platform")]
     by = lambda v: [c for c in comps if c.get("Verdict") == v]     # noqa: E731
     rules = state_rules()
@@ -311,13 +316,16 @@ def rating_why(app: dict) -> tuple[str, list[dict], list[dict]]:
         parts.append(f"{names(by('rewrite'))} need a port or rewrite.")
     if refactor:
         parts.append(f"{names(refactor)} need targeted code changes.")
-    if stateful and r in ("A", "B"):
-        parts.append("Not stateless: " + "; ".join(f"{c['ComponentName']} keeps its own data "
-                                                   f"({', '.join(state[c['ComponentName']])})" for c in stateful)
-                     + ". A needs every server component to keep its data in external services, so that replicas can "
-                       "come and go." + ("" if refactor else " Everything else needs configuration only."))
+    keeps = "; ".join(f"{c['ComponentName']} keeps its own data ({', '.join(state[c['ComponentName']])})"
+                      for c in stateful)
+    if stateful and r == "B":
+        parts.append(keeps + (". It runs with a persistent volume and one replica, no code change." if refactor else
+                              ", in a folder Containerizer could not find, so no persistent volume can hold it: its "
+                              "findings say what it writes (a folder setting or a path in the configuration places it)."))
     if r == "A":
-        parts = ["Every server component runs in Linux containers with configuration only and keeps no data of its own."]
+        parts = ["Every server component runs in Linux containers with configuration only"
+                 + (f". Stateful: {keeps}, and runs as it is with a persistent volume and one replica; scaling out "
+                    "needs that data in a shared service first." if stateful else " and keeps no data of its own.")]
     if not parts:
         return "", stateful, refactor
     return f"<p class='why-rating'><b>Why {e(r)}:</b> {e(' '.join(parts))}</p>", stateful, refactor
@@ -645,6 +653,14 @@ def _date(d) -> str:
     return d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else e(str(d or ""))
 
 
+def _confidence_source(app: dict) -> str:
+    """Where the confidence comes from: a build and run confirms it only when none of them failed."""
+    failed = sum(1 for c in app.get("components") or [] if c.get("VerifyStatus") in VERIFY_FAILED)
+    if failed:
+        return f"from source analysis; the build or run failed for {failed} component{'s' if failed != 1 else ''}"
+    return "confirmed by building and running" if app.get("Verified") else "from source analysis"
+
+
 def _confidence(c) -> str:
     c = float(c or 0)
     return "High" if c >= 0.8 else "Medium" if c >= 0.5 else "Low"
@@ -698,8 +714,24 @@ def _overview_href(bu=None, tag=None) -> str:
 
 
 def _tag_chips(stored) -> str:
-    """An application's tags, each a link to the front page filtered by it."""
-    return "".join(f" <a class='tag' href='{e(_overview_href(tag=t))}'>{e(t)}</a>" for t in split_tags(stored))
+    """An application's tags, each a link to the front page filtered by it (an automatic one, AUTO_TAGS, says so)."""
+    return "".join(f" <a class='tag{' auto' if t in AUTO_TAGS else ''}' href='{e(_overview_href(tag=t))}'"
+                   + (f" title='{e(AUTO_TAGS[t])}'" if t in AUTO_TAGS else "") + f">{e(t)}</a>" for t in split_tags(stored))
+
+
+def app_auto_tags(app: dict) -> list[str]:
+    """The automatic tags of an application on its results page: `stateful` when a server component keeps its own
+    data (findings of rules with a state)."""
+    from .migrationplan import stateful
+    state = stateful(app.get("findings"), state_rules())
+    return [STATEFUL] if any(c.get("ComponentId") in state and (c.get("Tier") or "server") in ("server", "platform")
+                             for c in app.get("components") or []) else []
+
+
+def _stateful_mark(auto) -> str:
+    """Next to an A rating: the application keeps data of its own (on a persistent volume, one replica)."""
+    return (f" <span class='stateful-mark' title='{e(AUTO_TAGS[STATEFUL])}'>stateful</span>"
+            if STATEFUL in (auto or ()) else "")
 
 
 def _trends_href(bu) -> str:
@@ -729,9 +761,15 @@ def _ready_mark(a: dict) -> str:
     n, total = a.get("ReadyNow") or 0, a.get("PlanComponents") or 0
     if a.get("Rating") == "A" or not n or not total:
         return ""
-    tip = (f"{n} of {total} components rate A on their own and can run in Linux containers now (the organization scan "
-           f"deploys them to the sandbox); the rating grades the whole application. See its migration plan.")
-    return f"<span class='ready-now' title='{e(tip)}'>{n}/{total} ready now</span>"
+    vol = a.get("ReadyStateful") or 0
+    tip = (f"{n} of {total} components can run in Linux containers now without code changes (the organization scan "
+           f"deploys them to the sandbox)"
+           + (f"; {vol} of them keep{'s' if vol == 1 else ''} its own data and run{'s' if vol == 1 else ''} with a "
+              f"persistent volume, one replica" if vol else "")
+           + "; the rating grades the whole application. See its migration plan.")
+    return (f"<span class='ready-now' title='{e(tip)}'>{n}/{total} ready now"
+            + (f"<span class='stateful'>, {'with a volume' if vol == n else f'{vol} with a volume'}</span>" if vol else "")
+            + "</span>")
 
 
 def a_patches_html(apps: list[dict], nav: str = "") -> str:
@@ -829,7 +867,7 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag
         body = []
         for (prod, pid), lst in sorted(products.items(), key=lambda kv: (kv[0][1] is None, kv[0][0].lower())):
             rows = "".join(
-                f"<tr><td>{badge(a['Rating'])}{_a_patch_mark(a)}{_ready_mark(a)}</td>"
+                f"<tr><td>{badge(a['Rating'])}{_stateful_mark(a.get('AutoTags'))}{_a_patch_mark(a)}{_ready_mark(a)}</td>"
                 f"<td><a href='/app/{int(a['ApplicationId'])}'>{e(a['ApplicationName'])}</a>{_tag_chips(a.get('Tags'))}"
                 f"<div class='muted small'>{e(RATING_TITLE.get(a['Rating'], ''))}: {e(RATING_TEXT.get(a['Rating'], ''))}</div></td>"
                 f"<td class='num'>{int(a['Score'])}</td>"
@@ -1000,10 +1038,10 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
         details.append(f"<details id='c{int(c['ComponentId'])}'{' open' if len(app['components']) == 1 else ''}>"
                        f"<summary><b>{e(c['ComponentName'])}</b> · {e(VERDICT_LABEL.get(c['Verdict'], c['Verdict']))}"
                        f" <span class='muted'>({len(fs)} item{'s' if len(fs) != 1 else ''})</span></summary>"
-                       f"<div class='muted small'>{e(c['VerdictText'])}{'; a Windows container is a workable stop-gap' if c['WindowsContainerOk'] and c['Verdict'] in ('rewrite', 'blocker') else ''}"
+                       f"<div class='muted small'>{e(c['VerdictText'])}"
                        f"{'; targets ' + e(c['TargetFramework']) if c['TargetFramework'] else ''}</div>"
                        f"{_llm_review(reviews.get(c['ComponentId']), app.get('AssessedAt'))}"
-                       f"{_sandbox_detail(sandbox.get(c['ComponentId']))}{items}"
+                       f"{_verify_detail(c)}{_sandbox_detail(sandbox.get(c['ComponentId']))}{items}"
                        f"{_migration(app['ApplicationId'], migs.get(c['ComponentId']), refactor)}</details>")
     repo = by_comp.get(None, [])
     if repo:
@@ -1022,13 +1060,13 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
                      ("Business unit owner", app.get("BusinessUnitOwner"))) if v)
     return page(app["ApplicationName"], f"""{_nav(nav)}
 <p class='crumbs'>{crumbs}</p>{_admin_links_html(refactor.get("admin_links"))}
-<header class='app'>{badge(r, True)}<div><h1>{e(app['ApplicationName'])}</h1>
+<header class='app'>{badge(r, True)}{_stateful_mark(app_auto_tags(app))}<div><h1>{e(app['ApplicationName'])}</h1>
 <p class='lead'><b>{e(RATING_TITLE.get(r, ''))}</b>: {e(RATING_TEXT.get(r, ''))}</p>
-{f"<p>{e(app['Description'])}</p>" if app.get('Description') else ''}<p>{e(app['Summary'])}</p>{rating_why(app)[0]}{_in_sandbox(app)}{_lab_needs(app, refactor)}</div></header>
+{f"<p>{e(app['Description'])}</p>" if app.get('Description') else ''}<p>{e(app['Summary'])}</p>{rating_why(app)[0]}{_verify_failed_note(app)}{_in_sandbox(app)}{_lab_needs(app, refactor)}</div></header>
 <div class='tiles'>
 <div class='tile'><div class='label'>Readiness</div><div class='value'>{int(app['Score'])}<span class='unit'>/100</span></div></div>
 <div class='tile'><div class='label'>Confidence</div><div class='value'>{_confidence(app['Confidence'])}</div>
-<div class='sub'>{'confirmed by building and running' if app['Verified'] else 'from source analysis'}</div></div>
+<div class='sub'>{_confidence_source(app)}</div></div>
 <div class='tile'><div class='label'>Last assessed</div><div class='value small-value'>{_date(app['AssessedAt'])}</div></div>
 </div>
 <div class='meta'>{owner}{src}</div>
@@ -1076,8 +1114,9 @@ def _tags_section(app: dict, ctx: dict | None) -> str:
     """The application's tags; administrators and operators edit them here (tags.py)."""
     from .tags import notice_html
     ctx = ctx or {}
-    tags = split_tags(app.get("Tags"))
-    shown = _tag_chips(app.get("Tags")) if tags else (" <span class='muted'>none</span>" if ctx.get("tags_csrf") else "")
+    tags = [t for t in split_tags(app.get("Tags")) if t.casefold() not in AUTO_TAGS]   # people's tags: the editor's
+    every = with_auto(",".join(tags), app_auto_tags(app))          # automatic ones are shown, never in the editor
+    shown = _tag_chips(every) if every else (" <span class='muted'>none</span>" if ctx.get("tags_csrf") else "")
     if not shown:
         return ""
     form = ""
@@ -1160,13 +1199,47 @@ def _migration(app_id, m: dict | None, ctx: dict | None = None) -> str:
     return "".join(out) + "</section>"
 
 
+VERIFY_TEXT = {"ok": "Runs", "ok-external": "Runs (stops only at missing external services)",
+               "finding": "Runs with a finding", "build-failed": "Build failed", "run-failed": "Run failed"}
+VERIFY_FAILED = ("build-failed", "run-failed")
+
+
 def _verify(c: dict) -> str:
     s = c.get("VerifyStatus")
     if not s:
         return "<span class='muted'>not run</span>"
-    text = {"ok": "Runs", "ok-external": "Runs (stops only at missing external services)",
-            "finding": "Runs with a finding", "build-failed": "Build failed", "run-failed": "Run failed"}.get(s, s)
-    return f"<span class='v-{e(s)}'>{e(text)}</span>"
+    out = f"<span class='v-{e(s)}'>{e(VERIFY_TEXT.get(s, s))}</span>"
+    if s in VERIFY_FAILED and c.get("ComponentId") is not None:
+        out += f" <a class='small' href='#c{int(c['ComponentId'])}'>why</a>"
+    return out
+
+
+def _verify_detail(c: dict) -> str:
+    """Why a component's build or run failed, with the end of its log (VerifyDetail), in its details."""
+    s = c.get("VerifyStatus")
+    if s not in VERIFY_FAILED:
+        return ""
+    detail = (c.get("VerifyDetail") or "").strip()
+    if "\n" in detail:
+        body = f"<pre class='code'>{e(detail)}</pre>"
+    else:                                   # a scan before the log was kept: only the steps it tried
+        body = ((f"<p class='small'><span class='label'>Steps</span> {e(detail)}</p>" if detail else "")
+                + "<p class='muted small'>This scan kept no log; the next scan shows the end of it here.</p>")
+    return (f"<div class='sandbox'><div><span class='label'>Build and run</span> {_verify(dict(c, ComponentId=None))}"
+            " <span class='muted small'>(in the scan's verification, before anything is generated)</span></div>"
+            f"{body}<p class='muted small'>A component whose build or run failed is left out of the generated files "
+            "and the sandbox; its rating comes from its source code.</p></div>")
+
+
+def _verify_failed_note(app: dict) -> str:
+    """At the top of the page: the rating comes from the source code, but the build or run failed."""
+    bad = [c for c in app.get("components") or [] if c.get("VerifyStatus") in VERIFY_FAILED]
+    if not bad:
+        return ""
+    names = ", ".join(f"<a href='#c{int(c['ComponentId'])}'>{e(c['ComponentName'])}</a>" for c in bad)
+    return (f"<p class='note'><b>Not confirmed:</b> building or running {names} failed in the scan's "
+            "verification. The rating comes from the source code; the failed components are not deployed until the "
+            "next scan builds and runs them.</p>")
 
 
 SANDBOX_TEXT = {"healthy": "Deployed and healthy", "failing": "Deployed but failing", "pending": "Not ready in time",
@@ -1419,6 +1492,7 @@ font-size:11px;font-weight:700;border-radius:4px;color:#fff}.cell.rB,.cell.rC{co
 .good{color:#006300;font-weight:600}.bad{color:#b42727;font-weight:600}
 @media (prefers-color-scheme:dark){.good{color:#4fd14f}.bad{color:#f07a7a}}
 .chips+.chips{margin-top:8px}
+.tag.auto{font-style:italic}.stateful-mark{display:inline-block;margin-left:6px;font-size:12px;padding:1px 6px;border:1px solid currentColor;border-radius:8px;opacity:.8;vertical-align:middle}
 .chips.tags{align-items:center}.chip.tagchip{font-size:13px;padding:2px 10px}
 a.tag{display:inline-block;font-size:12px;line-height:1.5;padding:0 8px;margin-left:4px;border-radius:999px;border:1px solid var(--line);
 background:var(--card);color:var(--muted);text-decoration:none;vertical-align:1px}a.tag:hover{color:var(--fg);border-color:var(--fg)}

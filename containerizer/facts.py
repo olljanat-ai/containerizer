@@ -9,6 +9,11 @@ from pathlib import Path
 from .rules import Context, Rule, run_rule
 
 FOLDER_KEY = re.compile(r"(folder|path|dir|directory|root|location|store|share|inbox|outbox|archive)$", re.I)
+# a connection string that is only an embedded database file in the app folder (no folder, no password)
+EMBEDDED_DB = re.compile(r"(Data\s*Source|DataSource|Filename)\s*=\s*[\w\-.]+\.(db|sqlite3?|litedb)\s*;?\s*"
+                         r"(;\s*(Cache|Mode|Pooling|Foreign\s*Keys|Connection)\s*=\s*[\w]+\s*)*;?", re.I)
+EMBEDDED_PKGS = re.compile(r"Microsoft\.EntityFrameworkCore\.Sqlite|Microsoft\.Data\.Sqlite|System\.Data\.SQLite|LiteDB",
+                           re.I)
 SECRET_KEY = re.compile(r"(password|secret|apikey|api_key|clientsecret|token|connectionstring|key)$", re.I)
 
 
@@ -45,6 +50,55 @@ def _merge(base, over):
     return over
 
 
+# PersistKeysToFileSystem(new DirectoryInfo(<folder>)): where the code keeps the Data Protection key ring
+PERSIST_KEYS_FS = re.compile(r"PersistKeysToFileSystem\(\s*new\s+(?:System\.IO\.)?DirectoryInfo\(\s*(.+?)\)\s*\)", re.S)
+CONFIG_READ = re.compile(r'\[\s*"([\w:.\-]+)"\s*\]|GetValue<string\??>\(\s*"([\w:.\-]+)"')
+
+
+def dataprotection_folder(repo, p, cfg: dict) -> dict:
+    """Where code in the project or a library it references (a shared hosting project) keeps the Data Protection
+    key ring with PersistKeysToFileSystem: the configuration keys it reads the folder from, directly or through a
+    variable (configuration["DataProtection:KeyFolder"]), with their values ("" when unset), or else the settings
+    whose name says they are a key ring folder (rules/60-security.yaml lint.keyring_names);
+    dataprotection_key_literal when the folder is a string literal in code. The generator mounts the key Secret
+    there (generate.dataprotection_plan)."""
+    from .harden import security
+    from .rules import _ref_closure
+    settings: dict[str, str] = {}
+    literal = None
+    persists = False
+    for q in [p] + _ref_closure(repo, p):
+        for f in q.source_files():
+            if f.suffix.lower() != ".cs":
+                continue
+            txt = q.text(f, True)
+            for m in PERSIST_KEYS_FS.finditer(txt):
+                persists = True
+                arg = m.group(1).strip()
+                v = re.fullmatch(r"[A-Za-z_]\w*", arg)
+                if v:       # a variable: the expression it was assigned from
+                    a = re.search(rf"\b{arg}\s*=\s*([^;=][^;]*);", txt)
+                    arg = a.group(1).strip() if a else arg
+                keys = [x or y for x, y in CONFIG_READ.findall(arg)]
+                for k in keys:
+                    settings.setdefault(k, "")
+                lit = re.fullmatch(r'@?"([^"]+)"', arg)
+                if not keys and lit:
+                    literal = lit.group(1)
+    if not persists:
+        return {}
+    flat = {k.lower(): v for k, v in _flatten(cfg)}        # .NET configuration keys ignore case
+    if not settings:
+        names = re.compile(security()["lint"]["keyring_names"])
+        settings = {k: "" for k, v in _flatten(cfg) if isinstance(v, str) and v and names.search(k)}
+    for k in settings:
+        v = flat.get(k.lower())
+        settings[k] = v if isinstance(v, str) else ""
+    if settings:
+        return {"dataprotection_key_settings": settings}
+    return {"dataprotection_key_literal": literal} if literal else {}
+
+
 def extract_facts(repo, comp, rules: list[Rule]) -> dict:
     p = comp.project
     facts: dict = {}
@@ -62,6 +116,7 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
     facts["entry"] = (p.assembly_name or p.name) + ".dll" if p.kind_hint == "dotnet" else p.name
     # appsettings.json: connection strings, Kestrel endpoints, folders, secrets
     appsettings = next((f for f in p.files if f.name.lower() == "appsettings.json" and f.parent == p.dir), None)
+    cfg: dict = {}
     if appsettings:
         # the container runs as Production: appsettings.Production.json overrides appsettings.json
         cfg = _load_json(appsettings)
@@ -71,6 +126,11 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
         cs = cfg.get("ConnectionStrings") or {}
         if isinstance(cs, dict) and cs:
             facts["connection_strings"] = sorted(cs.keys())
+            # embedded databases (SQLite, LiteDB) whose file is in the app folder: "Data Source=app.db". The
+            # generator re-points them to a persistent volume with an environment variable (generate.state_plan)
+            files = {k: v for k, v in cs.items() if isinstance(v, str) and EMBEDDED_DB.fullmatch(v.strip())}
+            if files and any(EMBEDDED_PKGS.match(n) for n in p.packages):
+                facts["embedded_db_files"] = files
         ep = ((cfg.get("Kestrel") or {}).get("Endpoints") or {}) if isinstance(cfg.get("Kestrel"), dict) else {}
         names = set(ep.keys()) if isinstance(ep, dict) else set()
         for f in p.files:   # appsettings.<Environment>.json may add endpoints, override those too
@@ -176,6 +236,11 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
             writable.add(m.group(2))
         for m in re.finditer(r'\?\?\s*"(App_Data|logs?|Logs|data|Data|temp|tmp|uploads|Uploads)"', txt):
             writable.add(m.group(1))
+        # files saved under the web root: Path.Combine(env.WebRootPath, "uploads", name)
+        for m in re.finditer(r'Path\.Combine\([^,()]*WebRootPath[^,()]*,\s*"([\w\-]+)"', txt):
+            writable.add("wwwroot/" + m.group(1))
+    if p.kind_hint == "dotnet":
+        facts.update(dataprotection_folder(repo, p, cfg))
     writable |= set(facts.get("nlog_basedir_dirs") or [])
     for key, val in (facts.get("folder_settings") or {}).items():
         if re.fullmatch(r"[\w\-./]+", val) and not val.startswith("/"):

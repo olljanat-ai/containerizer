@@ -74,11 +74,19 @@ def rating_of(comps: list[dict], state: dict, fixed: tuple = ()) -> str | None:
 
 
 def ready_now(c: dict, state: dict) -> bool:
-    """Wave 1: a server component that rates A on its own and has not failed to build and run (what an
-    organization scan deploys to the sandbox, org.select_components)."""
+    """Wave 1: a server component that rates A on its own, or would but for the data it keeps (it runs with a
+    persistent volume and one replica, no code change), and has not failed to build and run (what an organization
+    scan deploys to the sandbox, org.select_components)."""
     from .assess import rating_of as rate
     return ((c.get("Tier") or "server") == "server" and c.get("VerifyStatus") not in FAILED_VERIFY
-            and rate([_stand_in(c, c["ComponentId"] in state)]) == "A")
+            and rate([_stand_in(c, False)]) == "A")
+
+
+def stateful_note(c: dict, state: dict) -> str:
+    """Wave 1's note on a component that keeps its own data: how it runs, and what it keeps."""
+    from .org import STATEFUL_NOTE
+    titles = state.get(c["ComponentId"])
+    return f"{STATEFUL_NOTE} (keeps its own data: {', '.join(titles)})" if titles else ""
 
 
 def count_ready(comps: list[dict], state: dict) -> tuple[int, int]:
@@ -377,10 +385,15 @@ def section(app: dict, ctx: dict | None = None, refactoring_box: bool = False) -
 
     out.append("<div class='gens'>")
     # wave 1
-    rows = "".join(f"<tr><td><a href='#c{int(x['c']['ComponentId'])}'>{e(x['c']['ComponentName'])}</a></td>"
-                   f"<td>{_sandbox_html(x['sandbox'])}</td></tr>" for x in plan["now"])
+    rows = "".join(f"<tr><td><a href='#c{int(x['c']['ComponentId'])}'>{e(x['c']['ComponentName'])}</a>"
+                   + (f"<div class='muted small stateful'>{e(n)}</div>" if (n := stateful_note(x['c'], plan['state'])) else "")
+                   + f"</td><td>{_sandbox_html(x['sandbox'])}</td></tr>" for x in plan["now"])
+    note = ("Configuration only, no code changes. Components that keep their own data run as they are, with a "
+            "persistent volume and one replica; scaling them out needs the data in a shared service first."
+            if any(x["c"]["ComponentId"] in plan["state"] for x in plan["now"]) else
+            "Rate A on their own: configuration only, no data of their own.")
     out.append("<div class='gen g1'><h3>Wave 1, now <span class='muted small'>to Kubernetes</span></h3>"
-               + (f"<p class='muted small'>Rate A on their own: configuration only, no data of their own.</p>"
+               + (f"<p class='muted small'>{e(note)}</p>"
                   f"<table><thead><tr><th>Component</th><th>Sandbox</th></tr></thead><tbody>{rows}</tbody></table>"
                   if rows else "<p class='muted'>No component rates A on its own yet.</p>") + "</div>")
     # wave 2
@@ -403,9 +416,7 @@ def section(app: dict, ctx: dict | None = None, refactoring_box: bool = False) -
                    f"<table><thead><tr><th>Component</th><th>Main obstacle</th></tr></thead><tbody>{rows}</tbody></table></div>")
     if plan["windows"]:
         rows = "".join(f"<tr><td><a href='#c{int(c['ComponentId'])}'>{e(c['ComponentName'])}</a></td>"
-                       f"<td class='small'>{e(_obstacle(c, plan, ('blocker',)))}"
-                       + ("<div class='muted'>a Windows container is a workable stop-gap</div>" if c.get("WindowsContainerOk") else "")
-                       + "</td></tr>" for c in plan["windows"])
+                       f"<td class='small'>{e(_obstacle(c, plan, ('blocker',)))}</td></tr>" for c in plan["windows"])
         out.append("<div class='gen gw'><h3>Stays on Windows <span class='muted small'>VMs</span></h3>"
                    "<p class='muted small'>Cannot run in a Linux container: Windows-only technology.</p>"
                    f"<table><thead><tr><th>Component</th><th>Main obstacle</th></tr></thead><tbody>{rows}</tbody></table></div>")

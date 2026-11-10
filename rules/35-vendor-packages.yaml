@@ -43,8 +43,8 @@ rules:
       reports cannot be rendered in a Linux container.
     fix: >-
       Re-implement the reports with a cross-platform engine (QuestPDF, FastReport/Telerik/DevExpress
-      reporting for .NET, SSRS via its REST API), or keep report rendering on a Windows host (a Windows
-      container with the Crystal runtime MSI works as a stop-gap) and call it over HTTP.
+      reporting for .NET, SSRS via its REST API), or keep report rendering on a Windows host (a VM
+      with the Crystal runtime MSI) and call it over HTTP.
     refs:
       - https://www.sap.com/documents/2016/06/f871031e-757c-0010-82c7-eda71af511fa.html
 
@@ -600,7 +600,7 @@ rules:
     fix: >-
       Run RavenDB 4+ as its own container (ravendb/ravendb image, data on a volume), move the
       code to the current RavenDB.Client (DocumentStore) and migrate the data with export/import
-      (Smuggler). Keep the app on a Windows container meanwhile if the port must wait.
+      (Smuggler). Keep the app on its Windows VM meanwhile if the port must wait.
     refs:
       - https://www.nuget.org/packages/RavenDB.Embedded/2.0.2370
       - https://www.nuget.org/packages/RavenDB.Database/3.5.9

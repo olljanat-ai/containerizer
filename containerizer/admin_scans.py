@@ -390,7 +390,7 @@ def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
             cancel = (f"<form method='post' action='/admin/scans/{ident}/cancel' class='inline'>{adm._csrf(s)}"
                       f"<input type='hidden' name='RunId' value='{int(r['RunId'])}'><button class='link'>Cancel</button></form>")
         elif r["CancelRequested"] and r["Status"] == "running":
-            cancel = "<div class='muted small'>cancelling after the current repository</div>"
+            cancel = "<div class='muted small'>cancelling now: the repositories in progress are ended</div>"
         current = ""
         if r["Status"] == "running":
             current = "".join(f"<div class='muted small'>{e(x['repo'])}: {e(x.get('step') or 'starting')}</div>"
@@ -462,8 +462,8 @@ def run_progress(adm, conn, s, a, ident: int, run_id: int, flash: str) -> Respon
     t_now = _time.time()
     done, total = int(run["ReposDone"] or 0), run["ReposTotal"]
     took = ((run["FinishedAt"] or now) - run["StartedAt"]).total_seconds() if run["StartedAt"] else 0
-    facts = [("Status", run_chip(run["Status"]) + (" <span class='muted small'>cancelling after the repositories in "
-                                                    "progress</span>" if run["CancelRequested"] and live else "")),
+    facts = [("Status", run_chip(run["Status"]) + (" <span class='muted small'>cancelling now: the repositories in "
+                                                    "progress are ended</span>" if run["CancelRequested"] and live else "")),
              ("Started", f"{_d(run['StartedAt'] or run['RequestedAt'])}" + (f" · {e(run['Worker'])}" if run["Worker"] else "")),
              ("Took" if not live else "Running for", _secs(took) if run["StartedAt"] else "")]
     if total is not None:

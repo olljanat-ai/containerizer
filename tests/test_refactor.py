@@ -1475,3 +1475,15 @@ def test_a_platform_finding_never_reaches_the_fake_llm(shop, tmp_path, monkeypat
     monkeypatch.setattr(rf, "SETTINGS_FILE", cfg)
     with pytest.raises(rf.RefactorError, match="nothing to change"):
         _payload(shop, verify=False)
+
+
+def test_make_it_a_moves_only_data_no_volume_can_hold():
+    """Data on a persistent volume does not keep an application from A (#249): Make it A does not move it."""
+    from containerizer import refactor as rf
+    placed = {"name": "Web", "tier": "server", "verdict": "config", "stateless": False, "state_unplaced": False,
+              "state": [{"title": "Embedded file database"}], "findings": []}
+    lost = {**placed, "name": "Idx", "state_unplaced": True, "state": [{"title": "Local Lucene index"}]}
+    assert rf.rating_a_components({"components": [placed]}) == []
+    assert [c["name"] for c in rf.rating_a_components({"components": [placed, lost]})] == ["Idx"]
+    assert rf.still_stateful({"components": [placed, lost]}) == [{"component": "Idx", "state": ["Local Lucene index"]}]
+    assert [c["name"] for c in rf.stateful_components({"components": [placed, lost]})] == ["Web", "Idx"]  # goal stateless

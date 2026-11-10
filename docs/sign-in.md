@@ -98,6 +98,12 @@ compared without regard to case, so `PCI` and `pci` are one tag, and the change 
 ![An application's tags on its results page, with the editor administrators and operators see](images/results-tags-edit.png#only-light){ .cz-shot }
 ![An application's tags on its results page, with the editor administrators and operators see](images/results-tags-edit-dark.png#only-dark){ .cz-shot }
 
+Containerizer adds **automatic tags** from the assessment: `stateful` on an application with a server component
+that keeps its own data (it runs with a persistent volume, one replica: see
+[Application data on persistent volumes](overview.md#application-data-on-persistent-volumes)). It shows in
+italics with the others and the filter finds it, but the editor neither shows nor stores it: nobody can add or
+remove it, and it goes away when a scan no longer finds such data. The API returns people's tags only.
+
 Everyone who can read the results filters the front page by them: the **Tags** row under the business units
 lists the tags of the applications shown, with how many have each. A tag, on that row or next to an
 application's name, shows only the applications with it, and the tiles, bars and groups count only those;
