@@ -37,3 +37,9 @@ services:
   sftp:
     when:
       package: 'SSH\.NET|Renci\.SshNet.*|WinSCP|SftpCore'
+  smtp:
+    # sending mail over SMTP (System.Net.Mail or MailKit); SMTP settings the scan classified count too
+    when:
+      any:
+        - package: 'MailKit|FluentEmail\.Smtp|FluentEmail\.MailKit|NETCore\.MailKit|Aspire\.MailKit.*'
+        - code: '\bnew\s+SmtpClient\b|\bSmtpClient\s*\(|SmtpDeliveryMethod\.'

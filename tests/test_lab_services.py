@@ -57,7 +57,7 @@ SETTINGS = {"ConnectionStrings": {"Shop": "Host=db;Database=shop;Username=u;Pass
     ("Kafka:SecurityProtocol", "SaslSsl", "kafka:security-protocol"),
     ("Sftp:Host", "files.example.com", "sftp:host"),
     ("Sftp:Password", "x", "sftp:password"),
-    ("Smtp:Port", 25, None),
+    ("Smtp:Port", 25, "smtp:port"),
     ("Api:Url", "http://localhost:5000", None),
     ("Kestrel:Endpoints:Http:Url", "http://0.0.0.0:8080", None),
 ])
@@ -239,7 +239,7 @@ def test_config_is_validated(tmp_path):
     for bad in ({"redis": True}, {**L.defaults(), "oracle": True}, {**L.defaults(), "redis": "yes"}):
         with pytest.raises(L.LabError):
             labagent.apply_request({"services": bad}, p)
-    assert L.enabled_from_env({L.CONFIG_ENV: str(p)}) == {"sqlserver", "redis"}
+    assert L.enabled_from_env({L.CONFIG_ENV: str(p)}) == {"sqlserver", "redis", "smtp"}
     assert L.enabled_from_env({}) is None
 
 

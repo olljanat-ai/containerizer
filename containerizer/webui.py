@@ -963,6 +963,10 @@ def _lab_needs(app: dict, ctx: dict | None) -> str:
     parts = []
     if on:
         parts.append(f"<span class='st st-ok'>provided</span> {e(', '.join(on))}")
+    if "smtp" in (rep.get("provided") or []) and "smtp" in needed:
+        parts.append("the mail it sends is caught in the lab, not sent: "
+                     + ("<a href='/admin/lab-mail'>Admin → Lab mail</a>" if (ctx or {}).get("lab_mail")
+                        else "Admin → Lab mail (administrators and operators)"))
     if off:
         comps = sorted({c for x in off for c in needed.get(x) or []})
         where = ("<a href='/admin/lab-services'>Admin → Lab services</a>" if (ctx or {}).get("lab_admin")
@@ -1462,6 +1466,7 @@ details{background:var(--card);border:1px solid var(--line);border-radius:10px;p
 summary{cursor:pointer}.finding{border-top:1px solid var(--line);padding:10px 0 4px;margin-top:10px}.finding p{margin:4px 0}
 .obstacles{padding-left:18px}.obstacles li{margin:4px 0}
 .note{background:var(--card);border-left:4px solid var(--rC);padding:8px 12px;border-radius:4px}
+.mail-body{white-space:pre-wrap;word-break:break-word;background:var(--card);border:1px solid var(--line);padding:10px 12px;border-radius:6px;max-height:70vh;overflow:auto}
 footer{margin-top:36px;border-top:1px solid var(--line);padding-top:12px}code{font-size:13px}
 .topnav{display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:14px;margin-bottom:12px}
 form.inline{display:inline}button{font:inherit;border:1px solid var(--fg);background:var(--fg);color:var(--bg);border-radius:6px;
@@ -1751,6 +1756,7 @@ def make_handler(connect, admin=None):
                                 ctx.update(scan_again_ctx(admin, app))
                                 ctx["scan_csrf"] = admin._csrf(s)
                             ctx["lab_admin"] = bool(s and s.admin)              # may turn lab services on
+                            ctx["lab_mail"] = bool(s and (s.admin or s.operator) and getattr(admin, "system", None))
                             ctx["scan_notice"] = parse_qs(u.query).get("scanagain", [""])[0]
                             if s and (s.admin or s.operator or s.scopes):
                                 ctx["admin_links"] = admin_links(admin, conn, s, app)
