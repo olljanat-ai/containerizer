@@ -1,4 +1,5 @@
-# Packages/assemblies whose Linux behaviour is known. Anything not listed here
+# Packages/assemblies whose Linux behaviour is known: linux_ok works on Linux, judged_by_rules (below) is known
+# and left to the finding rules. Anything not listed here
 # (and not matched by a finding rule) lowers the confidence of an assessment;
 # the self-learning loop adds entries to rules/learned/packages.yaml.
 linux_ok:
@@ -36,12 +37,18 @@ linux_ok:
   - 'Microsoft\.AspNet\.WebApi\.Client|Microsoft\.Net\.Http|System\.Net\.Http'
   - 'MSBuild\.Microsoft\.VisualStudio\.Web\.targets|Microsoft\.Web\.Infrastructure|WebGrease|Antlr|AjaxMin|Microsoft\.AspNet\.Web\.Optimization|WebActivator.*|Microsoft\.CodeDom\.Providers\.DotNetCompilerPlatform'
   - 'Microsoft\.Owin(\.Security(\..*)?|\.Host\.HttpListener|\.Hosting)?|Owin|Microsoft\.AspNet\.(Mvc|WebApi.*|WebPages|Razor|SignalR.*|Identity.*|FriendlyUrls.*|Cors)'
-  - 'Microsoft\.SharePoint.*\.CSOM|Microsoft\.ReportingServices\..*'
-  - 'Microsoft\.Extensions\.Hosting\.WindowsServices|Microsoft\.Extensions\.Logging\.EventLog|System\.Diagnostics\.EventLog|System\.ServiceProcess\.ServiceController'
-  - 'Topshelf.*|System\.DirectoryServices.*|System\.Management|System\.IO\.Ports|System\.Security\.Cryptography\.ProtectedData|System\.Data\.OleDb|System\.Drawing\.Common'
+  - 'Microsoft\.SharePoint.*\.CSOM'
   - 'Novell\.Directory\.Ldap.*|Sustainsys\.Saml2.*|Microsoft\.AspNetCore\.Authentication\..*'
-  - 'EnterpriseLibrary\..*|DinkToPdf|Net\.IBM\.Data\.Db2.*'
   - 'Microsoft\.TypeScript\.MSBuild|Microsoft\.VisualStudio\.Azure\.Containers\.Tools\.Targets|Microsoft\.VisualStudio\.Web\.CodeGeneration\.Design'
+
+# Packages that are known but not Linux-safe on their own: Windows-bound, or with a native or platform dependency.
+# Finding rules judge how the component uses them (windows-service, system-drawing, directory-services, serial-port,
+# ...), so they are not "unknown" (no confidence penalty), and they are not a statement that the package works on Linux.
+judged_by_rules:
+  - 'Microsoft\.ReportingServices\..*'
+  - 'System\.Diagnostics\.EventLog|System\.ServiceProcess\.ServiceController'
+  - 'Topshelf.*|System\.DirectoryServices.*|System\.Management|System\.IO\.Ports|System\.Security\.Cryptography\.ProtectedData|System\.Data\.OleDb|System\.Drawing\.Common'
+  - 'EnterpriseLibrary\..*|DinkToPdf|Net\.IBM\.Data\.Db2.*'
 
 # Framework assembly references (<Reference Include=...>) that are neutral on
 # their own. Windows-only ones are covered by finding rules.

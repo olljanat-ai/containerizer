@@ -322,7 +322,7 @@ rules:
     when:
       all:
         - not: {role: 'test|desktop'}
-        - code: '\b_?(ServerName|InstanceId|InstanceName|Worker(Id|Name)?|Node(Id|Name)|Station(Id|Name)?|Terminal(Id)?|ClientId|(Lock)?Owner|Consumer(Id|Name)|Replica(Id|Name)|HostName)\s*(\{\s*get;\s*(private\s+|init;\s*)?(set;)?\s*\}\s*)?=\s*[^;\n]*Environment\.MachineName|\.With(ClientId|InstanceId|NodeId)\([^;\n]*Environment\.MachineName'
+        - code: '\b_?(\w*(Server|Instance|Worker|Node|Client|Consumer|Replica|Host|Station|Terminal|Agent|Runner|Processor|Scheduler|Device)_?(Id|Name|Key)|\w*(Owner|Holder)|Worker|Station|Terminal)\s*(\{\s*get;\s*(private\s+|init;\s*)?(set;)?\s*\}\s*)?=\s*[^;\n]*Environment\.MachineName|\.With(ClientId|InstanceId|NodeId)\([^;\n]*Environment\.MachineName'
     severity: info
     category: scaleout
     effort: 0.25
