@@ -376,7 +376,8 @@ last upgrade or roll back with its outcome, and checks GHCR for newer releases.
   that, a few MB: the signed image `ghcr.io/olljanat-ai/containerizer-app:vX.Y.Z`, checked with cosign against
   the same release workflow identity and fetched by its verified digest. It is unpacked on the persistent
   partition (`/var/lib/containerizer/app-patches/`), its code must import with the OS's Python packages, and it is
-  mounted read-only on `/run/containerizer/app-patch`, which Python reads before the OS image's own code. Only the
+  mounted read-only on `/run/containerizer/app-patch`, which Python reads before the OS image's own code. The new
+  code then upgrades the results database's schema, as `containerizer-db-init` does at every start. Only the
   containerizer services (web UI, scan worker, LLM queue runner, egress observer) restart; when they do not come
   up within 2 minutes, the code that ran before is put back. Planning and waiting for the work in progress work as
   for an OS upgrade, except for the LLM queue: an app update does not wait for its jobs and does not cut them

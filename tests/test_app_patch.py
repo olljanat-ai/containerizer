@@ -255,6 +255,12 @@ def test_patch_release_is_an_app_update_without_os_restart(agent, monkeypatch):
     assert ["systemctl", "reboot"] not in r.calls
     assert ["systemctl", "try-restart", *OTHERS] in r.calls
     assert ["systemctl", "try-restart", sysagent.LLM_QUEUE] in r.calls             # it did not run: started
+    # the schema is upgraded by the new code before the services restart, in a unit of its own (restarting
+    # containerizer-db-init.service would restart the services that Require= it, the LLM queue undrained)
+    db = next(i for i, c in enumerate(r.calls) if c[0] == "systemd-run")
+    assert r.calls[db][-1] == "/usr/lib/containerizer/bin/cz-db-init" and "--wait" in r.calls[db]
+    assert db < r.calls.index(["systemctl", "try-restart", *OTHERS])
+    assert ["systemctl", "restart", "containerizer-db-init.service"] not in r.calls
     assert (p.patches / "active").read_text().strip() == "v1.1.3"
     assert (p.patches / "v1.1.3" / "rules" / "learned").resolve() == p.learned.resolve()
     assert not [d for d in p.patches.iterdir() if d.name.startswith(".")]      # no staging left

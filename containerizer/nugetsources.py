@@ -11,6 +11,12 @@ For each .NET component, the NuGet.Config files of its folder and the folders ab
 are read; a mapped key no `<packageSources>` defines gets the registered source of that name, added before restore
 by the generated Dockerfile (`dotnet nuget add source`, into the config nearest to the project, which NuGet applies
 last), and MIGRATION.md lists it. A key no feed has a name for is listed as missing.
+
+A repository that does not clear the sources (`<clear/>`) also restores from the sources of the machine's own
+NuGet.Config, often without naming them anywhere (no NuGet.Config at all, or one without packageSourceMapping): its
+build gets every registered NuGet source (the first name of each line) in the build's user-level NuGet.Config, as
+on a developer's machine, unless the repository already has that URL. A repository that clears the sources lists
+all it needs: only its mapped names are added, into its own config (the user-level one is cleared).
 """
 from __future__ import annotations
 
@@ -25,6 +31,7 @@ NUGET_ORG = ("nuget.org", "https://api.nuget.org/v3/index.json")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._@+()-]{0,99}")
 DOCS = "https://learn.microsoft.com/en-us/nuget/consume-packages/package-source-mapping"
 MAX_TEXT = 2000
+USER_CONFIG = "/root/.nuget/NuGet/NuGet.Config"   # the build stage's user-level config (the SDK images build as root)
 
 
 def parse(text: str, feed_url: str) -> list[tuple[str, str]]:
@@ -110,16 +117,26 @@ def _read(path: Path) -> tuple[dict[str, str], set[str], bool]:
     return defined, mapped, clear
 
 
+def _machine(known: dict[str, tuple[str, str]]) -> list[tuple[str, str]]:
+    """The registered sources as a developer's machine has them: each URL once, under its first name."""
+    out, seen = [], set()
+    for name, url in known.values():
+        if url.rstrip("/").casefold() not in seen:
+            seen.add(url.rstrip("/").casefold())
+            out.append((name, url))
+    return out
+
+
 def plan_sources(root: Path, project_rel: str, known: dict[str, tuple[str, str]] | None = None) -> dict | None:
-    """What the build adds for the mapped sources the repository does not define: {"config": path in the repository,
-    "add": [[name, url], ...], "missing": [names], "same": [[name, the other name]]}; None when nothing is missing.
+    """What the build adds: {"config": path in the repository, or "" for the build's user-level NuGet.Config,
+    "add": [[name, url], ...] (mapped names the repository does not define), "machine": [[name, url], ...] (the
+    registered sources, for a repository that does not clear the machine's), "missing": [names], "same": [[name,
+    the other name]]}; None when nothing is added or missing.
 
     NuGet takes a URL once: of two sources with the same URL, restore keeps the first, and packages mapped to the
     other's name are not found. A name whose URL is already a source is not added but listed in "same"."""
     root = Path(root)
     configs = _configs(root, root / project_rel)
-    if not configs:
-        return None
     defined, urls, mapped, clear = set(), {}, {}, False
     for f in configs:
         d, m, c = _read(f)
@@ -146,20 +163,28 @@ def plan_sources(root: Path, project_rel: str, known: dict[str, tuple[str, str]]
         else:
             add.append([name, url])
             urls[url.rstrip("/").casefold()] = name
-    if not add and not missing and not same:
+    machine = []
+    if not clear and not mapped:         # restore uses every source: the machine's as well
+        for name, url in _machine(known):
+            if url.rstrip("/").casefold() not in urls and name.casefold() not in defined:
+                machine.append([name, url])
+                urls[url.rstrip("/").casefold()] = name
+    if not add and not missing and not same and not machine:
         return None
-    return {"config": configs[0].relative_to(root.resolve()).as_posix(), "add": add, "missing": missing,
-            "same": same}
+    return {"config": configs[0].relative_to(root.resolve()).as_posix() if clear else "", "add": add,
+            "machine": machine, "missing": missing, "same": same}
 
 
 def dockerfile_lines(plan: dict) -> list[str]:
-    """RUN lines that add the plan's sources to the repository's NuGet.Config before restore."""
+    """RUN lines that add the plan's sources before restore: into the repository's NuGet.Config when it clears the
+    sources, else into the build's user-level one (where a developer's machine has them)."""
     ns = plan.get("nuget_sources") or {}
-    if not ns.get("add"):
+    todo = (ns.get("add") or []) + (ns.get("machine") or [])
+    if not todo:
         return []
-    cfg = shlex.quote(ns["config"])
-    cmds = [f"dotnet nuget add source {shlex.quote(u)} -n {shlex.quote(n)} --configfile {cfg}" for n, u in ns["add"]]
-    return ["# package sources the NuGet.Config's packageSourceMapping names but does not define (MIGRATION.md)",
+    cfg = shlex.quote(ns.get("config") or USER_CONFIG)
+    cmds = [f"dotnet nuget add source {shlex.quote(u)} -n {shlex.quote(n)} --configfile {cfg}" for n, u in todo]
+    return ["# package sources the developers' machines have in their own NuGet.Config (MIGRATION.md)",
             "RUN " + " \\\n && ".join(cmds)]
 
 
@@ -167,11 +192,17 @@ def reason(plan: dict) -> None:
     """The plan's reason for the added sources (Dockerfile header and plan.json)."""
     from .generate import add_reason
     ns = plan.get("nuget_sources") or {}
+    why = []
     if ns.get("add"):
-        add_reason(plan, "nuget-sources", f"{ns['config']} maps packages to "
-                   + ", ".join(n for n, _ in ns["add"]) + " but does not define them (on the developers' machines "
-                   "they come from their own NuGet.Config): the build adds them with the URLs of the registered NuGet "
-                   "feeds that have those names (nuget.org: its own).", [DOCS])
+        why.append(f"{ns['config'] or 'NuGet.Config'} maps packages to " + ", ".join(n for n, _ in ns["add"])
+                   + " but does not define them: the build adds them with the URLs of the registered NuGet feeds that "
+                   "have those names (nuget.org: its own).")
+    if ns.get("machine"):
+        why.append("The repository does not clear the NuGet sources of the machine it builds on: the build adds the "
+                   "registered NuGet sources (" + ", ".join(n for n, _ in ns["machine"]) + ") to its user-level "
+                   "NuGet.Config, as on a developer's machine.")
+    if why:
+        add_reason(plan, "nuget-sources", " ".join(why), [DOCS])
 
 
 def migration_markdown(notes: dict[str, dict]) -> str:
@@ -179,13 +210,15 @@ def migration_markdown(notes: dict[str, dict]) -> str:
     if not notes:
         return ""
     L = ["", "## NuGet package sources", "",
-         "The packageSourceMapping of these components' NuGet.Config names sources the repository does not define "
-         "(they come from the developers' and build agents' own NuGet.Config). The Dockerfile adds the ones a "
-         "registered feed has a name for before restore; add them to the repository's NuGet.Config to drop that "
-         f"step. See {DOCS}.", ""]
+         "These components restore from package sources the repository does not define: the developers and build "
+         "agents have them in their own NuGet.Config. The Dockerfile adds the registered ones before restore; add "
+         f"them to the repository's NuGet.Config to drop that step. See {DOCS}.", ""]
     for comp, n in sorted(notes.items()):
-        L += [f"### {comp}", "", f"`{n['config']}`:", ""]
-        L += [f"- `{name}`: added as {url}" for name, url in n["add"]]
+        L += [f"### {comp}", "", f"Added to `{n['config'] or USER_CONFIG}` in the build:" if n["add"] or
+              n.get("machine") else "Not added:", ""]
+        L += [f"- `{name}`: {url} (mapped by packageSourceMapping)" for name, url in n["add"]]
+        L += [f"- `{name}`: {url} (a registered feed; the repository does not clear the machine's sources)"
+              for name, url in n.get("machine") or []]
         L += [f"- `{name}`: **not added**: its URL is already the source `{other}`, and NuGet uses a URL once (the "
               f"packages mapped to `{name}` are not found): map them to `{other}`" for name, other in n.get("same") or []]
         L += [f"- `{name}`: **not defined**, and no registered NuGet feed has this name: restore cannot find the "

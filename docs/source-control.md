@@ -152,12 +152,25 @@ The URL is the source's own (`index.json` for v3), and must be under the feed's 
 a line of names alone means the feed's URL itself. A name belongs to one feed only (names compare case-insensitively,
 as NuGet's do).
 
+Many repositories do not name the internal feed at all: no NuGet.Config, or one without package source mapping,
+and restore takes the feed from the machine's own NuGet.Config. In the container that ends with `NU1101: No packages
+exist with this id in source(s): nuget.org`. So the registered sources count as the machine's too.
+
 For each .NET component the scan reads the NuGet.Config files of the project's folder and the folders above it, up to
-the repository's root. A mapped name no `<packageSources>` defines gets the source registered under that name: the
-generated Dockerfile adds it before restore (`dotnet nuget add source ... --configfile`, into the config nearest to
-the project; the URL only, never a token), and MIGRATION.md lists it under *NuGet package sources*, so the real
-build pipeline gets it too, or you add it to the repository's NuGet.Config and the step goes. `nuget.org` needs no
-registration: it is added with its own URL when the repository's `<clear/>` removed it. MIGRATION.md also lists:
+the repository's root, and the generated Dockerfile adds before restore (`dotnet nuget add source`; the URL only,
+never a token):
+
+- when the repository does not clear the sources (no `<clear/>` in `<packageSources>`): into the build's user-level
+  NuGet.Config (`/root/.nuget/NuGet/NuGet.Config`), where a developer's machine has them,
+    - the mapped names it does not define, with the URL registered under that name, or
+    - without package source mapping: every registered NuGet source whose URL the repository does not have yet
+      (each URL once, under the first name of its line);
+- when it clears them: only the mapped names it does not define, into its config nearest to the project (the
+  user-level one does not count then). `nuget.org` needs no registration: it is added with its own URL when the
+  `<clear/>` removed it.
+
+MIGRATION.md lists what was added under *NuGet package sources*, so the real build pipeline gets it too, or you add
+the sources to the repository's NuGet.Config and the step goes. It also lists:
 
 - a mapped name no registered feed has: restore cannot find its packages until a feed gets the name or the
   repository defines the source;

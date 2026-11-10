@@ -455,6 +455,16 @@ def reselect(expect: str | None) -> None:
                          f"see journalctl -u containerizer-app-patch")
 
 
+def upgrade_schema() -> None:
+    """The results database's schema upgraded by the code now selected (cz-db-init: `containerizer db init`, idempotent),
+    before the services restart with it: at boot containerizer-db-init.service does it, but an app update does not
+    restart the OS. Run as a transient unit rather than by restarting that one: the services Require= it, and a
+    restart would restart them too (and the LLM queue runner without its drain)."""
+    run(["systemd-run", "--wait", "--collect", "--quiet", "--unit", f"containerizer-db-upgrade-{os.getpid()}",
+         "-p", "ProtectHome=yes", "-p", "PrivateTmp=yes", "-p", "NoNewPrivileges=yes",
+         "/usr/lib/containerizer/bin/cz-db-init"], timeout=2700)
+
+
 def restart_services(drain_until: datetime | None = None, version: str | None = None) -> None:
     """The containerizer services restart with the code now selected; the LLM queue runner is drained instead
     (SIGUSR1: it starts no new job, waits until no LLM call is being answered, puts its jobs back in the queue and
@@ -608,6 +618,7 @@ def install_patch(version: str, task: dict) -> None:
     until = _drain_until(task)
     try:
         reselect(version)
+        upgrade_schema()
         restart_services(until, version)
         problem = services_up()
     except AgentError as ex:
