@@ -10,6 +10,21 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+The OS image changes (`appliance/`: the Mailpit image pin): a minor release.
+
+- **Lab mail** (#280): a new lab service, **Mail (SMTP)**, on by default, gives each application that sends mail
+  its own catch-all mailbox in the sandbox ([Mailpit](https://github.com/axllent/mailpit), MIT, pinned by digest;
+  never relays). The scan finds mail senders (MailKit, FluentEmail, `SmtpClient`, `SmtpDeliveryMethod`) and their
+  SMTP settings in `appsettings.json` and overrides them: host and port from the lab's Secret, TLS off, a pickup
+  folder emptied, `DeliveryMethod`/`Mode: Pickup` set to network delivery, so mail written to a pickup folder is
+  sent and caught too, with no code change. Administrators and operators read it under the new **Admin → Lab mail**
+  (one inbox over all applications, HTML shown as text, never rendered); the results page links to it. The page
+  reads the mailboxes through the system agent (`labmail` request), whose only command is `wget` against the
+  mailbox's loopback API. Docs: [Lab services → Mail](https://containerizer.eu/lab-services/#mail).
+- **Lab services added in a later version** get their default when `lab-services.json` was written before them,
+  instead of the lab agent refusing the file.
+- Kafka and SFTP no longer get a `ConnectionStrings__DefaultConnection` override (to a Secret key they do not have)
+  when no setting of theirs was found.
 - **CronJob schedules from the Windows Task Scheduler** (#288). Console tools got one CronJob per sub-command at
   the placeholder `0 2 * * *`, so a job the old server ran on weekdays at 06:30 ran every night at 02:00 until
   someone read the PowerShell. The repository's deploy scripts and exports are now read

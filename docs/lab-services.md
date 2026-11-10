@@ -18,12 +18,14 @@ not change: only its configuration, through environment variables.
 | RabbitMQ | RabbitMQ 4.4 | Its own virtual host and user, with rights on that virtual host only | no |
 | Kafka | Apache Kafka 4.4, one node (KRaft) | Its own broker | no |
 | SFTP | [SFTPGo](https://github.com/drakkan/sftpgo), SFTP only | Its own SFTP server, user and password, on port 22 | no |
+| Mail (SMTP) | [Mailpit](https://github.com/axllent/mailpit) (MIT), a catch-all mailbox that never sends on | Its own mailbox on port 25, which takes any login or none; [read under Admin → Lab mail](#mail) | yes |
 
 MongoDB 8.0 does not start on Linux 6.19 and newer (a tcmalloc bug, SERVER-121912). The appliance runs
 Debian 13's kernel, so this only matters on a self-built cluster with a newer kernel.
 
 SQL Server is on by default because the appliance already ran SQL Server for
-[dev database restores](dev-databases.md). An app with an uploaded backup (SQL Server, PostgreSQL or MySQL)
+[dev database restores](dev-databases.md). Mail (SMTP) is on by default because it only catches: an app that
+sends mail would otherwise fail against a relay the sandbox cannot reach, or write files nothing sends. An app with an uploaded backup (SQL Server, PostgreSQL or MySQL)
 still gets that backup restored next to it, and the lab's server for that engine is not used for it.
 Turning the engine off stops those restores too.
 
@@ -68,6 +70,8 @@ The scan decides, for each component, which services the component needs:
     - RabbitMQ: `RabbitMQ.Client`, `MassTransit.RabbitMQ`, `EasyNetQ*`, `NServiceBus.RabbitMQ`, `RawRabbit*`, `Rebus.RabbitMq`
     - Kafka: `Confluent.Kafka`, `MassTransit.Kafka`, `KafkaFlow*`, `Silverback.Integration.Kafka`, `Rebus.Kafka`
     - SFTP: `SSH.NET`, `Renci.SshNet*`, `WinSCP`
+    - Mail (SMTP): `MailKit`, `FluentEmail.Smtp`, `FluentEmail.MailKit`, `NETCore.MailKit`, or code that creates an
+      `SmtpClient` or sets `SmtpDeliveryMethod`
 
   The Aspire client packages for these services count too.
 - **Settings in `appsettings.json`** (with `appsettings.Production.json` on top). Each connection string
@@ -82,7 +86,12 @@ The scan decides, for each component, which services the component needs:
     - `amqp://`, or `host=` under a key that names RabbitMQ or EasyNetQ, means RabbitMQ. So do `HostName`,
       `UserName`, `Password`, `Port` and `VirtualHost` under a `RabbitMQ` section;
     - `BootstrapServers` (or `bootstrap.servers`) means Kafka;
-    - `Host`, `Port`, `Username` and `Password` under an `Sftp` or `Ssh` section mean SFTP.
+    - `Host`, `Port`, `Username` and `Password` under an `Sftp` or `Ssh` section mean SFTP;
+    - `Host`, `Server`, `Port`, `EnableSsl` (`UseSsl`, `StartTls`), `SecureSocketOptions`, `PickupFolder`
+      (`PickupDirectory`, `PickupDirectoryLocation`), `DeliveryMethod` and `Mode` under a section whose name has
+      `Mail` or `Smtp` in it (`Mail`, `Smtp`, `EmailSettings`, `DocControl:Mail`), or a key that says it
+      (`SmtpHost`, `SmtpPort`, `MailPickupFolder`), mean Mail (SMTP). Sections of HTTP mail APIs (SendGrid,
+      Mailgun, Microsoft Graph, ...) do not count.
 
 For each service that the component needs and that is on, the scan writes the following.
 
@@ -98,6 +107,7 @@ For each service that the component needs and that is on, the scan writes the fo
   | RabbitMQ | Each AMQP URI or EasyNetQ connection string (key `connection-string`), and each host, port, user name, password and virtual host setting (keys `host`, `port`, `username`, `password`, `vhost`). |
   | Kafka | Each bootstrap servers setting (key `bootstrap-servers`). A `SecurityProtocol` setting becomes `Plaintext`. |
   | SFTP | Each host, port, user name and password setting (keys `host`, `port`, `username`, `password`). |
+  | Mail (SMTP) | Each SMTP host and port setting (keys `host`, `port`). TLS settings become `false` (`SecureSocketOptions`: `None`); a pickup folder setting becomes empty, `DeliveryMethod` `SpecifiedPickupDirectory` or `PickupDirectoryFromIis` becomes `Network`, and `Mode: Pickup` becomes `Smtp`, so the app sends over SMTP. The sender, the recipients and the credentials stay as they are: the mailbox takes any login, or none. |
 
   The whole connection string, or each part of it, comes from the Secret, so no password appears in a
   manifest. When no setting is found for a service the component needs, `lab/README.md` names the Secret
@@ -135,6 +145,34 @@ For each service that the component needs and that is on, the scan writes the fo
   `containerizer.lab-init`). A script that only some deploy step runs later (reference data "after the first
   import") is not picked up: run it yourself if the app needs it.
 
+## Mail
+
+Many applications send mail: order confirmations, password resets, reports. On the Windows server they sent
+it to the company's SMTP relay, or wrote it as `.eml` files to a pickup folder that the IIS SMTP service
+emptied. In the sandbox neither exists, so the app fails to send, or writes files that nobody sends. The lab's
+**Mail (SMTP)** service gives each such application its own catch-all mailbox instead: the scan points the
+application's SMTP settings at it (see the tables above), every message it sends is kept, and **none leaves the
+appliance**. The mailbox has no relay or forwarding settings, whatever address a message is for.
+
+Administrators and operators read the caught mail under **Admin → Lab mail**: one inbox over all the
+applications' mailboxes, the newest first, with the application each message came from, or one application's
+mailbox at a time. Opening a message shows its addresses, its text and the names of its attachments. An HTML
+message is never rendered: the page shows its text, with links written out, and its HTML source. The
+application's results page links to the inbox from its **Lab services** line. Each mailbox keeps the newest
+1,000 messages, for at most 30 days. Each read is in the access log when the view audit is on.
+
+![Admin -> Lab mail: the mail the sandbox's applications sent, newest first, with the application each came from](images/admin-lab-mail.png#only-light){ .cz-shot }
+![Admin -> Lab mail: the mail the sandbox's applications sent, newest first, with the application each came from](images/admin-lab-mail-dark.png#only-dark){ .cz-shot }
+
+What the scan cannot fix: mail that the code always writes to a folder, or sends to a host set in code.
+`lab/README.md` says when no SMTP host setting was found, and when the code writes to a pickup folder that no
+setting turns off. For production the application still needs a real SMTP relay in its settings
+([`cfg-smtp-pickup-iis`](platform-fixes.md)).
+
+The page reads the mailboxes through the system agent, as the database browser does: the agent checks that
+the namespace is one the lab runs a mailbox for, and runs only `wget` against the mailbox's API, which listens
+on the pod's own loopback (`127.0.0.1:8025`) and cannot be reached over the network.
+
 ## How it works
 
 ```
@@ -147,7 +185,7 @@ app namespace: ExternalSecret lab-<service> ──ESO──> containerizer-secre
 lab agent (root, every 2 min) ──finds the ExternalSecrets──> creates database/login or instance,
                                                              writes the credentials ─┘
 containerizer-lab: sqlserver, postgres, mysql, mongodb, rabbitmq (shared)
-                   redis-<ns>, s3-<ns>, azure-blob-<ns>, kafka-<ns>, sftp-<ns> (per app)
+                   redis-<ns>, s3-<ns>, azure-blob-<ns>, kafka-<ns>, sftp-<ns>, smtp-<ns> (per app)
 ```
 
 The lab agent (`python -m containerizer.labagent reconcile`, `containerizer-lab.timer`) runs as root with
@@ -180,7 +218,7 @@ the k3s admin kubeconfig. Each time it runs, it does the following.
           new pod.
 
       The script runs again only when the server's pod or the password changes.
-    - **Per-app instance** (Redis, S3, Azure Blob, Kafka, SFTP). It runs a Deployment, a Service and a data volume
+    - **Per-app instance** (Redis, S3, Azure Blob, Kafka, SFTP, Mail). It runs a Deployment, a Service and a data volume
       named `<service>-<ns>`. Their config Secret is built from the app's credentials:
         - **Redis** keeps only the SHA-256 of the password in its ACL. Commands in `@admin` are denied,
           and the append-only file is on.
@@ -195,6 +233,10 @@ the k3s admin kubeconfig. Each time it runs, it does the following.
           and the brute-force defender is on. Its user store is the app's one user, read from the config
           Secret. The Service listens on port 22, so a client that uses the default port works. The host
           keys are on the data volume, so they stay the same.
+        - **Mailpit** listens for SMTP on port 1025 (the Service's port 25) and keeps the messages in a SQLite file
+          on the data volume. It takes any login or none, has no relay or forwarding configured, does no reverse DNS
+          lookups and no version check, and its web UI and API listen on the pod's loopback only. Like Kafka, the
+          NetworkPolicy is the access control: only the app's own namespace reaches its mailbox.
     - A **NetworkPolicy per app** lets in only that app's pods (`app.kubernetes.io/part-of: <ns>` in
       namespace `<ns>`), on the service's port.
     - When the store gets new credentials, the agent annotates the app's ExternalSecret, so ESO syncs it
@@ -217,7 +259,7 @@ The lab follows the same baseline as the generated apps (NSA/CISA Kubernetes Har
 `rules/60-security.yaml`):
 
 - **Pods.** They run as non-root users: SQL Server as `10001`, PostgreSQL as `70`, MySQL, MongoDB and
-  Redis as `999`, RabbitMQ as `100`, Azurite, Kafka and SFTPGo as `1000`, the S3 gateway as `10001`. The root file system is read-only, with `emptyDir` folders (size
+  Redis as `999`, RabbitMQ as `100`, Azurite, Kafka, SFTPGo and Mailpit as `1000`, the S3 gateway as `10001`. The root file system is read-only, with `emptyDir` folders (size
   limited) where the server needs to write. All capabilities are dropped, privilege escalation is off,
   seccomp and AppArmor use `RuntimeDefault`, no service account token is mounted, and service links are
   off. There are memory requests and limits and ephemeral-storage limits. SQL Server keeps
@@ -239,7 +281,7 @@ certificate (`TrustServerCertificate=True`, as for the dev databases). The SQL S
 strings name the app (`Application Name=<app>`), so the shared server shows whose session it is; the database
 browser's sessions are `containerizer-db-browser` (PostgreSQL; sqlcmd sets none). MySQL connections are encrypted
 too (`SslMode=Required`, with the certificate MySQL makes at first start). SFTP is SSH. PostgreSQL,
-MongoDB, RabbitMQ, Kafka, Redis, S3 and Azurite use plain connections. The sandbox is a single-node cluster, so lab traffic never leaves the appliance:
+MongoDB, RabbitMQ, Kafka, Redis, S3, Azurite and Mail (SMTP) use plain connections. The sandbox is a single-node cluster, so lab traffic never leaves the appliance:
 it stays on the node's pod network, and the NetworkPolicies limit who can open a connection.
 
 ## Storage
@@ -247,7 +289,7 @@ it stays on the node's pod network, and the NetworkPolicies limit who can open a
 Each service keeps its data on a PersistentVolumeClaim of the default StorageClass. On the appliance, this
 is k3s `local-path`, under `/var/lib/rancher/k3s/storage` on the persistent partition, so the data survives
 restarts and OS upgrades. The requested sizes are 20 GiB for SQL Server, 10 GiB each for PostgreSQL,
-MySQL and MongoDB, 5 GiB for RabbitMQ, 1 GiB for each Redis and 5 GiB for each S3, Azurite, Kafka or SFTP
+MySQL and MongoDB, 5 GiB for RabbitMQ, 1 GiB for each Redis or Mail and 5 GiB for each S3, Azurite, Kafka or SFTP
 instance. `local-path` does not enforce these sizes: the
 appliance's disk is the limit.
 
@@ -268,7 +310,7 @@ It runs every statement as the app's own login, in its own database, and records
 
 When it is in use, SQL Server takes 2 to 3 GiB of memory, on top of the appliance's own SQL Server.
 PostgreSQL, MySQL and MongoDB take up to 1 GiB each, and RabbitMQ up to 768 MiB. Each Kafka instance takes
-512 MiB to 1 GiB. Each Redis, S3, Azurite or SFTP instance takes 32 to 512 MiB. Size the VM for the
+512 MiB to 1 GiB. Each Redis, S3, Azurite, SFTP or Mail instance takes 32 to 512 MiB. Size the VM for the
 services you turn on.
 
 ## Licences
@@ -284,6 +326,7 @@ services you turn on.
 - **RabbitMQ**: MPL 2.0.
 - **Apache Kafka**: Apache 2.0.
 - **SFTPGo**: AGPLv3. It runs unmodified.
+- **Mailpit**: MIT.
 
 The appliance downloads each image from its publisher when the service is first used. Nothing is
 redistributed in the OS image.

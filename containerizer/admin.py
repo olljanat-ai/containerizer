@@ -243,7 +243,7 @@ class Admin:
             known = kind in ("applications", "products", "business-units", "audit", "access", "scans", "repositories",
                              "llm-queue", "refactoring", "egress", "api",
                              "dev-databases", "system", "firewall", "source-control", "lab-services",
-                             "sandbox-https")
+                             "lab-mail", "sandbox-https")
             return Response(403 if known else 404, self._shell(s, a, "Not allowed" if known else "Not found", "",
                             "<p>Your role does not include this page.</p>" if known else ""))
         if kind in ("scans", "repositories"):
@@ -273,6 +273,9 @@ class Admin:
         if kind == "lab-services":                   # the appliance only; administrators only (see _tabs)
             from . import admin_lab
             return admin_lab.route(self, conn, s, a, method, parts, q, form)
+        if kind == "lab-mail":                       # the appliance only; administrators and operators (see _tabs)
+            from . import admin_labmail
+            return admin_labmail.route(self, conn, s, a, method, parts, q, form)
         if kind == "dev-databases":
             from . import admin_devdb
             return admin_devdb.route(self, conn, s, a, method, parts, q, form)
@@ -331,6 +334,8 @@ class Admin:
             tabs += [("dev-databases", "Dev databases")]
         if a.admin and self.system:                                      # lab services in the sandbox (admin_lab.py)
             tabs += [("lab-services", "Lab services")]
+        if self.system and (a.admin or a.operator):                     # mail the sandbox's apps sent (admin_labmail.py)
+            tabs += [("lab-mail", "Lab mail")]
         if self.may_review_rules(s):                                     # learned rules waiting for review
             tabs += [("rules", "Rule review")]
         if a.admin and getattr(self, "api", None) is not None:          # API keys and how to use the API
