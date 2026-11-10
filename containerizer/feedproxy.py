@@ -58,6 +58,7 @@ class Feed:
     token: str = field(repr=False)
     username: str = ""
     cred: object = None          # credentials.Credential, to record how it went
+    sources: list = field(default_factory=list)   # NuGet: (name, source URL) the projects use (nugetsources.py)
 
     @property
     def hostport(self) -> str:

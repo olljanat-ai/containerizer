@@ -133,6 +133,37 @@ The page shows when a feed was last used and whether the feed accepted the token
 with the HTTP status). Yarn 2 and later (`.yarnrc.yml`) and the Maven wrapper's own download of Maven do not use
 `HTTPS_PROXY`: their feeds are not covered.
 
+### NuGet source names
+
+A NuGet.Config with [package source mapping](https://learn.microsoft.com/en-us/nuget/consume-packages/package-source-mapping)
+maps packages to a source by its name (`<packageSource key="Contoso">`). Often the repository does not define that
+source: the developers and build agents have it in their own user or machine NuGet.Config, under whatever name the
+project chose, so one feed may be `internal` in one repository and `Contoso` in another. A container build has none
+of those files, and restore cannot find the mapped packages (`NU1100 ... PackageSourceMapping is enabled`).
+
+Give a NuGet feed the names projects use for it in **NuGet source names**, one source per line:
+
+```text
+internal, Contoso, AzureArtifacts = https://pkgs.dev.azure.com/contoso/_packaging/main/nuget/v3/index.json
+ContosoLegacy = https://pkgs.dev.azure.com/contoso/_packaging/legacy/nuget/v3/index.json
+```
+
+The URL is the source's own (`index.json` for v3), and must be under the feed's URL so the proxy signs its requests;
+a line of names alone means the feed's URL itself. A name belongs to one feed only (names compare case-insensitively,
+as NuGet's do).
+
+For each .NET component the scan reads the NuGet.Config files of the project's folder and the folders above it, up to
+the repository's root. A mapped name no `<packageSources>` defines gets the source registered under that name: the
+generated Dockerfile adds it before restore (`dotnet nuget add source ... --configfile`, into the config nearest to
+the project; the URL only, never a token), and MIGRATION.md lists it under *NuGet package sources*, so the real
+build pipeline gets it too, or you add it to the repository's NuGet.Config and the step goes. `nuget.org` needs no
+registration: it is added with its own URL when the repository's `<clear/>` removed it. MIGRATION.md also lists:
+
+- a mapped name no registered feed has: restore cannot find its packages until a feed gets the name or the
+  repository defines the source;
+- a name whose URL is already a source of the repository under another name: NuGet uses a URL once (the first
+  name wins), so it is not added, and its packages must be mapped to the other name.
+
 ## The LLM
 
 Scans with **Ask the LLM** on consult an LLM about the components the rules are unsure of and the

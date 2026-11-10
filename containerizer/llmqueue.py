@@ -1536,7 +1536,7 @@ class Runner:
             for c in creds.feeds():
                 if c.token:
                     REDACT.add(c.token, c.username)
-                    feeds.append(feedproxy.Feed(c.provider, c.scope, c.token, c.username, c))
+                    feeds.append(feedproxy.Feed(c.provider, c.scope, c.token, c.username, c, c.sources()))
             import tempfile
             base = Path(os.environ.get("CONTAINERIZER_REFACTOR_WORK") or tempfile.gettempdir())
             feedproxy.use(feeds, base, log=self.log)
