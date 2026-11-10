@@ -1070,13 +1070,15 @@ DOTNET_SOURCE_EXT = {".cs", ".vb", ".fs", ".cshtml", ".vbhtml", ".razor", ".aspx
                      ".asax", ".master", ".ashx", ".xaml"}
 JAVA_SOURCE_EXT = {".java", ".kt", ".groovy", ".scala", ".jsp"}
 NODE_SOURCE_EXT = {".js", ".ts", ".tsx", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".svelte"}
-KIND_SOURCE_EXT = {"java": JAVA_SOURCE_EXT, "node": NODE_SOURCE_EXT}
+KIND_SOURCE_EXT = {"java": JAVA_SOURCE_EXT, "node": NODE_SOURCE_EXT, "python": {".py"}, "go": {".go"}}
 # Java and Node keep their tests inside the module: test sources and test resources are not what the
 # deployed component runs (src/test/resources/application.properties, __tests__/, *.spec.ts)
 TEST_PATH_RE = {
     "java": re.compile(r"(^|/)src/(test|it|integrationTest|testFixtures|jmh)/", re.I),
     "node": re.compile(r"(^|/)(__tests__|__mocks__|tests?|e2e|cypress|playwright|spec|specs|fixtures?|stories)/|"
                        r"\.(test|spec|e2e|stories|cy)\.[cm]?[jt]sx?$", re.I),
+    "python": re.compile(r"(^|/)(tests?|testing|testdata|fixtures?|docs?|examples?)/|(^|/)(test_[^/]*|[^/]*_tests?|conftest)\.py$"),
+    "go": re.compile(r"_test\.go$|(^|/)(testdata|examples?|_examples)/"),
 }
 # third-party bundles (minified JS, editor grammars, vendored client libraries) are not application code
 VENDORED_RE = re.compile(r"\.min\.(js|css)$|(^|/)(wwwroot/lib|monaco[^/]*|node_modules|bower_components)/", re.I)
