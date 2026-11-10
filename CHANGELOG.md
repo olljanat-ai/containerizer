@@ -8,7 +8,9 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## Unreleased
+## 0.23.1 (2026-11-10)
+
+A patch release: no OS image changes, appliances install it as an app update.
 
 - **NuGet source names for package source mapping.** A NuGet feed on Admin → Source control → Package feeds gets the
   names projects use for it (`internal, Contoso = <source URL>` per line; several names per feed, each name on one
