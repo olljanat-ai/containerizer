@@ -1646,7 +1646,7 @@ def test_which_components_a_patch_leaves_unchanged():
 
 
 def test_the_open_link_goes_to_the_ui_not_the_api():
-    """trade-rebates: "Open" went to TradeRebates.Api, whose "/" answers 404 (only /ping and /api/v1/...)."""
+    """"Open" went to an API, whose "/" answers 404 (only /ping and /api/v1/...)."""
     from containerizer.sandbox import main_url
     api = {"component": "TradeRebates.Api", "url": "https://api.example/"}
     portal = {"component": "TradeRebates.Portal", "url": "https://portal.example/"}
@@ -1655,6 +1655,15 @@ def test_the_open_link_goes_to_the_ui_not_the_api():
     assert main_url([api, worker]) == "https://api.example/"                      # only an API: that one
     assert main_url([{"component": "Shop.WebApi", "url": "u1"}, {"component": "shop-web", "url": "u2"}]) == "u2"
     assert main_url([{"component": "Rapid", "url": "u1"}]) == "u1" and main_url([worker]) is None
+    # what the component is comes before its name: pages for a browser, or none
+    from containerizer.sandbox import serves_pages
+    assert main_url([{"component": "Shop.Gateway", "url": "u1", "ui": False},
+                     {"component": "Shop.Bff", "url": "u2", "ui": True}]) == "u2"
+    assert main_url([{"component": "Shop.Backend", "url": "u1", "ui": False},
+                     {"component": "Shop.WebApi", "url": "u2", "ui": True}]) == "u2"
+    assert main_url([{"component": "Shop.Service", "url": "u1"}, {"component": "client", "url": "u2", "role": "spa"}]) == "u2"
+    assert serves_pages("web", ["Views/Home/Index.cshtml"]) and serves_pages("spa", [])
+    assert not serves_pages("web", ["Controllers/OrdersController.cs", "appsettings.json"])
 
 
 def test_try_again_builds_the_patched_copy_again_once_per_request(tmp_path, monkeypatch):

@@ -9,7 +9,8 @@ as its configuration (or the sandbox) names it, to the component it reaches, wit
   (`<component>`, `<component>.<namespace>`, `...svc`, `...svc.cluster.local`) or its sandbox Ingress host;
 - **observed**: the sandbox blocked a connection from one application's pod to another application's pod (the
   egress observer names such a destination `<component>.<namespace>.svc.cluster.local`);
-- **llm**: a destination that looks internal (no dot, `.local`, `.internal`, `.corp`, ...) and that nothing matched
+- **llm**: a destination that looks internal (no dot, `.local`, `.internal`, `.corp`, ..., or one of the
+  organization's internal domains: `network.internal_domains`) and that nothing matched
   is shown to the LLM with its configuration line and a shortlist of candidate components (names, application,
   product, repository); it answers with the best match and its confidence, or none (LLM queue kind `link`);
 - **manual**: a person links it (Link manually).
@@ -43,12 +44,32 @@ def _k8s(s: str) -> str:
     return k8s_name(s)
 
 
-def internal_looking(host: str) -> bool:
-    """A destination that is probably not on the internet: one label, or an internal suffix."""
+INTERNAL_ENV = "CONTAINERIZER_INTERNAL_DOMAINS"
+
+
+def internal_domains() -> tuple[str, ...]:
+    """The organization's own internal DNS domains (corp.contoso.com, ad.company.net): hosts under them are
+    internal although the domain is a registered one. A site setting: CONTAINERIZER_INTERNAL_DOMAINS (comma or
+    space separated), else `network.internal_domains` of rules/60-security.yaml."""
+    import os
+    raw = os.environ.get(INTERNAL_ENV)
+    if raw is None:
+        from .harden import security
+        raw = security()["network"].get("internal_domains") or []
+    items = re.split(r"[,\s]+", raw) if isinstance(raw, str) else [str(x) for x in raw]
+    return tuple(d for d in (re.sub(r"^\*?\.", "", x.strip().lower()).rstrip(".") for x in items)
+                 if re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+", d))
+
+
+def internal_looking(host: str, domains: tuple[str, ...] | None = None) -> bool:
+    """A destination that is probably not on the internet: one label, an internal suffix, or a host of one of the
+    organization's internal domains (internal_domains(); `domains` for many calls)."""
     h = (host or "").lower().rstrip(".")
     if not h or h in ("localhost",) or re.fullmatch(r"[\d.]+|\[?[0-9a-f:]+\]?", h):
         return False
-    return "." not in h or bool(INTERNAL_SUFFIX.search(h))
+    if "." not in h or INTERNAL_SUFFIX.search(h):
+        return True
+    return any(h == d or h.endswith("." + d) for d in (internal_domains() if domains is None else domains))
 
 
 def identities(comp: str, namespace: str, url: str | None = None) -> set[str]:

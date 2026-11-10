@@ -97,3 +97,34 @@ def test_code_that_reads_a_setting_names_no_host():
     assert line_hosts("var server = GetServer(name);") == []
     assert [h for h, *_ in line_hosts('"Server=sql.corp.local\\INST,1433;Database=x"')] == ["sql.corp.local"]
     assert [h for h, *_ in line_hosts("Data Source=db01;Initial Catalog=x")] == ["db01"]
+
+
+def test_development_retry_only_when_development_reaches_dependencies_another_way(tmp_path, monkeypatch):
+    """Development settings that only name another server end at the same missing services: no second run."""
+    a, c = _app(tmp_path)
+    d = c.project.dir
+    assert verify.development_helps(c) is False                # only adds a cache host
+    monkeypatch.setattr(verify, "build", lambda *x: (True, "", "img:verify"))
+    monkeypatch.setattr(verify, "_run", lambda *x, **k: (0, ""))
+    envs = []
+    monkeypatch.setattr(verify, "run", lambda c, plan, tag, workdir, env=None, hosts=None, **k:
+                        envs.append(dict(env or {})) or ("exited", "Connection refused", {"exit_code": "1"}))
+    monkeypatch.setattr(verify, "diagnose", lambda *x: ({"id": "run-sql-unreachable", "outcome": "external"}, {}))
+    r = verify.verify_component(a, c, [], work=tmp_path / "work")
+    assert r["status"] == "ok-external" and envs == [{}]
+    # a developer's own SQL Server: still an external host
+    (d / "appsettings.Development.json").write_text(json.dumps(
+        {"ConnectionStrings": {"Db": "Server=devsql.corp.example;Database=x"}}))
+    assert verify.development_helps(c) is False
+    # a local file database, a stand-in switched on, or code that branches on the environment
+    (d / "appsettings.Development.json").write_text(json.dumps({"ConnectionStrings": {"Db": "Data Source=app.db"}}))
+    assert verify.development_helps(c) is True
+    envs.clear()
+    verify.verify_component(a, c, [], work=tmp_path / "work2")
+    assert [e.get("ASPNETCORE_ENVIRONMENT") for e in envs] == [None, "Development"]
+    (d / "appsettings.Development.json").write_text(json.dumps({"Carrier": {"UseSimulator": True}}))
+    assert verify.development_helps(c) is True
+    (d / "appsettings.Development.json").unlink()
+    assert verify.development_helps(c) is False
+    (d / "Program.cs").write_text("if (app.Environment.IsDevelopment()) o.UseInMemoryDatabase(\"x\");")
+    assert verify.development_helps(c) is True

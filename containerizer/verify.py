@@ -295,6 +295,52 @@ def _track(usage: dict, name: str) -> None:
     usage["run_limit_mib"] = RUN_MEMORY_MIB
 
 
+DEV_BRANCH = re.compile(r"\bIsDevelopment\(\)|IsEnvironment\(\s*(?:\"Development\"|Environments\.Development)"
+                        r"|EnvironmentName\s*==\s*(?:\"Development\"|Environments\.Development)")
+DEV_LOCAL = re.compile(r"(?i)sqlite|lite ?db|in-?memory|simulat|stub|fake|mock|UseDevelopmentStorage"
+                       r"|\.(?:db|sqlite3?|litedb)\b")
+
+
+def _external_hosts(value) -> set:
+    from .connectivity import line_hosts
+    # "Data Source=app.db" names a file, not a server
+    return {h for h in _mappable((h, p) for h, p, _ in line_hosts(str(value)))
+            if not re.search(r"\.(?:db|sqlite3?|litedb)$", h)}
+
+
+def development_helps(c: Component) -> bool:
+    """Does a run as Development reach the component's dependencies another way than Production? Only then is
+    the Development retry worth its run: the Development settings take a setting that names an external host off
+    that host (a local file database, localhost, nothing), or name a local or in-memory stand-in (SQLite, a
+    simulator, a stub), or the code itself branches on the Development environment. Development settings that
+    only name other servers (a developer's SQL Server) end at the same missing services."""
+    if c.project.kind_hint != "dotnet":
+        return False
+    from .facts import _flatten, _load_json
+    d = c.project.dir
+    dev = dict(_flatten(_load_json(d / "appsettings.Development.json")))
+    if dev:
+        base = {**dict(_flatten(_load_json(d / "appsettings.json"))),
+                **dict(_flatten(_load_json(d / "appsettings.Production.json")))}
+        for key, val in dev.items():
+            if val == base.get(key) or key.startswith("Logging:"):
+                continue
+            if _external_hosts(base.get(key, "")) and not _external_hosts(val):
+                return True
+            if isinstance(val, str) and not _external_hosts(val) and DEV_LOCAL.search(val):
+                return True
+            if isinstance(val, bool) and DEV_LOCAL.search(key):         # "UseSimulator": true
+                return True
+    for f in c.project.files:
+        if f.suffix.lower() in (".cs", ".vb", ".fs"):
+            try:
+                if DEV_BRANCH.search(f.read_text(errors="replace")):
+                    return True
+            except OSError:
+                continue
+    return False
+
+
 def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | None = None,
         wait: int = 90, hosts: dict | None = None) -> tuple[str, str, dict]:
     """Returns (status, log, details). status: ok | exited | unhealthy. `hosts` (hosts_to_map) resolve to
@@ -426,6 +472,7 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
     env_override: dict = {}
     learned_patches: list[tuple[dict, dict, dict]] = []
     hosts = hosts_to_map(a, c)
+    dev_helps = development_helps(c)         # else a Development run ends at the same missing services
     pruned = False
     t0 = time.time()
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -453,7 +500,7 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
             from .ai import diagnose_failure
             d = diagnose_failure(a, c, plan, stage, tail, model=model)
         if d is None and stage == "run" and status == "unhealthy" and not details.get("http") \
-                and not env_override and c.project.kind_hint == "dotnet":
+                and not env_override and dev_helps:
             # never answered HTTP and logged nothing useful: most likely still waiting on its database
             history.append({"attempt": attempt, "stage": stage, "status": "no-response", **details,
                             "note": "no HTTP answer; retrying in Development mode without external services"})
@@ -494,8 +541,8 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
             learned_patches.append((fr, caps, patch))
             continue
         if fr["outcome"] == "external":
-            if stage == "run" and not env_override.get("ASPNETCORE_ENVIRONMENT") and c.project.kind_hint == "dotnet":
-                # dependency-free smoke mode: many apps fall back to SQLite/simulators in Development
+            if stage == "run" and not env_override.get("ASPNETCORE_ENVIRONMENT") and dev_helps:
+                # dependency-free smoke mode: this app reaches its dependencies another way in Development
                 env_override = {"ASPNETCORE_ENVIRONMENT": "Development", "DOTNET_ENVIRONMENT": "Development"}
                 entry["note"] = "retrying in Development mode to smoke-test without external services"
                 continue
@@ -513,7 +560,7 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
             result["status"] = "ok-external"
             break
         result["finding"] = finding
-        if stage == "run" and not env_override and c.project.kind_hint == "dotnet":
+        if stage == "run" and not env_override and dev_helps:
             # still find out whether the rest of the app works (Development often swaps in simulators)
             env_override = {"ASPNETCORE_ENVIRONMENT": "Development", "DOTNET_ENVIRONMENT": "Development"}
             entry["note"] = "finding recorded; smoke-testing the rest in Development mode"

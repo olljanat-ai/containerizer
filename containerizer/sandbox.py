@@ -207,12 +207,28 @@ def deployed_apps(root: Path, only: set | list | None = None) -> list[dict]:
 API_NAME_RE = re.compile(r"(?:^|[.\-_ ])(?:web)?api$|webapi$", re.I)
 
 
+PAGE_SUFFIXES = {".cshtml", ".razor", ".aspx", ".master", ".html", ".htm", ".jsp", ".ftl", ".ejs", ".hbs", ".pug",
+                 ".vue", ".svelte", ".jinja", ".j2", ".tmpl", ".gohtml"}
+
+
+def serves_pages(role: str, files) -> bool:
+    """Does a component have pages for a browser (a single-page app, or views and templates among its files)?
+    An API alone answers 404 at "/"."""
+    return role == "spa" or any(Path(str(f)).suffix.lower() in PAGE_SUFFIXES for f in files or ())
+
+
 def main_url(comps: list[dict]) -> str | None:
-    """The URL a person opens for an application (the "Open" link): its first published component that is not an API
-    by its name (TradeRebates.Portal before TradeRebates.Api, whose "/" answers 404), else the first one."""
+    """The URL a person opens for an application (the "Open" link): its first published component that has pages
+    for a browser ("ui": serves_pages, as the scan recorded it, or the role spa), before the ones nothing is known
+    of that are not an API by their name (a Portal before an Api, whose "/" answers 404), else the first one."""
+    def rank(c: dict) -> int:
+        if c.get("ui") is True or c.get("role") == "spa":
+            return 0
+        if c.get("ui") is False:
+            return 2
+        return 2 if API_NAME_RE.search(str(c.get("component") or c.get("folder") or "")) else 1
     published = [c for c in comps if c.get("url")]
-    ui = [c for c in published if not API_NAME_RE.search(str(c.get("component") or c.get("folder") or ""))]
-    return (ui or published or [{}])[0].get("url")
+    return (sorted(published, key=rank) or [{}])[0].get("url")
 
 
 def _published(docs: list[dict]) -> tuple[str, str]:
@@ -529,8 +545,8 @@ def observe_component(kube: Kube, ns: str, workloads: list[tuple[str, str]]) -> 
 
 def lab_services_off(doc: dict, component: str) -> dict | None:
     """The lab services this component needs and the lab has turned off (containerizer.json lab_services.missing),
-    as a diagnosis: an app without its message broker or database often just stops (control-tower's
-    CarrierGateway: RabbitMQ off, its background services fail and the host exits 0; it logs to a file only, so
+    as a diagnosis: an app without its message broker or database often just stops (a gateway whose
+    message broker is off: its background services fail and the host exits 0; it logs to a file only, so
     the pod log is empty and the events only say a secret store key is missing)."""
     from .labservices import SERVICES
     ls = (doc or {}).get("lab_services") or {}

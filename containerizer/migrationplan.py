@@ -211,7 +211,7 @@ def _k8s(name: str) -> str:
 def _match(host: str, comps: list[dict], urls: dict) -> tuple[dict | None, str]:
     """The component of the application a configured host names, and how: its Kubernetes service name
     (connectivity's own rule), its sandbox URL, or a host whose first label is the end of the component's name
-    ("lending-api.corp.local" for Lucerne.Lending.Api), when exactly one component matches."""
+    ("orders-api.corp.example" for Contoso.Orders.Api), when exactly one component matches."""
     host = (host or "").lower().rstrip(".")
     first = host.split(".")[0]
     for c in comps:

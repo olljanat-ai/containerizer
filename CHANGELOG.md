@@ -10,6 +10,22 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- **Verification, lab and links that fitted the sample applications are general.**
+  - The Development-mode retry of the build-and-run verification runs only when Development reaches the dependencies
+    another way (its settings take a setting off its external host or name a local stand-in such as SQLite or a
+    simulator, or the code branches on `IsDevelopment()`); Development settings that only name other servers end as
+    `ok-external` without a second run.
+  - The lab's SQL setup scripts: every deploy script that runs `.sql` files counts (a repository of several
+    applications), sibling script folders (`billing/db`, `crm/db`) are all run, `migrations` folders and Flyway's
+    `db/migration` are found (versions in order, repeatable last, undo/down scripts never), and `sqlcmd` variables get
+    the values the script sets with `:setvar` (a database-name variable becomes the app's lab database).
+  - `network.internal_domains` in `rules/60-security.yaml` (or `CONTAINERIZER_INTERNAL_DOMAINS`): your own internal
+    DNS domains (`corp.contoso.com`), so hosts under a registered domain count as internal for links between
+    applications and the migration plan.
+  - The sandbox "Open" link goes to a component that has pages for a browser (views, templates, a single-page app;
+    recorded as `ui` in `containerizer.json`), with the name (`*.Api`) only as a fallback.
+  - The split suggestion for a repository of several applications counts `.slnx` solutions.
+
 - **Analysis and generation that fitted the sample applications are general.**
   - Console tools get one CronJob per sub-command also when the commands are declared with System.CommandLine,
     CommandLineParser, Spectre.Console.Cli or McMaster.Extensions.CommandLineUtils.

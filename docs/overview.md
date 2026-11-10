@@ -333,8 +333,10 @@ For each component that can be containerized the scan:
    - `retry`: patch the build plan (e.g. remove a pinned `global.json`, retarget an out-of-support
      TFM to net10.0, add Kerberos libraries, make a folder writable) and try again;
    - `external`: the container works, it only lacks a database/broker/directory/identity provider —
-     then the tool retries in a dependency-free smoke mode (`Development` environment, which many apps
-     map to SQLite and simulators) to prove the app actually serves requests. For the smoke run only,
+     then the tool retries in a dependency-free smoke mode (`Development` environment) to prove the app
+     actually serves requests, when Development reaches the dependencies another way: its settings take a
+     setting off its external host or name a local stand-in (SQLite, in-memory, a simulator), or the code
+     branches on `IsDevelopment()`. Development settings that only name other servers get no second run. For the smoke run only,
      `appsettings.Development.json` is mounted read-only (the image never contains it), its host names
      resolve to `127.0.0.1` too, relative
      SQLite paths are made absolute and writable, and sample input files are mounted from the repo.

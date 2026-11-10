@@ -441,7 +441,7 @@ def init_database(kube: Kubectl, pod: dict, ns: str, cred: dict, timeout: int = 
                      pw + "\n", timeout=60, redact=(pw,)).strip()
     if have == mark:
         return "", mark
-    out = kube.exec(L.LAB_NS, name, "sqlserver", sqlcmd("-i", "/dev/stdin"), pw + "\n" + labinit.script(data, mark),
+    out = kube.exec(L.LAB_NS, name, "sqlserver", sqlcmd("-i", "/dev/stdin"), pw + "\n" + labinit.script(data, mark, db),
                     timeout=max(timeout, 600), redact=(pw,))
     errors = [ln.strip()[len(labinit.ERROR_TAG):] for ln in out.splitlines() if ln.strip().startswith(labinit.ERROR_TAG)]
     errors += [ln.strip() for ln in out.splitlines() if re.match(r"\s*Msg \d+, Level 1[1-9]", ln)]

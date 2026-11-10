@@ -374,13 +374,20 @@ how it was found and its evidence:
 | --- | --- |
 | Configuration matches (`config`) | A configured host is another application's component: its service in the sandbox (`<component>.<namespace>`, `...svc`, `...svc.cluster.local`) or its sandbox Ingress host. Confidence 0.95. |
 | Observed in the sandbox (`observed`) | The sandbox blocked a call from one application's pod to another application's pod (the observer names such a destination `<component>.<namespace>.svc.cluster.local`). Not recorded again when the configuration already links it. |
-| LLM (`llm`) | A configured destination that looks internal (one label, or `.local`, `.internal`, `.corp`, `.lan`, `.intranet`, `.svc`, ...) and that nothing matched. A `link` job of the [LLM queue](scheduled-scans.md#the-llm-queue) (with its approval policy) gives the LLM the destination, its configuration lines and a shortlist of 15 candidate components of other applications (name, application, product, project, role, repository) and asks for the best match, its confidence and why, or none. Answers below 0.5 or outside the shortlist are not taken. |
+| LLM (`llm`) | A configured destination that looks internal (one label, or `.local`, `.internal`, `.corp`, `.lan`, `.intranet`, `.svc`, ..., or a host of one of your own internal domains, see below) and that nothing matched. A `link` job of the [LLM queue](scheduled-scans.md#the-llm-queue) (with its approval policy) gives the LLM the destination, its configuration lines and a shortlist of 15 candidate components of other applications (name, application, product, project, role, repository) and asks for the best match, its confidence and why, or none. Answers below 0.5 or outside the shortlist are not taken. |
 | By hand (`manual`) | **Link manually** on the results page: pick one of the components assessed here. |
 
 Every link is a **proposal** until a person confirms it: **Confirm** and **Reject** on the calling application's
 results page, for administrators, operators and the calling application's product owners; a link made by hand is
 confirmed at once. A destination that looks internal and is not linked shows as *Looks internal, not linked*, with
 *Link manually*. Every decision is recorded with who made it (and in the change history).
+
+**Your own internal domains.** Many organizations name internal servers under a registered domain
+(`orders.corp.contoso.com`, `sql01.ad.company.net`), which does not look internal by its name. List those domains
+in `network.internal_domains` of `rules/60-security.yaml`, or set the environment variable
+`CONTAINERIZER_INTERNAL_DOMAINS` (comma separated) for the worker and the web UI. Hosts under them are then
+candidates for links, and for the calls between the Linux and the Windows part in a
+[migration plan](overview.md#migration-plan).
 
 **A confirmed link** is written by the queue runner to **both** applications in the output repository, in one commit:
 

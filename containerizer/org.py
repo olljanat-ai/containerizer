@@ -108,7 +108,7 @@ class OrgOptions:
                                         # an administrator enables them one by one)
     llm_heavy: bool = False             # platform migrations and the sandbox tester ask the LLM as often as they need
                                         # (replatform.py); the worker sets it only when the appliance allows it
-    splits: dict | None = None          # project/repository -> folder pattern ("scenarios/*"): one application per
+    splits: dict | None = None          # project/repository -> folder pattern ("apps/*"): one application per
                                         # folder (the worker: OrgRepository.SplitPath from the state's sync)
     parallel: int = 1                   # repositories processed at the same time, each in its own process (1..MAX_PARALLEL)
     heavy_windows: dict | None = None   # Application.SourceKey -> ["*"] or ProjectPaths: LLM-heavy windows an administrator
@@ -306,8 +306,8 @@ def gate_detail(comp: dict) -> str:
 
 def vulnerability_reason(scan: dict) -> str:
     """Why a scan stops a component, with what to upgrade: "2 fixable vulnerabilities at or above the gate threshold
-    in the application's packages: Refit 6.3.2 (fixed in 7.2.22), ..." (the lab's retail-backoffice: the reason
-    named only the count, and the packages to upgrade were in the application, not in a stale base image)."""
+    in the application's packages: Refit 6.3.2 (fixed in 7.2.22), ..." (the count alone does not say that the
+    packages to upgrade are the application's, not a stale base image's)."""
     blocking = [b for b in scan.get("blocking") or [] if isinstance(b, dict)]
     where = {"app": "in the application's packages", "base": "in the base image"}
     origins = {b.get("origin") for b in blocking}
@@ -958,7 +958,7 @@ def repo_label(r: SourceRepo) -> str:
 SPLIT_RE = re.compile(r"(?!/)(?!.*(^|/)\.\.?(/|$))[\w .\-/*?\[\]]{1,200}")
 SPLIT_MAX = 200
 # what makes a folder an application of its own: a solution, or a top-level Node, Java, Go or Python project
-APP_MARKERS = ("*.sln", "package.json", "pom.xml", "build.gradle", "build.gradle.kts", "go.mod", "pyproject.toml")
+APP_MARKERS = ("*.sln", "*.slnx", "package.json", "pom.xml", "build.gradle", "build.gradle.kts", "go.mod", "pyproject.toml")
 SKIP_DIRS = {".git", "node_modules", "bin", "obj", "target", "dist", "build", "vendor", "packages", ".vs", ".idea"}
 
 
@@ -1027,7 +1027,8 @@ def repo_dirs(root: Path, rel: str) -> list[Path]:
 def suggest_split(src: Path, limit: int = 20000) -> dict:
     """A whole repository that looks like several applications: folders at the same level that each hold their
     own application root (a solution, or a top-level package.json, pom.xml, ...), at least 3 of them and nearly
-    every root in the repository. {"pattern": "scenarios/*", "count": 33} or {} (one application)."""
+    every root in the repository. {"pattern": "apps/*", "count": 12} or {} (one application). A hint only: the
+    administrator sets the pattern."""
     roots: list[tuple[str, ...]] = []
     seen = 0
     for dirpath, dirnames, filenames in os.walk(src):
@@ -1450,6 +1451,7 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
 
     # images: built by the gate (or here), pushed under <registry>/<app>/<component>:<tag>
     from .imagescan import build_image
+    from .sandbox import serves_pages
     comps = []
     for c in keep:
         cn = k8s_name(c.name)
@@ -1465,6 +1467,7 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
         entry = {"component": c.name, "folder": cn, "image": ref, "rating": component_rating(a, c), "verdict": c.verdict,
                  "role": c.role, "project": c.project.rel,
                  "project_name": c.project.name,
+                 "ui": serves_pages(c.role, c.project.files),      # the "Open" link (sandbox.main_url)
                  "verification": next((v.get("status") for v in getattr(a, "verification", None) or [] if v.get("component") == c.name),
                                       "not run")}
         if stateful_ready(a, c):
