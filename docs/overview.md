@@ -129,6 +129,9 @@ has callers that cannot be followed, so the hit counts. `unguarded: callers` app
 check (for an annotation on the type itself, as `supported-os-windows` does). `same_file: true` next to
 an `all` requires its `code`/`config`/`text` conditions to match in the same file (e.g. an assembly
 loader *and* an install path probe, not two unrelated files).
+`superseded_by: [<rule id>, ...]` drops a finding when the component also has an active finding of one of
+those rules, because that finding says more (`wcf-client` gives way to `wcf-server` in a component that
+hosts WCF services and reaches client code through its libraries).
 
 The scanner evaluates the target-framework part of MSBuild conditions: an item under
 `Condition="'$(TargetFramework)' == 'net472'"` (also `TargetFrameworkIdentifier`,
@@ -276,6 +279,15 @@ instead of being forced into a code change.
   verify: [...]
 ```
 
+An entry can have `variants`, each a `when` condition (as a finding rule's) with its own packages and
+steps, added when the condition holds for the component. The WCF port plan uses them to pick the CoreWCF
+packages from the bindings found (`CoreWCF.NetTcp` for netTcpBinding, `CoreWCF.WebHttp` for
+webHttpBinding and `[WebGet]`/`[WebInvoke]`, `CoreWCF.Http` for HTTP bindings and `.svc` endpoints) and to
+keep a `<system.serviceModel>` services section with `CoreWCF.ConfigurationManager` instead of rewriting
+it in code. The plan keeps the `System.ServiceModel` attributes in contract assemblies that clients also
+reference, since CoreWCF hosts them as they are; WF4 workflow services (`WorkflowServiceHost`, `.xamlx`)
+count as WCF services, and their plan says that CoreWF does not host them as endpoints.
+
 The plan is also rendered as a self-contained **prompt for AI coding agents** (Claude Code, GitHub
 Copilot, ...): the findings with their evidence, the replacements in order, constraints (minimal
 changes, no secrets in code, non-root and read-only file system) and how to verify. It is in the output
@@ -419,6 +431,8 @@ Techniques used to avoid application changes:
   by env var, and `${basedir}/logs` becomes a writable folder;
 - installed Windows tools (`C:\\Program Files\\wkhtmltopdf\\bin\\wkhtmltopdf.exe`) map to the Linux binary on PATH;
 - console tools with sub-commands (usage text, verb arrays, `case "x":`) get one CronJob per command;
+- each CronJob gets the schedule and arguments of the repository's Windows Task Scheduler job that starts it
+  ([below](#scheduled-tasks));
 - workers that use the ASP.NET Core shared framework get the aspnet base image;
 - old netstandard1.x packages that break a linux-x64 restore (NU1605) get a portable publish;
 - corporate TLS-inspecting proxies: an optional `ca` build secret is honoured.
@@ -426,6 +440,34 @@ Techniques used to avoid application changes:
   in `CurrentUser\My` come from an optional Secret mounted at `~/.dotnet/corefx/cryptography/x509stores/my`;
   `Path.Combine(GetFolderPath(ProgramFiles), "Acme", ...)` (`/app/Acme/...` on Linux) gets a volume there. These
   findings then count as `config` ([Platform fixes for refactor findings](platform-fixes.md)).
+
+### Scheduled tasks
+
+A console tool that the Windows Task Scheduler started gets its schedule and arguments from the repository's own
+deploy scripts and exports instead of a placeholder (`containerizer/schedules.py`; which files are read is data in
+`rules/20-platform.yaml`, `task_scheduler:`). Three shapes are read:
+
+| Shape | Schedule | Command |
+| --- | --- | --- |
+| PowerShell (`*.ps1`, `*.psm1`, `*.psd1`) | `New-ScheduledTaskTrigger -Daily` or `-Weekly [-DaysOfWeek ...]`, with `-At HH:mm`; optionally a repetition (`-RepetitionInterval`/`-RepetitionDuration`, or `$t.Repetition = (New-ScheduledTaskTrigger -Once ...).Repetition`) | `New-ScheduledTaskAction -Execute ... -Argument ...`, paired by `Register-ScheduledTask`, also from a table of jobs (`@{ Name = ...; Verb = ...; Trigger = ... }`) registered in a `foreach` |
+| `schtasks /create` (in `*.cmd`, `*.bat` or PowerShell, also splatted `schtasks.exe @taskArgs`) | `/sc` (`DAILY`, `WEEKLY`, `MONTHLY`, `MINUTE`, `HOURLY`) with `/st HH:mm [/d MON,TUE] [/mo n] [/ri n /du HH:mm]` | `/tr` |
+| Task Scheduler XML export (`*.xml`) | `CalendarTrigger` (`StartBoundary`, `ScheduleByDay`, `ScheduleByWeek`, `ScheduleByMonth`), `Repetition` (`Interval`, `Duration`) | `Exec` (`Command`, `Arguments`) |
+
+Each trigger becomes a cron schedule: weekdays 06:30 is `30 6 * * 1-5`, every 30 minutes from 06:00 for 14 hours
+`*/30 6-19 * * *`. A job belongs to the component whose executable or assembly it starts (`Jobs.exe`, `dotnet
+Jobs.dll`), and to the CronJob of the sub-command (`commands` fact) or run-once switch (`oneshot_arg`) in its
+arguments; the CronJob runs with the job's own arguments. Several triggers of one command become several CronJobs
+(`<name>-2`, ...); a tool without sub-commands whose jobs pass different arguments gets one CronJob per argument
+(`<name>-<first argument>`). The CronJob says where its schedule came from (a comment and the
+`containerizer.io/schedule-source: <file>:<line>` annotation). A CronJob that no job matched keeps the placeholder
+`0 2 * * *` and the annotation `containerizer.io/schedule: placeholder`, so a reviewer sees it. Logon and startup
+triggers (`-AtLogOn`, `-AtStartup`, `ONLOGON`, `BootTrigger`) never become CronJobs: they are reported ("runs at
+logon: a Deployment, or not a server job"). Task Scheduler runs at the server's local time and the schedule keeps
+those hours; no `timeZone:` is set, so the CronJob runs in the cluster's time zone (usually UTC) until an
+organization time zone setting sets it.
+
+`MIGRATION.md` (section "Windows Task Scheduler jobs") and the application page of the results web UI ("Scheduled
+tasks") list every job found, its trigger, its schedule and the CronJob it became, or why it did not become one.
 
 ## Security gate
 

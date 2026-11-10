@@ -219,6 +219,7 @@ def load_application(conn, app_id: int) -> dict | None:
                                  "WHERE ApplicationId = %s ORDER BY AssessedAt DESC, AssessmentId DESC", (app_id,))
     app["migrations"] = load_migrations(conn, app_id)
     app["idp"] = load_idp_clients(conn, app_id)
+    app["scheduled_tasks"] = load_scheduled_tasks(conn, app_id)
     app["llm_reviews"] = load_llm_reviews(conn, app_id)
     app["refactors"] = load_refactor_orders(conn, app_id)
     from .connectivityui import load as load_connectivity
@@ -578,6 +579,44 @@ def load_idp_clients(conn, app_id: int) -> list[dict]:
         print(f"warning: sandbox IdP clients not available ({type(ex).__name__}); run `containerizer db init`",
               file=sys.stderr)
         return []
+
+
+def load_scheduled_tasks(conn, app_id: int) -> list[dict]:
+    """The Task Scheduler jobs of the latest assessment (empty before `db init` made schema 45)."""
+    try:
+        r = _rows(conn, "SELECT ScheduledTasksJson FROM cz.vScheduledTaskLatest WHERE ApplicationId = %s", (app_id,))
+        return json.loads(r[0]["ScheduledTasksJson"]) if r and r[0].get("ScheduledTasksJson") else []
+    except Exception:  # noqa: BLE001 - schema not upgraded yet
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return []
+
+
+def _scheduled_tasks(rows: list[dict]) -> str:
+    """The repository's Windows Task Scheduler jobs, their schedule and the CronJob each became (schedules.report)."""
+    if not rows:
+        return ""
+    items = []
+    for t in rows:
+        names = ", ".join(f"<code>{e(n)}</code>" for n in t.get("cronjobs") or [])
+        if names:
+            became = f"CronJob {names}" + (f" <span class='muted small'>({e(t['component'])})</span>"
+                                           if t.get("component") else "")
+        else:
+            became = f"<span class='muted'>{e(t.get('why_not') or '')}</span>"
+        note = f"<div class='muted small'>{e(t['note'])}</div>" if t.get("note") and t.get("schedule") else ""
+        sched = f"<code>{e(t['schedule'])}</code>" if t.get("schedule") else "-"
+        items.append(f"<tr><td>{e(t.get('name') or '(unnamed)')}<div class='muted small'><code>{e(t.get('file'))}:"
+                     f"{int(t.get('line') or 0)}</code></div></td><td>{e(t.get('trigger') or '')}</td>"
+                     f"<td>{sched}{note}</td><td>{became}</td></tr>")
+    return ("<h2 id='scheduled-tasks'>Scheduled tasks</h2><p class='muted small'>Windows Task Scheduler jobs in the "
+            "repository's deploy scripts and exports. Each job of a console component becomes a CronJob with the same "
+            "arguments and schedule (at the hours of the server's local time); a CronJob no job matched keeps a "
+            "placeholder schedule, annotated <code>containerizer.io/schedule: placeholder</code>.</p>"
+            "<table><thead><tr><th>Job</th><th>Trigger</th><th>Schedule</th><th>Became</th></tr></thead>"
+            f"<tbody>{''.join(items)}</tbody></table>")
 
 
 IDP_PROTOCOL = {"oidc": "OpenID Connect", "wsfed": "WS-Federation", "saml": "SAML 2.0"}
@@ -963,6 +1002,10 @@ def _lab_needs(app: dict, ctx: dict | None) -> str:
     parts = []
     if on:
         parts.append(f"<span class='st st-ok'>provided</span> {e(', '.join(on))}")
+    if "smtp" in (rep.get("provided") or []) and "smtp" in needed:
+        parts.append("the mail it sends is caught in the lab, not sent: "
+                     + ("<a href='/admin/lab-mail'>Admin → Lab mail</a>" if (ctx or {}).get("lab_mail")
+                        else "Admin → Lab mail (administrators and operators)"))
     if off:
         comps = sorted({c for x in off for c in needed.get(x) or []})
         where = ("<a href='/admin/lab-services'>Admin → Lab services</a>" if (ctx or {}).get("lab_admin")
@@ -1078,6 +1121,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 <tbody>{comp_rows}</tbody></table>
 {_scan_again(app, refactor)}
 {_idp_section(app.get("idp") or [])}
+{_scheduled_tasks(app.get("scheduled_tasks") or [])}
 {_refactoring(app, refactor)}
 <h2>What needs to change, and why</h2>{''.join(details)}
 {_connectivity(app, refactor)}
@@ -1462,6 +1506,7 @@ details{background:var(--card);border:1px solid var(--line);border-radius:10px;p
 summary{cursor:pointer}.finding{border-top:1px solid var(--line);padding:10px 0 4px;margin-top:10px}.finding p{margin:4px 0}
 .obstacles{padding-left:18px}.obstacles li{margin:4px 0}
 .note{background:var(--card);border-left:4px solid var(--rC);padding:8px 12px;border-radius:4px}
+.mail-body{white-space:pre-wrap;word-break:break-word;background:var(--card);border:1px solid var(--line);padding:10px 12px;border-radius:6px;max-height:70vh;overflow:auto}
 footer{margin-top:36px;border-top:1px solid var(--line);padding-top:12px}code{font-size:13px}
 .topnav{display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:14px;margin-bottom:12px}
 form.inline{display:inline}button{font:inherit;border:1px solid var(--fg);background:var(--fg);color:var(--bg);border-radius:6px;
@@ -1751,6 +1796,7 @@ def make_handler(connect, admin=None):
                                 ctx.update(scan_again_ctx(admin, app))
                                 ctx["scan_csrf"] = admin._csrf(s)
                             ctx["lab_admin"] = bool(s and s.admin)              # may turn lab services on
+                            ctx["lab_mail"] = bool(s and (s.admin or s.operator) and getattr(admin, "system", None))
                             ctx["scan_notice"] = parse_qs(u.query).get("scanagain", [""])[0]
                             if s and (s.admin or s.operator or s.scopes):
                                 ctx["admin_links"] = admin_links(admin, conn, s, app)

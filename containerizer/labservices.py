@@ -18,9 +18,10 @@ Two kinds of service:
 
 - shared (SQL Server, PostgreSQL, MySQL, MongoDB, RabbitMQ): one server; each app gets its own database and
   login (RabbitMQ: virtual host and user), with rights on that database only;
-- per app (Redis, S3, Azure Blob, Kafka, SFTP): one small instance per app, because these protocols
+- per app (Redis, S3, Azure Blob, Kafka, SFTP, Mail): one small instance per app, because these protocols
   cannot keep apps apart on one server without code changes (Redis has no per-database ACL; bucket,
-  container and topic names would collide between apps; an SFTP client expects its own root).
+  container and topic names would collide between apps; an SFTP client expects its own root; a mail
+  catcher cannot tell which app sent a message).
 
 Data lives on persistent volumes (k3s local-path storage, on the appliance's persistent partition).
 Turning a service off stops it but keeps the volumes and the credentials, so turning it on again
@@ -51,6 +52,9 @@ REMOTE_PREFIX = "cz-lab-"                       # remote keys <namespace>--cz-la
 SECRET_PREFIX = "lab-"                          # ExternalSecret / Secret lab-<service> in the app namespace
 RULES_FILE = Path(__file__).resolve().parent.parent / "rules" / "lab-services.yaml"
 # namespaces that may never ask for lab credentials
+MAIL_API_PORT = 8025                            # Mailpit's API, on the pod's loopback only
+MAIL_MAX = 1000                                 # messages kept per app mailbox (the oldest go first)
+MAIL_MAX_AGE = "30d"
 RESERVED_NS = frozenset({LAB_NS, "containerizer-secrets", "kube-system", "kube-public", "kube-node-lease",
                          "default", "flux-system", "external-secrets", "containerizer-verify"})
 NS_RE = re.compile(r"[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?")
@@ -115,6 +119,10 @@ SERVICES: dict[str, Service] = {s.id: s for s in (
     Service("sftp", "SFTP", "SFTPGo (SFTP server)", False, 2022, 1000,
             "CZ_IMAGE_LAB_SFTP", False, ("32Mi", "256Mi"), "5Gi",
             "One SFTP server per app with its own user and password, on port 22.", service_port=22),
+    Service("smtp", "Mail (SMTP)", "Mailpit (catch-all mailbox, never relays)", False, 1025, 1000,
+            "CZ_IMAGE_LAB_MAILPIT", True, ("32Mi", "256Mi"), "1Gi",
+            "One SMTP mailbox per app on port 25 that keeps every message and sends none on; administrators and "
+            "operators read them under Admin -> Lab mail.", service_port=25),
 )}
 ORDER = list(SERVICES)
 
@@ -147,7 +155,10 @@ def load_config(path: Path | None = None) -> dict:
         return {"services": defaults(), "changed_by": None, "changed_at": None}
     except (OSError, ValueError) as ex:
         raise LabError(f"{p}: {ex}") from None
-    return {"services": validate((data or {}).get("services")), "changed_by": data.get("changed_by"),
+    services = (data or {}).get("services")
+    if isinstance(services, dict):          # a service this version added: its default until an administrator chooses
+        services = {**{k: v.default for k, v in SERVICES.items() if k not in services}, **services}
+    return {"services": validate(services), "changed_by": data.get("changed_by"),
             "changed_at": data.get("changed_at")}
 
 
@@ -245,8 +256,64 @@ PARTS: dict[str, tuple[re.Pattern, dict[str, str]]] = {
              {"host": "host", "hostname": "host", "server": "host", "address": "host", "port": "port",
               "username": "username", "user": "username", "login": "username", "password": "password"}),
 }
+# SMTP client settings: in a section named after mail or SMTP (Mail:Host, Smtp:Port, EmailSettings:SmtpServer),
+# or a leaf that says it (Worker:SmtpHost, Worker:MailPickupFolder). The sender's address, recipients and
+# credentials stay as they are: the lab's mailbox takes any login, or none.
+_SMTP_SECTION = re.compile(r"(?i)(^|:)[^:]*(mail|smtp)[^:]*:")
+_SMTP_LEAF = {"host": "host", "hostname": "host", "server": "host", "smtphost": "host", "smtpserver": "host",
+              "relay": "host", "smtprelay": "host", "port": "port", "smtpport": "port",
+              "enablessl": "tls", "usessl": "tls", "ssl": "tls", "usetls": "tls", "enabletls": "tls",
+              "starttls": "tls", "usestarttls": "tls", "smtpenablessl": "tls", "smtpusessl": "tls",
+              "pickupfolder": "pickup", "pickupdirectory": "pickup", "pickupdirectorylocation": "pickup",
+              "pickuppath": "pickup", "pickupdir": "pickup", "securesocketoptions": "secure",
+              "socketoptions": "secure", "secureoptions": "secure"}
+# sections of HTTP mail APIs (their Server or Host is not an SMTP server)
+_MAIL_API = re.compile(r"(?i)sendgrid|mailgun|mailchimp|mailjet|postmark|mandrill|sparkpost|graph|exchange|ews|imap|pop3")
+_SMTP_PREFIXED = re.compile(r"(?i)(smtp|mail)(host|server|relay|port|enablessl|usessl|pickupfolder|pickupdirectory|"
+                            r"pickupdirectorylocation|pickuppath)")
+_PICKUP_METHOD = re.compile(r"(?i)(SpecifiedPickupDirectory|PickupDirectoryFromIis)")
 # parts that are plain settings, not values from the lab secret
-_PLAIN_PARTS = {"kafka:security-protocol": "Plaintext"}
+_PLAIN_PARTS = {"kafka:security-protocol": "Plaintext",
+                # the lab's mailbox speaks plain SMTP on the node's pod network (like Kafka; see docs)
+                "smtp:tls": "false",
+                # mail written to a pickup folder: an empty folder makes the app send over SMTP instead
+                "smtp:pickup": "",
+                "smtp:delivery": "Network",     # SmtpDeliveryMethod.Network
+                "smtp:mode": "Smtp",            # Mode: Pickup -> Smtp
+                "smtp:secure": "None"}          # MailKit SecureSocketOptions
+
+
+def smtp_kind(key: str, value) -> str | None:
+    """`smtp:<part>` for an SMTP client setting (see _SMTP_LEAF), else None."""
+    leaf = key.rsplit(":", 1)[-1].replace("_", "").replace(".", "").lower()
+    if isinstance(value, str) and len(value) > 500 or _MAIL_API.search(key):
+        return None
+    if _SMTP_SECTION.search(key) or re.match(r"(?i)(smtp|mail)", leaf):
+        if leaf in ("deliverymethod", "smtpdeliverymethod") and isinstance(value, str) and _PICKUP_METHOD.fullmatch(value.strip()):
+            return "smtp:delivery"
+        if leaf in ("mode", "deliverymode", "mailmode", "delivery") and isinstance(value, str) \
+                and value.strip().lower() == "pickup":
+            return "smtp:mode"
+    if _SMTP_SECTION.search(key) and leaf in _SMTP_LEAF:
+        part = _SMTP_LEAF[leaf]
+    elif _SMTP_PREFIXED.fullmatch(leaf):
+        m = _SMTP_PREFIXED.fullmatch(leaf)
+        part = _SMTP_LEAF.get(m.group(2).lower()) or _SMTP_LEAF.get("smtp" + m.group(2).lower())
+    else:
+        return None
+    if part == "tls":
+        return "smtp:tls" if isinstance(value, bool) or str(value).strip().lower() in ("true", "false") else None
+    if part == "port":
+        return "smtp:port" if not isinstance(value, bool) and re.fullmatch(r"\d{1,5}", str(value).strip()) else None
+    if part == "pickup":
+        return "smtp:pickup" if isinstance(value, str) else None
+    if part == "secure":
+        return "smtp:secure" if isinstance(value, str) and re.fullmatch(
+            r"(?i)Auto|SslOnConnect|StartTls|StartTlsWhenAvailable|None", value.strip()) else None
+    # a host name, not a URL of an HTTP API or an empty placeholder
+    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][\w.\-]*", value.strip()):
+        return "smtp:host"
+    return None
 
 
 def classify(key: str, value) -> str | None:
@@ -262,6 +329,9 @@ def classify(key: str, value) -> str | None:
     if isinstance(value, str) and (_AMQP.search(value) or (_RABBIT_KEY.search(key) and re.search(r"(?i)\bhost\s*=", value))):
         return "rabbitmq"
     leaf = leaf.replace(".", "")
+    smtp = smtp_kind(key, value)
+    if smtp:
+        return smtp
     for svc, (section, leaves) in PARTS.items():
         if section.search(key) and leaf in leaves and not isinstance(value, bool):
             return f"{svc}:{leaves[leaf]}"
@@ -338,7 +408,7 @@ def connection_keys(c, svc: str, needed: dict) -> list[str]:
     """The connection string / setting keys of component `c` that should point at `svc`."""
     lab = (c.facts or {}).get("lab_settings") or {}
     keys = [k for k, v in lab.items() if v == svc]
-    if keys or svc in ("s3", "azure-blob"):
+    if keys or svc in ("s3", "azure-blob", "kafka", "sftp", "smtp"):
         return sorted(keys)
     if svc == "redis":
         return ["ConnectionStrings:Redis"]
@@ -383,6 +453,23 @@ def env_for(svc: str, ns: str, c, needed: dict) -> tuple[list[dict], list[str]]:
             notes.append("No Azure Storage connection string found in appsettings.json: point the app's setting at "
                          f"the Secret {sec}, key connection-string.")
         return [ref(_env_key(k), "connection-string") for k in keys], notes
+    if svc == "smtp":
+        lab = (c.facts or {}).get("lab_settings") or {}
+        env = []
+        for k in sorted(lab):
+            kind = lab[k]
+            if kind in ("smtp:host", "smtp:port"):
+                env.append(ref(_env_key(k), kind.split(":", 1)[1]))
+            elif kind.startswith("smtp:") and kind in _PLAIN_PARTS:
+                env.append({"name": _env_key(k), "value": _PLAIN_PARTS[kind]})
+        if not any(lab[k] == "smtp:host" for k in lab):
+            notes.append(f"No SMTP host setting found in appsettings.json: point the app's SMTP host and port at the "
+                         f"Secret {sec} (keys host, port); mail it sends elsewhere is not caught.")
+        pickup = any(str(getattr(getattr(f, "rule", None), "id", "")).startswith("cfg-smtp-pickup") for f in getattr(c, "findings", None) or [])
+        if pickup and not any(lab[k] in ("smtp:pickup", "smtp:delivery", "smtp:mode") for k in lab):
+            notes.append("The code writes mail to a pickup folder and no setting turns that off: nothing sends it, and "
+                         "the lab's mailbox does not see it.")
+        return env, notes
     if svc in PARTS:
         lab = (c.facts or {}).get("lab_settings") or {}
         env = [ref(_env_key(k), "connection-string") for k in keys]
@@ -475,6 +562,9 @@ def readme(app: str, plan: AppPlan) -> str:
                   f"- Credentials: Secret `{secret_name(svc)}` (ExternalSecret, remote key `{remote_key(app, svc)}`)."]
         if s.shared:
             lines.append(f"- Database and login `{db_name(app)}`, owner of that database only.")
+        if svc == "smtp":
+            lines.append("- A catch-all mailbox: every message the app sends stays in the lab, none is sent on. "
+                         "Administrators and operators read them under Admin -> Lab mail.")
         for comp, envs in sorted(plan.overrides.items()):
             mine = [e for e in envs if e.startswith(f"{svc}:")]
             if mine:
@@ -798,14 +888,35 @@ def per_app_manifests(svc: str, ns: str, image: str, cred: dict) -> list[dict]:
              "readinessProbe": {"tcpSocket": {"port": s.port}, "periodSeconds": 10},
              "livenessProbe": {"tcpSocket": {"port": s.port}, "periodSeconds": 30},
              "volumeMounts": mounts}
+    elif svc == "smtp":
+        # Mailpit: keeps every message (the newest MAIL_MAX, at most MAIL_MAX_AGE), relays none (no relay or
+        # forward configuration), takes any SMTP login or none. Its web UI and API listen on the pod's loopback
+        # only: the system agent reads them with kubectl exec (labmail.py); nothing else can reach them.
+        files = {}
+        vols, mounts = _scratch("/tmp")
+        vols.append({"name": "data", "persistentVolumeClaim": {"claimName": f"{name}-data"}})
+        mounts.append({"name": "data", "mountPath": "/data"})
+        c = {"name": svc, "image": image, "imagePullPolicy": "IfNotPresent",
+             "args": ["--smtp", f"0.0.0.0:{s.port}", "--listen", f"127.0.0.1:{MAIL_API_PORT}",
+                      "--database", "/data/mailpit.db", "--max", str(MAIL_MAX), "--max-age", MAIL_MAX_AGE,
+                      "--smtp-auth-accept-any", "--smtp-auth-allow-insecure", "--smtp-disable-rdns",
+                      "--disable-version-check", "--block-remote-css-and-fonts"],
+             "env": [{"name": "TMPDIR", "value": "/tmp"}],
+             "ports": [{"name": "svc", "containerPort": s.port}],
+             "readinessProbe": {"tcpSocket": {"port": s.port}, "periodSeconds": 10},
+             "livenessProbe": {"tcpSocket": {"port": s.port}, "periodSeconds": 30},
+             "volumeMounts": mounts}
     else:
         raise LabError(f"{svc} is not a per-app service")
     checksum = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
-    secret = {"apiVersion": "v1", "kind": "Secret", "metadata": {"name": name, "namespace": LAB_NS, "labels": dict(labels)},
-              "type": "Opaque", "stringData": files}
     tpl = _pod(svc, labels, c, vols)
-    return [secret, pvc(f"{name}-data", labels, s.storage), _deployment(name, labels, tpl, checksum),
+    docs = [pvc(f"{name}-data", labels, s.storage), _deployment(name, labels, tpl, checksum),
             _service(name, labels, svc), ingress_policy(svc, ns)]
+    if files:
+        docs.insert(0, {"apiVersion": "v1", "kind": "Secret",
+                        "metadata": {"name": name, "namespace": LAB_NS, "labels": dict(labels)},
+                        "type": "Opaque", "stringData": files})
+    return docs
 
 
 def kafka_cluster_id(ns: str) -> str:
@@ -881,6 +992,9 @@ def new_credentials(svc: str, ns: str, keep: dict | None = None) -> dict:
     if svc == "sftp":
         return {"host": h, "port": str(SERVICES[svc].svc_port), "username": db_name(ns),
                 "password": keep.get("password") or new_password()}
+    if svc == "smtp":
+        # no login: the mailbox takes any (or none), and only the app's own namespace can reach it
+        return {"host": h, "port": str(SERVICES[svc].svc_port)}
     if svc == "azure-blob":
         account = "lab" + hashlib.sha256(ns.encode()).hexdigest()[:12]
         key = keep.get("account-key") or base64.b64encode(secrets.token_bytes(64)).decode()
