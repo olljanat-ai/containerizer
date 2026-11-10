@@ -41,7 +41,8 @@ explains how the assessment works and what it generates. To install and use it, 
    projects, ASP.NET Web Site projects listed in a .sln), source and configuration. Nothing from the scanned repository is executed.
    Java and Node.js have their own parsers (see [Java and Node.js](java-node.md)): Maven parents,
    profiles and modules, Gradle version catalogs and `subprojects {}`, npm/yarn/pnpm workspaces, and
-   the lockfile's Windows-only and native packages.
+   the lockfile's Windows-only and native packages. Python and Go too (see [Python and Go](python-go.md)):
+   every manifest and lockfile of a Python folder, and one component per Go main package.
 2. **Role rules** (`rules/00-roles.yaml`) decide what each project is: web, worker, console, spa,
    desktop, library, test, tool, BizTalk, SharePoint, Sitecore XP, SQL CLR, SSIS.
 3. **Fact rules** (`rules/05-facts.yaml`) extract ports, health endpoints, run-once arguments,
@@ -367,6 +368,8 @@ and `MIGRATION.md`.
 Java (Maven/Gradle; Spring Boot, Quarkus, plain JVM programs, WARs on Tomcat) and Node.js
 (npm/pnpm/yarn; Express, NestJS, Next.js and others) components get distroless, non-root images
 built on the runtime line they declare; see [Java and Node.js](java-node.md#containers).
+Python (pip, Poetry, uv, Pipenv; Flask, FastAPI, Django and others, on the server they declare) and Go
+(static builds on distroless) components too; see [Python and Go](python-go.md#containers).
 
 GitOps: every app also gets `gitops/flux/`, its Flux configuration (Flux is the only GitOps tool):
 
@@ -415,6 +418,8 @@ Techniques used to avoid application changes:
   by env var, and `${basedir}/logs` becomes a writable folder;
 - installed Windows tools (`C:\\Program Files\\wkhtmltopdf\\bin\\wkhtmltopdf.exe`) map to the Linux binary on PATH;
 - console tools with sub-commands (usage text, verb arrays, `case "x":`) get one CronJob per command;
+- each CronJob gets the schedule and arguments of the repository's Windows Task Scheduler job that starts it
+  ([below](#scheduled-tasks));
 - workers that use the ASP.NET Core shared framework get the aspnet base image;
 - old netstandard1.x packages that break a linux-x64 restore (NU1605) get a portable publish;
 - corporate TLS-inspecting proxies: an optional `ca` build secret is honoured.
@@ -422,6 +427,34 @@ Techniques used to avoid application changes:
   in `CurrentUser\My` come from an optional Secret mounted at `~/.dotnet/corefx/cryptography/x509stores/my`;
   `Path.Combine(GetFolderPath(ProgramFiles), "Acme", ...)` (`/app/Acme/...` on Linux) gets a volume there. These
   findings then count as `config` ([Platform fixes for refactor findings](platform-fixes.md)).
+
+### Scheduled tasks
+
+A console tool that the Windows Task Scheduler started gets its schedule and arguments from the repository's own
+deploy scripts and exports instead of a placeholder (`containerizer/schedules.py`; which files are read is data in
+`rules/20-platform.yaml`, `task_scheduler:`). Three shapes are read:
+
+| Shape | Schedule | Command |
+| --- | --- | --- |
+| PowerShell (`*.ps1`, `*.psm1`, `*.psd1`) | `New-ScheduledTaskTrigger -Daily` or `-Weekly [-DaysOfWeek ...]`, with `-At HH:mm`; optionally a repetition (`-RepetitionInterval`/`-RepetitionDuration`, or `$t.Repetition = (New-ScheduledTaskTrigger -Once ...).Repetition`) | `New-ScheduledTaskAction -Execute ... -Argument ...`, paired by `Register-ScheduledTask`, also from a table of jobs (`@{ Name = ...; Verb = ...; Trigger = ... }`) registered in a `foreach` |
+| `schtasks /create` (in `*.cmd`, `*.bat` or PowerShell, also splatted `schtasks.exe @taskArgs`) | `/sc` (`DAILY`, `WEEKLY`, `MONTHLY`, `MINUTE`, `HOURLY`) with `/st HH:mm [/d MON,TUE] [/mo n] [/ri n /du HH:mm]` | `/tr` |
+| Task Scheduler XML export (`*.xml`) | `CalendarTrigger` (`StartBoundary`, `ScheduleByDay`, `ScheduleByWeek`, `ScheduleByMonth`), `Repetition` (`Interval`, `Duration`) | `Exec` (`Command`, `Arguments`) |
+
+Each trigger becomes a cron schedule: weekdays 06:30 is `30 6 * * 1-5`, every 30 minutes from 06:00 for 14 hours
+`*/30 6-19 * * *`. A job belongs to the component whose executable or assembly it starts (`Jobs.exe`, `dotnet
+Jobs.dll`), and to the CronJob of the sub-command (`commands` fact) or run-once switch (`oneshot_arg`) in its
+arguments; the CronJob runs with the job's own arguments. Several triggers of one command become several CronJobs
+(`<name>-2`, ...); a tool without sub-commands whose jobs pass different arguments gets one CronJob per argument
+(`<name>-<first argument>`). The CronJob says where its schedule came from (a comment and the
+`containerizer.io/schedule-source: <file>:<line>` annotation). A CronJob that no job matched keeps the placeholder
+`0 2 * * *` and the annotation `containerizer.io/schedule: placeholder`, so a reviewer sees it. Logon and startup
+triggers (`-AtLogOn`, `-AtStartup`, `ONLOGON`, `BootTrigger`) never become CronJobs: they are reported ("runs at
+logon: a Deployment, or not a server job"). Task Scheduler runs at the server's local time and the schedule keeps
+those hours; no `timeZone:` is set, so the CronJob runs in the cluster's time zone (usually UTC) until an
+organization time zone setting sets it.
+
+`MIGRATION.md` (section "Windows Task Scheduler jobs") and the application page of the results web UI ("Scheduled
+tasks") list every job found, its trigger, its schedule and the CronJob it became, or why it did not become one.
 
 ## Security gate
 

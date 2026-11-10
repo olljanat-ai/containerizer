@@ -25,6 +25,34 @@ The OS image changes (`appliance/`: the Mailpit image pin): a minor release.
   instead of the lab agent refusing the file.
 - Kafka and SFTP no longer get a `ConnectionStrings__DefaultConnection` override (to a Secret key they do not have)
   when no setting of theirs was found.
+- **CronJob schedules from the Windows Task Scheduler** (#288). Console tools got one CronJob per sub-command at
+  the placeholder `0 2 * * *`, so a job the old server ran on weekdays at 06:30 ran every night at 02:00 until
+  someone read the PowerShell. The repository's deploy scripts and exports are now read
+  (`containerizer/schedules.py`; the files are data in `rules/20-platform.yaml`, `task_scheduler:`):
+  `New-ScheduledTaskTrigger -Daily|-Weekly [-DaysOfWeek] -At` with its repetition and the
+  `New-ScheduledTaskAction -Execute -Argument` that `Register-ScheduledTask` pairs it with (also from a table of jobs
+  registered in a loop), `schtasks /create /sc /st /d /mo /ri /du /tr` (also splatted `schtasks.exe @taskArgs`) and
+  Task Scheduler XML. Each job is matched to the component whose executable it starts and to the CronJob of the
+  sub-command in its arguments, which then gets its cron schedule (`30 6 * * 1-5`; a 30-minute repetition for 14 h
+  from 06:00 is `*/30 6-19 * * *`) and arguments; several triggers of one command become several CronJobs. A CronJob
+  no job matched keeps the placeholder with the annotation `containerizer.io/schedule: placeholder`; logon and
+  startup triggers are reported, not scheduled. `MIGRATION.md` and the results page ("Scheduled tasks", from the new
+  view `vScheduledTaskLatest`: schema 45, run `containerizer db init`) list each job, its schedule and the CronJob it
+  became ([docs](docs/overview.md#scheduled-tasks)).
+- Python and Go components get a container build and deployment (`Dockerfile`, `k8s.yaml`, `plan.json`) with the
+  same hardening as .NET, Java and Node.js components, instead of only `MIGRATION.md`, and organization scans deploy
+  them (#248, [Python and Go](docs/python-go.md)). Python: the dependencies install with the repository's package
+  manager (pip requirements, Poetry, uv or Pipenv lockfiles, else the manifest's list) into a virtual environment on
+  the slim image of the declared Python line, run as uid 65532 by the server the app declares (Procfile, gunicorn,
+  uvicorn, waitress, ...) on the app object found in the code (Flask, FastAPI, Django, ...); gunicorn or uvicorn is
+  added only when the app declares none. Go: a static build of each main package (`cmd/*` each a component) on
+  distroless static (cgo: distroless base). No application file is changed.
+- Python scanning reads every manifest of a folder (`requirements.txt` with includes, `pyproject.toml` PEP 621 and
+  Poetry, `Pipfile`, `setup.py`), keeps development dependencies apart and finds the Python version; folders with a
+  manifest but no Python code (`docs/requirements.txt`) are no longer components. A Go module without a main package
+  is a library.
+- Base images: Python 3.11, 3.12 and 3.13 lines (slim runtime, full build image for native packages), Go builds on
+  `golang:1.26` (the lock already chose it for the old 1.22 line), distroless `base` for cgo.
 
 ## 0.21.0 (2026-11-10)
 
