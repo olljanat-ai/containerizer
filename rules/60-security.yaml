@@ -181,6 +181,8 @@ network:
   # it (the appliance's sandbox: kube-system, where k3s runs Traefik). `any` allows every namespace (a controller in
   # the host network: replace the rule with an ipBlock of the node CIDR, docs/egress.md#inbound).
   ingress_namespace: ingress-nginx
+  # The Gateway's namespace (gateway.parent, or gateway.proxy_namespace) may call the service ports too: the
+  # HTTPRoutes' traffic comes from there.
   # The egress review (egress.py, docs/egress.md): the deterministic pre-filter that runs before the LLM is
   # asked. Nothing it matches is ever proposed: it is reported (platform, unnamed, in-cluster) or suspicious.
   egress_review:
@@ -261,6 +263,46 @@ network:
           - config: '(?i)(?:Server|Data Source|Address|Host)\s*=\s*[\w.\-]+,(?P<port>\d{2,5})'
           - config: '(?i)\bPort\s*=\s*(?P<port>\d{2,5})'
           - config: '(?i)\b(?:https?|amqps?|redis|mongodb|ldaps?|smtp)://[\w.\-@]+:(?P<port>\d{2,5})'
+
+# Gateway API (containerizer/gateway.py, docs/gateway-api.md): every web component (one with an HTTP port) gets
+# an HTTPRoute in its k8s.yaml. The platform owns the Gateway: its HTTPS listener and certificate (TLS
+# terminates at the Gateway, the pod stays on plain HTTP) and an HTTP listener that only redirects to HTTPS.
+# The routes attach to the HTTPS listener only. What IIS did for the app maps to standard HTTPRoute fields;
+# request body limits and client IP lists have none, so they go to MIGRATION.md and HARDENING.md as settings
+# of the Gateway implementation (never as vendor annotations).
+gateway:
+  # CONTAINERIZER_GATEWAY=<namespace>/<name> (--gateway) and CONTAINERIZER_GATEWAY_LISTENER (--gateway-listener)
+  # override these
+  parent: {namespace: gateway-system, name: platform-gateway, section: https}
+  # where the Gateway's proxy pods run, the namespace the NetworkPolicies let in ("": the Gateway's namespace;
+  # Istio, NGINX Gateway Fabric and kgateway run them there, Envoy Gateway in envoy-gateway-system)
+  proxy_namespace: ""
+  # lint route-listener: the listener a route attaches to is an HTTPS one (this pattern, or the configured section)
+  https_listener: '^(https|websecure)(-[a-z0-9-]+)?$'
+  # host names; {domain} is --ingress-domain (or the organization's setting), else placeholder_domain
+  host: '{component}.{app}.{domain}'
+  host_app: '{app}.{domain}'          # a component with the app's name
+  placeholder_domain: example.invalid
+  # set on every rule that reaches the app (ResponseHeaderModifier); web.config customHeaders are added
+  response_headers:
+    Strict-Transport-Security: max-age=31536000
+  # raised IIS request timeouts (executionTimeout, ANCM requestTimeout) -> rules[].timeouts.request and
+  # backendRequest; the pod's terminationGracePeriodSeconds follows hardening.workloads.long_requests
+  timeouts: {finding: host-long-request-timeout, max_seconds: 3600}
+  # WebSocket connections (SignalR, Blazor Server circuits) stay open: at least this request timeout
+  long_lived: {findings: [signalr-scaleout, host-blazor-server], seconds: 3600}
+  # per-user state in one pod's memory: the Gateway must keep a user on one pod (cookie session affinity).
+  # sessionPersistence is in Gateway API's experimental channel, and a cluster with only the standard-channel CRDs
+  # rejects it under server-side apply (Flux). So it is opt-in: with `emit: false` (default) the route has no such
+  # field, and MIGRATION.md and HARDENING.md ask for cookie affinity at the Gateway implementation (`value` names
+  # the cookie). Set `emit: true` on clusters with the experimental CRDs.
+  session_persistence:
+    emit: false
+    findings: [in-memory-session-scaleout, state-session-in-memory, host-arr-affinity, signalr-scaleout, host-blazor-server]
+    value: {sessionName: CZAFFINITY, type: Cookie, cookieConfig: {lifetimeType: Session}}
+  # the request body limit a component with file uploads (IFormFile) needs at least: IIS and Kestrel's default
+  default_body_bytes: 30000000
+  max_rules: 15                        # translated web.config rules per route (HTTPRoute allows 16 rules)
 
 # Namespace resource policies (NSA/CISA "Resource policies"): a LimitRange
 # gives defaults to anything added by hand, a ResourceQuota caps the namespace
@@ -359,6 +401,9 @@ lint:
     external-secret-store: {severity: error, title: ExternalSecrets read a platform-defined (Cluster)SecretStore}
     cronjob-limits:      {severity: warning, title: 'CronJobs have retry, deadline and history limits'}
     worker-strategy:     {severity: warning, title: 'Workers (no ports) are replaced, not rolled (strategy Recreate)'}
+    route-parent:        {severity: error,   title: Every HTTPRoute attaches to a Gateway}
+    route-listener:      {severity: error,   title: 'HTTPRoutes attach to the Gateway''s HTTPS listener only (sectionName), never plain HTTP'}
+    route-hostname:      {severity: error,   title: Every HTTPRoute names its host names; no wildcard host}
     df-user:             {severity: error,   title: Final image stage runs as a non-root user}
     df-base-tag:         {severity: error,   title: Base images have an explicit, non-latest tag}
     df-base-digest:      {severity: info,    title: Base images are pinned to a digest}
@@ -530,6 +575,10 @@ controls:
   - {id: encryption, nsa: 'Network separation and hardening > Encryption', scope: cluster,
      title: Traffic encrypted in transit,
      action: 'Terminate TLS at the ingress; use a service mesh (mTLS) or TLS to databases (Encrypt=True in SQL Server connection strings).'}
+  - {id: gateway-routes, nsa: 'Network separation and hardening > Encryption', scope: namespace,
+     checks: [route-parent, route-listener, route-hostname],
+     title: 'Web components are reached through the platform Gateway over HTTPS only (HTTPRoute on its HTTPS listener, named hosts, HSTS)',
+     action: 'Platform: the Gateway''s HTTPS listener holds the certificate; its HTTP listener only redirects to HTTPS (docs/gateway-api.md).'}
   - {id: secrets, nsa: 'Network separation and hardening > Secrets', cis: '5.4.2', scope: namespace,
      checks: [plain-secret, secret-literals, secret-source, external-secret-store],
      title: 'Secret values come from an external store through External Secrets Operator, never from Git or images',

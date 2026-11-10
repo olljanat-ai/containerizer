@@ -460,10 +460,12 @@ def assess(path: str | Path, rules: list[Rule] | None = None, repo: Repo | None 
         c.findings = [f for f in c.findings if not (set(f.rule.meta.get("superseded_by") or ()) & active)]
 
     from .techniques import resolve_findings
+    from .gateway import resolve as resolve_gateway
     for c in comps.values():
         if c.role not in NON_DEPLOYABLE:
             c.facts = extract_facts(repo, c, rules)
             resolve_findings(repo, c, rules)
+            resolve_gateway(repo, c)        # web.config rules the HTTPRoute carries (gateway.py)
 
     repo_findings = []
     ctx = Context(repo, None)

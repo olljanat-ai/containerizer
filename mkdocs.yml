@@ -54,6 +54,7 @@ nav:
       - Platform fixes for refactor findings: platform-fixes.md
       - Refactoring patches: refactoring.md
       - Egress and network connectivity: egress.md
+      - Gateway API routes: gateway-api.md
       - Build pipelines: build-pipelines.md
       - Rule review: rule-review.md
   - Administration:

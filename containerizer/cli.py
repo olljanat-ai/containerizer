@@ -118,6 +118,13 @@ def _ingress_arg(s) -> None:
                    help="the ingress controller's namespace, the only one the NetworkPolicies let call a component's "
                         "service port (default CONTAINERIZER_INGRESS_NAMESPACE, else network.ingress_namespace in "
                         "rules/60-security.yaml: ingress-nginx); any: every namespace (docs/egress.md#inbound)")
+    s.add_argument("--gateway", metavar="NAMESPACE/NAME",
+                   help="the platform's Gateway the web components' HTTPRoutes attach to (default "
+                        "CONTAINERIZER_GATEWAY, else gateway.parent in rules/60-security.yaml: "
+                        "gateway-system/platform-gateway); its namespace may call the service ports (docs/gateway-api.md)")
+    s.add_argument("--gateway-listener", metavar="SECTION",
+                   help="the Gateway's HTTPS listener the routes attach to (default CONTAINERIZER_GATEWAY_LISTENER, "
+                        "else https)")
 
 
 def _gitops_args(s) -> None:
@@ -128,7 +135,9 @@ def _gitops_args(s) -> None:
     g.add_argument("--git-path", help="folder of the app in that repository (default deploy/<app>)")
     g.add_argument("--verify-commits", action="store_true", help="Flux: only apply signed commits")
     g.add_argument("--ingress-domain", help="wildcard domain (*.sandbox.example.com): an HTTPS Ingress per web component "
-                   "at <component>-<app>.<domain> (default: the appliance's Sandbox HTTPS setting)")
+                   "at <component>-<app>.<domain> for the sandbox, and the host names of the HTTPRoutes, "
+                   "<component>.<app>.<domain> (default: the appliance's Sandbox HTTPS setting; HTTPRoutes: "
+                   "example.invalid)")
     g.add_argument("--no-sandbox-idp", action="store_true",
                    help="do not register the components that sign users in at the sandbox identity provider")
 
@@ -535,6 +544,10 @@ def _run_cmd(args) -> int:
     if getattr(args, "ingress_from", None):
         from .harden import INGRESS_ENV
         os.environ[INGRESS_ENV] = args.ingress_from.strip()
+    from .gateway import GATEWAY_ENV, LISTENER_ENV
+    for opt, env in (("gateway", GATEWAY_ENV), ("gateway_listener", LISTENER_ENV)):
+        if getattr(args, opt, None):
+            os.environ[env] = getattr(args, opt).strip()
     try:
         return args.fn(args)
     except DockerUnavailable as e:
