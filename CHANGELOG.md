@@ -8,9 +8,9 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## Unreleased
+## 0.22.0 (2026-11-10)
 
-The OS image changes (`appliance/`: the Mailpit image pin): a minor release.
+The OS image changes (`appliance/`: the Mailpit image pin for the new Mail lab service): a minor release.
 
 - The **WCF port plan** fits the service it was found in (#267). The CoreWCF packages come from the bindings found:
   `CoreWCF.NetTcp` for netTcpBinding, `CoreWCF.WebHttp` for webHttpBinding and `[WebGet]`/`[WebInvoke]`,
@@ -81,6 +81,8 @@ The OS image changes (`appliance/`: the Mailpit image pin): a minor release.
   `route-hostname`). The NetworkPolicy admits the Gateway's namespace, and the Flux tenant gets a Role for
   `httproutes`, which `admin` does not cover. The sandbox keeps its Traefik Ingress: the appliance's Traefik has no
   Gateway API provider, so the sandbox drops the routes ([Gateway API routes](docs/gateway-api.md)).
+- CI: the check that the results UI serves the assessment no longer fails now and then (`curl | grep -q` under
+  `pipefail`); `ci/local.sh` and `ci.yml` read the whole page first.
 
 ## 0.21.0 (2026-11-10)
 
