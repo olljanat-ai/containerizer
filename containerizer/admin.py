@@ -33,7 +33,8 @@ TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Applicatio
               "DevDatabase": "Dev database", "RuleCandidate": "Learned rule",
               "SourceCredential": "Source control token", "LabService": "Lab service", "ApiKey": "API key",
               "RulesRepository": "Internal rules repository", "LlmJob": "LLM queue job",
-              "LlmQueueSettings": "LLM queue settings", "DatabaseEdit": "Sandbox database"}
+              "LlmQueueSettings": "LLM queue settings", "DatabaseEdit": "Sandbox database",
+              "RoleAssignment": "Role"}
 FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
               "Retired": "Hidden", "SandboxEnabled": "Sandbox", "OutputRepo": "Own output repository",
               "OutputBranch": "Its branch", "OutputPath": "Its folder", "Product": "Product", "BusinessUnit": "Business unit", "InfoUrl": "Product page link",
@@ -66,7 +67,12 @@ FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Des
               "MaxLoadPerCpu": "Load per CPU below", "Parallel": "Parallel requests",
               # the database browser (Admin -> Dev databases)
               "ApplicationId": "Application", "Namespace": "Namespace", "Source": "Database",
-              "TableName": "Table", "Statement": "Statement"}
+              "TableName": "Table", "Statement": "Statement",
+              # users and roles (admin_users.py)
+              "User": "User", "PendingEmail": "E-mail (not signed in yet)", "Role": "Role"}
+# Roles given on the admin pages (CONTAINERIZER_ROLE_SOURCE=ui) are read from the database again when a session's
+# were read longer ago than this (seconds): every request, but once for the several lookups of one page.
+ROLE_REFRESH = 1.0
 # Who may use the rule review pages: Session attributes, any of which lets a signed-in user in.
 RULE_REVIEW_ROLES = ("admin", "operator")
 UPLOAD_RE = re.compile(r"/admin/dev-databases/(\d{1,9})/upload")
@@ -119,7 +125,30 @@ class Admin:
         return {k: v.value for k, v in c.items()}
 
     def session(self, headers) -> Session | None:
-        return self.sessions.get(self._cookies(headers.get("Cookie")).get(self.cookie))
+        s = self.sessions.get(self._cookies(headers.get("Cookie")).get(self.cookie))
+        if s and self.cfg.ui_roles and not self.dev:
+            self.refresh_roles(s)
+        return s
+
+    def refresh_roles(self, s: Session, force: bool = False) -> None:
+        """CONTAINERIZER_ROLE_SOURCE=ui: the session's operator, product owner and viewer roles as they are in the
+        database now (userroles.py), so a removed role is gone at the next request. Administrators come from the
+        sign-in's claims and need no lookup. A failed lookup propagates: no page rather than stale roles."""
+        import time
+        if s.admin or (not force and time.time() - s.roles_at < ROLE_REFRESH):
+            return
+        from . import userroles
+        operator = viewer = False
+        scopes, names = [], []
+        if s.account is not None:
+            conn = self.connect_admin()
+            try:
+                operator, viewer, scopes, names = userroles.load(conn, s.account)
+            finally:
+                conn.close()
+        s.operator, s.scopes, s.scope_names = operator, scopes, names
+        s.viewer = operator or bool(scopes) or viewer
+        s.roles_at = time.time()
 
     def dev_session(self, headers) -> tuple[Session | None, list]:
         """The session, and in development mode one made at once when there is none (sessions live in memory, so
@@ -148,7 +177,7 @@ class Admin:
 
     @property
     def viewers_required(self) -> bool:
-        return bool(self.cfg.viewers)
+        return self.cfg.viewers_required
 
     def gate(self, headers, path: str, query: str) -> tuple[Response | None, Session | None]:
         """For a results page: (response to send instead, None) or (None, the session if any)."""
@@ -243,7 +272,7 @@ class Admin:
             known = kind in ("applications", "products", "business-units", "audit", "access", "scans", "repositories",
                              "llm-queue", "refactoring", "egress", "api",
                              "dev-databases", "system", "firewall", "source-control", "lab-services",
-                             "lab-mail", "sandbox-https")
+                             "lab-mail", "sandbox-https", "users")
             return Response(403 if known else 404, self._shell(s, a, "Not allowed" if known else "Not found", "",
                             "<p>Your role does not include this page.</p>" if known else ""))
         if kind in ("scans", "repositories"):
@@ -276,6 +305,9 @@ class Admin:
         if kind == "lab-mail":                       # the appliance only; administrators and operators (see _tabs)
             from . import admin_labmail
             return admin_labmail.route(self, conn, s, a, method, parts, q, form)
+        if kind == "users":                          # administrators only (see _tabs)
+            from . import admin_users
+            return admin_users.route(self, conn, s, a, method, parts, q, form)
         if kind == "dev-databases":
             from . import admin_devdb
             return admin_devdb.route(self, conn, s, a, method, parts, q, form)
@@ -343,6 +375,8 @@ class Admin:
         tabs += [("audit", "Change history")]
         if a.admin and self.cfg.view_audit:
             tabs += [("access", "Access log")]
+        if a.admin:                                  # who has which role (admin_users.py)
+            tabs += [("users", "Users and roles")]
         if a.admin and self.system:                  # on the appliance: upgrade, roll back, egress firewall
             tabs += [("system", "System"), ("firewall", "Firewall"), ("sandbox-https", "Sandbox HTTPS")]
         return tabs
@@ -408,13 +442,26 @@ class Admin:
                                       "<a href='/login'>Try again</a></p>"), [clear])
         user, name = identity(claims)
         admin = allowed(claims, self.cfg.admins)
-        operator = bool(self.cfg.operators) and allowed(claims, self.cfg.operators)
-        scopes = owner_scopes(claims, self.cfg.owners)
-        viewer = admin or operator or bool(scopes) or (self.viewers_required and allowed(claims, self.cfg.viewers))
+        account, names = None, []
+        if self.cfg.ui_roles:                       # roles from Admin -> Users and roles (userroles.py)
+            from . import userroles
+            conn = self.connect_admin()
+            try:
+                conn.set_user(user, name, role="sign-in")
+                account = userroles.sign_in(conn, claims, admin)
+                operator, viewer, scopes, names = userroles.load(conn, account)
+            finally:
+                conn.close()
+            viewer = admin or operator or bool(scopes) or viewer
+        else:
+            operator = bool(self.cfg.operators) and allowed(claims, self.cfg.operators)
+            scopes = owner_scopes(claims, self.cfg.owners)
+            viewer = admin or operator or bool(scopes) or (self.viewers_required and allowed(claims, self.cfg.viewers))
         print(f"sign-in: {user} role={role_label(admin, operator, scopes) or ('viewer' if viewer else '-')} "
               f"scopes={scopes if not admin else []}", file=sys.stderr)
         self.log_access(user, name, "sign-in" if viewer or not self.viewers_required else "sign-in refused", addr=addr)
-        sid = self.sessions.create(user, name, admin, viewer, operator, scopes)   # a new id at every sign-in (no fixation)
+        sid = self.sessions.create(user, name, admin, viewer, operator, scopes,   # a new id at every sign-in (no fixation)
+                                   account=account, scope_names=names)
         return redirect(pending["next"], [clear, self._set_cookie(self.cookie, sid, 8 * 3600)])
 
     # -- forms ----------------------------------------------------------------------------------
@@ -464,7 +511,7 @@ class Admin:
                      f" title='kubemg: audited console and kubectl access to the sandbox cluster'>kubemg ↗</a>")
         msg =f"<p class='note'>{e(flash)}</p>" if flash else ""
         role = role_label(s.admin, s.operator, s.scopes)
-        scope = f": {e(', '.join(s.scopes))}" if s.scopes and not s.admin else ""
+        scope = f": {e(', '.join(s.scope_names or s.scopes))}" if s.scopes and not s.admin else ""
         return page(title, f"""<div class='topnav'><a href='/'>← Results</a><span>Signed in as <b>{e(s.name)}</b>
 <span class='muted'>({e(s.user)}) · {e(role)}{scope}</span> {self._logout_form(s)}{THEME_BUTTON}</span></div>
 <header><h1>{e(title)}</h1></header><nav class='chips'>{tabs}</nav>{msg}{body}""", script=True, refresh=refresh)
@@ -955,11 +1002,11 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
                                       ("DevDatabase", "Dev databases"), ("LabService", "Lab services"),
                                       ("RuleCandidate", "Rule review"), ("RulesRepository", "Rules repository"),
                                       ("LlmJob", "LLM queue"), ("LlmQueueSettings", "LLM queue settings"),
-                                      ("DatabaseEdit", "Sandbox databases")))
+                                      ("DatabaseEdit", "Sandbox databases"), ("RoleAssignment", "Users and roles")))
         body = (f"<p class='muted'>Every change to business units, products, the application mapping, organization scans, "
                 f"projects and repositories (found by a scan, enabled or disabled, skipped), source control tokens (added, replaced or removed; "
                 f"never the token itself), dev database uploads, statements run in the sandbox databases, lab services turned on "
-                f"or off and the rule review "
+                f"or off, roles given on Users and roles and the rule review "
                 f"(learned rules proposed, approved or rejected): who made it, when, "
                 f"and what changed. Changes made directly in the database are recorded too, under the database login. "
                 f"Latest 200.</p><nav class='chips'>{chips}</nav>{render_audit(self._audit_rows(conn, table))}")

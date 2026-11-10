@@ -43,6 +43,15 @@ or P2. Entra ID does not send `email_verified`, so `email:` and `domain:` rules 
 
 ## Roles
 
+The operator, product owner and viewer roles come from one of two places, chosen with
+`CONTAINERIZER_ROLE_SOURCE`:
+
+- `env` (the default): allow-lists in `web.env`, described in this section.
+- `ui`: an administrator gives them to people on **Admin → Users and roles**
+  ([below](#roles-on-the-admin-pages)).
+
+The two are never mixed. Administrators always come from `CONTAINERIZER_ADMINS`, in both.
+
 Each role is an allow-list of rules, comma separated:
 
 | Rule | Matches |
@@ -87,6 +96,46 @@ their applications between their products. Everything outside their scope shows 
 are checked on every request, so a product moved to another business unit leaves (or joins) that
 owner's scope at once.
 
+### Roles on the admin pages
+
+With `CONTAINERIZER_ROLE_SOURCE=ui` administrators give the viewer, operator and product owner roles on
+**Admin → Users and roles** instead of in `web.env`:
+
+```sh
+CONTAINERIZER_ROLE_SOURCE=ui
+CONTAINERIZER_ADMINS=group:6f1c...            # still required: the only way to be an administrator
+CONTAINERIZER_VIEWERS_REQUIRED=true           # optional: the results pages need sign-in and a role
+```
+
+`CONTAINERIZER_OPERATORS`, `CONTAINERIZER_PRODUCT_OWNERS` and `CONTAINERIZER_VIEWERS` must then be empty or
+unset: the web UI does not start, and names them, if one is set. Nobody can be made an administrator on the
+page (the database refuses it too).
+
+![Admin → Users and roles: who signed in, their roles, and the form that gives one](images/admin-users.png#only-light){ .cz-shot }
+![Admin → Users and roles: who signed in, their roles, and the form that gives one](images/admin-users-dark.png#only-dark){ .cz-shot }
+
+- **Who is listed.** Everyone who has signed in, with the e-mail address or user name and the time of
+  their last sign-in. Administrators show as *admin (from configuration)*: that is whether
+  `CONTAINERIZER_ADMINS` matched at their last sign-in, and it cannot be changed here.
+- **Giving a role.** Choose the person, the role and, for a product owner, one or more business units
+  and products (a business unit covers all its products, as `bu:` does above), and optionally a note.
+  For someone who has not signed in yet, type their e-mail address instead.
+- **Matching.** Roles follow the person's account at the identity provider, its stable subject (`sub`),
+  not their e-mail address. A role given to an address waits until someone signs in with that address
+  verified by the provider (`email_verified`; Entra ID, which does not send it, the address or user name the
+  change history shows). It then belongs to that person's account; whoever gets the address later does not
+  get the role.
+- **Effect.** Roles are read from the database on every request, so a removed role is gone at the
+  person's next click, without signing out.
+- **History.** Every role given or removed is in the change history (**Users and roles**), with the
+  administrator who did it and the note.
+- **API.** A person's access token gets the operator and product owner roles of the account with the
+  token's `sub`. With Entra ID, where `sub` differs from one application to another, that needs the API's
+  audience to be the sign-in app registration; otherwise use [API keys](api.md). API clients
+  (`CONTAINERIZER_API_CLIENTS`) and API keys are unchanged.
+
+With `CONTAINERIZER_ROLE_SOURCE=env` the page is read-only: it lists the rules of each role from `web.env`.
+
 ## Application tags
 
 Administrators and operators tag applications on their results page: **Tags**, under the owner and the
@@ -117,11 +166,12 @@ address (`/?bu=3&tag=pci`) can be shared or bookmarked. The [API](api.md) return
 ## Sign-in for the results pages (optional)
 
 By default anyone who reaches the web UI over HTTPS can read the results. Set `CONTAINERIZER_VIEWERS`
-to limit that to named people; admins, operators and product owners can always read. Opening a results
+to limit that to named people (with `CONTAINERIZER_ROLE_SOURCE=ui`: `CONTAINERIZER_VIEWERS_REQUIRED=true`, and
+give the viewer role on **Admin → Users and roles**); admins, operators and product owners can always read. Opening a results
 page without a session then goes straight to the identity provider and back. People who match no
 list get a "not allowed" page, and the database is not read for them.
 
-`CONTAINERIZER_VIEW_AUDIT=true` (needs `CONTAINERIZER_VIEWERS`) records every sign-in, refused sign-in,
+`CONTAINERIZER_VIEW_AUDIT=true` (needs `CONTAINERIZER_VIEWERS`, or `CONTAINERIZER_VIEWERS_REQUIRED=true`) records every sign-in, refused sign-in,
 results page opened and sign-out in the **access log**, which admins see on the admin pages. If a row
 cannot be written, the page is not shown, so a view is never left unrecorded. The access log is personal
 data: tell users their access is recorded, and keep it only as long as your policy says (deleting old
@@ -139,7 +189,7 @@ rows needs the database owner).
   carry a strict Content-Security-Policy (no inline script), `X-Frame-Options: DENY`, HSTS and
   `no-store`; errors are logged on the server and never shown.
 - The change history (business units, products, application mapping, scans, repositories, tokens, lab
-  services, rule decisions) is written by database triggers, so even direct SQL changes are recorded.
+  services, roles given on the admin pages, rule decisions) is written by database triggers, so even direct SQL changes are recorded.
   No database role of the web UI can update or delete audit or access log rows; forward them to your
   SIEM if they must be tamper-proof.
 

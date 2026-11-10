@@ -8,6 +8,21 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- **Users and roles on the admin pages** (`CONTAINERIZER_ROLE_SOURCE=ui`). Administrators give the viewer, operator
+  and product owner roles (scoped to business units and products, chosen from a list) on **Admin → Users and roles**,
+  to someone who has signed in or to the e-mail address of someone who has not yet. Roles follow the person's
+  account at the identity provider (`sub`): a role given to an address binds at the first sign-in with that address
+  verified, and stays with that account. Roles are read on every request, so a removed role is gone at the next
+  click; every change is in the change history with the administrator who made it. Administrators still come only
+  from `CONTAINERIZER_ADMINS`, and nothing on the page (nor the database) makes anyone one. In this mode
+  `CONTAINERIZER_OPERATORS`, `CONTAINERIZER_PRODUCT_OWNERS` and `CONTAINERIZER_VIEWERS` must be unset (the web UI
+  names them and does not start), and `CONTAINERIZER_VIEWERS_REQUIRED=true` puts the results pages behind sign-in.
+  The default, `CONTAINERIZER_ROLE_SOURCE=env`, works as before; the page then lists the rules of `web.env`.
+  The API gives a person's access token the roles of the account with its `sub`. Database schema version 46
+  (`UserAccount`, `RoleAssignment`).
+
 ## 0.22.0 (2026-11-10)
 
 The OS image changes (`appliance/`: the Mailpit image pin for the new Mail lab service): a minor release.

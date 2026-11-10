@@ -83,7 +83,7 @@ The first boot creates `/etc/containerizer/` (mode 700) with:
 | File | What to set |
 | --- | --- |
 | `appliance.env` | `CZ_HOSTNAME` (the DNS name users open, usually the FQDN: the name in the HTTPS certificate and the sign-in redirect; it does not rename the machine), `CZ_ACME_EMAIL` (Let's Encrypt instead of the appliance's own CA; your own certificate: [HTTPS certificate](#https-certificate)), `CZ_DNS_SERVERS`, `CZ_MSSQL_EDITION`, `CZ_MSSQL_MEMORY`, `CZ_SQL_*` ([external database](#external-database)), `CZ_LLM_HEAVY` ([LLM-heavy mode](platform-migration.md#llm-heavy-mode), off by default) |
-| `web.env` | Sign-in for the web UI: `CONTAINERIZER_OIDC_*`, `CONTAINERIZER_ADMINS`, roles, viewers, API ([sign-in and roles](sign-in.md)) |
+| `web.env` | Sign-in for the web UI: `CONTAINERIZER_OIDC_*`, `CONTAINERIZER_ADMINS`, roles, viewers, API ([sign-in and roles](sign-in.md)). `CONTAINERIZER_ROLE_SOURCE=ui` gives the operator, product owner and viewer roles on **Admin → Users and roles** instead of in this file ([roles on the admin pages](sign-in.md#roles-on-the-admin-pages)) |
 | `worker.env` | Push credentials for an external image registry, and extra registry hosts the worker may push to. Scans that push to the appliance's own registry need none; source control tokens are registered on the admin pages ([source-control.md](source-control.md)) |
 | `sandbox.env` | The output repository the sandbox cluster deploys from ([the sandbox cluster](scheduled-scans.md#the-sandbox-cluster)) |
 | `grafana.env` | Optional Grafana settings, e.g. sign-in with your identity provider |

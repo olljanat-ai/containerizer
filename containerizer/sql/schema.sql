@@ -15,6 +15,7 @@
 --   Application 0-1 DevDatabase                                              (dev database backup for the sandbox)
 --   RuleCandidate 1-* RuleEvidence: rules the learning loop learned, waiting for review (rule review)
 --   SourceCredential: read-only tokens of the organizations scans may read, write tokens of output repositories
+--   UserAccount 1-* RoleAssignment: roles given on the admin pages (CONTAINERIZER_ROLE_SOURCE=ui)
 --
 -- The scan fills Application, Component and the assessment tables. People maintain business units,
 -- products and the application mapping in the admin pages of the web UI; a scan never overwrites them.
@@ -2690,4 +2691,92 @@ GRANT SELECT ON [${schema}].vScheduledTaskLatest TO [${schema}_reader];
 GRANT SELECT ON [${schema}].vScheduledTaskLatest TO [${schema}_writer];
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 45) INSERT [${schema}].SchemaVersion (Version) VALUES (45);
+GO
+
+-- 46: users and roles managed on the admin pages (CONTAINERIZER_ROLE_SOURCE=ui, userroles.py, admin_users.py).
+-- UserAccount: everyone who signed in, by the provider's stable subject (sub); AdminAtSignIn says whether the
+-- CONTAINERIZER_ADMINS rules matched at that sign-in (administrators come from the configuration only).
+-- RoleAssignment: a viewer, operator or product owner role, of a known user or of an e-mail address of someone who
+-- has not signed in yet (bound to their subject at their first sign-in with that verified address, then matched by
+-- the subject only). A product owner row has one scope: a business unit or a product, by id (deleting it deletes
+-- the scope). There is no admin role here: the CHECK refuses it. The admin login writes; the trigger records every
+-- change, with the administrator who made it, in the change history.
+IF OBJECT_ID(N'[${schema}].UserAccount', N'U') IS NULL
+CREATE TABLE [${schema}].UserAccount (
+    UserAccountId int IDENTITY(1,1) NOT NULL CONSTRAINT PK_UserAccount PRIMARY KEY,
+    Issuer        nvarchar(300)  NOT NULL,
+    Subject       nvarchar(255)  NOT NULL,
+    Email         nvarchar(256)  NULL,               -- e-mail / UPN from the last sign-in (shown, never matched)
+    DisplayName   nvarchar(256)  NULL,
+    AdminAtSignIn bit            NOT NULL CONSTRAINT DF_UserAccount_AdminAtSignIn DEFAULT 0,
+    FirstSeenAt   datetime2(0)   NOT NULL CONSTRAINT DF_UserAccount_FirstSeenAt DEFAULT SYSUTCDATETIME(),
+    LastSignInAt  datetime2(0)   NOT NULL CONSTRAINT DF_UserAccount_LastSignInAt DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT UQ_UserAccount_Subject UNIQUE (Issuer, Subject)
+);
+GO
+IF OBJECT_ID(N'[${schema}].RoleAssignment', N'U') IS NULL
+CREATE TABLE [${schema}].RoleAssignment (
+    RoleAssignmentId int IDENTITY(1,1) NOT NULL CONSTRAINT PK_RoleAssignment PRIMARY KEY,
+    UserAccountId  int            NULL CONSTRAINT FK_RoleAssignment_UserAccount REFERENCES [${schema}].UserAccount (UserAccountId),
+    PendingEmail   nvarchar(256)  NULL,
+    Role           nvarchar(20)   NOT NULL CONSTRAINT CK_RoleAssignment_Role CHECK (Role IN (N'viewer', N'operator', N'product-owner')),
+    BusinessUnitId int            NULL CONSTRAINT FK_RoleAssignment_BusinessUnit
+                                  REFERENCES [${schema}].BusinessUnit (BusinessUnitId) ON DELETE CASCADE,
+    ProductId      int            NULL CONSTRAINT FK_RoleAssignment_Product
+                                  REFERENCES [${schema}].Product (ProductId) ON DELETE CASCADE,
+    Note           nvarchar(400)  NULL,
+    AssignedBy     nvarchar(256)  NOT NULL CONSTRAINT DF_RoleAssignment_AssignedBy
+                                  DEFAULT COALESCE(CAST(SESSION_CONTEXT(N'containerizer.user') AS nvarchar(256)), ORIGINAL_LOGIN()),
+    AssignedAt     datetime2(0)   NOT NULL CONSTRAINT DF_RoleAssignment_AssignedAt DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT CK_RoleAssignment_Who CHECK ((UserAccountId IS NOT NULL AND PendingEmail IS NULL)
+                                            OR (UserAccountId IS NULL AND PendingEmail LIKE N'_%@_%')),
+    CONSTRAINT CK_RoleAssignment_Scope CHECK (
+        (Role = N'product-owner' AND ((BusinessUnitId IS NOT NULL AND ProductId IS NULL) OR (BusinessUnitId IS NULL AND ProductId IS NOT NULL)))
+        OR (Role <> N'product-owner' AND BusinessUnitId IS NULL AND ProductId IS NULL))
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UX_RoleAssignment_User' AND object_id = OBJECT_ID(N'[${schema}].RoleAssignment'))
+    CREATE UNIQUE INDEX UX_RoleAssignment_User ON [${schema}].RoleAssignment (UserAccountId, Role, BusinessUnitId, ProductId)
+        WHERE UserAccountId IS NOT NULL;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UX_RoleAssignment_Pending' AND object_id = OBJECT_ID(N'[${schema}].RoleAssignment'))
+    CREATE UNIQUE INDEX UX_RoleAssignment_Pending ON [${schema}].RoleAssignment (PendingEmail, Role, BusinessUnitId, ProductId)
+        WHERE PendingEmail IS NOT NULL;
+GO
+CREATE OR ALTER TRIGGER [${schema}].trRoleAssignmentAudit ON [${schema}].RoleAssignment
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'RoleAssignment', COALESCE(i.RoleAssignmentId, d.RoleAssignmentId),
+           LEFT(COALESCE(iu.Email, iu.DisplayName, i.PendingEmail, du.Email, du.DisplayName, d.PendingEmail, N'?')
+                + N': ' + COALESCE(i.Role, d.Role), 200),
+           CASE WHEN d.RoleAssignmentId IS NULL THEN N'insert' WHEN i.RoleAssignmentId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.RoleAssignmentId IS NOT NULL THEN (SELECT COALESCE(du.Email, du.DisplayName) AS [User], d.PendingEmail, d.Role,
+                COALESCE(db.Name, N'#' + CAST(d.BusinessUnitId AS nvarchar(12))) AS BusinessUnit,
+                COALESCE(dp.Name, N'#' + CAST(d.ProductId AS nvarchar(12))) AS Product, d.Note
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.RoleAssignmentId IS NOT NULL THEN (SELECT COALESCE(iu.Email, iu.DisplayName) AS [User], i.PendingEmail, i.Role,
+                COALESCE(ib.Name, N'#' + CAST(i.BusinessUnitId AS nvarchar(12))) AS BusinessUnit,
+                COALESCE(ip.Name, N'#' + CAST(i.ProductId AS nvarchar(12))) AS Product, i.Note
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.RoleAssignmentId = i.RoleAssignmentId
+    LEFT JOIN [${schema}].UserAccount iu ON iu.UserAccountId = i.UserAccountId
+    LEFT JOIN [${schema}].UserAccount du ON du.UserAccountId = d.UserAccountId
+    LEFT JOIN [${schema}].BusinessUnit ib ON ib.BusinessUnitId = i.BusinessUnitId
+    LEFT JOIN [${schema}].BusinessUnit db ON db.BusinessUnitId = d.BusinessUnitId
+    LEFT JOIN [${schema}].Product ip ON ip.ProductId = i.ProductId
+    LEFT JOIN [${schema}].Product dp ON dp.ProductId = d.ProductId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.RoleAssignmentId IS NULL OR i.RoleAssignmentId IS NULL
+       OR EXISTS (SELECT i.UserAccountId, i.PendingEmail, i.Role, i.BusinessUnitId, i.ProductId, i.Note
+                  EXCEPT SELECT d.UserAccountId, d.PendingEmail, d.Role, d.BusinessUnitId, d.ProductId, d.Note);
+END;
+GO
+GRANT SELECT, INSERT ON [${schema}].UserAccount TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].UserAccount (Email, DisplayName, AdminAtSignIn, LastSignInAt) TO [${schema}_admin];
+GRANT SELECT, INSERT, DELETE ON [${schema}].RoleAssignment TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].RoleAssignment (UserAccountId, PendingEmail, Note) TO [${schema}_admin];
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 46) INSERT [${schema}].SchemaVersion (Version) VALUES (46);
 GO
