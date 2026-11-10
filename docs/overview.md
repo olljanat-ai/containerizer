@@ -68,7 +68,7 @@ explains how the assessment works and what it generates. To install and use it, 
    components must stay on Windows; the rest need at most minor changes, so that part can run in Linux
    containers now), **D** major refactoring (a framework port is needed, also when other components must
    stay on Windows), **E** not feasible (no server component, or three quarters or more of them must stay
-   on Windows).
+   on Windows; the share is `rating.not_feasible_share` in `rules/45-rating.yaml`).
    **Stateful** is shown next to the rating, not taken from it: a server component that keeps its own
    data on its disk or in its process memory still rates **A** when it runs with configuration only,
    because it runs as it is with that data on a persistent volume and one replica (see
@@ -444,7 +444,10 @@ Techniques used to avoid application changes:
 - NLog folders from `${configsetting:...}` / `${environment:...}` with Windows defaults are re-pointed
   by env var, and `${basedir}/logs` becomes a writable folder;
 - installed Windows tools (`C:\\Program Files\\wkhtmltopdf\\bin\\wkhtmltopdf.exe`) map to the Linux binary on PATH;
-- console tools with sub-commands (usage text, verb arrays, `case "x":`) get one CronJob per command;
+- console tools with sub-commands (usage text, verb arrays, `case "x":`, or the commands of System.CommandLine,
+  CommandLineParser, Spectre.Console.Cli and McMaster.Extensions.CommandLineUtils) get one CronJob per command;
+- a console program that runs until it is stopped (it sleeps forever, blocks on its host's `Run()`, or polls in a
+  loop until cancelled; role rule `role-runs-until-stopped`) is a worker: a Deployment, not a CronJob;
 - each CronJob gets the schedule and arguments of the repository's Windows Task Scheduler job that starts it
   ([below](#scheduled-tasks));
 - workers that use the ASP.NET Core shared framework get the aspnet base image;

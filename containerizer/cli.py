@@ -13,14 +13,8 @@ from .rules import load_rules
 
 
 def _apps(paths: list[str]) -> list[Path]:
-    """A path is an app, or a folder of apps when it has no project files of its own at top level."""
-    out = []
-    for p in map(Path, paths):
-        if (p / "scenarios").is_dir():
-            out += sorted(d for d in (p / "scenarios").iterdir() if d.is_dir())
-        else:
-            out.append(p)
-    return out
+    """Each path is one application (a repository of several is given folder by folder: `apps/*`)."""
+    return [Path(p) for p in paths]
 
 
 def cmd_assess(args) -> int:

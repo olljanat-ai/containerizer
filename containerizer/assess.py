@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
-from .rules import SEV_RANK, SEVERITIES, Context, Match, Rule, load_rules, run_rule
+import yaml
+
+from .rules import RULES_DIR, SEV_RANK, SEVERITIES, Context, Match, Rule, load_rules, run_rule
 from .reach import CODE_EXT, mode_reachability, reachable_files
 from .scan import Project, Repo, nearest_tfms, scan
 
@@ -176,7 +179,7 @@ class AppAssessment:
         if not server:
             return "E"
         blocked = [c for c in server if c.verdict == "blocker"]
-        if blocked and len(blocked) * 4 >= len(server) * 3:
+        if blocked and len(blocked) + 1e-9 >= len(server) * not_feasible_share():
             return "E"
         if any(c.verdict == "rewrite" for c in server):
             return "D"        # a framework port is needed before anything runs, blocked parts or not
@@ -295,6 +298,17 @@ def rating_of(components) -> str:
     and `stateless` (Component, or a stand-in built from the results database). The web UI's migration plan rates
     a part of an application with it (one component, or the part that can run in Linux containers)."""
     return AppAssessment(repo=None, components=list(components), libraries=[], tests=[], repo_findings=[]).rating
+
+
+@lru_cache(maxsize=1)
+def not_feasible_share() -> float:
+    """The share of blocked server components from which an application is rated E (rules/45-rating.yaml)."""
+    try:
+        cfg = yaml.safe_load((RULES_DIR / "45-rating.yaml").read_text()) or {}
+        share = float((cfg.get("rating") or {}).get("not_feasible_share", 0.75))
+    except (OSError, ValueError, TypeError, yaml.YAMLError):
+        return 0.75
+    return share if 0 < share <= 1 else 0.75
 
 
 def classify_role(repo: Repo, p: Project, rules: list[Rule]) -> tuple[str, str]:

@@ -812,6 +812,36 @@ rules:
         - not: {code: '\bwhile\s*\(\s*!\s*[\w.]*IsCancellationRequested|\bPeriodicTimer\b|\bwhile\s*\(\s*true\s*\)|\bfor\s*\(\s*;\s*;\s*\)'}
         - not: {code: '\bServiceBase\b|HostFactory\.Run|UseWindowsService|UseSystemd|RunAsService'}
 
+  # A console program that runs until it is stopped is a long-running process (a Deployment), not a job that
+  # runs and exits (a CronJob): it sleeps forever while timers or threads do the work, blocks on a generic host's
+  # Run(), or polls in a loop until it is cancelled. An endless loop that a `break` or `return` leaves (a retry
+  # loop, a menu) does not count. Windows services, hosted services and listeners are workers by the rules around
+  # this one.
+  - id: role-runs-until-stopped
+    phase: role
+    role: worker
+    priority: 45
+    when:
+      all:
+        - output_type: Exe
+        - not: {sdk: 'Microsoft\.NET\.Sdk\.Web'}
+        - any:
+            - code: '\b(Thread\.Sleep|Task\.Delay)\s*\(\s*(Timeout\.Infinite(TimeSpan)?|-1)\s*[,)]'
+            - all:
+                - code: '\bHost\.Create(Default|Application)Builder\s*\(|\bnew\s+HostBuilder\s*\('
+                - code: '\.Run(Async)?\s*\(\s*\)|\.WaitForShutdown(Async)?\s*\('
+              same_file: true
+            - all:
+                - code: '\bwhile\s*\(\s*!\s*[\w.]*IsCancellationRequested\s*\)|\.WaitForNextTickAsync\s*\('
+                - code: &main_file '\bstatic\s+(async\s+)?(void|int|Task|Task<int>)\s+Main\s*\(|\bConsole\.CancelKeyPress\b'
+              same_file: true
+            - all:
+                - code: '\bwhile\s*\(\s*true\s*\)|\bfor\s*\(\s*;\s*;\s*\)'
+                - code: '\bThread\.Sleep\s*\(|\bTask\.Delay\s*\('
+                - code: *main_file
+                - not: {code: '\bbreak\s*;|\breturn\b'}
+              same_file: true
+
   - id: role-worker
     phase: role
     role: worker

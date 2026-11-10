@@ -55,9 +55,37 @@ CONN_RE = re.compile(r"(?i)\b(?:Server|Data Source|Address|Addr|Network Address)
                      # not code: `address = configuration["Proxy:Address"]` names no host (no [ or ( after it, and
                      # the whole word, so backtracking cannot shorten it into one)
                      r"(?P<host>[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)(?![A-Za-z0-9.\-\[(])"
-                     r"(?:\\[\w$]+)?(?:\s*,\s*(?P<port>\d{1,5}))?")
+                     r"(?P<inst>\\{1,2}[\w$]+)?(?:\s*,\s*(?P<port>\d{1,5}))?")
 HOSTPORT_RE = re.compile(r"(?i)\bHost\s*=\s*(?P<host>[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)\s*;"
                          r"(?:[^;\"]*;)*?\s*Port\s*=\s*(?P<port>\d{1,5})")
+# "Host=pg;Database=shop;Username=app" (Npgsql) and "host=mq;virtualHost=/;username=app" (EasyNetQ) without a port
+HOSTONLY_RE = re.compile(r"(?i)\bHost\s*=\s*(?P<host>[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)\s*(?=[;\"']|$)")
+# a connection string without a port uses its provider's default: the provider is told from the other keywords
+CONN_PORT_RE = re.compile(r"(?i)[;\"'\s]Port\s*=\s*(\d{1,5})\b")
+CONN_FILE_RE = re.compile(r"(?i)\.(db3?|sqlite3?|sdf|mdb|accdb|xlsx?|dbf|litedb|mdf)$|^\(")
+CONN_DEFAULTS = (     # (keywords of the provider, its default port); the first that matches
+    (re.compile(r"(?i)\b(SslMode|Allow ?User ?Variables|CharSet|Convert ?Zero ?Date ?Time|AllowPublicKeyRetrieval)\s*="),
+     3306),                                                                       # MySQL (MySqlConnector)
+    (re.compile(r"(?i)\b(Username|Search ?Path|Include ?Error ?Detail)\s*="), 5432),   # PostgreSQL (Npgsql)
+    (re.compile(r"(?i)\b(Initial Catalog|Database|Integrated Security|Trusted_Connection|User ID|Uid|"
+                r"MultipleActiveResultSets|TrustServerCertificate|Encrypt|Application ?Intent)\s*="), 1433),  # SQL Server
+)
+HOST_DEFAULTS = ((re.compile(r"(?i)\b(virtualHost|publisherConfirms|prefetchcount|requestedHeartbeat)\s*="), 5672),
+                 (re.compile(r"(?i)\bDatabase\s*="), 5432))
+
+
+def _default_port(line: str, pos: int, table) -> int | None:
+    """The port of the connection string around `pos`: its own Port=, else its provider's default. Only the
+    quoted value it is in is read (a JSON file on one line holds several connection strings)."""
+    start = max(line.rfind('"', 0, pos), line.rfind("'", 0, pos)) + 1
+    ends = [i for i in (line.find('"', pos), line.find("'", pos)) if i >= 0]
+    line = " " + line[start:min(ends) if ends else len(line)]
+    m = CONN_PORT_RE.search(line)
+    if m:
+        return int(m.group(1))
+    return next((port for rx, port in table if rx.search(line)), None)
+
+
 # names in configuration that are documentation, schemas or placeholders, not destinations
 NOISE_HOSTS = re.compile(r"(?i)^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*|\+|\.|"
                          r"(?:[\w-]+\.)*(?:w3\.org|xmlsoap\.org|schemas\.microsoft\.com|schemas\.openxmlformats\.org|"
@@ -108,14 +136,26 @@ def _placeholder(host: str) -> bool:
 # --------------------------------------------------------------------------- inferred at assessment time
 
 def line_hosts(line: str) -> list[tuple[str, int | None, str]]:
-    """(host, port or None, scheme) of every URL and connection string on one line."""
+    """(host, port or None, scheme) of every URL and connection string on one line. A connection string without a
+    port has its provider's default port (SQL Server 1433, PostgreSQL 5432, MySQL 3306, RabbitMQ 5672)."""
     hits = []
     for m in URL_RE.finditer(line):
         sch = m["scheme"].lower()
         hits.append((m["host"], int(m["port"]) if m["port"] else SCHEME_PORTS.get(sch), sch))
-    for rx in (CONN_RE, HOSTPORT_RE):
-        for m in rx.finditer(line):
-            hits.append((m["host"], int(m["port"]) if m["port"] else None, "connection-string"))
+    for m in CONN_RE.finditer(line):
+        port = int(m["port"]) if m["port"] else None
+        # no port: the provider's default, but not for a file ("Data Source=app.db") or a named SQL Server instance
+        # (host\\instance: SQL Server Browser gives its port, which is not known here)
+        if port is None and not m["inst"] and not CONN_FILE_RE.search(m["host"]):
+            port = _default_port(line, m.start(), CONN_DEFAULTS)
+        hits.append((m["host"], port, "connection-string"))
+    for m in HOSTPORT_RE.finditer(line):
+        hits.append((m["host"], int(m["port"]), "connection-string"))
+    known = {h.lower() for h, _, _ in hits}
+    for m in HOSTONLY_RE.finditer(line):
+        port = _default_port(line, m.start(), HOST_DEFAULTS)
+        if port is not None and m["host"].lower() not in known:
+            hits.append((m["host"], port, "connection-string"))
     return hits
 
 
