@@ -18,6 +18,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   where `ci/local.sh` also runs the `sql` job next to the others. LLM settings of the machine running the tests
   (`ANTHROPIC_BASE_URL`, API keys, `CONTAINERIZER_LLM_*`) no longer reach them (#256).
 
+- The `tests/test_round*.py` files are named after what they cover (#301).
+
 ## 0.31.1 (2026-11-10)
 
 A patch release: an app update for appliances (no ISO).

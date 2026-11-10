@@ -1,7 +1,7 @@
 """Round 8: Paket-managed projects (paket.references + paket.lock) expose their packages to rules."""
 from containerizer.scan import scan
 from tests.test_engine import write
-from tests.test_round7 import sev
+from tests.test_vb_fsharp_references_and_heads import sev
 
 
 def paket_app(root):
@@ -167,7 +167,7 @@ def test_windows_only_enum_is_not_windows_code(tmp_path):
 
 
 def test_windows_companion_executable_is_a_tool(tmp_path):
-    from tests.test_round7 import roles
+    from tests.test_vb_fsharp_references_and_heads import roles
     write(tmp_path, "src/App.Server/App.Server.csproj", """\
         <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType>
         <TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>
@@ -182,7 +182,7 @@ def test_windows_companion_executable_is_a_tool(tmp_path):
 
 
 def test_windows_only_executable_alone_is_not_a_tool(tmp_path):
-    from tests.test_round7 import roles
+    from tests.test_vb_fsharp_references_and_heads import roles
     write(tmp_path, "src/App.WindowsAgent/App.WindowsAgent.csproj", """\
         <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType>
         <TargetFramework>net8.0-windows</TargetFramework></PropertyGroup></Project>
@@ -220,7 +220,7 @@ def _svc(root, name, tfm="net10.0"):
 
 
 def test_windows_service_wrapper_with_cross_platform_twin_is_a_tool(tmp_path):
-    from tests.test_round7 import roles
+    from tests.test_vb_fsharp_references_and_heads import roles
     _svc(tmp_path, "App.Service")
     write(tmp_path, "src/App.Service/Program.cs", "class P { static void Main() { } }")
     _svc(tmp_path, "App.WindowsService")
@@ -230,7 +230,7 @@ def test_windows_service_wrapper_with_cross_platform_twin_is_a_tool(tmp_path):
 
 
 def test_windows_service_without_twin_stays_worker(tmp_path):
-    from tests.test_round7 import roles
+    from tests.test_vb_fsharp_references_and_heads import roles
     _svc(tmp_path, "App.Web")
     write(tmp_path, "src/App.Web/Program.cs", "class P { static void Main() { } }")
     _svc(tmp_path, "App.WindowsService")

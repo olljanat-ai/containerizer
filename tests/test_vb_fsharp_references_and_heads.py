@@ -5,7 +5,7 @@ from containerizer.assess import assess, classify_role
 from containerizer.rules import load_rules
 from containerizer.scan import reference_name, scan
 from tests.test_engine import web_app, write
-from tests.test_round3 import oldstyle, proj
+from tests.test_role_false_positives import oldstyle, proj
 
 RULES = load_rules()
 

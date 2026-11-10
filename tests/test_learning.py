@@ -7,7 +7,7 @@ from containerizer.assess import assess
 from containerizer.generate import make_plan
 from containerizer.rules import RULES_DIR, load_rules
 from tests.test_engine import web_app, write
-from tests.test_round7 import RULES, sev
+from tests.test_vb_fsharp_references_and_heads import RULES, sev
 
 NU1605 = """/w/src/Web/Web.csproj : error NU1605: Warning As Error: Detected package downgrade: System.IO.FileSystem from 4.3.0 to 4.0.1.
 /w/src/Web/Web.csproj : error NU1605:  Web -> Integration -> SSH.NET 2016.1.0 -> System.Net.Sockets 4.1.0 -> runtime.unix.System.Net.Sockets 4.3.0 -> System.IO.FileSystem (>= 4.3.0)

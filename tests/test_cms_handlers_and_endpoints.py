@@ -3,7 +3,7 @@ harnesses, 32-bit build flags and uncalled P/Invoke declarations."""
 from containerizer.assess import assess, classify_role
 from containerizer.scan import scan
 from tests.test_engine import write
-from tests.test_round7 import RULES, rating, sev
+from tests.test_vb_fsharp_references_and_heads import RULES, rating, sev
 
 WEB_GUID = "{349c5851-65df-11da-9384-00065b846f21};{fae04ec0-301f-11d3-bf4b-00c04f79efbc}"
 
@@ -195,7 +195,7 @@ def test_called_pinvoke_declaration_is_reported(tmp_path):
 
 def test_project_in_dotnet_new_template_is_a_tool(tmp_path):
     from tests.test_engine import write, web_app
-    from tests.test_round7 import roles
+    from tests.test_vb_fsharp_references_and_heads import roles
     web_app(tmp_path)
     write(tmp_path, "templates/MyProject/.template.config/template.json", '{"identity": "My.Template"}')
     write(tmp_path, "templates/MyProject/MyProject.csproj",
@@ -208,7 +208,7 @@ def test_project_in_dotnet_new_template_is_a_tool(tmp_path):
 
 def test_repository_that_is_a_template_keeps_its_projects(tmp_path):
     from tests.test_engine import write
-    from tests.test_round7 import roles
+    from tests.test_vb_fsharp_references_and_heads import roles
     write(tmp_path, ".template.config/template.json", '{"identity": "Clean.Template"}')
     write(tmp_path, "src/Web/Web.csproj",
           '<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>')
@@ -217,8 +217,8 @@ def test_repository_that_is_a_template_keeps_its_projects(tmp_path):
 
 
 def test_embedded_ravendb_legacy_is_flagged(tmp_path):
-    from tests.test_round8 import comp
-    from tests.test_round7 import sev
+    from tests.test_paket import comp
+    from tests.test_vb_fsharp_references_and_heads import sev
     c = comp(tmp_path, "class H { object S() => new Raven.Client.Embedded.EmbeddableDocumentStore(); }")
     assert sev(c, "pkg-ravendb-embedded-legacy") == "rewrite"
     c = comp(tmp_path / "modern", "class H { object S() => new Raven.Client.Documents.DocumentStore(); }")
