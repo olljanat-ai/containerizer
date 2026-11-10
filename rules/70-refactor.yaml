@@ -1,0 +1,23 @@
+# Guardrails of LLM code edits (refactoring orders, Make it A; containerizer/refactor.py, docs/refactoring.md).
+# Code edits are the last resort: what the platform (the generated Dockerfile, manifests and their options) settles
+# is never sent to the LLM, and an edit may change only the lines its findings need.
+refactor:
+  # Changed lines (of existing files; new files are not counted) an answer may make per finding it is asked to fix.
+  # An answer over the budget, after reformatting, using-directive churn, comment rewrites and package version
+  # changes are put back, is not applied: the LLM is asked again with the reason, then the file is left as it is.
+  max_changed_lines_per_finding: 40
+  # The budget per finding of the tasks the tool makes itself (larger: they change more by design).
+  max_changed_lines_by_rule:
+    move-state-out: 150           # the stateless move to SQL Server (goal stateless, Make it A)
+    build-error: 60               # a repair round of compiler or start-up errors
+
+  # Findings that a generator technique or an orchestration option already settles: never sent to the LLM. The
+  # order page lists them as "handled by configuration" with this text. Add a finding here only when the generated
+  # output really handles it for every component that has it.
+  platform:
+    core-eol: >-
+      the container runs the application on the framework it targets (its own runtime image, or rolled forward):
+      retargeting it is an upgrade, not a containerization
+    dataprotection-default: >-
+      the generated manifests mount one Data Protection key, generated in the cluster by External Secrets
+      Operator, read-only at the key folder (plan-dataprotection-keys), so every replica and restart shares it

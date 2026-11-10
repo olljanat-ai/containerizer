@@ -50,7 +50,9 @@ explains how the assessment works and what it generates. To install and use it, 
 4. **Finding rules** (`rules/10-runtime.yaml`, `20-platform.yaml`, `30-integration.yaml`) detect
    blockers and work items with a severity:
    `info < config < refactor < rewrite < blocker`, an explanation, a fix, and
-   whether a Windows container would be a workable stop-gap.
+   `windows_container` (whether the technology would run on Windows Server at all; a hint for
+   the migration plan and the SARIF output, not an output target: containerizer generates Linux
+   images only, and components that must stay on Windows stay on VMs).
 5. **Reachability**: findings in shared libraries only count for components whose code actually
    reaches the offending types (a type/extension-method mention graph) and that it compiles for its
    target framework, and Windows-only calls guarded by `OperatingSystem.IsWindows()` (directly, through
@@ -63,14 +65,17 @@ explains how the assessment works and what it generates. To install and use it, 
    containers now), **D** major refactoring (a framework port is needed, also when other components must
    stay on Windows), **E** not feasible (no server component, or three quarters or more of them must stay
    on Windows).
-   **A** also requires every server component to be **stateless**: persistent data may live in
-   services that are available as managed cloud services (SQL Server, PostgreSQL, MySQL, MongoDB,
-   Redis, blob storage, queues), but not on the component's own disk or in its process memory. Rules
-   that find such data carry `state: local` or `state: memory` (`rules/36-state.yaml`, `sqlite-local`,
+   **Stateful** is shown next to the rating, not taken from it: a server component that keeps its own
+   data on its disk or in its process memory still rates **A** when it runs with configuration only,
+   because it runs as it is with that data on a persistent volume and one replica (see
+   [Application data on persistent volumes](#application-data-on-persistent-volumes)). Rules that find
+   such data carry `state: local` or `state: memory` (`rules/36-state.yaml`, `sqlite-local`,
    `lucene-local-index`): a local SQLite/LiteDB file with no server database wired up, a local
    Lucene/Examine index, uploads or data files written under the content root or App_Data,
-   ASP.NET Core session without a distributed cache, and Hangfire in-memory storage. An app that is
-   otherwise ready but keeps such data is rated **B**, and the report lists what keeps it stateful.
+   ASP.NET Core session without a distributed cache, and Hangfire in-memory storage. The application is
+   marked **stateful** (next to its rating, an automatic `stateful` tag the front page filters by) and the
+   report lists what it keeps; scaling it out needs that data in a shared service first. Only data on its
+   own disk in a folder Containerizer cannot find (so no volume can hold it) keeps a component at **B**.
    Not counted: SQLite next to a server database provider (`sqlite-optional`), a read-only SQLite
    file shipped with the app, Lucene used only for text analysis, temp files and logs, and the
    ASP.NET Core Data Protection key ring (one `PersistKeysTo*` line; reported separately).
@@ -170,13 +175,13 @@ application, also the ones that need changes for the rest. The results page of e
 does not rate A has a **Migration plan**, right after the main obstacles, that splits it into waves:
 
 - **Wave 1, now** (to Kubernetes): the server components that rate A on their own (the application rating
-  rule applied to the one component: configuration only, no data of their own) and did not fail to build and
-  run. These are the components an organization scan deploys to the sandbox, so each shows whether it is there:
+  rule applied to the one component: configuration only) and did not fail to build and run. A component that keeps its own data is marked *runs with a persistent volume, one
+  replica* with what it keeps; it needs no code change. These are the components an organization scan deploys to the sandbox, so each shows whether it is there:
   the sandbox check's result, *deployed, not checked yet* (the scan deployed it, no check has a result yet), or
   *not deployed* with why (the application's sandbox is turned off, the scan left it out, or no organization
   scan deploys the application).
-- **Wave 2, after code changes**: components whose findings can be fixed in code (targeted changes, data
-  moved to an external service, a failed build or run), with what to fix, and what the part that can run in
+- **Wave 2, after code changes**: components whose findings can be fixed in code (targeted changes, a failed
+  build or run), with what to fix, and what the part that can run in
   Linux containers rates once they are fixed. Where the page has the Refactoring box,
   [Make it A](refactoring.md#make-it-a) makes these changes.
 - **After a framework port or rewrite**: components that need one, with their main obstacle.
@@ -191,7 +196,7 @@ A line at the top sums it up: *2 of 6 components can run in Linux containers now
 3 stay on Windows.* (or *Nothing runs in a Linux container until the framework port is done.*). The part that can
 run in Linux containers is rated with the same rule as the application (`assess.rating_of`), as it is and with
 the changes made. The front page shows the first wave next to the rating of such an application,
-*2/6 ready now*.
+*2/6 ready now* (*, 1 with a volume* when wave 1 has components that keep their own data).
 
 ![Migration plan of an application with components that must stay on Windows: two components ready and in the sandbox, one after code changes, three that stay on Windows, and the calls between the parts](images/results-migration-plan.png#only-light){ .cz-shot }
 ![Migration plan of an application with components that must stay on Windows: two components ready and in the sandbox, one after code changes, three that stay on Windows, and the calls between the parts](images/results-migration-plan-dark.png#only-dark){ .cz-shot }
@@ -215,6 +220,40 @@ When a component that crashes in the sandbox needs a [lab service](lab-services.
 sandbox result says so first ("It needs RabbitMQ, which the lab has turned off: turn it on under Admin -> Lab
 services"): an app without its message broker often just stops, and its other symptoms (an empty log, a secret
 store key that is not there) point elsewhere.
+
+### Application data on persistent volumes
+
+A component that is ready in every other way but keeps its own data (a SQLite/LiteDB file, a local Lucene index,
+uploads under the web root or App_Data, in-memory session or Hangfire storage) is deployed as it is: keeping
+data is an orchestration concern, not a reason to change the application's code. The generator
+(`generate.state_plan`):
+
+- runs it as **one replica** with `strategy: Recreate`, so two pods never write the same files;
+- mounts a **PersistentVolumeClaim** (`ReadWriteOnce`, 1Gi from the cluster's default StorageClass) on each folder
+  the component keeps data in: folders its code and configuration write to (`Path.Combine(ContentRootPath, ...)`,
+  `Path.Combine(env.WebRootPath, "uploads")`, folder settings, a SQLite `Data Source=data/app.db`), and App_Data
+  when the code names data folders under it;
+- moves an embedded database file that sits in the app folder (`"Data Source=app.db"`, `"Filename=app.litedb"`)
+  to `/data`, a volume, with an environment variable that overrides the connection string
+  (`ConnectionStrings__Default=Data Source=/data/app.db`): no file of the application changes;
+- keeps the root file system read-only and the user non-root; `fsGroup` (with `fsGroupChangePolicy:
+  OnRootMismatch`) lets that user write the volumes;
+- labels the workload, its pods and its volumes `stateful: "true"` (not in the selector), so the platform can
+  find them for backup and scheduling.
+
+`stateful:` in `rules/36-state.yaml` sets the platform side without editing manifests: the labels, the
+StorageClass (`storage_class`, empty for the cluster's default) and size of the volumes, and a `node_selector`
+and `tolerations` for a dedicated node pool. A separate cluster is not needed: a stateful component is still
+application tier (with an embedded database its data tier is in the same process), and what it needs from the
+platform is storage with backups. A `ReadWriteOnce` volume ties the pod to the node or zone that holds it.
+
+State kept only in memory (session, Hangfire in-memory storage) gets one replica and no volume. A component that
+writes local data to a folder the generator cannot find rates B and is left out ("keeps local state in a folder
+Containerizer could not find"): with a read-only root file system its writes would fail. The volumes hold
+application data: `HARDENING.md` and `MIGRATION.md` in the output say so, and the operator owns their backup,
+StorageClass and size. A volume starts empty: data shipped in that folder of the image (a seed database) is not
+copied into it. Moving the data to SQL Server, to scale out, is a code
+change and left to the application's developers (or a refactoring order, on request).
 
 ### Migration assistant
 
@@ -257,14 +296,20 @@ For each component that can be containerized the scan:
 1. builds the generated Dockerfile (application folder as context);
 2. runs it hardened (read-only root filesystem, all capabilities dropped, no new privileges, non-root,
    only the writable folders mounted) and probes the health endpoint. Writable folders are host
-   directories during the test, so apps that log only to files can still be diagnosed;
+   directories during the test, so apps that log only to files can still be diagnosed. Every host name
+   the component's connection strings and configured URLs name (the [connectivity](egress.md#network-connectivity)
+   scan; well-known public services in `public_hosts` of `rules/60-security.yaml` excepted) resolves to
+   `127.0.0.1` in the run, so a missing database or broker fails fast with *connection refused* instead
+   of a DNS lookup that hangs; the run's details list them (`mapped_hosts`), and a run stopped only by
+   external services reports what it needs (`needs: sql.corp.example:1433`);
 3. matches the log against `rules/50-failures.yaml`:
    - `retry`: patch the build plan (e.g. remove a pinned `global.json`, retarget an out-of-support
      TFM to net10.0, add Kerberos libraries, make a folder writable) and try again;
    - `external`: the container works, it only lacks a database/broker/directory/identity provider —
      then the tool retries in a dependency-free smoke mode (`Development` environment, which many apps
      map to SQLite and simulators) to prove the app actually serves requests. For the smoke run only,
-     `appsettings.Development.json` is mounted read-only (the image never contains it), relative
+     `appsettings.Development.json` is mounted read-only (the image never contains it), its host names
+     resolve to `127.0.0.1` too, relative
      SQLite paths are made absolute and writable, and sample input files are mounted from the repo.
      An app that never answers HTTP gets the same smoke retry;
    - `platform` / `code`: a runtime finding the static rules missed;
@@ -276,6 +321,25 @@ For each component that can be containerized the scan:
    with their evidence until an administrator approves or rejects them under **Admin → Rule review**.
    Approved rules go to your internal (private) rules repository, never into this public one
    ([rule review](rule-review.md)).
+
+While the container runs and its probes are answered, the run samples its memory and CPU (`docker stats`, every
+few seconds) and records the peak in the verification result (`usage` in `assessment.json`). The generated
+manifests size the component from it: `requests.memory` is the peak × 1.25 and `limits.memory` the peak × 2, both
+rounded up to 64Mi, never above the namespace LimitRange's max; the request never below 128Mi and the limit never
+below the 512Mi baseline, because a few seconds of probes understate real load (`hardening.measured_memory` in
+`rules/60-security.yaml`), with the reason in `plan.json` (*measured 310Mi peak in the verification run*). A
+component that was not measured keeps the fixed 256Mi/512Mi, and exceptions such as `native-rendering-memory` only
+ever raise the sizes. `containerizer generate --verification DIR` takes the measurement from a folder that
+`containerizer verify --out DIR` wrote.
+
+When the build or the run still fails, the rating stays the one the source code gives (a build can fail for a
+reason outside the application, such as a package feed the scan cannot reach), but the application's page says it
+is not confirmed, the confidence is not counted as confirmed by building and running, and the component is left out
+of the generated files and the sandbox. Its **Build and run** column links to *why*: the component's details show
+the reason (the failure rule, or *no known cause*) and the end of the build or run log.
+
+![A component whose build failed: the page says the rating is not confirmed and shows the end of the build log](images/results-verify-failed.png#only-light){ .cz-shot }
+![A component whose build failed: the page says the rating is not confirmed and shows the end of the build log](images/results-verify-failed-dark.png#only-dark){ .cz-shot }
 
 ### AI fallback (Claude or a self-hosted LLM)
 
@@ -298,8 +362,9 @@ cookie: the browser's local storage keeps it, and the server never sees it.)
 
 Per component: `Dockerfile` (+ `Dockerfile.dockerignore`), `k8s.yaml` (Deployment or CronJob,
 Service, NetworkPolicy, PVCs where state must persist, ExternalSecrets for every credential),
-`plan.json` (the build plan). For .NET Framework components that could work in Windows Server
-containers, a `Dockerfile.windows` stop-gap. Per app: `kustomization.yaml` and `MIGRATION.md`.
+`plan.json` (the build plan). Linux only: .NET Framework components that are not ported get no
+container files (they stay on Windows VMs, see the migration plan). Per app: `kustomization.yaml`
+and `MIGRATION.md`.
 Java (Maven/Gradle; Spring Boot, Quarkus, plain JVM programs, WARs on Tomcat) and Node.js
 (npm/pnpm/yarn; Express, NestJS, Next.js and others) components get distroless, non-root images
 built on the runtime line they declare; see [Java and Node.js](java-node.md#containers).
@@ -313,7 +378,7 @@ GitOps: every app also gets `gitops/flux/`, its Flux configuration (Flux is the 
 | Scope | `tenant.yaml`: namespace, ServiceAccount, `admin` RoleBinding in that namespace only; `Kustomization` applies as that ServiceAccount |
 | Namespace | created by `tenant.yaml` with the Pod Security "restricted" labels |
 | Sync | `GitRepository` (read-only key, optional signed-commit check) or cosign-verified `OCIRepository`; prune, wait |
-| Image updates | `ImageRepository`, `ImagePolicy`, `ImageUpdateAutomation` with `$imagepolicy` markers in `kustomization.yaml` |
+| Image updates | `ImageRepository`, `ImagePolicy` (digest reflection `Always`), `ImageUpdateAutomation` with `$imagepolicy` name, tag and digest markers in `kustomization.yaml`: deployed as `<image>:<tag>@sha256:...` (an organization scan writes the pushed digest itself) |
 
 Techniques used to avoid application changes:
 
@@ -330,10 +395,21 @@ Techniques used to avoid application changes:
 - Kestrel endpoints from `appsettings.json` are re-pointed with `Kestrel__Endpoints__X__Url`;
 - connection strings and secret settings become `ConnectionStrings__X` env vars from a Secret;
 - folders the app writes to (logs, App_Data) become volumes;
-- the ASP.NET Core Data Protection key folder (when the code does not persist the keys itself) gets one key,
-  read-only, from a Secret that External Secrets Operator generates once in the cluster (Password generator, no
-  secret store): cookies and antiforgery tokens survive restarts and work on every replica;
+- the ASP.NET Core Data Protection key folder gets one key, read-only, from a Secret that External Secrets Operator
+  generates once in the cluster (Password generator, no secret store): cookies and antiforgery tokens survive
+  restarts and work on every replica. That is the default folder under `/home/app` when no code (the component or
+  a library it references) persists the keys, or the folder the code reads from configuration for
+  `PersistKeysToFileSystem` (`DataProtection:KeyFolder`, re-pointed under `/data`; set when the configuration does
+  not). A folder written in the code itself is a persistent volume (ReadWriteOnce, one replica). The lint check
+  `dataprotection-volatile` fails a key ring folder setting that points into an `emptyDir`;
 - every web component runs one replica: more need shared state first (sessions, caches; the findings say which);
+- workers (queue consumers, folder pollers, schedulers, Windows services) are replaced on update (`strategy:
+  Recreate`), not rolled, so two copies never run the same job; web components keep `RollingUpdate`. A plan rule
+  with `scale_out: true` marks a worker safe to run twice. Pods get a stop grace period per role (web 30 s, worker
+  and console 120 s), raised to cover raised IIS request timeouts (`host-long-request-timeout`, at most 600 s).
+  CronJobs retry twice, stop a run after an hour, skip a run that could not start within 5 minutes, keep 3
+  succeeded and 3 failed Jobs and delete finished ones after a day. All of it is data in
+  `rules/60-security.yaml` (`hardening.workloads`), and each decision has its reason in `plan.json`;
 - Windows paths in configuration (`D:\\Archive`, `\\\\fs01\\share`) are re-pointed to `/data/...` volumes
   with `Section__Key` env vars; key and certificate files go to `/secrets` from a Kubernetes Secret;
 - Serilog file-only sinks are switched to the console (logs to stdout) with `Serilog__WriteTo__N__Name`;
@@ -376,7 +452,11 @@ service links, CPU/memory/ephemeral-storage requests and limits, and a `sizeLimi
 **Lint.** The gate checks the manifests against Pod Security `restricted` (host namespaces, privileged,
 capabilities, volume types, host ports, privilege escalation, non-root, seccomp, sysctls) plus read-only
 root FS, resources, secret literals (in env, `ENV` and Secrets), the service account token, `emptyDir`
-limits, image tags and NetworkPolicies, and the Dockerfiles for a non-root final stage, tagged base
+limits, no Data Protection key ring on an `emptyDir` (`dataprotection-volatile`), image tags, NetworkPolicies (warning
+on a service port open to every namespace, `namespaceSelector: {}`, unless generated with `--ingress-from any`:
+[inbound](egress.md#inbound)), CronJob limits and worker rollouts (warnings: a CronJob without `backoffLimit`,
+`activeDeadlineSeconds`, `startingDeadlineSeconds` or history limits; a Deployment without ports that is not
+`Recreate`, unless annotated `containerizer.io/scale-out`), and the Dockerfiles for a non-root final stage, tagged base
 images, `ADD <url>`/`curl | sh` and base image end of support. Errors fail the gate. A pod annotation
 `containerizer.io/waives: "check,check"` relaxes named checks for hand-made exceptions.
 

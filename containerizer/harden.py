@@ -11,6 +11,7 @@ reason, and `lint_manifests` checks the result against Pod Security
 from __future__ import annotations
 
 import copy
+import os
 import re
 from dataclasses import asdict, dataclass
 from datetime import date
@@ -45,6 +46,35 @@ def _merge(dst: dict, src: dict) -> dict:
 def _k8s_name(s: str) -> str:
     s = re.sub(r"[^a-z0-9-]+", "-", s.lower()).strip("-")
     return s[:63].rstrip("-") or "x"
+
+
+# --------------------------------------------------------------------------- workload lifecycle
+
+# CronJob limits (rules/60-security.yaml hardening.workloads.cronjob): on the CronJob spec, on its Job spec
+CRONJOB_KEYS = ("startingDeadlineSeconds", "successfulJobsHistoryLimit", "failedJobsHistoryLimit")
+JOB_KEYS = ("backoffLimit", "activeDeadlineSeconds", "ttlSecondsAfterFinished")
+
+
+def workloads() -> dict:
+    return security()["hardening"].get("workloads") or {}
+
+
+def role_lifecycle(role: str) -> dict:
+    """Rollout strategy and terminationGracePeriodSeconds of a role (`default` fills what the role leaves out)."""
+    roles = workloads().get("roles") or {}
+    return {**(roles.get("default") or {}), **(roles.get(role) or {})}
+
+
+def cronjob_limits(spec: dict) -> None:
+    """Retry, deadline and history limits on a CronJob spec; values already set stay."""
+    cfg = workloads().get("cronjob") or {}
+    for k in CRONJOB_KEYS:
+        if k in cfg:
+            spec.setdefault(k, cfg[k])
+    job = spec.setdefault("jobTemplate", {}).setdefault("spec", {})
+    for k in JOB_KEYS:
+        if k in cfg:
+            job.setdefault(k, cfg[k])
 
 
 # --------------------------------------------------------------------------- exceptions
@@ -129,7 +159,14 @@ def harden_pod(meta: dict, pod: dict, uid: int, component: str, exceptions: list
         for k, v in base["container"]["resources"].items():
             for rk, rv in v.items():
                 res.setdefault(k, {}).setdefault(rk, rv)
-        _merge(res, patch.get("resources") or {})
+        for k, v in (patch.get("resources") or {}).items():
+            sect = res.setdefault(k, {})
+            for rk, rv in v.items():     # exceptions only raise (a measured size may already be higher)
+                if rk not in sect or _qty(rv) > _qty(sect[rk]):
+                    sect[rk] = rv
+        for rk, rv in (res.get("requests") or {}).items():
+            if rk in (res.get("limits") or {}) and _qty(rv) > _qty(res["limits"][rk]):
+                res["limits"][rk] = rv   # a raised request never exceeds its limit
         mounts = c.setdefault("volumeMounts", [])
         mounted = {m["mountPath"]: m for m in mounts}
         for w in patch.get("writable") or []:
@@ -262,15 +299,34 @@ def egress_for(repo, c) -> list[dict]:
     return out
 
 
+INGRESS_ENV = "CONTAINERIZER_INGRESS_NAMESPACE"
+ANY_NAMESPACE = "any"
+
+
+def ingress_namespace() -> str:
+    """The ingress controller's namespace, the only one that may call a component's service port (siblings and
+    confirmed links have their own rules): CONTAINERIZER_INGRESS_NAMESPACE (`containerizer generate --ingress-from`)
+    or rules/60-security.yaml `network.ingress_namespace`; `any` allows every namespace."""
+    return (os.environ.get(INGRESS_ENV) or security()["network"].get("ingress_namespace") or ANY_NAMESPACE).strip()
+
+
+def ingress_sources(ns: str | None = None) -> list[dict]:
+    ns = ns or ingress_namespace()
+    if ns == ANY_NAMESPACE:
+        return [{"namespaceSelector": {}}]
+    return [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": ns}}}]
+
+
 def network_policy(component: str, labels: dict, port, egress: list[dict]) -> dict:
-    """Least-privilege NetworkPolicy: the service port in, siblings + DNS + inferred dependencies out."""
+    """Least-privilege NetworkPolicy: the service port in from the ingress controller's namespace, siblings + DNS +
+    inferred dependencies out."""
     net = security()["network"]
     app = labels.get("app.kubernetes.io/part-of")
     siblings = [{"podSelector": {"matchLabels": {"app.kubernetes.io/part-of": app}}}] if app else []
     ingress = []
+    ns = ingress_namespace()
     if port:
-        ingress.append({"from": copy.deepcopy(net.get("ingress_from") or [{"namespaceSelector": {}}]),
-                        "ports": [{"port": port, "protocol": "TCP"}]})
+        ingress.append({"from": ingress_sources(ns), "ports": [{"port": port, "protocol": "TCP"}]})
     dns = net["dns"]
     rules = [{"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": dns["namespace"]}},
                       "podSelector": {"matchLabels": dns["pod_labels"]}}],
@@ -287,7 +343,8 @@ def network_policy(component: str, labels: dict, port, egress: list[dict]) -> di
                       "ports": ports})
     doc = {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
            "metadata": {"name": component, "labels": labels,
-                        "annotations": {f"{ANNOTATION}/egress": ",".join(d["id"] for d in egress) or "none"}},
+                        "annotations": {f"{ANNOTATION}/egress": ",".join(d["id"] for d in egress) or "none",
+                                        f"{ANNOTATION}/ingress-from": ns}},
            "spec": {"podSelector": {"matchLabels": labels}, "policyTypes": ["Ingress", "Egress"],
                     "ingress": ingress, "egress": rules}}
     if siblings:
@@ -484,8 +541,10 @@ def cluster_kit(app: str | None, registry: str, image_refs: list[str] | None = N
     return {"cluster/audit-policy.yaml": [audit], "cluster/verify-images.yaml": [verify]}
 
 
-def write_app_security(out, app: str, comp_docs: dict[str, list[dict]], registry: str, dump) -> list[str]:
-    """Write security.yaml (kustomization resource), the cluster/ kit and HARDENING.md.
+def write_app_security(out, app: str, comp_docs: dict[str, list[dict]], registry: str, dump,
+                       digest_setters: set[str] | None = None) -> list[str]:
+    """Write security.yaml (kustomization resource), the cluster/ kit and HARDENING.md. `digest_setters`: the
+    images (without tag) the kustomization pins by digest through Flux `:digest` setters (gitops.image_setters).
     Returns (resources to add to the app's kustomization, the namespace policy docs)."""
     from pathlib import Path
     out = Path(out)
@@ -498,7 +557,7 @@ def write_app_security(out, app: str, comp_docs: dict[str, list[dict]], registry
     for rel, docs in cluster_kit(app, registry).items():
         (out / rel).parent.mkdir(parents=True, exist_ok=True)
         (out / rel).write_text(dump(docs))
-    (out / "HARDENING.md").write_text(hardening_markdown(app, comp_docs))
+    (out / "HARDENING.md").write_text(hardening_markdown(app, comp_docs, digest_setters))
     return ["security.yaml"], ns_docs
 
 
@@ -554,15 +613,24 @@ def harden_gitops(docs: dict[str, list[dict]], a=None) -> dict[str, list[dict]]:
 
 # --------------------------------------------------------------------------- report
 
-def hardening_markdown(app: str, comp_docs: dict[str, list[dict]]) -> str:
+def _inbound_note(namespaces: set[str]) -> str:
+    """Who may call the service ports (the NetworkPolicies' ingress-from annotation)."""
+    if ANY_NAMESPACE in namespaces:
+        return "Inbound: service ports open to every namespace (--ingress-from any)."
+    return (f"Inbound: service ports from namespace {', '.join(sorted(namespaces))} (the ingress controller), "
+            "sibling components and confirmed links only.")
+
+
+def hardening_markdown(app: str, comp_docs: dict[str, list[dict]], digest_setters: set[str] | None = None) -> str:
     """Each NSA/CISA and CIS control: applied, applied with exception, not applied, not applicable,
     or an action for the cluster operator / pipeline, with the guide section."""
     viol: dict[str, list[Violation]] = {}
     exceptions: dict[str, set] = {}
     egress: dict[str, str] = {}
+    inbound: set[str] = set()
     provided = external_secret_targets([d for docs in comp_docs.values() for d in docs])
     for comp, docs in comp_docs.items():
-        for v in lint_manifests(docs, f"{comp}: ", provided):
+        for v in lint_manifests(docs, f"{comp}: ", provided, digest_setters):
             viol.setdefault(v.check, []).append(v)
         for d in docs:
             for meta, _ in _pod_specs(d):
@@ -571,6 +639,8 @@ def hardening_markdown(app: str, comp_docs: dict[str, list[dict]]) -> str:
                         exceptions.setdefault(e, set()).add(comp)
             if d.get("kind") == "NetworkPolicy":
                 egress[comp] = (d["metadata"].get("annotations") or {}).get(f"{ANNOTATION}/egress", "")
+                if (d["metadata"].get("annotations") or {}).get(f"{ANNOTATION}/ingress-from"):
+                    inbound.add(d["metadata"]["annotations"][f"{ANNOTATION}/ingress-from"])
     rows = []
     counts: dict[str, int] = {}
     for ctl in security().get("controls") or []:
@@ -598,6 +668,12 @@ def hardening_markdown(app: str, comp_docs: dict[str, list[dict]]) -> str:
                 note = "no component calls the Kubernetes API"
             if ctl["id"] == "network-policies":
                 note = ctl.get("action", "")
+            if ctl["id"] == "digest-pinning" and viol.get("image-digest-setter"):
+                note = ("pinned by Flux after the first automation run (`$imagepolicy` digest setters in "
+                        "kustomization.yaml, gitops/flux/git/image-automation.yaml); without the image automation: "
+                        + note)
+        if ctl["id"] == "network-policies" and inbound:
+            note = f"{_inbound_note(inbound)} {note}".strip()
         counts[status] = counts.get(status, 0) + 1
         rows.append(f"| {ctl['title']} | {status} | {ctl.get('nsa', '')} | {ctl.get('cis', '')} | {note} |")
     lines = [f"# Hardening report: {app}", "",
@@ -613,6 +689,46 @@ def hardening_markdown(app: str, comp_docs: dict[str, list[dict]]) -> str:
     if exceptions:
         lines += ["## Hardening exceptions", "", "| Exception | Components |", "| --- | --- |"]
         lines += [f"| {e} | {', '.join(sorted(c))} |" for e, c in sorted(exceptions.items())]
+        lines.append("")
+    life = []
+    for comp, docs in sorted(comp_docs.items()):
+        for d in docs:
+            if d.get("kind") not in ("Deployment", "CronJob"):
+                continue
+            spec = d.get("spec") or {}
+            grace = next((p.get("terminationGracePeriodSeconds") for _, p in _pod_specs(d)), None)
+            grace = f"{grace} s" if grace is not None else "30 s (Kubernetes default)"
+            if d["kind"] == "Deployment":
+                how = (spec.get("strategy") or {}).get("type", "RollingUpdate")
+                if f"{ANNOTATION}/scale-out" in ((d.get("metadata") or {}).get("annotations") or {}):
+                    how += " (safe to run twice)"
+                limits = ""
+            else:
+                job = (spec.get("jobTemplate") or {}).get("spec") or {}
+                how = f"concurrency {spec.get('concurrencyPolicy', 'Allow')}"
+                parts = [("retries", job.get("backoffLimit"), ""), ("run deadline", job.get("activeDeadlineSeconds"), " s"),
+                         ("start deadline", spec.get("startingDeadlineSeconds"), " s"),
+                         ("history kept", f"{spec.get('successfulJobsHistoryLimit')}/{spec.get('failedJobsHistoryLimit')}"
+                          if spec.get("successfulJobsHistoryLimit") is not None else None, ""),
+                         ("finished Jobs deleted after", job.get("ttlSecondsAfterFinished"), " s")]
+                limits = ", ".join(f"{k} {v}{u}" for k, v, u in parts if v is not None) or "none"
+            life.append(f"| {comp} | {d['kind']}/{d['metadata'].get('name', '')} | {how} | {grace} | {limits} |")
+    if life:
+        lines += ["## Workload lifecycle", "",
+                  "Workers are replaced (Recreate), never rolled, so two copies never run the same job; CronJob runs "
+                  "are bounded; the grace period is how long a pod may finish its work after SIGTERM "
+                  "(rules/60-security.yaml `hardening.workloads`).", "",
+                  "| Component | Workload | Rollout | Grace period | CronJob limits |", "| --- | --- | --- | --- | --- |",
+                  *life, ""]
+    pvcs = sorted((comp, d["metadata"]["name"]) for comp, docs in comp_docs.items() for d in docs
+                  if d.get("kind") == "PersistentVolumeClaim")
+    if pvcs:
+        lines += ["## Application data (persistent volumes)", "",
+                  "These PersistentVolumeClaims hold the application's own data (the components run as they are, "
+                  "one replica). The operator owns their backup and restore, StorageClass, size and encryption at "
+                  "rest; deleting the namespace deletes them with the default reclaim policy.", "",
+                  "| Component | PersistentVolumeClaim |", "| --- | --- |"]
+        lines += [f"| {c} | `{n}` |" for c, n in pvcs]
         lines.append("")
     remote = []
     for comp, docs in sorted(comp_docs.items()):
@@ -710,9 +826,12 @@ def _lint_external_secret(L: "_Lint", d: dict, tgt: str) -> None:
             L.add("secret-literals", tgt, f"template key {k} carries a literal value; read it from the store")
 
 
-def lint_manifests(docs: list[dict], where: str = "", provided: set[str] | None = None) -> list[Violation]:
+def lint_manifests(docs: list[dict], where: str = "", provided: set[str] | None = None,
+                   digest_setters: set[str] | None = None) -> list[Violation]:
     """`provided`: Secret names that ExternalSecrets elsewhere in the app produce (another component's
-    folder, pull-secret.yaml)."""
+    folder, pull-secret.yaml). `digest_setters`: images (without tag) the app's kustomization.yaml pins by
+    digest through a Flux `:digest` setter (gitops.digest_setter_images): not pinned in the manifest itself,
+    but by the image automation."""
     L = _Lint()
     cfg = L.cfg
     docs = [d for d in docs if isinstance(d, dict)]
@@ -734,8 +853,23 @@ def lint_manifests(docs: list[dict], where: str = "", provided: set[str] | None 
         if kind == "ExternalSecret":
             _lint_external_secret(L, d, tgt)
             continue
+        if kind == "NetworkPolicy":
+            _lint_ingress_namespace(L, d, tgt)
+            continue
         for meta, pod in _pod_specs(d):
             waived = {w.strip() for w in ((meta.get("annotations") or {}).get(f"{ANNOTATION}/waives") or "").split(",") if w.strip()}
+            spec = d.get("spec") or {}
+            if kind == "CronJob":
+                job = (spec.get("jobTemplate") or {}).get("spec") or {}
+                missing = [k for k in CRONJOB_KEYS if spec.get(k) is None] + \
+                    [k for k in ("backoffLimit", "activeDeadlineSeconds") if job.get(k) is None]
+                if missing:
+                    L.add("cronjob-limits", tgt, f"no {', '.join(missing)}: a hung or failing run is not bounded", waived)
+            if kind == "Deployment" and not any(c.get("ports") for c in pod.get("containers") or []) \
+                    and (spec.get("strategy") or {}).get("type", "RollingUpdate") != "Recreate" \
+                    and f"{ANNOTATION}/scale-out" not in ((d.get("metadata") or {}).get("annotations") or {}):
+                L.add("worker-strategy", tgt, "a worker (no ports) rolls out with two copies running; use strategy "
+                      f"Recreate, or annotate {ANNOTATION}/scale-out when it is safe to run twice", waived)
             psc = pod.get("securityContext") or {}
             for hk in ("hostNetwork", "hostPID", "hostIPC"):
                 if pod.get(hk):
@@ -799,16 +933,61 @@ def lint_manifests(docs: list[dict], where: str = "", provided: set[str] | None 
                     if "value" in e and e.get("value") not in ("", None) and _secret_name(e.get("name", "")) \
                             and not _looks_like_path(str(e["value"])):
                         L.add("secret-literals", ct, f"env {e['name']} has a literal value; use a secretKeyRef", waived)
+                _lint_keyring_volume(L, ct, c, pod, waived)
                 img = c.get("image") or ""
                 if "@sha256:" not in img and (":" not in img.rsplit("/", 1)[-1] or img.endswith(":latest")):
                     L.add("image-tag", ct, f"image {img} uses latest or no tag", waived)
-                if "@sha256:" not in img:
+                if "@sha256:" in img:
+                    pass
+                elif _image_repo(img) in (digest_setters or ()):
+                    L.add("image-digest-setter", ct, f"image {img}: pinned by Flux after the first automation run "
+                                                     "(digest setter in kustomization.yaml)", waived)
+                else:
                     L.add("image-digest", ct, f"image {img} is not pinned to a digest", waived)
     return L.out
 
 
+def _lint_keyring_volume(L: "_Lint", ct: str, c: dict, pod: dict, waived: set) -> None:
+    """An environment variable that names a Data Protection key ring folder (lint.keyring_names) must not point
+    into an emptyDir: the key ring would be new after every restart, and every user signed out."""
+    names = re.compile(L.cfg["keyring_names"])
+    vtype = {v.get("name"): next((k for k in v if k != "name"), None) for v in pod.get("volumes") or []}
+    for e in c.get("env") or []:
+        val = str(e.get("value") or "")
+        if not val.startswith("/") or not names.search(e.get("name", "")):
+            continue
+        under = [m for m in c.get("volumeMounts") or []
+                 if val == m.get("mountPath") or val.startswith(str(m.get("mountPath", "")).rstrip("/") + "/")]
+        m = max(under, key=lambda m: len(m.get("mountPath", "")), default=None)
+        if m and vtype.get(m.get("name")) == "emptyDir":
+            L.add("dataprotection-volatile", ct, f"env {e['name']} puts the Data Protection key ring on emptyDir "
+                                                 f"{m['name']} ({m['mountPath']}): new keys at every restart", waived)
+
+
+def _image_repo(img: str) -> str:
+    """An image reference without its tag and digest."""
+    img = img.split("@", 1)[0]
+    return img.rsplit(":", 1)[0] if ":" in img.rsplit("/", 1)[-1] else img
+
+
+def _lint_ingress_namespace(L: _Lint, d: dict, tgt: str) -> None:
+    """An ingress rule from every namespace (`namespaceSelector: {}`) that `--ingress-from any` did not ask for."""
+    if ((d.get("metadata") or {}).get("annotations") or {}).get(f"{ANNOTATION}/ingress-from") == ANY_NAMESPACE:
+        return
+    for rule in (d.get("spec") or {}).get("ingress") or []:
+        if any(isinstance(p, dict) and "namespaceSelector" in p and not (p["namespaceSelector"] or {}).get("matchLabels")
+               and not (p["namespaceSelector"] or {}).get("matchExpressions") for p in rule.get("from") or []):
+            L.add("ingress-namespace", tgt, "an ingress rule allows every namespace (namespaceSelector: {}); select "
+                  "the ingress controller's namespace (network.ingress_namespace), or generate with --ingress-from any")
+            return
+
+
 def _looks_like_path(v: str) -> bool:
-    return v.startswith(("/", "FILE:", "file:")) or v.lower() in ("true", "false")
+    """A file or folder, a flag, or an embedded database file on a volume ("Data Source=/data/app.db",
+    generate.state_plan): no secret in it."""
+    return (v.startswith(("/", "FILE:", "file:")) or v.lower() in ("true", "false")
+            or bool(re.fullmatch(r"(Data\s*Source|DataSource|Filename)\s*=\s*/[\w\-./]+(\s*;\s*(Cache|Mode|Pooling|"
+                                 r"Foreign\s*Keys|Connection)\s*=\s*\w+)*\s*;?", v, re.I)))
 
 
 def _selects(selector: dict, labels: dict) -> bool:

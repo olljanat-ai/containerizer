@@ -581,7 +581,11 @@ def test_llm_queue_runner_unit():
     assert q["ExecStart"] == ["/usr/lib/containerizer/bin/cz-llm-queue"]
     # refactoring patches: Docker to build and run them (as the scan worker), the worker's clones read only,
     # writes only to the answer cache and the refactoring scratch space
-    assert q["SupplementaryGroups"] == w["SupplementaryGroups"] == ["docker"]
+    # through the Docker socket guard, not in the root-equivalent docker group (docs/appliance.md)
+    guard = "DOCKER_HOST=unix:///run/containerizer/docker-guard.sock"
+    assert "SupplementaryGroups" not in q and "SupplementaryGroups" not in w
+    assert guard in q["Environment"] and guard in w["Environment"]
+    assert "containerizer-docker-guard.socket" in q["Wants"][0].split()
     assert "docker.service" in q["Wants"][0].split() and "docker.service" in q["After"][0].split()
     # "Make it A" variants: images to the appliance's registry, the lab services, read-only cluster access
     assert "containerizer-registry.service" in q["Wants"][0].split()
@@ -994,10 +998,34 @@ def test_a_static_address_survives_a_restart(paths, monkeypatch):
     assert (copy.stat().st_mode & 0o777) == 0o644
     assert ["networkctl", "reload"] in r.calls and ["networkctl", "reconfigure", "br0"] in r.calls
     r.calls.clear()
-    assert sysagent.network_sync() == [] and r.calls == []           # fine now: nothing done
+    assert sysagent.network_sync() == [] and ["networkctl", "reload"] not in r.calls     # fine now: nothing done
     (paths.network / "10-static.network").write_text("[Match]\nName=bond0\n[Network]\nAddress=10.0.0.6/24\n")
     assert sysagent.network_sync() == ["10-static.network"] and "10.0.0.6" in copy.read_text()
 
+
+
+def test_br0_configured_before_the_static_file_was_copied_is_configured_again(paths, monkeypatch):
+    """0.14.x on a Dell server: systemd-networkd read its files before cz-firstboot copied the static one, br0 got
+    the DHCP default (no DHCP server: no address) and the copy was fine, so nothing was done. Now: firstboot runs
+    before networkd, and network_sync reloads when br0 has a file of the image although the static one is there."""
+    import configparser
+    s = configparser.ConfigParser(strict=False)
+    s.read(UNITS / "containerizer-firstboot.service")
+    assert "systemd-networkd.service" in s["Unit"]["Before"].split()
+    monkeypatch.setattr(sysagent, "DNS_WAIT", 0)
+    monkeypatch.setattr(sysagent, "apply_firewall", lambda reload_dns=True: None)
+    text = "[Match]\nName=br0\n[Network]\nAddress=10.0.0.5/24\n"
+    for d in (paths.network, paths.network_run):
+        d.mkdir(parents=True)
+        (d / "10-static.network").write_text(text)
+        (d / "10-static.network").chmod(0o644)
+    r = fake_run(monkeypatch, **{"networkctl --json=short status br0":
+                                 json.dumps({"NetworkFile": "/etc/systemd/network/22-uplink-br0.network"})})
+    assert sysagent.network_sync() == ["10-static.network"]
+    assert ["networkctl", "reload"] in r.calls and ["networkctl", "reconfigure", "br0"] in r.calls
+    r = fake_run(monkeypatch, **{"networkctl --json=short status br0":
+                                 json.dumps({"NetworkFile": str(paths.network_run / "10-static.network")})})
+    assert sysagent.network_sync() == [] and ["networkctl", "reload"] not in r.calls
 
 
 def test_a_static_address_of_0_13_moves_to_the_bridge(paths, monkeypatch):

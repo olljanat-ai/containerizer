@@ -5,6 +5,8 @@
   without one does not run.
 - Output repositories: a write token for each repository the generated files are pushed to, matched
   by its URL.
+- Package feeds: a token for each NuGet, npm or Maven/Gradle feed the builds of scanned code restore from; the
+  worker's feed proxy sends it with the builds' requests under the feed's URL (feedproxy.py).
 - LLM: the server, model and key the scans ask when "Ask the LLM" is on (the Claude API or a
   self-hosted OpenAI-compatible server). One at a time.
 - Built-in LLM (the appliance only, admin_local_llm.py): a CPU-only model the appliance can run itself,
@@ -29,6 +31,7 @@ DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 MODEL_RE = re.compile(r"[\w.:/@+\-]{1,200}")
 LLM_URL_RE = re.compile(r"https?://[A-Za-z0-9.-]+(:\d{1,5})?(/[^\s<>\"'`?#]*)?")
 SOON_DAYS = 14
+FEED_USER_RE = re.compile(r"[\w.@+\-]{1,200}")
 
 # Where the tokens are made, and with what. Shown next to the forms; docs/source-control.md has the same.
 DOCS = {
@@ -68,6 +71,22 @@ model only the evidence of the components the rules are unsure of, never the who
 similar: the URL up to and including <code>/v1</code> (for example <code>https://llm.example.internal/v1</code>), the
 model name as the server knows it, and its key if it has one (vLLM <code>--api-key</code>, a gateway). A key is only
 sent over https, or plain http to this machine. Choosing a model: docs/source-control.md#the-llm.</p>"""),
+        ]
+        return "".join(f"<details><summary><b>{t}</b>: what to enter</summary>{b}</details>" for t, b in items)
+    if purpose == "feed":
+        items = [
+            ("Azure Artifacts", """<p>A <b>personal access token</b> with the scope <b>Packaging: Read</b> only, for this
+organization, of an account that may read the feeds. Feed URL: the organization's packaging URL, which covers every
+feed and the URLs packages are downloaded from, e.g. <code>https://pkgs.dev.azure.com/contoso/</code>; user name: any
+text, e.g. <code>containerizer</code>.</p>"""),
+            ("GitHub Packages", """<p>A <b>personal access token (classic)</b> with the scope <b>read:packages</b> only.
+NuGet: <code>https://nuget.pkg.github.com/contoso/</code>, npm: <code>https://npm.pkg.github.com/</code>, Maven:
+<code>https://maven.pkg.github.com/contoso/</code>; user name: the token's account (npm: empty).</p>"""),
+            ("GitLab", """<p>A <b>deploy token</b> or <b>group access token</b> with the scope <b>read_package_registry</b>.
+Feed URL: the group's or project's package URL, e.g. <code>https://gitlab.example.com/api/v4/groups/42/-/packages/</code>;
+user name: the deploy token's user name (empty for an access token sent as a bearer token).</p>"""),
+            ("Nexus, Artifactory, ProGet and others", """<p>A read-only user or token of the repository manager, and the
+repository's URL, e.g. <code>https://nexus.example.com/repository/nuget-internal/</code>.</p>"""),
         ]
         return "".join(f"<details><summary><b>{t}</b>: what to enter</summary>{b}</details>" for t, b in items)
     if purpose == "read":
@@ -116,7 +135,7 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict) -> Res
     if len(parts) == 2 and parts[1] == "local-llm" and method == "POST":
         from . import admin_local_llm
         return admin_local_llm.post(adm, s, a, form)
-    if len(parts) == 2 and parts[1] in ("read", "write", "llm") and method == "POST":
+    if len(parts) == 2 and parts[1] in ("read", "write", "llm", "feed") and method == "POST":
         return add(adm, conn, s, parts[1], form)
     if ident is not None:
         if method == "GET" and not action:
@@ -154,6 +173,8 @@ def _used_by(c: cr.Credential, scans: list[dict]) -> list[dict]:
         return [x for x in scans if one.read_for(x["Provider"], x["ApiUrl"], x["Organization"])]
     if c.purpose == "llm":
         return [x for x in scans if x.get("UseAi")] if c.enabled else []
+    if c.purpose == "feed":
+        return [x for x in scans if x.get("Enabled")] if c.enabled else []
     return [x for x in scans if one.write_for(x["OutputRepo"])]
 
 
@@ -223,11 +244,13 @@ def list_page(adm, conn, s, a, flash: str) -> Response:
             where = e(r["Host"]) + (f"<div class='muted small'>{e(r['ApiUrl'])}</div>" if r["ApiUrl"] else "")
             last = (f"{_d(r['LastUsedAt'])}<div class='muted small'>{e((r['LastResult'] or '')[:300])}</div>"
                     if r["LastUsedAt"] else "<span class='muted'>not used yet</span>")
+            kind = cr.FEED_KINDS.get(r["Provider"]) if purpose == "feed" else None
             out.append(f"<tr><td><a href='/admin/source-control/{int(r['CredentialId'])}'>{e(r['Scope'])}</a>"
-                       f"<div class='muted small'>{e(cr.PROVIDER_TEXT.get(r['Provider'], r['Provider']))}</div></td>"
+                       f"<div class='muted small'>{e(kind or cr.PROVIDER_TEXT.get(r['Provider'], r['Provider']))}"
+                       f"{' · user ' + e(r['FeedUser']) if r.get('FeedUser') else ''}</div></td>"
                        f"<td>{where}</td><td>{_chips(status(r, kid, today))}<div class='muted small'>token saved "
                        f"{_d(r['TokenSetAt'])} by {e(r['TokenSetBy'])}</div></td><td>{used_html}</td><td>{last}</td></tr>")
-        what = "Organization" if purpose == "read" else "Repository"
+        what = {"read": "Organization", "feed": "Feed"}.get(purpose, "Repository")
         return (f"<table><thead><tr><th>{what}</th><th>Host</th><th>Token</th><th>Used by</th><th>Last used</th></tr></thead>"
                 f"<tbody>{''.join(out) or '<tr><td colspan=5 class=muted>None registered.</td></tr>'}</tbody></table>")
 
@@ -236,7 +259,7 @@ def list_page(adm, conn, s, a, flash: str) -> Response:
                     "<code>containerizer credentials keygen --private worker-key.pem --public worker-key.pub</code>, give "
                     f"the worker <code>{cr.PRIVATE_KEY_ENV}</code> and the web UI <code>{cr.PUBLIC_KEY_ENV}</code> "
                     "(docs/source-control.md). The appliance does this by itself.</p>")
-        read_form = write_form = llm_form = ""
+        read_form = write_form = llm_form = feed_form = ""
     else:
         key_note = (f"<p class='muted small'>Tokens are sealed for the scan worker's key <code>{e(kid)}</code> as soon as "
                     "you save them: this page cannot show them again, only replace them.</p>")
@@ -262,6 +285,19 @@ The internal rules repository of the <a href='/admin/rules#repository'>rule revi
 <label for='wScope'>Repository URL <span class='muted'>(https, as on the scan's Output repository)</span></label>
 <input id='wScope' name='Scope' type='url' required maxlength='400' placeholder='https://github.com/contoso/sandbox-deployments.git'>
 {_token_input('wToken')}{_common_inputs('w')}
+<div><button>Add</button></div></form>"""
+        feed_form = f"""<h3>Add a package feed</h3>
+<p class='muted'>A NuGet, npm or Maven/Gradle feed that needs a sign-in. The token never enters a build: the scan
+worker's feed proxy adds it to the builds' requests under this URL, and only to those.</p>
+{guidance('feed')}
+<form method='post' action='/admin/source-control/feed' class='edit'>{adm._csrf(s)}
+<label for='fProvider'>Kind</label><select id='fProvider' name='Provider'>{''.join(
+    f"<option value='{k}'>{t}</option>" for k, t in cr.FEED_KINDS.items())}</select>
+<label for='fScope'>Feed URL <span class='muted'>(https; the token is sent with every request under it)</span></label>
+<input id='fScope' name='Scope' type='url' required maxlength='400' placeholder='https://pkgs.dev.azure.com/contoso/'>
+<label for='fFeedUser'>User name <span class='muted'>(empty: the token is sent alone, as a bearer token)</span></label>
+<input id='fFeedUser' name='FeedUser' maxlength='200' autocomplete='off' spellcheck='false'>
+{_token_input('fToken')}{_common_inputs('f')}
 <div><button>Add</button></div></form>"""
         from .ai import CLAUDE_DEFAULT_MODEL
         first = not any(r["Purpose"] == "llm" for r in rows)
@@ -304,6 +340,8 @@ and including /v1)</span></label><input id='lApiUrl' name='ApiUrl' type='url' ma
             f"appliance, the hosts must also be on the Firewall page.</p>{key_note}"
             f"<h2>Organizations (read-only)</h2>{table('read')}{read_form}"
             f"<h2>Output repositories (write)</h2>{table('write')}{write_form}"
+            f"<h2 id='feeds'>Package feeds</h2><p class='muted'>Feeds the builds of scanned code restore packages from "
+            f"that need a sign-in. On the appliance, their hosts must also be on the Firewall page.</p>{table('feed')}{feed_form}"
             f"<h2>LLM</h2>{llm_html}{llm_form}{admin_local_llm.section(adm, s, a, registered=llm is not None)}")
     return Response(200, adm._shell(s, a, "Source control and LLM", "source-control", body, flash))
 
@@ -414,9 +452,36 @@ def validate_llm(form: dict) -> tuple[dict, list[str]]:
     return v, errors
 
 
+def validate_feed(form: dict) -> tuple[dict, list[str]]:
+    v, errors = _common(form)
+    prov = form.get("Provider", [""])[0]
+    if prov not in cr.FEED_KINDS:
+        errors.append("Choose the kind of feed")
+    v["Provider"] = prov
+    url = form.get("Scope", [""])[0].strip()
+    if not url:
+        errors.append("Feed URL is required")
+    elif len(url) > 400 or not URL_RE.fullmatch(url) or "@" in url.split("/")[2] or "?" in url or "#" in url \
+            or re.search(r"[<>\"' ]", url):
+        errors.append("Feed URL must be a plain https:// address without user name, query or fragment")
+    v["Scope"], v["ApiUrl"] = url, None
+    v["Host"] = cr._split(url)[1] if url and not errors else ""
+    user = form.get("FeedUser", [""])[0].strip()
+    if user and not FEED_USER_RE.fullmatch(user):
+        errors.append("User name: letters, digits and . @ + - _ only")
+    v["FeedUser"] = user or None
+    tok = form.get("Token", [""])[0].strip()
+    err = cr.check_token_text(tok)
+    errors += [err] if err else []
+    v["Token"] = tok
+    return v, errors
+
+
 def validate(purpose: str, form: dict) -> tuple[dict, list[str]]:
     if purpose == "llm":
         return validate_llm(form)
+    if purpose == "feed":
+        return validate_feed(form)
     v, errors = _common(form)
     prov = form.get("Provider", [""])[0]
     if prov not in cr.PROVIDER_TEXT:
@@ -467,10 +532,11 @@ def add(adm, conn, s, purpose: str, form: dict) -> Response:
     cur = conn.cursor()
     try:
         cur.execute("INSERT cz.SourceCredential (Purpose, Provider, ApiUrl, Host, Scope, Model, Note, ExpiresOn, TokenSealed, "
-                    "KeyId, TokenSetBy, LlmOrder, LlmMaxTokens, LlmParallel) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-                    "%s, %s, %s, %s); SELECT CAST(SCOPE_IDENTITY() AS int)",
+                    "KeyId, TokenSetBy, LlmOrder, LlmMaxTokens, LlmParallel, FeedUser) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, "
+                    "%s, %s, %s, %s, %s, %s, %s); SELECT CAST(SCOPE_IDENTITY() AS int)",
                     (purpose, v["Provider"], v["ApiUrl"], v["Host"], v["Scope"], v.get("Model"), v["Note"], v["ExpiresOn"],
-                     sealed, kid, s.user[:256], v.get("LlmOrder", 10), v.get("LlmMaxTokens", 0), v.get("LlmParallel", 1)))
+                     sealed, kid, s.user[:256], v.get("LlmOrder", 10), v.get("LlmMaxTokens", 0), v.get("LlmParallel", 1),
+                     v.get("FeedUser")))
         ident = cur.fetchone()[0]
         conn.commit()
     except Exception as ex:
@@ -483,6 +549,9 @@ def add(adm, conn, s, purpose: str, form: dict) -> Response:
     if purpose == "llm":
         return _back(f"/admin/source-control/{ident}", "LLM saved. The LLM queue uses it from its next job; scans with Ask "
                                                        "the LLM use it from their next run when it is first in the order.")
+    if purpose == "feed":
+        return _back(f"/admin/source-control/{ident}", f"Feed token saved for {v['Scope']}. The next scan run's builds "
+                                                       "use it (allow its host on the Firewall page of the appliance).")
     what = "Read-only token" if purpose == "read" else "Write token"
     return _back(f"/admin/source-control/{ident}", f"{what} saved for {v['Scope']}. The next run of its scans uses it.")
 
@@ -501,12 +570,18 @@ def edit_page(adm, conn, s, a, ident: int, flash: str) -> Response:
     c = cr.Credential.from_row(r)
     used = _used_by(c, _scans(conn))
     llm = c.purpose == "llm"
+    feed = c.purpose == "feed"
     kind = {"read": "Read-only token of the organization", "write": "Write token of the output repository",
-            "llm": "The LLM scans ask when Ask the LLM is on"}[c.purpose]
+            "llm": "The LLM scans ask when Ask the LLM is on",
+            "feed": "Token of a package feed the builds of scanned code restore from"}[c.purpose]
+    names = cr.LLM_PROVIDERS if llm else cr.FEED_KINDS if feed else cr.PROVIDER_TEXT
     facts = [("Access", {"read": "read only: lists and clones the organization's repositories",
                          "write": "write: pushes the generated files to this repository only",
-                         "llm": "the evidence of uncertain components is sent to this server"}[c.purpose]),
-             ("Provider", e((cr.LLM_PROVIDERS if llm else cr.PROVIDER_TEXT).get(c.provider, c.provider))),
+                         "llm": "the evidence of uncertain components is sent to this server",
+                         "feed": "sent by the feed proxy with the builds' requests under this URL; the builds never see "
+                                 "it"}[c.purpose]),
+             ("Provider" if not feed else "Kind", e(names.get(c.provider, c.provider))),
+             ("User name", e(c.username or "none: sent as a bearer token") if feed else ""),
              ("Model", e(c.model) if llm else ""), ("Host", e(r["Host"])),
              ("LLM queue", f"order {_order(r)}, calls up to {e(_size_text(r.get('LlmMaxTokens')))}, "
                            f"{int(r.get('LlmParallel') or 1)} at once" if llm else ""),
@@ -523,6 +598,9 @@ def edit_page(adm, conn, s, a, ident: int, flash: str) -> Response:
                if pub is not None else "<p class='muted'>The web UI has no worker public key: tokens cannot be replaced.</p>")
     model_in = (f"<label for='sModel'>Model</label><input id='sModel' name='Model' required maxlength='200' "
                 f"value='{e(c.model)}'>{_llm_route_inputs('s', r)}") if llm else ""
+    if feed:
+        model_in = (f"<label for='sFeedUser'>User name <span class='muted'>(empty: the token is sent alone, as a bearer "
+                    f"token)</span></label><input id='sFeedUser' name='FeedUser' maxlength='200' value='{e(c.username)}'>")
     settings = (f"<form method='post' action='/admin/source-control/{ident}' class='edit'>{adm._csrf(s)}"
                 f"{model_in}{_common_inputs('s', r)}<label class='check'><input type='checkbox' name='Enabled' value='1'"
                 f"{' checked' if r['Enabled'] else ''}> Enabled (unchecked: scans that need it do not run)</label>"
@@ -530,7 +608,7 @@ def edit_page(adm, conn, s, a, ident: int, flash: str) -> Response:
     delete = (f"<form method='post' action='/admin/source-control/{ident}/delete' class='danger'>{adm._csrf(s)}"
               f"<button>Remove the token for {e(c.scope)}</button></form><p class='muted small'>Also revoke it where it was "
               f"made: removing it here only stops this tool from using it.</p>")
-    what = "server" if llm else "organization or repository"
+    what = "server" if llm else "feed URL" if feed else "organization or repository"
     body = (f"<p class='muted'>{kind}. To point it at another {what}, remove it and add a new one."
             f"</p><div class='meta'>{meta}</div><h2>Replace the {'key' if llm else 'token'}</h2>{replace}{guidance(c.purpose)}"
             f"<h2>Settings</h2>{settings}{delete}<h2>Changes</h2>{adm._history(conn, 'SourceCredential', ident)}")
@@ -579,9 +657,16 @@ def save_settings(adm, conn, s, ident: int, form: dict) -> Response:
             errors.append("Model: the model's name (letters, digits and . : / @ + - _)")
         route, more = validate_route(form)
         errors += more
+    feed_user = None
+    if r["Purpose"] == "feed":
+        feed_user = form.get("FeedUser", [""])[0].strip()
+        if feed_user and not FEED_USER_RE.fullmatch(feed_user):
+            errors.append("User name: letters, digits and . @ + - _ only")
     if errors:
         return _back(back, "Not saved: " + "; ".join(errors))
     cur = conn.cursor()
+    if feed_user is not None:
+        cur.execute("UPDATE cz.SourceCredential SET FeedUser = %s WHERE CredentialId = %s", (feed_user or None, ident))
     extra = ", Model = %s, LlmOrder = %s, LlmMaxTokens = %s, LlmParallel = %s" if model is not None else ""
     cur.execute("UPDATE cz.SourceCredential SET Note = %s, ExpiresOn = %s, Enabled = %s" + extra + " WHERE CredentialId = %s",
                 (v["Note"], v["ExpiresOn"], form.get("Enabled", [""])[0] == "1",
@@ -617,4 +702,9 @@ def scan_tokens(conn, scan: dict) -> str:
         if c:
             out.append(f"<div><span class='label'>{what}</span> <a href='/admin/source-control/{c.id}'>{e(c.label)}</a> "
                        f"{_chips(status(by_id[c.id], None))}</div>")
+    feeds = creds.feeds()
+    if feeds:
+        out.append("<div><span class='label'>Package feeds</span> " + ", ".join(
+            f"<a href='/admin/source-control/{c.id}'>{e(c.label)}</a> {_chips(status(by_id[c.id], None))}" for c in feeds)
+            + " <span class='muted small'>(the builds' requests to them get the token from the feed proxy)</span></div>")
     return f"<div class='meta'>{''.join(out)}</div>" if out else ""

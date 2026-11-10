@@ -13,6 +13,8 @@ ask (see [The LLM](#the-llm) below):
   and GitOps files are pushed to, matched by the repository's URL. The internal rules repository of
   the [rule review](rule-review.md#setting-up-the-internal-rules-repository) gets its write token here
   too.
+- **Package feeds**: a token for each NuGet, npm or Maven/Gradle feed that needs a sign-in, which the builds of
+  scanned code restore packages from ([below](#package-feeds)). The builds never see it.
 
 ## How the tokens are protected
 
@@ -85,6 +87,51 @@ Notes:
 | Azure DevOps | Personal access token of a dedicated account whose only **Contribute** permission is on the output repository ([repository permissions](https://learn.microsoft.com/en-us/azure/devops/repos/git/set-git-repository-permissions)) | **Code: Read & write** |
 
 Enter the repository's https URL exactly as on the scan's *Output repository* (with or without `.git`).
+
+## Package feeds
+
+Applications that restore packages from a private feed (an internal NuGet feed on Azure Artifacts, npm packages
+on GitHub Packages, a Maven repository on Nexus) do not build without its credentials, and verification then
+reports *Build failed*. Register the feed under **Admin → Source control & LLM → Package feeds**: its kind (NuGet,
+npm, Maven or Gradle), its URL, a user name if the feed wants one, and a read-only token.
+
+![Package feeds on Admin → Source control: three feeds with their state, and the form to add one](images/admin-package-feeds.png#only-light){ .cz-shot }
+![Package feeds on Admin → Source control: three feeds with their state, and the form to add one](images/admin-package-feeds-dark.png#only-dark){ .cz-shot }
+
+The token never enters a build, an image or the generated files. The scan worker (and the LLM queue runner, for
+refactoring orders) runs a small HTTPS proxy, the **feed proxy**, and hands its builds its address as `HTTPS_PROXY`,
+which dotnet, npm, Maven and Gradle use (the generated Dockerfiles pass a proxy on to Maven and Gradle themselves):
+
+- A connection to the host of a registered feed is opened by the proxy: it answers with a certificate of its own CA,
+  checks the feed's real certificate itself, and adds `Authorization` to the requests whose URL is under the feed's
+  URL: `Basic` with the user name and the token, or `Bearer` with the token alone when the user name is empty.
+  Requests to other paths of that host get nothing. The builds trust the proxy's CA through the optional build
+  secret `ca` the generated Dockerfiles already read for TLS-inspecting corporate proxies (the bundle holds the
+  system's CAs, the corporate bundle if one is set, and the proxy's CA).
+- Connections to every other host pass through untouched (a plain tunnel).
+- The proxy refuses this machine's own addresses, loopback and link-local addresses, and the networks of Docker
+  and the sandbox cluster, so it opens nothing to a build that the build could not reach itself. On the appliance
+  the [firewall](appliance-admin.md#firewall) lets Docker's bridges reach the proxies' ports (3128 for the scan
+  worker, 3129 for the LLM queue runner, on the DNS filter's address) and nothing else on the host, and the feed's
+  host must be on the Firewall page as before. Elsewhere it listens on `docker0`'s address
+  (`CONTAINERIZER_FEED_PROXY_LISTEN=host:port` to choose); a corporate `HTTPS_PROXY` of the worker is used upstream.
+
+Which URL to register: the token goes with every request under it, so register the narrowest URL that still covers
+the downloads. Azure Artifacts downloads packages by the feed's id rather than its name, so register the
+organization's packaging URL, e.g. `https://pkgs.dev.azure.com/contoso/` (or `https://pkgs.dev.azure.com/contoso/project/`
+for a project-scoped feed). The repository's own `nuget.config`, `.npmrc`, `pom.xml` or `build.gradle` still names
+the feed as before; a credentials entry it has (for example `%NUGET_PAT%`) is replaced by the proxy's.
+
+| Feed | Token | User name |
+| --- | --- | --- |
+| Azure Artifacts | Personal access token with **Packaging: Read**, for this organization | any text, e.g. `containerizer` |
+| GitHub Packages | Personal access token (classic) with **read:packages** | the token's account (npm: empty) |
+| GitLab package registry | Deploy token or group access token with **read_package_registry** | the deploy token's user name |
+| Nexus, Artifactory, ProGet | A read-only user's password or token | the user |
+
+The page shows when a feed was last used and whether the feed accepted the token (*Working*, or *Last use failed*
+with the HTTP status). Yarn 2 and later (`.yarnrc.yml`) and the Maven wrapper's own download of Maven do not use
+`HTTPS_PROXY`: their feeds are not covered.
 
 ## The LLM
 

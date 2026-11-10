@@ -506,7 +506,7 @@ failures:
     match: 'OOMKilled|exit 137\)'
     outcome: code
     refs: [https://kubernetes.io/docs/tasks/configure-pod-container/assign-memory-resource/]
-    diagnosis: The container was killed for using more memory than its limit (512Mi in the generated manifests).
+    diagnosis: The container was killed for using more memory than its limit (512Mi in the generated manifests unless the verification run measured the component).
     finding: {severity: config, title: Needs a higher memory limit than generated,
       fix: 'Measure the working set under load and raise resources.limits.memory (and requests) in k8s.yaml; check for unbounded caches if it keeps growing.'}
 

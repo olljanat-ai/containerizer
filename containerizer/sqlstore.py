@@ -305,6 +305,31 @@ def _cut(s, n: int):
     return s if len(s) <= n else s[:n - 1] + "…"
 
 
+VERIFY_FAILED = ("build-failed", "run-failed")
+
+
+def verify_detail(v: dict, limit: int = 2000) -> str | None:
+    """A component's build-and-run result for its page (VerifyDetail): the steps tried and, when the build or the
+    run failed, why and the end of its log, so the failure can be read without the scan's files. The end of the log
+    is kept when it is long."""
+    detail = v.get("detail") or (v.get("finding") or {}).get("title")
+    if v.get("status") not in VERIFY_FAILED:
+        return detail
+    last = (v.get("attempts") or [{}])[-1]
+    why = "; ".join(str(x) for x in (last.get("diagnosis"), last.get("note")) if x) or \
+        ("no known cause (no rule matched the log)" if last.get("status") == "unexplained" else "")
+    steps = detail if detail and ";" in detail else ""     # one step: the Why says it
+    head = "\n".join(x for x in (f"Steps tried: {steps}" if steps else "", f"Why: {why}" if why else "") if x)
+    tail = str(last.get("log_tail") or "").strip()
+    if not tail:
+        return head or None
+    from .orgsource import REDACT
+    tail = REDACT(tail)
+    head = head[:limit // 3]
+    room = limit - len(head) - 2
+    return (head + "\n\n" if head else "") + (tail if len(tail) <= room else "…" + tail[-(room - 1):])
+
+
 def store_assessment(conn, doc: dict, source: dict, assessed_at=None) -> int:
     """Insert one application's assessment (an assessment.json entry); returns the AssessmentId.
 
@@ -344,7 +369,7 @@ def store_assessment(conn, doc: dict, source: dict, assessed_at=None) -> int:
             comp_id = _component(cur, app_id, c)
             v = ver.get(c["name"]) or {}
             status = v.get("status") if v.get("status") not in (None, "skipped") else None
-            detail = v.get("detail") or (v.get("finding") or {}).get("title")
+            detail = verify_detail(v)
             cur.execute("INSERT cz.ComponentAssessment (AssessmentId, ComponentId, Role, Tier, TargetFramework, Verdict, "
                         "VerdictText, Score, Confidence, WindowsContainerOk, VerifyStatus, VerifyDetail) "
                         "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",

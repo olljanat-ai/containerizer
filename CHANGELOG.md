@@ -4,22 +4,12 @@ Releases are tagged `vX.Y.Z`: bump `containerizer/__init__.py` and this file, th
 by hand on `main` with the version, and it tags the commit and releases from the tag (or push the tag `vX.Y.Z` on `main`
 yourself: a tag push starts the release too). Each release publishes the appliance OS image to
 `ghcr.io/olljanat-ai/containerizer-appliance` and its application alone to `ghcr.io/olljanat-ai/containerizer-app`
-(both signed with cosign by the release workflow) and the ISO, qcow2 and VHDX images as release assets. A patch
+(both signed with cosign by the release workflow) and the installer ISO as a release asset. A patch
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
 ## Unreleased
 
-- **Platform fixes for refactor findings** ([docs](docs/platform-fixes.md)): findings that the generated
-  configuration can satisfy no longer need code changes, and count as `config` in the rating. A plan rule names the
-  findings it `resolves`; three techniques are new: code that switches on `Environment.MachineName` gets the pod
-  `hostname:` it compares with (`plan-machine-hostname`), certificates looked up in `CurrentUser\My` come from an
-  optional Secret mounted where .NET on Linux reads that store (`plan-x509-user-store`), and
-  `Path.Combine(GetFolderPath(ProgramFiles), "Acme", ...)`, which is `/app/Acme/...` on Linux, gets a volume there
-  (`plan-special-folder-workdir`). Each one is listed with its reason and references in the Dockerfile header and
-  `plan.json` (`applied`, `resolved`, `reasons`); the finding keeps its rule severity as `rule_severity` and is
-  never sent to a refactoring. An application whose only refactor findings are these goes from B to A at its next
-  scan. The page also classifies all 111 refactor rules (platform, partial, code-only) as candidates for more.
 - Python and Go components get a container build and deployment (`Dockerfile`, `k8s.yaml`, `plan.json`) with the
   same hardening as .NET, Java and Node.js components, instead of only `MIGRATION.md`, and organization scans deploy
   them (#248, [Python and Go](docs/python-go.md)). Python: the dependencies install with the repository's package
@@ -34,6 +24,140 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   is a library.
 - Base images: Python 3.11, 3.12 and 3.13 lines (slim runtime, full build image for native packages), Go builds on
   `golang:1.26` (the lock already chose it for the old 1.22 line), distroless `base` for cgo.
+
+## 0.21.0 (2026-11-10)
+
+The OS image changes (`appliance/`: the worker, LLM queue and web units set the ingress namespace): a minor release.
+
+- **No more `Dockerfile.windows`** (#271): the project is Linux-only and Windows applications stay in VMs.
+  `containerizer generate` no longer writes the Windows Server Core stop-gap (`Dockerfile.windows` and its
+  `.dockerignore`) for .NET Framework components, `rules/images.yaml` drops the `windows:` images, `MIGRATION.md`
+  drops the "Windows container stop-gap" column, and finding fixes, the migration plan and the application page no
+  longer suggest a Windows container (components that cannot run on Linux stay on Windows VMs). The
+  `windows_container` rule attribute and `Component.WindowsContainerOk` stay (`containerizer migrate` and the SARIF
+  output read the attribute; no schema change).
+- **A Data Protection key folder from configuration gets the shared key.** An app that keeps its key ring in a
+  configured folder (`PersistKeysToFileSystem(new DirectoryInfo(configuration["DataProtection:KeyFolder"]))`, also
+  in a library it references) had that folder on an `emptyDir`, so every restart or rollout signed every user out,
+  and the generated key was mounted under `/home/app`, where the app never looked. Now the key Secret that External
+  Secrets Operator generates is mounted read-only at the configured folder (re-pointed under `/data`, or set when the
+  configuration leaves it empty), with no code change; a folder written in the code is a persistent volume
+  (ReadWriteOnce, one replica). `plan.json` and the Dockerfile header say why, and the new lint check
+  `dataprotection-volatile` fails a key ring folder setting that points into an `emptyDir`
+  ([docs](docs/overview.md#generated-output)).
+- **Workers are replaced, not rolled, and CronJobs cannot run forever** ([docs](docs/overview.md#generated-output)).
+  A worker (queue consumer, folder poller, scheduler, Windows service) was one process on one server, but its
+  Deployment rolled out with the new pod started while the old one still ran: two copies polled the same folder or
+  ran the same recurring job. Workers now get `strategy: Recreate` (web components keep `RollingUpdate`; a plan
+  rule with `scale_out: true` marks a worker safe to run twice). Pods get a stop grace period per role (web 30 s,
+  worker and console 120 s), longer when IIS let requests run for minutes. CronJobs get a retry limit (2), a run
+  deadline (1 hour), a start deadline (5 minutes), history limits (3/3) and a TTL for finished Jobs: before, a hung
+  run went on forever and, with `Forbid`, every later run was skipped. The values are in `rules/60-security.yaml`
+  (`hardening.workloads`), the reasons in `plan.json`, a line per workload in `HARDENING.md`, and the gate warns
+  about CronJobs without these limits and workers that roll.
+- **Images are deployed by digest** ([docs](docs/build-pipelines.md#the-sandbox-and-gitops)). Tags can be moved in
+  the registry; a digest cannot. The generated Flux `ImagePolicy` now reflects the digest of the tag it picks
+  (`digestReflectionPolicy: Always`, Flux 2.5+), and `kustomization.yaml` has a name, tag **and** digest setter per
+  image, so the image automation writes `<image>:<tag>@sha256:...`. An organization scan writes the digest of
+  each image it pushed straight into the kustomization, so the sandbox runs by digest from the first deploy,
+  without the image automation. The build pipelines keep the pushed digest as `digests.txt` (an artifact) and a
+  job output, for `kustomize edit set image $(cat digests.txt)` in a deploy pipeline. HARDENING.md's *Images are
+  deployed by digest* is now *applied* (pinned by Flux after the first automation run); a lint check
+  `image-digest-setter` (info) replaces `image-digest` for these images.
+- **Memory requests and limits come from what the verification run measured.** Every component got the same
+  256Mi request and 512Mi limit, so a large API could be killed for its memory in the sandbox while a small worker
+  reserved too much. The build-and-run now samples the container's memory and CPU while its probes are answered and
+  records the peak; the generated manifests then ask for the peak × 1.25 and limit it to the peak × 2 (rounded up
+  to 64Mi, at most the namespace's LimitRange max; the request at least 128Mi, the limit never below the 512Mi
+  baseline, as a few seconds of probes understate real load), with the reason in `plan.json`. A component that was
+  not measured keeps the old sizes; exceptions such as `native-rendering-memory` only raise them
+  ([docs](docs/overview.md#self-learning-loop)).
+- **Verification resolves every host the application is configured to reach to 127.0.0.1.** The build-and-run
+  check used to map one fixed name from an example application; now it takes every host name from the
+  component's connection strings and configured URLs (the same scan the connectivity model uses, plus
+  `appsettings.Development.json` in the smoke run) and maps it to loopback, so a missing database, broker or
+  service fails fast with "connection refused" instead of a DNS lookup that hangs. IP addresses and
+  well-known public services (`public_hosts` in `rules/60-security.yaml`) are left alone. The run's details list
+  the mapped names, and a component that runs but stops at missing services lists what it needs
+  (`needs: sql.corp.example:1433`) in the report.
+- **Service ports are open to the ingress controller's namespace, not to every namespace.** The generated
+  NetworkPolicies let any pod of the cluster call a component's service port; on a shared cluster another tenant's
+  pod could call the application directly, around the ingress. Now only the ingress controller's namespace
+  can (`network.ingress_namespace` in `rules/60-security.yaml`, default `ingress-nginx`; the environment variable
+  `CONTAINERIZER_INGRESS_NAMESPACE` or `--ingress-from` overrides it), besides the sibling components and confirmed
+  links as before. The appliance sets `kube-system`, where the sandbox's Traefik runs. `--ingress-from any` keeps
+  the old rule; for a controller in the host network, use it with an `ipBlock` of the node CIDR
+  ([docs/egress.md](docs/egress.md#inbound)). `CONNECTIVITY.md` and `HARDENING.md` name the namespace, the
+  gate's lint warns about a rule open to every namespace, and the egress observer proposes a link for a call from
+  another application that a service port now drops.
+
+## 0.20.0 (2026-11-09)
+
+- (The version jumps from 0.16 to 0.20: Containerizer is getting ready for use in real environments. 0.17 to 0.19
+  were not released.)
+
+- **Releases have only the installer ISO.** The qcow2 disk image is no longer published (nor built); install on
+  KVM, Proxmox and OpenStack from the ISO like everywhere else. SHA256SUMS covers the ISO.
+- **Cancel stops a scan run at once.** Before, it waited for the repositories in progress (*cancelling after
+  the current repository*). Now the worker sees the cancel within 3 seconds (was the 30-second heartbeat) and
+  ends the repositories in progress with every tool they started (git, builds): each repository of a run an
+  administrator can cancel is scanned in a process of its own, also with one repository at a time. The ended
+  ones are not recorded: they keep their previous result and the next run scans them again.
+- **A failed build or run is shown with its log.** An application rated from its source code (for example **A**)
+  whose component failed to build or run said only *Build failed*, and its confidence still read *confirmed by
+  building and running*. Now the page says the rating is not confirmed, the confidence says the build or run
+  failed, and the component's details show why and the end of the build or run log (kept in
+  `ComponentAssessment.VerifyDetail` by the next scan) ([docs](docs/overview.md#self-learning-loop)).
+- **Package feeds that need a sign-in** ([docs](docs/source-control.md#package-feeds)). Admin → Source control has
+  a new section, **Package feeds**: a NuGet, npm or Maven/Gradle feed's URL, an optional user name and a token,
+  sealed for the worker like the source control tokens. The token never enters a build: the scan worker and the
+  LLM queue runner run a feed proxy that the builds use as `HTTPS_PROXY`; it opens only the connections to the
+  registered feeds' hosts (its CA reaches the builds through the existing `ca` build secret) and adds the token to
+  the requests under the feed's URL, passes everything else through untouched, and refuses the appliance's own
+  addresses and container networks. The appliance firewall lets Docker's bridges reach the proxies (ports 3128 and
+  3129 on 169.254.53.53). Schema 44: `SourceCredential.FeedUser`, Purpose `feed`.
+- **A static address is kept after a restart.** systemd-networkd could start before `cz-firstboot` had copied
+  `/etc/containerizer/network/10-static.network` to `/run/systemd/network`; br0 then got the DHCP default, and
+  without a DHCP server the appliance had no address (seen on a Dell server). `cz-firstboot` now runs before
+  systemd-networkd itself, and the status check (every 5 minutes) reloads the network when br0 has a file of the
+  image although a static file is there. Until then: `networkctl reload && networkctl reconfigure br0`.
+- **Platform fixes for refactor findings** ([docs](docs/platform-fixes.md)): findings that the generated
+  configuration can satisfy no longer need code changes, and count as `config` in the rating. A plan rule names the
+  findings it `resolves`; three techniques are new: code that switches on `Environment.MachineName` gets the pod
+  `hostname:` it compares with (`plan-machine-hostname`), certificates looked up in `CurrentUser\My` come from an
+  optional Secret mounted where .NET on Linux reads that store (`plan-x509-user-store`), and
+  `Path.Combine(GetFolderPath(ProgramFiles), "Acme", ...)`, which is `/app/Acme/...` on Linux, gets a volume there
+  (`plan-special-folder-workdir`). Each one is listed with its reason and references in the Dockerfile header and
+  `plan.json` (`applied`, `resolved`, `reasons`); the finding keeps its rule severity as `rule_severity` and is
+  never sent to a refactoring. An application whose only refactor findings are these goes from B to A at its next
+  scan. The page also classifies all 111 refactor rules (platform, partial, code-only) as candidates for more.
+- **Apps that keep their own data run as they are, with a persistent volume, and rate A (stateful).** A component
+  that is ready in every other way but keeps local data (a SQLite/LiteDB file, uploads under the web root or
+  App_Data, a local index, in-memory session or Hangfire storage) was capped at B, left out of the sandbox ("keeps
+  local state") and pointed at Make it A, an LLM rewrite that moves the data to SQL Server. Now it rates **A**,
+  marked **stateful** next to the rating, and the organization scan deploys it unchanged: one replica with
+  `strategy: Recreate`, a PersistentVolumeClaim on each folder it keeps data in, `fsGroup` so the non-root user can
+  write it, the root file system still read-only. An embedded database file in the app folder (`Data Source=app.db`)
+  moves to `/data`, a volume, with an environment variable over its connection string; no file of the application
+  changes and no LLM is called. Local data in a folder Containerizer cannot find still keeps the component at B and
+  out of the sandbox. The workload, its pods and volumes get the label `stateful: "true"`; `stateful:` in
+  `rules/36-state.yaml` sets the label, StorageClass, size and a node pool (node selector, tolerations). The front
+  page and results page show an automatic `stateful` tag that the tag filter finds and nobody can add or remove;
+  the migration plan marks such components *runs with a persistent volume, one replica*. `HARDENING.md` and
+  `MIGRATION.md` list the volumes: the operator owns their backup, StorageClass and size. Ratings of such
+  applications go from B to A at their next scan.
+
+- **Builds of scanned code are isolated from the appliance** ([builds of scanned code](docs/appliance-admin.md#builds-of-scanned-code), #255).
+  The scan worker and the LLM queue runner are no longer in the root-equivalent `docker` group: they reach Docker
+  through a guard (`containerizer-docker-guard`, `containerizer/dockerguard.py`) that refuses privileged containers,
+  host namespaces, devices, extra capabilities, bind mounts outside the worker's folders, non-loopback ports and any
+  call on the appliance's own containers. The firewall answers only DNS on Docker's bridges (no SQL Server, registry,
+  Grafana, k3s API or kubelet) and keeps them off the k3s networks; builds never use the host network (Docker refuses
+  the `network.host` build entitlement too), Docker itself fetches no URL of the appliance's own services for a
+  build (`ADD <url>`: `cz-docker-egress`), and Docker runs every container with `no-new-privileges`. No scanned
+  application changes; a build that reached an appliance service on purpose (none is known) now fails to connect.
+  Outside the appliance, `CONTAINERIZER_BUILD_HOST_NETWORK=1` brings back the host network for builds behind a proxy
+  on `127.0.0.1` (it was automatic before).
 
 ## 0.16.4 (2026-11-05)
 

@@ -551,7 +551,7 @@ rules:
       container setup tells you to choose Windows containers, so there is no Linux Sitecore to run
       the module in.
     fix: >-
-      Keep the site on Windows (Sitecore's Windows container images on Windows nodes, or IIS VMs),
+      Keep the site on its Windows (IIS) VMs,
       or re-platform to a headless architecture (XM Cloud / Sitecore Headless with an ASP.NET Core
       or Next.js rendering host, which does run in Linux containers) and rewrite the presentation
       modules for it.

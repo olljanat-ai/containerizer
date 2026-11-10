@@ -90,9 +90,47 @@ def keeps_windows(fix: str) -> bool:
     return bool(KEEP_ON_WINDOWS.search(" ".join(str(fix or "").split())))
 
 
-# findings that a container settles without a code change: never sent to the LLM (core-eol: an out-of-support
-# .NET Core / .NET 5-7 app runs as it is, rolled forward; retargeting it is an upgrade, not a containerization)
-NO_CODE_CHANGE = frozenset({"core-eol"})
+# Guardrails of the LLM's code edits, as data (rules/70-refactor.yaml): the findings the platform settles (never
+# sent to the LLM) and the changed-line budget per finding (minimal_edit, apply_answer).
+SETTINGS_FILE = Path(__file__).resolve().parent.parent / "rules" / "70-refactor.yaml"
+DEFAULT_MAX_LINES = 40
+
+
+def settings() -> dict:
+    """The `refactor:` section of rules/70-refactor.yaml (empty when the file is missing or unreadable)."""
+    try:
+        import yaml
+        data = yaml.safe_load(SETTINGS_FILE.read_text()) or {}
+    except (OSError, ValueError, ImportError):
+        return {}
+    return data.get("refactor") or {} if isinstance(data, dict) else {}
+
+
+def platform_fixes() -> dict[str, str]:
+    """{rule id: how the platform settles it}: findings a generator technique or an orchestration option handles,
+    so no code change is needed (core-eol: an out-of-support .NET Core / .NET 5-7 app runs as it is)."""
+    out = {"core-eol": "the container runs the application on the framework it targets"}
+    for rule, how in (settings().get("platform") or {}).items():
+        out[str(rule)] = " ".join(str(how or "").split())
+    return out
+
+
+def line_budget(rule: str | None = None) -> int:
+    """Changed lines an answer may make per finding of `rule` (minimal_edit, apply_answer)."""
+    st = settings()
+    by_rule = st.get("max_changed_lines_by_rule") or {}
+    try:
+        return int(by_rule.get(rule) or st.get("max_changed_lines_per_finding") or DEFAULT_MAX_LINES)
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_LINES
+
+
+def task_budget(task: dict) -> int:
+    """The changed-line budget of one task (one file): the sum of its findings' budgets."""
+    return sum(line_budget(f.get("rule")) for f in task.get("findings") or []) or line_budget()
+
+
+HANDLED_PREFIX = "handled by configuration: "
 
 # project files whose target framework a refactoring keeps (keep_target_frameworks)
 PROJECT_FILES = ("*.csproj", "*.vbproj", "*.fsproj", "Directory.Build.props")
@@ -152,10 +190,10 @@ def skip_reason(f: dict) -> str | None:
     sev = f.get("severity")
     if f.get("dormant"):
         return "dormant: library code the component never reaches"
-    if f.get("resolved_by"):
-        return f"handled by the generated configuration ({f['resolved_by']}): the code stays as it is"
-    if f.get("id") in NO_CODE_CHANGE:
-        return "nothing to change in code: the container runs the application on the framework it targets"
+    if f.get("resolved_by"):                # a platform technique of this component settles it (techniques.py)
+        return HANDLED_PREFIX + f"the generated configuration ({f['resolved_by']}) settles it: the code stays as it is"
+    if (how := platform_fixes().get(f.get("id"))) is not None:
+        return HANDLED_PREFIX + (how or "the generated container configuration settles it")
     if sev in ("blocker", "rewrite"):
         return f"severity {sev}: a port or a component that stays on Windows, not a targeted change"
     if sev not in ELIGIBLE:
@@ -196,7 +234,8 @@ def plan_tasks(components: list[dict], include_config: bool = False) -> tuple[li
             ident = {"rule": f.get("id"), "title": f.get("title"), "component": c.get("name"), "severity": f.get("severity")}
             if why:
                 if f.get("severity") in ("refactor", "config", "rewrite", "blocker"):
-                    skipped.append({**ident, "reason": why})
+                    skipped.append({**ident, "reason": why,
+                                    **({"handled": "configuration"} if why.startswith(HANDLED_PREFIX) else {})})
                 continue
             ev = [parse_evidence(e) for e in f.get("evidence") or []]
             ev = [e for e in ev if e["file"] and not e["file"].startswith("/") and ".." not in Path(e["file"]).parts]
@@ -539,11 +578,19 @@ def stateful_components(doc: dict) -> list[dict]:
             and c.get("tier") in ("server", "platform", None) and c.get("verdict") in ("info", "config", "refactor")]
 
 
+def unplaced_components(doc: dict) -> list[dict]:
+    """Stateful components whose data is in a folder the generator cannot put a volume on (`state_unplaced`): the
+    only ones whose data keeps the application from A (one with a volume rates A, marked stateful)."""
+    return [c for c in stateful_components(doc) if c.get("state_unplaced")]
+
+
 def rating_a_components(doc: dict) -> list[dict]:
     """What keeps a B-rated application from A, by component: those with refactor or config findings to change
-    in code, and the server components that keep their own data (in assessment.json order, once each)."""
+    in code, and the server components that keep their own data in a folder no volume can be put on (in
+    assessment.json order, once each). Data a volume holds is not moved: that would be a code change A does
+    not need."""
     seen, out = set(), []
-    for c in [*eligible_components(doc), *stateful_components(doc)]:
+    for c in [*eligible_components(doc), *unplaced_components(doc)]:
         if c.get("name") not in seen:
             seen.add(c.get("name"))
             out.append(c)
@@ -582,7 +629,7 @@ def build_payload(doc: dict, source: dict, commit: str | None, component: str | 
             raise RefactorError(f"no component {component!r} in {doc.get('name')}"
                                 + (" that keeps its own data" if goal == "stateless" else ""))
     tasks, skipped = plan_tasks(comps, include_config)
-    if not tasks and goal == "rating-a" and not any(c.get("stateless") is False for c in comps):
+    if not tasks and goal == "rating-a" and not any(c.get("state_unplaced") for c in comps):
         raise RefactorError("nothing to change: no finding of this application can be fixed in code")
     if not tasks and goal not in ("stateless", "rating-a"):
         raise RefactorError("nothing to change: no refactor finding (or configuration finding with a file) "
@@ -598,7 +645,8 @@ def build_payload(doc: dict, source: dict, commit: str | None, component: str | 
             "tasks": tasks, "skipped": skipped, "include_config": bool(include_config), "verify": bool(verify),
             "max_calls": int(max_calls), "goal": goal,
             "state": [{"component": c.get("name"), "state": [s.get("title") for s in c.get("state") or []]}
-                      for c in comps if c.get("stateless") is False],
+                      for c in comps if c.get("stateless") is False
+                      and (goal != "rating-a" or c.get("state_unplaced"))],
             **({"max_passes": MAX_PASSES_A, "max_repairs": MAX_REPAIRS_A, "deploy": True} if goal == "rating-a" else {})}
 
 
@@ -1140,6 +1188,141 @@ def harmful_edit(rel: str, search: str, replace: str) -> list[str]:
     return out
 
 
+# --------------------------------------------------------------------------- minimal diffs
+
+# What an edit may change only when its finding is about it: the lines below are put back as they were (minimal_edit)
+USING_RE = re.compile(r"^\s*(?:using\s+(?:static\s+)?[\w.]+(?:\s*=\s*[\w.<>, ]+)?\s*;|global\s+using\s+[\w.=\s]+;|"
+                      r"Imports\s+[\w.=\s]+|import\s+(?:static\s+)?[\w.*]+\s*;)\s*$")
+COMMENT_RE = re.compile(r"^\s*(?://|/\*|\*|'|REM\b|<!--)")
+VERSION_ATTR_RE = re.compile(r"(<PackageReference\s+Include=\"(?P<pkg>[^\"]+)\"[^>]*?\bVersion=\")(?P<ver>[^\"]+)(\")", re.I)
+INDENT_SENSITIVE = (".yaml", ".yml", ".py", "makefile")
+
+
+def _key(line: str) -> str:
+    return " ".join(line.split())
+
+
+def changed_lines(old: str, new: str) -> int:
+    """Lines an edit changes: per differing block of lines, the larger of the removed and the added count."""
+    import difflib
+    a, b = old.split("\n"), new.split("\n")
+    return sum(max(i2 - i1, j2 - j1) for tag, i1, i2, j1, j2 in
+               difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes() if tag != "equal")
+
+
+def minimal_edit(rel: str, search: str, replace: str) -> tuple[str, list[str]]:
+    """The replacement with what the findings do not need put back as it was in `search`: whitespace-only changes
+    (reformatting, re-indentation; not in YAML or Python, where indentation is syntax), removed or reordered
+    using/import directives (added and removed ones stay), rewritten or removed comments, removed or added blank lines, and changed
+    versions of packages the project already references. Returns (replacement, what was put back)."""
+    import difflib
+    a, b = search.split("\n"), replace.split("\n")
+    keep_ws = rel.lower().endswith(INDENT_SENSITIVE) or rel.lower().rsplit("/", 1)[-1] in INDENT_SENSITIVE
+    old_usings = {_key(l) for l in a if USING_RE.match(l)}
+    new_usings = {_key(l) for l in b if USING_RE.match(l)}
+    old_versions = {m["pkg"].lower(): m["ver"] for l in a for m in VERSION_ATTR_RE.finditer(l)}
+    sm = difflib.SequenceMatcher(None, [_key(l) for l in a] if not keep_ws else a,
+                                 [_key(l) for l in b] if not keep_ws else b, autojunk=False)
+    out: list[str] = []
+    back: set[str] = set()
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        old, new = a[i1:i2], b[j1:j2]
+        if tag == "equal":
+            out += old                              # the same but for whitespace: as it was
+            if old != new:
+                back.add("whitespace")
+            continue
+        head, old, new, tail = _trim(old, new, keep_ws, back)
+        out += head
+        if not old and new and all(not l.strip() for l in new):
+            back.add("blank lines")                 # only blank lines added
+            new = []
+        kept = [l for l in old if USING_RE.match(l) and _key(l) in new_usings]
+        if kept:
+            back.add("using directives")            # moved (reordered): it stays where it was
+        new_kept = []
+        for l in new:
+            if USING_RE.match(l) and _key(l) in old_usings:
+                back.add("using directives")
+                continue                            # the moved copy (or a duplicate) is left out
+            m = VERSION_ATTR_RE.search(l)
+            if m and (was := old_versions.get(m["pkg"].lower())) and was != m["ver"]:
+                l = l[:m.start("ver")] + was + l[m.end("ver"):]
+                back.add("package versions")
+            new_kept.append(l)
+        out += kept + new_kept + tail
+    return "\n".join(out), sorted(back)
+
+
+def _comment_run(lines: list[str]) -> int:
+    """Leading lines that are comments or blank, when at least one is a comment (0: none)."""
+    n = 0
+    while n < len(lines) and (not lines[n].strip() or COMMENT_RE.match(lines[n])):
+        n += 1
+    return n if any(COMMENT_RE.match(l) for l in lines[:n]) else 0
+
+
+def _trim(old: list[str], new: list[str], keep_ws: bool, back: set) -> tuple[list, list, list, list]:
+    """Strips from both ends of a differing block what is churn, keeping the old lines for it: comments rewritten or
+    removed (a leading/trailing comment run on the old side; added comments stay), lines joined or split
+    differently (brace style, wrapping), and the new lines' indentation where it differs from the old block's.
+    Returns (old lines to keep before, old, new, old lines to keep after)."""
+    head: list[str] = []
+    tail: list[str] = []
+    for rev in (False, True):
+        o, n = (old[::-1], new[::-1]) if rev else (old, new)
+        kept: list[str] = []
+        while o:
+            if k := _comment_run(o):                # rewritten (the new side's comments go) or removed: kept
+                kept += o[:k]
+                o, n = o[k:], n[_comment_run(n):]
+                back.add("comments")
+                continue
+            if not keep_ws and n:
+                same, o2, n2 = _rewrapped(o, n, reverse=rev)
+                if same:
+                    kept += same
+                    o, n = o2, n2
+                    back.add("whitespace")
+                    continue
+            break
+        if rev:
+            old, new, tail = o[::-1], n[::-1], kept[::-1]
+        else:
+            old, new, head = o, n, kept
+    if not keep_ws and old and new:             # the new lines indented as the old ones they replace
+        ind_o = old[0][:len(old[0]) - len(old[0].lstrip())]
+        ind_n = new[0][:len(new[0]) - len(new[0].lstrip())]
+        if ind_o != ind_n and all(l.startswith(ind_n) or not l.strip() for l in new):
+            new = [ind_o + l[len(ind_n):] if l.strip() else l for l in new]
+            back.add("whitespace")
+    return head, old, new, tail
+
+
+def _rewrapped(old: list[str], new: list[str], reverse: bool = False) -> tuple[list[str], list[str], list[str]]:
+    """The longest leading run of `old` lines that `new` has the same but for whitespace and line breaks (the
+    lines joined or split differently): (that run of old lines, the old lines after it, the new lines after it).
+    With `reverse` the lists are given backwards (a trailing run), so each line's text is reversed too."""
+    best = (0, 0)
+    acc_a, acc_b, i, j = "", "", 0, 0
+    flat = (lambda l: "".join(l.split())[::-1]) if reverse else (lambda l: "".join(l.split()))
+    while i < len(old) or j < len(new):
+        if acc_a and acc_a == acc_b:
+            best = (i, j)
+        if (len(acc_a) <= len(acc_b) and i < len(old)) or j >= len(new):
+            acc_a += flat(old[i])
+            i += 1
+        else:
+            acc_b += flat(new[j])
+            j += 1
+        if not (acc_a.startswith(acc_b) or acc_b.startswith(acc_a)):
+            break
+    else:
+        if acc_a and acc_a == acc_b:
+            best = (i, j)
+    return old[:best[0]], old[best[0]:], new[best[1]:]
+
+
 def without_credentials(search: str, replace: str) -> str:
     """The replacement with the credentials it adds cut out (`User ID=sa;`, `Password=...;` in a connection
     string): the rest of the edit is right, and the sandbox gives the connection string with its credentials
@@ -1151,11 +1334,16 @@ def without_credentials(search: str, replace: str) -> str:
     return re.sub(r"(" + CREDENTIAL_RE.pattern + r")[ \t]*;?[ \t]*", cut, replace, flags=re.I)
 
 
-def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | None) -> tuple[list[dict], list[str]]:
+def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | None,
+                 budget: int | None = None) -> tuple[list[dict], list[str]]:
     """Apply one answer: every edit's search text must occur exactly once (in the file as changed by the
-    edits before it). All or nothing: on any error nothing is written (an edit or package change that changes
-    nothing is left out, not an error; a credential an edit adds is cut out of it). Returns (changes, errors)."""
+    edits before it), and only the files shown may be edited. All or nothing: on any error nothing is written (an
+    edit or package change that changes nothing is left out, not an error; a credential an edit adds is cut out of
+    it). Each edit is made minimal first (minimal_edit: reformatting, using churn, comment rewrites, package version
+    changes put back); with `budget`, an answer that still changes more lines of the existing files than that is an
+    error. Each change carries the lines it changes ("lines"). Returns (changes, errors)."""
     errors: list[str] = []
+    lines_by_file: dict[str, int] = {}
     files: dict[str, tuple[str, dict]] = {}
     changes: list[dict] = []
     root = app_root.resolve()
@@ -1182,11 +1370,15 @@ def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | 
             continue
         if search == replace:
             continue                # changes nothing: left out, so that the answer's other edits still apply
-        how_edit = {}
+        replace, put_back = minimal_edit(rel, search, replace)
+        if search == replace:
+            continue                # only churn (reformatting, comments, using order): left out
+        how_edit = {"detail": "put back unrelated changes: " + ", ".join(put_back)} if put_back else {}
         harm = harmful_edit(rel, search, replace)
         if harm and (clean := without_credentials(search, replace)) != replace and not harmful_edit(rel, search, clean):
             replace, harm = clean, []
-            how_edit = {"detail": "credential left out (it comes from a secret)"}
+            how_edit = {"detail": "; ".join(filter(None, ["credential left out (it comes from a secret)",
+                                                          how_edit.get("detail")]))}
         n = text.count(search)
         if n == 1:
             fixed = text.replace(search, replace, 1)
@@ -1207,8 +1399,10 @@ def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | 
         if harm:
             errors += [f"edit {i}: {h}" for h in harm]
             continue
+        n_lines = changed_lines(search, replace)
+        lines_by_file[rel] = lines_by_file.get(rel, 0) + n_lines
         files[rel] = (fixed, how)
-        changes.append({"file": rel, "kind": "edit", **how_edit})
+        changes.append({"file": rel, "kind": "edit", "lines": n_lines, **how_edit})
     new_files: dict[str, str] = {}
     for i, nf in enumerate(answer.get("new_files") or [], 1):
         rel = safe_rel(nf.get("file"))
@@ -1225,7 +1419,7 @@ def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | 
             errors += [f"new file {i}: {h}" for h in harm]
         else:
             new_files[rel] = without_credentials("", content)
-            changes.append({"file": rel, "kind": "new"})
+            changes.append({"file": rel, "kind": "new", "lines": content.rstrip("\n").count("\n") + 1})
     pkgs = [p for p in answer.get("package_changes") or [] if isinstance(p, dict)]
     if pkgs:
         rel = safe_rel(project or "")
@@ -1253,6 +1447,10 @@ def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | 
                     text = new
                     changes.append({"file": rel, "kind": "package", "detail": f"{act} {name} {ver}".strip()})
             files[rel] = (text, how)
+    if budget is not None and (total := sum(lines_by_file.values())) > budget:
+        errors.append(f"the edits change {total} lines (" + ", ".join(f"{f}: {n}" for f, n in lines_by_file.items())
+                      + f"), more than the {budget} the findings allow: change only the lines the findings need; "
+                      "do not reformat, rename, reorder, rewrite comments or touch code the findings do not name")
     if errors:
         return [], errors
     for rel, (text, how) in files.items():
@@ -1793,7 +1991,7 @@ def generate(payload: dict, tasks: list[dict], app_root: Path, ask, limit: int, 
         kept = None if payload.get("heavy_avoid") else shared_answer(key)     # starting over: no reuse
         if kept:                                        # the same code was changed by an earlier order: no LLM call
             reuse = _moved(kept["answer"], kept["file"], t["file"])
-            changes, errors = apply_answer(app_root, reuse, shown, t.get("project"))
+            changes, errors = apply_answer(app_root, reuse, shown, t.get("project"), task_budget(t))
             if not errors:
                 answer = reuse
                 log(f"{t['file']}: the same code was changed before ({kept.get('app') or 'another order'}): "
@@ -1816,7 +2014,7 @@ def generate(payload: dict, tasks: list[dict], app_root: Path, ask, limit: int, 
                     r.update(status="llm-error", reason=f"{type(ex).__name__}: {ex}"[:400])
                 answer = None
                 break
-            changes, errors = apply_answer(app_root, answer, shown, t.get("project"))
+            changes, errors = apply_answer(app_root, answer, shown, t.get("project"), task_budget(t))
             if not errors:
                 break
         if answer is None:
@@ -1831,6 +2029,12 @@ def generate(payload: dict, tasks: list[dict], app_root: Path, ask, limit: int, 
         said_fixed = [str(x) for x in answer.get("fixed") or []]
         reasons = {str(x.get("rule")): str(x.get("reason") or "") for x in answer.get("not_fixed") or [] if isinstance(x, dict)}
         code_changes = [c for c in changes if c["kind"] != "package-manual"]
+        n_lines = sum(int(c.get("lines") or 0) for c in code_changes)   # this file's answer, appsettings.json too
+        put_back = sorted({c["detail"] for c in code_changes if str(c.get("detail") or "").startswith("put back")})
+        for r in rows:
+            r.update(lines=n_lines, shared_with=len(rows))
+            if put_back:
+                r["put_back"] = "; ".join(put_back)
         for k, r in enumerate(rows, 1):
             said = _names(r["rule"], k, said_fixed)
             why = next((v for s, v in reasons.items() if _names(r["rule"], k, [s])), None)
@@ -1852,6 +2056,30 @@ def generate(payload: dict, tasks: list[dict], app_root: Path, ask, limit: int, 
                      "the application on the framework it targets (an upgrade is a separate project)")
         log("refactoring: kept the target framework of " + ", ".join(kept))
     return findings, calls, changes_all, notes
+
+
+def lines_text(r: dict) -> str:
+    """'12 lines changed' of a finding row (with how many findings of its file share them)."""
+    if r.get("lines") is None:
+        return ""
+    n, k = int(r.get("lines") or 0), int(r.get("shared_with") or 1)
+    return f"{n} line{'s' if n != 1 else ''} changed" + (f" for {k} findings in the file" if k > 1 else "")
+
+
+def patch_findings(fixed: list[dict], skipped: list[dict]) -> str:
+    """The patch header's list: per fixed finding its file, the lines changed and why a code change was needed
+    (no platform alternative), then the findings the platform settles instead (no code change)."""
+    out = [f"- {r['rule']} in {r['file']} ({r['component']}): {r['title']}"
+           + (f"; {lines_text(r)}" if lines_text(r) else "") for r in fixed]
+    if fixed:
+        out.insert(0, "Changed in code (no platform alternative: the generated Dockerfile and manifests cannot "
+                      "settle these):")
+    handled = [x for x in skipped if x.get("handled") == "configuration"]
+    if handled:
+        out += ["", "Handled by configuration (no code change):"]
+        out += [f"- {x.get('rule')} ({x.get('component')}): {str(x.get('reason') or '').removeprefix(HANDLED_PREFIX)}"
+                for x in handled]
+    return "\n".join(out)
 
 
 def variant_name(app: str | None, job) -> str:
@@ -1938,7 +2166,7 @@ def run_order(payload: dict, work: Path, ask=None, progress=None, verify: bool |
         subject = subject[:117] + "..."
     body = ("Code changes generated by Containerizer (LLM: " + (model or "unknown") + ") for the findings of the\n"
             "assessment of commit " + str(payload.get("commit") or "?")[:12] + ". Review them before you merge.\n\n"
-            + "\n".join(f"- {r['rule']} in {r['file']} ({r['component']}): {r['title']}" for r in fixed)
+            + patch_findings(fixed, payload.get("skipped") or [])
             + ("\n\nNotes:\n" + "\n".join(f"- {x}" for x in notes) if notes else "") + "\n")
     if payload.get("goal") == "repair" and changes_all:
         # one patch with the earlier change and its repair, for the assessed commit
@@ -2018,9 +2246,10 @@ def _broken(verification: list[dict]) -> list[dict]:
 
 
 def still_stateful(doc: dict) -> list[dict]:
-    """[{"component", "state": [titles]}] of the components of an assessment that still keep their own data."""
+    """[{"component", "state": [titles]}] of the components of an assessment that still keep their own data where no
+    volume can hold it (what still keeps it from A)."""
     return [{"component": c.get("name"), "state": [s.get("title") for s in c.get("state") or []]}
-            for c in stateful_components(doc)]
+            for c in unplaced_components(doc)]
 
 
 def remaining_findings(doc: dict) -> list[dict]:
@@ -2049,7 +2278,7 @@ def _combined_patch(repo: Path, base: str, payload: dict, findings: list[dict], 
     body = ("Code changes generated by Containerizer (LLM: " + (model or "unknown") + ") so that the application\n"
             "rates A (container-ready, stateless), for the assessment of commit " + str(payload.get("commit") or "?")[:12]
             + ". Review them before you merge.\n\n"
-            + "\n".join(f"- {r['rule']} in {r['file']} ({r['component']}): {r['title']}" for r in fixed)
+            + patch_findings(fixed, payload.get("skipped") or [])
             + ("\n\nNotes:\n" + "\n".join(f"- {x}" for x in notes) if notes else "") + "\n")
     return make_patch(repo, subject, body)
 
@@ -2149,6 +2378,8 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
             key = (r["component"], r["rule"], r["file"])
             if r["status"] == "skipped" and key in rows:
                 continue                          # not attempted again: the earlier attempt stands
+            if key in rows and rows[key].get("lines"):     # lines changed for it so far, every pass
+                r = {**r, "lines": int(r.get("lines") or 0) + int(rows[key]["lines"])}
             rows[key] = {**r, "pass": p}
         attempted += tasks
         changes_all += changes

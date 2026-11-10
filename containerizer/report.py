@@ -40,17 +40,24 @@ def migration_markdown(a: AppAssessment) -> str:
          "Stateless: " + ("yes" if not a.stateful() else "no - " + "; ".join(
              f"{c.name}: {', '.join(sorted({f.rule.title for f in c.state_findings}))}" for c in a.stateful())), "",
          a.summary(), ""]
+    if a.stateful():
+        L += ["## Application data on persistent volumes", "",
+              "The components that keep their own data run as they are, without code changes: one replica, replaced "
+              "rather than rolled on update, and their data folders on PersistentVolumeClaims (`<component>/k8s.yaml`). "
+              "Those volumes hold the application's data: the operator owns their backup, StorageClass and size "
+              "(1Gi from the cluster's default StorageClass as generated). Scaling out needs the data in a shared "
+              "service first (the findings below say which).", ""]
     tb = a.top_blockers()
     if tb:
         L += ["## Main obstacles", ""]
         for b in tb:
             L.append(f"- **{b['title']}** ({b['severity']}): {', '.join(b['components'])}")
         L.append("")
-    L += ["## Components", "", "| Component | Role | Target | Verdict | Score | Windows container stop-gap |",
-          "| --- | --- | --- | --- | --- | --- |"]
+    L += ["## Components", "", "| Component | Role | Target | Verdict | Score |",
+          "| --- | --- | --- | --- | --- |"]
     for c in a.components:
         L.append(f"| {c.name} | {c.role} | {';'.join(c.project.tfms) or c.project.kind_hint} | {VERDICT_TEXT[c.verdict]} | "
-                 f"{c.score} | {'yes' if c.windows_container_ok and c.project.is_netfx else '-'} |")
+                 f"{c.score} |")
     L.append("")
     for c in a.components:
         L += [f"### {c.name}", "", f"`{c.project.rel}` · {c.role} · {VERDICT_TEXT[c.verdict]}", ""]
@@ -88,6 +95,8 @@ def migration_markdown(a: AppAssessment) -> str:
             res = text.get(r["status"], r["status"])
             if r.get("mode") == "smoke" or r.get("smoke") == "ok":
                 res += " (proven in Development mode without production services)"
+            if r.get("needs"):
+                res += f"; needs: {', '.join(r['needs'])}"
             if r.get("finding"):
                 res += f": {r['finding'].get('title', '')}"
             L.append(f"| {r['component']} | {res} | {r.get('detail', '')} |")

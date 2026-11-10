@@ -40,7 +40,7 @@ def test_not_feasible_and_the_unchanged_ends():
     assert rate(extra_tiers=("client",)) == "E"                   # a desktop client does not count
     assert rate("blocker", "blocker", "config") == "C"            # two thirds blocked: still partial
     assert rate("config", "info") == "A"
-    assert rate("config", stateless=False) == "B"
+    assert rate("config", stateless=False) == "A"                 # its data on a persistent volume: still A
     assert rate("refactor", "config") == "B"
     assert rate("config", extra_tiers=("client", "database")) == "A"
 

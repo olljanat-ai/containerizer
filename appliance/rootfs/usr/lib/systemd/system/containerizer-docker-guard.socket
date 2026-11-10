@@ -1,0 +1,15 @@
+[Unit]
+Description=containerizer appliance: Docker for the scan worker and the LLM queue runner, through the guard
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+
+[Socket]
+# DOCKER_HOST of containerizer-worker.service and containerizer-llm-queue.service (both run as containerizer)
+ListenStream=/run/containerizer/docker-guard.sock
+SocketUser=root
+SocketGroup=containerizer
+SocketMode=0660
+Accept=no
+
+[Install]
+WantedBy=sockets.target

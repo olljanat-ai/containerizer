@@ -87,11 +87,15 @@ def _ca_bundle() -> str | None:
 
 def _docker_tool_args() -> list[str]:
     """Proxy, CA bundle and Docker socket for a scanner that runs as a container."""
-    args = ["-v", "/var/run/docker.sock:/var/run/docker.sock"]
+    # the Docker socket the worker itself uses: on the appliance the guard's (containerizer/dockerguard.py)
+    host = os.environ.get("DOCKER_HOST", "")
+    sock = host[len("unix://"):] if host.startswith("unix://") else "/var/run/docker.sock"
+    args = ["-v", f"{sock}:/var/run/docker.sock"]
     proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
     if proxy:
         args += ["-e", f"HTTPS_PROXY={proxy}", "-e", f"NO_PROXY={os.environ.get('NO_PROXY', '')}"]
-        if "127.0.0.1" in proxy or "localhost" in proxy:
+        from .verify import host_network_allowed
+        if ("127.0.0.1" in proxy or "localhost" in proxy) and host_network_allowed():
             args += ["--network", "host"]
     ca = _ca_bundle()
     if ca:
@@ -348,13 +352,13 @@ def candidates(ref: str, tags: list[str]) -> list[str]:
     return [f"{name}:{t}" for t in out]
 
 
-def image_refs(include_windows: bool = False) -> list[tuple[str, str]]:
+def image_refs() -> list[tuple[str, str]]:
     """(slot, reference) of every base image in rules/images.yaml (without the lock)."""
     from .rules import RULES_DIR
     data = yaml.safe_load((RULES_DIR / "images.yaml").read_text())
     out = []
     for group, d in data.items():
-        if not isinstance(d, dict) or (group == "windows" and not include_windows):
+        if not isinstance(d, dict):
             continue
         for k, v in d.items():
             if isinstance(v, str) and ":" in v:
@@ -705,12 +709,15 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
     from .harden import external_secret_targets
     provided = external_secret_targets([d for f in [*out.glob("*/k8s.yaml"), *out.glob("pull-secret.yaml")]
                                         for d in load_yaml_docs(f.read_text())])
+    from .gitops import digest_setter_images
+    setters = digest_setter_images((out / "kustomization.yaml").read_text()) if (out / "kustomization.yaml").exists() \
+        else set()
     for cdir in sorted(d for d in out.iterdir() if (d / "Dockerfile").exists()):
         df = (cdir / "Dockerfile").read_text()
         lint = lint_dockerfile(df, f"{cdir.name}/Dockerfile")
         if (cdir / "k8s.yaml").exists():
             lint += lint_manifests(load_yaml_docs((cdir / "k8s.yaml").read_text()), f"{cdir.name}/k8s.yaml: ",
-                                   provided)
+                                   provided, setters)
         lint_all += lint
         comp = {"component": cdir.name, "base": final_base(df), "lint": [v.to_dict() for v in lint], "scans": []}
         bres = None

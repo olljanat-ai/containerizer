@@ -432,7 +432,7 @@ def egress_from_settings(sv: Service) -> list[dict]:
 
 def manifests(ns: str, sv: Service, image: str, uid: int, domain: str = "", idp_sb=None) -> tuple[list[dict], dict | None]:
     """The hardened Kubernetes manifests of one migrated service, and its sandbox IdP registration."""
-    from .harden import externalize_secrets, harden_pod, network_policy, security, service_account
+    from .harden import cronjob_limits, externalize_secrets, harden_pod, network_policy, security, service_account
     name = k8s_name(sv.name)
     labels = {"app.kubernetes.io/name": name, "app.kubernetes.io/part-of": ns,
               "containerizer.io/migrated-from": sv.platform}
@@ -495,13 +495,19 @@ def manifests(ns: str, sv: Service, image: str, uid: int, domain: str = "", idp_
         docs.insert(0, {"apiVersion": "batch/v1", "kind": "CronJob", "metadata": {"name": name, "labels": labels},
                         "spec": {"schedule": sv.schedule, "concurrencyPolicy": "Forbid",
                                  "jobTemplate": {"spec": {"template": {"metadata": {"labels": labels}, "spec": pod}}}}})
+        cronjob_limits(docs[0]["spec"])     # retries, run deadline, history (rules/60-security.yaml)
     else:
         single = persistent or sv.replicas <= 1
         docs.insert(0, {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": name, "labels": labels},
                         "spec": {"replicas": 1 if persistent else max(1, sv.replicas),
-                                 "strategy": {"type": "Recreate"} if persistent else {"type": "RollingUpdate"},
+                                 # a worker (no port) that ran once is replaced, not rolled: two copies would run
+                                 # the same jobs; one that ran several copies already was safe to run twice
+                                 "strategy": {"type": "Recreate"} if persistent or (not port and sv.replicas <= 1)
+                                 else {"type": "RollingUpdate"},
                                  "selector": {"matchLabels": labels},
                                  "template": {"metadata": {"labels": labels}, "spec": pod}}})
+        if not port and not persistent and sv.replicas > 1:
+            docs[0]["metadata"]["annotations"] = {"containerizer.io/scale-out": f"ran {sv.replicas} replicas"}
         if persistent and sv.replicas > 1:
             sv.notes.append(f"{sv.name}: ran {sv.replicas} replicas; one replica here because it keeps data on a "
                             "ReadWriteOnce volume")

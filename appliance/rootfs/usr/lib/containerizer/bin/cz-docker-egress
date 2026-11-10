@@ -1,0 +1,16 @@
+#!/bin/sh
+# Keep the Docker daemon's own connections (a build's ADD <url>, a remote build context) away from the appliance's
+# services: run by docker.service (ExecStartPost), after systemd created its cgroup, which nftables matches by path.
+set -eu
+cg="system.slice/docker.service"
+/usr/sbin/nft -f - <<NFT
+table inet cz_dockerd
+delete table inet cz_dockerd
+table inet cz_dockerd {
+  chain output {
+    type filter hook output priority filter - 1; policy accept;
+    socket cgroupv2 level 2 "$cg" fib daddr type local tcp dport != { 53, 5000 } drop
+    socket cgroupv2 level 2 "$cg" ip daddr { 10.42.0.0/16, 10.43.0.0/16 } drop
+  }
+}
+NFT

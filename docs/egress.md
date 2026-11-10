@@ -43,7 +43,7 @@ not. It shows what the application needs from the network, from every source, ea
 | Lab service | The [lab services](lab-services.md) the components need. |
 | Observed in the sandbox | Connections the sandbox blocked (the egress observer), with the dropped packets, when, and from which pods. |
 | Approved | A destination a person approved for the real environment (documented; the sandbox stays as it is). |
-| Ingress, service port | Who reaches the components: the sandbox HTTPS host, the service port. |
+| Ingress, service port | Who reaches the components: the sandbox HTTPS host, the service port from the ingress controller's namespace ([Inbound](#inbound)). |
 
 The diagram has the inbound side on the left, the components in the middle and the destinations on the right, one
 line per connection, styled by its status:
@@ -85,6 +85,33 @@ In the diagram, an allowed or approved destination the sandbox cannot reach is d
 
 An application that is not in the sandbox (yet) shows what the assessment inferred, and says that nothing was
 observed. Assessments made before this version have no inferred network: scan the application again.
+
+### Inbound
+
+A component's service port is open to **the ingress controller's namespace** only (`namespaceSelector` on
+`kubernetes.io/metadata.name`), not to every namespace of the cluster: a pod of another tenant cannot call the
+application directly, around the ingress (TLS, sign-in proxies, rate limits). Its sibling components reach it
+through their own rule, and so do the callers of [confirmed links](#links-between-applications) (the caller's
+namespace and pods). `CONNECTIVITY.md` names the namespace in its **Inbound** table (`namespace ingress-nginx
+(Service)`), and `HARDENING.md` in its network policies row.
+
+The namespace is a site setting: `network.ingress_namespace` in
+[`rules/60-security.yaml`](../rules/60-security.yaml) (default `ingress-nginx`), overridden by the environment
+variable `CONTAINERIZER_INGRESS_NAMESPACE` or `--ingress-from <namespace>` (`containerizer generate`, `analyze`,
+`gate`, `org`). The appliance sets `kube-system`, where k3s runs Traefik for the sandbox (its scan worker, LLM
+queue runner and web UI, `containerizer-*.service`); so does the [lab sandbox](local-dev-server.md#lab-sandbox-k3s-flux-git-server)
+(`ci/lab-sandbox/env.sh`).
+
+`--ingress-from any` keeps the old rule (`namespaceSelector: {}`, every namespace) and says so in the
+NetworkPolicy (`containerizer.io/ingress-from: any`). Without it, the gate's lint warns about an ingress rule with
+an empty `namespaceSelector` (check `ingress-namespace`). Where the controller runs in the **host network**
+(`hostNetwork: true`, some bare-metal installations), its connections come from the node's address, which no
+namespace selector matches: generate with `--ingress-from any` and replace that rule's `from` with an `ipBlock`
+of the node CIDR, for example `from: [{ipBlock: {cidr: 10.0.0.0/24}}]`.
+
+With the service ports closed to other namespaces, the egress observer also records the drops at a component's
+ingress whose source is another application's pod: as that caller's blocked call to
+`<component>.<namespace>.svc.cluster.local`, so the link is proposed as before.
 
 ## The egress observer
 
@@ -262,7 +289,7 @@ components:
 - {name: egress-demo, component: Egress.Demo, role: web, port: 8080, service_port: 80}
 inbound:
 - {component: egress-demo, from: 'https://egress-demo.sandbox.lab.test/', port: 80, protocol: TCP, source: ingress, target_port: 8080}
-- {component: egress-demo, from: any namespace (Service), port: 80, protocol: TCP, source: service, target_port: 8080}
+- {component: egress-demo, from: namespace kube-system (Service), port: 80, protocol: TCP, source: service, target_port: 8080}
 internal: []                          # component to component, lab services
 outbound:
 - component: egress-demo

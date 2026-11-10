@@ -180,7 +180,7 @@ def test_edits_need_exactly_one_match(tmp_path):
     (root / "A.cs").write_bytes(b"\xef\xbb\xbfint a = 1;\r\nint b = 1;\r\nint b = 1;\r\n")
     shown = ["A.cs"]
     ch, err = rf.apply_answer(root, {"edits": [{"file": "A.cs", "search": "int a = 1;", "replace": "int a = 2;"}]}, shown, None)
-    assert err == [] and ch == [{"file": "A.cs", "kind": "edit"}]
+    assert err == [] and ch == [{"file": "A.cs", "kind": "edit", "lines": 1}]
     assert (root / "A.cs").read_bytes() == b"\xef\xbb\xbfint a = 2;\r\nint b = 1;\r\nint b = 1;\r\n"   # BOM and CRLF kept
     before = (root / "A.cs").read_bytes()
     ch, err = rf.apply_answer(root, {"edits": [{"file": "A.cs", "search": "int a = 2;", "replace": "int a = 3;"},
@@ -1363,5 +1363,127 @@ def test_an_out_of_support_dotnet_is_not_sent_to_the_llm():
         {"id": "core-eol", "severity": "config", "title": "Out-of-support .NET runtime", "fix": "Nothing to change",
          "evidence": ["src/Api/Api.csproj:3: <TargetFramework>net6.0</TargetFramework>"]}]}]
     tasks, skipped = rf.plan_tasks(comps, include_config=True)
-    assert tasks == [] and skipped[0]["rule"] == "core-eol" and "nothing to change in code" in skipped[0]["reason"]
+    assert tasks == [] and skipped[0]["rule"] == "core-eol" and "handled by configuration" in skipped[0]["reason"]
     assert "Never change a project's target framework" in rf.INSTRUCTIONS
+
+
+# --------------------------------------------------------------------------- platform first, minimal diffs (#252)
+
+def test_a_finding_the_platform_settles_is_never_sent_to_the_llm(tmp_path, monkeypatch):
+    """A finding listed under `platform:` in rules/70-refactor.yaml is handled by configuration: no task, no LLM call,
+    and the order page lists it as such."""
+    assert "dataprotection-default" in rf.platform_fixes()
+    comps = [comp("Api", [
+        finding("dataprotection-default", "config", ["src/Api/Program.cs:3: builder.Services.AddAuthentication()"]),
+        finding("cert-code", "refactor", ["src/Api/Bank.cs:9: new X509Store()"])])]
+    tasks, skipped = rf.plan_tasks(comps, include_config=True)
+    assert [t["file"] for t in tasks] == ["src/Api/Bank.cs"]
+    assert [f["rule"] for t in tasks for f in t["findings"]] == ["cert-code"]
+    assert skipped[0]["rule"] == "dataprotection-default" and skipped[0]["handled"] == "configuration"
+    assert skipped[0]["reason"].startswith(rf.HANDLED_PREFIX)
+    # only platform findings: nothing to send, so no order (and no LLM call)
+    only = [comp("Api", [finding("dataprotection-default", "config", ["src/Api/Program.cs:3: AddAuthentication()"])],
+                 verdict="config")]
+    assert rf.eligible_components({"components": only}) == []
+    # a rule added to the data file is honoured too (data, not code)
+    cfg = tmp_path / "70-refactor.yaml"
+    cfg.write_text("refactor:\n  platform:\n    dataprotection-default: a mounted key\n"
+                   "    cert-code: a certificate file mounted from a Secret\n")
+    monkeypatch.setattr(rf, "SETTINGS_FILE", cfg)
+    tasks, skipped = rf.plan_tasks(comps, include_config=True)
+    assert tasks == [] and [s["rule"] for s in skipped] == ["dataprotection-default", "cert-code"]
+    assert skipped[1]["reason"] == rf.HANDLED_PREFIX + "a certificate file mounted from a Secret"
+    assert "Handled by configuration (no code change):" in rf.patch_findings([], skipped)
+
+
+def test_minimal_edit_puts_back_what_the_findings_do_not_need():
+    search = ("using System;\nusing System.IO;\n\n// Loads the file\npublic class A\n{\n"
+              "    public string P() { return @\"C:\\data\\x.txt\"; }\n}")
+    replace = ("using System.IO;\nusing System;\nusing Microsoft.Extensions.Configuration;\n\n"
+               "// Reads the configured file (rewritten comment)\npublic class A {\n"
+               "  public string P() { return Path.Combine(AppContext.BaseDirectory, \"x.txt\"); }\n}\n\n")
+    out, back = rf.minimal_edit("A.cs", search, replace)
+    assert out.splitlines()[:2] == ["using System;", "using System.IO;"]        # order kept
+    assert "using Microsoft.Extensions.Configuration;" in out                   # a new using stays
+    assert "// Loads the file" in out and "rewritten comment" not in out
+    assert "public class A\n{" in out                                           # brace style kept
+    assert "Path.Combine(AppContext.BaseDirectory" in out                       # the fix stays
+    assert {"using directives", "comments", "whitespace"} <= set(back)
+    assert rf.changed_lines(search, out) == 2                                   # the new using and the fixed line
+    # package versions the project already has stay; a new package stays
+    s = '    <PackageReference Include="Serilog" Version="2.10.0" />'
+    r = '    <PackageReference Include="Serilog" Version="3.1.1" />\n    <PackageReference Include="New" Version="1.0.0" />'
+    out, back = rf.minimal_edit("A.csproj", s, r)
+    assert 'Include="Serilog" Version="2.10.0"' in out and 'Include="New"' in out and back == ["package versions"]
+    # indentation is syntax in YAML: not put back
+    out, _ = rf.minimal_edit("c.yaml", "a:\nb: 1", "a:\n  b: 1")
+    assert out == "a:\n  b: 1"
+
+
+def test_an_answer_that_reformats_the_whole_file_is_repaired(shop, tmp_path):
+    """The fake LLM returns the whole file reformatted (tabs, another brace style, comments rewritten, usings
+    reordered) with the fix inside: the patch only has the lines the fix needs, and the order shows them."""
+    old = (shop / "src/Shop.Api/Bank.cs").read_text()
+    new = old.replace(SEARCH, REPLACE)
+    reformatted = "\n".join(("\t" + l.strip()) if l.startswith("    ") else l for l in new.split("\n"))
+    reformatted = reformatted.replace("public static class Bank\n{", "public static class Bank {")
+
+    def ask(prompt, schema):
+        return {**good_answer(), "edits": [{"file": "src/Shop.Api/Bank.cs", "search": old, "replace": reformatted}]}
+    res = rf.run_order(_payload(shop, verify=False), tmp_path / "work", ask=ask)
+    assert res["status"] == "applies-only", res
+    patch = res["patch"]
+    body = patch[patch.index("diff --git"):]
+    changed = [l for l in body.splitlines() if l[:1] in "+-" and not l.startswith(("+++", "---"))]
+    assert len(changed) == 5, changed           # 3 lines out, 2 in: nothing reformatted
+    assert "\t" not in body and "public static class Bank {" not in body
+    rows = res["findings"]
+    assert rows[0]["lines"] == 3 and rows[0]["shared_with"] == 2 and "whitespace" in rows[0]["put_back"]
+    assert "3 lines changed for 2 findings in the file" in patch
+    assert "no platform alternative" in patch
+
+
+def test_an_answer_over_the_line_budget_is_asked_again_then_left_out(shop, tmp_path, monkeypatch):
+    cfg = tmp_path / "70-refactor.yaml"
+    cfg.write_text("refactor:\n  max_changed_lines_per_finding: 1\n")
+    monkeypatch.setattr(rf, "SETTINGS_FILE", cfg)
+    asked = []
+    big = REPLACE + "\n" + "\n".join(f"        // {i}" for i in range(5))
+    res = rf.run_order(_payload(shop, verify=False), tmp_path / "work",
+                       ask=lambda p, s: asked.append(p) or {**good_answer(), "edits": [
+                           {"file": "src/Shop.Api/Bank.cs", "search": SEARCH, "replace": big}]})
+    assert len(asked) == 2 and "more than the 2 the findings allow" in asked[1]
+    assert res["patch"] is None and all(r["status"] != "fixed" for r in res["findings"])
+    assert "more than the 2" in res["findings"][0]["reason"]
+    # within the budget (2 findings x 3 lines): applied
+    cfg.write_text("refactor:\n  max_changed_lines_per_finding: 3\n")
+    res = rf.run_order(_payload(shop, verify=False), tmp_path / "w2", ask=lambda p, s: good_answer())
+    assert res["status"] == "applies-only"
+
+
+def test_only_the_files_shown_may_change(shop, tmp_path):
+    res = rf.run_order(_payload(shop, verify=False), tmp_path / "work", ask=lambda p, s: {**good_answer(), "edits": [
+        *good_answer()["edits"], {"file": "src/Shop.Api/Program.cs", "search": "app.Run();", "replace": "app.Run(); "}]})
+    assert res["patch"] is None and "may not be edited" in res["findings"][0]["reason"]
+
+
+def test_a_platform_finding_never_reaches_the_fake_llm(shop, tmp_path, monkeypatch):
+    """With the shop's certificate findings handled by the platform, an order has nothing to send: the fake LLM is
+    never called."""
+    cfg = tmp_path / "70-refactor.yaml"
+    cfg.write_text("refactor:\n  platform:\n    cert-store: mounted store\n    cert-store-localmachine-code: mounted store\n")
+    monkeypatch.setattr(rf, "SETTINGS_FILE", cfg)
+    with pytest.raises(rf.RefactorError, match="nothing to change"):
+        _payload(shop, verify=False)
+
+
+def test_make_it_a_moves_only_data_no_volume_can_hold():
+    """Data on a persistent volume does not keep an application from A (#249): Make it A does not move it."""
+    from containerizer import refactor as rf
+    placed = {"name": "Web", "tier": "server", "verdict": "config", "stateless": False, "state_unplaced": False,
+              "state": [{"title": "Embedded file database"}], "findings": []}
+    lost = {**placed, "name": "Idx", "state_unplaced": True, "state": [{"title": "Local Lucene index"}]}
+    assert rf.rating_a_components({"components": [placed]}) == []
+    assert [c["name"] for c in rf.rating_a_components({"components": [placed, lost]})] == ["Idx"]
+    assert rf.still_stateful({"components": [placed, lost]}) == [{"component": "Idx", "state": ["Local Lucene index"]}]
+    assert [c["name"] for c in rf.stateful_components({"components": [placed, lost]})] == ["Web", "Idx"]  # goal stateless

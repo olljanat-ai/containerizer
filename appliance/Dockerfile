@@ -97,7 +97,8 @@ RUN chmod 0755 /usr/lib/containerizer/bin/* /usr/libexec/elemental-checker/conta
  && for f in $(grep -l '/etc/resolv\.conf' /usr/lib/tmpfiles.d/*.conf | grep -v containerizer); do \
       ln -sf /dev/null "/etc/tmpfiles.d/$(basename "$f")"; done \
  && systemd-sysusers \
- && test "$(id -u containerizer)" = 900 && test "$(id -u cz-web)" = 901 \
+ && test "$(id -u containerizer)" = 900 && test "$(id -u cz-web)" = 901 && test "$(id -u cz-dockerguard)" = 902 \
+ && ! id -nG containerizer | grep -qw docker \
  && systemctl enable systemd-networkd.service systemd-resolved.service ssh.service docker.service caddy.service \
       containerizer-firstboot.service containerizer-app-patch.service containerizer-root-password.service containerizer-root-password.path \
       containerizer-firewall.service containerizer-dns.service \
@@ -105,6 +106,7 @@ RUN chmod 0755 /usr/lib/containerizer/bin/* /usr/libexec/elemental-checker/conta
       containerizer-sysagent.path containerizer-sysagent-status.service containerizer-sysagent-status.timer containerizer-restart.timer \
       containerizer-mssql.service containerizer-db-init.service containerizer-web.service \
       containerizer-worker.service containerizer-llm-queue.service containerizer-registry.service \
+      containerizer-docker-guard.socket \
       containerizer-egress-observer.service \
       containerizer-prometheus.service containerizer-prometheus-k8s.service containerizer-grafana.service \
       containerizer-kubemg-db.service containerizer-kubemg.service containerizer-kubemg-sandbox.service \

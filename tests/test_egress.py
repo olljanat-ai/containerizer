@@ -148,6 +148,22 @@ def test_observer_keeps_egress_of_app_pods_and_names_it():
     assert json.loads(p[10]) == [{"pod": "web-1", "ip": "10.42.0.25"}] and p[12] == "obs"
 
 
+def test_observer_names_a_call_from_another_application_dropped_at_the_service_port():
+    """Service ports are open to the ingress controller's namespace only: another application's call is dropped
+    at the callee's ingress, and recorded as the caller's blocked call to the callee (a link to propose)."""
+    kube = FakeKube({"shop": {"10.42.0.25": ("web-1", "web")}, "orders": {"10.42.0.40": ("api-1", "api")}})
+    obs = eg.Observer(kube, None, FakeResolver({}), name="t", log=lambda m: None)
+    obs._namespaces = (eg._time.monotonic(), ["shop", "orders"])
+    D, out = nflog.Drop, nflog.socket.AF_INET
+    f = obs.drop(D("shop", "web", out, "10.42.0.40", "10.42.0.25", "TCP", 4000, 8080, True))
+    assert (f.namespace, f.component, f.destination, f.named, f.port) == \
+        ("orders", "api", "web.shop.svc.cluster.local", True, 8080)
+    assert f.pods == {"api-1": "10.42.0.40"}
+    # from outside the application namespaces: incoming traffic, nothing to record
+    assert obs.drop(D("shop", "web", out, "10.42.0.99", "10.42.0.25", "TCP", 4000, 8080, True)) is None
+    assert obs.agg.stats["ingress"] == 1 and obs.agg.stats["egress"] == 1
+
+
 def test_a_failed_flush_keeps_the_counts():
     obs = eg.Observer(FakeKube({}), lambda: (_ for _ in ()).throw(RuntimeError("db away")), FakeResolver({}),
                       log=lambda m: None)
@@ -445,7 +461,7 @@ def test_model_marks_every_source_and_the_findings():
     out = {(e["component"], e["destination"], e["port"]): e for e in doc["outbound"]}
     assert out[("web", "api.github.com", 443)]["status"] == "not-allowed"
     assert out[("web", "any address", 1433)]["status"] == "allowed" and out[("web", "any address", 1433)]["type"] == "any"
-    assert {i["from"] for i in doc["inbound"]} == {"https://web-shop.sandbox.example/", "any namespace (Service)"}
+    assert {i["from"] for i in doc["inbound"]} == {"https://web-shop.sandbox.example/", "namespace ingress-nginx (Service)"}
     assert {(i["from"], i["to"], i["port"]) for i in doc["internal"]} == {("web", "worker", 80), ("worker", "lab SQL Server", 1433)}
     kinds = sorted(f["kind"] for f in doc["findings"])
     assert kinds == ["missing", "unexplained"]
