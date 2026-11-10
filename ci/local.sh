@@ -61,15 +61,15 @@ venv() {
     fi
   fi
   local stamp="$VENV/.ci-local-deps" sum
-  sum=$(cat "$ROOT"/requirements.txt "$ROOT"/requirements-sql.txt | sha256sum | cut -c1-16)
+  sum=$( (cat "$ROOT"/requirements.txt "$ROOT"/requirements-sql.txt; echo pytest-xdist) | sha256sum | cut -c1-16)
   if [ "$(cat "$stamp" 2>/dev/null)" != "$sum" ]; then
     say "installing requirements into $VENV"
     if command -v uv >/dev/null; then
       uv pip install -q --python "$VENV/bin/python" -r "$ROOT/requirements.txt" -r "$ROOT/requirements-sql.txt" \
-        pytest "mkdocs==1.6.1" "mkdocs-material==9.8.0" || return 1
+        pytest pytest-xdist "mkdocs==1.6.1" "mkdocs-material==9.8.0" || return 1
     else
       "$VENV/bin/python" -m pip install -q --disable-pip-version-check -r "$ROOT/requirements.txt" \
-        -r "$ROOT/requirements-sql.txt" pytest "mkdocs==1.6.1" "mkdocs-material==9.8.0" || return 1
+        -r "$ROOT/requirements-sql.txt" pytest pytest-xdist "mkdocs==1.6.1" "mkdocs-material==9.8.0" || return 1
     fi
     echo "$sum" > "$stamp"
   fi
@@ -87,8 +87,8 @@ challenge() {  # fresh shallow clone of the challenge repository, like actions/c
 }
 
 # ------------------------------------------------------------------ jobs
-job_test() {
-  cd "$ROOT" && python -m pytest -q
+job_test() {   # in parallel, one worker per CPU (CI_LOCAL_WORKERS=1: one process)
+  cd "$ROOT" && python -m pytest -q -n "${CI_LOCAL_WORKERS:-auto}"
 }
 
 job_docs() {
@@ -286,15 +286,34 @@ done
 venv || { die "could not set up the Python environment"; exit 1; }
 declare -A RESULT TIME
 failed=0
+finish() {  # job, rc, start
+  TIME[$1]=$((SECONDS - $3))
+  if [ "$2" = 0 ]; then RESULT[$1]="${c_green}pass${c_off}"; else RESULT[$1]="${c_red}FAIL${c_off}"; failed=1; fi
+}
+# sql (SQL Server in its own container, about 10 minutes) runs next to the others: they use none of its
+# container, port or image. CI_LOCAL_PARALLEL=0 runs every job in turn.
+bg=
+if [ "${CI_LOCAL_PARALLEL:-1}" = 1 ] && [ ${#jobs[@]} -gt 1 ] && [[ " ${jobs[*]} " == *" sql "* ]]; then
+  bg=sql
+  say "=== sql: ${MIRRORS[sql]}  (in the background, log: ${WORK#"$ROOT"/}/logs/sql.log)"
+  bg_start=$SECONDS
+  ( job_sql ) > "$WORK/logs/sql.log" 2>&1 &
+  bg_pid=$!
+fi
 for j in "${jobs[@]}"; do
+  [ "$j" = "$bg" ] && continue
   log="$WORK/logs/$j.log"
   say "=== $j: ${MIRRORS[$j]}  (log: ${log#"$ROOT"/})"
   start=$SECONDS
   ( "job_$j" ) 2>&1 | tee "$log"
-  rc=${PIPESTATUS[0]}
-  TIME[$j]=$((SECONDS - start))
-  if [ "$rc" = 0 ]; then RESULT[$j]="${c_green}pass${c_off}"; else RESULT[$j]="${c_red}FAIL${c_off}"; failed=1; fi
+  finish "$j" "${PIPESTATUS[0]}" "$start"
 done
+if [ -n "$bg" ]; then
+  say "waiting for sql"
+  wait "$bg_pid"
+  finish sql $? "$bg_start"
+  tail -5 "$WORK/logs/sql.log"
+fi
 echo
 say "summary"
 for j in "${jobs[@]}"; do printf '  %-10s %s  %ss\n' "$j" "${RESULT[$j]}" "${TIME[$j]}"; done

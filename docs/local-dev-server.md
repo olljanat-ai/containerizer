@@ -16,7 +16,7 @@ Derived from the workflows themselves, so the local run matches CI:
 
 | Workflow job | Needs on the server | `ci/local.sh` job |
 | --- | --- | --- |
-| `ci.yml` test | Python 3.12, `requirements.txt`, pytest | `test` |
+| `ci.yml` test | Python 3.12, `requirements.txt`, pytest, pytest-xdist | `test` |
 | `docs.yml` build | `mkdocs==1.6.1`, `mkdocs-material==9.8.0` | `docs` |
 | `ci.yml` containerizer, containerizer-head | Python, git (the composite action is `python -m containerizer check`) | `gate` |
 | `ci.yml` action-selftest | git, network access to `github.com/onek8s/containerization-challenge` | `selftest` |
@@ -255,17 +255,22 @@ ci/local.sh --list
 ci/local.sh
 ```
 
-The first run creates `.venv-ci/` with Python 3.12, the requirements, pytest and the pinned MkDocs.
-Use that environment for ad hoc runs too: `.venv-ci/bin/python -m pytest -q tests/test_engine.py`.
+The first run creates `.venv-ci/` with Python 3.12, the requirements, pytest, pytest-xdist and the pinned
+MkDocs. Use that environment for ad hoc runs too: `.venv-ci/bin/python -m pytest -q tests/test_engine.py`,
+or the whole unit suite in parallel: `.venv-ci/bin/python -m pytest -q -n auto` (a few minutes instead of
+more than twenty in one process).
 
 | Command | Runs |
 | --- | --- |
 | `ci/local.sh` | `test docs gate selftest security sql sandbox` |
 | `ci/local.sh all` | the above, then `assess` (up to about an hour) and `appliance` (one to two hours) |
 | `ci/local.sh sql sandbox` | only the jobs named, in that order |
+| `CI_LOCAL_WORKERS=1 ci/local.sh test` | the unit tests in one process (default: one worker per CPU) |
+| `CI_LOCAL_PARALLEL=0 ci/local.sh` | every job in turn (default: `sql` runs in the background next to the others) |
 | `KEEP=1 ci/local.sh sql` | leaves SQL Server (`cz-ci-mssql`) and the web UI (`cz-ci-web`) running for debugging |
 
-Each job keeps going after another fails; the summary at the end lists pass / FAIL and the time per
+The unit tests run in parallel (pytest-xdist), and `sql`, the longest job, runs in the background
+while the others run; its output is only in its log. Each job keeps going after another fails; the summary at the end lists pass / FAIL and the time per
 job, and the exit code is non-zero if any failed. Logs are in `.work/ci-local/logs/<job>.log`, and
 reports, SARIF files, the kind kubeconfig and the appliance images in `.work/ci-local/` (git ignores
 `.work/`).

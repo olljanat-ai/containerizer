@@ -3,7 +3,15 @@ name: security
 # Security gate for what the tool generates, and a weekly refresh of the patched base image tags.
 # Documentation-only changes skip this workflow: docs.yml builds and publishes them.
 on:
-  # manual only for now (Actions -> Run workflow); the pull request, push and schedule triggers are off
+  # the gate on pull requests that change what the generated Dockerfiles and manifests are made of
+  pull_request:
+    paths:
+      - containerizer/generate.py
+      - containerizer/gen_jvm_node.py
+      - containerizer/gen_python_go.py
+      - containerizer/harden.py
+      - rules/60-security.yaml
+      - rules/images*.yaml
   workflow_dispatch:
 
 permissions:
