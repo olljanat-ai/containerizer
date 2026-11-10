@@ -433,7 +433,10 @@ def assess(path: str | Path, rules: list[Rule] | None = None, repo: Repo | None 
                 if f.rule.id in own or f.rule.id == "netfx-library" and c.project.is_netfx:
                     continue
                 code_ev = [e for e in f.evidence if e.line and Path(e.file).suffix.lower() in CODE_EXT]
-                dormant = bool(code_ev) and len(code_ev) == len(f.evidence) and not any(e.file in reached for e in code_ev)
+                # all evidence is code; with `evidence_from: code` the code alone decides (the package line
+                # of the library is no use of it)
+                dormant = bool(code_ev) and (len(code_ev) == len(f.evidence) or f.rule.evidence_from == "code") \
+                    and not any(e.file in reached for e in code_ev)
                 if not dormant:
                     own.add(f.rule.id)
                 c.findings.append(Finding(f.rule, f.evidence, via=lc.name, dormant=dormant))

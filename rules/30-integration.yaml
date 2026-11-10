@@ -742,6 +742,11 @@ rules:
     when:
       all:
         - package: &sqlite_pkgs 'Microsoft\.EntityFrameworkCore\.Sqlite(\.Core)?|Microsoft\.Data\.Sqlite(\.Core)?|System\.Data\.SQLite.*|LiteDB(\.Async)?|dbup-sqlite|sqlite-net-pcl|Hangfire\.(LiteDB|SQLite|Storage\.SQLite)'
+        # evidence: the code that opens the database file when there is one (evidence_from: code), so
+        # reachability decides for a component that gets the finding from a library
+        - any:
+            - closure: {code: '\bUseSqlite\s*\(|\bnew\s+(Sqlite|SQLite|SQLiteAsync)Connection\s*\(|\bnew\s+Lite(Database|Repository)\s*\(|\bUse(SQLite|Sqlite|LiteDb)Storage\s*\('}
+            - package: *sqlite_pkgs
         - not: &server_db
             any:
               - closure: {package: &server_db_pkgs 'Microsoft\.EntityFrameworkCore\.(SqlServer|Cosmos)|Npgsql(\..*)?|Pomelo\.EntityFrameworkCore\.MySql|MySql\.(Data|EntityFrameworkCore)|MySqlConnector|Oracle\.(ManagedDataAccess(\.Core)?|EntityFrameworkCore)|Microsoft\.Data\.SqlClient|System\.Data\.SqlClient|MongoDB\.Driver(\..*)?|MongoDB\.EntityFrameworkCore|RavenDB\.Client|Aspire\.(Npgsql|Microsoft\.Data\.SqlClient|Pomelo|Oracle|MongoDB)[\w.]*|Hangfire\.(SqlServer|PostgreSql|Pro\.Redis|Redis\.StackExchange|Mongo)'}
@@ -753,6 +758,7 @@ rules:
     severity: config
     category: storage
     state: local
+    evidence_from: code
     effort: 0.25
     title: Embedded file database (SQLite/LiteDB)
     why: >-
@@ -815,12 +821,15 @@ rules:
     when:
       all:
         - package: Lucene\.Net.*|Examine
+        # the code that opens the index first: it is the evidence (evidence_from: code), so a component
+        # that inherits the finding from a library only keeps it when it reaches that code
         - any: &lucene_index
-            - package: 'Examine|Lucene\.Net\.Replicator'
             - closure: {code: '\b(FSDirectory|SimpleFSDirectory|MMapDirectory|NIOFSDirectory)\b|\bnew\s+IndexWriter\s*\('}
+            - package: 'Examine|Lucene\.Net\.Replicator'
     severity: config
     category: storage
     state: local
+    evidence_from: code
     effort: 0.5
     title: Local Lucene index
     why: >-
