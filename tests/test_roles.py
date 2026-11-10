@@ -234,3 +234,145 @@ def test_roles_end_to_end(idp, tmp_path):  # noqa: F811
         m = sqlstore.connect(re.sub(r"Database=\w+", "Database=master", cs), autocommit=True)
         m.cursor().execute(f"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]")
         m.close()
+
+
+@needs_sql
+def test_ui_roles_end_to_end(idp, monkeypatch):  # noqa: F811
+    """CONTAINERIZER_ROLE_SOURCE=ui: an administrator gives roles on Admin -> Users and roles; a pending e-mail binds
+    to the subject at the first verified sign-in; a removed role is gone at the next request; the table, its
+    trigger and its grants."""
+    import uuid
+    from containerizer import api as apimod
+    monkeypatch.setattr(adminmod, "ROLE_REFRESH", 0)
+    name = "czui_" + uuid.uuid4().hex[:8]
+    cs = re.sub(r"(?i)(database|initial\s*catalog)\s*=[^;]*", f"Database={name}", ADMIN_SQL)
+    sqlstore.create_database(cs)
+    conn = sqlstore.connect(cs)
+    sqlstore.init_schema(conn)
+    sqlstore.init_schema(conn)                         # idempotent
+    for login, role in (("cz_u_reader", "reader"), ("cz_u_writer", "writer"), ("cz_u_admin", "admin")):
+        sqlstore.create_login(conn, login, "Test-Passw0rd!x", role)
+    cur = conn.cursor()
+    cur.execute("SELECT MAX(Version) FROM containerizer.SchemaVersion")
+    assert cur.fetchone()[0] >= 46
+    cur.execute("INSERT containerizer.BusinessUnit (Name) VALUES (N'Finance'), (N'Operations')")
+    cur.execute("INSERT containerizer.Product (Name, BusinessUnitId) SELECT N'Billing', BusinessUnitId FROM containerizer.BusinessUnit "
+                "WHERE Name = N'Finance' UNION ALL SELECT N'Freight', BusinessUnitId FROM containerizer.BusinessUnit WHERE Name = N'Operations'")
+    conn.commit()
+    cur.execute("SELECT Name, BusinessUnitId FROM containerizer.BusinessUnit")
+    bus = dict(cur.fetchall())
+    cur.execute("SELECT Name, ProductId FROM containerizer.Product")
+    products = dict(cur.fetchall())
+    conn.close()
+
+    def as_(login):
+        return re.sub(r"(?i)(user\s*id|uid)\s*=[^;]*", f"User Id={login}", cs)
+    port = free_port()
+    base = f"http://127.0.0.1:{port}"
+    c = cfg(idp, base)
+    c.role_source, c.viewers_ui = "ui", True
+    c.check()
+    connect_admin = lambda: sqlstore.connect(as_("cz_u_admin"), "Test-Passw0rd!x")  # noqa: E731
+    adm = adminmod.Admin(c, connect_admin)
+    adm.api = apimod.Api(adm.provider, "api://containerizer", [], connect_admin, c.admins, ui_roles=True)
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), webui.make_handler(
+        lambda: sqlstore.connect(as_("cz_u_reader"), "Test-Passw0rd!x"), adm))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        # someone signs in before having any role: recorded, but the results pages are refused
+        jane = Browser(base, idp)
+        idp.claims = {"sub": "s-jane", "email": "jane.doe@example.com", "email_verified": True, "name": "Jane Doe"}
+        s, _, body = jane.follow("/")
+        assert s == 403 and "not been given access" in body
+        # the administrator (from CONTAINERIZER_ADMINS) gives roles
+        ad = Browser(base, idp)
+        idp.claims = {"sub": "s-john", "email": "john.doe@example.com", "email_verified": True, "name": "John Doe",
+                      "groups": ["cz-admins"]}
+        s, _, body = ad.follow("/admin/users")
+        assert s == 200 and "admin (from configuration)" in body and "Jane Doe" in body
+        csrf = ad.csrf(body)
+        jane_id = re.search(r"<option value='(\d+)'>Jane Doe", body)[1]
+        assert "Not saved" in ad.follow("/admin/users/assign", {"csrf": csrf, "UserAccountId": jane_id, "Role": "admin"})[2]
+        s, _, body = ad.follow("/admin/users/assign", {"csrf": csrf, "UserAccountId": jane_id, "Role": "product-owner",
+                                                       "Scope": [f"bu:{bus['Finance']}"], "Note": "Finance lead"})
+        assert "Saved: Jane Doe is now product owner" in body and "product owner: Finance (business unit)" in body
+        # a pending e-mail for someone who has not signed in yet
+        s, _, body = ad.follow("/admin/users/assign", {"csrf": csrf, "Email": "Sam.Roe@example.com", "Role": "operator"})
+        assert "from their first sign-in" in body and "sam.roe@example.com" in body
+        ad.follow("/admin/users/assign", {"csrf": csrf, "Email": "max.moe@example.com", "Role": "viewer"})
+        # effective at Jane's next request, scopes by id
+        s, _, body = jane.follow("/admin/applications")
+        assert s == 200 and "product owner: bu:Finance" in body
+        assert jane.follow("/")[0] == 200 and jane.follow("/admin/users")[0] == 403
+        # the API: Jane's access token, by subject
+        tok = access_token(idp, sub="s-jane", azp="other")
+        assert api_call(base, "PATCH", f"/api/v1/products/{products['Billing']}", tok, {"owner": "Jane"})[0] == 200
+        assert api_call(base, "PATCH", f"/api/v1/products/{products['Freight']}", tok, {"owner": "Jane"})[0] == 403
+        assert api_call(base, "GET", "/api/v1/products", access_token(idp, sub="s-nobody", azp="other",
+                                                                      email="jane.doe@example.com"))[0] == 403
+        # Sam signs in with the verified address: the pending role binds to Sam's subject
+        sam = Browser(base, idp)
+        idp.claims = {"sub": "s-sam", "email": "sam.roe@example.com", "email_verified": True, "name": "Sam Roe"}
+        s, _, body = sam.follow("/admin/scans")
+        assert s == 200 and "operator" in body
+        # someone else later gets the same address: no role (matched by subject only now)
+        other = Browser(base, idp)
+        idp.claims = {"sub": "s-new-sam", "email": "sam.roe@example.com", "email_verified": True, "name": "Sam Roe 2"}
+        assert other.follow("/admin/scans")[0] == 403
+        # an unverified address binds nothing
+        mx = Browser(base, idp)
+        idp.claims = {"sub": "s-max", "email": "max.moe@example.com", "email_verified": False, "name": "Max Moe"}
+        assert mx.follow("/")[0] == 403
+        # removing a role: gone at the next request
+        body = ad.follow("/admin/users")[2]
+        rid = re.search(r"name='RoleAssignmentId' value='(\d+)'><button class='link' aria-label='Remove product owner: Finance", body)[1]
+        assert "Removed" in ad.follow("/admin/users/remove", {"csrf": csrf, "RoleAssignmentId": rid})[2]
+        assert jane.follow("/admin/applications")[0] == 403 and jane.follow("/")[0] == 403
+        assert api_call(base, "PATCH", f"/api/v1/products/{products['Billing']}", tok, {"owner": "x"})[0] == 403
+        # the change history names the administrator; the binding names the person who signed in
+        a_ = connect_admin()
+        cr = a_.cursor(as_dict=True)
+        cr.execute("SELECT ChangedBy, ChangedByRole, Action, RowName, OldValues, NewValues FROM cz.AuditLog "
+                   "WHERE TableName = N'RoleAssignment' ORDER BY AuditId")
+        log = cr.fetchall()
+        assert [(r["ChangedBy"], r["Action"]) for r in log] == [
+            ("john.doe@example.com", "insert"), ("john.doe@example.com", "insert"), ("john.doe@example.com", "insert"),
+            ("sam.roe@example.com", "update"), ("john.doe@example.com", "delete")]
+        assert log[0]["ChangedByRole"] == "admin" and log[0]["RowName"] == "jane.doe@example.com: product-owner"
+        assert '"BusinessUnit":"Finance"' in log[0]["NewValues"] and '"Note":"Finance lead"' in log[0]["NewValues"]
+        assert '"User":"sam.roe@example.com"' in log[3]["NewValues"] and log[3]["ChangedByRole"] == "sign-in"
+        # the database refuses an admin role, and a product owner without a scope, even from the admin login
+        cur_ = a_.cursor()
+        for sql in ("INSERT cz.RoleAssignment (PendingEmail, Role) VALUES (N'x@example.com', N'admin')",
+                    "INSERT cz.RoleAssignment (PendingEmail, Role) VALUES (N'x@example.com', N'product-owner')",
+                    "INSERT cz.RoleAssignment (PendingEmail, Role) VALUES (N'not-an-address', N'viewer')",
+                    "UPDATE cz.UserAccount SET Subject = N'stolen'"):
+            with pytest.raises(Exception):
+                cur_.execute(sql)
+            a_.rollback()
+        # deleting a product deletes its scopes (audited)
+        cur_.execute("INSERT cz.RoleAssignment (PendingEmail, Role, ProductId) VALUES (N'x@example.com', N'product-owner', %s)",
+                     (products["Freight"],))
+        a_.commit()
+        cur_.execute("DELETE cz.Product WHERE ProductId = %s", (products["Freight"],))
+        a_.commit()
+        cur_.execute("SELECT COUNT(*) FROM cz.RoleAssignment WHERE PendingEmail = N'x@example.com'")
+        assert cur_.fetchone()[0] == 0
+        cur_.execute("SELECT COUNT(*) FROM cz.AuditLog WHERE TableName = N'RoleAssignment' AND Action = N'delete'")
+        assert cur_.fetchone()[0] == 2
+        a_.close()
+        # the reader and writer logins can neither read nor change them
+        for login in ("cz_u_reader", "cz_u_writer"):
+            x = sqlstore.connect(as_(login), "Test-Passw0rd!x")
+            for sql in ("SELECT * FROM cz.RoleAssignment", "SELECT * FROM cz.UserAccount",
+                        "INSERT cz.RoleAssignment (PendingEmail, Role) VALUES (N'y@example.com', N'viewer')"):
+                with pytest.raises(Exception):
+                    x.cursor().execute(sql)
+                x.rollback()
+            x.close()
+    finally:
+        idp.claims = {}
+        httpd.shutdown()
+        m = sqlstore.connect(re.sub(r"Database=\w+", "Database=master", cs), autocommit=True)
+        m.cursor().execute(f"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]")
+        m.close()

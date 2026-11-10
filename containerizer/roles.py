@@ -20,6 +20,11 @@ owner add products to it and delete empty ones; a product scope covers that prod
 and details only. Scopes are resolved against the database on every request, so a renamed product
 drops out of a name scope at once.
 
+With CONTAINERIZER_ROLE_SOURCE=ui the operator, product owner and viewer roles come from Admin -> Users and
+roles instead (userroles.py; the lists above must then be unset), with product owner scopes by id
+(bu:#<id>, product:#<id>), read from the database on every request. Admins always come from
+CONTAINERIZER_ADMINS.
+
 The checks are in the application: all writes use the one admin database login, so the database
 cannot tell roles apart. The role is recorded with every change (AuditLog.ChangedByRole).
 """

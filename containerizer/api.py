@@ -13,7 +13,9 @@ sign-in for this API's audience (CONTAINERIZER_API_AUDIENCE); the token's signat
 and expiry are checked. Who may do what follows the same roles as the admin pages (roles.py):
 callers on CONTAINERIZER_API_CLIENTS or CONTAINERIZER_ADMINS may change everything, product owners
 (CONTAINERIZER_PRODUCT_OWNERS) only their own products and applications, operators
-(CONTAINERIZER_OPERATORS) read only; anyone else is refused. Changes go through the admin database
+(CONTAINERIZER_OPERATORS) read only; anyone else is refused. With CONTAINERIZER_ROLE_SOURCE=ui a user's
+token gets the operator and product owner roles given on Admin -> Users and roles to the account with the
+token's subject (sub), read on every call; API clients, API keys and administrators are unchanged. Changes go through the admin database
 login with the caller and role in SESSION_CONTEXT, so the audit log shows them as "API" with the
 client or user that made them. No cookies are read, so there is no CSRF surface.
 """
@@ -69,9 +71,10 @@ def _camel(row: dict) -> dict:
 
 class Api:
     def __init__(self, provider: Provider, audience: str, clients: list[str], connect_admin, admins: list[str] | None = None,
-                 operators: list[str] | None = None, owners: list | None = None):
+                 operators: list[str] | None = None, owners: list | None = None, ui_roles: bool = False):
         self.provider, self.audience, self.clients, self.connect_admin = provider, audience, clients, connect_admin
         self.admins, self.operators, self.owners = admins or [], operators or [], owners or []
+        self.ui_roles = ui_roles                    # CONTAINERIZER_ROLE_SOURCE=ui: users' roles from the database
 
     def roles(self, claims: dict) -> tuple[bool, bool, list[str], str]:
         """(admin, operator, product owner scopes, role label) of an access token's caller."""
@@ -81,8 +84,17 @@ class Api:
             return True, False, [], "API client"
         if self.admins and allowed(claims, self.admins):
             return True, False, [], "admin"
-        operator = bool(self.operators) and allowed(claims, self.operators)
-        scopes = owner_scopes(claims, self.owners)
+        if self.ui_roles:                           # by the token's subject only: no binding of pending e-mails here
+            from . import userroles
+            conn = self.connect_admin()
+            try:
+                account = userroles.find_account(conn, str(claims.get("iss") or ""), str(claims.get("sub") or ""))
+                operator, _, scopes, _ = userroles.load(conn, account)
+            finally:
+                conn.close()
+        else:
+            operator = bool(self.operators) and allowed(claims, self.operators)
+            scopes = owner_scopes(claims, self.owners)
         return False, operator, scopes, role_label(False, operator, scopes)
 
     @staticmethod
@@ -375,4 +387,4 @@ def build(env, provider: Provider, connect_admin, cfg=None) -> Api | None:
     clients = [r.strip() for r in (env.get("CONTAINERIZER_API_CLIENTS") or "").split(",") if r.strip()]
     if clients or not cfg:           # with sign-in configured, the admin / owner / operator rules are enough
         check_rules(clients, ("client", "email", "domain", "group", "role", "sub"), "CONTAINERIZER_API_CLIENTS")
-    return Api(provider, audience, clients, connect_admin, *((cfg.admins, cfg.operators, cfg.owners) if cfg else ()))
+    return Api(provider, audience, clients, connect_admin, *((cfg.admins, cfg.operators, cfg.owners, cfg.ui_roles) if cfg else ()))

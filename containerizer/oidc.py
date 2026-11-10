@@ -7,6 +7,12 @@ the public URL is https). Who may use the admin pages is an explicit allow-list:
 unless CONTAINERIZER_ADMINS names them. When CONTAINERIZER_VIEWERS is set, the read-only results pages
 need sign-in too (an automatic redirect to the provider) and only the users it names, and the admins,
 may see them; CONTAINERIZER_VIEW_AUDIT=true then also records who signed in and what they opened.
+
+The operator, product owner and viewer roles come from one of two sources (CONTAINERIZER_ROLE_SOURCE): `env`
+(the default), the allow-lists CONTAINERIZER_OPERATORS, CONTAINERIZER_PRODUCT_OWNERS and CONTAINERIZER_VIEWERS;
+or `ui`, the assignments administrators make on Admin -> Users and roles (userroles.py), where
+CONTAINERIZER_VIEWERS_REQUIRED=true puts the results pages behind sign-in. The two are never mixed, and
+administrators always come from CONTAINERIZER_ADMINS.
 """
 from __future__ import annotations
 
@@ -26,6 +32,9 @@ SESSION_TTL = 8 * 3600        # absolute lifetime of a sign-in
 IDLE_TTL = 3600               # signed out after an hour without requests
 LOGIN_TTL = 600               # time allowed at the identity provider
 SAFE_ALGS = {"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"}
+
+
+ROLE_LISTS = ("CONTAINERIZER_OPERATORS", "CONTAINERIZER_PRODUCT_OWNERS", "CONTAINERIZER_VIEWERS")
 
 
 class OidcError(Exception):
@@ -53,6 +62,8 @@ class OidcConfig:
     operators: list[str] = field(default_factory=list) # organization scans and repositories (roles.py)
     owners: list = field(default_factory=list)         # [(rules, scopes)]: scoped product owners (roles.py)
     view_audit: bool = False                           # record sign-ins and page views in AccessLog
+    role_source: str = "env"                           # env: the allow-lists above; ui: Admin -> Users and roles
+    viewers_ui: bool = False                           # ui: the results pages need sign-in and a viewer role
 
     @classmethod
     def from_env(cls, env=os.environ) -> "OidcConfig | None":
@@ -73,10 +84,34 @@ class OidcConfig:
                   operators=[r.strip() for r in (env.get("CONTAINERIZER_OPERATORS") or "").split(",") if r.strip()])
         from .roles import parse_owners
         cfg.owners = parse_owners(env.get("CONTAINERIZER_PRODUCT_OWNERS"))
+        cfg.role_source = (env.get("CONTAINERIZER_ROLE_SOURCE") or "env").strip().lower()
+        cfg.viewers_ui = _flag(env, "CONTAINERIZER_VIEWERS_REQUIRED")
+        if cfg.role_source == "ui":
+            mixed = [k for k in ROLE_LISTS if (env.get(k) or "").strip()]
+            if mixed:
+                raise OidcError("CONTAINERIZER_ROLE_SOURCE=ui: roles are given on Admin -> Users and roles, so "
+                                + " and ".join(mixed) + " must not be set (the two sources are never mixed)")
         cfg.check()
         return cfg
 
+    @property
+    def ui_roles(self) -> bool:
+        """Operators, product owners and viewers come from Admin -> Users and roles (CONTAINERIZER_ROLE_SOURCE=ui)."""
+        return self.role_source == "ui"
+
+    @property
+    def viewers_required(self) -> bool:
+        """The results pages need sign-in and a viewer (or higher) role."""
+        return self.viewers_ui if self.ui_roles else bool(self.viewers)
+
     def check(self) -> None:
+        if self.role_source not in ("env", "ui"):
+            raise OidcError(f"CONTAINERIZER_ROLE_SOURCE must be env or ui, not {self.role_source!r}")
+        if self.ui_roles and (self.viewers or self.operators or self.owners):
+            raise OidcError("CONTAINERIZER_ROLE_SOURCE=ui: the role lists of the environment must be empty")
+        if self.viewers_ui and not self.ui_roles:
+            raise OidcError("CONTAINERIZER_VIEWERS_REQUIRED is for CONTAINERIZER_ROLE_SOURCE=ui; with roles from the "
+                            "environment, set CONTAINERIZER_VIEWERS")
         for name, url in (("issuer", self.issuer), ("public URL", self.public_url)):
             if not url.startswith("https://") and not (url.startswith("http://") and _local(url)):
                 raise OidcError(f"the {name} must be https (http only for localhost): {url}")
@@ -85,9 +120,9 @@ class OidcConfig:
             check_rules(self.viewers, name="CONTAINERIZER_VIEWERS")
         if self.operators:
             check_rules(self.operators, name="CONTAINERIZER_OPERATORS")
-        if self.view_audit and not self.viewers:
-            raise OidcError("CONTAINERIZER_VIEW_AUDIT needs CONTAINERIZER_VIEWERS: without sign-in on the results "
-                            "pages there is nobody to record")
+        if self.view_audit and not self.viewers_required:
+            raise OidcError("CONTAINERIZER_VIEW_AUDIT needs " + ("CONTAINERIZER_VIEWERS_REQUIRED=true" if self.ui_roles
+                            else "CONTAINERIZER_VIEWERS") + ": without sign-in on the results pages there is nobody to record")
 
     @property
     def secure(self) -> bool:
@@ -255,6 +290,9 @@ class Session:
     viewer: bool = False                # may see the results pages (admins, operators, product owners always may)
     operator: bool = False              # organization scans and repositories
     scopes: list = field(default_factory=list)   # product owner scopes, e.g. ["bu:Finance"] (roles.py)
+    account: int | None = None          # CONTAINERIZER_ROLE_SOURCE=ui: the UserAccount whose roles apply
+    scope_names: list = field(default_factory=list)   # ui: the scopes by name, for the page header
+    roles_at: float = 0.0               # ui: when the roles were last read from the database
     csrf: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     created: float = field(default_factory=time.time)
     seen: float = field(default_factory=time.time)
@@ -290,11 +328,12 @@ class Sessions:
             return self._pending.pop(key, None) if key else None
 
     def create(self, user: str, name: str, admin: bool, viewer: bool = False, operator: bool = False,
-               scopes: list | None = None) -> str:
+               scopes: list | None = None, account: int | None = None, scope_names: list | None = None) -> str:
         sid = secrets.token_urlsafe(32)
         with self._lock:
             self._sessions[sid] = Session(user, name, admin, admin or operator or bool(scopes) or viewer,
-                                          operator and not admin, [] if admin else list(scopes or []))
+                                          operator and not admin, [] if admin else list(scopes or []),
+                                          account, [] if admin else list(scope_names or []), time.time())
         return sid
 
     def get(self, sid: str | None) -> Session | None:

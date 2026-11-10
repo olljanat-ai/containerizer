@@ -1539,6 +1539,8 @@ font-size:11px;font-weight:700;border-radius:4px;color:#fff}.cell.rB,.cell.rC{co
 .chips+.chips{margin-top:8px}
 .tag.auto{font-style:italic}.stateful-mark{display:inline-block;margin-left:6px;font-size:12px;padding:1px 6px;border:1px solid currentColor;border-radius:8px;opacity:.8;vertical-align:middle}
 .chips.tags{align-items:center}.chip.tagchip{font-size:13px;padding:2px 10px}
+span.role{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--line);border-radius:999px;padding:1px 10px;font-size:13px;
+margin:2px 6px 2px 0;background:var(--card)}span.role.admin{font-weight:600;border-color:var(--fg)}span.role button.link{text-decoration:none;font-size:15px;line-height:1}
 a.tag{display:inline-block;font-size:12px;line-height:1.5;padding:0 8px;margin-left:4px;border-radius:999px;border:1px solid var(--line);
 background:var(--card);color:var(--muted);text-decoration:none;vertical-align:1px}a.tag:hover{color:var(--fg);border-color:var(--fg)}
 .tags-row{margin:12px 0;font-size:14px}.tags-row .label{margin-right:2px}.tagform{margin:8px 0 0}.formrow.tagform input:not([type=hidden]):not([type=checkbox]){min-width:340px}
