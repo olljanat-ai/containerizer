@@ -544,7 +544,10 @@ def hardening_hits(log: str) -> list[str]:
     return sorted({m.group(0)[:160] for m in HARDENING_ERRORS.finditer("\n".join(lines))})
 
 
-def run_as_manifest(tag: str, k8s_docs: list[dict], wait: int = 40) -> dict:
+UNREACHABLE = "203.0.113.1"         # TEST-NET-3: never answers
+
+
+def run_as_manifest(tag: str, k8s_docs: list[dict], wait: int = 40, hosts=()) -> dict:
     """Start an image with the docker equivalent of its generated pod spec (user, read-only root,
     capabilities, sysctls, emptyDir mounts, env, memory limit) and look for hardening failures.
     status: ok | hardening-failure | inconclusive (the app stopped for another reason, e.g. no database)."""
@@ -558,8 +561,11 @@ def run_as_manifest(tag: str, k8s_docs: list[dict], wait: int = 40) -> dict:
     psc, csc = pod.get("securityContext") or {}, c.get("securityContext") or {}
     uid, gid = csc.get("runAsUser", psc.get("runAsUser")), csc.get("runAsGroup", psc.get("runAsGroup"))
     name = f"cz-gate-{os.getpid()}-{int(time.time())}-{secrets.token_hex(3)}"   # unique: jobs run at once
-    cmd = ["docker", "run", "-d", "--name", name, "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-           "--add-host", "sql01.corp.local:203.0.113.1"]
+    cmd = ["docker", "run", "-d", "--name", name, "--cap-drop", "ALL", "--security-opt", "no-new-privileges"]
+    # the hosts the component's configuration names (verify.hosts_to_map) resolve, to an address that never answers:
+    # the app is not stopped by a failed name lookup before the hardening check has seen it start
+    for h in sorted(hosts or ()):
+        cmd += ["--add-host", f"{h}:{UNREACHABLE}"]
     if csc.get("readOnlyRootFilesystem"):
         cmd.append("--read-only")
     if uid is not None:
@@ -751,7 +757,10 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
                         v.origin = "base" if v.key in base_keys else "app"
                     comp["scans"].append(_scan_entry(res, evaluate(res, pol), "image"))
                 if run and (cdir / "k8s.yaml").exists():
-                    comp["run"] = run_as_manifest(tag, load_yaml_docs((cdir / "k8s.yaml").read_text()))
+                    from .verify import hosts_to_map
+                    c = next((x for x in a.components if k8s_name(x.name) == cdir.name), None)
+                    comp["run"] = run_as_manifest(tag, load_yaml_docs((cdir / "k8s.yaml").read_text()),
+                                                  hosts=hosts_to_map(a, c) if c is not None else ())
         comp.pop("_os_patch_df", None)
         comps.append(comp)
     lint_errors = [v for v in lint_all if v.severity == "error"]

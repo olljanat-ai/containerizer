@@ -6,8 +6,8 @@
 #     runtime in the container; in .NET Framework code they add work to the port.
 #   * .NET Framework / System.Web features whose port is more than "retarget and recompile",
 #     used to size the port of a component that is already rated `rewrite` by netfx-target.
-# Rules that only add effort to an already-netfx component stay at config/refactor so that they
-# do not change challenge ratings on their own.
+# Rules that only add effort to an already-netfx component stay at config/refactor: the
+# component's rating already says it needs a port, and these size that port.
 # severity: info < config < refactor < rewrite < blocker (see rules/10-runtime.yaml)
 rules:
   # ------------------------------------------------------------ serialization

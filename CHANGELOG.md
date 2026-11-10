@@ -10,6 +10,22 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- **Rules that fitted the sample applications are general.** A review of the rules and the code against the
+  [containerization challenge](https://github.com/onek8s/containerization-challenge) apps they were first written for:
+  - Projects named `*.Lab` or `*.Simulator` are applications again, not tools (`*Stubs`, `*Mocks` and `*Fakes` are
+    tools).
+  - The hardened run of the gate resolves the hosts the component's own configuration names, not `sql01.corp.local`.
+  - Run diagnoses read the framework's messages for a missing setting (`Connection string 'X' not found.`,
+    `Section 'X' not found in configuration.`) and need a word about configuration, so an unrelated
+    `InvalidOperationException: ... is required` is no longer taken for a missing setting; an unreachable host of any
+    domain (not `.corp`/`.local` only) and a certificate missing from `CurrentUser` are recognized.
+  - A README's prose alone no longer gives the MSDTC and FILESTREAM findings; the gMSA finding no longer matches
+    account names like `svc-x$`, the vendor-installer note no longer matches `Install-*.ps1` or `.mrl`, and the IIS
+    FTP finding the words "FTP Server".
+  - Remote COM activation (`GetTypeFromProgID`/`GetTypeFromCLSID` with a server) is found whatever the variable
+    is called.
+  - `Dockerfile.dockerignore` keeps `*.ps1` files when a project file or the code names one.
+
 - **Tests run on every pull request, in parallel and without the developer's settings.** The `ci` workflow runs the
   unit tests and the action's gate on pull requests and pushes to `main` (documentation-only changes skip it, and a
   newer push cancels the run before it); the SQL Server, sandbox cluster and one-shot assessment jobs run by hand or

@@ -56,8 +56,10 @@ spec:
     clock = iter(range(0, 10 ** 6, 5))
     monkeypatch.setattr("time.sleep", lambda s: None)
     monkeypatch.setattr("time.time", lambda: next(clock))
-    isc.run_as_manifest("img:gate", docs, wait=21)
+    isc.run_as_manifest("img:gate", docs, wait=21, hosts={"db.example.internal": [1433]})
     cmd = cmds[0]
+    # only the hosts the component's own configuration names resolve (to an address that never answers)
+    assert [cmd[i + 1] for i, x in enumerate(cmd) if x == "--add-host"] == ["db.example.internal:203.0.113.1"]
     mounts = [cmd[i + 1] for i, x in enumerate(cmd) if x == "--tmpfs"]
     assert "/home/app/.aspnet/DataProtection-Keys:rw,exec,uid=1654,gid=1654,mode=1777" in mounts
     assert "/run/secrets/app:ro,mode=0550" in mounts
@@ -131,7 +133,7 @@ def test_scans_are_off_by_default_but_the_build_and_the_hardened_run_stay(tmp_pa
     monkeypatch.setattr(isc, "update_images", lambda *a, **k: (_ for _ in ()).throw(AssertionError("refreshed")))
     built, ran = [], []
     monkeypatch.setattr(isc, "_build_with_retries", lambda a, cdir, tag, comp, pin, post: built.append(tag) or (True, ""))
-    monkeypatch.setattr(isc, "run_as_manifest", lambda tag, docs: ran.append(tag) or {"status": "ok"})
+    monkeypatch.setattr(isc, "run_as_manifest", lambda tag, docs, hosts=(): ran.append(tag) or {"status": "ok"})
     web_app(tmp_path / "app")
     a = assess(tmp_path / "app")
     r = isc.gate_app(a, tmp_path / "out", build=True, scan=False, run=True)
