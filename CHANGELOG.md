@@ -8,7 +8,9 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## Unreleased
+## 0.31.1 (2026-11-10)
+
+A patch release: an app update for appliances (no ISO).
 
 - **Settings of other environments stay out of the image.** The generated `Dockerfile.dockerignore` left out
   `appsettings.Development.json` but kept `appsettings.Release.json`, `appsettings.Staging.json` and the like. The
