@@ -72,7 +72,14 @@ def main(argv: list[str] | None = None) -> int:
             if not args.clone:
                 print(f"{r['name']:<45} SKIP (not cloned; use --clone)")
                 continue
-            _clone(r, path)
+            try:
+                _clone(r, path)
+            except subprocess.CalledProcessError as e:      # the repository or the commit is gone: the rest still runs
+                import shutil
+                shutil.rmtree(path, ignore_errors=True)
+                print(f"{r['name']:<45} SKIP (clone failed: {(e.stderr or b'').decode(errors='replace').strip()[-120:]})",
+                      flush=True)
+                continue
         t0 = time.time()
         repo = scan(path)
         a = assess(path, rules, repo=repo)
@@ -81,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         total += 1
         ok += good
         print(f"{r['name']:<45} {a.rating} (expected {r['expected_rating']}) "
-              f"{'OK' if good else 'FAIL'} {time.time() - t0:.0f}s")
+              f"{'OK' if good else 'FAIL'} {time.time() - t0:.0f}s", flush=True)
         for m in misses:
             print(f"    role {m}")
         if a.rating != r["expected_rating"]:
