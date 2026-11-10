@@ -1,7 +1,8 @@
 """Confidence scoring: how sure the rule set is about a component.
 
-Each package or assembly reference that is neither known to be Linux-safe nor
-explained by a finding rule is an "unknown". Unknowns, native binaries and
+Each package or assembly reference that is neither known to be Linux-safe
+(rules/packages*.yaml linux_ok), nor known and left to the finding rules (judged_by_rules),
+nor explained by a finding rule is an "unknown". Unknowns, native binaries and
 vendor-looking namespaces lower confidence; low confidence triggers the verify
 loop and, if that cannot settle it, the AI fallback.
 """
@@ -25,6 +26,8 @@ def _catalog(key: str = "linux_ok"):
         if f.exists():
             d = yaml.safe_load(f.read_text()) or {}
             ok += d.get(key, []) or []
+            if key == "linux_ok":       # known, and judged by finding rules: not an unknown either
+                ok += d.get("judged_by_rules", []) or []
             if key != "linux_ok" and f in learned:
                 # packages proven by a verify run (or approved in the rule review) are listed under
                 # linux_ok whatever their ecosystem; Java and npm names cannot collide with NuGet ids

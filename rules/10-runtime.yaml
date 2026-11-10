@@ -215,8 +215,7 @@ rules:
       all:
         - any:
             - file: ["*.svc", "*.xamlx"]
-            # WorkflowServiceHost: WF4 workflow services are WCF endpoints too (staff-onboarding
-            # StaffOnboarding.WorkflowHost/HostSet.cs:33)
+            # WorkflowServiceHost: WF4 workflow services are WCF endpoints too
             - all:
                 - reference: System\.ServiceModel(\.Activation|\.Activities|\.Web)?
                 - code: '\b(Web|Workflow)?ServiceHost(Factory)?\b|[\[<]\s*ServiceContract\b|[\[<]\s*(WebGet|WebInvoke)\b|<system\.serviceModel>'
@@ -253,7 +252,7 @@ rules:
         # (SD.IdentitySystem AppService.Host(WCF) UseNetTcp on Kestrel, App.config:116)
         # ... and only for a service: a .NET Framework client of a netTcpBinding service (no <services>,
         # no ServiceHost) works unchanged on .NET 10 with System.ServiceModel.NetTcp, and the netfx
-        # finding already covers its port (credit-desk CreditDesk.Web/Web.config:58)
+        # finding already covers its port
         - all:
             - config: 'netTcpBinding'
             - tfm: 'net[1-4]\d{1,2}'
@@ -287,7 +286,7 @@ rules:
         - not: {file: ["*.svc", "*.xamlx"]}
         - not: {code: '\b(Workflow)?ServiceHost\b'}
     # a component that hosts WCF services gets the server finding and its port plan; the client
-    # references it reaches through its libraries add nothing (staff-onboarding WorkflowHost)
+    # references it reaches through its libraries add nothing
     superseded_by: [wcf-server]
     severity: info
     category: framework

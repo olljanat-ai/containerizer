@@ -4,42 +4,66 @@
 # variables (no code change), with credentials from External Secrets Operator.
 #
 # when:      rule conditions (rules.py) over the component and the projects it references; a
-#            connection string or setting the scan classified as this service also counts
+#            connection string or setting the scan classified as this service also counts. The first
+#            package line of a service is NuGet; the second the Java (groupId:artifactId), npm, Python
+#            and Go (module path) clients, whose environment labservices.py sets in their own conventions
 # settings:  which configuration keys the generator overrides, see containerizer/labservices.py
 services:
   sqlserver:
     when:
-      package: 'Microsoft\.Data\.SqlClient|System\.Data\.SqlClient|Microsoft\.EntityFrameworkCore\.SqlServer.*|Hangfire\.SqlServer|dbup-sqlserver|Aspire\.Microsoft\.(Data\.SqlClient|EntityFrameworkCore\.SqlServer)'
+      any:
+        - package: 'Microsoft\.Data\.SqlClient|System\.Data\.SqlClient|Microsoft\.EntityFrameworkCore\.SqlServer.*|Hangfire\.SqlServer|dbup-sqlserver|Aspire\.Microsoft\.(Data\.SqlClient|EntityFrameworkCore\.SqlServer)'
+        - {package: 'com\.microsoft\.sqlserver:mssql-jdbc|net\.sourceforge\.jtds:jtds|io\.r2dbc:r2dbc-mssql|io\.quarkus:quarkus-jdbc-mssql|mssql|tedious|pyodbc|pymssql|aioodbc|mssql-django|github\.com/(microsoft|denisenkom)/go-mssqldb', runtime: true}
   postgres:
     when:
-      package: 'Npgsql.*|dbup-postgresql|Hangfire\.PostgreSql|Aspire\.Npgsql.*'
+      any:
+        - package: 'Npgsql.*|dbup-postgresql|Hangfire\.PostgreSql|Aspire\.Npgsql.*'
+        - {package: 'org\.postgresql:(postgresql|r2dbc-postgresql)|io\.quarkus:quarkus-(jdbc-postgresql|reactive-pg-client)|pg|pg-promise|postgres|psycopg|psycopg2|psycopg2-binary|psycopg-binary|asyncpg|pg8000|github\.com/jackc/pgx(/v\d+)?|github\.com/lib/pq', runtime: true}
   redis:
     when:
-      package: 'StackExchange\.Redis|Microsoft\.Extensions\.Caching\.StackExchangeRedis|Microsoft\.AspNetCore\.SignalR\.StackExchangeRedis|Microsoft\.AspNetCore\.DataProtection\.StackExchangeRedis|Hangfire\.Redis\.StackExchange|Aspire\.StackExchange\.Redis.*'
+      any:
+        - package: 'StackExchange\.Redis|Microsoft\.Extensions\.Caching\.StackExchangeRedis|Microsoft\.AspNetCore\.SignalR\.StackExchangeRedis|Microsoft\.AspNetCore\.DataProtection\.StackExchangeRedis|Hangfire\.Redis\.StackExchange|Aspire\.StackExchange\.Redis.*'
+        - {package: 'org\.springframework\.boot:spring-boot-starter-data-redis(-reactive)?|redis\.clients:jedis|io\.lettuce:lettuce-core|org\.redisson:redisson.*|io\.quarkus:quarkus-redis-client|redis|ioredis|bull|bullmq|connect-redis|aioredis|django-redis|github\.com/(redis/go-redis|go-redis/redis)(/v\d+)?|github\.com/gomodule/redigo', runtime: true}
   s3:
     when:
-      package: 'AWSSDK\.S3|Minio'
+      any:
+        - package: 'AWSSDK\.S3|Minio'
+        - {package: 'software\.amazon\.awssdk:s3|com\.amazonaws:aws-java-sdk-s3|io\.minio:minio|@aws-sdk/client-s3|minio|github\.com/aws/aws-sdk-go-v2/service/s3|github\.com/minio/minio-go(/v\d+)?', runtime: true}
   azure-blob:
     when:
-      package: 'Azure\.Storage\.Blobs|Microsoft\.Azure\.Storage\.Blob|WindowsAzure\.Storage|Aspire\.Azure\.Storage\.Blobs'
+      any:
+        - package: 'Azure\.Storage\.Blobs|Microsoft\.Azure\.Storage\.Blob|WindowsAzure\.Storage|Aspire\.Azure\.Storage\.Blobs'
+        - {package: 'com\.azure:azure-storage-blob|@azure/storage-blob|azure-storage-blob|github\.com/Azure/azure-sdk-for-go/sdk/storage/azblob', runtime: true}
   mysql:
     when:
-      package: 'MySql\.Data|MySqlConnector|Pomelo\.EntityFrameworkCore\.MySql|MySql\.EntityFrameworkCore|Hangfire\.MySqlStorage|dbup-mysql|Aspire\.MySqlConnector|Aspire\.Pomelo\.EntityFrameworkCore\.MySql'
+      any:
+        - package: 'MySql\.Data|MySqlConnector|Pomelo\.EntityFrameworkCore\.MySql|MySql\.EntityFrameworkCore|Hangfire\.MySqlStorage|dbup-mysql|Aspire\.MySqlConnector|Aspire\.Pomelo\.EntityFrameworkCore\.MySql'
+        - {package: 'com\.mysql:mysql-connector-j|mysql:mysql-connector-java|org\.mariadb\.jdbc:mariadb-java-client|io\.quarkus:quarkus-jdbc-(mysql|mariadb)|mysql|mysql2|mysqlclient|pymysql|aiomysql|mysql-connector-python|github\.com/go-sql-driver/mysql', runtime: true}
   mongodb:
     when:
-      package: 'MongoDB\.Driver.*|MongoDB\.Entities|MongoDB\.EntityFrameworkCore|Aspire\.MongoDB\.Driver.*|Hangfire\.Mongo'
+      any:
+        - package: 'MongoDB\.Driver.*|MongoDB\.Entities|MongoDB\.EntityFrameworkCore|Aspire\.MongoDB\.Driver.*|Hangfire\.Mongo'
+        - {package: 'org\.springframework\.boot:spring-boot-starter-data-mongodb(-reactive)?|org\.mongodb:mongodb-driver.*|io\.quarkus:quarkus-mongodb.*|mongodb|mongoose|pymongo|motor|mongoengine|go\.mongodb\.org/mongo-driver(/v\d+)?', runtime: true}
   rabbitmq:
     when:
-      package: 'RabbitMQ\.Client|MassTransit\.RabbitMQ|EasyNetQ.*|NServiceBus\.RabbitMQ|RawRabbit.*|Aspire\.RabbitMQ\.Client.*|Rebus\.RabbitMq'
+      any:
+        - package: 'RabbitMQ\.Client|MassTransit\.RabbitMQ|EasyNetQ.*|NServiceBus\.RabbitMQ|RawRabbit.*|Aspire\.RabbitMQ\.Client.*|Rebus\.RabbitMq'
+        - {package: 'org\.springframework\.boot:spring-boot-starter-amqp|org\.springframework\.amqp:spring-rabbit|com\.rabbitmq:amqp-client|org\.springframework\.cloud:spring-cloud-starter-stream-rabbit|amqplib|amqp-connection-manager|pika|aio-pika|github\.com/rabbitmq/amqp091-go|github\.com/streadway/amqp', runtime: true}
   kafka:
     when:
-      package: 'Confluent\.Kafka|MassTransit\.Kafka|KafkaFlow.*|Aspire\.Confluent\.Kafka|Silverback\.Integration\.Kafka|Rebus\.Kafka'
+      any:
+        - package: 'Confluent\.Kafka|MassTransit\.Kafka|KafkaFlow.*|Aspire\.Confluent\.Kafka|Silverback\.Integration\.Kafka|Rebus\.Kafka'
+        - {package: 'org\.springframework\.kafka:spring-kafka|org\.apache\.kafka:kafka-(clients|streams)|org\.springframework\.cloud:spring-cloud-starter-stream-kafka|io\.quarkus:quarkus-(kafka-client|messaging-kafka|smallrye-reactive-messaging-kafka)|kafkajs|node-rdkafka|kafka-python|confluent-kafka|aiokafka|github\.com/segmentio/kafka-go|github\.com/(IBM|Shopify)/sarama|github\.com/confluentinc/confluent-kafka-go(/v\d+)?', runtime: true}
   sftp:
     when:
-      package: 'SSH\.NET|Renci\.SshNet.*|WinSCP|SftpCore'
+      any:
+        - package: 'SSH\.NET|Renci\.SshNet.*|WinSCP|SftpCore'
+        - {package: 'com\.jcraft:jsch|com\.github\.mwiede:jsch|org\.apache\.sshd:sshd-sftp|com\.hierynomus:sshj|ssh2-sftp-client|pysftp|github\.com/pkg/sftp', runtime: true}
   smtp:
     # sending mail over SMTP (System.Net.Mail or MailKit); SMTP settings the scan classified count too
     when:
       any:
         - package: 'MailKit|FluentEmail\.Smtp|FluentEmail\.MailKit|NETCore\.MailKit|Aspire\.MailKit.*'
         - code: '\bnew\s+SmtpClient\b|\bSmtpClient\s*\(|SmtpDeliveryMethod\.'
+        - {package: 'org\.springframework\.boot:spring-boot-starter-mail|com\.sun\.mail:.*|jakarta\.mail:.*|javax\.mail:.*|org\.eclipse\.angus:.*mail.*|io\.quarkus:quarkus-mailer|nodemailer|aiosmtplib|gopkg\.in/gomail\.v2|github\.com/wneessen/go-mail', runtime: true}
+        - code: '^\s*(import|from)\s+smtplib\b|"net/smtp"'

@@ -74,7 +74,27 @@ The scan decides, for each component, which services the component needs:
       `SmtpClient` or sets `SmtpDeliveryMethod`
 
   The Aspire client packages for these services count too.
-- **Settings in `appsettings.json`** (with `appsettings.Production.json` on top). Each connection string
+
+  Java, Node.js, Python and Go components are found by the client packages of their own ecosystems, for
+  example:
+
+  | Service | Java (Maven, Gradle) | Node.js | Python | Go |
+  | --- | --- | --- | --- | --- |
+  | SQL Server | `mssql-jdbc` | `mssql`, `tedious` | `pyodbc`, `pymssql` | `go-mssqldb` |
+  | PostgreSQL | `org.postgresql:postgresql` | `pg`, `postgres` | `psycopg`, `psycopg2`, `asyncpg` | `pgx`, `lib/pq` |
+  | MySQL | `mysql-connector-j`, `mariadb-java-client` | `mysql2`, `mysql` | `pymysql`, `mysqlclient` | `go-sql-driver/mysql` |
+  | Redis | `spring-boot-starter-data-redis`, `jedis`, `lettuce-core` | `redis`, `ioredis`, `bullmq` | `redis` | `go-redis`, `redigo` |
+  | MongoDB | `spring-boot-starter-data-mongodb`, `mongodb-driver-*` | `mongodb`, `mongoose` | `pymongo`, `motor` | `mongo-driver` |
+  | RabbitMQ | `spring-boot-starter-amqp`, `amqp-client` | `amqplib` | `pika`, `aio-pika` | `amqp091-go` |
+  | Kafka | `spring-kafka`, `kafka-clients` | `kafkajs`, `node-rdkafka` | `kafka-python`, `confluent-kafka` | `kafka-go`, `sarama` |
+  | S3 | `software.amazon.awssdk:s3`, `io.minio:minio` | `@aws-sdk/client-s3`, `minio` | | `aws-sdk-go-v2/service/s3`, `minio-go` |
+  | Azure Blob storage | `azure-storage-blob` | `@azure/storage-blob` | `azure-storage-blob` | `azblob` |
+  | SFTP | `jsch`, `sshj`, `sshd-sftp` | `ssh2-sftp-client` | `pysftp` | `pkg/sftp` |
+  | Mail (SMTP) | `spring-boot-starter-mail`, Jakarta Mail | `nodemailer` | `smtplib`, `aiosmtplib` | `net/smtp`, `gomail` |
+
+  Packages that only tests and builds use (Maven `test` scope, npm `devDependencies`) do not count. The whole
+  list is in `rules/lab-services.yaml`.
+- **Settings in `appsettings.json`** (.NET, with `appsettings.Production.json` on top). Each connection string
   and setting is classified by its value:
     - `Initial Catalog=` or `Server=host,1433` means SQL Server;
     - `Host=...;Username=` means PostgreSQL;
@@ -95,7 +115,7 @@ The scan decides, for each component, which services the component needs:
 
 For each service that the component needs and that is on, the scan writes the following.
 
-- **Environment variables** that override the component's configuration:
+- **Environment variables** that override the component's configuration. For a .NET component:
 
   | Service | Settings that are overridden |
   | --- | --- |
@@ -113,6 +133,39 @@ For each service that the component needs and that is on, the scan writes the fo
   manifest. When no setting is found for a service the component needs, `lab/README.md` names the Secret
   and its keys. Entries with the
   same name that the generator made before (references to the component's own secrets) are replaced.
+
+  A Java, Node.js, Python or Go component gets the variables of its own conventions instead of
+  `Section__Key` names:
+
+    1. **The variables its framework binds.** Spring Boot: `SPRING_DATASOURCE_URL` (a JDBC URL),
+       `SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD`, `SPRING_DATA_REDIS_HOST`, `_PORT` and
+       `_PASSWORD` (and `SPRING_REDIS_*`, which Spring Boot 2 reads), `SPRING_DATA_MONGODB_URI`,
+       `SPRING_RABBITMQ_HOST`, `_PORT`, `_USERNAME`, `_PASSWORD` and `_VIRTUAL_HOST`,
+       `SPRING_KAFKA_BOOTSTRAP_SERVERS`, `SPRING_MAIL_HOST` and `_PORT`. Quarkus: `QUARKUS_DATASOURCE_JDBC_URL`,
+       `_USERNAME` and `_PASSWORD`, `QUARKUS_REDIS_HOSTS`, `QUARKUS_MONGODB_CONNECTION_STRING`,
+       `KAFKA_BOOTSTRAP_SERVERS`, `QUARKUS_MAILER_HOST` and `_PORT`. Micronaut: `DATASOURCES_DEFAULT_URL`,
+       `_USERNAME` and `_PASSWORD`, `KAFKA_BOOTSTRAP_SERVERS`.
+    2. **The variables its code reads**: `process.env.X`, `os.environ["X"]` / `os.getenv("X")`,
+       `os.Getenv("X")`, `System.getenv("X")`, `${X}` in a Spring configuration file, and the names in
+       `.env.example`. The name says the service and what the variable holds: `REDIS_HOST`, `PGPASSWORD`,
+       `MYSQL_DATABASE`, `MONGO_URI`, `RABBITMQ_VHOST`, `KAFKA_BROKERS`, `SMTP_PORT`. Names that only say
+       "the database" (`DATABASE_URL`, `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`) are used when the
+       component needs exactly one database.
+    3. **A common name**, when neither says anything: `DATABASE_URL`, `REDIS_URL`, `MONGODB_URI`, `AMQP_URL`,
+       `KAFKA_BROKERS`, `SMTP_HOST` and `SMTP_PORT`, `AZURE_STORAGE_CONNECTION_STRING`. `lab/README.md` then
+       says that the name is a guess, and names the Secret and its keys.
+
+  A URL is written in the form the component's client takes: `jdbc:postgresql://...` for Java,
+  `postgresql://user:password@host:5432/db` for Node.js and Python (`?sslmode=disable` for Go),
+  `mysql://...` (`mysql+pymysql://...` with PyMySQL, `user:password@tcp(host:3306)/db` for Go),
+  `mssql://...`, `mssql+pyodbc://...` or `sqlserver://...` for SQL Server, `redis://:password@host:6379`.
+  The user name and password in it are references to the Secret (`CZ_LAB_<SERVICE>_USERNAME`,
+  `CZ_LAB_<SERVICE>_PASSWORD`, expanded by Kubernetes), so no password appears in a manifest here either. The
+  S3 variables are the same for every stack.
+
+  When the scan cannot tell (a component with two databases whose variables do not say which is which, an SFTP
+  client without a variable for its host), nothing is set and `lab/README.md` says that the service is **not
+  wired** for the component, with the Secret and the keys to point its settings at.
 - **`lab/k8s.yaml`**: an `ExternalSecret lab-<service>` for each service. It reads remote key
   `<namespace>--cz-lab-<service>` from the store `app-secrets` ([External Secrets](external-secrets.md)).
   The namespace's reader Role grants exactly these keys, like every other key of the app.
@@ -126,7 +179,8 @@ For each service that the component needs and that is on, the scan writes the fo
 - **Settings made in code.** A RabbitMQ `ConnectionFactory` without a user name in the configuration uses
   `guest`, which the lab does not allow, and a Kafka client that sets SASL in code cannot log in to the lab
   broker, which has no logins. An S3 client built with `new AmazonS3Client(new AmazonS3Config { ServiceURL = "..." })`
-  uses the URL in the code. The AWS SDK reads `AWS_ENDPOINT_URL_S3` only when the code does not set an
+  uses the URL in the code. A Node.js, Python or Go client whose host is written in the code, or read from a
+  configuration file and not from a variable, is not changed either. The AWS SDK reads `AWS_ENDPOINT_URL_S3` only when the code does not set an
   endpoint. The same is true for Azure clients created from a `serviceUri` with managed identity: the lab
   gives each app a connection string, not an identity. `lab/README.md` says when no setting was found.
 - **Database schema.** The databases start empty. Run the app's migrations at start-up, as most EF Core

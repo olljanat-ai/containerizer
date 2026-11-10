@@ -424,9 +424,225 @@ def connection_keys(c, svc: str, needed: dict) -> list[str]:
     return []
 
 
+# --------------------------------------------------------------------------- stacks other than .NET
+#
+# A Java, Node.js, Python or Go component is configured through environment variables of its own: the ones its
+# framework binds (Spring Boot, Quarkus, Micronaut), else the ones its code reads (process.env.X, os.environ["X"],
+# os.Getenv("X"), System.getenv("X"), .env.example), else a widespread name (DATABASE_URL, REDIS_URL...), with a
+# note that says so.
+
+SQL_DBS = ("sqlserver", "postgres", "mysql")
+_ENV_READS = {
+    "node": re.compile(r"""process\.env\.([A-Z][A-Z0-9_]*)|process\.env\[\s*['"]([A-Z][A-Z0-9_]*)['"]\s*\]"""),
+    "python": re.compile(r"""os\.(?:environ\.get|getenv|environ\.setdefault)\(\s*['"]([A-Z][A-Z0-9_]*)['"]|"""
+                         r"""os\.environ\[\s*['"]([A-Z][A-Z0-9_]*)['"]\s*\]|"""
+                         r"""\benv(?:\.\w+)?\(\s*['"]([A-Z][A-Z0-9_]*)['"]|config\(\s*['"]([A-Z][A-Z0-9_]*)['"]"""),
+    "go": re.compile(r"""os\.(?:Getenv|LookupEnv)\(\s*"([A-Z][A-Z0-9_]*)"\s*\)"""),
+    "java": re.compile(r"""System\.getenv\(\s*"([A-Z][A-Z0-9_]*)"\s*\)|\$\{([A-Z][A-Z0-9_]*)(?::[^}]*)?\}"""),
+}
+_ENV_EXAMPLES = (".env.example", ".env.sample", ".env.template", ".env.dist", "example.env", ".env.defaults")
+# the service a variable's name says (the first that matches a word of it); "db" is whichever database is needed
+_ENV_SVC = (("sqlserver", {"MSSQL", "SQLSERVER"}), ("postgres", {"PG", "POSTGRES", "POSTGRESQL", "PSQL"}),
+            ("mysql", {"MYSQL", "MARIADB"}), ("mongodb", {"MONGO", "MONGODB"}), ("redis", {"REDIS"}),
+            ("rabbitmq", {"RABBIT", "RABBITMQ", "AMQP"}), ("kafka", {"KAFKA"}), ("sftp", {"SFTP"}),
+            ("smtp", {"SMTP", "MAIL", "EMAIL"}), ("db", {"DB", "DATABASE", "SQL", "JDBC", "DATASOURCE"}))
+# what a variable holds, by the last word of its name
+_ENV_PART = {"URL": "url", "URI": "url", "DSN": "url", "CONNSTR": "url", "HOST": "host", "HOSTNAME": "host",
+             "SERVER": "host", "ADDR": "hostport", "ADDRESS": "hostport", "PORT": "port", "USER": "username",
+             "USERNAME": "username", "LOGIN": "username", "PASS": "password", "PASSWORD": "password",
+             "PASSWD": "password", "PWD": "password", "NAME": "database", "DATABASE": "database", "DB": "database",
+             "VHOST": "vhost", "BROKERS": "bootstrap", "BROKER": "bootstrap", "SERVERS": "bootstrap"}
+_LIBPQ = {"PGHOST": "host", "PGPORT": "port", "PGUSER": "username", "PGPASSWORD": "password", "PGDATABASE": "database"}
+# the variables a framework binds to its client configuration: {framework: {service: [(name, part)]}}
+_FRAMEWORK_ENV = {
+    "spring": {
+        "db": [("SPRING_DATASOURCE_URL", "jdbc"), ("SPRING_DATASOURCE_USERNAME", "username"),
+               ("SPRING_DATASOURCE_PASSWORD", "password")],
+        # Spring Boot 3 reads spring.data.redis.*, Spring Boot 2 spring.redis.*
+        "redis": [("SPRING_DATA_REDIS_HOST", "host"), ("SPRING_DATA_REDIS_PORT", "port"),
+                  ("SPRING_DATA_REDIS_PASSWORD", "password"), ("SPRING_REDIS_HOST", "host"),
+                  ("SPRING_REDIS_PORT", "port"), ("SPRING_REDIS_PASSWORD", "password")],
+        "mongodb": [("SPRING_DATA_MONGODB_URI", "url")],
+        "rabbitmq": [("SPRING_RABBITMQ_HOST", "host"), ("SPRING_RABBITMQ_PORT", "port"),
+                     ("SPRING_RABBITMQ_USERNAME", "username"), ("SPRING_RABBITMQ_PASSWORD", "password"),
+                     ("SPRING_RABBITMQ_VIRTUAL_HOST", "vhost")],
+        "kafka": [("SPRING_KAFKA_BOOTSTRAP_SERVERS", "bootstrap")],
+        "smtp": [("SPRING_MAIL_HOST", "host"), ("SPRING_MAIL_PORT", "port")],
+    },
+    "quarkus": {
+        "db": [("QUARKUS_DATASOURCE_JDBC_URL", "jdbc"), ("QUARKUS_DATASOURCE_USERNAME", "username"),
+               ("QUARKUS_DATASOURCE_PASSWORD", "password")],
+        "redis": [("QUARKUS_REDIS_HOSTS", "url")],
+        "mongodb": [("QUARKUS_MONGODB_CONNECTION_STRING", "url")],
+        "kafka": [("KAFKA_BOOTSTRAP_SERVERS", "bootstrap")],
+        "smtp": [("QUARKUS_MAILER_HOST", "host"), ("QUARKUS_MAILER_PORT", "port")],
+    },
+    "micronaut": {
+        "db": [("DATASOURCES_DEFAULT_URL", "jdbc"), ("DATASOURCES_DEFAULT_USERNAME", "username"),
+               ("DATASOURCES_DEFAULT_PASSWORD", "password")],
+        "kafka": [("KAFKA_BOOTSTRAP_SERVERS", "bootstrap")],
+    },
+}
+# a widespread name, when neither a framework nor the code says which variable the component reads
+_COMMON_ENV = {"db": [("DATABASE_URL", "url")], "redis": [("REDIS_URL", "url")], "mongodb": [("MONGODB_URI", "url")],
+               "rabbitmq": [("AMQP_URL", "url")], "kafka": [("KAFKA_BROKERS", "bootstrap")],
+               "smtp": [("SMTP_HOST", "host"), ("SMTP_PORT", "port")]}
+_AZURE_ENV = re.compile(r"^(AZURE_?STORAGE|AZURE_?BLOB|BLOB)\w*_CONNECTION_?STRING$")
+
+
+def stack(c) -> str:
+    """dotnet | java | node | python | go: whose conventions the component's settings follow."""
+    kind = getattr(getattr(c, "project", None), "kind_hint", "") or "dotnet"
+    return kind if kind in _ENV_READS else "dotnet"
+
+
+def env_part(name: str) -> tuple[str, str] | None:
+    """(service or "db", part) a variable's name says: DATABASE_URL -> ("db", "url"), POSTGRES_DB ->
+    ("postgres", "database"), REDIS_HOST -> ("redis", "host"); None for a name that says neither."""
+    if name in _LIBPQ:
+        return "postgres", _LIBPQ[name]
+    words = name.split("_")
+    if words[-2:] == ["CONNECTION", "STRING"]:
+        words = words[:-2] + ["CONNSTR"]
+    for svc, tokens in _ENV_SVC:
+        at = next((i for i, w in enumerate(words) if w in tokens), None)
+        if at is None:
+            continue
+        rest = words[:at] + words[at + 1:]
+        part = _ENV_PART.get(rest[-1]) if rest else None
+        if part == "bootstrap" and svc != "kafka":
+            return None
+        return (svc, part) if part else None
+    return None
+
+
+def env_reads(c) -> list[str]:
+    """The environment variables the component's code reads, and the ones its .env example lists."""
+    p, rx, names = c.project, _ENV_READS[stack(c)], set()
+    for f in p.source_files():
+        names |= {n for m in rx.finditer(p.text(f)) for n in m.groups() if n}
+    for n in _ENV_EXAMPLES:
+        try:
+            text = (p.dir / n).read_text(errors="replace")
+        except OSError:
+            continue
+        names |= set(re.findall(r"(?m)^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=", text))
+    if stack(c) == "java":
+        from .facts_jvm_node import _placeholder_env, java_config
+        names |= {n for v in java_config(p).values() for n in _placeholder_env(str(v))}
+    return sorted(names)
+
+
+def db_url(svc: str, c, host_: str, port, database: str, user: str, password: str, jdbc: bool = False) -> str:
+    """The database URL in the form the component's stack (and its client package) reads; `jdbc`: without the
+    login, which the framework takes from its own username and password settings."""
+    kind, pk = stack(c), set(getattr(c.project, "packages", None) or {})
+    if kind == "java":
+        if svc == "sqlserver":
+            url = f"jdbc:sqlserver://{host_}:{port};databaseName={database};encrypt=true;trustServerCertificate=true"
+            return url if jdbc else url + f";user={user};password={password}"
+        maria = any(n.startswith("org.mariadb.jdbc:") for n in pk) and not any("mysql-connector" in n for n in pk)
+        url = f"jdbc:{'postgresql' if svc == 'postgres' else 'mariadb' if maria else 'mysql'}://{host_}:{port}/{database}"
+        return url if jdbc else url + f"?user={user}&password={password}"
+    at = f"{user}:{password}@{host_}:{port}"
+    if svc == "postgres":
+        # lib/pq asks for TLS unless told otherwise; the lab's PostgreSQL has none (its traffic stays on the node)
+        return f"postgresql://{at}/{database}" + ("?sslmode=disable" if kind == "go" else "")
+    if svc == "mysql":
+        if kind == "go":                                        # go-sql-driver's DSN
+            return f"{user}:{password}@tcp({host_}:{port})/{database}"
+        scheme = "mysql+pymysql" if kind == "python" and "pymysql" in pk and "mysqlclient" not in pk else "mysql"
+        return f"{scheme}://{at}/{database}"
+    if kind == "go":
+        return f"sqlserver://{at}?database={database}&encrypt=true&TrustServerCertificate=true"
+    if kind == "python":
+        if "pymssql" in pk:
+            return f"mssql+pymssql://{at}/{database}"
+        return f"mssql+pyodbc://{at}/{database}?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+    if pk & {"prisma", "@prisma/client"}:
+        return f"sqlserver://{host_}:{port};database={database};user={user};password={password};trustServerCertificate=true"
+    return f"mssql://{at}/{database}?encrypt=true&trustServerCertificate=true"
+
+
+def stack_names(svc: str, c, needed: dict) -> tuple[list[tuple[str, str]], str]:
+    """[(environment variable, part)] that point a Java, Node.js, Python or Go component at `svc`, and how they
+    were found: "framework", "code", "common" (a widespread name: the component may not read it) or "" (none)."""
+    only_db = [s for s in SQL_DBS if s in needed] or [s for s in ("mongodb",) if s in needed]
+    generic = svc in SQL_DBS + ("mongodb",) and only_db == [svc]      # DB_*, DATABASE_URL mean this one
+    group = "db" if svc in SQL_DBS else svc
+    fw = _FRAMEWORK_ENV.get((getattr(c, "facts", None) or {}).get("java_framework") or "", {})
+    names = list(fw.get(group, [])) if group != "db" or generic else []
+    how = "framework" if names else ""
+    for n in env_reads(c):
+        hit = env_part(n)
+        if hit and (hit[0] == svc or (hit[0] == "db" and generic)) and n not in dict(names):
+            names.append((n, hit[1]))
+            how = how or "code"
+    if not names and (group != "db" or generic):
+        names = list(_COMMON_ENV.get(group, []))
+        how = "common" if names else ""
+    return names, how
+
+
+def stack_env(svc: str, ns: str, c, needed: dict) -> tuple[list[dict], list[str]]:
+    """env_for of a component that is not .NET."""
+    sec, s, h = secret_name(svc), SERVICES[svc], host(svc, ns)
+
+    def ref(name: str, key: str) -> dict:
+        return {"name": name, "valueFrom": {"secretKeyRef": {"name": sec, "key": key}}}
+    where = f"the Secret {sec} (keys: {', '.join(secret_keys(svc))})"
+    if svc == "s3":                 # the AWS SDKs of every language read these
+        return [ref("AWS_ACCESS_KEY_ID", "access-key-id"), ref("AWS_SECRET_ACCESS_KEY", "secret-access-key"),
+                {"name": "AWS_REGION", "value": "us-east-1"},
+                {"name": "AWS_ENDPOINT_URL_S3", "value": f"http://{h}:{s.port}"}], \
+            ["The AWS SDK reads AWS_ENDPOINT_URL_S3 (SDK releases since late 2023); a client that sets its endpoint "
+             "in code, or needs path-style addressing, still needs that setting."]
+    if svc == "azure-blob":
+        found = [n for n in env_reads(c) if _AZURE_ENV.match(n)]
+        notes = [] if found else ["No Azure Storage connection string variable was found in the code: "
+                                  "AZURE_STORAGE_CONNECTION_STRING is set (a common name). If the component reads "
+                                  f"another setting, point it at {where}."]
+        return [ref(n, "connection-string") for n in found or ["AZURE_STORAGE_CONNECTION_STRING"]], notes
+    names, how = stack_names(svc, c, needed)
+    if not names:
+        dbs = [SERVICES[x].title for x in SQL_DBS if x in needed]
+        why = (f"it uses more than one database ({', '.join(dbs)}) and its variables do not say which is which"
+               if svc in SQL_DBS and len(dbs) > 1 else "no environment variable for it was found in its code")
+        return [], [f"{s.title} is not wired for this component ({why}): point its settings at {where} yourself."]
+    keys = new_credentials(svc, ns)
+    user, pw = f"CZ_LAB_{svc.upper().replace('-', '_')}_USERNAME", f"CZ_LAB_{svc.upper().replace('-', '_')}_PASSWORD"
+    env, helpers = [], set()
+    for name, part in names:
+        if part == "bootstrap" or (svc == "kafka" and part in ("url", "hostport")):
+            env.append(ref(name, "bootstrap-servers"))
+        elif part == "hostport":
+            env.append({"name": name, "value": f"{h}:{s.svc_port}"})
+        elif part == "jdbc":
+            env.append({"name": name, "value": db_url(svc, c, h, s.port, db_name(ns), "", "", jdbc=True)})
+        elif part == "url" and svc in SQL_DBS:
+            helpers |= {"username", "password"}
+            env.append({"name": name, "value": db_url(svc, c, h, s.port, db_name(ns), f"$({user})", f"$({pw})")})
+        elif part == "url" and svc == "redis":
+            helpers.add("password")
+            env.append({"name": name, "value": f"redis://:$({pw})@{h}:{s.port}"})
+        elif part == "url" and "connection-string" in keys:
+            env.append(ref(name, "connection-string"))
+        elif part in keys:
+            env.append(ref(name, part))
+    env = [ref(user if k == "username" else pw, k) for k in sorted(helpers)] + env
+    notes = []
+    if how == "common":
+        notes.append(f"No environment variable for {s.title} was found in the code: "
+                     f"{', '.join(n for n, _ in names)} set (a common name). If the component reads another "
+                     f"setting, point it at {where}.")
+    return env, notes
+
+
 def env_for(svc: str, ns: str, c, needed: dict) -> tuple[list[dict], list[str]]:
     """Environment entries (secret references first, then plain settings, which may use them with
     Kubernetes' $(VAR) expansion) and notes for the README."""
+    if stack(c) != "dotnet":
+        return stack_env(svc, ns, c, needed)
     sec = secret_name(svc)
 
     def ref(name: str, key: str) -> dict:

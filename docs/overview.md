@@ -61,7 +61,8 @@ explains how the assessment works and what it generates. To install and use it, 
    `AddDocuments()` does not reach the search index that `AddSearchIndex()`, next to it in the same
    registration class, opens. A plain static method is reached through its type name, so a property
    of the same name elsewhere is not a mention.
-6. **Confidence**: packages and references unknown to `rules/packages*.yaml`, and uncertain rules,
+6. **Confidence**: packages and references unknown to `rules/packages*.yaml` (`linux_ok`: works on Linux;
+   `judged_by_rules`: known, and left to the finding rules), and uncertain rules,
    lower a component's confidence. Low confidence triggers verification and, optionally, Claude.
 7. **Rating** per application: **A** container-ready (built on a modern stack and libraries, runs in
    containers with configuration only, no code changes), **B** minor refactoring, **C** partial (some
