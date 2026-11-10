@@ -266,11 +266,11 @@ more than twenty in one process).
 | `ci/local.sh all` | the above, then `assess` (up to about an hour) and `appliance` (one to two hours) |
 | `ci/local.sh sql sandbox` | only the jobs named, in that order |
 | `CI_LOCAL_WORKERS=1 ci/local.sh test` | the unit tests in one process (default: one worker per CPU) |
-| `CI_LOCAL_PARALLEL=0 ci/local.sh` | every job in turn (default: `sql` runs in the background next to the others) |
+| `CI_LOCAL_PARALLEL=0 ci/local.sh` | every job in turn (default: `sql` runs in the background after `test`) |
 | `KEEP=1 ci/local.sh sql` | leaves SQL Server (`cz-ci-mssql`) and the web UI (`cz-ci-web`) running for debugging |
 
 The unit tests run in parallel (pytest-xdist), and `sql`, the longest job, runs in the background
-while the others run; its output is only in its log. Each job keeps going after another fails; the summary at the end lists pass / FAIL and the time per
+once they are done, next to the other jobs; its output is only in its log. Each job keeps going after another fails; the summary at the end lists pass / FAIL and the time per
 job, and the exit code is non-zero if any failed. Logs are in `.work/ci-local/logs/<job>.log`, and
 reports, SARIF files, the kind kubeconfig and the appliance images in `.work/ci-local/` (git ignores
 `.work/`).
