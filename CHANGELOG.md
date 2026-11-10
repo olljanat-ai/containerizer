@@ -8,7 +8,9 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## Unreleased
+## 0.23.0 (2026-11-10)
+
+The OS image changes (`appliance/`: new role settings in the `web.env` defaults): a minor release.
 
 - **Users and roles on the admin pages** (`CONTAINERIZER_ROLE_SOURCE=ui`). Administrators give the viewer, operator
   and product owner roles (scoped to business units and products, chosen from a list) on **Admin → Users and roles**,
