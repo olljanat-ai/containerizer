@@ -10,7 +10,7 @@ rules:
           unguarded: true
         # the ASP.NET Core Negotiate handler is the same Windows sign-in in code: turning IIS's
         # windowsAuthentication off in web.config (only IIS reads it) does not change how users sign in
-        # (the lab's trade-rebates portal: a Make it A patch did only that and rated A, nobody could sign in)
+        # (a patch that did only that rated A, and nobody could sign in)
         - code: 'AddNegotiate\(|NegotiateDefaults\.AuthenticationScheme'
     severity: refactor
     category: identity
@@ -252,7 +252,7 @@ rules:
 
   # Opening LocalMachine\My (or any LocalMachine store other than Root/CA) throws on Linux:
   # "Unix LocalMachine X509Store is limited to the Root and CertificateAuthority stores."
-  # (observed by `containerizer verify` on city-permits and housing-management)
+  # (observed by `containerizer verify`)
   - id: cert-store-localmachine-code
     applies_to: [dotnet]
     when:
@@ -301,14 +301,22 @@ rules:
     when:
       all:
         - not: {role: 'test'}
-        - code: '\.Use(SqlServer|AzureSql|Npgsql|MySql|MySQL|Oracle|Sqlite|Cosmos)\s*\(\s*(\w+\.)*(Constants?|Consts)\.\w+\s*[,)]|new\s+(Sql|Npgsql|MySql|Oracle|SqlCe)Connection\(\s*(\w+\.)*(Constants?|Consts)\.\w+\s*\)'
+        - any:
+            # a constant of a constants class
+            - code: '\.Use(SqlServer|AzureSql|Npgsql|MySql|MySQL|Oracle|Sqlite|Cosmos)\s*\(\s*(\w+\.)*(Constants?|Consts)\.\w+\s*[,)]|new\s+(Sql|Npgsql|MySql|Oracle|SqlCe)Connection\(\s*(\w+\.)*(Constants?|Consts)\.\w+\s*\)'
+            # the connection string itself as a literal, or a const of any class holding one that the same file
+            # passes on; not the design-time factory of EF Core's tools, which only `dotnet ef` runs
+            - all:
+                - code: '(\.Use(SqlServer|AzureSql|Npgsql|MySql|MySQL|Oracle)\s*\(|new\s+(Sql|Npgsql|MySql|Oracle|SqlCe)Connection\()\s*@?"[^"\n]*\b(Data Source|Server|Host)\s*=|\bconst\s+string\s+(?P<k>\w+)\s*=\s*@?"[^"\n]*\b(Data Source|Server|Host)\s*=[^"\n]*"[\s\S]{0,4000}?(\.Use(SqlServer|AzureSql|Npgsql|MySql|MySQL|Oracle)\s*\(|new\s+(Sql|Npgsql|MySql|Oracle|SqlCe)Connection\()\s*(?P=k)\s*[,)]'
+                - not: {code: '\bIDesignTimeDbContextFactory\b'}
+              same_file: true
     severity: refactor
     category: data
     effort: 0.25
     windows_container: true
     title: Database connection string compiled into the code
     why: >-
-      The code passes a constant (e.g. Constants.ConnectionString) to UseSqlServer or new
+      The code passes a constant (e.g. Constants.ConnectionString) or a literal to UseSqlServer or new
       SqlConnection, so the server, database and any password are fixed when the code is compiled.
       Every environment gets the same database, the value cannot be supplied through configuration,
       an environment variable or a Kubernetes Secret, and a password in it ends up in source control
@@ -415,8 +423,8 @@ rules:
       any:
         - role: ssis
         - file: "*.dtsx"
-        - text: 'sp_add_job|SQL Server Agent|msdb\.dbo\.sp_add_jobstep'
-          in: ["*.sql", "README.md"]
+        - text: 'sp_add_job|msdb\.dbo\.sp_add_jobstep'
+          in: ["*.sql"]
     severity: info
     category: data
     effort: 0

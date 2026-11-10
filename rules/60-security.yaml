@@ -426,9 +426,10 @@ lint:
   secret_names: '(?i)(password|passwd|pwd|secret|token|api[_-]?key|private[_-]?key|connectionstrings?__)'
   # configuration keys (DataProtection:KeyFolder) and environment variables (DataProtection__KeyFolder) that name the
   # folder of a Data Protection key ring: on an emptyDir the keys change at every restart and every user is signed
-  # out (dataprotection-volatile; facts.dataprotection_folder also finds the folder setting by this name). A bare
+  # out (dataprotection-volatile; facts.dataprotection_folder reads the setting from the PersistKeysToFileSystem argument, and only
+  # without one finds it by this name: DataProtection:KeyFolder, DataProtectionKeysPath, KeyStoragePath). A bare
   # KeysFolder is not enough: SSH or signing key folders are named so too
-  keyring_names: '(?i)(^|[:_])(DataProtection|KeyRing)\w*?[:_]+(Keys?|KeyRing)?(Folder|Path|Dir|Directory|Location)$|(^|[:_])KeyRing(Folder|Path|Dir|Directory)?$'
+  keyring_names: '(?i)(^|[:_])(DataProtection|KeyRing)\w*?[:_]*(Keys?|KeyRing|KeyStorage)?(Folder|Path|Dir|Directory|Location)$|(^|[:_])KeyRing(Folder|Path|Dir|Directory)?$|(^|[:_])KeyStorage[:_]*(Folder|Path|Dir|Directory|Location)$'
   # final-stage base images that already run as non-root without a USER line
   nonroot_bases: ['nginx-unprivileged', 'distroless/.*:nonroot', 'chiseled']
 

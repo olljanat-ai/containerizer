@@ -349,7 +349,7 @@ rules:
       any:
         - code: 'TaskScheduler\.TaskService|schtasks(\.exe)?'
         - text: 'Register-ScheduledTask|New-ScheduledTaskTrigger|schtasks\s*/create'
-          in: ["*.ps1", "*.psm1", "*.cmd", "*.bat", "*.md"]
+          in: ["*.ps1", "*.psm1", "*.cmd", "*.bat"]
     severity: config
     category: hosting
     effort: 0.5
@@ -393,7 +393,9 @@ rules:
     applies_to: [dotnet]
     when:
       any:
-        - code: '\bTpm\w*\b|Tbsi_|NCryptOpenStorageProvider|MS_PLATFORM_CRYPTO_PROVIDER|"Microsoft Platform Crypto Provider"'
+        # TPM APIs: the TSS.NET types (Tpm2, TpmHandle, TbsDevice...), the TBS functions and the platform key provider;
+        # not a word that only starts with "tpm", or a cmdlet named in a message ("Get-Tpm")
+        - code: '(?-i:(?<![\w\-"])Tpm(2\w*|Handle|Device|Public|Private|Alg(Id)?|Rc|Rh|Cc|Ht|St|Su|Se|Pt|Exception|s[A-Z]\w+|t[A-Z]\w+)\b|\bTbsDevice\b|\busing\s+Tpm2Lib\b|Tbsi_\w+|NCryptOpenStorageProvider|MS_PLATFORM_CRYPTO_PROVIDER|"Microsoft Platform Crypto Provider")'
         - code: '\bGpioController\b|\bUsbDevice\b|\bHidDevice\b|\bLibUsb\w*'
     severity: blocker
     category: hardware
@@ -536,12 +538,16 @@ rules:
 
   - id: vendor-sdk-install-dir
     applies_to: [dotnet]
-    confidence: 0.7
+    confidence: 0.6
     when:
       same_file: true
       all:
         - code: 'Assembly\.Load(From|File)\(|LoadFromAssemblyPath\(|AssemblyLoadContext\.Default\.Resolving|AppDomain\.CurrentDomain\.AssemblyResolve'
-        - code: 'Install(Dir|Path|Folder|Location)\b|Program Files|ProgramFiles'
+        # the folder is a product's installation: Program Files, a path read from the registry, or a setting or
+        # variable that says so (InstallDir, InstallationPath, SdkRoot, VendorHome...)
+        - code: 'Install(ation|ed)?_?(Dir(ectory)?|Path|Folder|Location|Root)\b|\b\w*(Sdk|Runtime|Product|Vendor|Engine)_?(Dir(ectory)?|Path|Folder|Location|Root|Home)\b|Program Files|ProgramFiles|ProgramW6432|Registry\.(LocalMachine|CurrentUser|ClassesRoot)|RegistryKey\.OpenBaseKey'
+        # a loader of the application's own plug-ins looks under the application's folder
+        - not: {code: '(Plugins?|Modules?|Extensions?|Add-?ins?)_?(Dir(ectory)?|Path|Folder|Location|Root)\b|AppContext\.BaseDirectory|AppDomain\.CurrentDomain\.BaseDirectory'}
     severity: blocker
     category: thirdparty
     effort: 0
