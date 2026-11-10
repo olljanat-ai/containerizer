@@ -10,6 +10,24 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- **Analysis and generation that fitted the sample applications are general.**
+  - Console tools get one CronJob per sub-command also when the commands are declared with System.CommandLine,
+    CommandLineParser, Spectre.Console.Cli or McMaster.Extensions.CommandLineUtils.
+  - A console program that runs until it is stopped (sleeps forever, blocks on its host's `Run()`, polls in a loop
+    until cancelled) is a worker and gets a Deployment, not a CronJob (role rule `role-runs-until-stopped`); the plan
+    says why a component is a Deployment or a CronJob.
+  - The share of blocked server components from which an application is rated E is a setting:
+    `rating.not_feasible_share` in `rules/45-rating.yaml` (default 0.75, as before).
+  - Two drives or shares with the same folder (`\\fs1\in\orders`, `\\fs2\in\orders`) no longer land in one `/data`
+    folder: the second keeps its server and share (`/data/fs2-in/orders`).
+  - The README given to the LLM is also found as `README.rst`, `.txt`, `.adoc` or without an extension, in any case,
+    in `docs/`, or next to the projects when the root has none.
+  - A connection string without a port is a destination with its provider's default port (SQL Server 1433,
+    PostgreSQL 5432, MySQL 3306, RabbitMQ 5672), so the database server appears in the connectivity data and the
+    egress review; `Host=...;Database=...` without a port is read too.
+  - The CLI no longer treats a folder named `scenarios` as a folder of applications: each path is one application
+    (pass `scenarios/*`).
+
 - **More rules that fitted the sample applications are general.**
   - The console switch of a Windows service (`--console`, `/console`, `-interactive`, `--no-service`) is found however
     the code compares it (`args[0] == "..."`, `string.Equals(args[0], "...")`, `a.Equals("...")`, `args.Contains`,
