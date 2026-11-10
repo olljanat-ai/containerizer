@@ -10,6 +10,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.32.0 (2026-11-11)
+
 - **Verification, lab and links that fitted the sample applications are general.**
   - The Development-mode retry of the build-and-run verification runs only when Development reaches the dependencies
     another way (its settings take a setting off its external host or name a local stand-in such as SQLite or a
