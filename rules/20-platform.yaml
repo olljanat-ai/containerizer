@@ -1,4 +1,17 @@
 # Windows platform dependencies (OS APIs, native code, COM, hardware, desktop).
+#
+# `task_scheduler:` (used by schedules.py): where the repository's Windows Task Scheduler jobs are
+# read from, so each console component's CronJob gets the schedule and arguments of the job that started it
+# (New-ScheduledTaskTrigger / New-ScheduledTaskAction, schtasks /create, Task Scheduler XML exports).
+task_scheduler:
+  files: ["*.ps1", "*.psm1", "*.psd1", "*.cmd", "*.bat", "*.xml"]   # scripts, settings tables and XML exports
+  placeholder: "0 2 * * *"     # the schedule of a CronJob no job matched (annotated containerizer.io/schedule: placeholder)
+  # triggers that are no schedule: reported, never a CronJob
+  not_scheduled:
+    logon: "runs at logon: a Deployment, or not a server job"
+    startup: "runs at startup: a Deployment (a long-running process), not a CronJob"
+    once: "runs once: a Job, or nothing to schedule"
+    event: "runs on an event or when idle: no CronJob equivalent"
 rules:
   - id: com-office-automation
     applies_to: [dotnet]

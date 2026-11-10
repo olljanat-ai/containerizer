@@ -114,6 +114,7 @@ def migration_markdown(a: AppAssessment) -> str:
                 L.append(f"  - Learn more: {refs_md(refs_of(f))}")
         if any(r.get("finding") for r in ver):
             L.append("")
+    L += scheduled_tasks_markdown(a.scheduled_tasks())
     plans = a.migration_plans()
     if plans:
         from .migrate import plan_markdown, prompt_filename
@@ -132,6 +133,31 @@ def migration_markdown(a: AppAssessment) -> str:
             L.append(f"- {c.name}: " + ", ".join(sorted({f.rule.title for f in c.findings if f.severity in ('blocker', 'rewrite', 'refactor')})))
         L.append("")
     return "\n".join(L)
+
+
+def scheduled_tasks_markdown(tasks: list[dict]) -> list[str]:
+    """The Task Scheduler jobs found in the repository and the CronJob each became (schedules.report)."""
+    if not tasks:
+        return []
+    L = ["## Windows Task Scheduler jobs", "",
+         "Read from the repository's deploy scripts and Task Scheduler exports. Each job of a console component "
+         "became a CronJob with the same arguments and schedule (cron, at the hours of the server's local time); a "
+         "CronJob no job matched keeps the placeholder schedule and the annotation "
+         "`containerizer.io/schedule: placeholder`.", "",
+         "| Job | Where | Trigger | Schedule | Became |", "| --- | --- | --- | --- | --- |"]
+
+    def cell(v) -> str:
+        return str(v).replace("|", "\\|")
+    for t in tasks:
+        became = ", ".join(f"CronJob `{n}`" for n in t.get("cronjobs") or []) or t.get("why_not") or ""
+        if t.get("component") and t.get("cronjobs"):
+            became += f" ({t['component']})"
+        sched = f"`{t['schedule']}`" if t.get("schedule") else "-"
+        if t.get("note") and t.get("schedule"):
+            sched += f" ({t['note']})"
+        L.append(f"| {cell(t.get('name') or '(unnamed)')} | `{cell(t['file'])}:{t['line']}` | {cell(t['trigger'])} | "
+                 f"{cell(sched)} | {cell(became)} |")
+    return L + [""]
 
 
 def prompt_dir(app: str) -> str:
