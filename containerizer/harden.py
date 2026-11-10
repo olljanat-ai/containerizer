@@ -232,7 +232,7 @@ def harden_manifests(docs: list[dict], repo, c, plan: dict, component: str) -> l
         egress = egress_for(repo, c)
         plan["egress"] = egress
         docs[:] = [d for d in docs if d.get("kind") != "NetworkPolicy"]
-        docs.append(network_policy(component, labels, plan.get("port"), egress))
+        docs.append(network_policy(component, labels, plan.get("port"), egress, gateway=True))
     externalize_secrets(docs, component, labels, plan)
     return [{"id": ex["id"], "why": ex.get("why", "")} for ex in exceptions]
 
@@ -317,16 +317,24 @@ def ingress_sources(ns: str | None = None) -> list[dict]:
     return [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": ns}}}]
 
 
-def network_policy(component: str, labels: dict, port, egress: list[dict]) -> dict:
-    """Least-privilege NetworkPolicy: the service port in from the ingress controller's namespace, siblings + DNS +
-    inferred dependencies out."""
+def network_policy(component: str, labels: dict, port, egress: list[dict], gateway: bool = False) -> dict:
+    """Least-privilege NetworkPolicy: the service port in from the ingress controller's namespace (and, with
+    `gateway`, the Gateway's: the component has an HTTPRoute, gateway.py), siblings + DNS + inferred dependencies
+    out."""
     net = security()["network"]
     app = labels.get("app.kubernetes.io/part-of")
     siblings = [{"podSelector": {"matchLabels": {"app.kubernetes.io/part-of": app}}}] if app else []
     ingress = []
     ns = ingress_namespace()
     if port:
-        ingress.append({"from": ingress_sources(ns), "ports": [{"port": port, "protocol": "TCP"}]})
+        sources = ingress_sources(ns)
+        if gateway and ns != ANY_NAMESPACE:
+            from .gateway import proxy_namespace
+            gw = proxy_namespace()
+            if gw and gw != ns:
+                sources += ingress_sources(gw)
+                ns = f"{ns},{gw}"
+        ingress.append({"from": sources, "ports": [{"port": port, "protocol": "TCP"}]})
     dns = net["dns"]
     rules = [{"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": dns["namespace"]}},
                       "podSelector": {"matchLabels": dns["pod_labels"]}}],
@@ -617,7 +625,9 @@ def _inbound_note(namespaces: set[str]) -> str:
     """Who may call the service ports (the NetworkPolicies' ingress-from annotation)."""
     if ANY_NAMESPACE in namespaces:
         return "Inbound: service ports open to every namespace (--ingress-from any)."
-    return (f"Inbound: service ports from namespace {', '.join(sorted(namespaces))} (the ingress controller), "
+    namespaces = {n for x in namespaces for n in x.split(",")}
+    who = "the ingress controller, the Gateway" if len(namespaces) > 1 else "the ingress controller"
+    return (f"Inbound: service ports from namespace {', '.join(sorted(namespaces))} ({who}), "
             "sibling components and confirmed links only.")
 
 
@@ -856,6 +866,9 @@ def lint_manifests(docs: list[dict], where: str = "", provided: set[str] | None 
         if kind == "NetworkPolicy":
             _lint_ingress_namespace(L, d, tgt)
             continue
+        if kind == "HTTPRoute":
+            _lint_route(L, d, tgt)
+            continue
         for meta, pod in _pod_specs(d):
             waived = {w.strip() for w in ((meta.get("annotations") or {}).get(f"{ANNOTATION}/waives") or "").split(",") if w.strip()}
             spec = d.get("spec") or {}
@@ -980,6 +993,33 @@ def _lint_ingress_namespace(L: _Lint, d: dict, tgt: str) -> None:
             L.add("ingress-namespace", tgt, "an ingress rule allows every namespace (namespaceSelector: {}); select "
                   "the ingress controller's namespace (network.ingress_namespace), or generate with --ingress-from any")
             return
+
+
+def _lint_route(L: _Lint, d: dict, tgt: str) -> None:
+    """An HTTPRoute attaches to the Gateway's HTTPS listener (sectionName) and names its hosts (no wildcard)."""
+    from .gateway import LISTENER_ENV, settings
+    g = settings()
+    spec = d.get("spec") or {}
+    refs = [p for p in spec.get("parentRefs") or [] if isinstance(p, dict)]
+    if not refs:
+        L.add("route-parent", tgt, "no parentRefs: the route attaches to no Gateway")
+    https = re.compile(g.get("https_listener") or "^https")
+    allowed = {os.environ.get(LISTENER_ENV, "").strip(), str((g.get("parent") or {}).get("section") or "")} - {""}
+    for p in refs:
+        if p.get("kind", "Gateway") != "Gateway":
+            L.add("route-parent", tgt, f"parentRef {p.get('name')} is a {p.get('kind')}, not a Gateway")
+            continue
+        sec = str(p.get("sectionName") or "")
+        if p.get("port") or not sec or not (sec in allowed or https.search(sec)):
+            L.add("route-listener", tgt, f"parentRef {p.get('name')} names "
+                  + (f"listener {sec!r}" if sec else "no listener (sectionName)")
+                  + ": attach to the Gateway's HTTPS listener only")
+    hosts = spec.get("hostnames") or []
+    if not hosts:
+        L.add("route-hostname", tgt, "no hostnames: the route answers for every host name of the listener")
+    for h in hosts:
+        if "*" in str(h) or re.fullmatch(r"[\d.]+|\[?[0-9a-fA-F]*:[0-9a-fA-F:.]*\]?", str(h)):
+            L.add("route-hostname", tgt, f"host name {h!r} is a wildcard or an address")
 
 
 def _looks_like_path(v: str) -> bool:

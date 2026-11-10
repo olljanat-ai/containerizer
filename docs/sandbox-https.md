@@ -152,6 +152,10 @@ spec:
 - **On another cluster**, give the ingress controller the wildcard certificate as its default. For
   ingress-nginx, use `--default-ssl-certificate`. For Traefik, use a `default` TLSStore. Redirect HTTP to
   HTTPS at the entry point: the Traefik annotations above put the route on `websecure` only.
+- The same `k8s.yaml` also has the component's [HTTPRoute](gateway-api.md) for the real environment's
+  Gateway. The sandbox does not apply it: the appliance's Traefik has no Gateway API provider, so the
+  sandbox's copy of each app's Flux Kustomization drops every HTTPRoute (a `$patch: delete` patch), and the
+  Ingress above serves the sandbox.
 
 ## Troubleshooting
 

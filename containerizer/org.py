@@ -556,8 +556,16 @@ def sandbox_wait_patch(folder: Path, doc: dict) -> dict | None:
     ns = doc.get("app") or ""
     if not ns:
         return None
+    docs = _app_docs(folder)
     ops = [{"op": "add", "path": "/spec/wait", "value": False},
-           {"op": "add", "path": "/spec/healthChecks", "value": sandbox_health_checks(_app_docs(folder), ns)}]
+           {"op": "add", "path": "/spec/healthChecks", "value": sandbox_health_checks(docs, ns)}]
+    if any(d.get("kind") == "HTTPRoute" for d in docs):
+        # the HTTPRoutes are for the real environment's Gateway: the sandbox routes with its Traefik Ingress
+        # (sandbox_https.py) and may not have the Gateway API CRDs at all
+        from .gateway import ROUTE_API
+        ops.append({"op": "add", "path": "/spec/patches/-", "value": {
+            "patch": f"$patch: delete\napiVersion: {ROUTE_API}\nkind: HTTPRoute\nmetadata:\n  name: any\n",
+            "target": {"group": ROUTE_API.split("/")[0], "kind": "HTTPRoute"}}})
     group, version = KUSTOMIZE_API.split("/")
     return {"target": {"group": group, "version": version, "kind": "Kustomization", "name": ns, "namespace": ns},
             "patch": json.dumps(ops)}

@@ -1023,6 +1023,7 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
     all_k8s = []
     images: list[tuple[str, str]] = []
     comp_docs: dict[str, list[dict]] = {}
+    route_notes: dict[str, dict] = {}
     lab_plan = None
     if lab is not None:
         from . import labservices
@@ -1047,6 +1048,13 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
                 from .sandbox_https import ingress
                 svc = next(d for d in docs if d.get("kind") == "Service")
                 docs.append(ingress(domain, app_ns(a.name), svc["metadata"]["name"], dict(svc["metadata"]["labels"])))
+            if plan.get("port"):                    # HTTPRoute at the platform's Gateway (gateway.py)
+                from .gateway import route_docs
+                svc = next(d for d in docs if d.get("kind") == "Service")
+                routes, route_notes[k8s_name(c.name)] = route_docs(
+                    c, app_ns(a.name), svc["metadata"]["name"], dict(svc["metadata"]["labels"]), domain,
+                    Path(a.repo.root), plan)
+                docs += routes
             if devdb is not None:
                 from .devdb import inject
                 inject(docs, devdb, c.name)
@@ -1120,7 +1128,11 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
     if all_k8s:
         written += app_files(a, out, all_k8s, comp_docs, images, registry, gitops)
         written += _connectivity(a, out, approved_egress, links)
-    (out / "MIGRATION.md").write_text(migration_markdown(a))
+    from . import gateway
+    if route_notes and (out / "HARDENING.md").exists():
+        (out / "HARDENING.md").write_text((out / "HARDENING.md").read_text() + "\n"
+                                          + gateway.hardening_markdown(route_notes))
+    (out / "MIGRATION.md").write_text(migration_markdown(a) + gateway.migration_markdown(route_notes))
     written.append(out / "MIGRATION.md")
     written += write_agent_prompts(a, out)
     written += _build_pipeline(a, out, registry, ci_provider)
