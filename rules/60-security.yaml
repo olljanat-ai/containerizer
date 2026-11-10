@@ -172,6 +172,11 @@ network:
   no_egress_roles: [spa]
   # configured URLs pointing here are not dependencies
   local_hosts: '^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\*|\+)$'
+  # The organization's own internal DNS domains (corp.contoso.com, ad.company.net): a configured host under one
+  # of them is internal like a one-label name or a .local/.corp/.internal one, so it is a candidate for a link to
+  # another assessed application and for the calls between the Linux and Windows parts of a migration plan.
+  # A site setting: the environment variable CONTAINERIZER_INTERNAL_DOMAINS (comma separated) overrides it.
+  internal_domains: []
   # well-known public services: the build-and-run verification leaves these to DNS; every other configured host
   # name resolves to 127.0.0.1 there, so a missing service fails fast as "connection refused" (verify.hosts_to_map)
   public_hosts: '(^|\.)(microsoftonline\.com|microsoft\.com|live\.com|googleapis\.com|google\.com|github\.com|githubusercontent\.com|nuget\.org|npmjs\.org|pypi\.org|maven\.org)$'

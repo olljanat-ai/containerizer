@@ -763,6 +763,10 @@ def test_split_helpers(tmp_path):
         (tmp_path / d / "App.sln").write_text("")
     (tmp_path / "scenarios/billing/src/Api.csproj").write_text("")
     assert orgmod.suggest_split(tmp_path) == {"pattern": "scenarios/*", "count": 3}
+    for d in ("apps/a", "apps/b", "apps/c"):                                             # the XML solution format
+        (tmp_path / ".other" / d).mkdir(parents=True)
+        (tmp_path / ".other" / d / "App.slnx").write_text("<Solution />")
+    assert orgmod.suggest_split(tmp_path / ".other") == {"pattern": "apps/*", "count": 3}
     assert orgmod.split_folders(tmp_path, "scenarios/*") == ["scenarios/billing", "scenarios/claims", "scenarios/crm"]
     assert orgmod.split_folders(tmp_path, "*") == ["docs", "scenarios"]                 # hidden folders never
     for bad in ("../x", "a/../b", "/etc/*", "", "x" * 201, "a;b"):

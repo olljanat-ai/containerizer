@@ -837,7 +837,7 @@ def redeploy(connect, key, job: int, payload: dict, result: dict, work: Path, no
     """Try again on the results page of an application whose sandbox runs an order's patched copy: the same patch on
     the same commit, built, checked and deployed again with this version's generator and gate (no LLM), the way it
     was when the order finished (deploy). A scan leaves the patched copy as it is (org.kept_patch), so without this
-    a component this version would deploy stays out (the lab's expense-claims frontend, left out by 0.16.0's gate).
+    a component this version would deploy stays out (a frontend an earlier version's gate left out).
     Returns the new result["sandbox"]; Skip when it cannot be built."""
     from . import refactor as rf
     patch = _patch_text(result)

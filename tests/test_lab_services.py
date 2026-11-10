@@ -468,8 +468,7 @@ def test_ready_for_and_crash_log():
 # --------------------------------------------------------------------------- the repository's SQL setup scripts
 
 def test_setup_scripts_are_found_in_the_order_a_deploy_script_runs_them(tmp_path):
-    """The lab's expense-claims: deploy/install-database.ps1 runs db/01 to 03 with Invoke-Sqlcmd; 04 only after the
-    first HR import (its README), so not here."""
+    """A deploy script runs db/01 to 03 with Invoke-Sqlcmd; 04 only after the first import (it says), so not here."""
     from containerizer import labinit
     for n in ("01-create-database.sql", "02-quartz-tables.sql", "03-schema.sql", "04-reference-data.sql"):
         write(tmp_path, f"db/{n}", f"-- {n}\nCREATE TABLE t{n[:2]} (id int);\nGO\n")
@@ -491,6 +490,48 @@ def test_setup_scripts_are_found_in_the_order_a_deploy_script_runs_them(tmp_path
         "db/01-create-database.sql", "db/02-quartz-tables.sql", "db/03-schema.sql", "db/04-reference-data.sql",
         "db/9-early.sql", "db/10-late.sql"]
     assert labinit.find(tmp_path / "tests") == ([], "")                 # test data is not set-up
+
+
+def test_setup_scripts_of_several_applications_and_of_migration_folders(tmp_path):
+    from containerizer import labinit
+    # two applications in one repository, each with its own deploy script and scripts of the same names
+    for app in ("billing", "crm"):
+        write(tmp_path, f"{app}/db/01-schema.sql", f"CREATE TABLE {app} (id int);")
+        write(tmp_path, f"{app}/deploy/install.ps1", "Invoke-Sqlcmd -InputFile (Join-Path $db '01-schema.sql')")
+    scripts, how = labinit.find(tmp_path)
+    assert [r for r, _ in scripts] == ["billing/db/01-schema.sql", "crm/db/01-schema.sql"]
+    assert how == "in the order billing/deploy/install.ps1, crm/deploy/install.ps1 run them"
+    for app in ("billing", "crm"):
+        (tmp_path / app / "deploy" / "install.ps1").unlink()
+    scripts, how = labinit.find(tmp_path)
+    assert [r for r, _ in scripts] == ["billing/db/01-schema.sql", "crm/db/01-schema.sql"]
+    assert how == "every .sql file of billing/db/, crm/db/, by name"
+    # Flyway: versions in order, repeatable migrations last, undo scripts never; EF Core's C# migrations are no scripts
+    fly = tmp_path / "fly"
+    for n in ("V10__late.sql", "V2__early.sql", "R__views.sql", "U2__early.sql", "V3__x.down.sql"):
+        write(fly, f"src/main/resources/db/migration/{n}", "SELECT 1;")
+    write(fly, "src/main/resources/db/migration/down/V2__early.sql", "DROP TABLE t;")
+    assert [r.split("/")[-1] for r, _ in labinit.find(fly)[0]] == ["V2__early.sql", "V10__late.sql", "R__views.sql"]
+    ef = tmp_path / "ef"
+    write(ef, "src/Api/Migrations/20240101_Init.cs", "class Init : Migration {}")
+    assert labinit.find(ef) == ([], "")
+
+
+def test_setup_scripts_get_the_values_of_their_sqlcmd_variables():
+    from containerizer import labinit
+    body, dropped = labinit.prepare(""":setvar DatabaseName "Shop"
+:setvar Schema app
+:setvar Owner "CORP\\shop web"
+CREATE SCHEMA [$(Schema)];
+GO
+INSERT INTO [$(schema)].Info VALUES (N'$(DatabaseName)', N'$(Owner)', N'$(Unset)');
+GO
+""")
+    assert dropped == [] and ":setvar" not in body
+    assert "CREATE SCHEMA [app];" in body
+    assert "VALUES (N'$(CZ_LAB_DATABASE)', N'CORP\\shop web', N'$(Unset)')" in body
+    run = labinit.script({"001-a.sql": body}, "m", "cz_shop")
+    assert "N''cz_shop''" in run and "CZ_LAB_DATABASE" not in run
 
 
 def test_setup_scripts_leave_out_what_the_lab_does_itself():

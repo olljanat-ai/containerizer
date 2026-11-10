@@ -132,9 +132,13 @@ For each service that the component needs and that is on, the scan writes the fo
 - **Database schema.** The databases start empty. Run the app's migrations at start-up, as most EF Core
   apps do, or upload a [dev database backup](dev-databases.md) for SQL Server, PostgreSQL or MySQL.
 - **The repository's SQL setup scripts (SQL Server).** Many apps are set up by a DBA with scripts in the
-  repository rather than by migrations. The scan finds them: in the order a deploy script runs them
+  repository rather than by migrations. The scan finds them: in the order the deploy scripts run them
   (`Invoke-Sqlcmd -InputFile ...`, `sqlcmd -i ...`), else every `.sql` file of a folder named `db`, `database`,
-  `sql`, `sqlscripts` or `schema`, by name. It leaves out what the lab does itself or what needs server-wide rights
+  `sql`, `sqlscripts`, `schema` or `migrations` (Flyway's `db/migration` too: versions in order, repeatable
+  migrations last, undo and `down` scripts never), by name; of several such folders side by side (`billing/db`,
+  `crm/db`) all of them. `sqlcmd` variables get the values the script sets itself (`:setvar Schema "app"`), and a
+  database-name variable (`$(DatabaseName)`) the app's lab database; a variable without a value stays as written
+  and its batch fails. It leaves out what the lab does itself or what needs server-wide rights
   (a database, a login, server configuration, another database, `sqlcmd` directives such as `:on error exit`) and
   a script's own `BEGIN TRANSACTION` / `COMMIT` batches, and puts the rest into the ConfigMap
   `cz-lab-sqlserver-init` of the app's namespace (`lab/k8s.yaml`; `lab/README.md` lists the scripts and what was

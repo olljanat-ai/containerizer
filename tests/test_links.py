@@ -31,8 +31,23 @@ def test_identities_and_internal_looking_names():
         "orders-demo.sandbox.example"}
     for h in ("billing", "billing.corp.local", "x.internal", "erp.intranet"):
         assert lk.internal_looking(h), h
-    for h in ("api.github.com", "localhost", "10.1.2.3", ""):
+    for h in ("api.github.com", "localhost", "10.1.2.3", "", "orders.corp.contoso.com"):
         assert not lk.internal_looking(h), h
+
+
+def test_the_organizations_own_domains_are_internal(monkeypatch):
+    """Internal hosts on a registered domain (orders.corp.contoso.com): network.internal_domains, or the site's
+    CONTAINERIZER_INTERNAL_DOMAINS."""
+    assert lk.internal_domains() == ()
+    monkeypatch.setenv(lk.INTERNAL_ENV, "corp.contoso.com, *.ad.company.net bad_entry")
+    assert lk.internal_domains() == ("corp.contoso.com", "ad.company.net")
+    for h in ("orders.corp.contoso.com", "corp.contoso.com", "SQL01.ad.company.net."):
+        assert lk.internal_looking(h), h
+    for h in ("www.contoso.com", "notcorp.contoso.com.example.org", "xcorp.contoso.com"):
+        assert not lk.internal_looking(h), h
+    monkeypatch.delenv(lk.INTERNAL_ENV)
+    monkeypatch.setattr("containerizer.harden.security", lambda: {"network": {"internal_domains": ["intra.example.org"]}})
+    assert lk.internal_looking("erp.intra.example.org") and not lk.internal_looking("orders.corp.contoso.com")
 
 
 def _conn(links=(), flows=()):

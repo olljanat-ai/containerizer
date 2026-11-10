@@ -534,7 +534,7 @@ def cluster_filled_secrets(k8s_docs: list[dict]) -> set:
 
 # a line the image's start-up script marks as information (the nginx image's entrypoint: "10-listen-on-ipv6-by-
 # default.sh: info: can not modify /etc/nginx/conf.d/default.conf (read-only file system?)", after which nginx serves
-# as it should): not a hardening failure (the lab's expense-claims frontend was left out of the sandbox for it)
+# as it should): not a hardening failure (a frontend would be left out of the sandbox for it)
 INFO_LINE = re.compile(r"(?i)(?:^|[\s:])(?:info|notice)\s*:\s")
 
 
