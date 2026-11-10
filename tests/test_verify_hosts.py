@@ -45,7 +45,8 @@ def _docker_run_cmd(monkeypatch, a, c, tmp_path, env=None):
 def test_add_host_list_comes_from_connection_strings_and_urls(tmp_path, monkeypatch):
     a, c = _app(tmp_path)
     hosts, mapped, details = _docker_run_cmd(monkeypatch, a, c, tmp_path)
-    assert hosts == {"sql.corp.example": [], "pg.corp.example": [5433], "mq.corp.example": [5671],
+    # a connection string without a port has its provider's default (SQL Server: 1433)
+    assert hosts == {"sql.corp.example": [1433], "pg.corp.example": [5433], "mq.corp.example": [5671],
                      "orders.corp.example": [8081]}
     assert sorted(mapped) == sorted(f"{h}:127.0.0.1" for h in hosts)
     assert details["mapped_hosts"] == sorted(hosts)
@@ -86,7 +87,7 @@ def test_a_run_stopped_by_external_services_names_what_it_needs(tmp_path, monkey
     assert r["status"] == "ok-external" and seen == [verify.hosts_to_map(a, c)]
     assert r["attempts"][0]["mapped_hosts"] == sorted(seen[0])
     assert sorted(r["needs"]) == ["mq.corp.example:5671", "orders.corp.example:8081", "pg.corp.example:5433",
-                                  "sql.corp.example"]
+                                  "sql.corp.example:1433"]
 
 
 def test_code_that_reads_a_setting_names_no_host():

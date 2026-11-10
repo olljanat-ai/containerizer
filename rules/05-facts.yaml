@@ -6,7 +6,9 @@ rules:
   - id: console-switch
     phase: facts
     priority: 90
-    when: {code: '\bargs\.(Contains|Any)\(\s*(\w+\s*=>\s*\w+\s*==\s*)?"(?P<console_arg>(--|-|/)(console|interactive|noservice|no-service))"'}
+    # the switch compared with an argument, in any of the usual ways: args.Contains("--console"), args[0] == "/console",
+    # string.Equals(args[0], "/console", ...), a.Equals("--console", ...), case "--console":
+    when: {code: '(?:[!=]=\s*|\bEquals\(\s*(?:[\w\[\]. ]+,\s*)?|\b(?:Contains|IndexOf|StartsWith)\(\s*|\bcase\s+)"(?P<console_arg>(--|-|/)(console|interactive|noservice|no-service))"'}
 
   # ---- listening port the app uses today (informational; containers listen on 8080)
   - id: port-code-useurls
@@ -131,7 +133,9 @@ rules:
 
   - id: fact-run-once-arg
     phase: facts
-    when: {code: '"(?P<oneshot_arg>--(run|once|run-once|run-nightly|nightly|import|export)[\w\-]*)"'}
+    # a literal the arguments are compared with or searched for (args.Contains("--once"), case "--import":,
+    # ArgValue(args, "--export")), not any string that looks like an option
+    when: {code: '(?:[!=]=\s*|\bEquals\(\s*(?:[\w\[\]. ]+,\s*)?|\b(?:Contains|IndexOf|StartsWith)\(\s*|\bcase\s+|\(\s*args\s*,\s*)"(?P<oneshot_arg>--(run|once|nightly|import|export)[\w\-]*)"'}
 
   # Node.js: a health route on the application object itself (a router may be mounted under a prefix,
   # which a probe path cannot know, so only app/server/fastify routes count)

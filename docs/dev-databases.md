@@ -62,10 +62,17 @@ scan worker ──reads DevDatabase──> builds <registry>/<app>/devdb:<tag> (
    - **With the LLM** (**Ask the LLM** on the scan): the AI reads the instructions and the
      configuration the scan found. It answers with environment variables written as templates (only
      `{host} {port} {database} {user} {password}`). Every answer is validated, and anything that
-     contains a literal password, a `$(...)` reference or an unknown placeholder is dropped.
+     contains a literal password (in a connection string or in a URL), a `$(...)` reference or an unknown
+     placeholder is dropped.
    - **Without the LLM** (or when its answer has nothing usable): every connection string the scan
      found in `appsettings*.json` points at the database. If it found none, the scan sets
-     `ConnectionStrings__DefaultConnection`.
+     `ConnectionStrings__DefaultConnection`. A Java, Node.js, Python or Go component that has a client of
+     the database's engine gets the variables of its own conventions, as for the
+     [lab services](lab-services.md#what-the-scan-changes-in-an-app): `SPRING_DATASOURCE_URL` with a JDBC URL
+     and the user name and password next to it, the variables its code reads (`DB_HOST`, `PGPASSWORD`, ...),
+     else `DATABASE_URL`.
+
+   The LLM is told the same conventions for each component, with the variables the component's code reads.
 
    The password is never written into a manifest. The container gets `CZ_DEVDB_PASSWORD` from the
    Secret `devdb`, and the connection string refers to it with Kubernetes' `$(CZ_DEVDB_PASSWORD)`

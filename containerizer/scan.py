@@ -1542,9 +1542,38 @@ def scan(root: str | Path) -> Repo:
     _mark_template_content(projects, root)
     _mark_build_time_runs(projects, files, root)
 
-    readme = ""
-    for cand in ("README.md", "readme.md", "README.txt", "README"):
-        if (root / cand).exists():
-            readme = read_text(root / cand)
-            break
-    return Repo(root=root, name=root.name, projects=projects, files=files, readme=readme, solution_files=sln)
+    return Repo(root=root, name=root.name, projects=projects, files=files, readme=_readme(root, projects),
+                solution_files=sln)
+
+
+README_RE = re.compile(r"(?i)readme(\.(md|markdown|rst|txt|adoc))?")
+README_ORDER = (".md", ".markdown", ".rst", ".txt", ".adoc", "")
+
+
+def _readme_in(folder: Path) -> Path | None:
+    try:
+        found = [f for f in folder.iterdir() if README_RE.fullmatch(f.name) and f.is_file()]
+    except OSError:
+        return None
+    return min(found, key=lambda f: (README_ORDER.index(f.suffix.lower()), f.name), default=None)
+
+
+def _readme(root: Path, projects: list) -> str:
+    """The README the LLM prompts get: the repository root's (README.md, .rst, .txt, .adoc or without an extension,
+    in any case), else docs/README, else the one nearest to the projects (in a project's folder or a folder above
+    it; the one that covers most projects)."""
+    for folder in (root, root / "docs", root / "doc"):
+        f = _readme_in(folder)
+        if f is not None:
+            return read_text(f)
+    seen: dict[Path, int] = {}
+    for p in projects:
+        d = p.path.parent
+        while d != root and root in d.parents:
+            seen[d] = seen.get(d, 0) + 1
+            d = d.parent
+    for d in sorted(seen, key=lambda d: (-seen[d], len(d.parts), str(d)))[:200]:
+        f = _readme_in(d)
+        if f is not None:
+            return read_text(f)
+    return ""

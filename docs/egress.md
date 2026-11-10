@@ -37,7 +37,7 @@ not. It shows what the application needs from the network, from every source, ea
 
 | Source | What |
 | --- | --- |
-| Configuration, code | URLs and connection strings in the configuration (`appsettings.json`, `web.config`, `.properties`, `.yaml`, `.env`) and the code, with the file and line. Development settings, comments, documentation and schema URLs are left out. |
+| Configuration, code | URLs and connection strings in the configuration (`appsettings.json`, `web.config`, `.properties`, `.yaml`, `.env`) and the code, with the file and line. Development settings, comments, documentation and schema URLs are left out. A connection string without a port has its provider's default (SQL Server 1433, PostgreSQL 5432, MySQL 3306, RabbitMQ 5672); a named SQL Server instance (`host\instance`), whose port SQL Server Browser gives, is not listed. |
 | Package | A dependency the generated NetworkPolicy opens a port for (a SQL Server client, an HTTP client, a message broker) when no configuration names its destination. |
 | NetworkPolicy | What the generated policy allows: the inferred ports to any address but the blocked ranges, the application's own pods, DNS. |
 | Lab service | The [lab services](lab-services.md) the components need. |

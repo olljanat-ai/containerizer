@@ -50,7 +50,7 @@ Notes:
 
 ## Verification: building and running the generated containers
 
-`python -m containerizer verify <challenge> --learn` builds every component the rules call
+`python -m containerizer verify <challenge>/scenarios/* --learn` builds every component the rules call
 feasible and runs it hardened (read-only root filesystem, non-root, all capabilities dropped,
 no-new-privileges). The first full pass, before the fixes it led to, ended like this:
 

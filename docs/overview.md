@@ -61,14 +61,15 @@ explains how the assessment works and what it generates. To install and use it, 
    `AddDocuments()` does not reach the search index that `AddSearchIndex()`, next to it in the same
    registration class, opens. A plain static method is reached through its type name, so a property
    of the same name elsewhere is not a mention.
-6. **Confidence**: packages and references unknown to `rules/packages*.yaml`, and uncertain rules,
+6. **Confidence**: packages and references unknown to `rules/packages*.yaml` (`linux_ok`: works on Linux;
+   `judged_by_rules`: known, and left to the finding rules), and uncertain rules,
    lower a component's confidence. Low confidence triggers verification and, optionally, Claude.
 7. **Rating** per application: **A** container-ready (built on a modern stack and libraries, runs in
    containers with configuration only, no code changes), **B** minor refactoring, **C** partial (some
    components must stay on Windows; the rest need at most minor changes, so that part can run in Linux
    containers now), **D** major refactoring (a framework port is needed, also when other components must
    stay on Windows), **E** not feasible (no server component, or three quarters or more of them must stay
-   on Windows).
+   on Windows; the share is `rating.not_feasible_share` in `rules/45-rating.yaml`).
    **Stateful** is shown next to the rating, not taken from it: a server component that keeps its own
    data on its disk or in its process memory still rates **A** when it runs with configuration only,
    because it runs as it is with that data on a persistent volume and one replica (see
@@ -446,7 +447,10 @@ Techniques used to avoid application changes:
 - NLog folders from `${configsetting:...}` / `${environment:...}` with Windows defaults are re-pointed
   by env var, and `${basedir}/logs` becomes a writable folder;
 - installed Windows tools (`C:\\Program Files\\wkhtmltopdf\\bin\\wkhtmltopdf.exe`) map to the Linux binary on PATH;
-- console tools with sub-commands (usage text, verb arrays, `case "x":`) get one CronJob per command;
+- console tools with sub-commands (usage text, verb arrays, `case "x":`, or the commands of System.CommandLine,
+  CommandLineParser, Spectre.Console.Cli and McMaster.Extensions.CommandLineUtils) get one CronJob per command;
+- a console program that runs until it is stopped (it sleeps forever, blocks on its host's `Run()`, or polls in a
+  loop until cancelled; role rule `role-runs-until-stopped`) is a worker: a Deployment, not a CronJob;
 - each CronJob gets the schedule and arguments of the repository's Windows Task Scheduler job that starts it
   ([below](#scheduled-tasks));
 - workers that use the ASP.NET Core shared framework get the aspnet base image;
