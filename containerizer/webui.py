@@ -219,6 +219,7 @@ def load_application(conn, app_id: int) -> dict | None:
                                  "WHERE ApplicationId = %s ORDER BY AssessedAt DESC, AssessmentId DESC", (app_id,))
     app["migrations"] = load_migrations(conn, app_id)
     app["idp"] = load_idp_clients(conn, app_id)
+    app["scheduled_tasks"] = load_scheduled_tasks(conn, app_id)
     app["llm_reviews"] = load_llm_reviews(conn, app_id)
     app["refactors"] = load_refactor_orders(conn, app_id)
     from .connectivityui import load as load_connectivity
@@ -578,6 +579,44 @@ def load_idp_clients(conn, app_id: int) -> list[dict]:
         print(f"warning: sandbox IdP clients not available ({type(ex).__name__}); run `containerizer db init`",
               file=sys.stderr)
         return []
+
+
+def load_scheduled_tasks(conn, app_id: int) -> list[dict]:
+    """The Task Scheduler jobs of the latest assessment (empty before `db init` made schema 45)."""
+    try:
+        r = _rows(conn, "SELECT ScheduledTasksJson FROM cz.vScheduledTaskLatest WHERE ApplicationId = %s", (app_id,))
+        return json.loads(r[0]["ScheduledTasksJson"]) if r and r[0].get("ScheduledTasksJson") else []
+    except Exception:  # noqa: BLE001 - schema not upgraded yet
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return []
+
+
+def _scheduled_tasks(rows: list[dict]) -> str:
+    """The repository's Windows Task Scheduler jobs, their schedule and the CronJob each became (schedules.report)."""
+    if not rows:
+        return ""
+    items = []
+    for t in rows:
+        names = ", ".join(f"<code>{e(n)}</code>" for n in t.get("cronjobs") or [])
+        if names:
+            became = f"CronJob {names}" + (f" <span class='muted small'>({e(t['component'])})</span>"
+                                           if t.get("component") else "")
+        else:
+            became = f"<span class='muted'>{e(t.get('why_not') or '')}</span>"
+        note = f"<div class='muted small'>{e(t['note'])}</div>" if t.get("note") and t.get("schedule") else ""
+        sched = f"<code>{e(t['schedule'])}</code>" if t.get("schedule") else "-"
+        items.append(f"<tr><td>{e(t.get('name') or '(unnamed)')}<div class='muted small'><code>{e(t.get('file'))}:"
+                     f"{int(t.get('line') or 0)}</code></div></td><td>{e(t.get('trigger') or '')}</td>"
+                     f"<td>{sched}{note}</td><td>{became}</td></tr>")
+    return ("<h2 id='scheduled-tasks'>Scheduled tasks</h2><p class='muted small'>Windows Task Scheduler jobs in the "
+            "repository's deploy scripts and exports. Each job of a console component becomes a CronJob with the same "
+            "arguments and schedule (at the hours of the server's local time); a CronJob no job matched keeps a "
+            "placeholder schedule, annotated <code>containerizer.io/schedule: placeholder</code>.</p>"
+            "<table><thead><tr><th>Job</th><th>Trigger</th><th>Schedule</th><th>Became</th></tr></thead>"
+            f"<tbody>{''.join(items)}</tbody></table>")
 
 
 IDP_PROTOCOL = {"oidc": "OpenID Connect", "wsfed": "WS-Federation", "saml": "SAML 2.0"}
@@ -1078,6 +1117,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 <tbody>{comp_rows}</tbody></table>
 {_scan_again(app, refactor)}
 {_idp_section(app.get("idp") or [])}
+{_scheduled_tasks(app.get("scheduled_tasks") or [])}
 {_refactoring(app, refactor)}
 <h2>What needs to change, and why</h2>{''.join(details)}
 {_connectivity(app, refactor)}

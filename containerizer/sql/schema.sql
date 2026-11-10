@@ -2677,3 +2677,16 @@ IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 43) INSER
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 44) INSERT [${schema}].SchemaVersion (Version) VALUES (44);
 GO
+
+-- 45: the Windows Task Scheduler jobs the latest assessment of each application found in its repository, their cron
+-- schedule and the CronJob each became (assessment.json "scheduled_tasks", schedules.report), for the results page
+CREATE OR ALTER VIEW [${schema}].vScheduledTaskLatest AS
+SELECT aa.ApplicationId, aa.AssessmentId, aa.AssessedAt, JSON_QUERY(aa.ReportJson, '$$.scheduled_tasks') AS ScheduledTasksJson
+FROM [${schema}].ApplicationAssessment aa
+WHERE aa.AssessmentId = (SELECT MAX(x.AssessmentId) FROM [${schema}].ApplicationAssessment x WHERE x.ApplicationId = aa.ApplicationId);
+GO
+GRANT SELECT ON [${schema}].vScheduledTaskLatest TO [${schema}_reader];
+GRANT SELECT ON [${schema}].vScheduledTaskLatest TO [${schema}_writer];
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 45) INSERT [${schema}].SchemaVersion (Version) VALUES (45);
+GO
