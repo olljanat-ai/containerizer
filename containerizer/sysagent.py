@@ -976,14 +976,17 @@ table inet {TABLE} {{
     meta l4proto ipv6-icmp icmpv6 type echo-request limit rate 20/second burst 50 packets accept
     udp sport 67 udp dport 68 accept
     udp sport 547 udp dport 546 accept
-    tcp dport {{ {", ".join(str(p) for p in INBOUND_TCP)} }} accept
     # containers and pods: the DNS filter; pods also the k3s API and the kubelet. Builds and verification runs
-    # (Docker's bridges) only the feed proxies besides: not the results database, the registry, Grafana or the k3s API
+    # (Docker's bridges) only the feed proxies besides: not the results database, the registry, Grafana or the k3s API.
+    # Before the inbound ports below: those are for the network outside, not for builds (SSH, the admin pages)
     iifname {{ {ifaces} }} ip daddr {DNS_ADDR} meta l4proto {{ tcp, udp }} th dport 53 accept
     iifname {{ {docker_ifaces} }} ip daddr {DNS_ADDR} tcp dport {{ {", ".join(str(p) for p in FEED_PROXY_PORTS)} }} accept
     iifname {{ {docker_ifaces} }} limit rate 10/minute burst 20 packets log prefix "cz-build-drop: " level info
     iifname {{ {docker_ifaces} }} drop
     iifname {{ {k3s_ifaces} }} tcp dport {{ 6443, 10250 }} accept
+    # pods: HTTPS (the sandbox apps' own URLs are on Caddy), never SSH
+    iifname {{ {k3s_ifaces} }} tcp dport 22 drop
+    tcp dport {{ {", ".join(str(p) for p in INBOUND_TCP)} }} accept
     limit rate 10/minute burst 20 packets log prefix "cz-in-drop: " level info
   }}
 

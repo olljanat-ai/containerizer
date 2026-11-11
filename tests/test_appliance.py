@@ -3,6 +3,7 @@
 import io
 import json
 import re
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1152,3 +1153,17 @@ def test_the_llm_usage_dashboard_is_set_up_from_the_app_code(paths, monkeypatch)
     assert not [c for c in grafana["calls"] if c[0] != "GET"] and len(logins) == 1
     grafana["dash"] = None
     assert sysagent.grafana_usage_sync(opener=opener, connect=lambda cs, pw: Conn()) == "dashboard"
+
+
+def test_builds_and_pods_never_reach_the_appliances_ssh(paths):
+    """The inbound ports (SSH, HTTPS) are for the network outside: the build bridges' drop comes before them (the
+    boot test's probe from a build REACHED <appliance>:22), and pods may use HTTPS (the sandbox URLs) but not SSH."""
+    nft, _ = sysagent.render(sysagent.system_rules(), {"mode": "enforce", "rules": []}, upstreams=["10.0.0.2"])
+    chain = nft[nft.index("chain input"):nft.index("chain forward")]
+    inbound = chain.index("tcp dport { 22, 443 } accept")
+    assert chain.index('"br-*" } drop') < inbound
+    assert chain.index("tcp dport 22 drop") < inbound
+    if shutil.which("nft"):
+        import subprocess
+        p = subprocess.run(["nft", "-c", "-f", "-"], input=nft, capture_output=True, text=True)
+        assert p.returncode == 0 or "Operation not permitted" in p.stderr, p.stderr

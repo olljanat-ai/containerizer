@@ -29,6 +29,18 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
     Secret's values away.
   - **Only a namespace's own key.** An ExternalSecret that names another namespace's remote key gets no entry, so
     one namespace's operators cannot write another's values.
+- **Fix: settings named `...Pwd`, `...Passwd` or just `Pass` were not secret.** A password in such a .NET setting
+  was not read from the secret store, and with a release-pipeline token it went to the settings ConfigMap in Git.
+  They are secret now, for replatformed services' environment variables too (`MAIL_PASS`); `Bypass` and `Compass`
+  stay plain settings.
+- **Security fix: builds of scanned code could reach the appliance's SSH and HTTPS ports.** The firewall accepted
+  the inbound ports (22, 443) before it dropped what comes from Docker's build bridges, so a build or verification
+  run of a scanned repository reached the appliance's SSH server and its admin pages. The build bridges' drop now
+  comes first, and pods in the sandbox cluster no longer reach SSH either (HTTPS stays: the sandbox URLs are on
+  Caddy). Found by the boot test's probe once it ran again (next item).
+- **Fix: the appliance boot test used `CZ_IMAGE_MSSQL` before loading it** (`unbound variable`), so its
+  build-isolation checks never ran.
+
 ## 0.35.7 (2026-11-11)
 
 - **Fix: an appsettings.json with comments or unquoted tokens was read as empty.** The scan understood only

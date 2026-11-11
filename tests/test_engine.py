@@ -498,3 +498,15 @@ def test_appsettings_with_comments_and_unquoted_tokens_are_read(tmp_path):
     assert "-e ':n' -e 's/\\([,:[][[:space:]]*\\)#{Api\\.Port}#\\([[:space:]]*[],}]\\)/\\1null\\2/'" in df
     assert df.index("-e 'tn'") < df.index("-e 's/#{Api\\.Host}#//g'")
     assert lenient_json('{"u": "http://x//y,}"}') == '{"u": "http://x//y,}"}'      # strings stay as they are
+
+
+def test_pwd_and_pass_settings_are_secret(tmp_path):
+    """`Smtp:Pwd`, `Ftp:Passwd` and `Mail:Pass` are passwords (they come from the secret store, never a ConfigMap
+    in Git); `Proxy:Bypass` is not."""
+    from containerizer.platforms import classify_env
+    web_app(tmp_path)
+    write(tmp_path, "src/Web/appsettings.json",
+          '{"Smtp": {"Pwd": "x"}, "Ftp": {"Passwd": "x"}, "Mail": {"Pass": "#{Mail.Pass}#"}, "Proxy": {"Bypass": "y"}}')
+    c = assess(tmp_path).components[0]
+    assert c.facts["secret_settings"] == ["Ftp:Passwd", "Mail:Pass", "Smtp:Pwd"]
+    assert classify_env({"Mail__Pass": "", "Proxy__Bypass": ""})[1] == ["Mail__Pass"]
