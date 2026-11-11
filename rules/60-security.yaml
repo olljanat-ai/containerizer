@@ -27,6 +27,15 @@ hardening:
     # every emptyDir gets a size limit so a runaway writer can't fill the node
     empty_dir_size_limit: 256Mi
 
+  # User namespaces (hostUsers: false, https://kubernetes.io/docs/concepts/workloads/pods/user-namespaces/): every
+  # pod's users are mapped to unprivileged IDs of the node, so a container breakout is no root (nor any real user) on
+  # the node. On by default since Kubernetes 1.33; the nodes need Linux 6.3+ (idmapped tmpfs), containerd 2.0+ or
+  # CRI-O 1.25+ with runc 1.2+ or crun 1.9+, and volume file systems with idmapped mounts (ext4, xfs, btrfs, tmpfs,
+  # overlayfs). The appliance's k3s (1.37, Debian 13's kernel 6.12, btrfs) has all of it. A cluster without the
+  # feature drops the field; one with it but an older runtime fails the pods: turn it off for those with
+  # CONTAINERIZER_USER_NAMESPACES=false (a site setting), or per component with an exception (patch host_users: true).
+  user_namespaces: true
+
   # Memory sized from the verification run, when it measured the component (verify.run samples
   # `docker stats` while the probes are answered): requests = peak x request_factor, limits = peak x
   # limit_factor, both rounded up to `round_to`, never below `floor` nor above namespace_policy.limit_range.max.
@@ -57,6 +66,7 @@ hardening:
   #   sysctls: [{name, value}]     pod sysctls (only the Kubernetes "safe" set passes the lint)
   #   capabilities_add: [..]       container capabilities (only NET_BIND_SERVICE passes the lint)
   #   automount_token: true        mount the service account token
+  #   host_users: true             run in the node's user namespace (no hostUsers: false)
   #   resources: {...}             merged over the baseline resources (only raises a value set before)
   #   env: {K: V}                  extra environment variables
   #   secret_mounts: [{name, path, items?}]  Secret `<component>-<name>` mounted read-only at path
@@ -391,6 +401,7 @@ lint:
     resources:           {severity: error,   title: CPU/memory requests and a memory limit}
     secret-literals:     {severity: error,   title: No secret values in manifests or images}
     sa-token:            {severity: warning, title: Service account token not mounted}
+    user-namespace:      {severity: info,    title: 'Pods run in their own user namespace (hostUsers: false)'}
     empty-dir-limit:     {severity: warning, title: emptyDir volumes have a sizeLimit}
     dataprotection-volatile: {severity: error, title: A Data Protection key ring folder is not an emptyDir}
     image-tag:           {severity: warning, title: Workload image has an explicit, non-latest tag or digest}
@@ -489,6 +500,21 @@ pipelines:
   syft_image: anchore/syft:v1.33.0
   cosign_tlog_upload: true
 
+# How the organization scans write each application's components to the output repository (helmchart.py,
+# docs/helm-chart.md). The generated objects are the same either way; only their form in Git differs.
+#   chart:      one Flux HelmRelease per component, of the shared chart charts/containerizer-app/<version>/, whose values
+#               hold only what the component has beyond the chart's hardened baseline
+#   manifests:  each component's objects in its k8s.yaml (kustomize), as before 0.33.0
+# CONTAINERIZER_DEPLOY_MODE (a site setting) overrides `mode`; administrators set it per application
+# (Admin -> Applications -> Deploy mode), which wins over both.
+deploy:
+  mode: chart
+  # An application already deployed keeps its mode when `mode` changes: switching recreates its objects (pods
+  # restart, PersistentVolumeClaims are made again, empty). true: it switches at its next deployment.
+  switch_existing: false
+  # A component stays plain manifests unless its HelmRelease is at least this much shorter (0.3: 30% fewer lines)
+  min_saving: 0.3
+
 # Base image lifecycle and bump policy for `containerizer images`.
 images:
   lock_max_age_days: 14       # the gate warns when images.lock.yaml is older
@@ -561,6 +587,9 @@ controls:
   - {id: sa-tokens, nsa: 'Pod security > Protecting Pod service account tokens', cis: '5.1.5, 5.1.6', scope: workload,
      checks: [sa-token, service-account], exception: [kubernetes-api-client],
      title: 'Own ServiceAccount per component; no token mounted'}
+  - {id: user-namespaces, nsa: 'Pod security > Non-root containers and "rootless" container engines', scope: workload,
+     checks: [user-namespace], title: 'Pods run in their own user namespace (hostUsers: false): root in a container is no user of the node',
+     action: 'Needs Kubernetes 1.33+ nodes with Linux 6.3+, containerd 2.0+ (or CRI-O) and runc 1.2+; elsewhere set CONTAINERIZER_USER_NAMESPACES=false.'}
   - {id: container-env, nsa: 'Pod security > Hardening container environments', cis: '5.7.2', scope: workload,
      checks: [seccomp, apparmor], title: 'Seccomp and AppArmor RuntimeDefault; all capabilities dropped',
      action: 'AppArmor needs AppArmor-enabled nodes; on SELinux nodes set hardening.apparmor: none. Consider a sandboxed runtime class (gVisor, Kata) for untrusted workloads.'}

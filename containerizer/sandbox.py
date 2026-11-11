@@ -187,12 +187,9 @@ def deployed_apps(root: Path, only: set | list | None = None) -> list[dict]:
         for c in doc.get("components") or []:
             folder = d / (c.get("folder") or "")
             workloads = []
-            k8s = folder / "k8s.yaml"
-            if c.get("folder") and k8s.is_file():
-                try:
-                    docs = [x for x in yaml.safe_load_all(k8s.read_text()) if isinstance(x, dict)]
-                except yaml.YAMLError:
-                    docs = []
+            if c.get("folder") and ((folder / "k8s.yaml").is_file() or (folder / "helmrelease.yaml").is_file()):
+                from .helmchart import component_docs
+                docs = component_docs(folder)
                 workloads = [(x["kind"], x["metadata"]["name"]) for x in docs
                              if x.get("kind") in ("Deployment", "StatefulSet", "CronJob") and x.get("metadata", {}).get("name")]
                 url, probe = _published(docs)
@@ -767,13 +764,14 @@ def verify_sandbox(root: Path, o: SandboxOptions | None = None, kube: Kube | Non
         r["log_tail"] = ob.log            # redacted; kept out of the output repository (see write_health)
         if (o.llm or a["doc"].get("source_key") in o.llm_keys) and r["status"] in (FAILING, PENDING):
             from .replatform import llm_sandbox_diagnosis
-            k8s = root / a["rel"] / (c.get("folder") or "") / "k8s.yaml"
+            from .helmchart import component_text
+            cdir = root / a["rel"] / (c.get("folder") or "")
             from .ai import usage_scope
             dd = a["doc"]
             label = dd.get("repo", "") if dd.get("project") in (None, "", "_") else f"{dd.get('project')}/{dd.get('repo', '')}"
             with usage_scope(repo=label or a["app"], source_key=dd.get("source_key") or None,
                              component=c.get("component") or None):
-                ld = llm_sandbox_diagnosis(r, k8s.read_text() if k8s.is_file() else "", o.model)
+                ld = llm_sandbox_diagnosis(r, component_text(cdir) if c.get("folder") else "", o.model)
             if ld:
                 r["llm"] = ld
                 if not r.get("diagnosis"):

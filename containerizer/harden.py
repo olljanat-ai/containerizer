@@ -31,6 +31,18 @@ def security() -> dict:
     return yaml.safe_load((RULES_DIR / "60-security.yaml").read_text())
 
 
+USER_NAMESPACES_ENV = "CONTAINERIZER_USER_NAMESPACES"
+
+
+def user_namespaces() -> bool:
+    """Do generated pods get their own user namespace (hostUsers: false)? CONTAINERIZER_USER_NAMESPACES (a site
+    setting: false, 0, off or no turns it off), else hardening.user_namespaces of rules/60-security.yaml (on)."""
+    env = (os.environ.get(USER_NAMESPACES_ENV) or "").strip().lower()
+    if env:
+        return env not in ("0", "false", "off", "no")
+    return bool(security()["hardening"].get("user_namespaces", True))
+
+
 def _merge(dst: dict, src: dict) -> dict:
     """Deep merge; lists are unioned, scalars from src win."""
     for k, v in (src or {}).items():
@@ -145,6 +157,8 @@ def harden_pod(meta: dict, pod: dict, uid: int, component: str, exceptions: list
         sc["sysctls"] = sc.get("sysctls", []) + [s for s in patch["sysctls"] if s not in sc.get("sysctls", [])]
     if patch.get("automount_token"):
         pod["automountServiceAccountToken"] = True
+    if user_namespaces() and not patch.get("host_users"):
+        pod["hostUsers"] = False            # the pod's users are unprivileged IDs on the node
     volumes = pod.setdefault("volumes", [])
     taken = {v["name"] for v in volumes}
     for c in pod.get("containers", []):
@@ -898,6 +912,8 @@ def lint_manifests(docs: list[dict], where: str = "", provided: set[str] | None 
                     L.add("sysctls", tgt, f"sysctl {s.get('name')} is not in the safe set", waived)
             if pod.get("automountServiceAccountToken") is not False:
                 L.add("sa-token", tgt, "automountServiceAccountToken is not false", waived)
+            if pod.get("hostUsers") is not False and user_namespaces():
+                L.add("user-namespace", tgt, "hostUsers is not false: the pod shares the node's user namespace", waived)
             for ref, at in _secret_refs(pod):
                 if ref not in produced:
                     L.add("secret-source", tgt, f"Secret {ref} ({at}) is not produced by an ExternalSecret", waived)
