@@ -10,6 +10,14 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.35.4 (2026-11-11)
+
+- **Fix: debug mode still did not come on (0.35.3).** Its patch switched a Deployment to strategy Recreate, but Flux
+  applies server-side, the Deployment's defaulted `rollingUpdate` stayed and the API server rejected the change
+  (`spec.strategy.rollingUpdate: Forbidden: may not be specified when strategy type is 'Recreate'`), so the
+  application's apply failed and the pod stuck on the quota stayed. Debug mode now rolls with `maxSurge: 0` and
+  `maxUnavailable: 1`: the old pod goes first and the new one fits in the quota the application already has.
+
 ## 0.35.3 (2026-11-11)
 
 - **Fix: the namespace quota left no room for a rolling update of a single pod.** The generated ResourceQuota was
