@@ -232,8 +232,11 @@ def workload_patch(doc: dict, tools: str, start: str = "") -> str | None:
             "volumeMounts": [{"name": VOLUME, "mountPath": "/target"}]}
     main = {"name": c.get("name"), "command": SLEEP, "args": None, "livenessProbe": None, "readinessProbe": None,
             "startupProbe": None, "env": env, "volumeMounts": [{"name": VOLUME, "mountPath": DIR, "readOnly": True}]}
-    # the crashing pod goes first: a rolling update would wait for room in the namespace's quota next to it
-    strategy = {"strategy": {"type": "Recreate", "rollingUpdate": None}} if doc["kind"] == "Deployment" else {}
+    # the crashing pod goes first: a surging rolling update would wait for room in the namespace's quota next to it.
+    # Not type Recreate: Flux applies server-side, the defaulted rollingUpdate stays and the API server rejects the
+    # Deployment (spec.strategy.rollingUpdate: Forbidden), so debug mode never came on
+    strategy = ({"strategy": {"type": "RollingUpdate", "rollingUpdate": {"maxSurge": 0, "maxUnavailable": 1}}}
+                if doc["kind"] == "Deployment" else {})
     patch = {"apiVersion": doc.get("apiVersion") or "apps/v1", "kind": doc["kind"],
              "metadata": {"name": (doc.get("metadata") or {}).get("name"),
                           "annotations": {"containerizer.io/debug": "true"}},
