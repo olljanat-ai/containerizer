@@ -203,3 +203,16 @@ def test_the_runner_pushes_the_tools_and_regenerates_sandbox_when_debug_changes(
     assert variant.sync_sandbox(Conn, "key", work, log=logs.append) == 0 and len(pushed) == 3   # done
     state["sw"] = d.Switches()
     assert variant.sync_sandbox(Conn, "key", work, log=logs.append) == 1 and written[-1] == set()
+
+
+def test_a_running_scan_writes_the_switches_of_now():
+    # a scan read the switches at its start; debug mode turned on meanwhile stays in the sandbox/ it writes
+    now = d.Switches((), {"k"})
+    o = orgmod.OrgOptions(provider="github", org="acme", registry="r", sandbox_switches=lambda: now)
+    assert orgmod.sandbox_switches(o) is now
+
+    def away():
+        raise OSError("database away")
+    o = orgmod.OrgOptions(provider="github", org="acme", registry="r", sandbox_off={"x"}, sandbox_switches=away)
+    assert orgmod.sandbox_switches(o) == {"x"}
+    assert orgmod.sandbox_switches(orgmod.OrgOptions(provider="github", org="a", registry="r", sandbox_off={"y"})) == {"y"}

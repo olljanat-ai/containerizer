@@ -120,6 +120,9 @@ class OrgOptions:
     sandbox_off: set | None = None      # SourceKeys and ApplicationIds of the applications whose sandbox an administrator
                                         # turned off (Admin -> Applications, load_sandbox_off): assessed, not built or
                                         # deployed; their folders stay in the output repository, out of sandbox/
+    sandbox_switches: object = None     # callable returning sandbox_off as it is now: a scan runs for hours and writes
+                                        # sandbox/ after every repository; with the set read at its start it took
+                                        # out the debug patches (or an off switch) an administrator made meanwhile
     deploy_modes: dict | None = None    # SourceKey -> 'chart' or 'manifests': the administrators' choice per application
                                         # (Admin -> Applications, load_deploy_modes); the rest: helmchart.app_mode
     deploy_mode: str | None = None      # the default for this run (CLI --deploy-mode); None: helmchart.settings()
@@ -1789,7 +1792,7 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
                                              status="disabled", reason=why, web_url=r.web_url, clone_url=r.clone_url,
                                              app=names[r.key]))
         if removed:
-            write_sandbox(out.root, out.url, o.output_branch, o.sandbox_off)
+            write_sandbox(out.root, out.url, o.output_branch, sandbox_switches(o))
             if not repos:                   # nothing else rewrites the index in this run
                 org_index(out.root, out.root / segment(o.org), [], run)
             out.commit(f"containerizer: {o.org}: {removed} disabled repositor{'y' if removed == 1 else 'ies'} removed")
@@ -1807,7 +1810,7 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
             o.state.record(r, res)
         if out:
             _phase(hooks, f"Committing {repo_label(r)} to the output repository")
-            ns = write_sandbox(out.root, out.url, o.output_branch, o.sandbox_off)
+            ns = write_sandbox(out.root, out.url, o.output_branch, sandbox_switches(o))
             org_index(out.root, out.root / segment(o.org), [x.to_dict() for x in results], run)
             out.commit(f"containerizer: {o.org}/{r.project}/{r.name} {res.status}"
                        + (f" ({len(res.components)} components, {tag})" if res.components else "")
@@ -2174,6 +2177,17 @@ def prune_cache(cache: Path, keep: set[str], log=print) -> None:
 
 SANDBOX_OFF = "sandbox-off"
 SANDBOX_OFF_REASON = "the sandbox is turned off for this application (Admin → Applications)"
+
+
+def sandbox_switches(o: OrgOptions):
+    """The sandbox switches (off and debug mode) for writing sandbox/: read now when the caller can
+    (o.sandbox_switches), else the ones of the scan's start."""
+    if callable(o.sandbox_switches):
+        try:
+            return o.sandbox_switches()
+        except Exception:  # noqa: BLE001 - the database is away: the ones of the scan's start
+            pass
+    return o.sandbox_off
 
 
 def sandbox_off(o: OrgOptions, source_key: str | None) -> bool:

@@ -10,6 +10,14 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.35.2 (2026-11-11)
+
+- **Debug mode stayed off while a scan was running.** A scan read the applications' sandbox switches once, at its
+  start, and wrote `sandbox/` with them after every repository: debug mode (or a sandbox switch) an administrator
+  changed meanwhile was written by the queue runner and taken out again by the scan's next commit, and nothing put
+  it back. The scan now reads the switches each time it writes `sandbox/`. After an update the queue runner writes the
+  debug patches of the applications in debug mode once more.
+
 ## 0.35.1 (2026-11-11)
 
 - **Debug mode: the pods start.** On the appliance the tools image was made with the services' umask (077), so the
