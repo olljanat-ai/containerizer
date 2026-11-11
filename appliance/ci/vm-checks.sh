@@ -59,9 +59,13 @@ step "secrets are root-only"
 test "$(stat -c %a /etc/containerizer/secrets)" = 700
 
 step "sandbox cluster"
+# shellcheck disable=SC1091
+test "$(. /etc/profile.d/kubeconfig.sh; echo "$KUBECONFIG")" = /etc/rancher/k3s/k3s.yaml
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 wait_for 900 "k3s node Ready" sh -c 'k3s kubectl get nodes --no-headers | grep -qw Ready'
 wait_for 900 "Flux controllers" k3s kubectl -n flux-system wait --for=condition=Available deploy --all --timeout=10s
+helm version --short
+helm list -A >/dev/null   # reaches the cluster with the same kubeconfig
 # Grafana's k3s and Flux dashboards: Prometheus reads the cluster with its read-only token (docs/appliance-admin.md#metrics)
 wait_for 900 "kube-state-metrics" k3s kubectl -n cz-monitoring wait --for=condition=Available deploy/kube-state-metrics --timeout=10s
 wait_for 900 "Prometheus reads k3s and Flux" sh -c 'curl -fsS http://127.0.0.1:9090/api/v1/targets?state=active | python3 -c "

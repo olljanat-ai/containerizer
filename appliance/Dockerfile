@@ -55,6 +55,11 @@ ADD --chmod=0644 --checksum=sha256:a8c838ccd9be5d30eba9df87cd229b7c4eb80c0049fba
 ADD --chmod=0755 --checksum=sha256:424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa \
     https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64 /usr/bin/cosign
 RUN ln -s k3s /usr/bin/kubectl && ln -s k3s /usr/bin/crictl
+# Helm CLI (the release tarball, verified by checksum) for administrators: charts in the sandbox cluster
+ADD --checksum=sha256:0403a88ae20913d11b10a2467b50087721fea7581736da6b9d3992f5357fe54b \
+    https://get.helm.sh/helm-v4.3.1-linux-amd64.tar.gz /tmp/helm.tar.gz
+RUN tar -xzf /tmp/helm.tar.gz -C /usr/bin --strip-components=1 --no-same-owner linux-amd64/helm \
+ && rm /tmp/helm.tar.gz && chmod 0755 /usr/bin/helm && helm version --short
 # External Secrets Operator Helm chart 2.14.0 (ghcr.io OCI artifact, fetched by its content digest and
 # checked), served to the k3s Helm controller from the API server (static/charts); see
 # /var/lib/rancher/k3s/server/manifests/external-secrets.yaml
