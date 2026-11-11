@@ -114,36 +114,73 @@ def _read_secret(name: str) -> str:
         return ""
 
 
+def _ready(bao: Bao, timeout: float = 120.0) -> None:
+    """Wait until OpenBao is unsealed and active: right after init the static seal unseals it a moment later."""
+    import time
+    end = time.monotonic() + timeout
+    while True:
+        try:
+            st = bao.call("GET", "sys/seal-status") or {}
+            if st.get("initialized") and not st.get("sealed"):
+                bao.call("GET", "sys/health")       # 200 only when active (429 standby, 503 sealed)
+                return
+        except BaoError:
+            pass
+        if time.monotonic() > end:
+            raise BaoError("OpenBao did not become active after its init (sys/health)")
+        time.sleep(2)
+
+
+def _exists_ok(fn) -> None:
+    """A setup step that a run before may have done (a resumed setup)."""
+    try:
+        fn()
+    except BaoError as ex:
+        if "already in use" not in str(ex) and "existing mount" not in str(ex):
+            raise
+
+
 def setup(bao: Bao, log=print) -> str:
     """Initialise OpenBao once: the apps' KV mount, user name and password sign-in with the user `admin` (password
     in openbao-admin), the policies, a token for the sync job; the root token is revoked afterwards. Returns the
-    sync job's token."""
+    sync job's token. Resumable: the root token is kept (root only) until every step is done, so a setup that
+    stopped half-way (OpenBao still unsealing after its init, a restart) is finished by the next run."""
     st = bao.call("GET", "sys/seal-status") or {}
     token = _read_secret("openbao-sync-token")
-    if st.get("initialized"):
+    if st.get("initialized") and token:
         if st.get("sealed"):
             raise BaoError("OpenBao is sealed: is /etc/containerizer/secrets/openbao-unseal.key its key?")
-        if not token:
-            raise BaoError("OpenBao is initialised but the sync token (secrets/openbao-sync-token) is missing: make a "
-                           "new one with a root token from the recovery key (docs/openbao.md#recovery)")
         return token
     password = _read_secret("openbao-admin")
     if not password:
         raise BaoError("secrets/openbao-admin is missing (cz-firstboot makes it)")
-    init = bao.call("PUT", "sys/init", {"recovery_shares": 1, "recovery_threshold": 1}) or {}
-    _write_secret("openbao-recovery-key", init["recovery_keys_base64"][0])
-    root = Bao(bao.addr, init["root_token"])
-    root.call("POST", f"sys/mounts/{MOUNT}", {"type": "kv", "options": {"version": "2"},
-                                              "description": "values of the sandbox apps' secrets (containerizer)"})
-    root.call("POST", "sys/auth/userpass", {"type": "userpass"})
+    root_token = _read_secret("openbao-root-token")
+    if not st.get("initialized"):
+        init = bao.call("PUT", "sys/init", {"recovery_shares": 1, "recovery_threshold": 1}) or {}
+        _write_secret("openbao-recovery-key", init["recovery_keys_base64"][0])
+        root_token = init["root_token"]
+        _write_secret("openbao-root-token", root_token)     # until setup is done
+    elif not root_token:
+        raise BaoError("OpenBao is initialised but the sync token (secrets/openbao-sync-token) is missing: make a "
+                       "new one with a root token from the recovery key (docs/openbao.md#recovery)")
+    _ready(bao)
+    root = Bao(bao.addr, root_token)
+    _exists_ok(lambda: root.call("POST", f"sys/mounts/{MOUNT}", {
+        "type": "kv", "options": {"version": "2"}, "description": "values of the sandbox apps' secrets (containerizer)"}))
+    _exists_ok(lambda: root.call("POST", "sys/auth/userpass", {"type": "userpass"}))
     root.call("PUT", f"sys/policies/acl/{ADMIN_POLICY}", {"policy": ADMIN_HCL})
     root.call("PUT", f"sys/policies/acl/{SYNC_POLICY}", {"policy": SYNC_HCL})
-    root.call("POST", "auth/userpass/users/admin", {"password": password, "token_policies": [ADMIN_POLICY]})
+    if root.call("GET", "auth/userpass/users/admin", ok404=True) is None:
+        root.call("POST", "auth/userpass/users/admin", {"password": password, "token_policies": [ADMIN_POLICY]})
     t = root.call("POST", "auth/token/create-orphan", {"policies": [SYNC_POLICY], "no_default_policy": True,
                                                        "period": "768h", "display_name": "containerizer-sync"}) or {}
     token = t["auth"]["client_token"]
     _write_secret("openbao-sync-token", token)
     root.call("POST", "auth/token/revoke-self")
+    try:
+        (SECRETS / "openbao-root-token").unlink()
+    except OSError:
+        pass
     log("openbao: initialised (user admin, mount apps/, root token revoked; recovery key in "
         "secrets/openbao-recovery-key)")
     return token

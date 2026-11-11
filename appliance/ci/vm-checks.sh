@@ -110,8 +110,10 @@ k3s kubectl -n ci-b get externalsecret web-secrets -o jsonpath='{.status.conditi
   | grep -q SecretSyncedError
 
 step "OpenBao: unsealed, admin sign-in on 443, placeholders, values into the store"
-systemctl is-active --quiet containerizer-openbao.service
-systemctl start containerizer-sandbox.service       # initialises OpenBao, then syncs
+# the sandbox job initialises OpenBao (once it has pulled its image and listens), then syncs
+wait_for 900 "OpenBao initialised by the sandbox job" sh -c \
+  'systemctl start containerizer-sandbox.service; test -s /etc/containerizer/secrets/openbao-sync-token'
+test ! -e /etc/containerizer/secrets/openbao-root-token     # revoked and removed once setup is done
 $PY -m containerizer.openbao status | grep -q '"sealed": false'
 test "$(stat -c '%U %a' /etc/containerizer/secrets/openbao-sync-token)" = "root 400"
 url="https://$(hostname)"
