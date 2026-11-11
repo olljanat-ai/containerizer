@@ -494,20 +494,27 @@ def namespace_policies(app_docs: list[dict]) -> list[dict]:
     totals = {"requests.cpu": 0.0, "requests.memory": 0.0, "limits.memory": 0.0,
               "requests.ephemeral-storage": 0.0, "limits.ephemeral-storage": 0.0}
     pods = 0
+    surge = dict.fromkeys(totals, 0.0)     # the extra pods of a rolling update of every Deployment at once
     for d in app_docs:
-        n = int((d.get("spec") or {}).get("replicas", 1)) if d.get("kind") != "CronJob" else 1
+        spec = d.get("spec") or {}
+        n = int(spec.get("replicas", 1)) if d.get("kind") != "CronJob" else 1
+        # a rolling Deployment starts the new pods next to the old ones (maxSurge 25 %, rounded up: one for a
+        # single replica); without room for them in the quota the rollout never starts
+        extra = -(-n // 4) if d.get("kind") == "Deployment" and (spec.get("strategy") or {}).get("type") != "Recreate" else 0
         for _, pod in _pod_specs(d):
-            pods += n
+            pods += n + extra
             for c in pod.get("containers") or []:
                 res = c.get("resources") or {}
                 for k in totals:
                     sect, r = k.split(".", 1)
-                    totals[k] += n * _qty((res.get(sect) or {}).get(r, 0))
+                    q = _qty((res.get(sect) or {}).get(r, 0))
+                    totals[k] += n * q
+                    surge[k] += extra * q
     head = float(np.get("quota_headroom", 1.5))
     hard = {}
     for k, v in totals.items():
         kind = "cpu" if k.endswith("cpu") else "mem"
-        val = v * head
+        val = max(v * head, v + surge[k])
         floor = np.get("quota_floor", {}).get(k)
         if floor is not None:
             val = max(val, _qty(floor))

@@ -717,3 +717,20 @@ def test_image_digest_lint_with_a_flux_digest_setter():
     assert "| Images are deployed by digest | applied | " in md and "pinned by Flux" in md
     pod["containers"][0]["image"] = "r.local/ns/web:1.2.3@sha256:" + "a" * 64
     assert not {"image-digest", "image-digest-setter"} & {v.check for v in lint_manifests(docs)}
+
+
+def test_quota_has_room_for_a_rolling_update_of_one_replica():
+    """One replica x 1.5 left no room for the new pod of a rolling update (exceeded quota: limits.ephemeral-storage
+    1536Mi, 1Gi used, 1Gi requested): the rollout never started. A replaced (Recreate) Deployment needs none."""
+    from containerizer.harden import namespace_policies
+    res = {"requests": {"cpu": "100m", "memory": "256Mi", "ephemeral-storage": "64Mi"},
+           "limits": {"memory": "512Mi", "ephemeral-storage": "1Gi"}}
+
+    def hard(strategy=None, replicas=1):
+        d = {"kind": "Deployment", "spec": {"replicas": replicas, **({"strategy": {"type": strategy}} if strategy else {}),
+                                            "template": {"spec": {"containers": [{"name": "c", "resources": res}]}}}}
+        return namespace_policies([d])[-1]["spec"]["hard"]
+
+    assert hard()["limits.ephemeral-storage"] == "2048Mi" and hard()["requests.ephemeral-storage"] == "128Mi"
+    assert hard("Recreate")["limits.ephemeral-storage"] == "1536Mi"
+    assert hard(replicas=4)["limits.ephemeral-storage"] == "6144Mi"          # 4 + 1 surge < 4 x 1.5

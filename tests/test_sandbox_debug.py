@@ -67,6 +67,8 @@ def test_workload_patch_sleeps_with_the_tools_and_without_probes():
     pod = p["spec"]["template"]["spec"]
     c = pod["containers"][0]
     assert p["spec"]["replicas"] == 1 and c["name"] == "web" and c["command"] == ["/cz-debug/bin/sleep", "infinity"]
+    # the crashing pod is replaced, not rolled: no second pod has to fit in the namespace's quota
+    assert p["spec"]["strategy"] == {"type": "Recreate", "rollingUpdate": None}
     assert c["args"] is None and c["livenessProbe"] is None and c["readinessProbe"] is None and c["startupProbe"] is None
     assert {"name": "CZ_DEBUG_START", "value": "dotnet X.dll"} in c["env"]
     init = pod["initContainers"][0]
