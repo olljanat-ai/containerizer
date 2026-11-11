@@ -55,6 +55,7 @@ nav:
       - Refactoring patches: refactoring.md
       - Egress and network connectivity: egress.md
       - Gateway API routes: gateway-api.md
+      - "Deploy mode: shared Helm chart": helm-chart.md
       - Build pipelines: build-pipelines.md
       - Rule review: rule-review.md
   - Administration:

@@ -257,7 +257,7 @@ def cmd_org(args) -> int:
         skip_no_code=not args.include_no_code, dry_run=args.dry_run,
         verify_sandbox=args.verify_sandbox, kubeconfig=args.kubeconfig, kube_context=args.kube_context,
         sandbox_timeout=args.sandbox_timeout, llm_heavy=args.llm_heavy,
-        migrate_containerized=args.migrate_containerized)
+        migrate_containerized=args.migrate_containerized, deploy_mode=args.deploy_mode)
     if args.llm_heavy and not args.ai:
         print("error: --llm-heavy needs --ai (docs/platform-migration.md)", file=sys.stderr)
         return 2
@@ -755,6 +755,10 @@ def main(argv=None) -> int:
     s.add_argument("--timeout", type=int, default=1800)
     s.add_argument("--pin-digests", action="store_true")
     s.add_argument("--verify-commits", action="store_true", help="Flux: only apply signed commits")
+    s.add_argument("--deploy-mode", choices=["chart", "manifests"], default=None,
+                   help="how new applications are written: HelmReleases of the shared chart (chart) or plain "
+                        "manifests (default: deploy.mode in rules/60-security.yaml or CONTAINERIZER_DEPLOY_MODE; "
+                        "deployed applications keep theirs, docs/helm-chart.md)")
     s.add_argument("--ingress-domain", help="wildcard domain (*.sandbox.example.com): an HTTPS Ingress per web component "
                    "at <component>-<app>.<domain> (default: the appliance's Sandbox HTTPS setting)")
     s.add_argument("--no-sandbox-idp", action="store_true",

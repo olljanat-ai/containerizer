@@ -154,6 +154,8 @@ def copy_app(src: Path, dst_root: Path, path: str, url: str, branch: str, moved_
         dst.rmdir()
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(src, dst, ignore=shutil.ignore_patterns(".git"))
+    from .helmchart import copy_charts
+    copy_charts(src, dst_root)          # the shared chart its HelmReleases name, at the same place (helmchart.py)
     repoint(dst, url, branch, path, old=moved_from)
     doc = _doc(dst) or {}
     doc.pop("moved_to", None)
@@ -175,7 +177,7 @@ def make_stub(folder: Path, m: dict) -> None:
     keep = ["containerizer.json", "gitops/flux/tenant.yaml", "gitops/flux/git/sync.yaml", "gitops/flux/kustomization.yaml"]
     for c in doc.get("components") or []:
         if c.get("folder"):
-            keep += [f"{c['folder']}/idp.json", f"{c['folder']}/k8s.yaml"]
+            keep += [f"{c['folder']}/idp.json", f"{c['folder']}/k8s.yaml", f"{c['folder']}/helmrelease.yaml"]
     tmp = folder.parent / (folder.name + ".stub")
     if tmp.exists():
         shutil.rmtree(tmp)

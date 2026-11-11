@@ -1,0 +1,12 @@
+apiVersion: v2
+name: containerizer-app
+description: >-
+  The shared chart of the components Containerizer generates: a hardened baseline (labels, ServiceAccount,
+  pod and container security, Service, NetworkPolicy rules, ExternalSecret shape) and each component's
+  differences from it as values (docs/helm-chart.md).
+type: application
+# Containerizer writes its own version here when it copies the chart into an output repository
+# (charts/containerizer-app/<version>/), and every HelmRelease names the version it was generated with.
+version: 0.0.0
+annotations:
+  containerizer.io/renderer: "1"
