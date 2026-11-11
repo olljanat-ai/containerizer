@@ -198,6 +198,14 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
         tokens = {k: sorted(set(TOKEN_RE.findall(v))) for k, v in flat if isinstance(v, str) and TOKEN_RE.search(v)}
         if tokens:
             facts["token_settings"] = tokens
+            # secret by its name, a token's name or its value (a password in it): from the secret store, the rest
+            # from a ConfigMap (platforms.classify_env, as for the settings of a replatformed service)
+            from .platforms import classify_env
+            vals = dict(flat)
+            secret = {k for k, toks in tokens.items()
+                      if classify_env({k.replace(":", "__"): vals[k], **{t.strip("#{}_ "): "" for t in toks}})[1]}
+            if secret:
+                facts["token_secret_settings"] = sorted(secret)
         # sign-in settings (OIDC, WS-Federation, SAML) the sandbox IdP overrides (idp.py)
         if any(facts.get(f"auth_{x}") for x in ("oidc", "wsfed", "saml")):
             from .idp import find_sections
