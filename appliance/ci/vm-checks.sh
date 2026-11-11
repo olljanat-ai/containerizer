@@ -47,7 +47,7 @@ wait_for 900 "Grafana" curl -fsS http://127.0.0.1:3000/grafana/api/health
 wait_for 300 "Caddy" curl -fsSk "https://$(hostname)/healthz" --resolve "$(hostname):443:127.0.0.1"
 systemctl is-active containerizer-db-init.service containerizer-web.service containerizer-mssql.service \
   containerizer-registry.service containerizer-prometheus.service containerizer-grafana.service caddy.service \
-  docker.service k3s.service ssh.service containerizer-root-password.service containerizer-root-password.path
+  containerizer-openbao.service docker.service k3s.service ssh.service containerizer-root-password.service containerizer-root-password.path
 
 step "web UI runs as its own user without privileges"
 test "$(ps -o user= -p "$(systemctl show -p MainPID --value containerizer-web.service)")" = cz-web
@@ -108,6 +108,26 @@ sleep 30
 if k3s kubectl -n ci-b get secret web-secrets >/dev/null 2>&1; then echo "ci-b must not read ci-a's key" >&2; exit 1; fi
 k3s kubectl -n ci-b get externalsecret web-secrets -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' \
   | grep -q SecretSyncedError
+
+step "OpenBao: unsealed, admin sign-in on 443, placeholders, values into the store"
+systemctl is-active --quiet containerizer-openbao.service
+systemctl start containerizer-sandbox.service       # initialises OpenBao, then syncs
+$PY -m containerizer.openbao status | grep -q '"sealed": false'
+test "$(stat -c '%U %a' /etc/containerizer/secrets/openbao-sync-token)" = "root 400"
+url="https://$(hostname)"
+login=$(printf '{"password": "%s"}' "$(cat /etc/containerizer/secrets/openbao-admin)" \
+  | curl -fsSk --resolve "$(hostname):443:127.0.0.1" -d @- "$url/v1/auth/userpass/login/admin")
+tok=$(printf %s "$login" | $PY -c 'import json,sys; print(json.load(sys.stdin)["auth"]["client_token"])')
+bao() { curl -fsSk --resolve "$(hostname):443:127.0.0.1" -H @<(printf 'X-Vault-Token: %s\n' "$tok") "$@"; }
+curl -fsSk --resolve "$(hostname):443:127.0.0.1" "$url/ui/" | grep -q OpenBao
+# the value put in the store before is the placeholder's value
+bao "$url/v1/apps/data/ci-a/web" | grep -q 'Server=db;Password=ci-only'
+printf '{"data": {"ConnectionStrings__Db": "Server=db;Password=from-openbao"}}' | bao -d @- "$url/v1/apps/data/ci-a/web" >/dev/null
+systemctl start containerizer-sandbox.service
+wait_for 300 "a value saved in OpenBao reaches the app" sh -c \
+  'k3s kubectl -n ci-a get secret web-secrets -o jsonpath={.data.ConnectionStrings__Db} | base64 -d | grep -q from-openbao'
+bao "$url/v1/sys/policies/acl/app-ci-a" | grep -q 'apps/data/ci-a/'
+
 k delete namespace ci-a ci-b --wait=false
 k -n containerizer-secrets delete secret/ci-a--web role/app-secrets-reader-ci-a rolebinding/app-secrets-reader-ci-a \
   role/app-secrets-reader-ci-b rolebinding/app-secrets-reader-ci-b >/dev/null 2>&1 || true

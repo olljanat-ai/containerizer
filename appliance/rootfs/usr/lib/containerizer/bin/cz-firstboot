@@ -20,7 +20,11 @@ done
 
 # SQL Server passwords: 32 random characters plus one of each class its policy asks for
 secret() { [ -s "$S/$1" ] || { printf '%s' "$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)Aa1!" > "$S/$1"; chmod 0400 "$S/$1"; }; }
-for n in mssql-sa cz-scanner cz-web cz-admin grafana-admin; do secret "$n"; done
+for n in mssql-sa cz-scanner cz-web cz-admin grafana-admin openbao-admin; do secret "$n"; done
+# OpenBao's static unseal key (docs/openbao.md): made once, never replaced (its data opens only with it); readable
+# by OpenBao's container user only
+[ -s "$S/openbao-unseal.key" ] || head -c 32 /dev/urandom > "$S/openbao-unseal.key"
+chown 8200:8200 "$S/openbao-unseal.key" && chmod 0400 "$S/openbao-unseal.key"
 printf 'MSSQL_SA_PASSWORD=%s\n' "$(cat $S/mssql-sa)" > "$S/mssql.env"
 printf 'GF_SECURITY_ADMIN_USER=admin\nGF_SECURITY_ADMIN_PASSWORD=%s\n' "$(cat $S/grafana-admin)" > "$S/grafana.env"
 chmod 0400 "$S/mssql.env" "$S/grafana.env"
@@ -38,6 +42,7 @@ install -d -m 0770 -o 10001 -g 0 "$D/mssql"
 install -d -m 0700 -o 65532 -g 65532 "$D/registry"
 install -d -m 0700 -o 65534 -g 65534 "$D/prometheus"
 install -d -m 0700 -o 472 -g 0 "$D/grafana"
+install -d -m 0700 -o 8200 -g 8200 "$D/openbao"
 install -d -m 0700 -o containerizer -g containerizer "$D/worker"
 # the LLM answer cache, shared by the scan worker and the LLM queue runner (which may write only there and in
 # its refactoring scratch space)
@@ -107,6 +112,7 @@ if [ -n "$sso" ]; then
   done
 fi
 echo "CONTAINERIZER_GRAFANA_URL=https://$host/grafana/d/containerizer-scans" >> /run/containerizer/web-url.env
+echo "CONTAINERIZER_OPENBAO_URL=https://$host/ui/" >> /run/containerizer/web-url.env
 # LLM-heavy mode (docs/platform-migration.md): off unless appliance.env turns it on; the web UI shows it, the
 # worker only uses it for scans that have it ticked too
 case "${CZ_LLM_HEAVY:-false}" in true|yes|1|on) llm_heavy=true;; *) llm_heavy=false;; esac

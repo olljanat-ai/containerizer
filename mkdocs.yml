@@ -69,6 +69,7 @@ nav:
       - Sandbox identity provider: sandbox-idp.md
       - Dev databases: dev-databases.md
       - Secrets (External Secrets): external-secrets.md
+      - Secret values in OpenBao: openbao.md
   - Reference:
       - Java and Node.js: java-node.md
       - Python and Go: python-go.md

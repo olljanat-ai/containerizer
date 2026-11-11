@@ -90,6 +90,10 @@ ClusterGenerator are switched off. Every 2 minutes `cz-sandbox`:
    `<namespace>--cz-git` for every app that the output repository deploys. Flux reads them through the
    generated ExternalSecrets.
 
+**Administrators and operators enter the apps' values in OpenBao** (`https://<CZ_HOSTNAME>/ui/`,
+[Secret values in OpenBao](openbao.md)): the appliance makes an empty entry for every value a sandbox app reads and
+copies the filled ones here. The rest of this section is for the appliance's own writers and for doing it by hand.
+
 Other appliance scripts write values with the helpers in `/usr/lib/containerizer/lib/secret-store.sh`:
 
 ```sh

@@ -1,0 +1,25 @@
+[Unit]
+Description=containerizer appliance: OpenBao, the sandbox apps' secret values (https://<appliance>/ui/)
+After=docker.service containerizer-firstboot.service
+Requires=docker.service
+ConditionKernelCommandLine=!cdroot
+ConditionPathExists=!/run/elemental/recovery_mode
+
+[Service]
+EnvironmentFile=/usr/lib/containerizer/images.env
+ExecStartPre=-/usr/bin/docker rm -f cz-openbao
+# bao itself, not the image's entrypoint (it would chown the read-only mounts); its own user, no capabilities
+ExecStart=/usr/bin/docker run --rm --name cz-openbao --network host \
+  --entrypoint bao \
+  --volume /usr/lib/containerizer/openbao/openbao.hcl:/openbao/config.hcl:ro \
+  --volume /etc/containerizer/secrets/openbao-unseal.key:/openbao/unseal.key:ro \
+  --volume /var/lib/containerizer/openbao:/openbao/data \
+  --user 8200:8200 --read-only --tmpfs /tmp:size=16m --cap-drop ALL --security-opt no-new-privileges \
+  ${CZ_IMAGE_OPENBAO} server -config=/openbao/config.hcl
+ExecStop=/usr/bin/docker stop cz-openbao
+Restart=always
+RestartSec=30
+TimeoutStartSec=15min
+
+[Install]
+WantedBy=multi-user.target

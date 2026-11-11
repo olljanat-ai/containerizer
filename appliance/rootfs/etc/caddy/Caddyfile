@@ -1,4 +1,4 @@
-# HTTPS for the web UI and Grafana. The site names come from /run/containerizer/caddy.env (written by
+# HTTPS for the web UI, Grafana and OpenBao. The site names come from /run/containerizer/caddy.env (written by
 # cz-firstboot from CZ_HOSTNAME and the addresses of the appliance). The certificate is your own
 # (/etc/containerizer/tls; CZ_CADDY_TLS is then "<cert> <key>"), else Let's Encrypt when CZ_ACME_EMAIL is set
 # (TLS-ALPN challenge on 443: allow acme-v02.api.letsencrypt.org on the Firewall page), else Caddy's own CA.
@@ -18,6 +18,13 @@
 	header -Server
 	handle /grafana* {
 		reverse_proxy 127.0.0.1:3000
+	}
+	# OpenBao (docs/openbao.md): its UI and the API the UI and the bao CLI use
+	handle /ui* {
+		reverse_proxy 127.0.0.1:8200
+	}
+	handle /v1/* {
+		reverse_proxy 127.0.0.1:8200
 	}
 	handle {
 		reverse_proxy 127.0.0.1:8080 {

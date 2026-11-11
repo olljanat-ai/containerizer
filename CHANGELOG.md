@@ -10,6 +10,25 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.36.0 (2026-11-11)
+
+- **OpenBao for the sandbox apps' secret values** ([Secret values in OpenBao](docs/openbao.md)). The appliance runs
+  OpenBao 2.7.2 (`containerizer-openbao.service`; its own user, read-only, loopback only). Caddy serves it on the
+  appliance's HTTPS port at `https://<appliance>/ui/` (**Secrets ↗** on the admin pages). It unseals itself with a
+  static key made at first boot.
+  - **Placeholders.** Every two minutes the appliance gives each component's settings ExternalSecret an entry
+    `apps/<namespace>/<component>` with every key empty, or with the value already in the store. Administrators
+    only fill in values.
+  - **Values reach the apps.** Filled values go into the existing store (`containerizer-secrets`, own field
+    manager; an emptied key is removed); the ExternalSecret syncs at once and the workloads that read it restart.
+  - **Sign-in and delegation.** The user `admin` (password in `secrets/openbao-admin`). Each app namespace gets
+    the policy `app-<namespace>` for operators, given to a user or to a group of an identity provider. The guide
+    covers sign-in with OIDC/OAuth 2.0 (Entra ID, Keycloak, Okta) and group-to-policy mapping.
+  - **The sandbox's ExternalSecrets.** A component's settings ExternalSecret now reads every key its remote Secret
+    has (`dataFrom: extract`, sandbox only): a value nobody filled yet is not set, instead of keeping all of that
+    Secret's values away.
+  - **Only a namespace's own key.** An ExternalSecret that names another namespace's remote key gets no entry, so
+    one namespace's operators cannot write another's values.
 ## 0.35.7 (2026-11-11)
 
 - **Fix: an appsettings.json with comments or unquoted tokens was read as empty.** The scan understood only
