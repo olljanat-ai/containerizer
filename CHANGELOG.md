@@ -10,6 +10,14 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.35.1 (2026-11-11)
+
+- **Debug mode: the pods start.** On the appliance the tools image was made with the services' umask (077), so the
+  application's user could not enter `/cz-debug` and the pod failed with `stat /cz-debug/bin/sleep: permission
+  denied`. The image's folders and files are now readable by every user whatever the umask, the init container
+  makes its copy readable too, and the image has a new tag, so pods in debug mode pick it up within a few minutes
+  of the update.
+
 ## 0.35.0 (2026-11-11)
 
 - **Debug mode for an application in the sandbox** (docs/scheduled-scans.md#debug-mode), for containers that crash

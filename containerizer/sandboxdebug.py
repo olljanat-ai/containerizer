@@ -37,6 +37,7 @@ VOLUME = "cz-debug"
 INIT = "cz-debug-tools"
 IMAGE = "cz-debug-tools"
 UID = 65532
+FORMAT = "2"                     # of the tools image (part of its tag): 2 = readable by every user, whatever the umask
 BINARIES = {"bash": ("bash-static",), "busybox": ("busybox-static", "busybox")}
 KINDS = ("Deployment", "StatefulSet")
 SLEEP = [f"{DIR}/bin/sleep", "infinity"]
@@ -98,7 +99,7 @@ def binaries() -> dict | None:
 
 @lru_cache(maxsize=1)
 def _hash() -> str:
-    h = hashlib.sha256((SHELL + START).encode())
+    h = hashlib.sha256((FORMAT + SHELL + START).encode())
     for _, p in sorted((binaries() or {}).items()):
         h.update(p.read_bytes())
     return h.hexdigest()[:12]
@@ -140,7 +141,10 @@ def build_context(ctx: Path) -> None:
     for name, text in (("shell", SHELL), ("start", START)):
         (root / name).write_text(text)
         (root / name).chmod(0o755)
-    (ctx / "Dockerfile").write_text(f"FROM scratch\nCOPY --chown={UID}:{UID} cz-debug /cz-debug\n"
+    # the application's user reads it, whatever umask this process runs with (the services': 077)
+    for q in (ctx, root, root / "bin"):
+        q.chmod(0o755)
+    (ctx / "Dockerfile").write_text(f"FROM scratch\nCOPY --chown={UID}:{UID} --chmod=0755 cz-debug /cz-debug\n"
                                     f"USER {UID}:{UID}\nENTRYPOINT [\"/cz-debug/busybox\"]\n")
 
 
@@ -219,7 +223,8 @@ def workload_patch(doc: dict, tools: str, start: str = "") -> str | None:
     c = containers[0]
     env = [{"name": "CZ_DEBUG", "value": "1"}] + ([{"name": "CZ_DEBUG_START", "value": start}] if start else [])
     init = {"name": INIT, "image": tools, "imagePullPolicy": "IfNotPresent",
-            "command": [f"{DIR}/busybox", "cp", "-dR", f"{DIR}/.", "/target/"],
+            "command": [f"{DIR}/busybox", "sh", "-c", f"umask 022 && {DIR}/busybox cp -dR {DIR}/. /target/ && "
+                        f"{DIR}/busybox chmod -R a+rX /target/*"],
             "securityContext": {"runAsNonRoot": True, "runAsUser": UID, "runAsGroup": UID, "allowPrivilegeEscalation": False,
                                 "readOnlyRootFilesystem": True, "capabilities": {"drop": ["ALL"]},
                                 "seccompProfile": {"type": "RuntimeDefault"}},
