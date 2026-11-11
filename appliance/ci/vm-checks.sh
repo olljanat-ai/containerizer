@@ -272,13 +272,13 @@ tr '\0' '\n' < "/proc/$wpid/environ" | grep -qx DOCKER_HOST=unix:///run/containe
 ctx=$(mktemp -d); export ctx; chown containerizer "$ctx"
 asworker() { runuser -u containerizer -- env HOME="$ctx" DOCKER_CONFIG="$ctx/.docker" DOCKER_HOST=unix:///run/containerizer/docker-guard.sock "$@"; }
 if runuser -u containerizer -- docker -H unix:///var/run/docker.sock ps >/dev/null 2>&1; then fail "the worker user reaches Docker's own socket"; fi
+. /usr/lib/containerizer/images.env      # CZ_IMAGE_MSSQL, before its first use (set -u)
 for bad in "run --rm --privileged $CZ_IMAGE_MSSQL true" "run --rm --network host $CZ_IMAGE_MSSQL true" \
            "run --rm -v /:/host $CZ_IMAGE_MSSQL true" "exec cz-mssql true" "inspect cz-mssql"; do
   # shellcheck disable=SC2086
   if asworker docker $bad >/dev/null 2>&1; then fail "the guard let 'docker $bad' through"; fi
 done
 echo "ok: the guard refuses privileged, host-network, host-mount and appliance-container calls"
-. /usr/lib/containerizer/images.env
 host_ip=$(ip -4 -o addr show scope global | awk '$2 !~ /^(docker|br-|cni|flannel|veth|cz-)/ {sub(/\/.*/, "", $4); print $4; exit}')
 gw=$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')
 # the results database, the k3s API (node and service address), the kubelet, the registry, Grafana, Prometheus, the web UI
