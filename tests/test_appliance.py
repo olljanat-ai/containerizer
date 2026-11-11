@@ -465,7 +465,11 @@ def test_dev_database_folder_is_shared_by_the_web_ui_and_the_worker():
 def test_every_download_in_the_image_is_pinned():
     docker = (APPLIANCE / "Dockerfile").read_text()
     assert "oras" not in docker                           # no SBOM attachments: no ORAS
-    assert docker.count("--checksum=sha256:") >= 3
+    assert docker.count("--checksum=sha256:") >= 4
+    helm = docker[docker.index("https://get.helm.sh/helm-v"):]
+    assert "--checksum=sha256:" in docker[:docker.index("https://get.helm.sh/helm-v")].rsplit("ADD", 1)[1]
+    assert "/usr/bin/helm" in helm and "helm version" in helm
+    assert "KUBECONFIG=/etc/rancher/k3s/k3s.yaml" in (APPLIANCE / "rootfs/etc/profile.d/kubeconfig.sh").read_text()
 
 
 def test_root_password_default_is_expired_and_kept_and_ssh_takes_it():

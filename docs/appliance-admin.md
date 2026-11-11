@@ -14,7 +14,7 @@ image, and upgraded from the admin pages. To install it, see [Getting started](a
 | LLM queue runner ([queued LLM reviews](scheduled-scans.md#the-llm-queue), [refactoring patches](refactoring.md)) | systemd service `containerizer-llm-queue`, user `containerizer`, Docker through the [guard](#builds-of-scanned-code) (to build and run refactoring patches), reads the scan worker's clones, writes only its answer cache and `/var/lib/containerizer/refactor` | Admin → LLM queue, Admin → Refactoring |
 | [Egress observer](egress.md#the-egress-observer): what the sandbox blocks (its NetworkPolicies, the firewall, the DNS filter) | systemd service `containerizer-egress-observer`, user `containerizer` with CAP_NET_ADMIN (the NFLOG drop log) and CAP_SYSLOG (the kernel log, for the firewall's drops) only, its own read-only Kubernetes account | Admin → Egress, the results pages' Network connectivity |
 | SQL Server 2025 (results database), or your own SQL Server ([external database](#external-database)) | container, non-root, data on the persistent partition | `127.0.0.1:1433` only |
-| Sandbox cluster: k3s (single node) with Flux and Traefik | systemd service | `kubectl` on the appliance; apps at `https://<component>-<app>.<domain>/` with [Sandbox HTTPS](sandbox-https.md) |
+| Sandbox cluster: k3s (single node) with Flux and Traefik | systemd service | `kubectl` and `helm` on the appliance; apps at `https://<component>-<app>.<domain>/` with [Sandbox HTTPS](sandbox-https.md) |
 | [Lab services](lab-services.md) for the sandboxed apps: SQL Server, PostgreSQL, MySQL, MongoDB, Redis, RabbitMQ, Kafka, S3, Azure Blob storage, SFTP, a catch-all mailbox for the mail the apps send (each optional) | k3s, namespace `containerizer-lab`, data on the persistent partition | Admin → Lab services; inside the cluster only |
 | Local container registry | container | `127.0.0.1:5000` only (Docker and k3s) |
 | Prometheus and Grafana, with the scan worker's, k3s' and Flux's metrics, alerts and dashboards ([metrics](#metrics)) | containers | `https://<appliance>/grafana/` |
@@ -270,7 +270,8 @@ write to it with the write token of **Admin → Source control**: the two are se
 found is at the top of Grafana's Flux dashboard and in `journalctl -u containerizer-sandbox` (each change), and the
 alert `ContainerizerSandboxNotConnected` fires after 15 minutes without a connection. Each app reconciles as its own ServiceAccount with its own copy of the token
 ([the sandbox cluster](scheduled-scans.md#the-sandbox-cluster)). Allow the Git server on
-the Firewall page. `kubectl` (as root on the appliance) shows the result. Flux is the only GitOps tool.
+the Firewall page. `kubectl` (as root on the appliance) shows the result, and `helm` is there for looking at
+and installing charts by hand (`helm list -A`); what Helm installs by hand is not in the output repository. Flux is the only GitOps tool.
 An application moved to an [output repository of its own](scheduled-scans.md#own-output-repository) is
 deployed from that repository, with its token: the LLM queue runner writes it to
 `/var/lib/containerizer/refactor/sandbox-git/<namespace>` (0600, its own user) and `cz-sandbox` puts it in that

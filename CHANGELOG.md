@@ -10,6 +10,10 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- **Helm on the appliance.** The OS image has the Helm CLI (`helm` 4.3.1, the release tarball checked against its
+  SHA-256), and root's shell has `KUBECONFIG` set to the sandbox cluster, so `helm list -A` works as `kubectl` does.
+  An OS change: it comes with the next minor release.
+
 ## 0.32.0 (2026-11-11)
 
 - **Verification, lab and links that fitted the sample applications are general.**
