@@ -10,6 +10,15 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.35.3 (2026-11-11)
+
+- **Fix: the namespace quota left no room for a rolling update of a single pod.** The generated ResourceQuota was
+  1.5 times the pods' own resources, so the new pod of a one-replica Deployment did not fit next to the old one
+  (`exceeded quota: quota, requested: limits.ephemeral-storage=1Gi ... limited: 1536Mi`) and the rollout never
+  started; debug mode showed it, because the crashing pod stayed. The quota now has room for the extra pods of a
+  rolling update of every Deployment (applications get it at their next scan), and debug mode replaces the pod
+  (strategy Recreate) instead of rolling it, so it works with the quota an application already has.
+
 ## 0.35.2 (2026-11-11)
 
 - **Debug mode stayed off while a scan was running.** A scan read the applications' sandbox switches once, at its

@@ -232,10 +232,12 @@ def workload_patch(doc: dict, tools: str, start: str = "") -> str | None:
             "volumeMounts": [{"name": VOLUME, "mountPath": "/target"}]}
     main = {"name": c.get("name"), "command": SLEEP, "args": None, "livenessProbe": None, "readinessProbe": None,
             "startupProbe": None, "env": env, "volumeMounts": [{"name": VOLUME, "mountPath": DIR, "readOnly": True}]}
+    # the crashing pod goes first: a rolling update would wait for room in the namespace's quota next to it
+    strategy = {"strategy": {"type": "Recreate", "rollingUpdate": None}} if doc["kind"] == "Deployment" else {}
     patch = {"apiVersion": doc.get("apiVersion") or "apps/v1", "kind": doc["kind"],
              "metadata": {"name": (doc.get("metadata") or {}).get("name"),
                           "annotations": {"containerizer.io/debug": "true"}},
-             "spec": {"replicas": 1, "template": {
+             "spec": {"replicas": 1, **strategy, "template": {
                  "metadata": {"annotations": {"containerizer.io/debug": "true"}},
                  "spec": {"initContainers": [init], "containers": [main],
                           "volumes": [{"name": VOLUME, "emptyDir": {"sizeLimit": "64Mi"}}]}}}}
