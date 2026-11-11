@@ -10,6 +10,21 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.34.0 (2026-11-11)
+
+- **The output repository is laid out for several clusters** (docs/clusters.md). Next to `sandbox/`, every run writes
+  `clusters/development/`, `clusters/acceptance/` and `clusters/production/` (`CONTAINERIZER_CLUSTERS` names them).
+  Each has a Flux bootstrap and one overlay per app over the same app folder, images and shared Helm chart.
+  - `clusters/<cluster>/cluster.yaml` is yours: which apps the cluster runs (`deploy: all`, or `listed` with `apps`)
+    and the registry it pulls from (`<registry>/<namespace>/<component>`, where the generated CI pipelines push).
+    Development runs every app; acceptance and production run nothing until you list an app.
+  - `clusters/<cluster>/apps/<namespace>/custom/` is yours too: a kustomize Component for the cluster's settings of
+    the app. In acceptance and production it starts pinned to the tag and digest the app had when the cluster first ran
+    it, so promoting a build is a commit that changes them; it also takes replicas, hosts and the values of chart mode
+    components. No run rewrites either file.
+  - The clusters keep `wait: true` and the HTTPRoutes, and have no sandbox identity provider. The sandbox's layout
+    and the appliance's sync are unchanged.
+
 ## 0.33.0 (2026-11-11)
 
 - **Components are deployed from a shared Helm chart by default** (docs/helm-chart.md).

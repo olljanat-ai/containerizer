@@ -259,6 +259,8 @@ sandbox/
   README.md namespaces.txt
   flux/bootstrap.yaml        GitRepository + root Kustomization
   idp/                       sandbox identity provider, when a component signs users in
+clusters/<cluster>/          development, acceptance, production: the same apps with each cluster's own app list,
+                             registry, image promotion and settings (clusters.md)
 ```
 
 The project folder is the Azure DevOps project, `_` for GitHub (no projects), or the GitLab subgroup
