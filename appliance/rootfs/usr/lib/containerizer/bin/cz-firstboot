@@ -89,6 +89,7 @@ elif [ -e "$T/cert.pem" ] || [ -e "$T/key.pem" ]; then
 fi
 {
   echo "CZ_SITES=https://$host"
+  echo "CZ_SNI=$host"
   if [ -s "$R/key.pem" ]; then
     echo "CZ_CADDY_TLS=$R/cert.pem $R/key.pem"
     echo "CZ_CADDY_ACME="

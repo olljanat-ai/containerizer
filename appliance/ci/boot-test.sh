@@ -88,7 +88,7 @@ if "$HERE/password-ssh.exp" run containerizer true >/dev/null; then echo "the de
 "${SSH[@]}" 'bash -s' < "$HERE/vm-checks.sh"
 
 echo "=== from outside: only HTTPS and SSH are forwarded; HTTPS answers"
-if ! curl -fsSk https://127.0.0.1:8443/healthz; then        # an IP address: no SNI, Caddy picks by local address
+if [ "$(curl -fsSk https://127.0.0.1:8443/healthz)" != ok ]; then        # an IP address: no SNI, Caddy picks by local address
   "${SSH[@]}" 'cat /run/containerizer/caddy.env | grep -v TLS; ip -o -4 addr show scope global;
     journalctl -b -u caddy -u containerizer-addresses --no-pager | grep -iE "certificate|no matching|addresses|reload|sni" | tail -30' || true
   exit 1

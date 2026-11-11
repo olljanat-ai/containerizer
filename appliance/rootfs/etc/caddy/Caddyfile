@@ -6,6 +6,9 @@
 	admin off
 	http_port 8081
 	auto_https disable_redirects
+	# a connection without a server name (https://<address> when the address is not a site yet: it changed since
+	# boot) gets the appliance name's certificate instead of a TLS alert
+	default_sni {$CZ_SNI}
 	{$CZ_CADDY_ACME}
 	servers {
 		protocols h1 h2

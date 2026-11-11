@@ -38,6 +38,10 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   run of a scanned repository reached the appliance's SSH server and its admin pages. The build bridges' drop now
   comes first, and pods in the sandbox cluster no longer reach SSH either (HTTPS stays: the sandbox URLs are on
   Caddy). Found by the boot test's probe once it ran again (next item).
+- **Fix: `https://<appliance address>` could fail with a TLS alert ("internal error").** Caddy started at the same
+  time as the step that adds the appliance's addresses to its certificate and missed its reload, so it had a
+  certificate for the name only. It now starts after that step, and a connection without a server name gets the
+  name's certificate.
 - **Fix: the appliance boot test used `CZ_IMAGE_MSSQL` before loading it** (`unbound variable`), so its
   build-isolation checks never ran.
 
