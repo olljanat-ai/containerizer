@@ -84,7 +84,15 @@ def test_tools_image_context(tmp_path, monkeypatch):
         pytest.skip("no busybox on this machine")
     from pathlib import Path
     monkeypatch.setattr(d, "binaries", lambda: {"bash": Path(bb), "busybox": Path(bb)})
-    d.build_context(tmp_path / "ctx")
+    import os
+    old = os.umask(0o077)                                          # the appliance's services run with it
+    try:
+        d.build_context(tmp_path / "ctx")
+    finally:
+        os.umask(old)
+    for q in (tmp_path / "ctx" / "cz-debug", tmp_path / "ctx" / "cz-debug" / "bin", tmp_path / "ctx" / "cz-debug" / "busybox"):
+        assert q.stat().st_mode & 0o777 == 0o755                   # the application's user gets in
+    assert "--chmod=0755" in (tmp_path / "ctx" / "Dockerfile").read_text()
     root = tmp_path / "ctx" / "cz-debug"
     assert (root / "bin" / "sleep").is_symlink() and (root / "bin" / "bash").resolve() == root / "bash"
     assert (root / "shell").read_text().startswith("#!/cz-debug/busybox sh")
