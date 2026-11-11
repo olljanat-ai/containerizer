@@ -14,6 +14,44 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   SHA-256), and root's shell has `KUBECONFIG` set to the sandbox cluster, so `helm list -A` works as `kubectl` does.
   An OS change: it comes with the next minor release.
 
+## 0.34.0 (2026-11-11)
+
+- **The output repository is laid out for several clusters** (docs/clusters.md). Next to `sandbox/`, every run writes
+  `clusters/development/`, `clusters/acceptance/` and `clusters/production/` (`CONTAINERIZER_CLUSTERS` names them).
+  Each has a Flux bootstrap and one overlay per app over the same app folder, images and shared Helm chart.
+  - `clusters/<cluster>/cluster.yaml` is yours: which apps the cluster runs (`deploy: all`, or `listed` with `apps`)
+    and the registry it pulls from (`<registry>/<namespace>/<component>`, where the generated CI pipelines push).
+    Development runs every app; acceptance and production run nothing until you list an app.
+  - `clusters/<cluster>/apps/<namespace>/custom/` is yours too: a kustomize Component for the cluster's settings of
+    the app. In acceptance and production it starts pinned to the tag and digest the app had when the cluster first ran
+    it, so promoting a build is a commit that changes them; it also takes replicas, hosts and the values of chart mode
+    components. No run rewrites either file.
+  - The clusters keep `wait: true` and the HTTPRoutes, and have no sandbox identity provider. The sandbox's layout
+    and the appliance's sync are unchanged.
+
+## 0.33.0 (2026-11-11)
+
+- **Components are deployed from a shared Helm chart by default** (docs/helm-chart.md).
+  - An organization scan writes each component as a Flux `HelmRelease` of `charts/containerizer-app/<version>/` (copied
+    into the output repository). Its values hold only what the component has beyond the chart's baseline. A component
+    becomes a HelmRelease only when the chart renders exactly the objects the generator made and saves at least
+    `deploy.min_saving` (30%) of the lines; otherwise it stays `k8s.yaml`. On the lab environment's 39 components the
+    HelmReleases are 42% shorter, and `helm template` gives every object back unchanged.
+  - The hardening is in the chart's templates, not in the values: user namespace, no token, non-root, seccomp, no
+    privilege escalation, read-only root file system, all capabilities dropped. Values cannot change it. Host
+    namespaces, hostPath volumes, hostPorts, unsafe sysctls, extra capabilities and containers without a memory limit
+    fail the render, so a component with a hardening exception stays plain manifests.
+  - The mode: the administrators' choice per application (Admin -> Applications -> Deploy mode, schema 48), else the
+    mode the application is deployed with (switching recreates its objects), else `deploy.mode` in
+    `rules/60-security.yaml` / `CONTAINERIZER_DEPLOY_MODE` / `containerizer org --deploy-mode`. `containerizer.json`
+    records it.
+  - Each HelmRelease names its chart version, so a new release changes nothing that runs until the application is
+    generated again. Chart versions that no HelmRelease names are removed. A move to the application's own repository
+    takes its chart along. The sandbox leaves out the HTTPRoutes of HelmReleases too (`values.skipKinds`).
+- **User namespaces for every generated pod** (`hostUsers: false`): root in a container is an unprivileged user on
+  the node. The appliance's k3s supports it. Turn it off for older runtimes with `CONTAINERIZER_USER_NAMESPACES=false`,
+  or per component with an exception (`host_users: true`). New HARDENING.md control and lint check `user-namespace`.
+
 ## 0.32.0 (2026-11-11)
 
 - **Verification, lab and links that fitted the sample applications are general.**

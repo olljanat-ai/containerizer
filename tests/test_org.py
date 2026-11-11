@@ -337,7 +337,8 @@ def test_run_org_deploys_java_and_node_repos(tmp_path, monkeypatch):
     assert "distroless/java17" in java and "USER 65532" in java
     nodedf = next((out).rglob("api/**/Dockerfile")).read_text()
     assert "distroless/nodejs" in nodedf and "npm ci" in nodedf
-    k8s = next((out).rglob("orders/**/k8s.yaml")).read_text()
+    from containerizer.helmchart import component_text
+    k8s = component_text(next((out).rglob("orders/**/Dockerfile")).parent)    # the chart's objects (helmchart.py)
     assert "/actuator/health/readiness" in k8s
 
 
@@ -370,13 +371,21 @@ def test_run_org_writes_layout_sandbox_and_commits(tmp_path, monkeypatch):
     assert res["dockerized"].status == "skipped-dockerfile" and "src/Dockerfile" in res["dockerized"].reason
     assert res["old"].status == "skipped-stale"
     app = out / "Contoso" / "Shop Floor" / "ci-demo"
-    assert (app / "demo-web" / "Dockerfile").exists() and (app / "demo-web" / "k8s.yaml").exists()
+    # the default: a HelmRelease of the shared chart, which the repository holds once (helmchart.py)
+    assert (app / "demo-web" / "Dockerfile").exists() and (app / "demo-web" / "helmrelease.yaml").exists()
+    assert not (app / "demo-web" / "k8s.yaml").exists()
+    from containerizer import __version__
+    assert (out / "charts" / "containerizer-app" / __version__ / "Chart.yaml").is_file()
+    assert f"version: {__version__}" in (out / "charts" / "containerizer-app" / __version__ / "Chart.yaml").read_text()
     assert not (out / "Contoso" / "Shop Floor" / "dockerized").exists()
     meta = json.loads((app / "containerizer.json").read_text())
     assert meta["app"] == "shop-floor-ci-demo"
     assert meta["components"][0]["image"] == "reg.example/sandbox/shop-floor-ci-demo/demo-web:1.2.3"
     k = (app / "kustomization.yaml").read_text()
-    assert "newTag: 1.2.3" in k and "regcred" in k
+    assert "demo-web/helmrelease.yaml" in k and "images:" not in k and "regcred" in k
+    hr = (app / "demo-web" / "helmrelease.yaml").read_text()
+    assert 'tag: 1.2.3 # {"$imagepolicy": "shop-floor-ci-demo:demo-web:tag"}' in hr and "regcred" in hr
+    assert meta["deploy_mode"] == "chart" and meta["components"][0]["deploy_mode"] == "chart"
     ks = next(d for d in yaml.safe_load_all((app / "gitops" / "flux" / "git" / "sync.yaml").read_text())
               if d and d["kind"] == "Kustomization")
     assert ks["spec"]["path"] == "./Contoso/Shop Floor/ci-demo" and ks["metadata"]["name"] == "shop-floor-ci-demo"
@@ -977,12 +986,12 @@ def test_deploy_app_writes_the_pushed_digest_into_the_kustomization(tmp_path, mo
     monkeypatch.setattr(imagescan, "build_image", lambda src, cdir, tag, timeout=1800: (True, ""))
     src, a = _a_app(tmp_path, "shop-web")
     o = OrgOptions(provider="github", org="acme", registry="reg.example/sandbox", verify=True, gate=False,
-                   push_images=True, image_pull_secret="regcred")
+                   push_images=True, image_pull_secret="regcred", deploy_mode="manifests")
     out = _Out(tmp_path / "out")
     res = orgmod.RepoResult(provider="github", org="acme", project="_", repo="shop", status="error", app="shop-web")
     res = orgmod.deploy_app(a, src, "acme/_/shop", o, out, FakeRegistry(), "1.2.3", GitOpsOptions(path="acme/_/shop"),
                             res, tmp_path / "work", "shop-web")
-    assert res.status == "deployed"
+    assert res.status == "deployed" and res.deploy_mode == "manifests"
     text = (out.root / "acme/_/shop/kustomization.yaml").read_text()
     k = yaml.safe_load(text)
     [img] = k["images"]

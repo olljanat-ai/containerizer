@@ -12,7 +12,9 @@ output Git repository at
 GitHub has no project level and GitLab projects can sit directly in the group: those use the
 project folder `_`. GitLab subgroups become one folder (`team/sub` -> `team--sub`).
 
-The output repository also gets `sandbox/`: a Flux root Kustomization that deploys every generated app to a sandbox cluster through the per-app GitOps files.
+The output repository also gets `sandbox/`: a Flux root Kustomization that deploys every generated app to a sandbox cluster through the per-app GitOps files,
+and `clusters/<name>/` (development, acceptance and production by default, clusters.py): the same apps for the real
+clusters, each with its own settings.
 """
 from __future__ import annotations
 
@@ -118,6 +120,9 @@ class OrgOptions:
     sandbox_off: set | None = None      # SourceKeys and ApplicationIds of the applications whose sandbox an administrator
                                         # turned off (Admin -> Applications, load_sandbox_off): assessed, not built or
                                         # deployed; their folders stay in the output repository, out of sandbox/
+    deploy_modes: dict | None = None    # SourceKey -> 'chart' or 'manifests': the administrators' choice per application
+                                        # (Admin -> Applications, load_deploy_modes); the rest: helmchart.app_mode
+    deploy_mode: str | None = None      # the default for this run (CLI --deploy-mode); None: helmchart.settings()
     review_queue: object = None         # with ai: queued LLM reviews (llmqueue.ReviewQueue): the scan asks the LLM
                                         # nothing, component reviews wait in the LLM review queue (no LLM-heavy mode,
                                         # no failure diagnosis or dev database questions either)
@@ -154,6 +159,8 @@ class RepoResult:
     split_hint: dict = field(default_factory=dict)     # a whole repository that looks like several applications
     patched: dict = field(default_factory=dict)        # the folder runs a "Make it A" patch (variant.py): its order,
                                                        # source commit and the output repository's commit before it
+    deploy_mode: str = ""             # chart (HelmReleases of the shared chart) or manifests (helmchart.py)
+    deploy_mode_reason: str = ""      # why that mode: set for the application, kept, or the default
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -417,7 +424,7 @@ def _apps_in(root: Path) -> list[tuple[str, Path, dict]]:
     """(relative app folder, folder, containerizer.json) of every deployed app in the output repository."""
     out = []
     for meta in sorted(root.glob("*/*/*/containerizer.json")):
-        if meta.parts[len(root.parts)] == SANDBOX:
+        if meta.parts[len(root.parts)] in (SANDBOX, "clusters"):
             continue
         try:
             doc = json.loads(meta.read_text())
@@ -528,8 +535,27 @@ def load_sandbox_off(conn) -> set:
     return {int(r[0]) for r in rows} | {str(r[1]) for r in rows}
 
 
-def _app_docs(folder: Path) -> list[dict]:
-    """Every document the app folder's kustomization.yaml lists (what its Flux Kustomization applies)."""
+def load_deploy_modes(conn) -> dict:
+    """SourceKey -> deploy mode of the applications an administrator set one for (Application.DeployMode, schema 48).
+    Empty on an older schema."""
+    from .helmchart import clean_mode
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT SourceKey, DeployMode FROM cz.Application WHERE DeployMode IS NOT NULL")
+        rows = cur.fetchall()
+    except Exception:  # noqa: BLE001 - before schema 48: the default for every application
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return {}
+    return {str(r[0]): clean_mode(r[1]) for r in rows if clean_mode(r[1])}
+
+
+def _app_docs(folder: Path, rendered: bool = True) -> list[dict]:
+    """Every document the app folder's kustomization.yaml lists (what its Flux Kustomization applies); with
+    `rendered`, a component's HelmRelease as the objects its chart renders (helmchart.component_docs)."""
+    from .helmchart import HELMRELEASE, component_docs
     try:
         res = (yaml.safe_load((folder / "kustomization.yaml").read_text()) or {}).get("resources") or []
     except (OSError, yaml.YAMLError):
@@ -537,6 +563,9 @@ def _app_docs(folder: Path) -> list[dict]:
     docs = []
     for r in res:
         f = folder / str(r)
+        if rendered and f.name == HELMRELEASE and f.is_file():
+            docs += component_docs(f.parent)
+            continue
         if f.is_file() and f.suffix in (".yaml", ".yml"):
             try:
                 docs += [d for d in yaml.safe_load_all(f.read_text()) if isinstance(d, dict)]
@@ -566,6 +595,12 @@ def sandbox_wait_patch(folder: Path, doc: dict) -> dict | None:
         ops.append({"op": "add", "path": "/spec/patches/-", "value": {
             "patch": f"$patch: delete\napiVersion: {ROUTE_API}\nkind: HTTPRoute\nmetadata:\n  name: any\n",
             "target": {"group": ROUTE_API.split("/")[0], "kind": "HTTPRoute"}}})
+        if any(d.get("kind") == "HelmRelease" for d in _app_docs(folder, rendered=False)):
+            # the same for the components of the shared chart: it leaves out the kinds in values.skipKinds
+            from .helmchart import HELM_API
+            ops.append({"op": "add", "path": "/spec/patches/-", "value": {
+                "patch": json.dumps([{"op": "add", "path": "/spec/values/skipKinds", "value": ["HTTPRoute"]}]),
+                "target": {"group": HELM_API.split("/")[0], "kind": "HelmRelease"}}})
     group, version = KUSTOMIZE_API.split("/")
     return {"target": {"group": group, "version": version, "kind": "Kustomization", "name": ns, "namespace": ns},
             "patch": json.dumps(ops)}
@@ -584,10 +619,14 @@ def write_cluster_kit(root: Path) -> list[str]:
     from . import eso
     from .generate import _yaml_docs
     from .harden import cluster_kit
+    from .helmchart import HELMRELEASE, component_docs
     refs = set()
     for _rel, folder, _doc in _apps_in(root):
         for f in folder.glob("*/k8s.yaml"):
             refs |= {f"{m}/*" for m in IMAGE_RE.findall(f.read_text(errors="replace"))}
+        for f in folder.glob(f"*/{HELMRELEASE}"):
+            from .generate import _yaml_docs
+            refs |= {f"{m}/*" for m in IMAGE_RE.findall(_yaml_docs(component_docs(f.parent)))}
         old = folder / CLUSTER
         if old.is_dir():
             shutil.rmtree(old)
@@ -616,20 +655,26 @@ does not apply this folder). Generated by `containerizer org`; the next run rewr
 def write_sandbox(root: Path, git_url: str, branch: str, off=None) -> list[str]:
     """sandbox/: the Flux root Kustomization over every app in the repository, except the ones of applications
     whose sandbox is turned off (`off`, load_sandbox_off): their folders stay, the cluster prunes them, and turning
-    the sandbox on again brings the same manifests and images back without a build. The Argo CD files of app
+    the sandbox on again brings the same manifests and images back without a build. Also clusters/: the other
+    clusters of the repository (clusters.py; the sandbox's `off` does not apply there). The Argo CD files of app
     folders made before 0.9.2 are removed: Flux is the only GitOps tool."""
     from .gitops import FLUX_NS, KUSTOMIZE_API, SOURCE_API
+    from .helmchart import sync_charts
     write_cluster_kit(root)
+    sync_charts(root)                     # charts/: the shared chart versions the HelmReleases name
     for old in root.glob("*/*/*/gitops/argocd"):
         if old.parts[len(root.parts)] != SANDBOX and old.is_dir():
             shutil.rmtree(old)
     from .generate import reserved_namespace
-    apps = []
+    apps, every = [], []
     for x in _apps_in(root):
         ns = str(x[2].get("namespace") or "")
         if reserved_namespace(ns):          # never deployed into a namespace of the cluster or the platform
             print(f"warning: {x[0]}: namespace {ns} is reserved; left out of the sandbox", file=sys.stderr)
-        elif not sandbox_excluded(x[2], off):
+            continue
+        if not x[2].get("variant"):         # a variant folder (0.10.0 and before) is a sandbox-only copy
+            every.append(x)
+        if not sandbox_excluded(x[2], off):
             apps.append(x)
     sb = root / SANDBOX
     if sb.exists():
@@ -664,6 +709,8 @@ def write_sandbox(root: Path, git_url: str, branch: str, off=None) -> list[str]:
         "# cluster admin after the namespaces exist; it grants nothing cluster-wide and no access to Secrets.\n"
         + dump(verify_rbac(namespaces)))
     (sb / "README.md").write_text(sandbox_readme(git_url, branch, apps, idp_url))
+    from .clusters import write_clusters
+    write_clusters(root, git_url, branch, every)
     return namespaces
 
 
@@ -1512,6 +1559,20 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
     # the pushed digests into kustomization.yaml: the sandbox runs by digest from the first deploy
     pushed = {e["image"].rsplit(":", 1)[0]: e["digest"] for e in comps + [res.dev_database or {}]
               if e.get("image") and e.get("digest")}
+    # the components as HelmReleases of the shared chart, or as manifests (helmchart.py)
+    from . import helmchart
+    cfg = helmchart.settings()
+    if o.deploy_mode:
+        cfg["mode"] = helmchart.clean_mode(o.deploy_mode) or cfg["mode"]
+    res.deploy_mode, res.deploy_mode_reason = helmchart.app_mode((o.deploy_modes or {}).get(res.source_key),
+                                                                 helmchart.folder_mode(dest), cfg)
+    forms = helmchart.convert_app(gen, app_ns(a.name), [e["folder"] for e in comps], res.deploy_mode,
+                                  digests=pushed, pull_secret=o.image_pull_secret, min_saving=cfg["min_saving"])
+    for e in comps:
+        f = forms.get(e["folder"]) or {}
+        e["deploy_mode"] = f.get("mode") or "manifests"
+        if f.get("reason"):
+            e["deploy_mode_reason"] = f["reason"]
     if pushed and (gen / "kustomization.yaml").exists():
         from .gitops import set_image_digests
         set_image_digests(gen / "kustomization.yaml", pushed)
@@ -1539,12 +1600,9 @@ def published_urls(dest: Path, keep: list) -> list[dict]:
     from .generate import k8s_name, app_ns
     from .sandbox import _published
     out = []
+    from .helmchart import component_docs
     for c in keep:
-        f = dest / k8s_name(c.name) / "k8s.yaml"
-        try:
-            docs = [d for d in yaml.safe_load_all(f.read_text()) if isinstance(d, dict)] if f.is_file() else []
-        except yaml.YAMLError:
-            docs = []
+        docs = component_docs(dest / k8s_name(c.name))
         url = _published(docs)[0] if docs else ""
         if url:
             out.append({"ComponentName": c.name, "Url": url})

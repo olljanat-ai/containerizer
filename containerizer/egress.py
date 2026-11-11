@@ -1196,20 +1196,19 @@ def refresh_folder(conn, app_id: int, folder: Path, namespace: str) -> tuple[dic
 
 def patch_links(folder: Path, doc: dict) -> list[str]:
     """Open the confirmed links of connectivity.yaml in the components' NetworkPolicies."""
-    import yaml
-    from .generate import _yaml_docs
     from .links import apply_links
     from . import connectivity
+    from .helmchart import HELMRELEASE, MANIFESTS, component_docs, write_component_docs
     out, inn = connectivity.linked_entries(doc)
     changed = []
     for comp in sorted({e.get("component") for e in out} | {i.get("component") for i in inn}):
-        f = folder / str(comp) / "k8s.yaml"
-        if not re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?", str(comp)) or not f.is_file():
+        cdir = folder / str(comp)
+        if not re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?", str(comp)) or not (
+                (cdir / MANIFESTS).is_file() or (cdir / HELMRELEASE).is_file()):
             continue
-        docs = [d for d in yaml.safe_load_all(f.read_text()) if isinstance(d, dict)]
-        if apply_links(docs, comp, out, inn):
-            f.write_text(_yaml_docs(docs))
-            changed.append(f"{comp}/k8s.yaml")
+        docs = component_docs(cdir)       # k8s.yaml, or what its HelmRelease renders (helmchart.py)
+        if docs and apply_links(docs, comp, out, inn):
+            changed.append(f"{comp}/{write_component_docs(cdir, docs)}")
     return changed
 
 

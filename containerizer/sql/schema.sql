@@ -91,7 +91,9 @@ CREATE TABLE [${schema}].Application (
     OutputMovedCommit nvarchar(64) NULL,            -- the commit in OutputRepo that holds them
     OutputNamespace nvarchar(63) NULL,              -- its sandbox namespace (the read token for its repository goes there)
     OutputMoveError nvarchar(800) NULL,             -- why the move did not happen (yet)
-    Tags           nvarchar(800) NULL               -- set by people: comma-separated tags, the front page filters by them (37)
+    Tags           nvarchar(800) NULL,              -- set by people: comma-separated tags, the front page filters by them (37)
+    DeployMode     nvarchar(20)  NULL               -- set by administrators: chart or manifests, NULL the system default (48)
+                   CONSTRAINT CK_Application_DeployMode CHECK (DeployMode IN (N'chart', N'manifests'))
 );
 GO
 -- 35: the sandbox can be turned off per application (Admin -> Applications): the scans assess it, but do not deploy it
@@ -110,6 +112,12 @@ GO
 -- the front page filters by them
 IF COL_LENGTH(N'[${schema}].Application', N'Tags') IS NULL
     ALTER TABLE [${schema}].Application ADD Tags nvarchar(800) NULL;
+GO
+-- 48: how its components are written to the output repository (Admin -> Applications, administrators; helmchart.py):
+-- HelmReleases of the shared chart or plain manifests; NULL: the system default (deploy.mode in rules/60-security.yaml)
+IF COL_LENGTH(N'[${schema}].Application', N'DeployMode') IS NULL
+    ALTER TABLE [${schema}].Application ADD DeployMode nvarchar(20) NULL
+        CONSTRAINT CK_Application_DeployMode CHECK (DeployMode IN (N'chart', N'manifests'));
 GO
 
 -- A deployable part of an application (web site, service, worker, desktop client, ...), matched by
@@ -562,20 +570,20 @@ BEGIN
            COALESCE(i.DisplayName, i.Name, d.DisplayName, d.Name),
            CASE WHEN d.ApplicationId IS NULL THEN N'insert' WHEN i.ApplicationId IS NULL THEN N'delete' ELSE N'update' END,
            CASE WHEN d.ApplicationId IS NOT NULL THEN (SELECT d.Name, d.DisplayName, d.Description, d.Owner, d.Retired, d.SandboxEnabled,
-                d.OutputRepo, d.OutputBranch, d.OutputPath, d.Tags,
+                d.OutputRepo, d.OutputBranch, d.OutputPath, d.Tags, d.DeployMode,
                 (SELECT p.Name FROM [${schema}].Product p WHERE p.ProductId = d.ProductId) AS Product
                 FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
            CASE WHEN i.ApplicationId IS NOT NULL THEN (SELECT i.Name, i.DisplayName, i.Description, i.Owner, i.Retired, i.SandboxEnabled,
-                i.OutputRepo, i.OutputBranch, i.OutputPath, i.Tags,
+                i.OutputRepo, i.OutputBranch, i.OutputPath, i.Tags, i.DeployMode,
                 (SELECT p.Name FROM [${schema}].Product p WHERE p.ProductId = i.ProductId) AS Product
                 FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
     FROM inserted i FULL OUTER JOIN deleted d ON d.ApplicationId = i.ApplicationId
     CROSS JOIN [${schema}].fnAuditWho() w
     WHERE d.ApplicationId IS NULL OR i.ApplicationId IS NULL
        OR EXISTS (SELECT i.Name, i.DisplayName, i.Description, i.Owner, i.Retired, i.SandboxEnabled, i.ProductId,
-                         i.OutputRepo, i.OutputBranch, i.OutputPath, i.Tags
+                         i.OutputRepo, i.OutputBranch, i.OutputPath, i.Tags, i.DeployMode
                   EXCEPT SELECT d.Name, d.DisplayName, d.Description, d.Owner, d.Retired, d.SandboxEnabled, d.ProductId,
-                         d.OutputRepo, d.OutputBranch, d.OutputPath, d.Tags);
+                         d.OutputRepo, d.OutputBranch, d.OutputPath, d.Tags, d.DeployMode);
 END;
 GO
 
@@ -1246,6 +1254,8 @@ GRANT UPDATE ON [${schema}].Application (OutputMovedAt, OutputMovedCommit, Outpu
     TO [${schema}_writer];
 -- 37: tags (administrators and operators; the checks are in admin_tags.py)
 GRANT UPDATE ON [${schema}].Application (Tags) TO [${schema}_admin];
+-- 48: the deploy mode (administrators; admin.set_deploy_mode)
+GRANT UPDATE ON [${schema}].Application (DeployMode) TO [${schema}_admin];
 GRANT SELECT ON [${schema}].AuditLog TO [${schema}_admin];
 GRANT SELECT, INSERT ON [${schema}].AccessLog TO [${schema}_admin];
 GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].DevDatabase TO [${schema}_admin];
@@ -2786,4 +2796,6 @@ GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 46) INSERT [${schema}].SchemaVersion (Version) VALUES (46);
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 47) INSERT [${schema}].SchemaVersion (Version) VALUES (47);
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 48) INSERT [${schema}].SchemaVersion (Version) VALUES (48);
 GO
