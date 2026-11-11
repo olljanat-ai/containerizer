@@ -10,6 +10,14 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- **Debug mode for an application in the sandbox** (docs/scheduled-scans.md#debug-mode), for containers that crash
+  at start. An administrator turns it on under Admin → Applications → the application → Sandbox. Within a few minutes
+  the application's pods stay running without starting it (`sleep` in place of the start command, one replica, no
+  probes), in the application's own image with its user, environment, mounts and network, and with a static Bash
+  and the BusyBox tools in `/cz-debug` (`/cz-debug/shell`, and `/cz-debug/start` for the application's own start
+  command). Nothing is built again and the application's folder does not change: it is a patch in `sandbox/` only,
+  for components of the shared chart as a post-renderer of their HelmRelease. The OS image gets `bash-static` and
+  `busybox-static` for the tools image (`<registry>/cz-debug-tools`). Schema 49 (`Application.SandboxDebug`).
 - **Helm on the appliance.** The OS image has the Helm CLI (`helm` 4.3.1, the release tarball checked against its
   SHA-256), and root's shell has `KUBECONFIG` set to the sandbox cluster, so `helm list -A` works as `kubectl` does.
   An OS change: it comes with the next minor release.

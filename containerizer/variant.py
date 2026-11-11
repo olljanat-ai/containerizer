@@ -1062,7 +1062,9 @@ def sync_sandbox(connect, key, work: Path, log=print) -> int:
     sandbox/ in every output repository (org.write_sandbox leaves those applications out; their folders and images
     stay, so on again deploys them as they were, without a build). Only when the set changed since the last sync
     (work/sandbox-off.json), which is recorded only once every output repository has it: one that could not be
-    opened or written is tried again at the next step. Returns the commits made."""
+    opened or written is tried again at the next step. The same for debug mode (sandboxdebug.py): sandbox/ gets or
+    loses the application's debug patches, and the tools image is pushed to the scans' registries first. Returns the
+    commits made."""
     from .credentials import load, private_key_from_env
     from .org import Output, host_allowed, load_sandbox_off, write_sandbox
     from .orgsource import REDACT
@@ -1074,14 +1076,24 @@ def sync_sandbox(connect, key, work: Path, log=print) -> int:
         creds = load(conn, key if key is not None else private_key_from_env()) if scans else None
     finally:
         conn.close()
-    sig = json.dumps(sorted(str(x) for x in off))
+    from . import sandboxdebug
+    debug = sandboxdebug.debug_of(off)
+    sig = json.dumps(sorted(str(x) for x in off) if not debug else
+                     [sorted(str(x) for x in off), sorted(str(x) for x in debug), sandboxdebug.tools_ref("r") or ""])
     state = work / SYNC_STATE
     if state.is_file() and state.read_text() == sig:
         return 0
     n, seen, missed = 0, set(), []
     hosts = allowed_hosts() | (creds.hosts() if creds else set())
+    pushed: set = set()
     for scan in scans:
         repo = scan["OutputRepo"]
+        registry = str(scan.get("Registry") or "")
+        if debug and registry and registry not in pushed and sandboxdebug.binaries() is not None:
+            # the tools image of the applications in debug mode, in the registry their images are in
+            pushed.add(registry)
+            if sandboxdebug.ensure_tools(registry, work, log) is None:
+                missed.append(f"{registry}/{sandboxdebug.IMAGE}")
         if repo in seen:
             continue
         seen.add(repo)

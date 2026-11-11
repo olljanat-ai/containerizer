@@ -66,6 +66,53 @@ and commits it. A scan also leaves the application out when it writes `sandbox/`
 switched it and when. A Make it A copy stays until a scan assesses newer code of its application, also while
 the sandbox is off.
 
+<a id="debug-mode"></a>
+### Debug mode: a container that crashes at start
+
+A container that crashes when it starts is hard to look into: there is nothing running to `kubectl exec` into, the
+generated images have no shell (chiseled and distroless), and an ephemeral debug container (`kubectl debug`,
+kubemg's debug session) only sees the processes and files of a container that is running. First read what the
+application wrote before it stopped: `kubectl -n <namespace> logs <pod> --previous`, or the **Sandbox cluster**
+details on the application's results page.
+
+When that is not enough, an administrator turns on **debug mode** for the application: **Admin → Applications** →
+the application → **Sandbox** → **Turn debug mode on**.
+
+![The Sandbox section of an application with debug mode on: the commands to open a shell and start the application](images/admin-app-debug-mode.png#only-light){ .cz-shot }
+![The Sandbox section of an application with debug mode on: the commands to open a shell and start the application](images/admin-app-debug-mode-dark.png#only-dark){ .cz-shot }
+
+Within a few minutes the application's pods in the sandbox restart and **stay running without starting the
+application**:
+
+- The container runs `sleep` in place of the application, with one replica and without probes. Everything else is
+  the application's own: its image, user, environment variables, mounted settings and secrets, read-only root
+  filesystem and network policies. What you see is what the application starts in.
+- `/cz-debug` holds a static Bash and the BusyBox tools (`ls`, `cat`, `vi`, `ps`, `env`, `wget`, `nc`, `nslookup`,
+  ...). They are copied in by an init container; nothing is installed into the image and nothing is built again.
+
+Open a shell in a pod, as root on the appliance or from [kubemg](appliance-admin.md#kubemg), and start the
+application by hand to see it fail:
+
+```sh
+kubectl -n <namespace> get pods
+kubectl -n <namespace> exec -it <pod> -- /cz-debug/shell
+/cz-debug/start        # the application's own start command, in the foreground ($CZ_DEBUG_START)
+```
+
+`/cz-debug/shell` is Bash with the tools on `PATH`; it prints the start command (the image's `ENTRYPOINT` and `CMD`
+with the arguments of the Deployment). Start it as often as you like, with other arguments or environment
+variables.
+
+- **Only the sandbox:** debug mode is a patch in `sandbox/flux/apps` of the output repository. The application's
+  own folder, and with it the [other clusters](clusters.md) of the output repository, never see it.
+- **Off again:** **Turn debug mode off**; within a few minutes the pods start the application again.
+- **While it is on,** the sandbox check reads the application as healthy, because its pods run: the page's
+  **Debug mode** mark is what says the application itself is not started. Scheduled jobs (CronJobs) are not put in
+  debug mode.
+- The change history records who switched it and when. The tools image is `<registry>/cz-debug-tools`, made on the
+  appliance from the static `bash-static` and `busybox` of its OS image and pushed to the appliance's registry; a
+  machine without those two programs has no debug mode (the scan's log says so).
+
 <a id="own-output-repository"></a>
 ## An application's own output repository
 
