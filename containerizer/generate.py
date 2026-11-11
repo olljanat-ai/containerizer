@@ -190,6 +190,7 @@ def default_plan(c: Component) -> dict:
     if p.kind_hint == "dotnet":
         _repoint_config(plan, c.facts)
         _repoint_nlog(plan, c.facts)
+        _blank_tokens(plan, c.facts)
         dataprotection_plan(plan, c.facts)
         plan["env"]["DOTNET_ENVIRONMENT"] = "Production"
         if c.role == "web":
@@ -226,6 +227,26 @@ def add_reason(plan: dict, rule: str, why: str, refs: list[str] | None = None) -
 
 
 CONFIG_DOCS = "https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/"
+
+
+def _blank_tokens(plan: dict, facts: dict) -> None:
+    """Release-pipeline tokens in appsettings.json ("#{Example.Variable}#", "__Example.Variable__"), which Azure DevOps
+    Replace Tokens or Octopus replaced at deployment: the image blanks them (dockerfile_dotnet), so the app never reads
+    a placeholder, and the settings come from the secret store like the pipeline's variables (k8s_manifests)."""
+    toks = sorted({t for v in (facts.get("token_settings") or {}).values() for t in v})
+    if not toks:
+        return
+    plan["blank_tokens"] = toks
+    keys = sorted(facts["token_settings"])
+    add_reason(plan, "config-tokens", f"appsettings.json has release-pipeline tokens ({', '.join(toks[:5])}"
+               f"{', ...' if len(toks) > 5 else ''}) that a deployment tool replaced: the image blanks them, and the "
+               f"settings that use them ({', '.join(keys[:5])}{', ...' if len(keys) > 5 else ''}) come from the "
+               "secret store as environment variables.", [CONFIG_DOCS])
+
+
+def _sed_bre(text: str) -> str:
+    """`text` as a literal in a sed basic regular expression delimited by '/'."""
+    return re.sub(r"([\\.*\[\]^$/])", r"\\\1", text)
 
 
 def _repoint_config(plan: dict, facts: dict) -> None:
@@ -689,6 +710,10 @@ def dockerfile_dotnet(plan: dict) -> str:
               *(["    export PATH=/opt/npm-prebuilt:$PATH; \\"] if plan.get("spa_root") else []),
               f'    dotnet restore "{proj}"{rid_arg}{restore_tfm} \\',
               f' && dotnet publish "{proj}" --no-restore {" ".join(pub)}']
+    if plan.get("blank_tokens"):
+        # release-pipeline tokens a deployment tool replaced: blank, the values come from the environment
+        lines.append("RUN find /out -maxdepth 1 -iname 'appsettings*.json' -exec sed -i "
+                     + " ".join(f"-e 's/{_sed_bre(t)}//g'" for t in plan["blank_tokens"]) + " {} +")
     writable = writable_dirs(plan)
     if writable:
         lines.append("RUN mkdir -p " + " ".join("/writable" + w for w in writable))
@@ -899,6 +924,15 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
         key = s.replace(":", "__")          # .NET configuration keys; Java/Node facts are variable names already
         secret_keys.append(key)
         env.append({"name": key, "valueFrom": {"secretKeyRef": {"name": secret_name, "key": key, "optional": True}}})
+    # settings with release-pipeline tokens (the image blanks them): their values from the secret store, unless a
+    # secret reference or the plan already sets them
+    have = {e["name"] for e in env}
+    for s in sorted(c.facts.get("token_settings") or {}):
+        key = s.replace(":", "__")
+        if key not in have:
+            have.add(key)
+            secret_keys.append(key)
+            env.append({"name": key, "valueFrom": {"secretKeyRef": {"name": secret_name, "key": key, "optional": True}}})
     volumes, mounts = [], []
     dp_pvc = plan.get("dataprotection_pvc")     # a key ring folder written in code (dataprotection_plan)
     for i, w in enumerate(writable_dirs(plan)):

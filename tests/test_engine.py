@@ -409,3 +409,30 @@ def test_image_policy_reflects_digests_and_the_kustomization_has_digest_setters(
     hardening = (out / "HARDENING.md").read_text()
     assert "| Images are deployed by digest | applied |" in hardening and "pinned by Flux" in hardening
     assert "image-digest:" not in hardening
+
+
+def test_release_pipeline_tokens_are_blanked_and_come_from_the_store(tmp_path):
+    """appsettings.json full of Replace Tokens / Octopus placeholders: the image blanks exactly those tokens and each
+    setting that used one is an optional reference into the component's secret store keys."""
+    from containerizer.generate import k8s_manifests
+    web_app(tmp_path)
+    write(tmp_path, "src/Web/appsettings.json", """
+        {"Api": {"Url": "https://#{Api.Host}#/v1", "Mode": "__Example.Mode__"},
+         "Antiforgery": {"Cookie": "__RequestVerificationToken"},
+         "ConnectionStrings": {"Main": "Server=#{Db.Host}#;Database=App"}}""")
+    a = assess(tmp_path)
+    c = a.components[0]
+    assert c.facts["token_settings"] == {"Api:Url": ["#{Api.Host}#"], "Api:Mode": ["__Example.Mode__"],
+                                         "ConnectionStrings:Main": ["#{Db.Host}#"]}
+    plan = make_plan(a, c)
+    assert plan["blank_tokens"] == ["#{Api.Host}#", "#{Db.Host}#", "__Example.Mode__"]
+    df = dockerfile_dotnet(plan)
+    assert ("RUN find /out -maxdepth 1 -iname 'appsettings*.json' -exec sed -i -e 's/#{Api\\.Host}#//g' "
+            "-e 's/#{Db\\.Host}#//g' -e 's/__Example\\.Mode__//g' {} +") in df
+    assert df.index("-exec sed") < df.index("AS final")
+    dep = next(d for d in k8s_manifests(a, c, plan, "img") if d["kind"] == "Deployment")
+    env = dep["spec"]["template"]["spec"]["containers"][0]["env"]
+    names = [e["name"] for e in env]
+    assert "Api__Url" in names and "Api__Mode" in names and names.count("ConnectionStrings__Main") == 1
+    ref = next(e for e in env if e["name"] == "Api__Url")["valueFrom"]["secretKeyRef"]
+    assert ref == {"name": "web-secrets", "key": "Api__Url", "optional": True}
