@@ -10,6 +10,14 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.35.6 (2026-11-11)
+
+- **Settings with release-pipeline tokens come from a ConfigMap unless they look secret.** 0.35.5 read every
+  setting with a `#{X}#` or `__X__` token from the secret store. Now only those whose name, a token's name or value
+  looks secret (`#{Smtp.Password}#`, `password=#{X}#`; the check replatformed services use) do; the others are
+  optional references to the new ConfigMap `<component>-settings` in `k8s.yaml`, one empty key per setting to set
+  for the environment.
+
 ## 0.35.5 (2026-11-11)
 
 - **Release-pipeline tokens in appsettings.json.** Settings like `"Url": "https://#{Api.Host}#/v1"` or

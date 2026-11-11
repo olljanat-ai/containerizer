@@ -8,7 +8,7 @@ on the appliance a locked-down namespace of the same cluster. Git only holds the
 
 | What | ExternalSecret | Remote key | Properties |
 | --- | --- | --- | --- |
-| Connection strings, secret settings and settings with release-pipeline tokens (`#{X}#`, `__X__`) of a component | `<component>-secrets` | `<namespace>--<component>` | one per environment variable, e.g. `ConnectionStrings__Main` |
+| Connection strings, secret settings and secret-looking settings with release-pipeline tokens (`#{X}#`, `__X__`; the others are in the ConfigMap `<component>-settings`) of a component | `<component>-secrets` | `<namespace>--<component>` | one per environment variable, e.g. `ConnectionStrings__Main` |
 | Key and certificate files (mounted under `/secrets`), Kerberos keytab | `<component>-files`, `<component>-keytab` | `<namespace>--<component>` | the file names |
 | Flux `GitRepository` credential | `<namespace>-git` | `<namespace>--cz-git` | `username` + `password`, or `identity` + `known_hosts` |
 | Flux commit verification keys | `<namespace>-git-gpg` | `<namespace>--cz-git-gpg` | the public keys |

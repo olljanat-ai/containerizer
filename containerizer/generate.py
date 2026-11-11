@@ -924,15 +924,23 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
         key = s.replace(":", "__")          # .NET configuration keys; Java/Node facts are variable names already
         secret_keys.append(key)
         env.append({"name": key, "valueFrom": {"secretKeyRef": {"name": secret_name, "key": key, "optional": True}}})
-    # settings with release-pipeline tokens (the image blanks them): their values from the secret store, unless a
-    # secret reference or the plan already sets them
+    # settings with release-pipeline tokens (the image blanks them), unless a secret reference or the plan already
+    # sets them: secret-looking ones from the secret store, the others from the ConfigMap <component>-settings
     have = {e["name"] for e in env}
+    token_secrets = set(c.facts.get("token_secret_settings") or ())
+    settings_name, settings = f"{name}-settings", {}
     for s in sorted(c.facts.get("token_settings") or {}):
         key = s.replace(":", "__")
-        if key not in have:
-            have.add(key)
+        if key in have:
+            continue
+        have.add(key)
+        if s in token_secrets:
             secret_keys.append(key)
             env.append({"name": key, "valueFrom": {"secretKeyRef": {"name": secret_name, "key": key, "optional": True}}})
+        else:
+            settings[key] = ""
+            env.append({"name": key, "valueFrom": {"configMapKeyRef": {"name": settings_name, "key": key,
+                                                                         "optional": True}}})
     volumes, mounts = [], []
     dp_pvc = plan.get("dataprotection_pvc")     # a key ring folder written in code (dataprotection_plan)
     for i, w in enumerate(writable_dirs(plan)):
@@ -1053,6 +1061,11 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
                                   "resources": {"requests": {"storage": st["size"] if st else "1Gi"}}},
                          "_comment": "the application's own data: back it up; the cluster's default StorageClass "
                                      "provides it (set storageClassName and the size for production)"})
+    if settings:
+        docs.append({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": settings_name, "labels": labels},
+                     "data": settings,
+                     "_comment": "settings a release pipeline set with tokens in appsettings.json (the image blanks the "
+                                 "tokens): set each value for this environment"})
     if secret_keys:
         docs.append({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": secret_name, "labels": labels},
                      "type": "Opaque", "stringData": {k: "" for k in secret_keys},

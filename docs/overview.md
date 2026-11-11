@@ -426,8 +426,9 @@ Techniques used to avoid application changes:
 - connection strings and secret settings become `ConnectionStrings__X` env vars from a Secret;
 - release-pipeline tokens in `appsettings.json` (`#{Example.Variable}#`, `__Example.Variable__`, which Azure DevOps
   Replace Tokens or Octopus replaced at deployment) are blanked in the image, so the app never reads a placeholder,
-  and every setting that used one becomes an optional env var from the same Secret (`Api__Url`): put its value in
-  the secret store, as the pipeline's variable used to give it;
+  and every setting that used one becomes an optional env var (`Api__Url`): from the ConfigMap
+  `<component>-settings` (set its values for the environment), or from the component's Secret when the setting's
+  name, a token's name or its value looks secret (`#{Smtp.Password}#`, `password=#{X}#`);
 - folders the app writes to (logs, App_Data) become volumes;
 - the ASP.NET Core Data Protection key folder gets one key, read-only, from a Secret that External Secrets Operator
   generates once in the cluster (Password generator, no secret store): cookies and antiforgery tokens survive

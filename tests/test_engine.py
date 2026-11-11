@@ -411,28 +411,37 @@ def test_image_policy_reflects_digests_and_the_kustomization_has_digest_setters(
     assert "image-digest:" not in hardening
 
 
-def test_release_pipeline_tokens_are_blanked_and_come_from_the_store(tmp_path):
-    """appsettings.json full of Replace Tokens / Octopus placeholders: the image blanks exactly those tokens and each
-    setting that used one is an optional reference into the component's secret store keys."""
+def test_release_pipeline_tokens_are_blanked_and_come_from_the_environment(tmp_path):
+    """appsettings.json full of Replace Tokens / Octopus placeholders: the image blanks exactly those tokens; each
+    setting that used one comes from the ConfigMap <component>-settings, or from the secret store when its name, a
+    token's name or its value looks secret."""
     from containerizer.generate import k8s_manifests
     web_app(tmp_path)
     write(tmp_path, "src/Web/appsettings.json", """
         {"Api": {"Url": "https://#{Api.Host}#/v1", "Mode": "__Example.Mode__"},
+         "Smtp": {"Auth": "#{Smtp.Password}#", "Relay": "host=#{Relay.Host}#;password=#{Relay.Pass}#"},
          "Antiforgery": {"Cookie": "__RequestVerificationToken"},
          "ConnectionStrings": {"Main": "Server=#{Db.Host}#;Database=App"}}""")
     a = assess(tmp_path)
     c = a.components[0]
     assert c.facts["token_settings"] == {"Api:Url": ["#{Api.Host}#"], "Api:Mode": ["__Example.Mode__"],
+                                         "Smtp:Auth": ["#{Smtp.Password}#"],
+                                         "Smtp:Relay": ["#{Relay.Host}#", "#{Relay.Pass}#"],
                                          "ConnectionStrings:Main": ["#{Db.Host}#"]}
+    assert c.facts["token_secret_settings"] == ["ConnectionStrings:Main", "Smtp:Auth", "Smtp:Relay"]
     plan = make_plan(a, c)
-    assert plan["blank_tokens"] == ["#{Api.Host}#", "#{Db.Host}#", "__Example.Mode__"]
+    assert plan["blank_tokens"][:3] == ["#{Api.Host}#", "#{Db.Host}#", "#{Relay.Host}#"]
     df = dockerfile_dotnet(plan)
     assert ("RUN find /out -maxdepth 1 -iname 'appsettings*.json' -exec sed -i -e 's/#{Api\\.Host}#//g' "
-            "-e 's/#{Db\\.Host}#//g' -e 's/__Example\\.Mode__//g' {} +") in df
+            "-e 's/#{Db\\.Host}#//g' ") in df and "-e 's/__Example\\.Mode__//g' {} +" in df
     assert df.index("-exec sed") < df.index("AS final")
-    dep = next(d for d in k8s_manifests(a, c, plan, "img") if d["kind"] == "Deployment")
-    env = dep["spec"]["template"]["spec"]["containers"][0]["env"]
-    names = [e["name"] for e in env]
-    assert "Api__Url" in names and "Api__Mode" in names and names.count("ConnectionStrings__Main") == 1
-    ref = next(e for e in env if e["name"] == "Api__Url")["valueFrom"]["secretKeyRef"]
-    assert ref == {"name": "web-secrets", "key": "Api__Url", "optional": True}
+    docs = k8s_manifests(a, c, plan, "img")
+    env = next(d for d in docs if d["kind"] == "Deployment")["spec"]["template"]["spec"]["containers"][0]["env"]
+    refs = {e["name"]: e.get("valueFrom") for e in env}
+    assert [e["name"] for e in env].count("ConnectionStrings__Main") == 1
+    assert refs["Api__Url"] == {"configMapKeyRef": {"name": "web-settings", "key": "Api__Url", "optional": True}}
+    assert refs["Api__Mode"]["configMapKeyRef"]["key"] == "Api__Mode"
+    assert refs["Smtp__Auth"] == {"secretKeyRef": {"name": "web-secrets", "key": "Smtp__Auth", "optional": True}}
+    assert "secretKeyRef" in refs["Smtp__Relay"]
+    cm = next(d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "web-settings")
+    assert cm["data"] == {"Api__Mode": "", "Api__Url": ""}
