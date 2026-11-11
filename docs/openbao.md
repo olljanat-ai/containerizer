@@ -130,7 +130,8 @@ two applications with the same provider and use the same groups for both.
     `cz-sync`;
   - a periodic token for the sync, kept in `secrets/openbao-sync-token`;
   - the recovery key, kept in `secrets/openbao-recovery-key`;
-  - then it revokes the root token.
+  - then it revokes the root token. Until then the root token is kept in `secrets/openbao-root-token` (root only),
+    so a setup that stopped half-way, say during a restart, is finished by the next run.
 - **Sync.** Each run:
   - reads every component's `<component>-secrets` ExternalSecret in the sandbox, but only those that read their
     own namespace's key `<namespace>--<component>`;
