@@ -367,7 +367,7 @@ history, one namespace, one set of URLs, IdP clients, lab databases and egress d
   not: it leaves the patched copy as it is. Use it after an update that lets a component through, such as a gate
   fix. If the new build cannot be deployed, what ran stays and the page says why.
 - **After an update** the queue runner does the same by itself, once: the patched copy of each application's latest
-  order that another Containerizer version built (or one from before 0.36.1, which recorded no version) is built
+  order that another Containerizer version built (or one from before 0.35.7, which recorded no version) is built
   again with the new version. So what the update changes in the generated files (settings, Secrets, ConfigMaps)
   reaches the applications that run a patch, too.
 - **Remove from the sandbox** on the order page (administrators, operators, the application's product owners)

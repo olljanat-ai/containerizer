@@ -915,7 +915,7 @@ UPGRADE_BY = "containerizer upgrade"
 
 def upgrade_requests(connect, log=print, version: str | None = None) -> int:
     """The queue runner's periodic step: the patched copies that run in the sandbox but were built by another
-    Containerizer version (Result sandbox.version; none before 0.36.1) are built again, once per version, as if
+    Containerizer version (Result sandbox.version; none before 0.35.7) are built again, once per version, as if
     someone pressed Try again (redeploy_requested does it). A scan leaves those folders as they are (org.kept_patch),
     so without this an upgrade's generator changes (settings, secrets, ConfigMaps) never reached them. Only the latest
     order of each application, and none whose rebuild is already asked. Returns how many it asked for."""

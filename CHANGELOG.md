@@ -10,7 +10,7 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
-## 0.36.1 (2026-11-11)
+## 0.35.7 (2026-11-11)
 
 - **Fix: an appsettings.json with comments or unquoted tokens was read as empty.** The scan understood only
   comments on a line of their own. A comment at the end of a line or a `/* */` block (.NET reads both), or a
