@@ -114,21 +114,21 @@ step "OpenBao: unsealed, admin sign-in on 443, placeholders, values into the sto
 wait_for 900 "OpenBao initialised by the sandbox job" sh -c \
   'systemctl start containerizer-sandbox.service; test -s /etc/containerizer/secrets/openbao-sync-token'
 test ! -e /etc/containerizer/secrets/openbao-root-token     # revoked and removed once setup is done
-$PY -m containerizer.openbao status | grep -q '"sealed": false'
+$PY -m containerizer.openbao status | grep '"sealed": false' >/dev/null
 test "$(stat -c '%U %a' /etc/containerizer/secrets/openbao-sync-token)" = "root 400"
 url="https://$(hostname)"
 login=$(printf '{"password": "%s"}' "$(cat /etc/containerizer/secrets/openbao-admin)" \
   | curl -fsSk --resolve "$(hostname):443:127.0.0.1" -d @- "$url/v1/auth/userpass/login/admin")
 tok=$(printf %s "$login" | $PY -c 'import json,sys; print(json.load(sys.stdin)["auth"]["client_token"])')
 bao() { curl -fsSk --resolve "$(hostname):443:127.0.0.1" -H @<(printf 'X-Vault-Token: %s\n' "$tok") "$@"; }
-curl -fsSk --resolve "$(hostname):443:127.0.0.1" "$url/ui/" | grep -q OpenBao
+curl -fsSk --resolve "$(hostname):443:127.0.0.1" "$url/ui/" | grep OpenBao >/dev/null
 # the value put in the store before is the placeholder's value
-bao "$url/v1/apps/data/ci-a/web" | grep -q 'Server=db;Password=ci-only'
+bao "$url/v1/apps/data/ci-a/web" | grep 'Server=db;Password=ci-only' >/dev/null
 printf '{"data": {"ConnectionStrings__Db": "Server=db;Password=from-openbao"}}' | bao -d @- "$url/v1/apps/data/ci-a/web" >/dev/null
 systemctl start containerizer-sandbox.service
 wait_for 300 "a value saved in OpenBao reaches the app" sh -c \
   'k3s kubectl -n ci-a get secret web-secrets -o jsonpath={.data.ConnectionStrings__Db} | base64 -d | grep -q from-openbao'
-bao "$url/v1/sys/policies/acl/app-ci-a" | grep -q 'apps/data/ci-a/'
+bao "$url/v1/sys/policies/acl/app-ci-a" | grep 'apps/data/ci-a/' >/dev/null
 
 k delete namespace ci-a ci-b --wait=false
 k -n containerizer-secrets delete secret/ci-a--web role/app-secrets-reader-ci-a rolebinding/app-secrets-reader-ci-a \
