@@ -10,6 +10,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.35.0 (2026-11-11)
+
 - **Debug mode for an application in the sandbox** (docs/scheduled-scans.md#debug-mode), for containers that crash
   at start. An administrator turns it on under Admin → Applications → the application → Sandbox. Within a few minutes
   the application's pods stay running without starting it (`sleep` in place of the start command, one replica, no
@@ -20,7 +22,6 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   `busybox-static` for the tools image (`<registry>/cz-debug-tools`). Schema 49 (`Application.SandboxDebug`).
 - **Helm on the appliance.** The OS image has the Helm CLI (`helm` 4.3.1, the release tarball checked against its
   SHA-256), and root's shell has `KUBECONFIG` set to the sandbox cluster, so `helm list -A` works as `kubectl` does.
-  An OS change: it comes with the next minor release.
 
 ## 0.34.0 (2026-11-11)
 
