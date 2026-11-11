@@ -10,6 +10,30 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.35.7 (2026-11-11)
+
+- **Fix: an appsettings.json with comments or unquoted tokens was read as empty.** The scan understood only
+  comments on a line of their own. A comment at the end of a line or a `/* */` block (.NET reads both), or a
+  release-pipeline token where a number or boolean goes (`"Port": #{Api.Port}#`), made the whole file unreadable.
+  Its connection strings, folders, secret settings and tokens were then missed, and no rescan could produce the
+  settings ConfigMap. The file is now read as .NET reads it. The image turns such an unquoted token into `null`
+  (blanked, it would leave invalid JSON); a token inside a string is blanked as before.
+- **Settings with release-pipeline tokens start with another environment's value.** The ConfigMap
+  `<component>-settings` no longer starts empty when the repository has a value for the setting. It looks, in
+  this order, for:
+  - the same key in `appsettings.json` (a value the Production file tokenizes) or an
+    `appsettings.<Environment>.json`, development and test environments first;
+  - each token by its name as a key (`#{Auth.Authority}#` from `Auth:Authority`);
+  - the one value of the settings with the same name.
+
+  The ConfigMap's comment says where each value came from; check them for the environment. Secret-looking settings
+  and values never get one: they would be in Git.
+- **An update now reaches applications that run a "Make it A" patch.** A scan leaves their folder as it is (the
+  patch is newer), so an update's changes to the generated files (the ConfigMap and secret settings of 0.35.5 and
+  0.35.6, say) never reached them until someone pressed Try again. The queue runner now builds the patched copy
+  of each application's latest order again by itself, once per version (the same patch on the same commit, no
+  LLM).
+
 ## 0.35.6 (2026-11-11)
 
 - **Settings with release-pipeline tokens come from a ConfigMap unless they look secret.** 0.35.5 read every

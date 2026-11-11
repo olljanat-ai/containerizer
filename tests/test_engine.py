@@ -445,3 +445,56 @@ def test_release_pipeline_tokens_are_blanked_and_come_from_the_environment(tmp_p
     assert "secretKeyRef" in refs["Smtp__Relay"]
     cm = next(d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "web-settings")
     assert cm["data"] == {"Api__Mode": "", "Api__Url": ""}
+
+
+def test_token_settings_start_with_another_environments_value(tmp_path):
+    """A setting the Production file tokenizes keeps appsettings.json's value as its starting value; a token is found
+    by its name as a key in the development file; a setting with the same last name part and one value elsewhere
+    takes that; a secret-looking one never gets a value (it would be in Git)."""
+    from containerizer.generate import k8s_manifests
+    web_app(tmp_path)
+    write(tmp_path, "src/Web/appsettings.json", """
+        {"Auth": {"Authority": "https://auth.acc.example.com/idhub/oidc"},
+         "Api": {"Url": "https://#{Api.Host}#/v1"}, "Jwt": {"Authority": "#{Jwt.Authority}#"},
+         "Mail": {"From": "__Mail.From__"}, "Smtp": {"Password": "#{Smtp.Password}#"}}""")
+    write(tmp_path, "src/Web/appsettings.Production.json", '{"Auth": {"Authority": "#{Auth.Authority}#"}}')
+    write(tmp_path, "src/Web/appsettings.Development.json",
+          '{"Api": {"Host": "api.dev.example.com"}, "Smtp": {"Password": "dev-only"}}')
+    a = assess(tmp_path)
+    c = a.components[0]
+    assert c.facts["token_defaults"] == {
+        "Auth:Authority": {"value": "https://auth.acc.example.com/idhub/oidc", "from": "appsettings.json (Auth:Authority)"},
+        "Api:Url": {"value": "https://api.dev.example.com/v1",
+                    "from": "#{Api.Host}# = appsettings.Development.json (Api:Host)"},
+        "Jwt:Authority": {"value": "https://auth.acc.example.com/idhub/oidc",
+                          "from": "appsettings.json (Auth:Authority, the same name)"}}
+    docs = k8s_manifests(a, c, make_plan(a, c), "img")
+    cm = next(d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "web-settings")
+    assert cm["data"]["Api__Url"] == "https://api.dev.example.com/v1" and cm["data"]["Mail__From"] == ""
+    assert "Smtp__Password" not in cm["data"]                                  # secret: the store, no value in Git
+    assert "Auth__Authority from appsettings.json (Auth:Authority)" in cm["_comment"]
+
+
+def test_appsettings_with_comments_and_unquoted_tokens_are_read(tmp_path):
+    """.NET reads comments anywhere and trailing commas, and a release pipeline puts numbers and booleans unquoted
+    ("Port": #{Api.Port}#). Such a file read as empty: no connection strings, no tokens, no ConfigMap. Now it is
+    read, and the image turns an unquoted token into null (blanked it would be invalid JSON)."""
+    from containerizer.facts import lenient_json
+    web_app(tmp_path)
+    write(tmp_path, "src/Web/appsettings.json", """
+        {
+          /* the API this app calls */
+          "Api": {"Url": "https://#{Api.Host}#:#{Api.Port}#/v1", // set by the release
+                  "Port": #{Api.Port}#, "Retry": __Api.Retry__,},
+          "ConnectionStrings": {"Main": "Server=db;Database=App"},
+        }""")
+    a = assess(tmp_path)
+    c = a.components[0]
+    assert c.facts["connection_strings"] == ["Main"]
+    assert set(c.facts["token_settings"]) == {"Api:Url", "Api:Port", "Api:Retry"}
+    assert c.facts["token_bare"] == ["#{Api.Port}#", "__Api.Retry__"]
+    plan = make_plan(a, c)
+    df = dockerfile_dotnet(plan)
+    assert "-e ':n' -e 's/\\([,:[][[:space:]]*\\)#{Api\\.Port}#\\([[:space:]]*[],}]\\)/\\1null\\2/'" in df
+    assert df.index("-e 'tn'") < df.index("-e 's/#{Api\\.Host}#//g'")
+    assert lenient_json('{"u": "http://x//y,}"}') == '{"u": "http://x//y,}"}'      # strings stay as they are
