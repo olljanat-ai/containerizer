@@ -366,6 +366,10 @@ history, one namespace, one set of URLs, IdP clients, lab databases and egress d
   deployed with the version the appliance runs now (no LLM), within a few minutes by the queue runner. A scan does
   not: it leaves the patched copy as it is. Use it after an update that lets a component through, such as a gate
   fix. If the new build cannot be deployed, what ran stays and the page says why.
+- **After an update** the queue runner does the same by itself, once: the patched copy of each application's latest
+  order that another Containerizer version built (or one from before 0.36.1, which recorded no version) is built
+  again with the new version. So what the update changes in the generated files (settings, Secrets, ConfigMaps)
+  reaches the applications that run a patch, too.
 - **Remove from the sandbox** on the order page (administrators, operators, the application's product owners)
   puts the scan's output back: the queue runner, within a few minutes, checks the folder out of
   `previous_revision` (no folder there, as when no component rated A on its own: the folder goes), regenerates

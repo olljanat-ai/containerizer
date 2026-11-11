@@ -822,7 +822,7 @@ def test_housekeep_records_the_removal(monkeypatch, tmp_path):
     r = lq.Runner(away, name="r", log=logs.append, metrics=object.__new__(lq.QueueMetrics))
     # one line per step (sandbox variants, Try again's rebuilds, their state, the sandbox switch, applications' own
     # output repositories, egress), once a minute
-    assert r.housekeep() == 0 and r.housekeep() == 0 and len(logs) == 6 and all("db away" in m for m in logs)
+    assert r.housekeep() == 0 and r.housekeep() == 0 and len(logs) == 7 and all("db away" in m for m in logs)
 
 
 
@@ -1720,3 +1720,46 @@ def test_try_again_builds_the_patched_copy_again_once_per_request(tmp_path, monk
     sb = saved[-1][1]["sandbox"]
     assert sb["status"] == "running" and sb["redeploy_error"] == "not deployed: gate"
     assert sb["deployed_at"] == "2026-11-05T20:05:00"                        # the earlier build still runs
+
+
+def test_an_upgrade_builds_the_patched_copies_of_older_versions_again_once(tmp_path):
+    """A scan leaves a folder that runs a Make it A patch as it is (org.kept_patch), so the generator changes of an
+    upgrade never reached it: the runner asks for a rebuild of the latest order of each application built by another
+    version (or before versions were recorded), once, and not when a rebuild is asked already."""
+    import json as _json
+    from datetime import datetime as _dt
+    from containerizer import variant as vt
+    asked = _dt(2026, 11, 5, 20, 0, 0)
+    rows = [{"JobId": 9, "Payload": _json.dumps({"application_id": 7}),
+             "Result": _json.dumps({"sandbox": {"status": "running", "folder": "a/_/x"}}), "RedeployRequestedAt": None},
+            {"JobId": 8, "Payload": _json.dumps({"application_id": 7}),                   # older order, same app
+             "Result": _json.dumps({"sandbox": {"status": "running", "folder": "a/_/x"}}), "RedeployRequestedAt": None},
+            {"JobId": 5, "Payload": _json.dumps({"application_id": 3}),                   # a rebuild is asked already
+             "Result": _json.dumps({"sandbox": {"status": "running", "folder": "a/_/y", "version": "0.1.0"}}),
+             "RedeployRequestedAt": asked},
+            {"JobId": 4, "Payload": _json.dumps({"application_id": 2}),                   # done for an earlier request
+             "Result": _json.dumps({"sandbox": {"status": "deployed", "folder": "a/_/z", "version": "0.1.0",
+                                                "redeploy_of": vt._iso(asked)}}), "RedeployRequestedAt": asked}]
+    updates = []
+
+    class Cur:
+        def execute(self, sql, params=()):
+            if sql.startswith("UPDATE"):
+                updates.append(params)
+            else:
+                assert params == ("9.9.9",) and "sandbox.version" in sql
+
+        def fetchall(self):
+            return [dict(r) for r in rows]
+
+    class Conn:
+        def cursor(self, as_dict=False):
+            return Cur()
+
+        def commit(self):
+            pass
+
+        def close(self):
+            pass
+    assert vt.upgrade_requests(lambda: Conn(), log=lambda m: None, version="9.9.9") == 2
+    assert updates == [("containerizer upgrade to 9.9.9", 9), ("containerizer upgrade to 9.9.9", 4)]

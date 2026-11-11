@@ -1460,6 +1460,10 @@ class Runner:
                 n += variant.housekeep(self.connect, self.key, base, log=self.log)
             except Exception as ex:             # a database from before schema 23, the output repository away: next time
                 self.log(f"sandbox variants: {type(ex).__name__}: {ex}"[:400])
+            try:                                # patched copies an older version built: built again with this one
+                variant.upgrade_requests(self.connect, log=self.log)
+            except Exception as ex:             # a database from before 0.16.4: next time
+                self.log(f"sandbox variant upgrade: {type(ex).__name__}: {ex}"[:400])
             try:                                # Try again: an order's patched copy built again (scanagain.py)
                 base = Path(os.environ.get(refactor.WORK_ENV) or tempfile.gettempdir()) / "variants"
                 n += variant.redeploy_requested(self.connect, self.key, base, log=self.log)

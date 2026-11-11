@@ -428,7 +428,11 @@ Techniques used to avoid application changes:
   Replace Tokens or Octopus replaced at deployment) are blanked in the image, so the app never reads a placeholder,
   and every setting that used one becomes an optional env var (`Api__Url`): from the ConfigMap
   `<component>-settings` (set its values for the environment), or from the component's Secret when the setting's
-  name, a token's name or its value looks secret (`#{Smtp.Password}#`, `password=#{X}#`);
+  name, a token's name or its value looks secret (`#{Smtp.Password}#`, `password=#{X}#`). The ConfigMap starts with
+  another environment's value when the repository has one, and its comment says which: the same key in
+  `appsettings.json` or an `appsettings.<Environment>.json` (Development and test environments first), else each
+  token by its name as a key (`#{Auth.Authority}#` from `Auth:Authority`), else the one value of the settings with
+  the same name (`Authority`). Secret-looking values are never taken: they would be in Git;
 - folders the app writes to (logs, App_Data) become volumes;
 - the ASP.NET Core Data Protection key folder gets one key, read-only, from a Secret that External Secrets Operator
   generates once in the cluster (Password generator, no secret store): cookies and antiforgery tokens survive

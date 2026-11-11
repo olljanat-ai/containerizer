@@ -27,12 +27,103 @@ TOKEN_RE = re.compile(r"#\{\s*[A-Za-z_][\w.\-]*\s*\}#|(?<![\w])__[A-Za-z][A-Za-z
 SECRET_KEY = re.compile(r"(password|secret|apikey|api_key|clientsecret|token|connectionstring|key)$", re.I)
 
 
+def _settings_rank(name: str) -> tuple:
+    """Where a token's starting value is looked for first: appsettings.json (its value under the Production
+    override), then the development and test environments' files, then the others."""
+    env = name.lower()[len("appsettings"):-len(".json")].strip(".")
+    order = ["", "development", "dev", "local", "test", "testing", "acc", "acceptance", "qa", "uat", "staging", "stage"]
+    return (order.index(env) if env in order else len(order), env)
+
+
+def token_defaults(settings: dict, files: list[tuple[str, dict]]) -> dict:
+    """A starting value for each setting with release-pipeline tokens (`settings`: {key: value}), from the
+    component's other settings files (`files`: [(name, flattened settings)] in the order to look): the same key with
+    a value without tokens; else each token by its name as a key (`#{Auth.Authority}#` -> Auth:Authority); else
+    another setting with the same last name part (`Jwt:Authority` for `Auth:Authority`) when all of those have one
+    and the same value. A value that looks secret is never taken (it would be in Git). {key: {"value", "from"}}."""
+    from .platforms import classify_env
+
+    def clean(v) -> bool:
+        """A real value: not empty, no token, not an object."""
+        return bool(v.strip()) and not TOKEN_RE.search(v) if isinstance(v, str) else isinstance(v, (int, float, bool))
+
+    def text(v) -> str:
+        return ("true" if v else "false") if isinstance(v, bool) else str(v)
+
+    def safe(k: str, v: str) -> bool:
+        return not classify_env({k.replace(":", "__"): v})[1]
+    out = {}
+    for key, value in settings.items():
+        hit = next(((n, f[key]) for n, f in files if key in f and clean(f[key])), None)
+        if hit and safe(key, text(hit[1])):
+            out[key] = {"value": text(hit[1]), "from": f"{hit[0]} ({key})"}
+            continue
+        resolved, why = str(value), []
+        for tok in TOKEN_RE.findall(str(value)):
+            name = tok.strip("#{}_ ")
+            cand = [name.replace(".", ":"), name.replace("__", ":"), name]
+            hit = next(((n, k, f[k]) for c in cand for n, f in files for k in f
+                        if k.lower() == c.lower() and clean(f[k])), None)
+            if not hit:
+                break
+            resolved = resolved.replace(tok, text(hit[2]))
+            why.append(f"{tok} = {hit[0]} ({hit[1]})")
+        else:
+            if why and safe(key, resolved):
+                out[key] = {"value": resolved, "from": "; ".join(why)}
+                continue
+        leaf = key.rsplit(":", 1)[-1].lower()
+        same = [(n, k, text(f[k])) for n, f in files for k in f
+                if k != key and k.rsplit(":", 1)[-1].lower() == leaf and clean(f[k])]
+        if same and len({v for _, _, v in same}) == 1 and safe(key, same[0][2]):
+            out[key] = {"value": same[0][2], "from": f"{same[0][0]} ({same[0][1]}, the same name)"}
+    return out
+
+
+def lenient_json(txt: str, bare: set | None = None) -> str:
+    """JSON as .NET's configuration reads it, made strict: `//` and `/* */` comments anywhere outside strings and
+    trailing commas go, and a release-pipeline token where a value goes (`"Port": #{Api.Port}#`, unquoted because the
+    pipeline puts a number or a boolean there) becomes that token as a string. Strings are left exactly as they are
+    (a URL's `//`, a `,}` inside a value). The unquoted tokens are added to `bare`."""
+    out: list[str] = []
+    i, n = 0, len(txt)
+    while i < n:
+        ch = txt[i]
+        if ch == '"':                                   # a string, with its escapes, as it is
+            j = i + 1
+            while j < n and txt[j] != '"':
+                j += 2 if txt[j] == "\\" else 1
+            out.append(txt[i:j + 1])
+            i = j + 1
+        elif txt.startswith("//", i):
+            while i < n and txt[i] not in "\r\n":
+                i += 1
+        elif txt.startswith("/*", i):
+            end = txt.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+        elif ch == "," and re.match(r"(?:\s|//[^\r\n]*|/\*.*?\*/)*[}\]]", txt[i + 1:], re.S):
+            i += 1                                      # a trailing comma
+        elif (m := TOKEN_RE.match(txt, i)):
+            out.append(json.dumps(m.group(0)))
+            if bare is not None:
+                bare.add(m.group(0))
+            i = m.end()
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def bare_tokens(txt: str) -> set[str]:
+    """The release-pipeline tokens that stand unquoted where a value goes (`"Port": #{Api.Port}#`)."""
+    bare: set[str] = set()
+    lenient_json(txt, bare)
+    return bare
+
+
 def _load_json(p: Path) -> dict:
     try:
-        txt = p.read_text(encoding="utf-8-sig", errors="replace")
-        txt = re.sub(r"^\s*//.*$", "", txt, flags=re.M)        # appsettings allow comments
-        txt = re.sub(r",(\s*[}\]])", r"\1", txt)                # and trailing commas
-        return json.loads(txt)
+        return json.loads(lenient_json(p.read_text(encoding="utf-8-sig", errors="replace")))
     except (OSError, ValueError):
         return {}
 
@@ -198,6 +289,15 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
         tokens = {k: sorted(set(TOKEN_RE.findall(v))) for k, v in flat if isinstance(v, str) and TOKEN_RE.search(v)}
         if tokens:
             facts["token_settings"] = tokens
+            # unquoted where a value goes ("Port": #{Api.Port}#): the image makes them null, not empty (invalid JSON)
+            bare = set()
+            for f in (appsettings, appsettings.with_name("appsettings.Production.json")):
+                try:
+                    bare |= bare_tokens(f.read_text(encoding="utf-8-sig", errors="replace"))
+                except OSError:
+                    pass
+            if bare:
+                facts["token_bare"] = sorted(bare)
             # secret by its name, a token's name or its value (a password in it): from the secret store, the rest
             # from a ConfigMap (platforms.classify_env, as for the settings of a replatformed service)
             from .platforms import classify_env
@@ -206,6 +306,12 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
                       if classify_env({k.replace(":", "__"): vals[k], **{t.strip("#{}_ "): "" for t in toks}})[1]}
             if secret:
                 facts["token_secret_settings"] = sorted(secret)
+            files = sorted((f for f in p.files if f.parent == p.dir and re.fullmatch(r"appsettings(\.[\w-]+)?\.json", f.name, re.I)),
+                           key=lambda f: _settings_rank(f.name))
+            starts = token_defaults({k: vals[k] for k in tokens if k not in secret},
+                                    [(f.name, dict(_flatten(_load_json(f)))) for f in files])
+            if starts:
+                facts["token_defaults"] = starts
         # sign-in settings (OIDC, WS-Federation, SAML) the sandbox IdP overrides (idp.py)
         if any(facts.get(f"auth_{x}") for x in ("oidc", "wsfed", "saml")):
             from .idp import find_sections

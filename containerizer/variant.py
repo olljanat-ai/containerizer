@@ -482,7 +482,7 @@ def deploy(connect, key, payload: dict, job: int, result: dict, work: Path, name
           "url": main_url(comps), "url_check": None, "checked_at": None,
           "deployed_at": _iso(now), "commit": payload.get("commit"), "excluded": res.excluded,
           "local_images": any(c.get("image_source") == "local" for c in res.components),
-          "reason": "deployed"}
+          "reason": "deployed", "version": _version()}
     progress("deploying: waiting for the sandbox to run it")
     sb.update((health or check_health)(out.root, ns, rev))
     return sb
@@ -894,13 +894,67 @@ def redeploy_requested(connect, key, work: Path, log=print, now: datetime | None
         if new.get("status") == "skipped":            # not deployed: what ran before stays (the folder was restored)
             new = {**sb, "redeploy_error": str(new.get("reason") or "not deployed")[:600],
                    "excluded": new.get("excluded") or sb.get("excluded")}
-        new.update(redeploy_of=asked, redeployed_at=_iso(now), redeployed_by=r.get("RedeployRequestedBy"))
+        # built (or tried) with this version: upgrade_requests asks for it again only after the next upgrade
+        new.update(redeploy_of=asked, redeployed_at=_iso(now), redeployed_by=r.get("RedeployRequestedBy"),
+                   version=_version())
         result["sandbox"] = new
         _save(connect, jid, result)
         log(f"#{jid}: patched copy built again: {new.get('status')}"
             + (f" ({new['redeploy_error']})" if new.get("redeploy_error") else ""))
         return 1
     return 0
+
+
+def _version() -> str:
+    from . import __version__
+    return __version__
+
+
+UPGRADE_BY = "containerizer upgrade"
+
+
+def upgrade_requests(connect, log=print, version: str | None = None) -> int:
+    """The queue runner's periodic step: the patched copies that run in the sandbox but were built by another
+    Containerizer version (Result sandbox.version; none before 0.36.1) are built again, once per version, as if
+    someone pressed Try again (redeploy_requested does it). A scan leaves those folders as they are (org.kept_patch),
+    so without this an upgrade's generator changes (settings, secrets, ConfigMaps) never reached them. Only the latest
+    order of each application, and none whose rebuild is already asked. Returns how many it asked for."""
+    version = version or _version()
+    conn = connect()
+    try:
+        rows = _rows(conn, "SELECT JobId, Payload, Result, RedeployRequestedAt FROM cz.LlmJob WHERE Kind = N'refactor' "
+                           "AND Status = N'answered' AND RemoveRequestedAt IS NULL "
+                           "AND JSON_VALUE(Result, '$.sandbox.folder') IS NOT NULL "
+                           "AND JSON_VALUE(Result, '$.sandbox.status') IN (N'running', N'failing', N'deployed') "
+                           "AND JSON_VALUE(Result, '$.sandbox.removed_at') IS NULL "
+                           "AND ISNULL(JSON_VALUE(Result, '$.sandbox.version'), N'') <> %s ORDER BY JobId DESC",
+                     (version,))
+        seen, todo = set(), []
+        for r in rows:
+            x = _parse(r)
+            if x is None:
+                continue
+            pl, _, sb = x
+            app = pl.get("application_id") or sb.get("folder")
+            if app in seen:
+                continue                    # an older order of the same application: not what runs
+            seen.add(app)
+            asked = r.get("RedeployRequestedAt")
+            asked = _iso(asked) if isinstance(asked, datetime) else (str(asked) if asked else None)
+            if asked and sb.get("redeploy_of") != asked:
+                continue                    # a rebuild is asked already
+            todo.append(int(r["JobId"]))
+        cur = conn.cursor()
+        for jid in todo:
+            cur.execute("UPDATE cz.LlmJob SET RedeployRequestedAt = SYSUTCDATETIME(), RedeployRequestedBy = %s "
+                        "WHERE JobId = %s", (f"{UPGRADE_BY} to {version}", jid))
+        if todo:
+            conn.commit()
+    finally:
+        conn.close()
+    for jid in todo:
+        log(f"#{jid}: the patched copy was built by another Containerizer version: building it again with {version}")
+    return len(todo)
 
 
 # --------------------------------------------------------------------------- what runs in the sandbox now

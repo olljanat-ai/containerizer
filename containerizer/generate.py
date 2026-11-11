@@ -237,6 +237,7 @@ def _blank_tokens(plan: dict, facts: dict) -> None:
     if not toks:
         return
     plan["blank_tokens"] = toks
+    plan["null_tokens"] = sorted(set(facts.get("token_bare") or ()) & set(toks))
     keys = sorted(facts["token_settings"])
     add_reason(plan, "config-tokens", f"appsettings.json has release-pipeline tokens ({', '.join(toks[:5])}"
                f"{', ...' if len(toks) > 5 else ''}) that a deployment tool replaced: the image blanks them, and the "
@@ -247,6 +248,20 @@ def _blank_tokens(plan: dict, facts: dict) -> None:
 def _sed_bre(text: str) -> str:
     """`text` as a literal in a sed basic regular expression delimited by '/'."""
     return re.sub(r"([\\.*\[\]^$/])", r"\\\1", text)
+
+
+def _null_token_sed(tokens) -> list[str]:
+    """sed expressions that turn each unquoted token standing alone as a value ("Port": #{Api.Port}#, [#{A}#, #{B}#],
+    on a line of its own) into null: blanked it would leave invalid JSON. A token inside a string is not alone (a
+    character other than `,`, `:` or `[` before it, or other than `,`, `}` or `]` after it) and is blanked as usual.
+    Looped (`:n` ... `tn`), so neighbours in an array are all done."""
+    out = []
+    for t in tokens:
+        q = _sed_bre(t)
+        for before in (r"\([,:[][[:space:]]*\)", r"^\([[:space:]]*\)"):
+            out += [f"-e 's/{before}{q}\\([[:space:]]*[],}}]\\)/\\1null\\2/'",
+                    f"-e 's/{before}{q}[[:space:]]*$/\\1null/'"]
+    return ["-e ':n'", *out, "-e 'tn'"] if out else []
 
 
 def _repoint_config(plan: dict, facts: dict) -> None:
@@ -713,7 +728,8 @@ def dockerfile_dotnet(plan: dict) -> str:
     if plan.get("blank_tokens"):
         # release-pipeline tokens a deployment tool replaced: blank, the values come from the environment
         lines.append("RUN find /out -maxdepth 1 -iname 'appsettings*.json' -exec sed -i "
-                     + " ".join(f"-e 's/{_sed_bre(t)}//g'" for t in plan["blank_tokens"]) + " {} +")
+                     + " ".join(_null_token_sed(plan.get("null_tokens") or ())
+                                + [f"-e 's/{_sed_bre(t)}//g'" for t in plan["blank_tokens"]]) + " {} +")
     writable = writable_dirs(plan)
     if writable:
         lines.append("RUN mkdir -p " + " ".join("/writable" + w for w in writable))
@@ -929,6 +945,8 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
     have = {e["name"] for e in env}
     token_secrets = set(c.facts.get("token_secret_settings") or ())
     settings_name, settings = f"{name}-settings", {}
+    starts = c.facts.get("token_defaults") or {}
+    origins = []
     for s in sorted(c.facts.get("token_settings") or {}):
         key = s.replace(":", "__")
         if key in have:
@@ -938,7 +956,10 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
             secret_keys.append(key)
             env.append({"name": key, "valueFrom": {"secretKeyRef": {"name": secret_name, "key": key, "optional": True}}})
         else:
-            settings[key] = ""
+            # a starting value from the component's other settings files (facts.token_defaults), else empty
+            settings[key] = str((starts.get(s) or {}).get("value", ""))
+            if s in starts:
+                origins.append(f"{key} from {starts[s]['from']}")
             env.append({"name": key, "valueFrom": {"configMapKeyRef": {"name": settings_name, "key": key,
                                                                          "optional": True}}})
     volumes, mounts = [], []
@@ -1065,7 +1086,9 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
         docs.append({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": settings_name, "labels": labels},
                      "data": settings,
                      "_comment": "settings a release pipeline set with tokens in appsettings.json (the image blanks the "
-                                 "tokens): set each value for this environment"})
+                                 "tokens): set each value for this environment"
+                                 + ("; starting values (another environment's, check them): " + "; ".join(origins)
+                                    if origins else "")})
     if secret_keys:
         docs.append({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": secret_name, "labels": labels},
                      "type": "Opaque", "stringData": {k: "" for k in secret_keys},
