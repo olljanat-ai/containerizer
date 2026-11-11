@@ -1076,10 +1076,11 @@ def sync_sandbox(connect, key, work: Path, log=print) -> int:
         creds = load(conn, key if key is not None else private_key_from_env()) if scans else None
     finally:
         conn.close()
-    from . import sandboxdebug
+    from . import __version__, sandboxdebug
     debug = sandboxdebug.debug_of(off)
     sig = json.dumps(sorted(str(x) for x in off) if not debug else
-                     [sorted(str(x) for x in off), sorted(str(x) for x in debug), sandboxdebug.tools_ref("r") or ""])
+                     [sorted(str(x) for x in off), sorted(str(x) for x in debug), sandboxdebug.tools_ref("r") or "",
+                      __version__])     # the version: an update writes the debug patches again
     state = work / SYNC_STATE
     if state.is_file() and state.read_text() == sig:
         return 0

@@ -839,21 +839,25 @@ class Worker:
             parallel=int(scan.get("Parallel") or 1),
             verify=bool(scan["Verify"]), gate=bool(scan["Gate"]), sql=self.sql, work_dir=str(base / "work"),
             llm_heavy=llm_heavy(scan), review_queue=self.review_queue(scan) if llm_queued(scan) else None,
-            heavy_windows=self.heavy_windows() if scan["UseAi"] else None, sandbox_off=self.sandbox_off(),
+            heavy_windows=self.heavy_windows() if scan["UseAi"] else None, sandbox_off=self.sandbox_off(), sandbox_switches=self.sandbox_switches,
             deploy_modes=self.deploy_modes(),
             cache_dir=str(base / "repos"), state=store, hooks=hooks,
             allowed_hosts=self.hosts | (creds.hosts() if creds else set()),
             **sandbox_check_options(self.log))
 
+    def sandbox_switches(self) -> set | None:
+        """org.load_sandbox_off as it is now (it raises when the database is away)."""
+        from .org import load_sandbox_off
+        conn = self.connect()
+        try:
+            return load_sandbox_off(conn) or None
+        finally:
+            conn.close()
+
     def sandbox_off(self) -> set | None:
         """The applications whose sandbox an administrator turned off (org.load_sandbox_off)."""
-        from .org import load_sandbox_off
         try:
-            conn = self.connect()
-            try:
-                return load_sandbox_off(conn) or None
-            finally:
-                conn.close()
+            return self.sandbox_switches()
         except Exception as ex:  # noqa: BLE001 - an older schema: every application is deployed
             self.log(f"applications without a sandbox not read: {type(ex).__name__}: {str(ex)[:200]}")
             return None
