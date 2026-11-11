@@ -10,6 +10,16 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.35.5 (2026-11-11)
+
+- **Release-pipeline tokens in appsettings.json.** Settings like `"Url": "https://#{Api.Host}#/v1"` or
+  `"Mode": "__Example.Mode__"`, which Azure DevOps Replace Tokens or Octopus replaced at deployment, reached the
+  container as literal placeholders. The scan now finds the tokens in the settings the container loads
+  (`appsettings.json` and `appsettings.Production.json`), the generated Dockerfile blanks exactly those tokens in
+  the published `appsettings*.json` (so an unset value is empty, never a placeholder), and every setting that used
+  one is an optional environment variable from the component's `<component>-secrets` ExternalSecret (`Api__Url`),
+  listed with the other secret store keys in `HARDENING.md`. Applications get it at their next scan.
+
 ## 0.35.4 (2026-11-11)
 
 - **Fix: debug mode still did not come on (0.35.3).** Its patch switched a Deployment to strategy Recreate, but Flux

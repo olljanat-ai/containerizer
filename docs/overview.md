@@ -424,6 +424,10 @@ Techniques used to avoid application changes:
 - `global.json` SDK pins are removed inside the build stage only;
 - Kestrel endpoints from `appsettings.json` are re-pointed with `Kestrel__Endpoints__X__Url`;
 - connection strings and secret settings become `ConnectionStrings__X` env vars from a Secret;
+- release-pipeline tokens in `appsettings.json` (`#{Example.Variable}#`, `__Example.Variable__`, which Azure DevOps
+  Replace Tokens or Octopus replaced at deployment) are blanked in the image, so the app never reads a placeholder,
+  and every setting that used one becomes an optional env var from the same Secret (`Api__Url`): put its value in
+  the secret store, as the pipeline's variable used to give it;
 - folders the app writes to (logs, App_Data) become volumes;
 - the ASP.NET Core Data Protection key folder gets one key, read-only, from a Secret that External Secrets Operator
   generates once in the cluster (Password generator, no secret store): cookies and antiforgery tokens survive

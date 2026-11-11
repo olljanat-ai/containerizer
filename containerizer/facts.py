@@ -21,6 +21,9 @@ EMBEDDED_DB = re.compile(r"(Data\s*Source|DataSource|Filename)\s*=\s*[\w\-.]+\.(
                          r"(;\s*(Cache|Mode|Pooling|Foreign\s*Keys|Connection)\s*=\s*[\w]+\s*)*;?", re.I)
 EMBEDDED_PKGS = re.compile(r"Microsoft\.EntityFrameworkCore\.Sqlite|Microsoft\.Data\.Sqlite|System\.Data\.SQLite|LiteDB",
                            re.I)
+# deployment-time tokens a release pipeline replaces in appsettings.json (Azure DevOps Replace Tokens, Octopus):
+# "#{Example.Variable}#" and "__Example.Variable__"
+TOKEN_RE = re.compile(r"#\{\s*[A-Za-z_][\w.\-]*\s*\}#|(?<![\w])__[A-Za-z][A-Za-z0-9.\-]*(?:_[A-Za-z0-9.\-]+)*__(?![\w])")
 SECRET_KEY = re.compile(r"(password|secret|apikey|api_key|clientsecret|token|connectionstring|key)$", re.I)
 
 
@@ -191,6 +194,10 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
             facts["listen_url_settings"] = listen
         if secrets:
             facts["secret_settings"] = sorted(secrets)
+        # settings full of release-pipeline tokens: the image blanks the tokens, the deployment sets the values
+        tokens = {k: sorted(set(TOKEN_RE.findall(v))) for k, v in flat if isinstance(v, str) and TOKEN_RE.search(v)}
+        if tokens:
+            facts["token_settings"] = tokens
         # sign-in settings (OIDC, WS-Federation, SAML) the sandbox IdP overrides (idp.py)
         if any(facts.get(f"auth_{x}") for x in ("oidc", "wsfed", "saml")):
             from .idp import find_sections
