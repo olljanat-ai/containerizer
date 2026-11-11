@@ -306,7 +306,13 @@ echo "ok: a verification run reaches no appliance service"
 if asworker env DOCKER_BUILDKIT=0 docker build --network host -q "$ctx" >/dev/null 2>&1; then fail "a build got the host network"; fi
 if asworker docker build --network host -q "$ctx" >/dev/null 2>&1; then fail "a BuildKit build got the host network"; fi
 echo "ok: builds never get the host network"
-nft list table inet cz_dockerd | grep -q 'system.slice/docker.service' || fail "Docker's own egress table is not loaded"
+if ! nft list table inet cz_dockerd 2>&1 | grep 'system.slice/docker.service' >/dev/null; then
+  nft list tables; nft list table inet cz_dockerd 2>&1 | head -20
+  systemctl show -p ExecStartPost -p ActiveEnterTimestamp -p NRestarts docker.service
+  journalctl -b -u docker.service --no-pager | grep -iE "egress|nft|ExecStartPost|Started|Stopp" | tail -20
+  /usr/lib/containerizer/bin/cz-docker-egress; echo "cz-docker-egress by hand: exit $?"; nft list table inet cz_dockerd 2>&1 | head
+  fail "Docker's own egress table is not loaded"
+fi
 for url in http://127.0.0.1:9090/-/ready http://127.0.0.1:3000/grafana/api/health "http://$host_ip:8080/healthz"; do
   printf 'FROM %s\nADD %s /x\n' "$CZ_IMAGE_MSSQL" "$url" > "$ctx/Dockerfile.add"; chown containerizer "$ctx/Dockerfile.add"
   if asworker docker build --no-cache -q -f "$ctx/Dockerfile.add" "$ctx" >/dev/null 2>&1; then fail "a build fetched $url"; fi
