@@ -38,13 +38,14 @@ RUN apt-get update \
     apparmor docker.io docker-cli docker-buildx git caddy \
     python3 python3-venv \
     xz-utils zstd \
+    bash-static busybox-static \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_* /etc/mdadm /boot/initrd.img* /etc/machine-id /var/lib/dbus/machine-id \
  && ln -s /etc/machine-id /var/lib/dbus/machine-id \
  && echo > /etc/motd \
  && ln -sf /usr/bin/grub-editenv /usr/bin/grub2-editenv \
  && systemctl mask systemd-journald-audit.socket \
- && test -x /usr/bin/docker && command -v dockerd \
+ && test -x /usr/bin/docker && command -v dockerd && command -v bash-static && busybox --list | grep -qx sleep \
  && test "$(id -u caddy)" = 910 && test "$(id -u dnsmasq)" = 911 && test "$(getent group docker | cut -d: -f3)" = 912
 
 # k3s (single binary) and the Flux install manifest, verified by checksum; cosign for upgrade signatures

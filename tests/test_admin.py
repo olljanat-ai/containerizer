@@ -386,6 +386,20 @@ def test_admin_maps_and_audits(idp, tmp_path):
         assert "Not saved" in b.follow(f"/admin/applications/{app}/sandbox", {"csrf": csrf, "Enabled": "x"})[2]
         s, _, body = b.follow(f"/admin/applications/{app}/sandbox", {"csrf": csrf, "Enabled": "1"})
         assert "Sandbox enabled" in body and "Disable the sandbox" in body
+        # debug mode in the sandbox (sandboxdebug.py): on and off, read by the writers of sandbox/
+        assert "Turn debug mode on" in body and "/cz-debug/shell" not in body
+        assert b.go(f"/admin/applications/{app}/sandbox-debug", {"Debug": "1"})[0] == 403        # no CSRF token
+        assert "Not saved" in b.follow(f"/admin/applications/{app}/sandbox-debug", {"csrf": csrf, "Debug": "x"})[2]
+        s, _, body = b.follow(f"/admin/applications/{app}/sandbox-debug", {"csrf": csrf, "Debug": "1"})
+        assert "Debug mode on" in body and "/cz-debug/shell" in body and "Turn debug mode off" in body
+        assert "Sandbox debug mode" in body                                                      # the change history
+        from containerizer.org import load_sandbox_off
+        dbg = sqlstore.connect(as_("cz_a_admin"), "Test-Passw0rd!x")
+        assert int(app) in load_sandbox_off(dbg).debug and int(app) not in load_sandbox_off(dbg)
+        s, _, body = b.follow(f"/admin/applications/{app}/sandbox-debug", {"csrf": csrf, "Debug": "0"})
+        assert "Debug mode off" in body and "Turn debug mode on" in body
+        assert not load_sandbox_off(dbg).debug
+        dbg.close()
         # its own output repository (administrators): only one with a write token; clearing needs the admin grant
         assert "<h2>Output repository</h2>" in body
         s, _, body = b.follow(f"/admin/applications/{app}/output", {"csrf": csrf, "Action": "save", "OutputBranch": "main",

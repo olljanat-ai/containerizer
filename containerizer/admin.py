@@ -36,7 +36,7 @@ TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Applicatio
               "LlmQueueSettings": "LLM queue settings", "DatabaseEdit": "Sandbox database",
               "RoleAssignment": "Role"}
 FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
-              "Retired": "Hidden", "SandboxEnabled": "Sandbox", "DeployMode": "Deploy mode", "OutputRepo": "Own output repository",
+              "Retired": "Hidden", "SandboxEnabled": "Sandbox", "SandboxDebug": "Sandbox debug mode", "DeployMode": "Deploy mode", "OutputRepo": "Own output repository",
               "OutputBranch": "Its branch", "OutputPath": "Its folder", "Product": "Product", "BusinessUnit": "Business unit", "InfoUrl": "Product page link",
               # the internal rules repository (rule review)
               "RepoUrl": "Repository URL", "Branch": "Branch", "Path": "Folder",
@@ -319,6 +319,8 @@ class Admin:
                 return self.bulk_map(conn, a, form)
             if ident is not None and len(parts) == 3 and parts[2] == "sandbox" and method == "POST":
                 return self.set_sandbox(conn, a, ident, form)
+            if ident is not None and len(parts) == 3 and parts[2] == "sandbox-debug" and method == "POST":
+                return self.set_sandbox_debug(conn, a, ident, form)
             if ident is not None and len(parts) == 3 and parts[2] == "deploy-mode" and method == "POST":
                 return self.set_deploy_mode(conn, a, ident, form)
             if ident is not None and len(parts) == 3 and parts[2] == "output" and method == "POST":
@@ -612,7 +614,8 @@ class Admin:
         cur = conn.cursor(as_dict=True)
         cur.execute("SELECT x.ApplicationId, x.Name, x.DisplayName, x.Description, x.Owner, x.ProductId, x.Retired, x.RepositoryUrl, "
                     "x.SandboxEnabled, x.SourcePath, x.FirstSeenAt, x.LastSeenAt, p.Name AS ProductName, x.OutputRepo, "
-                    "x.OutputBranch, x.OutputPath, x.OutputMovedAt, x.OutputMovedCommit, x.OutputMoveError, x.DeployMode FROM cz.Application x "
+                    "x.OutputBranch, x.OutputPath, x.OutputMovedAt, x.OutputMovedCommit, x.OutputMoveError, x.DeployMode, "
+                    "x.SandboxDebug FROM cz.Application x "
                     "LEFT JOIN cz.Product p ON p.ProductId = x.ProductId WHERE x.ApplicationId = %s", (app_id,))
         r = cur.fetchone()
         if not r:
@@ -662,6 +665,31 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
             out += (f"<form method='post' action='/admin/applications/{int(r['ApplicationId'])}/sandbox' class='formrow'>"
                     f"{self._csrf(s)}<input type='hidden' name='Enabled' value='{'0' if on else '1'}'>"
                     f"<button{' class=secondary' if on else ''}>{'Disable' if on else 'Enable'} the sandbox</button></form>")
+        return out + self._debug_section(s, a, r, on)
+
+    def _debug_section(self, s: Session, a: Access, r: dict, sandbox_on: bool) -> str:
+        """Debug mode in the sandbox (administrators; sandboxdebug.py): the pods sleep with a shell in them."""
+        debug = bool(r.get("SandboxDebug"))
+        if not a.admin and not debug:
+            return ""
+        if debug:
+            state = ("<span class='st st-warn'>Debug mode</span> Its pods in the sandbox do not start the application: "
+                     "they run <code>sleep</code> with the application's own image, user, environment and mounts, and "
+                     "have Bash and the usual tools in <code>/cz-debug</code>. Open a shell in a pod (as root on the "
+                     "appliance, or from kubemg), then start the application by hand to see it fail:"
+                     "<pre>kubectl -n &lt;namespace&gt; get pods\n"
+                     "kubectl -n &lt;namespace&gt; exec -it &lt;pod&gt; -- /cz-debug/shell\n"
+                     "/cz-debug/start        # the application's own start command ($CZ_DEBUG_START)</pre>"
+                     + ("" if sandbox_on else "<p class='muted'>The sandbox is disabled: nothing of it runs until it is enabled.</p>"))
+        else:
+            state = ("<b>Debug mode is off.</b> For a container that crashes at start: with debug mode on, its pods stay "
+                     "running without starting the application, with Bash in them, so you can look at its files and "
+                     "environment and start it by hand. Nothing is built again.")
+        out = f"<h3>Debug mode</h3><p>{state}</p>" if not debug else f"<h3>Debug mode</h3><div>{state}</div>"
+        if a.admin:
+            out += (f"<form method='post' action='/admin/applications/{int(r['ApplicationId'])}/sandbox-debug' class='formrow'>"
+                    f"{self._csrf(s)}<input type='hidden' name='Debug' value='{'0' if debug else '1'}'>"
+                    f"<button class='secondary'>{'Turn debug mode off' if debug else 'Turn debug mode on'}</button></form>")
         return out
 
     def _deploy_section(self, s: Session, a: Access, r: dict) -> str:
@@ -809,6 +837,30 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
             raise
         msg = ("Saved: its files are moved there within a few minutes." if action == "save" else
                "Cleared: the next scan generates and deploys it in the scan's output repository again.")
+        return redirect(back + urlencode({"msg": msg}))
+
+    def set_sandbox_debug(self, conn, a: Access, app_id: int, form: dict) -> Response:
+        """Turn the application's debug mode in the sandbox on or off (administrators; Application.SandboxDebug, the
+        change history records it; the queue runner applies it: variant.sync_sandbox)."""
+        back = f"/admin/applications/{app_id}?"
+        if not a.admin:
+            return redirect(back + urlencode({"msg": "Not saved: only administrators turn debug mode on or off."}))
+        val = form.get("Debug", [""])[0]
+        if val not in ("0", "1"):
+            return redirect(back + urlencode({"msg": "Not saved: turn debug mode on or off."}))
+        try:
+            if not self._locked_apps(conn, [app_id]):
+                conn.rollback()
+                return Response(404, page("Not found", "<h1>Application not found</h1>"))
+            cur = conn.cursor()
+            cur.execute("UPDATE cz.Application SET SandboxDebug = %s WHERE ApplicationId = %s", (val == "1", app_id))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        msg = ("Debug mode on: within a few minutes its pods in the sandbox restart and stay running without starting "
+               "the application." if val == "1" else
+               "Debug mode off: within a few minutes its pods in the sandbox start the application again.")
         return redirect(back + urlencode({"msg": msg}))
 
     def set_sandbox(self, conn, a: Access, app_id: int, form: dict) -> Response:

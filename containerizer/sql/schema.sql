@@ -119,6 +119,12 @@ IF COL_LENGTH(N'[${schema}].Application', N'DeployMode') IS NULL
     ALTER TABLE [${schema}].Application ADD DeployMode nvarchar(20) NULL
         CONSTRAINT CK_Application_DeployMode CHECK (DeployMode IN (N'chart', N'manifests'));
 GO
+-- 49: debug mode in the sandbox (Admin -> Applications, administrators; sandboxdebug.py): its pods run `sleep` with a
+-- shell in them instead of starting the application
+IF COL_LENGTH(N'[${schema}].Application', N'SandboxDebug') IS NULL
+    ALTER TABLE [${schema}].Application ADD SandboxDebug bit NOT NULL
+        CONSTRAINT DF_Application_SandboxDebug DEFAULT 0;
+GO
 
 -- A deployable part of an application (web site, service, worker, desktop client, ...), matched by
 -- its project file path inside the application. Created and mapped to its application by the scan.
@@ -570,20 +576,20 @@ BEGIN
            COALESCE(i.DisplayName, i.Name, d.DisplayName, d.Name),
            CASE WHEN d.ApplicationId IS NULL THEN N'insert' WHEN i.ApplicationId IS NULL THEN N'delete' ELSE N'update' END,
            CASE WHEN d.ApplicationId IS NOT NULL THEN (SELECT d.Name, d.DisplayName, d.Description, d.Owner, d.Retired, d.SandboxEnabled,
-                d.OutputRepo, d.OutputBranch, d.OutputPath, d.Tags, d.DeployMode,
+                d.OutputRepo, d.OutputBranch, d.OutputPath, d.Tags, d.DeployMode, d.SandboxDebug,
                 (SELECT p.Name FROM [${schema}].Product p WHERE p.ProductId = d.ProductId) AS Product
                 FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
            CASE WHEN i.ApplicationId IS NOT NULL THEN (SELECT i.Name, i.DisplayName, i.Description, i.Owner, i.Retired, i.SandboxEnabled,
-                i.OutputRepo, i.OutputBranch, i.OutputPath, i.Tags, i.DeployMode,
+                i.OutputRepo, i.OutputBranch, i.OutputPath, i.Tags, i.DeployMode, i.SandboxDebug,
                 (SELECT p.Name FROM [${schema}].Product p WHERE p.ProductId = i.ProductId) AS Product
                 FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
     FROM inserted i FULL OUTER JOIN deleted d ON d.ApplicationId = i.ApplicationId
     CROSS JOIN [${schema}].fnAuditWho() w
     WHERE d.ApplicationId IS NULL OR i.ApplicationId IS NULL
        OR EXISTS (SELECT i.Name, i.DisplayName, i.Description, i.Owner, i.Retired, i.SandboxEnabled, i.ProductId,
-                         i.OutputRepo, i.OutputBranch, i.OutputPath, i.Tags, i.DeployMode
+                         i.OutputRepo, i.OutputBranch, i.OutputPath, i.Tags, i.DeployMode, i.SandboxDebug
                   EXCEPT SELECT d.Name, d.DisplayName, d.Description, d.Owner, d.Retired, d.SandboxEnabled, d.ProductId,
-                         d.OutputRepo, d.OutputBranch, d.OutputPath, d.Tags, d.DeployMode);
+                         d.OutputRepo, d.OutputBranch, d.OutputPath, d.Tags, d.DeployMode, d.SandboxDebug);
 END;
 GO
 
@@ -1256,6 +1262,8 @@ GRANT UPDATE ON [${schema}].Application (OutputMovedAt, OutputMovedCommit, Outpu
 GRANT UPDATE ON [${schema}].Application (Tags) TO [${schema}_admin];
 -- 48: the deploy mode (administrators; admin.set_deploy_mode)
 GRANT UPDATE ON [${schema}].Application (DeployMode) TO [${schema}_admin];
+-- 49: debug mode in the sandbox (administrators; admin.set_sandbox_debug)
+GRANT UPDATE ON [${schema}].Application (SandboxDebug) TO [${schema}_admin];
 GRANT SELECT ON [${schema}].AuditLog TO [${schema}_admin];
 GRANT SELECT, INSERT ON [${schema}].AccessLog TO [${schema}_admin];
 GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].DevDatabase TO [${schema}_admin];
@@ -2798,4 +2806,6 @@ GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 47) INSERT [${schema}].SchemaVersion (Version) VALUES (47);
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 48) INSERT [${schema}].SchemaVersion (Version) VALUES (48);
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 49) INSERT [${schema}].SchemaVersion (Version) VALUES (49);
 GO

@@ -532,6 +532,23 @@ def load_sandbox_off(conn) -> set:
         except Exception:  # noqa: BLE001
             pass
         return set()
+    from .sandboxdebug import Switches
+    return Switches({int(r[0]) for r in rows} | {str(r[1]) for r in rows}, load_sandbox_debug(conn))
+
+
+def load_sandbox_debug(conn) -> set:
+    """The SourceKeys and ApplicationIds of the applications in debug mode (Application.SandboxDebug = 1, schema 49;
+    sandboxdebug.py). Empty on an older schema."""
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT ApplicationId, SourceKey FROM cz.Application WHERE SandboxDebug = 1")
+        rows = cur.fetchall()
+    except Exception:  # noqa: BLE001 - before schema 49: no application is in debug mode
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return set()
     return {int(r[0]) for r in rows} | {str(r[1]) for r in rows}
 
 
@@ -574,7 +591,7 @@ def _app_docs(folder: Path, rendered: bool = True) -> list[dict]:
     return docs
 
 
-def sandbox_wait_patch(folder: Path, doc: dict) -> dict | None:
+def sandbox_wait_patch(folder: Path, doc: dict, debug_image: str | None = None) -> dict | None:
     """kustomize patch for the sandbox's copy of an app's Flux Kustomization: wait for the app's workloads and the
     Secrets they need (gitops.sandbox_health_checks), not for every object. The generated ExternalSecrets of
     settings, secret files and keytabs read remote keys that nobody fills in the sandbox; their references are
@@ -601,6 +618,9 @@ def sandbox_wait_patch(folder: Path, doc: dict) -> dict | None:
             ops.append({"op": "add", "path": "/spec/patches/-", "value": {
                 "patch": json.dumps([{"op": "add", "path": "/spec/values/skipKinds", "value": ["HTTPRoute"]}]),
                 "target": {"group": HELM_API.split("/")[0], "kind": "HelmRelease"}}})
+    if debug_image:                         # debug mode: the pods sleep, with a shell (sandboxdebug.py)
+        from .sandboxdebug import ops as debug_ops
+        ops += debug_ops(folder, doc, debug_image)
     group, version = KUSTOMIZE_API.split("/")
     return {"target": {"group": group, "version": version, "kind": "Kustomization", "name": ns, "namespace": ns},
             "patch": json.dumps(ops)}
@@ -688,7 +708,15 @@ def write_sandbox(root: Path, git_url: str, branch: str, off=None) -> list[str]:
         return "---\n".join(yaml.safe_dump(d, sort_keys=False) for d in docs)
 
     idp_url = write_idp(root, apps)
-    patches = [p for _, d, doc in apps if (p := sandbox_wait_patch(d, doc))]
+    from . import sandboxdebug
+    debug = sandboxdebug.debug_of(off)
+    tools = {id(doc): sandboxdebug.tools_ref(sandboxdebug.registry_of(doc)) for _, _, doc in apps
+             if sandboxdebug.in_debug(doc, debug)}
+    for _, _, doc in apps:
+        if id(doc) in tools and not tools[id(doc)]:
+            print(f"warning: {doc.get('app')}: debug mode is on, but this machine has no static bash-static and "
+                  "busybox for the tools image: deployed as usual", file=sys.stderr)
+    patches = [p for _, d, doc in apps if (p := sandbox_wait_patch(d, doc, tools.get(id(doc))))]
     (sb / "flux" / "apps" / "kustomization.yaml").write_text(yaml.safe_dump(
         {**k, "resources": [f"../../../{rel}/gitops/flux" for rel, _, _ in apps]
          + (["../../idp"] if idp_url else []), **({"patches": patches} if patches else {})}, sort_keys=False))
@@ -708,7 +736,8 @@ def write_sandbox(root: Path, git_url: str, branch: str, off=None) -> list[str]:
         "# Read-only access for `containerizer sandbox verify`. Apply it as a\n"
         "# cluster admin after the namespaces exist; it grants nothing cluster-wide and no access to Secrets.\n"
         + dump(verify_rbac(namespaces)))
-    (sb / "README.md").write_text(sandbox_readme(git_url, branch, apps, idp_url))
+    (sb / "README.md").write_text(sandbox_readme(git_url, branch, apps, idp_url,
+                                                 debug={doc.get("app") for _, _, doc in apps if tools.get(id(doc))}))
     from .clusters import write_clusters
     write_clusters(root, git_url, branch, every)
     return namespaces
@@ -727,9 +756,15 @@ def sandbox_credentials(namespace: str, name: str, labels: dict) -> list[dict]:
         [eso.reader_service_account(namespace, labels, set_namespace=True), es]
 
 
-def sandbox_readme(git_url: str, branch: str, apps, idp_url: str = "") -> str:
-    rows = "\n".join(f"| `{doc.get('app')}` | [{rel}]({rel.replace(' ', '%20')}/) | "
+def sandbox_readme(git_url: str, branch: str, apps, idp_url: str = "", debug=()) -> str:
+    rows = "\n".join(f"| `{doc.get('app')}`{' (debug mode)' if doc.get('app') in debug else ''} | "
+                     f"[{rel}]({rel.replace(' ', '%20')}/) | "
                      f"{', '.join(c['component'] for c in doc.get('components', []))} |" for rel, _, doc in apps)
+    debug_text = ("" if not debug else
+                  "\nIn **debug mode** (an administrator turned it on: Admin → Applications → Sandbox) an application's "
+                  "pods do not start\nthe application: they run `sleep` with a shell at `/cz-debug/shell` and the "
+                  "application's start command as\n`/cz-debug/start`. Only this folder's patches say so; the "
+                  "application's own folder is as always.\n")
     if idp_url:
         idp_text = (f"\nThe components that sign users in with OpenID Connect, SAML 2.0 or WS-Federation are registered at\n"
                     f"the sandbox identity provider (WSO2 Identity Server) at {idp_url}/. Flux applies `{SANDBOX}/idp`\n"
@@ -746,7 +781,7 @@ run and passed the security gate), deployed with Flux. Generated by
 | Namespace | Folder | Components |
 | --- | --- | --- |
 {rows}
-
+{debug_text}
 Credentials come from External Secrets Operator: nothing in this repository is a Secret. Install ESO
 and a `ClusterSecretStore` named `app-secrets` first (`cluster/secret-store.yaml` at the repository root;
 docs/external-secrets.md shows Vault, Azure Key Vault and AWS Secrets Manager). Then put the read-only
