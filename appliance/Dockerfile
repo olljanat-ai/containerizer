@@ -97,7 +97,7 @@ COPY appliance/rootfs/ /
 COPY monitoring/prometheus/containerizer-alerts.yml /usr/lib/containerizer/prometheus/
 COPY monitoring/grafana/ /usr/lib/containerizer/grafana/dashboards/
 RUN chmod 0755 /usr/lib/containerizer/bin/* /usr/libexec/elemental-checker/containerizer \
- && ln -sf /usr/lib/containerizer/bin/cz /usr/bin/cz \
+ && ln -sf /usr/lib/containerizer/bin/cz /usr/bin/cz && ln -sf /usr/lib/containerizer/bin/bao /usr/bin/bao \
  && chmod 0600 /etc/rancher/k3s/config.yaml \
  && mkdir -p /etc/tmpfiles.d \
  && for f in $(grep -l '/etc/resolv\.conf' /usr/lib/tmpfiles.d/*.conf | grep -v containerizer); do \

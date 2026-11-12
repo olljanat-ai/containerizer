@@ -56,7 +56,7 @@ Give operators that policy as a user or, better, through a group of your identit
 a user (**Access → Authentication methods → userpass → Create user**, or with the CLI):
 
 ```sh
-export BAO_ADDR=https://<CZ_HOSTNAME>    # the CLI is `bao` (OpenBao) or `vault`; VAULT_ADDR works too
+export BAO_ADDR=https://<CZ_HOSTNAME>    # on a workstation; on the appliance just run `bao` (see Recovery)
 bao login -method=userpass username=admin
 bao write auth/userpass/users/jdoe password='...' token_policies=app-shop,app-hr
 ```
@@ -100,7 +100,7 @@ For Keycloak the discovery URL is `https://<keycloak>/realms/<realm>`; for Okta 
 group's name or (Entra ID) object ID:
 
 ```sh
-accessor=$(bao auth list -format=json | jq -r '."oidc/".accessor')
+accessor=$(bao read -field=accessor sys/auth/oidc)
 id=$(bao write -field=id identity/group name=shop-operators type=external policies=app-shop)
 bao write identity/group-alias name="<group object ID or name>" mount_accessor="$accessor" canonical_id="$id"
 # administrators: the admin policy
@@ -160,7 +160,7 @@ key and the sync token): one without the other is of no use. See [Backup](applia
 token with the recovery key, create a new sync token, and revoke the root token:
 
 ```sh
-export BAO_ADDR=https://<CZ_HOSTNAME>
+export BAO_ADDR=https://<CZ_HOSTNAME>    # on a workstation; not needed on the appliance
 bao operator generate-root -init                     # prints a nonce and a one-time password (OTP)
 bao operator generate-root -nonce=<nonce> "$(cat /etc/containerizer/secrets/openbao-recovery-key)"
 bao operator generate-root -decode=<encoded token> -otp=<OTP>
@@ -169,6 +169,6 @@ BAO_TOKEN=<root token> bao token create -orphan -policy=cz-sync -no-default-poli
 BAO_TOKEN=<root token> bao token revoke -self
 ```
 
-The appliance has no `bao` binary. Run these commands from your workstation against
-`https://<CZ_HOSTNAME>`, or on the appliance with `docker exec -it cz-openbao bao ...` and
-`BAO_ADDR=http://127.0.0.1:8200`.
+On the appliance (as root) the command `bao` runs the CLI in the OpenBao container and talks to it directly, so
+leave `BAO_ADDR` unset there. From your workstation, use your own `bao` (or `vault`) with
+`BAO_ADDR=https://<CZ_HOSTNAME>`.

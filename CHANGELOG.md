@@ -10,6 +10,15 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.37.0 (2026-11-12)
+
+- **`bao` on the appliance.** The command `bao` (as root) runs the OpenBao CLI in its container and talks to
+  it directly. Before, `docker exec cz-openbao bao ...` failed with "server gave HTTP response to HTTPS client",
+  and `bao login` couldn't keep its token ("read-only file system"), so the next command was denied (`bao auth
+  enable oidc`: "permission denied"). The container now has `BAO_ADDR` and `HOME=/tmp` set, too.
+- The `cz-admin` policy may tune sign-in methods (`sys/mounts/auth/*`) on new installations. The OIDC guide
+  looks up the method's accessor with `bao read` (no `jq` needed).
+
 ## 0.36.0 (2026-11-11)
 
 - **OpenBao for the sandbox apps' secret values** ([Secret values in OpenBao](docs/openbao.md)). The appliance runs
