@@ -10,6 +10,13 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.41.2 (2026-11-12)
+
+- **`appsettings.Release.json` transforms are found in real project files.** 0.41.1 missed the transform item when
+  the project file had any item that closes itself (`<None Include="x" />`, `<Content Update="y" />`) before it.
+- **Db2's `Server=host:50000` keeps its port in connectivity.yaml.** It was read as the host with SQL Server's
+  default port 1433.
+
 ## 0.41.1 (2026-11-12)
 
 - **Tokens in `appsettings.Release.json` are found.** When the project file marks it as the build's transform of
