@@ -42,6 +42,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   time as the step that adds the appliance's addresses to its certificate and missed its reload, so it had a
   certificate for the name only. It now starts after that step, and a connection without a server name gets the
   name's certificate.
+- **Fix: Caddy wrote its environment to the journal at every start.** Debian's unit runs it with `--environ`, so
+  `appliance.env` (and anything an administrator adds there) ended up in the system log. It starts without it now.
 - **Fix: the appliance boot test used `CZ_IMAGE_MSSQL` before loading it** (`unbound variable`), so its
   build-isolation checks never ran.
 
