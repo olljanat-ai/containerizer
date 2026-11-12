@@ -81,7 +81,7 @@ def external_secret(name: str, namespace: str, remote: str, keys: list[str] | No
                                                      **({"decodingStrategy": "Base64"} if k in (base64 or ()) else {})}}
                         for k in keys]
     else:
-        spec["dataFrom"] = [{"extract": {"key": remote}}]
+        spec["dataFrom"] = [{"extract": {"key": remote, **({"decodingStrategy": "Base64"} if base64 == {"*"} else {})}}]
     meta: dict = {"name": name}
     if set_namespace:
         meta["namespace"] = namespace

@@ -455,6 +455,7 @@ def make_plan(a: AppAssessment, c: Component, rules: list[Rule] | None = None, e
     plan = apply_plan_rules(plan, a.repo, c, rules)
     state_plan(c, plan)
     cert_plan(c, plan)
+    files_plan(c, plan)
     if extra:
         merge_plan(plan, extra)
     workload_lifecycle(c, plan)         # its reasons (k8s_manifests applies it)
@@ -484,6 +485,19 @@ def cert_plan(c: Component, plan: dict) -> None:
                    + ", ".join(x["path"] for x in out) + "). The image leaves them out; each comes from the secret store "
                    "(base64) and is mounted read-only where the app reads it, /app/<path>.",
                    ["https://kubernetes.io/docs/concepts/configuration/secret/#using-secrets-as-files-from-a-pod"])
+
+
+def files_plan(c: Component, plan: dict) -> None:
+    """The repository's setting (Admin -> Repositories -> Files from the secret store, OrgRepository.SecretFilesPath,
+    which the scan puts in facts.files_mount): every key of the component's Secret <component>-files is a file in that
+    folder, read-only, whatever the scan found. The Secret is optional: an empty folder until someone adds a file."""
+    path = (c.facts or {}).get("files_mount")
+    if path:
+        plan["files_mount"] = path
+        add_reason(plan, "files-from-secret-store",
+                   f"An administrator set this repository's files from the secret store: each key of the component's "
+                   f"files ({path}) is a file there, read-only. Point the app's setting at it "
+                   f"({path}/<file>).", ["https://kubernetes.io/docs/concepts/configuration/secret/#using-secrets-as-files-from-a-pod"])
 
 
 # --------------------------------------------------------------------------- local state
@@ -1017,10 +1031,12 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
         volumes.append({"name": f"x509-{store}", "secret": {"secretName": f"{name}-x509-{store}", "optional": True,
                                                             "defaultMode": 0o440}})
         mounts.append({"name": f"x509-{store}", "mountPath": f"{X509_STORE_DIR}/{store}", "readOnly": True})
-    if plan.get("secret_files"):
+    if plan.get("secret_files") or plan.get("files_mount"):
         volumes.append({"name": "secret-files", "secret": {"secretName": f"{name}-files", "optional": True,
                                                            "defaultMode": 0o440}})
-        mounts.append({"name": "secret-files", "mountPath": "/secrets", "readOnly": True})
+        for path in dict.fromkeys(([plan["files_mount"]] if plan.get("files_mount") else [])
+                                  + (["/secrets"] if plan.get("secret_files") else [])):
+            mounts.append({"name": "secret-files", "mountPath": path, "readOnly": True})
     for cf in plan.get("cert_files") or []:
         # where the app reads it (content root /app): one file, not the folder, so the image's other files stay
         mounts.append({"name": "secret-files", "mountPath": f"/app/{cf['path']}", "subPath": cf["key"], "readOnly": True})

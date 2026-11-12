@@ -903,6 +903,24 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         b.follow(f"/admin/repositories/{api_id}", {"csrf": csrf, "Setting": "auto", "Note": "", "SplitMode": "whole"})
         assert "value='whole' checked" in b.follow(f"/admin/repositories/{api_id}")[2]
 
+        # files from the secret store: a folder of the repository's components, validated, audited, read by the scans
+        s, _, body = b.follow(f"/admin/repositories/{api_id}", {"csrf": csrf, "Setting": "auto", "Note": "",
+                                                                "FilesOn": "1", "FilesPath": "/app"})
+        assert "Files folder:" in body
+        s, _, body = b.follow(f"/admin/repositories/{api_id}", {"csrf": csrf, "Setting": "auto", "Note": "",
+                                                                "FilesOn": "1", "FilesPath": "/secrets/"})
+        assert "Saved." in body and "name='FilesOn' value='1' checked" in body and "value='/secrets'" in body
+        assert "/secrets" in b.follow("/admin/audit?table=OrgRepository")[2]
+        c2 = sqlstore.connect(cs, sa_pw)
+        try:
+            cur = c2.cursor()
+            cur.execute("SELECT SecretFilesPath FROM cz.OrgRepository WHERE RepositoryId = %s", (api_id,))
+            assert cur.fetchone()[0] == "/secrets"
+        finally:
+            c2.close()
+        b.follow(f"/admin/repositories/{api_id}", {"csrf": csrf, "Setting": "auto", "Note": "", "FilesPath": "/secrets"})
+        assert "name='FilesOn' value='1' checked" not in b.follow(f"/admin/repositories/{api_id}")[2]
+
         # new repositories disabled by default: the next discovery adds a new one disabled, the known ones keep theirs
         body = b.follow(f"/admin/scans/{scan_id}")[2]
         assert "<option value='1' selected>Enabled by default" in body
