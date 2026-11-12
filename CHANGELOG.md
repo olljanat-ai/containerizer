@@ -10,6 +10,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.40.0 (2026-11-12)
+
 - **Secrets ↗ without OpenBao's sign-in page.** With OIDC set up in OpenBao, the link now signs in directly: the
   web UI starts OpenBao's OIDC sign-in for the UI's own redirect URI, Caddy sends that one callback back to the web UI
   (a cookie set when it started), OpenBao finishes the sign-in and its UI opens with a single-use wrapped token
