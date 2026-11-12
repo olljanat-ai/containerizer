@@ -552,3 +552,45 @@ def test_a_db2_driver_keeps_a_mysql_looking_setting_out_of_the_lab(tmp_path):
     a = assess(tmp_path)
     assert a.components[0].facts["lab_settings"] == {"ConnectionStrings:Main": "mysql"}
     assert labservices.needs(a.repo, a.components[0]) == {}
+
+
+def test_a_pfx_next_to_the_code_is_mounted_from_the_secret_store(tmp_path):
+    """A certificate with its private key in the repository (the image leaves *.pfx out): mounted read-only where
+    the app reads it, /app/<path>, from the Secret <component>-files (an ExternalSecret, base64 in the store);
+    the component's OpenBao entry gets its key; the scan leaves the repository's file as its starting value."""
+    import base64
+    import json
+    from containerizer import openbao
+    from containerizer.generate import k8s_manifests
+    from containerizer.org import write_secret_seed
+    web_app(tmp_path)
+    write(tmp_path, "src/Web/appsettings.json", '{"Snow": {"CertificatePath": "Certificates/snow.pfx", "CertificatePassword": ""}}')
+    (tmp_path / "src/Web/Certificates").mkdir()
+    (tmp_path / "src/Web/Certificates/snow.pfx").write_bytes(b"\x30\x82binary")
+    a = assess(tmp_path)
+    c = a.components[0]
+    assert c.facts["cert_files"] == ["Certificates/snow.pfx"]
+    plan = make_plan(a, c)
+    assert plan["cert_files"] == [{"path": "Certificates/snow.pfx", "key": "snow.pfx"}]
+    docs = k8s_manifests(a, c, plan, "img")
+    ctr = next(d for d in docs if d["kind"] == "Deployment")["spec"]["template"]["spec"]
+    assert {"name": "secret-files", "mountPath": "/app/Certificates/snow.pfx", "subPath": "snow.pfx",
+            "readOnly": True} in ctr["containers"][0]["volumeMounts"]
+    vol = next(v for v in ctr["volumes"] if v["name"] == "secret-files")
+    assert vol["secret"]["secretName"] == "web-files" and vol["secret"]["optional"] is True
+    es = next(d for d in docs if d["kind"] == "ExternalSecret" and d["metadata"]["name"] == "web-files")
+    assert es["spec"]["data"] == [{"secretKey": "snow.pfx", "remoteRef": {
+        "key": es["spec"]["data"][0]["remoteRef"]["key"], "property": "snow.pfx", "decodingStrategy": "Base64"}}]
+    sec = next(d for d in docs if d["kind"] == "ExternalSecret" and d["metadata"]["name"] == "web-secrets")
+    assert es["spec"]["data"][0]["remoteRef"]["key"] == sec["spec"]["data"][0]["remoteRef"]["key"]   # one entry
+    # OpenBao: one entry for the component, with the settings and the file
+    for d in (sec, es):
+        d["metadata"]["namespace"] = "shop"
+        for x in d["spec"]["data"]:
+            x["remoteRef"]["key"] = "shop--web"
+    [entry] = openbao.component_secrets([sec, es])
+    assert entry["component"] == "web" and "snow.pfx" in entry["properties"] \
+        and "Snow__CertificatePassword" in entry["properties"]
+    write_secret_seed(tmp_path / "seed", "shop", a.components)
+    seed = json.loads((tmp_path / "seed" / "shop" / "web.json").read_text())
+    assert base64.b64decode(seed["snow.pfx"]) == b"\x30\x82binary"

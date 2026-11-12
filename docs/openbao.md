@@ -37,6 +37,12 @@ It can't seal OpenBao, change its storage or create a root token.
 The key names are environment variable names: `ConnectionStrings__Main` sets `ConnectionStrings:Main`,
 `Api__Url` sets `Api:Url`. They match the **Secret store keys** in the app's `HARDENING.md`.
 
+A key named like a file (`snow.pfx`) is a certificate with its private key that the app's repository has next to
+its code: the image leaves it out, and the app gets it mounted read-only where it reads it (`/app/<path>`). Its value
+is the file in base64, for example `base64 -w0 snow.pfx`. It starts with the repository's own file (a development
+certificate); put the environment's certificate in its place. Its password, when the app's settings have one
+(`...__CertificatePassword`), is a key of the same entry.
+
 | What you see | Where it comes from |
 | --- | --- |
 | An empty key | Nobody has filled it yet. The app runs without it (with its `appsettings.json` value). |

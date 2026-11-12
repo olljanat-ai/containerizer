@@ -400,8 +400,8 @@ def externalize_secrets(docs: list[dict], component: str, labels: dict, plan: di
                 sec = v.get("secret")
                 if sec and sec["secretName"] not in wanted:
                     keys = [i["key"] for i in sec.get("items") or []]
-                    if not keys and sec["secretName"].endswith("-files"):
-                        keys = list(plan.get("secret_files") or [])
+                    if sec["secretName"].endswith("-files"):
+                        keys = list(dict.fromkeys(keys + list(plan.get("secret_files") or [])))
                     if not keys and sec["secretName"].endswith("-keytab"):
                         keys = [_basename(plan.get("env", {}).get("KRB5_KTNAME") or "service.keytab")]
                     wanted[sec["secretName"]] = keys
@@ -411,10 +411,13 @@ def externalize_secrets(docs: list[dict], component: str, labels: dict, plan: di
     for name in [n for n in wanted if n.endswith(DATAPROTECTION_SUFFIX)]:
         del wanted[name]
         docs.extend(dataprotection_docs(name, labels))
+    certs = {cf["key"] for cf in plan.get("cert_files") or []}
     for name, keys in sorted(wanted.items()):
         # unknown keys: the whole remote secret of that name
         remote = eso.remote_key(app, component if keys else name)
-        docs.append(eso.external_secret(name, app, remote, keys, labels))
+        # certificate files are base64 in the store (binary; a key of the component's OpenBao entry)
+        docs.append(eso.external_secret(name, app, remote, keys, labels,
+                                        base64={k for k in keys if k in certs} if name.endswith("-files") else None))
 
 
 DP_KEY_XML = """<?xml version="1.0" encoding="utf-8"?>

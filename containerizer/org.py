@@ -588,11 +588,13 @@ def _sync_has_patches(folder: Path) -> bool:
 def write_secret_seed(base: Path, ns: str, comps) -> None:
     """<base>/<namespace>/<component>.json (owner only): the values the component's own settings files give the
     settings it reads from the secret store (connection strings, secret settings, secret-looking token settings),
-    the development values a developer runs it with. Never in the output repository: the appliance's OpenBao sync
-    fills its empty placeholders with them once (openbao.py)."""
+    the development values a developer runs it with, and its certificate files in the repository (base64, under
+    their Secret key: generate.cert_plan). Never in the output repository: the appliance's OpenBao sync fills its
+    empty placeholders with them once (openbao.py)."""
+    import base64
     import os
     from .facts import secret_starts
-    from .generate import k8s_name
+    from .generate import cert_plan, k8s_name
     d = base / ns
     if d.exists():
         shutil.rmtree(d)
@@ -601,6 +603,15 @@ def write_secret_seed(base: Path, ns: str, comps) -> None:
         keys = [f"ConnectionStrings:{k}" for k in f.get("connection_strings") or []] + list(f.get("secret_settings") or []) \
             + list(f.get("token_secret_settings") or [])
         values = secret_starts(c.project, list(dict.fromkeys(keys))) if keys and c.project.kind_hint == "dotnet" else {}
+        plan: dict = {}
+        cert_plan(c, plan)
+        for cf in plan.get("cert_files") or []:
+            try:
+                raw = (c.project.dir / cf["path"]).read_bytes()
+            except OSError:
+                continue
+            if len(raw) <= 64 * 1024:                       # a certificate, not something else with that name
+                values[cf["key"]] = base64.b64encode(raw).decode()
         if not values:
             continue
         d.mkdir(parents=True, exist_ok=True, mode=0o700)
