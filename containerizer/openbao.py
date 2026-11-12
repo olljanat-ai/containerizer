@@ -49,6 +49,7 @@ MOUNT = "apps"                              # KV version 2: apps/<namespace>/<co
 MANAGER = "containerizer-openbao"           # field manager of the copied keys in the store
 PROPERTIES = "containerizer.io/properties"  # the properties a component reads (sandbox_patches keeps them)
 SUFFIX = "-secrets"                         # the ExternalSecret of a component's settings (harden.externalize_secrets)
+FILES = "-files"                            # ... and of its files (certificates: base64), from the same remote key
 ADMIN_POLICY, SYNC_POLICY = "cz-admin", "cz-sync"
 
 # administrators: the apps' values, the users and groups, policies and sign-in methods (SSO): everything except the
@@ -276,11 +277,12 @@ def _run(args: list[str], stdin: str | None = None, ok_missing: bool = False) ->
 def component_secrets(items: list[dict]) -> list[dict]:
     """The components' settings ExternalSecrets among `items` (kubectl get externalsecrets -A): namespace, component,
     remote key and the properties it reads (the annotation the sandbox patch keeps, or its data list)."""
-    out = []
+    out: dict[tuple, dict] = {}
     for es in items:
         meta, spec = es.get("metadata") or {}, es.get("spec") or {}
         name, ns = meta.get("name") or "", meta.get("namespace") or ""
-        if not name.endswith(SUFFIX) or not ns or ns.startswith(("containerizer-", "flux-system", "kube-")):
+        suffix = SUFFIX if name.endswith(SUFFIX) else FILES if name.endswith(FILES) else ""
+        if not suffix or not ns or ns.startswith(("containerizer-", "flux-system", "kube-")):
             continue
         ann = (meta.get("annotations") or {}).get(PROPERTIES)
         data = spec.get("data") or []
@@ -289,15 +291,15 @@ def component_secrets(items: list[dict]) -> list[dict]:
         remotes.discard(None)
         if len(remotes) != 1:
             continue
-        component, remote = name[:-len(SUFFIX)], remotes.pop()
+        component, remote = name[:-len(suffix)], remotes.pop()
         # only the namespace's own key: an ExternalSecret naming another namespace's key must not let this
         # namespace's operators write that one (the store's Role keeps it from reading it anyway)
         if remote != _remote_key(ns, component):
             continue
         props = [p for p in ann.split(",") if p] if ann is not None else [d.get("secretKey") for d in data]
-        out.append({"namespace": ns, "component": component, "remote": remote,
-                    "properties": sorted(p for p in props if p)})
-    return out
+        c = out.setdefault((ns, component), {"namespace": ns, "component": component, "remote": remote, "properties": []})
+        c["properties"] = sorted(set(c["properties"]) | {p for p in props if p})
+    return list(out.values())
 
 
 def _remote_key(ns: str, component: str) -> str:
@@ -420,7 +422,8 @@ def _uses(obj: dict, secret: str) -> bool:
             return True
         if any((e.get("secretRef") or {}).get("name") == secret for e in ct.get("envFrom") or []):
             return True
-    return False
+    # a Secret mounted as files: a file mounted alone (subPath, the certificates) changes only when the pod restarts
+    return any((v.get("secret") or {}).get("secretName") == secret for v in pod.get("volumes") or [])
 
 
 def apply_now(changed: list[dict], log=print, wait: float = 60.0) -> None:
@@ -430,8 +433,9 @@ def apply_now(changed: list[dict], log=print, wait: float = 60.0) -> None:
     import time
     stamp = str(int(time.time()))
     for c in changed:
-        _run(["-n", c["namespace"], "annotate", "externalsecrets.external-secrets.io", c["component"] + SUFFIX,
-              f"force-sync={stamp}", "--overwrite"], ok_missing=True)
+        for suffix in (SUFFIX, FILES):
+            _run(["-n", c["namespace"], "annotate", "externalsecrets.external-secrets.io", c["component"] + suffix,
+                  f"force-sync={stamp}", "--overwrite"], ok_missing=True)
     end = time.monotonic() + wait
     for c in changed:
         name = c["component"] + SUFFIX
@@ -445,7 +449,7 @@ def apply_now(changed: list[dict], log=print, wait: float = 60.0) -> None:
             time.sleep(3)
         raw = _run(["-n", c["namespace"], "get", "deployments.apps,statefulsets.apps", "-o", "json"], ok_missing=True)
         for w in (json.loads(raw).get("items") or []) if raw else []:
-            if _uses(w, name):
+            if _uses(w, name) or _uses(w, c["component"] + FILES):
                 _run(["-n", c["namespace"], "rollout", "restart", f"{w['kind'].lower()}/{w['metadata']['name']}"],
                      ok_missing=True)
                 log(f"openbao: {c['namespace']}/{w['metadata']['name']} restarted with its new values")

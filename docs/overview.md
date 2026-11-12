@@ -440,6 +440,9 @@ Techniques used to avoid application changes:
   SlowCheetah), its values count as part of `appsettings.json` (they are in the published file), so its tokens are
   found too; its `@jdt.*` directives are ignored;
 - folders the app writes to (logs, App_Data) become volumes;
+- certificates with their private key next to the code (`*.pfx`, `*.p12`), which the image leaves out, are mounted
+  read-only where the app reads them (`/app/<path>`) from the component's Secret `<component>-files` (base64 in the
+  secret store; on the appliance a key of its OpenBao entry, see [OpenBao](openbao.md));
 - the ASP.NET Core Data Protection key folder gets one key, read-only, from a Secret that External Secrets Operator
   generates once in the cluster (Password generator, no secret store): cookies and antiforgery tokens survive
   restarts and work on every replica. That is the default folder under `/home/app` when no code (the component or

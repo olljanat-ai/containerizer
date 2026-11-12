@@ -65,7 +65,8 @@ def remote_key(namespace: str, name: str) -> str:
 
 
 def external_secret(name: str, namespace: str, remote: str, keys: list[str] | None = None, labels: dict | None = None,
-                    secret_type: str | None = None, comment: str | None = None, set_namespace: bool = False) -> dict:
+                    secret_type: str | None = None, comment: str | None = None, set_namespace: bool = False,
+                    base64: set[str] | None = None) -> dict:
     """ExternalSecret `name` (and its target Secret) in `namespace`: `keys` from properties of the
     remote secret `remote`, or every property when `keys` is empty."""
     c = cfg()
@@ -76,7 +77,9 @@ def external_secret(name: str, namespace: str, remote: str, keys: list[str] | No
         # keep the fetched keys, set the Secret type (dockerconfigjson, tls, ...)
         spec["target"]["template"] = {"type": secret_type, "engineVersion": "v2", "mergePolicy": "Merge"}
     if keys:
-        spec["data"] = [{"secretKey": k, "remoteRef": {"key": remote, "property": k}} for k in keys]
+        spec["data"] = [{"secretKey": k, "remoteRef": {"key": remote, "property": k,
+                                                     **({"decodingStrategy": "Base64"} if k in (base64 or ()) else {})}}
+                        for k in keys]
     else:
         spec["dataFrom"] = [{"extract": {"key": remote}}]
     meta: dict = {"name": name}

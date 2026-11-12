@@ -15,6 +15,10 @@ CLI_VERB_RE = re.compile(r'(?:\bnew\s+Command\s*\(|\[\s*(?:Verb|Command)\s*\((?:
                          r'|\.AddCommand\s*<[\w.<>, ]+>\s*\(|\.AddBranch\s*(?:<[\w.<>, ]+>)?\s*\(|\.Command\s*\()'
                          r'\s*"([a-z][\w-]*)"')
 
+# certificates with their private key, which the image leaves out (generate.DOCKERIGNORE): they come from the secret
+# store. Public certificates (.crt, .cer, .pem CA bundles) stay in the image.
+CERT_EXT = (".pfx", ".p12")
+CERT_SKIP = re.compile(r"(?i)(^|/)(bin|obj|node_modules|tests?|testdata|fixtures?)/")
 FOLDER_KEY = re.compile(r"(folder|path|dir|directory|root|location|store|share|inbox|outbox|archive)$", re.I)
 # a connection string that is only an embedded database file in the app folder (no folder, no password)
 EMBEDDED_DB = re.compile(r"(Data\s*Source|DataSource|Filename)\s*=\s*[\w\-.]+\.(db|sqlite3?|litedb)\s*;?\s*"
@@ -375,6 +379,13 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
             sections = find_sections(cfg)
             if sections:
                 facts["auth_sections"] = sections
+    # certificate and key files next to the code (Dockerfile.dockerignore keeps them out of the image): the
+    # manifests mount each from the secret store where the app expects it (generate.cert_files)
+    certs = sorted(f.relative_to(p.dir).as_posix() for f in p.files
+                   if f.suffix.lower() in CERT_EXT and p.dir in f.parents
+                   and not CERT_SKIP.search(f.relative_to(p.dir).as_posix()))
+    if certs:
+        facts["cert_files"] = certs[:20]
     # sub-commands of a console tool: "Usage: Tool <import|export|purge>", an array of verbs, case "import": in
     # Program.cs, or the commands declared with a command-line library
     if comp.role == "console" and "oneshot_arg" not in facts:
