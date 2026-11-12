@@ -209,5 +209,47 @@ def test_secrets_link_opens_oidc_sign_in_once_openbao_has_it(monkeypatch):
     assert adm.openbao_link(now=100.0) == "https://cz.example.com/ui/"
     codes[0] = 400
     assert adm.openbao_link(now=130.0) == "https://cz.example.com/ui/"        # asked once a minute
-    assert adm.openbao_link(now=161.0) == "https://cz.example.com/ui/vault/auth?with=oidc%2F"
+    assert adm.openbao_link(now=161.0) == "/admin/secrets"                     # straight to the provider (below)
     assert len(answers) == n + 2
+
+
+def test_secrets_link_signs_in_to_openbao_without_its_sign_in_page(monkeypatch):
+    """/admin/secrets starts OpenBao's OIDC sign-in for the UI's own redirect URI, with the state in a cookie only the
+    callback gets; the callback (Caddy sends it to the web UI when the cookie is there) has OpenBao finish it and opens
+    the UI with the wrapped token. A callback without our state goes to OpenBao's sign-in page."""
+    from urllib.parse import urlencode
+    from containerizer import admin as adminmod, openbao
+    from containerizer.oidc import OidcConfig
+    calls = []
+    monkeypatch.setattr(openbao, "sso_start", lambda api, pub: calls.append(("start", api, pub)) or
+                        ("https://login.example.com/authorize?state=st1&x=1", "st1", "nonce1"))
+    monkeypatch.setattr(openbao, "sso_finish", lambda api, st, code, nonce: calls.append(("finish", st, code, nonce))
+                        or ("hvs.wrapped" if code == "good" else None))
+    cfg = OidcConfig.from_env({"CONTAINERIZER_OIDC_ISSUER": "https://login.example.com", "CONTAINERIZER_OIDC_CLIENT_ID": "c",
+                               "CONTAINERIZER_PUBLIC_URL": "https://cz.example.com", "CONTAINERIZER_ADMINS": "role:Admin"})
+    adm = adminmod.Admin(cfg, lambda: None, provider=object())
+    adm.openbao_url, adm.openbao_api = "https://cz.example.com/ui/", "http://127.0.0.1:8200"
+    r = adm.openbao_start()
+    h = dict(r.headers)
+    assert r.status == 303 and h["Location"].startswith("https://login.example.com/authorize?state=st1")
+    assert h["Set-Cookie"].startswith("cz_bao_sso=st1; Path=/ui/vault/auth/oidc/oidc/callback; HttpOnly; SameSite=Lax")
+    assert calls[0] == ("start", "http://127.0.0.1:8200", "https://cz.example.com")
+    assert adm.handles("/ui/vault/auth/oidc/oidc/callback")
+
+    def cb(query, cookie):
+        return adm.handle("GET", "/ui/vault/auth/oidc/oidc/callback", urlencode(query), {"Cookie": cookie}, b"")
+    r = cb({"state": "st1", "code": "good"}, "cz_bao_sso=other")          # not the browser that started it
+    assert dict(r.headers)["Location"] == "https://cz.example.com/ui/vault/auth?with=oidc%2F"
+    r = cb({"state": "st1", "code": "good"}, "a=b; cz_bao_sso=st1")
+    h = dict(r.headers)
+    assert h["Location"] == "https://cz.example.com/ui/vault/auth?wrapped_token=hvs.wrapped"
+    assert ("finish", "st1", "good", "nonce1") in calls and "Max-Age=0" in h["Set-Cookie"]
+    r = cb({"state": "st1", "code": "good"}, "cz_bao_sso=st1")            # used once only
+    assert dict(r.headers)["Location"].endswith("with=oidc%2F")
+    adm.openbao_start()
+    r = cb({"state": "st1", "code": "bad"}, "cz_bao_sso=st1")             # OpenBao refused: its own sign-in page
+    assert dict(r.headers)["Location"].endswith("with=oidc%2F")
+    monkeypatch.setattr(openbao, "sso_start", lambda api, pub: None)
+    assert dict(adm.openbao_start().headers)["Location"].endswith("with=oidc%2F")
+    adm.openbao_api = ""
+    assert not adm.handles("/ui/vault/auth/oidc/oidc/callback")        # not on the appliance: never routed here

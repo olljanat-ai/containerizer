@@ -76,6 +76,47 @@ def oidc_enabled(api: str, timeout: float = 2.0) -> bool:
         return False
 
 
+CALLBACK = "/ui/vault/auth/oidc/oidc/callback"   # OpenBao's UI callback: the redirect URI people register (docs)
+
+
+def _post_json(url: str, body: dict | None, headers: dict | None = None, method: str = "POST", timeout: float = 10.0):
+    req = urllib.request.Request(url, method=method, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Content-Type": "application/json", **(headers or {})})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read() or b"{}")
+
+
+def sso_start(api: str, public_url: str) -> tuple[str, str, str] | None:
+    """The OIDC sign-in to OpenBao without its sign-in page, step 1: (the identity provider's URL, its state, our
+    client nonce), for the redirect URI the UI uses (so nothing new to register). None when OpenBao refuses."""
+    import secrets
+    from urllib.parse import parse_qs, urlsplit
+    nonce = secrets.token_urlsafe(24)
+    try:
+        d = _post_json(api.rstrip("/") + "/v1/auth/oidc/oidc/auth_url",
+                       {"role": "", "redirect_uri": public_url.rstrip("/") + CALLBACK, "client_nonce": nonce})
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    url = ((d or {}).get("data") or {}).get("auth_url") or ""
+    state = parse_qs(urlsplit(url).query).get("state", [""])[0]
+    if not url.startswith(("https://", "http://127.0.0.1", "http://localhost")) or not state:
+        return None
+    return url, state, nonce
+
+
+def sso_finish(api: str, state: str, code: str, nonce: str) -> str | None:
+    """Step 2, at the callback: OpenBao completes the sign-in and answers with its token wrapped (single use, one
+    minute). The UI signs in with it (/ui/vault/auth?wrapped_token=...). None when OpenBao refuses."""
+    from urllib.parse import urlencode
+    try:
+        d = _post_json(api.rstrip("/") + "/v1/auth/oidc/oidc/callback?" +
+                       urlencode({"state": state, "code": code, "client_nonce": nonce}), None,
+                       {"X-Vault-Wrap-TTL": "60s"}, method="GET")
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    return ((d or {}).get("wrap_info") or {}).get("token") or None
+
+
 def app_policy(ns: str) -> str:
     """An operator of namespace `ns`: its own entries only (the list of namespaces shows names, never values)."""
     return (f'path "{MOUNT}/data/{ns}/*" {{ capabilities = ["create", "read", "update", "patch", "delete"] }}\n'

@@ -111,9 +111,11 @@ bao write identity/group-alias name="<admins group>" mount_accessor="$accessor" 
 People now choose **OIDC** on the sign-in page and get the policies of their groups. Keep the `admin` user (with a
 strong password) as the way in when the provider is down.
 
-Once the method is there, the **Secrets ↗** link on the admin pages opens OpenBao's sign-in with **OIDC** selected
-(`https://<CZ_HOSTNAME>/ui/vault/auth?with=oidc%2F`): people only press *Sign in with OIDC Provider*. The appliance
-checks for the method once a minute. To show only OIDC on the sign-in page (the `admin` user stays under **Other**):
+Once the method is there, the **Secrets ↗** link on the admin pages signs you in to OpenBao with it directly, without
+OpenBao's sign-in page: it goes to the identity provider (no prompt when you are signed in there already) and comes
+back to OpenBao's UI signed in. It uses the UI's redirect URI above, so there is nothing more to register. The appliance
+checks for the method once a minute; until then, or if that sign-in fails, the link opens OpenBao's sign-in page
+with OIDC selected. To show only OIDC on the sign-in page (the `admin` user stays under **Other**):
 
 ```sh
 bao auth tune -listing-visibility=unauth oidc/

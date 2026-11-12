@@ -22,6 +22,17 @@
 	handle /grafana* {
 		reverse_proxy 127.0.0.1:3000
 	}
+	# the sign-in to OpenBao the admin pages' Secrets link started (admin.openbao_start, docs/openbao.md): its
+	# callback goes to the web UI, which completes it; every other sign-in's callback goes to OpenBao's UI
+	@baosso {
+		path /ui/vault/auth/oidc/oidc/callback
+		header Cookie *cz_bao_sso=*
+	}
+	handle @baosso {
+		reverse_proxy 127.0.0.1:8080 {
+			header_up X-Forwarded-Proto https
+		}
+	}
 	# OpenBao (docs/openbao.md): its UI and the API the UI and the bao CLI use
 	handle /ui* {
 		reverse_proxy 127.0.0.1:8200

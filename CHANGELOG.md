@@ -10,6 +10,10 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- **Secrets ↗ without OpenBao's sign-in page.** With OIDC set up in OpenBao, the link now signs in directly: the
+  web UI starts OpenBao's OIDC sign-in for the UI's own redirect URI, Caddy sends that one callback back to the web UI
+  (a cookie set when it started), OpenBao finishes the sign-in and its UI opens with a single-use wrapped token
+  (`?wrapped_token=`). Nothing new to register at the identity provider (OS image: Caddyfile).
 - **DNS after a reboot.** The DNS filter could be left without the DHCP DNS servers after a boot (every outbound name
   refused until `systemctl restart containerizer-firewall-reload containerizer-dns`): when the DHCP servers changed
   while the firewall was being rendered, the change was missed. `cz-firewall` now renders again until they stayed the

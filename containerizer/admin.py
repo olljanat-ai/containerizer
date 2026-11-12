@@ -77,6 +77,8 @@ FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Des
 ROLE_REFRESH = 1.0
 # Who may use the rule review pages: Session attributes, any of which lets a signed-in user in.
 RULE_REVIEW_ROLES = ("admin", "operator")
+BAO_CALLBACK = "/ui/vault/auth/oidc/oidc/callback"   # openbao.CALLBACK; Caddy sends it here with the cookie below
+BAO_COOKIE = "cz_bao_sso"
 UPLOAD_RE = re.compile(r"/admin/dev-databases/(\d{1,9})/upload")
 
 
@@ -105,6 +107,7 @@ class Admin:
         self.openbao_url = ""                       # CONTAINERIZER_OPENBAO_URL: the sandbox apps' secret values
         self.openbao_api = ""                       # CONTAINERIZER_OPENBAO_API: asked whether it has OIDC sign-in
         self._openbao_sso = None                    # (when asked, the answer)
+        self._bao_pending = {}                      # OpenBao sign-ins started at /admin/secrets: state -> (nonce, until)
         self.kubemg_url = ""                        # CONTAINERIZER_KUBEMG_URL: kubemg on the appliance (optional)
         self.system = None                          # appliance.SystemPage on the appliance (System, Firewall)
         self.dev: DevIdentity | None = None         # development mode: no sign-in (CONTAINERIZER_DEV_NO_AUTH)
@@ -216,13 +219,16 @@ class Admin:
     # -- routing --------------------------------------------------------------------------------
 
     def handles(self, path: str) -> bool:
-        return path in ("/login", "/logout", "/auth/callback") or path == "/admin" or path.startswith("/admin/")
+        return path in ("/login", "/logout", "/auth/callback") or path == "/admin" or path.startswith("/admin/") \
+            or (bool(self.openbao_api) and path == BAO_CALLBACK)
 
     def handle(self, method: str, path: str, query: str, headers, body: bytes, addr: str | None = None) -> Response:
         if path == "/login" and method == "GET":
             return self.login(parse_qs(query).get("next", ["/admin"])[0])
         if path == "/auth/callback" and method == "GET":
             return self.callback(headers, parse_qs(query), addr)
+        if path == BAO_CALLBACK and method == "GET" and self.openbao_api:
+            return self.openbao_callback(headers, parse_qs(query))
         s = self.session(headers)
         if path == "/logout" and method == "POST":
             form = self._form(body)
@@ -264,6 +270,8 @@ class Admin:
         if not parts:
             return redirect(f"/admin/{tabs[0][0]}")
         kind = parts[0]
+        if kind == "secrets" and method == "GET" and (a.admin or a.operator):    # the Secrets link (SSO to OpenBao)
+            return self.openbao_start()
         if kind == "links":                          # the results page's links between applications: no tab of its own
             from . import admin_links
             return admin_links.route(self, conn, s, a, method, parts, q, form)
@@ -545,7 +553,44 @@ class Admin:
             self._openbao_sso = (now, oidc_enabled(self.openbao_api))
         if not self._openbao_sso[1]:
             return self.openbao_url
-        return self.openbao_url.rstrip("/") + "/vault/auth?with=oidc%2F"
+        return "/admin/secrets"
+
+    def openbao_start(self) -> Response:
+        """/admin/secrets: straight to the identity provider for OpenBao, no sign-in page. The state is remembered
+        here and in a cookie that only goes to the callback (Caddy sends the callback here when it has it)."""
+        import time
+        from .openbao import CALLBACK, sso_start
+        start = sso_start(self.openbao_api, self.cfg.public_url)
+        if not start:                               # OIDC not set up after all, or OpenBao down: its own sign-in
+            return redirect(self.openbao_url.rstrip("/") + "/vault/auth?with=oidc%2F")
+        url, state, nonce = start
+        now = time.monotonic()
+        self._bao_pending = {k: v for k, v in self._bao_pending.items() if v[1] > now}
+        if len(self._bao_pending) > 1000:
+            self._bao_pending.clear()
+        self._bao_pending[state] = (nonce, now + 600)
+        cookie = f"{BAO_COOKIE}={state}; Path={CALLBACK}; HttpOnly; SameSite=Lax; Max-Age=600" + \
+            ("; Secure" if self.cfg.secure else "")
+        return redirect(url, [("Set-Cookie", cookie), ("Referrer-Policy", "no-referrer")])
+
+    def openbao_callback(self, headers, q: dict) -> Response:
+        """The identity provider's answer for /admin/secrets: OpenBao completes the sign-in and its UI opens signed
+        in with the wrapped token. Anything else (a sign-in started on OpenBao's own page) goes to OpenBao's UI."""
+        from urllib.parse import quote
+        from .openbao import CALLBACK, sso_finish
+        state = q.get("state", [""])[0]
+        mine = self._cookies(headers.get("Cookie")).get(BAO_COOKIE, "")
+        pending = self._bao_pending.pop(state, None) if state and secrets.compare_digest(state, mine) else None
+        clear = ("Set-Cookie", f"{BAO_COOKIE}=; Path={CALLBACK}; HttpOnly; SameSite=Lax; Max-Age=0"
+                 + ("; Secure" if self.cfg.secure else ""))
+        sign_in = self.openbao_url.rstrip("/") + "/vault/auth?with=oidc%2F"
+        if not pending or "code" not in q:
+            return redirect(sign_in, [clear])
+        token = sso_finish(self.openbao_api, state, q["code"][0], pending[0])
+        if not token:
+            return redirect(sign_in, [clear])
+        return redirect(self.openbao_url.rstrip("/") + "/vault/auth?wrapped_token=" + quote(token, safe=""),
+                        [clear, ("Referrer-Policy", "no-referrer"), ("Cache-Control", "no-store")])
 
     # -- applications ---------------------------------------------------------------------------
 
