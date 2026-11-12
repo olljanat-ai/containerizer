@@ -539,3 +539,85 @@ def test_lab_connection_strings_name_the_app():
     assert "Application Name" not in L.connection_string("mysql", {**c, "port": "3306"})   # MySql.Data refuses it
     from containerizer import devdb
     assert "Application Name={database}" in devdb.CONNECTION["sqlserver"]
+
+
+@needs_sql
+def test_developers_and_one_product_per_project(db):
+    """The worker's login stores commit authors and maps projects to products (AutoMapProjects) but cannot map
+    applications itself; administrators set business units and change a project's product (developers.py,
+    admin_developers.py)."""
+    from containerizer import admin_developers, developers
+    pw = "Test-Passw0rd!x"
+    ed = sqlstore.connect(_as(db, "cz_t_editor"), password=pw)
+    wr = sqlstore.connect(_as(db, "cz_t_writer"), password=pw)
+    try:
+        c = ed.cursor()
+        c.execute("INSERT cz.OrgScan (Name, Provider, Organization, Registry) VALUES (N'dev-scan', N'azure-devops', N'contoso', N'r')")
+        c.execute("INSERT cz.BusinessUnit (Name) VALUES (N'Dev BU')")
+        ed.commit()
+        cur = ed.cursor(as_dict=True)
+        cur.execute("SELECT ScanId FROM cz.OrgScan WHERE Name = N'dev-scan'")
+        scan = cur.fetchone()["ScanId"]
+        cur.execute("SELECT BusinessUnitId FROM cz.BusinessUnit WHERE Name = N'Dev BU'")
+        bu = cur.fetchone()["BusinessUnitId"]
+        w = wr.cursor()
+        w.execute("INSERT cz.OrgProject (ScanId, Name) VALUES (%s, N'DevProj')", (scan,))
+        url = "https://dev.azure.com/contoso/DevProj/_git/dev-api"
+        w.execute("INSERT cz.OrgRepository (ScanId, ProjectName, Name, CloneUrl, RepositoryUrl) VALUES (%s, N'DevProj', N'dev-api', %s, %s)",
+                  (scan, url, url))
+        w.execute("INSERT cz.Application (SourceKey, Name, RepositoryUrl) VALUES (%s, N'dev-api', %s)", (url + "#.", url))
+        wr.commit()
+        wc = wr.cursor(as_dict=True)
+        wc.execute("SELECT RepositoryId FROM cz.OrgRepository WHERE ScanId = %s", (scan,))
+        rid = wc.fetchone()["RepositoryId"]
+
+        a = developers.Authors()
+        a.add("Dev.One@example.com", "Dev One", datetime(2026, 11, 1, 10))
+        a.add("dev.two@example.com", "Dev Two", datetime(2026, 11, 2, 10))
+        now = datetime(2026, 11, 12)
+        developers.store(wr, rid, a, now, developers._developers(wr))
+        b = developers.Authors()
+        b.add("dev.one@example.com", "Dev One", datetime(2026, 10, 1))        # older: the date stays
+        developers.store(wr, rid, b, now, developers._developers(wr))
+        wc.execute("SELECT d.Email, dr.Commits, dr.LastCommitAt FROM cz.DeveloperRepository dr "
+                   "JOIN cz.Developer d ON d.DeveloperId = dr.DeveloperId WHERE dr.RepositoryId = %s ORDER BY d.Email", (rid,))
+        assert [(r["Email"], r["Commits"], r["LastCommitAt"]) for r in wc.fetchall()] == [
+            ("dev.one@example.com", 1, datetime(2026, 11, 1, 10)), ("dev.two@example.com", 0, datetime(2026, 11, 2, 10))]
+        with pytest.raises(Exception):                         # the worker never maps applications itself
+            wr.cursor().execute("UPDATE cz.Application SET ProductId = NULL WHERE SourceKey = %s", (url + "#.",))
+        wr.rollback()
+
+        developers.auto_map(wr, log=lambda m: (_ for _ in ()).throw(AssertionError(m)))
+        developers.auto_map(wr)                                # idempotent
+        cur.execute("SELECT a.ProductId, a.ProductAutoAt, p.Name FROM cz.Application a JOIN cz.Product p ON p.ProductId = a.ProductId "
+                    "WHERE a.SourceKey = %s", (url + "#.",))
+        row = cur.fetchone()
+        assert row["Name"] == "DevProj" and row["ProductAutoAt"] is not None
+        cur.execute("SELECT COUNT(*) AS n FROM cz.Product WHERE Name = N'DevProj'")
+        assert cur.fetchone()["n"] == 1
+        cur.execute("SELECT TOP (1) Via FROM cz.AuditLog WHERE TableName = N'Product' AND RowName = N'DevProj' "
+                    "ORDER BY AuditId")
+        assert cur.fetchone()["Via"] == "scan"
+
+        ed.set_user("john.doe@example.com", "John Doe")
+        cur.execute("SELECT DeveloperId FROM cz.Developer WHERE Email = N'dev.one@example.com'")
+        did = str(cur.fetchone()["DeveloperId"])
+        r = admin_developers.save(ed, {"d": [did], f"was-{did}": ["|0"], f"bu-{did}": [str(bu)]})
+        assert r.status == 303
+        m = admin_developers.load(ed)
+        assert m.repo_suggestions()[rid].bu == bu
+        assert m.product_suggestions()[row["ProductId"]][0].bu == bu
+        cur.execute("SELECT ProjectId FROM cz.OrgProject WHERE ScanId = %s", (scan,))
+        pid = cur.fetchone()["ProjectId"]
+        c.execute("INSERT cz.Product (Name, BusinessUnitId) VALUES (N'Dev product', %s)", (bu,))
+        ed.commit()
+        cur.execute("SELECT ProductId FROM cz.Product WHERE Name = N'Dev product'")
+        new = cur.fetchone()["ProductId"]
+        admin_developers.project(ed, {"ProjectId": [str(pid)], "Product": [str(new)]})
+        cur.execute("SELECT ProductId FROM cz.Application WHERE SourceKey = %s", (url + "#.",))
+        assert cur.fetchone()["ProductId"] == new                # mapped automatically: follows the project
+        cur.execute("SELECT TOP (1) ChangedBy FROM cz.AuditLog WHERE TableName = N'OrgProject' ORDER BY AuditId DESC")
+        assert cur.fetchone()["ChangedBy"] == "john.doe@example.com"
+    finally:
+        ed.close()
+        wr.close()

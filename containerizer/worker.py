@@ -187,6 +187,7 @@ class SqlRepoStore:
         self.new_enabled = new_enabled
         self.splits: dict[str, str] = {}        # key -> OrgRepository.SplitPath (one application per folder)
         self.new: list[str] = []
+        self.repos: list = []
         self.listed = 0
         self.projects = 0
 
@@ -265,6 +266,7 @@ class SqlRepoStore:
             self.conn.rollback()
             raise
         self.listed = len(listed)
+        self.repos = list(listed)               # for the commit authors at the end of the run (developers.py)
         for r in listed:
             if _cut(r.project, 200) in off:
                 admin[r.key] = "project-disabled"
@@ -939,6 +941,7 @@ class Worker:
                 if read and read.token:
                     REDACT.add(read.token, read.username)
                 status, message = self.discover(scan, store, hooks, creds, read, name)
+                message += self.developers(conn, scan, store, hooks, name)
                 return status
             write = creds.write_for(scan["OutputRepo"])
             llm = creds.llm() if scan["UseAi"] else None
@@ -954,7 +957,7 @@ class Worker:
                 scope = json.loads(run["Scope"])
                 o.only_projects = set(scope.get("projects") or [])
                 o.only_repos = set(scope.get("repositories") or [])
-            o.on_listed = lambda prov, n: self._listed(read, prov, n)
+            o.on_listed = lambda prov, n: (self._listed(read, prov, n), setattr(store, "prov", prov))
             (self.data / f"scan-{int(scan['ScanId'])}").mkdir(parents=True, exist_ok=True)
             from .org import run_org
             from .ai import cancel_when, configured
@@ -981,6 +984,7 @@ class Worker:
                 status = "succeeded"
                 message = (f"{hooks.total} repositories: {c['deployed']} deployed, {c['skipped']} skipped or disabled, "
                            f"{c['errors']} failed" + (f"; {len(store.new)} new" if store.new else ""))
+            message += self.developers(conn, scan, store, hooks, name)
         except SourceError as ex:
             message = REDACT(str(ex))
         except Exception as ex:
@@ -1028,7 +1032,7 @@ class Worker:
         """A discovery run: projects, repositories and their latest commits, nothing cloned."""
         from .org import discover_org
         o = self.options(scan, store, hooks, creds)
-        o.on_listed = lambda prov, n: self._listed(read, prov, n)
+        o.on_listed = lambda prov, n: (self._listed(read, prov, n), setattr(store, "prov", prov))
         found = discover_org(o, log=lambda msg: self.log(f"{name}: {msg}"))
         c = hooks.counts
         hooks._update(ReposDone=len(found), ReposSkipped=c["skipped"], ReposErrors=c["errors"])
@@ -1041,6 +1045,27 @@ class Worker:
                              + f"; {c['skipped']} would be skipped (archived, empty, fork, stale or filtered)"
                              + (f"; latest commit not available for {c['errors']}" if c["errors"] else "")
                              + "; nothing cloned")
+
+    def developers(self, conn, scan: dict, store, hooks, name: str) -> str:
+        """The end of every run: the commit authors of the repositories that are due (developers.py), then one product
+        per project for what nobody mapped yet. Bookkeeping only: a failure is logged, the run's status stays.
+        Returns text for the run's message."""
+        from . import developers
+        text = ""
+        prov = getattr(store, "prov", None)
+        if prov is not None and store.repos and not hooks.should_stop():
+            hooks.phase("Reading the commit authors")
+            try:
+                n = developers.collect(conn, scan["ScanId"], prov, store.repos, log=lambda m: self.log(f"{name}: {m}"),
+                                       should_stop=hooks.should_stop)
+                if n["repositories"] or n["errors"]:
+                    text = (f"; commit authors of {n['repositories']} repositories read"
+                            + (f" ({n['errors']} failed)" if n["errors"] else ""))
+            except Exception as ex:
+                conn.rollback()
+                self.log(f"{name}: could not read the commit authors: {type(ex).__name__}: {ex}")
+        developers.auto_map(conn, log=lambda m: self.log(f"{name}: {m}"))
+        return text
 
     def _listed(self, cred, prov, n: int) -> None:
         """The organization's token worked: record it, with any sign that it can do more than read."""

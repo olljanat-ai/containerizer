@@ -320,6 +320,25 @@ the reason, such as "no source code".
 
 <div markdown>
 
+### Who owns which repository?
+
+Every scan reads who committed where in the last six months. Give the developers their business units, and the
+repositories and products nobody mapped get a suggested business unit, weighed by commits. To start with, each Azure
+DevOps project (GitLab subgroup) becomes a product, with its applications mapped to it.
+
+[Developers and ownership :octicons-arrow-right-24:](developers.md)
+
+</div>
+
+![Products and repositories nobody mapped, with the business unit their developers suggest](images/admin-developers-suggestions.png#only-light){ .cz-shot }
+![Products and repositories nobody mapped, with the business unit their developers suggest](images/admin-developers-suggestions-dark.png#only-dark){ .cz-shot }
+
+</div>
+
+<div class="cz-feature" markdown>
+
+<div markdown>
+
 ### A slow LLM never holds up a scan
 
 With a CPU-only or busy LLM, scans can leave the LLM reviews to a queue: uncertain components first,
@@ -335,7 +354,7 @@ many tokens and hours are left, estimated from the speed it has measured on your
 
 </div>
 
-<div class="cz-feature" markdown>
+<div class="cz-feature cz-reverse" markdown>
 
 <div markdown>
 
@@ -354,7 +373,7 @@ runs the container. You get a coloured diff, the result per finding and a `.patc
 
 </div>
 
-<div class="cz-feature cz-reverse" markdown>
+<div class="cz-feature" markdown>
 
 <div markdown>
 
@@ -372,7 +391,7 @@ reject them; approved rules make the next run faster and AI-free.
 
 </div>
 
-<div class="cz-feature" markdown>
+<div class="cz-feature cz-reverse" markdown>
 
 <div markdown>
 
@@ -390,7 +409,7 @@ in the sandbox right now.
 
 </div>
 
-<div class="cz-feature cz-reverse" markdown>
+<div class="cz-feature" markdown>
 
 <div markdown>
 
@@ -409,7 +428,7 @@ application's page says the same at the top.
 
 </div>
 
-<div class="cz-feature" markdown>
+<div class="cz-feature cz-reverse" markdown>
 
 <div markdown>
 

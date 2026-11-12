@@ -148,7 +148,7 @@ On the Vault side, one role for every namespace, and a policy templated on the c
 `shop` reads only `secret/data/shop--*`:
 
 ```sh
-ACCESSOR=$(vault auth list -format=json | jq -r '."kubernetes/".accessor')
+ACCESSOR=$(vault read -field=accessor sys/auth/kubernetes)
 vault policy write app-secrets - <<EOF
 path "secret/data/{{identity.entity.aliases.$ACCESSOR.metadata.service_account_namespace}}--*" {
   capabilities = ["read"]
