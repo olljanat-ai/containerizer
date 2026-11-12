@@ -1,9 +1,22 @@
 #!/bin/sh
 # Load the appliance firewall; fall back to SSH-only if the allow-lists cannot be rendered.
-if /usr/lib/containerizer/venv/bin/python -m containerizer.sysagent firewall apply --no-dns-reload; then
-  systemctl try-restart containerizer-dns.service 2>/dev/null || true
-  exit 0
-fi
-echo "containerizer: firewall rules could not be applied; loading the SSH-only fallback" >&2
-/usr/sbin/nft -f /usr/lib/containerizer/firewall-fallback.nft
-exit 1
+#
+# The DNS filter's upstream servers come from the DHCP lease (/run/systemd/resolve/resolv.conf; the path unit
+# containerizer-dns-upstream.path runs this again when it changes). A change while this runs would be merged
+# into the running job and missed, leaving the filter without upstreams until the next change (every name
+# refused after a boot): so render again until the file stayed the same while rendering.
+resolved=/run/systemd/resolve/resolv.conf
+i=0
+while :; do
+  before=$(cat "$resolved" 2>/dev/null | cksum)
+  if ! /usr/lib/containerizer/venv/bin/python -m containerizer.sysagent firewall apply --no-dns-reload; then
+    echo "containerizer: firewall rules could not be applied; loading the SSH-only fallback" >&2
+    /usr/sbin/nft -f /usr/lib/containerizer/firewall-fallback.nft
+    exit 1
+  fi
+  i=$((i + 1))
+  [ "$(cat "$resolved" 2>/dev/null | cksum)" = "$before" ] || [ "$i" -ge 5 ] && break
+  echo "containerizer: the DHCP DNS servers changed while rendering; rendering again" >&2
+done
+systemctl try-restart containerizer-dns.service 2>/dev/null || true
+exit 0
