@@ -10,6 +10,16 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.44.1 (2026-11-12)
+
+- **Certificates next to the code come from the secret store.** A `.pfx` or `.p12` in a .NET component's project
+  folder (the image leaves them out; `*.p12` now too) is mounted read-only where the app reads it,
+  `/app/<the same path>`, from the component's Secret `<component>-files`, optional, so the app starts without it.
+  In the store the file is base64 (External Secrets decodes it). On the appliance it is a key of the component's
+  OpenBao entry (`snow.pfx`), next to its password setting, and starts with the repository's own file, which the
+  scan leaves on the appliance only. Saving a new one restarts the app (a single mounted file does not refresh).
+  Public certificates (`.crt`, `.cer`, `.pem`) stay in the image.
+
 ## 0.44.0 (2026-11-12)
 
 - **No more `sandbox/` and `cluster/` at the root of the output repository.** The root holds the app folders and
