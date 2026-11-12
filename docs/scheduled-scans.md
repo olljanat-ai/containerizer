@@ -157,6 +157,39 @@ Discovery can be run again at any time, for example before a scheduled run, to s
 repositories first. Scheduled runs are always full scans; new repositories found by them are processed
 in that run unless their project is disabled.
 
+## External application IDs (`metadata.json`)
+
+A repository can name the application it belongs to in another system (a CMDB, a portfolio or service catalogue) in a
+`metadata.json` at its root:
+
+```json
+{
+  "applicationId": "3f2b8c1e-5d6a-4b7c-9e0f-1a2b3c4d5e6f"
+}
+```
+
+The full scan reads it after the clone (a GUID's braces are dropped; letters, digits and `. _ : -`, at most 100
+characters) and keeps it with the repository; a repository that no longer has the file loses it at its next scan.
+Each application has an **External ID** (Admin → Applications → the application, administrators).
+**Admin → Applications → External IDs** lists the IDs repositories declare that no application has yet, with a proposal
+for each: **Link** it to the repository's application (one per application of a split repository), or **Add
+application** for a repository no scan assessed (an application for the whole repository, without results until a
+scan assesses it). **Link proposals** links every repository that has one application without an ID. The change
+history records every ID set.
+
+## Forget an application
+
+**Admin → Applications → the application → Forget application** (administrators; type the application's name to
+confirm) deletes everything recorded about it: its assessments and findings, components, sandbox checks, LLM jobs and
+Make it A orders, LLM usage, egress and link decisions, dev database and sandbox database edits. Its repository is
+**disabled** (the note says who forgot it), and a scan of that repository is queued: as for any disabled repository,
+it removes the application's files from the output repository and the sandbox prunes its namespace. When a scan of
+the organization is running, the next run does it.
+
+To start over with it, enable the repository again on **Admin → Repositories** and scan it: it is assessed as a new
+application. The change history keeps the deletion; secret values in OpenBao (`apps/<namespace>/...`) stay until you
+delete them there.
+
 ## What happens to each repository
 
 1. **Listed** through the provider's API, including private and internal repositories the token can

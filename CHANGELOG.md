@@ -10,6 +10,17 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.41.0 (2026-11-12)
+
+- **Forget application** (Admin → Applications → the application, administrators): deletes everything recorded about
+  an application (assessments, findings, components, sandbox checks, LLM jobs, Make it A orders and usage, egress and
+  link decisions, dev database), disables its repository and queues a scan of it, which removes its files from the
+  output repository and the sandbox (cz.ForgetApplication).
+- **External application IDs.** A repository's `metadata.json` (`{"applicationId": "<id>"}`) names its application in
+  another system; the full scan reads it. Applications have an **External ID**; **Admin → Applications → External IDs**
+  proposes linking the declared IDs no application has, or adding an application for a repository no scan assessed.
+  Database schema 51.
+
 - **The sandbox is a cluster under `clusters/`.** The output repository's sandbox folder is `clusters/sandbox/` (was
   `sandbox/`), next to development, acceptance and production. `sandbox/flux/apps/kustomization.yaml` stays as a
   pointer to it, so the appliance's Flux (it reads `./sandbox/flux/apps`) and clusters bootstrapped before keep working.

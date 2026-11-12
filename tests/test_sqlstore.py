@@ -621,3 +621,96 @@ def test_developers_and_one_product_per_project(db):
     finally:
         ed.close()
         wr.close()
+
+
+FORGOTTEN_REFS = {"Component", "ApplicationAssessment", "ComponentAssessment", "Finding", "SandboxCheck", "SandboxIdpClient",
+                  "DevDatabase", "LlmJob", "LlmHeavyWindow", "EgressDecision", "ComponentLink", "DatabaseEdit",
+                  "ComponentMigration"}
+
+
+@needs_sql
+def test_forget_application_and_external_ids(db, tmp_path):
+    """cz.ForgetApplication deletes what refers to the application (every foreign key to it is one it handles) and
+    disables its repository; cz.AddRepositoryApplication adds an application for a declared external ID, which the
+    scan then adopts by its SourceKey (admin_forget.py, appmeta.py)."""
+    conn = sqlstore.connect(db)
+    cur = conn.cursor(as_dict=True)
+    cur.execute("SELECT DISTINCT OBJECT_NAME(fk.parent_object_id) AS T FROM sys.foreign_keys fk "
+                "WHERE fk.referenced_object_id IN (OBJECT_ID(N'cz.Application'), OBJECT_ID(N'cz.Component'), "
+                "OBJECT_ID(N'cz.ApplicationAssessment'), OBJECT_ID(N'cz.ComponentAssessment'))")
+    refs = {r["T"] for r in cur.fetchall()}
+    conn.close()
+    assert refs and refs <= FORGOTTEN_REFS, f"ForgetApplication does not handle {refs - FORGOTTEN_REFS}"
+
+    app_dir = tmp_path / "forget-me"
+    web_app(app_dir)
+    a = assess(app_dir)
+    pw = "Test-Passw0rd!x"
+    [assessment] = sqlstore.store_results(_as(db, "cz_t_writer"), [a], [app_dir], password=pw)
+    ed = sqlstore.connect(_as(db, "cz_t_editor"), password=pw)
+    wr = sqlstore.connect(_as(db, "cz_t_writer"), password=pw)
+    try:
+        ed.set_user("john.doe@example.com", "John Doe")
+        cur = ed.cursor(as_dict=True)
+        cur.execute("SELECT p.ApplicationId, p.Name, p.SourceKey, p.RepositoryUrl FROM cz.ApplicationAssessment x "
+                    "JOIN cz.Application p ON p.ApplicationId = x.ApplicationId WHERE x.AssessmentId = %s", (assessment,))
+        app = cur.fetchone()
+        own = sqlstore.connect(db)
+        o = own.cursor()
+        o.execute("INSERT cz.SandboxCheck (ApplicationId, Status, Namespace) VALUES (%s, N'healthy', N'forget-me')",
+                  (app["ApplicationId"],))
+        o.execute("INSERT cz.LlmUsage (ApplicationId, SourceKey, Feature, Model, InputTokens, OutputTokens) "
+                  "VALUES (%s, %s, N'review', N'm', 1, 1)", (app["ApplicationId"], app["SourceKey"]))
+        own.commit()
+        own.close()
+        w = wr.cursor()
+        url = app["RepositoryUrl"] or "https://git.example.com/x/forget-me"
+        c = ed.cursor()
+        c.execute("INSERT cz.OrgScan (Name, Provider, Organization, Registry) VALUES (N'forget-scan', N'github', N'x', N'r')")
+        ed.commit()
+        cur.execute("SELECT ScanId FROM cz.OrgScan WHERE Name = N'forget-scan'")
+        scan = cur.fetchone()["ScanId"]
+        w.execute("INSERT cz.OrgRepository (ScanId, ProjectName, Name, CloneUrl, RepositoryUrl, ExternalAppId) "
+                  "VALUES (%s, N'_', N'forget-me', %s, %s, N'APP-1')", (scan, url, url))
+        w.execute("INSERT cz.OrgRepository (ScanId, ProjectName, Name, CloneUrl, RepositoryUrl, AppName, ExternalAppId) "
+                  "VALUES (%s, N'_', N'not-assessed', N'https://git.example.com/x/na', N'https://git.example.com/x/na', "
+                  "N'not-assessed', N'APP-2')", (scan,))
+        wr.commit()
+        if not app["RepositoryUrl"]:                # a folder without a remote: give it the repository's URL
+            conn = sqlstore.connect(db)
+            conn.cursor().execute("UPDATE cz.Application SET RepositoryUrl = %s WHERE ApplicationId = %s", (url, app["ApplicationId"]))
+            conn.commit()
+            conn.close()
+
+        from containerizer import appmeta
+        assert [r["Name"] for r in appmeta.proposals(ed)] == ["forget-me", "not-assessed"]
+        appmeta.link(ed, {"ApplicationId": [str(app["ApplicationId"])], "ExternalId": ["APP-1"]})
+        r = appmeta.add(ed, {"RepositoryId": [str(next(x["RepositoryId"] for x in appmeta.proposals(ed)))]})
+        assert r.status == 303
+        cur.execute("SELECT SourceKey, Name, ExternalId FROM cz.Application WHERE ExternalId = N'APP-2'")
+        assert cur.fetchone() == {"SourceKey": "https://git.example.com/x/na#", "Name": "not-assessed", "ExternalId": "APP-2"}
+        assert appmeta.proposals(ed) == []
+
+        cur.execute("EXEC cz.ForgetApplication @ApplicationId = %s, @Namespace = N'forget-me', @Note = N'forgotten by test'",
+                    (app["ApplicationId"],))
+        ed.commit()
+        own = sqlstore.connect(db)
+        oc = own.cursor(as_dict=True)
+        for t, col in (("Application", "ApplicationId"), ("Component", "ApplicationId"), ("ApplicationAssessment", "ApplicationId"),
+                       ("SandboxCheck", "ApplicationId"), ("LlmUsage", "ApplicationId")):
+            oc.execute(f"SELECT COUNT(*) AS n FROM cz.{t} WHERE {col} = %s", (app["ApplicationId"],))
+            assert oc.fetchone()["n"] == 0, t
+        oc.execute("SELECT COUNT(*) AS n FROM cz.Finding WHERE AssessmentId = %s", (assessment,))
+        assert oc.fetchone()["n"] == 0
+        own.close()
+        cur.execute("SELECT AdminState, AdminNote FROM cz.OrgRepository WHERE ScanId = %s AND Name = N'forget-me'", (scan,))
+        assert cur.fetchone() == {"AdminState": "disabled", "AdminNote": "forgotten by test"}
+        cur.execute("SELECT TOP (1) Action, ChangedBy FROM cz.AuditLog WHERE TableName = N'Application' AND RowId = %s "
+                    "ORDER BY AuditId DESC", (app["ApplicationId"],))
+        assert cur.fetchone() == {"Action": "delete", "ChangedBy": "john.doe@example.com"}
+        with pytest.raises(Exception):              # the scan's login cannot forget
+            wr.cursor().execute("EXEC cz.ForgetApplication @ApplicationId = 1")
+        wr.rollback()
+    finally:
+        ed.close()
+        wr.close()

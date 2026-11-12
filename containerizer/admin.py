@@ -71,7 +71,7 @@ FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Des
               # users and roles (admin_users.py)
               "User": "User", "PendingEmail": "E-mail (not signed in yet)", "Role": "Role",
               # developers (admin_developers.py)
-              "Ignored": "Ignored"}
+              "Ignored": "Ignored", "ExternalId": "External ID"}
 # Roles given on the admin pages (CONTAINERIZER_ROLE_SOURCE=ui) are read from the database again when a session's
 # were read longer ago than this (seconds): every request, but once for the several lookups of one page.
 ROLE_REFRESH = 1.0
@@ -328,11 +328,20 @@ class Admin:
             from . import admin_devdb
             return admin_devdb.route(self, conn, s, a, method, parts, q, form)
         ident = int(parts[1]) if len(parts) > 1 and re.fullmatch(r"\d{1,9}", parts[1]) else None
-        if len(parts) > 1 and ident is None and parts[1] not in ("new", "bulk"):
+        if len(parts) > 1 and ident is None and parts[1] not in ("new", "bulk", "external-link", "external-add"):
             return Response(404, page("Not found", "<h1>Not found</h1>"))
         if kind == "applications":
             if method == "POST" and len(parts) > 1 and parts[1] == "bulk":
                 return self.bulk_map(conn, a, form)
+            if method == "POST" and len(parts) == 2 and parts[1] in ("external-link", "external-add") and a.admin:
+                from . import appmeta                    # the IDs repositories declare (metadata.json)
+                return appmeta.link(conn, form) if parts[1] == "external-link" else appmeta.add(conn, form)
+            if ident is not None and len(parts) == 3 and parts[2] == "forget" and method == "POST" and a.admin:
+                from . import admin_forget
+                return admin_forget.forget(self, conn, s, ident, form)
+            if ident is not None and len(parts) == 3 and parts[2] == "external-id" and method == "POST" and a.admin:
+                from . import appmeta
+                return appmeta.save_id(conn, ident, form)
             if ident is not None and len(parts) == 3 and parts[2] == "sandbox" and method == "POST":
                 return self.set_sandbox(conn, a, ident, form)
             if ident is not None and len(parts) == 3 and parts[2] == "sandbox-debug" and method == "POST":
@@ -607,6 +616,13 @@ class Admin:
         return f"<select name='{name}' id='{name}'>{''.join(opts)}</select>"
 
     def list_applications(self, conn, s: Session, a: Access, show: str, flash: str) -> Response:
+        if show == "external" and a.admin:              # the IDs repositories declare that no application has (appmeta.py)
+            from . import appmeta
+            filters = " ".join(f"<a class='chip{' on' if k == show else ''}' href='/admin/applications?show={k}'>{t}</a>"
+                               for k, t in (("unmapped", "Not mapped"), ("all", "All"), ("hidden", "Hidden"),
+                                            ("external", "External IDs")))
+            body = f"<nav class='chips'>{filters}</nav>" + appmeta.view(self, s, conn)
+            return Response(200, self._shell(s, a, "Application mapping", "applications", body, flash))
         where = {"unmapped": "a.ProductId IS NULL AND a.Retired = 0", "hidden": "a.Retired = 1"}.get(show, "a.Retired = 0")
         show = show if show in ("unmapped", "hidden") else "all"
         cur = conn.cursor(as_dict=True)
@@ -621,7 +637,8 @@ class Admin:
         apps = cur.fetchall()
         products = [p for p in self._products(conn) if a.admin or p["ProductId"] in a.products]
         filters = " ".join(f"<a class='chip{' on' if k == show else ''}' href='/admin/applications?show={k}'>{t}</a>"
-                           for k, t in (("unmapped", "Not mapped"), ("all", "All"), ("hidden", "Hidden")))
+                           for k, t in (("unmapped", "Not mapped"), ("all", "All"), ("hidden", "Hidden"))
+                           + ((("external", "External IDs"),) if a.admin else ()))
 
         def pick(r) -> str:
             if not a.can_map(r["ProductId"], None) and not a.admin:
@@ -687,7 +704,7 @@ class Admin:
         cur.execute("SELECT x.ApplicationId, x.Name, x.DisplayName, x.Description, x.Owner, x.ProductId, x.Retired, x.RepositoryUrl, "
                     "x.SandboxEnabled, x.SourcePath, x.FirstSeenAt, x.LastSeenAt, p.Name AS ProductName, x.OutputRepo, "
                     "x.OutputBranch, x.OutputPath, x.OutputMovedAt, x.OutputMovedCommit, x.OutputMoveError, x.DeployMode, "
-                    "x.SandboxDebug FROM cz.Application x "
+                    "x.SandboxDebug, x.ExternalId, x.SourceKey FROM cz.Application x "
                     "LEFT JOIN cz.Product p ON p.ProductId = x.ProductId WHERE x.ApplicationId = %s", (app_id,))
         r = cur.fetchone()
         if not r:
@@ -716,7 +733,18 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
         heavy = admin_heavy.section(self, conn, s, a, app_id) if a.admin else ""
         output = self._output_section(conn, s, a, r) if a.admin else ""
         deploy = self._deploy_section(s, a, r) if a.admin else ""
-        body = f"{head}{form}{self._sandbox_section(s, a, r)}{deploy}{output}{heavy}<h2>Changes</h2>{self._history(conn, 'Application', app_id)}"
+        ext = forget = ""
+        if a.admin:
+            from . import admin_forget
+            ext = (f"<h2>External ID</h2><p class='muted'>The application's ID in another system (a CMDB, a portfolio tool). A "
+                   "repository can declare it in <code>metadata.json</code> at its root; "
+                   "<a href='/admin/applications?show=external'>External IDs</a> lists the declared ones no application has.</p>"
+                   f"<form method='post' action='/admin/applications/{app_id}/external-id' class='formrow'>{self._csrf(s)}"
+                   f"<input name='ExternalId' class='wide' maxlength='100' value='{e(r.get('ExternalId') or '')}' aria-label='External ID' "
+                   "placeholder='e.g. 3f2b8c1e-5d6a-4b7c-9e0f-1a2b3c4d5e6f'><button>Save</button></form>")
+            forget = admin_forget.section(self, s, r)
+        body = (f"{head}{form}{ext}{self._sandbox_section(s, a, r)}{deploy}{output}{heavy}<h2>Changes</h2>"
+                f"{self._history(conn, 'Application', app_id)}{forget}")
         return Response(200, self._shell(s, a, r["DisplayName"] or r["Name"], "applications", body, flash))
 
     @staticmethod

@@ -2953,3 +2953,115 @@ GRANT EXECUTE ON [${schema}].AutoMapProjects TO [${schema}_admin];
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 50) INSERT [${schema}].SchemaVersion (Version) VALUES (50);
 GO
+
+-- 51: the application's ID in another system (a CMDB, a portfolio tool), set by administrators; a repository can declare
+-- it in metadata.json at its root ({"applicationId": "<id>"}), which the organization scan reads into
+-- OrgRepository.ExternalAppId (appmeta.py). Admin -> Applications -> External IDs proposes linking the IDs no
+-- application has yet.
+IF COL_LENGTH(N'[${schema}].Application', N'ExternalId') IS NULL
+ALTER TABLE [${schema}].Application ADD ExternalId nvarchar(100) NULL;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Application_ExternalId' AND object_id = OBJECT_ID(N'[${schema}].Application'))
+CREATE INDEX IX_Application_ExternalId ON [${schema}].Application (ExternalId) WHERE ExternalId IS NOT NULL;
+GO
+IF COL_LENGTH(N'[${schema}].OrgRepository', N'ExternalAppId') IS NULL
+ALTER TABLE [${schema}].OrgRepository ADD ExternalAppId nvarchar(100) NULL, ExternalAppIdAt datetime2(0) NULL;
+GO
+-- (with the external ID: 51)
+CREATE OR ALTER TRIGGER [${schema}].trApplicationAudit ON [${schema}].Application
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'Application', COALESCE(i.ApplicationId, d.ApplicationId),
+           COALESCE(i.DisplayName, i.Name, d.DisplayName, d.Name),
+           CASE WHEN d.ApplicationId IS NULL THEN N'insert' WHEN i.ApplicationId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.ApplicationId IS NOT NULL THEN (SELECT d.Name, d.DisplayName, d.Description, d.Owner, d.Retired, d.SandboxEnabled,
+                d.OutputRepo, d.OutputBranch, d.OutputPath, d.Tags, d.DeployMode, d.SandboxDebug, d.ExternalId,
+                (SELECT p.Name FROM [${schema}].Product p WHERE p.ProductId = d.ProductId) AS Product
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.ApplicationId IS NOT NULL THEN (SELECT i.Name, i.DisplayName, i.Description, i.Owner, i.Retired, i.SandboxEnabled,
+                i.OutputRepo, i.OutputBranch, i.OutputPath, i.Tags, i.DeployMode, i.SandboxDebug, i.ExternalId,
+                (SELECT p.Name FROM [${schema}].Product p WHERE p.ProductId = i.ProductId) AS Product
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.ApplicationId = i.ApplicationId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.ApplicationId IS NULL OR i.ApplicationId IS NULL
+       OR EXISTS (SELECT i.Name, i.DisplayName, i.Description, i.Owner, i.Retired, i.SandboxEnabled, i.ProductId,
+                         i.OutputRepo, i.OutputBranch, i.OutputPath, i.Tags, i.DeployMode, i.SandboxDebug, i.ExternalId
+                  EXCEPT SELECT d.Name, d.DisplayName, d.Description, d.Owner, d.Retired, d.SandboxEnabled, d.ProductId,
+                         d.OutputRepo, d.OutputBranch, d.OutputPath, d.Tags, d.DeployMode, d.SandboxDebug, d.ExternalId);
+END;
+GO
+-- An application of a repository no scan assessed (yet), for its declared external ID: the scan adopts it by its
+-- SourceKey (<repository URL>#, the whole repository) when it assesses the repository.
+CREATE OR ALTER PROCEDURE [${schema}].AddRepositoryApplication @RepositoryId int, @ExternalId nvarchar(100) AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    DECLARE @id int = NULL;
+    BEGIN TRANSACTION;
+    DECLARE @url nvarchar(400), @name nvarchar(200);
+    SELECT @url = RepositoryUrl, @name = COALESCE(AppName, Name) FROM [${schema}].OrgRepository
+    WHERE RepositoryId = @RepositoryId AND RemovedAt IS NULL AND RepositoryUrl IS NOT NULL;
+    IF @url IS NOT NULL
+    BEGIN
+        SELECT @id = ApplicationId FROM [${schema}].Application WITH (UPDLOCK, HOLDLOCK) WHERE SourceKey = @url + N'#';
+        IF @id IS NULL
+        BEGIN
+            INSERT [${schema}].Application (SourceKey, Name, RepositoryUrl, SourcePath, ExternalId)
+            VALUES (@url + N'#', @name, @url, N'.', @ExternalId);
+            SET @id = SCOPE_IDENTITY();
+        END
+        ELSE
+            UPDATE [${schema}].Application SET ExternalId = @ExternalId WHERE ApplicationId = @id;
+    END
+    COMMIT;
+    SELECT @id AS ApplicationId;
+END;
+GO
+-- Forget an application (Admin -> Applications -> the application, administrators): everything recorded about it is
+-- deleted (assessments, findings, components, sandbox checks, LLM jobs and usage, egress and link decisions, dev
+-- database, sandbox database edits) and its repository is disabled, so the next scan removes its files from the output
+-- repository and no scan assesses it again until an administrator enables it. The change history keeps the deletion.
+CREATE OR ALTER PROCEDURE [${schema}].ForgetApplication @ApplicationId int, @Namespace nvarchar(63) = NULL,
+    @Note nvarchar(400) = NULL AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    BEGIN TRANSACTION;
+    DECLARE @url nvarchar(400), @key nvarchar(400);
+    SELECT @url = RepositoryUrl, @key = SourceKey FROM [${schema}].Application WITH (UPDLOCK, HOLDLOCK)
+    WHERE ApplicationId = @ApplicationId;
+    IF @key IS NULL
+    BEGIN
+        ROLLBACK;
+        RETURN;
+    END
+    IF @url IS NOT NULL
+        UPDATE [${schema}].OrgRepository SET AdminState = N'disabled', AdminNote = LEFT(COALESCE(@Note, N'application forgotten'), 400)
+        WHERE RepositoryUrl = @url AND RemovedAt IS NULL;
+    DELETE [${schema}].ComponentLink WHERE FromApplicationId = @ApplicationId;
+    UPDATE [${schema}].ComponentLink SET ToApplicationId = NULL WHERE ToApplicationId = @ApplicationId;
+    DELETE [${schema}].EgressDecision WHERE ApplicationId = @ApplicationId;
+    IF @Namespace IS NOT NULL
+        DELETE [${schema}].EgressFlow WHERE Namespace = @Namespace;
+    DELETE [${schema}].DatabaseEdit WHERE ApplicationId = @ApplicationId;
+    DELETE [${schema}].DevDatabase WHERE ApplicationId = @ApplicationId;
+    DELETE [${schema}].LlmHeavyWindow WHERE ApplicationId = @ApplicationId;
+    DELETE [${schema}].LlmJob WHERE ApplicationId = @ApplicationId OR SourceKey = @key;
+    DELETE [${schema}].LlmUsage WHERE ApplicationId = @ApplicationId OR SourceKey = @key;
+    DELETE [${schema}].SandboxCheck WHERE ApplicationId = @ApplicationId;
+    DELETE [${schema}].ApplicationAssessment WHERE ApplicationId = @ApplicationId;  -- and, cascaded, what hangs off them
+    DELETE [${schema}].Component WHERE ApplicationId = @ApplicationId;
+    DELETE [${schema}].Application WHERE ApplicationId = @ApplicationId;
+    COMMIT;
+END;
+GO
+GRANT UPDATE ON [${schema}].Application (ExternalId) TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].OrgRepository (ExternalAppId, ExternalAppIdAt) TO [${schema}_writer];
+GRANT EXECUTE ON [${schema}].AddRepositoryApplication TO [${schema}_admin];
+GRANT EXECUTE ON [${schema}].ForgetApplication TO [${schema}_admin];
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 51) INSERT [${schema}].SchemaVersion (Version) VALUES (51);
+GO
