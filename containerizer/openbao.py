@@ -45,6 +45,7 @@ path "{MOUNT}/*" {{ capabilities = ["create", "read", "update", "patch", "delete
 path "auth/*" {{ capabilities = ["create", "read", "update", "patch", "delete", "list", "sudo"] }}
 path "sys/auth" {{ capabilities = ["read"] }}
 path "sys/auth/*" {{ capabilities = ["create", "read", "update", "delete", "sudo"] }}
+path "sys/mounts/auth/*" {{ capabilities = ["read", "update"] }}
 path "sys/policies/acl" {{ capabilities = ["list"] }}
 path "sys/policies/acl/*" {{ capabilities = ["create", "read", "update", "patch", "delete", "list"] }}
 path "identity/*" {{ capabilities = ["create", "read", "update", "patch", "delete", "list"] }}

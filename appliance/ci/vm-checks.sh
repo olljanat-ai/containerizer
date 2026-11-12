@@ -116,6 +116,7 @@ wait_for 900 "OpenBao initialised by the sandbox job" sh -c \
 test ! -e /etc/containerizer/secrets/openbao-root-token     # revoked and removed once setup is done
 $PY -m containerizer.openbao status | grep '"sealed": false' >/dev/null
 test "$(stat -c '%U %a' /etc/containerizer/secrets/openbao-sync-token)" = "root 400"
+/usr/bin/bao status </dev/null | grep -E '^Sealed +false' >/dev/null    # the CLI on the appliance
 url="https://$(hostname)"
 login=$(printf '{"password": "%s"}' "$(cat /etc/containerizer/secrets/openbao-admin)" \
   | curl -fsSk --resolve "$(hostname):443:127.0.0.1" -d @- "$url/v1/auth/userpass/login/admin")

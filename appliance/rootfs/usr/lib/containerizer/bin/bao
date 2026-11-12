@@ -1,0 +1,8 @@
+#!/bin/sh
+# bao, the OpenBao CLI (docs/openbao.md), run in the cz-openbao container: the appliance has no binary of its own.
+# It talks to OpenBao on the loopback without TLS (Caddy does TLS on 443); `bao login` keeps its token in the
+# container's /tmp (gone at OpenBao's restart). BAO_TOKEN/VAULT_TOKEN of the caller are passed on.
+t=-i
+[ -t 0 ] && [ -t 1 ] && t=-it
+exec docker exec $t -e BAO_ADDR=http://127.0.0.1:8200 -e HOME=/tmp \
+  ${BAO_TOKEN:+-e BAO_TOKEN} ${VAULT_TOKEN:+-e VAULT_TOKEN} cz-openbao bao "$@"
