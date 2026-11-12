@@ -120,7 +120,7 @@ def verifier_kubeconfig(tmp_path: Path) -> Path:
 
 def test_read_back_on_a_real_cluster(cluster, tmp_path):
     root = tmp_path / "out"
-    (root / "sandbox").mkdir(parents=True)
+    (root / "clusters" / "sandbox").mkdir(parents=True)
     crash = ["sh", "-c", "echo 'Unhandled exception. System.PlatformNotSupportedException: System.Drawing.Common is "
                          "not supported on this platform.'; echo 'Password=hunter2'; exit 1"]
     shop = {"web": [deployment("web", WEB_IMAGE, port=8080, replicas=2)],
@@ -172,4 +172,4 @@ def test_read_back_on_a_real_cluster(cluster, tmp_path):
     ids = sb.learn_from_cluster(doc["components"], tmp_path / "learned")
     assert len(ids) == 1 and "cluster-shop-crash" in ids[0]
     sb.write_health(root, doc)
-    assert "hunter2" not in (root / "sandbox" / "health.json").read_text()
+    assert "hunter2" not in (root / "clusters" / "sandbox" / "health.json").read_text()
