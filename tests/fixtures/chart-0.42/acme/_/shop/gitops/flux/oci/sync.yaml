@@ -1,0 +1,113 @@
+# registry read credential (.dockerconfigjson): every key of remote secret ci-demo--cz-registry in the secret store, never from Git
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: ci-demo-registry
+  namespace: ci-demo
+  labels:
+    app.kubernetes.io/part-of: ci-demo
+    app.kubernetes.io/managed-by: containerizer
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: app-secrets
+  target:
+    name: ci-demo-registry
+    creationPolicy: Owner
+    deletionPolicy: Retain
+    template:
+      type: kubernetes.io/dockerconfigjson
+      engineVersion: v2
+      mergePolicy: Merge
+  dataFrom:
+  - extract:
+      key: ci-demo--cz-registry
+---
+# cosign public key (cosign.pub): every key of remote secret ci-demo--cz-cosign-pub in the secret store, never from Git
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: ci-demo-cosign-pub
+  namespace: ci-demo
+  labels:
+    app.kubernetes.io/part-of: ci-demo
+    app.kubernetes.io/managed-by: containerizer
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: app-secrets
+  target:
+    name: ci-demo-cosign-pub
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  dataFrom:
+  - extract:
+      key: ci-demo--cz-cosign-pub
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: ci-demo
+  namespace: ci-demo
+  labels:
+    app.kubernetes.io/part-of: ci-demo
+    app.kubernetes.io/managed-by: containerizer
+spec:
+  interval: 5m
+  url: oci://registry.local/ci-demo/manifests
+  ref:
+    semver: '>=1.0.0'
+  secretRef:
+    name: ci-demo-registry
+  verify:
+    provider: cosign
+    secretRef:
+      name: ci-demo-cosign-pub
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: ci-demo
+  namespace: ci-demo
+  labels:
+    app.kubernetes.io/part-of: ci-demo
+    app.kubernetes.io/managed-by: containerizer
+spec:
+  interval: 10m
+  retryInterval: 2m
+  timeout: 5m
+  sourceRef:
+    kind: OCIRepository
+    name: ci-demo
+  path: ./
+  prune: true
+  wait: true
+  targetNamespace: ci-demo
+  serviceAccountName: ci-demo-reconciler
+  patches:
+  - patch: "$patch: delete\napiVersion: v1\nkind: Namespace\nmetadata:\n  name: ci-demo\n"
+    target:
+      kind: Namespace
+      name: ci-demo
+  - patch: "$patch: delete\napiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\n\
+      metadata:\n  name: default-deny-all\n"
+    target:
+      kind: NetworkPolicy
+      name: default-deny-all
+  - patch: "$patch: delete\napiVersion: v1\nkind: LimitRange\nmetadata:\n  name: defaults\n"
+    target:
+      kind: LimitRange
+      name: defaults
+  - patch: "$patch: delete\napiVersion: v1\nkind: ResourceQuota\nmetadata:\n  name:\
+      \ quota\n"
+    target:
+      kind: ResourceQuota
+      name: quota
+  - patch: "$patch: delete\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name:\
+      \ app-secrets-reader\n"
+    target:
+      kind: ServiceAccount
+      name: app-secrets-reader
+  force: false

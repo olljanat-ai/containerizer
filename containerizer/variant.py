@@ -222,8 +222,6 @@ def _open(connect, key, payload: dict, work: Path, deploying: bool = True):
                 from .org import SANDBOX_OFF_REASON
                 raise Skip(f"not deployed: {SANDBOX_OFF_REASON}")
         target = load_target(conn, payload)
-        from .org import load_deploy_modes
-        modes = load_deploy_modes(conn)
         try:
             creds = load(conn, key if key is not None else private_key_from_env())
         except CredentialError as ex:
@@ -239,7 +237,6 @@ def _open(connect, key, payload: dict, work: Path, deploying: bool = True):
     if not host_allowed(scan["OutputRepo"], hosts):
         raise Skip("no output repository access: its host is not allowed on this machine (CONTAINERIZER_WORKER_HOSTS)")
     o = options(scan, write, work)
-    o.deploy_modes = modes or None
     return target, o
 
 

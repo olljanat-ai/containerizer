@@ -346,8 +346,6 @@ class Admin:
                 return self.set_sandbox(conn, a, ident, form)
             if ident is not None and len(parts) == 3 and parts[2] == "sandbox-debug" and method == "POST":
                 return self.set_sandbox_debug(conn, a, ident, form)
-            if ident is not None and len(parts) == 3 and parts[2] == "deploy-mode" and method == "POST":
-                return self.set_deploy_mode(conn, a, ident, form)
             if ident is not None and len(parts) == 3 and parts[2] == "output" and method == "POST":
                 return self.set_output(conn, a, ident, form)
             if ident is not None and len(parts) == 3 and parts[2] == "heavy" and method == "POST":
@@ -703,7 +701,7 @@ class Admin:
         cur = conn.cursor(as_dict=True)
         cur.execute("SELECT x.ApplicationId, x.Name, x.DisplayName, x.Description, x.Owner, x.ProductId, x.Retired, x.RepositoryUrl, "
                     "x.SandboxEnabled, x.SourcePath, x.FirstSeenAt, x.LastSeenAt, p.Name AS ProductName, x.OutputRepo, "
-                    "x.OutputBranch, x.OutputPath, x.OutputMovedAt, x.OutputMovedCommit, x.OutputMoveError, x.DeployMode, "
+                    "x.OutputBranch, x.OutputPath, x.OutputMovedAt, x.OutputMovedCommit, x.OutputMoveError, "
                     "x.SandboxDebug, x.ExternalId, x.SourceKey FROM cz.Application x "
                     "LEFT JOIN cz.Product p ON p.ProductId = x.ProductId WHERE x.ApplicationId = %s", (app_id,))
         r = cur.fetchone()
@@ -732,7 +730,6 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
         from . import admin_heavy
         heavy = admin_heavy.section(self, conn, s, a, app_id) if a.admin else ""
         output = self._output_section(conn, s, a, r) if a.admin else ""
-        deploy = self._deploy_section(s, a, r) if a.admin else ""
         ext = forget = ""
         if a.admin:
             from . import admin_forget
@@ -743,7 +740,7 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
                    f"<input name='ExternalId' class='wide' maxlength='100' value='{e(r.get('ExternalId') or '')}' aria-label='External ID' "
                    "placeholder='e.g. 3f2b8c1e-5d6a-4b7c-9e0f-1a2b3c4d5e6f'><button>Save</button></form>")
             forget = admin_forget.section(self, s, r)
-        body = (f"{head}{form}{ext}{self._sandbox_section(s, a, r)}{deploy}{output}{heavy}<h2>Changes</h2>"
+        body = (f"{head}{form}{ext}{self._sandbox_section(s, a, r)}{output}{heavy}<h2>Changes</h2>"
                 f"{self._history(conn, 'Application', app_id)}{forget}")
         return Response(200, self._shell(s, a, r["DisplayName"] or r["Name"], "applications", body, flash))
 
@@ -791,57 +788,6 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
                     f"{self._csrf(s)}<input type='hidden' name='Debug' value='{'0' if debug else '1'}'>"
                     f"<button class='secondary'>{'Turn debug mode off' if debug else 'Turn debug mode on'}</button></form>")
         return out
-
-    def _deploy_section(self, s: Session, a: Access, r: dict) -> str:
-        """How its components are written to the output repository (administrators; helmchart.py): the shared Helm
-        chart or plain manifests, the system default unless set here."""
-        from .helmchart import clean_mode, settings
-        try:
-            default = settings()["mode"]
-        except ValueError as ex:
-            default = f"invalid ({ex})"
-        cur = clean_mode(r.get("DeployMode"))
-        names = {"chart": "Shared Helm chart", "manifests": "Plain manifests"}
-        state = (f"<b>{names[cur]}</b>, set for this application." if cur else
-                 f"<b>The system default</b> ({e(names.get(default, default))}, <code>deploy.mode</code> in "
-                 "rules/60-security.yaml or CONTAINERIZER_DEPLOY_MODE). An application already deployed keeps the "
-                 "mode it was deployed with when the default changes.")
-        opts = "".join(f"<label class='check'><input type='radio' name='DeployMode' value='{v}'"
-                       f"{' checked' if (cur or '') == v else ''}> {t}</label>"
-                       for v, t in (("", "System default"), ("chart", names["chart"] + ": one HelmRelease per "
-                                    "component, only what differs from the chart's hardened baseline"),
-                                    ("manifests", names["manifests"] + ": each component's objects in its k8s.yaml")))
-        return (f"<h2>Deploy mode</h2><p>{state} A component the chart cannot render exactly, or where it saves "
-                "little, stays plain manifests either way.</p>"
-                f"<form method='post' action='/admin/applications/{int(r['ApplicationId'])}/deploy-mode' class='edit'>"
-                f"{self._csrf(s)}{opts}<p class='muted small'>The next scan or Make it A deployment writes it in the "
-                "new mode. Switching a deployed application recreates its objects: its pods restart, its "
-                "PersistentVolumeClaims are made again (empty) and its generated Data Protection keys change "
-                "(docs/helm-chart.md).</p><div><button>Save</button></div></form>")
-
-    def set_deploy_mode(self, conn, a: Access, app_id: int, form: dict) -> Response:
-        """Set or clear the application's deploy mode (administrators; Application.DeployMode, the change history
-        records it)."""
-        from .helmchart import MODES
-        back = f"/admin/applications/{app_id}?"
-        if not a.admin:
-            return redirect(back + urlencode({"msg": "Not saved: only administrators set the deploy mode."}))
-        val = form.get("DeployMode", [""])[0].strip()
-        if val and val not in MODES:
-            return redirect(back + urlencode({"msg": "Not saved: choose the default, chart or manifests."}))
-        try:
-            if not self._locked_apps(conn, [app_id]):
-                conn.rollback()
-                return Response(404, page("Not found", "<h1>Application not found</h1>"))
-            cur = conn.cursor()
-            cur.execute("UPDATE cz.Application SET DeployMode = %s WHERE ApplicationId = %s", (val or None, app_id))
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        msg = (f"Saved: the next deployment writes it as {'HelmReleases of the shared chart' if val == 'chart' else 'plain manifests'}."
-               if val else "Saved: it follows the system default (a deployed application keeps its mode).")
-        return redirect(back + urlencode({"msg": msg}))
 
     def _output_section(self, conn, s: Session, a: Access, r: dict) -> str:
         """The application's own output repository (appoutput.py; administrators: it uses the registered write

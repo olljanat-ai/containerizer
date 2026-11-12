@@ -1,0 +1,2 @@
+{"app": "ci-demo", "namespace": "ci-demo", "status": "deployed", "deploy_mode": "chart", "deploy_mode_reason": "the system default",
+ "components": [{"component": "DemoWeb", "folder": "demo-web", "image": "registry.local/ci-demo/demo-web:latest", "deploy_mode": "chart"}]}

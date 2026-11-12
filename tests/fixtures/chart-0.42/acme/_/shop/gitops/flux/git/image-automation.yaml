@@ -1,0 +1,85 @@
+# registry read credential (.dockerconfigjson): every key of remote secret ci-demo--cz-registry in the secret store, never from Git
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: ci-demo-registry
+  namespace: ci-demo
+  labels:
+    app.kubernetes.io/part-of: ci-demo
+    app.kubernetes.io/managed-by: containerizer
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: app-secrets
+  target:
+    name: ci-demo-registry
+    creationPolicy: Owner
+    deletionPolicy: Retain
+    template:
+      type: kubernetes.io/dockerconfigjson
+      engineVersion: v2
+      mergePolicy: Merge
+  dataFrom:
+  - extract:
+      key: ci-demo--cz-registry
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: demo-web
+  namespace: ci-demo
+  labels:
+    app.kubernetes.io/part-of: ci-demo
+    app.kubernetes.io/managed-by: containerizer
+spec:
+  image: registry.local/ci-demo/demo-web
+  interval: 10m
+  secretRef:
+    name: ci-demo-registry
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: demo-web
+  namespace: ci-demo
+  labels:
+    app.kubernetes.io/part-of: ci-demo
+    app.kubernetes.io/managed-by: containerizer
+spec:
+  imageRepositoryRef:
+    name: demo-web
+  policy:
+    semver:
+      range: '>=1.0.0'
+  digestReflectionPolicy: Always
+  interval: 10m
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageUpdateAutomation
+metadata:
+  name: ci-demo
+  namespace: ci-demo
+  labels:
+    app.kubernetes.io/part-of: ci-demo
+    app.kubernetes.io/managed-by: containerizer
+spec:
+  interval: 30m
+  sourceRef:
+    kind: GitRepository
+    name: ci-demo
+  git:
+    checkout:
+      ref:
+        branch: main
+    commit:
+      author:
+        name: fluxcdbot
+        email: fluxcdbot@users.noreply.github.com
+      messageTemplate: Update {{range .Changed.Changes}}{{.OldValue}} -> {{.NewValue}}
+        {{end}}
+    push:
+      branch: main
+  update:
+    strategy: Setters
+    path: ./deploy/ci-demo

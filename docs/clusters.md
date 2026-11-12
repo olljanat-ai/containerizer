@@ -2,7 +2,7 @@
 
 The output repository is laid out for several clusters, all under `clusters/`: the **sandbox** (`clusters/sandbox/`, the
 appliance's own k3s) and by default **development**, **acceptance** and **production**. Every cluster
-deploys the same app folders, the same images and the same shared Helm chart (docs/helm-chart.md) with Flux. What
+deploys the same app folders and the same images with Flux. What
 differs per cluster lives in that cluster's own folder.
 
 ```
@@ -55,15 +55,14 @@ digests the app had when the cluster first ran it:
 ```yaml
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
-images:                                   # components of plain manifests
+images:
 - name: localhost:5000/sandbox/containerization-challenge-shop/api
   newTag: 1.20261107.200
   digest: sha256:...
-patches:                                  # components of the shared Helm chart
-- target: {group: helm.toolkit.fluxcd.io, version: v2, kind: HelmRelease, name: web}
-  patch: '[{"op": "add", "path": "/spec/values/image/tag", "value": "1.20261107.200"},
-           {"op": "add", "path": "/spec/values/image/digest", "value": "sha256:..."}]'
 ```
+
+A cluster that pinned a component of the shared Helm chart (before 0.43.0) with a HelmRelease patch here gets that
+pin as an `images:` entry like the one above when the app is converted back to manifests.
 
 Promoting a build is a commit that changes the tag and digest there, for example from what acceptance runs to
 production. The scan's tags and digests are in the app folder's `containerizer.json`. An empty digest deploys by tag.
@@ -71,8 +70,7 @@ production. The scan's tags and digests are in the app folder's `containerizer.j
 ## Other per-cluster settings
 
 Anything else that differs per cluster goes into the same `custom/` Component as kustomize patches: replicas,
-resources, Ingress hosts, or the values of a chart mode component (its `objects`). The hardening is enforced by the
-chart's templates and the cluster's Pod Security, so no cluster can loosen it.
+resources, Ingress hosts. The cluster's Pod Security (restricted) keeps the hardening: no cluster can loosen it.
 
 ```yaml
 patches:

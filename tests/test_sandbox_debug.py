@@ -5,7 +5,6 @@ import json
 import pytest
 import yaml
 
-from containerizer import helmchart as h
 from containerizer import org as orgmod
 from containerizer import sandboxdebug as d
 from containerizer.gitops import GitOpsOptions
@@ -107,22 +106,19 @@ def test_no_tools_without_the_binaries(monkeypatch):
     assert d.tools_ref("reg/sandbox") is None and d.ensure_tools("reg/sandbox", None, log=lambda m: None) is None
 
 
-@pytest.mark.parametrize("mode", ["manifests", "chart"])
-def test_sandbox_patches_the_application_in_debug_mode(tmp_path, monkeypatch, mode):
+def test_sandbox_patches_the_application_in_debug_mode(tmp_path, monkeypatch):
     from tests.test_make_it_a import _a_app, _Out
     from containerizer import imagescan
     monkeypatch.setattr(imagescan, "build_image", lambda src, cdir, tag, timeout=1800: (True, ""))
-    monkeypatch.delenv(h.MODE_ENV, raising=False)
     monkeypatch.setattr(d, "tools_ref", lambda registry: f"{registry}/cz-debug-tools:abc" if registry else None)
     src, a = _a_app(tmp_path, "shop-web")
     out = _Out(tmp_path / "out")
     rel = "acme/_/shop"
     o = orgmod.OrgOptions(provider="github", org="acme", registry="reg.example/sandbox", verify=True, gate=False,
-                          push_images=False, deploy_mode=mode)
+                          push_images=False)
     res = orgmod.RepoResult(provider="github", org="acme", project="_", repo="shop", status="error", app="shop-web",
                             source_key="k1")
-    r = orgmod.deploy_app(a, src, rel, o, out, None, "1.2.3", GitOpsOptions(path=rel), res, tmp_path / "work", "shop-web")
-    assert r.deploy_mode == mode
+    orgmod.deploy_app(a, src, rel, o, out, None, "1.2.3", GitOpsOptions(path=rel), res, tmp_path / "work", "shop-web")
     kfile = out.root / rel / "gitops" / "sandbox" / "kustomization.yaml"      # the app's sandbox overlay
 
     def ops():
@@ -137,13 +133,7 @@ def test_sandbox_patches_the_application_in_debug_mode(tmp_path, monkeypatch, mo
     orgmod.write_sandbox(out.root, out.url, "main", d.Switches(debug={"k1"}))
     added = [op["value"] for op in ops() if op["path"] == "/spec/patches/-" and "cz-debug" in op["value"]["patch"]]
     assert len(added) == 1
-    if mode == "chart":
-        assert added[0]["target"]["kind"] == "HelmRelease" and added[0]["target"]["name"]
-        post = yaml.safe_load(added[0]["patch"])
-        assert post[0]["path"] == "/spec/postRenderers"
-        workload = post[0]["value"][0]["kustomize"]["patches"][0]
-    else:
-        workload = added[0]
+    workload = added[0]
     assert workload["target"]["kind"] == "Deployment" and workload["target"]["group"] == "apps"
     patch = yaml.safe_load(workload["patch"])
     pod = patch["spec"]["template"]["spec"]

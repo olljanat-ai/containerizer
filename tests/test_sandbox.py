@@ -776,22 +776,6 @@ def test_an_application_moved_to_its_own_repository_syncs_any_revision_from_ther
     assert doc["components"][0]["status"] == HEALTHY
 
 
-def test_a_chart_component_without_its_deployment_yet_shows_its_helmrelease():
-    """Helm mode: Flux applied the HelmRelease, helm-controller has not made the Deployment yet (pending, not
-    "not deployed"), or Helm failed (its message)."""
-    from containerizer.sandbox import FLUX_HR, observe_component
-    hr = lambda status, reason, msg: {"status": {"conditions": [   # noqa: E731
-        {"type": "Ready", "status": status, "reason": reason, "message": msg}]}}
-    k = FakeKube({(FLUX_HR, "shop", "web"): hr("Unknown", "Progressing", "Fulfilling prerequisites")})
-    ob = observe_component(k, "shop", [("Deployment", "web")], "web")
-    assert ob.status == "pending" and not ob.final and "installing" in ob.reason
-    k = FakeKube({(FLUX_HR, "shop", "web"): hr("False", "InstallFailed", "Helm install failed: timed out waiting")})
-    ob = observe_component(k, "shop", [("Deployment", "web")], "web")
-    assert ob.status == "failing" and ob.final and "InstallFailed" in ob.reason and "timed out" in ob.reason
-    ob = observe_component(FakeKube({}), "shop", [("Deployment", "web")], "web")
-    assert ob.status == "not-found" and "HelmRelease web not found" in ob.reason
-
-
 def test_k3s_config_warnings_are_not_the_error(tmp_path):
     from containerizer.sandbox import Kube, KubeError, KubeOptions
     fake = tmp_path / "kubectl"

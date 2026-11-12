@@ -1,0 +1,165 @@
+# Component demo-web: the shared chart charts/containerizer-app/0.42.0 (from the root of the repository) with the values below,
+# which hold only what its objects have beyond the chart's values.yaml (docs/helm-chart.md).
+# ExternalSecret/demo-web-dataprotection: ASP.NET Core Data Protection key, generated in the cluster once (no secret store); replace with your own key ring or PersistKeysTo* in code if you prefer
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: demo-web
+  labels:
+    app.kubernetes.io/name: demo-web
+    app.kubernetes.io/part-of: ci-demo
+spec:
+  interval: 10m
+  chart:
+    spec:
+      chart: ./charts/containerizer-app/0.42.0
+      version: 0.42.0
+      reconcileStrategy: ChartVersion
+      sourceRef:
+        kind: GitRepository
+        name: ci-demo
+  serviceAccountName: ci-demo-reconciler
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    component: demo-web
+    partOf: ci-demo
+    image:
+      repository: registry.local/ci-demo/demo-web # {"$imagepolicy": "ci-demo:demo-web:name"}
+      tag: latest # {"$imagepolicy": "ci-demo:demo-web:tag"}
+      digest: "" # {"$imagepolicy": "ci-demo:demo-web:digest"}
+    objects:
+    - kind: ServiceAccount
+    - kind: Deployment
+      spec:
+        template:
+          spec:
+            securityContext:
+              fsGroupChangePolicy: OnRootMismatch
+            containers:
+            - env:
+              - '@aspnetcore-production'
+              - name: ASPNETCORE_HTTP_PORTS
+                value: '8080'
+              - '@dotnet-production'
+              - '@dotnet-roll-forward'
+              volumeMounts:
+              - name: w0-dataprotection-keys
+                mountPath: /home/app/.aspnet/DataProtection-Keys
+                readOnly: true
+              - name: w1-tmp
+                mountPath: /tmp
+              ports:
+              - name: http
+                containerPort: 8080
+              readinessProbe:
+                httpGet:
+                  path: /healthz
+                  port: http
+                periodSeconds: 10
+              livenessProbe:
+                httpGet:
+                  path: /healthz
+                  port: http
+                periodSeconds: 20
+                initialDelaySeconds: 20
+              startupProbe:
+                httpGet:
+                  path: /healthz
+                  port: http
+                periodSeconds: 5
+                failureThreshold: 30
+            volumes:
+            - name: w0-dataprotection-keys
+              secret:
+                secretName: demo-web-dataprotection
+            - name: w1-tmp
+              emptyDir:
+                sizeLimit: 256Mi
+    - kind: Service
+    - kind: NetworkPolicy
+      metadata:
+        annotations:
+          containerizer.io/egress: none
+          containerizer.io/ingress-from: ingress-nginx,gateway-system
+      spec:
+        ingress:
+        - from:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: ingress-nginx
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: gateway-system
+          ports:
+          - port: 8080
+            protocol: TCP
+        - '@from-app'
+        egress:
+        - '@dns'
+        - '@to-app'
+    - kind: Password
+      metadata:
+        name: demo-web-dataprotection
+    - kind: ExternalSecret
+      metadata:
+        name: demo-web-dataprotection
+      spec:
+        target:
+          template:
+            data:
+              key-0c9f39a4-b365-5368-a92c-7617e0a88cee.xml: "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<key id=\"0c9f39a4-b365-5368-a92c-7617e0a88cee\"\
+                \ version=\"1\">\n  <creationDate>2026-01-01T00:00:00Z</creationDate>\n  <activationDate>2026-01-01T00:00:00Z</activationDate>\n\
+                \  <expirationDate>2126-01-01T00:00:00Z</expirationDate>\n  <descriptor deserializerType=\"Microsoft.AspNetCore.DataProtection.AuthenticatedEncryption.ConfigurationModel.AuthenticatedEncryptorDescriptorDeserializer,\
+                \ Microsoft.AspNetCore.DataProtection\">\n    <descriptor>\n      <encryption algorithm=\"AES_256_CBC\" />\n\
+                \      <validation algorithm=\"HMACSHA256\" />\n      <masterKey p4:requiresEncryption=\"true\" xmlns:p4=\"\
+                http://schemas.asp.net/2015/03/dataProtection\">\n        <value>{{ .password | b64enc }}</value>\n      </masterKey>\n\
+                \    </descriptor>\n  </descriptor>\n</key>\n"
+    - kind: Ingress
+      metadata:
+        annotations:
+          containerizer.io/url: https://demo-web-ci-demo.apps.example.com/
+      spec:
+        tls:
+        - hosts:
+          - demo-web-ci-demo.apps.example.com
+        rules:
+        - host: demo-web-ci-demo.apps.example.com
+          http:
+            paths:
+            - path: /
+              pathType: Prefix
+              backend:
+                service:
+                  name: demo-web
+                  port:
+                    name: http
+    - kind: HTTPRoute
+      spec:
+        parentRefs:
+        - group: gateway.networking.k8s.io
+          kind: Gateway
+          namespace: gateway-system
+          name: platform-gateway
+          sectionName: https
+        hostnames:
+        - demo-web.ci-demo.apps.example.com
+        rules:
+        - name: app
+          matches:
+          - path:
+              type: PathPrefix
+              value: /
+          filters:
+          - type: ResponseHeaderModifier
+            responseHeaderModifier:
+              set:
+              - name: Strict-Transport-Security
+                value: max-age=31536000
+          backendRefs:
+          - name: demo-web
+            port: 80

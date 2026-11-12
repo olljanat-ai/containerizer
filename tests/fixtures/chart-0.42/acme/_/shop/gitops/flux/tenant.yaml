@@ -1,0 +1,172 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ci-demo
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+    app.kubernetes.io/part-of: ci-demo
+    app.kubernetes.io/managed-by: containerizer
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ci-demo-reconciler
+  namespace: ci-demo
+  labels:
+    app.kubernetes.io/part-of: ci-demo
+    app.kubernetes.io/managed-by: containerizer
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ci-demo-reconciler
+  namespace: ci-demo
+  labels:
+    app.kubernetes.io/part-of: ci-demo
+    app.kubernetes.io/managed-by: containerizer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: admin
+subjects:
+- kind: ServiceAccount
+  name: ci-demo-reconciler
+  namespace: ci-demo
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-secrets-reader
+  namespace: ci-demo
+  labels:
+    app.kubernetes.io/part-of: ci-demo
+    app.kubernetes.io/managed-by: containerizer
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: app-secrets-reader-ci-demo
+  namespace: containerizer-secrets
+  labels:
+    app.kubernetes.io/part-of: ci-demo
+    app.kubernetes.io/managed-by: containerizer
+rules:
+- apiGroups:
+  - ''
+  resources:
+  - secrets
+  resourceNames:
+  - ci-demo--cz-cosign-pub
+  - ci-demo--cz-git
+  - ci-demo--cz-registry
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: app-secrets-reader-ci-demo
+  namespace: containerizer-secrets
+  labels:
+    app.kubernetes.io/part-of: ci-demo
+    app.kubernetes.io/managed-by: containerizer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: app-secrets-reader-ci-demo
+subjects:
+- kind: ServiceAccount
+  name: app-secrets-reader
+  namespace: ci-demo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ci-demo-reconciler-routes
+  namespace: ci-demo
+  labels:
+    app.kubernetes.io/part-of: ci-demo
+    app.kubernetes.io/managed-by: containerizer
+rules:
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - httproutes
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ci-demo-reconciler-routes
+  namespace: ci-demo
+  labels:
+    app.kubernetes.io/part-of: ci-demo
+    app.kubernetes.io/managed-by: containerizer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ci-demo-reconciler-routes
+subjects:
+- kind: ServiceAccount
+  name: ci-demo-reconciler
+  namespace: ci-demo
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: ci-demo
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: defaults
+  namespace: ci-demo
+spec:
+  limits:
+  - type: Container
+    default:
+      memory: 512Mi
+      ephemeral-storage: 1Gi
+    defaultRequest:
+      cpu: 100m
+      memory: 256Mi
+      ephemeral-storage: 64Mi
+    max:
+      memory: 4Gi
+      ephemeral-storage: 4Gi
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: quota
+  namespace: ci-demo
+spec:
+  hard:
+    requests.cpu: 1000m
+    requests.memory: 1024Mi
+    limits.memory: 2048Mi
+    requests.ephemeral-storage: 128Mi
+    limits.ephemeral-storage: 2048Mi
+    pods: '10'
+    services: '10'
+    persistentvolumeclaims: '10'
+    secrets: '20'
+    configmaps: '20'

@@ -1,0 +1,83 @@
+# read-only deploy key or token (identity + known_hosts, or username + password): every key of remote secret ci-demo--cz-git in the secret store, never from Git
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: ci-demo-git
+  namespace: ci-demo
+  labels:
+    app.kubernetes.io/part-of: ci-demo
+    app.kubernetes.io/managed-by: containerizer
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: app-secrets
+  target:
+    name: ci-demo-git
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  dataFrom:
+  - extract:
+      key: ci-demo--cz-git
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: ci-demo
+  namespace: ci-demo
+  labels:
+    app.kubernetes.io/part-of: ci-demo
+    app.kubernetes.io/managed-by: containerizer
+spec:
+  interval: 5m
+  url: https://git.example.com/platform/deployments.git
+  ref:
+    branch: main
+  secretRef:
+    name: ci-demo-git
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: ci-demo
+  namespace: ci-demo
+  labels:
+    app.kubernetes.io/part-of: ci-demo
+    app.kubernetes.io/managed-by: containerizer
+spec:
+  interval: 10m
+  retryInterval: 2m
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: ci-demo
+  path: ./deploy/ci-demo
+  prune: true
+  wait: true
+  targetNamespace: ci-demo
+  serviceAccountName: ci-demo-reconciler
+  patches:
+  - patch: "$patch: delete\napiVersion: v1\nkind: Namespace\nmetadata:\n  name: ci-demo\n"
+    target:
+      kind: Namespace
+      name: ci-demo
+  - patch: "$patch: delete\napiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\n\
+      metadata:\n  name: default-deny-all\n"
+    target:
+      kind: NetworkPolicy
+      name: default-deny-all
+  - patch: "$patch: delete\napiVersion: v1\nkind: LimitRange\nmetadata:\n  name: defaults\n"
+    target:
+      kind: LimitRange
+      name: defaults
+  - patch: "$patch: delete\napiVersion: v1\nkind: ResourceQuota\nmetadata:\n  name:\
+      \ quota\n"
+    target:
+      kind: ResourceQuota
+      name: quota
+  - patch: "$patch: delete\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name:\
+      \ app-secrets-reader\n"
+    target:
+      kind: ServiceAccount
+      name: app-secrets-reader
+  force: false

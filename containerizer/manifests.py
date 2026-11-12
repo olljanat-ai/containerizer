@@ -1,0 +1,191 @@
+"""A component's Kubernetes objects in the output repository: plain manifests, applied by kustomize.
+
+The generator writes each component's objects to `<component>/k8s.yaml` (generate.k8s_manifests: hardened, linted,
+scanned and run by the security gate). When an application is written to the output repository, `split_app` turns
+each into one file per kind, with a kustomization.yaml in the component's folder listing them:
+
+    <component>/kustomization.yaml   resources: serviceaccount.yaml, deployment.yaml, service.yaml, ...
+    <component>/deployment.yaml      (one file per kind; every object of that kind)
+    <component>/settings.yaml        the ConfigMap <component>-settings: the values to set per environment
+
+and the app's kustomization.yaml lists the component's folder. A folder written before 0.42.0 has the single
+k8s.yaml; one written as a HelmRelease of the shared chart (0.33.0 to 0.42.x) is converted once (helmchart.py).
+
+Everything that reads or changes a finished component folder goes through `component_docs`, `component_text` and
+`write_component_docs`, so it does not need to know which form the folder has.
+"""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import yaml
+
+MANIFESTS = "k8s.yaml"                  # the generator's output (and a component folder before 0.42.0)
+KUSTOMIZATION = "kustomization.yaml"    # a component folder split into one file per kind
+SETTINGS = "settings.yaml"              # the settings ConfigMap's file
+
+
+def is_settings(d: dict) -> bool:
+    """The ConfigMap <component>-settings (generate.k8s_manifests): values a person sets per environment."""
+    return d.get("kind") == "ConfigMap" and str((d.get("metadata") or {}).get("name") or "").endswith("-settings")
+
+
+def split_file(d: dict) -> str:
+    """The file of an object in a split component folder: settings.yaml for the settings ConfigMap, else its kind
+    (deployment.yaml, service.yaml, networkpolicy.yaml, externalsecret.yaml, ...)."""
+    return SETTINGS if is_settings(d) else f"{str(d.get('kind') or 'object').lower()}.yaml"
+
+
+def is_split(cdir: Path) -> bool:
+    from .helmchart import HELMRELEASE
+    return (cdir / KUSTOMIZATION).is_file() and not (cdir / MANIFESTS).is_file() and not (cdir / HELMRELEASE).is_file()
+
+
+def component_form(cdir: Path) -> str | None:
+    """How a component folder holds its objects: "split" (a file per kind), "manifests" (one k8s.yaml, before
+    0.42.0), "chart" (a HelmRelease of the shared chart, before 0.43.0: converted by the next scan), None (none)."""
+    from .helmchart import HELMRELEASE
+    if (cdir / MANIFESTS).is_file():
+        return "manifests"
+    if (cdir / HELMRELEASE).is_file():
+        return "chart"
+    return "split" if is_split(cdir) else None
+
+
+def load_docs_with_comments(text: str) -> list[dict]:
+    """The documents of a YAML file, each with its leading comment as `_comment` (generate._yaml_docs writes them)."""
+    out = []
+    for chunk in re.split(r"(?m)^---\s*$", text):
+        lines = chunk.strip("\n").splitlines()
+        comment = []
+        while lines and lines[0].startswith("#"):
+            comment.append(lines.pop(0)[1:].strip())
+        try:
+            d = yaml.safe_load("\n".join(lines))
+        except yaml.YAMLError:
+            continue
+        if isinstance(d, dict):
+            if comment:
+                d["_comment"] = " ".join(comment)
+            out.append(d)
+    return out
+
+
+def split_files(cdir: Path) -> list[str]:
+    """The files a split component folder's kustomization.yaml lists."""
+    try:
+        res = (yaml.safe_load((cdir / KUSTOMIZATION).read_text()) or {}).get("resources") or []
+    except (OSError, yaml.YAMLError):
+        return []
+    return [str(r) for r in res if str(r).endswith((".yaml", ".yml")) and "/" not in str(r)]
+
+
+def split_docs(cdir: Path, comments: bool = False) -> list[dict]:
+    """The objects of a split component folder, in the order its kustomization.yaml lists the files."""
+    out = []
+    for name in split_files(cdir):
+        try:
+            text = (cdir / name).read_text()
+        except OSError:
+            continue
+        out += load_docs_with_comments(text) if comments else [
+            d for d in yaml.safe_load_all(text) if isinstance(d, dict)]
+    return out
+
+
+def write_split(cdir: Path, docs: list[dict]) -> list[str]:
+    """`docs` as one file per kind (split_file) and the component's kustomization.yaml listing them; files of an
+    earlier split that hold nothing now are removed. Returns the files."""
+    from .generate import _yaml_docs
+    groups: dict[str, list[dict]] = {}
+    for d in docs:
+        groups.setdefault(split_file(d), []).append(d)
+    for old in split_files(cdir):
+        if old not in groups:
+            (cdir / old).unlink(missing_ok=True)
+    for name, ds in groups.items():
+        (cdir / name).write_text(_yaml_docs(ds))
+    (cdir / KUSTOMIZATION).write_text(
+        "# The component's Kubernetes objects, one file per kind (generated by containerizer). The app folder's\n"
+        "# kustomization.yaml lists this folder; its images: and patches apply here too.\n"
+        + yaml.safe_dump({"apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization",
+                          "resources": list(groups)}, sort_keys=False))
+    return list(groups)
+
+
+def split_component(cdir: Path) -> bool:
+    """A component's k8s.yaml as one file per kind (write_split); False when it has none."""
+    if not (cdir / MANIFESTS).is_file():
+        return False
+    docs = load_docs_with_comments((cdir / MANIFESTS).read_text())
+    (cdir / MANIFESTS).unlink()
+    write_split(cdir, docs)
+    return True
+
+
+def set_resources(app_dir: Path, swap: dict[str, str]) -> None:
+    """kustomization.yaml `resources:`: `<old>` -> `<new>` for each entry of `swap`, keeping the rest of the text."""
+    k = app_dir / "kustomization.yaml"
+    text = k.read_text()
+    for old, new in swap.items():
+        text = re.sub(rf"(?m)^(-\s+){re.escape(old)}\s*$", rf"\g<1>{new}", text)
+    k.write_text(text)
+
+
+def drop_resource(app_dir: Path, entry: str) -> None:
+    k = app_dir / "kustomization.yaml"
+    if k.is_file():
+        k.write_text(re.sub(rf"(?m)^-\s+{re.escape(entry)}\s*\n", "", k.read_text()))
+
+
+def split_app(app_dir: Path, folders: list[str]) -> list[str]:
+    """Each component's k8s.yaml split (split_component); the app's kustomization.yaml lists the component's folder
+    instead of its k8s.yaml. Returns the folders split."""
+    done = [f for f in folders if split_component(app_dir / f)]
+    if done:
+        set_resources(app_dir, {f"{f}/{MANIFESTS}": f for f in done})
+    return done
+
+
+def component_docs(cdir: Path) -> list[dict]:
+    """A component folder's objects, whatever its form (component_form). Empty when it has none."""
+    form = component_form(cdir)
+    try:
+        if form == "manifests":
+            return [d for d in yaml.safe_load_all((cdir / MANIFESTS).read_text()) if isinstance(d, dict)]
+        if form == "split":
+            return split_docs(cdir)
+    except yaml.YAMLError:
+        return []
+    if form == "chart":
+        from .helmchart import rendered_docs
+        return rendered_docs(cdir)
+    return []
+
+
+def component_text(cdir: Path) -> str:
+    """The component's objects as YAML (what an LLM or a person reads)."""
+    if (cdir / MANIFESTS).is_file():
+        return (cdir / MANIFESTS).read_text()
+    if is_split(cdir):
+        return "---\n".join((cdir / f).read_text().rstrip("\n") + "\n" for f in split_files(cdir) if (cdir / f).is_file())
+    return "---\n".join(yaml.safe_dump(d, sort_keys=False) for d in component_docs(cdir))
+
+
+def write_component_docs(cdir: Path, docs: list[dict]) -> str:
+    """Write changed objects back to a component folder in its form (a file per kind, or the k8s.yaml of a folder
+    from before 0.42.0); the comments of the objects stay. Returns the file that lists them."""
+    from .generate import _yaml_docs
+    if (cdir / MANIFESTS).is_file():
+        (cdir / MANIFESTS).write_text(_yaml_docs(docs))
+        return MANIFESTS
+    if component_form(cdir) == "chart":         # not converted yet (helmchart.py): convert it, then write
+        from .helmchart import unchart_component
+        unchart_component(cdir)
+    comments = {(d.get("kind"), (d.get("metadata") or {}).get("name")): d["_comment"]
+                for d in split_docs(cdir, comments=True) if d.get("_comment")}
+    docs = [{**d, "_comment": comments[k]} if (k := (d.get("kind"), (d.get("metadata") or {}).get("name"))) in comments
+            and "_comment" not in d else d for d in docs]
+    write_split(cdir, docs)
+    return KUSTOMIZATION

@@ -9,21 +9,12 @@ from containerizer import clusters, org
 URL, BRANCH = "https://git/out.git", "main"
 
 
-def app(root: Path, rel: str, ns: str, helm: bool = False) -> Path:
+def app(root: Path, rel: str, ns: str, comp: str = "api") -> Path:
     d = root / rel
     (d / "gitops" / "flux").mkdir(parents=True)
     (d / "gitops" / "flux" / "kustomization.yaml").write_text("resources: []\n")
     (d / "containerizer.json").write_text(json.dumps({"app": ns, "namespace": ns, "components": []}))
-    k = {"resources": []}
-    if helm:
-        (d / "web").mkdir()
-        (d / "web" / "helmrelease.yaml").write_text(yaml.safe_dump({
-            "apiVersion": "helm.toolkit.fluxcd.io/v2", "kind": "HelmRelease", "metadata": {"name": "web"},
-            "spec": {"values": {"image": {"repository": f"localhost:5000/sandbox/{ns}/web", "tag": "1.1",
-                                          "digest": "sha256:aa"}}}}))
-        k["resources"] = ["web/helmrelease.yaml"]
-    else:
-        k["images"] = [{"name": f"localhost:5000/sandbox/{ns}/api", "newTag": "1.1"}]
+    k = {"resources": [], "images": [{"name": f"localhost:5000/sandbox/{ns}/{comp}", "newTag": "1.1"}]}
     (d / "kustomization.yaml").write_text(yaml.safe_dump(k))
     return d
 
@@ -36,7 +27,7 @@ def test_development_runs_every_app_and_production_only_listed_ones_pinned(tmp_p
     monkeypatch.delenv("CONTAINERIZER_CLUSTERS", raising=False)
     root = tmp_path / "out"
     app(root, "acme/p/shop", "p-shop")
-    app(root, "acme/p/billing", "p-billing", helm=True)
+    app(root, "acme/p/billing", "p-billing", "web")
     org.write_sandbox(root, URL, BRANCH)
     c = root / "clusters"
     assert sorted(x.name for x in c.iterdir() if x.is_dir()) == ["acceptance", "development", "production", "sandbox"]
@@ -65,12 +56,8 @@ def test_development_runs_every_app_and_production_only_listed_ones_pinned(tmp_p
         {"name": "localhost:5000/sandbox/p-shop/api", "newTag": "1.1"}]
     assert load(prod / "apps" / "p-shop" / "kustomization.yaml")["images"] == [
         {"name": "localhost:5000/sandbox/p-shop/api", "newName": "registry.example.com/apps/p-shop/api"}]
-    hc = load(prod / "apps" / "p-billing" / "custom" / "kustomization.yaml")["patches"][0]
-    assert hc["target"]["kind"] == "HelmRelease" and hc["target"]["name"] == "web"
-    assert yaml.safe_load(hc["patch"]) == [{"op": "add", "path": "/spec/values/image/tag", "value": "1.1"},
-                                       {"op": "add", "path": "/spec/values/image/digest", "value": "sha256:aa"}]
-    hr = load(prod / "apps" / "p-billing" / "kustomization.yaml")["patches"][0]
-    assert yaml.safe_load(hr["patch"])[0]["value"] == "registry.example.com/apps/p-billing/web"
+    assert load(prod / "apps" / "p-billing" / "custom" / "kustomization.yaml")["images"] == [
+        {"name": "localhost:5000/sandbox/p-billing/web", "newTag": "1.1"}]
 
     # yours: a newer build and a promotion edit survive the next run
     (root / "acme/p/shop/kustomization.yaml").write_text(yaml.safe_dump(

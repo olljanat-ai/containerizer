@@ -2,7 +2,7 @@
 
 The sandbox (`clusters/sandbox/`, org.write_sandbox) is one cluster of the output repository; `clusters/` holds the others,
 by default development, acceptance and production (CONTAINERIZER_CLUSTERS="development,acceptance,production"
-changes the names). Every cluster deploys the same app folders, the same images and the same shared Helm chart;
+changes the names). Every cluster deploys the same app folders, and the same images;
 what differs per cluster lives in the cluster's own folder:
 
     clusters/<name>/
@@ -12,7 +12,7 @@ what differs per cluster lives in the cluster's own folder:
       flux/apps/kustomization.yaml    each app's gitops/flux, pointed at the overlay below          (generated)
       apps/<namespace>/
         kustomization.yaml            the app folder + the cluster's registry                       (generated)
-        custom/kustomization.yaml     image promotion, replicas, hosts, Helm values: a kustomize
+        custom/kustomization.yaml     image promotion, replicas, hosts: a kustomize
                                       Component                                                     (yours)
 
 "Yours": written once, when the cluster or the app first appears, and never rewritten, so the settings of a cluster
@@ -37,7 +37,6 @@ DEFAULT_CLUSTERS = ("development", "acceptance", "production")
 FOLLOWS = ("development",)          # clusters that run every app and follow new builds by default
 K_API = "kustomize.config.k8s.io/v1beta1"
 COMPONENT_API = "kustomize.config.k8s.io/v1alpha1"
-HELM_API = "helm.toolkit.fluxcd.io/v2"
 
 
 def names() -> list[str]:
@@ -110,8 +109,7 @@ def _app_resources(folder: Path) -> list[tuple[str, list[dict]]]:
 
 
 def app_images(folder: Path) -> list[dict]:
-    """The images of an app folder: {name, tag, digest?, release?}. Plain manifests: the kustomization's `images`
-    (name + newTag); chart mode: each HelmRelease's values.image (repository, tag, digest), `release` its name."""
+    """The images of an app folder: {name, tag, digest?}, from its kustomization's `images` (name + newTag)."""
     pushed = {}                     # the digests the scan pushed (containerizer.json), by image without its tag
     try:
         for c in json.loads((folder / "containerizer.json").read_text()).get("components") or []:
@@ -124,15 +122,6 @@ def app_images(folder: Path) -> list[dict]:
         if isinstance(i, dict) and i.get("name"):
             out.append({"name": str(i["name"]), "tag": str(i.get("newTag") or ""),
                         "digest": str(i.get("digest") or pushed.get(str(i["name"])) or "")})
-    for _f, docs in _app_resources(folder):
-        for d in docs:
-            if d.get("kind") != "HelmRelease":
-                continue
-            img = ((d.get("spec") or {}).get("values") or {}).get("image") or {}
-            if isinstance(img, dict) and img.get("repository"):
-                out.append({"name": str(img["repository"]), "tag": str(img.get("tag") or ""),
-                            "digest": str(img.get("digest") or pushed.get(str(img["repository"])) or ""),
-                            "release": str((d.get("metadata") or {}).get("name"))})
     return out
 
 
@@ -141,40 +130,63 @@ def moved_name(image: str, ns: str, registry: str) -> str:
     return f"{registry}/{ns}/{image.rsplit('/', 1)[-1]}"
 
 
-def _helm_patch(release: str, ops: list[dict]) -> dict:
-    group, version = HELM_API.split("/")
-    return {"target": {"group": group, "version": version, "kind": "HelmRelease", "name": release},
-            "patch": json.dumps(ops)}
+def unchart_custom(path: Path, images: list[dict]) -> bool:
+    """A cluster's custom/kustomization.yaml written for an app of the shared Helm chart (before 0.43.0): its patches
+    that pinned a HelmRelease's image tag and digest become `images:` entries (the app is plain manifests now, its
+    images are kustomize images); the rest of the file stays. True when it changed."""
+    import yaml
+    try:
+        c = yaml.safe_load(path.read_text()) or {}
+    except (OSError, yaml.YAMLError):
+        return False
+    pins, keep = [], []
+    for p in c.get("patches") or []:
+        t = (p.get("target") or {}) if isinstance(p, dict) else {}
+        if t.get("kind") != "HelmRelease":
+            keep.append(p)
+            continue
+        try:
+            ops = {o["path"]: o.get("value") for o in (json.loads(p["patch"]) if isinstance(p.get("patch"), str)
+                                                        and p["patch"].lstrip().startswith("[") else yaml.safe_load(p["patch"]))}
+        except (ValueError, KeyError, TypeError, yaml.YAMLError):
+            keep.append(p)
+            continue
+        img = next((i for i in images if i["name"].rsplit("/", 1)[-1] == t.get("name")), None)
+        if img and ops.get("/spec/values/image/tag"):
+            pins.append({"name": img["name"], "newTag": str(ops["/spec/values/image/tag"]),
+                         **({"digest": str(ops["/spec/values/image/digest"])} if ops.get("/spec/values/image/digest") else {})})
+    if not pins and len(keep) == len(c.get("patches") or []):
+        return False
+    head = "".join(ln + "\n" for ln in path.read_text().splitlines() if ln.startswith("#"))
+    if keep:
+        c["patches"] = keep
+    else:
+        c.pop("patches", None)
+    if pins:
+        c["images"] = [i for i in c.get("images") or [] if i.get("name") not in {x["name"] for x in pins}] + pins
+    from .org import readable_patches, readable_yaml
+    path.write_text(head + readable_yaml(readable_patches(c)))
+    return True
 
 
 def overlay(rel: str, ns: str, images: list[dict], registry: str) -> dict:
     """apps/<namespace>/kustomization.yaml: the app folder, the cluster's Component and its registry."""
     k = {"apiVersion": K_API, "kind": "Kustomization", "resources": [f"../../../../{rel}"], "components": ["custom"]}
     if registry:
-        plain = [{"name": i["name"], "newName": moved_name(i["name"], ns, registry)} for i in images if not i.get("release")]
-        helm = [_helm_patch(i["release"], [{"op": "replace", "path": "/spec/values/image/repository",
-                                            "value": moved_name(i["name"], ns, registry)}])
-                for i in images if i.get("release")]
+        plain = [{"name": i["name"], "newName": moved_name(i["name"], ns, registry)} for i in images]
         if plain:
             k["images"] = plain
-        if helm:
-            k["patches"] = helm
     return k
 
 
 def custom_text(name: str, ns: str, images: list[dict], pin: bool) -> str:
     """apps/<namespace>/custom/kustomization.yaml: the cluster's own settings of one app, written once."""
     c = {"apiVersion": COMPONENT_API, "kind": "Component"}
-    plain = [i for i in images if not i.get("release")]
-    helm = [i for i in images if i.get("release")]
+    plain = images
     if pin and plain:
         # with the digest: a later build's digest in the app folder cannot override the pinned tag
         c["images"] = [{"name": i["name"], "newTag": i["tag"], **({"digest": i["digest"]} if i["digest"] else {})}
                        for i in plain if i["tag"]]
-    if pin and helm:
-        c["patches"] = [_helm_patch(i["release"], [{"op": "add", "path": "/spec/values/image/tag", "value": i["tag"]},
-                                                   {"op": "add", "path": "/spec/values/image/digest",
-                                                    "value": i["digest"]}]) for i in helm if i["tag"]]
     if pin:
         head = (f"# {ns} in cluster \"{name}\": pinned to the images the app had when the\n"
                 f"# cluster first ran it. Promote a build by changing its tag and digest here (the scan's\n"
@@ -186,10 +198,7 @@ def custom_text(name: str, ns: str, images: list[dict], pin: bool) -> str:
              "# here too, as kustomize patches, e.g. replicas of a Deployment or an Ingress host:\n"
              "#   patches:\n"
              "#   - target: {kind: Deployment, name: <component>}\n"
-             "#     patch: '[{\"op\": \"replace\", \"path\": \"/spec/replicas\", \"value\": 3}]'\n"
-             "# and, for a component of the shared Helm chart, its values (the hardening cannot be changed):\n"
-             f"#   - target: {{group: helm.toolkit.fluxcd.io, kind: HelmRelease, name: <component>}}\n"
-             "#     patch: '[{\"op\": \"add\", \"path\": \"/spec/values/objects\", \"value\": {...}}]'\n")
+             "#     patch: '[{\"op\": \"replace\", \"path\": \"/spec/replicas\", \"value\": 3}]'\n")
     from .org import readable_patches, readable_yaml
     return head + readable_yaml(readable_patches(c))
 
@@ -221,6 +230,8 @@ def write_cluster(root: Path, name: str, git_url: str, branch: str, apps) -> lis
             + readable_yaml(readable_patches(overlay(rel, ns, images, s["registry"]))))
         if not (o / "custom" / "kustomization.yaml").exists():   # the first time the cluster runs the app
             (o / "custom" / "kustomization.yaml").write_text(custom_text(name, ns, images, pin))
+        else:                                                     # its chart image pins, as kustomize images
+            unchart_custom(o / "custom" / "kustomization.yaml", images)
         patches.append({"target": {"group": group, "version": version, "kind": "Kustomization", "name": ns,
                                    "namespace": ns},
                         "patch": json.dumps([{"op": "replace", "path": "/spec/path",
@@ -264,9 +275,9 @@ def index(clusters: dict[str, list[str]]) -> str:
     rows = "\n".join(f"| [{n}]({n}/) | {len(ns)} |" for n, ns in clusters.items())
     return f"""# Clusters
 
-The sandbox (`sandbox/`, next to these) and the clusters below deploy the same app folders, images and shared Helm chart with
+The sandbox (`sandbox/`, next to these) and the clusters below deploy the same app folders and images with
 Flux. Each cluster's own settings are in its folder: `cluster.yaml` (which apps, the registry it pulls from) and
-`apps/<namespace>/custom/` (image promotion, replicas, hosts, Helm values). Containerizer writes those once and
+`apps/<namespace>/custom/` (image promotion, replicas, hosts). Containerizer writes those once and
 never rewrites them; everything else here is generated by `containerizer org` and rewritten by every run.
 
 | Cluster | Apps |

@@ -393,7 +393,7 @@ Per component: `Dockerfile` (+ `Dockerfile.dockerignore`), its Kubernetes object
 Service, NetworkPolicy, PVCs where state must persist, ExternalSecrets for every credential, and for web
 components an HTTPRoute at the platform's Gateway, see [Gateway API routes](gateway-api.md)): in the output
 repository one file per kind (`deployment.yaml`, `service.yaml`, ...; the settings ConfigMap in `settings.yaml`) with
-a `kustomization.yaml` listing them, or a HelmRelease of the shared chart ([Helm chart](helm-chart.md)); the
+a `kustomization.yaml` listing them; the
 generator's own output (`containerizer generate`) keeps them together in `k8s.yaml`,
 `plan.json` (the build plan). Linux only: .NET Framework components that are not ported get no
 container files (they stay on Windows VMs, see the migration plan). Per app: `kustomization.yaml`
