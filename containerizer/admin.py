@@ -740,7 +740,7 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
                    "repository can declare it in <code>metadata.json</code> at its root; "
                    "<a href='/admin/applications?show=external'>External IDs</a> lists the declared ones no application has.</p>"
                    f"<form method='post' action='/admin/applications/{app_id}/external-id' class='formrow'>{self._csrf(s)}"
-                   f"<input name='ExternalId' class='wide' maxlength='100' value='{e(r['ExternalId'] or '')}' aria-label='External ID' "
+                   f"<input name='ExternalId' class='wide' maxlength='100' value='{e(r.get('ExternalId') or '')}' aria-label='External ID' "
                    "placeholder='e.g. 3f2b8c1e-5d6a-4b7c-9e0f-1a2b3c4d5e6f'><button>Save</button></form>")
             forget = admin_forget.section(self, s, r)
         body = (f"{head}{form}{ext}{self._sandbox_section(s, a, r)}{deploy}{output}{heavy}<h2>Changes</h2>"

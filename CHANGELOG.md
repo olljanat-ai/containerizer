@@ -10,6 +10,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.41.0 (2026-11-12)
+
 - **Forget application** (Admin → Applications → the application, administrators): deletes everything recorded about
   an application (assessments, findings, components, sandbox checks, LLM jobs, Make it A orders and usage, egress and
   link decisions, dev database), disables its repository and queues a scan of it, which removes its files from the
