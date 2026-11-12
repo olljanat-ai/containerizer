@@ -23,7 +23,8 @@ def section(adm, s, r: dict) -> str:
             "decisions, dev database and sandbox database edits. Its repository is <b>disabled</b>, so the next scan removes "
             "its files from the output repository and the sandbox, and no scan assesses it again until you enable it on "
             "<a href='/admin/repositories'>Repositories</a>; then it is assessed as new. The change history keeps the deletion. "
-            "Secret values in OpenBao stay.</p>"
+            "On the appliance its secret values go too: its OpenBao entries, policy and the values copied to the "
+            "secret store, once the sandbox has removed its namespace.</p>"
             f"<form method='post' action='/admin/applications/{int(r['ApplicationId'])}/forget' class='edit danger'>{adm._csrf(s)}"
             f"<label for='confirm'>Type <b>{e(name)}</b> to confirm</label>"
             f"<input id='confirm' name='confirm' autocomplete='off' required maxlength='200'>"
@@ -60,6 +61,11 @@ def forget(adm, conn, s, app_id: int, form: dict):
             devdb.remove_unused(adm.devdb, conn, r["StoredAs"])
         except Exception as ex:  # noqa: BLE001 - the file only; the rows are gone
             print(f"forget {app_id}: dev database file not removed: {type(ex).__name__}: {ex}", file=sys.stderr)
+    if getattr(adm, "system", None) is not None:
+        try:
+            adm.system.request("openbao-forget", s.user, s.name, namespace=app_ns(r["Name"]))
+        except OSError as ex:
+            print(f"forget {app_id}: OpenBao entries not queued: {type(ex).__name__}: {ex}", file=sys.stderr)
     queued = 0
     by_scan: dict = {}
     for x in repos:

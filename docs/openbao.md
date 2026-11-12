@@ -164,23 +164,33 @@ two applications with the same provider and use the same groups for both.
   services. Secret files (`<component>-files`) and keytabs are set as before
   ([External Secrets](external-secrets.md#the-appliance-sandbox)).
 
+## Forgotten applications
+
+**Forget application** (Admin → Applications → the application) removes the application's OpenBao entries
+(`apps/<namespace>/...`, every version), its policy `app-<namespace>` and the values copied to the secret store. This
+happens once the sandbox has removed its namespace (the scan Forget queues does that), within two minutes of it.
+When the namespace is still there a day later (its repository was enabled and scanned again), the entries stay.
+
+Appliances set up before 0.41.3 give the sync job the right to delete once: it signs in as `admin` with the password
+the appliance generated. If you changed that password, the log of `containerizer-sandbox.service` says so; run
+`cz openbao-policy` as root once (it asks for an OpenBao administrator's user name and password).
+
 ## Backup and recovery
 
 Back up `/var/lib/containerizer/openbao` together with `/etc/containerizer/secrets` (the unseal key, the recovery
 key and the sync token): one without the other is of no use. See [Backup](appliance-admin.md#backup).
 
-**Recovery.** If the sync token is lost (the log of `containerizer-sandbox.service` then says so), make a root
-token with the recovery key, create a new sync token, and revoke the root token:
+**Recovery.** If the sync token is lost (the log of `containerizer-sandbox.service` then says so), sign in as an
+administrator (policy `cz-admin`) and create a new sync token, as root on the appliance:
 
 ```sh
-export BAO_ADDR=https://<CZ_HOSTNAME>    # on a workstation; not needed on the appliance
-bao operator generate-root -init                     # prints a nonce and a one-time password (OTP)
-bao operator generate-root -nonce=<nonce> "$(cat /etc/containerizer/secrets/openbao-recovery-key)"
-bao operator generate-root -decode=<encoded token> -otp=<OTP>
-BAO_TOKEN=<root token> bao token create -orphan -policy=cz-sync -no-default-policy -period=768h -field=token \
+BAO_TOKEN=$(bao login -method=userpass -field=token username=admin) \
+  bao token create -orphan -policy=cz-sync -no-default-policy -period=768h -field=token \
   > /etc/containerizer/secrets/openbao-sync-token && chmod 0400 /etc/containerizer/secrets/openbao-sync-token
-BAO_TOKEN=<root token> bao token revoke -self
 ```
+
+OpenBao 2.7 refuses `bao operator generate-root` without a token, so the recovery key alone no longer makes a root
+token; keep an administrator's password (or an OIDC administrator) at hand.
 
 On the appliance (as root) the command `bao` runs the CLI in the OpenBao container and talks to it directly, so
 leave `BAO_ADDR` unset there. From your workstation, use your own `bao` (or `vault`) with

@@ -110,3 +110,30 @@ def test_scan_records_the_declared_id():
     res.external_app_id = ""
     st.record(R, res)                                          # the file is gone: cleared
     assert None in conn.log[-1][1][-4:]
+
+
+def test_forget_asks_the_system_agent_to_forget_the_openbao_entries():
+    from types import SimpleNamespace
+    calls, asked = [], []
+
+    class Cur:
+        def __init__(self, *a, **k):
+            pass
+
+        def execute(self, sql, args=()):
+            calls.append(sql)
+
+        def fetchone(self):
+            return {"ApplicationId": 7, "Name": "shop", "RepositoryUrl": None, "StoredAs": None} \
+                if "FROM cz.Application" in calls[-1] else [0]
+
+        def fetchall(self):
+            return []
+    conn = SimpleNamespace(cursor=Cur, commit=lambda: None, rollback=lambda: None)
+    system = SimpleNamespace(request=lambda action, user, name, **kw: asked.append((action, kw)))
+    adm = SimpleNamespace(system=system, devdb=None)
+    s = SimpleNamespace(user="john.doe@contoso.com", name="John Doe")
+    admin_forget.forget(adm, conn, s, 7, {"confirm": ["shop"]})
+    from containerizer.generate import app_ns
+    assert asked == [("openbao-forget", {"namespace": app_ns("shop")})]
+    assert any("ForgetApplication" in c for c in calls)

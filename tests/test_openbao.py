@@ -17,6 +17,8 @@ class FakeBao(ob.Bao):
 
     def call(self, method, path, body=None, ok404=False):
         self.calls.append((method, path))
+        if path == "auth/token/renew-self":
+            return {}
         if path.startswith("apps/data/"):
             p = path[len("apps/data/"):]
             if method == "GET":
@@ -253,3 +255,62 @@ def test_secrets_link_signs_in_to_openbao_without_its_sign_in_page(monkeypatch):
     assert dict(adm.openbao_start().headers)["Location"].endswith("with=oidc%2F")
     adm.openbao_api = ""
     assert not adm.handles("/ui/vault/auth/oidc/oidc/callback")        # not on the appliance: never routed here
+
+
+def test_forget_waits_for_the_prune_then_deletes_entries_policy_and_store_values(tmp_path, monkeypatch):
+    """Forget application: the namespace is left alone while its ExternalSecrets are still in the sandbox (so the
+    placeholders are not written again), then its entries, policy and remote Secrets go; other apps stay."""
+    monkeypatch.setattr(ob, "FORGET_PATH", tmp_path / "forget.json")
+    monkeypatch.setattr(ob, "SECRETS", tmp_path)
+    ob._write_secret("openbao-sync-policy", ob.policy_hash())
+    with pytest.raises(ValueError):
+        ob.request_forget("kube-system")
+    ob.request_forget("shop")
+    bao = FakeBao()
+    bao.kv = {"shop/web": ({"A": "1"}, 2), "other/api": ({"B": "2"}, 1)}
+    bao.policies = {"app-shop": "x", "app-other": "y"}
+    base = bao.call
+
+    def call(method, path, body=None, ok404=False):
+        if method == "LIST" and path == "apps/metadata/shop":
+            return {"data": {"keys": ["web"]}}
+        if method == "DELETE":
+            bao.calls.append((method, path))
+            if path.startswith("apps/metadata/"):
+                bao.kv.pop(path[len("apps/metadata/"):], None)
+            else:
+                bao.policies.pop(path.rsplit("/", 1)[1], None)
+            return {}
+        return base(method, path, body, ok404)
+    bao.call = call
+    cluster = {"items": [es("shop", "web-secrets", ["A"]), es("other", "api-secrets", ["B"])]}
+    kubectl = []
+
+    def run(args, stdin=None, ok_missing=False):
+        kubectl.append(args)
+        return json.dumps(cluster) if "externalsecrets.external-secrets.io" in args else None
+    monkeypatch.setattr(ob, "_run", run)
+    monkeypatch.setattr(ob, "setup", lambda b, log=print: "t")
+    monkeypatch.setattr(ob, "Bao", lambda *a, **k: bao)
+    monkeypatch.setattr(ob, "apply_now", lambda changed, log=print: None)
+    assert ob.sync(lambda m: None) == 0
+    assert "shop/web" in bao.kv and ("GET", "apps/data/shop/web") not in bao.calls      # left alone, not synced
+    cluster["items"] = cluster["items"][1:]                                           # the scan pruned shop
+    assert ob.sync(lambda m: None) == 0
+    assert "shop/web" not in bao.kv and "app-shop" not in bao.policies and ob.pending_forgets() == {}
+    assert ["-n", "containerizer-secrets", "delete", "secret", "shop--web", "--ignore-not-found"] in kubectl
+    assert "other/api" in bao.kv and "app-other" in bao.policies
+
+
+def test_forget_of_a_namespace_scanned_again_is_dropped_after_a_day(tmp_path, monkeypatch):
+    monkeypatch.setattr(ob, "FORGET_PATH", tmp_path / "forget.json")
+    ob.request_forget("shop", now=0)
+    assert set(ob.pending_forgets()) == {"shop"}
+    monkeypatch.setattr(ob, "setup", lambda b, log=print: "t")
+    bao = FakeBao()
+    monkeypatch.setattr(ob, "Bao", lambda *a, **k: bao)
+    monkeypatch.setattr(ob, "_run", lambda args, stdin=None, ok_missing=False: json.dumps(
+        {"items": [es("shop", "web-secrets", ["A"])]}) if "externalsecrets.external-secrets.io" in args else None)
+    monkeypatch.setattr(ob, "apply_now", lambda changed, log=print: None)
+    ob.sync(lambda m: None)
+    assert ob.pending_forgets() == {} and "shop/web" in bao.kv        # synced again as usual

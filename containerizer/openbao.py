@@ -13,6 +13,11 @@ the Flux webhook, the sandbox IdP, lab services) keep writing there. OpenBao is 
   apply, field manager `containerizer-openbao`, so the other writers' keys stay); a key emptied in OpenBao is removed
   there. In the sandbox the component's ExternalSecret reads every key the remote Secret has (sandbox_patches), so a
   value that is not filled yet is simply not set: the app's own appsettings value applies.
+- **Forget.** Admin -> Applications -> Forget application asks the system agent to forget the namespace
+  (FORGET_PATH, root only). Once the scan has pruned its ExternalSecrets, the sync deletes its entries (every version),
+  its policy and the copied values in the store (the remote Secrets `<namespace>--<component>`). The sync's own token
+  policy may delete since 0.41.3; an older appliance's is updated once, signed in as the appliance's user `admin`, or
+  by `cz openbao-policy` when that password was changed.
 - **Delegation.** Every app namespace gets the policy `app-<namespace>`: read and write its own entries, nothing
   else. An administrator gives it to an operator's user, or to a group of the identity provider (SSO).
 
@@ -32,6 +37,7 @@ from pathlib import Path
 
 ADDR = os.environ.get("CZ_OPENBAO_ADDR", "http://127.0.0.1:8200")
 SECRETS = Path(os.environ.get("CZ_OPENBAO_SECRETS", "/etc/containerizer/secrets"))
+FORGET_PATH = Path(os.environ.get("CZ_OPENBAO_FORGET", "/var/lib/containerizer/system/openbao-forget.json"))
 MOUNT = "apps"                              # KV version 2: apps/<namespace>/<component>
 MANAGER = "containerizer-openbao"           # field manager of the copied keys in the store
 PROPERTIES = "containerizer.io/properties"  # the properties a component reads (sandbox_patches keeps them)
@@ -55,8 +61,8 @@ path "sys/internal/ui/*" {{ capabilities = ["read", "list"] }}
 # the sync job: the apps' entries and the operators' policies, its own token
 SYNC_HCL = f"""
 path "{MOUNT}/data/*" {{ capabilities = ["create", "read", "update"] }}
-path "{MOUNT}/metadata/*" {{ capabilities = ["read", "list"] }}
-path "sys/policies/acl/app-*" {{ capabilities = ["create", "read", "update"] }}
+path "{MOUNT}/metadata/*" {{ capabilities = ["read", "list", "delete"] }}
+path "sys/policies/acl/app-*" {{ capabilities = ["create", "read", "update", "delete"] }}
 path "auth/token/renew-self" {{ capabilities = ["update"] }}
 """
 
@@ -227,6 +233,7 @@ def setup(bao: Bao, log=print) -> str:
     _exists_ok(lambda: root.call("POST", "sys/auth/userpass", {"type": "userpass"}))
     root.call("PUT", f"sys/policies/acl/{ADMIN_POLICY}", {"policy": ADMIN_HCL})
     root.call("PUT", f"sys/policies/acl/{SYNC_POLICY}", {"policy": SYNC_HCL})
+    _write_secret("openbao-sync-policy", policy_hash())
     if root.call("GET", "auth/userpass/users/admin", ok404=True) is None:
         root.call("POST", "auth/userpass/users/admin", {"password": password, "token_policies": [ADMIN_POLICY]})
     t = root.call("POST", "auth/token/create-orphan", {"policies": [SYNC_POLICY], "no_default_policy": True,
@@ -415,6 +422,96 @@ def _epoch(t: str) -> int:
         return 0
 
 
+FORGET_WAIT = 24 * 3600     # a forgotten namespace still in the sandbox after this (enabled again): request dropped
+
+
+def pending_forgets(path: Path | None = None) -> dict[str, float]:
+    """{namespace: when it was asked for (epoch)}."""
+    try:
+        v = json.loads((path or FORGET_PATH).read_text())
+    except (OSError, ValueError):
+        return {}
+    return {str(k): float(t) for k, t in v.items() if isinstance(t, (int, float))} if isinstance(v, dict) else {}
+
+
+def _save_forgets(pending: dict[str, float], path: Path | None = None) -> None:
+    p = path or FORGET_PATH
+    if not pending:
+        p.unlink(missing_ok=True)
+        return
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(pending, sort_keys=True))
+    os.replace(tmp, p)
+
+
+def request_forget(ns: str, path: Path | None = None, now: float | None = None) -> None:
+    """The system agent (root): remember that namespace `ns`'s OpenBao entries are to go (sync does it)."""
+    import time
+    from .labservices import NS_RE, RESERVED_NS
+    if not NS_RE.fullmatch(ns or "") or ns in RESERVED_NS or ns.startswith(("containerizer-", "kube-")):
+        raise ValueError(f"not an application namespace: {ns!r}")
+    _save_forgets({**pending_forgets(path), ns: time.time() if now is None else now}, path)
+
+
+def login(addr: str, username: str, password: str) -> Bao:
+    """A user name and password sign-in (userpass)."""
+    t = Bao(addr).call("POST", f"auth/userpass/login/{username}", {"password": password}) or {}
+    token = (t.get("auth") or {}).get("client_token")
+    if not token:
+        raise BaoError(f"signing in as {username} gave no token")
+    return Bao(addr, token)
+
+
+def policy_hash() -> str:
+    import hashlib
+    return hashlib.sha256(SYNC_HCL.encode()).hexdigest()
+
+
+def write_sync_policy(admin: Bao) -> None:
+    """The sync job's policy as this version has it, written by an administrator (cz-admin may write policies)."""
+    try:
+        admin.call("PUT", f"sys/policies/acl/{SYNC_POLICY}", {"policy": SYNC_HCL})
+    finally:
+        try:
+            admin.call("POST", "auth/token/revoke-self")
+        except BaoError:
+            pass
+    _write_secret("openbao-sync-policy", policy_hash())
+
+
+def sync_policy_current(bao: Bao) -> None:
+    """Appliances set up before Forget deleted anything (0.41.2 and older) have a sync policy without delete: update
+    it once as the appliance's user admin. When its password was changed (docs/openbao.md says to), an administrator
+    runs `cz openbao-policy` once. The policy's hash is kept next to the sync token."""
+    if _read_secret("openbao-sync-policy") == policy_hash():
+        return
+    password = _read_secret("openbao-admin")
+    try:
+        admin = login(bao.addr, "admin", password) if password else None
+    except BaoError:
+        admin = None
+    if admin is None:
+        raise BaoError("the sync job may not delete yet: run `cz openbao-policy` as root once (it asks for an OpenBao "
+                       "administrator's user name and password) and the forgotten apps' entries go")
+    write_sync_policy(admin)
+
+
+def forget_namespace(bao: Bao, store_ns: str, ns: str, log=print) -> int:
+    """Delete namespace `ns`'s entries (all versions), its policy and the remote Secrets of those components in the
+    store. Returns the number of entries deleted."""
+    listed = bao.call("LIST", f"{MOUNT}/metadata/{ns}", ok404=True) or {}
+    comps = [k for k in (listed.get("data") or {}).get("keys") or [] if not k.endswith("/")]
+    for comp in comps:
+        bao.call("DELETE", f"{MOUNT}/metadata/{ns}/{comp}", ok404=True)
+        _run(["-n", store_ns, "delete", "secret", _remote_key(ns, comp), "--ignore-not-found"], ok_missing=True)
+    bao.call("DELETE", f"sys/policies/acl/app-{ns}", ok404=True)
+    log(f"openbao: forgot {ns}: {len(comps)} entr{'y' if len(comps) == 1 else 'ies'}, policy app-{ns}")
+    return len(comps)
+
+
 def sync(log=print) -> int:
     from . import eso
     bao = Bao()
@@ -426,6 +523,28 @@ def sync(log=print) -> int:
         log(f"openbao: {ex}")
         return 1
     store_ns, comps, rc = eso.remote_namespace(), component_secrets(items), 0
+    # forgotten applications: nothing of theirs is synced; their entries go once the scan pruned their namespace
+    forget = pending_forgets()
+    if forget:
+        import time
+        live = {c["namespace"] for c in comps}
+        done = []
+        for ns, asked in sorted(forget.items()):
+            if ns in live:
+                if time.time() - asked > FORGET_WAIT:
+                    log(f"openbao: forget {ns}: still in the sandbox a day later (enabled again?): its entries stay")
+                    done.append(ns)
+                continue
+            try:
+                sync_policy_current(bao)
+                forget_namespace(bao, store_ns, ns, log)
+                done.append(ns)
+            except BaoError as ex:
+                log(f"openbao: forget {ns}: {ex}")
+                rc = 1
+        if done:
+            _save_forgets({k: v for k, v in pending_forgets().items() if k not in done})
+        comps = [c for c in comps if c["namespace"] not in pending_forgets()]
     added = copied = 0
     changed = []
     for c in comps:

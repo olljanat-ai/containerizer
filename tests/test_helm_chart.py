@@ -444,3 +444,27 @@ def test_an_exception_keeps_the_nodes_user_namespace(monkeypatch):
     dep = {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "c"},
            "spec": {"template": {"metadata": {}, "spec": pod}}}
     assert [v for v in lint_manifests([dep]) if v.check == "user-namespace"]
+
+
+def test_chart_mode_keeps_the_settings_configmap_in_a_file_of_its_own(tmp_path):
+    """The ConfigMap <component>-settings is what a person edits per environment: in chart mode it is
+    <component>/settings.yaml, a resource of the app's kustomization.yaml, not an entry of the HelmRelease's values.
+    Read back with the component's objects; written back there; a fall back to manifests does not repeat it."""
+    out, ns, comps = _generated(tmp_path)
+    comp = next(iter(comps))
+    cm = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": f"{comp}-settings"}, "data": {"Api__Url": ""}}
+    (out / comp / "k8s.yaml").write_text((out / comp / "k8s.yaml").read_text() + "---\n" + yaml.safe_dump(cm))
+    assert h.convert_app(out, ns, [comp], "chart", min_saving=0)[comp] == {"mode": "chart"}
+    assert yaml.safe_load((out / comp / "settings.yaml").read_text()) == cm
+    assert "kind: ConfigMap" not in (out / comp / "helmrelease.yaml").read_text()
+    res = yaml.safe_load((out / "kustomization.yaml").read_text())["resources"]
+    assert res.index(f"{comp}/settings.yaml") == res.index(f"{comp}/helmrelease.yaml") + 1
+    docs = h.component_docs(out / comp)
+    assert cm in docs
+    next(d for d in docs if h.is_settings(d))["data"]["Api__Url"] = "https://api.example.com"
+    assert h.write_component_docs(out / comp, docs) == "helmrelease.yaml"
+    assert "kind: ConfigMap" not in (out / comp / "helmrelease.yaml").read_text()
+    assert yaml.safe_load((out / comp / "settings.yaml").read_text())["data"]["Api__Url"] == "https://api.example.com"
+    next(d for d in docs if d["kind"] == "Deployment")["spec"]["progressDeadlineSeconds"] = 10 ** 7
+    assert h.write_component_docs(out / comp, docs) == "k8s.yaml"
+    assert not any(h.is_settings(d) for d in yaml.safe_load_all((out / comp / "k8s.yaml").read_text()) if d)
