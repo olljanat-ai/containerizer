@@ -10,6 +10,21 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.45.0 (2026-11-12)
+
+- **Files from the secret store, for any application.** Admin → Repositories → the repository → Settings →
+  **Files from the secret store** (schema 52, `OrgRepository.SecretFilesPath`, audited): every component of the
+  repository mounts its optional Secret `<component>-files` read-only in the folder set there (`/secrets` by default).
+  Every key is a file, its value base64. On the appliance each component gets an OpenBao entry
+  `apps/<namespace>/<component>-files`, made empty so it is there before anyone adds a file; saving one restarts the
+  app. Point the app's setting at the file. Make it A deployments follow the setting too.
+- **A component's files have their own remote key, `<namespace>--<component>-files`, all base64.** The certificates
+  0.44.1 found next to the code moved there from `<namespace>--<component>` (on the appliance: from the component's
+  OpenBao entry to its `-files` entry, seeded again with the repository's file), and so did the key and certificate
+  files named by a Windows path (`/secrets`), whose values are now base64 too: put them there in a real cluster.
+- The OpenBao sync makes the store's Secret of a component's settings when nobody filled a value yet, so its
+  ExternalSecret syncs (empty) instead of reporting a missing key.
+
 ## 0.44.1 (2026-11-12)
 
 - **Certificates next to the code come from the secret store.** A `.pfx` or `.p12` in a .NET component's project

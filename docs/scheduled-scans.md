@@ -268,6 +268,18 @@ scan uses the rules only, or give a self-hosted LLM more slots; **Verifying** an
 repositories in parallel if the machine has the cores and memory; **Cloning** — the first run clones everything,
 later runs only pull. The [Grafana dashboard](#metrics-and-grafana) has the same run over time.
 
+## Files from the secret store
+
+An application may read files that are not in its repository and must not be in its image, such as a certificate
+with its private key. On the repository's page (**Admin → Repositories → the repository → Settings**), **Files from
+the secret store** with a folder (`/secrets` by default; not `/app`, `/tmp` or a system folder) makes every component
+of the repository mount its Secret `<component>-files` there, read-only and optional: every key is a file, its value
+the file in base64. On the appliance the files are an OpenBao entry, `apps/<namespace>/<component>-files`
+([OpenBao](openbao.md#files-certificates)); in another cluster, the remote key `<namespace>--<component>-files` of its
+secret store, which has to exist (empty or not) before Flux's first sync. Point the application's setting at the file
+(`/secrets/app.pfx`). The next scan of the repository uses the setting. Without it, a `.pfx` or `.p12` next to the
+code is still mounted where the app reads it.
+
 ## Repositories with several applications
 
 A scan assesses each repository as one application. A mono-repo that holds several applications, for example

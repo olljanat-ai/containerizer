@@ -186,6 +186,7 @@ class SqlRepoStore:
         self.conn, self.scan_id, self.run_id = conn, scan_id, run_id
         self.new_enabled = new_enabled
         self.splits: dict[str, str] = {}        # key -> OrgRepository.SplitPath (one application per folder)
+        self.files_mounts: dict[str, str] = {}  # key -> OrgRepository.SecretFilesPath (files from the secret store)
         self.new: list[str] = []
         self.repos: list = []
         self.listed = 0
@@ -225,7 +226,7 @@ class SqlRepoStore:
             self.conn.rollback()
             raise
         cur = self.conn.cursor(as_dict=True)
-        cur.execute("SELECT RepositoryId, ProjectName, Name, ExternalId, AdminState, SplitPath FROM cz.OrgRepository "
+        cur.execute("SELECT RepositoryId, ProjectName, Name, ExternalId, AdminState, SplitPath, SecretFilesPath FROM cz.OrgRepository "
                     "WHERE ScanId = %s", (self.scan_id,))
         rows = cur.fetchall()
         by_name = {(r["ProjectName"], r["Name"]): r for r in rows}
@@ -247,6 +248,8 @@ class SqlRepoStore:
                     admin[r.key] = row["AdminState"]
                     if row["SplitPath"]:
                         self.splits[r.key] = row["SplitPath"]
+                    if row.get("SecretFilesPath"):
+                        self.files_mounts[r.key] = row["SecretFilesPath"]
                 else:
                     state = None if self.new_enabled else "disabled"
                     c.execute("INSERT cz.OrgRepository (ScanId, ProjectName, Name, ExternalId, CloneUrl, WebUrl, RepositoryUrl, "

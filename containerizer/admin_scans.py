@@ -888,6 +888,17 @@ def edit_repo(adm, conn, s, a, ident: int, flash: str) -> Response:
             f"is assessed and deployed as its own application, with its own rating, results page and sandbox namespace. "
             f"The applications assessed as the whole repository before stay in the history (hide them on the "
             f"application page). The next scan of the repository uses it.</p>"
+            f"<h3 id='files'>Files from the secret store</h3>"
+            f"<label class='check'><input type='checkbox' name='FilesOn' value='1'{' checked' if r.get('SecretFilesPath') else ''}> "
+            f"Mount each component's files read-only</label>"
+            f"<label for='FilesPath'>Folder in the container</label>"
+            f"<input id='FilesPath' name='FilesPath' maxlength='200' value='{e(r.get('SecretFilesPath') or '/secrets')}' placeholder='/secrets'>"
+            f"<p class='muted small'>For files an application reads that are not in its repository, such as a certificate "
+            f"with its private key (.pfx). Each component mounts its Secret <code>&lt;component&gt;-files</code> there: every "
+            f"key is a file, its value the file in base64. On the appliance add them in OpenBao, entry "
+            f"<code>apps/&lt;namespace&gt;/&lt;component&gt;-files</code>; in another cluster, remote key "
+            f"<code>&lt;namespace&gt;--&lt;component&gt;-files</code> of its secret store (it must exist, empty or not). Then point "
+            f"the application's setting at the file (<code>/secrets/app.pfx</code>). The next scan of the repository uses it.</p>"
             f"<div><button>Save</button> <a href='/admin/repositories?scan={int(r['ScanId'])}'>Back</a></div></form>")
     if hint and not split:
         form = (f"<p class='note'>This repository looks like <b>{int(hint.get('count') or 0)} applications</b>, one in each "
@@ -910,7 +921,7 @@ def edit_repo(adm, conn, s, a, ident: int, flash: str) -> Response:
             + apps_table
             + (f"<h2>Deployed components</h2><ul>{comps}</ul>" if comps and not apps_rows else "")
             + (f"<h2>Not deployed</h2><ul>{excl}</ul>" if excl else "") + lab
-            + f"<h2>Enabled or disabled</h2>{form}<h2>Changes</h2>{adm._history(conn, 'OrgRepository', ident)}")
+            + f"<h2>Settings</h2>{form}<h2>Changes</h2>{adm._history(conn, 'OrgRepository', ident)}")
     if not r["RemovedAt"]:
         body = (f"<form method='post' action='/admin/repositories/{ident}/scan' class='inline'>{adm._csrf(s)}"
                 f"<button title='A full scan of this repository now, outside the schedule'>Scan now</button></form>" + body)
@@ -974,6 +985,15 @@ def save_repo(conn, ident: int, form: dict) -> Response:
                                                          "scenarios/* (letters, digits, . _ - / * ? [ ]; no ..).")
         sets += ", SplitPath = %s"
         params.append(pattern or None)
+    if "FilesPath" in form:                                  # the form has it; the list's bulk actions do not
+        from .org import valid_files_path
+        on = form.get("FilesOn", [""])[0] == "1"
+        path = form.get("FilesPath", [""])[0].strip().rstrip("/")
+        if on and not valid_files_path(path):
+            return _back(f"/admin/repositories/{ident}", "Files folder: an absolute folder such as /secrets or /app/certs "
+                                                         "(letters, digits, . _ - /; not /app, /tmp or a system folder).")
+        sets += ", SecretFilesPath = %s"
+        params.append(path if on else None)
     cur = conn.cursor()
     cur.execute(f"UPDATE cz.OrgRepository SET {sets} WHERE RepositoryId = %s", (*params, ident))
     n = cur.rowcount

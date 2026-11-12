@@ -556,8 +556,8 @@ def test_a_db2_driver_keeps_a_mysql_looking_setting_out_of_the_lab(tmp_path):
 
 def test_a_pfx_next_to_the_code_is_mounted_from_the_secret_store(tmp_path):
     """A certificate with its private key in the repository (the image leaves *.pfx out): mounted read-only where
-    the app reads it, /app/<path>, from the Secret <component>-files (an ExternalSecret, base64 in the store);
-    the component's OpenBao entry gets its key; the scan leaves the repository's file as its starting value."""
+    the app reads it, /app/<path>, from the Secret <component>-files (remote key <namespace>--<component>-files,
+    base64); OpenBao's entry <component>-files gets its key; the scan leaves the repository's file as its start."""
     import base64
     import json
     from containerizer import openbao
@@ -579,18 +579,45 @@ def test_a_pfx_next_to_the_code_is_mounted_from_the_secret_store(tmp_path):
     vol = next(v for v in ctr["volumes"] if v["name"] == "secret-files")
     assert vol["secret"]["secretName"] == "web-files" and vol["secret"]["optional"] is True
     es = next(d for d in docs if d["kind"] == "ExternalSecret" and d["metadata"]["name"] == "web-files")
-    assert es["spec"]["data"] == [{"secretKey": "snow.pfx", "remoteRef": {
-        "key": es["spec"]["data"][0]["remoteRef"]["key"], "property": "snow.pfx", "decodingStrategy": "Base64"}}]
+    [ref] = es["spec"]["data"]
+    assert ref["secretKey"] == "snow.pfx" and ref["remoteRef"]["property"] == "snow.pfx"
+    assert ref["remoteRef"]["decodingStrategy"] == "Base64" and ref["remoteRef"]["key"].endswith("--web-files")
     sec = next(d for d in docs if d["kind"] == "ExternalSecret" and d["metadata"]["name"] == "web-secrets")
-    assert es["spec"]["data"][0]["remoteRef"]["key"] == sec["spec"]["data"][0]["remoteRef"]["key"]   # one entry
-    # OpenBao: one entry for the component, with the settings and the file
+    # OpenBao: the settings entry and the files entry
     for d in (sec, es):
         d["metadata"]["namespace"] = "shop"
         for x in d["spec"]["data"]:
-            x["remoteRef"]["key"] = "shop--web"
-    [entry] = openbao.component_secrets([sec, es])
-    assert entry["component"] == "web" and "snow.pfx" in entry["properties"] \
-        and "Snow__CertificatePassword" in entry["properties"]
+            x["remoteRef"]["key"] = "shop--web" if d is sec else "shop--web-files"
+    entries = {e["component"]: e for e in openbao.component_secrets([sec, es])}
+    assert entries["web-files"]["properties"] == ["snow.pfx"] and entries["web-files"]["es"] == "web-files"
+    assert "Snow__CertificatePassword" in entries["web"]["properties"]
     write_secret_seed(tmp_path / "seed", "shop", a.components)
-    seed = json.loads((tmp_path / "seed" / "shop" / "web.json").read_text())
+    seed = json.loads((tmp_path / "seed" / "shop" / "web-files.json").read_text())
     assert base64.b64decode(seed["snow.pfx"]) == b"\x30\x82binary"
+
+
+def test_a_repository_mounts_every_file_of_its_components(tmp_path):
+    """Admin -> Repositories -> Files from the secret store (facts.files_mount): every key of the component's files
+    is a file in that folder, read-only, from an optional Secret; nothing found in the repository needed."""
+    from containerizer import openbao
+    from containerizer.generate import k8s_manifests
+    from containerizer.org import valid_files_path
+    web_app(tmp_path)
+    a = assess(tmp_path)
+    c = a.components[0]
+    c.facts["files_mount"] = "/secrets"
+    docs = k8s_manifests(a, c, make_plan(a, c), "img")
+    pod = next(d for d in docs if d["kind"] == "Deployment")["spec"]["template"]["spec"]
+    assert {"name": "secret-files", "mountPath": "/secrets", "readOnly": True} in pod["containers"][0]["volumeMounts"]
+    assert next(v for v in pod["volumes"] if v["name"] == "secret-files")["secret"] == {
+        "secretName": "web-files", "optional": True, "defaultMode": 0o440}
+    es = next(d for d in docs if d["kind"] == "ExternalSecret" and d["metadata"]["name"] == "web-files")
+    assert "data" not in es["spec"] and es["spec"]["dataFrom"][0]["extract"]["decodingStrategy"] == "Base64"
+    assert es["spec"]["dataFrom"][0]["extract"]["key"].endswith("--web-files")
+    es["metadata"]["namespace"] = "shop"
+    es["spec"]["dataFrom"][0]["extract"]["key"] = "shop--web-files"
+    [entry] = openbao.component_secrets([es])
+    assert entry == {"namespace": "shop", "component": "web-files", "es": "web-files", "remote": "shop--web-files",
+                     "properties": [], "every": True}
+    assert valid_files_path("/secrets") and valid_files_path("/app/certs")
+    assert not any(valid_files_path(p) for p in ("/app", "/", "secrets", "/tmp", "/etc/ssl/..", "/a b", "/home/app"))

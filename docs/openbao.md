@@ -37,11 +37,22 @@ It can't seal OpenBao, change its storage or create a root token.
 The key names are environment variable names: `ConnectionStrings__Main` sets `ConnectionStrings:Main`,
 `Api__Url` sets `Api:Url`. They match the **Secret store keys** in the app's `HARDENING.md`.
 
-A key named like a file (`snow.pfx`) is a certificate with its private key that the app's repository has next to
-its code: the image leaves it out, and the app gets it mounted read-only where it reads it (`/app/<path>`). Its value
-is the file in base64, for example `base64 -w0 snow.pfx`. It starts with the repository's own file (a development
-certificate); put the environment's certificate in its place. Its password, when the app's settings have one
-(`...__CertificatePassword`), is a key of the same entry.
+### Files (certificates)
+
+Files an app reads, such as a certificate with its private key (`.pfx`), are in a second entry of the component:
+`apps/<namespace>/<component>-files`. Each key is a file name, its value the file in base64 (for example
+`base64 -w0 app.pfx`). Its password, when the app's settings have one (`...__CertificatePassword`), is a key of the
+component's own entry.
+
+- **A `.pfx` or `.p12` next to the app's code**: the image leaves it out, and the scan mounts it read-only where the app
+  reads it (`/app/<path>`). Its key starts with the repository's own file (a development certificate); put the
+  environment's certificate in its place.
+- **Any other file**: turn on **Files from the secret store** for the app's repository (Admin → Repositories → the
+  repository → Settings) with a folder, `/secrets` by default. After the next scan each component mounts all of its
+  files there, and its `-files` entry exists, empty. Add a key per file and point the app's setting at it
+  (`/secrets/app.pfx`), in `settings.yaml` or in the settings entry.
+
+Saving a file restarts the app (a file mounted on its own does not change in a running pod).
 
 | What you see | Where it comes from |
 | --- | --- |

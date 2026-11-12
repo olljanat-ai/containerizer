@@ -49,7 +49,7 @@ MOUNT = "apps"                              # KV version 2: apps/<namespace>/<co
 MANAGER = "containerizer-openbao"           # field manager of the copied keys in the store
 PROPERTIES = "containerizer.io/properties"  # the properties a component reads (sandbox_patches keeps them)
 SUFFIX = "-secrets"                         # the ExternalSecret of a component's settings (harden.externalize_secrets)
-FILES = "-files"                            # ... and of its files (certificates: base64), from the same remote key
+FILES = "-files"                            # ... and of its files (base64): entry apps/<namespace>/<component>-files
 ADMIN_POLICY, SYNC_POLICY = "cz-admin", "cz-sync"
 
 # administrators: the apps' values, the users and groups, policies and sign-in methods (SSO): everything except the
@@ -275,8 +275,10 @@ def _run(args: list[str], stdin: str | None = None, ok_missing: bool = False) ->
 
 
 def component_secrets(items: list[dict]) -> list[dict]:
-    """The components' settings ExternalSecrets among `items` (kubectl get externalsecrets -A): namespace, component,
-    remote key and the properties it reads (the annotation the sandbox patch keeps, or its data list)."""
+    """The components' settings and files ExternalSecrets among `items` (kubectl get externalsecrets -A): namespace,
+    component (the entry's name: <component> for its settings, <component>-files for its files), the ExternalSecret,
+    remote key and the properties it reads (the annotation the sandbox patch keeps, or its data list; none when it
+    reads every key: `every`)."""
     out: dict[tuple, dict] = {}
     for es in items:
         meta, spec = es.get("metadata") or {}, es.get("spec") or {}
@@ -291,13 +293,14 @@ def component_secrets(items: list[dict]) -> list[dict]:
         remotes.discard(None)
         if len(remotes) != 1:
             continue
-        component, remote = name[:-len(suffix)], remotes.pop()
+        component, remote = (name[:-len(suffix)] if suffix == SUFFIX else name), remotes.pop()
         # only the namespace's own key: an ExternalSecret naming another namespace's key must not let this
         # namespace's operators write that one (the store's Role keeps it from reading it anyway)
         if remote != _remote_key(ns, component):
             continue
         props = [p for p in ann.split(",") if p] if ann is not None else [d.get("secretKey") for d in data]
-        c = out.setdefault((ns, component), {"namespace": ns, "component": component, "remote": remote, "properties": []})
+        c = out.setdefault((ns, component), {"namespace": ns, "component": component, "es": name, "remote": remote,
+                                             "properties": [], "every": not data})
         c["properties"] = sorted(set(c["properties"]) | {p for p in props if p})
     return list(out.values())
 
@@ -377,6 +380,9 @@ def sync_component(bao: Bao, store_ns: str, c: dict, log=print) -> dict:
     owners, have = _owners(secret or {}), _decode(secret)
     system = {k for k, m in owners.items() if _system(m)}
     added = [p for p in c["properties"] if p not in data and p not in system]
+    if got is None and not version and not c["properties"]:
+        # an entry to add keys to (a component's files): there before anyone adds one, so people see where
+        bao.call("POST", f"{MOUNT}/data/{path}", {"options": {"cas": 0}, "data": {}})
     seed, seeded = seed_values(c["namespace"], c["component"]), _json_file(SEEDED_PATH)
     done = set(seeded.get(path) or [])
     fill = {p: seed[p] for p in c["properties"] if p in seed and p not in done and p not in system
@@ -397,6 +403,9 @@ def sync_component(bao: Bao, store_ns: str, c: dict, log=print) -> dict:
     values = {k: str(v) for k, v in data.items() if v not in ("", None) and k not in system}
     mine = {k for k, m in owners.items() if m == MANAGER}
     # a changed value, one we do not own yet (set by hand: emptying it in OpenBao must remove it), or one emptied
+    if c.get("every") and secret is None:
+        _apply_store(store_ns, c["remote"], values, True)     # the ExternalSecret reads every key: the Secret must exist
+        return {"added": len(added), "copied": len(values), "changed": bool(values)}
     if any(have.get(k) != v or owners.get(k) != MANAGER for k, v in values.items()) or mine - set(values):
         _apply_store(store_ns, c["remote"], values, secret is not None)
         return {"added": len(added), "copied": len(values), "changed": True}
@@ -433,12 +442,11 @@ def apply_now(changed: list[dict], log=print, wait: float = 60.0) -> None:
     import time
     stamp = str(int(time.time()))
     for c in changed:
-        for suffix in (SUFFIX, FILES):
-            _run(["-n", c["namespace"], "annotate", "externalsecrets.external-secrets.io", c["component"] + suffix,
-                  f"force-sync={stamp}", "--overwrite"], ok_missing=True)
+        _run(["-n", c["namespace"], "annotate", "externalsecrets.external-secrets.io", c.get("es") or c["component"] + SUFFIX,
+              f"force-sync={stamp}", "--overwrite"], ok_missing=True)
     end = time.monotonic() + wait
     for c in changed:
-        name = c["component"] + SUFFIX
+        name = c.get("es") or c["component"] + SUFFIX
         while True:     # synced after the annotation (status.refreshTime is RFC 3339, seconds)
             raw = _run(["-n", c["namespace"], "get", "externalsecrets.external-secrets.io", name, "-o", "json"],
                        ok_missing=True)
@@ -449,7 +457,7 @@ def apply_now(changed: list[dict], log=print, wait: float = 60.0) -> None:
             time.sleep(3)
         raw = _run(["-n", c["namespace"], "get", "deployments.apps,statefulsets.apps", "-o", "json"], ok_missing=True)
         for w in (json.loads(raw).get("items") or []) if raw else []:
-            if _uses(w, name) or _uses(w, c["component"] + FILES):
+            if _uses(w, name):
                 _run(["-n", c["namespace"], "rollout", "restart", f"{w['kind'].lower()}/{w['metadata']['name']}"],
                      ok_missing=True)
                 log(f"openbao: {c['namespace']}/{w['metadata']['name']} restarted with its new values")

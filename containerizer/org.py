@@ -113,6 +113,8 @@ class OrgOptions:
                                         # an administrator enables them one by one)
     llm_heavy: bool = False             # platform migrations and the sandbox tester ask the LLM as often as they need
                                         # (replatform.py); the worker sets it only when the appliance allows it
+    files_mounts: dict | None = None    # project/repository -> folder where each component mounts its files from the
+                                        # secret store (OrgRepository.SecretFilesPath; generate.files_plan)
     splits: dict | None = None          # project/repository -> folder pattern ("apps/*"): one application per
                                         # folder (the worker: OrgRepository.SplitPath from the state's sync)
     parallel: int = 1                   # repositories processed at the same time, each in its own process (1..MAX_PARALLEL)
@@ -605,20 +607,22 @@ def write_secret_seed(base: Path, ns: str, comps) -> None:
         values = secret_starts(c.project, list(dict.fromkeys(keys))) if keys and c.project.kind_hint == "dotnet" else {}
         plan: dict = {}
         cert_plan(c, plan)
+        files = {}                                          # the files entry: <component>-files
         for cf in plan.get("cert_files") or []:
             try:
                 raw = (c.project.dir / cf["path"]).read_bytes()
             except OSError:
                 continue
             if len(raw) <= 64 * 1024:                       # a certificate, not something else with that name
-                values[cf["key"]] = base64.b64encode(raw).decode()
-        if not values:
-            continue
-        d.mkdir(parents=True, exist_ok=True, mode=0o700)
-        base.chmod(0o700)
-        fd = os.open(d / f"{k8s_name(c.name)}.json", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            fh.write(json.dumps(values))
+                files[cf["key"]] = base64.b64encode(raw).decode()
+        for entry, vals in ((k8s_name(c.name), values), (f"{k8s_name(c.name)}-files", files)):
+            if not vals:
+                continue
+            d.mkdir(parents=True, exist_ok=True, mode=0o700)
+            base.chmod(0o700)
+            fd = os.open(d / f"{entry}.json", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                fh.write(json.dumps(vals))
 
 
 SANDBOX_OVERLAY = "gitops/sandbox"      # an app folder's overlay of its gitops/flux for the sandbox
@@ -1139,6 +1143,19 @@ APP_MARKERS = ("*.sln", "*.slnx", "package.json", "pom.xml", "build.gradle", "bu
 SKIP_DIRS = {".git", "node_modules", "bin", "obj", "target", "dist", "build", "vendor", "packages", ".vs", ".idea"}
 
 
+FILES_PATH_RE = re.compile(r"/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*")
+# folders a mount must not hide: the system's, the app's own (/app) and its home
+FILES_PATH_DENY = {"/app", "/bin", "/boot", "/dev", "/etc", "/home", "/home/app", "/lib", "/lib64", "/opt", "/proc",
+                   "/root", "/run", "/sbin", "/srv", "/sys", "/tmp", "/usr", "/var"}
+
+
+def valid_files_path(path: str) -> bool:
+    """Where a repository's components mount their files (OrgRepository.SecretFilesPath): an absolute folder, at most
+    200 characters, no `..`, not a folder of the system or of the app itself (/app/certs is fine, /app is not)."""
+    return (bool(path) and len(path) <= 200 and bool(FILES_PATH_RE.fullmatch(path)) and ".." not in path.split("/")
+            and path.rstrip("/") not in FILES_PATH_DENY)
+
+
 def valid_split(pattern: str) -> bool:
     """A folder pattern relative to the repository: no absolute paths, no `..`, at most 200 characters."""
     return bool(pattern) and bool(SPLIT_RE.fullmatch(pattern)) and not pattern.startswith("/")
@@ -1587,6 +1604,12 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
     names = {k8s_name(c.name): c for c in keep}
     waived: dict = {}
     g = None
+    mount = (o.files_mounts or {}).get(f"{res.project}/{res.repo}")
+    for c in keep:                          # Admin -> Repositories -> Files from the secret store (generate.files_plan)
+        if mount:
+            c.facts["files_mount"] = mount
+        else:
+            c.facts.pop("files_mount", None)
     while keep:
         if gen.exists():
             shutil.rmtree(gen)
@@ -1839,6 +1862,7 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
     log(f"{o.org}: {len(listed)} repositories" + (f", {len(repos)} selected by the filters" if len(repos) != len(listed) else ""))
     admin = o.state.sync(listed, names) if o.state else {}
     splits = {**(o.splits or {}), **(getattr(o.state, "splits", None) or {})}
+    o.files_mounts = {**(o.files_mounts or {}), **(getattr(o.state, "files_mounts", None) or {})} or None
     if o.state:
         chosen = {r.key for r in repos}
         for r in listed:

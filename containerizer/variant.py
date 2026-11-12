@@ -174,7 +174,8 @@ def load_target(conn, payload: dict) -> dict:
         raise Skip("no output repository: the organization scan that assessed the application writes no output "
                    "repository, so the sandbox cannot pull a variant")
     app = str(src.get("dir") or "").rsplit("/", 1)[-1]
-    repo = _rows(conn, "SELECT TOP (1) ProjectName, Name, CloneUrl, WebUrl, DefaultBranch, AppName FROM cz.OrgRepository "
+    repo = _rows(conn, "SELECT TOP (1) ProjectName, Name, CloneUrl, WebUrl, DefaultBranch, AppName, SecretFilesPath "
+                       "FROM cz.OrgRepository "
                        "WHERE ScanId = %s AND AppName = %s ORDER BY RepositoryId DESC", (int(src["scan_id"]), app))
     if not repo:
         raise Skip("no output repository: the organization scan no longer lists the application's repository")
@@ -237,6 +238,9 @@ def _open(connect, key, payload: dict, work: Path, deploying: bool = True):
     if not host_allowed(scan["OutputRepo"], hosts):
         raise Skip("no output repository access: its host is not allowed on this machine (CONTAINERIZER_WORKER_HOSTS)")
     o = options(scan, write, work)
+    r = target["repo"]
+    if r.get("SecretFilesPath"):            # Admin -> Repositories -> Files from the secret store
+        o.files_mounts = {f"{r['ProjectName']}/{r['Name']}": r["SecretFilesPath"]}
     return target, o
 
 

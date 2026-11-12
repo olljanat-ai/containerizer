@@ -9,7 +9,8 @@ on the appliance a locked-down namespace of the same cluster. Git only holds the
 | What | ExternalSecret | Remote key | Properties |
 | --- | --- | --- | --- |
 | Connection strings, secret settings and secret-looking settings with release-pipeline tokens (`#{X}#`, `__X__`; the others are in the ConfigMap `<component>-settings`) of a component | `<component>-secrets` | `<namespace>--<component>` | one per environment variable, e.g. `ConnectionStrings__Main` |
-| Key and certificate files (mounted under `/secrets`), Kerberos keytab | `<component>-files`, `<component>-keytab` | `<namespace>--<component>` | the file names |
+| Key and certificate files: `.pfx`/`.p12` next to the code (mounted where the app reads them), files named by a Windows path (under `/secrets`), every file when the repository mounts them all (Admin → Repositories) | `<component>-files` | `<namespace>--<component>-files` | the file names; values base64 |
+| Kerberos keytab | `<component>-keytab` | `<namespace>--<component>` | the file name |
 | Flux `GitRepository` credential | `<namespace>-git` | `<namespace>--cz-git` | `username` + `password`, or `identity` + `known_hosts` |
 | Flux commit verification keys | `<namespace>-git-gpg` | `<namespace>--cz-git-gpg` | the public keys |
 | Registry read credential (Flux `OCIRepository`/`ImageRepository`; the image pull secret of an organization scan) | `<namespace>-registry`, the pull secret's name | `<namespace>--cz-registry` | `.dockerconfigjson` |

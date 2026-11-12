@@ -57,13 +57,15 @@ def es(ns, name, props=None, annotated=None):
 def test_component_secrets_from_patched_and_plain_external_secrets():
     items = [es("shop", "web-secrets", annotated="Api__Url,Smtp__Auth"),
              es("shop", "api-secrets", ["ConnectionStrings__Main"]),
-             es("shop", "web-files", ["cert.pfx"]),                       # files: not settings
+             es("shop", "web-files", ["cert.pfx"]),                       # files of another remote key: not its own
              es("flux-system", "x-secrets", ["a"]),                       # the appliance's own
              {"metadata": {"name": "web-secrets", "namespace": "evil"},   # another namespace's key: never written
               "spec": {"data": [{"secretKey": "a", "remoteRef": {"key": "shop--web", "property": "a"}}]}}]
     assert ob.component_secrets(items) == [
-        {"namespace": "shop", "component": "web", "remote": "shop--web", "properties": ["Api__Url", "Smtp__Auth"]},
-        {"namespace": "shop", "component": "api", "remote": "shop--api", "properties": ["ConnectionStrings__Main"]}]
+        {"namespace": "shop", "component": "web", "es": "web-secrets", "remote": "shop--web",
+         "properties": ["Api__Url", "Smtp__Auth"], "every": True},
+        {"namespace": "shop", "component": "api", "es": "api-secrets", "remote": "shop--api",
+         "properties": ["ConnectionStrings__Main"], "every": False}]
 
 
 def store_secret(values: dict, owners: dict):
@@ -353,3 +355,19 @@ def test_the_scan_leaves_the_development_values_outside_git(tmp_path):
     assert json.loads(f.read_text()) == {"ConnectionStrings__Main": "Server=db;Database=a;User Id=u;Password=dev",
                                          "Snow__ClientSecret": "dev-secret"}
     assert f.stat().st_mode & 0o777 == 0o600
+
+
+def test_a_files_entry_exists_before_anyone_adds_a_file(kube):
+    """A component whose repository mounts its files (every key): its OpenBao entry <component>-files is made empty, so
+    people see where to add files, and the store's Secret exists so the ExternalSecret syncs; a file added in OpenBao
+    (base64) is copied there."""
+    bao = FakeBao()
+    c = {"namespace": "shop", "component": "web-files", "es": "web-files", "remote": "shop--web-files",
+         "properties": [], "every": True}
+    ob.sync_component(bao, "containerizer-secrets", c, log=lambda m: None)
+    assert bao.kv["shop/web-files"] == ({}, 1)
+    assert kube["applied"][-1]["metadata"]["name"] == "shop--web-files" and "data" not in kube["applied"][-1]
+    bao.kv["shop/web-files"] = ({"app.pfx": "MIIK"}, 2)
+    kube["secret"] = {"metadata": {"name": "shop--web-files", "managedFields": []}, "data": {}}
+    r = ob.sync_component(bao, "containerizer-secrets", c, log=lambda m: None)
+    assert r["copied"] == 1 and kube["applied"][-1]["data"] == {"app.pfx": base64.b64encode(b"MIIK").decode()}

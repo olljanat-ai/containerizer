@@ -411,13 +411,21 @@ def externalize_secrets(docs: list[dict], component: str, labels: dict, plan: di
     for name in [n for n in wanted if n.endswith(DATAPROTECTION_SUFFIX)]:
         del wanted[name]
         docs.extend(dataprotection_docs(name, labels))
-    certs = {cf["key"] for cf in plan.get("cert_files") or []}
     for name, keys in sorted(wanted.items()):
+        if name == f"{component}-files":
+            # the component's files: their own remote key <namespace>--<component>-files, every value base64 (binary
+            # certificates); every key of it when the repository mounts them all (generate.files_plan)
+            remote = eso.remote_key(app, name)
+            if plan.get("files_mount"):
+                docs.append(eso.external_secret(name, app, remote, [], labels, base64={"*"},
+                                                comment=f"every key of remote key {remote} is a file in "
+                                                        f"{plan['files_mount']} (base64 in the store); never from Git"))
+            else:
+                docs.append(eso.external_secret(name, app, remote, keys, labels, base64=set(keys)))
+            continue
         # unknown keys: the whole remote secret of that name
         remote = eso.remote_key(app, component if keys else name)
-        # certificate files are base64 in the store (binary; a key of the component's OpenBao entry)
-        docs.append(eso.external_secret(name, app, remote, keys, labels,
-                                        base64={k for k in keys if k in certs} if name.endswith("-files") else None))
+        docs.append(eso.external_secret(name, app, remote, keys, labels))
 
 
 DP_KEY_XML = """<?xml version="1.0" encoding="utf-8"?>
