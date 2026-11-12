@@ -50,12 +50,13 @@ URL_RE = re.compile(r"\b(?P<scheme>https?|wss?|amqps?|rediss?|mongodb(?:\+srv)?|
                     r"mqtts?|kafka|postgres(?:ql)?|mysql|jdbc:sqlserver)://(?:[^@/\s\"'<>]*@)?"
                     r"(?P<host>\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)"
                     r"(?::(?P<port>\d{1,5}))?", re.I)
-# connection strings: "Server=db.example.com,1433", "Data Source=tcp:db,1433", "Host=pg;Port=5433"
+# connection strings: "Server=db.example.com,1433", "Data Source=tcp:db,1433", "Host=pg;Port=5433", and Db2's
+# "Server=db2.example.com:50000"
 CONN_RE = re.compile(r"(?i)\b(?:Server|Data Source|Address|Addr|Network Address)\s*=\s*(?:tcp:)?"
                      # not code: `address = configuration["Proxy:Address"]` names no host (no [ or ( after it, and
                      # the whole word, so backtracking cannot shorten it into one)
                      r"(?P<host>[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)(?![A-Za-z0-9.\-\[(])"
-                     r"(?P<inst>\\{1,2}[\w$]+)?(?:\s*,\s*(?P<port>\d{1,5}))?")
+                     r"(?P<inst>\\{1,2}[\w$]+)?(?:\s*[,:]\s*(?P<port>\d{1,5}))?")
 HOSTPORT_RE = re.compile(r"(?i)\bHost\s*=\s*(?P<host>[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)\s*;"
                          r"(?:[^;\"]*;)*?\s*Port\s*=\s*(?P<port>\d{1,5})")
 # "Host=pg;Database=shop;Username=app" (Npgsql) and "host=mq;virtualHost=/;username=app" (EasyNetQ) without a port

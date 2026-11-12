@@ -95,6 +95,9 @@ def test_code_that_reads_a_setting_names_no_host():
     from containerizer.connectivity import line_hosts
     assert line_hosts('var address = configuration["Proxy:Address"];') == []
     assert line_hosts("var server = GetServer(name);") == []
+    # Db2 puts the port after a colon
+    assert line_hosts('"Main": "Server=db2.example.com:50000;Database=APP;UID=a;PWD=b"') == [
+        ("db2.example.com", 50000, "connection-string")]
     assert [h for h, *_ in line_hosts('"Server=sql.corp.local\\INST,1433;Database=x"')] == ["sql.corp.local"]
     assert [h for h, *_ in line_hosts("Data Source=db01;Initial Catalog=x")] == ["db01"]
 

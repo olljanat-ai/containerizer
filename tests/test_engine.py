@@ -519,7 +519,8 @@ def test_release_transform_file_tokens_and_a_db2_connection_string(tmp_path):
     from containerizer import labservices
     from containerizer.generate import k8s_manifests
     web_app(tmp_path, packages="""<PackageReference Include="Net.IBM.Data.Db2-lnx" Version="9.0.0.100" />
-        </ItemGroup><ItemGroup><Content Remove="appsettings.Release.json" /></ItemGroup>
+        </ItemGroup><ItemGroup><None Include="README.md" /><Content Update="web.config" />
+        <Content Remove="appsettings.Release.json" /></ItemGroup>
         <ItemGroup><None Include="appsettings.Release.json"><DependentUpon>appsettings.json</DependentUpon>
           <IsTransformFile>true</IsTransformFile></None>""")
     write(tmp_path, "src/Web/appsettings.json", """

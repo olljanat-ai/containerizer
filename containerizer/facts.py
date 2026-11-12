@@ -154,7 +154,9 @@ def _merge(base, over):
 
 # a settings file the build transforms appsettings.json with (SlowCheetah, `dotnet publish -c Release`):
 # <None Include="appsettings.Release.json"><IsTransformFile>true</IsTransformFile></None> in the project file
-TRANSFORM_ITEM = re.compile(r'<(None|Content)\s+(?:Include|Update)\s*=\s*"([^"]*)"[^>]*>(.*?)</\1\s*>', re.S | re.I)
+# (an item that closes itself, <None Include="x" />, has no body: it must not swallow the next item's)
+TRANSFORM_ITEM = re.compile(r'<(None|Content)\s+(?:Include|Update)\s*=\s*"([^"]*)"[^>]*(?<!/)>(.*?)</\1\s*>',
+                            re.S | re.I)
 
 
 def release_transform(p) -> Path | None:
