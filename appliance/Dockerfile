@@ -32,7 +32,7 @@ RUN apt-get update \
     dracut-core dracut-live dracut-network dracut-squash \
     grub2-common grub-efi-amd64-signed shim-signed \
     btrfs-progs btrfsmaintenance dosfstools e2fsprogs fdisk gdisk parted lvm2 dmsetup mtools squashfs-tools xorriso \
-    rsync findutils kmod kbd tzdata less vim bash-completion \
+    rsync findutils kmod kbd tzdata less vim bash-completion jq \
     ca-certificates curl gpg iproute2 iputils-ping net-tools bridge-utils nftables iptables conntrack dnsmasq-base \
     openssh-server openssh-client \
     apparmor docker.io docker-cli docker-buildx git caddy \
@@ -45,7 +45,7 @@ RUN apt-get update \
  && echo > /etc/motd \
  && ln -sf /usr/bin/grub-editenv /usr/bin/grub2-editenv \
  && systemctl mask systemd-journald-audit.socket \
- && test -x /usr/bin/docker && command -v dockerd && command -v bash-static && busybox --list | grep -qx sleep \
+ && test -x /usr/bin/docker && command -v dockerd && command -v jq && command -v bash-static && busybox --list | grep -qx sleep \
  && test "$(id -u caddy)" = 910 && test "$(id -u dnsmasq)" = 911 && test "$(getent group docker | cut -d: -f3)" = 912
 
 # k3s (single binary) and the Flux install manifest, verified by checksum; cosign for upgrade signatures

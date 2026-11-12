@@ -10,6 +10,9 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- **`jq` on the appliance** (OS image: a minor release). The OpenBao container still has none: pipe the appliance's
+  `bao` into it, `bao read -format=json sys/auth | jq ...`.
+
 ## 0.38.0 (2026-11-12)
 
 - **Developers and ownership** ([Developers and ownership](docs/developers.md)), **Admin → Developers**
