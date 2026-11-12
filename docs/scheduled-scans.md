@@ -187,8 +187,9 @@ it removes the application's files from the output repository and the sandbox pr
 the organization is running, the next run does it.
 
 To start over with it, enable the repository again on **Admin → Repositories** and scan it: it is assessed as a new
-application. The change history keeps the deletion; secret values in OpenBao (`apps/<namespace>/...`) stay until you
-delete them there.
+application. The change history keeps the deletion. On the appliance its secret values go too: its OpenBao entries
+(`apps/<namespace>/...`), policy and the values copied to the secret store, once its namespace is gone from the
+sandbox ([OpenBao](openbao.md#forgotten-applications)).
 
 ## What happens to each repository
 

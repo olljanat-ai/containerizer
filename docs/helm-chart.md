@@ -82,13 +82,16 @@ each component's `deploy_mode` (with `deploy_mode_reason` when it stayed manifes
 ```
 charts/containerizer-app/0.33.0/        the chart, once per repository and version
 <org>/<project>/<repo>/
-  kustomization.yaml                    lists <component>/helmrelease.yaml (no images: entry for it)
+  kustomization.yaml                    lists <component>/helmrelease.yaml (no images: entry for it) and
+                                        <component>/settings.yaml
   <component>/helmrelease.yaml          HelmRelease: chart path and version, values
+  <component>/settings.yaml             ConfigMap <component>-settings, when the component has one
   gitops/flux/git/sync.yaml             the same GitRepository serves the chart
 ```
 
 The values have `component`, `partOf`, `image` (with the Flux image automation markers for name, tag and digest) and
-`objects`: one entry per object, holding only what differs from the chart's `values.yaml`. Maps merge key by key, a
+`objects`: one entry per object (except the settings ConfigMap: it is in `settings.yaml`, a plain file you edit
+per environment, applied by the app's Kustomization, not by Helm), holding only what differs from the chart's `values.yaml`. Maps merge key by key, a
 list replaces the default list, `~unset` removes a default key, and `"@<name>"` stands for a shared fragment (the DNS
 egress rule, the health probes, ...). The HelmRelease runs as the namespace's `<namespace>-reconciler`
 ServiceAccount, like the Kustomization. helm-controller is part of the default Flux install, and the appliance runs it.

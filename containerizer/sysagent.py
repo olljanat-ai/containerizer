@@ -32,6 +32,8 @@ request again before acting on it:
             again; the answer goes to answers/<id>.json, readable by the web UI's group only.
 - labmail: Admin -> Lab mail (labmail.py): the mail an application in the sandbox sent, read from its
             lab mailbox; answered the same way.
+- openbao-forget: a forgotten application's namespace: the OpenBao sync deletes its entries, policy and copied
+            values once the namespace is pruned (openbao.py).
 - local-llm: the built-in LLM on or off (local_llm.py checks the RAM and the disk again); while its model
             downloads, huggingface.co and hf.co are on the egress allow-list.
 
@@ -54,6 +56,8 @@ Commands (also for an administrator on the console or over SSH):
     network static <address/prefix> <gateway> <dns> [<dns> ...]
                                a static address (netconfig.py), applied at once and kept over restarts
     network dhcp               back to DHCP (the default)
+    openbao-policy             bring the OpenBao sync job's policy up to date (asks for an OpenBao administrator's
+                               user name and password; needed once after 0.41.3 when admin's password was changed)
 
 On the appliance the command `cz` runs these (/usr/bin/cz, root): `cz network show`.
 """
@@ -1778,6 +1782,9 @@ def process() -> int:
                 from .labmail import Agent as MailAgent, agent_request as mail_request
                 mail_request(req, P.run / "answers", MailAgent(kube=Kubectl("k3s kubectl", str(P.kubeconfig)),
                                                                lab_status=P.run / "lab-status.json"))
+            elif action == "openbao-forget":    # Admin -> Applications -> Forget application (openbao.py)
+                from .openbao import request_forget
+                request_forget(str(req.get("namespace") or ""))
             elif action == "sandbox-https":
                 save_sandbox_https(req, user, name)
                 publish(https_state=sandbox_https_status())
@@ -1897,6 +1904,17 @@ def main(argv=None) -> int:
             return 0
         if cmd == "sql-env":
             write_sql_env()
+            return 0
+        if cmd == "openbao-policy" and len(argv) == 1:
+            import getpass
+            from . import openbao
+            user = input("OpenBao administrator [admin]: ").strip() or "admin"
+            try:
+                openbao.write_sync_policy(openbao.login(openbao.ADDR, user, getpass.getpass("Password: ")))
+            except openbao.BaoError as ex:
+                log(f"not changed: {ex}")
+                return 1
+            print("the OpenBao sync job's policy is up to date")
             return 0
         if cmd == "sandbox-https" and argv[1:2] == ["sync"]:
             print(sync_sandbox_https())

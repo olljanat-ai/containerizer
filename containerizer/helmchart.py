@@ -43,6 +43,24 @@ CHARTS_DIR = "charts"
 PACKAGED = Path(__file__).resolve().parent / "chart" / CHART
 HELM_API = "helm.toolkit.fluxcd.io/v2"
 HELMRELEASE = "helmrelease.yaml"
+SETTINGS = "settings.yaml"      # chart mode: the component's settings ConfigMap, in a file of its own
+
+
+def is_settings(d: dict) -> bool:
+    """The ConfigMap <component>-settings (generate.k8s_manifests): values a person sets per environment."""
+    return d.get("kind") == "ConfigMap" and str((d.get("metadata") or {}).get("name") or "").endswith("-settings")
+
+
+def settings_text(doc: dict) -> str:
+    from .generate import _yaml_docs
+    return _yaml_docs([doc])
+
+
+def _settings_docs(cdir: Path) -> list[dict]:
+    try:
+        return [d for d in yaml.safe_load_all((cdir / SETTINGS).read_text()) if isinstance(d, dict)]
+    except (OSError, yaml.YAMLError):
+        return []
 MANIFESTS = "k8s.yaml"
 MODES = ("chart", "manifests")
 MODE_ENV = "CONTAINERIZER_DEPLOY_MODE"
@@ -505,7 +523,7 @@ def component_docs(cdir: Path) -> list[dict]:
     spec = (hr.get("spec") or {}).get("chart", {}).get("spec") or {}
     chart = find_chart(cdir, str(spec.get("chart") or "")) if spec.get("chart") else None
     try:
-        return render((hr.get("spec") or {}).get("values") or {}, chart)
+        return render((hr.get("spec") or {}).get("values") or {}, chart) + _settings_docs(cdir)
     except (KeyError, TypeError, AttributeError):
         return []
 
@@ -593,6 +611,8 @@ def convert_app(app_dir: Path, ns: str, folders: list[str], mode: str, digests: 
             continue
         raw = (cdir / MANIFESTS).read_text()
         docs = load_docs_with_comments(raw)
+        own = [d for d in docs if is_settings(d)]
+        docs = [d for d in docs if not is_settings(d)]
         comments = [f"{d.get('kind')}/{(d.get('metadata') or {}).get('name')}: {d.pop('_comment')}"
                     for d in docs if d.get("_comment")]
         image = _image_values(docs, digests or {})
@@ -610,6 +630,9 @@ def convert_app(app_dir: Path, ns: str, folders: list[str], mode: str, digests: 
         (cdir / HELMRELEASE).write_text(text)
         (cdir / MANIFESTS).unlink()
         moved[f"{f}/{MANIFESTS}"] = f"{f}/{HELMRELEASE}"
+        if own:
+            (cdir / SETTINGS).write_text(settings_text(own[0]))
+            moved[f"{f}/{MANIFESTS}"] += f"\n- {f}/{SETTINGS}"
         if image.get("repository"):
             repos.add(image["repository"])
         out[f] = {"mode": "chart"}
@@ -641,6 +664,11 @@ def write_component_docs(cdir: Path, docs: list[dict]) -> str:
     if hr is None:
         (cdir / MANIFESTS).write_text(_yaml_docs(docs))
         return MANIFESTS
+    if (cdir / SETTINGS).is_file():
+        own = [d for d in docs if is_settings(d)]
+        docs = [d for d in docs if not is_settings(d)]
+        if own and own != _settings_docs(cdir):
+            (cdir / SETTINGS).write_text(settings_text(own[0]))
     spec = hr.get("spec") or {}
     vals = spec.get("values") or {}
     chart_spec = (spec.get("chart") or {}).get("spec") or {}

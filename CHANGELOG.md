@@ -10,6 +10,23 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.41.3 (2026-11-12)
+
+- **Forget application removes the application's secret values.** Its OpenBao entries (`apps/<namespace>/...`, every
+  version), its policy `app-<namespace>` and the values copied to the secret store go once the sandbox has removed
+  its namespace. Until then the sync leaves the namespace alone, so the placeholders are not written again. The
+  sync job's policy may now delete; an older appliance's is updated once, signed in as the appliance's `admin`. If
+  you changed that password, run `cz openbao-policy` as root once (the log says so).
+- **The sandbox check understands Helm mode.** A component deployed with the shared chart was "not deployed" as soon
+  as Flux had applied its HelmRelease, before helm-controller made the Deployment. Now it waits while Helm installs it
+  and, when Helm fails, shows the HelmRelease's own message. The verifier may read HelmReleases for that. kubectl's
+  `open /etc/rancher/k3s/config.yaml: permission denied` warnings are no longer part of the error shown.
+- **Chart mode: the settings ConfigMap is a file of its own.** `<component>/settings.yaml` (listed in the app's
+  `kustomization.yaml`) holds the ConfigMap `<component>-settings` instead of an entry in the HelmRelease's values,
+  so the values to set per environment are easy to find and edit.
+- **OpenBao recovery steps work with OpenBao 2.7.** It refuses `generate-root` without a token: a lost sync token is
+  now made again by an administrator (docs/openbao.md#backup-and-recovery).
+
 ## 0.41.2 (2026-11-12)
 
 - **`appsettings.Release.json` transforms are found in real project files.** 0.41.1 missed the transform item when
