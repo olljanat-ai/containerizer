@@ -10,6 +10,12 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- **The sandbox is a cluster under `clusters/`.** The output repository's sandbox folder is `clusters/sandbox/` (was
+  `sandbox/`), next to development, acceptance and production. `sandbox/flux/apps/kustomization.yaml` stays as a
+  pointer to it, so the appliance's Flux (it reads `./sandbox/flux/apps`) and clusters bootstrapped before keep working.
+- **Readable cluster kustomizations.** The patches in `clusters/*/flux/apps/kustomization.yaml` (and the clusters' app
+  overlays) are YAML blocks, also the patches nested in them, instead of JSON in a quoted string.
+
 ## 0.40.0 (2026-11-12)
 
 - **Secrets ↗ without OpenBao's sign-in page.** With OIDC set up in OpenBao, the link now signs in directly: the

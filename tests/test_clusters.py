@@ -39,11 +39,11 @@ def test_development_runs_every_app_and_production_only_listed_ones_pinned(tmp_p
     app(root, "acme/p/billing", "p-billing", helm=True)
     org.write_sandbox(root, URL, BRANCH)
     c = root / "clusters"
-    assert sorted(x.name for x in c.iterdir() if x.is_dir()) == ["acceptance", "development", "production"]
+    assert sorted(x.name for x in c.iterdir() if x.is_dir()) == ["acceptance", "development", "production", "sandbox"]
 
     dev = load(c / "development" / "flux" / "apps" / "kustomization.yaml")
     assert dev["resources"] == ["../../../../acme/p/billing/gitops/flux", "../../../../acme/p/shop/gitops/flux"]
-    paths = {p["target"]["name"]: json.loads(p["patch"])[0]["value"] for p in dev["patches"]}
+    paths = {p["target"]["name"]: yaml.safe_load(p["patch"])[0]["value"] for p in dev["patches"]}
     assert paths == {"p-shop": "./clusters/development/apps/p-shop", "p-billing": "./clusters/development/apps/p-billing"}
     ov = load(c / "development" / "apps" / "p-shop" / "kustomization.yaml")
     assert ov["resources"] == ["../../../../acme/p/shop"] and ov["components"] == ["custom"] and "images" not in ov
@@ -67,10 +67,10 @@ def test_development_runs_every_app_and_production_only_listed_ones_pinned(tmp_p
         {"name": "localhost:5000/sandbox/p-shop/api", "newName": "registry.example.com/apps/p-shop/api"}]
     hc = load(prod / "apps" / "p-billing" / "custom" / "kustomization.yaml")["patches"][0]
     assert hc["target"]["kind"] == "HelmRelease" and hc["target"]["name"] == "web"
-    assert json.loads(hc["patch"]) == [{"op": "add", "path": "/spec/values/image/tag", "value": "1.1"},
+    assert yaml.safe_load(hc["patch"]) == [{"op": "add", "path": "/spec/values/image/tag", "value": "1.1"},
                                        {"op": "add", "path": "/spec/values/image/digest", "value": "sha256:aa"}]
     hr = load(prod / "apps" / "p-billing" / "kustomization.yaml")["patches"][0]
-    assert json.loads(hr["patch"])[0]["value"] == "registry.example.com/apps/p-billing/web"
+    assert yaml.safe_load(hr["patch"])[0]["value"] == "registry.example.com/apps/p-billing/web"
 
     # yours: a newer build and a promotion edit survive the next run
     (root / "acme/p/shop/kustomization.yaml").write_text(yaml.safe_dump(
@@ -105,9 +105,9 @@ def test_cluster_names_and_the_sandbox_index_are_unchanged(tmp_path, monkeypatch
     monkeypatch.setenv("CONTAINERIZER_CLUSTERS", "Dev, sandbox, qa,dev")
     assert clusters.names() == ["dev", "qa"]
     org.write_sandbox(root, URL, BRANCH)
-    assert sorted(x.name for x in (root / "clusters").iterdir() if x.is_dir()) == ["dev", "qa"]
-    assert load(root / "sandbox" / "flux" / "apps" / "kustomization.yaml")["resources"] == [
-        "../../../acme/p/shop/gitops/flux"]
+    assert sorted(x.name for x in (root / "clusters").iterdir() if x.is_dir()) == ["dev", "qa", "sandbox"]
+    assert load(root / "clusters" / "sandbox" / "flux" / "apps" / "kustomization.yaml")["resources"] == [
+        "../../../../acme/p/shop/gitops/flux"]
     assert [x[0] for x in org._apps_in(root)] == ["acme/p/shop"]
     monkeypatch.setenv("CONTAINERIZER_CLUSTERS", "none")
     assert clusters.names() == []

@@ -6,7 +6,7 @@ deploys its own identity provider into the sandbox cluster. Every component that
 **OpenID Connect**, **SAML 2.0** or **WS-Federation** is registered there and pointed at it, through
 configuration only. The app's code is never changed. Test users and groups are created too.
 
-Everything is declarative and lives in the output repository under `sandbox/idp/`, next to the apps.
+Everything is declarative and lives in the output repository under `clusters/sandbox/idp/`, next to the apps.
 Flux applies it with the apps; the secrets come from the secret store
 ([External Secrets](external-secrets.md)).
 
@@ -19,7 +19,7 @@ Flux applies it with the apps; the secrets come from the secret store
 | SAML 2.0 | entity ID `https://containerizer-idp.<domain>`, metadata `…/identity/metadata/saml2` |
 | WS-Federation | metadata `…/wsfed-metadata/FederationMetadata/2007-06/FederationMetadata.xml`, passive endpoint `…/wsfed` |
 | Test users | `alice` (group `sandbox-admins`), `bob` and `carol` (`sandbox-users`), e-mail `<user>@<domain>` |
-| Where the details are shown | application page of the results UI (**Sign-in in the sandbox**), `sandbox/idp/README.md`, each component's `idp.json` |
+| Where the details are shown | application page of the results UI (**Sign-in in the sandbox**), `clusters/sandbox/idp/README.md`, each component's `idp.json` |
 
 On the appliance, `containerizer idp users` on the console prints the test users' passwords.
 
@@ -112,7 +112,7 @@ Nothing secret is in Git. The remote key `containerizer-idp--cz-idp` in the secr
 | `client-<app>--<component>` | OIDC client secrets; the same value is put under the component's own remote key |
 
 On the appliance, `cz-sandbox` runs `containerizer idp secrets` every 2 minutes. Once Flux has deployed
-`sandbox/idp`, it creates the values that are missing and keeps the ones that exist, through server-side
+`clusters/sandbox/idp`, it creates the values that are missing and keeps the ones that exist, through server-side
 apply with field manager `containerizer-idp`. With another store (Vault, a cloud secret manager), create
 these properties there yourself.
 
@@ -141,7 +141,7 @@ these properties there yourself.
 
 ## How it was verified
 
-The generated `sandbox/idp/` files were run in Docker: the WSO2 container with the same mounts, the init
+The generated `clusters/sandbox/idp/` files were run in Docker: the WSO2 container with the same mounts, the init
 script under a read-only root file system, a TLS proxy in front, and the sync job. Then three unmodified
 ASP.NET Core 8 apps (`examples/sandbox-idp/`) signed in as `alice` in a real browser, configured only with
 the generated environment variables. OIDC, WS-Federation and SAML 2.0 (Sustainsys) all returned the

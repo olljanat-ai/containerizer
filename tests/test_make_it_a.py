@@ -569,9 +569,9 @@ def test_the_patched_copy_runs_in_place_and_remove_brings_the_scan_output_back(t
     assert yaml.safe_load((d / "kustomization.yaml").read_text())["namespace"] == "shop"
     ks = next(x for x in yaml.safe_load_all((d / "gitops/flux/git/sync.yaml").read_text()) if x and x["kind"] == "Kustomization")
     assert ks["metadata"]["name"] == "shop" and ks["spec"]["path"] == "./Contoso/_/shop"
-    assert (out / "sandbox/namespaces.txt").read_text() == "shop\n"
-    assert yaml.safe_load((out / "sandbox/flux/apps/kustomization.yaml").read_text())["resources"] == [
-        "../../../Contoso/_/shop/gitops/flux"]
+    assert (out / "clusters/sandbox/namespaces.txt").read_text() == "shop\n"
+    assert yaml.safe_load((out / "clusters/sandbox/flux/apps/kustomization.yaml").read_text())["resources"] == [
+        "../../../../Contoso/_/shop/gitops/flux"]
     assert _log(out) == f"sandbox: shop runs the Make it A patch of order #42 (commit {'c' * 12})\n"
     # Remove from the sandbox: the scan's output is back from the output repository's history
     later = datetime(2026, 11, 3, 8, 0, tzinfo=timezone.utc)
@@ -580,7 +580,7 @@ def test_the_patched_copy_runs_in_place_and_remove_brings_the_scan_output_back(t
     assert sb2["reason"] == "removed from the sandbox by o@example.com: the scan's output is back in the application's folder"
     assert (d / "containerizer.json").read_text() == before and not (d / variant.PATCH_FILE).exists()
     assert subprocess.run(["git", "diff", "--quiet", scan_rev, "HEAD", "--", "Contoso"], cwd=out).returncode == 0
-    assert (out / "sandbox/namespaces.txt").read_text() == "shop\n"
+    assert (out / "clusters/sandbox/namespaces.txt").read_text() == "shop\n"
     assert "gets the scan's output back: the Make it A patch of order #42 removed" in _log(out)
     with pytest.raises(variant.Skip):
         variant.remove(None, None, 42, PAYLOAD, {**sb, "folder": "../shop"}, tmp_path / "rm2")
@@ -595,9 +595,9 @@ def test_an_application_without_scan_output_goes_back_to_no_folder(tmp_path, mon
     subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "nothing A"], cwd=out, check=True)
     sb = _patched(tmp_path, monkeypatch, 43, out, o)["sandbox"]
     assert sb["status"] == "deployed" and sb["folder"] == "Contoso/_/shop" and sb["namespace"] == "shop", sb.get("reason")
-    assert (out / "sandbox/namespaces.txt").read_text() == "shop\n"
+    assert (out / "clusters/sandbox/namespaces.txt").read_text() == "shop\n"
     variant.remove(None, None, 43, PAYLOAD, sb, tmp_path / "rm")
-    assert not (out / "Contoso/_/shop").exists() and (out / "sandbox/namespaces.txt").read_text() == ""
+    assert not (out / "Contoso/_/shop").exists() and (out / "clusters/sandbox/namespaces.txt").read_text() == ""
 
 
 def test_a_scan_of_the_same_commit_keeps_the_patch_and_newer_code_replaces_it(tmp_path, monkeypatch):
@@ -650,7 +650,7 @@ def test_a_newer_order_overwrites_the_older_one_in_place(tmp_path, monkeypatch):
     assert meta["patched"]["job"] == 172 and meta["patched"]["previous_revision"] == scan_rev
     assert meta["patched"]["replaced_job"] == 168
     assert sorted(p.name for p in (out / "Contoso/_").iterdir()) == ["shop"]
-    assert (out / "sandbox/namespaces.txt").read_text() == "shop\n"
+    assert (out / "clusters/sandbox/namespaces.txt").read_text() == "shop\n"
     conn = FakeConn({r"SELECT JobId, Payload, Result, RemoveRequestedAt": rows,
                      r"FROM cz.vApplicationLatest": [{"ApplicationId": 7, "SourceCommit": PAYLOAD["commit"]}]})
     rev = _head(out)
@@ -712,7 +712,7 @@ def test_housekeep_moves_the_variants_of_before_into_the_applications_folder(tmp
     monkeypatch.setattr(variant, "_open", lambda connect, key, payload, work, deploying=True: (TARGET, o))
     pl = {**PAYLOAD, "commit": commit}
     old = {jid: _legacy(tmp_path, out, jid) for jid in (150, 151)}
-    assert (out / "sandbox/namespaces.txt").read_text() == "shop\nshop-refactor-150\nshop-refactor-151\n"
+    assert (out / "clusters/sandbox/namespaces.txt").read_text() == "shop\nshop-refactor-150\nshop-refactor-151\n"
     scan_rev = _head(out)
     rows = [{"JobId": jid, "Payload": json.dumps(pl), "RemoveRequestedAt": None, "RemoveRequestedBy": None,
              "Result": json.dumps({"status": "verified", "patch": patch, "sandbox": {**sb, "commit": commit}})}
@@ -723,9 +723,9 @@ def test_housekeep_moves_the_variants_of_before_into_the_applications_folder(tmp
     logs = []
     assert variant.housekeep(lambda: conn, None, tmp_path / "hk", log=logs.append, now=now) == 2
     assert sorted(p.name for p in (out / "Contoso/_").iterdir()) == ["shop"]
-    assert (out / "sandbox/namespaces.txt").read_text() == "shop\n"
-    assert yaml.safe_load((out / "sandbox/flux/apps/kustomization.yaml").read_text())["resources"] == [
-        "../../../Contoso/_/shop/gitops/flux"]
+    assert (out / "clusters/sandbox/namespaces.txt").read_text() == "shop\n"
+    assert yaml.safe_load((out / "clusters/sandbox/flux/apps/kustomization.yaml").read_text())["resources"] == [
+        "../../../../Contoso/_/shop/gitops/flux"]
     assert _log(out) == (f"sandbox: shop runs the Make it A patch of order #151 (commit {commit[:12]}), moved from "
                          f"Contoso/_/shop-refactor-151 (patched copies run in their application's folder now)\n")
     d = out / "Contoso/_/shop"

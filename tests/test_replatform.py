@@ -442,7 +442,7 @@ def test_enabled_dockerfile_repo_is_migrated_in_an_org_scan(tmp_path, monkeypatc
     [a] = [x for x in deployed_apps(out) if x["app"] == "shop"]
     assert {c["component"]: c["workloads"] for c in a["components"]} == {"api": [("Deployment", "api")],
                                                                          "worker": [("Deployment", "worker")]}
-    assert "acme/_/shop/gitops/flux" in (out / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text()
+    assert "acme/_/shop/gitops/flux" in (out / "clusters" / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text()
 
 
 @pytest.mark.skipif(not __import__("os").environ.get("CONTAINERIZER_TEST_DOCKER"),

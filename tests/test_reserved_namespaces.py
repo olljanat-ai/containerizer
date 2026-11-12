@@ -51,7 +51,7 @@ def test_the_sandbox_never_deploys_into_a_reserved_namespace(tmp_path, capsys):
         (d / "gitops" / "flux" / "kustomization.yaml").write_text("resources: []\n")
         (d / "containerizer.json").write_text(json.dumps({"namespace": ns, "app": ns}))
     org.write_sandbox(tmp_path, "https://git.example.com/out.git", "main")
-    text = "".join(p.read_text() for p in (tmp_path / "sandbox").rglob("*.yaml"))
+    text = "".join(p.read_text() for p in (tmp_path / "clusters" / "sandbox").rglob("*.yaml"))
     assert "org/p/shop" in text and "org/p/evil" not in text
     assert "namespace external-secrets is reserved" in capsys.readouterr().err
 

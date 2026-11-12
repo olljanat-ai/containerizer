@@ -57,7 +57,7 @@ def clean_path(p: str | None) -> str | None:
     """The folder in the application's repository: relative, no `..`, letters, digits, `._-` (None: not valid)."""
     p = (p or "").strip().strip("/") or DEFAULT_PATH
     if len(p) > 200 or not PATH_RE.fullmatch(p) or any(x in ("..", ".git") for x in p.split("/")) \
-            or p.split("/")[0] == "sandbox":
+            or p.split("/")[0] in ("sandbox", "clusters"):
         return None
     return p
 

@@ -73,7 +73,7 @@ need:
 - a container that fails the hardened run gets an LLM fix, for up to `CONTAINERIZER_LLM_HEAVY_ROUNDS`
   rounds (default 3);
 - with sandbox verification (`containerizer org --verify-sandbox --llm-heavy`), a component that is
-  failing in the cluster gets an LLM diagnosis in `sandbox/HEALTH.md`. For migrated apps its fix is
+  failing in the cluster gets an LLM diagnosis in `clusters/sandbox/HEALTH.md`. For migrated apps its fix is
   applied, committed and checked again, and kept in the app's `sandbox-fixes.json` so later scans
   generate it too.
 

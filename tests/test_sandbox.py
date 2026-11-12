@@ -109,7 +109,7 @@ def output_repo(tmp_path, components=(("web", "Deployment"),), app="shop-web", s
                       "project_name": f"Shop.{name.title()}", "image": f"reg/{app}/{name}:1.0.0"})
     (d / "containerizer.json").write_text(json.dumps({"app": app, "components": comps, "source_key": source_key,
                                                       "clone_url": "https://git.example/shop.git"}))
-    (root / "sandbox").mkdir()
+    (root / "clusters" / "sandbox").mkdir(parents=True)
     return root
 
 
@@ -426,9 +426,9 @@ def test_health_report_keeps_logs_out_of_the_repository(tmp_path):
                            "restarts": 4, "log_tail": "secret stuff", "diagnosis": {"rule": "r", "outcome": "code",
                                                                                     "finding": {"title": "t"}}}]}
     sb.write_health(root, doc)
-    h = json.loads((root / "sandbox" / "health.json").read_text())
+    h = json.loads((root / "clusters" / "sandbox" / "health.json").read_text())
     assert "log_tail" not in h["components"][0] and "finding" not in h["components"][0]["diagnosis"]
-    md = (root / "sandbox" / "HEALTH.md").read_text()
+    md = (root / "clusters" / "sandbox" / "HEALTH.md").read_text()
     assert "**failing**" in md and "CrashLoopBackOff / x" in md and "secret stuff" not in md
     assert "(../Contoso/_/shop/)" in md
 
@@ -496,14 +496,14 @@ def test_org_run_with_verify_sandbox_and_no_cluster(tmp_path, monkeypatch):
     meta = json.loads((out / "acme" / "_" / "ci-demo" / "containerizer.json").read_text())
     assert meta["components"][0]["project_name"] and meta["source_key"] == res[0].source_key
     assert any("sandbox verification skipped: kubectl is not installed" in x for x in logs)
-    h = json.loads((out / "sandbox" / "health.json").read_text())
+    h = json.loads((out / "clusters" / "sandbox" / "health.json").read_text())
     assert "kubectl is not installed" in h["skipped"] and h["components"][0]["status"] == SKIPPED
-    assert "Not checked: kubectl is not installed" in (out / "sandbox" / "HEALTH.md").read_text()
-    rbac = list(yaml.safe_load_all((out / "sandbox" / "verify-rbac.yaml").read_text()))
+    assert "Not checked: kubectl is not installed" in (out / "clusters" / "sandbox" / "HEALTH.md").read_text()
+    rbac = list(yaml.safe_load_all((out / "clusters" / "sandbox" / "verify-rbac.yaml").read_text()))
     assert any(d["kind"] == "Role" and d["metadata"]["namespace"] == meta["app"] for d in rbac)
     # the sandbox waits for the generated app's workloads only; its own sync.yaml (the real environment) for everything
-    [patch] = yaml.safe_load((out / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text())["patches"]
-    ops = json.loads(patch["patch"])
+    [patch] = yaml.safe_load((out / "clusters" / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text())["patches"]
+    ops = yaml.safe_load(patch["patch"])
     assert patch["target"]["name"] == meta["app"] and ops[0] == {"op": "add", "path": "/spec/wait", "value": False}
     assert ops[1]["value"] and {c["kind"] for c in ops[1]["value"]} <= {"Deployment", "StatefulSet", "ExternalSecret"}
     sync = list(yaml.safe_load_all((out / "acme" / "_" / "ci-demo" / "gitops" / "flux" / "git" / "sync.yaml").read_text()))
@@ -578,11 +578,13 @@ def test_sandbox_kustomizations_wait_for_the_workloads_not_every_object(tmp_path
     (app / "web" / "k8s.yaml").write_text("---\n".join(yaml.safe_dump(d) for d in docs))
     (app / "kustomization.yaml").write_text(yaml.safe_dump({"resources": ["web/k8s.yaml", "missing.yaml"]}))
     assert write_sandbox(root, "https://git.example/out.git", "main") == ["shop-web"]
-    k = yaml.safe_load((root / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text())
+    text = (root / "clusters" / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text()
+    assert '"op"' not in text and "  patch: |" in text            # the patches read as YAML, not as JSON strings
+    k = yaml.safe_load(text)
     [p] = k["patches"]
     assert p["target"] == {"group": "kustomize.toolkit.fluxcd.io", "version": "v1", "kind": "Kustomization",
                            "name": "shop-web", "namespace": "shop-web"}
-    ops = json.loads(p["patch"])
+    ops = yaml.safe_load(p["patch"])
     assert ops[:3] == [
         {"op": "add", "path": "/spec/wait", "value": False},
         {"op": "add", "path": "/spec/healthChecks", "value": [
@@ -593,8 +595,11 @@ def test_sandbox_kustomizations_wait_for_the_workloads_not_every_object(tmp_path
     assert es["path"] == "/spec/patches/-" and es["value"]["target"]["name"] == "web-secrets"
     assert yaml.safe_load((app / "gitops" / "flux" / "git" / "sync.yaml").read_text())["spec"]["wait"] is True
     if shutil.which("kubectl"):                    # what Flux's root sync applies (kustomize build)
-        built = subprocess.run(["kubectl", "kustomize", str(root / "sandbox" / "flux" / "apps")], capture_output=True,
+        built = subprocess.run(["kubectl", "kustomize", str(root / "clusters" / "sandbox" / "flux" / "apps")], capture_output=True,
                                text=True, check=True).stdout
+        # the old place (sandbox/, what the appliances' Flux reads) builds the same
+        assert subprocess.run(["kubectl", "kustomize", str(root / "sandbox" / "flux" / "apps")], capture_output=True,
+                              text=True, check=True).stdout == built
         [got] = [d for d in yaml.safe_load_all(built) if d and d["kind"] == "Kustomization"]
         assert got["spec"]["wait"] is False and got["spec"]["prune"] is True
         assert got["spec"]["healthChecks"] == [{"apiVersion": "apps/v1", "kind": "Deployment", "name": "web",

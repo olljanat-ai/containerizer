@@ -521,9 +521,9 @@ def test_health_check_opens_the_url(tmp_path, monkeypatch):
     assert r["url"] == "https://web-shop-web.sandbox.example.com/" and len(asked) == 3
     assert asked[0] == ("https://web-shop-web.sandbox.example.com/", "/healthz", "127.0.0.1:443", "/x/ca.pem")
     sb.write_health(root, doc)
-    md = (root / "sandbox" / "HEALTH.md").read_text()
+    md = (root / "clusters" / "sandbox" / "HEALTH.md").read_text()
     assert "<https://web-shop-web.sandbox.example.com/> (TLS: certificate has expired)" in md
-    assert json.loads((root / "sandbox" / "health.json").read_text())["components"][0]["url_check"].startswith("TLS")
+    assert json.loads((root / "clusters" / "sandbox" / "health.json").read_text())["components"][0]["url_check"].startswith("TLS")
 
     doc = sb.verify_sandbox(root, o, kube=k, log=lambda *a: None, sleep=clock.sleep, clock=clock,
                             url_checker=lambda *a: sb.UrlCheck(True, "HTTP 200"))

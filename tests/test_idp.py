@@ -132,7 +132,7 @@ def sandbox_repo(tmp_path, rules):
 
 
 def test_sandbox_idp_files(sandbox_repo):
-    d = sandbox_repo / "sandbox" / "idp"
+    d = sandbox_repo / "clusters" / "sandbox" / "idp"
     k = yaml.safe_load((d / "kustomization.yaml").read_text())
     for r in k["resources"]:
         assert (d / r).is_file(), r
@@ -142,9 +142,9 @@ def test_sandbox_idp_files(sandbox_repo):
     sync_files = next(g for g in k["configMapGenerator"] if g["name"] == idp.SYNC)["files"]
     assert sorted(Path(f).name for f in sync_files if "apps__" in f) == [
         "apps__oidc--oidc.json", "apps__saml--saml.json", "apps__wsfed--wsfed.json"]
-    flux = yaml.safe_load((sandbox_repo / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text())
+    flux = yaml.safe_load((sandbox_repo / "clusters" / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text())
     assert "../../idp" in flux["resources"]
-    assert "containerizer-idp.sandbox.test" in (sandbox_repo / "sandbox" / "README.md").read_text()
+    assert "containerizer-idp.sandbox.test" in (sandbox_repo / "clusters" / "sandbox" / "README.md").read_text()
     toml = tomllib.loads((d / "config" / "deployment.toml").read_text())
     assert toml["server"]["hostname"] == "containerizer-idp.sandbox.test"
     assert toml["saml"]["entity_id"] == IDP
@@ -173,7 +173,7 @@ def test_sandbox_idp_files(sandbox_repo):
 
 
 def test_needed_secrets_and_values(sandbox_repo):
-    d = sandbox_repo / "sandbox" / "idp" / "sync"
+    d = sandbox_repo / "clusters" / "sandbox" / "idp" / "sync"
     cfg = json.loads((d / "idp.json").read_text())
     apps = [json.loads(p.read_text()) for p in sorted(d.glob("apps__*.json"))]
     props, keys = idp.needed_secrets(cfg, apps)
@@ -280,7 +280,7 @@ def test_sync_is_idempotent_and_prunes_only_its_own(sandbox_repo, tmp_path, monk
     fake = FakeWso2()
     monkeypatch.setattr(idp_sync.Api, "call", lambda self, *a, **k: fake.call(self, *a, **k))
     monkeypatch.setattr(idp_sync, "wait_healthy", lambda *a, **k: None)
-    cfgdir = sandbox_repo / "sandbox" / "idp" / "sync"
+    cfgdir = sandbox_repo / "clusters" / "sandbox" / "idp" / "sync"
     sec = tmp_path / "secrets"
     sec.mkdir()
     for name in ("admin-password", "user-alice", "user-bob", "user-carol", "client-oidc--oidc"):
@@ -338,7 +338,7 @@ print("unexpected " + " ".join(args), file=sys.stderr); sys.exit(2)
 
 
 def test_appliance_secrets_are_generated_once(sandbox_repo, tmp_path):
-    d = sandbox_repo / "sandbox" / "idp" / "sync"
+    d = sandbox_repo / "clusters" / "sandbox" / "idp" / "sync"
     data = {p.name: p.read_text() for p in d.glob("*.json")}
     state = tmp_path / "state.json"
     state.write_text(json.dumps({"configmaps": [{"metadata": {"creationTimestamp": "t"}, "data": data}],

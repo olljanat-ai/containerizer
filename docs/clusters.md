@@ -1,14 +1,15 @@
 # Clusters: sandbox, development, acceptance, production
 
-The output repository is laid out for several clusters. The **sandbox** (`sandbox/`, the appliance's own k3s) is one
-of them; `clusters/` holds the others, by default **development**, **acceptance** and **production**. Every cluster
+The output repository is laid out for several clusters, all under `clusters/`: the **sandbox** (`clusters/sandbox/`, the
+appliance's own k3s) and by default **development**, **acceptance** and **production**. Every cluster
 deploys the same app folders, the same images and the same shared Helm chart (docs/helm-chart.md) with Flux. What
 differs per cluster lives in that cluster's own folder.
 
 ```
-sandbox/                              the sandbox (docs/scheduled-scans.md#the-sandbox-cluster)
+sandbox/flux/apps/kustomization.yaml  a pointer to clusters/sandbox/ (where the sandbox was before 0.41.0)
 clusters/
   README.md                           the clusters and how many apps each runs
+  sandbox/                            the sandbox (docs/scheduled-scans.md#the-sandbox-cluster)
   <cluster>/
     cluster.yaml                      which apps it runs, the registry it pulls from        yours
     README.md                         its apps and how to bootstrap it                      generated
@@ -98,3 +99,11 @@ the sandbox only.
 `CONTAINERIZER_CLUSTERS` (a site setting) names the clusters, comma separated: the default is
 `development,acceptance,production`, and `none` writes no `clusters/`. A new name gets `deploy: listed`, except
 `development`, which runs every app. The folder of a cluster that is no longer named stays as it is.
+
+## Where the sandbox was
+
+Before 0.41.0 the sandbox's folder was `sandbox/` at the repository's root. It is now `clusters/sandbox/`, next to the
+other clusters, and `sandbox/flux/apps/kustomization.yaml` only points there: the appliance's Flux (and a cluster
+bootstrapped from the old `sandbox/flux/bootstrap.yaml`) reads `./sandbox/flux/apps` and keeps working unchanged. The
+patches in the clusters' `flux/apps/kustomization.yaml` are written as YAML, not as JSON strings.
+
