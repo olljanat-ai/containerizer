@@ -36,6 +36,26 @@ def _settings_rank(name: str) -> tuple:
     return (order.index(env) if env in order else len(order), env)
 
 
+def secret_starts(p, keys: list[str]) -> dict[str, str]:
+    """The values the component's own settings files give its secret settings (`keys`, configuration form
+    `Section:Name`): appsettings.json, then the development and test environments' files, a value without tokens.
+    {environment variable name: value}. For the appliance's OpenBao only (openbao.py seeds its empty placeholders
+    with them); never written to the output repository."""
+    files = sorted((f for f in p.files if f.parent == p.dir and re.fullmatch(r"appsettings(\.[\w-]+)?\.json", f.name, re.I)),
+                   key=lambda f: _settings_rank(f.name))
+    flat = [dict(_flatten(_load_json(f))) for f in files]
+    out = {}
+    for key in keys:
+        low = key.lower()
+        for f in flat:
+            v = next((v for k, v in f.items() if k.lower() == low), None)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) or isinstance(v, str) and v.strip() \
+                    and not TOKEN_RE.search(v):
+                out[key.replace(":", "__")] = str(v)
+                break
+    return out
+
+
 def token_defaults(settings: dict, files: list[tuple[str, dict]]) -> dict:
     """A starting value for each setting with release-pipeline tokens (`settings`: {key: value}), from the
     component's other settings files (`files`: [(name, flattened settings)] in the order to look): the same key with

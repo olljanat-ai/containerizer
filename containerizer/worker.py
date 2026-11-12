@@ -846,7 +846,7 @@ class Worker:
             llm_heavy=llm_heavy(scan), review_queue=self.review_queue(scan) if llm_queued(scan) else None,
             heavy_windows=self.heavy_windows() if scan["UseAi"] else None, sandbox_off=self.sandbox_off(), sandbox_switches=self.sandbox_switches,
             deploy_modes=self.deploy_modes(),
-            cache_dir=str(base / "repos"), state=store, hooks=hooks,
+            cache_dir=str(base / "repos"), secret_seed_dir=str(self.data / "secret-seed"), state=store, hooks=hooks,
             allowed_hosts=self.hosts | (creds.hosts() if creds else set()),
             **sandbox_check_options(self.log))
 
