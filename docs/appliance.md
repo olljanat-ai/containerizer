@@ -77,6 +77,10 @@ files ([configuration files](appliance-admin.md#configuration-files)). Then:
 7. **Admin → Organization scans**: define the scans ([organization scans](scheduled-scans.md)), and
    fill in `sandbox.env` so the sandbox cluster deploys what they generate.
 
+The sandbox apps' secret values (connection strings, API keys, release-pipeline settings) are entered in OpenBao at
+`https://<CZ_HOSTNAME>/ui/`, user `admin`, password in `/etc/containerizer/secrets/openbao-admin`: every value an app
+reads is already there, empty ([Secret values in OpenBao](openbao.md)).
+
 Grafana is at `https://<CZ_HOSTNAME>/grafana/`, user `admin`, password in
 `/etc/containerizer/secrets/grafana-admin` (change it in Grafana, or set up sign-in in `grafana.env`:
 [Grafana sign-in](sign-in.md)). It opens on the **Containerizer: organization scans** dashboard.

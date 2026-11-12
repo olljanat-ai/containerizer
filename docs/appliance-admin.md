@@ -564,6 +564,7 @@ the clones, images in the local registry and the sandbox apps, but not the rest:
 | Learned rules | `/var/lib/containerizer/learned` | Rules the learning loop added on this appliance. Rules approved in the rule review are in your rules repository |
 | HTTPS certificate authority | `/var/lib/caddy` | Without `CZ_ACME_EMAIL`, the appliance's own CA: a new one means every browser has to trust a new root |
 | Metrics (optional) | `/var/lib/containerizer/prometheus`, `/var/lib/containerizer/grafana` | 90 days of scan and LLM usage metrics, and changes made in Grafana |
+| OpenBao | `/var/lib/containerizer/openbao` (with `secrets/openbao-unseal.key`, `openbao-recovery-key`, `openbao-sync-token`) | The values administrators and operators entered for the sandbox apps, users, policies and sign-in settings ([Secret values in OpenBao](openbao.md)) |
 | kubemg (optional) | `/var/lib/containerizer/kubemg` (with `secrets/kubemg-secret-key`) | kubemg's users, SSO settings, audit trail and recorded sessions |
 
 **The configuration without its secrets is also in the output repository.** At every boot the appliance copies

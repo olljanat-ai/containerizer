@@ -263,10 +263,30 @@ def _component_docs(cdir: Path) -> tuple[list[dict], str | None]:
         return [], None
 
 
+def workload_patches(docs: list[dict], dockerfile: str | None, tools: str) -> list[dict]:
+    """The debug patches of one component's Deployments and StatefulSets."""
+    patches = []
+    for d in docs:
+        pod = (((d.get("spec") or {}).get("template") or {}).get("spec") or {})
+        if d.get("kind") not in KINDS or not pod.get("containers"):
+            continue
+        p = workload_patch(d, tools, start_command(pod["containers"][0], dockerfile))
+        if p:
+            patches.append({"target": {"group": "apps", "kind": d["kind"], "name": d["metadata"]["name"]}, "patch": p})
+    return patches
+
+
 def ops(folder: Path, doc: dict, tools: str) -> list[dict]:
     """JSON patch operations on the sandbox's copy of the application's Flux Kustomization: one kustomize patch per
     Deployment and StatefulSet of its components; for a component of the shared chart, on its HelmRelease as a
     post-renderer (the chart's own values are left alone)."""
+    return component_ops(folder, doc, lambda docs, dockerfile: workload_patches(docs, dockerfile, tools))
+
+
+def component_ops(folder: Path, doc: dict, make) -> list[dict]:
+    """JSON patch operations that put the kustomize patches `make(docs, dockerfile)` returns for each component into the
+    sandbox's copy of the application's Flux Kustomization; for a component of the shared chart, into its HelmRelease
+    as one post-renderer (so the debug patches and the others do not replace each other)."""
     from .helmchart import HELM_API
     out = []
     for c in doc.get("components") or []:
@@ -278,14 +298,7 @@ def ops(folder: Path, doc: dict, tools: str) -> list[dict]:
             dockerfile = (cdir / "Dockerfile").read_text()
         except OSError:
             dockerfile = None
-        patches = []
-        for d in docs:
-            pod = (((d.get("spec") or {}).get("template") or {}).get("spec") or {})
-            if d.get("kind") not in KINDS or not pod.get("containers"):
-                continue
-            p = workload_patch(d, tools, start_command(pod["containers"][0], dockerfile))
-            if p:
-                patches.append({"target": {"group": "apps", "kind": d["kind"], "name": d["metadata"]["name"]}, "patch": p})
+        patches = make(docs, dockerfile)
         if not patches:
             continue
         if release:

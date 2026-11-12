@@ -594,6 +594,16 @@ def _app_docs(folder: Path, rendered: bool = True) -> list[dict]:
     return docs
 
 
+def _sync_has_patches(folder: Path) -> bool:
+    """The app's Flux Kustomization (gitops/flux/git/sync.yaml) has a spec.patches list (generated ones do)."""
+    try:
+        docs = list(yaml.safe_load_all((folder / "gitops" / "flux" / "git" / "sync.yaml").read_text()))
+    except (OSError, yaml.YAMLError):
+        return True
+    return any(isinstance(d, dict) and d.get("kind") == "Kustomization" and isinstance((d.get("spec") or {}).get("patches"), list)
+               for d in docs)
+
+
 def sandbox_wait_patch(folder: Path, doc: dict, debug_image: str | None = None) -> dict | None:
     """kustomize patch for the sandbox's copy of an app's Flux Kustomization: wait for the app's workloads and the
     Secrets they need (gitops.sandbox_health_checks), not for every object. The generated ExternalSecrets of
@@ -621,9 +631,14 @@ def sandbox_wait_patch(folder: Path, doc: dict, debug_image: str | None = None) 
             ops.append({"op": "add", "path": "/spec/patches/-", "value": {
                 "patch": json.dumps([{"op": "add", "path": "/spec/values/skipKinds", "value": ["HTTPRoute"]}]),
                 "target": {"group": HELM_API.split("/")[0], "kind": "HelmRelease"}}})
-    if debug_image:                         # debug mode: the pods sleep, with a shell (sandboxdebug.py)
-        from .sandboxdebug import ops as debug_ops
-        ops += debug_ops(folder, doc, debug_image)
+    # each component's settings read every key the store has (openbao.sandbox_patches: a value nobody filled yet is
+    # not set, the others are), and in debug mode the pods sleep, with a shell (sandboxdebug.py)
+    from .openbao import sandbox_patches
+    from .sandboxdebug import component_ops, workload_patches
+    ops += component_ops(folder, doc, lambda docs, dockerfile: sandbox_patches(docs) + (
+        workload_patches(docs, dockerfile, debug_image) if debug_image else []))
+    if any(o["path"] == "/spec/patches/-" for o in ops) and not _sync_has_patches(folder):
+        ops.insert(2, {"op": "add", "path": "/spec/patches", "value": []})     # appending needs the list
     group, version = KUSTOMIZE_API.split("/")
     return {"target": {"group": group, "version": version, "kind": "Kustomization", "name": ns, "namespace": ns},
             "patch": json.dumps(ops)}

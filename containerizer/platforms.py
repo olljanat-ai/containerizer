@@ -41,7 +41,7 @@ BACKING_RE = re.compile(r"(^|/)(postgres|postgis|mysql|mariadb|mongo|redis|valke
                         r"cp-kafka|nats|minio|azurite|consul|vault|etcd|mailhog|mailpit|localstack)([:@]|$)", re.I)
 SECRET_NAME_RE = re.compile(r"(?i)(passw|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|"
                             r"credential|connection[_-]?string|connstr|conn[_-]?str|sas|signing[_-]?key|"
-                            r"client[_-]?secret|^ConnectionStrings__|dsn$|_url_with_password)")
+                            r"client[_-]?secret|^ConnectionStrings__|dsn$|_url_with_password|(?:^|__|[_.:-])pass$)")
 ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.:-]{0,250}")
 
 

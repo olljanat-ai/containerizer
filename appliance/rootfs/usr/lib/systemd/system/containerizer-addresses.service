@@ -1,6 +1,9 @@
 [Unit]
 Description=containerizer appliance: HTTPS certificate names for the appliance's addresses
 After=network-online.target containerizer-firstboot.service
+# Caddy starts with the addresses' names: started at the same time, it missed the reload below and served no
+# certificate for https://<address> (TLS alert "internal error")
+Before=caddy.service
 Wants=network-online.target
 ConditionKernelCommandLine=!cdroot
 ConditionPathExists=!/run/elemental/recovery_mode

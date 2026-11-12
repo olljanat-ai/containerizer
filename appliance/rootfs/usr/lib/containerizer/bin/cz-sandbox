@@ -79,6 +79,12 @@ KUBECONFIG
 observer_access || echo "containerizer: the egress observer's read-only sandbox access is not ready yet; retrying in 2 minutes" >&2
 
 if cz_store_ready; then cz_store_setup; fi
+# OpenBao (docs/openbao.md): initialised the first time; then an empty entry per secret value each sandbox app
+# reads, for administrators and operators to fill in, and the filled values into the store (containerizer.openbao)
+if systemctl is-active --quiet containerizer-openbao.service && cz_store_ready; then
+  CZ_KUBECTL="/usr/bin/k3s kubectl" /usr/lib/containerizer/venv/bin/python -I -m containerizer.openbao sync \
+    || echo "openbao: could not sync the apps' secret values" >&2
+fi
 # Sandbox HTTPS (Admin -> Sandbox HTTPS): the wildcard certificate as Traefik's default, or none when it is off.
 # After the store is set up, so the certificate goes through it; before sandbox.env, which it does not need.
 /usr/lib/containerizer/venv/bin/python -m containerizer.sysagent sandbox-https sync >/dev/null \

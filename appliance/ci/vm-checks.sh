@@ -47,7 +47,7 @@ wait_for 900 "Grafana" curl -fsS http://127.0.0.1:3000/grafana/api/health
 wait_for 300 "Caddy" curl -fsSk "https://$(hostname)/healthz" --resolve "$(hostname):443:127.0.0.1"
 systemctl is-active containerizer-db-init.service containerizer-web.service containerizer-mssql.service \
   containerizer-registry.service containerizer-prometheus.service containerizer-grafana.service caddy.service \
-  docker.service k3s.service ssh.service containerizer-root-password.service containerizer-root-password.path
+  containerizer-openbao.service docker.service k3s.service ssh.service containerizer-root-password.service containerizer-root-password.path
 
 step "web UI runs as its own user without privileges"
 test "$(ps -o user= -p "$(systemctl show -p MainPID --value containerizer-web.service)")" = cz-web
@@ -108,6 +108,28 @@ sleep 30
 if k3s kubectl -n ci-b get secret web-secrets >/dev/null 2>&1; then echo "ci-b must not read ci-a's key" >&2; exit 1; fi
 k3s kubectl -n ci-b get externalsecret web-secrets -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' \
   | grep -q SecretSyncedError
+
+step "OpenBao: unsealed, admin sign-in on 443, placeholders, values into the store"
+# the sandbox job initialises OpenBao (once it has pulled its image and listens), then syncs
+wait_for 900 "OpenBao initialised by the sandbox job" sh -c \
+  'systemctl start containerizer-sandbox.service; test -s /etc/containerizer/secrets/openbao-sync-token'
+test ! -e /etc/containerizer/secrets/openbao-root-token     # revoked and removed once setup is done
+$PY -m containerizer.openbao status | grep '"sealed": false' >/dev/null
+test "$(stat -c '%U %a' /etc/containerizer/secrets/openbao-sync-token)" = "root 400"
+url="https://$(hostname)"
+login=$(printf '{"password": "%s"}' "$(cat /etc/containerizer/secrets/openbao-admin)" \
+  | curl -fsSk --resolve "$(hostname):443:127.0.0.1" -d @- "$url/v1/auth/userpass/login/admin")
+tok=$(printf %s "$login" | $PY -c 'import json,sys; print(json.load(sys.stdin)["auth"]["client_token"])')
+bao() { curl -fsSk --resolve "$(hostname):443:127.0.0.1" -H @<(printf 'X-Vault-Token: %s\n' "$tok") "$@"; }
+curl -fsSk --resolve "$(hostname):443:127.0.0.1" "$url/ui/" | grep OpenBao >/dev/null
+# the value put in the store before is the placeholder's value
+bao "$url/v1/apps/data/ci-a/web" | grep 'Server=db;Password=ci-only' >/dev/null
+printf '{"data": {"ConnectionStrings__Db": "Server=db;Password=from-openbao"}}' | bao -d @- "$url/v1/apps/data/ci-a/web" >/dev/null
+systemctl start containerizer-sandbox.service
+wait_for 300 "a value saved in OpenBao reaches the app" sh -c \
+  'k3s kubectl -n ci-a get secret web-secrets -o jsonpath={.data.ConnectionStrings__Db} | base64 -d | grep -q from-openbao'
+bao "$url/v1/sys/policies/acl/app-ci-a" | grep 'apps/data/ci-a/' >/dev/null
+
 k delete namespace ci-a ci-b --wait=false
 k -n containerizer-secrets delete secret/ci-a--web role/app-secrets-reader-ci-a rolebinding/app-secrets-reader-ci-a \
   role/app-secrets-reader-ci-b rolebinding/app-secrets-reader-ci-b >/dev/null 2>&1 || true
@@ -250,13 +272,13 @@ tr '\0' '\n' < "/proc/$wpid/environ" | grep -qx DOCKER_HOST=unix:///run/containe
 ctx=$(mktemp -d); export ctx; chown containerizer "$ctx"
 asworker() { runuser -u containerizer -- env HOME="$ctx" DOCKER_CONFIG="$ctx/.docker" DOCKER_HOST=unix:///run/containerizer/docker-guard.sock "$@"; }
 if runuser -u containerizer -- docker -H unix:///var/run/docker.sock ps >/dev/null 2>&1; then fail "the worker user reaches Docker's own socket"; fi
+. /usr/lib/containerizer/images.env      # CZ_IMAGE_MSSQL, before its first use (set -u)
 for bad in "run --rm --privileged $CZ_IMAGE_MSSQL true" "run --rm --network host $CZ_IMAGE_MSSQL true" \
            "run --rm -v /:/host $CZ_IMAGE_MSSQL true" "exec cz-mssql true" "inspect cz-mssql"; do
   # shellcheck disable=SC2086
   if asworker docker $bad >/dev/null 2>&1; then fail "the guard let 'docker $bad' through"; fi
 done
 echo "ok: the guard refuses privileged, host-network, host-mount and appliance-container calls"
-. /usr/lib/containerizer/images.env
 host_ip=$(ip -4 -o addr show scope global | awk '$2 !~ /^(docker|br-|cni|flannel|veth|cz-)/ {sub(/\/.*/, "", $4); print $4; exit}')
 gw=$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')
 # the results database, the k3s API (node and service address), the kubelet, the registry, Grafana, Prometheus, the web UI
@@ -284,7 +306,13 @@ echo "ok: a verification run reaches no appliance service"
 if asworker env DOCKER_BUILDKIT=0 docker build --network host -q "$ctx" >/dev/null 2>&1; then fail "a build got the host network"; fi
 if asworker docker build --network host -q "$ctx" >/dev/null 2>&1; then fail "a BuildKit build got the host network"; fi
 echo "ok: builds never get the host network"
-nft list table inet cz_dockerd | grep -q 'system.slice/docker.service' || fail "Docker's own egress table is not loaded"
+if ! nft list table inet cz_dockerd 2>&1 | grep 'system.slice/docker.service' >/dev/null; then
+  nft list tables; nft list table inet cz_dockerd 2>&1 | head -20
+  systemctl show -p ExecStartPost -p ActiveEnterTimestamp -p NRestarts docker.service
+  journalctl -b -u docker.service --no-pager | grep -iE "egress|nft|ExecStartPost|Started|Stopp" | tail -20
+  /usr/lib/containerizer/bin/cz-docker-egress; echo "cz-docker-egress by hand: exit $?"; nft list table inet cz_dockerd 2>&1 | head
+  fail "Docker's own egress table is not loaded"
+fi
 for url in http://127.0.0.1:9090/-/ready http://127.0.0.1:3000/grafana/api/health "http://$host_ip:8080/healthz"; do
   printf 'FROM %s\nADD %s /x\n' "$CZ_IMAGE_MSSQL" "$url" > "$ctx/Dockerfile.add"; chown containerizer "$ctx/Dockerfile.add"
   if asworker docker build --no-cache -q -f "$ctx/Dockerfile.add" "$ctx" >/dev/null 2>&1; then fail "a build fetched $url"; fi

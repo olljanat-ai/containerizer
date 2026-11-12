@@ -79,6 +79,7 @@ def test_docker_daemon_defaults_to_no_new_privileges():
 
 # --------------------------------------------------------------------------- Docker socket guard
 
+import sys
 import json  # noqa: E402
 import os  # noqa: E402
 import shutil  # noqa: E402
@@ -216,7 +217,7 @@ def test_guard_in_front_of_a_real_docker(tmp_path):
     sock, work = tmp_path / "g.sock", tmp_path / "work"
     work.mkdir()
     env = {k: v for k, v in os.environ.items() if k != "DOCKER_HOST"}
-    p = subprocess.Popen(["python", "-m", "containerizer.dockerguard", "--listen", str(sock), "--bind-root", str(work)],
+    p = subprocess.Popen([sys.executable, "-m", "containerizer.dockerguard", "--listen", str(sock), "--bind-root", str(work)],
                          cwd=ROOT, env=env)
     other = f"cz-guard-test-{os.getpid()}"
     try:

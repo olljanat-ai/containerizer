@@ -10,6 +10,43 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.36.0 (2026-11-11)
+
+- **OpenBao for the sandbox apps' secret values** ([Secret values in OpenBao](docs/openbao.md)). The appliance runs
+  OpenBao 2.7.2 (`containerizer-openbao.service`; its own user, read-only, loopback only). Caddy serves it on the
+  appliance's HTTPS port at `https://<appliance>/ui/` (**Secrets ↗** on the admin pages). It unseals itself with a
+  static key made at first boot.
+  - **Placeholders.** Every two minutes the appliance gives each component's settings ExternalSecret an entry
+    `apps/<namespace>/<component>` with every key empty, or with the value already in the store. Administrators
+    only fill in values.
+  - **Values reach the apps.** Filled values go into the existing store (`containerizer-secrets`, own field
+    manager; an emptied key is removed); the ExternalSecret syncs at once and the workloads that read it restart.
+  - **Sign-in and delegation.** The user `admin` (password in `secrets/openbao-admin`). Each app namespace gets
+    the policy `app-<namespace>` for operators, given to a user or to a group of an identity provider. The guide
+    covers sign-in with OIDC/OAuth 2.0 (Entra ID, Keycloak, Okta) and group-to-policy mapping.
+  - **The sandbox's ExternalSecrets.** A component's settings ExternalSecret now reads every key its remote Secret
+    has (`dataFrom: extract`, sandbox only): a value nobody filled yet is not set, instead of keeping all of that
+    Secret's values away.
+  - **Only a namespace's own key.** An ExternalSecret that names another namespace's remote key gets no entry, so
+    one namespace's operators cannot write another's values.
+- **Fix: settings named `...Pwd`, `...Passwd` or just `Pass` were not secret.** A password in such a .NET setting
+  was not read from the secret store, and with a release-pipeline token it went to the settings ConfigMap in Git.
+  They are secret now, for replatformed services' environment variables too (`MAIL_PASS`); `Bypass` and `Compass`
+  stay plain settings.
+- **Security fix: builds of scanned code could reach the appliance's SSH and HTTPS ports.** The firewall accepted
+  the inbound ports (22, 443) before it dropped what comes from Docker's build bridges, so a build or verification
+  run of a scanned repository reached the appliance's SSH server and its admin pages. The build bridges' drop now
+  comes first, and pods in the sandbox cluster no longer reach SSH either (HTTPS stays: the sandbox URLs are on
+  Caddy). Found by the boot test's probe once it ran again (next item).
+- **Fix: `https://<appliance address>` could fail with a TLS alert ("internal error").** Caddy started at the same
+  time as the step that adds the appliance's addresses to its certificate and missed its reload, so it had a
+  certificate for the name only. It now starts after that step, and a connection without a server name gets the
+  name's certificate.
+- **Fix: Caddy wrote its environment to the journal at every start.** Debian's unit runs it with `--environ`, so
+  `appliance.env` (and anything an administrator adds there) ended up in the system log. It starts without it now.
+- **Fix: the appliance boot test used `CZ_IMAGE_MSSQL` before loading it** (`unbound variable`), so its
+  build-isolation checks never ran.
+
 ## 0.35.7 (2026-11-11)
 
 - **Fix: an appsettings.json with comments or unquoted tokens was read as empty.** The scan understood only

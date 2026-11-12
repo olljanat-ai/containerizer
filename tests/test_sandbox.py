@@ -582,10 +582,15 @@ def test_sandbox_kustomizations_wait_for_the_workloads_not_every_object(tmp_path
     [p] = k["patches"]
     assert p["target"] == {"group": "kustomize.toolkit.fluxcd.io", "version": "v1", "kind": "Kustomization",
                            "name": "shop-web", "namespace": "shop-web"}
-    assert json.loads(p["patch"]) == [
+    ops = json.loads(p["patch"])
+    assert ops[:3] == [
         {"op": "add", "path": "/spec/wait", "value": False},
         {"op": "add", "path": "/spec/healthChecks", "value": [
-            {"apiVersion": "apps/v1", "kind": "Deployment", "name": "web", "namespace": "shop-web"}]}]
+            {"apiVersion": "apps/v1", "kind": "Deployment", "name": "web", "namespace": "shop-web"}]},
+        {"op": "add", "path": "/spec/patches", "value": []}]       # this sync.yaml has none: appending needs one
+    # the settings' ExternalSecret reads every key its remote Secret has (a value not filled yet is just not set)
+    [es] = ops[3:]
+    assert es["path"] == "/spec/patches/-" and es["value"]["target"]["name"] == "web-secrets"
     assert yaml.safe_load((app / "gitops" / "flux" / "git" / "sync.yaml").read_text())["spec"]["wait"] is True
     if shutil.which("kubectl"):                    # what Flux's root sync applies (kustomize build)
         built = subprocess.run(["kubectl", "kustomize", str(root / "sandbox" / "flux" / "apps")], capture_output=True,

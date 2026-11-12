@@ -24,7 +24,8 @@ EMBEDDED_PKGS = re.compile(r"Microsoft\.EntityFrameworkCore\.Sqlite|Microsoft\.D
 # deployment-time tokens a release pipeline replaces in appsettings.json (Azure DevOps Replace Tokens, Octopus):
 # "#{Example.Variable}#" and "__Example.Variable__"
 TOKEN_RE = re.compile(r"#\{\s*[A-Za-z_][\w.\-]*\s*\}#|(?<![\w])__[A-Za-z][A-Za-z0-9.\-]*(?:_[A-Za-z0-9.\-]+)*__(?![\w])")
-SECRET_KEY = re.compile(r"(password|secret|apikey|api_key|clientsecret|token|connectionstring|key)$", re.I)
+# the last part of a configuration key that names a secret ("Pass" alone: Bypass, Compass are no passwords)
+SECRET_KEY = re.compile(r"(password|passwd|pwd|secret|apikey|api_key|clientsecret|token|connectionstring|key)$|^pass$", re.I)
 
 
 def _settings_rank(name: str) -> tuple:
