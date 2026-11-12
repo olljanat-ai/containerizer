@@ -40,7 +40,7 @@ The key names are environment variable names: `ConnectionStrings__Main` sets `Co
 | What you see | Where it comes from |
 | --- | --- |
 | An empty key | Nobody has filled it yet. The app runs without it (with its `appsettings.json` value). |
-| A key with a value you didn't type | Someone put it in the store by hand before OpenBao was there: it was taken over. |
+| A key with a value you didn't type | The app's own development value: the one `appsettings.json` (or `appsettings.Development.json`, ...) gives it in the app's repository, where a release pipeline replaces it. The scan leaves these values on the appliance only, never in the output repository, and each key is filled from there once: empty it and it stays empty. Or someone put it in the store by hand before OpenBao was there: it was taken over. |
 | A key that is not there although `HARDENING.md` lists it | Another part of the appliance fills it (the [sandbox identity provider](sandbox-idp.md)'s client secret, [lab services](lab-services.md)' credentials): don't set it. |
 
 Settings that are not secret (a URL with a token in it, say) are in the component's ConfigMap

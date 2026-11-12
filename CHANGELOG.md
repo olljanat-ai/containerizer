@@ -10,6 +10,16 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.41.4 (2026-11-12)
+
+- **OpenBao's placeholders start with the app's own development values.** For a secret setting that the app's
+  `appsettings.json` (or a development or test settings file) gives a value, the release pipeline's transform or
+  token replaces it at deployment, and OpenBao showed it empty. Now the scan leaves those values on the appliance,
+  outside Git (`/var/lib/containerizer/worker/secret-seed`, owner only), and the OpenBao sync fills each empty key
+  with its value once; a key emptied afterwards stays empty. Forget application removes them too.
+- **A setting named `TokenEndpoint` or `TokenLifetime` is no secret.** "Token" makes a setting secret only as a
+  whole part of its name (`ApiToken`, `Auth:Token`, `ACCESS_TOKEN`); a token URL goes to the ConfigMap.
+
 ## 0.41.3 (2026-11-12)
 
 - **Forget application removes the application's secret values.** Its OpenBao entries (`apps/<namespace>/...`, every

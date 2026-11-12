@@ -92,6 +92,8 @@ class OrgOptions:
     work_dir: str = ".work/org"
     keep_work: bool = False
     cache_dir: str | None = None        # keep clones here and only pull the newest commit on later runs
+    secret_seed_dir: str | None = None  # the appliance: the secret settings' values of the apps' own settings files,
+                                        # outside Git, for OpenBao's empty placeholders (write_secret_seed)
     skip_no_code: bool = True           # skip repositories without application code (docs, config, libraries only)
     dry_run: bool = False
     now: datetime | None = None
@@ -604,6 +606,31 @@ def _sync_has_patches(folder: Path) -> bool:
         return True
     return any(isinstance(d, dict) and d.get("kind") == "Kustomization" and isinstance((d.get("spec") or {}).get("patches"), list)
                for d in docs)
+
+
+def write_secret_seed(base: Path, ns: str, comps) -> None:
+    """<base>/<namespace>/<component>.json (owner only): the values the component's own settings files give the
+    settings it reads from the secret store (connection strings, secret settings, secret-looking token settings),
+    the development values a developer runs it with. Never in the output repository: the appliance's OpenBao sync
+    fills its empty placeholders with them once (openbao.py)."""
+    import os
+    from .facts import secret_starts
+    from .generate import k8s_name
+    d = base / ns
+    if d.exists():
+        shutil.rmtree(d)
+    for c in comps:
+        f = c.facts or {}
+        keys = [f"ConnectionStrings:{k}" for k in f.get("connection_strings") or []] + list(f.get("secret_settings") or []) \
+            + list(f.get("token_secret_settings") or [])
+        values = secret_starts(c.project, list(dict.fromkeys(keys))) if keys and c.project.kind_hint == "dotnet" else {}
+        if not values:
+            continue
+        d.mkdir(parents=True, exist_ok=True, mode=0o700)
+        base.chmod(0o700)
+        fd = os.open(d / f"{k8s_name(c.name)}.json", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(values))
 
 
 def sandbox_wait_patch(folder: Path, doc: dict, debug_image: str | None = None) -> dict | None:
@@ -1607,6 +1634,12 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
         if dest.exists():                                      # it no longer qualifies: stop deploying it
             shutil.rmtree(dest)
         return res
+
+    if o.secret_seed_dir and not o.dry_run:
+        try:
+            write_secret_seed(Path(o.secret_seed_dir), app_ns(a.name), keep)
+        except OSError as ex:
+            print(f"warning: {a.name}: secret starting values not written: {ex}", file=sys.stderr)
 
     # images: built by the gate (or here), pushed under <registry>/<app>/<component>:<tag>
     from .imagescan import build_image

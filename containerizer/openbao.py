@@ -9,6 +9,9 @@ the Flux webhook, the sandbox IdP, lab services) keep writing there. OpenBao is 
   entry `apps/<namespace>/<component>` (KV version 2) with one key per property the component reads: empty, or the
   value already in the store (set by hand before). Keys another appliance writer owns (the sandbox IdP's client
   secret) are left out: they are filled automatically.
+- **Starting values.** A placeholder starts with the value the app's own settings files give it (appsettings.json and
+  the development files: what a developer runs it with), which the scan leaves outside Git (SEED_DIR). Each key is
+  filled from there once; a value a person empties later stays empty.
 - **Copy.** The keys with a value are copied to the store's remote Secret `<namespace>--<component>` (server-side
   apply, field manager `containerizer-openbao`, so the other writers' keys stay); a key emptied in OpenBao is removed
   there. In the sandbox the component's ExternalSecret reads every key the remote Secret has (sandbox_patches), so a
@@ -37,6 +40,10 @@ from pathlib import Path
 
 ADDR = os.environ.get("CZ_OPENBAO_ADDR", "http://127.0.0.1:8200")
 SECRETS = Path(os.environ.get("CZ_OPENBAO_SECRETS", "/etc/containerizer/secrets"))
+# the development values of the apps' secret settings, from their own settings files (org.write_secret_seed, the scan
+# worker; never in Git), and which keys were filled from them already (each once: a value a person empties stays empty)
+SEED_DIR = Path(os.environ.get("CZ_OPENBAO_SEED", "/var/lib/containerizer/worker/secret-seed"))
+SEEDED_PATH = Path(os.environ.get("CZ_OPENBAO_SEEDED", "/var/lib/containerizer/system/openbao-seeded.json"))
 FORGET_PATH = Path(os.environ.get("CZ_OPENBAO_FORGET", "/var/lib/containerizer/system/openbao-forget.json"))
 MOUNT = "apps"                              # KV version 2: apps/<namespace>/<component>
 MANAGER = "containerizer-openbao"           # field manager of the copied keys in the store
@@ -332,8 +339,30 @@ def _apply_store(store_ns: str, remote: str, values: dict[str, str], exists: boo
          stdin=json.dumps(doc))
 
 
+def _json_file(p: Path) -> dict:
+    try:
+        v = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return {}
+    return v if isinstance(v, dict) else {}
+
+
+def seed_values(ns: str, component: str) -> dict[str, str]:
+    return {str(k): str(v) for k, v in _json_file(SEED_DIR / ns / f"{component}.json").items() if v not in (None, "")}
+
+
+def _save_seeded(seeded: dict) -> None:
+    SEEDED_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SEEDED_PATH.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(seeded, sort_keys=True))
+    os.replace(tmp, SEEDED_PATH)
+
+
 def sync_component(bao: Bao, store_ns: str, c: dict, log=print) -> dict:
-    """Placeholders in OpenBao for one component, then its filled values into the store. Returns counts."""
+    """Placeholders in OpenBao for one component (empty, the value already in the store, or the app's own starting
+    value), then its filled values into the store. Returns counts."""
     path = f"{c['namespace']}/{c['component']}"
     got = bao.call("GET", f"{MOUNT}/data/{path}", ok404=True)
     data = dict(((got or {}).get("data") or {}).get("data") or {})
@@ -346,15 +375,23 @@ def sync_component(bao: Bao, store_ns: str, c: dict, log=print) -> dict:
     owners, have = _owners(secret or {}), _decode(secret)
     system = {k for k, m in owners.items() if _system(m)}
     added = [p for p in c["properties"] if p not in data and p not in system]
-    if added:
-        # an empty placeholder, or the value someone already put in the store by hand
+    seed, seeded = seed_values(c["namespace"], c["component"]), _json_file(SEEDED_PATH)
+    done = set(seeded.get(path) or [])
+    fill = {p: seed[p] for p in c["properties"] if p in seed and p not in done and p not in system
+            and not data.get(p) and not (have.get(p) and not _system(owners.get(p, "")))}
+    if added or fill:
+        # an empty placeholder, the value someone already put in the store by hand, or the app's starting value
         data.update({p: have.get(p, "") if not _system(owners.get(p, "")) else "" for p in added})
+        data.update(fill)
         try:
             bao.call("POST", f"{MOUNT}/data/{path}", {"options": {"cas": version}, "data": data})
         except BaoError as ex:
             if "check-and-set" in str(ex):
                 return {"added": 0, "copied": 0}      # someone saved it just now: next round
             raise
+    if seed and set(seed) & set(c["properties"]) - done:
+        seeded[path] = sorted(done | (set(seed) & set(c["properties"])))
+        _save_seeded(seeded)
     values = {k: str(v) for k, v in data.items() if v not in ("", None) and k not in system}
     mine = {k for k, m in owners.items() if m == MANAGER}
     # a changed value, one we do not own yet (set by hand: emptying it in OpenBao must remove it), or one emptied
@@ -508,6 +545,11 @@ def forget_namespace(bao: Bao, store_ns: str, ns: str, log=print) -> int:
         bao.call("DELETE", f"{MOUNT}/metadata/{ns}/{comp}", ok404=True)
         _run(["-n", store_ns, "delete", "secret", _remote_key(ns, comp), "--ignore-not-found"], ok_missing=True)
     bao.call("DELETE", f"sys/policies/acl/app-{ns}", ok404=True)
+    import shutil
+    shutil.rmtree(SEED_DIR / ns, ignore_errors=True)
+    seeded = _json_file(SEEDED_PATH)
+    if any(k.startswith(f"{ns}/") for k in seeded):
+        _save_seeded({k: v for k, v in seeded.items() if not k.startswith(f"{ns}/")})
     log(f"openbao: forgot {ns}: {len(comps)} entr{'y' if len(comps) == 1 else 'ies'}, policy app-{ns}")
     return len(comps)
 

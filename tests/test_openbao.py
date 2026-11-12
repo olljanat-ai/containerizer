@@ -2,6 +2,7 @@
 and the sandbox's ExternalSecret patch."""
 import base64
 import json
+from pathlib import Path
 
 import pytest
 
@@ -314,3 +315,41 @@ def test_forget_of_a_namespace_scanned_again_is_dropped_after_a_day(tmp_path, mo
     monkeypatch.setattr(ob, "apply_now", lambda changed, log=print: None)
     ob.sync(lambda m: None)
     assert ob.pending_forgets() == {} and "shop/web" in bao.kv        # synced again as usual
+
+
+def test_placeholders_start_with_the_apps_own_values_once(tmp_path, kube, monkeypatch):
+    """The scan leaves the development values of the secret settings outside Git (org.write_secret_seed); the sync
+    fills each empty key with them once: a key a person empties afterwards stays empty, a filled one is not touched."""
+    monkeypatch.setattr(ob, "SEED_DIR", tmp_path / "seed")
+    monkeypatch.setattr(ob, "SEEDED_PATH", tmp_path / "seeded.json")
+    (tmp_path / "seed" / "shop").mkdir(parents=True)
+    (tmp_path / "seed" / "shop" / "web.json").write_text(json.dumps({"Snow__ClientSecret": "dev-secret",
+                                                                    "Snow__Password": "dev-pw"}))
+    bao = FakeBao()
+    bao.kv["shop/web"] = ({"Snow__ClientSecret": "", "Snow__Password": "mine"}, 1)
+    c = {"namespace": "shop", "component": "web", "remote": "shop--web",
+         "properties": ["Snow__ClientSecret", "Snow__Password", "Other"]}
+    ob.sync_component(bao, "containerizer-secrets", c, log=lambda m: None)
+    assert bao.kv["shop/web"][0] == {"Snow__ClientSecret": "dev-secret", "Snow__Password": "mine", "Other": ""}
+    bao.kv["shop/web"] = ({**bao.kv["shop/web"][0], "Snow__ClientSecret": ""}, bao.kv["shop/web"][1] + 1)
+    ob.sync_component(bao, "containerizer-secrets", c, log=lambda m: None)
+    assert bao.kv["shop/web"][0]["Snow__ClientSecret"] == ""                  # emptied by a person: stays empty
+
+
+def test_the_scan_leaves_the_development_values_outside_git(tmp_path):
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_engine import web_app, write
+    from containerizer.assess import assess
+    from containerizer.org import write_secret_seed
+    web_app(tmp_path / "src")
+    write(tmp_path / "src", "src/Web/appsettings.json", """
+        {"ConnectionStrings": {"Main": "Server=db;Database=a;User Id=u;Password=dev"},
+         "Snow": {"ClientSecret": "dev-secret", "TokenEndpoint": "https://snow.example.com/token"}}""")
+    write(tmp_path / "src", "src/Web/appsettings.Production.json", '{"Snow": {"ClientSecret": "#{Snow.Secret}#"}}')
+    a = assess(tmp_path / "src")
+    write_secret_seed(tmp_path / "seed", "shop", a.components)
+    f = tmp_path / "seed" / "shop" / "web.json"
+    assert json.loads(f.read_text()) == {"ConnectionStrings__Main": "Server=db;Database=a;User Id=u;Password=dev",
+                                         "Snow__ClientSecret": "dev-secret"}
+    assert f.stat().st_mode & 0o777 == 0o600
