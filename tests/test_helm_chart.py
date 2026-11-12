@@ -295,12 +295,14 @@ def test_write_component_docs_keeps_the_form_and_falls_back_to_manifests(tmp_pat
     assert h.write_component_docs(out / comp, docs) == "helmrelease.yaml"
     assert h.component_docs(out / comp) == docs
     assert '"$imagepolicy"' in (out / comp / "helmrelease.yaml").read_text()
-    # something the chart cannot carry: k8s.yaml again, with its image setter back in kustomization.yaml
+    # something the chart cannot carry: manifests again (a file per kind), with its image setter back in
+    # kustomization.yaml
     next(d for d in docs if d["kind"] == "Deployment")["spec"]["progressDeadlineSeconds"] = 10 ** 7
-    assert h.write_component_docs(out / comp, docs) == "k8s.yaml"
-    assert not (out / comp / "helmrelease.yaml").exists()
+    assert h.write_component_docs(out / comp, docs) == "kustomization.yaml"
+    assert not (out / comp / "helmrelease.yaml").exists() and h.component_form(out / comp) == "split"
+    assert h.component_docs(out / comp) == docs
     k = (out / "kustomization.yaml").read_text()
-    assert f"{comp}/k8s.yaml" in k and f'"{ns}:{comp}:tag"' in k
+    assert f"- {comp}\n" in k and f'"{ns}:{comp}:tag"' in k
     assert yaml.safe_load(k)["images"]
 
 
@@ -375,13 +377,13 @@ def test_deploy_app_follows_the_override_and_keeps_the_deployed_mode(tmp_path, m
                                  tmp_path / f"work{n}", "shop-web")
     dest = out.root / rel
     r = deploy(1, deploy_mode="manifests")                    # a run whose default is manifests
-    assert r.deploy_mode == "manifests" and (dest / "demo-web" / "k8s.yaml").exists()
+    assert r.deploy_mode == "manifests" and h.component_form(dest / "demo-web") == "split"
     r = deploy(2)                                             # the default (chart) does not switch it
     assert r.deploy_mode == "manifests" and "deployed with" in r.deploy_mode_reason
     assert json.loads((dest / "containerizer.json").read_text())["deploy_mode"] == "manifests"
     r = deploy(3, deploy_modes={"k1": "chart"})               # the administrators' choice does
     assert r.deploy_mode == "chart" and r.deploy_mode_reason == "set for this application"
-    assert (dest / "demo-web" / "helmrelease.yaml").exists() and not (dest / "demo-web" / "k8s.yaml").exists()
+    assert h.component_form(dest / "demo-web") == "chart" and not (dest / "demo-web" / "deployment.yaml").exists()
     assert r.components[0]["deploy_mode"] == "chart"
     r = deploy(4)                                             # and it stays
     assert r.deploy_mode == "chart"
@@ -466,5 +468,36 @@ def test_chart_mode_keeps_the_settings_configmap_in_a_file_of_its_own(tmp_path):
     assert "kind: ConfigMap" not in (out / comp / "helmrelease.yaml").read_text()
     assert yaml.safe_load((out / comp / "settings.yaml").read_text())["data"]["Api__Url"] == "https://api.example.com"
     next(d for d in docs if d["kind"] == "Deployment")["spec"]["progressDeadlineSeconds"] = 10 ** 7
-    assert h.write_component_docs(out / comp, docs) == "k8s.yaml"
-    assert not any(h.is_settings(d) for d in yaml.safe_load_all((out / comp / "k8s.yaml").read_text()) if d)
+    assert h.write_component_docs(out / comp, docs) == "kustomization.yaml"
+    # settings.yaml is the split folder's now: listed once, by the component's kustomization.yaml
+    assert yaml.safe_load((out / comp / "kustomization.yaml").read_text())["resources"].count("settings.yaml") == 1
+    assert f"{comp}/settings.yaml" not in yaml.safe_load((out / "kustomization.yaml").read_text())["resources"]
+
+
+def test_manifests_mode_writes_a_file_per_kind(tmp_path):
+    """Manifests mode: each component folder holds one file per kind and a kustomization.yaml listing them, the app's
+    kustomization.yaml lists the folder. What kustomize builds is what k8s.yaml held; reading and writing back keep
+    the form and the comments."""
+    out, ns, comps = _generated(tmp_path)
+    before = {c: [d for d in docs] for c, docs in comps.items()}
+    assert h.split_app(out, list(comps)) == list(comps)
+    comp = next(iter(comps))
+    cdir = out / comp
+    assert not (cdir / "k8s.yaml").exists() and h.component_form(cdir) == "split"
+    files = yaml.safe_load((cdir / "kustomization.yaml").read_text())["resources"]
+    assert "deployment.yaml" in files and "service.yaml" in files and "networkpolicy.yaml" in files
+    assert all((cdir / f).is_file() for f in files)
+    assert {d["kind"] for d in yaml.safe_load_all((cdir / "networkpolicy.yaml").read_text())} == {"NetworkPolicy"}
+    assert sorted(map(json.dumps, h.component_docs(cdir))) == sorted(map(json.dumps, before[comp]))
+    res = yaml.safe_load((out / "kustomization.yaml").read_text())["resources"]
+    assert comp in res and f"{comp}/k8s.yaml" not in res
+    docs = h.component_docs(cdir)
+    pol = next(d for d in docs if d["kind"] == "NetworkPolicy")
+    pol["spec"].setdefault("egress", []).append({"to": [{"podSelector": {"matchLabels": {"app": "x"}}}]})
+    assert h.write_component_docs(cdir, docs) == "kustomization.yaml"
+    assert h.component_docs(cdir) == docs
+    assert (cdir / "deployment.yaml").read_text().startswith("#") or "Deployment" in (cdir / "deployment.yaml").read_text()
+    if shutil.which("kubectl"):
+        built = subprocess.run(["kubectl", "kustomize", str(out)], capture_output=True, text=True)
+        assert built.returncode == 0, built.stderr
+        assert "kind: Deployment" in built.stdout

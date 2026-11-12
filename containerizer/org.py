@@ -590,6 +590,9 @@ def _app_docs(folder: Path, rendered: bool = True) -> list[dict]:
         if rendered and f.name == HELMRELEASE and f.is_file():
             docs += component_docs(f.parent)
             continue
+        if f.is_dir() and (f / "kustomization.yaml").is_file():     # a component split into a file per kind
+            docs += component_docs(f)
+            continue
         if f.is_file() and f.suffix in (".yaml", ".yml"):
             try:
                 docs += [d for d in yaml.safe_load_all(f.read_text()) if isinstance(d, dict)]
@@ -710,7 +713,7 @@ def write_cluster_kit(root: Path) -> list[str]:
     for _rel, folder, _doc in _apps_in(root):
         for f in folder.glob("*/k8s.yaml"):
             refs |= {f"{m}/*" for m in IMAGE_RE.findall(f.read_text(errors="replace"))}
-        for f in folder.glob(f"*/{HELMRELEASE}"):
+        for f in [*folder.glob(f"*/{HELMRELEASE}"), *folder.glob("*/kustomization.yaml")]:
             from .generate import _yaml_docs
             refs |= {f"{m}/*" for m in IMAGE_RE.findall(_yaml_docs(component_docs(f.parent)))}
         old = folder / CLUSTER
@@ -1741,6 +1744,8 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
         e["deploy_mode"] = f.get("mode") or "manifests"
         if f.get("reason"):
             e["deploy_mode_reason"] = f["reason"]
+    # manifests: a file per kind and a kustomization.yaml in each component's folder
+    helmchart.split_app(gen, [e["folder"] for e in comps if e["deploy_mode"] == "manifests"])
     if pushed and (gen / "kustomization.yaml").exists():
         from .gitops import set_image_digests
         set_image_digests(gen / "kustomization.yaml", pushed)
