@@ -34,6 +34,13 @@ DEFAULT_API = {"azure-devops": "https://dev.azure.com", "github": "https://api.g
 NO_PROJECT = "_"            # project folder for repositories that have no project level (GitHub, top-level GitLab)
 
 
+COMMIT_LIMIT = 20000         # commits read per repository and run at most (the newest)
+
+
+def _iso(d: datetime) -> str:
+    return urllib.parse.quote(d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), safe="")
+
+
 class SourceError(RuntimeError):
     pass
 
@@ -210,6 +217,11 @@ class Provider:
     def last_commit(self, r: SourceRepo) -> datetime | None:
         return None
 
+    def commits(self, r: SourceRepo, since: datetime, limit: int = COMMIT_LIMIT):
+        """The commits on the default branch since `since`, newest first: (author e-mail, author name, author date).
+        At most `limit` (the newest)."""
+        return iter(())
+
     def git_header(self) -> str:
         if not self.token:
             return ""
@@ -291,6 +303,21 @@ class GitHub(Provider):
         return parse_time((c.get("committer") or {}).get("date") or (c.get("author") or {}).get("date"))
 
 
+    def commits(self, r: SourceRepo, since: datetime, limit: int = COMMIT_LIMIT):
+        full = "/".join(urllib.parse.quote(x, safe="") for x in (r.extra.get("full_name") or f"{self.org}/{r.name}").split("/", 1))
+        url = f"{self.api}/repos/{full}/commits?per_page=100&since={_iso(since)}"
+        if r.default_branch:
+            url += "&sha=" + urllib.parse.quote(r.default_branch, safe="")
+        n = 0
+        while url and n < limit:
+            data, h = self.get(url)
+            for d in data or []:
+                a = (d or {}).get("commit", {}).get("author") or {}
+                n += 1
+                yield a.get("email") or "", a.get("name") or "", parse_time(a.get("date"))
+            url = _next_link(h)
+
+
 class GitLab(Provider):
     """Projects of a group and all its subgroups (`/groups/:id/projects?include_subgroups=true`).
     The project folder is the subgroup path below the group (`team/sub` -> `team--sub`)."""
@@ -341,6 +368,20 @@ class GitLab(Provider):
         return parse_time((data or [{}])[0].get("committed_date")) if data else None
 
 
+    def commits(self, r: SourceRepo, since: datetime, limit: int = COMMIT_LIMIT):
+        if not r.default_branch:
+            return
+        url = (f"{self.api}/api/v4/projects/{r.id}/repository/commits?per_page=100&since={_iso(since)}"
+               f"&ref_name={urllib.parse.quote(r.default_branch, safe='')}")
+        n = 0
+        while url and n < limit:
+            data, h = self.get(url)
+            for d in data or []:
+                n += 1
+                yield d.get("author_email") or "", d.get("author_name") or "", parse_time(d.get("authored_date"))
+            url = _next_link(h)
+
+
 class AzureDevOps(Provider):
     """All projects of an organization (or an Azure DevOps Server collection: --api-url
     https://server/tfs and the collection as the organization) and their Git repositories."""
@@ -389,6 +430,23 @@ class AzureDevOps(Provider):
         data, _ = self.get(url)
         v = (data or {}).get("value") or []
         return parse_time((v[0].get("committer") or {}).get("date")) if v else None
+
+
+    def commits(self, r: SourceRepo, since: datetime, limit: int = COMMIT_LIMIT):
+        base = (f"{self.base}/{r.extra.get('project_q', urllib.parse.quote(r.project))}/_apis/git/repositories/{r.id}"
+                f"/commits?{self.API}&searchCriteria.fromDate={_iso(since)}&searchCriteria.$top=1000")
+        if r.default_branch:
+            base += "&searchCriteria.itemVersion.version=" + urllib.parse.quote(r.default_branch, safe="")
+        n = 0
+        while n < limit:
+            data, _ = self.get(base + f"&searchCriteria.$skip={n}")
+            v = (data or {}).get("value") or []
+            for d in v:
+                a = d.get("author") or {}
+                n += 1
+                yield a.get("email") or "", a.get("name") or "", parse_time(a.get("date"))
+            if len(v) < 1000:
+                return
 
 
 def provider(name: str, org: str, token: str = "", api_url: str | None = None) -> Provider:

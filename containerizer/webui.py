@@ -1588,6 +1588,12 @@ table.dbrows th a{color:inherit}table.dbrows .null{color:var(--muted);font-style
 .dbfield{display:grid;grid-template-columns:minmax(160px,220px) 1fr auto;gap:8px;align-items:start;padding:6px 0;border-top:1px solid var(--line)}
 .dbfield label{margin:0}.dbfield .dbval{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px}
 .dbfield .opts{display:flex;gap:10px;white-space:nowrap;font-size:13px}.pager{display:flex;gap:14px;align-items:center;margin:8px 0}
+form.inline-form{display:flex;gap:6px;align-items:center;margin:0}form.inline-form select{width:auto;min-width:180px}
+table.devs td.repos{max-width:420px}table.devs details.more{border:0;padding:0;margin:2px 0;background:none;display:inline}
+table.devs details.more summary{font-size:13px;color:var(--muted);cursor:pointer}td.num{text-align:right}
+table.devs select{width:auto;min-width:150px}span.sugg.sure{font-weight:600}
+nav.chips.sub{margin-top:10px;gap:6px}nav.chips.sub .chip{font-size:13px;padding:2px 10px}
+.formrow input.wide:not([type=checkbox]){min-width:380px}
 """
 
 # The only script (admin pages): a header checkbox that checks or clears the checkboxes of its column.

@@ -10,6 +10,24 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.38.0 (2026-11-12)
+
+- **Developers and ownership** ([Developers and ownership](docs/developers.md)), **Admin → Developers**
+  (administrators). Every organization scan run, full or discovery, reads the commit authors of the last six months
+  from the provider's API (no extra clones): one developer per e-mail address, the repositories they commit to,
+  their commits there and their latest commit (only ever moves forward). A repository is read again when it has a
+  newer commit, or weekly. Bots and build services are left out; others can be ignored.
+  - Administrators map developers to business units. The page suggests a developer's business unit from the
+    products of their repositories, and the business unit of the products and repositories nobody mapped from their
+    developers, weighed by commits; **Apply suggestions** sets the ones at least 60% sure.
+  - **One product per project** as a starting point: after every run the scan makes a product named after each Azure
+    DevOps project (GitLab subgroup) with an assessed application, and maps the project's applications nobody mapped
+    to it, once. **Projects → products** changes a project's product; the applications mapped automatically follow.
+  - Database schema 50: `Developer`, `DeveloperRepository`, the procedure `AutoMapProjects`, new columns in
+    `OrgRepository`, `OrgProject` and `Application`.
+- The External Secrets guide looks up the Kubernetes auth method's accessor with `vault read` (no `jq` needed),
+  like the OpenBao guide since 0.37.0.
+
 ## 0.37.0 (2026-11-12)
 
 - **`bao` on the appliance.** The command `bao` (as root) runs the OpenBao CLI in its container and talks to

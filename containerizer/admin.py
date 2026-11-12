@@ -34,7 +34,7 @@ TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Applicatio
               "SourceCredential": "Source control token", "LabService": "Lab service", "ApiKey": "API key",
               "RulesRepository": "Internal rules repository", "LlmJob": "LLM queue job",
               "LlmQueueSettings": "LLM queue settings", "DatabaseEdit": "Sandbox database",
-              "RoleAssignment": "Role"}
+              "RoleAssignment": "Role", "Developer": "Developer"}
 FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
               "Retired": "Hidden", "SandboxEnabled": "Sandbox", "SandboxDebug": "Sandbox debug mode", "DeployMode": "Deploy mode", "OutputRepo": "Own output repository",
               "OutputBranch": "Its branch", "OutputPath": "Its folder", "Product": "Product", "BusinessUnit": "Business unit", "InfoUrl": "Product page link",
@@ -69,7 +69,9 @@ FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Des
               "ApplicationId": "Application", "Namespace": "Namespace", "Source": "Database",
               "TableName": "Table", "Statement": "Statement",
               # users and roles (admin_users.py)
-              "User": "User", "PendingEmail": "E-mail (not signed in yet)", "Role": "Role"}
+              "User": "User", "PendingEmail": "E-mail (not signed in yet)", "Role": "Role",
+              # developers (admin_developers.py)
+              "Ignored": "Ignored"}
 # Roles given on the admin pages (CONTAINERIZER_ROLE_SOURCE=ui) are read from the database again when a session's
 # were read longer ago than this (seconds): every request, but once for the several lookups of one page.
 ROLE_REFRESH = 1.0
@@ -273,7 +275,7 @@ class Admin:
             known = kind in ("applications", "products", "business-units", "audit", "access", "scans", "repositories",
                              "llm-queue", "refactoring", "egress", "api",
                              "dev-databases", "system", "firewall", "source-control", "lab-services",
-                             "lab-mail", "sandbox-https", "users")
+                             "lab-mail", "sandbox-https", "users", "developers")
             return Response(403 if known else 404, self._shell(s, a, "Not allowed" if known else "Not found", "",
                             "<p>Your role does not include this page.</p>" if known else ""))
         if kind in ("scans", "repositories"):
@@ -306,6 +308,9 @@ class Admin:
         if kind == "lab-mail":                       # the appliance only; administrators and operators (see _tabs)
             from . import admin_labmail
             return admin_labmail.route(self, conn, s, a, method, parts, q, form)
+        if kind == "developers":                     # administrators only (see _tabs)
+            from . import admin_developers
+            return admin_developers.route(self, conn, s, a, method, parts, q, form)
         if kind == "users":                          # administrators only (see _tabs)
             from . import admin_users
             return admin_users.route(self, conn, s, a, method, parts, q, form)
@@ -360,6 +365,8 @@ class Admin:
             tabs += [("applications", "Applications"), ("products", "Products")]
         if a.admin:
             tabs += [("business-units", "Business units")]
+        if a.admin and hasattr(self, "route_scans"):                     # who commits where (admin_developers.py)
+            tabs += [("developers", "Developers")]
         if (a.admin or a.operator) and hasattr(self, "route_scans"):     # scheduled organization scans
             tabs += [("scans", "Organization scans"), ("repositories", "Repositories"), ("llm-queue", "LLM queue"),
                      ("refactoring", "Refactoring"), ("egress", "Egress")]

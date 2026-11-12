@@ -19,7 +19,8 @@ A scan runs in two phases, so time is not spent on repositories nobody uses any 
    repository's latest commit on its default branch, through the provider's API only. Nothing is cloned,
    assessed, built or pushed, and the output repository is not touched, so even a large organization is
    listed in minutes. Discovery also marks the [automatic skips](#automatic-skips) the API alone shows
-   (archived, empty, fork, not updated recently, left out by the filter).
+   (archived, empty, fork, not updated recently, left out by the filter). Every run also reads who committed where in the last six
+   months, for [Developers and ownership](developers.md).
 2. An administrator or operator reviews the result and **disables** what is deprecated:
    - **Admin → Repositories** shows each repository's latest commit. **No commit for a year** and
      **Oldest commit first** bring the old ones to the top; select them (the box in the header selects every

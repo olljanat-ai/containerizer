@@ -989,7 +989,8 @@ BEGIN
 END;
 GO
 
--- Projects: found by a scan, disabled or enabled again by people, and leaving the organization.
+-- Projects: found by a scan, disabled or enabled again by people, and leaving the organization (with the product: 50,
+-- below, once its columns exist).
 CREATE OR ALTER TRIGGER [${schema}].trOrgProjectAudit ON [${schema}].OrgProject
 AFTER INSERT, UPDATE, DELETE AS
 BEGIN
@@ -2808,4 +2809,147 @@ GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 48) INSERT [${schema}].SchemaVersion (Version) VALUES (48);
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 49) INSERT [${schema}].SchemaVersion (Version) VALUES (49);
+GO
+
+-- 50: developers (Admin -> Developers, developers.py). Every organization scan run reads the commit authors of the last
+-- six months from the provider's API, per repository, and keeps who committed where and when last. Administrators map
+-- developers to business units; the page then suggests the business unit of the repositories and products nobody
+-- mapped, from the business units of the people who commit to them. Ignored: a service account or bot, left out.
+IF OBJECT_ID(N'[${schema}].Developer', N'U') IS NULL
+CREATE TABLE [${schema}].Developer (
+    DeveloperId    int IDENTITY(1,1) NOT NULL CONSTRAINT PK_Developer PRIMARY KEY,
+    Email          nvarchar(256) NOT NULL CONSTRAINT UQ_Developer_Email UNIQUE,   -- lower case, from the commits
+    Name           nvarchar(200) NULL,                                            -- the author name of the latest commit
+    BusinessUnitId int           NULL CONSTRAINT FK_Developer_BusinessUnit
+                                 REFERENCES [${schema}].BusinessUnit (BusinessUnitId) ON DELETE SET NULL,  -- set by people
+    Ignored        bit           NOT NULL CONSTRAINT DF_Developer_Ignored DEFAULT 0,                     -- set by people
+    Note           nvarchar(400) NULL,                                                                   -- set by people
+    FirstSeenAt    datetime2(0)  NOT NULL CONSTRAINT DF_Developer_FirstSeenAt DEFAULT SYSUTCDATETIME(),
+    LastCommitAt   datetime2(0)  NULL
+);
+GO
+-- one row per developer and repository: commits in the six months before the repository's HistoryAt, and the newest
+-- commit ever seen (only ever moves forward)
+IF OBJECT_ID(N'[${schema}].DeveloperRepository', N'U') IS NULL
+CREATE TABLE [${schema}].DeveloperRepository (
+    DeveloperId   int NOT NULL CONSTRAINT FK_DeveloperRepository_Developer
+                  REFERENCES [${schema}].Developer (DeveloperId) ON DELETE CASCADE,
+    RepositoryId  int NOT NULL CONSTRAINT FK_DeveloperRepository_Repository
+                  REFERENCES [${schema}].OrgRepository (RepositoryId) ON DELETE CASCADE,
+    Commits       int NOT NULL CONSTRAINT DF_DeveloperRepository_Commits DEFAULT 0,
+    FirstSeenAt   datetime2(0) NOT NULL CONSTRAINT DF_DeveloperRepository_FirstSeenAt DEFAULT SYSUTCDATETIME(),
+    LastCommitAt  datetime2(0) NOT NULL,
+    CONSTRAINT PK_DeveloperRepository PRIMARY KEY (DeveloperId, RepositoryId)
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_DeveloperRepository_Repository' AND object_id = OBJECT_ID(N'[${schema}].DeveloperRepository'))
+CREATE INDEX IX_DeveloperRepository_Repository ON [${schema}].DeveloperRepository (RepositoryId) INCLUDE (Commits, LastCommitAt);
+GO
+-- when the repository's commit authors were read last, the newest commit then, and why reading them failed
+IF COL_LENGTH(N'[${schema}].OrgRepository', N'HistoryAt') IS NULL
+ALTER TABLE [${schema}].OrgRepository ADD HistoryAt datetime2(0) NULL, HistoryCommitAt datetime2(0) NULL,
+    HistoryError nvarchar(400) NULL;
+GO
+-- the product of a project (Azure DevOps project, GitLab subgroup): at first one product per project, made by the
+-- organization scan (AutoMapProjects) once the project has an assessed application; afterwards as administrators set it.
+-- ProductMappedAt NULL: nobody decided yet; set with ProductId NULL: no product for this project.
+IF COL_LENGTH(N'[${schema}].OrgProject', N'ProductId') IS NULL
+ALTER TABLE [${schema}].OrgProject ADD ProductId int NULL CONSTRAINT FK_OrgProject_Product
+    REFERENCES [${schema}].Product (ProductId) ON DELETE SET NULL, ProductMappedAt datetime2(0) NULL;
+GO
+-- when the application was mapped to its project's product automatically (once: a mapping people change stays)
+IF COL_LENGTH(N'[${schema}].Application', N'ProductAutoAt') IS NULL
+ALTER TABLE [${schema}].Application ADD ProductAutoAt datetime2(0) NULL;
+GO
+CREATE OR ALTER TRIGGER [${schema}].trDeveloperAudit ON [${schema}].Developer
+AFTER UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'Developer', COALESCE(i.DeveloperId, d.DeveloperId), COALESCE(i.Email, d.Email),
+           CASE WHEN i.DeveloperId IS NULL THEN N'delete' ELSE N'update' END,
+           (SELECT (SELECT b.Name FROM [${schema}].BusinessUnit b WHERE b.BusinessUnitId = d.BusinessUnitId) AS BusinessUnit,
+                   d.Ignored, d.Note FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES),
+           CASE WHEN i.DeveloperId IS NOT NULL THEN (SELECT (SELECT b.Name FROM [${schema}].BusinessUnit b
+                WHERE b.BusinessUnitId = i.BusinessUnitId) AS BusinessUnit, i.Ignored, i.Note
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM deleted d LEFT JOIN inserted i ON i.DeveloperId = d.DeveloperId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE i.DeveloperId IS NULL
+       OR EXISTS (SELECT i.BusinessUnitId, i.Ignored, i.Note EXCEPT SELECT d.BusinessUnitId, d.Ignored, d.Note);
+END;
+GO
+-- Projects: found by a scan, disabled or enabled again by people, mapped to a product, and leaving the organization.
+CREATE OR ALTER TRIGGER [${schema}].trOrgProjectAudit ON [${schema}].OrgProject
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'OrgProject', COALESCE(i.ProjectId, d.ProjectId), COALESCE(i.Name, d.Name),
+           CASE WHEN d.ProjectId IS NULL THEN N'insert' WHEN i.ProjectId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.ProjectId IS NOT NULL THEN (SELECT COALESCE(d.AdminState, N'enabled') AS Setting, d.AdminNote AS Note,
+                CAST(CASE WHEN d.RemovedAt IS NULL THEN 0 ELSE 1 END AS bit) AS Removed,
+                (SELECT p.Name FROM [${schema}].Product p WHERE p.ProductId = d.ProductId) AS Product,
+                (SELECT s.Name FROM [${schema}].OrgScan s WHERE s.ScanId = d.ScanId) AS OrgScan
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.ProjectId IS NOT NULL THEN (SELECT COALESCE(i.AdminState, N'enabled') AS Setting, i.AdminNote AS Note,
+                CAST(CASE WHEN i.RemovedAt IS NULL THEN 0 ELSE 1 END AS bit) AS Removed,
+                (SELECT p.Name FROM [${schema}].Product p WHERE p.ProductId = i.ProductId) AS Product,
+                (SELECT s.Name FROM [${schema}].OrgScan s WHERE s.ScanId = i.ScanId) AS OrgScan
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.ProjectId = i.ProjectId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.ProjectId IS NULL OR i.ProjectId IS NULL
+       OR EXISTS (SELECT i.AdminState, i.AdminNote, CASE WHEN i.RemovedAt IS NULL THEN 0 ELSE 1 END, i.ProductId,
+                         CASE WHEN i.ProductMappedAt IS NULL THEN 0 ELSE 1 END
+                  EXCEPT SELECT d.AdminState, d.AdminNote, CASE WHEN d.RemovedAt IS NULL THEN 0 ELSE 1 END, d.ProductId,
+                         CASE WHEN d.ProductMappedAt IS NULL THEN 0 ELSE 1 END);
+END;
+GO
+-- One product per project, as a starting point: for every project nobody decided on yet (enabled, still listed) that has
+-- an assessed application, the product of the same name (made when there is none); then the applications nobody mapped
+-- (and that were never mapped automatically) of the projects with a product get it. Run by the scan worker after every
+-- run and by the admin pages after a project's product changes. A mapping people made is never changed.
+CREATE OR ALTER PROCEDURE [${schema}].AutoMapProjects AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    BEGIN TRANSACTION;
+    DECLARE @todo TABLE (ProjectId int PRIMARY KEY, ProductName nvarchar(200) NOT NULL);
+    INSERT @todo (ProjectId, ProductName)
+    SELECT p.ProjectId, LEFT(REPLACE(p.Name, N'--', N'/'), 200)
+    FROM [${schema}].OrgProject p WITH (UPDLOCK, HOLDLOCK)
+    WHERE p.ProductMappedAt IS NULL AND p.RemovedAt IS NULL AND p.AdminState IS NULL AND p.Name <> N'_'
+      AND EXISTS (SELECT 1 FROM [${schema}].OrgRepository r
+                  JOIN [${schema}].Application a ON a.RepositoryUrl = r.RepositoryUrl
+                  WHERE r.ScanId = p.ScanId AND r.ProjectName = p.Name AND r.RemovedAt IS NULL AND a.Retired = 0);
+    INSERT [${schema}].Product (Name, Description)
+    SELECT DISTINCT t.ProductName, N'Made from the project ' + t.ProductName + N' by the organization scan'
+    FROM @todo t WHERE NOT EXISTS (SELECT 1 FROM [${schema}].Product x WITH (UPDLOCK, HOLDLOCK) WHERE x.Name = t.ProductName);
+    UPDATE p SET ProductId = x.ProductId, ProductMappedAt = SYSUTCDATETIME()
+    FROM [${schema}].OrgProject p JOIN @todo t ON t.ProjectId = p.ProjectId
+    JOIN [${schema}].Product x ON x.Name = t.ProductName;
+    UPDATE a SET ProductId = m.ProductId, ProductAutoAt = SYSUTCDATETIME()
+    FROM [${schema}].Application a
+    CROSS APPLY (SELECT TOP (1) p.ProductId FROM [${schema}].OrgRepository r
+                 JOIN [${schema}].OrgProject p ON p.ScanId = r.ScanId AND p.Name = r.ProjectName
+                 WHERE r.RepositoryUrl = a.RepositoryUrl AND r.RemovedAt IS NULL AND p.ProductId IS NOT NULL
+                 ORDER BY r.LastSeenAt DESC, r.RepositoryId) m
+    WHERE a.ProductId IS NULL AND a.ProductAutoAt IS NULL;
+    COMMIT;
+END;
+GO
+GRANT SELECT, INSERT ON [${schema}].Developer TO [${schema}_writer];
+GRANT UPDATE ON [${schema}].Developer (Name, LastCommitAt) TO [${schema}_writer];
+GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].DeveloperRepository TO [${schema}_writer];
+GRANT UPDATE ON [${schema}].OrgRepository (HistoryAt, HistoryCommitAt, HistoryError) TO [${schema}_writer];
+GRANT EXECUTE ON [${schema}].AutoMapProjects TO [${schema}_writer];
+GRANT SELECT ON [${schema}].Developer TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].Developer (BusinessUnitId, Ignored, Note) TO [${schema}_admin];
+GRANT SELECT ON [${schema}].DeveloperRepository TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].OrgProject (ProductId, ProductMappedAt) TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].Application (ProductAutoAt) TO [${schema}_admin];
+GRANT EXECUTE ON [${schema}].AutoMapProjects TO [${schema}_admin];
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 50) INSERT [${schema}].SchemaVersion (Version) VALUES (50);
 GO
