@@ -10,6 +10,11 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- **DNS after a reboot.** The DNS filter could be left without the DHCP DNS servers after a boot (every outbound name
+  refused until `systemctl restart containerizer-firewall-reload containerizer-dns`): when the DHCP servers changed
+  while the firewall was being rendered, the change was missed. `cz-firewall` now renders again until they stayed the
+  same (OS image).
+
 ## 0.39.0 (2026-11-12)
 
 - **Secrets ↗ signs in with SSO.** Once OpenBao has the OIDC sign-in method (docs/openbao.md), the admin pages'
