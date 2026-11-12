@@ -536,7 +536,7 @@ def namespace_policies(app_docs: list[dict]) -> list[dict]:
 def cluster_kit(app: str | None, registry: str, image_refs: list[str] | None = None) -> dict[str, list[dict]]:
     """Cluster-level starting points (not part of the app's kustomization): audit policy and
     image signature verification. `app` None: one kit for every namespace Containerizer manages (an organization
-    scan's output repository: its root `cluster/`), whose policy admits the images `image_refs` (each app's
+    scan's output repository: each cluster's `clusters/<name>/platform/`), whose policy admits the images `image_refs` (each app's
     `<registry>/<app>/*`)."""
     audit = {"apiVersion": "audit.k8s.io/v1", "kind": "Policy",
              "_comment": "NSA/CISA 'Kubernetes native audit logging configuration'; pass with --audit-policy-file",
@@ -879,7 +879,7 @@ def lint_manifests(docs: list[dict], where: str = "", provided: set[str] | None 
             continue
         if kind in ("SecretStore", "ClusterSecretStore"):
             L.add("external-secret-store", tgt, f"{kind} in the app's manifests; the platform defines the store "
-                                                "(cluster/secret-store.yaml)")
+                                                "(clusters/<cluster>/platform/secret-store.yaml)")
             continue
         if kind == "ExternalSecret":
             _lint_external_secret(L, d, tgt)

@@ -44,7 +44,7 @@ Git source's own ExternalSecret needs it before the first sync.
 The rules behind this are in [`rules/60-security.yaml`](../rules/60-security.yaml) (`secrets`): store
 name and kind, refresh interval, key format, reader name and annotations, and the provider
 definitions. `CONTAINERIZER_SECRET_STORE=kubernetes|vault|azurekv|aws` in `/etc/containerizer/worker.env`
-chooses which store the scans write into `cluster/secret-store.yaml` (default `kubernetes`, the
+chooses which store the scans write into each cluster's `platform/secret-store.yaml` (default `kubernetes`, the
 appliance's own store).
 
 ## Missing secrets
@@ -118,7 +118,7 @@ metadata level only.
 ## Real clusters
 
 Install ESO (the [Helm chart](https://external-secrets.io/latest/introduction/getting-started/)), apply
-`cluster/secret-store.yaml` at the root of the organization scan's output repository (the store is the same for every app;
+`clusters/<cluster>/platform/secret-store.yaml` of the organization scan's output repository (the store is the same for every app;
 each app's Role is in its `gitops/flux/tenant.yaml`), and
 put the remote keys from `HARDENING.md` in the store. Then deploy as usual. To use another backend, set
 `CONTAINERIZER_SECRET_STORE` for the scans, or edit the store. The app manifests stay the same.

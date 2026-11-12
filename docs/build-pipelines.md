@@ -157,7 +157,7 @@ DOCKER_BUILDKIT=1 docker build -f containerizer/<component>/Dockerfile .
   <image>`. Not for images whose names must not appear in a public log.
 - `key`: cosign signs with your key (`cosign generate-key-pair`). The signature is recorded in Rekor unless
   `pipelines.cosign_tlog_upload` in `rules/60-security.yaml` is `false` (then `--tlog-upload=false`). This is the
-  same key the generated `cluster/verify-images.yaml` (Kyverno) can enforce.
+  same key the generated `clusters/<cluster>/platform/verify-images.yaml` (Kyverno) can enforce.
 
 When signing, the SBOM is also attached to the image as a signed CycloneDX attestation
 (`cosign attest --type cyclonedx`). cosign is the release binary, checked against the release's SHA-256.

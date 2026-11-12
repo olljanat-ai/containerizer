@@ -6,7 +6,7 @@
 #   Secrets in the locked-down namespace containerizer-secrets (lib/secret-store.sh). Nothing generated
 #   is a Secret; this script only puts values into that namespace.
 # - The read-only Git token goes there as flux-system--cz-git (the root GitRepository + Kustomization of
-#   `containerizer org`, sandbox/flux/bootstrap.yaml, read it through an ExternalSecret) and as
+#   `containerizer org`, clusters/sandbox/flux/bootstrap.yaml, read it through an ExternalSecret) and as
 #   <namespace>--cz-git for every app whose GitRepository asks for one (each app reconciles as its own
 #   ServiceAccount from its own source; its generated tenant.yaml grants it that key).
 set -euo pipefail
@@ -176,7 +176,7 @@ spec:
   prune: true
   wait: false
   sourceRef: {kind: GitRepository, name: containerizer-sandbox}
-  path: ./sandbox/flux/apps
+  path: ./clusters/sandbox/flux/apps
 YAML
 if [ -n "${CZ_SANDBOX_GIT_TOKEN:-}" ]; then
   sandbox_status connected "the root sync (flux-system: GitRepository and Kustomization containerizer-sandbox) reads $CZ_SANDBOX_GIT_URL"

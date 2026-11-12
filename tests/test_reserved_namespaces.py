@@ -56,9 +56,10 @@ def test_the_sandbox_never_deploys_into_a_reserved_namespace(tmp_path, capsys):
     assert "namespace external-secrets is reserved" in capsys.readouterr().err
 
 
-def test_one_cluster_kit_at_the_repository_root(tmp_path):
-    """The cluster-level kit is written once at the output repository's root (secret store, one image policy
-    for every managed namespace with each app's image path, audit policy); the app folders' copies go."""
+def test_one_cluster_kit_in_each_cluster(tmp_path, monkeypatch):
+    """The cluster-level kit (secret store, one image policy for every managed namespace with each app's image path,
+    audit policy) is in each real cluster's platform/; the app folders' copies go."""
+    monkeypatch.delenv("CONTAINERIZER_CLUSTERS", raising=False)
     import yaml
     for rel, ns in (("org/p/shop", "shop"), ("org/p/billing", "billing")):
         d = tmp_path / rel
@@ -72,7 +73,8 @@ def test_one_cluster_kit_at_the_repository_root(tmp_path):
         (d / "cluster" / "audit-policy.yaml").write_text("old\n")
     org.write_sandbox(tmp_path, "https://git.example.com/out.git", "main")
     assert not (tmp_path / "org/p/shop/cluster").exists() and not (tmp_path / "org/p/billing/cluster").exists()
-    kit = tmp_path / "cluster"
+    assert not (tmp_path / "cluster").exists()
+    kit = tmp_path / "clusters" / "production" / "platform"
     assert sorted(p.name for p in kit.iterdir()) == ["README.md", "audit-policy.yaml", "secret-store.yaml",
                                                       "verify-images.yaml"]
     pol = yaml.safe_load((kit / "verify-images.yaml").read_text())

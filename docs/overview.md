@@ -583,12 +583,12 @@ or an action for the cluster operator, with the guide section and CIS number.
 - **Secrets**: no generated file is a `Secret` or holds a value. Component settings, Flux source and
   registry credentials and the sandbox's Git token are [External Secrets](https://external-secrets.io)
   `ExternalSecret`s from the `ClusterSecretStore` `app-secrets` (remote keys `<namespace>--<name>`). Each
-  namespace reads the store as its own ServiceAccount and only gets its own keys. `cluster/secret-store.yaml`
+  namespace reads the store as its own ServiceAccount and only gets its own keys. Each cluster's `clusters/<cluster>/platform/secret-store.yaml`
   defines the store (kubernetes provider by default; Vault, Azure Key Vault or AWS Secrets Manager by
   setting), and the gate fails on any plain Secret or Secret reference that no ExternalSecret produces. See
   [Secrets (External Secrets)](external-secrets.md).
-- **Cluster kit** (`cluster/`, once at the root of an organization scan's output repository for every app; in the
-  output folder with `containerizer generate`): an API server audit policy (metadata only for Secrets, full requests and
+- **Cluster kit** (each cluster's `clusters/<cluster>/platform/` in an organization scan's output repository; `cluster/`
+  in the output folder with `containerizer generate`): an API server audit policy (metadata only for Secrets, full requests and
   responses for RBAC, every write and every exec) and a Kyverno `verifyImages` policy that only admits images signed with your cosign
   key. These are for the cluster operator to apply. The report also lists the cluster controls the
   generator can't set, such as etcd encryption, kubelet authentication and control plane TLS.

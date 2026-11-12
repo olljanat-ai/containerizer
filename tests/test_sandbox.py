@@ -601,9 +601,7 @@ def test_sandbox_kustomizations_wait_for_the_workloads_not_every_object(tmp_path
     if shutil.which("kubectl"):                    # what Flux's root sync applies (kustomize build)
         built = subprocess.run(["kubectl", "kustomize", str(root / "clusters" / "sandbox" / "flux" / "apps")], capture_output=True,
                                text=True, check=True).stdout
-        # the old place (sandbox/, what the appliances' Flux reads) builds the same
-        assert subprocess.run(["kubectl", "kustomize", str(root / "sandbox" / "flux" / "apps")], capture_output=True,
-                              text=True, check=True).stdout == built
+        assert not (root / "sandbox").exists()     # no pointer at the old place since 0.44.0
         [got] = [d for d in yaml.safe_load_all(built) if d and d["kind"] == "Kustomization"]
         assert got["spec"]["wait"] is False and got["spec"]["prune"] is True
         assert got["spec"]["healthChecks"] == [{"apiVersion": "apps/v1", "kind": "Deployment", "name": "web",

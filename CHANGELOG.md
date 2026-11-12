@@ -10,6 +10,19 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.44.0 (2026-11-12)
+
+- **No more `sandbox/` and `cluster/` at the root of the output repository.** The root holds the app folders and
+  `clusters/` only.
+  - The appliance's Flux reads `./clusters/sandbox/flux/apps` (OS change), so the pointer that stayed in `sandbox/`
+    since 0.41.0 is removed by the next scan. A cluster you bootstrapped yourself from the old
+    `sandbox/flux/bootstrap.yaml` needs `kubectl apply -f clusters/sandbox/flux/bootstrap.yaml` once.
+  - The cluster-level kit (the `ClusterSecretStore`, the Kyverno signed-images policy, the API server's audit
+    policy) is in each real cluster's `clusters/<cluster>/platform/`, next to its `bootstrap.yaml`; Flux does not
+    apply it. `containerizer generate` on a single app still writes its own `cluster/`.
+- **An organization or project named `sandbox` is deployed.** Its app folders were taken for the old sandbox folder
+  and left out.
+
 ## 0.43.0 (2026-11-12)
 
 - **Chart mode is gone: every application is plain kustomize manifests.** The shared Helm chart saved lines but made

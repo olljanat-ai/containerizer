@@ -6,7 +6,6 @@ deploys the same app folders and the same images with Flux. What
 differs per cluster lives in that cluster's own folder.
 
 ```
-sandbox/flux/apps/kustomization.yaml  a pointer to clusters/sandbox/ (where the sandbox was before 0.41.0)
 clusters/
   README.md                           the clusters and how many apps each runs
   sandbox/                            the sandbox (docs/scheduled-scans.md#the-sandbox-cluster)
@@ -82,11 +81,11 @@ patches:
 
 ## Bootstrapping a cluster
 
-The prerequisites are those of the sandbox: Flux (with helm-controller), External Secrets Operator with the
-`ClusterSecretStore` `app-secrets` (`cluster/secret-store.yaml`), and the output repository's read-only token in the
+The prerequisites are those of the sandbox: Flux, External Secrets Operator with the
+`ClusterSecretStore` `app-secrets` (`platform/secret-store.yaml` in the cluster's folder), and the output repository's read-only token in the
 store under `flux-system--cz-git` and `<namespace>--cz-git` of every app the cluster runs (docs/external-secrets.md).
-The cluster kit in `cluster/` (signed images with Kyverno, the API server's audit policy) is meant for these
-clusters. Then:
+The rest of the cluster's `platform/` (signed images with Kyverno, the API server's audit policy) is meant for it
+too; Flux does not apply that folder. Then:
 
 ```sh
 kubectl apply -f clusters/production/flux/bootstrap.yaml
@@ -107,8 +106,12 @@ the sandbox only.
 ## Where the sandbox was
 
 Before 0.41.0 the sandbox's folder was `sandbox/` at the repository's root. It is now `clusters/sandbox/`, next to the
-other clusters, and `sandbox/flux/apps/kustomization.yaml` only points there: the appliance's Flux (and a cluster
-bootstrapped from the old `sandbox/flux/bootstrap.yaml`) reads `./sandbox/flux/apps` and keeps working unchanged. The
-patches are written as YAML, not as JSON strings, and since 0.42.0 the sandbox's are in each app folder's
+other clusters. Until 0.44.0 a pointer stayed in `sandbox/` for the appliance's Flux; since 0.44.0 the appliance
+reads `./clusters/sandbox/flux/apps` and the scans remove `sandbox/`. A cluster you bootstrapped yourself from the
+old `sandbox/flux/bootstrap.yaml` needs `kubectl apply -f clusters/sandbox/flux/bootstrap.yaml` once. The patches
+are written as YAML, not as JSON strings, and since 0.42.0 the sandbox's are in each app folder's
 `gitops/sandbox/kustomization.yaml`.
+
+The cluster-level kit (ClusterSecretStore, signed-images policy, audit policy) was in `cluster/` at the root until
+0.44.0; it is now each cluster's `platform/`.
 
