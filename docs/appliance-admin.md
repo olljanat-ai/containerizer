@@ -265,7 +265,7 @@ k3s also runs External Secrets Operator, and the generated configurations get ev
 To deploy what the scans generate, set `sandbox.env` (output repository URL, branch, read-only token).
 Every 2 minutes `cz-sandbox` puts the read-only token in the secret store for Flux's root sync and for
 every app namespace, and creates the root `GitRepository` + `Kustomization` of the output repository's
-`sandbox/flux/`. Until `sandbox.env` names the repository nothing is deployed, even when the scans and Make it A
+`clusters/sandbox/flux/`. Until `sandbox.env` names the repository nothing is deployed, even when the scans and Make it A
 write to it with the write token of **Admin → Source control**: the two are set separately. What `cz-sandbox` last
 found is at the top of Grafana's Flux dashboard and in `journalctl -u containerizer-sandbox` (each change), and the
 alert `ContainerizerSandboxNotConnected` fires after 15 minutes without a connection. Each app reconciles as its own ServiceAccount with its own copy of the token

@@ -14,7 +14,7 @@ on the appliance a locked-down namespace of the same cluster. Git only holds the
 | Flux commit verification keys | `<namespace>-git-gpg` | `<namespace>--cz-git-gpg` | the public keys |
 | Registry read credential (Flux `OCIRepository`/`ImageRepository`; the image pull secret of an organization scan) | `<namespace>-registry`, the pull secret's name | `<namespace>--cz-registry` | `.dockerconfigjson` |
 | cosign public key for signed OCI artifacts | `<namespace>-cosign-pub` | `<namespace>--cz-cosign-pub` | `cosign.pub` |
-| Sandbox root sync (`sandbox/flux/bootstrap.yaml`) | `containerizer-sandbox-git` | `flux-system--cz-git` | `username` + `password` |
+| Sandbox root sync (`clusters/sandbox/flux/bootstrap.yaml`) | `containerizer-sandbox-git` | `flux-system--cz-git` | `username` + `password` |
 | Dev database passwords ([dev-databases.md](dev-databases.md)) | `devdb`, `devdb-admin` | none: ESO's Password generator creates them in the cluster | |
 
 `<namespace>` is the app's namespace. Each app's `HARDENING.md` lists the exact remote keys and
@@ -58,7 +58,7 @@ the cluster by ESO's Password generator, no store), the image pull credential, t
 - **Real clusters**: the app's `gitops/flux/git/sync.yaml` has `wait: true`, so Flux waits for every applied
   object and the Kustomization stays not ready (health check timeout naming the ExternalSecret) until each
   secret is in the store. Fill the keys of `HARDENING.md` before the first sync.
-- **The sandbox**: nobody fills the components' own keys there, so `sandbox/flux/apps` patches each app's
+- **The sandbox**: nobody fills the components' own keys there, so `clusters/sandbox/flux/apps` patches each app's
   Kustomization to `wait: false` with `healthChecks` of its Deployments and StatefulSets and the ExternalSecrets
   of the Secrets a pod needs. The Kustomization is ready when the workloads are; a missing required secret still
   fails it (the pod never starts, or its ExternalSecret is not ready).

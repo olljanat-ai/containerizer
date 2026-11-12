@@ -390,13 +390,13 @@ def test_run_org_writes_layout_sandbox_and_commits(tmp_path, monkeypatch):
               if d and d["kind"] == "Kustomization")
     assert ks["spec"]["path"] == "./Contoso/Shop Floor/ci-demo" and ks["metadata"]["name"] == "shop-floor-ci-demo"
     assert not (app / "gitops" / "argocd").exists()            # Flux is the only GitOps tool
-    sb = out / "sandbox"
+    sb = out / "clusters" / "sandbox"
     assert not (sb / "argocd").exists()
     assert yaml.safe_load((sb / "flux" / "apps" / "kustomization.yaml").read_text())["resources"] == [
-        "../../../Contoso/Shop Floor/ci-demo/gitops/flux"]
+        "../../../../Contoso/Shop Floor/ci-demo/gitops/flux"]
     assert (sb / "namespaces.txt").read_text() == "shop-floor-ci-demo\n"
     boot = {d["kind"]: d for d in yaml.safe_load_all((sb / "flux" / "bootstrap.yaml").read_text())}
-    assert boot["Kustomization"]["spec"]["path"] == "./sandbox/flux/apps"
+    assert boot["Kustomization"]["spec"]["path"] == "./clusters/sandbox/flux/apps"
     # the root Git credential comes from the secret store, readable only by flux-system's reader
     assert "Secret" not in boot
     assert boot["ExternalSecret"]["metadata"]["name"] == boot["GitRepository"]["spec"]["secretRef"]["name"]
@@ -837,7 +837,7 @@ def test_run_org_split_repository(tmp_path, monkeypatch, parallel):
         meta = json.loads((out / "acme" / "_" / f"mono@{n}" / "containerizer.json").read_text())
         assert meta["app"] == f"mono-{n}"
     assert not (out / "acme" / "_" / "mono").exists() and not (out / "acme" / "_" / "mono@handbook").exists()
-    assert "../../../acme/_/mono@orders/gitops/flux" in (out / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text()
+    assert "../../../../acme/_/mono@orders/gitops/flux" in (out / "clusters" / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text()
     assert res["solo"].status == "deployed" and not res["solo"].apps and (out / "acme" / "_" / "solo").is_dir()
     # back to one application: the per-folder folders go, the hint says what it looks like
     o.splits = None
@@ -865,7 +865,7 @@ def test_the_sandbox_index_leaves_out_applications_whose_sandbox_is_off(tmp_path
     app("acme/p/billing", {"source_key": "https://x/billing#"})
 
     def listed():
-        return (root / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text()
+        return (root / "clusters" / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text()
     org.write_sandbox(root, "https://git/out", "main")
     assert "acme/p/shop/" in listed() and "shop-refactor-7" in listed()
     org.write_sandbox(root, "https://git/out", "main", {"https://x/shop#", 5})

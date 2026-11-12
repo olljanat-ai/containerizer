@@ -124,8 +124,8 @@ def test_the_files_move_once_and_the_sandbox_follows(tmp_path, monkeypatch):
         "gitops/flux/git/sync.yaml", "gitops/flux/kustomization.yaml", "gitops/flux/tenant.yaml"]
     sdocs = [x for x in yaml.safe_load_all((s / "gitops/flux/git/sync.yaml").read_text()) if x]
     assert next(x for x in sdocs if x["kind"] == "GitRepository")["spec"]["url"] == "https://git.example.com/team/shop"
-    apps_k = yaml.safe_load((out / "sandbox/flux/apps/kustomization.yaml").read_text())
-    assert f"../../../{APP_REL}/gitops/flux" in apps_k["resources"]
+    apps_k = yaml.safe_load((out / "clusters/sandbox/flux/apps/kustomization.yaml").read_text())
+    assert f"../../../../{APP_REL}/gitops/flux" in apps_k["resources"]
     assert ao.moved_to(s)["path"] == "deploy" and orgmod.repo_dirs(out, APP_REL) == []   # scans leave it alone
     (sql, params), = conn.sql(r"SET OutputMovedAt = SYSUTCDATETIME\(\)")
     assert params == (commit, "shop", 7, "https://git.example.com/team/shop")
@@ -138,7 +138,7 @@ def test_the_files_move_once_and_the_sandbox_follows(tmp_path, monkeypatch):
     # cleared: the stub goes (the next scan deploys it here again), the token too; its own copy stays
     apps["rows"] = []
     assert run() == 1
-    assert not (out / APP_REL).exists() and f"{APP_REL}/gitops/flux" not in (out / "sandbox/flux/apps/kustomization.yaml").read_text()
+    assert not (out / APP_REL).exists() and f"{APP_REL}/gitops/flux" not in (out / "clusters/sandbox/flux/apps/kustomization.yaml").read_text()
     assert not (tokens / "shop").exists() and (team / "deploy/containerizer.json").is_file()
 
 

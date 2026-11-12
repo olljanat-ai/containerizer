@@ -322,7 +322,7 @@ history, one namespace, one set of URLs, IdP clients, lab databases and egress d
 
 - **Where.** The application's own folder in the output repository of the organization scan that assessed it,
   `<Organization>/<Project>/<Repository>/` (or `<Repository>@<folder>/` for one application of a split
-  repository), the folder the scan writes. The scan's output there is replaced, `sandbox/` is regenerated, in one
+  repository), the folder the scan writes. The scan's output there is replaced, `clusters/sandbox/` is regenerated, in one
   commit: `sandbox: <app> runs the Make it A patch of order #<job> (commit <sha>)`; Flux rolls the application
   over to it. Its images go to the appliance's own registry, as the scan's do; the output repository and branch and
   the security gate are that scan's; the output repository's write token is its registered credential. An
@@ -342,7 +342,7 @@ history, one namespace, one set of URLs, IdP clients, lab databases and egress d
   uses, as the lab services are per namespace.
 - **Health.** The runner reads the application's namespace back with a read-only kubeconfig
   (`CONTAINERIZER_SANDBOX_KUBECONFIG`, optional `CONTAINERIZER_SANDBOX_CONTEXT`; on the appliance the
-  verifier account of `sandbox/verify-rbac.yaml`, below) and records it in the order: **running in the
+  verifier account of `clusters/sandbox/verify-rbac.yaml`, below) and records it in the order: **running in the
   sandbox**, **failing in the sandbox**, or *deployed, health not checked* without a kubeconfig. From then on the
   scan's sandbox checks of the application see the patched copy, and the results page's Migration plan says the
   sandbox runs the patch.
@@ -373,14 +373,14 @@ history, one namespace, one set of URLs, IdP clients, lab databases and egress d
 - **Remove from the sandbox** on the order page (administrators, operators, the application's product owners)
   puts the scan's output back: the queue runner, within a few minutes, checks the folder out of
   `previous_revision` (no folder there, as when no component rated A on its own: the folder goes), regenerates
-  `sandbox/` and commits; the sandbox runs the application as the scan deployed it. The patch stays available on its
+  `clusters/sandbox/` and commits; the sandbox runs the application as the scan deployed it. The patch stays available on its
   order (in the results database), and a new Make it A order for the new code starts from it (above).
 
 **Variants of before: `<app>-refactor-<job>`.** Until 0.10.0 patched copies ran beside the application, in a folder
 `<Organization>/<Project>/<Repository>-refactor-<job>/` and a namespace of their own. The LLM queue runner's
 housekeeping moves them: the latest one of each application that still runs is generated again under the
 application's name from the source at its commit with its patch (its images as they were built: nothing is built
-again) into the application's folder, the `-refactor-` folders are deleted and `sandbox/` regenerated, in one
+again) into the application's folder, the `-refactor-` folders are deleted and `clusters/sandbox/` regenerated, in one
 commit; Flux prunes the old namespaces (with their lab database). The order keeps its history; its sandbox
 namespace, folder and URL become the application's (the old ones under *Before* on the order page). One that cannot
 be moved (its source is gone) is taken out of the sandbox, and **Build again (no LLM)** on its order deploys it in
@@ -434,7 +434,7 @@ The LLM queue runner (`containerizer-llm-queue`) carries out the orders. For the
   with the registered write token, pushes the patched copy's images to the appliance's registry, reads the lab
   services that are on, and reads its health with the kubeconfig of the read-only verifier
   account, `/run/containerizer/sandbox-verifier.kubeconfig`. `cz-sandbox` (root, every 2 minutes) gives that
-  account its Role in every namespace Containerizer generated (`sandbox/verify-rbac.yaml`: workloads, pods,
+  account its Role in every namespace Containerizer generated (`clusters/sandbox/verify-rbac.yaml`: workloads, pods,
   their logs and events, the namespace's Flux Kustomization; no Secrets, nothing cluster-wide) and writes the
   kubeconfig with a 24-hour token (`root:containerizer`, 0640). A namespace new to the sandbox gets its Role at the
   next run of `cz-sandbox`; the runner waits for it within its health check (15 minutes,

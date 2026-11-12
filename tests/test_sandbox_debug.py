@@ -123,11 +123,11 @@ def test_sandbox_patches_the_application_in_debug_mode(tmp_path, monkeypatch, mo
                             source_key="k1")
     r = orgmod.deploy_app(a, src, rel, o, out, None, "1.2.3", GitOpsOptions(path=rel), res, tmp_path / "work", "shop-web")
     assert r.deploy_mode == mode
-    kfile = out.root / "sandbox" / "flux" / "apps" / "kustomization.yaml"
+    kfile = out.root / "clusters" / "sandbox" / "flux" / "apps" / "kustomization.yaml"
 
     def ops():
         k = yaml.safe_load(kfile.read_text())
-        return [op for p in k.get("patches") or [] for op in json.loads(p["patch"])]
+        return [op for p in k.get("patches") or [] for op in yaml.safe_load(p["patch"])]
 
     orgmod.write_sandbox(out.root, out.url, "main", d.Switches())
     assert "cz-debug" not in kfile.read_text()
@@ -137,7 +137,7 @@ def test_sandbox_patches_the_application_in_debug_mode(tmp_path, monkeypatch, mo
     assert len(added) == 1
     if mode == "chart":
         assert added[0]["target"]["kind"] == "HelmRelease" and added[0]["target"]["name"]
-        post = json.loads(added[0]["patch"])
+        post = yaml.safe_load(added[0]["patch"])
         assert post[0]["path"] == "/spec/postRenderers"
         workload = post[0]["value"][0]["kustomize"]["patches"][0]
     else:
@@ -149,10 +149,10 @@ def test_sandbox_patches_the_application_in_debug_mode(tmp_path, monkeypatch, mo
     assert pod["containers"][0]["command"] == d.SLEEP
     start = next(e["value"] for e in pod["containers"][0]["env"] if e["name"] == "CZ_DEBUG_START")
     assert "dotnet" in start
-    assert "(debug mode)" in (out.root / "sandbox" / "README.md").read_text()
+    assert "(debug mode)" in (out.root / "clusters" / "sandbox" / "README.md").read_text()
     # the application's own folder (what the other clusters deploy) is untouched
     assert before == {p: p.read_bytes() for p in (out.root / rel).rglob("*") if p.is_file()}
-    assert "cz-debug" not in "".join(p.read_text() for p in (out.root / "clusters").rglob("*.yaml"))
+    assert "cz-debug" not in "".join(p.read_text() for p in (out.root / "clusters").rglob("*.yaml") if "sandbox" not in p.parts)
     orgmod.write_sandbox(out.root, out.url, "main", d.Switches(debug={"other"}))
     assert "cz-debug" not in kfile.read_text()
 

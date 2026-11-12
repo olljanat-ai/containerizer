@@ -377,7 +377,8 @@ def cmd_sandbox(args) -> int:
     write_health(root, doc)
     for r in doc["components"]:
         print(f"{r['app']}/{r['component']}: {r['status']}" + (f" - {r['reason']}" if r.get("reason") else ""))
-    print(f"sandbox health: {summary(doc)} -> {root / 'sandbox' / 'HEALTH.md'}")
+    from .org import SANDBOX
+    print(f"sandbox health: {summary(doc)} -> {root / SANDBOX / 'HEALTH.md'}")
     if doc.get("learned"):
         print(f"learned from the cluster: {', '.join(doc['learned'])}")
     if (args.sql or os.environ.get("CONTAINERIZER_SQL")) and doc["components"] and not doc.get("skipped"):

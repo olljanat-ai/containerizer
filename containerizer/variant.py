@@ -101,14 +101,14 @@ def valid_folder(rel: str, job: int) -> bool:
     """A variant folder of before the runner may delete: three plain segments, the last one a variant of this job."""
     from .refactor import safe_rel
     parts = str(rel or "").split("/")
-    return safe_rel(rel) == rel and len(parts) == 3 and parts[0] != "sandbox" and parts[2].endswith(f"{SUFFIX}{int(job)}")
+    return safe_rel(rel) == rel and len(parts) == 3 and parts[0] not in ("sandbox", "clusters") and parts[2].endswith(f"{SUFFIX}{int(job)}")
 
 
 def valid_app_folder(rel: str) -> bool:
     """An application folder (three plain segments, not sandbox/) a removal may put the scan's output back into."""
     from .refactor import safe_rel
     parts = str(rel or "").split("/")
-    return safe_rel(rel) == rel and len(parts) == 3 and parts[0] != "sandbox"
+    return safe_rel(rel) == rel and len(parts) == 3 and parts[0] not in ("sandbox", "clusters")
 
 
 def in_place(sb: dict) -> bool:

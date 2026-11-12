@@ -57,13 +57,13 @@ and the product owners of its product). It is on by default.
   Make it A copies. The scans still assess it, so its results stay current, but they build and deploy nothing of it.
   New Make it A patches for it are made and verified, but not deployed.
 - **The files stay:** its folders in the output repository and its images in the appliance's registry are kept.
-  `sandbox/` leaves them out, so Flux removes them from the cluster.
-- **On again:** `sandbox/` lists them again, and Flux deploys the same manifests with the same images (the
+  `clusters/sandbox/` leaves them out, so Flux removes them from the cluster.
+- **On again:** `clusters/sandbox/` lists them again, and Flux deploys the same manifests with the same images (the
   patched ones of a Make it A copy too), without a build. The next scan of its repository then builds the original
   as usual.
 
-The LLM queue runner applies a change within a few minutes: it regenerates `sandbox/` in every output repository
-and commits it. A scan also leaves the application out when it writes `sandbox/`. The change history records who
+The LLM queue runner applies a change within a few minutes: it regenerates `clusters/sandbox/` in every output repository
+and commits it. A scan also leaves the application out when it writes `clusters/sandbox/`. The change history records who
 switched it and when. A Make it A copy stays until a scan assesses newer code of its application, also while
 the sandbox is off.
 
@@ -104,7 +104,7 @@ kubectl -n <namespace> exec -it <pod> -- /cz-debug/shell
 with the arguments of the Deployment). Start it as often as you like, with other arguments or environment
 variables.
 
-- **Only the sandbox:** debug mode is a patch in `sandbox/flux/apps` of the output repository. The application's
+- **Only the sandbox:** debug mode is a patch in `clusters/sandbox/flux/apps` of the output repository. The application's
   own folder, and with it the [other clusters](clusters.md) of the output repository, never see it.
 - **Off again:** **Turn debug mode off**; within a few minutes the pods start the application again.
 - **While it is on,** the sandbox check reads the application as healthy, because its pods run: the page's
@@ -129,7 +129,7 @@ are then **moved there once**:
    runner tries again every 10 minutes). Until a scan has deployed the application, the move waits.
 2. In the scan's output repository, the application's folder becomes a **stub**: `containerizer.json` (with
    `moved_to`), the Flux tenant and sync files, pointed at the application's repository, each component's
-   `idp.json` and `k8s.yaml`, and a README. `sandbox/` still lists it, so **the sandbox deploys it from its own
+   `idp.json` and `k8s.yaml`, and a README. `clusters/sandbox/` still lists it, so **the sandbox deploys it from its own
    repository**: what its team changes there runs in the sandbox too.
 3. The page shows **Moved**, with the repository, the folder, the commit and when.
 
@@ -329,8 +329,8 @@ The appliance's k3s cluster deploys what the scans commit. Fill in `/etc/contain
 and allow the Git server on **Admin → Firewall**. Every 2 minutes the appliance then:
 
 - puts the read-only token in the secret store for Flux's root sync and for every app namespace listed
-  in `sandbox/namespaces.txt`;
-- creates the root `GitRepository` and `Kustomization` of `sandbox/flux/`. The root creates each tenant
+  in `clusters/sandbox/namespaces.txt`;
+- creates the root `GitRepository` and `Kustomization` of `clusters/sandbox/flux/`. The root creates each tenant
   (namespace with Pod Security "restricted", ServiceAccounts, a namespace-only RoleBinding, read access to
   its own secret store keys), and each app then reconciles as its own ServiceAccount;
 - keeps the Flux webhook up to date (below).
@@ -348,7 +348,7 @@ runner call it, and Flux fetches the new commit at once. Its token is made once 
 only: nothing publishes it. A call that fails (Flux restarting, the receiver not ready yet after the first boot)
 is logged once and never fails the push; polling picks the commit up as before.
 
-On another cluster (the generated `gitops/` or `sandbox/README.md`), Flux polls unless you add a receiver
+On another cluster (the generated `gitops/` or `clusters/sandbox/README.md`), Flux polls unless you add a receiver
 yourself. To deploy on each push, create a `Receiver` of your Git server's type for the app's `GitRepository`
 and point the repository's push webhook at it ([Flux webhook receivers](https://fluxcd.io/flux/guides/webhook-receivers/)):
 
@@ -372,20 +372,20 @@ Nothing in the output repository is a Secret: credentials are ExternalSecrets ([
 Apps that need a database, cache or object storage get one from the [lab services](lab-services.md), or a
 restored copy of their [development database](dev-databases.md). Apps that sign users in with OpenID
 Connect, SAML 2.0 or WS-Federation are pointed at the [sandbox identity provider](sandbox-idp.md). `kubectl` as root on the appliance shows
-the result. To deploy the same output repository to another cluster, follow `sandbox/README.md` in it
+the result. To deploy the same output repository to another cluster, follow `clusters/sandbox/README.md` in it
 (Flux).
 
 **Health in the sandbox.** Each app's Flux Kustomization waits for its Deployments and StatefulSets and for the
 ExternalSecrets of the Secrets a pod cannot start without (Data Protection keys, the image pull credential), not
 for every object: the ExternalSecrets of a component's secret settings, secret files and keytabs read remote keys
-that nobody fills in the sandbox, and the workloads' references to them are optional. `sandbox/flux/apps` sets
+that nobody fills in the sandbox, and the workloads' references to them are optional. `clusters/sandbox/flux/apps` sets
 this (`wait: false` with `healthChecks`) on the sandbox's copy only; the app folder's own `gitops/flux` keeps
 `wait: true`, so a real cluster waits for every secret ([secrets](external-secrets.md#missing-secrets)).
 
 **The sandbox check.** At the end of each scan, while the sandbox is connected to the output repository, the
 worker waits (up to 15 minutes) for Flux to apply the scan's commit and reads back every component's rollout,
 readiness, restarts and Warning events, as the read-only verifier account `cz-sandbox` keeps up to date. The result
-is the **Sandbox cluster** column and details on each application's results page, and `sandbox/HEALTH.md` in the
+is the **Sandbox cluster** column and details on each application's results page, and `clusters/sandbox/HEALTH.md` in the
 output repository. **Stop** on a running scan ends the wait; the check is then not recorded.
 
 ## The LLM queue

@@ -154,7 +154,7 @@ two applications with the same provider and use the same groups for both.
     field manager (`containerizer-openbao`), so the keys of the other writers stay, and removes a key emptied in
     OpenBao;
   - writes the `app-<namespace>` policies.
-- **The sandbox's ExternalSecrets.** In the sandbox (`sandbox/flux/apps`), each component's `<component>-secrets`
+- **The sandbox's ExternalSecrets.** In the sandbox (`clusters/sandbox/flux/apps`), each component's `<component>-secrets`
   ExternalSecret reads every key its remote Secret has (`dataFrom: extract`), and its annotation
   `containerizer.io/properties` keeps the list. A key that isn't filled is then just not set. With the generated
   list of properties, External Secrets Operator creates none of a Secret's keys while one is missing. The app
