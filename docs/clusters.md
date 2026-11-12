@@ -18,7 +18,13 @@ clusters/
     apps/<namespace>/
       kustomization.yaml              the app folder, the cluster's registry, custom/       generated
       custom/kustomization.yaml       the cluster's settings of this app (kustomize Component) yours
+<org>/<project>/<repo>/gitops/sandbox/kustomization.yaml
+                                      the app's Flux objects (../flux) with the sandbox's patch  generated
 ```
+
+The sandbox's `flux/apps/kustomization.yaml` only lists each app folder's `gitops/sandbox/`. What the sandbox
+changes about an app (no waiting for every object, no Gateway API routes, the settings read from OpenBao, debug mode)
+is in that app's own folder, next to the `gitops/flux` the other clusters deploy unchanged.
 
 "Yours": Containerizer writes it once and no later run rewrites it. `cluster.yaml` is written with the cluster's
 folder, and `custom/` when the cluster first runs the app. "Generated": every `containerizer org` run rewrites it.
@@ -105,5 +111,6 @@ the sandbox only.
 Before 0.41.0 the sandbox's folder was `sandbox/` at the repository's root. It is now `clusters/sandbox/`, next to the
 other clusters, and `sandbox/flux/apps/kustomization.yaml` only points there: the appliance's Flux (and a cluster
 bootstrapped from the old `sandbox/flux/bootstrap.yaml`) reads `./sandbox/flux/apps` and keeps working unchanged. The
-patches in the clusters' `flux/apps/kustomization.yaml` are written as YAML, not as JSON strings.
+patches are written as YAML, not as JSON strings, and since 0.42.0 the sandbox's are in each app folder's
+`gitops/sandbox/kustomization.yaml`.
 

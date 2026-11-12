@@ -571,7 +571,7 @@ def test_the_patched_copy_runs_in_place_and_remove_brings_the_scan_output_back(t
     assert ks["metadata"]["name"] == "shop" and ks["spec"]["path"] == "./Contoso/_/shop"
     assert (out / "clusters/sandbox/namespaces.txt").read_text() == "shop\n"
     assert yaml.safe_load((out / "clusters/sandbox/flux/apps/kustomization.yaml").read_text())["resources"] == [
-        "../../../../Contoso/_/shop/gitops/flux"]
+        "../../../../Contoso/_/shop/gitops/sandbox"]
     assert _log(out) == f"sandbox: shop runs the Make it A patch of order #42 (commit {'c' * 12})\n"
     # Remove from the sandbox: the scan's output is back from the output repository's history
     later = datetime(2026, 11, 3, 8, 0, tzinfo=timezone.utc)
@@ -725,7 +725,7 @@ def test_housekeep_moves_the_variants_of_before_into_the_applications_folder(tmp
     assert sorted(p.name for p in (out / "Contoso/_").iterdir()) == ["shop"]
     assert (out / "clusters/sandbox/namespaces.txt").read_text() == "shop\n"
     assert yaml.safe_load((out / "clusters/sandbox/flux/apps/kustomization.yaml").read_text())["resources"] == [
-        "../../../../Contoso/_/shop/gitops/flux"]
+        "../../../../Contoso/_/shop/gitops/sandbox"]
     assert _log(out) == (f"sandbox: shop runs the Make it A patch of order #151 (commit {commit[:12]}), moved from "
                          f"Contoso/_/shop-refactor-151 (patched copies run in their application's folder now)\n")
     d = out / "Contoso/_/shop"

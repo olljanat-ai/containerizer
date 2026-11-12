@@ -393,7 +393,7 @@ def test_run_org_writes_layout_sandbox_and_commits(tmp_path, monkeypatch):
     sb = out / "clusters" / "sandbox"
     assert not (sb / "argocd").exists()
     assert yaml.safe_load((sb / "flux" / "apps" / "kustomization.yaml").read_text())["resources"] == [
-        "../../../../Contoso/Shop Floor/ci-demo/gitops/flux"]
+        "../../../../Contoso/Shop Floor/ci-demo/gitops/sandbox"]
     assert (sb / "namespaces.txt").read_text() == "shop-floor-ci-demo\n"
     boot = {d["kind"]: d for d in yaml.safe_load_all((sb / "flux" / "bootstrap.yaml").read_text())}
     assert boot["Kustomization"]["spec"]["path"] == "./clusters/sandbox/flux/apps"
@@ -837,7 +837,7 @@ def test_run_org_split_repository(tmp_path, monkeypatch, parallel):
         meta = json.loads((out / "acme" / "_" / f"mono@{n}" / "containerizer.json").read_text())
         assert meta["app"] == f"mono-{n}"
     assert not (out / "acme" / "_" / "mono").exists() and not (out / "acme" / "_" / "mono@handbook").exists()
-    assert "../../../../acme/_/mono@orders/gitops/flux" in (out / "clusters" / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text()
+    assert "../../../../acme/_/mono@orders/gitops/sandbox" in (out / "clusters" / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text()
     assert res["solo"].status == "deployed" and not res["solo"].apps and (out / "acme" / "_" / "solo").is_dir()
     # back to one application: the per-folder folders go, the hint says what it looks like
     o.splits = None

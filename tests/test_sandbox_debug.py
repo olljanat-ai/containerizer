@@ -123,7 +123,7 @@ def test_sandbox_patches_the_application_in_debug_mode(tmp_path, monkeypatch, mo
                             source_key="k1")
     r = orgmod.deploy_app(a, src, rel, o, out, None, "1.2.3", GitOpsOptions(path=rel), res, tmp_path / "work", "shop-web")
     assert r.deploy_mode == mode
-    kfile = out.root / "clusters" / "sandbox" / "flux" / "apps" / "kustomization.yaml"
+    kfile = out.root / rel / "gitops" / "sandbox" / "kustomization.yaml"      # the app's sandbox overlay
 
     def ops():
         k = yaml.safe_load(kfile.read_text())
@@ -131,7 +131,9 @@ def test_sandbox_patches_the_application_in_debug_mode(tmp_path, monkeypatch, mo
 
     orgmod.write_sandbox(out.root, out.url, "main", d.Switches())
     assert "cz-debug" not in kfile.read_text()
-    before = {p: p.read_bytes() for p in (out.root / rel).rglob("*") if p.is_file()}
+    def own():      # what the other clusters deploy: everything but the app's sandbox overlay
+        return {p: p.read_bytes() for p in (out.root / rel).rglob("*") if p.is_file() and "sandbox" not in p.parts}
+    before = own()
     orgmod.write_sandbox(out.root, out.url, "main", d.Switches(debug={"k1"}))
     added = [op["value"] for op in ops() if op["path"] == "/spec/patches/-" and "cz-debug" in op["value"]["patch"]]
     assert len(added) == 1
@@ -151,7 +153,7 @@ def test_sandbox_patches_the_application_in_debug_mode(tmp_path, monkeypatch, mo
     assert "dotnet" in start
     assert "(debug mode)" in (out.root / "clusters" / "sandbox" / "README.md").read_text()
     # the application's own folder (what the other clusters deploy) is untouched
-    assert before == {p: p.read_bytes() for p in (out.root / rel).rglob("*") if p.is_file()}
+    assert before == own()
     assert "cz-debug" not in "".join(p.read_text() for p in (out.root / "clusters").rglob("*.yaml") if "sandbox" not in p.parts)
     orgmod.write_sandbox(out.root, out.url, "main", d.Switches(debug={"other"}))
     assert "cz-debug" not in kfile.read_text()
