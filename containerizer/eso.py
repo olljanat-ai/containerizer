@@ -39,7 +39,7 @@ def cfg() -> dict:
 
 
 def provider() -> str:
-    """The store backend `cluster/secret-store.yaml` is written for (CONTAINERIZER_SECRET_STORE overrides
+    """The store backend `secret-store.yaml` (each cluster's platform/) is written for (CONTAINERIZER_SECRET_STORE overrides
     the rules)."""
     p = os.environ.get("CONTAINERIZER_SECRET_STORE") or cfg().get("provider", "kubernetes")
     if p not in PROVIDERS or p not in (cfg().get("providers") or {}):

@@ -98,3 +98,30 @@ def test_cluster_names_and_the_sandbox_index_are_unchanged(tmp_path, monkeypatch
     assert [x[0] for x in org._apps_in(root)] == ["acme/p/shop"]
     monkeypatch.setenv("CONTAINERIZER_CLUSTERS", "none")
     assert clusters.names() == []
+
+
+def test_each_cluster_has_its_platform_kit_and_the_old_folders_go(tmp_path, monkeypatch):
+    """The cluster-level kit (ClusterSecretStore, signed images, audit policy) is each real cluster's platform/, not
+    cluster/ at the root; the sandbox's pointer folder of 0.41.0 to 0.43.x goes, an organization named sandbox stays."""
+    monkeypatch.delenv("CONTAINERIZER_CLUSTERS", raising=False)
+    root = tmp_path / "out"
+    app(root, "acme/p/shop", "p-shop")
+    (root / "cluster").mkdir()
+    (root / "cluster" / "secret-store.yaml").write_text("old\n")
+    (root / "sandbox" / "flux" / "apps").mkdir(parents=True)
+    (root / "sandbox" / "flux" / "apps" / "kustomization.yaml").write_text("resources: [../../../clusters/sandbox/flux/apps]\n")
+    (root / "sandbox" / "README.md").write_text("# Moved\n")
+    org.write_sandbox(root, URL, BRANCH)
+    assert not (root / "cluster").exists() and not (root / "sandbox").exists()
+    for name in ("development", "acceptance", "production"):
+        kit = root / "clusters" / name / "platform"
+        assert sorted(f.name for f in kit.iterdir()) == ["README.md", "audit-policy.yaml", "secret-store.yaml",
+                                                         "verify-images.yaml"]
+        assert "ClusterSecretStore" in (kit / "secret-store.yaml").read_text()
+        assert "platform/secret-store.yaml" in (root / "clusters" / name / "README.md").read_text()
+    assert not (root / "clusters" / "sandbox" / "platform").exists()     # the appliance has its own
+    # an organization (or project) named sandbox is an app folder, not the old pointer: it stays
+    app(root, "sandbox/p/billing", "p-billing")
+    org.write_sandbox(root, URL, BRANCH)
+    assert (root / "sandbox" / "p" / "billing" / "containerizer.json").is_file()
+    assert "sandbox/p/billing" in [rel for rel, _, _ in org._apps_in(root)]          # and is deployed
