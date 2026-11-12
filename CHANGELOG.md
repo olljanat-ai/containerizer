@@ -10,6 +10,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.39.0 (2026-11-12)
+
 - **Secrets ↗ signs in with SSO.** Once OpenBao has the OIDC sign-in method (docs/openbao.md), the admin pages'
   **Secrets ↗** link opens its sign-in with OIDC selected, so people only press its button. The web UI asks OpenBao
   without a token, at most once a minute (`CONTAINERIZER_OPENBAO_API`, set on the appliance). The OIDC guide shows
