@@ -111,6 +111,17 @@ bao write identity/group-alias name="<admins group>" mount_accessor="$accessor" 
 People now choose **OIDC** on the sign-in page and get the policies of their groups. Keep the `admin` user (with a
 strong password) as the way in when the provider is down.
 
+Once the method is there, the **Secrets ↗** link on the admin pages opens OpenBao's sign-in with **OIDC** selected
+(`https://<CZ_HOSTNAME>/ui/vault/auth?with=oidc%2F`): people only press *Sign in with OIDC Provider*. The appliance
+checks for the method once a minute. To show only OIDC on the sign-in page (the `admin` user stays under **Other**):
+
+```sh
+bao auth tune -listing-visibility=unauth oidc/
+```
+
+On an appliance set up before 0.37.0, `cz-admin` may not tune sign-in methods yet; as `admin`, add that first:
+`{ bao policy read cz-admin; echo 'path "sys/mounts/auth/*" { capabilities = ["read", "update"] }'; } | bao policy write cz-admin -`.
+
 The appliance's own sign-in ([Sign-in and roles](sign-in.md)) is separate: register Containerizer and OpenBao as
 two applications with the same provider and use the same groups for both.
 

@@ -170,3 +170,44 @@ def test_changed_values_sync_now_and_restart_the_workloads_that_read_them(monkey
     assert calls[0][5].startswith("force-sync=")
     assert ["-n", "shop", "rollout", "restart", "deployment/web"] in calls
     assert not any("statefulset/db" in c for c in calls)
+
+
+def test_secrets_link_opens_oidc_sign_in_once_openbao_has_it(monkeypatch):
+    """The admin pages' Secrets link: OpenBao's sign-in with OIDC selected when it has the method (asked without a
+    token, at most once a minute), its front page otherwise."""
+    import urllib.error
+    from containerizer import admin as adminmod, openbao
+    answers = []
+
+    def fake(req, timeout=0):
+        assert req.full_url == "http://127.0.0.1:8200/v1/auth/oidc/oidc/auth_url" and req.get_method() == "POST"
+        answers.append(1)
+        code = codes[0]
+        if code == 200:
+            class R:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+            return R()
+        if code == 0:
+            raise urllib.error.URLError("refused")
+        raise urllib.error.HTTPError(req.full_url, code, "x", {}, None)
+    monkeypatch.setattr(openbao.urllib.request, "urlopen", fake)
+    codes = [403]
+    assert not openbao.oidc_enabled("http://127.0.0.1:8200")
+    for c, want in ((400, True), (200, True), (0, False), (404, False)):
+        codes[0] = c
+        assert openbao.oidc_enabled("http://127.0.0.1:8200") is want
+
+    adm = adminmod.Admin.__new__(adminmod.Admin)
+    adm.openbao_url, adm.openbao_api, adm._openbao_sso = "https://cz.example.com/ui/", "", None
+    assert adm.openbao_link() == "https://cz.example.com/ui/"                 # not on the appliance: never asked
+    adm.openbao_api = "http://127.0.0.1:8200"
+    codes[0], n = 403, len(answers)
+    assert adm.openbao_link(now=100.0) == "https://cz.example.com/ui/"
+    codes[0] = 400
+    assert adm.openbao_link(now=130.0) == "https://cz.example.com/ui/"        # asked once a minute
+    assert adm.openbao_link(now=161.0) == "https://cz.example.com/ui/vault/auth?with=oidc%2F"
+    assert len(answers) == n + 2

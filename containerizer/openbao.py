@@ -61,6 +61,21 @@ path "auth/token/renew-self" {{ capabilities = ["update"] }}
 """
 
 
+def oidc_enabled(api: str, timeout: float = 2.0) -> bool:
+    """Whether OpenBao has the OIDC sign-in method at auth/oidc (docs/openbao.md), asked without a token: its
+    auth_url endpoint answers 403 when the method is not there, 400 or 200 when it is (configured or not)."""
+    req = urllib.request.Request(api.rstrip("/") + "/v1/auth/oidc/oidc/auth_url", method="POST",
+                                 data=json.dumps({"role": "", "redirect_uri": "http://localhost:8250/oidc/callback"}).encode(),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout):
+            return True
+    except urllib.error.HTTPError as ex:
+        return ex.code not in (403, 404, 405)
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
 def app_policy(ns: str) -> str:
     """An operator of namespace `ns`: its own entries only (the list of namespaces shows names, never values)."""
     return (f'path "{MOUNT}/data/{ns}/*" {{ capabilities = ["create", "read", "update", "patch", "delete"] }}\n'

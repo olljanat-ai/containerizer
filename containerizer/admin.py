@@ -103,6 +103,8 @@ class Admin:
         self.credential_key = None                  # the scan worker's public key: seals source control tokens
         self.grafana_url = ""                       # CONTAINERIZER_GRAFANA_URL: link on the admin pages
         self.openbao_url = ""                       # CONTAINERIZER_OPENBAO_URL: the sandbox apps' secret values
+        self.openbao_api = ""                       # CONTAINERIZER_OPENBAO_API: asked whether it has OIDC sign-in
+        self._openbao_sso = None                    # (when asked, the answer)
         self.kubemg_url = ""                        # CONTAINERIZER_KUBEMG_URL: kubemg on the appliance (optional)
         self.system = None                          # appliance.SystemPage on the appliance (System, Firewall)
         self.dev: DevIdentity | None = None         # development mode: no sign-in (CONTAINERIZER_DEV_NO_AUTH)
@@ -519,7 +521,7 @@ class Admin:
             tabs += (f"<a class='chip' href='{e(self.grafana_url)}' rel='noopener noreferrer' target='_blank'"
                      f" title='Metrics of the scans and the scan worker'>Grafana ↗</a>")
         if self.openbao_url and (a.admin or a.operator):
-            tabs += (f"<a class='chip' href='{e(self.openbao_url)}' rel='noopener noreferrer' target='_blank'"
+            tabs += (f"<a class='chip' href='{e(self.openbao_link())}' rel='noopener noreferrer' target='_blank'"
                      f" title='OpenBao: the values of the sandbox apps&#39; secrets and settings'>Secrets ↗</a>")
         if self.kubemg_url and (a.admin or a.operator):
             tabs += (f"<a class='chip' href='{e(self.kubemg_url)}' rel='noopener noreferrer' target='_blank'"
@@ -530,6 +532,20 @@ class Admin:
         return page(title, f"""<div class='topnav'><a href='/'>← Results</a><span>Signed in as <b>{e(s.name)}</b>
 <span class='muted'>({e(s.user)}) · {e(role)}{scope}</span> {self._logout_form(s)}{THEME_BUTTON}</span></div>
 <header><h1>{e(title)}</h1></header><nav class='chips'>{tabs}</nav>{msg}{body}""", script=True, refresh=refresh)
+
+    def openbao_link(self, now: float | None = None) -> str:
+        """The Secrets link: OpenBao's sign-in with OIDC selected once it has that method (SSO, docs/openbao.md), so
+        people only press its button; asked at most once a minute (CONTAINERIZER_OPENBAO_API, the appliance's own)."""
+        if not self.openbao_api:
+            return self.openbao_url
+        import time
+        now = time.monotonic() if now is None else now
+        if self._openbao_sso is None or now - self._openbao_sso[0] >= 60:
+            from .openbao import oidc_enabled
+            self._openbao_sso = (now, oidc_enabled(self.openbao_api))
+        if not self._openbao_sso[1]:
+            return self.openbao_url
+        return self.openbao_url.rstrip("/") + "/vault/auth?with=oidc%2F"
 
     # -- applications ---------------------------------------------------------------------------
 
@@ -1321,6 +1337,9 @@ def build(env=None) -> Admin | None:
     openbao = (env.get("CONTAINERIZER_OPENBAO_URL") or "").strip()
     if openbao and not LINK_RE.fullmatch(openbao):
         raise OidcError("CONTAINERIZER_OPENBAO_URL must be an https:// link (http:// only to localhost)")
+    openbao_api = (env.get("CONTAINERIZER_OPENBAO_API") or "").strip()
+    if openbao_api and not LINK_RE.fullmatch(openbao_api):
+        raise OidcError("CONTAINERIZER_OPENBAO_API must be an https:// link (http:// only to localhost)")
     kubemg = (env.get("CONTAINERIZER_KUBEMG_URL") or "").strip()
     if kubemg and not LINK_RE.fullmatch(kubemg):
         raise OidcError("CONTAINERIZER_KUBEMG_URL must be an https:// link (http:// only to localhost)")
@@ -1340,6 +1359,7 @@ def build(env=None) -> Admin | None:
         print(f"warning: rule review: {ex}", file=sys.stderr)
     adm.grafana_url = grafana
     adm.openbao_url = openbao
+    adm.openbao_api = openbao_api
     adm.kubemg_url = kubemg
     from .credentials import CredentialError, public_key_from_env
     try:

@@ -114,6 +114,8 @@ if [ -n "$sso" ]; then
 fi
 echo "CONTAINERIZER_GRAFANA_URL=https://$host/grafana/d/containerizer-scans" >> /run/containerizer/web-url.env
 echo "CONTAINERIZER_OPENBAO_URL=https://$host/ui/" >> /run/containerizer/web-url.env
+# asked whether OpenBao has OIDC sign-in: the Secrets link then opens it (docs/openbao.md)
+echo "CONTAINERIZER_OPENBAO_API=http://127.0.0.1:8200" >> /run/containerizer/web-url.env
 # LLM-heavy mode (docs/platform-migration.md): off unless appliance.env turns it on; the web UI shows it, the
 # worker only uses it for scans that have it ticked too
 case "${CZ_LLM_HEAVY:-false}" in true|yes|1|on) llm_heavy=true;; *) llm_heavy=false;; esac

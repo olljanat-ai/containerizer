@@ -10,6 +10,10 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- **Secrets ↗ signs in with SSO.** Once OpenBao has the OIDC sign-in method (docs/openbao.md), the admin pages'
+  **Secrets ↗** link opens its sign-in with OIDC selected, so people only press its button. The web UI asks OpenBao
+  without a token, at most once a minute (`CONTAINERIZER_OPENBAO_API`, set on the appliance). The OIDC guide shows
+  how to list only OIDC on the sign-in page.
 - **`jq` on the appliance** (OS image: a minor release). The OpenBao container still has none: pipe the appliance's
   `bao` into it, `bao read -format=json sys/auth | jq ...`.
 
