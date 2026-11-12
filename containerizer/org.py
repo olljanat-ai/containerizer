@@ -165,6 +165,7 @@ class RepoResult:
                                                        # source commit and the output repository's commit before it
     deploy_mode: str = ""             # chart (HelmReleases of the shared chart) or manifests (helmchart.py)
     deploy_mode_reason: str = ""      # why that mode: set for the application, kept, or the default
+    external_app_id: str | None = None  # metadata.json's applicationId (appmeta.py): "" none; None not read (no clone)
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -1453,6 +1454,8 @@ def _process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, wor
     try:
         res.commit, when = head_commit(src)
         res.last_commit = when.isoformat() if when else ""
+        from .appmeta import read_metadata
+        res.external_app_id = read_metadata(src)      # the application's ID in another system, if the repository says
         if cutoff and when and when < cutoff and \
                 (x := skip("skipped-stale", f"last commit on {r.default_branch or 'default branch'} {when:%Y-%m-%d}")):
             return x

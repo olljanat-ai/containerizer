@@ -314,6 +314,9 @@ class SqlRepoStore:
         if skip is not None:
             sets += ", SkipStatus = %s, SkipReason = %s"
             params += [_cut(skip[0], 40), _cut(skip[1], 1000)]
+        if getattr(res, "external_app_id", None) is not None:      # read from its metadata.json (appmeta.py)
+            sets += ", ExternalAppId = %s, ExternalAppIdAt = SYSUTCDATETIME()"
+            params.append(res.external_app_id or None)
         cur = self.conn.cursor()
         cur.execute(f"UPDATE cz.OrgRepository SET {sets} WHERE ScanId = %s AND ProjectName = %s AND Name = %s",
                     (*params, self.scan_id, _cut(r.project, 200), _cut(r.name, 200)))
