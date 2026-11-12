@@ -432,7 +432,10 @@ Techniques used to avoid application changes:
   another environment's value when the repository has one, and its comment says which: the same key in
   `appsettings.json` or an `appsettings.<Environment>.json` (Development and test environments first), else each
   token by its name as a key (`#{Auth.Authority}#` from `Auth:Authority`), else the one value of the settings with
-  the same name (`Authority`). Secret-looking values are never taken: they would be in Git;
+  the same name (`Authority`). Secret-looking values are never taken: they would be in Git. When the project file
+  marks `appsettings.Release.json` as the build's transform of `appsettings.json` (`<IsTransformFile>true</IsTransformFile>`,
+  SlowCheetah), its values count as part of `appsettings.json` (they are in the published file), so its tokens are
+  found too; its `@jdt.*` directives are ignored;
 - folders the app writes to (logs, App_Data) become volumes;
 - the ASP.NET Core Data Protection key folder gets one key, read-only, from a Secret that External Secrets Operator
   generates once in the cluster (Password generator, no secret store): cookies and antiforgery tokens survive

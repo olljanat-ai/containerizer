@@ -510,3 +510,44 @@ def test_pwd_and_pass_settings_are_secret(tmp_path):
     c = assess(tmp_path).components[0]
     assert c.facts["secret_settings"] == ["Ftp:Passwd", "Mail:Pass", "Smtp:Pwd"]
     assert classify_env({"Mail__Pass": "", "Proxy__Bypass": ""})[1] == ["Mail__Pass"]
+
+
+def test_release_transform_file_tokens_and_a_db2_connection_string(tmp_path):
+    """Tokens in appsettings.Release.json, the build's transform of appsettings.json (IsTransformFile, SlowCheetah),
+    are in the published appsettings.json: the settings come from the ConfigMap or the secret store and start with
+    appsettings.json's value. A Db2 connection string (Server=host:port;...;UID=;PWD=) is no lab MySQL database."""
+    from containerizer import labservices
+    from containerizer.generate import k8s_manifests
+    web_app(tmp_path, packages="""<PackageReference Include="Net.IBM.Data.Db2-lnx" Version="9.0.0.100" />
+        </ItemGroup><ItemGroup><Content Remove="appsettings.Release.json" /></ItemGroup>
+        <ItemGroup><None Include="appsettings.Release.json"><DependentUpon>appsettings.json</DependentUpon>
+          <IsTransformFile>true</IsTransformFile></None>""")
+    write(tmp_path, "src/Web/appsettings.json", """
+        {"Auth": {"Authority": "https://auth.acc.example.com/idhub/oidc"},
+         "Snow": {"BaseUrl": "https://snow.example.com", "ClientSecret": ""},
+         "ConnectionStrings": {"Main": "Server=db2.example.com:50000;Database=APP;UID=app;PWD=dev"}}""")
+    write(tmp_path, "src/Web/appsettings.Release.json", """
+        {"@jdt.remove": "Logging", "Auth": {"Authority": "#{Auth.Authority}#"},
+         "Snow": {"BaseUrl": "#{Snow.BaseUrl}#", "ClientSecret": "#{Snow.ClientSecret}#"},
+         "ConnectionStrings": {"Main": "#{Db.Main}#"}}""")
+    a = assess(tmp_path)
+    c = a.components[0]
+    assert c.facts["settings_transform"] == "src/Web/appsettings.Release.json"
+    assert set(c.facts["token_settings"]) == {"Auth:Authority", "Snow:BaseUrl", "Snow:ClientSecret",
+                                              "ConnectionStrings:Main"}
+    docs = k8s_manifests(a, c, make_plan(a, c), "img")
+    cm = next(d for d in docs if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "web-settings")
+    assert cm["data"] == {"Auth__Authority": "https://auth.acc.example.com/idhub/oidc",
+                          "Snow__BaseUrl": "https://snow.example.com"}
+    assert labservices.classify("ConnectionStrings:Main", "Server=db2.example.com:50000;Database=APP;UID=a;PWD=b") is None
+    assert "mysql" not in labservices.needs(a.repo, c)
+
+
+def test_a_db2_driver_keeps_a_mysql_looking_setting_out_of_the_lab(tmp_path):
+    from containerizer import labservices
+    web_app(tmp_path, packages='<PackageReference Include="Net.IBM.Data.Db2-lnx" Version="9.0.0.100" />')
+    write(tmp_path, "src/Web/appsettings.json",
+          '{"ConnectionStrings": {"Main": "Server=db2.example.com;Database=APP;UID=app;PWD=dev"}}')
+    a = assess(tmp_path)
+    assert a.components[0].facts["lab_settings"] == {"ConnectionStrings:Main": "mysql"}
+    assert labservices.needs(a.repo, a.components[0]) == {}

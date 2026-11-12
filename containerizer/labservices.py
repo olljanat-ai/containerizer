@@ -224,6 +224,13 @@ _SERVER_DB = re.compile(r"(?i)\b(Server|Data Source)\s*=[^;]+;.*\bDatabase\s*=")
 _NOT_SQLSERVER = re.compile(r"(?i)\b(Port|Host|SslMode|Ssl Mode|Uid|CharSet|AllowPublicKeyRetrieval)\s*=")
 _MYSQL = re.compile(r"(?i)^\s*mysql://|\b(Server|Host|Data Source)\s*=[^;]+;.*(\b(Uid|Pwd)\s*=|\bPort\s*=\s*3306\b|"
                     r"\b(AllowPublicKeyRetrieval|CharSet|AllowUserVariables|ConvertZeroDateTime|TreatTinyAsBoolean)\s*=)")
+# Db2 (IBM Data Server Provider) and Informix put the port after a colon: Server=db2.example.com:50000
+_COLON_PORT = re.compile(r"(?i)\bServer\s*=\s*[^;:,\\]+:\d{2,5}\s*(;|$)")
+# drivers of databases the lab does not run: a connection string of such a component is not a lab database, even
+# when it looks like one (Db2's Server=...;Database=...;UID=...;PWD=... reads like MySQL's)
+OTHER_DB_PACKAGES = re.compile(r"(?i)^(Net\.)?IBM\.Data\.(DB2|Db2|Informix)([.\-].*)?$|^IBM\.EntityFrameworkCore(-lnx|-osx)?$|"
+                               r"^Oracle\.(ManagedDataAccess|DataAccess|EntityFrameworkCore)(\..*)?$|"
+                               r"^com\.ibm\.db2:jcc$|^com\.oracle\.database\.jdbc:.*|^ibm_db$|^oracledb$|^cx_Oracle$")
 _ODBC_SQLSERVER = re.compile(r"(?i)\bDriver\s*=\s*\{?[^;]*SQL Server")
 _POSTGRES = re.compile(r"(?i)^\s*postgres(ql)?://|\bHost\s*=[^;]+;.*\b(Username|User ID|User Id|UserName|Database|Port)\s*=|"
                        r"\b(Username|Database|Port)\s*=[^;]*;.*\bHost\s*=")
@@ -343,6 +350,8 @@ def classify(key: str, value) -> str | None:
         return "azure-blob"
     if _POSTGRES.search(value):
         return "postgres"
+    if _COLON_PORT.search(value):
+        return None             # Db2 or Informix: not a database the lab runs
     if _MYSQL.search(value) and not _ODBC_SQLSERVER.search(value):
         return "mysql"
     if _SQLSERVER.search(value) or (_SERVER_DB.search(value) and not _NOT_SQLSERVER.search(value)):
@@ -391,8 +400,12 @@ def needs(repo, c) -> dict[str, list[str]]:
             if m is not None:
                 out.setdefault(svc, []).append(f"package in {p.rel}" if p is not c.project else "package")
                 break
+    # a component with a Db2 or Oracle driver and none of a lab database: its connection strings are for that one
+    other_db = any(OTHER_DB_PACKAGES.match(n) for p in _projects(repo, c) for n in p.packages)
     for key, kind in sorted(((c.facts or {}).get("lab_settings") or {}).items()):
         svc = kind.split(":", 1)[0]
+        if svc in SQL_DBS and other_db and svc not in out:
+            continue
         if svc in SERVICES:
             out.setdefault(svc, []).append(f"setting {key}")
     return {k: out[k] for k in ORDER if k in out}

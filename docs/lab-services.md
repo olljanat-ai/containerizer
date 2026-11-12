@@ -101,7 +101,9 @@ The scan decides, for each component, which services the component needs:
     - `host:6379,abortConnect=false` means Redis;
     - `UseDevelopmentStorage=true` or `AccountName=...;AccountKey=` means Azure Storage;
     - `ServiceURL`, `AccessKey` and similar keys under an `AWS`, `S3` or `Minio` section mean S3;
-    - `Server=...;Uid=` or `Port=3306` means MySQL;
+    - `Server=...;Uid=` or `Port=3306` means MySQL, but `Server=host:50000` (a port after a colon) is Db2 or Informix,
+      which the lab does not run. A component with a Db2 or Oracle driver (`Net.IBM.Data.Db2*`, `IBM.Data.DB2*`,
+      `Oracle.ManagedDataAccess*`, ...) and no driver of a lab database gets no lab database from its settings;
     - `mongodb://` means MongoDB, and `DatabaseName` under a `Mongo...` section is its database;
     - `amqp://`, or `host=` under a key that names RabbitMQ or EasyNetQ, means RabbitMQ. So do `HostName`,
       `UserName`, `Password`, `Port` and `VirtualHost` under a `RabbitMQ` section;
