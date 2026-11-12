@@ -126,9 +126,6 @@ class OrgOptions:
     sandbox_switches: object = None     # callable returning sandbox_off as it is now: a scan runs for hours and writes
                                         # sandbox/ after every repository; with the set read at its start it took
                                         # out the debug patches (or an off switch) an administrator made meanwhile
-    deploy_modes: dict | None = None    # SourceKey -> 'chart' or 'manifests': the administrators' choice per application
-                                        # (Admin -> Applications, load_deploy_modes); the rest: helmchart.app_mode
-    deploy_mode: str | None = None      # the default for this run (CLI --deploy-mode); None: helmchart.settings()
     review_queue: object = None         # with ai: queued LLM reviews (llmqueue.ReviewQueue): the scan asks the LLM
                                         # nothing, component reviews wait in the LLM review queue (no LLM-heavy mode,
                                         # no failure diagnosis or dev database questions either)
@@ -165,8 +162,6 @@ class RepoResult:
     split_hint: dict = field(default_factory=dict)     # a whole repository that looks like several applications
     patched: dict = field(default_factory=dict)        # the folder runs a "Make it A" patch (variant.py): its order,
                                                        # source commit and the output repository's commit before it
-    deploy_mode: str = ""             # chart (HelmReleases of the shared chart) or manifests (helmchart.py)
-    deploy_mode_reason: str = ""      # why that mode: set for the application, kept, or the default
     external_app_id: str | None = None  # metadata.json's applicationId (appmeta.py): "" none; None not read (no clone)
 
     def to_dict(self) -> dict:
@@ -559,27 +554,9 @@ def load_sandbox_debug(conn) -> set:
     return {int(r[0]) for r in rows} | {str(r[1]) for r in rows}
 
 
-def load_deploy_modes(conn) -> dict:
-    """SourceKey -> deploy mode of the applications an administrator set one for (Application.DeployMode, schema 48).
-    Empty on an older schema."""
-    from .helmchart import clean_mode
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT SourceKey, DeployMode FROM cz.Application WHERE DeployMode IS NOT NULL")
-        rows = cur.fetchall()
-    except Exception:  # noqa: BLE001 - before schema 48: the default for every application
-        try:
-            conn.rollback()
-        except Exception:  # noqa: BLE001
-            pass
-        return {}
-    return {str(r[0]): clean_mode(r[1]) for r in rows if clean_mode(r[1])}
-
-
-def _app_docs(folder: Path, rendered: bool = True) -> list[dict]:
-    """Every document the app folder's kustomization.yaml lists (what its Flux Kustomization applies); with
-    `rendered`, a component's HelmRelease as the objects its chart renders (helmchart.component_docs)."""
-    from .helmchart import HELMRELEASE, component_docs
+def _app_docs(folder: Path) -> list[dict]:
+    """Every document the app folder's kustomization.yaml lists (what its Flux Kustomization applies)."""
+    from .manifests import component_docs
     try:
         res = (yaml.safe_load((folder / "kustomization.yaml").read_text()) or {}).get("resources") or []
     except (OSError, yaml.YAMLError):
@@ -587,9 +564,6 @@ def _app_docs(folder: Path, rendered: bool = True) -> list[dict]:
     docs = []
     for r in res:
         f = folder / str(r)
-        if rendered and f.name == HELMRELEASE and f.is_file():
-            docs += component_docs(f.parent)
-            continue
         if f.is_dir() and (f / "kustomization.yaml").is_file():     # a component split into a file per kind
             docs += component_docs(f)
             continue
@@ -676,12 +650,6 @@ def sandbox_wait_patch(folder: Path, doc: dict, debug_image: str | None = None) 
         ops.append({"op": "add", "path": "/spec/patches/-", "value": {
             "patch": f"$patch: delete\napiVersion: {ROUTE_API}\nkind: HTTPRoute\nmetadata:\n  name: any\n",
             "target": {"group": ROUTE_API.split("/")[0], "kind": "HTTPRoute"}}})
-        if any(d.get("kind") == "HelmRelease" for d in _app_docs(folder, rendered=False)):
-            # the same for the components of the shared chart: it leaves out the kinds in values.skipKinds
-            from .helmchart import HELM_API
-            ops.append({"op": "add", "path": "/spec/patches/-", "value": {
-                "patch": json.dumps([{"op": "add", "path": "/spec/values/skipKinds", "value": ["HTTPRoute"]}]),
-                "target": {"group": HELM_API.split("/")[0], "kind": "HelmRelease"}}})
     # each component's settings read every key the store has (openbao.sandbox_patches: a value nobody filled yet is
     # not set, the others are), and in debug mode the pods sleep, with a shell (sandboxdebug.py)
     from .openbao import sandbox_patches
@@ -708,12 +676,12 @@ def write_cluster_kit(root: Path) -> list[str]:
     from . import eso
     from .generate import _yaml_docs
     from .harden import cluster_kit
-    from .helmchart import HELMRELEASE, component_docs
+    from .manifests import component_docs
     refs = set()
     for _rel, folder, _doc in _apps_in(root):
         for f in folder.glob("*/k8s.yaml"):
             refs |= {f"{m}/*" for m in IMAGE_RE.findall(f.read_text(errors="replace"))}
-        for f in [*folder.glob(f"*/{HELMRELEASE}"), *folder.glob("*/kustomization.yaml")]:
+        for f in folder.glob("*/kustomization.yaml"):
             from .generate import _yaml_docs
             refs |= {f"{m}/*" for m in IMAGE_RE.findall(_yaml_docs(component_docs(f.parent)))}
         old = folder / CLUSTER
@@ -748,9 +716,11 @@ def write_sandbox(root: Path, git_url: str, branch: str, off=None) -> list[str]:
     clusters of the repository (clusters.py; the sandbox's `off` does not apply there). The Argo CD files of app
     folders made before 0.9.2 are removed: Flux is the only GitOps tool."""
     from .gitops import FLUX_NS, KUSTOMIZE_API, SOURCE_API
-    from .helmchart import sync_charts
     write_cluster_kit(root)
-    sync_charts(root)                     # charts/: the shared chart versions the HelmReleases name
+    # applications deployed with the shared Helm chart (before 0.43.0) as plain manifests again, charts/ removed
+    from .helmchart import unchart_repository
+    for done in unchart_repository(root, _apps_in(root)):
+        print(f"{done}: converted from the shared Helm chart to manifests", file=sys.stderr)
     for old in root.glob("*/*/*/gitops/argocd"):
         if old.parts[len(root.parts)] not in (OLD_SANDBOX, "clusters") and old.is_dir():
             shutil.rmtree(old)
@@ -1730,22 +1700,9 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
     # the pushed digests into kustomization.yaml: the sandbox runs by digest from the first deploy
     pushed = {e["image"].rsplit(":", 1)[0]: e["digest"] for e in comps + [res.dev_database or {}]
               if e.get("image") and e.get("digest")}
-    # the components as HelmReleases of the shared chart, or as manifests (helmchart.py)
-    from . import helmchart
-    cfg = helmchart.settings()
-    if o.deploy_mode:
-        cfg["mode"] = helmchart.clean_mode(o.deploy_mode) or cfg["mode"]
-    res.deploy_mode, res.deploy_mode_reason = helmchart.app_mode((o.deploy_modes or {}).get(res.source_key),
-                                                                 helmchart.folder_mode(dest), cfg)
-    forms = helmchart.convert_app(gen, app_ns(a.name), [e["folder"] for e in comps], res.deploy_mode,
-                                  digests=pushed, pull_secret=o.image_pull_secret, min_saving=cfg["min_saving"])
-    for e in comps:
-        f = forms.get(e["folder"]) or {}
-        e["deploy_mode"] = f.get("mode") or "manifests"
-        if f.get("reason"):
-            e["deploy_mode_reason"] = f["reason"]
-    # manifests: a file per kind and a kustomization.yaml in each component's folder
-    helmchart.split_app(gen, [e["folder"] for e in comps if e["deploy_mode"] == "manifests"])
+    # a file per kind and a kustomization.yaml in each component's folder (manifests.py)
+    from .manifests import split_app
+    split_app(gen, [e["folder"] for e in comps])
     if pushed and (gen / "kustomization.yaml").exists():
         from .gitops import set_image_digests
         set_image_digests(gen / "kustomization.yaml", pushed)
@@ -1773,7 +1730,7 @@ def published_urls(dest: Path, keep: list) -> list[dict]:
     from .generate import k8s_name, app_ns
     from .sandbox import _published
     out = []
-    from .helmchart import component_docs
+    from .manifests import component_docs
     for c in keep:
         docs = component_docs(dest / k8s_name(c.name))
         url = _published(docs)[0] if docs else ""

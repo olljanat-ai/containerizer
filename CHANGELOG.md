@@ -10,6 +10,20 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.43.0 (2026-11-12)
+
+- **Chart mode is gone: every application is plain kustomize manifests.** The shared Helm chart saved lines but made
+  the output harder to read and to change. Each component is a file per kind with its `kustomization.yaml` (0.42.0).
+  - The next scan converts every application still deployed as a HelmRelease: what the chart rendered becomes the
+    component's files, its image an `images:` entry with the Flux image automation markers again, and `charts/`
+    leaves the output repository. In the sandbox Flux then replaces the HelmRelease with the same objects; Helm's
+    uninstall may delete them for a moment, and the next reconciliation brings them back.
+  - A cluster's `custom/kustomization.yaml` that pinned a chart component's image with a HelmRelease patch gets
+    that pin as an `images:` entry.
+  - Gone: Admin → Applications → Deploy mode, `containerizer org --deploy-mode`, `deploy:` in
+    rules/60-security.yaml, `CONTAINERIZER_DEPLOY_MODE` and docs/helm-chart.md. The `Application.DeployMode` column
+    stays in the database, unused.
+
 ## 0.42.0 (2026-11-12)
 
 - **Manifests mode: one file per kind.** A component's objects are no longer one long `k8s.yaml` but

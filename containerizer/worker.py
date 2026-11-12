@@ -845,7 +845,6 @@ class Worker:
             verify=bool(scan["Verify"]), gate=bool(scan["Gate"]), sql=self.sql, work_dir=str(base / "work"),
             llm_heavy=llm_heavy(scan), review_queue=self.review_queue(scan) if llm_queued(scan) else None,
             heavy_windows=self.heavy_windows() if scan["UseAi"] else None, sandbox_off=self.sandbox_off(), sandbox_switches=self.sandbox_switches,
-            deploy_modes=self.deploy_modes(),
             cache_dir=str(base / "repos"), secret_seed_dir=str(self.data / "secret-seed"), state=store, hooks=hooks,
             allowed_hosts=self.hosts | (creds.hosts() if creds else set()),
             **sandbox_check_options(self.log))
@@ -865,19 +864,6 @@ class Worker:
             return self.sandbox_switches()
         except Exception as ex:  # noqa: BLE001 - an older schema: every application is deployed
             self.log(f"applications without a sandbox not read: {type(ex).__name__}: {str(ex)[:200]}")
-            return None
-
-    def deploy_modes(self) -> dict | None:
-        """The applications an administrator set a deploy mode for (org.load_deploy_modes)."""
-        from .org import load_deploy_modes
-        try:
-            conn = self.connect()
-            try:
-                return load_deploy_modes(conn) or None
-            finally:
-                conn.close()
-        except Exception as ex:  # noqa: BLE001 - an older schema: the default for every application
-            self.log(f"deploy modes not read: {type(ex).__name__}: {str(ex)[:200]}")
             return None
 
     def heavy_windows(self) -> dict | None:

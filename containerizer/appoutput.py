@@ -153,9 +153,9 @@ def copy_app(src: Path, dst_root: Path, path: str, url: str, branch: str, moved_
     if dst.exists():
         dst.rmdir()
     dst.parent.mkdir(parents=True, exist_ok=True)
+    from .helmchart import unchart_app
+    unchart_app(src)                    # deployed with the shared Helm chart before 0.43.0: plain manifests first
     shutil.copytree(src, dst, ignore=shutil.ignore_patterns(".git"))
-    from .helmchart import copy_charts
-    copy_charts(src, dst_root)          # the shared chart its HelmReleases name, at the same place (helmchart.py)
     repoint(dst, url, branch, path, old=moved_from)
     doc = _doc(dst) or {}
     doc.pop("moved_to", None)
@@ -177,10 +177,10 @@ def make_stub(folder: Path, m: dict) -> None:
     keep = ["containerizer.json", "gitops/flux/tenant.yaml", "gitops/flux/git/sync.yaml", "gitops/flux/kustomization.yaml"]
     for c in doc.get("components") or []:
         if c.get("folder"):
-            keep += [f"{c['folder']}/idp.json", f"{c['folder']}/k8s.yaml", f"{c['folder']}/helmrelease.yaml"]
-            from .helmchart import KUSTOMIZATION, _split_files, is_split
-            if is_split(folder / c["folder"]):        # a file per kind (helmchart.write_split)
-                keep += [f"{c['folder']}/{f}" for f in [KUSTOMIZATION, *_split_files(folder / c["folder"])]]
+            keep += [f"{c['folder']}/idp.json", f"{c['folder']}/k8s.yaml"]
+            from .manifests import KUSTOMIZATION, is_split, split_files
+            if is_split(folder / c["folder"]):        # a file per kind (manifests.write_split)
+                keep += [f"{c['folder']}/{f}" for f in [KUSTOMIZATION, *split_files(folder / c["folder"])]]
     tmp = folder.parent / (folder.name + ".stub")
     if tmp.exists():
         shutil.rmtree(tmp)

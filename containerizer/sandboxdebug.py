@@ -247,19 +247,6 @@ def workload_patch(doc: dict, tools: str, start: str = "") -> str | None:
     return yaml.safe_dump(patch, sort_keys=False)
 
 
-def _component_docs(cdir: Path) -> tuple[list[dict], str | None]:
-    """(the component's objects, the name of its HelmRelease or None when it is plain manifests)."""
-    from .helmchart import HELMRELEASE, component_docs
-    hr = cdir / HELMRELEASE
-    if hr.is_file():
-        try:
-            raw = [d for d in yaml.safe_load_all(hr.read_text()) if isinstance(d, dict) and d.get("kind") == "HelmRelease"]
-        except yaml.YAMLError:
-            raw = []
-        return component_docs(cdir), ((raw[0].get("metadata") or {}).get("name") if raw else None)
-    return component_docs(cdir), None          # k8s.yaml, or a file per kind
-
-
 def workload_patches(docs: list[dict], dockerfile: str | None, tools: str) -> list[dict]:
     """The debug patches of one component's Deployments and StatefulSets."""
     patches = []
@@ -275,22 +262,20 @@ def workload_patches(docs: list[dict], dockerfile: str | None, tools: str) -> li
 
 def ops(folder: Path, doc: dict, tools: str) -> list[dict]:
     """JSON patch operations on the sandbox's copy of the application's Flux Kustomization: one kustomize patch per
-    Deployment and StatefulSet of its components; for a component of the shared chart, on its HelmRelease as a
-    post-renderer (the chart's own values are left alone)."""
+    Deployment and StatefulSet of its components."""
     return component_ops(folder, doc, lambda docs, dockerfile: workload_patches(docs, dockerfile, tools))
 
 
 def component_ops(folder: Path, doc: dict, make) -> list[dict]:
     """JSON patch operations that put the kustomize patches `make(docs, dockerfile)` returns for each component into the
-    sandbox's copy of the application's Flux Kustomization; for a component of the shared chart, into its HelmRelease
-    as one post-renderer (so the debug patches and the others do not replace each other)."""
-    from .helmchart import HELM_API
+    sandbox's copy of the application's Flux Kustomization."""
+    from .manifests import component_docs
     out = []
     for c in doc.get("components") or []:
         cdir = folder / str(c.get("folder") or "")
         if not c.get("folder") or not cdir.is_dir():
             continue
-        docs, release = _component_docs(cdir)
+        docs = component_docs(cdir)
         try:
             dockerfile = (cdir / "Dockerfile").read_text()
         except OSError:
@@ -298,13 +283,7 @@ def component_ops(folder: Path, doc: dict, make) -> list[dict]:
         patches = make(docs, dockerfile)
         if not patches:
             continue
-        if release:
-            out.append({"op": "add", "path": "/spec/patches/-", "value": {
-                "target": {"group": HELM_API.split("/")[0], "kind": "HelmRelease", "name": release},
-                "patch": json.dumps([{"op": "add", "path": "/spec/postRenderers",
-                                      "value": [{"kustomize": {"patches": patches}}]}])}})
-        else:
-            out += [{"op": "add", "path": "/spec/patches/-", "value": p} for p in patches]
+        out += [{"op": "add", "path": "/spec/patches/-", "value": p} for p in patches]
     return out
 
 

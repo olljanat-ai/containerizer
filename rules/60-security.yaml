@@ -500,21 +500,6 @@ pipelines:
   syft_image: anchore/syft:v1.33.0
   cosign_tlog_upload: true
 
-# How the organization scans write each application's components to the output repository (helmchart.py,
-# docs/helm-chart.md). The generated objects are the same either way; only their form in Git differs.
-#   chart:      one Flux HelmRelease per component, of the shared chart charts/containerizer-app/<version>/, whose values
-#               hold only what the component has beyond the chart's hardened baseline
-#   manifests:  each component's objects in its k8s.yaml (kustomize), as before 0.33.0
-# CONTAINERIZER_DEPLOY_MODE (a site setting) overrides `mode`; administrators set it per application
-# (Admin -> Applications -> Deploy mode), which wins over both.
-deploy:
-  mode: chart
-  # An application already deployed keeps its mode when `mode` changes: switching recreates its objects (pods
-  # restart, PersistentVolumeClaims are made again, empty). true: it switches at its next deployment.
-  switch_existing: false
-  # A component stays plain manifests unless its HelmRelease is at least this much shorter (0.3: 30% fewer lines)
-  min_saving: 0.3
-
 # Base image lifecycle and bump policy for `containerizer images`.
 images:
   lock_max_age_days: 14       # the gate warns when images.lock.yaml is older

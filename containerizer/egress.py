@@ -1198,7 +1198,7 @@ def patch_links(folder: Path, doc: dict) -> list[str]:
     """Open the confirmed links of connectivity.yaml in the components' NetworkPolicies."""
     from .links import apply_links
     from . import connectivity
-    from .helmchart import component_docs, component_form, write_component_docs
+    from .manifests import component_docs, component_form, write_component_docs
     out, inn = connectivity.linked_entries(doc)
     changed = []
     for comp in sorted({e.get("component") for e in out} | {i.get("component") for i in inn}):

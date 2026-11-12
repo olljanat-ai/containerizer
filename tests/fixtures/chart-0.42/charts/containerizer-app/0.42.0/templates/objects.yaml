@@ -1,0 +1,49 @@
+{{- /* Every object of the component: see values.yaml. containerizer/helmchart.py `render` does the same. */ -}}
+{{- $v := .Values -}}
+{{- $partOf := $v.partOf | default .Release.Namespace -}}
+{{- $ctx := dict "component" $v.component "partOf" $partOf -}}
+{{- $frags := include "cz.subst" (merge (dict "x" $v.fragments) $ctx) | fromJson -}}
+{{- $image := "" -}}
+{{- if $v.image.repository -}}
+{{- $image = printf "%s:%s" $v.image.repository (toString $v.image.tag) -}}
+{{- if $v.image.digest -}}{{- $image = printf "%s@%s" $image $v.image.digest -}}{{- end -}}
+{{- end -}}
+{{- range $o := $v.objects -}}
+{{- if not (has $o.kind $v.skipKinds) -}}
+{{- $defs := include "cz.subst" (merge (dict "x" $v.defaults) $ctx) | fromJson -}}
+{{- $obj := dict -}}
+{{- if hasKey $v.apiVersions $o.kind -}}{{- $_ := set $obj "apiVersion" (get $v.apiVersions $o.kind) -}}{{- end -}}
+{{- include "cz.merge" (dict "dst" $obj "src" (get $defs "*")) -}}
+{{- if hasKey $defs $o.kind -}}{{- include "cz.merge" (dict "dst" $obj "src" (get $defs $o.kind)) -}}{{- end -}}
+{{- $name := $v.component -}}
+{{- if and $o.metadata $o.metadata.name -}}{{- $name = $o.metadata.name -}}{{- end -}}
+{{- $named := printf "%s/%s" $o.kind $name -}}
+{{- if hasKey $defs $named -}}{{- include "cz.merge" (dict "dst" $obj "src" (get $defs $named)) -}}{{- end -}}
+{{- $tpl := dict -}}
+{{- $workload := or (eq $o.kind "Deployment") (eq $o.kind "CronJob") -}}
+{{- if eq $o.kind "Deployment" -}}{{- $tpl = $obj.spec.template -}}{{- end -}}
+{{- if eq $o.kind "CronJob" -}}{{- $tpl = $obj.spec.jobTemplate.spec.template -}}{{- end -}}
+{{- if $workload -}}
+{{- $pod := include "cz.subst" (merge (dict "x" $v.pod) $ctx) | fromJson -}}
+{{- include "cz.merge" (dict "dst" $pod "src" $tpl.spec) -}}
+{{- $_ := set $tpl "spec" $pod -}}
+{{- end -}}
+{{- include "cz.merge" (dict "dst" $obj "src" $o) -}}
+{{- if $workload -}}
+{{- if eq $o.kind "Deployment" -}}{{- $tpl = $obj.spec.template -}}{{- else -}}{{- $tpl = $obj.spec.jobTemplate.spec.template -}}{{- end -}}
+{{- $cs := $tpl.spec.containers | default (list (dict)) -}}
+{{- $c0 := include "cz.subst" (merge (dict "x" $v.container) $ctx) | fromJson -}}
+{{- if $image -}}{{- $_ := set $c0 "image" $image -}}{{- end -}}
+{{- include "cz.merge" (dict "dst" $c0 "src" (first $cs)) -}}
+{{- $_ := set $tpl.spec "containers" (prepend (rest $cs) $c0) -}}
+{{- end -}}
+{{- include "cz.resolve" (dict "x" $obj "fragments" $frags) -}}
+{{- if $workload -}}
+{{- if eq $o.kind "Deployment" -}}{{- $tpl = $obj.spec.template -}}{{- else -}}{{- $tpl = $obj.spec.jobTemplate.spec.template -}}{{- end -}}
+{{- include "cz.harden" (dict "pod" $tpl.spec "where" (printf "%s/%s" $o.kind $obj.metadata.name)) -}}
+{{- end -}}
+{{- if eq $o.kind "ServiceAccount" -}}{{- $_ := set $obj "automountServiceAccountToken" false -}}{{- end }}
+---
+{{ toYaml $obj }}
+{{- end -}}
+{{- end -}}

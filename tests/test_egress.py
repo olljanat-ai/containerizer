@@ -574,7 +574,7 @@ def test_a_later_scan_keeps_approved_egress(tmp_path, monkeypatch):
         return orgmod.deploy_app(dataclasses.replace(a), src, name, o, out, None, "1.0.0", GitOpsOptions(path=name), res,
                                  tmp_path / f"work-{name.replace('/', '-')}", "egress-demo")
     assert deploy(rel).status == "deployed"
-    from containerizer.helmchart import component_docs
+    from containerizer.manifests import component_docs
     pol = [d for d in component_docs(out.root / rel / "egress-demo")
            if d and d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == "egress-demo"][0]
     assert not any({"port": 443, "protocol": "TCP"} in (r.get("ports") or []) for r in pol["spec"]["egress"])

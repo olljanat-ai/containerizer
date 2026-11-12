@@ -442,11 +442,11 @@ def test_deploy_app_with_local_images_tags_and_never_pushes(tmp_path, monkeypatc
     c = res.components[0]
     assert c["image"] == ref and c["image_source"] == "local" and "digest" not in c and "signature" not in c
     assert "not pushed" in c["note"]
-    from containerizer.helmchart import component_docs
+    from containerizer.manifests import component_docs
     docs = component_docs(dest / "demo-web")
     ctr = next(d for d in docs if d["kind"] == "Deployment")["spec"]["template"]["spec"]["containers"][0]
     assert ctr["image"] == ref and ctr["imagePullPolicy"] == "IfNotPresent" and "@sha256" not in ctr["image"]
-    assert "tag: 1.2.3 #" in (dest / "demo-web" / "helmrelease.yaml").read_text()
+    assert "newTag: 1.2.3 #" in (dest / "kustomization.yaml").read_text()
 
 
 def test_local_images_setting(monkeypatch):
@@ -735,7 +735,7 @@ def test_housekeep_moves_the_variants_of_before_into_the_applications_folder(tmp
     # the images it was built as: nothing was built again
     old_img = "reg.example/sandbox/shop-refactor-151/demo-web:1.20261101.905-refactor.151"
     assert meta["components"][0]["image"] == old_img
-    from containerizer.helmchart import component_text
+    from containerizer.manifests import component_text
     assert f"image: {old_img}" in component_text(d / "demo-web")
     assert "shop-refactor" not in (d / "gitops/flux/git/sync.yaml").read_text()
     upd = {p[1]: json.loads(p[0])["sandbox"] for _, p in conn.sql(r"UPDATE cz.LlmJob SET Result")}

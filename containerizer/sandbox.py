@@ -87,7 +87,6 @@ class KubeOptions:
 
 
 K3S_WARNING = re.compile(r'level=warning msg="open /etc/rancher/k3s/config\.yaml')
-FLUX_HR = "helmreleases.helm.toolkit.fluxcd.io"
 
 
 class Kube:
@@ -193,16 +192,11 @@ def deployed_apps(root: Path, only: set | list | None = None) -> list[dict]:
         for c in doc.get("components") or []:
             folder = d / (c.get("folder") or "")
             workloads = []
-            from .helmchart import component_form
+            from .manifests import component_docs, component_form
             if c.get("folder") and component_form(folder):
-                from .helmchart import component_docs
                 docs = component_docs(folder)
                 workloads = [(x["kind"], x["metadata"]["name"]) for x in docs
                              if x.get("kind") in ("Deployment", "StatefulSet", "CronJob") and x.get("metadata", {}).get("name")]
-                if component_form(folder) == "chart":
-                    from .helmchart import read_helmrelease
-                    hr = read_helmrelease(folder / "helmrelease.yaml") or {}
-                    c = {**c, "helmrelease": (hr.get("metadata") or {}).get("name") or ""}
                 url, probe = _published(docs)
                 if url:
                     comps.append({**c, "workloads": workloads, "url": url, "probe_path": probe})
@@ -537,36 +531,11 @@ OBSERVE = {"Deployment": observe_deployment, "StatefulSet": observe_statefulset,
 RANK = {HEALTHY: 0, SCHEDULED: 1, PENDING: 2, NOT_FOUND: 3, FAILING: 4, ERROR: 5}
 
 
-def helm_state(kube: Kube, ns: str, name: str) -> Observation | None:
-    """Why a component deployed with the shared chart has no workload yet: its HelmRelease is still installing
-    (pending) or failed (Helm's own message). None when it says nothing more (ready, or not readable)."""
-    try:
-        hr = kube.get(FLUX_HR, ns, name)
-    except KubeError as e:
-        if e.kind == "not-found":
-            return Observation(NOT_FOUND, f"HelmRelease {name} not found: Flux has not applied it", final=True)
-        return None
-    ready = _cond(hr, "Ready")
-    if ready.get("status") == "True":
-        return None
-    msg = " ".join(str(ready.get("message") or "").split())[:400]
-    if (hr.get("spec") or {}).get("suspend"):
-        return Observation(FAILING, f"HelmRelease {name} is suspended", final=True)
-    if not ready or ready.get("status") == "Unknown" or ready.get("reason") in ("Progressing", "DependencyNotReady"):
-        return Observation(PENDING, f"HelmRelease {name}: Helm is installing it" + (f" ({msg})" if msg else ""))
-    return Observation(FAILING, f"HelmRelease {name} {ready.get('reason') or 'not ready'}: {redact(msg)}", final=True)
-
-
-def observe_component(kube: Kube, ns: str, workloads: list[tuple[str, str]], helmrelease: str = "") -> Observation:
-    """The worst observation over the component's workloads (a console app can have several CronJobs). A component
-    of the shared chart whose workload is not there yet says what its HelmRelease is doing."""
+def observe_component(kube: Kube, ns: str, workloads: list[tuple[str, str]]) -> Observation:
+    """The worst observation over the component's workloads (a console app can have several CronJobs)."""
     if not workloads:
         return Observation(NOT_FOUND, "no workload in the generated manifests", final=True)
     obs = [OBSERVE[k](kube, ns, n) for k, n in workloads]
-    if helmrelease and any(o.status == NOT_FOUND for o in obs):
-        hs = helm_state(kube, ns, helmrelease)
-        if hs:
-            return hs
     worst = max(obs, key=lambda o: RANK.get(o.status, 9))
     worst.restarts = sum(o.restarts for o in obs)
     if worst.status == HEALTHY:
@@ -741,7 +710,7 @@ def verify_sandbox(root: Path, o: SandboxOptions | None = None, kube: Kube | Non
         for a, c in pending:
             key = (a["app"], c["component"])
             try:
-                ob = observe_component(kube, a["app"], c["workloads"], c.get("helmrelease") or "")
+                ob = observe_component(kube, a["app"], c["workloads"])
             except KubeError as e:
                 ob = Observation(ERROR, str(e), final=True)
             obs[key] = ob
@@ -800,7 +769,7 @@ def verify_sandbox(root: Path, o: SandboxOptions | None = None, kube: Kube | Non
         r["log_tail"] = ob.log            # redacted; kept out of the output repository (see write_health)
         if (o.llm or a["doc"].get("source_key") in o.llm_keys) and r["status"] in (FAILING, PENDING):
             from .replatform import llm_sandbox_diagnosis
-            from .helmchart import component_text
+            from .manifests import component_text
             cdir = root / a["rel"] / (c.get("folder") or "")
             from .ai import usage_scope
             dd = a["doc"]
@@ -955,8 +924,7 @@ def verify_rbac(namespaces: list[str]) -> list[dict]:
     ]
     for ns in namespaces:
         r = list(rules) + [{"apiGroups": ["kustomize.toolkit.fluxcd.io"], "resources": ["kustomizations"],
-                            "resourceNames": [ns], "verbs": ["get"]},
-                           {"apiGroups": ["helm.toolkit.fluxcd.io"], "resources": ["helmreleases"], "verbs": ["get", "list"]}]
+                            "resourceNames": [ns], "verbs": ["get"]}]
         docs += [
             {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role",
              "metadata": {"name": VERIFIER, "namespace": ns, "labels": labels}, "rules": r},
