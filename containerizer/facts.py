@@ -152,6 +152,33 @@ def _merge(base, over):
     return over
 
 
+# a settings file the build transforms appsettings.json with (SlowCheetah, `dotnet publish -c Release`):
+# <None Include="appsettings.Release.json"><IsTransformFile>true</IsTransformFile></None> in the project file
+TRANSFORM_ITEM = re.compile(r'<(None|Content)\s+(?:Include|Update)\s*=\s*"([^"]*)"[^>]*>(.*?)</\1\s*>', re.S | re.I)
+
+
+def release_transform(p) -> Path | None:
+    """appsettings.Release.json when the project file marks it as the build's transform of appsettings.json: its
+    values (often release-pipeline tokens) are in the published appsettings.json."""
+    try:
+        text = p.path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return None
+    for _, inc, body in TRANSFORM_ITEM.findall(text):
+        name = inc.replace("\\", "/").rsplit("/", 1)[-1]
+        if name.lower() == "appsettings.release.json" and re.search(r"<IsTransformFile>\s*true\s*<", body, re.I):
+            f = p.dir / inc.replace("\\", "/")
+            return f if f.is_file() else None
+    return None
+
+
+def _no_jdt(d):
+    """A JSON Document Transform without its @jdt.* directives (merged like a settings file)."""
+    if isinstance(d, dict):
+        return {k: _no_jdt(v) for k, v in d.items() if not k.lower().startswith("@jdt.")}
+    return [_no_jdt(v) for v in d] if isinstance(d, list) else d
+
+
 # PersistKeysToFileSystem(new DirectoryInfo(<folder>)): where the code keeps the Data Protection key ring
 PERSIST_KEYS_FS = re.compile(r"PersistKeysToFileSystem\(\s*new\s+(?:System\.IO\.)?DirectoryInfo\(\s*(.+?)\)\s*\)", re.S)
 CONFIG_READ = re.compile(r'\[\s*"([\w:.\-]+)"\s*\]|GetValue<string\??>\(\s*"([\w:.\-]+)"')
@@ -222,6 +249,11 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
     if appsettings:
         # the container runs as Production: appsettings.Production.json overrides appsettings.json
         cfg = _load_json(appsettings)
+        # the build's transform (appsettings.Release.json) is in the published appsettings.json
+        transform = release_transform(p)
+        if transform:
+            cfg = _merge(cfg, _no_jdt(_load_json(transform)))
+            facts["settings_transform"] = p.rel_file(transform)
         prod = appsettings.with_name("appsettings.Production.json")
         if prod.exists():
             cfg = _merge(cfg, _load_json(prod))
@@ -292,7 +324,9 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
             facts["token_settings"] = tokens
             # unquoted where a value goes ("Port": #{Api.Port}#): the image makes them null, not empty (invalid JSON)
             bare = set()
-            for f in (appsettings, appsettings.with_name("appsettings.Production.json")):
+            for f in (appsettings, transform, appsettings.with_name("appsettings.Production.json")):
+                if f is None:
+                    continue
                 try:
                     bare |= bare_tokens(f.read_text(encoding="utf-8-sig", errors="replace"))
                 except OSError:

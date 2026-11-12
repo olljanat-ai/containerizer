@@ -10,6 +10,17 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.41.1 (2026-11-12)
+
+- **Tokens in `appsettings.Release.json` are found.** When the project file marks it as the build's transform of
+  `appsettings.json` (`IsTransformFile`, SlowCheetah), its values are in the published file. The scan read only
+  `appsettings.json` and `appsettings.Production.json`, so these tokens got no ConfigMap entry and no secret store
+  key, and stayed in the image. Now its settings come from the ConfigMap `<component>-settings` (starting with
+  `appsettings.json`'s value) or the secret store, like the tokens of `appsettings.json`.
+- **A Db2 app no longer gets a lab MySQL database.** A Db2 connection string (`Server=host:50000;Database=...;UID=...;
+  PWD=...`) was read as MySQL. A port after a colon is no MySQL server, and a component with a Db2 or Oracle driver
+  and no driver of a lab database gets no lab database from its settings.
+
 ## 0.41.0 (2026-11-12)
 
 - **Forget application** (Admin → Applications → the application, administrators): deletes everything recorded about
