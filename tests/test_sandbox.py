@@ -502,7 +502,8 @@ def test_org_run_with_verify_sandbox_and_no_cluster(tmp_path, monkeypatch):
     rbac = list(yaml.safe_load_all((out / "clusters" / "sandbox" / "verify-rbac.yaml").read_text()))
     assert any(d["kind"] == "Role" and d["metadata"]["namespace"] == meta["app"] for d in rbac)
     # the sandbox waits for the generated app's workloads only; its own sync.yaml (the real environment) for everything
-    [patch] = yaml.safe_load((out / "clusters" / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text())["patches"]
+    [overlay] = out.glob("**/gitops/sandbox/kustomization.yaml")              # the app folder's sandbox overlay
+    [patch] = yaml.safe_load(overlay.read_text())["patches"]
     ops = yaml.safe_load(patch["patch"])
     assert patch["target"]["name"] == meta["app"] and ops[0] == {"op": "add", "path": "/spec/wait", "value": False}
     assert ops[1]["value"] and {c["kind"] for c in ops[1]["value"]} <= {"Deployment", "StatefulSet", "ExternalSecret"}
@@ -578,7 +579,10 @@ def test_sandbox_kustomizations_wait_for_the_workloads_not_every_object(tmp_path
     (app / "web" / "k8s.yaml").write_text("---\n".join(yaml.safe_dump(d) for d in docs))
     (app / "kustomization.yaml").write_text(yaml.safe_dump({"resources": ["web/k8s.yaml", "missing.yaml"]}))
     assert write_sandbox(root, "https://git.example/out.git", "main") == ["shop-web"]
-    text = (root / "clusters" / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text()
+    assert yaml.safe_load((root / "clusters" / "sandbox" / "flux" / "apps" / "kustomization.yaml").read_text())[
+        "resources"] == [f"../../../../{app.relative_to(root).as_posix()}/gitops/sandbox"]
+    text = (app / "gitops" / "sandbox" / "kustomization.yaml").read_text()
+    assert yaml.safe_load(text)["resources"] == ["../flux"]
     assert '"op"' not in text and "  patch: |" in text            # the patches read as YAML, not as JSON strings
     k = yaml.safe_load(text)
     [p] = k["patches"]

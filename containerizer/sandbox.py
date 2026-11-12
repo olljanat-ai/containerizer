@@ -193,12 +193,13 @@ def deployed_apps(root: Path, only: set | list | None = None) -> list[dict]:
         for c in doc.get("components") or []:
             folder = d / (c.get("folder") or "")
             workloads = []
-            if c.get("folder") and ((folder / "k8s.yaml").is_file() or (folder / "helmrelease.yaml").is_file()):
+            from .helmchart import component_form
+            if c.get("folder") and component_form(folder):
                 from .helmchart import component_docs
                 docs = component_docs(folder)
                 workloads = [(x["kind"], x["metadata"]["name"]) for x in docs
                              if x.get("kind") in ("Deployment", "StatefulSet", "CronJob") and x.get("metadata", {}).get("name")]
-                if not (folder / "k8s.yaml").is_file():
+                if component_form(folder) == "chart":
                     from .helmchart import read_helmrelease
                     hr = read_helmrelease(folder / "helmrelease.yaml") or {}
                     c = {**c, "helmrelease": (hr.get("metadata") or {}).get("name") or ""}
@@ -560,7 +561,7 @@ def observe_component(kube: Kube, ns: str, workloads: list[tuple[str, str]], hel
     """The worst observation over the component's workloads (a console app can have several CronJobs). A component
     of the shared chart whose workload is not there yet says what its HelmRelease is doing."""
     if not workloads:
-        return Observation(NOT_FOUND, "no workload in the generated k8s.yaml", final=True)
+        return Observation(NOT_FOUND, "no workload in the generated manifests", final=True)
     obs = [OBSERVE[k](kube, ns, n) for k, n in workloads]
     if helmrelease and any(o.status == NOT_FOUND for o in obs):
         hs = helm_state(kube, ns, helmrelease)

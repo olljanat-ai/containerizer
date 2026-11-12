@@ -107,7 +107,7 @@ def test_cluster_names_and_the_sandbox_index_are_unchanged(tmp_path, monkeypatch
     org.write_sandbox(root, URL, BRANCH)
     assert sorted(x.name for x in (root / "clusters").iterdir() if x.is_dir()) == ["dev", "qa", "sandbox"]
     assert load(root / "clusters" / "sandbox" / "flux" / "apps" / "kustomization.yaml")["resources"] == [
-        "../../../../acme/p/shop/gitops/flux"]
+        "../../../../acme/p/shop/gitops/sandbox"]
     assert [x[0] for x in org._apps_in(root)] == ["acme/p/shop"]
     monkeypatch.setenv("CONTAINERIZER_CLUSTERS", "none")
     assert clusters.names() == []

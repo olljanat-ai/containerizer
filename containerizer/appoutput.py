@@ -178,6 +178,9 @@ def make_stub(folder: Path, m: dict) -> None:
     for c in doc.get("components") or []:
         if c.get("folder"):
             keep += [f"{c['folder']}/idp.json", f"{c['folder']}/k8s.yaml", f"{c['folder']}/helmrelease.yaml"]
+            from .helmchart import KUSTOMIZATION, _split_files, is_split
+            if is_split(folder / c["folder"]):        # a file per kind (helmchart.write_split)
+                keep += [f"{c['folder']}/{f}" for f in [KUSTOMIZATION, *_split_files(folder / c["folder"])]]
     tmp = folder.parent / (folder.name + ".stub")
     if tmp.exists():
         shutil.rmtree(tmp)

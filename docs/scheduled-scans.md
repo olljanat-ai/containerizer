@@ -334,7 +334,9 @@ cluster/                     the cluster-level kit for every app, once: secret s
     namespace.yaml security.yaml HARDENING.md SECURITY.md MIGRATION.md
     containerizer.json       source URL, commit, images, digests, verification
     gitops/flux/             tenant.yaml, git/sync.yaml, oci/, image automation
-    <component>/             Dockerfile, Dockerfile.dockerignore, k8s.yaml, plan.json
+    <component>/             Dockerfile, Dockerfile.dockerignore, plan.json, and the objects: kustomization.yaml
+                             with a file per kind (manifests), or helmrelease.yaml + settings.yaml (chart)
+    gitops/sandbox/          the sandbox's copy of gitops/flux, with its patch (clusters.md)
     pipeline/<provider>/     the image build pipeline for the application's own repository (build-pipelines.md)
     make-it-a.patch          while a Make it A copy runs here in place of the scan's output (refactoring.md)
 sandbox/

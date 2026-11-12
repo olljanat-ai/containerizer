@@ -5,7 +5,7 @@ An organization scan writes each application's components to the output reposito
 | Mode | A component's files | Applied by |
 | --- | --- | --- |
 | `chart` (the default) | `<component>/helmrelease.yaml`: a Flux `HelmRelease` of the shared chart `charts/containerizer-app/<version>/`, whose values hold only what the component has beyond the chart's baseline | Flux helm-controller |
-| `manifests` | `<component>/k8s.yaml`: the component's objects themselves | Flux kustomize-controller |
+| `manifests` | The component's objects themselves, one file per kind (`<component>/deployment.yaml`, `service.yaml`, `networkpolicy.yaml`, `externalsecret.yaml`, `settings.yaml`, ...) and `<component>/kustomization.yaml` listing them; before 0.42.0 one `<component>/k8s.yaml` | Flux kustomize-controller |
 
 The objects that run are the same either way. The generator always makes, hardens, lints, scans and runs the plain
 objects first (the security gate). Only when the application is written to the output repository does Containerizer

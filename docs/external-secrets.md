@@ -58,7 +58,7 @@ the cluster by ESO's Password generator, no store), the image pull credential, t
 - **Real clusters**: the app's `gitops/flux/git/sync.yaml` has `wait: true`, so Flux waits for every applied
   object and the Kustomization stays not ready (health check timeout naming the ExternalSecret) until each
   secret is in the store. Fill the keys of `HARDENING.md` before the first sync.
-- **The sandbox**: nobody fills the components' own keys there, so `clusters/sandbox/flux/apps` patches each app's
+- **The sandbox**: nobody fills the components' own keys there, so each app folder's `gitops/sandbox/` patches the app's
   Kustomization to `wait: false` with `healthChecks` of its Deployments and StatefulSets and the ExternalSecrets
   of the Secrets a pod needs. The Kustomization is ready when the workloads are; a missing required secret still
   fails it (the pod never starts, or its ExternalSecret is not ready).

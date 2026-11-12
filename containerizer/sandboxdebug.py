@@ -249,7 +249,7 @@ def workload_patch(doc: dict, tools: str, start: str = "") -> str | None:
 
 def _component_docs(cdir: Path) -> tuple[list[dict], str | None]:
     """(the component's objects, the name of its HelmRelease or None when it is plain manifests)."""
-    from .helmchart import HELMRELEASE, MANIFESTS, component_docs
+    from .helmchart import HELMRELEASE, component_docs
     hr = cdir / HELMRELEASE
     if hr.is_file():
         try:
@@ -257,10 +257,7 @@ def _component_docs(cdir: Path) -> tuple[list[dict], str | None]:
         except yaml.YAMLError:
             raw = []
         return component_docs(cdir), ((raw[0].get("metadata") or {}).get("name") if raw else None)
-    try:
-        return [d for d in yaml.safe_load_all((cdir / MANIFESTS).read_text()) if isinstance(d, dict)], None
-    except (OSError, yaml.YAMLError):
-        return [], None
+    return component_docs(cdir), None          # k8s.yaml, or a file per kind
 
 
 def workload_patches(docs: list[dict], dockerfile: str | None, tools: str) -> list[dict]:

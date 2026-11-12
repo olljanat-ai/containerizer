@@ -10,6 +10,17 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.42.0 (2026-11-12)
+
+- **Manifests mode: one file per kind.** A component's objects are no longer one long `k8s.yaml` but
+  `deployment.yaml`, `service.yaml`, `networkpolicy.yaml`, `externalsecret.yaml`, `serviceaccount.yaml`,
+  `settings.yaml` (the settings ConfigMap) and so on, with a `kustomization.yaml` in the component's folder listing
+  them; the app's `kustomization.yaml` lists the folder. What Flux applies is the same. Folders written before keep
+  their `k8s.yaml` until the next scan; applications moved from another platform keep it too.
+- **The sandbox's patches are in each app folder.** `<app>/gitops/sandbox/kustomization.yaml` holds the app's Flux
+  objects (`../flux`) with what the sandbox changes about them; `clusters/sandbox/flux/apps/kustomization.yaml` only
+  lists those folders.
+
 ## 0.41.4 (2026-11-12)
 
 - **OpenBao's placeholders start with the app's own development values.** For a secret setting that the app's
