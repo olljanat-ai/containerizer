@@ -1014,7 +1014,8 @@ def test_a_job_takes_an_llm_request_only_while_its_call_is_answered(monkeypatch,
     pool = ThreadPoolExecutor(4)
     try:
         started = r.fill(pool)
-        assert [x["JobId"] for x in r.active.values()] == [1, 2, 3]       # 3 jobs at once: 2 requests + 1
+        # 3 jobs at once: 2 requests + 1 (what fill started: the review may be answered, out of r.active, by now)
+        assert len(started) == 3
         assert started[2].result(10) == "answered"                       # the review asked while the others build
         assert sorted(building) == [1, 2] and not started[0].done() and not started[1].done()
         assert not any(r.slots.in_progress().values())                    # nobody holds an LLM while building
