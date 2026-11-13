@@ -690,7 +690,7 @@ REPO_SHOW = {"all": ("All", "r.RemovedAt IS NULL"), "enabled": ("Enabled", "r.Re
              "disabled": ("Disabled", "r.RemovedAt IS NULL AND r.Active = 0"),
              "new": ("New", f"r.RemovedAt IS NULL AND r.FirstSeenAt > DATEADD(day, -{NEW_DAYS}, SYSUTCDATETIME())"),
              "failed": ("Failed", "r.RemovedAt IS NULL AND r.LastStatus = N'error'"),
-             "inactive": ("No commit for a year", "r.RemovedAt IS NULL AND r.LatestCommitAt < DATEADD(year, -1, SYSUTCDATETIME())"),
+             "active": ("Commit in 6 months", "r.RemovedAt IS NULL AND r.LatestCommitAt >= DATEADD(month, -6, SYSUTCDATETIME())"),
              "removed": ("Removed", "r.RemovedAt IS NOT NULL")}
 
 
@@ -701,7 +701,9 @@ def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
     scan_id = int(scan) if re.fullmatch(r"\d{1,9}", scan) else None
     text = " ".join(_q(q, "q").split())
     project = _q(q, "project")
-    order = "r.LatestCommitAt, s.Name, r.ProjectName, r.Name" if _q(q, "sort") == "commit" else "s.Name, r.ProjectName, r.Name"
+    # latest commit first; unknown ones last
+    order = ("CASE WHEN r.LatestCommitAt IS NULL THEN 1 ELSE 0 END, r.LatestCommitAt DESC, s.Name, r.ProjectName, r.Name"
+             if _q(q, "sort") == "commit" else "s.Name, r.ProjectName, r.Name")
     cur = conn.cursor(as_dict=True)
     cur.execute("SELECT ScanId, Name FROM cz.OrgScan ORDER BY Name")
     scans = cur.fetchall()
@@ -773,7 +775,7 @@ def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
     sort_link = (f"<a class='chip' href='/admin/repositories?{e(urlencode({**sort, 'show': show}))}'>Sort by name</a>"
                  if base.get("sort") else
                  f"<a class='chip' href='/admin/repositories?{e(urlencode({**base, 'show': show, 'sort': 'commit'}))}'>"
-                 f"Oldest commit first</a>")
+                 f"Latest commit first</a>")
     scoped = f" in project <b>{e(project)}</b> (<a href='/admin/repositories?{e(urlencode({'show': show}))}'>all</a>)" \
         if project else ""
     body = (f"<p class='muted'>Every repository the organization scans have found{scoped}. A scan skips repositories that "
@@ -1007,6 +1009,9 @@ def save_repo(conn, ident: int, form: dict) -> Response:
 
 PROJECT_SHOW = {"all": ("All", "p.RemovedAt IS NULL"), "enabled": ("Enabled", "p.RemovedAt IS NULL AND p.AdminState IS NULL"),
                 "disabled": ("Disabled", "p.RemovedAt IS NULL AND p.AdminState = N'disabled'"),
+                "active": ("Commit in 6 months", "p.RemovedAt IS NULL AND EXISTS (SELECT 1 FROM cz.vOrgRepository r "
+                           "WHERE r.ScanId = p.ScanId AND r.ProjectName = p.Name AND r.RemovedAt IS NULL "
+                           "AND r.LatestCommitAt >= DATEADD(month, -6, SYSUTCDATETIME()))"),
                 "removed": ("Removed", "p.RemovedAt IS NOT NULL")}
 PROJECT_STATS = """(SELECT COUNT(*) FROM cz.OrgRepository r WHERE r.ScanId = p.ScanId AND r.ProjectName = p.Name
                      AND r.RemovedAt IS NULL) AS Repos,
@@ -1030,7 +1035,8 @@ def list_projects(adm, conn, s, a, q: dict, flash: str) -> Response:
     show = show if show in PROJECT_SHOW else "all"
     scan = _q(q, "scan")
     scan_id = int(scan) if re.fullmatch(r"\d{1,9}", scan) else None
-    order = "LatestCommitAt, s.Name, p.Name" if _q(q, "sort") == "commit" else "s.Name, p.Name"
+    order = ("CASE WHEN LatestCommitAt IS NULL THEN 1 ELSE 0 END, LatestCommitAt DESC, s.Name, p.Name"
+             if _q(q, "sort") == "commit" else "s.Name, p.Name")
     cur = conn.cursor(as_dict=True)
     cur.execute("SELECT ScanId, Name FROM cz.OrgScan ORDER BY Name")
     scans = cur.fetchall()
@@ -1051,7 +1057,7 @@ def list_projects(adm, conn, s, a, q: dict, flash: str) -> Response:
     chips += (f" <a class='chip' href='/admin/repositories/projects?{e(urlencode({**nosort, 'show': show}))}'>Sort by name</a>"
               if base.get("sort") else
               f" <a class='chip' href='/admin/repositories/projects?{e(urlencode({**base, 'show': show, 'sort': 'commit'}))}'>"
-              f"Oldest commit first</a>")
+              f"Latest commit first</a>")
     scan_opts = "<option value=''>All scans</option>" + "".join(
         f"<option value='{int(x['ScanId'])}'{' selected' if x['ScanId'] == scan_id else ''}>{e(x['Name'])}</option>"
         for x in scans)
@@ -1186,8 +1192,21 @@ def _scope_text(scope) -> str:
 
 def scan_now(conn, project_ids: list[int], repo_ids: list[int], back: str) -> Response:
     """Queue a full scan, outside the schedule, of only the chosen projects and repositories (one run per
-    organization scan). Disabled ones stay disabled: the run leaves them out as any full scan does."""
+    organization scan). A chosen one an administrator disabled (or that started disabled as a new repository) is
+    enabled first, with a note: asking to scan it says it is wanted. Automatic skips (a Dockerfile, no application
+    code, ...) stay; Enable overrides those."""
     cur = conn.cursor(as_dict=True)
+    enabled = 0
+    for ids, sql in ((project_ids, "UPDATE cz.OrgProject SET AdminState = NULL, AdminNote = N'enabled by Scan now' "
+                                   "WHERE AdminState = N'disabled' AND RemovedAt IS NULL AND ProjectId IN ({})"),
+                     (repo_ids, "UPDATE cz.OrgRepository SET AdminState = N'enabled', AdminNote = N'enabled by Scan now' "
+                                "WHERE AdminState = N'disabled' AND RemovedAt IS NULL AND RepositoryId IN ({})")):
+        for i in range(0, len(ids), 500):
+            part = ids[i:i + 500]
+            cur.execute(sql.format(", ".join(["%s"] * len(part))), tuple(part))
+            enabled += cur.rowcount
+    if enabled:
+        conn.commit()
     scopes: dict[int, dict] = {}
     for ids, sql, key in ((project_ids, "SELECT ScanId, Name FROM cz.OrgProject WHERE RemovedAt IS NULL AND ProjectId IN ({})",
                            "projects"),
@@ -1211,7 +1230,8 @@ def scan_now(conn, project_ids: list[int], repo_ids: list[int], back: str) -> Re
             queued.append(f"#{rid} ({_scope_text(json.dumps(scope))})")
         else:
             busy += 1
-    msg = (f"Scan {', '.join(queued)} queued; the worker starts it within a minute." if queued else "")
+    msg = (f"{enabled} disabled one{'' if enabled == 1 else 's'} enabled. " if enabled else "") + \
+        (f"Scan {', '.join(queued)} queued; the worker starts it within a minute." if queued else "")
     if busy:
         msg += (" " if msg else "") + ("Not queued: the scan is paused, or a run is already queued or running."
                                        if busy == 1 else f"{busy} scans not queued: paused, or already running.")
