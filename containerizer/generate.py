@@ -494,6 +494,13 @@ def files_plan(c: Component, plan: dict) -> None:
     path = (c.facts or {}).get("files_mount")
     if path:
         plan["files_mount"] = path
+        named = (c.facts or {}).get("cert_path_settings") or {}
+        for key, leaf in sorted(named.items()):
+            plan["env"][key.replace(":", "__")] = f"{path.rstrip('/')}/{leaf}"
+        if named:
+            add_reason(plan, "files-from-secret-store-settings",
+                       "Settings that name a key or certificate file (" + ", ".join(sorted(named)) + ") point at it in "
+                       f"{path}: add it there under the same file name.", [CONFIG_DOCS])
         add_reason(plan, "files-from-secret-store",
                    f"An administrator set this repository's files from the secret store: each key of the component's "
                    f"files ({path}) is a file there, read-only. Point the app's setting at it "

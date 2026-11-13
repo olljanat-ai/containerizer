@@ -614,6 +614,10 @@ class Worker:
             self.rescan_left_out()
         except Exception as ex:  # noqa: BLE001 - next time
             self.log(f"rescan of components left out for vulnerabilities: {type(ex).__name__}: {ex}"[:400])
+        try:
+            self.recheck_sandbox()
+        except Exception as ex:  # noqa: BLE001 - next time
+            self.log(f"sandbox check again: {type(ex).__name__}: {ex}"[:400])
         conn = self.connect()
         try:
             self.metrics.refresh(conn)
@@ -632,6 +636,25 @@ class Worker:
             return False
         self.execute(run)
         return True
+
+    def recheck_sandbox(self, now: float | None = None) -> int:
+        """Applications whose latest sandbox check was not healthy, read again from the cluster every
+        sandbox.RECHECK_EVERY seconds (sandbox.recheck): one that recovered after the scan is healthy on the results
+        pages without another scan. Only with the scan's sandbox check on (sandbox_check_options)."""
+        from . import sandbox
+        now = _time.monotonic() if now is None else now
+        if now - getattr(self, "_rechecked", -sandbox.RECHECK_EVERY) < sandbox.RECHECK_EVERY:
+            return 0
+        self._rechecked = now
+        opts = sandbox_check_options()
+        if not opts:
+            return 0
+        kube = sandbox.Kube(sandbox.KubeOptions(kubeconfig=opts["kubeconfig"], context=opts.get("kube_context")))
+        conn = self.connect()
+        try:
+            return sandbox.recheck(conn, kube, log=self.log)
+        finally:
+            conn.close()
 
     def rescan_left_out(self, now: float | None = None) -> int:
         """Repositories whose latest scan left a component out of the sandbox at the security gate: a full scan of only

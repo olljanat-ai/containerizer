@@ -934,3 +934,92 @@ def verify_rbac(namespaces: list[str]) -> list[dict]:
              "subjects": subject},
         ]
     return docs
+
+
+# --------------------------------------------------------------------------- checked again after the scan
+
+RECHECK_EVERY = 600         # seconds between the worker's looks at applications whose latest check was not healthy
+RECHECK_DAYS = 14           # ... whose latest check is at most this old (later: the next scan checks them)
+RECHECK_LIMIT = 10          # applications per look
+_COPY = ("ApplicationId", "ComponentId", "GitOps", "Namespace", "Workloads", "ImageRef", "Revision", "Url")
+
+
+def _workloads(text: str | None) -> list[tuple[str, str]]:
+    out = []
+    for w in (text or "").split(","):
+        kind, _, name = w.strip().partition("/")
+        if kind in OBSERVE and name:
+            out.append((kind, name))
+    return out
+
+
+def recheck(conn, kube: Kube, log=print, url_checker=None, limit: int = RECHECK_LIMIT) -> int:
+    """The latest check of an application said a component was failing or not ready (the scan's check waits only so
+    long; an app may recover later, once someone fills its secret values or fixes a setting): its components are read
+    again from the cluster, once, without waiting, and when one is healthy now a new check of all of the application's
+    components is recorded (vSandboxLatest shows the rows of an application's latest check). A component still failing
+    records nothing, so the results keep the scan's diagnosis. Returns the applications whose state changed."""
+    cur = conn.cursor(as_dict=True)
+    cur.execute(
+        "SELECT x.* FROM (SELECT s.*, MAX(s.CheckedAt) OVER (PARTITION BY s.ApplicationId) AS LastCheck, "
+        "ROW_NUMBER() OVER (PARTITION BY s.ApplicationId, s.ComponentId, s.CheckedAt ORDER BY s.CheckId DESC) AS n "
+        "FROM cz.SandboxCheck s) x "
+        "WHERE x.CheckedAt = x.LastCheck AND x.n = 1 AND x.LastCheck > DATEADD(day, -%s, SYSUTCDATETIME()) "
+        "AND x.ApplicationId IN (SELECT y.ApplicationId FROM cz.SandboxCheck y "
+        "  WHERE y.CheckedAt = (SELECT MAX(z.CheckedAt) FROM cz.SandboxCheck z WHERE z.ApplicationId = y.ApplicationId) "
+        "  AND y.Status IN (N'failing', N'pending')) "
+        "ORDER BY x.LastCheck DESC, x.ApplicationId, x.CheckId", (RECHECK_DAYS,))
+    apps: dict[int, list[dict]] = {}
+    for r in cur.fetchall():
+        apps.setdefault(r["ApplicationId"], []).append(r)
+    if not apps:
+        return 0
+    ok, why = cluster_access(kube)
+    if not ok:
+        return 0
+    url_checker = url_checker or check_url
+    from .sandbox_https import load_settings
+    st = load_settings() or {}
+    edge, ca = st.get("edge") or "", st.get("cert_file") or ""
+    n = 0
+    for app_id, rows in list(apps.items())[:limit]:
+        new, better = [], False
+        for r in rows:
+            row = {k: r.get(k) for k in _COPY}
+            row.update({k: r.get(k) for k in ("Status", "Reason", "Ready", "Restarts", "RuleId", "Outcome", "Diagnosis",
+                                               "Events", "UrlCheck")})
+            wl = _workloads(r.get("Workloads"))
+            if r.get("Status") in (FAILING, PENDING) and wl:
+                try:
+                    ob = observe_component(kube, r["Namespace"], wl)
+                except KubeError:
+                    ob = None
+                if ob is not None and ob.status == HEALTHY:
+                    uc = url_checker(r["Url"], "/", edge, ca) if r.get("Url") else None
+                    if uc is None or uc.ok:
+                        row.update({"Status": HEALTHY, "Ready": ob.ready or None, "Restarts": ob.restarts,
+                                    "Reason": f"{ob.reason or (ob.ready or '') + ' ready'}; healthy when checked again "
+                                              "after the scan", "RuleId": None, "Outcome": None, "Diagnosis": None,
+                                    "Events": None, "UrlCheck": uc.detail if uc else r.get("UrlCheck")})
+                        better = True
+            new.append(row)
+        if not better:
+            continue
+        try:
+            for row in new:
+                cur.execute("INSERT cz.SandboxCheck (ApplicationId, ComponentId, CheckedAt, Status, Reason, GitOps, "
+                            "Namespace, Workloads, ImageRef, Revision, Ready, Restarts, RuleId, Outcome, Diagnosis, Events, "
+                            "Url, UrlCheck) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                            (row["ApplicationId"], row["ComponentId"], datetime.now(timezone.utc).replace(
+                                tzinfo=None, microsecond=0), row["Status"], (row["Reason"] or "")[:2000] or None,
+                             row["GitOps"], row["Namespace"], row["Workloads"], row["ImageRef"], row["Revision"],
+                             row["Ready"], row["Restarts"], row["RuleId"], row["Outcome"], row["Diagnosis"],
+                             row["Events"], row["Url"], row["UrlCheck"]))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        n += 1
+        log(f"sandbox: {rows[0]['Namespace']}: " + ", ".join(
+            f"{(r.get('Workloads') or '?')} {r['Status']}" for r in new))
+    return n

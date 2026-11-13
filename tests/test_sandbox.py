@@ -784,3 +784,54 @@ def test_k3s_config_warnings_are_not_the_error(tmp_path):
     with pytest.raises(KubeError) as e:
         Kube(KubeOptions(), kubectl=str(fake)).get("deployments.apps", "shop", "web")
     assert str(e.value) == 'Error from server (NotFound): deployments.apps "web" not found' and e.value.kind == "not-found"
+
+
+class RecheckConn:
+    """cz.SandboxCheck rows of the latest check (the recheck's SELECT), and what it inserts."""
+
+    def __init__(self, rows):
+        self.rows, self.inserted, self.commits = rows, [], 0
+
+    def cursor(self, as_dict=False):
+        conn = self
+
+        class Cur:
+            def execute(self, sql, args=()):
+                if sql.startswith("INSERT"):
+                    conn.inserted.append(args)
+
+            def fetchall(self):
+                return conn.rows
+        return Cur()
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        pass
+
+
+def test_an_app_that_recovered_after_the_scan_is_checked_again(monkeypatch):
+    """The scan's check found a component failing; it recovered later (its secret values filled in): the worker reads
+    it again and records a new check of all the application's components, without another scan."""
+    monkeypatch.setattr("containerizer.sandbox_https.load_settings", lambda: {})
+    rows = [{"ApplicationId": 7, "ComponentId": 1, "Status": FAILING, "Reason": "CrashLoopBackOff", "GitOps": "flux",
+             "Namespace": "shop-web", "Workloads": "Deployment/web", "ImageRef": "img", "Revision": SHA,
+             "Url": None, "UrlCheck": None, "Ready": "0/2", "Restarts": 5, "RuleId": "r", "Outcome": "code",
+             "Diagnosis": "d", "Events": None},
+            {"ApplicationId": 7, "ComponentId": 2, "Status": HEALTHY, "Reason": "1/1 ready", "GitOps": "flux",
+             "Namespace": "shop-web", "Workloads": "Deployment/worker", "ImageRef": "img2", "Revision": SHA,
+             "Url": None, "UrlCheck": None, "Ready": "1/1", "Restarts": 0, "RuleId": None, "Outcome": None,
+             "Diagnosis": None, "Events": None}]
+    kube = FakeKube({("deployments.apps", "shop-web", "web"): deployment("web"),
+                     ("pods", "shop-web", SEL): {"items": [pod("web-1"), pod("web-2")]}})
+    conn = RecheckConn(rows)
+    assert sb.recheck(conn, kube, log=lambda m: None) == 1
+    assert [(r[1], r[3]) for r in conn.inserted] == [(1, HEALTHY), (2, HEALTHY)]
+    assert len({r[2] for r in conn.inserted}) == 1                 # one check: the rows share CheckedAt
+    assert conn.inserted[0][12:15] == (None, None, None)           # the old diagnosis is gone
+    # still failing: nothing recorded, the scan's diagnosis stays
+    kube = FakeKube({("deployments.apps", "shop-web", "web"): deployment("web", ready=0),
+                     ("pods", "shop-web", SEL): {"items": [pod("web-1", ready=False, waiting="CrashLoopBackOff")]}})
+    conn = RecheckConn(rows)
+    assert sb.recheck(conn, kube, log=lambda m: None) == 0 and not conn.inserted
