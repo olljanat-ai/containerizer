@@ -28,7 +28,8 @@ A scan runs in two phases, so time is not spent on repositories nobody uses any 
      projects page.
    - **Admin → Repositories → Projects** lists the projects (Azure DevOps projects, GitLab subgroups)
      with their number of repositories and latest commit. Disabling a project disables all its
-     repositories, including ones added to it later. GitHub organizations have no project level:
+     repositories, including ones added to it later, and moves them on **Admin → Repositories** to **Hidden**:
+     no other view, not even **All**, lists them (the project's page links to them too). GitHub organizations have no project level:
      disable the repositories, or pause the scan.
    ![Repositories after discovery: a disabled project and a disabled repository](images/admin-repositories-discovered.png#only-light)
    ![Repositories after discovery: a disabled project and a disabled repository](images/admin-repositories-discovered-dark.png#only-dark)
