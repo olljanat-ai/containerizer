@@ -464,8 +464,10 @@ rules:
       business's local zone. DateTime.Now / Today, local schedules ("run at 02:00") and dates
       printed on documents shift by the UTC offset.
     fix: >-
-      Set TZ (e.g. TZ=Europe/Helsinki) in the Deployment - the chiseled-extra images include
-      tzdata - or convert explicitly with TimeZoneInfo.FindSystemTimeZoneById.
+      Set the organization's time zone (site setting `timezone`: rules/site.yaml, CONTAINERIZER_TIMEZONE,
+      or Admin -> Source control & LLM -> Site on the appliance). Every component with this finding
+      then gets TZ=<zone> (rule plan-local-timezone; the chiseled-extra images include tzdata) and the
+      code stays as it is.
     refs:
       - https://github.com/dotnet/dotnet-docker/blob/main/documentation/image-variants.md
       - https://devblogs.microsoft.com/dotnet/date-time-and-time-zone-enhancements-in-net-6/
