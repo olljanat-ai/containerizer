@@ -80,6 +80,7 @@ def kube(monkeypatch):
 
     def run(args, stdin=None, ok_missing=False):
         if args[:2] == ["-n", "containerizer-secrets"] and args[2] == "get":
+            assert "--show-managed-fields" in args       # kubectl leaves them out otherwise: every key looks not ours
             return json.dumps(state["secret"]) if state["secret"] else None
         if args[0] == "apply":
             assert f"--field-manager={ob.MANAGER}" in args
