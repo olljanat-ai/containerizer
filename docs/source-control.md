@@ -70,9 +70,20 @@ replace or remove it here.
 
 Notes:
 
-- GitHub organizations can require approval of fine-grained tokens, or forbid them
-  ([token policy](https://docs.github.com/en/organizations/managing-programmatic-access-to-your-organization/setting-a-personal-access-token-policy-for-your-organization)).
-  A classic token needs the `repo` scope for private repositories, which can also write: avoid it.
+- GitHub: no owner permissions needed. The scan lists and reads every repository the token's user can read, nothing
+  more. What can need an owner is the organization's
+  [token policy](https://docs.github.com/en/organizations/managing-programmatic-access-to-your-organization/setting-a-personal-access-token-policy-for-your-organization):
+  it can require approval of fine-grained tokens (until then they reach public repositories only) or forbid them.
+  Without an owner's approval:
+
+  | Token | Reaches | |
+  | --- | --- | --- |
+  | Fine-grained, resource owner the organization (above) | every repository you can read | when the policy lets members use them |
+  | Classic, scope `repo` (with SAML SSO: **Configure SSO → Authorize** for the organization) | every repository you can read, private and internal too | can also write: the page warns; Containerizer only reads |
+  | Classic, no scope at all | public repositories only | read-only |
+
+  Leave **Server** empty for github.com (`https://github.com` works too: it means `https://api.github.com`). For
+  GitHub Enterprise Server, give its API: `https://ghe.example.com/api/v3`.
 - GitLab: the organization is the group path; subgroups are included (`acme` covers `acme/platform/*`),
   or register a subgroup alone (`acme/platform`).
 - Azure DevOps is retiring PATs for *All accessible organizations*: make one per organization. Use a

@@ -3,7 +3,8 @@ tool) in `metadata.json` at its root:
 
     {"applicationId": "3f2b8c1e-5d6a-4b7c-9e0f-1a2b3c4d5e6f"}
 
-The organization scan reads it after the clone (read_metadata) into cz.OrgRepository.ExternalAppId. Administrators keep
+The organization scan reads it after the clone (read_metadata), and discovery through the provider's API
+(Provider.file_text), into cz.OrgRepository.ExternalAppId. Administrators keep
 each application's ID in cz.Application.ExternalId (Admin -> Applications -> the application). Admin -> Applications
 -> External IDs lists the IDs repositories declare that no application has yet, and proposes linking each to the
 repository's application, or adding an application for a repository no scan assessed.
@@ -38,8 +39,16 @@ def read_metadata(src: Path) -> str:
     try:
         if not f.is_file() or f.is_symlink() or f.stat().st_size > MAX_BYTES:
             return ""
-        doc = json.loads(f.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
+        return parse_metadata(f.read_text(encoding="utf-8-sig"))
+    except OSError:
+        return ""
+
+
+def parse_metadata(text: str | None) -> str:
+    """The applicationId of a metadata.json's text (read from the clone, or through the provider's API by discovery)."""
+    try:
+        doc = json.loads((text or "").lstrip("\ufeff"))
+    except ValueError:
         return ""
     if not isinstance(doc, dict):
         return ""

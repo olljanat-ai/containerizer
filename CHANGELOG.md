@@ -10,6 +10,18 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.45.5 (2026-11-13)
+
+- **Admin → Repositories and Projects: Commit in 6 months and Latest commit first**, instead of No commit for a year and
+  Oldest commit first: the repositories someone works on, to enable, are on top (unknown ones last).
+- **GitHub: `https://github.com` as the Server works.** It listed nothing (`GET https://github.com/users/<org>/repos:
+  HTTP 404`): it now means `https://api.github.com`.
+- Docs (source-control.md): scanning a GitHub organization without owner permissions, which tokens reach what.
+- **Scan now enables the disabled projects and repositories it is asked to scan** (note *enabled by Scan now*), so a new
+  repository disabled by default is scanned instead of left out.
+- **Discovery reads `metadata.json`** through the provider's API (GitHub, GitLab, Azure DevOps), disabled repositories
+  too: Admin → Applications → External IDs lists the IDs before any full scan.
+
 ## 0.45.4 (2026-11-13)
 
 - **A discovery run says why a repository's Latest commit stays empty.** Discovery asks the provider's API for each

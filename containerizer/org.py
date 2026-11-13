@@ -2193,6 +2193,7 @@ class Discovered:
     last_commit: datetime | None = None
     skip: tuple[str, str] | None = None
     error: str = ""
+    external_app_id: str | None = None      # metadata.json's applicationId (appmeta.py): "" none; None not read
 
 
 def discover_org(o: OrgOptions, log=print, workers: int = 8) -> list[Discovered]:
@@ -2230,15 +2231,32 @@ def discover_org(o: OrgOptions, log=print, workers: int = 8) -> list[Discovered]
         except SourceError as e:            # keep going: the API's activity date is the next best thing
             return r.last_activity, str(e)[:300]
 
+    def metadata(r: SourceRepo) -> str | None:
+        """metadata.json's applicationId through the API (appmeta.py), so the external IDs are known before a full scan."""
+        if r.empty:
+            return ""
+        from .appmeta import FILE, parse_metadata
+        read = getattr(prov, "file_text", None)
+        if read is None:
+            return None
+        try:
+            text = read(r, FILE)
+        except (NotImplementedError, SourceError):
+            return None                     # not read: the full scan reads it from the clone
+        return parse_metadata(text) if text else ""
+
+    def look(r: SourceRepo):
+        return latest(r), metadata(r)
+
     out: list[Discovered] = []
     errors = 0
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        for i, (r, (when, err)) in enumerate(zip(listed, pool.map(latest, listed)), 1):
+        for i, (r, ((when, err), ext)) in enumerate(zip(listed, pool.map(look, listed)), 1):
             if hooks and hasattr(hooks, "should_stop") and hooks.should_stop():
                 log(f"stopped: {len(out)} of {len(listed)} repositories discovered")
                 pool.shutdown(wait=False, cancel_futures=True)
                 break
-            d = Discovered(r, when, None, err)
+            d = Discovered(r, when, None, err, ext)
             if err:
                 errors += 1
                 if errors <= 5:             # why "Latest commit" stays empty (the token, the API): a few say it

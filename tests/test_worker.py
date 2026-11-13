@@ -765,10 +765,13 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         assert set(rows) == set(keys)
         assert "2026-10-20 08:00 UTC" in rows["Billing/api"] and "discovered: not scanned yet" in rows["Billing/api"]
         assert "2019-05-04 03:02 UTC" in rows["Legacy/old-app"] and "Not updated recently" in rows["Legacy/old-app"]
-        body = b.follow(f"/admin/repositories?scan={scan_id}&show=inactive")[2]
-        assert "old-app" in body and ">api<" not in body
+        body = b.follow(f"/admin/repositories?scan={scan_id}&show=active")[2]
+        assert "Commit in 6 months" in body and "old-app" not in body
         body = b.follow(f"/admin/repositories?scan={scan_id}&sort=commit")[2]
-        assert body.index("old-app") < body.index(">web<") < body.index(">api<")
+        assert "Latest commit first" not in body and "Sort by name" in body
+        assert body.index(">api<") < body.index(">web<") < body.index("old-app")
+        body = b.follow(f"/admin/repositories/projects?scan={scan_id}&show=active&sort=commit")[2]
+        assert "Legacy" not in body
         body = b.follow(f"/admin/repositories/projects?scan={scan_id}")[2]
         projects = dict((n, int(i)) for i, n in re.findall(r"name='project' value='(\d+)' aria-label='Select ([^']+)'", body))
         assert set(projects) == {"Billing", "Legacy"} and "2026-10-20 08:00 UTC" in body
@@ -876,15 +879,16 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         api_id = int(re.search(r"/admin/repositories/(\d+)", rows["Billing/api"])[1])
         fetched.clear()
         s, _, body = b.follow("/admin/repositories/bulk", {"csrf": csrf, "repo": [str(api_id), str(web_id)], "action": "scan"})
-        assert "2 repositories) queued" in body, body
+        assert "1 disabled one enabled" in body and "2 repositories) queued" in body, body
         assert w.tick() is True
-        assert fetched == ["Billing/api"], logs                          # web stays disabled
+        assert sorted(fetched) == ["Billing/api", "Billing/web"], logs   # web: enabled by Scan now
+        assert "enabled by Scan now" in b.follow(f"/admin/repositories/{web_id}")[2]
         b.follow(f"/admin/repositories/projects/{projects['Legacy']}", {"csrf": csrf, "Setting": "disabled", "Note": ""})
 
         # enabling the project again brings its results back; only administrators may change projects
         b.follow(f"/admin/repositories/projects/{projects['Legacy']}", {"csrf": csrf, "Setting": "enabled", "Note": ""})
         apps, _ = visible()
-        assert set(apps) == {"api", "old-app"}
+        assert set(apps) == {"api", "web", "old-app"}                    # web: enabled by Scan now
 
         # applications per folder: set on the repository's page, audited, used by the next scan of it
         s, _, body = b.follow(f"/admin/repositories/{api_id}", {"csrf": csrf, "Setting": "auto", "Note": "",

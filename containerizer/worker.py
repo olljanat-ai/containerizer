@@ -289,6 +289,10 @@ class SqlRepoStore:
                     "WHERE ScanId = %s AND ProjectName = %s AND Name = %s",
                     (naive(d.last_commit), skip[0], skip[0], *META_SKIPS, skip[0], _cut(skip[1], 1000), *META_SKIPS,
                      self.scan_id, _cut(d.repo.project, 200), _cut(d.repo.name, 200)))
+        if getattr(d, "external_app_id", None) is not None:      # metadata.json through the API (appmeta.py)
+            cur.execute("UPDATE cz.OrgRepository SET ExternalAppId = %s, ExternalAppIdAt = SYSUTCDATETIME() "
+                        "WHERE ScanId = %s AND ProjectName = %s AND Name = %s",
+                        (d.external_app_id or None, self.scan_id, _cut(d.repo.project, 200), _cut(d.repo.name, 200)))
         self.conn.commit()
 
     def record(self, r, res) -> None:

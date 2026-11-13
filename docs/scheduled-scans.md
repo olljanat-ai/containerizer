@@ -22,15 +22,16 @@ A scan runs in two phases, so time is not spent on repositories nobody uses any 
    (archived, empty, fork, not updated recently, left out by the filter). Every run also reads who committed where in the last six
    months, for [Developers and ownership](developers.md).
 2. An administrator or operator reviews the result and **disables** what is deprecated:
-   - **Admin → Repositories** shows each repository's latest commit. **No commit for a year** and
-     **Oldest commit first** bring the old ones to the top; select them (the box in the header selects every
-     repository listed) and **Disable**, with a note.
+   - **Admin → Repositories** shows each repository's latest commit. **Commit in 6 months** lists the ones
+     someone works on and **Latest commit first** puts them on top (unknown ones last); select them (the box in the
+     header selects every repository listed) and **Enable** or **Disable**, with a note. The same two are on the
+     projects page.
    - **Admin → Repositories → Projects** lists the projects (Azure DevOps projects, GitLab subgroups)
      with their number of repositories and latest commit. Disabling a project disables all its
      repositories, including ones added to it later. GitHub organizations have no project level:
      disable the repositories, or pause the scan.
-   ![Repositories after discovery, oldest commit first: a disabled project and a disabled repository](images/admin-repositories-discovered.png#only-light)
-   ![Repositories after discovery, oldest commit first: a disabled project and a disabled repository](images/admin-repositories-discovered-dark.png#only-dark)
+   ![Repositories after discovery: a disabled project and a disabled repository](images/admin-repositories-discovered.png#only-light)
+   ![Repositories after discovery: a disabled project and a disabled repository](images/admin-repositories-discovered-dark.png#only-dark)
 
    ![Projects of an Azure DevOps organization with their latest commits, one disabled](images/admin-projects.png#only-light)
    ![Projects of an Azure DevOps organization with their latest commits, one disabled](images/admin-projects-dark.png#only-dark)
@@ -150,8 +151,10 @@ change is in the application's change history.
 
 **Scan now**, on a project's or repository's page or for the ones selected in the lists, runs a full
 scan of only those, outside the schedule, for example after a fix was pushed. The other repositories
-keep their results from the last full run. Disabled ones stay disabled; a run of the scan that is
-already queued or running has to finish first.
+keep their results from the last full run. A selected one that is disabled (by an administrator, or as a new
+repository disabled by default) is enabled first, with the note *enabled by Scan now*; automatic skips (a Dockerfile,
+no application code) stay until you **Enable** it. A run of the scan that is already queued or running has to finish
+first.
 
 Discovery can be run again at any time, for example before a scheduled run, to see the new projects and
 repositories first. Scheduled runs are always full scans; new repositories found by them are processed
@@ -168,8 +171,9 @@ A repository can name the application it belongs to in another system (a CMDB, a
 }
 ```
 
-The full scan reads it after the clone (a GUID's braces are dropped; letters, digits and `. _ : -`, at most 100
-characters) and keeps it with the repository; a repository that no longer has the file loses it at its next scan.
+Discovery reads it through the provider's API, disabled repositories too, without a clone; the full scan reads it
+again after the clone (a GUID's braces are dropped; letters, digits and `. _ : -`, at most 100 characters). It is kept
+with the repository; a repository that no longer has the file loses it at its next discovery or scan.
 Each application has an **External ID** (Admin → Applications → the application, administrators).
 **Admin → Applications → External IDs** lists the IDs repositories declare that no application has yet, with a proposal
 for each: **Link** it to the repository's application (one per application of a split repository), or **Add

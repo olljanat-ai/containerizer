@@ -725,6 +725,12 @@ def test_discover_org_lists_without_cloning(monkeypatch, tmp_path):
             if r.name == "broken":
                 raise orgsource.SourceError("HTTP 500")
             return dates.get(r.key)
+
+        def file_text(self, r, path):
+            assert path == "metadata.json"
+            if r.name == "broken":
+                raise orgsource.SourceError("HTTP 500")
+            return '\ufeff{"applicationId": "{3F2B8C1E-5D6A}"}' if r.name == "fresh" else None
     prov = Prov(repos)
     monkeypatch.setattr(orgmod, "provider", lambda *a, **k: prov)
     monkeypatch.setattr(orgmod, "update_clone", lambda *a, **k: pytest.fail("discovery must not clone"))
@@ -752,6 +758,9 @@ def test_discover_org_lists_without_cloning(monkeypatch, tmp_path):
     assert found["A/gone"].skip[0] == "skipped-archived" and found["A/blank"].skip[0] == "skipped-empty"
     assert found["B/fork"].skip[0] == "skipped-fork" and found["B/sandbox"].skip[0] == "skipped-filter"
     assert found["A/broken"].error and found["A/broken"].skip is None
+    # metadata.json through the API: the external ID before any clone; none; not read (the full scan reads it)
+    assert found["A/fresh"].external_app_id == "3F2B8C1E-5D6A" and found["A/old"].external_app_id == ""
+    assert found["A/broken"].external_app_id is None and found["A/blank"].external_app_id == ""
     assert "C/off" in prov.asked and "A/blank" not in prov.asked     # disabled: its latest commit too; empty: none
 
     class Stop:
@@ -1006,3 +1015,47 @@ def test_deploy_app_writes_the_pushed_digest_into_the_kustomization(tmp_path, mo
         assert f"image: reg.example/sandbox/shop-web/demo-web:1.2.3@{digest}" in p.stdout
     hardening = (out.root / "acme/_/shop/HARDENING.md").read_text()
     assert "| Images are deployed by digest | applied |" in hardening and "pinned by Flux" in hardening
+
+
+def test_github_server_as_people_enter_it():
+    """https://github.com in the Server field listed nothing (GET https://github.com/orgs/...: 404): it means the
+    API, https://api.github.com."""
+    from containerizer.orgsource import github_api
+    assert provider("github", "acme", "t", "https://github.com").api == "https://api.github.com"
+    assert provider("github", "acme", "t", "https://github.com/").api == "https://api.github.com"
+    assert provider("github", "acme", "t", None).api == "https://api.github.com"
+    assert github_api("https://api.github.com") == "https://api.github.com"
+    assert github_api("https://ghe.example.com/api/v3") == "https://ghe.example.com/api/v3"
+
+
+def test_metadata_json_through_each_providers_api(api):
+    """Discovery reads metadata.json without a clone: GitHub's and GitLab's file APIs (base64), Azure DevOps' items
+    (text); a missing file is None, another error raises."""
+    import base64 as b64
+    doc = '{"applicationId": "app-1"}'
+    enc = {"content": b64.b64encode(doc.encode()).decode(), "encoding": "base64", "size": len(doc)}
+
+    def gh(path, base):
+        assert "ref=main" in path
+        return (200, enc, {}) if "/svc/" in path else (404, {"message": "Not Found"}, {})
+
+    def gl(path, base):
+        return (200, enc, {}) if "/projects/7/" in path else (404, {"message": "404 File Not Found"}, {})
+
+    def ado(path, base):
+        assert "includeContent=true" in path and "versionDescriptor.version=main" in path
+        return (200, {"path": "/metadata.json", "content": doc}, {}) if "/id1/" in path else (403, {"message": "denied"}, {})
+    a = api([("/repos/acme/svc/contents/metadata.json", gh), ("/repos/acme/none/contents/metadata.json", gh),
+             ("/api/v4/projects/7/repository/files/metadata.json", gl),
+             ("/api/v4/projects/8/repository/files/metadata.json", gl),
+             ("/contoso/P/_apis/git/repositories/id1/items", ado), ("/contoso/P/_apis/git/repositories/id2/items", ado)])
+    p = provider("github", "acme", "tok", a.url)
+    r = lambda n, **k: SourceRepo("github", "acme", NO_PROJECT, n, "", default_branch="main", **k)  # noqa: E731
+    assert p.file_text(r("svc", extra={"full_name": "acme/svc"}), "metadata.json") == doc
+    assert p.file_text(r("none", extra={"full_name": "acme/none"}), "metadata.json") is None
+    p = provider("gitlab", "grp", "tok", a.url)
+    assert p.file_text(r("x", id="7"), "metadata.json") == doc and p.file_text(r("y", id="8"), "metadata.json") is None
+    p = provider("azure-devops", "contoso", "tok", a.url)
+    assert p.file_text(r("x", id="id1", extra={"project_q": "P"}), "metadata.json") == doc
+    with pytest.raises(orgsource.SourceError):
+        p.file_text(r("y", id="id2", extra={"project_q": "P"}), "metadata.json")

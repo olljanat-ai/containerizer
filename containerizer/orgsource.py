@@ -211,6 +211,21 @@ class Provider:
         """Signs that the token can do more than read (shown on the admin page). Best effort."""
         return []
 
+    def file_text(self, r: "SourceRepo", path: str) -> str | None:
+        """A file of the repository's default branch through the API, without a clone; None when it has none.
+        Raises SourceError when it could not be read."""
+        raise NotImplementedError
+
+    @staticmethod
+    def _missing(e: Exception) -> bool:
+        return "HTTP 404" in str(e)
+
+    @staticmethod
+    def _b64(data, limit: int = 64 * 1024) -> str | None:
+        if not isinstance(data, dict) or int(data.get("size") or 0) > limit or not data.get("content"):
+            return None
+        return base64.b64decode(data["content"]).decode("utf-8", errors="replace")
+
     def repos(self):
         raise NotImplementedError
 
@@ -228,11 +243,22 @@ class Provider:
         return "Authorization: Basic " + base64.b64encode(f"{self.git_username}:{self.token}".encode()).decode()
 
 
+def github_api(url: str | None) -> str | None:
+    """The REST API of github.com as people enter it: https://github.com is https://api.github.com. (A GitHub
+    Enterprise Server's API is https://<server>/api/v3: given as entered.)"""
+    if url and (urllib.parse.urlsplit(url.strip()).hostname or "").lower() in ("github.com", "www.github.com"):
+        return "https://api.github.com"
+    return url
+
+
 class GitHub(Provider):
     """Organization repositories (`/orgs/{org}/repos`, all types incl. private and internal with a
     token that can read them); a user account falls back to `/users/{name}/repos` (public only)
     or `/user/repos` when the token belongs to that user. GitHub has no project level."""
     name = "github"
+
+    def __init__(self, org: str, token: str = "", api_url: str | None = None):
+        super().__init__(org, token, github_api(api_url))
 
     def headers(self) -> dict:
         h = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
@@ -290,6 +316,19 @@ class GitHub(Provider):
             if not nxt:
                 return
             data, h = self.get(nxt)
+
+    def file_text(self, r: SourceRepo, path: str) -> str | None:
+        full = "/".join(urllib.parse.quote(x, safe="") for x in (r.extra.get("full_name") or f"{self.org}/{r.name}").split("/", 1))
+        url = f"{self.api}/repos/{full}/contents/{urllib.parse.quote(path)}"
+        if r.default_branch:
+            url += "?ref=" + urllib.parse.quote(r.default_branch, safe="")
+        try:
+            data, _ = self.get(url)
+        except SourceError as e:
+            if self._missing(e):
+                return None
+            raise
+        return self._b64(data)
 
     def last_commit(self, r: SourceRepo) -> datetime | None:
         full = "/".join(urllib.parse.quote(x, safe="") for x in (r.extra.get("full_name") or f"{self.org}/{r.name}").split("/", 1))
@@ -360,6 +399,18 @@ class GitLab(Provider):
                 return
             data, h = self.get(nxt)
 
+    def file_text(self, r: SourceRepo, path: str) -> str | None:
+        if not r.default_branch:
+            return None
+        try:
+            data, _ = self.get(f"{self.api}/api/v4/projects/{r.id}/repository/files/{urllib.parse.quote(path, safe='')}"
+                               f"?ref={urllib.parse.quote(r.default_branch, safe='')}")
+        except SourceError as e:
+            if self._missing(e):
+                return None
+            raise
+        return self._b64(data)
+
     def last_commit(self, r: SourceRepo) -> datetime | None:
         if not r.default_branch:
             return None
@@ -421,6 +472,20 @@ class AzureDevOps(Provider):
                     web_url=d.get("webUrl") or "", archived=bool(d.get("isDisabled")),
                     empty=not d.get("defaultBranch") or d.get("size") == 0,
                     fork=bool(d.get("isFork")), id=d.get("id", ""), extra={"project_q": urllib.parse.quote(proj)})
+
+    def file_text(self, r: SourceRepo, path: str) -> str | None:
+        url = (f"{self.base}/{r.extra.get('project_q', urllib.parse.quote(r.project))}/_apis/git/repositories/{r.id}"
+               f"/items?path={urllib.parse.quote('/' + path)}&includeContent=true&$format=json&{self.API}")
+        if r.default_branch:
+            url += "&versionDescriptor.version=" + urllib.parse.quote(r.default_branch, safe="")
+        try:
+            data, _ = self.get(url)
+        except SourceError as e:
+            if self._missing(e):
+                return None
+            raise
+        text = (data or {}).get("content") if isinstance(data, dict) else None
+        return text if isinstance(text, str) and len(text) <= 64 * 1024 else None
 
     def last_commit(self, r: SourceRepo) -> datetime | None:
         url = (f"{self.base}/{r.extra.get('project_q', urllib.parse.quote(r.project))}/_apis/git/repositories/{r.id}"
