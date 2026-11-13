@@ -17,8 +17,9 @@ scan with a commit in that time. Nothing extra is cloned. It keeps:
   with 0 commits.
 
 A repository is read again when it has a newer commit than the last time, or once a week (the counts age), so most
-runs ask the API about few repositories. Repositories that are disabled (themselves or their project), archived or
-empty are left out. Automation is left out as it is read (`[bot]` accounts, `noreply` addresses, build
+runs ask the API about few repositories. Archived and empty repositories are left out. A disabled one (itself or its
+project, or a new repository that starts disabled) is read only while its latest commit is in the six months, so the
+page shows whom to ask before enabling it, and a deprecated one nobody touches costs nothing. Automation is left out as it is read (`[bot]` accounts, `noreply` addresses, build
 services without an e-mail address); tick **Ignore** for any other service account. Why reading a repository failed
 is in `OrgRepository.HistoryError`.
 

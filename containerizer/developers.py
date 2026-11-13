@@ -1,7 +1,7 @@
 """Developers: who commits to which repository, and what that says about the repositories nobody mapped.
 
 Every organization scan run (full and discovery, worker.py) reads the commit authors of the last six months of each
-active repository from the provider's API (orgsource.Provider.commits), and keeps them in cz.Developer and
+repository from the provider's API (a disabled one only while its latest commit is in those six months) (orgsource.Provider.commits), and keeps them in cz.Developer and
 cz.DeveloperRepository: one developer per e-mail address, the repositories they committed to, how many commits in
 the six months, and their newest commit there (it only moves forward). A repository is read again when it has a
 newer commit than the last time, or after REFRESH_DAYS, so most runs ask the API for few repositories.
@@ -67,9 +67,13 @@ def _naive(d: datetime | None) -> datetime | None:
 
 def due(row: dict, now: datetime, cutoff: datetime) -> bool:
     """Whether a repository's authors should be read in this run (naive UTC datetimes from the database)."""
-    if row.get("RemovedAt") or row.get("AdminState") == "disabled" or row.get("ProjectState") == "disabled":
+    if row.get("RemovedAt"):
         return False
     latest = row.get("LatestCommitAt")
+    if (row.get("AdminState") == "disabled" or row.get("ProjectState") == "disabled") and not (latest and latest >= cutoff):
+        # disabled (new repositories may start so): read only while someone commits there, which says who to ask
+        # before enabling it; a deprecated one nobody touched in six months costs nothing
+        return False
     if latest and latest < cutoff and not row.get("HistoryAt"):
         return False                               # nobody committed in six months, and nothing to age out
     if not row.get("HistoryAt"):

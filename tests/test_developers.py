@@ -225,8 +225,13 @@ def test_due_reads_new_commits_and_refreshes_weekly():
     assert not dv.due(seen, NOW, cutoff)
     assert dv.due({**seen, "LatestCommitAt": D(2026, 11, 11)}, NOW, cutoff)
     assert dv.due({**seen, "HistoryAt": D(2026, 11, 1)}, NOW, cutoff)
-    assert not dv.due({**seen, "AdminState": "disabled", "HistoryAt": None}, NOW, cutoff)
-    assert not dv.due({**seen, "ProjectState": "disabled", "HistoryAt": None}, NOW, cutoff)
+    # disabled (a new repository may start so): read while someone commits there, who to ask before enabling it
+    assert dv.due({**seen, "AdminState": "disabled", "HistoryAt": None}, NOW, cutoff)
+    assert dv.due({**seen, "ProjectState": "disabled", "HistoryAt": None}, NOW, cutoff)
+    assert not dv.due({**seen, "AdminState": "disabled", "LatestCommitAt": D(2025, 1, 1), "HistoryAt": D(2025, 2, 1)},
+                      NOW, cutoff)                                       # deprecated: nobody committed in six months
+    assert not dv.due({**seen, "ProjectState": "disabled", "LatestCommitAt": None, "HistoryAt": None}, NOW, cutoff)
+    assert not dv.due({**seen, "RemovedAt": NOW}, NOW, cutoff)
 
 
 class FakeProvider:

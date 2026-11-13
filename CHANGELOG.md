@@ -10,6 +10,18 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.45.4 (2026-11-13)
+
+- **A discovery run says why a repository's Latest commit stays empty.** Discovery asks the provider's API for each
+  repository's latest commit; when that failed, the run only counted it as failed. The worker's log
+  (`journalctl -u containerizer-worker`) now names the first five repositories with the API's answer, and how many
+  failed.
+- **Discovery reads the latest commit of disabled repositories and projects too**, so Latest commit is no longer
+  "unknown" for them (Azure DevOps has no other date): whether a project disabled as deprecated is still worked on.
+- **Admin → Developers includes who commits to disabled repositories**, while their latest commit is in the last six
+  months: a new repository that starts disabled shows whom to ask before enabling it. Discovery reads them too. One
+  nobody committed to in six months is not read.
+
 ## 0.45.3 (2026-11-13)
 
 - **An application that recovers after its scan is no longer shown failing until the next scan.** The scan worker
