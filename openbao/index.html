@@ -1,0 +1,1942 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Can this application run as a Linux container on Kubernetes? Assessment, hardened builds and manifests.">
+      
+      
+      
+        <link rel="canonical" href="https://containerizer.eu/openbao/">
+      
+      
+        <link rel="prev" href="../external-secrets/">
+      
+      
+        <link rel="next" href="../java-node/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../images/favicon.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>Secret values in OpenBao - Containerizer</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/landing.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  <meta property="og:type" content="website"><meta property="og:site_name" content="Containerizer"><meta property="og:title" content="Secret values in OpenBao - Containerizer"><meta property="og:description" content="Can this application run as a Linux container on Kubernetes? Assessment, hardened builds and manifests."><meta property="og:url" content="https://containerizer.eu/openbao/"><meta name="twitter:card" content="summary"><meta name="twitter:title" content="Secret values in OpenBao - Containerizer"><meta name="twitter:description" content="Can this application run as a Linux container on Kubernetes? Assessment, hardened builds and manifests."></head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#secret-values-in-openbao" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Containerizer" class="md-header__button md-logo" aria-label="Containerizer" data-md-component="logo">
+      
+  <img src="../images/favicon.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis"><a href="../" class="cz-home-link">Containerizer</a></span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Secret values in OpenBao
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/olljanat-ai/containerizer" title="Go to repository" class="md-source" data-md-component="source" target="_blank" rel="noopener noreferrer">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    olljanat-ai/containerizer
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../appliance/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../overview/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  How it works
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../scheduled-scans/" class="md-tabs__link">
+          
+  
+  
+  Using it
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../sign-in/" class="md-tabs__link">
+          
+  
+  
+  Administration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../sandbox-https/" class="md-tabs__link">
+          
+  
+  
+  Sandbox
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../java-node/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Containerizer" class="md-nav__button md-logo" aria-label="Containerizer" data-md-component="logo">
+      
+  <img src="../images/favicon.svg" alt="logo">
+
+    </a>
+    Containerizer
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/olljanat-ai/containerizer" title="Go to repository" class="md-source" data-md-component="source" target="_blank" rel="noopener noreferrer">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    olljanat-ai/containerizer
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../appliance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using it
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Using it
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scheduled-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Organization scans
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../developers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developers and ownership
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platform-migration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform migrations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platform-fixes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform fixes for refactor findings
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../refactoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Refactoring patches
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../egress/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Egress and network connectivity
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gateway-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway API routes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../clusters/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Clusters: sandbox, development, acceptance, production
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../build-pipelines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build pipelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rule-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rule review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Administration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Administration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sign-in/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sign-in and roles
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../source-control/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Source control tokens and the LLM
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../appliance-admin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Running the appliance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sandbox
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-https/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox HTTPS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../lab-services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lab services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-idp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox identity provider
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dev-databases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dev databases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../external-secrets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Secrets (External Secrets)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Secret values in OpenBao
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Secret values in OpenBao
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#sign-in-as-the-administrator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sign in as the administrator
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fill-in-an-apps-values" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fill in an app's values
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Fill in an app&#39;s values">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#files-certificates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Files (certificates)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#give-operators-their-own-apps-delegated-access" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Give operators their own apps (delegated access)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sign-in-with-your-identity-provider-oidc-oauth-20" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sign-in with your identity provider (OIDC / OAuth 2.0)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-it-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How it works
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#forgotten-applications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Forgotten applications
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#backup-and-recovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backup and recovery
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../java-node/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Java and Node.js
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python-go/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python and Go
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../local-dev-server/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local dev server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#sign-in-as-the-administrator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sign in as the administrator
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fill-in-an-apps-values" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fill in an app's values
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Fill in an app&#39;s values">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#files-certificates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Files (certificates)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#give-operators-their-own-apps-delegated-access" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Give operators their own apps (delegated access)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sign-in-with-your-identity-provider-oidc-oauth-20" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sign-in with your identity provider (OIDC / OAuth 2.0)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-it-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How it works
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#forgotten-applications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Forgotten applications
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#backup-and-recovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backup and recovery
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="secret-values-in-openbao">Secret values in OpenBao<a class="headerlink" href="#secret-values-in-openbao" title="Permanent link">&para;</a></h1>
+<p>The apps in the appliance's sandbox read their connection strings, secret settings and the settings a release
+pipeline used to fill (<code>#{Api.Host}#</code>, <code>__Example.Mode__</code>) from the secret store (see
+<a href="../external-secrets/">External Secrets</a>). On the appliance you enter those values in
+<a href="https://openbao.org" target="_blank" rel="noopener noreferrer">OpenBao</a>. It runs on the appliance and is served on its normal HTTPS port:</p>
+<p><strong><code>https://&lt;CZ_HOSTNAME&gt;/ui/</code></strong>. On the admin pages, <strong>Secrets ↗</strong> links there.</p>
+<p>You don't have to look up which keys an app needs. Every two minutes the appliance makes one entry for each
+component that has secrets, with an empty value for each key the component reads. You only type the values.</p>
+<h2 id="sign-in-as-the-administrator">Sign in as the administrator<a class="headerlink" href="#sign-in-as-the-administrator" title="Permanent link">&para;</a></h2>
+<p>User name <code>admin</code> (method <strong>Username</strong>). The password is in <code>/etc/containerizer/secrets/openbao-admin</code> (root only,
+like Grafana's). Change it in OpenBao after the first sign-in. The appliance doesn't need it afterwards.</p>
+<p>The <code>admin</code> user can:</p>
+<ul>
+<li>read and write every app's values;</li>
+<li>create users, groups and policies (to give operators access);</li>
+<li>turn on sign-in methods (for SSO).</li>
+</ul>
+<p>It can't seal OpenBao, change its storage or create a root token.</p>
+<h2 id="fill-in-an-apps-values">Fill in an app's values<a class="headerlink" href="#fill-in-an-apps-values" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Secrets engines → apps</strong>: one folder per app namespace, one entry per component
+   (<code>apps/&lt;namespace&gt;/&lt;component&gt;</code>, KV version 2, so every save keeps the earlier versions).</li>
+<li>Open the entry and choose <strong>Create new version</strong>. Fill in the values; leave a key empty if the app should
+   keep its own value from <code>appsettings.json</code>. Save.</li>
+<li>Within two minutes the appliance:</li>
+<li>copies the filled values into the store;</li>
+<li>has External Secrets Operator sync the app's Secret right away;</li>
+<li>restarts the app's Deployments and StatefulSets that read it, once, and only when what the app gets changed:
+     the pod template's annotation <code>containerizer.io/secrets</code> is a fingerprint of the Secrets it reads (ESO's data
+     hash, never a value). CronJobs pick the values up at their next run.</li>
+</ol>
+<p>The key names are environment variable names: <code>ConnectionStrings__Main</code> sets <code>ConnectionStrings:Main</code>,
+<code>Api__Url</code> sets <code>Api:Url</code>. They match the <strong>Secret store keys</strong> in the app's <code>HARDENING.md</code>.</p>
+<h3 id="files-certificates">Files (certificates)<a class="headerlink" href="#files-certificates" title="Permanent link">&para;</a></h3>
+<p>Files an app reads, such as a certificate with its private key (<code>.pfx</code>), are in a second entry of the component:
+<code>apps/&lt;namespace&gt;/&lt;component&gt;-files</code>. Each key is a file name, its value the file in base64 (for example
+<code>base64 -w0 app.pfx</code>). Its password, when the app's settings have one (<code>...__CertificatePassword</code>), is a key of the
+component's own entry.</p>
+<ul>
+<li><strong>A <code>.pfx</code> or <code>.p12</code> next to the app's code</strong>: the image leaves it out, and the scan mounts it read-only where the app
+  reads it (<code>/app/&lt;path&gt;</code>). Its key starts with the repository's own file (a development certificate); put the
+  environment's certificate in its place.</li>
+<li><strong>Any other file</strong>: turn on <strong>Files from the secret store</strong> for the app's repository (Admin → Repositories → the
+  repository → Settings) with a folder, <code>/secrets</code> by default. After the next scan each component mounts all of its
+  files there, and its <code>-files</code> entry exists, empty. Add a key per file and point the app's setting at it
+  (<code>/secrets/app.pfx</code>), in <code>settings.yaml</code> or in the settings entry.</li>
+</ul>
+<p>Saving a file restarts the app (a file mounted on its own does not change in a running pod).</p>
+<table>
+<thead>
+<tr>
+<th>What you see</th>
+<th>Where it comes from</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>An empty key</td>
+<td>Nobody has filled it yet. The app runs without it (with its <code>appsettings.json</code> value).</td>
+</tr>
+<tr>
+<td>A key with a value you didn't type</td>
+<td>The app's own development value: the one <code>appsettings.json</code> (or <code>appsettings.Development.json</code>, ...) gives it in the app's repository, where a release pipeline replaces it. The scan leaves these values on the appliance only, never in the output repository, and each key is filled from there once: empty it and it stays empty. Or someone put it in the store by hand before OpenBao was there: it was taken over.</td>
+</tr>
+<tr>
+<td>A key that is not there although <code>HARDENING.md</code> lists it</td>
+<td>Another part of the appliance fills it (the <a href="../sandbox-idp/">sandbox identity provider</a>'s client secret, <a href="../lab-services/">lab services</a>' credentials): don't set it.</td>
+</tr>
+</tbody>
+</table>
+<p>Settings that are not secret (a URL with a token in it, say) are in the component's ConfigMap
+<code>&lt;component&gt;-settings</code>, not in OpenBao: see <a href="../overview/#generated-output">overview</a>.</p>
+<h2 id="give-operators-their-own-apps-delegated-access">Give operators their own apps (delegated access)<a class="headerlink" href="#give-operators-their-own-apps-delegated-access" title="Permanent link">&para;</a></h2>
+<p>For every app namespace the appliance writes the policy <strong><code>app-&lt;namespace&gt;</code></strong>. It allows reading and changing
+that namespace's entries (<code>apps/&lt;namespace&gt;/*</code>) and nothing else. An operator who has it sees the names of the
+other namespaces, never their values.</p>
+<p>Give operators that policy as a user or, better, through a group of your identity provider (next section). With
+a user (<strong>Access → Authentication methods → userpass → Create user</strong>, or with the CLI):</p>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">BAO_ADDR</span><span class="o">=</span>https://&lt;CZ_HOSTNAME&gt;<span class="w">    </span><span class="c1"># on a workstation; on the appliance just run `bao` (see Recovery)</span>
+bao<span class="w"> </span>login<span class="w"> </span>-method<span class="o">=</span>userpass<span class="w"> </span><span class="nv">username</span><span class="o">=</span>admin
+bao<span class="w"> </span>write<span class="w"> </span>auth/userpass/users/jdoe<span class="w"> </span><span class="nv">password</span><span class="o">=</span><span class="s1">'...'</span><span class="w"> </span><span class="nv">token_policies</span><span class="o">=</span>app-shop,app-hr
+</code></pre></div>
+<p>You can write policies of your own, too: one per team over several namespaces, or read-only (<code>["read", "list"]</code>).
+Don't edit <code>app-*</code>, <code>cz-admin</code> or <code>cz-sync</code>: the appliance rewrites <code>app-*</code> when it differs.</p>
+<h2 id="sign-in-with-your-identity-provider-oidc-oauth-20">Sign-in with your identity provider (OIDC / OAuth 2.0)<a class="headerlink" href="#sign-in-with-your-identity-provider-oidc-oauth-20" title="Permanent link">&para;</a></h2>
+<p>OpenBao signs people in through any OpenID Connect provider: Microsoft Entra ID, Okta, Keycloak, Google, GitLab,
+and others. You register OpenBao as an application with the provider. Its groups then decide who gets which policy.</p>
+<p><strong>1. Register an application at the provider</strong></p>
+<ul>
+<li>Type: web application, authorization code flow (confidential client with a client secret).</li>
+<li>Redirect URIs:</li>
+<li><code>https://&lt;CZ_HOSTNAME&gt;/ui/vault/auth/oidc/oidc/callback</code> (the web UI);</li>
+<li><code>http://localhost:8250/oidc/callback</code> (the <code>bao login -method=oidc</code> CLI).</li>
+<li>A <code>groups</code> claim in the ID token. In Entra ID: <strong>Token configuration → Add groups claim → Security groups</strong>. The
+  claim then has the groups' object IDs. In Keycloak: a <em>Group Membership</em> mapper with <em>Full group path</em> off.</li>
+<li>Allow outbound HTTPS to the provider on the appliance's <strong>Firewall</strong> page (for Entra ID:
+  <code>login.microsoftonline.com</code>).</li>
+</ul>
+<p><strong>2. Turn on the OIDC method in OpenBao</strong> (as <code>admin</code>)</p>
+<div class="highlight"><pre><span></span><code>bao<span class="w"> </span>auth<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>oidc
+bao<span class="w"> </span>write<span class="w"> </span>auth/oidc/config<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="nv">oidc_discovery_url</span><span class="o">=</span><span class="s2">"https://login.microsoftonline.com/&lt;tenant-id&gt;/v2.0"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="nv">oidc_client_id</span><span class="o">=</span><span class="s2">"&lt;client id&gt;"</span><span class="w"> </span><span class="nv">oidc_client_secret</span><span class="o">=</span><span class="s2">"&lt;client secret&gt;"</span><span class="w"> </span><span class="nv">default_role</span><span class="o">=</span>people
+bao<span class="w"> </span>write<span class="w"> </span>auth/oidc/role/people<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="nv">user_claim</span><span class="o">=</span>email<span class="w"> </span><span class="nv">groups_claim</span><span class="o">=</span>groups<span class="w"> </span><span class="nv">oidc_scopes</span><span class="o">=</span>openid,profile,email<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="nv">allowed_redirect_uris</span><span class="o">=</span><span class="s2">"https://&lt;CZ_HOSTNAME&gt;/ui/vault/auth/oidc/oidc/callback"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="nv">allowed_redirect_uris</span><span class="o">=</span><span class="s2">"http://localhost:8250/oidc/callback"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="nv">token_ttl</span><span class="o">=</span>8h<span class="w"> </span><span class="nv">token_policies</span><span class="o">=</span>default
+</code></pre></div>
+<p>For Keycloak the discovery URL is <code>https://&lt;keycloak&gt;/realms/&lt;realm&gt;</code>; for Okta <code>https://&lt;org&gt;.okta.com</code>.</p>
+<p><strong>3. Map the provider's groups to policies.</strong> One external group per provider group, with an alias that is the
+group's name or (Entra ID) object ID:</p>
+<div class="highlight"><pre><span></span><code><span class="nv">accessor</span><span class="o">=</span><span class="k">$(</span>bao<span class="w"> </span><span class="nb">read</span><span class="w"> </span>-field<span class="o">=</span>accessor<span class="w"> </span>sys/auth/oidc<span class="k">)</span>
+<span class="nv">id</span><span class="o">=</span><span class="k">$(</span>bao<span class="w"> </span>write<span class="w"> </span>-field<span class="o">=</span>id<span class="w"> </span>identity/group<span class="w"> </span><span class="nv">name</span><span class="o">=</span>shop-operators<span class="w"> </span><span class="nv">type</span><span class="o">=</span>external<span class="w"> </span><span class="nv">policies</span><span class="o">=</span>app-shop<span class="k">)</span>
+bao<span class="w"> </span>write<span class="w"> </span>identity/group-alias<span class="w"> </span><span class="nv">name</span><span class="o">=</span><span class="s2">"&lt;group object ID or name&gt;"</span><span class="w"> </span><span class="nv">mount_accessor</span><span class="o">=</span><span class="s2">"</span><span class="nv">$accessor</span><span class="s2">"</span><span class="w"> </span><span class="nv">canonical_id</span><span class="o">=</span><span class="s2">"</span><span class="nv">$id</span><span class="s2">"</span>
+<span class="c1"># administrators: the admin policy</span>
+<span class="nv">id</span><span class="o">=</span><span class="k">$(</span>bao<span class="w"> </span>write<span class="w"> </span>-field<span class="o">=</span>id<span class="w"> </span>identity/group<span class="w"> </span><span class="nv">name</span><span class="o">=</span>containerizer-admins<span class="w"> </span><span class="nv">type</span><span class="o">=</span>external<span class="w"> </span><span class="nv">policies</span><span class="o">=</span>cz-admin<span class="k">)</span>
+bao<span class="w"> </span>write<span class="w"> </span>identity/group-alias<span class="w"> </span><span class="nv">name</span><span class="o">=</span><span class="s2">"&lt;admins group&gt;"</span><span class="w"> </span><span class="nv">mount_accessor</span><span class="o">=</span><span class="s2">"</span><span class="nv">$accessor</span><span class="s2">"</span><span class="w"> </span><span class="nv">canonical_id</span><span class="o">=</span><span class="s2">"</span><span class="nv">$id</span><span class="s2">"</span>
+</code></pre></div>
+<p>People now choose <strong>OIDC</strong> on the sign-in page and get the policies of their groups. Keep the <code>admin</code> user (with a
+strong password) as the way in when the provider is down.</p>
+<p>Once the method is there, the <strong>Secrets ↗</strong> link on the admin pages signs you in to OpenBao with it directly, without
+OpenBao's sign-in page: it goes to the identity provider (no prompt when you are signed in there already) and comes
+back to OpenBao's UI signed in. It uses the UI's redirect URI above, so there is nothing more to register. The appliance
+checks for the method once a minute; until then, or if that sign-in fails, the link opens OpenBao's sign-in page
+with OIDC selected. To show only OIDC on the sign-in page (the <code>admin</code> user stays under <strong>Other</strong>):</p>
+<div class="highlight"><pre><span></span><code>bao<span class="w"> </span>auth<span class="w"> </span>tune<span class="w"> </span>-listing-visibility<span class="o">=</span>unauth<span class="w"> </span>oidc/
+</code></pre></div>
+<p>On an appliance set up before 0.37.0, <code>cz-admin</code> may not tune sign-in methods yet; as <code>admin</code>, add that first:
+<code>{ bao policy read cz-admin; echo 'path "sys/mounts/auth/*" { capabilities = ["read", "update"] }'; } | bao policy write cz-admin -</code>.</p>
+<p>The appliance's own sign-in (<a href="../sign-in/">Sign-in and roles</a>) is separate: register Containerizer and OpenBao as
+two applications with the same provider and use the same groups for both.</p>
+<h2 id="how-it-works">How it works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Service.</strong> OpenBao 2.7 runs as the container <code>cz-openbao</code> (systemd <code>containerizer-openbao.service</code>):</li>
+<li>its own user, a read-only file system, no capabilities;</li>
+<li>listens on 127.0.0.1:8200 only; Caddy serves <code>/ui/</code> and its API <code>/v1/</code> on port 443 with the appliance's
+    certificate;</li>
+<li>integrated (Raft) storage in <code>/var/lib/containerizer/openbao</code>.</li>
+<li><strong>Unsealing.</strong> OpenBao unseals itself at every start with the static key
+  <code>/etc/containerizer/secrets/openbao-unseal.key</code>, which <code>cz-firstboot</code> makes once. After a reboot nobody has to
+  enter an unseal key. The data can't be read without that file.</li>
+<li><strong>Setup.</strong> <code>cz-sandbox</code> runs <code>python -m containerizer.openbao sync</code> every two minutes, as root. The first run
+  initialises OpenBao:</li>
+<li>the mount <code>apps</code> (KV version 2), the <code>userpass</code> method with the user <code>admin</code>, the policies <code>cz-admin</code> and
+    <code>cz-sync</code>;</li>
+<li>a periodic token for the sync, kept in <code>secrets/openbao-sync-token</code>;</li>
+<li>the recovery key, kept in <code>secrets/openbao-recovery-key</code>;</li>
+<li>then it revokes the root token. Until then the root token is kept in <code>secrets/openbao-root-token</code> (root only),
+    so a setup that stopped half-way, say during a restart, is finished by the next run.</li>
+<li><strong>Sync.</strong> Each run:</li>
+<li>reads every component's <code>&lt;component&gt;-secrets</code> ExternalSecret in the sandbox, but only those that read their
+    own namespace's key <code>&lt;namespace&gt;--&lt;component&gt;</code>;</li>
+<li>adds the missing keys to <code>apps/&lt;namespace&gt;/&lt;component&gt;</code>, empty or with the value already in the store, and
+    never overwrites a value that is there;</li>
+<li>writes the filled values into the remote Secret <code>containerizer-secrets/&lt;namespace&gt;--&lt;component&gt;</code> with its own
+    field manager (<code>containerizer-openbao</code>), so the keys of the other writers stay, and removes a key emptied in
+    OpenBao;</li>
+<li>writes the <code>app-&lt;namespace&gt;</code> policies.</li>
+<li><strong>The sandbox's ExternalSecrets.</strong> In the sandbox (<code>clusters/sandbox/flux/apps</code>), each component's <code>&lt;component&gt;-secrets</code>
+  ExternalSecret reads every key its remote Secret has (<code>dataFrom: extract</code>), and its annotation
+  <code>containerizer.io/properties</code> keeps the list. A key that isn't filled is then just not set. With the generated
+  list of properties, External Secrets Operator creates none of a Secret's keys while one is missing. The app
+  folder's own manifests, for the real environment, keep the list.</li>
+<li><strong>The other values stay where they were.</strong> The store is still the namespace <code>containerizer-secrets</code>, and the
+  appliance's own writers fill it there: Git tokens, the Flux webhook, the sandbox identity provider, lab
+  services. Secret files (<code>&lt;component&gt;-files</code>) and keytabs are set as before
+  (<a href="../external-secrets/#the-appliance-sandbox">External Secrets</a>).</li>
+</ul>
+<h2 id="forgotten-applications">Forgotten applications<a class="headerlink" href="#forgotten-applications" title="Permanent link">&para;</a></h2>
+<p><strong>Forget application</strong> (Admin → Applications → the application) removes the application's OpenBao entries
+(<code>apps/&lt;namespace&gt;/...</code>, every version), its policy <code>app-&lt;namespace&gt;</code> and the values copied to the secret store. This
+happens once the sandbox has removed its namespace (the scan Forget queues does that), within two minutes of it.
+When the namespace is still there a day later (its repository was enabled and scanned again), the entries stay.</p>
+<p>Appliances set up before 0.41.3 give the sync job the right to delete once: it signs in as <code>admin</code> with the password
+the appliance generated. If you changed that password, the log of <code>containerizer-sandbox.service</code> says so; run
+<code>cz openbao-policy</code> as root once (it asks for an OpenBao administrator's user name and password).</p>
+<h2 id="backup-and-recovery">Backup and recovery<a class="headerlink" href="#backup-and-recovery" title="Permanent link">&para;</a></h2>
+<p>Back up <code>/var/lib/containerizer/openbao</code> together with <code>/etc/containerizer/secrets</code> (the unseal key, the recovery
+key and the sync token): one without the other is of no use. See <a href="../appliance-admin/#backup">Backup</a>.</p>
+<p><strong>Recovery.</strong> If the sync token is lost (the log of <code>containerizer-sandbox.service</code> then says so), sign in as an
+administrator (policy <code>cz-admin</code>) and create a new sync token, as root on the appliance:</p>
+<div class="highlight"><pre><span></span><code><span class="nv">BAO_TOKEN</span><span class="o">=</span><span class="k">$(</span>bao<span class="w"> </span>login<span class="w"> </span>-method<span class="o">=</span>userpass<span class="w"> </span>-field<span class="o">=</span>token<span class="w"> </span><span class="nv">username</span><span class="o">=</span>admin<span class="k">)</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>bao<span class="w"> </span>token<span class="w"> </span>create<span class="w"> </span>-orphan<span class="w"> </span>-policy<span class="o">=</span>cz-sync<span class="w"> </span>-no-default-policy<span class="w"> </span>-period<span class="o">=</span>768h<span class="w"> </span>-field<span class="o">=</span>token<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>&gt;<span class="w"> </span>/etc/containerizer/secrets/openbao-sync-token<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>chmod<span class="w"> </span><span class="m">0400</span><span class="w"> </span>/etc/containerizer/secrets/openbao-sync-token
+</code></pre></div>
+<p>OpenBao 2.7 refuses <code>bao operator generate-root</code> without a token, so the recovery key alone no longer makes a root
+token; keep an administrator's password (or an OIDC administrator) at hand.</p>
+<p>On the appliance (as root) the command <code>bao</code> runs the CLI in the OpenBao container and talks to it directly, so
+leave <code>BAO_ADDR</code> unset there. From your workstation, use your own <code>bao</code> (or <code>vault</code>) with
+<code>BAO_ADDR=https://&lt;CZ_HOSTNAME&gt;</code>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../external-secrets/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Secrets (External Secrets)">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Secrets (External Secrets)
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../java-node/" class="md-footer__link md-footer__link--next" aria-label="Next: Java and Node.js">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Java and Node.js
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.tabs", "navigation.top", "navigation.footer", "search.highlight", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>
