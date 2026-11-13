@@ -47,6 +47,7 @@ SEEDED_PATH = Path(os.environ.get("CZ_OPENBAO_SEEDED", "/var/lib/containerizer/s
 FORGET_PATH = Path(os.environ.get("CZ_OPENBAO_FORGET", "/var/lib/containerizer/system/openbao-forget.json"))
 MOUNT = "apps"                              # KV version 2: apps/<namespace>/<component>
 MANAGER = "containerizer-openbao"           # field manager of the copied keys in the store
+RESTART_ANNOTATION = "containerizer.io/secrets"    # fingerprint of the Secrets a workload reads (apply_now)
 PROPERTIES = "containerizer.io/properties"  # the properties a component reads (sandbox_patches keeps them)
 SUFFIX = "-secrets"                         # the ExternalSecret of a component's settings (harden.externalize_secrets)
 FILES = "-files"                            # ... and of its files (base64): entry apps/<namespace>/<component>-files
@@ -406,7 +407,9 @@ def sync_component(bao: Bao, store_ns: str, c: dict, log=print) -> dict:
     if c.get("every") and secret is None:
         _apply_store(store_ns, c["remote"], values, True)     # the ExternalSecret reads every key: the Secret must exist
         return {"added": len(added), "copied": len(values), "changed": bool(values)}
-    if any(have.get(k) != v or owners.get(k) != MANAGER for k, v in values.items()) or mine - set(values):
+    why = sorted({k for k, v in values.items() if have.get(k) != v or owners.get(k) != MANAGER} | (mine - set(values)))
+    if why:
+        log(f"openbao: {path}: store updated ({', '.join(why)})")
         _apply_store(store_ns, c["remote"], values, secret is not None)
         return {"added": len(added), "copied": len(values), "changed": True}
     return {"added": len(added), "copied": len(values)}
@@ -423,44 +426,83 @@ def sync_policies(bao: Bao, namespaces: set[str]) -> int:
     return n
 
 
-def _uses(obj: dict, secret: str) -> bool:
-    """A Deployment or StatefulSet whose containers read Secret `secret` as environment variables."""
+def _secret_names(obj: dict) -> set[str]:
+    """The Secrets a Deployment's or StatefulSet's pods read: environment variables, and files (a file mounted alone,
+    with subPath, as the certificates are, changes only when the pod restarts)."""
     pod = ((obj.get("spec") or {}).get("template") or {}).get("spec") or {}
+    out = set()
     for ct in (pod.get("containers") or []) + (pod.get("initContainers") or []):
-        if any(((e.get("valueFrom") or {}).get("secretKeyRef") or {}).get("name") == secret for e in ct.get("env") or []):
-            return True
-        if any((e.get("secretRef") or {}).get("name") == secret for e in ct.get("envFrom") or []):
-            return True
-    # a Secret mounted as files: a file mounted alone (subPath, the certificates) changes only when the pod restarts
-    return any((v.get("secret") or {}).get("secretName") == secret for v in pod.get("volumes") or [])
+        out |= {((e.get("valueFrom") or {}).get("secretKeyRef") or {}).get("name") for e in ct.get("env") or []}
+        out |= {(e.get("secretRef") or {}).get("name") for e in ct.get("envFrom") or []}
+    out |= {(v.get("secret") or {}).get("secretName") for v in pod.get("volumes") or []}
+    out.discard(None)
+    return out
+
+
+def _uses(obj: dict, secret: str) -> bool:
+    return secret in _secret_names(obj)
+
+
+def _secret_versions(ns: str) -> dict[str, str]:
+    """{Secret: what its data is} in `ns`, without reading a value: ESO's hash of the data it wrote (else the
+    Secret's resourceVersion)."""
+    raw = _run(["-n", ns, "get", "secrets", "-o", "jsonpath={range .items[*]}{.metadata.name}{\"\\t\"}"
+                "{.metadata.resourceVersion}{\"\\t\"}{.metadata.annotations.reconcile\\.external-secrets\\.io/data-hash}"
+                "{\"\\n\"}{end}"], ok_missing=True) or ""
+    out = {}
+    for line in raw.splitlines():
+        name, rv, h = (line.split("\t") + ["", ""])[:3]
+        if name:
+            out[name] = h or rv
+    return out
 
 
 def apply_now(changed: list[dict], log=print, wait: float = 60.0) -> None:
     """New values without waiting: each changed component's ExternalSecret syncs now (ESO's force-sync annotation,
     instead of its refresh interval), then the workloads that read the Secret restart (environment variables are
-    read when a container starts). CronJobs read it at their next run."""
+    read when a container starts). CronJobs read it at their next run.
+
+    A workload restarts by a fingerprint of the Secrets it reads in its pod template (RESTART_ANNOTATION), not by
+    `kubectl rollout restart`: the same values give the same fingerprint, so nothing restarts when the store was
+    written but what the app gets did not change, and a workload whose settings and files both changed restarts
+    once."""
+    import hashlib
     import time
     stamp = str(int(time.time()))
     for c in changed:
         _run(["-n", c["namespace"], "annotate", "externalsecrets.external-secrets.io", c.get("es") or c["component"] + SUFFIX,
               f"force-sync={stamp}", "--overwrite"], ok_missing=True)
     end = time.monotonic() + wait
+    targets: dict[str, set[str]] = {}
     for c in changed:
         name = c.get("es") or c["component"] + SUFFIX
         while True:     # synced after the annotation (status.refreshTime is RFC 3339, seconds)
             raw = _run(["-n", c["namespace"], "get", "externalsecrets.external-secrets.io", name, "-o", "json"],
                        ok_missing=True)
-            st = (json.loads(raw).get("status") or {}) if raw else {}
-            t = st.get("refreshTime") or ""
+            es = json.loads(raw) if raw else {}
+            t = (es.get("status") or {}).get("refreshTime") or ""
             if not raw or _epoch(t) >= int(stamp) or time.monotonic() > end:
                 break
             time.sleep(3)
-        raw = _run(["-n", c["namespace"], "get", "deployments.apps,statefulsets.apps", "-o", "json"], ok_missing=True)
+        target = (((es.get("spec") or {}).get("target") or {}).get("name")) or name
+        targets.setdefault(c["namespace"], set()).add(target)
+    for ns, names in sorted(targets.items()):
+        raw = _run(["-n", ns, "get", "deployments.apps,statefulsets.apps", "-o", "json"], ok_missing=True)
+        versions = None
         for w in (json.loads(raw).get("items") or []) if raw else []:
-            if _uses(w, name):
-                _run(["-n", c["namespace"], "rollout", "restart", f"{w['kind'].lower()}/{w['metadata']['name']}"],
-                     ok_missing=True)
-                log(f"openbao: {c['namespace']}/{w['metadata']['name']} restarted with its new values")
+            reads = _secret_names(w)
+            if not reads & names:
+                continue
+            if versions is None:
+                versions = _secret_versions(ns)
+            mark = hashlib.sha256("\n".join(f"{s}={versions.get(s, '')}" for s in sorted(reads)).encode()).hexdigest()[:16]
+            have = ((((w.get("spec") or {}).get("template") or {}).get("metadata") or {}).get("annotations") or {})
+            if have.get(RESTART_ANNOTATION) == mark:
+                continue
+            _run(["-n", ns, "patch", f"{w['kind'].lower()}/{w['metadata']['name']}", "--type", "merge", "-p",
+                  json.dumps({"spec": {"template": {"metadata": {"annotations": {RESTART_ANNOTATION: mark}}}}})],
+                 ok_missing=True)
+            log(f"openbao: {ns}/{w['metadata']['name']} restarted with its new values")
 
 
 def _epoch(t: str) -> int:

@@ -157,24 +157,46 @@ def test_sandbox_patch_reads_every_key_and_keeps_the_list():
 
 
 def test_changed_values_sync_now_and_restart_the_workloads_that_read_them(monkeypatch):
+    """A workload restarts by a fingerprint of the Secrets it reads in its pod template: once, though its settings and
+    its files both changed, and never again while what ESO wrote stays the same (a restart every sync round made a
+    new ReplicaSet every 2 minutes)."""
     calls = []
-    dep = {"kind": "Deployment", "metadata": {"name": "web"}, "spec": {"template": {"spec": {"containers": [
-        {"env": [{"name": "A", "valueFrom": {"secretKeyRef": {"name": "web-secrets", "key": "A"}}}]}]}}}}
+    dep = {"kind": "Deployment", "metadata": {"name": "web"}, "spec": {"template": {"spec": {
+        "containers": [{"env": [{"name": "A", "valueFrom": {"secretKeyRef": {"name": "web-secrets", "key": "A"}}}]}],
+        "volumes": [{"name": "files", "secret": {"secretName": "web-files"}}]}}}}
     other = {"kind": "StatefulSet", "metadata": {"name": "db"}, "spec": {"template": {"spec": {"containers": [{}]}}}}
+    hashes = {"web-secrets": "h1", "web-files": "h2"}
 
     def run(args, stdin=None, ok_missing=False):
         calls.append(args)
         if args[2] == "get" and args[3].startswith("externalsecrets"):
             return json.dumps({"status": {"refreshTime": "2999-01-01T00:00:00Z"}})
+        if args[2:4] == ["get", "secrets"]:
+            return "".join(f"{k}\t7\t{v}\n" for k, v in hashes.items())
         if args[2] == "get":
             return json.dumps({"items": [dep, other]})
+        if args[2] == "patch":
+            ann = json.loads(args[-1])["spec"]["template"]["metadata"]["annotations"]
+            dep["spec"]["template"].setdefault("metadata", {}).setdefault("annotations", {}).update(ann)
         return ""
     monkeypatch.setattr(ob, "_run", run)
-    ob.apply_now([{"namespace": "shop", "component": "web"}], log=lambda m: None)
+    both = [{"namespace": "shop", "component": "web", "es": "web-secrets"},
+            {"namespace": "shop", "component": "web-files", "es": "web-files"}]
+    ob.apply_now(both, log=lambda m: None)
     assert calls[0][:4] == ["-n", "shop", "annotate", "externalsecrets.external-secrets.io"]
     assert calls[0][5].startswith("force-sync=")
-    assert ["-n", "shop", "rollout", "restart", "deployment/web"] in calls
-    assert not any("statefulset/db" in c for c in calls)
+    patches = [c for c in calls if c[2] == "patch"]
+    assert [c[3] for c in patches] == ["deployment/web"]
+    assert not any("rollout" in c for c in calls)
+    # the next round: the store was written again, but the app's Secrets are the same: no restart
+    calls.clear()
+    ob.apply_now(both, log=lambda m: None)
+    assert not any(c[2] == "patch" for c in calls)
+    # a value changed: ESO's data hash changes, the app restarts
+    hashes["web-files"] = "h3"
+    calls.clear()
+    ob.apply_now(both[1:], log=lambda m: None)
+    assert [c[3] for c in calls if c[2] == "patch"] == ["deployment/web"]
 
 
 def test_secrets_link_opens_oidc_sign_in_once_openbao_has_it(monkeypatch):

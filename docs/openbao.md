@@ -32,7 +32,9 @@ It can't seal OpenBao, change its storage or create a root token.
 3. Within two minutes the appliance:
    - copies the filled values into the store;
    - has External Secrets Operator sync the app's Secret right away;
-   - restarts the app's Deployments and StatefulSets that read it (CronJobs pick the values up at their next run).
+   - restarts the app's Deployments and StatefulSets that read it, once, and only when what the app gets changed:
+     the pod template's annotation `containerizer.io/secrets` is a fingerprint of the Secrets it reads (ESO's data
+     hash, never a value). CronJobs pick the values up at their next run.
 
 The key names are environment variable names: `ConnectionStrings__Main` sets `ConnectionStrings:Main`,
 `Api__Url` sets `Api:Url`. They match the **Secret store keys** in the app's `HARDENING.md`.
