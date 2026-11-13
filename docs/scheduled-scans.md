@@ -276,8 +276,11 @@ the secret store** with a folder (`/secrets` by default; not `/app`, `/tmp` or a
 of the repository mount its Secret `<component>-files` there, read-only and optional: every key is a file, its value
 the file in base64. On the appliance the files are an OpenBao entry, `apps/<namespace>/<component>-files`
 ([OpenBao](openbao.md#files-certificates)); in another cluster, the remote key `<namespace>--<component>-files` of its
-secret store, which has to exist (empty or not) before Flux's first sync. Point the application's setting at the file
-(`/secrets/app.pfx`). The next scan of the repository uses the setting. Without it, a `.pfx` or `.p12` next to the
+secret store, which has to exist (empty or not) before Flux's first sync. The scan points every setting whose value
+names a key or certificate file (`.pfx`, `.p12`, `.pem`, `.key`, `.crt`, `.cer`, `.jks`, `.keytab`; relative or a
+Windows path, not a URL or a release-pipeline placeholder) at that file name in the folder
+(`"CertificatePath": "certs\\app.pfx"` becomes `/secrets/app.pfx`): add the file under that name. Nothing to edit by
+hand, so a scan again keeps it. The next scan of the repository uses the setting. Without it, a `.pfx` or `.p12` next to the
 code is still mounted where the app reads it.
 
 ## Repositories with several applications
@@ -434,7 +437,10 @@ this (`wait: false` with `healthChecks`) on the sandbox's copy only; the app fol
 worker waits (up to 15 minutes) for Flux to apply the scan's commit and reads back every component's rollout,
 readiness, restarts and Warning events, as the read-only verifier account `cz-sandbox` keeps up to date. The result
 is the **Sandbox cluster** column and details on each application's results page, and `clusters/sandbox/HEALTH.md` in the
-output repository. **Stop** on a running scan ends the wait; the check is then not recorded.
+output repository. **Stop** on a running scan ends the wait; the check is then not recorded. An application whose
+latest check found a component failing or not ready is read again every 10 minutes (for 14 days): once it is healthy,
+say after someone filled its secret values in OpenBao, a new check says so, without another scan. One still failing
+keeps the scan's diagnosis. `HEALTH.md` changes with the next scan.
 
 ## The LLM queue
 

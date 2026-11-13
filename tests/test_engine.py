@@ -621,3 +621,19 @@ def test_a_repository_mounts_every_file_of_its_components(tmp_path):
                      "properties": [], "every": True}
     assert valid_files_path("/secrets") and valid_files_path("/app/certs")
     assert not any(valid_files_path(p) for p in ("/app", "/", "secrets", "/tmp", "/etc/ssl/..", "/a b", "/home/app"))
+
+
+def test_settings_that_name_a_certificate_point_at_the_files_from_the_secret_store(tmp_path):
+    """With the repository's files from the secret store, a setting naming a key or certificate file (relative, a
+    Windows path) is pointed at that file in the folder: a scan again does not undo it; a placeholder, a URL stay."""
+    web_app(tmp_path)
+    write(tmp_path, "src/Web/appsettings.json", r"""{"Snow": {"CertificatePath": "certs\\key_dev.pfx",
+        "CaFile": "C:\\certs\\ca.pem", "JwksUrl": "https://idp/keys.pem", "Other": "#{Cert.Path}#"}}""")
+    a = assess(tmp_path)
+    c = a.components[0]
+    assert c.facts["cert_path_settings"] == {"Snow:CertificatePath": "key_dev.pfx", "Snow:CaFile": "ca.pem"}
+    assert "Snow__CertificatePath" not in make_plan(a, c)["env"]           # no files folder: as before
+    c.facts["files_mount"] = "/app/certs/"
+    env = make_plan(a, c)["env"]
+    assert env["Snow__CertificatePath"] == "/app/certs/key_dev.pfx" and env["Snow__CaFile"] == "/app/certs/ca.pem"
+    assert "Snow__JwksUrl" not in env and "Snow__Other" not in env

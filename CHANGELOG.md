@@ -10,6 +10,16 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.45.3 (2026-11-13)
+
+- **An application that recovers after its scan is no longer shown failing until the next scan.** The scan worker
+  reads applications whose latest sandbox check found a component failing or not ready again every 10 minutes (for
+  14 days) and records a new check once they are healthy, say after their secret values were filled in OpenBao.
+- **Settings that name a certificate point at the files from the secret store.** With the repository's **Files from
+  the secret store**, a setting whose value names a key or certificate file (`certs\\app.pfx`, `C:\\certs\\ca.pem`) is
+  set to that file name in the folder (`/secrets/app.pfx`), so nobody edits the output by hand and a scan again keeps
+  it.
+
 ## 0.45.2 (2026-11-13)
 
 - **The OpenBao sync no longer rewrites every value in the store every 2 minutes.** It reads the store's Secrets

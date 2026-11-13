@@ -337,6 +337,16 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
                 win[key] = val
         if win:
             facts["windows_paths"] = win
+        # settings that name a key or certificate file (Snow:CertificatePath = "certs\\app.pfx"): pointed at the folder
+        # of the files from the secret store when the repository mounts one (generate.files_plan)
+        certs = {}
+        for key, val in _flatten(cfg):
+            if isinstance(val, str) and len(val) < 260 and "://" not in val and "#{" not in val and "$(" not in val:
+                leaf = re.split(r"[\\/]", val.strip())[-1]
+                if re.fullmatch(r"[\w.-]+\.(pfx|p12|pem|key|crt|cer|jks|keytab)", leaf, re.I):
+                    certs[key] = leaf
+        if certs:
+            facts["cert_path_settings"] = certs
         # custom listen-address settings ("WebhookUrls": "http://*:8085" read by UseUrls)
         listen = [k for k, v in _flatten(cfg) if isinstance(v, str) and not k.startswith("Kestrel:")
                   and re.fullmatch(r"(https?://(\*|\+|0\.0\.0\.0|\[::\]):\d+;?)+", v.strip())]
