@@ -10,6 +10,11 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.45.6 (2026-11-13)
+
+- **A disabled project's repositories are hidden on Admin → Repositories**: only the new **Hidden** view lists them
+  (not even **All**), and the project's page; the other views say how many are hidden.
+
 ## 0.45.5 (2026-11-13)
 
 - **Admin → Repositories and Projects: Commit in 6 months and Latest commit first**, instead of No commit for a year and

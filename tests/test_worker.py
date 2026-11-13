@@ -824,8 +824,9 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         body = b.follow("/admin/audit?table=OrgProject")[2]
         assert "Legacy" in body and "Found by a scan" in body and "Jane Doe" in body
         body = b.follow(f"/admin/repositories?scan={scan_id}&show=disabled")[2]
-        assert "project Legacy disabled by an administrator (deprecated)" in body and "retired" in body
-        assert ">api<" not in body
+        assert "retired" in body and ">api<" not in body and "old-app" not in body   # its project's: under Hidden
+        body = b.follow(f"/admin/repositories?scan={scan_id}&show=hidden")[2]
+        assert "project Legacy disabled by an administrator (deprecated)" in body and "retired" not in body
         body = b.follow(f"/admin/repositories/{int(re.search(r'/admin/repositories/(\d+)', rows['Legacy/old-app'])[1])}")[2]
         assert "Its project Legacy is disabled" in body
 
@@ -850,7 +851,10 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         assert fetched == ["Billing/api"], logs
         body = b.follow(f"/admin/repositories?scan={scan_id}")[2]
         rows = dict(re.findall(r"aria-label='Select ([^']+)'>(.*?)</tr>", body, re.S))
-        assert "Not processed (disabled)" in rows["Legacy/old-app"] and "Not processed (disabled)" in rows["Billing/web"]
+        assert "Legacy/old-app" not in rows and "Not processed (disabled)" in rows["Billing/web"]
+        body = b.follow(f"/admin/repositories?scan={scan_id}&show=hidden")[2]
+        rows.update(re.findall(r"aria-label='Select ([^']+)'>(.*?)</tr>", body, re.S))
+        assert "Not processed (disabled)" in rows["Legacy/old-app"]
         out = tmp_path / "data" / f"scan-{scan_id}" / "output" / "contoso"
         assert (out / "Billing" / "api").is_dir() and not (out / "Legacy" / "old-app").exists() and not (out / "Billing" / "web").exists()
         body = b.follow("/admin/scans")[2]
@@ -884,6 +888,13 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         assert sorted(fetched) == ["Billing/api", "Billing/web"], logs   # web: enabled by Scan now
         assert "enabled by Scan now" in b.follow(f"/admin/repositories/{web_id}")[2]
         b.follow(f"/admin/repositories/projects/{projects['Legacy']}", {"csrf": csrf, "Setting": "disabled", "Note": ""})
+        # a disabled project's repositories are not in the list, only under the project
+        body = b.follow(f"/admin/repositories?scan={scan_id}")[2]
+        assert "old-app" not in body and ">api<" in body and "1 repository of disabled projects not listed" in body
+        assert "old-app" in b.follow(f"/admin/repositories?scan={scan_id}&project=Legacy")[2]
+        assert "old-app" not in b.follow(f"/admin/repositories?scan={scan_id}&show=disabled")[2]
+        body = b.follow(f"/admin/repositories?scan={scan_id}&show=hidden")[2]
+        assert "old-app" in body and ">api<" not in body
 
         # enabling the project again brings its results back; only administrators may change projects
         b.follow(f"/admin/repositories/projects/{projects['Legacy']}", {"csrf": csrf, "Setting": "enabled", "Note": ""})

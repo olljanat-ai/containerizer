@@ -691,6 +691,7 @@ REPO_SHOW = {"all": ("All", "r.RemovedAt IS NULL"), "enabled": ("Enabled", "r.Re
              "new": ("New", f"r.RemovedAt IS NULL AND r.FirstSeenAt > DATEADD(day, -{NEW_DAYS}, SYSUTCDATETIME())"),
              "failed": ("Failed", "r.RemovedAt IS NULL AND r.LastStatus = N'error'"),
              "active": ("Commit in 6 months", "r.RemovedAt IS NULL AND r.LatestCommitAt >= DATEADD(month, -6, SYSUTCDATETIME())"),
+             "hidden": ("Hidden", "r.RemovedAt IS NULL AND r.ProjectState = N'disabled'"),
              "removed": ("Removed", "r.RemovedAt IS NOT NULL")}
 
 
@@ -715,9 +716,16 @@ def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
         where.append("(r.Name LIKE %s ESCAPE '\\' OR r.ProjectName LIKE %s ESCAPE '\\')")
         like = "%" + re.sub(r"([%_\[\\])", r"\\\1", text) + "%"
         params += [like, like]
+    hidden = 0
     if project:
         where.append("r.ProjectName = %s")
         params.append(project)
+    elif show not in ("removed", "hidden"):
+        # a disabled project's repositories: under Hidden (and Projects -> the project), in no other view
+        cur.execute(f"""SELECT COUNT(*) AS N FROM cz.vOrgRepository r WHERE {' AND '.join(where)}
+                        AND r.ProjectState = N'disabled'""", tuple(params) or None)
+        hidden = int(cur.fetchone()["N"] or 0)
+        where.append("(r.ProjectState IS NULL OR r.ProjectState <> N'disabled')")
     cur.execute(f"""SELECT TOP (2000) r.*, s.Name AS ScanName FROM cz.vOrgRepository r JOIN cz.OrgScan s ON s.ScanId = r.ScanId
                     WHERE {' AND '.join(where)} ORDER BY {order}""", tuple(params) or None)
     repos = cur.fetchall()
@@ -784,7 +792,10 @@ def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
             f"process it anyway, disable one to leave it out, or set it back to automatic. A disabled repository is not "
             f"cloned by the full scan and its results are hidden from the results pages. Whole projects are disabled "
             f"under <a href='/admin/repositories/projects'>Projects</a>. <b>Discover</b> on the scan's page fills this "
-            f"list with the latest commits without a full scan.</p>{search}"
+            f"list with the latest commits without a full scan.</p>"
+            + (f"<p class='muted small'>{hidden} repositor{'y' if hidden == 1 else 'ies'} of disabled projects not listed: "
+               f"<a href='/admin/repositories?{e(urlencode({**base, 'show': 'hidden'}))}'>Hidden</a>.</p>" if hidden else "")
+            + f"{search}"
             f"<nav class='chips'>{chips} {sort_link}</nav>"
             f"<form method='post' action='/admin/repositories/bulk'>{adm._csrf(s)}{actions}"
             f"<table><thead><tr><th>{SELECT_ALL.format(name='repo', what='repositories')}</th><th>Repository</th><th>Latest commit</th><th>State</th><th>Reason</th>"
