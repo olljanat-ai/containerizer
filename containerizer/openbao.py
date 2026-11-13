@@ -376,7 +376,8 @@ def sync_component(bao: Bao, store_ns: str, c: dict, log=print) -> dict:
     if got is None:     # none, or its latest version deleted (its values are cleared): write after that version
         meta = bao.call("GET", f"{MOUNT}/metadata/{path}", ok404=True)
         version = ((meta or {}).get("data") or {}).get("current_version") or 0
-    raw = _run(["-n", store_ns, "get", "secret", c["remote"], "-o", "json"], ok_missing=True)
+    # kubectl leaves managedFields out unless asked: without them every key looked set by hand, and was written again
+    raw = _run(["-n", store_ns, "get", "secret", c["remote"], "-o", "json", "--show-managed-fields"], ok_missing=True)
     secret = json.loads(raw) if raw else None
     owners, have = _owners(secret or {}), _decode(secret)
     system = {k for k, m in owners.items() if _system(m)}

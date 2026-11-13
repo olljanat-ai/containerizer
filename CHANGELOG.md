@@ -10,6 +10,13 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.45.2 (2026-11-13)
+
+- **The OpenBao sync no longer rewrites every value in the store every 2 minutes.** It reads the store's Secrets
+  without their managed fields (kubectl leaves them out unless asked), so it never saw that it owns its keys and
+  wrote them all again each run. It asks for them now. The same made a key another appliance writer fills (the
+  sandbox IdP's client secret) look like a value set by hand.
+
 ## 0.45.1 (2026-11-13)
 
 - **An app whose secret values come from OpenBao no longer restarts every 2 minutes.** The sync restarted the app on
