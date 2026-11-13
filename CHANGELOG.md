@@ -10,6 +10,15 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.45.1 (2026-11-13)
+
+- **An app whose secret values come from OpenBao no longer restarts every 2 minutes.** The sync restarted the app on
+  each run it wrote the store, and it did so for each entry: an app with settings and files got a new ReplicaSet
+  every 2 minutes (two at once, the second refused: "could not sync the apps' secret values"). A workload now
+  restarts by a fingerprint of the Secrets it reads in its pod template (`containerizer.io/secrets`, from ESO's data
+  hash): once per change, and not at all when what the app gets is the same. The sync logs the key names (never
+  values) whenever it writes the store, so `journalctl -u containerizer-sandbox` says why.
+
 ## 0.45.0 (2026-11-12)
 
 - **Files from the secret store, for any application.** Admin → Repositories → the repository → Settings →
