@@ -2222,7 +2222,8 @@ def discover_org(o: OrgOptions, log=print, workers: int = 8) -> list[Discovered]
         hooks.start(len(listed))
 
     def latest(r: SourceRepo) -> tuple[datetime | None, str]:
-        if r.empty or admin.get(r.key) in ("disabled", "project-disabled"):
+        # a disabled one too: whether a project disabled as deprecated is still worked on is what its latest commit says
+        if r.empty:
             return r.last_activity, ""
         try:
             return prov.last_commit(r) or r.last_activity, ""
@@ -2230,6 +2231,7 @@ def discover_org(o: OrgOptions, log=print, workers: int = 8) -> list[Discovered]
             return r.last_activity, str(e)[:300]
 
     out: list[Discovered] = []
+    errors = 0
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         for i, (r, (when, err)) in enumerate(zip(listed, pool.map(latest, listed)), 1):
             if hooks and hasattr(hooks, "should_stop") and hooks.should_stop():
@@ -2237,6 +2239,10 @@ def discover_org(o: OrgOptions, log=print, workers: int = 8) -> list[Discovered]
                 pool.shutdown(wait=False, cancel_futures=True)
                 break
             d = Discovered(r, when, None, err)
+            if err:
+                errors += 1
+                if errors <= 5:             # why "Latest commit" stays empty (the token, the API): a few say it
+                    log(f"{r.key}: latest commit not read: {err}")
             if (inc and not inc.search(r.key)) or (exc and exc.search(r.key)) or \
                     (o.output_repo and same_repo(r.clone_url, o.output_repo)):
                 d.skip = ("skipped-filter", "left out by the scan's include/exclude filter")
@@ -2255,6 +2261,8 @@ def discover_org(o: OrgOptions, log=print, workers: int = 8) -> list[Discovered]
                 o.state.discovered(d)
             if hooks and hasattr(hooks, "discovered"):
                 hooks.discovered(i, d)
+    if errors:
+        log(f"latest commit not read for {errors} of {len(out)} repositories" + (" (the first 5 are above)" if errors > 5 else ""))
     return out
 
 

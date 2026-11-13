@@ -742,14 +742,17 @@ def test_discover_org_lists_without_cloning(monkeypatch, tmp_path):
     o = OrgOptions(provider="azure-devops", org="contoso", registry="r.example/x", token="t", skip_forks=True,
                    exclude="sandbox", state=st, now=datetime(2026, 11, 1, tzinfo=timezone.utc),
                    work_dir=str(tmp_path / "work"))
-    found = {d.repo.key: d for d in orgmod.discover_org(o, log=lambda m: None)}
+    logged = []
+    found = {d.repo.key: d for d in orgmod.discover_org(o, log=logged.append)}
+    assert "A/broken: latest commit not read: HTTP 500" in logged       # why its Latest commit stays empty
+    assert "latest commit not read for 1 of 8 repositories" in logged
     assert len(st.seen) == len(repos) and not (tmp_path / "work").exists()
     assert found["A/fresh"].skip is None and found["A/fresh"].last_commit == dates["A/fresh"]
     assert found["A/old"].skip == ("skipped-stale", "last commit 2020-01-01")
     assert found["A/gone"].skip[0] == "skipped-archived" and found["A/blank"].skip[0] == "skipped-empty"
     assert found["B/fork"].skip[0] == "skipped-fork" and found["B/sandbox"].skip[0] == "skipped-filter"
     assert found["A/broken"].error and found["A/broken"].skip is None
-    assert "C/off" not in prov.asked and "A/blank" not in prov.asked     # disabled and empty: no API call
+    assert "C/off" in prov.asked and "A/blank" not in prov.asked     # disabled: its latest commit too; empty: none
 
     class Stop:
         def start(self, n):
