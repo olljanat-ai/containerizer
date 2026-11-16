@@ -10,6 +10,22 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.45.8 (2026-11-16)
+
+- **Hide single repositories**: Admin → Repositories → **Hide** (or **Hidden** on a repository's page) for the deprecated
+  repositories of a project that is still used. A hidden repository is disabled and listed only under **Hidden** and
+  with its project, like a disabled project's repositories. Schema 53 (`OrgRepository.Hidden`).
+- **Archived, empty, forked, stale and filtered-out repositories are listed under Hidden** with their reason (unless an
+  administrator enabled them), and a disabled repository shows its automatic skip too: after a discovery with new
+  repositories disabled by default, every one said only *disabled by an administrator (new repository: disabled by
+  default)*.
+- **Admin → Repositories opens on Enabled** instead of All (a project's link still lists all its repositories).
+- **Runs an administrator starts go side by side**: Scan now, Run now and Discover of different organization scans start at
+  once next to the runs already going (up to 4 at a time) instead of waiting in the queue; scheduled runs still wait
+  until no run is going.
+- **A new organization scan starts with** New repositories *Disabled by default*, **Build and run** on, LLM reviews
+  *Queued* and no schedule day (on demand), enabled. Existing scans keep their settings.
+
 ## 0.45.7 (2026-11-16)
 
 - **An enabled repository with Dockerfiles but no Compose, Swarm, Nomad, Azure Container Apps or ECS file is deployed

@@ -91,21 +91,27 @@ def repo_state(r: dict) -> tuple[str, str, str]:
     if r.get("ProjectState") == "disabled":
         pnote = f" ({r['ProjectNote']})" if r.get("ProjectNote") else ""
         return "Disabled", "administrator", f"project {r['ProjectName']} disabled by an administrator" + pnote
+    skip = f"{SKIP_TEXT.get(r['SkipStatus'], r['SkipStatus'])}: {r.get('SkipReason') or ''}" if r.get("SkipStatus") else ""
+    if r.get("Hidden"):
+        return "Hidden", "administrator", "hidden by an administrator (disabled)" + note
+    if r.get("IsHidden") and r.get("AdminState") != "enabled":
+        # an automatic skip the provider's API shows (archived, empty, fork, stale, filtered): listed under Hidden
+        return "Hidden", "automatic", skip + (f"; {r['AdminNote']}" if r.get("AdminNote") else "")
     if r.get("AdminState") == "disabled":
-        return "Disabled", "administrator", "disabled by an administrator" + note
+        return "Disabled", "administrator", "disabled by an administrator" + note + (f"; automatic skip: {skip}" if skip else "")
     if r.get("AdminState") == "enabled":
         over = f"; overrides the automatic skip: {SKIP_TEXT.get(r['SkipStatus'], r['SkipStatus'])}: {r['SkipReason']}" \
             if r.get("SkipStatus") else ""
         return "Enabled", "administrator", "enabled by an administrator" + note + over
     if r.get("SkipStatus"):
-        return "Disabled", "automatic", f"{SKIP_TEXT.get(r['SkipStatus'], r['SkipStatus'])}: {r.get('SkipReason') or ''}"
+        return "Disabled", "automatic", skip
     if not r.get("LastStatus"):
         return "Enabled", "automatic", "new: not scanned yet" if not r.get("LatestCommitAt") else "discovered: not scanned yet"
     return "Enabled", "automatic", ""
 
 
 def state_chip(state: str, who: str) -> str:
-    css = {"Enabled": "st-ok", "Disabled": "st-off", "Removed": "st-off"}.get(state, "")
+    css = {"Enabled": "st-ok", "Disabled": "st-off", "Hidden": "st-off", "Removed": "st-off"}.get(state, "")
     return f"<span class='st {css}'>{e(state)}</span>" + (f"<div class='muted small'>{e(who)}</div>" if who else "")
 
 
@@ -349,9 +355,11 @@ under <a href='/admin/repositories'>Repositories</a>.</p>
 def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
     from .worker import check_scan, schedule_text
     if ident is None:
-        scan = {"Provider": "github", "OutputBranch": "main", "Registry": LOCAL_REGISTRY, "SkipForks": True, "StaleDays": 183, "Verify": False,
-                "Gate": True, "PushImages": True, "UseAi": False, "LlmMode": "inline", "LlmHeavy": False, "ScheduleDays": 32, "ScheduleMinute": 120, "Enabled": True,
-                "NewReposEnabled": True, "Parallel": 1}
+        # a new scan: build and run on, LLM reviews queued, no schedule (on demand) and new repositories disabled until
+        # an administrator enables them
+        scan = {"Provider": "github", "OutputBranch": "main", "Registry": LOCAL_REGISTRY, "SkipForks": True, "StaleDays": 183, "Verify": True,
+                "Gate": True, "PushImages": True, "UseAi": False, "LlmMode": "queued", "LlmHeavy": False, "ScheduleDays": 0, "ScheduleMinute": 120, "Enabled": True,
+                "NewReposEnabled": False, "Parallel": 1}
         return Response(200, adm._shell(s, a, "New organization scan", "scans", _scan_form(adm, s, scan, None, _output_repos(conn)), flash))
     cur = conn.cursor(as_dict=True)
     cur.execute("SELECT * FROM cz.OrgScan WHERE ScanId = %s", (ident,))
@@ -691,13 +699,15 @@ REPO_SHOW = {"all": ("All", "r.RemovedAt IS NULL"), "enabled": ("Enabled", "r.Re
              "new": ("New", f"r.RemovedAt IS NULL AND r.FirstSeenAt > DATEADD(day, -{NEW_DAYS}, SYSUTCDATETIME())"),
              "failed": ("Failed", "r.RemovedAt IS NULL AND r.LastStatus = N'error'"),
              "active": ("Commit in 6 months", "r.RemovedAt IS NULL AND r.LatestCommitAt >= DATEADD(month, -6, SYSUTCDATETIME())"),
-             "hidden": ("Hidden", "r.RemovedAt IS NULL AND r.ProjectState = N'disabled'"),
+             "hidden": ("Hidden", "r.RemovedAt IS NULL AND (r.IsHidden = 1 OR r.ProjectState = N'disabled')"),
              "removed": ("Removed", "r.RemovedAt IS NOT NULL")}
 
 
 def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
-    show = _q(q, "show", "all")
-    show = show if show in REPO_SHOW else "all"
+    # Enabled by default; a project's repositories (its page links here) all, hidden and disabled ones too
+    default = "all" if _q(q, "project") else "enabled"
+    show = _q(q, "show", default)
+    show = show if show in REPO_SHOW else default
     scan = _q(q, "scan")
     scan_id = int(scan) if re.fullmatch(r"\d{1,9}", scan) else None
     text = " ".join(_q(q, "q").split())
@@ -721,11 +731,11 @@ def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
         where.append("r.ProjectName = %s")
         params.append(project)
     elif show not in ("removed", "hidden"):
-        # a disabled project's repositories: under Hidden (and Projects -> the project), in no other view
+        # hidden repositories and a disabled project's ones: under Hidden (and Projects -> the project), in no other view
         cur.execute(f"""SELECT COUNT(*) AS N FROM cz.vOrgRepository r WHERE {' AND '.join(where)}
-                        AND r.ProjectState = N'disabled'""", tuple(params) or None)
+                        AND (r.IsHidden = 1 OR r.ProjectState = N'disabled')""", tuple(params) or None)
         hidden = int(cur.fetchone()["N"] or 0)
-        where.append("(r.ProjectState IS NULL OR r.ProjectState <> N'disabled')")
+        where.append("r.IsHidden = 0 AND (r.ProjectState IS NULL OR r.ProjectState <> N'disabled')")
     cur.execute(f"""SELECT TOP (2000) r.*, s.Name AS ScanName FROM cz.vOrgRepository r JOIN cz.OrgScan s ON s.ScanId = r.ScanId
                     WHERE {' AND '.join(where)} ORDER BY {order}""", tuple(params) or None)
     repos = cur.fetchall()
@@ -776,6 +786,8 @@ def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
                "<button name='action' value='enable'>Enable</button>"
                "<button name='action' value='disable'>Disable</button>"
                "<button name='action' value='auto' class='secondary'>Automatic</button>"
+               "<button name='action' value='hide' class='secondary' title='Deprecated: disabled, and listed only under "
+               "Hidden'>Hide</button>"
                "<button name='action' value='scan' class='secondary' title='A full scan of the selected repositories now, "
                "outside the schedule'>Scan now</button>"
                "<input name='Note' maxlength='400' placeholder='Note (optional), e.g. why' aria-label='Note'></div>")
@@ -789,11 +801,13 @@ def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
     body = (f"<p class='muted'>Every repository the organization scans have found{scoped}. A scan skips repositories that "
             f"already have a Dockerfile, have no application code, have not been updated recently, are archived, empty "
             f"or forks: they show as <b>disabled</b> with the reason, and are checked again at every run. Enable one to "
-            f"process it anyway, disable one to leave it out, or set it back to automatic. A disabled repository is not "
+            f"process it anyway, disable one to leave it out, or set it back to automatic. <b>Hide</b> a deprecated one: it "
+            f"is disabled and listed only under <b>Hidden</b> and on its project's page, as are the archived, empty, forked, "
+            f"stale and filtered-out ones (each with its reason) unless enabled. A disabled repository is not "
             f"cloned by the full scan and its results are hidden from the results pages. Whole projects are disabled "
             f"under <a href='/admin/repositories/projects'>Projects</a>. <b>Discover</b> on the scan's page fills this "
             f"list with the latest commits without a full scan.</p>"
-            + (f"<p class='muted small'>{hidden} repositor{'y' if hidden == 1 else 'ies'} of disabled projects not listed: "
+            + (f"<p class='muted small'>{hidden} hidden repositor{'y' if hidden == 1 else 'ies'} (hidden by an administrator, archived, empty, forks, not updated recently or filtered out, or of disabled projects) not listed: "
                f"<a href='/admin/repositories?{e(urlencode({**base, 'show': 'hidden'}))}'>Hidden</a>.</p>" if hidden else "")
             + f"{search}"
             f"<nav class='chips'>{chips} {sort_link}</nav>"
@@ -805,7 +819,7 @@ def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
     return Response(200, adm._shell(s, a, "Repositories", "repositories", body, flash))
 
 
-ACTIONS = {"enable": "enabled", "disable": "disabled", "auto": None}
+ACTIONS = {"enable": "enabled", "disable": "disabled", "auto": None, "hide": "disabled"}
 
 
 def bulk_repos(conn, form: dict) -> Response:
@@ -815,7 +829,7 @@ def bulk_repos(conn, form: dict) -> Response:
         return scan_now(conn, [], ids, "/admin/repositories") if ids else \
             _back("/admin/repositories", "Select at least one repository.")
     if action not in ACTIONS:
-        return _back("/admin/repositories", "Choose Enable, Disable or Automatic.")
+        return _back("/admin/repositories", "Choose Enable, Disable, Automatic or Hide.")
     if not ids:
         return _back("/admin/repositories", "Select at least one repository.")
     note = " ".join(form.get("Note", [""])[0].split())[:400] or None
@@ -823,11 +837,13 @@ def bulk_repos(conn, form: dict) -> Response:
     n = 0
     for i in range(0, len(ids), 500):
         part = ids[i:i + 500]
-        cur.execute(f"UPDATE cz.OrgRepository SET AdminState = %s, AdminNote = %s WHERE RepositoryId IN "
-                    f"({', '.join(['%s'] * len(part))})", (ACTIONS[action], note if action != "auto" else None, *part))
+        cur.execute(f"UPDATE cz.OrgRepository SET AdminState = %s, AdminNote = %s, Hidden = %s WHERE RepositoryId IN "
+                    f"({', '.join(['%s'] * len(part))})",
+                    (ACTIONS[action], note if action != "auto" else None, 1 if action == "hide" else 0, *part))
         n += cur.rowcount
     conn.commit()
-    what = {"enable": "enabled", "disable": "disabled", "auto": "set back to automatic"}[action]
+    what = {"enable": "enabled", "disable": "disabled", "auto": "set back to automatic",
+            "hide": "hidden (disabled; listed under Hidden)"}[action]
     return _back("/admin/repositories", f"{n} repositor{'y' if n == 1 else 'ies'} {what}. The next run follows it.")
 
 
@@ -874,7 +890,7 @@ def edit_repo(adm, conn, s, a, ident: int, flash: str) -> Response:
     if apps:
         facts.append(("Results", ", ".join(f"<a href='/app/{int(a['ApplicationId'])}'>{e(a['N'])}</a>" for a in apps)))
     meta = "".join(f"<div><span class='label'>{k}</span> {v}</div>" for k, v in facts if v)
-    cur_setting = r["AdminState"] or "auto"
+    cur_setting = "hidden" if r.get("Hidden") else r["AdminState"] or "auto"
     opts = "".join(f"<label class='check'><input type='radio' name='Setting' value='{k}'{' checked' if k == cur_setting else ''}> "
                    f"{t}</label>" for k, t in (("auto", "Automatic: the scan decides (skips repositories with a Dockerfile, "
                                                          "without application code, not updated recently, ...)"),
@@ -883,7 +899,9 @@ def edit_repo(adm, conn, s, a, ident: int, flash: str) -> Response:
                                                           "Compose, Nomad, Azure Container Apps or ECS to Kubernetes; "
                                                           "without those, each Dockerfile is built and deployed)"),
                                               ("disabled", "Disabled: never process it (stops deploying it to the sandbox, "
-                                                           "hides its results from the results pages)")))
+                                                           "hides its results from the results pages)"),
+                                              ("hidden", "Hidden: deprecated; disabled, and listed only under Hidden and on "
+                                                         "its project's page")))
     split = r.get("SplitPath") or ""
     hint = detail.get("split_hint") or {}
     split_val = split or hint.get("pattern") or ""
@@ -987,10 +1005,11 @@ def _llm_section(u: dict) -> str:
 def save_repo(conn, ident: int, form: dict) -> Response:
     from .org import valid_split
     setting = form.get("Setting", [""])[0]
-    if setting not in ("auto", "enabled", "disabled"):
-        return _back(f"/admin/repositories/{ident}", "Choose automatic, enabled or disabled.")
+    if setting not in ("auto", "enabled", "disabled", "hidden"):
+        return _back(f"/admin/repositories/{ident}", "Choose automatic, enabled, disabled or hidden.")
     note = " ".join(form.get("Note", [""])[0].split())[:400] or None
-    sets, params = "AdminState = %s, AdminNote = %s", [None if setting == "auto" else setting, note]
+    sets, params = "AdminState = %s, AdminNote = %s, Hidden = %s", [
+        None if setting == "auto" else "disabled" if setting == "hidden" else setting, note, 1 if setting == "hidden" else 0]
     mode = form.get("SplitMode", [""])[0]
     if mode in ("whole", "split"):                         # the form has it; the list's bulk actions do not
         pattern = form.get("SplitPath", [""])[0].strip().strip("/") if mode == "split" else ""
@@ -1211,7 +1230,7 @@ def scan_now(conn, project_ids: list[int], repo_ids: list[int], back: str) -> Re
     enabled = 0
     for ids, sql in ((project_ids, "UPDATE cz.OrgProject SET AdminState = NULL, AdminNote = N'enabled by Scan now' "
                                    "WHERE AdminState = N'disabled' AND RemovedAt IS NULL AND ProjectId IN ({})"),
-                     (repo_ids, "UPDATE cz.OrgRepository SET AdminState = N'enabled', AdminNote = N'enabled by Scan now' "
+                     (repo_ids, "UPDATE cz.OrgRepository SET AdminState = N'enabled', AdminNote = N'enabled by Scan now', Hidden = 0 "
                                 "WHERE AdminState = N'disabled' AND RemovedAt IS NULL AND RepositoryId IN ({})")):
         for i in range(0, len(ids), 500):
             part = ids[i:i + 500]

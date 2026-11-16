@@ -198,6 +198,18 @@ def test_repo_state_texts():
     assert st[0] == "Enabled" and st[1] == "administrator" and "overrides the automatic skip: No application code" in st[2]
     st = admin_scans.repo_state({**base, "AdminState": "disabled", "AdminNote": "legacy"})
     assert st == ("Disabled", "administrator", "disabled by an administrator (legacy)")
+    # disabled by default, with an automatic skip the full scan found: the reason is shown too
+    st = admin_scans.repo_state({**base, "AdminState": "disabled", "AdminNote": "new repository: disabled by default",
+                                 "SkipStatus": "skipped-dockerfile", "SkipReason": "found Dockerfile"})
+    assert st[0] == "Disabled" and st[2].endswith("; automatic skip: Has a Dockerfile: found Dockerfile")
+    # an automatic skip the provider's API shows (IsHidden in the view): under Hidden, with its reason
+    st = admin_scans.repo_state({**base, "AdminState": "disabled", "AdminNote": "new repository: disabled by default",
+                                 "SkipStatus": "skipped-stale", "SkipReason": "no update since 2024-01-07", "IsHidden": True})
+    assert st == ("Hidden", "automatic", "Not updated recently: no update since 2024-01-07; new repository: disabled by default")
+    st = admin_scans.repo_state({**base, "SkipStatus": "skipped-archived", "SkipReason": "archived or disabled", "IsHidden": True})
+    assert st == ("Hidden", "automatic", "Archived: archived or disabled")
+    st = admin_scans.repo_state({**base, "AdminState": "disabled", "Hidden": True, "IsHidden": True})
+    assert st == ("Hidden", "administrator", "hidden by an administrator (disabled)")
 
 
 # --------------------------------------------------------------------------- metrics
@@ -338,6 +350,11 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
         s, _, body = b.follow("/admin/scans")
         assert s == 200 and "No organization scans yet" in body and "Organization scans" in body
         csrf = b.csrf(body)
+        # a new scan's form: build and run on, LLM reviews queued, no day (on demand), new repositories disabled
+        form = b.follow("/admin/scans/new")[2]
+        assert "name='Verify' value='1' checked" in form and "value='queued' selected" in form
+        assert "name='day' value='" in form and "name='day' value='5' checked" not in form and "' checked> Mon" not in form
+        assert "<option value='0' selected>Disabled by default" in form and "name='Enabled' value='1' checked" in form
         s, h, body = b.follow("/admin/scans/new", {"csrf": csrf, **_form(Name="Acme GitHub", Gate="", day=["5"])})
         assert s == 200 and "Saved." in body and "Sat at 02:30 UTC" in body
         assert "name='LlmHeavy' value='1'>" in body and "off on this appliance" in body    # off by default
@@ -474,7 +491,7 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
 
         s, _, body = b.follow(f"/admin/scans/{scan_id}")
         assert "Finished" in body and "4 of 4" in body and "2 deployed" in body and "4 new" in body, body
-        s, _, body = b.follow(f"/admin/repositories?scan={scan_id}")
+        s, _, body = b.follow(f"/admin/repositories?scan={scan_id}&show=all")
         assert s == 200
         page_rows = re.findall(r"<tr><td><input type='checkbox' name='repo' value='(\d+)' aria-label='Select ([^']+)'>"
                                r"(.*?)</tr>", body, re.S)
@@ -508,7 +525,7 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
         s, _, body = b.follow(f"/admin/scans/{scan_id}/run", {"csrf": csrf})
         assert w.tick() is True
         assert "legacy" not in fetched and fetched.count("shop") == 1          # disabled: not fetched
-        body = b.follow(f"/admin/repositories?scan={scan_id}")[2]
+        body = b.follow(f"/admin/repositories?scan={scan_id}&show=all")[2]
         page_rows = re.findall(r"<tr><td><input type='checkbox' name='repo' value='(\d+)' aria-label='Select ([^']+)'>"
                                r"(.*?)</tr>", body, re.S)
         rows2 = {n: html for _, n, html in page_rows}
@@ -760,16 +777,20 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         body = b.follow(f"/admin/scans/{scan_id}")[2]
         assert "Finished" in body and "Discovery" in body and "3 repositories in 2 projects" in body, body
         assert "nothing cloned" in body and "1 would be skipped" in body and "press Discover first" not in body
-        body = b.follow(f"/admin/repositories?scan={scan_id}")[2]
+        body = b.follow(f"/admin/repositories?scan={scan_id}&show=all")[2]
         rows = dict(re.findall(r"aria-label='Select ([^']+)'>(.*?)</tr>", body, re.S))
-        assert set(rows) == set(keys)
+        # the stale one (an automatic skip the provider's API shows): only under Hidden, with its reason
+        assert set(rows) == {"Billing/api", "Billing/web"} and "1 hidden repository" in body
         assert "2026-10-20 08:00 UTC" in rows["Billing/api"] and "discovered: not scanned yet" in rows["Billing/api"]
-        assert "2019-05-04 03:02 UTC" in rows["Legacy/old-app"] and "Not updated recently" in rows["Legacy/old-app"]
+        body = b.follow(f"/admin/repositories?scan={scan_id}&show=hidden")[2]
+        rows.update(re.findall(r"aria-label='Select ([^']+)'>(.*?)</tr>", body, re.S))
+        assert ">api<" not in body and "2019-05-04 03:02 UTC" in rows["Legacy/old-app"]
+        assert ">Hidden<" in rows["Legacy/old-app"] and "Not updated recently: " in rows["Legacy/old-app"]
         body = b.follow(f"/admin/repositories?scan={scan_id}&show=active")[2]
         assert "Commit in 6 months" in body and "old-app" not in body
-        body = b.follow(f"/admin/repositories?scan={scan_id}&sort=commit")[2]
+        body = b.follow(f"/admin/repositories?scan={scan_id}&sort=commit&show=all")[2]
         assert "Latest commit first" not in body and "Sort by name" in body
-        assert body.index(">api<") < body.index(">web<") < body.index("old-app")
+        assert body.index(">api<") < body.index(">web<") and "old-app" not in body
         body = b.follow(f"/admin/repositories/projects?scan={scan_id}&show=active&sort=commit")[2]
         assert "Legacy" not in body
         body = b.follow(f"/admin/repositories/projects?scan={scan_id}")[2]
@@ -849,7 +870,7 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         b.follow(f"/admin/scans/{scan_id}/run", {"csrf": csrf})
         assert w.tick() is True
         assert fetched == ["Billing/api"], logs
-        body = b.follow(f"/admin/repositories?scan={scan_id}")[2]
+        body = b.follow(f"/admin/repositories?scan={scan_id}&show=all")[2]
         rows = dict(re.findall(r"aria-label='Select ([^']+)'>(.*?)</tr>", body, re.S))
         assert "Legacy/old-app" not in rows and "Not processed (disabled)" in rows["Billing/web"]
         body = b.follow(f"/admin/repositories?scan={scan_id}&show=hidden")[2]
@@ -876,7 +897,7 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         assert fetched == ["Legacy/old-app"], logs
         body = b.follow(f"/admin/scans/{scan_id}")[2]
         assert "Full scan: project Legacy" in body and "1 of 1" in body
-        body = b.follow(f"/admin/repositories?scan={scan_id}")[2]
+        body = b.follow(f"/admin/repositories?scan={scan_id}&show=all")[2]
         rows = dict(re.findall(r"aria-label='Select ([^']+)'>(.*?)</tr>", body, re.S))
         assert "Not processed (disabled)" in rows["Billing/web"] and "Deployed" in rows["Legacy/old-app"]
         assert "Left out by the filter" not in body                     # the others are not touched
@@ -889,8 +910,8 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         assert "enabled by Scan now" in b.follow(f"/admin/repositories/{web_id}")[2]
         b.follow(f"/admin/repositories/projects/{projects['Legacy']}", {"csrf": csrf, "Setting": "disabled", "Note": ""})
         # a disabled project's repositories are not in the list, only under the project
-        body = b.follow(f"/admin/repositories?scan={scan_id}")[2]
-        assert "old-app" not in body and ">api<" in body and "1 repository of disabled projects not listed" in body
+        body = b.follow(f"/admin/repositories?scan={scan_id}&show=all")[2]
+        assert "old-app" not in body and ">api<" in body and "1 hidden repository (hidden by an administrator" in body
         assert "old-app" in b.follow(f"/admin/repositories?scan={scan_id}&project=Legacy")[2]
         assert "old-app" not in b.follow(f"/admin/repositories?scan={scan_id}&show=disabled")[2]
         body = b.follow(f"/admin/repositories?scan={scan_id}&show=hidden")[2]
@@ -900,6 +921,34 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         b.follow(f"/admin/repositories/projects/{projects['Legacy']}", {"csrf": csrf, "Setting": "enabled", "Note": ""})
         apps, _ = visible()
         assert set(apps) == {"api", "web", "old-app"}                    # web: enabled by Scan now
+
+        # the list opens on Enabled
+        body = b.follow(f"/admin/repositories?scan={scan_id}")[2]
+        assert "class='chip on' href='/admin/repositories?scan=" in body and "show=enabled'>Enabled<" in body
+        assert ">api<" in body
+        # one deprecated repository of a project that is still used: hidden on its own, disabled as well, audited
+        s, _, body = b.follow("/admin/repositories/bulk", {"csrf": csrf, "repo": [str(web_id)], "action": "hide",
+                                                           "Note": "deprecated"})
+        assert "1 repository hidden" in body, body
+        body = b.follow(f"/admin/repositories?scan={scan_id}&show=all")[2]
+        assert "Billing/web" not in body and ">api<" in body and "1 hidden repository" in body
+        assert "Billing/web" not in b.follow(f"/admin/repositories?scan={scan_id}&show=disabled")[2]
+        body = b.follow(f"/admin/repositories?scan={scan_id}&show=hidden")[2]
+        assert "Billing/web" in body and "hidden by an administrator (disabled) (deprecated)" in body
+        assert "Billing/web" in b.follow(f"/admin/repositories?scan={scan_id}&project=Billing")[2]
+        apps, _ = visible()
+        assert "web" not in apps                                          # disabled: its results are hidden too
+        body = b.follow(f"/admin/repositories/{web_id}")[2]
+        assert "value='hidden' checked" in body
+        assert "Hidden" in b.follow("/admin/audit?table=OrgRepository")[2]
+        # Scan now, Enable and the form bring it back
+        s, _, body = b.follow(f"/admin/repositories/{web_id}", {"csrf": csrf, "Setting": "hidden", "Note": ""})
+        assert "Saved." in body and "value='hidden' checked" in body
+        s, _, body = b.follow(f"/admin/repositories/{web_id}", {"csrf": csrf, "Setting": "enabled", "Note": ""})
+        assert "value='enabled' checked" in body
+        assert "Billing/web" in b.follow(f"/admin/repositories?scan={scan_id}&show=all")[2]
+        apps, _ = visible()
+        assert "web" in apps
 
         # applications per folder: set on the repository's page, audited, used by the next scan of it
         s, _, body = b.follow(f"/admin/repositories/{api_id}", {"csrf": csrf, "Setting": "auto", "Note": "",
@@ -945,7 +994,7 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         prov.list.append(repo("Billing/new-app", 9))
         b.follow(f"/admin/scans/{scan_id}/discover", {"csrf": csrf})
         assert w.tick() is True, logs
-        body = b.follow(f"/admin/repositories?scan={scan_id}")[2]
+        body = b.follow(f"/admin/repositories?scan={scan_id}&show=all")[2]
         rows = dict(re.findall(r"aria-label='Select ([^']+)'>(.*?)</tr>", body, re.S))
         assert "Disabled" in rows["Billing/new-app"] and "disabled by default (scan setting)" in rows["Billing/new-app"]
         assert "Enabled" in rows["Billing/api"] and "data-select-all='repo'" in body
@@ -1014,3 +1063,46 @@ def test_components_left_out_for_vulnerabilities_are_scanned_again(tmp_path, mon
     assert w2.rescan_left_out(now=1000.0) == 0 and len(conn.sql(r"EXEC cz\.QueueOrgScanRun")) == 3
     monkeypatch.setattr("containerizer.org.vulnerabilities_block", lambda: True)
     assert wk.Worker(lambda: conn, tmp_path / "other", log=lambda m: None).rescan_left_out(now=1000.0) == 0
+
+
+def test_administrator_runs_go_side_by_side(tmp_path, monkeypatch):
+    """run_forever: each run in a thread of its own. A scheduled run starts only when none runs; a run an administrator
+    started (Scan now, Run now) starts next to the others, up to MAX_RUNS at a time."""
+    class _Conn:
+        def close(self):
+            pass
+    w = worker.Worker(lambda: _Conn(), tmp_path, poll=1, log=lambda m: None)
+    for f in ("recover", "queue_due", "rescan_left_out", "recheck_sandbox"):
+        monkeypatch.setattr(w, f, lambda *a, **k: 0)
+    monkeypatch.setattr(w.metrics, "refresh", lambda c: None)
+    monkeypatch.setattr(worker.restartplan, "holding", lambda: "")
+    queue = [{"RunId": 1, "TriggeredBy": "schedule"}, {"RunId": 2, "TriggeredBy": "schedule"}] + \
+        [{"RunId": 3 + i, "TriggeredBy": "manual"} for i in range(worker.MAX_RUNS + 1)]
+    asked = []
+
+    def claim(manual_only=False):
+        asked.append(manual_only)
+        for r in queue:
+            if not manual_only or r["TriggeredBy"] == "manual":
+                queue.remove(r)
+                return r
+        return None
+    release = threading.Event()
+    started = []
+    monkeypatch.setattr(w, "claim", claim)
+    monkeypatch.setattr(w, "execute", lambda run: started.append(run["RunId"]) or release.wait(10))
+    assert w.tick(background=True) is True                      # scheduled run 1: nothing else runs
+    while w.tick(background=True):
+        pass
+    # run 2 (scheduled) waits; the administrator's runs start next to run 1, up to MAX_RUNS in all
+    assert sorted(w.active) == [1] + list(range(3, 2 + worker.MAX_RUNS))
+    assert asked[0] is False and all(asked[1:])
+    assert [r["RunId"] for r in queue] == [2, 2 + worker.MAX_RUNS, 3 + worker.MAX_RUNS]
+    release.set()
+    for t in list(w.active.values()):
+        t.join(5)
+    while w.tick(background=True):
+        pass
+    for t in list(w.active.values()):
+        t.join(5)
+    assert sorted(started) == list(range(1, 4 + worker.MAX_RUNS))   # once the others ended, the rest started
