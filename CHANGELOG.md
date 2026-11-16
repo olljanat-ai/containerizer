@@ -10,6 +10,12 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- **CI: third-party GitHub Actions pinned to commit SHAs** (helm/kind-action, docker/setup-buildx-action,
+  docker/build-push-action, softprops/action-gh-release, peter-evans/create-pull-request), at the versions they
+  already ran, with the version in a comment, so a moved or compromised tag cannot change what CI runs.
+- **Release workflow: `boot_test` reaches its scripts through an environment variable**, not a `${{ }}` expression
+  pasted into the shell script.
+
 ## 0.50.6 (2026-11-16)
 
 - **Repositories in parallel is one machine-wide limit**: 80% of the CPU cores by default (was a setting of each
