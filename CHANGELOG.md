@@ -10,6 +10,16 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.50.5 (2026-11-16)
+
+- **Scan now queues while other runs are going**: an administrator's Scan now of chosen repositories or projects
+  was dropped ("a run is already queued or running") while any run of the same scan was queued or running. It now
+  queues next to them and runs in a work folder of its own (the same selection is not queued twice while it waits).
+- **Repositories → Not scanned**: the enabled repositories no run has processed yet, to select all and Scan now.
+- **Runs pushing the same change**: when another run had already pushed what this run committed, the push failed
+  with *git commit --amend: … would make it empty*. A commit left with nothing of its own is dropped, and another
+  run's commit is never amended.
+
 ## 0.50.4 (2026-11-16)
 
 - **A migrated app uses the lab's database**: an app moved from Compose, Swarm, Nomad and the like whose

@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import signal
 import socket
 import sys
@@ -973,6 +974,7 @@ class Worker:
         self.log(f"{name}: {'discovery' if discovery else 'run'} #{run_id} started ({run['TriggeredBy']}"
                  + (f" by {run['RequestedBy']}" if run.get("RequestedBy") else "") + ")")
         read = write = None
+        scoped_work = None
         try:
             from .credentials import CredentialError
             try:
@@ -1005,6 +1007,9 @@ class Worker:
                 scope = json.loads(run["Scope"])
                 o.only_projects = set(scope.get("projects") or [])
                 o.only_repos = set(scope.get("repositories") or [])
+                # it may run next to the scan's other runs (cz.QueueOrgScanRun): a work folder of its own
+                scoped_work = self.data / f"scan-{int(scan['ScanId'])}" / f"work-run-{int(run_id)}"
+                o.work_dir = str(scoped_work)
             o.on_listed = lambda prov, n: (self._listed(read, prov, n), setattr(store, "prov", prov))
             (self.data / f"scan-{int(scan['ScanId'])}").mkdir(parents=True, exist_ok=True)
             from .org import run_org
@@ -1038,6 +1043,8 @@ class Worker:
         except Exception as ex:
             message = REDACT(f"{type(ex).__name__}: {ex}")
         finally:
+            if scoped_work is not None:
+                shutil.rmtree(scoped_work, ignore_errors=True)
             if status == "failed" and read and ("HTTP 401" in message or "HTTP 403" in message):
                 self._mark(read, f"failed: {message[:400]}")
             done.set()

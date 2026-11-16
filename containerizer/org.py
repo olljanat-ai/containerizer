@@ -1085,6 +1085,7 @@ class Output:
             if not git(["status", "--porcelain"], cwd=self.root).strip():
                 return False
             git([*self._who(), "commit", "-q", "-m", message], cwd=self.root)
+            self._message = message
             if self.push:
                 def push():
                     git(["push", "-q", "origin", f"HEAD:{self.o.output_branch}"], cwd=self.root, url=self.url,
@@ -1126,12 +1127,24 @@ class Output:
             except SourceError:
                 git(["merge", "--abort"], cwd=self.root, check=False)
                 raise
+        # the rebase drops this commit when the other run pushed the same changes: HEAD is then theirs, never amended
+        ours = git(["rev-parse", "HEAD"], cwd=self.root).strip() != git(["rev-parse", "FETCH_HEAD"], cwd=self.root).strip()
         refresh = getattr(self, "refresh", None)
         if refresh:
             refresh()
             git(["add", "-A"], cwd=self.root)
             if git(["status", "--porcelain"], cwd=self.root).strip():
-                git([*self._who(), "commit", "-q", "--amend", "--no-edit"], cwd=self.root)
+                if ours:
+                    git([*self._who(), "commit", "-q", "--amend", "--no-edit", "--allow-empty"], cwd=self.root)
+                else:
+                    git([*self._who(), "commit", "-q", "-m", getattr(self, "_message", "") or "containerizer"],
+                        cwd=self.root)
+                    ours = True
+        # a commit (not a merge) left with no change of its own: dropped, nothing to push
+        if ours and len(git(["rev-list", "--parents", "-n", "1", "HEAD"], cwd=self.root).split()) == 2 and \
+                git(["rev-parse", "HEAD^{tree}"], cwd=self.root).strip() == \
+                git(["rev-parse", "HEAD^^{tree}"], cwd=self.root).strip():
+            git(["reset", "-q", "--soft", "HEAD^"], cwd=self.root)
 
 
 # --------------------------------------------------------------------------- one repository
