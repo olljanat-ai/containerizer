@@ -10,6 +10,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.50.0 (2026-11-16)
+
 - **Runs side by side no longer fail on the output repository's push** (*! [rejected] HEAD -> main (non-fast-forward)*):
   on a worker the runs push one at a time, and a run whose push is rejected (another run or worker pushed first)
   puts its commit on top of theirs (its own version wins in a file both changed), regenerates the sandbox index from
