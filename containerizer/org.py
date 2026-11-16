@@ -1455,6 +1455,16 @@ def _process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, wor
             if mres is not None:
                 if mres.status == "deployed":
                     (tdest / "containerizer.json").write_text(json.dumps(mres.to_dict(), indent=2, default=str) + "\n")
+                if mres.status in ("deployed", "no-a-components") and (mres.components or mres.excluded) \
+                        and (o.sql or os.environ.get("CONTAINERIZER_SQL")):
+                    # on the results pages like any other application (its sandbox checks attach to it)
+                    from .replatform import assessment
+                    from .sqlstore import connect, store_assessment
+                    conn = connect(o.sql)
+                    try:
+                        store_assessment(conn, assessment(mres), {**source_info(path, name), "key": tres.source_key})
+                    finally:
+                        conn.close()
                 return mres
         if o.skip_no_code:
             progress.step(progress.CODE)

@@ -10,6 +10,11 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- **A repository moved from its own Dockerfiles (or Compose, Swarm, Nomad, ACA, ECS) is on the results pages**: the
+  front page and Admin → Applications list it, rated A when every container is deployed (B while the gate leaves one
+  out, with its reason), and its sandbox checks attach to it. It was deployed, but only its repository page said so.
+  The next scan of such a repository adds it.
+
 ## 0.50.1 (2026-11-16)
 
 - **nginx from a repository's own Dockerfile passes the hardened run**: a component built `FROM nginx` (or running
