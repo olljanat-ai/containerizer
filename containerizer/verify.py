@@ -100,6 +100,68 @@ class DockerUnavailable(RuntimeError):
 DOCKER_DOWN = "Cannot connect to the Docker daemon"
 
 
+CA_ENV = ("if [ -f /run/secrets/ca ]; then export SSL_CERT_FILE=/run/secrets/ca NODE_EXTRA_CA_CERTS=/run/secrets/ca "
+          "REQUESTS_CA_BUNDLE=/run/secrets/ca PIP_CERT=/run/secrets/ca; fi; ")
+_RUN_RE = re.compile(r"^(\s*RUN)((?:\s+--\S+)*)(\s+)(.*)$", re.I | re.S)
+_HEREDOC_RE = re.compile(r"<<-?\s*[\"']?(\w+)[\"']?")
+
+
+def trust_build_ca(dockerfile: str) -> str:
+    """A repository's own Dockerfile, for a build through the feed proxy: each shell-form RUN reads the optional `ca`
+    build secret (the system's CAs, the corporate bundle and the feed proxy's CA) as the generated Dockerfiles do,
+    so npm, pip, dotnet and curl trust the proxy that adds the feeds' tokens. RUNs that already read it, exec-form
+    and heredoc RUNs, and Dockerfiles with another escape character or a non-POSIX SHELL stay as they are."""
+    if re.search(r"(?im)^#\s*escape\s*=", dockerfile) or re.search(r"(?im)^\s*SHELL\s.*(powershell|pwsh|cmd)",
+                                                                       dockerfile):
+        return dockerfile
+    out, cont, heredoc = [], False, None
+    for line in dockerfile.split("\n"):
+        if heredoc is not None:
+            if line.strip() == heredoc:
+                heredoc = None
+            out.append(line)
+            continue
+        if cont:
+            if line.strip() and not line.lstrip().startswith("#"):
+                cont = line.rstrip().endswith("\\")
+            out.append(line)
+            continue
+        m = _RUN_RE.match(line)
+        if m and not line.lstrip().startswith("#"):
+            flags, rest = m.group(2), m.group(4)
+            h = _HEREDOC_RE.search(rest)
+            if h:
+                heredoc = h.group(1)
+            elif "id=ca" not in flags and not rest.lstrip().startswith("["):
+                line = f"{m.group(1)} --mount=type=secret,id=ca,required=false{flags}{m.group(3)}{CA_ENV}{rest}"
+        if not line.lstrip().startswith("#"):
+            cont = line.rstrip().endswith("\\")
+        out.append(line)
+    return "\n".join(out)
+
+
+def feed_dockerfile(dockerfile: Path, workdir: Path) -> Path:
+    """The Dockerfile to build a repository's own Dockerfile with: when package feeds are served through the feed
+    proxy, a copy in `workdir` whose RUNs trust the proxy's CA (trust_build_ca), with the original's
+    <name>.dockerignore; else the original."""
+    from . import feedproxy
+    if feedproxy.active() is None:
+        return dockerfile
+    try:
+        text = dockerfile.read_text()
+    except (OSError, UnicodeDecodeError):
+        return dockerfile
+    new = trust_build_ca(text)
+    if new == text:
+        return dockerfile
+    copy = workdir / "feeds.Dockerfile"
+    copy.write_text(new)
+    ignore = dockerfile.with_name(dockerfile.name + ".dockerignore")
+    if ignore.is_file():
+        (workdir / "feeds.Dockerfile.dockerignore").write_text(ignore.read_text())
+    return copy
+
+
 def readable_context(root: Path) -> None:
     """Make a build context readable for everyone (files a+r, folders a+rx). The appliance's services run with
     UMask=0077, so their clones are 0600; `docker build` keeps the modes, and an image's root-owned 0600 files

@@ -10,6 +10,15 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.50.3 (2026-11-16)
+
+- **Private package feeds work for a repository built from its own Dockerfile**: its build goes through the feed
+  proxy like a generated one, but its `RUN`s did not trust the proxy's CA, so npm, pip and dotnet could not reach a
+  registered feed. It is built from a copy whose shell-form `RUN`s read the optional `ca` build secret.
+- **A build a package feed refuses says so**: npm `E401`/`E403`, NuGet `NU1301` with 401, Maven, Gradle and pip
+  sign-in failures add "a package feed refused the build's sign-in: register the feed's URL … on Admin → Source
+  control → Package feeds" to the reason.
+
 ## 0.50.2 (2026-11-16)
 
 - **A repository moved from its own Dockerfiles (or Compose, Swarm, Nomad, ACA, ECS) is on the results pages**: the

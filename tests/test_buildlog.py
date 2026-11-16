@@ -72,3 +72,26 @@ def test_hardened_run_reason_names_the_failing_line():
     assert why == ("does not run with the hardened pod security context: ERROR - [Errno 30] Read-only file system: "
                    "'/mkdocs/site'")
     assert org.gate_failure({"run": {"status": "hardening-failure"}}) == org.HARDENED_RUN
+
+
+# npm ci against a private feed that refused the token (the repository's own Dockerfile)
+NPM_401_LOG = """#9 [build 5/7] RUN npm ci
+#9 5.818 npm error code E401
+#9 5.818 npm error Unable to authenticate, your authentication token seems to be invalid.
+#9 5.818 npm error To correct this please try logging in again with:
+#9 5.818 npm error   npm login
+#9 ERROR: process "/bin/sh -c npm ci" did not complete successfully: exit code: 1
+ERROR: failed to solve: process "/bin/sh -c npm ci" did not complete successfully: exit code: 1
+"""
+
+
+def test_reason_points_a_refused_sign_in_at_the_package_feeds():
+    text = buildlog.failure_text(NPM_401_LOG)
+    assert "E401" in text and "Unable to authenticate" in text
+    assert "a package feed refused the build's sign-in" in text and "Admin → Source control → Package feeds" in text
+    assert "Firewall" not in text and len(text) <= 600
+    nuget = ("error NU1301: Unable to load the service index for source "
+             "https://pkgs.dev.azure.com/contoso/_packaging/main/nuget/v3/index.json.\n"
+             "  Response status code does not indicate success: 401 (Unauthorized).")
+    assert buildlog.refused_feeds(nuget) == ["pkgs.dev.azure.com"]
+    assert buildlog.refused_feeds(APK_LOG) is None

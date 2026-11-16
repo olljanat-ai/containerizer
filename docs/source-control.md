@@ -118,7 +118,9 @@ which dotnet, npm, Maven and Gradle use (the generated Dockerfiles pass a proxy 
   URL: `Basic` with the user name and the token, or `Bearer` with the token alone when the user name is empty.
   Requests to other paths of that host get nothing. The builds trust the proxy's CA through the optional build
   secret `ca` the generated Dockerfiles already read for TLS-inspecting corporate proxies (the bundle holds the
-  system's CAs, the corporate bundle if one is set, and the proxy's CA).
+  system's CAs, the corporate bundle if one is set, and the proxy's CA). A repository built from its own Dockerfile
+  is built from a copy whose shell-form `RUN` instructions read that secret the same way (exporting
+  `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` and `PIP_CERT`); the repository is not changed.
 - Connections to every other host pass through untouched (a plain tunnel).
 - The proxy refuses this machine's own addresses, loopback and link-local addresses, and the networks of Docker
   and the sandbox cluster, so it opens nothing to a build that the build could not reach itself. On the appliance
@@ -130,7 +132,9 @@ which dotnet, npm, Maven and Gradle use (the generated Dockerfiles pass a proxy 
 Which URL to register: the token goes with every request under it, so register the narrowest URL that still covers
 the downloads. Azure Artifacts downloads packages by the feed's id rather than its name, so register the
 organization's packaging URL, e.g. `https://pkgs.dev.azure.com/contoso/` (or `https://pkgs.dev.azure.com/contoso/project/`
-for a project-scoped feed). The repository's own `nuget.config`, `.npmrc`, `pom.xml` or `build.gradle` still names
+for a project-scoped feed), and also its older host, e.g. `https://contoso.pkgs.visualstudio.com/`, when the
+projects' `.npmrc` or `nuget.config` name that one. A build that a feed refuses (npm `E401`, NuGet `NU1301` with
+401) says so in its reason and points here. The repository's own `nuget.config`, `.npmrc`, `pom.xml` or `build.gradle` still names
 the feed as before; a credentials entry it has (for example `%NUGET_PAT%`) is replaced by the proxy's.
 
 | Feed | Token | User name |
