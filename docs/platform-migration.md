@@ -66,8 +66,10 @@ scan (only with `scan.enabled`, off by default), and a run with the hardened sec
 capabilities dropped). Findings in the repository's own Dockerfile are reported as warnings to fix there.
 
 When the hardened run fails because the app writes to a folder, the folder the error names becomes a
-writable emptyDir and the run is repeated. A component that still fails is not deployed, with the
-reason on the repository page.
+writable emptyDir and the run is repeated (for a folder it could not create, the folder it was creating it in). A
+component built `FROM nginx` (or running the nginx image) gets nginx's folders writable before the run:
+`/var/cache/nginx` (its temp folders) and `/run` (its pid file). A component that still fails is not deployed, with
+the reason and the gate's **What failed** on the repository page.
 
 ## LLM-heavy mode
 
