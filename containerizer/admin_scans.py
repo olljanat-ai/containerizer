@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode
 
 from .admin import URL_RE, Response, _code, _d, e, page, redirect
 
@@ -60,6 +60,20 @@ NEW_CHIP = " <span class='st st-run'>New</span>"
 
 def _q(q: dict, k: str, default: str = "") -> str:
     return q.get(k, [default])[0][:200]
+
+
+VIEW_KEYS = ("show", "scan", "q", "project", "sort")
+
+
+def _view(form: dict, path: str) -> str:
+    """The list view a bulk form was sent from (its hidden `view`: the list's filters), to return to it."""
+    pairs = [(k, v) for k, v in parse_qsl((form.get("view") or [""])[0])
+             if k in VIEW_KEYS and len(v) <= 400][:len(VIEW_KEYS)]
+    return path + ("?" + urlencode(pairs) if pairs else "")
+
+
+def _view_field(params: dict) -> str:
+    return f"<input type='hidden' name='view' value='{e(urlencode(params))}'>"
 
 
 def _back(url: str, msg: str) -> Response:
@@ -811,7 +825,8 @@ def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
                f"<a href='/admin/repositories?{e(urlencode({**base, 'show': 'hidden'}))}'>Hidden</a>.</p>" if hidden else "")
             + f"{search}"
             f"<nav class='chips'>{chips} {sort_link}</nav>"
-            f"<form method='post' action='/admin/repositories/bulk'>{adm._csrf(s)}{actions}"
+            f"<form method='post' action='/admin/repositories/bulk'>{adm._csrf(s)}{_view_field({**base, 'show': show})}"
+            f"{actions}"
             f"<table><thead><tr><th>{SELECT_ALL.format(name='repo', what='repositories')}</th><th>Repository</th><th>Latest commit</th><th>State</th><th>Reason</th>"
             f"<th>Latest result</th></tr></thead>"
             f"<tbody>{''.join(rows) or '<tr><td colspan=6 class=muted>Nothing here.</td></tr>'}</tbody></table></form>"
@@ -825,13 +840,13 @@ ACTIONS = {"enable": "enabled", "disable": "disabled", "auto": None, "hide": "di
 def bulk_repos(conn, form: dict) -> Response:
     ids = [int(x) for x in form.get("repo", []) if re.fullmatch(r"\d{1,9}", x)][:2000]
     action = form.get("action", [""])[0]
+    back = _view(form, "/admin/repositories")          # the view it was sent from, not the default one
     if action == "scan":
-        return scan_now(conn, [], ids, "/admin/repositories") if ids else \
-            _back("/admin/repositories", "Select at least one repository.")
+        return scan_now(conn, [], ids, back) if ids else _back(back, "Select at least one repository.")
     if action not in ACTIONS:
-        return _back("/admin/repositories", "Choose Enable, Disable, Automatic or Hide.")
+        return _back(back, "Choose Enable, Disable, Automatic or Hide.")
     if not ids:
-        return _back("/admin/repositories", "Select at least one repository.")
+        return _back(back, "Select at least one repository.")
     note = " ".join(form.get("Note", [""])[0].split())[:400] or None
     cur = conn.cursor()
     n = 0
@@ -844,7 +859,7 @@ def bulk_repos(conn, form: dict) -> Response:
     conn.commit()
     what = {"enable": "enabled", "disable": "disabled", "auto": "set back to automatic",
             "hide": "hidden (disabled; listed under Hidden)"}[action]
-    return _back("/admin/repositories", f"{n} repositor{'y' if n == 1 else 'ies'} {what}. The next run follows it.")
+    return _back(back, f"{n} repositor{'y' if n == 1 else 'ies'} {what}. The next run follows it.")
 
 
 def edit_repo(adm, conn, s, a, ident: int, flash: str) -> Response:
@@ -1120,7 +1135,8 @@ def list_projects(adm, conn, s, a, q: dict, flash: str) -> Response:
             f"leaves all its repositories out (nothing is cloned) and their results are hidden from the results pages. "
             f"<b>Discover</b> on the scan's page lists them with their latest commits without a full scan. "
             f"<a href='/admin/repositories'>Repositories</a></p>{search}<nav class='chips'>{chips}</nav>"
-            f"<form method='post' action='/admin/repositories/projects/bulk'>{adm._csrf(s)}{actions}"
+            f"<form method='post' action='/admin/repositories/projects/bulk'>{adm._csrf(s)}"
+            f"{_view_field({**base, 'show': show})}{actions}"
             f"<table><thead><tr><th>{SELECT_ALL.format(name='project', what='projects')}</th><th>Project</th><th class='num'>Repositories</th><th>Latest commit</th>"
             f"<th>State</th><th>Reason</th></tr></thead>"
             f"<tbody>{''.join(rows) or '<tr><td colspan=6 class=muted>No projects. Run Discover on an organization scan.</td></tr>'}"
@@ -1134,7 +1150,7 @@ PROJECT_ACTIONS = {"disable": "disabled", "enable": None}
 def bulk_projects(conn, form: dict) -> Response:
     ids = [int(x) for x in form.get("project", []) if re.fullmatch(r"\d{1,9}", x)][:2000]
     action = form.get("action", [""])[0]
-    back = "/admin/repositories/projects"
+    back = _view(form, "/admin/repositories/projects")
     if action == "scan":
         return scan_now(conn, ids, [], back) if ids else _back(back, "Select at least one project.")
     if action not in PROJECT_ACTIONS:

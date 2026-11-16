@@ -927,8 +927,11 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         assert "class='chip on' href='/admin/repositories?scan=" in body and "show=enabled'>Enabled<" in body
         assert ">api<" in body
         # one deprecated repository of a project that is still used: hidden on its own, disabled as well, audited
-        s, _, body = b.follow("/admin/repositories/bulk", {"csrf": csrf, "repo": [str(web_id)], "action": "hide",
-                                                           "Note": "deprecated"})
+        assert f"name='view' value='scan={scan_id}&amp;show=enabled'" in body       # the bulk form knows the view
+        s, h, body = b.go("/admin/repositories/bulk", {"csrf": csrf, "repo": [str(web_id)], "action": "hide",
+                                                       "Note": "deprecated", "view": f"scan={scan_id}&show=all"})
+        assert h["Location"].startswith(f"/admin/repositories?scan={scan_id}&show=all&msg=")   # back to that view
+        body = b.follow(h["Location"])[2]
         assert "1 repository hidden" in body, body
         body = b.follow(f"/admin/repositories?scan={scan_id}&show=all")[2]
         assert "Billing/web" not in body and ">api<" in body and "1 hidden repository" in body
