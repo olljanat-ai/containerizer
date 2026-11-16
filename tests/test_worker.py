@@ -782,6 +782,8 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         # the stale one (an automatic skip the provider's API shows): only under Hidden, with its reason
         assert set(rows) == {"Billing/api", "Billing/web"} and "1 hidden repository" in body
         assert "2026-10-20 08:00 UTC" in rows["Billing/api"] and "discovered: not scanned yet" in rows["Billing/api"]
+        unscanned = b.follow(f"/admin/repositories?scan={scan_id}&show=unscanned")[2]    # to select and Scan now
+        assert ">api<" in unscanned and ">web<" in unscanned and "Not scanned</a>" in unscanned
         body = b.follow(f"/admin/repositories?scan={scan_id}&show=hidden")[2]
         rows.update(re.findall(r"aria-label='Select ([^']+)'>(.*?)</tr>", body, re.S))
         assert ">api<" not in body and "2019-05-04 03:02 UTC" in rows["Legacy/old-app"]
@@ -803,6 +805,7 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         b.follow(f"/admin/scans/{scan_id}/run", {"csrf": csrf})
         assert w.tick() is True
         assert sorted(fetched) == sorted(keys), logs
+        assert ">api<" not in b.follow(f"/admin/repositories?scan={scan_id}&show=unscanned")[2]
         apps, hist = visible()
         assert set(apps) == {"api", "web", "old-app"} and hist == 3
 
@@ -905,6 +908,17 @@ def test_discovery_then_full_scan_with_disabled_projects(tmp_path, monkeypatch):
         fetched.clear()
         s, _, body = b.follow("/admin/repositories/bulk", {"csrf": csrf, "repo": [str(api_id), str(web_id)], "action": "scan"})
         assert "1 disabled one enabled" in body and "2 repositories) queued" in body, body
+        # another selection queues next to it; the same one again does not
+        s, _, body = b.follow("/admin/repositories/bulk", {"csrf": csrf, "repo": [str(api_id)], "action": "scan"})
+        assert "(repository Billing/api) queued" in body, body
+        s, _, body = b.follow("/admin/repositories/bulk", {"csrf": csrf, "repo": [str(api_id)], "action": "scan"})
+        assert "the same selection is already waiting" in body, body
+        c = sqlstore.connect(writer, PW)
+        cur = c.cursor()
+        cur.execute("UPDATE cz.OrgScanRun SET Status = N'cancelled' WHERE ScanId = %s AND Status = N'queued' AND RunId = "
+                    "(SELECT MAX(RunId) FROM cz.OrgScanRun WHERE ScanId = %s)", (scan_id, scan_id))
+        c.commit()
+        c.close()
         assert w.tick() is True
         assert sorted(fetched) == ["Billing/api", "Billing/web"], logs   # web: enabled by Scan now
         assert "enabled by Scan now" in b.follow(f"/admin/repositories/{web_id}")[2]

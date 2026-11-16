@@ -168,8 +168,10 @@ change is in the application's change history.
 scan of only those, outside the schedule, for example after a fix was pushed. The other repositories
 keep their results from the last full run. A selected one that is disabled (by an administrator, or as a new
 repository disabled by default) is enabled first, with the note *enabled by Scan now*; automatic skips (a Dockerfile,
-no application code) stay until you **Enable** it. A run of the scan that is already queued or running has to finish
-first.
+no application code) stay until you **Enable** it. Each **Scan now** is queued as a run of its own, next to the
+scan's runs already queued or running (the same selection is not queued twice while it waits), and runs in a work
+folder of its own. To scan every enabled repository that no run has processed yet, open **Repositories → Not
+scanned**, select them all and press **Scan now**.
 
 Runs of different organization scans that an administrator starts (**Scan now**, **Run now**, **Discover**) do not
 wait for each other: the worker starts each one at once, next to the runs already going, up to 4 at a time. A

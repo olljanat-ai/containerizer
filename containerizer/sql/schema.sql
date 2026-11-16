@@ -904,9 +904,15 @@ BEGIN
     SET NOCOUNT ON; SET XACT_ABORT ON;
     DECLARE @id int = 0;
     BEGIN TRANSACTION;
+    -- an administrator's Scan now of some repositories (a scope) queues next to the scan's other runs (the worker
+    -- runs those in parallel), unless the same one is still waiting; any other run waits for none to be on
     IF EXISTS (SELECT 1 FROM [${schema}].OrgScan WITH (UPDLOCK, HOLDLOCK) WHERE ScanId = @ScanId AND Enabled = 1)
-       AND NOT EXISTS (SELECT 1 FROM [${schema}].OrgScanRun WITH (UPDLOCK, HOLDLOCK)
-                       WHERE ScanId = @ScanId AND Status IN (N'queued', N'running'))
+       AND ((@TriggeredBy = N'manual' AND @Scope IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM [${schema}].OrgScanRun WITH (UPDLOCK, HOLDLOCK)
+                             WHERE ScanId = @ScanId AND Status = N'queued' AND TriggeredBy = N'manual'
+                               AND Kind = @Kind AND Scope = @Scope))
+            OR NOT EXISTS (SELECT 1 FROM [${schema}].OrgScanRun WITH (UPDLOCK, HOLDLOCK)
+                           WHERE ScanId = @ScanId AND Status IN (N'queued', N'running')))
     BEGIN
         INSERT [${schema}].OrgScanRun (ScanId, TriggeredBy, RequestedBy, Kind, Scope)
         SELECT @ScanId, @TriggeredBy, CASE WHEN @TriggeredBy = N'manual' THEN w.ChangedBy END, @Kind, @Scope

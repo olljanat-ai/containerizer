@@ -93,3 +93,32 @@ def test_a_rejected_push_from_another_worker_is_retried(tmp_path, monkeypatch):
     head = tmp_path / "check"
     _git("clone", "-q", str(bare), str(head))
     assert (head / "x.txt").read_text() == "from contoso\n" and (head / "y.txt").read_text() == "2\n"
+
+
+def test_a_change_the_other_run_already_pushed_is_not_an_empty_amend(tmp_path, monkeypatch):
+    """Two runs scanned the same repository (Scan now next to a full run) and wrote the same files: the second
+    push's commit becomes empty on top of the first; it is dropped, never amended into the other run's commit."""
+    monkeypatch.setattr(fluxhook, "notify", lambda reason="": None)
+    bare = tmp_path / "out.git"
+    _git("init", "-q", "--bare", "-b", "main", str(bare))
+    seed = tmp_path / "seed"
+    _git("clone", "-q", str(bare), str(seed))
+    (seed / "index.txt").write_text("")
+    _git("add", "-A", cwd=seed)
+    _git("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "index", cwd=seed)
+    _git("push", "-q", "origin", "HEAD:main", cwd=seed)
+    a, out_a = _clone(tmp_path, bare, "one")
+    b, out_b = _clone(tmp_path, bare, "two")
+    for d in (a, b):
+        (d / "acme").mkdir()
+        (d / "acme" / "app.yaml").write_text("same\n")
+    (a / "other").mkdir()                                # run 1 also deployed another app: run 2's index is stale
+    (a / "other" / "app.yaml").write_text("o\n")
+    out_a.refresh()
+    assert out_a.commit("containerizer: acme/shop deployed (run 1)")
+    out_b.refresh()
+    assert out_b.commit("containerizer: acme/shop deployed (run 2)")       # no error: nothing left to push
+    head = tmp_path / "check"
+    _git("clone", "-q", str(bare), str(head))
+    assert _git("log", "--format=%s", cwd=head).splitlines() == ["containerizer: acme/shop deployed (run 1)", "index"]
+    assert (head / "index.txt").read_text() == "acme\nother\n"

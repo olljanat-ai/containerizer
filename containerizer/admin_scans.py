@@ -711,6 +711,7 @@ def delete_scan(conn, ident: int) -> Response:
 REPO_SHOW = {"all": ("All", "r.RemovedAt IS NULL"), "enabled": ("Enabled", "r.RemovedAt IS NULL AND r.Active = 1"),
              "disabled": ("Disabled", "r.RemovedAt IS NULL AND r.Active = 0"),
              "new": ("New", f"r.RemovedAt IS NULL AND r.FirstSeenAt > DATEADD(day, -{NEW_DAYS}, SYSUTCDATETIME())"),
+             "unscanned": ("Not scanned", "r.RemovedAt IS NULL AND r.Active = 1 AND r.LastStatus IS NULL"),
              "failed": ("Failed", "r.RemovedAt IS NULL AND r.LastStatus = N'error'"),
              "active": ("Commit in 6 months", "r.RemovedAt IS NULL AND r.LatestCommitAt >= DATEADD(month, -6, SYSUTCDATETIME())"),
              "hidden": ("Hidden", "r.RemovedAt IS NULL AND (r.IsHidden = 1 OR r.ProjectState = N'disabled')"),
@@ -819,7 +820,8 @@ def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
             f"is disabled and listed only under <b>Hidden</b> and on its project's page, as are the archived, empty, forked, "
             f"stale and filtered-out ones (each with its reason) unless enabled. A disabled repository is not "
             f"cloned by the full scan and its results are hidden from the results pages. Whole projects are disabled "
-            f"under <a href='/admin/repositories/projects'>Projects</a>. <b>Discover</b> on the scan's page fills this "
+            f"under <a href='/admin/repositories/projects'>Projects</a>. <b>Not scanned</b> lists the enabled ones no "
+            f"run has processed yet: select them all and <b>Scan now</b>. <b>Discover</b> on the scan's page fills this "
             f"list with the latest commits without a full scan.</p>"
             + (f"<p class='muted small'>{hidden} hidden repositor{'y' if hidden == 1 else 'ies'} (hidden by an administrator, archived, empty, forks, not updated recently or filtered out, or of disabled projects) not listed: "
                f"<a href='/admin/repositories?{e(urlencode({**base, 'show': 'hidden'}))}'>Hidden</a>.</p>" if hidden else "")
@@ -1280,8 +1282,10 @@ def scan_now(conn, project_ids: list[int], repo_ids: list[int], back: str) -> Re
         else:
             busy += 1
     msg = (f"{enabled} disabled one{'' if enabled == 1 else 's'} enabled. " if enabled else "") + \
-        (f"Scan {', '.join(queued)} queued; the worker starts it within a minute." if queued else "")
+        (f"Scan {', '.join(queued)} queued; the worker starts it within a minute, next to the runs already "
+         f"going." if queued else "")
     if busy:
-        msg += (" " if msg else "") + ("Not queued: the scan is paused, or a run is already queued or running."
-                                       if busy == 1 else f"{busy} scans not queued: paused, or already running.")
+        msg += (" " if msg else "") + ("Not queued: the scan is paused, or the same selection is already waiting."
+                                       if busy == 1 else f"{busy} scans not queued: paused, or the same selection "
+                                                         "already waiting.")
     return _back(back, msg.strip())
