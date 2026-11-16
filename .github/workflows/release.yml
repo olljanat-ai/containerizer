@@ -61,6 +61,7 @@ jobs:
         env:
           INPUT: ${{ inputs.version }}
           GH_TOKEN: ${{ github.token }}
+          BOOT_TEST: ${{ inputs.boot_test == true }}
         run: |
           v="${INPUT#v}"
           [[ "$v" =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$ ]] || { echo "the version is X.Y.Z, got $INPUT" >&2; exit 1; }
@@ -76,7 +77,7 @@ jobs:
           git tag -a "v$v" -m "containerizer $v" "$GITHUB_SHA"
           git push origin "refs/tags/v$v"
           # a tag pushed with this token starts no workflow; a dispatch does
-          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "v$v" -f boot_test=${{ inputs.boot_test }}
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "v$v" -f boot_test="$BOOT_TEST"
           echo "Tagged v$v at $GITHUB_SHA; the release runs on the tag: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/release.yml" >> "$GITHUB_STEP_SUMMARY"
 
   appliance:
@@ -122,11 +123,11 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
           df -h /
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Build the OS image
         if: steps.v.outputs.patch != 'true' || inputs.boot_test
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: appliance/Dockerfile
@@ -188,6 +189,7 @@ jobs:
         if: steps.v.outputs.patch != 'true' || inputs.boot_test
         env:
           V: ${{ steps.v.outputs.version }}
+          BOOT_TEST: ${{ inputs.boot_test == true }}
         run: |
           mkdir -p build build/test
           ssh-keygen -q -t ed25519 -N '' -f build/ci_key
@@ -199,7 +201,7 @@ jobs:
           # the boot test's disk: an expandable disk holds only the recovery system; on its first boot it installs
           # itself to the whole disk (the persistent partition takes what the OS snapshots leave). Releases ship
           # only the ISO.
-          if [ "${{ inputs.boot_test }}" = true ]; then
+          if [ "$BOOT_TEST" = true ]; then
             run_elemental build-disk --expandable --local --system containerizer-appliance:build \
               --cloud-init /build/test-login.yaml -n test -o /build/test
           fi
@@ -296,7 +298,7 @@ jobs:
 
       - name: GitHub release
         if: steps.v.outputs.release == 'true' && steps.v.outputs.patch != 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           generate_release_notes: true
           body: |
@@ -315,7 +317,7 @@ jobs:
 
       - name: "GitHub release (patch release: the app update only)"
         if: steps.v.outputs.release == 'true' && steps.v.outputs.patch == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           generate_release_notes: true
           body: |
