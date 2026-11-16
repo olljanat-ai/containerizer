@@ -10,6 +10,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.50.2 (2026-11-16)
+
 - **A repository moved from its own Dockerfiles (or Compose, Swarm, Nomad, ACA, ECS) is on the results pages**: the
   front page and Admin → Applications list it, rated A when every container is deployed (B while the gate leaves one
   out, with its reason), and its sandbox checks attach to it. It was deployed, but only its repository page said so.
