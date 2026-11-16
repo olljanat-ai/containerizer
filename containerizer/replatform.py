@@ -88,6 +88,8 @@ class Plan:
     notes: list = field(default_factory=list)
     llm: bool = False
     llm_notes: list = field(default_factory=list)
+    backing: list = field(default_factory=list)         # Service: the databases, caches and brokers it ran
+    lab: list = field(default_factory=list)             # {"component", "image", "service"}: given by the lab instead
 
     @property
     def platforms(self) -> list[str]:
@@ -266,6 +268,7 @@ def plan_migration(src: Path, app: str, dockerfiles: list[str], llm: bool = Fals
         llm_review(src, apps, plan, model)
     for key, sv in sorted(by_name.items()):
         if sv.backing:
+            plan.backing.append(sv)
             plan.excluded.append({"component": sv.name, "reason": f"backing service ({sv.image or 'not a container'}): "
                                   "use a managed service or the appliance's lab service and point the app at it"})
         elif not sv.image and not sv.build:
@@ -531,9 +534,13 @@ def manifests(ns: str, sv: Service, image: str, uid: int, domain: str = "", idp_
     labels = {"app.kubernetes.io/name": name, "app.kubernetes.io/part-of": ns,
               "containerizer.io/migrated-from": sv.platform}
     secret_name = f"{name}-secrets"
-    env = [{"name": k, "value": v} for k, v in sorted(sv.env.items()) if k not in sv.secrets]
+    lab_names = {x["name"] for x in sv.lab_env}
+    env = [{"name": k, "value": v} for k, v in sorted(sv.env.items()) if k not in sv.secrets and k not in lab_names]
     env += [{"name": k, "valueFrom": {"secretKeyRef": {"name": secret_name, "key": k, "optional": True}}}
-            for k in sorted(set(sv.secrets))]
+            for k in sorted(set(sv.secrets) - lab_names)]
+    # the lab's: secret references first, so the settings' $(VAR) of them resolve (Kubernetes expands earlier ones)
+    env = ([copy.deepcopy(x) for x in sv.lab_env if "valueFrom" in x] + env
+           + [copy.deepcopy(x) for x in sv.lab_env if "valueFrom" not in x])
     volumes, mounts = [], []
     paths = [v for v in sv.volumes if v.get("path")]
     if not any(v["path"] == "/tmp" for v in paths):
@@ -626,6 +633,10 @@ def manifests(ns: str, sv: Service, image: str, uid: int, domain: str = "", idp_
         docs.insert(0, service_account(name, labels, False))
     if security().get("network", {}).get("default_deny"):
         docs.append(network_policy(name, labels, port, egress_from_settings(sv)))
+        if sv.lab:
+            from .labservices import allow_egress
+            for svc in sv.lab:
+                allow_egress(docs, svc, ns)
     externalize_secrets(docs, name, labels, {"secret_files": [f["name"] for f in sv.secret_files]})
     if domain and port and sv.public:
         from .sandbox_https import ingress
@@ -718,6 +729,245 @@ def image_uid(local: str) -> int | None:
     return None
 
 
+# --------------------------------------------------------------------------- lab services for backing services
+
+# a backing service's image -> the lab service (labservices.py) that takes its place
+LAB_IMAGES = ((re.compile(r"(?i)(^|/)(postgres|postgis)([:@]|$)"), "postgres"),
+              (re.compile(r"(?i)(^|/)(mysql|mariadb)([:@]|$)"), "mysql"),
+              (re.compile(r"(?i)(^|/)(mssql/server|azure-sql-edge)([:@]|$)"), "sqlserver"),
+              (re.compile(r"(?i)(^|/)(mongo)([:@]|$)"), "mongodb"),
+              (re.compile(r"(?i)(^|/)(redis|valkey)([:@]|$)"), "redis"),
+              (re.compile(r"(?i)(^|/)(rabbitmq)([:@]|$)"), "rabbitmq"),
+              (re.compile(r"(?i)(^|/)(kafka|cp-kafka)([:@]|$)"), "kafka"),
+              (re.compile(r"(?i)(^|/)(mailhog|mailpit)([:@]|$)"), "smtp"))
+# the backing container's own settings that name its login: role -> (variables, default)
+LAB_CREDS = {"postgres": {"user": (("POSTGRES_USER",), "postgres"), "password": (("POSTGRES_PASSWORD",), ""),
+                          "database": (("POSTGRES_DB",), "")},
+             "mysql": {"user": (("MYSQL_USER", "MARIADB_USER"), "root"),
+                       "password": (("MYSQL_PASSWORD", "MARIADB_PASSWORD", "MYSQL_ROOT_PASSWORD",
+                                     "MARIADB_ROOT_PASSWORD"), ""),
+                       "database": (("MYSQL_DATABASE", "MARIADB_DATABASE"), "")},
+             "sqlserver": {"user": ((), "sa"), "password": (("MSSQL_SA_PASSWORD", "SA_PASSWORD"), "")},
+             "mongodb": {"user": (("MONGO_INITDB_ROOT_USERNAME",), ""), "password": (("MONGO_INITDB_ROOT_PASSWORD",), ""),
+                         "database": (("MONGO_INITDB_DATABASE",), "")},
+             "rabbitmq": {"user": (("RABBITMQ_DEFAULT_USER",), "guest"), "password": (("RABBITMQ_DEFAULT_PASS",), "guest"),
+                          "database": (("RABBITMQ_DEFAULT_VHOST",), "")},
+             "redis": {"password": (("REDIS_PASSWORD",), "")}}
+_URL_RE = re.compile(r"(?P<scheme>[a-z][a-z0-9+.-]*://)(?:(?P<user>[^:@/\s]*)(?::(?P<pw>[^@/\s]*))?@)?"
+                     r"(?P<host>[A-Za-z0-9_.-]+)(?::(?P<port>\d{1,5}))?(?P<path>/[^?#\s,;]*)?", re.I)
+_KV_HOST_RE = r"(?i)(^|;)\s*(host|server|data source|address|addr)\s*=\s*(tcp:)?{host}\b"
+_USER_KEY = re.compile(r"(?i)(user|login|uid)(name)?$|_user_|username")
+_PASS_KEY = re.compile(r"(?i)pass|pwd|secret")
+_DB_KEY = re.compile(r"(?i)(^|_)(db|database|dbname|db_name|database_name|schema|vhost)$")
+
+
+def lab_service_for(image: str) -> str | None:
+    return next((svc for rx, svc in LAB_IMAGES if rx.search(image or "")), None)
+
+
+def _backing_creds(b: Service, svc: str) -> dict:
+    """The backing container's user and database, and its password's sha256 (secret settings keep only that)."""
+    from .platforms import secret_sha
+    out = {}
+    for role, (names, default) in LAB_CREDS.get(svc, {}).items():
+        if role == "password":
+            sha = next((b.secret_hints[n]["sha"] for n in names if n in b.secret_hints),
+                       next((secret_sha(str(b.env[n])) for n in names if b.env.get(n)),
+                            secret_sha(default) if default else ""))
+            if sha:
+                out["password_sha"] = sha
+            continue
+        v = next((str(b.env[n]) for n in names if b.env.get(n)), default)
+        if v:
+            out[role] = v
+    if svc == "postgres" and "database" not in out and out.get("user"):
+        out["database"] = out["user"]          # the image's default database: the user's name
+    return out
+
+
+def wire_lab(app: str, sv: Service, backing: dict[str, tuple[str, dict]]) -> list[str]:
+    """Point an app container at the lab services that take the place of its backing services: `backing` is
+    {backing service name: (lab service, its login settings)}. Settings that name the backing service's host (a URL,
+    an ADO.NET connection string, host or host:port) and the ones equal to its user, password or database get the
+    lab's, from the Secret lab-<service> (credentials of its own, the lab agent's). Returns the settings changed."""
+    from . import labservices as L
+    changed: list[str] = []
+    refs: dict[str, dict] = {}
+    env: dict[str, dict] = {}
+    used: set[str] = set()
+
+    def ref(svc: str, key: str, name: str | None = None) -> dict:
+        return {"name": name or "", "valueFrom": {"secretKeyRef": {"name": L.secret_name(svc), "key": key}}}
+
+    def helper(svc: str, key: str) -> str:
+        n = f"CZ_LAB_{svc.upper().replace('-', '_')}_{key.upper().replace('-', '_')}"
+        refs[n] = {**ref(svc, key), "name": n}
+        return f"$({n})"
+
+    def lab_db(svc: str) -> str:
+        return app if svc == "rabbitmq" else L.db_name(app)
+
+    from .platforms import secret_sha
+    values = {k: (v, secret_sha(v)) for k, v in sv.env.items() if isinstance(v, str) and v}
+    values |= {k: (h.get("shape") or "", h.get("sha") or "") for k, h in sv.secret_hints.items() if k in sv.secrets}
+    for k, (v, sha) in sorted(values.items()):
+        new: dict | None = None
+        for host, (svc, creds) in backing.items():
+            lab_host, lab_port = L.host(svc, app), L.SERVICES[svc].svc_port
+            keys = L.secret_keys(svc)
+            if re.search(_KV_HOST_RE.format(host=re.escape(host)), v) and "connection-string" in keys:
+                new = ref(svc, "connection-string", k)
+                break
+            if svc == "redis" and re.fullmatch(rf"{re.escape(host)}(:\d+)?,.*", v):
+                new = ref(svc, "connection-string", k)
+                break
+            hit = False
+
+            def url(m: re.Match) -> str:
+                nonlocal hit
+                if m.group("host") != host:
+                    return m.group(0)
+                hit = True
+                info = ""
+                if m.group("user") is not None:
+                    info = helper(svc, "username") if "username" in keys else m.group("user")
+                    if m.group("pw") is not None:
+                        info += ":" + (helper(svc, "password") if "password" in keys else m.group("pw"))
+                    info += "@"
+                path = m.group("path") or ""
+                if path and svc in ("postgres", "mysql", "sqlserver", "mongodb", "rabbitmq") and len(path) > 1:
+                    path = "/" + lab_db(svc) + ("/" + path.split("/", 2)[2] if path.count("/") > 1 else "")
+                return f"{m.group('scheme')}{info}{lab_host}:{lab_port}{path}"
+            out = _URL_RE.sub(url, v)
+            if hit:
+                if svc == "redis" and "password" in keys and "@" not in out.split("://", 1)[-1].split("/", 1)[0]:
+                    out = out.replace("://", f"://:{helper(svc, 'password')}@", 1)
+                new = {"name": k, "value": out}
+                break
+            if v and v == host:
+                new = {"name": k, "value": lab_host}
+                break
+            if v and re.fullmatch(rf"{re.escape(host)}:\d{{1,5}}", v):
+                new = {"name": k, "value": f"{lab_host}:{lab_port}"}
+                break
+            if creds.get("password_sha") and sha == creds["password_sha"] and _PASS_KEY.search(k) and "password" in keys:
+                new = ref(svc, "password", k)
+                break
+            if creds.get("user") and v == creds["user"] and _USER_KEY.search(k) and "username" in keys:
+                new = ref(svc, "username", k)
+                break
+            if creds.get("database") and v == creds["database"] and _DB_KEY.search(k) and "username" in keys:
+                new = {"name": k, "value": lab_db(svc)}
+                break
+        if new is not None:
+            env[k] = new
+            changed.append(k)
+            used.add(svc)
+    if not changed:
+        return []
+    for k in changed:
+        if k in sv.secrets:             # the lab's value: a secret reference, or $(...) of them
+            sv.secrets.remove(k)
+    sv.lab_env = list(refs.values()) + [env[k] for k in changed]
+    sv.lab = sorted(used)
+    return changed
+
+
+def lab_backing(plan: Plan, app: str, lab: set | None) -> dict[str, tuple[str, dict]]:
+    """The backing services the lab takes the place of (the lab services that are on): out of plan.excluded into
+    plan.lab, the app containers pointed at them (wire_lab). Ones whose lab service is off say how to turn it on."""
+    from . import labservices as L
+    out: dict[str, tuple[str, dict]] = {}
+    for b in plan.backing:
+        svc = lab_service_for(b.image)
+        if not svc or lab is None:
+            continue
+        if svc not in lab:
+            for x in plan.excluded:
+                if x["component"] == b.name:
+                    x["reason"] = (f"backing service ({b.image}): turn on {L.SERVICES[svc].title} under Admin → Lab "
+                                   "services and scan again, or use a managed service and point the app at it")
+            continue
+        out[b.name] = (svc, _backing_creds(b, svc))
+        plan.lab.append({"component": b.name, "image": b.image, "service": svc})
+    if not out:
+        return out
+    plan.excluded = [x for x in plan.excluded if x["component"] not in out]
+    for sv in plan.services:
+        if changed := wire_lab(app, sv, out):
+            sv.notes.append("pointed at the lab: " + ", ".join(f"`{k}`" for k in changed))
+    return out
+
+
+def _lab_title(svc: str) -> str:
+    from .labservices import SERVICES
+    return SERVICES[svc].title
+
+
+def lab_report(plan: Plan, keep: list, lab_on: set) -> dict:
+    """RepoResult.lab_services of a migrated app, in the shape of labservices.AppPlan.to_dict."""
+    needed: dict[str, list] = {}
+    for x in plan.lab:
+        needed.setdefault(x["service"], []).append(x["component"])
+    for b in plan.backing:
+        svc = lab_service_for(b.image)
+        if svc and svc not in lab_on:
+            needed.setdefault(svc, []).append(b.name)
+    provided = sorted({s for sv in keep for s in sv.lab})
+    return {"needed": {k: sorted(v) for k, v in needed.items()}, "provided": provided,
+            "missing": sorted(s for s in needed if s not in lab_on),
+            "overrides": {sv.name: [f"{_env_service(x, sv.lab)}:{x['name']}" for x in sv.lab_env
+                                    if not x["name"].startswith("CZ_LAB_")] for sv in keep if sv.lab_env}}
+
+
+def _env_service(entry: dict, services: list) -> str:
+    """The lab service an env entry of wire_lab is for: its Secret's, or the one whose host or helper it names."""
+    from . import labservices as L
+    sec = ((entry.get("valueFrom") or {}).get("secretKeyRef") or {}).get("name", "")
+    if sec.startswith(L.SECRET_PREFIX):
+        return sec[len(L.SECRET_PREFIX):]
+    v = entry.get("value") or ""
+    return next((s for s in services if f"CZ_LAB_{s.upper().replace('-', '_')}_" in v or ".containerizer-lab." in v
+                 and v.split(".containerizer-lab.")[0].split("//")[-1].split("@")[-1].startswith(s)),
+                services[0] if services else "")
+
+
+def lab_readme(app: str, plan: Plan) -> str:
+    from . import labservices as L
+    lines = [f"# Lab services of {app}", "",
+             "The appliance runs these in namespace `containerizer-lab` (Admin → Lab services) instead of the "
+             "backing containers the application ran next to it. Its settings that named them are overridden "
+             "with environment variables; its code and images are unchanged. Credentials come from the secret "
+             "store through External Secrets Operator; a Service with each backing container's name points at the "
+             "lab service, for host names in configuration files.", ""]
+    for x in plan.lab:
+        s = L.SERVICES[x["service"]]
+        lines += [f"## {x['component']} (`{x['image']}`) → {s.title}", "",
+                  f"- Host `{L.host(x['service'], app)}`, port {s.svc_port} ({s.engine}).",
+                  f"- Credentials: Secret `{L.secret_name(x['service'])}` (keys: {', '.join(L.secret_keys(x['service']))})."]
+        if s.shared:
+            lines.append(f"- Its own database and login `{L.db_name(app)}`; the data the backing container had is not "
+                         "copied: the app starts with an empty database.")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def lab_docs(app: str, plan: Plan, names: set) -> list[dict]:
+    """lab/k8s.yaml of a migrated app: an ExternalSecret per lab service it uses (the lab agent provisions what
+    they ask for), and a Service per backing service name that points at the lab service (ExternalName), for the
+    host names in its images' own configuration files."""
+    from . import labservices as L
+    used = sorted({x["service"] for x in plan.lab}, key=L.ORDER.index)
+    docs = L.app_docs(app, used)
+    for x in plan.lab:
+        n = x["component"]
+        if k8s_name(n) == n and n not in names:
+            docs.append({"apiVersion": "v1", "kind": "Service",
+                         "metadata": {"name": n, "labels": {"app.kubernetes.io/part-of": app, L.LABEL: x["service"]}},
+                         "spec": {"type": "ExternalName", "externalName": L.host(x["service"], app)}})
+    return docs
+
+
 # --------------------------------------------------------------------------- writing it out
 
 def write_component(out: Path, ns: str, sv: Service, image: str, uid: int, domain: str, idp_sb, local: str = "") -> list[dict]:
@@ -755,6 +1005,9 @@ def migration_markdown(plan: Plan, results: dict[str, dict] | None = None) -> st
         lines.append(f"| {sv.name} | {PLATFORM_TEXT.get(sv.platform, sv.platform)} (`{sv.source}`) | {src} | "
                      f"{', '.join(map(str, sv.ports)) or '-'} | {1 if sv.schedule else sv.replicas} | "
                      f"{r.get('result', 'generated')} |")
+    for x in plan.lab:
+        lines.append(f"| {x['component']} | | `{x['image']}` | | | the lab's {_lab_title(x['service'])} instead "
+                     f"(Admin → Lab services; `lab/README.md`) |")
     for x in plan.excluded:
         lines.append(f"| {x['component']} | | | | | not migrated: {x['reason']} |")
     lines.append("")
@@ -849,6 +1102,9 @@ def migrate_repo(src: Path, o, res, app: str, rel: str, dest: Path, gen: Path, r
         return res
     res.migration = {"platforms": plan.platforms, "descriptors": [d["path"] for d in plan.descriptors],
                      "llm_heavy": llm}
+    from .org import _lab_services
+    lab_on = _lab_services(o)
+    lab_backing(plan, app, lab_on)
     earlier = load_fixes(dest) if dest.exists() else {}
     for sv in plan.services:
         if k8s_name(sv.name) in earlier:
@@ -894,11 +1150,20 @@ def migrate_repo(src: Path, o, res, app: str, rel: str, dest: Path, gen: Path, r
     for sv in keep:
         cn = k8s_name(sv.name)
         comp_docs[cn] = write_component(gen, app, sv, images[cn][0], images[cn][2], domain, idp_sb)
+    labd: list[dict] = []
+    if plan.lab and keep:
+        from .generate import _yaml_docs as _yd
+        if "lab" in comp_docs:
+            raise ValueError("a component is named 'lab', the folder of the lab service credentials")
+        labd = lab_docs(app, plan, set(comp_docs))
+        (gen / "lab").mkdir(parents=True, exist_ok=True)
+        (gen / "lab" / "k8s.yaml").write_text(_yd(labd))
+        (gen / "lab" / "README.md").write_text(lab_readme(app, plan))
     g = None
     if o.gate and keep:
         pol = policy(o.fail_on)
         scanner = o.scanner or security()["scan"].get("default_scanner", "auto")
-        provided = external_secret_targets([d for docs in comp_docs.values() for d in docs])
+        provided = external_secret_targets([d for docs in comp_docs.values() for d in docs] + labd)
         comps = []
         for sv in list(keep):
             cn = k8s_name(sv.name)
@@ -947,9 +1212,11 @@ def migrate_repo(src: Path, o, res, app: str, rel: str, dest: Path, gen: Path, r
         (gen / "security.json").write_text(json.dumps(g, indent=2, default=str))
         (gen / "SECURITY.md").write_text(security_markdown(g))
     res.excluded = list(plan.excluded)
+    if lab_on is not None:
+        res.lab_services = lab_report(plan, keep, lab_on)
     (gen / "migration.json").write_text(json.dumps({
         "app": app, "platforms": plan.platforms, "llm_heavy": llm, "descriptors": plan.descriptors,
-        "services": [sv.to_dict() for sv in plan.services], "excluded": plan.excluded,
+        "services": [sv.to_dict() for sv in plan.services], "excluded": plan.excluded, "lab": plan.lab,
         "notes": plan.notes + plan.llm_notes}, indent=2, default=str) + "\n")
     if not keep:
         res.status = "no-a-components"
@@ -957,7 +1224,7 @@ def migrate_repo(src: Path, o, res, app: str, rel: str, dest: Path, gen: Path, r
         if dest.exists():
             shutil.rmtree(dest)
         return res
-    all_k8s = [d for docs in comp_docs.values() for d in docs]
+    all_k8s = [d for docs in comp_docs.values() for d in docs] + labd
     imgs = [(sv.name, images[k8s_name(sv.name)][0]) for sv in keep]
     app_files(_App(app), gen, all_k8s, comp_docs, imgs, o.registry, gitops)
     (gen / "MIGRATION.md").write_text(migration_markdown(plan, results))

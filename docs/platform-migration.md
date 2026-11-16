@@ -53,8 +53,22 @@ memory, the health check, volumes, the schedule of batch and periodic jobs, and 
 | Sandbox IdP client | sign-in settings in the environment, e.g. `OpenIdConnect__Authority` and `OpenIdConnect__ClientId` |
 
 Databases, caches and brokers in a compose file or Nomad job (PostgreSQL, Redis, RabbitMQ, ...) are not
-migrated as apps: use a managed service or the appliance's [lab services](lab-services.md). What cannot be
-carried over (placement constraints, scale rules, Dapr, privileged mode, the Docker socket, variables set
+migrated as apps. On the appliance, when the matching [lab service](lab-services.md) is on (PostgreSQL for
+`postgres` or `postgis`, MySQL for `mysql` or `mariadb`, SQL Server, MongoDB, Redis or Valkey, RabbitMQ, Kafka,
+Mail for `mailpit` or `mailhog`), the app uses it instead:
+
+- the settings that name the backing container's host (a URL, a connection string, `host` or `host:port`) get
+  the lab's, with its login from the Secret `lab-<service>` (for example
+  `postgres://$(CZ_LAB_POSTGRES_USERNAME):$(CZ_LAB_POSTGRES_PASSWORD)@<lab host>:5432/<database>`), and so do the
+  settings equal to the container's own user, password or database (`POSTGRES_USER`, `POSTGRES_PASSWORD`,
+  `POSTGRES_DB` and the like);
+- `lab/k8s.yaml` asks the lab agent for the app's database and login (an ExternalSecret) and adds a Service with
+  the backing container's name (ExternalName) that points at the lab, for host names in configuration files
+  inside the images;
+- the app starts with an empty database: the backing container's data is not copied.
+
+When the lab service is off, the container is left out with *turn on PostgreSQL under Admin → Lab services and
+scan again*; elsewhere, use a managed service and point the app at it. What cannot be carried over (placement constraints, scale rules, Dapr, privileged mode, the Docker socket, variables set
 where the stack is deployed) is listed in the app's `MIGRATION.md`.
 
 ## Images and the security gate

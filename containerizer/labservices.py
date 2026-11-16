@@ -739,7 +739,14 @@ def inject(docs: list[dict], svc: str, ns: str, c, needed: dict) -> list[str]:
             for ct in (tpl.get("spec") or {}).get("containers") or []:
                 rest = [e for e in ct.get("env") or [] if e["name"] not in names]
                 ct["env"] = copy.deepcopy(refs) + rest + copy.deepcopy(vals)
-        elif d.get("kind") == "NetworkPolicy" and "Egress" in ((d.get("spec") or {}).get("policyTypes") or []):
+    allow_egress(docs, svc, ns)
+    return notes
+
+
+def allow_egress(docs: list[dict], svc: str, ns: str) -> None:
+    """The components' egress NetworkPolicies may reach the lab service."""
+    for d in docs:
+        if d.get("kind") == "NetworkPolicy" and "Egress" in ((d.get("spec") or {}).get("policyTypes") or []):
             rule = egress_rule(svc, ns)
             eg = d["spec"].setdefault("egress", [])
             if rule not in eg:
@@ -749,7 +756,6 @@ def inject(docs: list[dict], svc: str, ns: str, c, needed: dict) -> list[str]:
             have = [x for x in (ann.get(key) or "").split(",") if x and x != "none"]
             if f"lab-{svc}" not in have:
                 ann[key] = ",".join(have + [f"lab-{svc}"])
-    return notes
 
 
 def app_docs(ns: str, services: list[str]) -> list[dict]:

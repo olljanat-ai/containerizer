@@ -440,7 +440,8 @@ def _commit(d: Path):
     subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x"], cwd=d, check=True)
 
 
-def test_enabled_dockerfile_repo_is_migrated_in_an_org_scan(tmp_path, monkeypatch):
+@pytest.mark.parametrize("lab", [None, {"postgres"}])
+def test_enabled_dockerfile_repo_is_migrated_in_an_org_scan(tmp_path, monkeypatch, lab):
     from containerizer import org as orgmod
     from containerizer.org import OrgOptions, run_org
     from containerizer.orgsource import NO_PROJECT, SourceRepo
@@ -462,16 +463,23 @@ def test_enabled_dockerfile_repo_is_migrated_in_an_org_scan(tmp_path, monkeypatc
     state = _State({"_/shop": "enabled"})
     o = OrgOptions(provider="github", org="acme", registry="reg.example/sb", output_dir=str(out), token="t",
                    verify=False, gate=False, push_images=False, tag="1.0.0", work_dir=str(tmp_path / "work"),
-                   state=state, now=datetime(2026, 10, 31, tzinfo=timezone.utc))
+                   state=state, now=datetime(2026, 10, 31, tzinfo=timezone.utc), lab=lab)
     res = {r.repo: r for r in run_org(o, log=lambda *a, **k: None)}
     shop = res["shop"]
+    app = out / "acme" / "_" / "shop"
+    if lab:     # the lab's PostgreSQL takes the place of db: not left out, its ExternalSecret and host name
+        assert not shop.excluded and shop.lab_services["needed"] == {"postgres": ["db"]}
+        assert "lab/k8s.yaml" in (app / "kustomization.yaml").read_text()
+        kinds = [(d["kind"], d["metadata"]["name"]) for d in yaml.safe_load_all((app / "lab" / "k8s.yaml").read_text())]
+        assert kinds == [("ExternalSecret", "lab-postgres"), ("Service", "db")]
+        assert "the lab's PostgreSQL instead" in (app / "MIGRATION.md").read_text()
+        return
     assert shop.status == "deployed", shop
     assert shop.overridden[0]["status"] == "skipped-dockerfile"
     assert shop.migration["platforms"] == ["docker-swarm"] and not shop.migration["llm_heavy"]
     assert {c["component"] for c in shop.components} == {"api", "worker"}
     assert any(x["component"] == "db" for x in shop.excluded)
     assert res["plain"].status == "skipped-dockerfile"        # not enabled: skipped as before
-    app = out / "acme" / "_" / "shop"
     meta = json.loads((app / "containerizer.json").read_text())
     assert meta["migration"]["platforms"] == ["docker-swarm"] and meta["app"] == "shop"
     assert (app / "gitops" / "flux" / "kustomization.yaml").exists() and not (app / "gitops" / "argocd").exists()
@@ -576,3 +584,76 @@ def test_nginx_gets_its_cache_and_pid_folders(tmp_path):
     assert c["securityContext"]["readOnlyRootFilesystem"]
     dep = next(d for d in load_yaml_docs((out / "api" / "k8s.yaml").read_text()) if d["kind"] == "Deployment")
     assert "/var/cache/nginx" not in {m["mountPath"] for m in dep["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]}
+
+
+# --------------------------------------------------------------------------- lab services for backing services
+
+COMPOSE_PG = """services:
+  web:
+    build: .
+    ports: ["8080:8080"]
+    environment:
+      DATABASE_URL: postgres://shop:s3cret@db:5432/shop?sslmode=disable
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: shop
+      DB_PASSWORD: s3cret
+      DB_NAME: shop
+      CACHE: cache:6379
+      MODE: prod
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: s3cret
+      POSTGRES_DB: shop
+  cache:
+    image: redis:7
+"""
+
+
+def test_backing_postgres_is_the_labs_when_it_is_on(tmp_path):
+    from containerizer import labservices as L
+    (tmp_path / "docker-compose.yml").write_text(COMPOSE_PG)
+    (tmp_path / "Dockerfile").write_text("FROM scratch\n")
+    plan = replatform.plan_migration(tmp_path, "shop", ["Dockerfile"])
+    assert {x["component"] for x in plan.excluded} == {"db", "cache"}
+    web = next(s for s in plan.services if s.name == "web")
+    assert "DATABASE_URL" in web.secrets and "DATABASE_URL" not in web.env
+    assert "s3cret" not in json.dumps(web.to_dict())                     # the hints never leave the plan
+    replatform.lab_backing(plan, "shop", {"postgres", "smtp"})
+    assert plan.lab == [{"component": "db", "image": "postgres:16", "service": "postgres"}]
+    [cache] = plan.excluded                                             # Redis is off: says how to turn it on
+    assert cache["component"] == "cache" and "turn on Redis under Admin → Lab services" in cache["reason"]
+    h = L.host("postgres", "shop")
+    env = {e["name"]: e for e in web.lab_env}
+    assert env["DATABASE_URL"]["value"] == (f"postgres://$(CZ_LAB_POSTGRES_USERNAME):$(CZ_LAB_POSTGRES_PASSWORD)@{h}:5432/"
+                                            f"{L.db_name('shop')}?sslmode=disable")
+    assert env["DB_HOST"]["value"] == h and env["DB_NAME"]["value"] == L.db_name("shop")
+    assert env["DB_USER"]["valueFrom"]["secretKeyRef"] == {"name": "lab-postgres", "key": "username"}
+    assert env["DB_PASSWORD"]["valueFrom"]["secretKeyRef"] == {"name": "lab-postgres", "key": "password"}
+    assert "CACHE" not in env and "MODE" not in env and "DB_PORT" not in env
+    assert "DATABASE_URL" not in web.secrets and "DB_PASSWORD" not in web.secrets and web.lab == ["postgres"]
+    docs, _ = replatform.manifests("shop", web, "img", 10001)
+    ct = docs[[d["kind"] for d in docs].index("Deployment")]["spec"]["template"]["spec"]["containers"][0]
+    names = [e["name"] for e in ct["env"]]
+    assert names.index("CZ_LAB_POSTGRES_PASSWORD") < names.index("DATABASE_URL")   # $(VAR) resolves
+    assert names.count("DB_PASSWORD") == 1 and names.count("DATABASE_URL") == 1
+    netpol = next(d for d in docs if d["kind"] == "NetworkPolicy" and "Egress" in d["spec"]["policyTypes"])
+    assert L.egress_rule("postgres", "shop") in netpol["spec"]["egress"]
+    lab = replatform.lab_docs("shop", plan, {"web"})
+    assert [(d["kind"], d["metadata"]["name"]) for d in lab] == [("ExternalSecret", "lab-postgres"), ("Service", "db")]
+    assert lab[1]["spec"] == {"type": "ExternalName", "externalName": h}
+    rep = replatform.lab_report(plan, [web], {"postgres"})
+    assert rep["provided"] == ["postgres"] and rep["missing"] == ["redis"]
+    assert "postgres:DATABASE_URL" in rep["overrides"]["web"]
+    assert "the lab's PostgreSQL instead" in replatform.migration_markdown(plan)
+
+
+def test_backing_service_stays_out_where_there_is_no_lab(tmp_path):
+    (tmp_path / "docker-compose.yml").write_text(COMPOSE_PG)
+    (tmp_path / "Dockerfile").write_text("FROM scratch\n")
+    plan = replatform.plan_migration(tmp_path, "shop", ["Dockerfile"])
+    replatform.lab_backing(plan, "shop", None)
+    assert not plan.lab and {x["component"] for x in plan.excluded} == {"db", "cache"}
+    assert all("use a managed service or the appliance's lab service" in x["reason"] for x in plan.excluded)
