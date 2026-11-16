@@ -10,6 +10,13 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.50.6 (2026-11-16)
+
+- **Repositories in parallel is one machine-wide limit**: 80% of the CPU cores by default (was a setting of each
+  scan, 1 to 8, default 1), shared by every run going (full runs, Scan now, Run now). A run that starts while the
+  others use every slot waits for a free one. `CONTAINERIZER_PARALLEL_REPOS` on the worker chooses another
+  number, up to one per CPU core (the limit of 8 is gone). The scan form no longer has the field.
+
 ## 0.50.5 (2026-11-16)
 
 - **Scan now queues while other runs are going**: an administrator's Scan now of chosen repositories or projects

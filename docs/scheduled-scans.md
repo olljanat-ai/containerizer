@@ -175,8 +175,8 @@ scanned**, select them all and press **Scan now**.
 
 Runs of different organization scans that an administrator starts (**Scan now**, **Run now**, **Discover**) do not
 wait for each other: the worker starts each one at once, next to the runs already going, up to 4 at a time. A
-scheduled run waits until no other run is going. The machine's CPU cores, memory and LLM slots are shared by
-the runs, each with its own **Repositories in parallel**, so keep those numbers lower when you start several.
+scheduled run waits until no other run is going. The runs share the machine's repositories in parallel
+(below): a run that starts while the others use them all waits for a free one.
 
 Discovery can be run again at any time, for example before a scheduled run, to see the new projects and
 repositories first. Scheduled runs are always full scans; new repositories found by them are processed
@@ -260,13 +260,14 @@ them again. Stopping the worker (a restart, an update) still lets the repositori
 are on. A scan that has run cannot be
 deleted (its history is kept): pause it.
 
-**Repositories in parallel** (the scan's settings, 1 to 8, default 1): how many repositories a full scan or
-**Scan now** processes at the same time. The assessment is CPU-bound, so each repository gets its own process
-and the scan uses that many CPU cores. Results are committed to the output repository one at a time, in the
-order the repositories finish. Each one also needs its own memory (about 1 GB, more with **Build and run**)
-and disk space, and with **Ask the LLM** each asks the LLM on its own, so a self-hosted LLM gets up to that
-many requests at once (give llama.cpp that many slots, `--parallel`). Start with the number of CPU cores minus
-one, and lower it if the machine runs short of memory.
+**Repositories in parallel**: the worker processes up to 80% of the machine's CPU cores worth of repositories
+at the same time, summed over every run going (a full run, Scan now and Run now share them): one machine-wide
+limit, not a setting of each scan. Set `CONTAINERIZER_PARALLEL_REPOS` in the worker's environment to choose
+another number, up to one per CPU core. The assessment is CPU-bound, so each repository gets its own process.
+Results are committed to the output repository one at a time, in the order the repositories finish. Each one
+also needs its own memory (about 1 GB, more with **Build and run**) and disk space, and with **Ask the LLM**
+each asks the LLM on its own, so a self-hosted LLM gets up to that many requests at once (give llama.cpp that
+many slots, `--parallel`); lower the number if the machine runs short of memory.
 
 ## Progress of a run
 
@@ -287,7 +288,7 @@ progress count in the scan list). It reloads itself every 10 seconds while the r
   the sandbox).
 - **Where the time goes**: each step's total time over the repositories of the run, its share, and its average per
   repository, so you can see whether a slow scan waits for the LLM, for builds and verification, for the security
-  gate or for git. With **Repositories in parallel** above 1, the times are summed over the processes.
+  gate or for git. With more than one repository at a time, the times are summed over the processes.
 - **Finished most recently** and **Slowest**: the repositories of the run with their result and how long each took.
 
 ![Progress of a running organization scan: repositories in progress and where the time goes](images/admin-scan-run-progress.png#only-light){ .cz-shot }
