@@ -667,7 +667,7 @@ def build_or_pull(src: Path, sv: Service, local: str, cdir: Path, timeout: int =
             args += ["--target", sv.build["target"]]
         rc, out = _docker(args + [str(ctx)], timeout)
         (cdir / "build.log").write_text(out)
-        return rc == 0, out[-2000:]
+        return rc == 0, out[-20000:]
     rc, out = _docker(["pull", sv.image], timeout)
     if rc != 0:
         return False, f"docker pull {sv.image}: {out.strip()[-600:]}"
@@ -847,8 +847,10 @@ def migrate_repo(src: Path, o, res, app: str, rel: str, dest: Path, gen: Path, r
         if build:
             ok, tail = build_or_pull(src, sv, local, cdir, o.timeout)
             if not ok:
+                from .buildlog import failure_text
                 plan.excluded.append({"component": sv.name, "reason": ("image build failed: " if sv.build else
-                                                                       "image could not be pulled: ") + REDACT(tail)[-300:]})
+                                                                       "image could not be pulled: ")
+                                      + REDACT(failure_text(tail, 600))})
                 shutil.rmtree(cdir, ignore_errors=True)
                 continue
             uid = image_uid(local) or uid

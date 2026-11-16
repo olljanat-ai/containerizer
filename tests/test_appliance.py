@@ -131,7 +131,9 @@ def test_render_dns_only_allowed_names_and_parent_sets():
                                       {"cidr": "10.20.0.0/16", "ports": "1433"}, {"host": "pool.ntp.org", "ports": "udp/123"}]})
     nft, dns = render(system, admin, ["192.168.1.1", "1.1.1.1"])
     lines = dns.splitlines()
-    assert "no-resolv" in lines                                    # everything else: REFUSED
+    assert "no-resolv" in lines
+    # everything else: the refuser answers REFUSED and counts it (dnsmasq logs no queries); after the rules
+    assert lines[-1] == "server=127.0.0.1#5354" and lines.count("server=127.0.0.1#5354") == 1
     assert "server=/github.com/192.168.1.1" in lines and "server=/ghcr.io/1.1.1.1" in lines
     # a subdomain with its own rule still gets the parent's set (dnsmasq uses the longest match only)
     assert "nftset=/ssh.github.com/4#inet#cz_firewall#f4_tcp22,6#inet#cz_firewall#f6_tcp22," \
@@ -173,7 +175,8 @@ def test_egress_status_parses_journal(paths):
         "cz-egress-drop: IN=cni0 OUT=eth0 SRC=10.42.0.7 DST=1.2.3.4 LEN=60 PROTO=TCP SPT=4000 DPT=8443 WINDOW=1",
     ])
     st = sysagent.egress_status(journal)
-    assert st["denied_names"] == [{"name": "api.nuget.org", "count": 2}, {"name": "registry.npmjs.org", "count": 1}]
+    # the most recent first: a build's name is on top right after it failed, whatever the counts
+    assert st["denied_names"] == [{"name": "registry.npmjs.org", "count": 1}, {"name": "api.nuget.org", "count": 2}]
     assert st["dropped"] == [{"name": "1.2.3.4 tcp/8443", "count": 1}]
     assert [r["host"] for r in st["system_rules"]] == ["ghcr.io", "pkg-containers.githubusercontent.com"]
 

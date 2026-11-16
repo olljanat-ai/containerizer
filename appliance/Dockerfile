@@ -107,7 +107,7 @@ RUN chmod 0755 /usr/lib/containerizer/bin/* /usr/libexec/elemental-checker/conta
  && ! id -nG containerizer | grep -qw docker \
  && systemctl enable systemd-networkd.service systemd-resolved.service ssh.service docker.service caddy.service \
       containerizer-firstboot.service containerizer-app-patch.service containerizer-root-password.service containerizer-root-password.path \
-      containerizer-firewall.service containerizer-dns.service \
+      containerizer-firewall.service containerizer-dns.service containerizer-dns-refused.service \
       containerizer-dns-upstream.path containerizer-addresses.service \
       containerizer-sysagent.path containerizer-sysagent-status.service containerizer-sysagent-status.timer containerizer-restart.timer \
       containerizer-mssql.service containerizer-db-init.service containerizer-web.service containerizer-openbao.service \

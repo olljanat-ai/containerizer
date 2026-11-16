@@ -511,7 +511,7 @@ def build_image(app_root: Path, cdir: Path, tag: str, timeout: int = 1800) -> tu
     rc, out, err = _run(["docker", "build", "--progress=plain", *_build_env_args(), "-f", str(cdir / "Dockerfile"),
                          "-t", tag, str(app_root)], timeout)
     (cdir / "build.log").write_text(out + err)
-    return rc == 0, (out + err)[-2000:]
+    return rc == 0, (out + err)[-20000:]
 
 
 HARDENING_ERRORS = re.compile(r"Read-only file system|Permission denied|UnauthorizedAccessException|"
@@ -542,6 +542,19 @@ def hardening_hits(log: str) -> list[str]:
     """The hardening errors of a container's log, not counting the lines its start-up scripts mark as information."""
     lines = [ln for ln in log.splitlines() if not INFO_LINE.search(ln)]
     return sorted({m.group(0)[:160] for m in HARDENING_ERRORS.finditer("\n".join(lines))})
+
+
+def hardening_lines(log: str, n: int = 2) -> list[str]:
+    """The first lines of a container's log with a hardening error (the path or port it names), information lines
+    of start-up scripts left out."""
+    out = []
+    for ln in (log or "").splitlines():
+        ln = " ".join(ln.split())
+        if HARDENING_ERRORS.search(ln) and not INFO_LINE.search(ln) and ln[:200] not in out:
+            out.append(ln[:200])
+            if len(out) >= n:
+                break
+    return out
 
 
 UNREACHABLE = "203.0.113.1"         # TEST-NET-3: never answers
@@ -748,7 +761,9 @@ def gate_app(a, out: Path, build: bool = False, scan: bool = True, scanner: str 
             tag = f"containerizer/{app_ns(a.name)}-{cdir.name}:gate"
             ok, log = _build_with_retries(a, cdir, tag, comp, pin, lambda d: _apply_os_patch(d, comp))
             if not ok:
+                from .buildlog import failure_text
                 comp["build_error"] = log[-800:]
+                comp["build_failure"] = failure_text(log, 600)      # the error lines and failed name lookups
             else:
                 if scan:
                     res = scan_image(tag, scanner, local=True)

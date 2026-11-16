@@ -313,22 +313,14 @@ HEAVY_CALLS = 40
 # without a line (NuGet's NU1605 package downgrade, MSBuild's): /src/<project> : error CODE: message
 BUILD_ERROR_RE = re.compile(r"(?:^|\s)/src/(?P<file>[^\s(:]+\.(?:cs|vb|fs|cshtml|razor|csproj|vbproj|fsproj|props|targets))"
                             r"(?:\((?P<line>\d+)(?:,\d+)?\)| ):? error (?P<code>[A-Z]+\d+): (?P<msg>[^\[\n]+)")
+from .buildlog import error_lines  # noqa: E402,F401 - moved there; used here and by callers
+
 REPAIR_GUIDANCE = """An earlier change (the patch below) was made to fix the findings, but the result does not build
 (or does not run). Fix the errors listed for this file so that the code builds and runs, and keep the intent of
 the earlier change. Often another file of the patch changed something this file uses (a constructor, a method, a
 setting): adapt this file to it, do not undo the earlier change. A NuGet error that a package or version does not
 exist (NU1101, NU1102) is the exception: remove or correct that package reference (on .NET Core 3.0 and later,
 the Microsoft.AspNetCore.* namespaces of ASP.NET Core need no package)."""
-
-
-def error_lines(log: str, limit: int = 1500) -> str:
-    """What a failed build or run says: its lines that name an error (the last ones, about `limit` characters),
-    else the end of the log. The end alone is often Docker's own report of the failed step, without the error."""
-    lines = [" ".join(l.split()) for l in (log or "").splitlines()]
-    errs = [l for l in lines if re.search(r"\berror\b|\bexception\b|\bfailed\b|\bfatal\b", l, re.I)
-            and not l.startswith(("ERROR: failed to solve", "------", ">>>"))]
-    out = " | ".join(errs)
-    return out[-limit:] if errs else " ".join((log or "").split())[-600:]
 
 
 def build_errors(log: str) -> list[dict]:

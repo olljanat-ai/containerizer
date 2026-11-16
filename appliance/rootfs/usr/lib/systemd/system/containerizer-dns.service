@@ -2,6 +2,9 @@
 Description=containerizer appliance: DNS filter (only names on the egress allow-list resolve)
 After=containerizer-firewall.service systemd-networkd.service
 Requires=containerizer-firewall.service
+# the default server: answers REFUSED for the names no rule allows and counts them (Admin -> Firewall)
+Wants=containerizer-dns-refused.service
+After=containerizer-dns-refused.service
 Before=nss-lookup.target docker.service k3s.service containerizer-web.service containerizer-worker.service
 Wants=nss-lookup.target
 

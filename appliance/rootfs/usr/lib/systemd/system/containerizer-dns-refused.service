@@ -1,0 +1,31 @@
+[Unit]
+Description=containerizer appliance: DNS filter refuser (answers REFUSED for names no egress rule allows, counts them)
+# dnsmasq's default server (sysagent.REFUSER): every name no rule covers comes here; the counts are Admin ->
+# Firewall -> Refused names (sysagent.egress_status), so dnsmasq does not log every query into the journal
+Before=containerizer-dns.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+RuntimeDirectory=containerizer-dns-refused
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/lib/containerizer/venv/bin/python -m containerizer.dnsrefuse --listen 127.0.0.1:5354 --state /run/containerizer-dns-refused/refused.json
+Restart=always
+RestartSec=2
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

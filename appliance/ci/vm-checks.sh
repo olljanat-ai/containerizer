@@ -179,14 +179,16 @@ wait_for 120 "example.com allowed" getent ahostsv4 example.com
 wait_for 60 "example.com reachable on 443" curl -sS -o /dev/null --max-time 15 https://example.com/
 grep -q '"by": "ci"' /var/lib/containerizer/system/egress-history.jsonl
 step "refused names are reported"
-# the refusal reaches the journal a moment after the answer: ask again until the status shows it
+systemctl is-active --quiet containerizer-dns-refused.service
+# the refuser writes its counts every 15 seconds: ask again until the status shows it
 refused() {
   getent ahostsv4 not-allowed.example.org || true
   $PY -m containerizer.sysagent status
   $PY -c "import json; e=json.load(open('/run/containerizer/system/status.json'))['egress']; assert any(d['name']=='not-allowed.example.org' for d in e['denied_names'])"
 }
 wait_for 60 "not-allowed.example.org reported" refused || {
-  journalctl -u containerizer-dns.service --no-pager -o cat --grep 'not-allowed|REFUSED' | tail -20
+  journalctl -u containerizer-dns.service -u containerizer-dns-refused.service --no-pager -o cat | tail -20
+  cat /run/containerizer-dns-refused/refused.json; echo; grep -n 'server=127' /run/containerizer/dnsmasq/egress.conf
   $PY -c "import json; print(json.load(open('/run/containerizer/system/status.json'))['egress']['denied_names'][:5])"
   exit 1
 }
