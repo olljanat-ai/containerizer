@@ -714,3 +714,33 @@ def test_forget_application_and_external_ids(db, tmp_path):
     finally:
         ed.close()
         wr.close()
+
+
+@needs_sql
+def test_a_migrated_application_is_on_the_results_pages(db):
+    """A repository moved from its own Dockerfiles (replatform.py) has no source assessment: the migration's own entry
+    makes the application, one component per container (A) or left out (B), and its sandbox checks attach to it."""
+    from containerizer import org as orgmod, replatform
+    res = orgmod.RepoResult(provider="github", org="acme", project="_", repo="site", status="deployed", app="site")
+    res.migration = {"platforms": ["dockerfile"], "descriptors": ["web/Dockerfile"]}
+    res.components = [{"component": "web", "image": "reg/site/web:1", "role": "web", "project": "web/Dockerfile"}]
+    res.excluded = [{"component": "test", "reason": "security gate: does not run with the hardened pod security context: "
+                                                    "nginx: [emerg] mkdir() failed", "detail": "Run with ..."}]
+    doc = replatform.assessment(res)
+    assert doc["rating"] == "B" and "its Dockerfiles" in doc["summary"] and "1 container deployed, 1 not" in doc["summary"]
+    writer = _as(db, "cz_t_writer")
+    conn = sqlstore.connect(writer, "Test-Passw0rd!x")
+    try:
+        key = "https://github.com/acme/site#"
+        sqlstore.store_assessment(conn, doc, {"key": key, "repository_url": "https://github.com/acme/site", "path": "."})
+        cur = conn.cursor(as_dict=True)
+        cur.execute("SELECT a.Name, l.Rating FROM cz.Application a JOIN cz.vApplicationLatest l "
+                    "ON l.ApplicationId = a.ApplicationId WHERE a.SourceKey = %s", (key,))
+        assert cur.fetchone() == {"Name": "site", "Rating": "B"}
+        n, missing = sqlstore.store_sandbox_checks(conn, {"components": [
+            {"source_key": key, "project": "web/Dockerfile", "component": "web", "status": "healthy"}]})
+        assert (n, missing) == (1, 0)
+    finally:
+        conn.close()
+    res.excluded = []
+    assert replatform.assessment(res)["rating"] == "A"

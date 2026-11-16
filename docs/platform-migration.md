@@ -71,6 +71,10 @@ component built `FROM nginx` (or running the nginx image) gets nginx's folders w
 `/var/cache/nginx` (its temp folders) and `/run` (its pid file). A component that still fails is not deployed, with
 the reason and the gate's **What failed** on the repository page.
 
+A migrated application is on the results pages like any other (the front page, Admin → Applications): one
+component per container, rated A when it is deployed as it is, B while the gate leaves a container out (the reason
+is its finding), and the sandbox cluster's health of each.
+
 ## LLM-heavy mode
 
 Off by default. When it is on, platform migrations and the sandbox tester ask the LLM as often as they

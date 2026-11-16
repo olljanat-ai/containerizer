@@ -965,12 +965,13 @@ def migrate_repo(src: Path, o, res, app: str, rel: str, dest: Path, gen: Path, r
         (gen / FIXES_FILE).write_text(json.dumps({k: v for k, v in earlier.items() if k in comp_docs}, indent=2) + "\n")
 
     comps_out = []
+    sources = [sv.source for sv in keep]
     for sv in keep:
         cn = k8s_name(sv.name)
         ref, local, _ = images[cn]
         gc = next((c for c in (g or {}).get("components", []) if c["component"] == cn), {})
         entry = {"component": sv.name, "folder": cn, "image": ref, "rating": "A", "verdict": "info",
-                 "role": "cron" if sv.schedule else ("web" if sv.ports else "worker"), "project": sv.source,
+                 "role": "cron" if sv.schedule else ("web" if sv.ports else "worker"), "project": project_path(sv, sources),
                  "project_name": sv.name, "platform": sv.platform,
                  "verification": (gc.get("run") or {}).get("status", "not run")}
         if o.push_images and reg and build:
@@ -989,6 +990,37 @@ def migrate_repo(src: Path, o, res, app: str, rel: str, dest: Path, gen: Path, r
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(gen, dest)
     return res
+
+
+def project_path(sv: Service, sources: list[str]) -> str:
+    """The component's project path (Component.ProjectPath; the sandbox check finds the component by it): its
+    descriptor or Dockerfile, with the service's name when more services come from the same file (a Compose file)."""
+    return sv.source if sources.count(sv.source) <= 1 else f"{sv.source}#{k8s_name(sv.name)}"
+
+
+def assessment(res, plan_services: list | None = None) -> dict:
+    """The assessment.json entry of a migrated application (sqlstore.store_assessment), so it is on the results pages
+    like any other: one component per container it migrated (rated A: it runs as it is, from its own image) and per
+    one the gate left out (the reason; a fix is needed: B)."""
+    m = getattr(res, "migration", None) or {}
+    plats = ", ".join(PLATFORM_TEXT.get(p, p) for p in m.get("platforms") or []) or "its own images"
+    comps = [{"name": c["component"], "project": c.get("project") or c["component"], "role": c.get("role") or "web",
+              "tier": "other", "verdict": "info", "verdict_text": f"deployed as it is ({c.get('image', '')})",
+              "score": 100, "confidence": 1.0, "findings": []} for c in res.components or []]
+    for x in res.excluded or []:
+        comps.append({"name": x["component"], "project": x["component"], "role": "web", "tier": "other",
+                      "verdict": "refactor", "verdict_text": f"not deployed: {x.get('reason', '')}"[:200], "score": 60,
+                      "confidence": 1.0, "findings": [{"id": "replatform-not-deployed", "severity": "refactor",
+                                                       "category": "platform", "title": "Not deployed to the sandbox",
+                                                       "why": str(x.get("reason") or "")[:2000],
+                                                       "fix": str(x.get("detail") or "")[-2000:] or None,
+                                                       "source": "replatform"}]})
+    rating = "B" if any(c["verdict"] == "refactor" for c in comps) else "A"
+    return {"name": res.app, "rating": rating, "score": 100 if rating == "A" else 60, "confidence": 1.0,
+            "summary": f"Already containerized: moved to Kubernetes from {plats}; {len(res.components or [])} "
+                       f"container{'' if len(res.components or []) == 1 else 's'} deployed"
+                       + (f", {len(res.excluded)} not" if res.excluded else ""),
+            "components": comps, "repo_findings": [], "migration": m}
 
 
 # --------------------------------------------------------------------------- sandbox tester
