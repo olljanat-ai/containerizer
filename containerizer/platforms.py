@@ -34,7 +34,8 @@ MAX_FILE = 512 * 1024
 PLATFORM_TEXT = {"docker-swarm": "Docker Swarm", "docker-compose": "Docker Compose", "nomad": "HashiCorp Nomad",
                  "azure-container-apps": "Azure Container Apps", "aws-ecs": "Amazon ECS", "fly": "Fly.io",
                  "cloud-foundry": "Cloud Foundry", "app-engine": "Google App Engine", "render": "Render",
-                 "marathon": "Marathon", "heroku": "Heroku", "kamal": "Kamal"}
+                 "marathon": "Marathon", "heroku": "Heroku", "kamal": "Kamal",
+                 "dockerfile": "its Dockerfiles (no deployment descriptor)"}
 # images that are a backing service (database, cache, broker), not the application itself
 BACKING_RE = re.compile(r"(^|/)(postgres|postgis|mysql|mariadb|mongo|redis|valkey|memcached|rabbitmq|"
                         r"elasticsearch|opensearch|mssql/server|azure-sql-edge|cassandra|zookeeper|kafka|"

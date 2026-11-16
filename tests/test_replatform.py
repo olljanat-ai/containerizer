@@ -215,12 +215,49 @@ def test_nomad_and_aca_cron_jobs(tmp_path):
     assert not any(d["kind"] == "Ingress" for d in orders)            # no --ingress-domain
 
 
-def test_cli_without_descriptor_says_so(tmp_path, capsys):
+def test_cli_without_dockerfile_or_descriptor_says_so(tmp_path, capsys):
     from containerizer.cli import main
     (tmp_path / "app").mkdir()
-    (tmp_path / "app" / "Dockerfile").write_text("FROM scratch\n")
+    (tmp_path / "app" / "README.md").write_text("# nothing\n")
     assert main(["replatform", str(tmp_path / "app"), "--out", str(tmp_path / "out")]) == 1
-    assert "no Docker Swarm" in capsys.readouterr().err
+    assert "no Dockerfile, and no Docker Swarm" in capsys.readouterr().err
+
+
+def test_dockerfiles_without_descriptor_are_deployed_one_component_each(tmp_path):
+    """An enabled repository with Dockerfiles and no Compose, Swarm, Nomad, ACA or ECS file: each Dockerfile is
+    a component built from it, named after its folder; its EXPOSEd port gets a Service and an Ingress."""
+    from containerizer.cli import main
+    from containerizer.orgsource import existing_dockerfiles
+    app = tmp_path / "shop"
+    for f, text in {"backend/Dockerfile": "FROM golang AS b\nEXPOSE 9999\nFROM alpine\nEXPOSE 8080/tcp ${X}\n",
+                    "backend/Dockerfile.dev": "FROM alpine\n",
+                    "frontend/Dockerfile": "FROM nginx\nEXPOSE 80\n",
+                    "maintenance/Dockerfile": "FROM alpine\nCMD [\"sh\"]\n",
+                    "tools/api.Dockerfile": "FROM alpine\n", "tools/Dockerfile.debug": "FROM alpine\n",
+                    "docs/Dockerfile": "FROM alpine\n", ".devcontainer/Dockerfile": "FROM alpine\n"}.items():
+        (app / f).parent.mkdir(parents=True, exist_ok=True)
+        (app / f).write_text(text)
+    svcs = replatform.dockerfile_services(app, "shop", existing_dockerfiles(app, limit=200))
+    got = {s.name: (s.build["dockerfile"], s.build["context"], s.ports, s.public) for s in svcs}
+    assert got == {"backend": ("backend/Dockerfile", "backend", [8080], True),
+                   "frontend": ("frontend/Dockerfile", "frontend", [80], True),
+                   "maintenance": ("maintenance/Dockerfile", "maintenance", [], False),
+                   "tools": ("tools/api.Dockerfile", "tools", [], False)}       # the debug variant is left out
+    root = tmp_path / "single"
+    root.mkdir()
+    (root / "Dockerfile").write_text("FROM alpine\nEXPOSE 3000\n")
+    assert [s.name for s in replatform.dockerfile_services(root, "single", ["Dockerfile"])] == ["single"]
+
+    out = tmp_path / "out"
+    assert main(["replatform", str(app), "--out", str(out), "--name", "shop", "--ingress-domain", "sandbox.example.com",
+                 "--registry", "reg.example/sb", "--tag", "1.0.0"]) == 0
+    docs = {f.parent.name: load_yaml_docs(f.read_text()) for f in out.glob("*/k8s.yaml")}
+    assert set(docs) == {"backend", "frontend", "maintenance", "tools"}
+    assert {d["kind"] for d in docs["frontend"]} >= {"Deployment", "Service", "Ingress"}
+    assert not any(d["kind"] in ("Service", "Ingress") for d in docs["maintenance"])
+    dep = next(d for d in docs["backend"] if d["kind"] == "Deployment")
+    assert dep["spec"]["template"]["spec"]["containers"][0]["image"] == "reg.example/sb/shop/backend:1.0.0"
+    assert "its Dockerfiles" in (out / "MIGRATION.md").read_text()
 
 
 def test_rule_fix_makes_named_folders_writable():
