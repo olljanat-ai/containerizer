@@ -33,6 +33,7 @@ from .assess import AppAssessment, Component
 from .generate import (CONTAINER_PORT, DOCKERIGNORE, add_reason, _writable_abs, hides_app, writable_dirs, buildable, dockerfile_dotnet, dockerfile_for, dockerfile_spa,
                        images, k8s_name, app_ns, make_plan, merge_plan)
 from .rules import RULES_DIR, load_rules
+from . import progress
 from .paths import work_dir
 
 LEARNED = RULES_DIR / "learned"
@@ -461,8 +462,9 @@ def run(c: Component, plan: dict, tag: str, workdir: Path, env_override: dict | 
 
 
 def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False, ai: bool = False,
-                     model: str | None = None, timeout: int = 900, work: Path | None = None) -> dict:
-    """Build and run one component; `work` replaces WORK (the refactoring runner's scratch space)."""
+                     model: str | None = None, timeout: int = 900, work: Path | None = None, where: str = "") -> dict:
+    """Build and run one component; `work` replaces WORK (the refactoring runner's scratch space). `where`
+    ("component 2 of 3: ") prefixes what the run's progress page shows (progress.detail)."""
     failures = load_failures()
     plan = make_plan(a, c, rules)
     workdir = (work or WORK) / "verify" / a.name / k8s_name(c.name)
@@ -476,10 +478,18 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
     pruned = False
     t0 = time.time()
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        def show(what: str) -> None:
+            after = ""
+            if history:
+                h = history[-1]
+                after = f" (attempt {h['attempt']}: {h['stage']} {h.get('rule') or h.get('status')})"
+            progress.detail(f"{where}{c.name}, attempt {attempt} of {MAX_ATTEMPTS}: {what}{after}")
+        show("building the image" + (" in Development mode" if env_override else ""))
         ok, log, tag = build(a, c, plan, workdir, timeout)
         stage, details = "build", {}
         if ok:
             stage = "run"
+            show("running it" + (" in Development mode" if env_override else ""))
             status, log, details = run(c, plan, tag, workdir, env_override, hosts=hosts)
             if status == "exited" and c.role == "console" and details.get("exit_code") == "0":
                 status = "ok"                    # a batch job that ran to completion
@@ -684,16 +694,17 @@ def verify_app(a: AppAssessment, out: Path | None = None, learn: bool = False, o
     rules = load_rules()
     results = []
     _run(["docker", "info"], 60)              # fails fast with DockerUnavailable
-    for c in a.components:
-        if only and only not in (c.name, c.project.name):
-            continue
+    todo = [c for c in a.components if not only or only in (c.name, c.project.name)]
+    for i, c in enumerate(todo, 1):
         if not buildable(c):
             results.append({"app": a.name, "component": c.name, "status": "skipped",
                             "detail": f"verdict {c.verdict}, role {c.role}", "predicted": c.verdict})
             continue
-        r = verify_component(a, c, rules, learn=learn, ai=ai, model=model, timeout=timeout)
+        r = verify_component(a, c, rules, learn=learn, ai=ai, model=model, timeout=timeout,
+                             where=f"component {i} of {len(todo)}: " if len(todo) > 1 else "")
         r["detail"] = "; ".join(f"{h.get('rule', h.get('status'))}" for h in r["attempts"])
         results.append(r)
+    progress.detail("")
     _free_disk()
     if out:
         out.mkdir(parents=True, exist_ok=True)

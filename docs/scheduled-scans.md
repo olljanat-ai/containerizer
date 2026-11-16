@@ -256,7 +256,11 @@ progress count in the scan list). It reloads itself every 10 seconds while the r
   code, Assessing (rules), LLM review, Verifying: build and run, Assessing again, Generating files, Development
   database, Security gate: build, scan, run, Building images, Pushing images, Writing the output files), how long it
   has been on that step and on the repository, and what it waits for inside the step (the LLM call, the components
-  in the security gate). A step that has taken more than 15 minutes is marked **slow**.
+  in the security gate; in **Verifying: build and run** the component, the attempt (up to 5: each failed build or
+  run that a rule can fix is tried again), whether it is building or running, and what ended the previous attempt).
+  A step that has taken more than 15 minutes is marked **slow**: a fixed threshold, not a comparison with other
+  repositories. Verifying builds each component up to 5 times, and one build may take as long as the scan's
+  timeout (30 minutes by default), so a large repository can pass it without being stuck.
 - The pace (the average time a repository has taken so far) and an **estimated end** at that pace, and what the run
   as a whole does between repositories (listing the repositories, committing to the output repository, checking
   the sandbox).

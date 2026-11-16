@@ -300,8 +300,8 @@ def cmd_replatform(args) -> int:
         r = migrate_repo(src, o, res, app, ".", out, Path(tmp) / "gen", None, args.tag, gitops,
                          existing_dockerfiles(src, limit=200))
     if r is None:
-        print(f"{src}: no Docker Swarm, Compose, Nomad, Azure Container Apps or ECS descriptor with a container found",
-              file=sys.stderr)
+        print(f"{src}: no Dockerfile, and no Docker Swarm, Compose, Nomad, Azure Container Apps or ECS descriptor "
+              "with a container found", file=sys.stderr)
         return 1
     for c in r.components:
         print(f"{c['component']}: {c['image']}")

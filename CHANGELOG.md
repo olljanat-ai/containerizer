@@ -10,6 +10,18 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.45.7 (2026-11-16)
+
+- **An enabled repository with Dockerfiles but no Compose, Swarm, Nomad, Azure Container Apps or ECS file is deployed
+  from its own Dockerfiles**: each one is a component (`backend/Dockerfile` becomes `backend`), its `EXPOSE`d port gets
+  a Service and an Ingress. They were ignored, and the source code was containerized again (often with nothing
+  deployed).
+- **Run progress: Verifying: build and run says what it is doing**: the component (2 of 3), the attempt (of 5),
+  building or running, and what ended the previous attempt; the **slow** mark's tooltip explains the 15 minutes.
+- **A repository's Changes say *Automatic skip (unless enabled)*** instead of *Skipped by the scan*: an enabled
+  repository with a Dockerfile records the skip it overrides there, but it is processed (its **Latest result** says how
+  it went).
+
 ## 0.45.6 (2026-11-13)
 
 - **A disabled project's repositories are hidden on Admin → Repositories**: only the new **Hidden** view lists them

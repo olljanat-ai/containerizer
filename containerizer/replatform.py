@@ -159,6 +159,69 @@ def match_dockerfile(sv: Service, dockerfiles: list[str]) -> dict | None:
     return None
 
 
+EXPOSE_RE = re.compile(r"(?im)^\s*EXPOSE\s+(.+)$")
+FROM_RE = re.compile(r"(?im)^\s*FROM\s")
+VARIANT_RE = re.compile(r"(?i)(^|[.-])(dev|devel|development|local|debug|test|tests|ci)$")
+NOT_APP_RE = re.compile(r"(?i)(^|/)(test|tests|docs?|examples?|samples?|\.devcontainer|\.github)/")
+
+
+def _exposed(df: Path) -> list[int]:
+    """The ports the final stage of a Dockerfile EXPOSEs (80, 8080/tcp; variables are left out)."""
+    try:
+        text = df.read_text(errors="replace")
+    except OSError:
+        return []
+    last = list(FROM_RE.finditer(text))
+    text = text[last[-1].start():] if last else text
+    ports = []
+    for m in EXPOSE_RE.finditer(text):
+        for x in m.group(1).split():
+            n = re.fullmatch(r"(\d{1,5})(/tcp)?", x.strip())
+            if n and 0 < int(n.group(1)) < 65536 and int(n.group(1)) not in ports:
+                ports.append(int(n.group(1)))
+    return ports[:10]
+
+
+def dockerfile_services(src: Path, app: str, dockerfiles: list[str]) -> list[Service]:
+    """A repository with Dockerfiles but no deployment descriptor: one component per Dockerfile, built from it
+    (backend/Dockerfile -> backend). In a folder with a plain Dockerfile (or Containerfile) its variants
+    (Dockerfile.prod, api.Dockerfile) are left out; development and test variants are left out when others remain.
+    Its ports are the ones the Dockerfile EXPOSEs: a component with a port gets a Service and an Ingress."""
+    by_dir: dict[str, list[str]] = {}
+    for df in dockerfiles:
+        if not NOT_APP_RE.search("/" + df):
+            by_dir.setdefault(Path(df).parent.as_posix(), []).append(df)
+    out: list[Service] = []
+    for folder, dfs in sorted(by_dir.items()):
+        plain = [d for d in dfs if Path(d).name.lower() in ("dockerfile", "containerfile")]
+        pick = plain[:1] or dfs
+        if len(pick) > 1:
+            pick = [d for d in pick if not VARIANT_RE.search(_variant(d))] or pick
+        base = Path(folder).name if folder not in ("", ".") else app
+        for d in sorted(pick):
+            v = _variant(d)
+            name = k8s_name(f"{base}-{v}" if v and len(pick) > 1 else base) or k8s_name(app)
+            ports = _exposed(src / d)
+            out.append(Service(name=name, platform="dockerfile", source=d, ports=ports, public=bool(ports),
+                               build={"context": folder if folder not in ("", ".") else ".", "dockerfile": d},
+                               notes=["no deployment descriptor: built from its Dockerfile"
+                                      + ("" if ports else "; it EXPOSEs no port, so it runs as a worker without a Service")]))
+    seen: set[str] = set()
+    for sv in out:                                         # backend and api/backend: backend, backend-2
+        n, i = sv.name, 2
+        while sv.name in seen:
+            sv.name, i = f"{n}-{i}", i + 1
+        seen.add(sv.name)
+    return out
+
+
+def _variant(df: str) -> str:
+    """Dockerfile.prod -> prod, api.Dockerfile -> api, Dockerfile -> ''."""
+    n = Path(df).name
+    m = re.fullmatch(r"(?i)(?:dockerfile|containerfile)\.(.+)|(.+)\.(?:dockerfile|containerfile)", n)
+    return (m.group(1) or m.group(2)) if m else ""
+
+
 def plan_migration(src: Path, app: str, dockerfiles: list[str], llm: bool = False, model: str | None = None,
                    log=print) -> Plan:
     """Read the descriptors and decide what is migrated. With `llm`, descriptors the rules cannot read are
@@ -166,6 +229,8 @@ def plan_migration(src: Path, app: str, dockerfiles: list[str], llm: bool = Fals
     src = Path(src)
     plan = Plan(app=app, llm=llm)
     descs = find_descriptors(src)
+    if not descs and (svcs := dockerfile_services(src, app, dockerfiles)):
+        descs = [Descriptor(path=", ".join(sv.source for sv in svcs), platform="dockerfile", services=svcs)]
     if llm:
         for d in descs:
             if not d.services and (not d.parsed or d.error):
@@ -733,8 +798,8 @@ def _gate_component(src: Path, sv: Service, cdir: Path, docs: list[dict], local:
 def migrate_repo(src: Path, o, res, app: str, rel: str, dest: Path, gen: Path, reg, tag: str, gitops,
                  dockerfiles: list[str], log=print):
     """The platform migration of one repository an administrator enabled although it has a Dockerfile.
-    Returns the RepoResult, or None when no deployment descriptor with a container was found (the scan
-    then containerizes the source code as before)."""
+    Without a deployment descriptor, each Dockerfile is a component built from it (dockerfile_services).
+    Returns the RepoResult, or None when there is neither (the scan then containerizes the source code)."""
     import shutil
     from .ai import usage_scope
     from .generate import _yaml_docs, app_files

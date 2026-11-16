@@ -491,7 +491,7 @@ def run_progress(adm, conn, s, a, ident: int, run_id: int, flash: str) -> Respon
     rows = []
     for x in sorted(active, key=lambda x: x.get("started") or 0):
         on = t_now - (x.get("since") or t_now)
-        slow = " <span class='st st-warn' title='A long time on one step'>slow</span>" if on > SLOW_STEP else ""
+        slow = " <span class='st st-warn' title='More than 15 minutes on this step: the line below says what it is doing'>slow</span>" if on > SLOW_STEP else ""
         det = ""
         if x.get("detail"):
             det = (f"<div class='muted small'>{e(x['detail'])}"
@@ -880,7 +880,8 @@ def edit_repo(adm, conn, s, a, ident: int, flash: str) -> Response:
                                                          "without application code, not updated recently, ...)"),
                                               ("enabled", "Enabled: always process it, even when the scan would skip it"
                                                           " (a repository with a Dockerfile is moved from Docker Swarm, "
-                                                          "Compose, Nomad, Azure Container Apps or ECS to Kubernetes)"),
+                                                          "Compose, Nomad, Azure Container Apps or ECS to Kubernetes; "
+                                                          "without those, each Dockerfile is built and deployed)"),
                                               ("disabled", "Disabled: never process it (stops deploying it to the sandbox, "
                                                            "hides its results from the results pages)")))
     split = r.get("SplitPath") or ""

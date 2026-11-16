@@ -131,3 +131,28 @@ def test_development_retry_only_when_development_reaches_dependencies_another_wa
     assert verify.development_helps(c) is False
     (d / "Program.cs").write_text("if (app.Environment.IsDevelopment()) o.UseInMemoryDatabase(\"x\");")
     assert verify.development_helps(c) is True
+
+
+def test_progress_says_which_component_attempt_and_stage(tmp_path, monkeypatch):
+    """The run's progress page shows what Verifying: build and run is doing (progress.detail)."""
+    from containerizer import progress
+    a, c = _app(tmp_path)
+    shown = []
+    progress.set_reporter(lambda kind, text: kind == "detail" and shown.append(text))
+    try:
+        monkeypatch.setattr(verify, "build", lambda *x: (True, "", "img:verify"))
+        monkeypatch.setattr(verify, "_run", lambda *x, **k: (0, ""))
+        runs = iter([("exited", "boom", {"exit_code": "1"}), ("ok", "", {})])
+        monkeypatch.setattr(verify, "run", lambda *x, **k: next(runs))
+        monkeypatch.setattr(verify, "diagnose", lambda *x: ({"id": "run-fix", "outcome": "retry",
+                                                             "fix": {"env": {"X": "1"}}}, {}))
+        monkeypatch.setattr(verify, "persist_learning", lambda *x: None)
+        r = verify.verify_component(a, c, [], work=tmp_path / "work", where="component 1 of 2: ")
+    finally:
+        progress.set_reporter(None)
+    assert r["status"] == "ok"
+    n = verify.MAX_ATTEMPTS
+    assert shown == [f"component 1 of 2: {c.name}, attempt 1 of {n}: building the image",
+                     f"component 1 of 2: {c.name}, attempt 1 of {n}: running it",
+                     f"component 1 of 2: {c.name}, attempt 2 of {n}: building the image (attempt 1: run run-fix)",
+                     f"component 1 of 2: {c.name}, attempt 2 of {n}: running it (attempt 1: run run-fix)"]

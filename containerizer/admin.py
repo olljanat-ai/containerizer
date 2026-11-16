@@ -49,7 +49,7 @@ FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Des
               "Gate": "Security gate", "PushImages": "Push images", "UseAi": "Ask the LLM", "LlmMode": "LLM reviews", "LlmHeavy": "LLM-heavy mode", "ScheduleDays": "Days",
               "ScheduleMinute": "Time (UTC)", "Enabled": "Enabled",
               # repositories
-              "Setting": "Setting", "Note": "Note", "Skipped": "Skipped by the scan", "Removed": "Removed from the organization",
+              "Setting": "Setting", "Note": "Note", "Skipped": "Automatic skip (unless enabled)", "Removed": "Removed from the organization",
               "OrgScan": "Scan",
               # dev databases
               "Engine": "Engine", "DatabaseName": "Database name", "FileName": "File", "SizeBytes": "Size (bytes)",

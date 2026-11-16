@@ -12,9 +12,16 @@ health check in the sandbox cluster.
 1. Open **Admin → Repositories** and pick a repository the scan skipped with **Has a Dockerfile**.
 2. Choose **Enabled** and save, with a note if you like. The next run of the scan migrates it.
 
-A repository that has a Dockerfile but no deployment descriptor the scan can read is containerized from
-its source code, as before. The repository page shows **Platform migration** with the platform and the
-files it was read from once a run has migrated it.
+A repository that has Dockerfiles but no deployment descriptor is deployed from those Dockerfiles: each
+one becomes a component named after its folder (`backend/Dockerfile` becomes `backend`, a Dockerfile at the
+root takes the application's name), built from it with its folder as the build context. Its ports are the
+ones the Dockerfile `EXPOSE`s; a component with a port gets a Service and an HTTPS Ingress, one without runs
+as a worker. In a folder with a plain `Dockerfile`, its variants (`Dockerfile.prod`, `api.Dockerfile`) are
+left out, and Dockerfiles under `test/`, `docs/`, `examples/` or `.devcontainer/` are never used. Settings,
+secrets and volumes are not known without a descriptor: add them in the generated manifests or the secret
+store. A repository with a descriptor the scan cannot read is containerized from its source code, as before.
+The repository page shows **Platform migration** with the platform and the files it was read from once a run
+has migrated it.
 
 From the command line, `containerizer org --migrate-containerized` migrates every repository with a
 Dockerfile, and `containerizer replatform <checkout> --out <folder>` migrates one checkout without a scan
