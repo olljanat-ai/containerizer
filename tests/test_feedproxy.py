@@ -119,3 +119,23 @@ def test_rewrite_and_build_env(monkeypatch):
     monkeypatch.delenv("https_proxy", raising=False)
     args = verify._build_env_args()
     assert "HTTPS_PROXY=http://172.17.0.1:3128" in args and "id=ca,src=/x/ca-bundle.pem" in args
+
+
+def test_repository_dockerfile_trusts_the_proxy_ca():
+    from containerizer.verify import trust_build_ca
+    src = ("# syntax=docker/dockerfile:1\nFROM node:22 AS build\nWORKDIR /app\nCOPY . .\nRUN npm ci\n"
+           "RUN --mount=type=cache,target=/root/.npm npm run build && \\\n    # a comment\n    npm prune\n"
+           "RUN [\"npm\", \"test\"]\nRUN <<EOF\nset -e\nRUN not an instruction\nEOF\n"
+           "RUN --mount=type=secret,id=ca,required=false echo hi\nFROM nginx\nrun \\\n  echo x\n")
+    out = trust_build_ca(src).split("\n")
+    pre = "RUN --mount=type=secret,id=ca,required=false"
+    assert out[4].startswith(pre + " if [ -f /run/secrets/ca ]; then export SSL_CERT_FILE=") and out[4].endswith("npm ci")
+    assert out[5].startswith(pre + " --mount=type=cache,target=/root/.npm if [") and out[5].endswith("npm run build && \\")
+    assert out[6:8] == ["    # a comment", "    npm prune"]
+    assert out[8] == 'RUN ["npm", "test"]'
+    assert out[9:13] == ["RUN <<EOF", "set -e", "RUN not an instruction", "EOF"]
+    assert out[13] == "RUN --mount=type=secret,id=ca,required=false echo hi"
+    assert out[15].startswith("run --mount=type=secret,id=ca,required=false if [") and out[15].endswith("; \\")
+    assert out[16] == "  echo x"
+    win = "# escape=`\nFROM mcr.microsoft.com/windows/servercore\nRUN dir\n"
+    assert trust_build_ca(win) == win
