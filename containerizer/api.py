@@ -248,9 +248,9 @@ class Api:
             params.append(_int(q["rowId"][0], "rowId"))
         limit = min(_int(q.get("limit", ["100"])[0], "limit"), 1000)
         cur = conn.cursor(as_dict=True)
-        cur.execute(f"SELECT TOP ({limit}) AuditId, ChangedAt, ChangedBy, ChangedByName, ChangedByRole, DbLogin, Via, TableName, RowId, "
+        cur.execute(f"SELECT TOP (%s) AuditId, ChangedAt, ChangedBy, ChangedByName, ChangedByRole, DbLogin, Via, TableName, RowId, "
                     f"RowName, Action, OldValues, NewValues FROM cz.AuditLog {('WHERE ' + ' AND '.join(where)) if where else ''} "
-                    f"ORDER BY ChangedAt DESC, AuditId DESC", tuple(params) or None)
+                    f"ORDER BY ChangedAt DESC, AuditId DESC", (limit, *params))
         rows = []
         for r in cur.fetchall():
             r = _camel(r)
