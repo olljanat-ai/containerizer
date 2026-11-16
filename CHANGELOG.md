@@ -10,6 +10,17 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.50.4 (2026-11-16)
+
+- **A migrated app uses the lab's database**: an app moved from Compose, Swarm, Nomad and the like whose
+  descriptor runs PostgreSQL, MySQL/MariaDB, SQL Server, MongoDB, Redis/Valkey, RabbitMQ, Kafka or a mail
+  catcher next to it is pointed at that lab service when it is on (Admin → Lab services). Before, the backing
+  container was only left out ("use a managed service or the appliance's lab service"), even with the lab
+  service on. The settings that name its host, user, password or database get the lab's; the backing
+  container's name resolves to the lab service. When the lab service is off, the reason says which one to turn on.
+- **Repositories: bulk actions stay in the view**: Scan now, Hide, Enable, Disable and Automatic return to the
+  list's filters (Hidden, All, the search, the scan) instead of Enabled.
+
 ## 0.50.3 (2026-11-16)
 
 - **Private package feeds work for a repository built from its own Dockerfile**: its build goes through the feed

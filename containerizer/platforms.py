@@ -71,9 +71,16 @@ class Service:
     notes: list = field(default_factory=list)
     backing: bool = False                             # a database/cache/broker image: not migrated as an app
     egress: list = field(default_factory=list)        # ports it calls out to (from its settings, secret ones too)
+    lab: list = field(default_factory=list)           # lab services it is pointed at (replatform.wire_lab)
+    lab_env: list = field(default_factory=list)       # their env entries, before its own (secret references first)
+    # secret settings, never written out: {name: {"sha": sha256 of the value, "shape": the value without its
+    # password, for a URL or connection string}}; replatform.wire_lab finds the ones that name a backing service
+    secret_hints: dict = field(default_factory=dict, repr=False)
 
     def to_dict(self) -> dict:
-        return dataclasses.asdict(self)
+        d = dataclasses.asdict(self)
+        d.pop("secret_hints", None)
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Service":
@@ -171,8 +178,27 @@ def split_env(sv: "Service", env: dict) -> None:
     """Settings into the service: plain values, the names of the secret ones, and the ports they point at."""
     plain, secret = classify_env(env)
     sv.env = {**sv.env, **plain}
+    for k in secret:
+        v = "" if env.get(k) is None else str(env[k])
+        if v:
+            sv.secret_hints[k] = {"sha": secret_sha(v), "shape": secret_shape(v)}
     sv.secrets = sorted(set(sv.secrets) | set(secret))
     sv.egress = sorted(set(sv.egress) | set(egress_ports(env)))
+
+
+def secret_sha(v: str) -> str:
+    import hashlib
+    return hashlib.sha256(v.encode()).hexdigest()
+
+
+def secret_shape(v: str) -> str:
+    """A URL or connection string without its password ("" for anything else): which host, user and database it
+    names."""
+    if re.search(r"\w+://", v):
+        return re.sub(r"(\w+://[^/\s:@]*):[^/\s@]*@", r"\1:***@", v)
+    if re.search(r"(?i)(server|host|data source)\s*=", v):
+        return re.sub(r"(?i)\b(password|pwd)\s*=\s*[^;]*", r"\1=***", v)
+    return ""
 
 
 def classify_env(env: dict) -> tuple[dict, list]:
