@@ -10,6 +10,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+## 0.50.1 (2026-11-16)
+
 - **nginx from a repository's own Dockerfile passes the hardened run**: a component built `FROM nginx` (or running
   the nginx image) gets `/var/cache/nginx` and `/run` writable, so nginx starts on the read-only root file system
   (it stopped with *mkdir() "/var/cache/nginx/fastcgi_temp" failed (30: Read-only file system)*). A failed `mkdir`
