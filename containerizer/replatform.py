@@ -439,19 +439,48 @@ def llm_fix_run(sv: Service, docs: list[dict], run: dict, model: str | None) -> 
     return _patches(r, {sv.name}).get(sv.name) or {}, str(r.get("diagnosis") or "")[:500]
 
 
+# servers whose official images write outside /tmp: the folders a read-only root file system needs writable
+# (nginx: its cache and temp folders, and the pid file in /run; /var/run is a link to /run in its images)
+KNOWN_WRITABLE = [(re.compile(r"(^|/)(nginx|nginx-unprivileged|openresty)(:|@|$)", re.I), ["/var/cache/nginx", "/run"])]
+
+
+def known_writable(src: Path, sv: Service) -> list[str]:
+    """The writable folders of a known server the service runs: from its Dockerfile's final FROM, or its image."""
+    images = [sv.image] if sv.image else []
+    if sv.build:
+        try:
+            text = (src / sv.build["dockerfile"]).read_text(errors="replace")
+            froms = re.findall(r"^\s*FROM\s+(?:--\S+\s+)*(\S+)", text, re.M | re.I)
+            if froms:
+                images.append(froms[-1])
+        except OSError:
+            pass
+    out: list[str] = []
+    for img in images:
+        for rx, dirs in KNOWN_WRITABLE:
+            if rx.search(img.split("@")[0]):
+                out += [d for d in dirs if d not in out]
+    return out
+
+
 def rule_fix_run(run: dict) -> dict:
-    """Without the LLM: folders a hardening failure names become writable."""
+    """Without the LLM: folders a hardening failure names become writable (a failed mkdir: the folder it was made
+    in, where the program makes others too), and a known server's folders when its log names it."""
     paths = []
-    for m in PATH_IN_ERROR.finditer((run.get("log") or "") + "\n" + "\n".join(run.get("errors") or [])):
+    text = (run.get("log") or "") + "\n" + "\n".join(run.get("errors") or [])
+    for m in PATH_IN_ERROR.finditer(text):
         p = (m.group(1) or m.group(2) or "").rstrip("/.")
         if not p or p in ("/", "/proc", "/sys", "/dev"):
             continue
-        # a file: its folder
-        if re.search(r"\.\w{1,5}$", p.rsplit("/", 1)[-1]):
+        line = text[text.rfind("\n", 0, m.start()) + 1:text.find("\n", m.end()) if text.find("\n", m.end()) >= 0 else None]
+        # a file, or a folder it could not make: the folder it is in
+        if re.search(r"\.\w{1,5}$", p.rsplit("/", 1)[-1]) or re.search(r"\bmkdir\b", line, re.I):
             p = p.rsplit("/", 1)[0] or "/"
         if p != "/" and p not in paths:
             paths.append(p)
-    return {"writable": paths[:5]} if paths else {}
+    if re.search(r"^nginx: \[|\bnginx\.conf\b", text, re.M):
+        paths += [d for d in KNOWN_WRITABLE[0][1] if d not in paths]
+    return {"writable": paths[:6]} if paths else {}
 
 
 # --------------------------------------------------------------------------- manifests
@@ -824,6 +853,8 @@ def migrate_repo(src: Path, o, res, app: str, rel: str, dest: Path, gen: Path, r
     for sv in plan.services:
         if k8s_name(sv.name) in earlier:
             apply_patch(sv, earlier[k8s_name(sv.name)], "kept from an earlier sandbox test")
+        if dirs := known_writable(src, sv):         # nginx: its cache and pid folders, before the hardened run
+            apply_patch(sv, {"writable": dirs}, "the folders its server writes (read-only root file system)")
     if gen.exists():
         shutil.rmtree(gen)
     gen.mkdir(parents=True)

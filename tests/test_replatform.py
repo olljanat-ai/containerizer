@@ -264,7 +264,8 @@ def test_rule_fix_makes_named_folders_writable():
     run = {"status": "hardening-failure", "log": "Error: EROFS: read-only file system, open '/app/logs/app.log'\n"
            "nginx: [emerg] mkdir() \"/var/cache/nginx/client_temp\" failed (13: Permission denied)",
            "errors": []}
-    assert replatform.rule_fix_run(run) == {"writable": ["/app/logs", "/var/cache/nginx/client_temp"]}
+    # a failed mkdir: the folder it was made in (nginx makes client_temp, proxy_temp, ... there), and nginx's pid folder
+    assert replatform.rule_fix_run(run) == {"writable": ["/app/logs", "/var/cache/nginx", "/run"]}
     sv = platforms.Service(name="x", platform="nomad", source="x.nomad", image="x", ports=[80])
     assert replatform.apply_patch(sv, {"writable": ["/app/logs", "/"], "env": {"A": "1", "DB_PASSWORD": "no"},
                                        "secrets": ["TOKEN"], "port": 8080, "memory": "1Gi", "health_path": "/up"}) \
@@ -540,3 +541,38 @@ def test_an_answer_that_cannot_be_cached_is_not_lost(monkeypatch, tmp_path):
     monkeypatch.setattr(ai, "_backend", lambda: "api")
     monkeypatch.setattr(ai, "_ask_api", lambda *a, **k: ({"ok": True}, {"input_tokens": 10, "output_tokens": 2}))
     assert ai.ask_json("q", {"type": "object"}, model="claude-opus-5-5") == {"ok": True}
+
+
+NGINX_LOG = """/docker-entrypoint.sh: /docker-entrypoint.d/ is not empty, will attempt to perform configuration
+10-listen-on-ipv6-by-default.sh: info: can not modify /etc/nginx/conf.d/default.conf (read-only file system?)
+/docker-entrypoint.sh: Configuration complete; ready for start up
+2026/11/16 11:52:33 [warn] 1#1: the "user" directive makes sense only if the master process runs with super-user privileges, ignored in /etc/nginx/nginx.conf:2
+2026/11/16 11:52:33 [emerg] 1#1: mkdir() "/var/cache/nginx/fastcgi_temp" failed (30: Read-only file system)
+nginx: [emerg] mkdir() "/var/cache/nginx/fastcgi_temp" failed (30: Read-only file system)
+"""
+
+
+def test_nginx_gets_its_cache_and_pid_folders(tmp_path):
+    """nginx's official image writes /var/cache/nginx/*_temp and /run/nginx.pid: writable before the hardened run when
+    the Dockerfile builds FROM nginx, and from its log when it failed anyway (a failed mkdir: the parent folder)."""
+    from containerizer.cli import main
+    assert replatform.rule_fix_run({"log": NGINX_LOG}) == {"writable": ["/var/cache/nginx", "/run"]}
+    assert replatform.rule_fix_run({"log": 'mkdir: cannot create directory "/app/logs/2026": Read-only file system'}) \
+        == {"writable": ["/app/logs"]}
+    app = tmp_path / "site"
+    (app / "web").mkdir(parents=True)
+    (app / "web" / "Dockerfile").write_text("FROM node:22 AS build\nRUN npm ci\nFROM nginx:1.29-alpine\n"
+                                            "COPY --from=build /src/dist /usr/share/nginx/html\nEXPOSE 80\n")
+    (app / "api").mkdir()
+    (app / "api" / "Dockerfile").write_text("FROM python:3.13-slim\nEXPOSE 8000\n")
+    svcs = {s.name: s for s in replatform.dockerfile_services(app, "site", ["api/Dockerfile", "web/Dockerfile"])}
+    assert replatform.known_writable(app, svcs["web"]) == ["/var/cache/nginx", "/run"]
+    assert replatform.known_writable(app, svcs["api"]) == []
+    out = tmp_path / "out"
+    assert main(["replatform", str(app), "--out", str(out), "--name", "site"]) == 0
+    dep = next(d for d in load_yaml_docs((out / "web" / "k8s.yaml").read_text()) if d["kind"] == "Deployment")
+    c = dep["spec"]["template"]["spec"]["containers"][0]
+    assert {"/var/cache/nginx", "/run", "/tmp"} <= {m["mountPath"] for m in c["volumeMounts"]}
+    assert c["securityContext"]["readOnlyRootFilesystem"]
+    dep = next(d for d in load_yaml_docs((out / "api" / "k8s.yaml").read_text()) if d["kind"] == "Deployment")
+    assert "/var/cache/nginx" not in {m["mountPath"] for m in dep["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]}
