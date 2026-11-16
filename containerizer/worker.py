@@ -457,6 +457,7 @@ class RunHooks:
 
     def __init__(self, worker: "Worker", conn, run_id: int, scan: str, store: SqlRepoStore):
         self.w, self.conn, self.run_id, self.scan, self.store = worker, conn, run_id, scan, store
+        self.cancel = threading.Event()         # an administrator cancelled this run (Worker._heartbeat)
         self.counts = {"done": 0, "deployed": 0, "skipped": 0, "errors": 0}
         self.total = 0
         # the progress page (OrgScanRun.Activity): the repositories in progress with the step each one is on, what
@@ -563,16 +564,18 @@ class RunHooks:
         m.git_seconds.inc(seconds, scan=self.scan, operation=op)
 
     def should_stop(self) -> bool:
-        return self.w.stopping.is_set() or self.w.cancel.is_set()
+        return self.w.stopping.is_set() or self.cancel.is_set()
 
     def should_abort(self) -> bool:
         """An administrator cancelled the run: the repositories in progress end now (org._run_parallel)."""
-        return self.w.cancel.is_set()
+        return self.cancel.is_set()
 
 
 # --------------------------------------------------------------------------- the worker
 
 RESCAN_CHECK = 300      # seconds between looks for components left out for vulnerabilities (rescan_left_out)
+MAX_RUNS = 4            # runs at a time: a scheduled run starts when none runs; an administrator's (Scan now, Run now)
+                        # starts next to the others, up to this many
 
 
 class Worker:
@@ -587,7 +590,8 @@ class Worker:
         self.hosts = allowed_hosts() if hosts is None else hosts
         self.metrics = metrics or ScanMetrics({"data": str(self.data)}, self.name)
         self.stopping = threading.Event()
-        self.cancel = threading.Event()
+        self.active: dict[int, threading.Thread] = {}   # RunId -> the thread running it (run_forever)
+        self._rules_lock = threading.Lock()             # one checkout of the approved rules at a time
         self.log = log or (lambda msg: print(f"worker: {msg}", file=sys.stderr, flush=True))
 
     # -- the loop ------------------------------------------------------------------------------
@@ -603,15 +607,19 @@ class Worker:
         while not self.stopping.is_set():
             ran = False
             try:
-                ran = self.tick()
+                ran = self.tick(background=True)
             except Exception as ex:          # the database may be away for a while: keep trying
                 self.metrics.poll_errors.inc()
                 self.log(f"error: {type(ex).__name__}: {ex}")
             if not ran:
                 self.stopping.wait(self.poll)
+        for t in list(self.active.values()):     # stopping: the runs end after the step they are on
+            t.join()
 
-    def tick(self) -> bool:
-        """One round: recover lost runs, queue due scans, run the oldest queued run. True if one ran."""
+    def tick(self, background: bool = False) -> bool:
+        """One round: recover lost runs, queue due scans, run the oldest queued run. True if one ran (background:
+        started in a thread of its own; then, while runs are going, only an administrator's run is started, up to
+        MAX_RUNS at a time)."""
         self.recover()
         self.queue_due()
         try:
@@ -635,11 +643,30 @@ class Worker:
                 self.log(hold)
         if hold:
             return False
-        run = self.claim()
+        if not background:
+            run = self.claim()
+            if not run:
+                return False
+            self.execute(run)
+            return True
+        for rid, t in list(self.active.items()):
+            if not t.is_alive():
+                del self.active[rid]
+        if len(self.active) >= MAX_RUNS:
+            return False
+        run = self.claim(manual_only=bool(self.active))
         if not run:
             return False
-        self.execute(run)
+        t = threading.Thread(target=self._execute_logged, args=(run,), name=f"run-{run['RunId']}", daemon=True)
+        self.active[int(run["RunId"])] = t
+        t.start()
         return True
+
+    def _execute_logged(self, run: dict) -> None:
+        try:
+            self.execute(run)
+        except Exception as ex:  # noqa: BLE001 - execute records its own failures; this is a last resort
+            self.log(f"run #{run['RunId']}: {type(ex).__name__}: {ex}")
 
     def recheck_sandbox(self, now: float | None = None) -> int:
         """Applications whose latest sandbox check was not healthy, read again from the cluster every
@@ -753,7 +780,7 @@ class Worker:
             self.log(f"rule review: approved rules not updated: {type(ex).__name__}: {ex}")
             return
         if path is not None:
-            os.environ["CONTAINERIZER_REVIEWED_RULES"] = str(path)
+            os.environ["CONTAINERIZER_REVIEWED_RULES"] = str(path)     # the same folder for every run
         elif str(self.data / "reviewed-rules") in os.environ.get("CONTAINERIZER_REVIEWED_RULES", ""):
             os.environ.pop("CONTAINERIZER_REVIEWED_RULES", None)
 
@@ -803,13 +830,15 @@ class Worker:
         finally:
             conn.close()
 
-    def claim(self) -> dict | None:
+    def claim(self, manual_only: bool = False) -> dict | None:
+        """The oldest queued run, now running on this worker; manual_only: only one an administrator started."""
         conn = self.connect()
         try:
             cur = conn.cursor(as_dict=True)
             # one transaction: lock the oldest queued run (skipping ones another worker holds), then take it
             cur.execute("SELECT TOP (1) RunId, ScanId, TriggeredBy, RequestedBy, Kind, Scope FROM cz.OrgScanRun "
-                        "WITH (UPDLOCK, READPAST, ROWLOCK) WHERE Status = N'queued' ORDER BY RunId")
+                        "WITH (UPDLOCK, READPAST, ROWLOCK) WHERE Status = N'queued'"
+                        + (" AND TriggeredBy = N'manual'" if manual_only else "") + " ORDER BY RunId")
             run = cur.fetchone()
             if run:
                 cur.execute("UPDATE cz.OrgScanRun SET Status = N'running', Worker = %s, StartedAt = SYSUTCDATETIME(), "
@@ -824,7 +853,7 @@ class Worker:
 
     # -- one run -------------------------------------------------------------------------------
 
-    def _heartbeat(self, run_id: int, done: threading.Event) -> None:
+    def _heartbeat(self, run_id: int, done: threading.Event, cancel: threading.Event) -> None:
         """The run's heartbeat every HEARTBEAT seconds, and a look for an administrator's cancel every CANCEL_POLL."""
         last = _time.monotonic()
         while not done.wait(CANCEL_POLL):
@@ -843,7 +872,7 @@ class Worker:
                 finally:
                     conn.close()
                 if row and row[0]:
-                    self.cancel.set()
+                    cancel.set()
             except Exception as ex:
                 self.log(f"heartbeat: {type(ex).__name__}: {ex}")
 
@@ -928,19 +957,18 @@ class Worker:
         scan = cur.fetchone()
         name = scan["Name"]
         m = self.metrics
-        self.cancel.clear()
         t0 = _time.time()
         m.busy.set(1)
         m.scan_name = name
         m.running.set(1, scan=name)
         m.started.set(t0, scan=name)
-        done = threading.Event()
-        beat = threading.Thread(target=self._heartbeat, args=(run_id, done), daemon=True)
-        beat.start()
         status, message = "failed", ""
         tag = default_tag(utcnow())
         store = SqlRepoStore(conn, scan["ScanId"], run_id, bool(scan.get("NewReposEnabled", True)))
         hooks = RunHooks(self, conn, run_id, name, store)
+        done = threading.Event()
+        beat = threading.Thread(target=self._heartbeat, args=(run_id, done, hooks.cancel), daemon=True)
+        beat.start()
         discovery = run.get("Kind") == "discovery"
         self.log(f"{name}: {'discovery' if discovery else 'run'} #{run_id} started ({run['TriggeredBy']}"
                  + (f" by {run['RequestedBy']}" if run.get("RequestedBy") else "") + ")")
@@ -968,7 +996,8 @@ class Worker:
                 if c and c.token:
                     REDACT.add(c.token, c.username)
             proxy = self.use_feeds(creds)
-            self.sync_reviewed_rules(conn, creds)
+            with self._rules_lock:
+                self.sync_reviewed_rules(conn, creds)
             hooks._update(ImageTag=tag)
             o = self.options(scan, store, hooks, creds)
             o.tag = tag
@@ -979,14 +1008,14 @@ class Worker:
             o.on_listed = lambda prov, n: (self._listed(read, prov, n), setattr(store, "prov", prov))
             (self.data / f"scan-{int(scan['ScanId'])}").mkdir(parents=True, exist_ok=True)
             from .org import run_org
-            from .ai import cancel_when, configured
+            from .ai import cancel_thread_when, configured
             from .credentials import llm_for_run
-            # the registered LLM, else the appliance's built-in one, else the environment's; for this run
-            # only, never through os.environ (the scan's processes inherit it)
+            # the registered LLM, else the appliance's built-in one, else the environment's; for this run (and the
+            # processes it forks) only: never through os.environ, nor process-wide, as runs go on side by side
             choice = llm_for_run(llm) if scan["UseAi"] else None
             if choice and choice.model:
                 o.model = choice.model
-            with configured(choice.settings if choice else None), cancel_when(hooks.should_stop):
+            with configured(choice.settings if choice else None, local=True), cancel_thread_when(hooks.should_stop):
                 results = run_org(o, log=lambda msg: self.log(f"{name}: {msg}"))
             if write:
                 self._mark(write, "ok: pushed the generated files" if o.push else "ok")
@@ -997,7 +1026,7 @@ class Worker:
             stopped = len(results) < hooks.total
             if stopped:
                 status = "cancelled"
-                message = ("cancelled by an administrator" if self.cancel.is_set() else "the worker was stopped") + \
+                message = ("cancelled by an administrator" if hooks.cancel.is_set() else "the worker was stopped") + \
                     f" after {len(results)} of {hooks.total} repositories"
             else:
                 status = "succeeded"
@@ -1021,7 +1050,7 @@ class Worker:
                 self.log(f"{name}: could not record the end of run #{run_id}: {type(ex).__name__}: {ex}")
             conn.close()
             end = _time.time()
-            m.busy.set(0)
+            m.busy.set(1 if any(t.is_alive() and t is not threading.current_thread() for t in self.active.values()) else 0)
             m.scan_name = ""
             m.running.set(0, scan=name)
             m.ended.set(end, scan=name)
@@ -1057,7 +1086,7 @@ class Worker:
         hooks._update(ReposDone=len(found), ReposSkipped=c["skipped"], ReposErrors=c["errors"])
         projects = f" in {store.projects} projects" if store.projects else ""
         if len(found) < hooks.total:
-            return "cancelled", (("cancelled by an administrator" if self.cancel.is_set() else "the worker was stopped")
+            return "cancelled", (("cancelled by an administrator" if hooks.cancel.is_set() else "the worker was stopped")
                                  + f" after {len(found)} of {hooks.total} repositories")
         return "succeeded", (f"discovery: {hooks.total} repositories{projects}"
                              + (f", {len(store.new)} new" if store.new else "")

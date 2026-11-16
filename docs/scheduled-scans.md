@@ -22,7 +22,7 @@ A scan runs in two phases, so time is not spent on repositories nobody uses any 
    (archived, empty, fork, not updated recently, left out by the filter). Every run also reads who committed where in the last six
    months, for [Developers and ownership](developers.md).
 2. An administrator or operator reviews the result and **disables** what is deprecated:
-   - **Admin → Repositories** shows each repository's latest commit. **Commit in 6 months** lists the ones
+   - **Admin → Repositories** opens on **Enabled** (the chips switch to **All**, **Disabled**, ...) and shows each repository's latest commit. **Commit in 6 months** lists the ones
      someone works on and **Latest commit first** puts them on top (unknown ones last); select them (the box in the
      header selects every repository listed) and **Enable** or **Disable**, with a note. The same two are on the
      projects page.
@@ -31,14 +31,28 @@ A scan runs in two phases, so time is not spent on repositories nobody uses any 
      repositories, including ones added to it later, and moves them on **Admin → Repositories** to **Hidden**:
      no other view, not even **All**, lists them (the project's page links to them too). GitHub organizations have no project level:
      disable the repositories, or pause the scan.
+   - A project that has both used and deprecated repositories: select the deprecated ones on **Admin → Repositories**
+     and **Hide** them (or choose **Hidden** on a repository's page). A hidden repository is disabled as well, and it
+     is listed only under **Hidden** and with its project (**Repositories** on the project's page). **Enable**,
+     **Automatic**, **Disable** or **Scan now** brings it back into the other views.
+   - The repositories with an automatic skip that the provider's API shows (archived, empty, forks, not updated
+     recently, left out by the filter) are listed under **Hidden** too, each with its reason, so the other views
+     show what may be worth scanning. **Enable** one to scan it anyway. Every disabled repository shows its automatic
+     skip as well (*disabled by an administrator (new repository: disabled by default); automatic skip: Has a
+     Dockerfile: ...*).
+
+     ![Admin → Repositories → Hidden: deprecated repositories an administrator hid, a fork and a stale one hidden automatically with their reasons, and one of a disabled project](images/admin-repositories-hidden.png#only-light)
+     ![Admin → Repositories → Hidden: deprecated repositories an administrator hid, a fork and a stale one hidden automatically with their reasons, and one of a disabled project](images/admin-repositories-hidden-dark.png#only-dark)
+
    ![Repositories after discovery: a disabled project and a disabled repository](images/admin-repositories-discovered.png#only-light)
    ![Repositories after discovery: a disabled project and a disabled repository](images/admin-repositories-discovered-dark.png#only-dark)
 
    ![Projects of an Azure DevOps organization with their latest commits, one disabled](images/admin-projects.png#only-light)
    ![Projects of an Azure DevOps organization with their latest commits, one disabled](images/admin-projects-dark.png#only-dark)
 
-   Or work the other way round: set the scan's **New repositories** to **Disabled by default** before the first
-   discovery. Every repository it finds then starts disabled (note *new repository: disabled by default*), and you
+   Or work the other way round, as a new scan does: its **New repositories** is **Disabled by default** (a new scan
+   also starts with **Build and run** on, LLM reviews **Queued** and no schedule day, so it runs only when started).
+   Every repository it finds then starts disabled (note *new repository: disabled by default*), and you
    enable only the ones to process. The setting also applies to repositories added to the organization later;
    repositories already found keep theirs.
 3. **Run full scan** (or the schedule) then processes only the enabled repositories. Disabled ones are
@@ -156,6 +170,11 @@ keep their results from the last full run. A selected one that is disabled (by a
 repository disabled by default) is enabled first, with the note *enabled by Scan now*; automatic skips (a Dockerfile,
 no application code) stay until you **Enable** it. A run of the scan that is already queued or running has to finish
 first.
+
+Runs of different organization scans that an administrator starts (**Scan now**, **Run now**, **Discover**) do not
+wait for each other: the worker starts each one at once, next to the runs already going, up to 4 at a time. A
+scheduled run waits until no other run is going. The machine's CPU cores, memory and LLM slots are shared by
+the runs, each with its own **Repositories in parallel**, so keep those numbers lower when you start several.
 
 Discovery can be run again at any time, for example before a scheduled run, to see the new projects and
 repositories first. Scheduled runs are always full scans; new repositories found by them are processed

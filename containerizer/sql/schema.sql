@@ -3115,3 +3115,62 @@ GRANT UPDATE ON [${schema}].OrgRepository (SecretFilesPath) TO [${schema}_admin]
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 52) INSERT [${schema}].SchemaVersion (Version) VALUES (52);
 GO
+
+-- 53: Hidden: an administrator hid a deprecated repository (Admin -> Repositories -> Hide). It is disabled as well (never
+-- processed, results hidden) and listed only under Hidden and on its project's page, like a disabled project's ones.
+-- vOrgRepository.IsHidden: those, and the automatic skips the provider's API shows (archived, empty, fork, stale, filtered).
+IF COL_LENGTH(N'[${schema}].OrgRepository', N'Hidden') IS NULL
+ALTER TABLE [${schema}].OrgRepository ADD Hidden bit NOT NULL CONSTRAINT DF_OrgRepository_Hidden DEFAULT 0;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_OrgRepository_Hidden'
+               AND parent_object_id = OBJECT_ID(N'[${schema}].OrgRepository'))
+ALTER TABLE [${schema}].OrgRepository ADD CONSTRAINT CK_OrgRepository_Hidden CHECK (Hidden = 0 OR AdminState = N'disabled');
+GO
+-- (with Hidden: 53)
+CREATE OR ALTER VIEW [${schema}].vOrgRepository AS
+SELECT r.RepositoryId, r.ScanId, r.ProjectName, r.Name, r.ExternalId, r.CloneUrl, r.WebUrl, r.RepositoryUrl,
+       r.DefaultBranch, r.AppName, r.LastActivityAt, r.FirstSeenAt, r.FirstRunId, r.LastSeenAt, r.RemovedAt,
+       r.AdminState, r.AdminNote, r.SkipStatus, r.SkipReason, r.LastStatus, r.LastReason, r.LastCommit, r.LastCommitAt,
+       r.LastRating, r.LastScannedAt, r.LastRunId, r.LastSeconds, r.LastDetail, r.Enabled, r.SplitPath, r.SecretFilesPath, r.Hidden,
+       p.ProjectId, p.AdminState AS ProjectState, p.AdminNote AS ProjectNote,
+       COALESCE(r.LastCommitAt, r.LastActivityAt) AS LatestCommitAt,
+       CAST(CASE WHEN r.RemovedAt IS NULL AND r.Enabled = 1 AND p.AdminState IS NULL THEN 1 ELSE 0 END AS bit) AS Active,
+       -- listed only under Hidden: hidden by an administrator, or an automatic skip the provider's API shows (archived,
+       -- empty, fork, stale, filtered: org.META_SKIPS) that no administrator overrode
+       CAST(CASE WHEN r.Hidden = 1 OR (COALESCE(r.AdminState, N'') <> N'enabled' AND r.SkipStatus IN (N'skipped-archived',
+                 N'skipped-empty', N'skipped-fork', N'skipped-stale', N'skipped-filter', N'skipped-output'))
+                 THEN 1 ELSE 0 END AS bit) AS IsHidden
+FROM [${schema}].OrgRepository r
+LEFT JOIN [${schema}].OrgProject p ON p.ScanId = r.ScanId AND p.Name = r.ProjectName;
+GO
+-- (with Hidden: 53)
+CREATE OR ALTER TRIGGER [${schema}].trOrgRepositoryAudit ON [${schema}].OrgRepository
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'OrgRepository', COALESCE(i.RepositoryId, d.RepositoryId),
+           COALESCE(CASE WHEN i.ProjectName = N'_' THEN i.Name ELSE i.ProjectName + N'/' + i.Name END,
+                    CASE WHEN d.ProjectName = N'_' THEN d.Name ELSE d.ProjectName + N'/' + d.Name END),
+           CASE WHEN d.RepositoryId IS NULL THEN N'insert' WHEN i.RepositoryId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.RepositoryId IS NOT NULL THEN (SELECT COALESCE(d.AdminState, N'automatic') AS Setting, d.AdminNote AS Note,
+                COALESCE(d.SplitPath, N'whole repository') AS Applications, d.SecretFilesPath AS SecretFiles, d.SkipReason AS Skipped, d.Hidden AS Hidden, CAST(CASE WHEN d.RemovedAt IS NULL THEN 0 ELSE 1 END AS bit) AS Removed,
+                (SELECT s.Name FROM [${schema}].OrgScan s WHERE s.ScanId = d.ScanId) AS OrgScan
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.RepositoryId IS NOT NULL THEN (SELECT COALESCE(i.AdminState, N'automatic') AS Setting, i.AdminNote AS Note,
+                COALESCE(i.SplitPath, N'whole repository') AS Applications, i.SecretFilesPath AS SecretFiles, i.SkipReason AS Skipped, i.Hidden AS Hidden, CAST(CASE WHEN i.RemovedAt IS NULL THEN 0 ELSE 1 END AS bit) AS Removed,
+                (SELECT s.Name FROM [${schema}].OrgScan s WHERE s.ScanId = i.ScanId) AS OrgScan
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.RepositoryId = i.RepositoryId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.RepositoryId IS NULL OR i.RepositoryId IS NULL
+       OR EXISTS (SELECT i.AdminState, i.AdminNote, i.SkipStatus, i.SkipReason, CASE WHEN i.RemovedAt IS NULL THEN 0 ELSE 1 END,
+                         i.ProjectName, i.Name, i.SplitPath, i.SecretFilesPath, i.Hidden
+                  EXCEPT SELECT d.AdminState, d.AdminNote, d.SkipStatus, d.SkipReason, CASE WHEN d.RemovedAt IS NULL THEN 0 ELSE 1 END,
+                         d.ProjectName, d.Name, d.SplitPath, d.SecretFilesPath, d.Hidden);
+END;
+GO
+GRANT UPDATE ON [${schema}].OrgRepository (Hidden) TO [${schema}_admin];
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 53) INSERT [${schema}].SchemaVersion (Version) VALUES (53);
+GO
