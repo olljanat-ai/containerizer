@@ -120,11 +120,9 @@ def test_new_repositories_enabled_or_disabled_by_default():
     assert errors == [] and v["NewReposEnabled"] is True                  # an old form without the field: enabled
     v, errors = admin_scans.validate_scan(_form(NewReposEnabled="0"))
     assert errors == [] and v["NewReposEnabled"] is False
-    assert v["Parallel"] == 1                                              # one at a time unless chosen
+    # repositories at a time: the machine's (org.repo_slots), not a scan's own setting
     v, errors = admin_scans.validate_scan(_form(Parallel="4"))
-    assert errors == [] and v["Parallel"] == 4 and "Parallel" in admin_scans.SCAN_COLS
-    for bad in ("0", "9", "x"):
-        assert any("1 to 8" in x for x in admin_scans.validate_scan(_form(Parallel=bad))[1])
+    assert errors == [] and "Parallel" not in v and "Parallel" not in admin_scans.SCAN_COLS
     assert "NewReposEnabled" in admin_scans.SCAN_COLS
     assert "data-select-all='repo'" in admin_scans.SELECT_ALL.format(name="repo", what="repositories")
     assert "data-select-all" in webui.JS

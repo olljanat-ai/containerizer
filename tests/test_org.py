@@ -1059,3 +1059,25 @@ def test_metadata_json_through_each_providers_api(api):
     assert p.file_text(r("x", id="id1", extra={"project_q": "P"}), "metadata.json") == doc
     with pytest.raises(orgsource.SourceError):
         p.file_text(r("y", id="id2", extra={"project_q": "P"}), "metadata.json")
+
+
+def test_repository_slots_are_80_percent_of_the_cores_and_shared(monkeypatch):
+    from containerizer import org as orgmod
+    monkeypatch.setattr(orgmod, "MAX_PARALLEL", 10)
+    monkeypatch.delenv(orgmod.PARALLEL_ENV, raising=False)
+    assert orgmod.repo_slots() == 8
+    monkeypatch.setenv(orgmod.PARALLEL_ENV, "10")
+    assert orgmod.repo_slots() == 10
+    monkeypatch.setenv(orgmod.PARALLEL_ENV, "64")
+    assert orgmod.repo_slots() == 10                        # at most one per core
+    monkeypatch.setattr(orgmod, "MAX_PARALLEL", 1)
+    monkeypatch.delenv(orgmod.PARALLEL_ENV)
+    assert orgmod.repo_slots() == 1
+    # two runs share the slots: the second gets what the first leaves
+    monkeypatch.setattr(orgmod, "_slots_used", 0)
+    assert [orgmod._take_slot(3) for _ in range(4)] == [True, True, True, False]
+    orgmod._give_slot()
+    assert orgmod._take_slot(3) and not orgmod._take_slot(3)
+    for _ in range(3):
+        orgmod._give_slot()
+    assert orgmod._slots_used == 0

@@ -2071,7 +2071,40 @@ def _phase(hooks, text: str) -> None:
 
 # --------------------------------------------------------------------------- repositories in parallel
 
-MAX_PARALLEL = 8
+# repositories at a time: at most one per CPU core this process may use
+MAX_PARALLEL = max(1, len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1))
+PARALLEL_ENV = "CONTAINERIZER_PARALLEL_REPOS"
+
+
+def repo_slots() -> int:
+    """Repositories processed at the same time on this machine, summed over every run going: 80% of the CPU cores
+    (CONTAINERIZER_PARALLEL_REPOS to choose, up to one per core)."""
+    try:
+        n = int(os.environ.get(PARALLEL_ENV) or 0)
+    except ValueError:
+        n = 0
+    return max(1, min(n or int(MAX_PARALLEL * 0.8), MAX_PARALLEL))
+
+
+# the slots the runs of this process hold (the worker runs administrators' runs side by side)
+_slots_lock = threading.Lock()
+_slots_used = 0
+
+
+def _take_slot(limit: int) -> bool:
+    """A slot while fewer than `limit` are taken (the worker's runs: repo_slots(); a command line run: its own)."""
+    global _slots_used
+    with _slots_lock:
+        if _slots_used < limit:
+            _slots_used += 1
+            return True
+        return False
+
+
+def _give_slot() -> None:
+    global _slots_used
+    with _slots_lock:
+        _slots_used = max(0, _slots_used - 1)
 
 
 def _repo_job(r: SourceRepo, prov, o: OrgOptions, app: str, out, work: Path, reg, tag: str, cutoff, rules_reset,
@@ -2185,17 +2218,25 @@ def _run_parallel(repos: list, n: int, o: OrgOptions, prov, out, work: Path, reg
                     _end_group(p)
                     recv.close()
                     shutil.rmtree(stage, ignore_errors=True)
-                running.clear()
+                    del running[recv]
+                    _give_slot()
                 return True
             if not stopped and hooks and hasattr(hooks, "should_stop") and hooks.should_stop():
                 stopped = True
                 stop.set()
                 log(f"stopped: {done} of {len(repos)} repositories done, waiting for the {len(running)} in progress")
                 pending.clear()
-            while pending and len(running) < n:
-                start(pending.pop(0))
+            while pending and len(running) < n and _take_slot(n):     # the machine's slots, shared by the runs
+                try:
+                    start(pending.pop(0))
+                except BaseException:
+                    _give_slot()
+                    raise
             if not running:
-                break
+                if not pending:
+                    break
+                _time.sleep(1)                          # every slot is another run's: wait for one
+                continue
             for recv in wait(list(running), timeout=1.0):
                 p, r, rel, stage = running[recv]
                 try:
@@ -2207,6 +2248,7 @@ def _run_parallel(repos: list, n: int, o: OrgOptions, prov, out, work: Path, reg
                         hooks.repo_step(r, msg[1], msg[2])
                     continue
                 del running[recv]
+                _give_slot()
                 res, git_events, usage = msg if msg else (None, [], [])
                 recv.close()
                 p.join(timeout=60)
@@ -2238,6 +2280,8 @@ def _run_parallel(repos: list, n: int, o: OrgOptions, prov, out, work: Path, reg
             p.join(timeout=5)
             if p.is_alive():
                 p.kill()
+            _give_slot()
+        running.clear()
     return stopped
 
 
