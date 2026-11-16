@@ -235,8 +235,13 @@ dropped and logged.
 
 - **Allow** a name (it covers its subdomains: `nuget.org` also allows `api.nuget.org`) or a network
   (`10.20.0.0/16`), with ports (`443`, `80,443`, `udp/123`) and a note.
-- **Refused names, last 24 hours**: what something on the appliance tried to resolve and was refused,
-  with an **Allow** button. Run a scan, then allow what it needs.
+- **Refused names, last 24 hours**: what something on the appliance tried to resolve and was refused, the most
+  recent first (up to 100), with an **Allow** button. Run a scan, then allow what it needs. A build that failed on a
+  refused name says so in its result: *name lookup failed for dl-cdn.alpinelinux.org: allow it on Admin → Firewall
+  if the build needs it* (some tools, such as Alpine's `apk`, report a refused name only as *DNS: transient error*).
+  The DNS filter does not log every query: the names no rule allows go to a small refuser
+  (`containerizer-dns-refused.service`) that answers *REFUSED* and counts them, so the journal keeps its history
+  (logging every query took some 900 000 lines an hour, and the journal's 2 GB held only hours).
 - **Blocked connections**: addresses and ports the firewall dropped.
 - **Log only mode** lets everything out but still lists what would have been refused, to build the list.
   Turn blocking back on when you are done.
@@ -709,7 +714,7 @@ use the host network again, for a proxy that listens only on `127.0.0.1`.
 | | |
 | --- | --- |
 | Something does not start | `systemctl --failed`, `journalctl -b -u <unit>`; units are `containerizer-*`, `k3s`, `caddy`, `docker` |
-| A scan cannot reach a host | Admin → Firewall → Refused names; or `journalctl -u containerizer-dns \| grep REFUSED` |
+| A scan cannot reach a host | Admin → Firewall → Refused names; or `cat /run/containerizer-dns-refused/refused.json` (the names the DNS filter refused, counted) |
 | The firewall did not load | the SSH-only fallback ruleset is active; `systemctl status containerizer-firewall` shows why |
 | Status of the system agent | `/run/containerizer/system/status.json`, `journalctl -u containerizer-sysagent` |
 | Planned restart (Admin → System) | `/var/lib/containerizer/system/restart-plan.json`, `journalctl -u containerizer-restart` |

@@ -10,6 +10,27 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## Unreleased
 
+- **Runs side by side no longer fail on the output repository's push** (*! [rejected] HEAD -> main (non-fast-forward)*):
+  on a worker the runs push one at a time, and a run whose push is rejected (another run or worker pushed first)
+  puts its commit on top of theirs (its own version wins in a file both changed), regenerates the sandbox index from
+  the combined tree and pushes again (up to 6 times). Before, a conflict in the index files every run rewrites left
+  the pull unfinished and every retry was rejected.
+- **"does not run with the hardened pod security context" says what failed**: the first log line with the error
+  (*Read-only file system: '/app/data'*, *mkdir() "/var/cache/nginx/client_temp" failed (30: Read-only file system)*), and the repository's
+  page (Admin → Repositories) has the gate's **What failed** under **Not deployed**, as the results page does.
+
+- **A failed image build says why**: its result shows the lines of the build log that name the error, and the names
+  whose lookups failed with a pointer to Admin → Firewall (*name lookup failed for dl-cdn.alpinelinux.org: allow it
+  ...*), instead of the last 300 characters, which were Docker's report of the failed step (*exit code: 3*). The
+  security gate's *image build failed* says it too.
+- **Admin → Firewall → Refused names lists the most recent first** (up to 100, was the 50 most frequent): a name a
+  build was refused a moment ago is on top, not below the names sandbox apps ask for every few seconds.
+- **Appliance: the DNS filter no longer logs every query.** The names no egress rule allows go to a small refuser
+  (`containerizer-dns-refused.service`, dnsmasq's default server) that answers *REFUSED* as before and counts them for
+  Refused names. With every query logged, a busy appliance wrote some 900 000 journal lines an hour: the journal's
+  2 GB held only about ten hours of everything, and a build's refused names were gone before anyone looked. An OS
+  change: a minor release.
+
 ## 0.45.8 (2026-11-16)
 
 - **Hide single repositories**: Admin → Repositories → **Hide** (or **Hidden** on a repository's page) for the deprecated

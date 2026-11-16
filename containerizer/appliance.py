@@ -316,7 +316,7 @@ placeholder='443 or 80,443 or udp/123'></div>
                 f"value='{e(d['name'])}'><input name='ports' value='443' size='8' aria-label='Ports for {e(d['name'])}'> "
                 f"<button{pend}>Allow</button></form></td></tr>" for d in denied)
             out.append("<h2>Refused names, last 24 hours</h2><p class='muted small'>Names something on the appliance tried "
-                       "to resolve (a build, the worker, an app in the sandbox). Allow only the ones you expect.</p>"
+                       "to resolve (a build, the worker, an app in the sandbox), the most recent first. Allow only the ones you expect.</p>"
                        f"<table><thead><tr><th>Name</th><th>Lookups</th><th></th></tr></thead><tbody>{drows}</tbody></table>")
         dropped = eg.get("dropped") or []
         if dropped:

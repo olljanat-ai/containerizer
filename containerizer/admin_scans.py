@@ -867,7 +867,9 @@ def edit_repo(adm, conn, s, a, ident: int, flash: str) -> Response:
         detail = {}
     comps = "".join(f"<li><b>{e(c.get('component', ''))}</b> <span class='muted small'>{e(c.get('image', ''))}</span></li>"
                     for c in detail.get("components") or [])
-    excl = "".join(f"<li>{e(x.get('component', ''))}: {e(x.get('reason', ''))}</li>" for x in detail.get("excluded") or [])
+    excl = "".join(f"<li>{e(x.get('component', ''))}: {e(x.get('reason', ''))}"
+                   + (f"<details class='small gate-detail'><summary>What failed</summary><pre>{e(x['detail'])}</pre></details>"
+                      if x.get("detail") else "") + "</li>" for x in detail.get("excluded") or [])
     lab = _lab_section(detail.get("lab_services") or {}) + _migration_section(detail.get("migration") or {}) + \
         _llm_section(detail.get("llm_usage") or {})
     link = (f"<a href='{e(r['WebUrl'])}' rel='noopener noreferrer' target='_blank'>{e(r['WebUrl'])}</a>"

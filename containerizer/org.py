@@ -18,6 +18,7 @@ clusters, each with its own settings.
 """
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import fnmatch
 import hashlib
@@ -28,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -273,7 +275,7 @@ def gate_failure(comp: dict, vulnerabilities: bool | None = None) -> str:
     """Why the security gate keeps a component out of the sandbox, or "". `vulnerabilities`: whether a vulnerability
     scan that did not pass counts (default: vulnerabilities_block)."""
     if comp.get("build_error"):
-        return "image build failed"
+        return "image build failed" + (f": {comp['build_failure']}" if comp.get("build_failure") else "")
     errs = [v for v in comp.get("lint", []) if v.get("severity") == "error"]
     if errs:
         return f"manifest/Dockerfile lint: {errs[0].get('check')}: {errs[0].get('message')}"[:300]
@@ -284,8 +286,11 @@ def gate_failure(comp: dict, vulnerabilities: bool | None = None) -> str:
             if s.get("error"):
                 return f"{s.get('kind', 'image')} scan failed: {s['error']}"[:300]
             return vulnerability_reason(s)
-    if (comp.get("run") or {}).get("status") == "hardening-failure":
-        return HARDENED_RUN
+    run = comp.get("run") or {}
+    if run.get("status") == "hardening-failure":
+        from .imagescan import hardening_lines
+        lines = hardening_lines(str(run.get("log") or ""), 1) or [str(x) for x in run.get("errors") or []][:1]
+        return f"{HARDENED_RUN}: {lines[0]}"[:400] if lines else HARDENED_RUN
     return ""
 
 
@@ -998,6 +1003,19 @@ def output_git_error(url: str, e: SourceError) -> SourceError:
     return e
 
 
+PUSH_ATTEMPTS = 6
+REJECTED_RE = re.compile(r"\[rejected\]|non-fast-forward|fetch first|stale info|failed to push some refs|"
+                         r"cannot lock ref|incorrect old value", re.I)
+_PUSH_LOCKS: dict[str, threading.Lock] = {}
+_PUSH_LOCKS_GUARD = threading.Lock()
+
+
+def _push_lock(key: str) -> threading.Lock:
+    """One push at a time to an output repository's branch from this process (runs side by side: worker.py)."""
+    with _PUSH_LOCKS_GUARD:
+        return _PUSH_LOCKS.setdefault(key, threading.Lock())
+
+
 def _retry(url: str, what, sleep=None, before_retry=None):
     """Run `what()`; after a transient failure (an outage, a dropped connection: TRANSIENT_RE) wait and try again
     (OUTPUT_RETRY_PAUSES), calling `before_retry()` first. A refused token or another error is raised at once."""
@@ -1024,6 +1042,7 @@ class Output:
         self.o = o
         self.header = ""
         self.push = o.push
+        self.refresh = None             # rewrites the files every run regenerates, after another run's push (commit)
         if o.output_repo:
             self.url = strip_userinfo(o.output_repo)
             tok = o.output_token if o.output_token is not None else read_token("", o.output_token_env)
@@ -1054,34 +1073,65 @@ class Output:
             self.push = self.push and bool(remote)
 
     def commit(self, message: str) -> bool:
+        """Commit everything and push it. Runs of other organization scans may push to the same repository at the same
+        time (the worker runs an administrator's runs side by side; other workers too): on this worker they push one at
+        a time, and when the remote branch moved on (another run pushed), this commit goes on top of theirs (this
+        commit's version wins in a file both changed), the files every run regenerates are rewritten from the combined
+        tree (`refresh`: the sandbox index), and the push is tried again."""
         if not self.git:
             return False
-        git(["add", "-A"], cwd=self.root)
-        if not git(["status", "--porcelain"], cwd=self.root).strip():
-            return False
+        with _push_lock(f"{self.url}#{self.o.output_branch}") if self.push else contextlib.nullcontext():
+            git(["add", "-A"], cwd=self.root)
+            if not git(["status", "--porcelain"], cwd=self.root).strip():
+                return False
+            git([*self._who(), "commit", "-q", "-m", message], cwd=self.root)
+            if self.push:
+                def push():
+                    git(["push", "-q", "origin", f"HEAD:{self.o.output_branch}"], cwd=self.root, url=self.url,
+                        header=self.header)
+                for attempt in range(PUSH_ATTEMPTS):
+                    try:
+                        _retry(self.url, push)
+                        break
+                    except SourceError as e:
+                        if attempt == PUSH_ATTEMPTS - 1 or AUTH_FAILED_RE.search(str(e)) \
+                                or "refused the write token" in str(e) or not REJECTED_RE.search(str(e)):
+                            raise
+                        if attempt:                     # not in step with the other run
+                            import random
+                            import time
+                            time.sleep(random.uniform(0.2, 1.0) * attempt)
+                        self._integrate()
+                # the sandbox's Flux reconciles now instead of at its next poll (fluxhook.py; a no-op off the appliance)
+                from .fluxhook import notify
+                notify(message.splitlines()[0] if message else "")
+        return True
+
+    def _who(self) -> list[str]:
         name = os.environ.get("GIT_AUTHOR_NAME") or GIT_USER[0]
         email = os.environ.get("GIT_AUTHOR_EMAIL") or GIT_USER[1]
-        git(["-c", f"user.name={name}", "-c", f"user.email={email}", "commit", "-q", "-m", message], cwd=self.root)
-        if self.push:
-            def push():
-                git(["push", "-q", "origin", f"HEAD:{self.o.output_branch}"], cwd=self.root, url=self.url,
-                    header=self.header)
+        return ["-c", f"user.name={name}", "-c", f"user.email={email}"]
 
-            def pull():                     # someone else pushed meanwhile: our generated commit on top of theirs
-                git(["pull", "-q", "--rebase", "--depth", "50", "origin", self.o.output_branch], cwd=self.root,
-                    url=self.url, header=self.header, check=False)
-            for attempt in range(3):
-                try:
-                    _retry(self.url, push, before_retry=pull)
-                    break
-                except SourceError as e:
-                    if attempt == 2 or AUTH_FAILED_RE.search(str(e)) or "refused the write token" in str(e):
-                        raise
-                    pull()
-            # the sandbox's Flux reconciles now instead of at its next poll (fluxhook.py; a no-op off the appliance)
-            from .fluxhook import notify
-            notify(message.splitlines()[0] if message else "")
-        return True
+    def _integrate(self) -> None:
+        """This clone's commits on top of the remote branch: a rebase, this side winning in a file both changed
+        (-X theirs: the commit being replayed), else a merge the same way; then `refresh` the files every run
+        regenerates (the sandbox index lists the other run's apps too) and fold them into the last commit."""
+        _retry(self.url, lambda: git(["fetch", "-q", "--depth", "50", "origin", self.o.output_branch], cwd=self.root,
+                                     url=self.url, header=self.header))
+        git([*self._who(), "rebase", "-q", "-X", "theirs", "FETCH_HEAD"], cwd=self.root, check=False)
+        if (self.root / ".git" / "rebase-merge").exists() or (self.root / ".git" / "rebase-apply").exists():
+            git(["rebase", "--abort"], cwd=self.root, check=False)
+            try:
+                git([*self._who(), "merge", "-q", "--no-edit", "-X", "theirs", "FETCH_HEAD"], cwd=self.root)
+            except SourceError:
+                git(["merge", "--abort"], cwd=self.root, check=False)
+                raise
+        refresh = getattr(self, "refresh", None)
+        if refresh:
+            refresh()
+            git(["add", "-A"], cwd=self.root)
+            if git(["status", "--porcelain"], cwd=self.root).strip():
+                git([*self._who(), "commit", "-q", "--amend", "--no-edit"], cwd=self.root)
 
 
 # --------------------------------------------------------------------------- one repository
@@ -1633,7 +1683,7 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
         failed = {c["component"]: gate_failure(c) for c in g["components"] if gate_failure(c)}
         for c in g["components"]:       # gate_waive: the hardened run of a component deployed as it is (variant.py)
             cname = c["component"]
-            if cname in failed and failed[cname] == HARDENED_RUN and cname in names and names[cname].name in (gate_waive or ()):
+            if cname in failed and failed[cname].startswith(HARDENED_RUN) and cname in names and names[cname].name in (gate_waive or ()):
                 waived[names[cname].name] = failed.pop(cname)
         if not failed:
             break
@@ -1670,7 +1720,8 @@ def deploy_app(a, src: Path, rel: str, o: "OrgOptions", out: "Output", reg: "Reg
             progress.detail(c.name)
             ok, tail = build_image(src, cdir, local, timeout=o.timeout)
             if not ok:
-                raise SourceError(f"{c.name}: image build failed: {tail[-300:]}")
+                from .buildlog import failure_text
+                raise SourceError(f"{c.name}: image build failed: {failure_text(tail, 600)}")
         ref = f"{o.registry.rstrip('/')}/{app_ns(a.name)}/{cn}:{tag}"
         entry = {"component": c.name, "folder": cn, "image": ref, "rating": component_rating(a, c), "verdict": c.verdict,
                  "role": c.role, "project": c.project.rel,
@@ -1879,6 +1930,8 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
     cache = prepare_cache(o) if o.cache_dir and not o.dry_run else None
 
     out = Output(o, work) if not o.dry_run else None
+    if out:     # after another run's push: the sandbox index again, from the combined tree (Output.commit)
+        out.refresh = lambda: write_sandbox(out.root, out.url, o.output_branch, sandbox_switches(o))
     reg = Registry(o.registry) if (o.push_images and not o.dry_run) else None
     run = {"provider": o.provider, "org": o.org, "registry": o.registry, "tag": tag,
            "started": now.isoformat(timespec="seconds"), "stale_days": o.stale_days,
