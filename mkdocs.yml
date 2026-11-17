@@ -8,6 +8,13 @@ docs_dir: docs
 hooks:
   - .github/mkdocs_hooks.py
 
+# Self-host the theme's web fonts (copied into the site at build time): every page loads only same-origin files,
+# so the Content-Security-Policy the hook adds can stay strict and there is nothing cross-origin to need Subresource
+# Integrity (Google Fonts' stylesheet cannot carry it: its content differs per browser).
+plugins:
+  - search
+  - privacy
+
 theme:
   name: material
   favicon: images/favicon.svg

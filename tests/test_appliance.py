@@ -1230,3 +1230,19 @@ def test_rule_category_validation():
     out = sysagent.validate_rules({"rules": [{"host": "a.example", "ports": "443", "category": "x" * 99},
                                              {"host": "b.example", "ports": "443", "category": "  "}]})["rules"]
     assert out[0]["category"] == "x" * sysagent.CATEGORY_MAX and "category" not in out[1]
+
+
+def test_caddy_and_grafana_send_security_headers():
+    """Every appliance site gets HSTS, anti-clickjacking and a baseline CSP from Caddy when its upstream sends none;
+    Grafana sends its own Content-Security-Policy and refuses to be framed."""
+    rfs = Path(__file__).resolve().parent.parent / "appliance/rootfs"
+    caddy = (rfs / "etc/caddy/Caddyfile").read_text()
+    snippet = caddy[caddy.index("(security_headers) {"):caddy.index("{$CZ_SITES} {")]
+    for h in ('?Strict-Transport-Security "max-age=31536000"', '?X-Frame-Options "DENY"',
+              "?Content-Security-Policy \"frame-ancestors 'none'", "?X-Content-Type-Options \"nosniff\"", "-Server"):
+        assert h in snippet
+    site = caddy[caddy.index("{$CZ_SITES} {"):]
+    assert site.index("import security_headers") < site.index("reverse_proxy")
+    assert caddy.index("(security_headers)") < caddy.index("import /run/containerizer/kubemg*.caddy")
+    grafana = (rfs / "usr/lib/systemd/system/containerizer-grafana.service").read_text()
+    assert "GF_SECURITY_CONTENT_SECURITY_POLICY=true" in grafana and "GF_SECURITY_ALLOW_EMBEDDING=false" in grafana

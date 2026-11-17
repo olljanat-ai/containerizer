@@ -5,6 +5,8 @@ work on the published site as they do when browsing the repository. The site nam
 to the front page on every page.
 """
 
+import base64
+import hashlib
 import posixpath
 import re
 from pathlib import Path
@@ -65,18 +67,48 @@ def _preview(page, config):
     return "".join(f'<meta {k}="{n}" content="{_esc(v)}">' for k, n, v in tags if v)
 
 
+INLINE_SCRIPT = re.compile(r"<script(?P<attrs>[^>]*)>(?P<body>.*?)</script>", re.S | re.I)
+INLINE_STYLE = re.compile(r"<style[^>]*>(?P<body>.*?)</style>", re.S | re.I)
+# Everything the pages load is the site's own (the privacy plugin self-hosts the fonts); the only other origin is
+# the GitHub API, from which the header's repository link reads the star and fork counts. Material's few inline
+# scripts (colour scheme, base URL) and its font <style> are allowed by their hashes, so nothing injected runs.
+CSP = ("default-src 'none'; script-src 'self' {scripts}; style-src 'self' {styles}; font-src 'self'; img-src 'self' data:; "
+       "connect-src 'self' https://api.github.com; worker-src 'self'; manifest-src 'self'; base-uri 'self'; "
+       "form-action 'none'; object-src 'none'; upgrade-insecure-requests")
+
+
+def _hashes(bodies):
+    out = dict.fromkeys("'sha256-" + base64.b64encode(hashlib.sha256(b.encode()).digest()).decode() + "'" for b in bodies)
+    return " ".join(out)
+
+
+def _csp(html):
+    """A Content-Security-Policy <meta> as the first element of <head>. GitHub Pages sets no response headers of
+    our choosing, so the policy travels in the page; frame-ancestors (clickjacking) and HSTS cannot be set this
+    way: they need a CDN or host in front of the site that can set response headers."""
+    scripts = [m["body"] for m in INLINE_SCRIPT.finditer(html)
+               # not external, and not data (the __config JSON) that never runs
+               if "src=" not in m["attrs"].lower() and not re.search(r'type="(?!text/javascript|module)', m["attrs"], re.I)]
+    styles = [m["body"] for m in INLINE_STYLE.finditer(html)]
+    meta = (f'<meta http-equiv="Content-Security-Policy" '
+            f'content="{CSP.format(scripts=_hashes(scripts), styles=_hashes(styles))}">')
+    return re.sub(r"<head>", lambda m: m[0] + meta, html, count=1, flags=re.I)
+
+
 def on_post_page(output, page, config):
     # Material shows the site name in the header as plain text; make it a link to the front page.
     home = page.url.count("/") * "../" or "./"
     output = output.replace("</head>", _preview(page, config) + "</head>", 1)
     output = _external_links(output, (config.get("site_url") or "").rstrip("/"))
-    return HEADER_NAME.sub(lambda m: f'{m.group(1)}<a href="{home}" class="cz-home-link">{m.group(2)}</a>{m.group(3)}',
-                           output, count=1)
+    output = HEADER_NAME.sub(lambda m: f'{m.group(1)}<a href="{home}" class="cz-home-link">{m.group(2)}</a>{m.group(3)}',
+                             output, count=1)
+    return _csp(output)
 
 
 def on_post_template(output, template_name, config):
     # 404.html is served at any path, so it links to the site root.
     if template_name != "404.html":
         return output
-    return HEADER_NAME.sub(lambda m: f'{m.group(1)}<a href="/" class="cz-home-link">{m.group(2)}</a>{m.group(3)}',
-                           output, count=1)
+    output = HEADER_NAME.sub(lambda m: f'{m.group(1)}<a href="/" class="cz-home-link">{m.group(2)}</a>{m.group(3)}',
+                             output, count=1)
+    return _csp(output)

@@ -199,7 +199,7 @@ def test_firstboot_writes_the_settings_site_and_secrets_only_when_turned_on(tmp_
     assert "CZ_KUBEMG_HOST=kubemg.cz.example.com" in kenv and "KUBEMG_PUBLIC_URL=https://kubemg.cz.example.com" in kenv
     site = (run / "kubemg.caddy").read_text()
     assert site.startswith("https://kubemg.cz.example.com {") and "tls {$CZ_CADDY_TLS}" in site
-    assert "reverse_proxy https://127.0.0.1:8444 {" in site
+    assert "reverse_proxy https://127.0.0.1:8444 {" in site and "import security_headers" in site
     assert f"tls_trusted_ca_certs {run}/kubemg/loopback-ca.pem" in site
     assert (run / "kubemg/loopback-ca.pem").read_text() == (d / "kubemg/tls/ca.crt").read_text()
     assert "CONTAINERIZER_KUBEMG_URL=https://kubemg.cz.example.com/" in (run / "web-url.env").read_text()
