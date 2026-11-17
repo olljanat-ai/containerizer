@@ -156,3 +156,11 @@ def test_progress_says_which_component_attempt_and_stage(tmp_path, monkeypatch):
                      f"component 1 of 2: {c.name}, attempt 1 of {n}: running it",
                      f"component 1 of 2: {c.name}, attempt 2 of {n}: building the image (attempt 1: run run-fix)",
                      f"component 1 of 2: {c.name}, attempt 2 of {n}: running it (attempt 1: run run-fix)"]
+
+
+def test_a_timed_out_step_returns_its_output_so_far():
+    """subprocess gives the output of a timed-out command as bytes even with text=True: it was concatenated with a
+    str, and the TypeError ("can't concat str to bytes") failed the repository instead of the step."""
+    from containerizer.verify import _run
+    rc, out = _run(["sh", "-c", "echo building; sleep 5"], 1)
+    assert rc == 124 and out.startswith("building") and out.endswith("[timeout after 1 s]")
