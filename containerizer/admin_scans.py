@@ -738,9 +738,10 @@ def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
         where.append("r.ScanId = %s")
         params.append(scan_id)
     if text:
-        where.append("(r.Name LIKE %s ESCAPE '\\' OR r.ProjectName LIKE %s ESCAPE '\\')")
+        # also the latest result's reason: Failed + "TypeError" finds the repositories one error failed
+        where.append("(r.Name LIKE %s ESCAPE '\\' OR r.ProjectName LIKE %s ESCAPE '\\' OR r.LastReason LIKE %s ESCAPE '\\')")
         like = "%" + re.sub(r"([%_\[\\])", r"\\\1", text) + "%"
-        params += [like, like]
+        params += [like, like, like]
     hidden = 0
     if project:
         where.append("r.ProjectName = %s")
@@ -770,7 +771,7 @@ def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
               f"{scan_opts}</select><input type='hidden' name='show' value='{e(show)}'>"
               + (f"<input type='hidden' name='project' value='{e(project)}'>" if project else "")
               + (f"<input type='hidden' name='sort' value='commit'>" if base.get("sort") else "") +
-              f"<input name='q' value='{e(text)}' placeholder='Repository or project' aria-label='Search'>"
+              f"<input name='q' value='{e(text)}' placeholder='Repository, project or error' aria-label='Search'>"
               f"<button>Filter</button></form>")
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     rows = []

@@ -498,6 +498,9 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
         assert "Enabled" in rows["shop"][1] and "Deployed to the sandbox" in rows["shop"][1]
         assert "Disabled" in rows["dockerized"][1] and "Has a Dockerfile: found Dockerfile" in rows["dockerized"][1]
         assert "Disabled" in rows["handbook"][1] and "No application code: 2 files (.md 2), no source code" in rows["handbook"][1]
+        # the search also matches the latest result's reason (Failed + an error's text)
+        found = b.follow(f"/admin/repositories?scan={scan_id}&show=all&q=found+Dockerfile")[2]
+        assert set(re.findall(r"name='repo' value='\d+' aria-label='Select ([^']+)'", found)) == {"dockerized"}, found
         assert "New" in rows["shop"][1]
         disabled = b.follow(f"/admin/repositories?scan={scan_id}&show=disabled")[2]
         assert "dockerized" in disabled and "handbook" in disabled and ">shop<" not in disabled
