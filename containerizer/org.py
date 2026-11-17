@@ -45,6 +45,7 @@ from .orgsource import (NO_PROJECT, REDACT, SourceError, SourceRepo, clone, code
 OK_VERIFY = ("ok", "ok-external")
 SANDBOX = "clusters/sandbox"     # the sandbox's cluster folder (sandbox/ before 0.41.0)
 OLD_SANDBOX = "sandbox"          # the sandbox's folder before 0.41.0 (a pointer to clusters/sandbox until 0.44.0)
+SANDBOX_HEALTH_FILES = ("HEALTH.md", "health.json")   # written by the sandbox health check (sandbox.write_health)
 GIT_USER = ("containerizer", "containerizer@users.noreply.invalid")
 
 
@@ -755,13 +756,18 @@ def write_sandbox(root: Path, git_url: str, branch: str, off=None) -> list[str]:
         if not sandbox_excluded(x[2], off):
             apps.append(x)
     sb = root / SANDBOX
+    # the sandbox health check's report (sandbox.write_health) is not regenerated here: kept, or a scan pushed
+    # next to a health run deletes what that run modified (a merge conflict -X cannot resolve)
+    kept = {f: (sb / f).read_bytes() for f in SANDBOX_HEALTH_FILES if (sb / f).is_file()}
     if sb.exists():
         shutil.rmtree(sb)
     (sb / "flux" / "apps").mkdir(parents=True)
+    for f, data in kept.items():
+        (sb / f).write_bytes(data)
     old = root / OLD_SANDBOX                 # the sandbox's folder before 0.41.0, then a pointer here until 0.44.0
     if old.is_dir() and {p.relative_to(old).as_posix() for p in old.rglob("*") if p.is_file()} <= {
             "README.md", "flux/apps/kustomization.yaml", "flux/bootstrap.yaml", "namespaces.txt", "verify-rbac.yaml",
-            "HEALTH.md", "health.json"}:
+            *SANDBOX_HEALTH_FILES}:
         shutil.rmtree(old)
     k = {"apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization"}
     labels = {"app.kubernetes.io/part-of": "containerizer-sandbox", "app.kubernetes.io/managed-by": "containerizer"}
@@ -1127,8 +1133,15 @@ class Output:
             try:
                 git([*self._who(), "merge", "-q", "--no-edit", "-X", "theirs", "FETCH_HEAD"], cwd=self.root)
             except SourceError:
-                git(["merge", "--abort"], cwd=self.root, check=False)
-                raise
+                # left by -X: a file one side deleted and the other changed. The changed one is kept (a file every
+                # run regenerates is rewritten by `refresh` below, after the merge)
+                left = git(["diff", "--name-only", "--diff-filter=U"], cwd=self.root).split()
+                if not left or git(["ls-files", "-u", "--", *left], cwd=self.root).count("\n") > 2 * len(left) \
+                        or any(not (self.root / f).exists() for f in left):
+                    git(["merge", "--abort"], cwd=self.root, check=False)
+                    raise
+                git(["add", "--", *left], cwd=self.root)
+                git([*self._who(), "commit", "-q", "--no-edit"], cwd=self.root)
         # the rebase drops this commit when the other run pushed the same changes: HEAD is then theirs, never amended
         ours = git(["rev-parse", "HEAD"], cwd=self.root).strip() != git(["rev-parse", "FETCH_HEAD"], cwd=self.root).strip()
         refresh = getattr(self, "refresh", None)
