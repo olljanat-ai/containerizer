@@ -8,6 +8,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.50.11 (2026-11-17)
+
+- **Container log of a failing sandbox component on its results page**: when the sandbox check finds a component
+  *Deployed but failing* (or not ready in time), administrators and operators now see the end of its container's
+  log (the crashed start's when it restarted, secrets masked) under the status, Why and Warning events, without
+  `kubectl`. The check already kept it (`SandboxCheck.LogTail`); schema 54 lets the admin login read it, and the
+  reader role and `HEALTH.md` still do not get it.
+
 ## 0.50.10 (2026-11-17)
 
 - **Repository Dockerfiles: the build context is where the most `COPY` sources are**: 0.50.8 moved the context of a

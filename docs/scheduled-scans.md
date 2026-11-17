@@ -473,6 +473,14 @@ latest check found a component failing or not ready is read again every 10 minut
 say after someone filled its secret values in OpenBao, a new check says so, without another scan. One still failing
 keeps the scan's diagnosis. `HEALTH.md` changes with the next scan.
 
+**Container log.** For a component the check found failing or not ready in time, administrators and operators also
+see the end of its container's log on the results page (of the previous start when it restarted: the crash), with
+secrets masked when the check read it. The log can carry data the application printed, so the page reads it with the
+admin login; people who only view results, and `HEALTH.md` in the output repository, do not get it.
+
+![Container log of a failing component](images/results-sandbox-log.png#only-light){ .cz-shot }
+![Container log of a failing component](images/results-sandbox-log-dark.png#only-dark){ .cz-shot }
+
 ## The LLM queue
 
 With **Ask the LLM** on, **LLM reviews** chooses when the LLM is asked:

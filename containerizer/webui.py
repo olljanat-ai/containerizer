@@ -350,6 +350,31 @@ def scan_again_ctx(admin, app: dict) -> dict:
             pass
 
 
+def sandbox_logs(admin, app: dict) -> dict:
+    """The end of each component's container log from the application's latest sandbox check (SandboxCheck.LogTail,
+    redacted when the check took it: sandbox.redact), by ComponentId. Read with the admin login, so only for
+    administrators and operators: the log can carry data the application printed, and the reader role cannot read it.
+    Nothing when it cannot be read (a database before schema 54)."""
+    try:
+        conn = admin.connect_admin()
+    except Exception:  # noqa: BLE001
+        return {}
+    try:
+        return {r["ComponentId"]: r["LogTail"] for r in _rows(
+            conn, "SELECT x.ComponentId, x.LogTail FROM (SELECT s.ComponentId, s.CheckedAt, s.LogTail, "
+                  "MAX(s.CheckedAt) OVER () AS LastCheck, "
+                  "ROW_NUMBER() OVER (PARTITION BY s.ComponentId, s.CheckedAt ORDER BY s.CheckId DESC) AS n "
+                  "FROM cz.SandboxCheck s WHERE s.ApplicationId = %s) x "
+                  "WHERE x.CheckedAt = x.LastCheck AND x.n = 1 AND x.LogTail IS NOT NULL", (int(app["ApplicationId"]),))}
+    except Exception:  # noqa: BLE001 - no grant before schema 54
+        return {}
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def refactor_estimates(admin, app: dict) -> dict:
     """What each refactoring order of the application would cost, as the LLM queue estimates it (the order
     built as when it is placed; the speed learned from earlier answers). Key (component id or None, goal).
@@ -1084,7 +1109,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
                        f"<div class='muted small'>{e(c['VerdictText'])}"
                        f"{'; targets ' + e(c['TargetFramework']) if c['TargetFramework'] else ''}</div>"
                        f"{_llm_review(reviews.get(c['ComponentId']), app.get('AssessedAt'))}"
-                       f"{_verify_detail(c)}{_sandbox_detail(sandbox.get(c['ComponentId']))}{items}"
+                       f"{_verify_detail(c)}{_sandbox_detail(sandbox.get(c['ComponentId']), (refactor.get('sandbox_logs') or {}).get(c['ComponentId']))}{items}"
                        f"{_migration(app['ApplicationId'], migs.get(c['ComponentId']), refactor)}</details>")
     repo = by_comp.get(None, [])
     if repo:
@@ -1348,8 +1373,9 @@ def _app_url(s: dict | None) -> str:
     return f"<a href='{e(url)}' rel='noopener noreferrer' target='_blank'>{e(url.removeprefix('https://').rstrip('/'))}</a>"
 
 
-def _sandbox_detail(s: dict | None) -> str:
-    """What the sandbox cluster showed for a component: status, why, the Warning events."""
+def _sandbox_detail(s: dict | None, log: str | None = None) -> str:
+    """What the sandbox cluster showed for a component: status, why, the Warning events and, for administrators and
+    operators (sandbox_logs), the end of the failing container's log."""
     if not s:
         return ""
     st = s["Status"]
@@ -1378,6 +1404,11 @@ def _sandbox_detail(s: dict | None) -> str:
             f"<li><b>{e(ev.get('reason', ''))}</b> {e(ev.get('message', ''))}"
             f"{' (' + str(int(ev['count'])) + '×)' if isinstance(ev.get('count'), int) and ev['count'] > 1 else ''}</li>"
             for ev in events[:5]) + "</ul>")
+    if log and log.strip() and st != "healthy":
+        out.append("<details class='container-log' open><summary>Container log</summary>"
+                   f"<pre class='code'>{e(log.strip())}</pre><p class='muted small'>The end of the failing container's log "
+                   "(of its previous start when it restarted), secrets masked; shown to administrators and operators."
+                   "</p></details>")
     return "".join(out) + "</div>"
 
 
@@ -1500,7 +1531,7 @@ header.app{display:flex;gap:18px;align-items:flex-start;margin-top:8px}.lead{fon
 .v-sb-pending,.v-sb-scheduled{color:#8a6100}
 @media (prefers-color-scheme:dark){.v-ok,.v-ok-external,.v-sb-healthy{color:#4fd14f}
 .v-build-failed,.v-run-failed,.v-sb-failing,.v-sb-not-found,.v-sb-error{color:#f07a7a}.v-sb-pending,.v-sb-scheduled{color:#fac35a}}
-.sandbox{margin-top:8px;padding:8px 10px;border-radius:6px;background:var(--bg)}.sandbox p{margin:4px 0}
+.sandbox{margin-top:8px;padding:8px 10px;border-radius:6px;background:var(--bg)}.sandbox p{margin:4px 0}.container-log{margin-top:6px}.container-log summary{cursor:pointer;font-size:13px}.container-log pre.code{white-space:pre;max-height:22em;margin:4px 0;font-size:12px}
 ul.events{margin:4px 0;padding-left:18px}
 details{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:8px 0}
 summary{cursor:pointer}.finding{border-top:1px solid var(--line);padding:10px 0 4px;margin-top:10px}.finding p{margin:4px 0}
@@ -1802,6 +1833,7 @@ def make_handler(connect, admin=None):
                             ctx["tags_notice"] = parse_qs(u.query).get("tags", [""])[0]
                             if s and (s.admin or s.operator):                   # may scan it again (scanagain.py)
                                 ctx.update(scan_again_ctx(admin, app))
+                                ctx["sandbox_logs"] = sandbox_logs(admin, app)  # the failing containers' logs
                                 ctx["scan_csrf"] = admin._csrf(s)
                             ctx["lab_admin"] = bool(s and s.admin)              # may turn lab services on
                             ctx["lab_mail"] = bool(s and (s.admin or s.operator) and getattr(admin, "system", None))
