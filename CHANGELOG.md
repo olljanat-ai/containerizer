@@ -8,8 +8,15 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## Unreleased
+## 0.50.7 (2026-11-17)
 
+- **Firewall rules have categories**: Admin → Firewall groups the administrators' rules by a category picked from
+  a menu (Certificate checks, Container registries, Databases, Internal services, LLM, Package registries, Source
+  control, Other). A rule's category and *Why* can be changed in place (**Save changes**); a save on a stale page
+  (the rules changed meanwhile) saves nothing.
+- **Refused certificate-check names are proposed on port 80**: CRL, OCSP and issuer names (`crl*`, `ocsp*`,
+  `cacerts*`, `aia*`, `ctldl*`) on the Refused names list got port 443, but they are fetched over plain HTTP. They
+  now get port 80 and the category Certificate checks (the lookup was refused, so no port was ever seen).
 - **CI: third-party GitHub Actions pinned to commit SHAs** (helm/kind-action, docker/setup-buildx-action,
   docker/build-push-action, softprops/action-gh-release, peter-evans/create-pull-request), at the versions they
   already ran, with the version in a comment, so a moved or compromised tag cannot change what CI runs.

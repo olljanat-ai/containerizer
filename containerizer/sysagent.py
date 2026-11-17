@@ -87,6 +87,7 @@ PORT_RE = re.compile(r"(?:(tcp|udp)/)?(\d{1,5})")
 MAX_RULES = 500
 MAX_PORTS = 16
 NOTE_MAX = 200
+CATEGORY_MAX = 40
 TABLE = "cz_firewall"
 DNS_ADDR = "169.254.53.53"        # dnsmasq: the one resolver of the host, Docker and k3s
 REFUSER = "127.0.0.1#5354"        # dnsmasq's default server: answers REFUSED and counts the names (dnsrefuse.py)
@@ -817,7 +818,8 @@ def normalize_host(h: str) -> str:
 
 
 def validate_rules(data) -> dict:
-    """The allow-list in its stored form, or RuleError. Entries: {host|cidr, ports, note}."""
+    """The allow-list in its stored form, or RuleError. Entries: {host|cidr, ports, note[, category]}: the category
+    is a free-form tag the Firewall page groups the rules by."""
     if not isinstance(data, dict):
         raise RuleError("expected an object")
     mode = data.get("mode") or "enforce"
@@ -831,6 +833,7 @@ def validate_rules(data) -> dict:
         if not isinstance(r, dict):
             raise RuleError("each rule is an object")
         note = " ".join(str(r.get("note") or "").split())[:NOTE_MAX]
+        category = " ".join(str(r.get("category") or "").split())[:CATEGORY_MAX]
         ports = parse_ports(r.get("ports"))
         if r.get("cidr"):
             try:
@@ -847,7 +850,7 @@ def validate_rules(data) -> dict:
             entry = {"host": host, "ports": ports, "note": note}
         if key not in seen:
             seen.add(key)
-            rules.append(entry)
+            rules.append(dict(entry, category=category) if category else entry)
     return {"mode": mode, "rules": rules}
 
 
