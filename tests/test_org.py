@@ -1081,3 +1081,31 @@ def test_repository_slots_are_80_percent_of_the_cores_and_shared(monkeypatch):
     for _ in range(3):
         orgmod._give_slot()
     assert orgmod._slots_used == 0
+
+
+def test_ignored_dockerfiles_are_assessed_and_generated(tmp_path, monkeypatch):
+    """Admin -> Repositories -> Dockerfiles in the repository: ignored (they run development tools only). The
+    repository is not skipped as "Has a Dockerfile" nor moved from its Dockerfiles: its source is assessed and the
+    Dockerfiles are generated, as without them. Without the setting it is skipped as before."""
+    sources = {}
+    for name in ("devtools", "plain"):
+        d = tmp_path / "src" / name
+        shutil.copytree(DEMO, d)
+        (d / "Dockerfile").write_text("FROM scratch\n")
+        _commit(d)
+        sources[name] = d
+    repos = [SourceRepo("github", "acme", NO_PROJECT, n, f"https://github.com/acme/{n}.git", default_branch="main",
+                        id=str(i)) for i, n in enumerate(sources)]
+    monkeypatch.setattr(orgmod, "provider", lambda *a, **k: _FakeProvider(repos))
+    monkeypatch.setattr(orgmod, "update_clone", lambda url, dest, branch="", header="": (
+        shutil.copytree(sources[url.rsplit("/", 1)[1].removesuffix(".git")], dest), "cloned")[1])
+    state = _State({})
+    state.ignore_dockerfiles = {"_/devtools"}
+    o = OrgOptions(provider="github", org="acme", registry="reg.example/sb", output_dir=str(tmp_path / "out"), token="t",
+                   verify=False, gate=False, push_images=False, tag="1.0.0", work_dir=str(tmp_path / "work"),
+                   cache_dir=str(tmp_path / "cache"), state=state, allowed_hosts={"github.com"}, now=datetime(2026, 10, 31, tzinfo=timezone.utc))
+    res = {r.repo: r for r in run_org(o, log=lambda *a, **k: None)}
+    assert res["plain"].status == "skipped-dockerfile", {k: (v.status, v.reason) for k, v in res.items()}
+    assert res["devtools"].status == "deployed" and res["devtools"].overridden == []
+    gen = [f for f in (tmp_path / "out").rglob("Dockerfile") if "devtools" in f.as_posix()]
+    assert gen and all(f.read_text() != "FROM scratch\n" for f in gen)      # generated, not the repository's

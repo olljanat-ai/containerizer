@@ -117,6 +117,8 @@ class OrgOptions:
                                         # (replatform.py); the worker sets it only when the appliance allows it
     files_mounts: dict | None = None    # project/repository -> folder where each component mounts its files from the
                                         # secret store (OrgRepository.SecretFilesPath; generate.files_plan)
+    ignore_dockerfiles: set | None = None  # project/repository whose Dockerfiles are for development tools only: assessed
+                                        # and generated as without them (the worker: OrgRepository.IgnoreDockerfiles)
     splits: dict | None = None          # project/repository -> folder pattern ("apps/*"): one application per
                                         # folder (the worker: OrgRepository.SplitPath from the state's sync)
     parallel: int = 1                   # repositories processed at the same time, each in its own process (1..MAX_PARALLEL)
@@ -1441,6 +1443,12 @@ def _process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, wor
             return tstop(status, reason)
 
         dockerfiles = existing_dockerfiles(path)
+        if dockerfiles and f"{r.project}/{r.name}" in (o.ignore_dockerfiles or ()):
+            # Admin -> Repositories: its Dockerfiles are for development tools; the application is assessed and
+            # its Dockerfiles generated as in a repository without them
+            print(f"{name}: ignoring the repository's Dockerfiles ({', '.join(dockerfiles[:3])}): an administrator's "
+                  "setting", flush=True)
+            dockerfiles = []
         if dockerfiles and not o.migrate_containerized and (x := tskip("skipped-dockerfile", "found " + ", ".join(dockerfiles[:3])
                                       + (" ..." if len(dockerfiles) > 3 else ""))):
             return x
@@ -1937,6 +1945,7 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
     admin = o.state.sync(listed, names) if o.state else {}
     splits = {**(o.splits or {}), **(getattr(o.state, "splits", None) or {})}
     o.files_mounts = {**(o.files_mounts or {}), **(getattr(o.state, "files_mounts", None) or {})} or None
+    o.ignore_dockerfiles = set(o.ignore_dockerfiles or ()) | set(getattr(o.state, "ignore_dockerfiles", None) or ()) or None
     if o.state:
         chosen = {r.key for r in repos}
         for r in listed:

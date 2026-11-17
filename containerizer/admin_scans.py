@@ -948,6 +948,15 @@ def edit_repo(adm, conn, s, a, ident: int, flash: str) -> Response:
             f"<code>apps/&lt;namespace&gt;/&lt;component&gt;-files</code>; in another cluster, remote key "
             f"<code>&lt;namespace&gt;--&lt;component&gt;-files</code> of its secret store (it must exist, empty or not). Then point "
             f"the application's setting at the file (<code>/secrets/app.pfx</code>). The next scan of the repository uses it.</p>"
+            f"<h3 id='dockerfiles'>Dockerfiles in the repository</h3>"
+            f"<input type='hidden' name='DockerfilesForm' value='1'>"
+            f"<label class='check'><input type='checkbox' name='IgnoreDockerfiles' value='1'"
+            f"{' checked' if r.get('IgnoreDockerfiles') else ''}> Ignore them: they are for development tools</label>"
+            f"<p class='muted small'>A repository whose Dockerfiles (and Compose files) only run development tools, a "
+            f"database or a build container, while the application itself is not containerized: the scan assesses its "
+            f"source code and generates the Dockerfiles, as for a repository without them, instead of skipping it "
+            f"(<i>Has a Dockerfile</i>) or building and deploying those Dockerfiles. The next scan of the repository "
+            f"uses it.</p>"
             f"<div><button>Save</button> <a href='/admin/repositories?scan={int(r['ScanId'])}'>Back</a></div></form>")
     if hint and not split:
         form = (f"<p class='note'>This repository looks like <b>{int(hint.get('count') or 0)} applications</b>, one in each "
@@ -1044,6 +1053,9 @@ def save_repo(conn, ident: int, form: dict) -> Response:
                                                          "(letters, digits, . _ - /; not /app, /tmp or a system folder).")
         sets += ", SecretFilesPath = %s"
         params.append(path if on else None)
+    if "DockerfilesForm" in form:                            # the form has it; the list's bulk actions do not
+        sets += ", IgnoreDockerfiles = %s"
+        params.append(1 if form.get("IgnoreDockerfiles", [""])[0] == "1" else 0)
     cur = conn.cursor()
     cur.execute(f"UPDATE cz.OrgRepository SET {sets} WHERE RepositoryId = %s", (*params, ident))
     n = cur.rowcount
