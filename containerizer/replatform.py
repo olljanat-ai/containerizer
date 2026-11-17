@@ -145,7 +145,7 @@ def _rank(d: Descriptor) -> tuple:
     return (order.get(d.platform, 3), "override" in name or bool(re.search(r"\.(dev|local|test|ci)\.", name)), d.path)
 
 
-COPY_RE = re.compile(r"(?im)^[ \t]*(?:COPY|ADD)[ \t]+((?:[^\n]*\\[ \t]*\n)*[^\n]*)$")
+COPY_RE = re.compile(r"(?im)^[ \t]*(?:COPY|ADD)[ \t]+((?:[^\n]*\\[ \t]*\r?\n)*[^\n]*)$")
 DOCKERFILE_CONTEXT_RE = re.compile(r"(?is)<DockerfileContext>\s*([^<]*?)\s*</DockerfileContext>")
 
 
@@ -153,7 +153,7 @@ def _copy_sources(text: str) -> list[str]:
     """The build-context paths a Dockerfile's COPY and ADD read (not --from=, URLs, git sources or variables)."""
     out = []
     for m in COPY_RE.finditer(text):
-        body = re.sub(r"\\[ \t]*\n", " ", m.group(1)).strip()
+        body = re.sub(r"\\[ \t]*\r?\n", " ", m.group(1)).strip()
         if re.search(r"(^|\s)--from[= ]", body) or body.startswith("<<"):
             continue
         body = re.sub(r"^(?:--[\w-]+(?:=\S*)?\s+)*", "", body)
@@ -170,23 +170,26 @@ def _copy_sources(text: str) -> list[str]:
     return out
 
 
-def _sources_exist(base: Path, sources: list[str]) -> bool:
+def _resolved(base: Path, sources: list[str]) -> int:
+    """How many of the COPY sources exist under `base` (a glob counts when it matches something)."""
+    n = 0
     for a in sources:
         rel = a.lstrip("/") or "."
-        if any(ch in rel for ch in "*?["):
-            if not any(base.glob(rel)):
-                return False
-        elif not (base / rel).exists():
-            return False
-    return True
+        try:
+            n += bool(any(base.glob(rel)) if any(ch in rel for ch in "*?[") else (base / rel).exists())
+        except (OSError, ValueError):
+            pass
+    return n
 
 
 def dockerfile_context(src: Path, df: str) -> str:
     """The build context of a repository Dockerfile no descriptor gives one: its own folder, unless what it COPYs
     is written relative to a folder above it, as in the Dockerfiles Visual Studio generates (`COPY
-    ["Sln/Web/Web.csproj", "Sln/Web/"]`, built from the solution's or the repository's root). Then the project's
-    <DockerfileContext> when it names a folder whose COPY sources exist, else the nearest folder up to the
-    repository's root where they all do. Its own folder when none does (the build then says what is missing)."""
+    ["Sln/Web/Web.csproj", "Sln/Web/"]`, built from the solution's or the repository's root). Of its own folder,
+    the project's <DockerfileContext> and the folders up to the repository's root, the one where the most COPY
+    sources exist, the first of those in that order on a tie: one source missing everywhere (a file name in
+    another case, a file the build itself would not find either) does not keep the context in the wrong folder,
+    and the build then names what is missing."""
     src = Path(src).resolve()
     folder = Path(df).parent
     own = folder.as_posix() if folder.as_posix() not in ("", ".") else "."
@@ -195,29 +198,37 @@ def dockerfile_context(src: Path, df: str) -> str:
     except OSError:
         return own
     sources = _copy_sources(text)
-    if not sources or _sources_exist(src / folder, sources):
+    if not sources:
         return own
 
     def inside(p: Path) -> str | None:
         try:
             p = p.resolve()
-            return p.relative_to(src).as_posix() if p.is_dir() else None
+            return (p.relative_to(src).as_posix() or ".") if p.is_dir() else None
         except (OSError, ValueError):
             return None
+    candidates = [own]
     for proj in sorted((src / folder).glob("*.*proj")):
         try:
             m = DOCKERFILE_CONTEXT_RE.search(proj.read_text(errors="replace"))
         except OSError:
             continue
         rel = inside(src / folder / m.group(1).replace("\\", "/")) if m and m.group(1) else None
-        if rel is not None and _sources_exist(src / rel, sources):
-            return rel or "."
+        if rel is not None:
+            candidates.append(rel)
+            break
     up = folder
     while up.as_posix() not in ("", "."):
         up = up.parent
-        if _sources_exist(src / up, sources):
-            return up.as_posix() if up.as_posix() not in ("", ".") else "."
-    return own
+        candidates.append(up.as_posix() if up.as_posix() not in ("", ".") else ".")
+    best, score = own, -1
+    for c in dict.fromkeys(candidates):                 # in order, each once
+        n = _resolved(src / c, sources)
+        if n > score:
+            best, score = c, n
+        if score == len(sources):
+            break
+    return best
 
 
 def match_dockerfile(sv: Service, dockerfiles: list[str]) -> dict | None:

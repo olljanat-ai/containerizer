@@ -744,5 +744,21 @@ def test_failed_build_says_which_dockerfile_and_context(tmp_path, monkeypatch):
                                 GitOpsOptions(git_url="https://git.example.com/x.git"), ["Shop/Shop.Web/Dockerfile"])
     [x] = r.excluded
     assert x["reason"].startswith("image build failed: ")
-    assert x["detail"].startswith("Dockerfile: Shop/Shop.Web/Dockerfile\nBuild context: Shop/Shop.Web (from")
+    # the other sources are at the root: built from there, so the build names the one file that is missing
+    assert x["detail"].startswith("Dockerfile: Shop/Shop.Web/Dockerfile\nBuild context: . (from")
     assert "failed to calculate checksum" in x["detail"]
+
+
+def test_context_where_most_copy_sources_resolve(tmp_path):
+    # Windows line endings, a NuGet.Config that is nuget.config on disk: the root still has all the projects
+    app = vs_repo(tmp_path / "shop")
+    (app / "nuget.config").write_text("<configuration/>")
+    df = 'FROM x AS build\r\nCOPY ["NuGet.Config", "."]\r\n' + VS_DOCKERFILE.replace("\n", "\r\n")
+    (app / "Shop" / "Shop.Web" / "Dockerfile").write_text(df)
+    assert "Shop/Shop.Api/Shop.Api.csproj" in replatform._copy_sources(df)       # the CRLF continuation
+    assert replatform.dockerfile_context(app, "Shop/Shop.Web/Dockerfile") == "."
+    # nothing resolves above its own folder better than in it: its own folder
+    (app / "Shop" / "Shop.Web" / "Dockerfile").write_text("FROM x\r\nCOPY a.txt b.txt /\r\n")
+    (app / "Shop" / "Shop.Web" / "a.txt").write_text("a")
+    (app / "a.txt").write_text("a")
+    assert replatform.dockerfile_context(app, "Shop/Shop.Web/Dockerfile") == "Shop/Shop.Web"

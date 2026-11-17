@@ -16,9 +16,10 @@ A repository that has Dockerfiles but no deployment descriptor is deployed from 
 one becomes a component named after its folder (`backend/Dockerfile` becomes `backend`, a Dockerfile at the
 root takes the application's name), built from it with its folder as the build context, unless what it `COPY`s
 is written relative to a folder above it: Visual Studio's Dockerfiles (`COPY ["Shop/Shop.Web/Shop.Web.csproj",
-"Shop/Shop.Web/"]`) are built from the solution's or the repository's root. Then the context is the project's
-`<DockerfileContext>` when the `COPY` sources are there, else the nearest folder up to the repository's root where
-they all are. The same goes for a Dockerfile found for a service by its folder's name. Its ports are the
+"Shop/Shop.Web/"]`) are built from the solution's or the repository's root. Then the context is the folder where the
+most `COPY` sources are, of its own folder, the project's `<DockerfileContext>` and the folders up to the
+repository's root (the first of those on a tie): a single file that is missing (or in another case, such as
+`nuget.config` for `NuGet.Config`) does not keep the build in the wrong folder, and the build names that file. The same goes for a Dockerfile found for a service by its folder's name. Its ports are the
 ones the Dockerfile `EXPOSE`s; a component with a port gets a Service and an HTTPS Ingress, one without runs
 as a worker. In a folder with a plain `Dockerfile`, its variants (`Dockerfile.prod`, `api.Dockerfile`) are
 left out, and Dockerfiles under `test/`, `docs/`, `examples/` or `.devcontainer/` are never used. Settings,

@@ -8,6 +8,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- **Repository Dockerfiles: the build context is where the most `COPY` sources are**: 0.50.8 moved the context of a
+  Visual Studio Dockerfile only to a folder where every `COPY` source existed, so one file missing or in another
+  case (`NuGet.Config` that is `nuget.config` on disk) kept it in the Dockerfile's folder, and every project
+  `COPY` failed. It is now the folder where the most of them are (its own on a tie), and the build names the one
+  that is missing. Windows line endings in a `COPY` continued over lines are read too.
+
 ## 0.50.9 (2026-11-17)
 
 - **Single-page apps: the site is found where the build wrote it**: the image build stopped with *no built
