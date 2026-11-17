@@ -253,21 +253,58 @@ VARIANT_RE = re.compile(r"(?i)(^|[.-])(dev|devel|development|local|debug|test|te
 NOT_APP_RE = re.compile(r"(?i)(^|/)(test|tests|docs?|examples?|samples?|\.devcontainer|\.github)/")
 
 
-def _exposed(df: Path) -> list[int]:
-    """The ports the final stage of a Dockerfile EXPOSEs (80, 8080/tcp; variables are left out)."""
-    try:
-        text = df.read_text(errors="replace")
-    except OSError:
-        return []
-    last = list(FROM_RE.finditer(text))
-    text = text[last[-1].start():] if last else text
+STAGE_RE = re.compile(r"(?im)^\s*FROM\s+(?:--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?")
+
+
+def _ports_in(text: str) -> list[int]:
     ports = []
     for m in EXPOSE_RE.finditer(text):
         for x in m.group(1).split():
             n = re.fullmatch(r"(\d{1,5})(/tcp)?", x.strip())
             if n and 0 < int(n.group(1)) < 65536 and int(n.group(1)) not in ports:
                 ports.append(int(n.group(1)))
+    return ports
+
+
+def _exposed(df: Path, any_stage: bool = False) -> list[int]:
+    """The ports the final stage of a Dockerfile EXPOSEs (80, 8080/tcp; variables are left out), with the ones of
+    the stages it is built FROM (`FROM build`). `any_stage`: when it has none, the ones any stage EXPOSEs (an
+    `EXPOSE 8080` written in the build stage of a front end that an nginx stage serves)."""
+    try:
+        text = df.read_text(errors="replace")
+    except OSError:
+        return []
+    starts = list(STAGE_RE.finditer(text))
+    if not starts:
+        return _ports_in(text)[:10]
+    stages = [(m.group(1).lower(), (m.group(2) or "").lower(), text[m.start():(starts[i + 1].start() if i + 1 < len(starts)
+                                                                               else len(text))])
+              for i, m in enumerate(starts)]
+    ports: list[int] = []
+    i, seen = len(stages) - 1, set()
+    while i >= 0 and i not in seen:                  # the final stage, then the stage it is FROM, ...
+        seen.add(i)
+        ports += [p for p in _ports_in(stages[i][2]) if p not in ports]
+        base = stages[i][0]
+        i = next((j for j in range(i - 1, -1, -1) if stages[j][1] == base), -1)
+    if not ports and any_stage:
+        ports = _ports_in(text)
     return ports[:10]
+
+
+def image_ports(local: str) -> list[int]:
+    """The TCP ports a built image exposes (its own EXPOSE and its base image's: nginx 80)."""
+    rc, out = _docker(["image", "inspect", "-f", "{{json .Config.ExposedPorts}}", local], 60)
+    try:
+        exposed = json.loads(out.strip() or "null") if rc == 0 else None
+    except ValueError:
+        return []
+    ports = []
+    for k in exposed or {}:
+        n = re.fullmatch(r"(\d{1,5})(/tcp)?", str(k))
+        if n and 0 < int(n.group(1)) < 65536 and int(n.group(1)) not in ports:
+            ports.append(int(n.group(1)))
+    return sorted(ports)[:10]
 
 
 def dockerfile_services(src: Path, app: str, dockerfiles: list[str]) -> list[Service]:
@@ -352,6 +389,14 @@ def plan_migration(src: Path, app: str, dockerfiles: list[str], llm: bool = Fals
             sv.notes.append(f"build: {sv.build.get('dockerfile') or '?'} is not in the repository; using the image "
                             f"{sv.image or '(none)'}")
             sv.build = None
+    for sv in apps:
+        # the descriptor gives no port (a Compose service without `ports`/`expose`, say a front end the developer
+        # opens some other way): the ports its Dockerfile EXPOSEs, as without a descriptor (dockerfile_services).
+        # Without them it would run as a background worker with no Service and no URL.
+        if not sv.ports and sv.build and (ports := _exposed(src / sv.build.get("dockerfile", ""))):
+            sv.ports, sv.public = ports, True
+            sv.notes.append(f"{sv.source}: no port for {sv.name}; using the one(s) its Dockerfile EXPOSEs: "
+                            + ", ".join(map(str, ports)))
     if llm and apps:
         llm_review(src, apps, plan, model)
     for key, sv in sorted(by_name.items()):
@@ -1234,6 +1279,15 @@ def migrate_repo(src: Path, o, res, app: str, rel: str, dest: Path, gen: Path, r
                 shutil.rmtree(cdir, ignore_errors=True)
                 continue
             uid = image_uid(local) or uid
+            if not sv.ports and sv.build:
+                # no port from the descriptor or the final stage's EXPOSE: the built image's (its base image's: nginx
+                # 80), else an EXPOSE of another stage. Without one it runs as a worker with no Service and no URL.
+                img = image_ports(local)
+                ports = img or _exposed(src / sv.build.get("dockerfile", ""), any_stage=True)
+                if ports:
+                    sv.ports, sv.public = ports, True
+                    sv.notes.append(f"{sv.build.get('dockerfile')}: port(s) {', '.join(map(str, ports))} from the "
+                                    + ("built image" if img else "Dockerfile's EXPOSE in an earlier stage"))
         elif not sv.build:
             ref = sv.image                                     # no build, no push: the image it runs today
         images[cn] = (ref, local, uid)

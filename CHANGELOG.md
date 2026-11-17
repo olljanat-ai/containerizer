@@ -8,6 +8,15 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.1 (2026-11-17)
+
+- **Repository Dockerfiles: the port of a multi-stage build**: only the final stage's `EXPOSE` was read, so a
+  front end that writes `EXPOSE 8080` in its `build` stage and is served by a later stage (nginx, a slim Node image)
+  got no port: it ran as a background service, without a Service, an Ingress or a URL. The port now comes from the
+  final stage and the stages it is built `FROM`, else the built image (its base image's, nginx 80), else an `EXPOSE`
+  of any stage. A Compose (Swarm, Nomad, ...) service built from a Dockerfile, with no `ports` or `expose` of its
+  own, takes them the same way. `MIGRATION.md` says where the port came from.
+
 ## 0.51.0 (2026-11-17)
 
 - **Container log of a failing sandbox component on its results page**: when the sandbox check finds a component
