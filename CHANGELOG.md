@@ -8,6 +8,17 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## Unreleased
+
+- **Visual Studio Dockerfiles build from the right context**: a repository built from its own Dockerfile without a
+  descriptor that sets the context was built with the Dockerfile's folder as the context, so a Dockerfile whose
+  `COPY`s are written relative to the solution's or repository's root (as Visual Studio writes them:
+  `COPY ["Sln/Web/Web.csproj", "Sln/Web/"]`) failed with *failed to calculate checksum ... not found*. The context
+  is now the project's `<DockerfileContext>`, or the nearest folder up to the repository's root where the `COPY`
+  sources are.
+- **A failed image build says which build it was**: **What failed** on the repository page names the Dockerfile
+  and the build context, with the end of the build log (the component's `build.log` is not kept).
+
 ## 0.50.7 (2026-11-17)
 
 - **Firewall rules have categories**: Admin → Firewall groups the administrators' rules by a category picked from
