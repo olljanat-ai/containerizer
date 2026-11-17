@@ -223,6 +223,52 @@ def test_cli_without_dockerfile_or_descriptor_says_so(tmp_path, capsys):
     assert "no Dockerfile, and no Docker Swarm" in capsys.readouterr().err
 
 
+def test_descriptor_service_without_port_uses_dockerfile_expose(tmp_path):
+    """A Compose service built from a Dockerfile that EXPOSEs a port, with no `ports` or `expose` of its own (a front
+    end): the Dockerfile's port, so it is a web component with a Service and an Ingress, not a background worker.
+    A port the descriptor gives wins; a Dockerfile without EXPOSE stays a worker."""
+    app = tmp_path / "shop"
+    files = {"docker-compose.yml": "services:\n  frontend:\n    build: ./frontend\n  api:\n    build: ./api\n"
+                                   "    expose: ['5000']\n  jobs:\n    build: ./jobs\n",
+             "frontend/Dockerfile": "FROM node:22 AS b\nEXPOSE 3000\nFROM nginx\nEXPOSE 8080\n",
+             "api/Dockerfile": "FROM python:3.13\nEXPOSE 8000\n", "jobs/Dockerfile": "FROM alpine\n"}
+    for f, text in files.items():
+        (app / f).parent.mkdir(parents=True, exist_ok=True)
+        (app / f).write_text(text)
+    plan = replatform.plan_migration(app, "shop", [f for f in files if f.endswith("Dockerfile")])
+    got = {s.name: (s.ports, s.public) for s in plan.services}
+    assert got == {"frontend": ([8080], True), "api": ([5000], False), "jobs": ([], False)}
+    assert any("EXPOSEs: 8080" in n for n in next(s for s in plan.services if s.name == "frontend").notes)
+
+
+def test_exposed_ports_of_multi_stage_dockerfiles(tmp_path):
+    """The final stage's EXPOSE, with the stages it is built FROM; any stage's only when asked (after the build,
+    when the image exposes nothing either)."""
+    cases = {
+        "FROM node:22.19.0 AS build\nEXPOSE 8080\nCMD [\"node\", \"server.js\"]\n": ([8080], [8080]),
+        "FROM node:22.19.0 AS build\nEXPOSE 8080\nRUN npm run build\nFROM build AS run\nCMD [\"npm\", \"start\"]\n": ([8080], [8080]),
+        "FROM node:22.19.0 AS build\nEXPOSE 8080\nRUN npm run build\nFROM nginx:1.27\nCOPY --from=build /app/dist /usr/share/nginx/html\n": ([], [8080]),
+        "FROM --platform=$BUILDPLATFORM golang AS b\nEXPOSE 9999\nFROM alpine\nEXPOSE 8080/tcp\n": ([8080], [8080]),
+        "FROM alpine\nCMD [\"sh\"]\n": ([], []),
+    }
+    for i, (text, (final, any_)) in enumerate(cases.items()):
+        df = tmp_path / f"Dockerfile{i}"
+        df.write_text(text)
+        assert (replatform._exposed(df), replatform._exposed(df, any_stage=True)) == (final, any_), text
+
+
+def test_built_image_ports_when_the_dockerfile_gives_none(monkeypatch):
+    calls = []
+
+    def docker(args, timeout=0):
+        calls.append(args)
+        return 0, '{"80/tcp":{},"443/tcp":{},"53/udp":{}}\n'
+    monkeypatch.setattr(replatform, "_docker", docker)
+    assert replatform.image_ports("x:gate") == [80, 443]
+    monkeypatch.setattr(replatform, "_docker", lambda args, timeout=0: (0, "null\n"))
+    assert replatform.image_ports("x:gate") == []
+
+
 def test_dockerfiles_without_descriptor_are_deployed_one_component_each(tmp_path):
     """An enabled repository with Dockerfiles and no Compose, Swarm, Nomad, ACA or ECS file: each Dockerfile is
     a component built from it, named after its folder; its EXPOSEd port gets a Service and an Ingress."""
