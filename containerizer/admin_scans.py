@@ -342,9 +342,11 @@ sandbox cluster and needs no credentials.</p>
 {inp('OutputBranch', 'Output branch', '', maxlen=200)}
 <p class='muted small'>Pushing uses the write token registered for this repository URL under Source control, never the
 organization's read-only token. The output repository is never scanned.</p>
-<p class='muted small'>Repositories are scanned {_slots()} at a time, each in its own process, shared by every run going
-at once (80% of the machine's {_cores()}; <code>CONTAINERIZER_PARALLEL_REPOS</code> on the worker to choose,
-up to one per core). Each one also needs memory (about 1 GB, more with Build and run) and asks the LLM on its own.</p>
+<p class='muted small'>Repositories are scanned several at a time, each in its own process, shared by every run going
+at once: 80% of the machine's {_cores()} by default. <code>CONTAINERIZER_PARALLEL_REPOS</code> in the worker's
+environment chooses another number, also above the cores, since a repository spends much of its time waiting
+(the LLM, image pulls and builds). Each one also needs memory (about 1 GB, more with Build and run) and asks the
+LLM on its own.</p>
 {chk('Verify', 'Build and run every component before rating it')}
 <p class='muted small'>Slow: every component is built and started in a container, and with "Ask the LLM" each failure is
 diagnosed by the LLM too. Off (the default for new scans): the rating comes
@@ -497,7 +499,7 @@ def run_progress(adm, conn, s, a, ident: int, run_id: int, flash: str) -> Respon
                                       f"{int(run['ReposSkipped'] or 0)} skipped · {int(run['ReposErrors'] or 0)} failed"))
         if done and took:
             facts.append(("Pace", f"{_secs(took / done)} a repository on average"
-                                  + (f", up to {_slots()} at a time (shared by the runs going)" if _slots() > 1 else "")))
+                                  + (f", several at a time (the worker's limit, shared by the runs going)" if _slots() > 1 else "")))
         if live and done and total > done:
             left = took / done * (total - done)
             end = now + timedelta(seconds=left)

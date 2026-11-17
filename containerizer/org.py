@@ -122,7 +122,7 @@ class OrgOptions:
                                         # and generated as without them (the worker: OrgRepository.IgnoreDockerfiles)
     splits: dict | None = None          # project/repository -> folder pattern ("apps/*"): one application per
                                         # folder (the worker: OrgRepository.SplitPath from the state's sync)
-    parallel: int = 1                   # repositories processed at the same time, each in its own process (1..MAX_PARALLEL)
+    parallel: int = 1                   # repositories processed at the same time, each in its own process (1..MAX_PARALLEL * MAX_OVERSUBSCRIBE)
     heavy_windows: dict | None = None   # Application.SourceKey -> ["*"] or ProjectPaths: LLM-heavy windows an administrator
                                         # opened (llmqueue.heavy_windows); the worker sets it only when the appliance
                                         # allows LLM-heavy mode and the scan asks the LLM. Those applications get
@@ -2030,7 +2030,7 @@ def run_org(o: OrgOptions, log=print) -> list[RepoResult]:
             hooks.repo_done(i, r, res)
         _phase(hooks, "Scanning the repositories")
 
-    parallel = 1 if o.dry_run else max(1, min(int(o.parallel or 1), MAX_PARALLEL))
+    parallel = 1 if o.dry_run else max(1, min(int(o.parallel or 1), MAX_PARALLEL * MAX_OVERSUBSCRIBE))
     _phase(hooks, "Scanning the repositories")
     try:
         # a run an administrator can cancel (the worker's) scans each repository in a process of its own, even one
@@ -2098,14 +2098,19 @@ MAX_PARALLEL = max(1, len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffi
 PARALLEL_ENV = "CONTAINERIZER_PARALLEL_REPOS"
 
 
+# CONTAINERIZER_PARALLEL_REPOS may go above the cores: a repository spends much of its time waiting (the LLM, image
+# pulls and builds, the image scanner's lock, pushes), not on the CPU. The ceiling only catches a typo.
+MAX_OVERSUBSCRIBE = 8
+
+
 def repo_slots() -> int:
-    """Repositories processed at the same time on this machine, summed over every run going: 80% of the CPU cores
-    (CONTAINERIZER_PARALLEL_REPOS to choose, up to one per core)."""
+    """Repositories processed at the same time on this machine, summed over every run going: 80% of the CPU cores, or
+    CONTAINERIZER_PARALLEL_REPOS (up to MAX_OVERSUBSCRIBE per core; each one needs about 1 GB of memory)."""
     try:
         n = int(os.environ.get(PARALLEL_ENV) or 0)
     except ValueError:
         n = 0
-    return max(1, min(n or int(MAX_PARALLEL * 0.8), MAX_PARALLEL))
+    return max(1, min(n or int(MAX_PARALLEL * 0.8), MAX_PARALLEL * MAX_OVERSUBSCRIBE))
 
 
 # the slots the runs of this process hold (the worker runs administrators' runs side by side)
