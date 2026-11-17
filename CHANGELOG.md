@@ -8,6 +8,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.5 (2026-11-17)
+
+- **`CONTAINERIZER_PARALLEL_REPOS` above the number of CPU cores**: it was capped at one repository per core. A
+  repository spends much of its scan waiting for the LLM, image pulls and builds, the image scanner and pushes,
+  so the cores sat idle. The value is now honored up to 8 per core, a ceiling that only catches typos. The
+  default is still 80% of the cores. The scan and run pages no longer show a number of repositories at a time:
+  the web UI cannot see the worker's environment and showed the default.
+
 ## 0.51.4 (2026-11-17)
 
 - **Scan failed: `TypeError: can't concat str to bytes`**: a build, image pull or test run that timed out during

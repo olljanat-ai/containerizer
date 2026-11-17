@@ -1069,7 +1069,9 @@ def test_repository_slots_are_80_percent_of_the_cores_and_shared(monkeypatch):
     monkeypatch.setenv(orgmod.PARALLEL_ENV, "10")
     assert orgmod.repo_slots() == 10
     monkeypatch.setenv(orgmod.PARALLEL_ENV, "64")
-    assert orgmod.repo_slots() == 10                        # at most one per core
+    assert orgmod.repo_slots() == 64                        # above the cores: the repositories mostly wait
+    monkeypatch.setenv(orgmod.PARALLEL_ENV, "2000")
+    assert orgmod.repo_slots() == 10 * orgmod.MAX_OVERSUBSCRIBE    # a typo is capped
     monkeypatch.setattr(orgmod, "MAX_PARALLEL", 1)
     monkeypatch.delenv(orgmod.PARALLEL_ENV)
     assert orgmod.repo_slots() == 1

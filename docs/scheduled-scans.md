@@ -263,7 +263,10 @@ deleted (its history is kept): pause it.
 **Repositories in parallel**: the worker processes up to 80% of the machine's CPU cores worth of repositories
 at the same time, summed over every run going (a full run, Scan now and Run now share them): one machine-wide
 limit, not a setting of each scan. Set `CONTAINERIZER_PARALLEL_REPOS` in the worker's environment to choose
-another number, up to one per CPU core. The assessment is CPU-bound, so each repository gets its own process.
+another number. It may be above the number of CPU cores (up to 8 per core): a repository spends much of its
+time waiting for the LLM, image pulls and builds, the image scanner and pushes, not on the CPU. Edit
+`/etc/containerizer/worker.env` on the appliance and `systemctl restart containerizer-worker`. Each repository
+gets its own process.
 Results are committed to the output repository one at a time, in the order the repositories finish. Each one
 also needs its own memory (about 1 GB, more with **Build and run**) and disk space, and with **Ask the LLM**
 each asks the LLM on its own, so a self-hosted LLM gets up to that many requests at once (give llama.cpp that
