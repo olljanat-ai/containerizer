@@ -191,7 +191,12 @@ def _run(cmd: list[str], timeout: int, cwd: Path | None = None) -> tuple[int, st
             raise DockerUnavailable(f"{DOCKER_DOWN}; start it and run verify again")
         return p.returncode, p.stdout
     except subprocess.TimeoutExpired as e:
-        return 124, (e.stdout or "") + "\n[timeout]"
+        # the output so far is bytes here even with text=True (Python's subprocess): a str + bytes TypeError
+        # failed the whole repository instead of reporting the timed-out step
+        out = e.stdout or ""
+        if isinstance(out, bytes):
+            out = out.decode(errors="replace")
+        return 124, out + f"\n[timeout after {timeout} s]"
 
 
 def _free_port() -> int:
