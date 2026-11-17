@@ -188,6 +188,7 @@ class SqlRepoStore:
         self.new_enabled = new_enabled
         self.splits: dict[str, str] = {}        # key -> OrgRepository.SplitPath (one application per folder)
         self.files_mounts: dict[str, str] = {}  # key -> OrgRepository.SecretFilesPath (files from the secret store)
+        self.ignore_dockerfiles: set[str] = set()  # keys whose Dockerfiles are for tools (OrgRepository.IgnoreDockerfiles)
         self.new: list[str] = []
         self.repos: list = []
         self.listed = 0
@@ -227,8 +228,8 @@ class SqlRepoStore:
             self.conn.rollback()
             raise
         cur = self.conn.cursor(as_dict=True)
-        cur.execute("SELECT RepositoryId, ProjectName, Name, ExternalId, AdminState, SplitPath, SecretFilesPath FROM cz.OrgRepository "
-                    "WHERE ScanId = %s", (self.scan_id,))
+        cur.execute("SELECT RepositoryId, ProjectName, Name, ExternalId, AdminState, SplitPath, SecretFilesPath, "
+                    "IgnoreDockerfiles FROM cz.OrgRepository WHERE ScanId = %s", (self.scan_id,))
         rows = cur.fetchall()
         by_name = {(r["ProjectName"], r["Name"]): r for r in rows}
         by_id = {r["ExternalId"]: r for r in rows if r["ExternalId"]}
@@ -251,6 +252,8 @@ class SqlRepoStore:
                         self.splits[r.key] = row["SplitPath"]
                     if row.get("SecretFilesPath"):
                         self.files_mounts[r.key] = row["SecretFilesPath"]
+                    if row.get("IgnoreDockerfiles"):
+                        self.ignore_dockerfiles.add(r.key)
                 else:
                     state = None if self.new_enabled else "disabled"
                     c.execute("INSERT cz.OrgRepository (ScanId, ProjectName, Name, ExternalId, CloneUrl, WebUrl, RepositoryUrl, "

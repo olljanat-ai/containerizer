@@ -299,6 +299,15 @@ scan uses the rules only, or give a self-hosted LLM more slots; **Verifying** an
 repositories in parallel if the machine has the cores and memory; **Cloning** — the first run clones everything,
 later runs only pull. The [Grafana dashboard](#metrics-and-grafana) has the same run over time.
 
+## Dockerfiles for development tools
+
+Some repositories have Dockerfiles (and Compose files) only for the developers' tools: a local database, a build or
+test container, a dev container, while the application itself is not containerized. Such a repository would be
+skipped as *Has a Dockerfile*, or, enabled, its Dockerfiles would be built and deployed in place of the application.
+**Admin → Repositories → (the repository) → Dockerfiles in the repository → Ignore them** tells the scans to
+assess its source code and generate the Dockerfiles, as for a repository without them. The next scan of the
+repository uses it; the change is in the audit log.
+
 ## Files from the secret store
 
 An application may read files that are not in its repository and must not be in its image, such as a certificate
@@ -353,7 +362,7 @@ The command line does the same with `containerizer org ... --split '<project>/<r
 
 | Automatic skip | Reason shown, for example |
 | --- | --- |
-| Has a Dockerfile | `found src/Api/Dockerfile`: the team already containerizes it. Enabled, it is moved from Docker Swarm, Compose, Nomad, Azure Container Apps or ECS to Kubernetes ([platform migrations](platform-migration.md)) |
+| Has a Dockerfile | `found src/Api/Dockerfile`: the team already containerizes it. Enabled, it is moved from Docker Swarm, Compose, Nomad, Azure Container Apps or ECS to Kubernetes ([platform migrations](platform-migration.md)). When its Dockerfiles only run development tools, [ignore them](#dockerfiles-for-development-tools) |
 | No application code | `14 files (.md 9, .yml 3, .json 2), no source code`: documentation, configuration, pipelines, SQL or scripts |
 | Language not supported | `Ruby (32 files), but no project the tool can build (...)` |
 | Nothing to deploy | `only library, test: 3 projects, nothing that runs on its own` |

@@ -8,6 +8,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.2 (2026-11-17)
+
+- **Ignore a repository's Dockerfiles that are for development tools**: a repository whose Dockerfiles (and Compose
+  files) only run developer tools, while the application is not containerized, was skipped as *Has a Dockerfile*
+  or, enabled, had those Dockerfiles built and deployed. **Admin → Repositories → Dockerfiles in the repository →
+  Ignore them** makes the scans assess its source code and generate the Dockerfiles instead. Schema 55:
+  `OrgRepository.IgnoreDockerfiles` (audited).
+
 ## 0.51.1 (2026-11-17)
 
 - **Repository Dockerfiles: the port of a multi-stage build**: only the final stage's `EXPOSE` was read, so a
