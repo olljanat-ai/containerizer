@@ -8,13 +8,17 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## 0.50.11 (2026-11-17)
+## 0.51.0 (2026-11-17)
 
 - **Container log of a failing sandbox component on its results page**: when the sandbox check finds a component
   *Deployed but failing* (or not ready in time), administrators and operators now see the end of its container's
   log (the crashed start's when it restarted, secrets masked) under the status, Why and Warning events, without
   `kubectl`. The check already kept it (`SandboxCheck.LogTail`); schema 54 lets the admin login read it, and the
   reader role and `HEALTH.md` still do not get it.
+- **Security headers on every appliance site** (OS image): Caddy adds HSTS, `X-Frame-Options: DENY`, a baseline
+  Content-Security-Policy (`frame-ancestors 'none'`), `nosniff` and a Referrer-Policy wherever the upstream sends
+  none (the kubemg site too), and Grafana sends its own CSP and HSTS and refuses to be embedded. The docs site
+  carries a Content-Security-Policy that allows only same-origin resources, with its fonts self-hosted.
 
 ## 0.50.10 (2026-11-17)
 
