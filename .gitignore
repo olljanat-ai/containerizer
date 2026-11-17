@@ -6,3 +6,4 @@ out/
 results/.env
 site/
 .venv-ci/
+.cache/

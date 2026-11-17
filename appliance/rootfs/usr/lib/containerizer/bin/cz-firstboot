@@ -160,7 +160,7 @@ if [ "$kubemg" = true ]; then
 https://$khost {
 	tls {\$CZ_CADDY_TLS}
 	encode zstd gzip
-	header -Server
+	import security_headers
 	reverse_proxy https://127.0.0.1:8444 {
 		transport http {
 			tls_trusted_ca_certs /run/containerizer/kubemg/loopback-ca.pem

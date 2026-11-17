@@ -15,10 +15,25 @@
 	}
 }
 
+# Security headers for every appliance site. The web UI sends its own (strict CSP, X-Frame-Options, HSTS) and
+# Grafana and OpenBao theirs; "?" only fills in a header the upstream did not send, so they are kept as they are and
+# what has none (Caddy's own error pages, OpenBao's API, any upstream that leaves one out) still gets HSTS,
+# anti-clickjacking and a baseline Content-Security-Policy.
+(security_headers) {
+	header {
+		-Server
+		?Strict-Transport-Security "max-age=31536000"
+		?X-Frame-Options "DENY"
+		?Content-Security-Policy "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+		?X-Content-Type-Options "nosniff"
+		?Referrer-Policy "same-origin"
+	}
+}
+
 {$CZ_SITES} {
 	tls {$CZ_CADDY_TLS}
 	encode zstd gzip
-	header -Server
+	import security_headers
 	handle /grafana* {
 		reverse_proxy 127.0.0.1:3000
 	}
