@@ -212,12 +212,31 @@ def test_short_answers_are_capped_and_a_ramble_is_reported(server, monkeypatch):
     server.answer('{"verdict": "info", "confidence": 1}')
     ai.ask_json("p-env", SCHEMA, max_tokens=ai.SHORT_ANSWER_TOKENS)
     assert server.requests[-1]["body"]["max_tokens"] == 2000
-    # cut off twice (the retry keeps the cap): a clear error, the component keeps the rules' verdict
+    # cut off at the environment's cap (no bigger budget to retry with): a clear error, the component keeps the
+    # rules' verdict
     server.answer('{"verdict": "info", "reasoning": "and so on and so on', finish="length")
-    server.answer('{"verdict": "info", "reasoning": "and so on and so on', finish="length")
+    n = len(server.requests)
     with pytest.raises(RuntimeError, match="cut off at 2000 tokens: the model rambled"):
         ai.ask_json("p-ramble", SCHEMA, max_tokens=ai.SHORT_ANSWER_TOKENS)
-    assert server.requests[-1]["body"]["max_tokens"] == 2000
+    assert len(server.requests) == n + 1 and server.requests[-1]["body"]["max_tokens"] == 2000
+
+
+def test_a_reasoning_model_cut_off_by_the_short_cap_is_asked_again_with_the_whole_budget(server):
+    """gpt-oss-20b on llama.cpp: its thinking (reasoning_content) used the 4096 tokens of a short answer and the
+    content was empty. Asked again with the same cap it ended the same way; now with CONTAINERIZER_LLM_MAX_TOKENS."""
+    def thinking(content, finish):
+        return (200, {"choices": [{"message": {"role": "assistant", "content": content,
+                                               "reasoning_content": "We need to look at the build log. " * 300},
+                                   "finish_reason": finish}], "usage": {"prompt_tokens": 11, "completion_tokens": 4096}})
+    server.replies.append(thinking("", "length"))
+    server.replies.append(thinking('{"verdict": "info", "confidence": 1}', "stop"))
+    assert ai.ask_json("p-think", SCHEMA, max_tokens=ai.SHORT_ANSWER_TOKENS)["verdict"] == "info"
+    assert [r["body"]["max_tokens"] for r in server.requests[-2:]] == [ai.SHORT_ANSWER_TOKENS, 16000]
+    # cut off with the whole budget too: the error says the reasoning took it
+    server.replies.append(thinking("", "length"))
+    server.replies.append(thinking("", "length"))
+    with pytest.raises(RuntimeError, match=r"cut off at 16000 tokens, \d+ characters of them the model's reasoning"):
+        ai.ask_json("p-think-more", SCHEMA, max_tokens=ai.SHORT_ANSWER_TOKENS)
 
 
 def test_reviews_ask_for_a_short_answer(monkeypatch):

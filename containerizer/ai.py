@@ -709,13 +709,25 @@ def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False, sys
     data = _first_json(text)
     errs = _schema_errors(data, schema) if data is not None else ["no JSON object"]
     if errs:
-        if not _retry:
+        msg = choice.get("message") or {}
+        # a reasoning model (gpt-oss, DeepSeek-R1, Qwen3) served with its thinking apart (reasoning_content) spends
+        # max_tokens on it too: a short answer's cap can run out before the JSON
+        thought = str(msg.get("reasoning_content") or msg.get("reasoning") or "")
+        cut = choice.get("finish_reason") == "length"
+        cap = int(_env("CONTAINERIZER_LLM_MAX_TOKENS", "16000"))
+        if not _retry and cut and body["max_tokens"] < cap:
+            # cut off: the same question with the whole budget (asking it again with the same cap ends the same way)
+            return _ask_openai(prompt, schema, model, _retry=True, system=system, max_tokens=cap)
+        if not _retry and not cut:
             return _ask_openai(prompt + "\n\nYour previous answer did not match the schema (" + "; ".join(errs[:5])
                                + "). Answer with the JSON object only.", schema, model, _retry=True,
                                system=system, max_tokens=max_tokens)
-        hint = (f" (answer cut off at {body['max_tokens']} tokens: the model rambled, or raise CONTAINERIZER_LLM_MAX_TOKENS)"
-                if choice.get("finish_reason") == "length" else "")
-        raise RuntimeError(f"no valid JSON in answer{hint}: {'; '.join(errs[:3])}: {text[:300]}")
+        hint = ""
+        if cut:
+            hint = (f" (answer cut off at {body['max_tokens']} tokens"
+                    + (f", {len(thought)} characters of them the model's reasoning" if thought else "")
+                    + ": the model rambled, or raise CONTAINERIZER_LLM_MAX_TOKENS)")
+        raise RuntimeError(f"no valid JSON in answer{hint}: {'; '.join(errs[:3])}: {(text or thought[-300:])[:300]}")
     u = resp.get("usage") or {}
     usage = {"input_tokens": u.get("prompt_tokens") or 0, "output_tokens": u.get("completion_tokens") or 0}
     t = resp.get("timings") or {}           # llama.cpp llama-server: time spent on the prompt and on generating

@@ -8,6 +8,17 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.6 (2026-11-17)
+
+- **`no valid JSON in answer (answer cut off at 4096 tokens ...)` from a reasoning model** (gpt-oss, DeepSeek-R1,
+  Qwen3): served with its thinking apart (`reasoning_content`), it spends the answer's tokens on that too. A short
+  answer (a review, a build diagnosis, capped at 4096) ran out before the JSON. Asked again with the same cap, it
+  ended the same way. A cut-off answer is now asked again with the whole budget, `CONTAINERIZER_LLM_MAX_TOKENS`
+  (16000). The error, when that runs out too, says how much of it was the model's reasoning.
+- **Admin → Repositories: the search box also matches the latest result's reason**. **Failed** with the text of
+  an error (`TypeError`, `no valid JSON`) lists the repositories that one error failed: select them all and
+  **Scan now**.
+
 ## 0.51.5 (2026-11-17)
 
 - **`CONTAINERIZER_PARALLEL_REPOS` above the number of CPU cores**: it was capped at one repository per core. A
