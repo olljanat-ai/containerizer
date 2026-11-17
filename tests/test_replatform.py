@@ -657,3 +657,92 @@ def test_backing_service_stays_out_where_there_is_no_lab(tmp_path):
     replatform.lab_backing(plan, "shop", None)
     assert not plan.lab and {x["component"] for x in plan.excluded} == {"db", "cache"}
     assert all("use a managed service or the appliance's lab service" in x["reason"] for x in plan.excluded)
+
+
+# --------------------------------------------------------------------------- the context of a repository Dockerfile
+
+VS_DOCKERFILE = """FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
+WORKDIR /app
+EXPOSE 8080
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+WORKDIR /src
+COPY ["Shop/Shop.Web/Shop.Web.csproj", "Shop/Shop.Web/"]
+COPY ["Shop/Shop.Api/Shop.Api.csproj", \\
+      "Shop/Shop.Api/"]
+RUN dotnet restore "./Shop/Shop.Web/Shop.Web.csproj"
+COPY . .
+FROM base AS final
+COPY --from=build /app/publish .
+"""
+
+
+def vs_repo(root, dockerfile_context=None):
+    for p in ("Shop/Shop.Web", "Shop/Shop.Api"):
+        (root / p).mkdir(parents=True, exist_ok=True)
+    (root / "Shop" / "Shop.Web" / "Dockerfile").write_text(VS_DOCKERFILE)
+    ctx = f"<DockerfileContext>{dockerfile_context}</DockerfileContext>" if dockerfile_context else ""
+    (root / "Shop" / "Shop.Web" / "Shop.Web.csproj").write_text(f"<Project><PropertyGroup>{ctx}</PropertyGroup></Project>")
+    (root / "Shop" / "Shop.Api" / "Shop.Api.csproj").write_text("<Project/>")
+    return root
+
+
+def test_visual_studio_dockerfile_builds_from_where_its_copies_resolve(tmp_path):
+    # Visual Studio's Dockerfiles COPY paths of the solution's or repository's root: its own folder is no context
+    app = vs_repo(tmp_path / "shop")
+    assert replatform.dockerfile_context(app, "Shop/Shop.Web/Dockerfile") == "."
+    svcs = replatform.dockerfile_services(app, "shop", ["Shop/Shop.Web/Dockerfile"])
+    assert svcs[0].name == "shop-web" and svcs[0].build == {"context": ".", "dockerfile": "Shop/Shop.Web/Dockerfile"}
+    # the project's <DockerfileContext> (Windows separators) when its COPYs resolve there
+    (app / "Shop" / "Shop.Web" / "Dockerfile").write_text(VS_DOCKERFILE.replace('"Shop/', '"'))
+    (app / "Shop" / "Shop.Web" / "Shop.Web.csproj").write_text(
+        "<Project><PropertyGroup><DockerfileContext>..</DockerfileContext></PropertyGroup></Project>")
+    assert replatform.dockerfile_context(app, "Shop/Shop.Web/Dockerfile") == "Shop"
+    # a wrong <DockerfileContext> is not trusted: the nearest folder where they resolve
+    (app / "Shop" / "Shop.Web" / "Shop.Web.csproj").write_text(
+        "<Project><PropertyGroup><DockerfileContext>..\\..</DockerfileContext></PropertyGroup></Project>")
+    assert replatform.dockerfile_context(app, "Shop/Shop.Web/Dockerfile") == "Shop"
+
+
+def test_dockerfile_context_stays_its_folder(tmp_path):
+    app = tmp_path / "a"
+    (app / "web").mkdir(parents=True)
+    (app / "web" / "package.json").write_text("{}")
+    # its COPYs resolve in its own folder (globs, flags, the destination left out)
+    (app / "web" / "Dockerfile").write_text("FROM node:22\nCOPY --chown=1000:1000 package*.json ./\nCOPY . /app\n"
+                                            "ADD https://example.com/x.tgz /tmp/\nCOPY $SRC /x\nCOPY --from=b /a /b\n")
+    assert replatform.dockerfile_context(app, "web/Dockerfile") == "web"
+    # they resolve nowhere: its own folder, and the build says what is missing
+    (app / "web" / "Dockerfile").write_text("FROM node:22\nCOPY missing.txt /x\n")
+    assert replatform.dockerfile_context(app, "web/Dockerfile") == "web"
+    # no COPY at all, and a Dockerfile at the root
+    (app / "Dockerfile").write_text("FROM nginx\n")
+    assert replatform.dockerfile_context(app, "Dockerfile") == "."
+
+
+def test_matched_dockerfile_gets_the_inferred_context(tmp_path):
+    app = vs_repo(tmp_path / "shop")
+    sv = replatform.Service(name="shop-web", platform="docker-compose", source="docker-compose.yml",
+                            image="registry.example.com/shop.web:1")
+    found = replatform.match_dockerfile(sv, ["Shop/Shop.Web/Dockerfile"])
+    assert found["context"] == "Shop/Shop.Web"           # by the folder's name; plan_migration then infers "."
+    (app / "docker-compose.yml").write_text("services:\n  shop.web:\n    image: registry.example.com/shop.web:1\n")
+    plan = replatform.plan_migration(app, "shop", ["Shop/Shop.Web/Dockerfile"])
+    assert [s.build for s in plan.services] == [{"context": ".", "dockerfile": "Shop/Shop.Web/Dockerfile"}]
+
+
+def test_failed_build_says_which_dockerfile_and_context(tmp_path, monkeypatch):
+    # the component's folder (and its build.log) is dropped: the results page keeps which build it was and its log
+    from containerizer.gitops import GitOpsOptions
+    from containerizer.org import OrgOptions, RepoResult
+    app = vs_repo(tmp_path / "shop")
+    (app / "Shop" / "Shop.Web" / "Dockerfile").write_text(VS_DOCKERFILE.replace("Shop.Api.csproj", "Gone.csproj"))
+    log = "#11 [build 3/7] COPY [\"Shop/Shop.Api/Gone.csproj\", ...]\n#11 ERROR: failed to calculate checksum: not found\n"
+    monkeypatch.setattr(replatform, "build_or_pull", lambda src, sv, local, cdir, timeout=1800: (False, log))
+    o = OrgOptions(provider="local", org="local", registry="reg.local/sb", gate=True, push_images=False)
+    res = RepoResult(provider="local", org="local", project="_", repo="shop", status="error", app="shop")
+    r = replatform.migrate_repo(app, o, res, "shop", ".", tmp_path / "out", tmp_path / "gen", None, "1.0.0",
+                                GitOpsOptions(git_url="https://git.example.com/x.git"), ["Shop/Shop.Web/Dockerfile"])
+    [x] = r.excluded
+    assert x["reason"].startswith("image build failed: ")
+    assert x["detail"].startswith("Dockerfile: Shop/Shop.Web/Dockerfile\nBuild context: Shop/Shop.Web (from")
+    assert "failed to calculate checksum" in x["detail"]

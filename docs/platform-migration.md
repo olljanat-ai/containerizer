@@ -14,7 +14,11 @@ health check in the sandbox cluster.
 
 A repository that has Dockerfiles but no deployment descriptor is deployed from those Dockerfiles: each
 one becomes a component named after its folder (`backend/Dockerfile` becomes `backend`, a Dockerfile at the
-root takes the application's name), built from it with its folder as the build context. Its ports are the
+root takes the application's name), built from it with its folder as the build context, unless what it `COPY`s
+is written relative to a folder above it: Visual Studio's Dockerfiles (`COPY ["Shop/Shop.Web/Shop.Web.csproj",
+"Shop/Shop.Web/"]`) are built from the solution's or the repository's root. Then the context is the project's
+`<DockerfileContext>` when the `COPY` sources are there, else the nearest folder up to the repository's root where
+they all are. The same goes for a Dockerfile found for a service by its folder's name. Its ports are the
 ones the Dockerfile `EXPOSE`s; a component with a port gets a Service and an HTTPS Ingress, one without runs
 as a worker. In a folder with a plain `Dockerfile`, its variants (`Dockerfile.prod`, `api.Dockerfile`) are
 left out, and Dockerfiles under `test/`, `docs/`, `examples/` or `.devcontainer/` are never used. Settings,
@@ -83,7 +87,8 @@ When the hardened run fails because the app writes to a folder, the folder the e
 writable emptyDir and the run is repeated (for a folder it could not create, the folder it was creating it in). A
 component built `FROM nginx` (or running the nginx image) gets nginx's folders writable before the run:
 `/var/cache/nginx` (its temp folders) and `/run` (its pid file). A component that still fails is not deployed, with
-the reason and the gate's **What failed** on the repository page.
+the reason and the gate's **What failed** on the repository page. For an image that did not build, **What failed**
+names the Dockerfile and the build context it was built with, and the end of the build log.
 
 A migrated application is on the results pages like any other (the front page, Admin → Applications): one
 component per container, rated A when it is deployed as it is, B while the gate leaves a container out (the reason

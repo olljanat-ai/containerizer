@@ -145,6 +145,81 @@ def _rank(d: Descriptor) -> tuple:
     return (order.get(d.platform, 3), "override" in name or bool(re.search(r"\.(dev|local|test|ci)\.", name)), d.path)
 
 
+COPY_RE = re.compile(r"(?im)^[ \t]*(?:COPY|ADD)[ \t]+((?:[^\n]*\\[ \t]*\n)*[^\n]*)$")
+DOCKERFILE_CONTEXT_RE = re.compile(r"(?is)<DockerfileContext>\s*([^<]*?)\s*</DockerfileContext>")
+
+
+def _copy_sources(text: str) -> list[str]:
+    """The build-context paths a Dockerfile's COPY and ADD read (not --from=, URLs, git sources or variables)."""
+    out = []
+    for m in COPY_RE.finditer(text):
+        body = re.sub(r"\\[ \t]*\n", " ", m.group(1)).strip()
+        if re.search(r"(^|\s)--from[= ]", body) or body.startswith("<<"):
+            continue
+        body = re.sub(r"^(?:--[\w-]+(?:=\S*)?\s+)*", "", body)
+        if body.startswith("["):
+            try:
+                args = [str(x) for x in json.loads(body)]
+            except ValueError:
+                continue
+        else:
+            args = body.split()
+        for a in args[:-1]:                      # the last one is the destination
+            if a and "$" not in a and "://" not in a and not a.startswith("git@"):
+                out.append(a)
+    return out
+
+
+def _sources_exist(base: Path, sources: list[str]) -> bool:
+    for a in sources:
+        rel = a.lstrip("/") or "."
+        if any(ch in rel for ch in "*?["):
+            if not any(base.glob(rel)):
+                return False
+        elif not (base / rel).exists():
+            return False
+    return True
+
+
+def dockerfile_context(src: Path, df: str) -> str:
+    """The build context of a repository Dockerfile no descriptor gives one: its own folder, unless what it COPYs
+    is written relative to a folder above it, as in the Dockerfiles Visual Studio generates (`COPY
+    ["Sln/Web/Web.csproj", "Sln/Web/"]`, built from the solution's or the repository's root). Then the project's
+    <DockerfileContext> when it names a folder whose COPY sources exist, else the nearest folder up to the
+    repository's root where they all do. Its own folder when none does (the build then says what is missing)."""
+    src = Path(src).resolve()
+    folder = Path(df).parent
+    own = folder.as_posix() if folder.as_posix() not in ("", ".") else "."
+    try:
+        text = (src / df).read_text(errors="replace")
+    except OSError:
+        return own
+    sources = _copy_sources(text)
+    if not sources or _sources_exist(src / folder, sources):
+        return own
+
+    def inside(p: Path) -> str | None:
+        try:
+            p = p.resolve()
+            return p.relative_to(src).as_posix() if p.is_dir() else None
+        except (OSError, ValueError):
+            return None
+    for proj in sorted((src / folder).glob("*.*proj")):
+        try:
+            m = DOCKERFILE_CONTEXT_RE.search(proj.read_text(errors="replace"))
+        except OSError:
+            continue
+        rel = inside(src / folder / m.group(1).replace("\\", "/")) if m and m.group(1) else None
+        if rel is not None and _sources_exist(src / rel, sources):
+            return rel or "."
+    up = folder
+    while up.as_posix() not in ("", "."):
+        up = up.parent
+        if _sources_exist(src / up, sources):
+            return up.as_posix() if up.as_posix() not in ("", ".") else "."
+    return own
+
+
 def match_dockerfile(sv: Service, dockerfiles: list[str]) -> dict | None:
     """The repository Dockerfile a service with only an image reference is built from: one in a folder
     named like the service or its image, a Dockerfile.<name>/<name>.Dockerfile, or the only Dockerfile."""
@@ -205,7 +280,7 @@ def dockerfile_services(src: Path, app: str, dockerfiles: list[str]) -> list[Ser
             name = k8s_name(f"{base}-{v}" if v and len(pick) > 1 else base) or k8s_name(app)
             ports = _exposed(src / d)
             out.append(Service(name=name, platform="dockerfile", source=d, ports=ports, public=bool(ports),
-                               build={"context": folder if folder not in ("", ".") else ".", "dockerfile": d},
+                               build={"context": dockerfile_context(src, d), "dockerfile": d},
                                notes=["no deployment descriptor: built from its Dockerfile"
                                       + ("" if ports else "; it EXPOSEs no port, so it runs as a worker without a Service")]))
     seen: set[str] = set()
@@ -259,6 +334,8 @@ def plan_migration(src: Path, app: str, dockerfiles: list[str], llm: bool = Fals
         if not found and not sv.build and len(single) == 1 and len([x for x in apps if not x.build]) == 1:
             found = {"context": Path(single[0]).parent.as_posix() or ".", "dockerfile": single[0]}
         if found and (src / found.get("dockerfile", "")).is_file():
+            if not sv.build:                     # found here, not given by a descriptor: where its COPYs resolve
+                found = dict(found, context=dockerfile_context(src, found["dockerfile"]))
             sv.build = found
         elif sv.build:
             sv.notes.append(f"build: {sv.build.get('dockerfile') or '?'} is not in the repository; using the image "
@@ -1135,9 +1212,14 @@ def migrate_repo(src: Path, o, res, app: str, rel: str, dest: Path, gen: Path, r
             ok, tail = build_or_pull(src, sv, local, cdir, o.timeout)
             if not ok:
                 from .buildlog import failure_text
-                plan.excluded.append({"component": sv.name, "reason": ("image build failed: " if sv.build else
-                                                                       "image could not be pulled: ")
-                                      + REDACT(failure_text(tail, 600))})
+                x = {"component": sv.name, "reason": ("image build failed: " if sv.build else "image could not be pulled: ")
+                     + REDACT(failure_text(tail, 600))}
+                if sv.build:                         # which build it was, and the log the folder took with it
+                    from .org import DETAIL_MAX
+                    x["detail"] = REDACT(f"Dockerfile: {sv.build.get('dockerfile')}\n"
+                                         f"Build context: {sv.build.get('context') or '.'} (from the repository's root)\n\n"
+                                         "Image build, the end of its log:\n" + tail[-2500:])[-DETAIL_MAX:]
+                plan.excluded.append(x)
                 shutil.rmtree(cdir, ignore_errors=True)
                 continue
             uid = image_uid(local) or uid
