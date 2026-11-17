@@ -8,6 +8,15 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.50.9 (2026-11-17)
+
+- **Single-page apps: the site is found where the build wrote it**: the image build stopped with *no built
+  index.html found* when the build's output folder was not one of the known ones (`dist`, `build`, `out` or the
+  folder `angular.json`, the Vite or Vue CLI config names), e.g. Angular's default `dist/<project>/browser` or an
+  `outDir` computed with `path.resolve`. The build stage now falls back to the folder of the `index.html` the
+  build wrote (not the source's `index.html`); Angular's server-rendered `index.csr.html` is served as
+  `index.html`. A build that writes no page fails with the folders it did write.
+
 ## 0.50.8 (2026-11-17)
 
 - **Visual Studio Dockerfiles build from the right context**: a repository built from its own Dockerfile without a

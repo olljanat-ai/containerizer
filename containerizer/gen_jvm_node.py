@@ -521,8 +521,12 @@ def _build_lines(plan: dict) -> list[str]:
             "    export NODE_ENV=production; \\", "    " + " \\\n && ".join(cmds)]
 
 
-def node_build_stage(plan: dict) -> list[str]:
-    """FROM ... AS build: the toolchain, the dependencies from the lockfile and the build scripts."""
+BUILD_MARK = "/tmp/.containerizer-build-start"
+
+
+def node_build_stage(plan: dict, mark: bool = False) -> list[str]:
+    """FROM ... AS build: the toolchain, the dependencies from the lockfile and the build scripts. With `mark`, a
+    file touched just before the build scripts run: what they write is newer than it (find -newer)."""
     im = _images()["node"]
     line, root = plan["node"], plan.get("build_root") or ""
     native = plan.get("native_build")
@@ -538,7 +542,7 @@ def node_build_stage(plan: dict) -> list[str]:
               "--mount=type=secret,id=ca,required=false")      # corepack's own home stays in the layer: it holds the pinned version
     lines += ["# optional build secret 'ca': CA bundle for TLS-inspecting corporate proxies",
               f"RUN {mounts} \\", f"    {CA_ENV}; \\", f"    {_install_cmd(plan)}"]
-    return lines + _build_lines(plan)
+    return lines + ([f"RUN touch {BUILD_MARK}"] if mark else []) + _build_lines(plan)
 
 
 def dockerfile_node(plan: dict) -> str:

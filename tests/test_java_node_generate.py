@@ -353,3 +353,54 @@ def test_settings_of_other_environments_stay_out_of_the_image(tmp_path):
     (tmp_path / "Web/Program.cs").write_text('var f = $"appsettings.{env}.json";')
     subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
     assert "**/appsettings.Release.json" not in dockerignore(repo)
+
+
+def _site_script(df, mark, site):
+    """The build stage's RUN that picks the site folder, as a shell script with these paths."""
+    lines = df.split("\n")
+    start = next(i for i, x in enumerate(lines) if x.startswith("RUN for d in "))
+    end = lines.index("", start)
+    script = "\n".join(lines[start:end])[len("RUN "):]
+    return script.replace("/tmp/.containerizer-build-start", str(mark)).replace("/site", str(site))
+
+
+def test_node_spa_finds_the_index_html_its_build_wrote(tmp_path):
+    import os
+    import subprocess
+    import time
+    node(tmp_path / "repo", "", {"name": "web", "scripts": {"build": "vite build"}, "devDependencies": {"vite": "5", "react": "18"}},
+         {"index.html": "<div id=root></div>", "package-lock.json": "{}"})
+    df = plan_and_df(tmp_path / "repo", "web")[3]
+    assert "RUN touch /tmp/.containerizer-build-start" in df
+
+    def run(files, case):
+        src, site, mark = tmp_path / case / "src", tmp_path / case / "site", tmp_path / case / "mark"
+        for f in ("index.html", "public/index.html", "node_modules/x/index.html"):   # sources: older than the build
+            (src / f).parent.mkdir(parents=True, exist_ok=True)
+            (src / f).write_text("source")
+        old = time.time() - 60
+        for f in src.rglob("*"):
+            os.utime(f, (old, old))
+        mark.touch()
+        os.utime(mark, (old + 30, old + 30))
+        for f in files:                                      # what the build wrote
+            (src / f).parent.mkdir(parents=True, exist_ok=True)
+            (src / f).write_text("built")
+        p = subprocess.run(["sh", "-c", _site_script(df, mark, site)], cwd=src, capture_output=True, text=True)
+        return p, site
+
+    # Angular without an outputPath: dist/<project>/browser (its server bundle is no site)
+    p, site = run(["dist/shop/browser/index.html", "dist/shop/browser/main.js", "dist/shop/server/index.server.html"], "ng")
+    assert p.returncode == 0 and (site / "main.js").exists() and "dist/shop/browser" in p.stderr
+    # Angular's server rendering: the page is index.csr.html
+    p, site = run(["dist/app/browser/index.csr.html"], "ssr")
+    assert p.returncode == 0 and (site / "index.html").read_text() == "built"
+    # an output folder the facts do not know (path.resolve in vite.config): found anyway, not the source's index.html
+    p, site = run(["wwwroot/index.html", "wwwroot/assets/a.js"], "outdir")
+    assert p.returncode == 0 and (site / "assets" / "a.js").exists()
+    # the build wrote no page: the error lists where its output went
+    p, site = run(["lib/bundle.js", "lib/bundle.css"], "none")
+    assert p.returncode != 0 and "no built index.html found" in p.stderr and "2 ./lib" in p.stderr and not site.exists()
+    # the usual folder still wins
+    p, site = run(["dist/index.html", "other/index.html"], "dist")
+    assert p.returncode == 0 and (site / "index.html").exists() and "the site is" not in p.stderr

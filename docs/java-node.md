@@ -119,6 +119,11 @@ in `rules/images.yaml`, with patched tags pinned in `rules/images.lock.yaml`.
 | Configuration | variables listed in `.env.example` that hold credentials or connection URLs become Secret references; Windows paths in node-config files (`config/default.json`) are overridden with `NODE_CONFIG`. |
 
 Single-page apps build with the repository's package manager and are served by unprivileged nginx.
+The site is the build's output folder: the one `angular.json` (`outputPath`), the Vite or Vue CLI config
+(`outDir`/`outputDir`) or Create React App names, else `dist` or `build`; Angular's `browser/` folder when there is one.
+When none of those has an `index.html`, it is the folder of the `index.html` the build wrote (the shallowest one;
+Angular's server rendering writes `index.csr.html`, served as `index.html`), so `dist/<project>/browser` or an
+`outDir` the config computes is found too. A build that wrote no page fails with the folders it did write.
 
 ## Verification
 
