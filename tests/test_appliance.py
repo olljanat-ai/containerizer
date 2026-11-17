@@ -1170,3 +1170,63 @@ def test_builds_and_pods_never_reach_the_appliances_ssh(paths):
         import subprocess
         p = subprocess.run(["nft", "-c", "-f", "-"], input=nft, capture_output=True, text=True)
         assert p.returncode == 0 or "Operation not permitted" in p.stderr, p.stderr
+
+
+def test_refused_name_ports_prefill_http_for_revocation_hosts():
+    # CRL, OCSP and AIA are fetched over plain HTTP; the lookup was refused, so no port was ever seen
+    for name in ("crl3.digicert.com", "crl.microsoft.com", "ocsp.digicert.com", "ocsp2.globalsign.com",
+                 "cacerts.digicert.com", "ctldl.windowsupdate.com", "ocsp-a.example.org"):
+        assert appliance.guess_ports(name) == "80", name
+    for name in ("api.nuget.org", "crlf.example.com", "ocspd.example.com", "registry.npmjs.org", ""):
+        assert appliance.guess_ports(name) == "443", name
+
+
+def test_firewall_refused_name_prefills_port(page):
+    eg = json.loads((page.status_dir / "status.json").read_text())["egress"]
+    eg["denied_names"].append({"name": "ocsp.digicert.com", "count": 2})
+    body = page.render_firewall(eg, ADMIN)
+    assert "value='443' size='8' aria-label='Ports for registry.npmjs.org'" in body
+    assert "value='80' size='8' aria-label='Ports for ocsp.digicert.com'" in body
+
+
+def test_firewall_categories_and_descriptions(page):
+    page.handle(ADMIN, "POST", ["firewall"], {}, {"do": ["add"], "target": ["crl3.digicert.com"], "ports": ["80"],
+                                                  "category": ["  Certificate   checks "], "note": [""]}, shell)
+    assert requests_in(page)[0]["rules"][-1] == {"host": "crl3.digicert.com", "ports": ["tcp/80"], "note": "",
+                                                 "category": "Certificate checks"}
+    for f in (page.status_dir / "requests").glob("*.json"):
+        f.unlink()
+    # edit an existing rule's category and description; the rule itself stays as it was
+    page.handle(ADMIN, "POST", ["firewall"], {}, {"do": ["update"], "key0": ["api.nuget.org"],
+                                                  "category0": ["Package registries"], "note0": ["NuGet restores"]}, shell)
+    assert requests_in(page)[0]["rules"] == [{"host": "api.nuget.org", "ports": ["tcp/443"], "note": "NuGet restores",
+                                              "category": "Package registries"}]
+    for f in (page.status_dir / "requests").glob("*.json"):
+        f.unlink()
+    # the page was stale (row 0 is now another rule): nothing saved
+    st, _, loc = page.handle(ADMIN, "POST", ["firewall"], {}, {"do": ["update"], "key0": ["ghcr.io"],
+                                                               "note0": ["x"]}, shell)
+    assert "changed+meanwhile" in loc and requests_in(page) == []
+
+
+def test_firewall_rules_grouped_by_category(page):
+    eg = {"mode": "enforce", "denied_names": [{"name": "ocsp.digicert.com", "count": 1}],
+          "rules": [{"host": "b.example", "ports": ["tcp/443"], "note": ""},
+                    {"host": "a.example", "ports": ["tcp/443"], "note": "", "category": "Zeta"},
+                    {"host": "c.example", "ports": ["tcp/443"], "note": "why <c>", "category": "Alpha"}]}
+    body = page.render_firewall(eg, ADMIN)
+    g = "class='group'>"
+    assert body.index(g + "Alpha<") < body.index(g + "Zeta<") < body.index(g + "No category<")
+    assert body.index("<td>c.example") < body.index("<td>a.example") < body.index("<td>b.example")
+    assert "name='key2' value='c.example'" in body and "value='why &lt;c&gt;'" in body   # stored positions, escaped
+    # a menu of the usual categories plus the ones in use, each rule's own selected
+    assert "<option value='Zeta' selected>Zeta</option>" in body and "<option value='Databases'>Databases</option>" in body
+    assert "<select name='category'" in body and "<option value=''>No category</option>" in body
+    # a refused certificate-check name is allowed on port 80 under its category
+    assert "name='category' value='Certificate checks'><input name='ports' value='80'" in body
+
+
+def test_rule_category_validation():
+    out = sysagent.validate_rules({"rules": [{"host": "a.example", "ports": "443", "category": "x" * 99},
+                                             {"host": "b.example", "ports": "443", "category": "  "}]})["rules"]
+    assert out[0]["category"] == "x" * sysagent.CATEGORY_MAX and "category" not in out[1]

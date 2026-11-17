@@ -234,9 +234,14 @@ dropped and logged.
 **Admin → Firewall** (administrators only):
 
 - **Allow** a name (it covers its subdomains: `nuget.org` also allows `api.nuget.org`) or a network
-  (`10.20.0.0/16`), with ports (`443`, `80,443`, `udp/123`) and a note.
+  (`10.20.0.0/16`), with ports (`443`, `80,443`, `udp/123`), a category and a note (*Why*).
+- **Allowed by administrators** groups the rules by category, picked from a menu (*Certificate checks*,
+  *Container registries*, *Databases*, *Internal services*, *LLM*, *Package registries*, *Source control*, *Other*). Change a rule's category or *Why* in place and **Save changes**.
 - **Refused names, last 24 hours**: what something on the appliance tried to resolve and was refused, the most
-  recent first (up to 100), with an **Allow** button. Run a scan, then allow what it needs. A build that failed on a
+  recent first (up to 100), with an **Allow** button. The lookup was refused, so no port was ever seen: the port
+  field is a guess you can change, `443` except for certificate revocation and issuer names (`crl*`, `ocsp*`,
+  `cacerts*`, `aia*`, `ctldl*`), which are fetched over plain HTTP and get `80` and the category *Certificate
+  checks*. Run a scan, then allow what it needs. A build that failed on a
   refused name says so in its result: *name lookup failed for dl-cdn.alpinelinux.org: allow it on Admin → Firewall
   if the build needs it* (some tools, such as Alpine's `apk`, report a refused name only as *DNS: transient error*).
   The DNS filter does not log every query: the names no rule allows go to a small refuser
@@ -249,6 +254,9 @@ dropped and logged.
   Docker Hub and the Microsoft registry for its own service images). Part of the OS image. While the
   [built-in LLM](#built-in-llm)'s model downloads, `huggingface.co` and `hf.co` are listed here too.
 - **Change history**: who changed what, kept on the persistent partition.
+
+![Admin → Firewall: rules grouped by category](images/admin-firewall.png#only-light){ .cz-shot }
+![Admin → Firewall: rules grouped by category](images/admin-firewall-dark.png#only-dark){ .cz-shot }
 
 The web UI does not change the firewall itself: it asks the system agent (root), which checks the rules
 again, loads the new ruleset in one transaction (checked with `nft -c` first, and the previous ruleset is

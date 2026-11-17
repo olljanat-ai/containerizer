@@ -77,6 +77,30 @@ def ghcr_tags(image: str, timeout: float = 8.0, opener=urllib.request.urlopen) -
     return [t for t in tags if isinstance(t, str)]
 
 
+# certificate revocation and issuer lookups (CRL, OCSP, AIA) go over plain HTTP: HTTPS would need them to check itself
+PLAIN_HTTP_NAME = re.compile(r"^(crl|ocsp|cacerts?|aia|ctldl)\d*([.-]|$)", re.I)
+
+
+CERT_CATEGORY = "Certificate checks"
+# the choices of the Category menu (a category already in use stays a choice too)
+CATEGORIES = (CERT_CATEGORY, "Container registries", "Databases", "Internal services", "LLM", "Package registries",
+              "Source control", "Other")
+
+
+def category_select(name: str, current: str, cats, extra: str = "") -> str:
+    opts = "".join(f"<option value='{e(c)}'{' selected' if c == current else ''}>{e(c)}</option>" for c in cats)
+    return f"<select name='{name}'{extra}><option value=''>No category</option>{opts}</select>"
+
+
+def guess_ports(name: str) -> str:
+    """The ports to prefill for a refused name: the lookup was refused, so no connection (and no port) was seen."""
+    return "80" if PLAIN_HTTP_NAME.match(name or "") else "443"
+
+
+def guess_category(name: str) -> str:
+    return CERT_CATEGORY if PLAIN_HTTP_NAME.match(name or "") else ""
+
+
 @dataclass
 class SystemPage:
     status_dir: Path = STATUS_DIR
@@ -245,7 +269,8 @@ class SystemPage:
             what = form.get("do", [""])[0]
             if what == "add":
                 target = " ".join(form.get("target", [""])[0].split())
-                entry = {"ports": form.get("ports", ["443"])[0] or "443", "note": form.get("note", [""])[0]}
+                entry = {"ports": form.get("ports", ["443"])[0] or "443", "note": form.get("note", [""])[0],
+                         "category": form.get("category", [""])[0]}
                 entry["cidr" if re.fullmatch(r"[0-9a-fA-F.:]+(/\d{1,3})?", target) else "host"] = target
                 rules.append(entry)
                 done = f"Allowed {target}"
@@ -255,6 +280,16 @@ class SystemPage:
                     return 303, "", back + urlencode({"msg": "Select the rules to remove."})
                 rules = [r for i, r in enumerate(rules) if i not in drop]
                 done = f"Removed {len(drop)} rule(s)"
+            elif what == "update":
+                # the page names each row's rule: a change since the page was loaded must not edit the wrong one
+                for i, r in enumerate(rules):
+                    if f"key{i}" not in form:
+                        continue
+                    if form[f"key{i}"][0] != (r.get("host") or r.get("cidr") or ""):
+                        return 303, "", back + urlencode({"msg": "The rules changed meanwhile: nothing saved. Edit them again."})
+                    r["note"] = form.get(f"note{i}", [""])[0]
+                    r["category"] = form.get(f"category{i}", [""])[0]
+                done = "Saved the categories and descriptions"
             elif what == "mode":
                 mode = form.get("mode", [""])[0]
                 if mode == "log" and form.get("confirm", [""])[0] != "yes":
@@ -294,26 +329,46 @@ class SystemPage:
             out.append(f"<form method='post' action='/admin/firewall' class='danger'>{csrf}<input type='hidden' name='do' value='mode'>"
                        "<input type='hidden' name='mode' value='log'><label class='small'><input type='checkbox' name='confirm' "
                        f"value='yes' required> let every connection out and only log it</label> <button{pend}>Log only mode</button></form>")
+        admin_rules = list(enumerate(eg.get("rules") or []))
+        in_use = {r.get("category") for _, r in admin_rules if r.get("category")}
+        cats = list(CATEGORIES) + sorted(in_use - set(CATEGORIES), key=str.lower)
         out.append(f"""<h2>Allow</h2><form method='post' action='/admin/firewall'>{csrf}<input type='hidden' name='do' value='add'>
 <div class='formrow'><label for='target'>Name or network</label><input name='target' id='target' required maxlength='253'
 placeholder='api.nuget.org or 10.20.0.0/16'></div>
 <div class='formrow'><label for='ports'>Ports</label><input name='ports' id='ports' value='443' maxlength='120'
 placeholder='443 or 80,443 or udp/123'></div>
+<div class='formrow'><label for='category'>Category</label>{category_select("category", "", cats, " id='category'")}</div>
 <div class='formrow'><label for='note'>Why</label><input name='note' id='note' maxlength='200'><button{pend}>Allow</button></div></form>""")
-        rows = "".join(
-            f"<tr><td><input type='checkbox' name='rule' value='{i}' aria-label='Select {e(r.get('host') or r.get('cidr') or '')}'></td>"
-            f"<td>{e(r.get('host') or r.get('cidr') or '')}</td><td>{e(', '.join(r.get('ports') or []))}</td>"
-            f"<td>{e(r.get('note') or '')}</td></tr>" for i, r in enumerate(eg.get("rules") or []))
+        # grouped by category (uncategorised last); the form fields keep each rule's stored position
+        admin_rules.sort(key=lambda ir: (not ir[1].get("category"), (ir[1].get("category") or "").lower(),
+                                         ir[1].get("host") or ir[1].get("cidr") or ""))
+        rows, last = [], None
+        for i, r in admin_rules:
+            target, cat = r.get("host") or r.get("cidr") or "", r.get("category") or ""
+            if cat != last:
+                rows.append(f"<tr><th colspan=5 class='group'>{e(cat or 'No category')}</th></tr>")
+                last = cat
+            rows.append(
+                f"<tr><td><input type='checkbox' name='rule' value='{i}' aria-label='Select {e(target)}'>"
+                f"<input type='hidden' name='key{i}' value='{e(target)}'></td>"
+                f"<td>{e(target)}</td><td>{e(', '.join(r.get('ports') or []))}</td>"
+                f"<td>{category_select(f'category{i}', cat, cats, f' aria-label=\'Category for {e(target)}\'')}</td>"
+                f"<td><input name='note{i}' value='{e(r.get('note') or '')}' maxlength='200' size='32' "
+                f"aria-label='Why {e(target)} is allowed'></td></tr>")
+        rows = "".join(rows)
+        buttons = (f"<button name='do' value='update'{pend}>Save changes</button> "
+                   f"<button name='do' value='remove'{pend}>Remove selected</button>")
         out.append(f"""<h2>Allowed by administrators</h2><form method='post' action='/admin/firewall'>{csrf}
-<input type='hidden' name='do' value='remove'><table><thead><tr><th></th><th>Name or network</th><th>Ports</th><th>Why</th></tr></thead>
-<tbody>{rows or "<tr><td colspan=4 class=muted>Nothing yet.</td></tr>"}</tbody></table>
-{"<button" + pend + ">Remove selected</button>" if rows else ""}</form>""")
+<table><thead><tr><th></th><th>Name or network</th><th>Ports</th><th>Category</th><th>Why</th></tr></thead>
+<tbody>{rows or "<tr><td colspan=5 class=muted>Nothing yet.</td></tr>"}</tbody></table>
+{buttons if rows else ""}</form>""")
         denied = eg.get("denied_names") or []
         if denied:
             drows = "".join(
                 f"<tr><td>{e(d['name'])}</td><td>{int(d.get('count') or 0)}</td><td><form method='post' action='/admin/firewall' "
                 f"class='inline'>{csrf}<input type='hidden' name='do' value='add'><input type='hidden' name='target' "
-                f"value='{e(d['name'])}'><input name='ports' value='443' size='8' aria-label='Ports for {e(d['name'])}'> "
+                f"value='{e(d['name'])}'><input type='hidden' name='category' value='{e(guess_category(d['name']))}'>"
+                f"<input name='ports' value='{guess_ports(d['name'])}' size='8' aria-label='Ports for {e(d['name'])}'> "
                 f"<button{pend}>Allow</button></form></td></tr>" for d in denied)
             out.append("<h2>Refused names, last 24 hours</h2><p class='muted small'>Names something on the appliance tried "
                        "to resolve (a build, the worker, an app in the sandbox), the most recent first. Allow only the ones you expect.</p>"
