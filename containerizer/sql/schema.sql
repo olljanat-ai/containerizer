@@ -3180,3 +3180,10 @@ GRANT UPDATE ON [${schema}].OrgRepository (Hidden) TO [${schema}_admin];
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 53) INSERT [${schema}].SchemaVersion (Version) VALUES (53);
 GO
+
+-- 54: the results page shows administrators and operators the end of a failing component's container log (LogTail,
+-- redacted when the check took it), read with the admin login; the reader role still cannot read it.
+GRANT SELECT ON [${schema}].SandboxCheck (CheckId, ApplicationId, ComponentId, CheckedAt, LogTail) TO [${schema}_admin];
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 54) INSERT [${schema}].SchemaVersion (Version) VALUES (54);
+GO

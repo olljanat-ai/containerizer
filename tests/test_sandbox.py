@@ -706,7 +706,7 @@ def test_sandbox_checks_in_sql(tmp_path):
     conn = sqlstore.connect(cs)
     sqlstore.init_schema(conn)
     sqlstore.init_schema(conn)
-    for login, role in (("cz_s_reader", "reader"), ("cz_s_writer", "writer")):
+    for login, role in (("cz_s_reader", "reader"), ("cz_s_writer", "writer"), ("cz_s_admin", "admin")):
         sqlstore.create_login(conn, login, "Test-Passw0rd!x", role)
     conn.close()
 
@@ -744,6 +744,14 @@ def test_sandbox_checks_in_sql(tmp_path):
                 ("https://web-shop.sandbox.example.com/", "HTTP 503")
             assert json.loads(detail["sandbox"][0]["Events"])[0]["reason"] == "BackOff"
             assert "Deployed but failing" in webui.render_application(detail)
+            # administrators and operators: the failing container's log, read with the admin login (schema 54)
+            admin = type("A", (), {"connect_admin": staticmethod(
+                lambda: sqlstore.connect(as_("cz_s_admin"), password="Test-Passw0rd!x"))})()
+            logs = webui.sandbox_logs(admin, detail)
+            assert list(logs.values()) == ["Password=***"]
+            html = webui.render_application(detail, "", {"sandbox_logs": logs})
+            assert "Container log" in html and "Password=***" in html
+            assert "Container log" not in webui.render_application(detail)
             with pytest.raises(Exception, match="(?i)permission"):
                 rd.cursor().execute("SELECT LogTail FROM cz.SandboxCheck")
             with pytest.raises(Exception, match="(?i)permission"):
@@ -835,3 +843,14 @@ def test_an_app_that_recovered_after_the_scan_is_checked_again(monkeypatch):
                      ("pods", "shop-web", SEL): {"items": [pod("web-1", ready=False, waiting="CrashLoopBackOff")]}})
     conn = RecheckConn(rows)
     assert sb.recheck(conn, kube, log=lambda m: None) == 0 and not conn.inserted
+
+
+def test_sandbox_detail_shows_failing_container_log():
+    from containerizer import webui
+    s = {"Status": "failing", "Reason": "CrashLoopBackOff", "Namespace": "shop", "GitOps": "flux",
+         "CheckedAt": "2026-11-17 08:00:00", "Events": None}
+    html = webui._sandbox_detail(s, "Unhandled exception <boom>\n  at Program.Main")
+    assert "<summary>Container log</summary>" in html and "Unhandled exception &lt;boom&gt;" in html
+    assert "Container log" not in webui._sandbox_detail(s)                         # not for readers
+    assert "Container log" not in webui._sandbox_detail(dict(s, Status="healthy"), "started")
+    assert webui.sandbox_logs(type("A", (), {"connect_admin": staticmethod(lambda: 1 / 0)})(), {"ApplicationId": 1}) == {}
