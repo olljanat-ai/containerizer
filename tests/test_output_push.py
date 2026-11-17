@@ -122,3 +122,35 @@ def test_a_change_the_other_run_already_pushed_is_not_an_empty_amend(tmp_path, m
     _git("clone", "-q", str(bare), str(head))
     assert _git("log", "--format=%s", cwd=head).splitlines() == ["containerizer: acme/shop deployed (run 1)", "index"]
     assert (head / "index.txt").read_text() == "acme\nother\n"
+
+
+def test_a_file_one_run_deleted_and_the_other_changed_is_kept(tmp_path, monkeypatch):
+    """A scan pushed next to a sandbox health run (which rewrote HEALTH.md): the scan's commit no longer has it.
+    -X cannot resolve a modify/delete conflict; the changed file is kept and the push goes through."""
+    monkeypatch.setattr(fluxhook, "notify", lambda reason="": None)
+    bare = tmp_path / "out.git"
+    _git("init", "-q", "--bare", "-b", "main", str(bare))
+    a, out_a = _clone(tmp_path, bare, "health")
+    (a / "HEALTH.md").write_text("old\n")
+    (a / "app.yaml").write_text("1\n")
+    assert out_a.commit("first")
+    b, out_b = _clone(tmp_path, bare, "scan")
+    (a / "HEALTH.md").write_text("new\n")
+    assert out_a.commit("containerizer: sandbox health")
+    (b / "HEALTH.md").unlink()
+    (b / "app.yaml").write_text("2\n")
+    assert out_b.commit("containerizer: scan")
+    head = tmp_path / "check"
+    _git("clone", "-q", str(bare), str(head))
+    assert (head / "HEALTH.md").read_text() == "new\n" and (head / "app.yaml").read_text() == "2\n"
+
+
+def test_write_sandbox_keeps_the_health_report(tmp_path):
+    sb = tmp_path / orgmod.SANDBOX
+    sb.mkdir(parents=True)
+    (sb / "HEALTH.md").write_text("# health\n")
+    (sb / "health.json").write_text("{}\n")
+    (sb / "stale.yaml").write_text("x\n")
+    orgmod.write_sandbox(tmp_path, "https://git.example.com/out.git", "main")
+    assert (sb / "HEALTH.md").read_text() == "# health\n" and (sb / "health.json").read_text() == "{}\n"
+    assert not (sb / "stale.yaml").exists()

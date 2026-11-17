@@ -8,6 +8,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.3 (2026-11-17)
+
+- **Scan failed with a merge conflict on `clusters/sandbox/HEALTH.md`**: every scan rebuilt `clusters/sandbox/`
+  and so deleted the sandbox health check's `HEALTH.md` and `health.json`. A scan that pushed right after a health
+  run had changed them stopped with `CONFLICT (modify/delete)`, which `-X theirs` cannot resolve. The scans now keep
+  the health report. A file that one run deleted and another run changed is kept in its changed form, and the push
+  goes through.
+
 ## 0.51.2 (2026-11-17)
 
 - **Ignore a repository's Dockerfiles that are for development tools**: a repository whose Dockerfiles (and Compose
