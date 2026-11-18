@@ -423,7 +423,7 @@ ASPNETCORE_FRAMEWORK_PACKAGES = {p.lower() for p in (
     "Microsoft.AspNetCore.StaticFiles", "Microsoft.AspNetCore.WebUtilities")}
 
 MISSING_PKG_RE = re.compile(r"(?:^|\s)/src/(?P<file>[^\s(:]+\.(?:cs|vb|fs)proj) ?: error (?P<code>NU110[12]): Unable to find "
-                            r"package (?P<pkg>[\w.\-]+)(?: with version \(>= (?P<want>[\w.\-+]+)\))?"
+                            r"package (?P<pkg>[\w\-]+(?:\.[\w\-]+)*)(?: with version \(>= (?P<want>[\w.\-+]+)\))?"
                             r"(?:[^\n]*\n[^\n]*?Nearest version: (?P<near>[\w.\-+]+))?")
 
 
@@ -476,14 +476,80 @@ def fix_framework_packages(app_root: Path, log_text: str, log=print) -> tuple[li
     return changes, notes, fixed
 
 
+def _original_text(app_root: Path, rel: str) -> str | None:
+    """The file as it was assessed: the scratch repository's first commit (None: no repository, or not there)."""
+    try:
+        root = git(["rev-list", "--max-parents=0", "HEAD"], cwd=app_root, check=False)
+        first = root.stdout.decode().split()
+        if root.returncode != 0 or not first:
+            return None
+        p = git(["show", f"{first[-1]}:./{rel}"], cwd=app_root, check=False)
+        return p.stdout.decode("utf-8", errors="replace") if p.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _pkg_version(text: str, package: str) -> str | None:
+    m = re.search(r"<PackageReference\s+Include=\"" + re.escape(package) + r"\"[^>]*?\bVersion=\"([^\"]+)\"", text or "", re.I)
+    if m:
+        return m[1]
+    m = re.search(r"<PackageReference\s+Include=\"" + re.escape(package) + r"\"[^>]*>.*?<Version>([^<]+)</Version>",
+                  text or "", re.I | re.S)
+    return m[1] if m else None
+
+
+def fix_invented_packages(app_root: Path, log_text: str, log=print) -> tuple[list[dict], list[str], set]:
+    """NuGet's NU1101 "Unable to find package P" / NU1102 "... with version (>= V)" for a package reference the LLM
+    added or changed (the project as assessed has no such reference, or another version): an invented package
+    ("Aspose.Words.CrossPlatform") is removed, an invented version goes back to the one the project had, or to
+    NuGet's nearest version for a package the LLM added. Without the LLM. Returns (changes, notes, fixed)."""
+    changes, notes, fixed = [], [], set()
+    for m in MISSING_PKG_RE.finditer(log_text or ""):
+        rel = safe_rel(m["file"])
+        key = (rel, m["pkg"].lower())
+        if not rel or key in fixed or not (app_root / rel).is_file():
+            continue
+        orig = _original_text(app_root, rel)
+        if orig is None:
+            continue
+        f = app_root / rel
+        text, how = _read_text(f)
+        now, before = _pkg_version(text, m["pkg"]), _pkg_version(orig, m["pkg"])
+        if now is None or now == before:
+            continue                                    # the project's own reference: not the LLM's doing
+        if before is not None:
+            new = re.sub(r"(<PackageReference\s+Include=\"" + re.escape(m["pkg"]) + r"\"[^>]*?\bVersion=\")[^\"]+(\")",
+                         lambda x: x[1] + before + x[2], text, count=1, flags=re.I)
+            what = f"{m['pkg']} back to {before}, the version the project had"
+        elif m["code"] == "NU1102" and m["near"]:
+            new = re.sub(r"(<PackageReference\s+Include=\"" + re.escape(m["pkg"]) + r"\"[^>]*?\bVersion=\")[^\"]+(\")",
+                         lambda x: x[1] + m["near"] + x[2], text, count=1, flags=re.I)
+            what = f"{m['pkg']} {now} does not exist: {m['near']}, the nearest version"
+        else:
+            new, err = _csproj_change(text, "remove", m["pkg"], "")
+            if err or new is None:
+                continue
+            what = f"removed {m['pkg']}: no package with this id exists"
+        if new == text:
+            continue
+        _write_text(f, new, how)
+        fixed.add(key)
+        changes.append({"file": rel, "kind": "package", "detail": what})
+        notes.append(f"{rel}: {what} (the LLM's package reference, {m['code']}; no LLM call)")
+        log(notes[-1])
+    return changes, notes, fixed
+
+
 FREE_ROUNDS = 2         # build rounds a Make it A order adds for fixes without the LLM (fix_packages)
 
 
 def fix_packages(app_root: Path, log_text: str, log=print) -> tuple[list[dict], list[str], set]:
-    """The NuGet errors of a build log that need no LLM: package downgrades and ASP.NET Core framework packages."""
+    """The NuGet errors of a build log that need no LLM: package downgrades, ASP.NET Core framework packages and
+    packages or versions the LLM invented."""
     c1, n1, f1 = fix_downgrades(app_root, log_text, log)
     c2, n2, f2 = fix_framework_packages(app_root, log_text, log)
-    return c1 + c2, n1 + n2, f1 | f2
+    c3, n3, f3 = fix_invented_packages(app_root, log_text, log)
+    return c1 + c2 + c3, n1 + n2 + n3, f1 | f2 | f3
 
 
 def without_fixed(errors: list[dict], fixed: set) -> list[dict]:
@@ -1151,6 +1217,62 @@ def _trailing_space_match(text: str, search: str, replace: str) -> str | None:
     return "\n".join(lines[:i] + new + lines[i + len(want):])
 
 
+def _indent_match(text: str, search: str, replace: str) -> str | None:
+    """LLMs re-indent what they copy (spaces for the file's tabs, the first line without its indentation). When the
+    search text's lines, without the spaces and tabs at both ends, match exactly once, the edit applies there with
+    the replacement moved to the file's indentation. Returns the new text, or None."""
+    want = [ln.strip(" \t") for ln in search.split("\n")]
+    while want and not want[-1]:
+        want.pop()
+    while want and not want[0]:
+        want.pop(0)
+    if not want:
+        return None
+    lines = text.split("\n")
+    have = [ln.strip(" \t") for ln in lines]
+    at = [i for i in range(len(lines) - len(want) + 1) if have[i:i + len(want)] == want]
+    if len(at) != 1:
+        return None
+    i = at[0]
+    first = next(ln for ln in search.split("\n") if ln.strip(" \t"))
+    s_ind = first[:len(first) - len(first.lstrip(" \t"))]
+    f_ind = lines[i][:len(lines[i]) - len(lines[i].lstrip(" \t"))]
+    rep = replace.split("\n")
+    if search.endswith("\n") and rep and rep[-1] == "":
+        rep.pop()
+    new = []
+    for ln in rep:
+        if not ln.strip(" \t"):
+            new.append("")
+        elif s_ind and ln.startswith(s_ind):
+            new.append(f_ind + ln[len(s_ind):])
+        elif not s_ind:
+            new.append(f_ind + ln)
+        else:
+            new.append(f_ind + ln.lstrip(" \t"))
+    return "\n".join(lines[:i] + new + lines[i + len(want):])
+
+
+ESCAPED_RE = re.compile(r"\\[nt\"]")
+
+
+def _unescaped(s: str) -> str:
+    return s.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
+
+
+def _escaped_match(text: str, search: str, replace: str) -> str | None:
+    """LLMs sometimes escape their JSON twice: the search text then has the two characters \\n where the file has a
+    line break (and \\t, \\"). When the search text with those undone matches (exactly, with other indentation or
+    trailing spaces) and the file does not itself have them there, the edit applies with the replacement undone
+    the same way. Returns the new text, or None."""
+    if not ESCAPED_RE.search(search):
+        return None
+    s2, r2 = _unescaped(search), _unescaped(replace)
+    if text.count(s2) == 1:
+        return text.replace(s2, r2, 1)
+    return _trailing_space_match(text, s2, r2) or _indent_match(text, s2, r2)
+
+
 def _first_mismatch(text: str, search: str) -> str:
     """Where a search text that was not found goes wrong: its first line that is not in the file, and the
     file's closest line, so the retry can copy it exactly."""
@@ -1398,6 +1520,10 @@ def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | 
                 slip = "backslashes as in the file"         # the same text but for JSON escaping
             elif (fixed := _trailing_space_match(text, search, replace)) is not None:
                 slip = "trailing spaces as in the file"     # the same lines but for spaces at their ends
+            elif (fixed := _indent_match(text, search, replace)) is not None:
+                slip = "indentation as in the file"         # the same lines but for their indentation
+            elif (fixed := _escaped_match(text, search, replace)) is not None:
+                slip = "line breaks and quotes as in the file"  # \n, \t, \" escaped once more than JSON needs
             else:
                 errors.append(f"edit {i} ({rel}): the search text was not found in the file; copy it exactly from "
                               f"the file shown ({_first_mismatch(text, search)})")

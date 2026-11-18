@@ -792,7 +792,18 @@ docker exec cz-mssql /opt/mssql-tools18/bin/bcp "$Q" queryout /var/opt/mssql/bac
 ls -lh /var/lib/containerizer/mssql/backup/make-it-a-export.json
 ```
 
-To export only recent orders, add `AND j.QueuedAt > DATEADD(day, -3, SYSUTCDATETIME())` before `ORDER BY`. Logs
+To export only the orders after an earlier export, set `LAST` to the highest `JobId` in it and use this `Q`
+instead (or add `AND j.QueuedAt > DATEADD(day, -3, SYSUTCDATETIME())` for the last three days):
+
+```sh
+LAST=1439
+Q=$(cat <<SQL
+SET NOCOUNT ON; SELECT (SELECT j.JobId, j.App, j.Component, j.Status, j.Summary, j.Error, j.Note, j.Model, j.Endpoint, j.Attempts, j.QueuedAt, j.FinishedAt, j.Seconds, j.InputTokens, j.OutputTokens, JSON_VALUE(j.Payload, '\$.heavy_round') AS HeavyRound, JSON_QUERY(JSON_MODIFY(JSON_MODIFY(JSON_MODIFY(j.Result, '\$.patch', NULL), '\$.patch_b64', NULL), '\$.files', NULL)) AS Result FROM Containerizer.containerizer.LlmJob j WHERE j.Kind = N'refactor' AND JSON_VALUE(j.Payload, '\$.goal') = N'rating-a' AND j.Status IN (N'answered', N'failed') AND j.JobId > $LAST ORDER BY j.JobId FOR JSON PATH)
+SQL
+)
+```
+
+The highest `JobId` of an export: `grep -o '"JobId":[0-9]*' make-it-a-export.json | tail -1`. Logs
 and the findings left still quote lines of the applications' code, paths and host names: keep the file like
 the code, and delete it once copied off (`scp root@<appliance>:/var/lib/containerizer/mssql/backup/make-it-a-export.json .`).
 Do not use `docker cp` for files of a running container: it pauses the container while it copies.

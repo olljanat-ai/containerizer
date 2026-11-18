@@ -198,7 +198,40 @@ def technique_code_port(repo, c, findings) -> dict | None:
     return {"port": 80, "_note": "The container listens on port 80, where the code does."}
 
 
+# ------------------------------------------------------------------ Windows authentication in a connection string
+
+_CS_KEY = re.compile(r'^\s*"(?P<key>[^"]+)"\s*:\s*"')
+_APPSETTINGS = re.compile(r"(?i)(^|/)appsettings(\.(?P<env>[^/.]+))?\.json$")
+
+
+def technique_connection_string_secret(repo, c, findings) -> dict | None:
+    """Integrated Security / Trusted_Connection in connection strings of appsettings.json: every one of the
+    component's connection strings comes from the secret ConnectionStrings__<Name> in the generated manifests
+    (generate.k8s_manifests), whose value has SQL or Entra credentials, so the files stay as they are for Windows.
+    appsettings.<Environment>.json other than Production and developer-only files are not read in the container.
+    A connection string elsewhere (web.config, another section, code) stays a finding."""
+    names = {str(n).lower() for n in ((c.facts or {}).get("connection_strings") or [])}
+    seen = False
+    for f in findings:
+        for e in f.evidence:
+            rel = str(getattr(e, "file", "") or "").replace("\\", "/")
+            m = _APPSETTINGS.search(rel)
+            if m and m["env"] and m["env"].lower() != "production":
+                continue                                # not read in the container (it runs as Production)
+            if not m and re.search(r"(?i)(^|/)local\.settings\.json$|(^|/)launchSettings\.json$", rel):
+                continue                                # developer-only
+            k = _CS_KEY.match(str(getattr(e, "snippet", "") or ""))
+            if not m or not k or k["key"].lower() not in names:
+                return None
+            seen = True
+    if not seen and not names:
+        return None
+    return {"_note": "The connection strings come from the secret ConnectionStrings__<Name>, with SQL or Entra "
+                     "credentials; the files keep Windows authentication for Windows."}
+
+
 TECHNIQUES = {
+    "connection-string-secret": technique_connection_string_secret,
     "code-port": technique_code_port,
     "machine-hostname": technique_machine_hostname,
     "x509-user-store": technique_x509_user_store,

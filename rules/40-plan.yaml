@@ -154,6 +154,20 @@ rules:
       - https://learn.microsoft.com/en-us/dotnet/api/system.environment.machinename
     when: {}
 
+  - id: plan-connection-string-secret
+    phase: plan
+    applies_to: [dotnet]
+    resolves: [sql-integrated-security]
+    technique: connection-string-secret
+    why: >-
+      The connection strings in appsettings.json use Windows authentication (Integrated Security,
+      Trusted_Connection). The generated manifests set every connection string from the secret
+      ConnectionStrings__<Name> (an environment variable, which takes precedence over appsettings.json), with
+      SQL or Entra credentials, so the files stay as they are and keep working on Windows.
+    refs:
+      - https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/#connection-string-prefixes
+    when: {}
+
   - id: plan-code-port
     phase: plan
     applies_to: [dotnet]
