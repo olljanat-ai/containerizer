@@ -37,7 +37,11 @@ A scan runs in two phases, so time is not spent on repositories nobody uses any 
      **Automatic**, **Disable** or **Scan now** brings it back into the other views.
    - The repositories with an automatic skip that the provider's API shows (archived, empty, forks, not updated
      recently, left out by the filter) are listed under **Hidden** too, each with its reason, so the other views
-     show what may be worth scanning. **Enable** one to scan it anyway. Every disabled repository shows its automatic
+     show what may be worth scanning. **Enable** one to scan it anyway. So are the repositories the organization
+     lists but whose content the scan's token may not read: a project or repository with permissions of its own
+     (Azure DevOps `TF401027: You need the Git 'GenericRead' permission`, GitLab *not allowed to download code*,
+     HTTP 403). They are skipped as **No access to its content**, with the provider's message. Every scan tries
+     them again, so they come back by themselves once the token may read them. Every disabled repository shows its automatic
      skip as well (*disabled by an administrator (new repository: disabled by default); automatic skip: Has a
      Dockerfile: ...*).
 

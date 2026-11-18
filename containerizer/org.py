@@ -1579,6 +1579,10 @@ def _process_repo(r: SourceRepo, prov, o: OrgOptions, app: str, out: Output, wor
         if hooks and hasattr(hooks, "git"):
             hooks.git(op, _time.monotonic() - t0, False)
         res.reason = str(e)
+        if (why := no_access(str(e))) is not None:
+            # listed, but its content is closed to the scan's token (a project's or repository's own permissions):
+            # an automatic skip, hidden; every scan tries again, so it comes back once the token may read it
+            res.status, res.reason = "skipped-no-access", why
         return res                               # keep whatever was deployed before
     if hooks and hasattr(hooks, "git"):
         hooks.git(op, _time.monotonic() - t0, True)
@@ -2326,6 +2330,24 @@ def _end_group(p) -> None:
     if p.is_alive():
         p.kill()
         p.join(timeout=3)
+
+
+# a clone the provider refused for want of read permission: Azure DevOps TF401027 ("You need the Git 'GenericRead'
+# permission") and TF401019 ("does not exist or you do not have permissions"), GitLab "You are not allowed to download
+# code", GitHub "Permission to ... denied", or HTTP 403
+NO_ACCESS_RE = re.compile(r"TF4010(?:27|19)\b|not allowed to download code|Permission to \S+ denied|"
+                          r"returned error: 403\b")
+PROVIDER_SAYS_RE = re.compile(r"remote:\s*(.+?)(?:\s+fatal:|$)", re.S)
+
+
+def no_access(error: str) -> str | None:
+    """The skip reason when a clone failed because the token may not read the repository; None otherwise."""
+    if not NO_ACCESS_RE.search(error or ""):
+        return None
+    said = PROVIDER_SAYS_RE.search(error)
+    detail = " ".join((said[1] if said else error).split())[:300]
+    return ("the scan's token may not read its content (permissions of its own, or of its project); every scan "
+            f"tries again: {detail}")
 
 
 # automatic skips that only need the provider's API (discovery records them); the others need the clone

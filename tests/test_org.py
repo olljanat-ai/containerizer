@@ -1111,3 +1111,37 @@ def test_ignored_dockerfiles_are_assessed_and_generated(tmp_path, monkeypatch):
     assert res["devtools"].status == "deployed" and res["devtools"].overridden == []
     gen = [f for f in (tmp_path / "out").rglob("Dockerfile") if "devtools" in f.as_posix()]
     assert gen and all(f.read_text() != "FROM scratch\n" for f in gen)      # generated, not the repository's
+
+
+def test_a_clone_the_token_may_not_read_is_a_hidden_automatic_skip(tmp_path, monkeypatch):
+    """Azure DevOps lists a repository of a project with its own permissions, but its content is closed to the scan's
+    token (TF401027, HTTP 403): an automatic skip (skipped-no-access) with the provider's message, not a failure.
+    Any other clone error stays a failure."""
+    err = ("git -c core.symlinks=false clone --quiet --no-tags --single-branch --depth 1 --branch main -- /work/x: "
+           "remote: TF401027: You need the Git 'GenericRead' permission to perform this action. Details: identity "
+           "'7ef41b2d\\\\john.doe@example.com', scope 'repository'. fatal: unable to access "
+           "'https://dev.azure.com/example/SecOps/_git/assistant/': The requested URL returned error: 403")
+    why = orgmod.no_access(err)
+    assert why.startswith("the scan's token may not read its content") and "TF401027" in why and "fatal" not in why
+    assert orgmod.no_access("fatal: unable to access 'https://gitlab.example.com/x/': The requested URL returned "
+                            "error: 403") is not None
+    assert orgmod.no_access("remote: You are not allowed to download code from this project.") is not None
+    for other in ("fatal: unable to access 'https://x/': Could not resolve host: x", "fatal: Authentication failed",
+                  "The requested URL returned error: 500"):
+        assert orgmod.no_access(other) is None, other
+    repos = [SourceRepo("azure-devops", "Contoso", "SecOps", n, f"https://dev.azure.com/Contoso/SecOps/_git/{n}",
+                        default_branch="main") for n in ("closed", "away")]
+    monkeypatch.setattr(orgmod, "provider", lambda *a, **k: _FakeProvider(repos))
+
+    def clone(url, dest, branch="", header="", depth=1):
+        raise orgsource.SourceError(err if url.endswith("closed") else "git clone: fatal: Could not resolve host")
+    monkeypatch.setattr(orgmod, "clone", clone)
+    out = tmp_path / "out"
+    out.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=out, check=True)
+    o = OrgOptions(provider="azure-devops", org="Contoso", registry="reg.example/sandbox", output_dir=str(out),
+                   token="pat", verify=False, gate=False, push_images=False, tag="1.0.0",
+                   work_dir=str(tmp_path / "work"), now=datetime(2026, 11, 18, tzinfo=timezone.utc))
+    res = {r.repo: r for r in run_org(o, log=lambda *a, **k: None)}
+    assert res["closed"].status == "skipped-no-access" and "GenericRead" in res["closed"].reason
+    assert res["away"].status == "error"

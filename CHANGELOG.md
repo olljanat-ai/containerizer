@@ -8,6 +8,15 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.10 (2026-11-18)
+
+- **Repositories the scan's token may not read are skipped and hidden**: a project or repository with permissions of
+  its own was listed by discovery, and its clone then failed every scan as an error (Azure DevOps `TF401027: You need
+  the Git 'GenericRead' permission`, HTTP 403). It is now an automatic skip, **No access to its content**, with the
+  provider's message, listed only under **Hidden** (Admin → Repositories). Every scan tries it again, so it comes
+  back by itself once the token may read it. Other clone errors stay failures. Schema 57: `vOrgRepository.IsHidden`
+  counts `skipped-no-access`.
+
 ## 0.51.9 (2026-11-18)
 
 - **Sandbox: "Too many pods"**: the sandbox node took Kubernetes' default of 110 pods, and k3s gives each node
