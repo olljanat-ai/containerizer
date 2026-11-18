@@ -1522,6 +1522,10 @@ def publish_sandbox_ca(cert_pem: str) -> None:
 GRAFANA_API = "http://127.0.0.1:3000/grafana"      # containerizer-grafana: 127.0.0.1:3000, served from /grafana/
 GRAFANA_DS_UID = "containerizer-sql"
 GRAFANA_DASHBOARD = Path(__file__).resolve().parent / "grafana" / "llm-usage.json"
+# the dashboards on the results database, with what the sync says it saved: the LLM token usage, how the applications
+# are mapped to products over time (schema 59)
+GRAFANA_DASHBOARDS = ((GRAFANA_DASHBOARD, "dashboard", "dashboard"),
+                      (GRAFANA_DASHBOARD.parent / "application-mapping.json", "dashboard-mapping", "mapping dashboard"))
 GRAFANA_LOGIN = "cz_grafana"
 
 
@@ -1578,7 +1582,7 @@ def grafana_usage_sync(opener=None, connect=None) -> str:
     """The "Containerizer: LLM token usage" dashboard (docs/appliance-admin.md#llm-token-usage), set up from the app
     code so that an app update brings it: the login cz_grafana (role usage: the LLM usage views only; its password
     in secrets/cz-grafana) made with the results database's owner, and Grafana's data source "Containerizer
-    results" and the dashboard (containerizer/grafana/llm-usage.json, in the provisioned folder "containerizer")
+    results" and the dashboards (GRAFANA_DASHBOARDS: llm-usage.json, application-mapping.json, in the provisioned folder "containerizer")
     made with Grafana's API as its admin. Each step only when it changed or Grafana lost it (state in
     grafana-usage.json). `status` (every 5 minutes) calls it. Returns what happened."""
     import hashlib
@@ -1633,20 +1637,22 @@ def grafana_usage_sync(opener=None, connect=None) -> str:
         done.append("data source")
     elif st != 200:
         raise AgentError(f"Grafana: the data source not read ({st})")
-    dash = json.loads(GRAFANA_DASHBOARD.read_text())
-    dash_mark = hashlib.sha256(json.dumps(dash, sort_keys=True).encode()).hexdigest()[:16]
-    st, _ = _grafana("GET", f"/api/dashboards/uid/{dash['uid']}", password=admin, opener=opener)
-    if st == 404 or state.get("dashboard") != dash_mark:
-        st, folders = _grafana("GET", "/api/folders", password=admin, opener=opener)
-        folder = next((f.get("uid") for f in (folders if isinstance(folders, list) else []) if f.get("title") == "containerizer"), None)
-        body = {"dashboard": {**dash, "id": None}, "overwrite": True, "message": "containerizer system agent"}
-        if folder:
-            body["folderUid"] = folder
-        st, r = _grafana("POST", "/api/dashboards/db", body, admin, opener)
-        if st != 200:
-            raise AgentError(f"Grafana: the dashboard not saved ({st}: {str(r)[:200]})")
-        state["dashboard"] = dash_mark
-        done.append("dashboard")
+    for path, key, label in GRAFANA_DASHBOARDS:
+        dash = json.loads(path.read_text())
+        dash_mark = hashlib.sha256(json.dumps(dash, sort_keys=True).encode()).hexdigest()[:16]
+        st, _ = _grafana("GET", f"/api/dashboards/uid/{dash['uid']}", password=admin, opener=opener)
+        if st == 404 or state.get(key) != dash_mark:
+            st, folders = _grafana("GET", "/api/folders", password=admin, opener=opener)
+            folder = next((f.get("uid") for f in (folders if isinstance(folders, list) else [])
+                           if f.get("title") == "containerizer"), None)
+            body = {"dashboard": {**dash, "id": None}, "overwrite": True, "message": "containerizer system agent"}
+            if folder:
+                body["folderUid"] = folder
+            st, r = _grafana("POST", "/api/dashboards/db", body, admin, opener)
+            if st != 200:
+                raise AgentError(f"Grafana: the {label} not saved ({st}: {str(r)[:200]})")
+            state[key] = dash_mark
+            done.append(label)
     if done:
         atomic_write(state_f, json.dumps(state), 0o600)
         log(f"Grafana LLM usage: {', '.join(done)} set up")

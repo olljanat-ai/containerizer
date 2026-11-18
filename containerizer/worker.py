@@ -810,29 +810,33 @@ class Worker:
         conn = self.connect()
         try:
             cur = conn.cursor(as_dict=True)
-            cur.execute("SELECT ScanId, Name, ScheduleDays, ScheduleMinute, NextRunAt FROM cz.OrgScan WHERE Enabled = 1")
+            cur.execute("SELECT * FROM cz.OrgScan WHERE Enabled = 1")
             for s in cur.fetchall():
-                nxt = naive(next_run(s["ScheduleDays"], s["ScheduleMinute"], now))
-                old = s["NextRunAt"]
-                if old is not None and aware(old) <= now:
-                    # due: whoever moves NextRunAt on (compare-and-set) queues the run
-                    c = conn.cursor()
-                    c.execute("UPDATE cz.OrgScan SET NextRunAt = %s WHERE ScanId = %s AND NextRunAt = %s",
-                              (nxt, s["ScanId"], old))
-                    conn.commit()
-                    if c.rowcount == 1:
-                        c.execute("EXEC cz.QueueOrgScanRun @ScanId = %s, @TriggeredBy = N'schedule'", (s["ScanId"],))
-                        rid = c.fetchone()[0]
-                        conn.commit()
-                        self.log(f"{s['Name']}: scheduled run " + (f"#{rid} queued" if rid else "skipped, one is already "
-                                                                    "queued or running"))
-                elif old is None and nxt is not None or old is not None and nxt is None:
-                    c = conn.cursor()
-                    c.execute("UPDATE cz.OrgScan SET NextRunAt = %s WHERE ScanId = %s AND "
-                              "(NextRunAt IS NULL OR NextRunAt = %s)", (nxt, s["ScanId"], old))
-                    conn.commit()
+                # the full scans, then the discovery runs of their own schedule (schema 59)
+                self._due(conn, s, now, "NextRunAt", "ScheduleDays", "ScheduleMinute", "full")
+                if "DiscoveryDays" in s:
+                    self._due(conn, s, now, "NextDiscoveryAt", "DiscoveryDays", "DiscoveryMinute", "discovery")
         finally:
             conn.close()
+
+    def _due(self, conn, s: dict, now: datetime, col: str, days: str, minute: str, kind: str) -> None:
+        nxt = naive(next_run(s[days], s[minute], now))
+        old = s[col]
+        c = conn.cursor()
+        if old is not None and aware(old) <= now:
+            # due: whoever moves the next time on (compare-and-set) queues the run
+            c.execute(f"UPDATE cz.OrgScan SET {col} = %s WHERE ScanId = %s AND {col} = %s", (nxt, s["ScanId"], old))
+            conn.commit()
+            if c.rowcount == 1:
+                c.execute("EXEC cz.QueueOrgScanRun @ScanId = %s, @TriggeredBy = N'schedule', @Kind = %s", (s["ScanId"], kind))
+                rid = c.fetchone()[0]
+                conn.commit()
+                what = "scheduled run" if kind == "full" else "scheduled discovery"
+                self.log(f"{s['Name']}: {what} " + (f"#{rid} queued" if rid else "skipped, one is already queued or running"))
+        elif old is None and nxt is not None or old is not None and nxt is None:
+            c.execute(f"UPDATE cz.OrgScan SET {col} = %s WHERE ScanId = %s AND ({col} IS NULL OR {col} = %s)",
+                      (nxt, s["ScanId"], old))
+            conn.commit()
 
     def claim(self, manual_only: bool = False) -> dict | None:
         """The oldest queued run, now running on this worker; manual_only: only one an administrator started."""
@@ -1129,6 +1133,7 @@ class Worker:
                 conn.rollback()
                 self.log(f"{name}: could not read the commit authors: {type(ex).__name__}: {ex}")
         developers.auto_map(conn, log=lambda m: self.log(f"{name}: {m}"))
+        developers.snapshot(conn, log=lambda m: self.log(f"{name}: {m}"))
         return text
 
     def _listed(self, cred, prov, n: int) -> None:

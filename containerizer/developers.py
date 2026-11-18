@@ -192,6 +192,17 @@ def auto_map(conn, log=print) -> None:
         log(f"could not map projects to products: {type(ex).__name__}: {ex}")
 
 
+def snapshot(conn, log=print) -> None:
+    """How the applications are mapped now, for the Grafana dashboard "application mapping" (cz.RecordMappingSnapshot,
+    schema 59); bookkeeping: a failure is logged only."""
+    try:
+        conn.cursor().execute("EXEC cz.RecordMappingSnapshot")
+        conn.commit()
+    except Exception as ex:
+        conn.rollback()
+        log(f"could not record how the applications are mapped: {type(ex).__name__}: {ex}")
+
+
 # -- suggestions --------------------------------------------------------------------------------------------------
 
 @dataclass

@@ -146,3 +146,82 @@ def test_usage_rows_and_the_views_grafana_reads():
         for login in ("cz_u_writer", "cz_u_grafana"):
             m.cursor().execute(f"IF SUSER_ID(N'{login}') IS NOT NULL DROP LOGIN [{login}]")
         m.close()
+
+
+@needs_sql
+def test_mapping_snapshots_and_the_mapping_dashboard():
+    """cz.RecordMappingSnapshot (schema 59, the end of every scan run) counts how the applications are mapped; the
+    usage role reads vMappingHistory, and every query of the mapping dashboard runs as it."""
+    import json as _json
+    from containerizer import sqlstore
+    from containerizer.sysagent import GRAFANA_DASHBOARDS
+    pw, sa_pw = "Test-Passw0rd!x", os.environ["CONTAINERIZER_SQL_PASSWORD"]
+    name = "czmap_" + uuid.uuid4().hex[:8]
+    cs = re.sub(r"(?i)(database|initial\s*catalog)\s*=[^;]*", f"Database={name}", ADMIN_SQL)
+    sqlstore.create_database(cs, sa_pw)
+    conn = sqlstore.connect(cs, sa_pw)
+    try:
+        sqlstore.init_schema(conn)
+        sqlstore.init_schema(conn)
+        for login, role in (("cz_m_writer", "writer"), ("cz_m_grafana", "usage")):
+            sqlstore.create_login(conn, login, pw, role)
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM cz.MappingSnapshot")
+        assert cur.fetchone()[0] == 1                       # the first one, made by the schema step
+        cur.execute("""
+            INSERT cz.OrgScan (Name, Provider, Organization, Registry) VALUES (N's', N'github', N'acme', N'r');
+            DECLARE @s int = SCOPE_IDENTITY();
+            INSERT cz.OrgRepository (ScanId, ProjectName, Name, CloneUrl, RepositoryUrl, ExternalAppId) VALUES
+                (@s, N'_', N'shop', N'https://g/acme/shop.git', N'https://g/acme/shop', N'APP-1'),
+                (@s, N'_', N'crm', N'https://g/acme/crm.git', N'https://g/acme/crm', NULL),
+                (@s, N'_', N'new', N'https://g/acme/new.git', N'https://g/acme/new', N'APP-9'),
+                (@s, N'_', N'pay', N'https://g/acme/pay.git', N'https://g/acme/pay', N'APP-3');
+            INSERT cz.Product (Name, ExternalId) VALUES (N'Stores', N'APP-1');
+            INSERT cz.Product (Name) VALUES (N'Back office');
+            INSERT cz.Application (Name, SourceKey, RepositoryUrl) VALUES
+                (N'shop', N'https://g/acme/shop#', N'https://g/acme/shop'),
+                (N'crm', N'https://g/acme/crm#', N'https://g/acme/crm'),
+                (N'pay', N'https://g/acme/pay#', N'https://g/acme/pay'),
+                (N'old', N'https://g/acme/old#', N'https://g/acme/old');
+            UPDATE cz.Application SET ProductId = (SELECT ProductId FROM cz.Product WHERE Name = N'Back office')
+            WHERE Name = N'crm';""")
+        conn.commit()
+        cur.execute("EXEC cz.MapProductExternalIds")       # shop: by its repository's metadata.json
+        conn.commit()
+
+        def as_(login):
+            return re.sub(r"(?i)(user\s*id|uid)\s*=[^;]*", f"User Id={login}", cs)
+        wr = sqlstore.connect(as_("cz_m_writer"), pw)
+        wr.cursor().execute("EXEC cz.RecordMappingSnapshot")
+        wr.commit()
+        wr.close()
+        g = sqlstore.connect(as_("cz_m_grafana"), pw)
+        try:
+            c = g.cursor(as_dict=True)
+            c.execute("SELECT TOP (1) * FROM cz.vMappingHistory ORDER BY At DESC, Repositories DESC")
+            r = c.fetchone()
+            assert {k: r[k] for k in ("Repositories", "ReposDeclaring", "ReposDeclaringNoApp", "Applications", "AppsWithId",
+                                      "AppsByExternalId", "AppsByProject", "AppsByHand", "AppsNoProduct",
+                                      "IdsWithoutProduct")} == {
+                "Repositories": 4, "ReposDeclaring": 3, "ReposDeclaringNoApp": 1, "Applications": 4, "AppsWithId": 2,
+                "AppsByExternalId": 1, "AppsByProject": 0, "AppsByHand": 1, "AppsNoProduct": 2, "IdsWithoutProduct": 1}
+            path = next(p for p, key, _ in GRAFANA_DASHBOARDS if key == "dashboard-mapping")
+            dash = _json.loads(path.read_text())
+            sqls = [t["rawSql"] for p in dash["panels"] for t in p.get("targets") or [] if t.get("rawSql")]
+            assert len(sqls) == 9
+            for q in sqls:
+                q = re.sub(r"\$__timeFilter\((\w+)\)", r"\1 >= '2000-01-01'", q).replace("containerizer.", "cz.")
+                t = g.cursor()
+                t.execute(q)
+                assert t.fetchall()
+            with pytest.raises(Exception):
+                c.execute("SELECT TOP 1 * FROM cz.MappingSnapshot")     # the view only
+        finally:
+            g.close()
+    finally:
+        conn.close()
+        m = sqlstore.connect(re.sub(r"(?i)Database=\w+", "Database=master", cs), sa_pw, autocommit=True)
+        m.cursor().execute(f"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]")
+        for login in ("cz_m_writer", "cz_m_grafana"):
+            m.cursor().execute(f"IF SUSER_ID(N'{login}') IS NOT NULL DROP LOGIN [{login}]")
+        m.close()
