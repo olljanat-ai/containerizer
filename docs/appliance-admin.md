@@ -342,7 +342,8 @@ Grafana (`https://<appliance>/grafana/`, **Grafana ↗** on the admin pages) has
 Every call an LLM answers is recorded in the results database, in the table `LlmUsage`: the input and output tokens
 the LLM reported in its answer (never an estimate; a cached answer and a failed call cost nothing and are not
 recorded), the time, the backend and model, the cost (Claude's list prices, or `CONTAINERIZER_LLM_PRICE_INPUT` /
-`_OUTPUT` for a self-hosted LLM), the feature (`assessment`: the component reviews of scans; `refactor-queued`: Make
+`_OUTPUT` for a self-hosted LLM, worked out when the answer comes: to price earlier calls, see
+[Database tasks from the shell](#database-tasks-from-the-shell)), the feature (`assessment`: the component reviews of scans; `refactor-queued`: Make
 it A and other refactoring orders; `sandbox-tester`, `build-diagnosis`, `platform-migration`, egress and link
 reviews ...), the application, the component, and the LLM queue job or the scan it was for. The scan worker and
 the LLM queue runner write it as the answers come. Unlike Prometheus, which keeps 90 days, it is kept for the long
@@ -807,3 +808,25 @@ The highest `JobId` of an export: `grep -o '"JobId":[0-9]*' make-it-a-export.jso
 and the findings left still quote lines of the applications' code, paths and host names: keep the file like
 the code, and delete it once copied off (`scp root@<appliance>:/var/lib/containerizer/mssql/backup/make-it-a-export.json .`).
 Do not use `docker cp` for files of a running container: it pauses the container while it copies.
+
+**Price the LLM calls made before a price was set.** The cost of each answered call is worked out once, when
+the answer comes, and stored in `LlmUsage.CostUsd`: Claude's list prices, or for other LLMs (an OpenAI-compatible
+server, the built-in LLM) `CONTAINERIZER_LLM_PRICE_INPUT` / `CONTAINERIZER_LLM_PRICE_OUTPUT` in
+`/etc/containerizer/worker.env` (US dollars per million tokens; restart `containerizer-worker` and
+`containerizer-llm-queue` after changing them). Calls made while no price was set cost 0 (`CostKnown = 0`), and a
+new price does not change them. This recomputes the cost of every call to an OpenAI-compatible LLM
+(`Backend = 'openai'`) from its recorded tokens with the prices you give, and marks it as priced; Claude's calls keep
+their list prices. Use the same prices as in `worker.env`. It prints how many calls it changed:
+
+```sh
+docker exec cz-mssql /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$SA" -d Containerizer -Q "
+DECLARE @in decimal(12,5) = 0.10, @out decimal(12,5) = 0.40;   -- \$ per 1M tokens: input, output
+UPDATE containerizer.LlmUsage
+SET CostUsd = (InputTokens * @in + OutputTokens * @out) / 1000000.0, CostKnown = 1
+WHERE Backend = N'openai';"
+```
+
+To price one model only, add `AND Model = N'<model>'` to the `WHERE` (the models are in the **By model** table).
+The **Containerizer: LLM token usage** dashboard reads the table, so it shows the new cost at its next refresh. The
+cost panels of **Containerizer: scans** do not change: they come from the worker's Prometheus counter
+`containerizer_llm_cost_usd_total`, which keeps what each call cost when it was answered.

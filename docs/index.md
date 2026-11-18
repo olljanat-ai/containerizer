@@ -267,7 +267,8 @@ allow it, and both `connectivity.yaml` files document it.
 ### Watch the portfolio move
 
 Trends show how ratings change over time per business unit and product, so you can see the effect
-of each fix and each newly learned rule.
+of each fix and each newly learned rule, and, with the working Make it A patches counted, what the
+patches would achieve before they are merged.
 
 [Install the appliance :octicons-arrow-right-24:](appliance.md)
 

@@ -1565,6 +1565,9 @@ section.card details{border:0;padding:0;background:none}
 .strip{display:inline-flex;gap:2px}.cell{display:inline-block;width:20px;height:20px;line-height:20px;text-align:center;
 font-size:11px;font-weight:700;border-radius:4px;color:#fff}.cell.rB,.cell.rC{color:#0b0b0b}
 .cell.none{background:var(--line);opacity:.5}
+.cell.patched{outline:2px dashed var(--fg);outline-offset:-2px}
+.key.patched{outline:2px dashed var(--fg);outline-offset:-2px}
+.chart .fpatch{fill:var(--card);fill-opacity:.45;stroke:var(--fg);stroke-width:1.5;stroke-dasharray:3 2}
 .good{color:#006300;font-weight:600}.bad{color:#b42727;font-weight:600}
 @media (prefers-color-scheme:dark){.good{color:#4fd14f}.bad{color:#f07a7a}}
 .chips+.chips{margin-top:8px}
@@ -1803,11 +1806,13 @@ def make_handler(connect, admin=None):
                 if u.path == "/trends":
                     from . import trends
                     rng, bu, product = trends.parse_query(parse_qs(u.query))
+                    with_patches = trends.patches_on(parse_qs(u.query))
                     now = datetime.now(timezone.utc).replace(tzinfo=None)
                     since = trends.since_for(rng, now)
                     conn = connect()
                     try:
-                        data = trends.compute(trends.load_history(conn, since), now, since)
+                        data = trends.compute(trends.load_history(conn, since), now, since,
+                                              trends.load_patches(conn) if with_patches else None)
                     finally:
                         conn.close()
                     return self._send(200, trends.render_trends(data, rng, bu, product, nav), head=head, forms=bool(nav))

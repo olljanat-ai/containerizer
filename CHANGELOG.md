@@ -8,6 +8,20 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.13 (2026-11-18)
+
+- **Readiness over time with working Make it A patches**: the trends page has the switch **With working Make it A
+  patches**, to measure Make it A. An application whose latest scan has a patch that builds, runs and rates A (made
+  for the scanned commit) counts as A from the day the patch finished, without obstacles. The new tile **A only
+  with a Make it A patch**, the dashed part of each A column, the dashed cells of the history per application and a
+  table column show those applications. **Code in the repositories** is the page as before. Schema 58:
+  `vAssessmentHistory` has the scanned commit (`SourceCommit`).
+- **LLM usage per model in Grafana**: the **Containerizer: LLM token usage** dashboard has a **By model** table
+  (calls, input, output and total tokens, cost, answer time, seconds per call, output tokens per second, calls
+  without a price) and **Cost per day by model** next to the tokens per day. An app update puts the new dashboard
+  in place.
+- Docs: how to price the LLM calls made before a price was set (Database tasks from the shell).
+
 ## 0.51.12 (2026-11-18)
 
 From an export of 205 Make it A orders of 66 real applications:

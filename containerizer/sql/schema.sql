@@ -3350,3 +3350,24 @@ FROM [${schema}].OrgRepository r
 LEFT JOIN [${schema}].OrgProject p ON p.ScanId = r.ScanId AND p.Name = r.ProjectName;
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 57) INSERT [${schema}].SchemaVersion (Version) VALUES (57);
+GO
+
+-- 58: the trends page with working Make it A patches (trends.with_patch) matches a patch with the scan it was
+-- made for: the scanned commit in the history view.
+CREATE OR ALTER VIEW [${schema}].vAssessmentHistory AS
+SELECT aa.AssessmentId, aa.ApplicationId, COALESCE(a.DisplayName, a.Name) AS ApplicationName,
+       p.ProductId, p.Name AS ProductName, bu.BusinessUnitId, bu.Name AS BusinessUnitName,
+       aa.AssessedAt, aa.Rating, aa.Score, aa.Verified,
+       COALESCE(f.Blockers, 0) AS Blockers, COALESCE(f.Rewrites, 0) AS Rewrites, aa.SourceCommit
+FROM [${schema}].ApplicationAssessment aa
+JOIN [${schema}].Application a ON a.ApplicationId = aa.ApplicationId
+LEFT JOIN [${schema}].Product p ON p.ProductId = a.ProductId
+LEFT JOIN [${schema}].BusinessUnit bu ON bu.BusinessUnitId = p.BusinessUnitId
+OUTER APPLY (SELECT COUNT(DISTINCT CASE WHEN x.Severity = 'blocker' THEN x.RuleId END) AS Blockers,
+                    COUNT(DISTINCT CASE WHEN x.Severity = 'rewrite' THEN x.RuleId END) AS Rewrites
+             FROM [${schema}].Finding x
+             WHERE x.AssessmentId = aa.AssessmentId AND x.Severity IN ('blocker', 'rewrite')) f
+WHERE a.Retired = 0
+  AND NOT EXISTS (SELECT 1 FROM [${schema}].vDisabledRepositoryUrl h WHERE h.RepositoryUrl = a.RepositoryUrl);
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 58) INSERT [${schema}].SchemaVersion (Version) VALUES (58);

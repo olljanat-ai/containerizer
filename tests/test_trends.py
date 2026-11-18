@@ -165,6 +165,8 @@ def test_history_view_keeps_every_scan(tmp_path):
             assert d["dist"][0] == {blocked.rating: 1} and d["dist"][-1] == {ready.rating: 1}
             assert "Readiness over time" in trends.render_trends(d)
             assert len(trends.load_history(rd, datetime(2026, 10, 1))) == 1
+            assert "SourceCommit" in rows[0]                        # schema 58: the scanned commit
+            assert trends.load_patches(rd) == {}                     # the reader may read the orders view
         finally:
             rd.close()
     finally:
@@ -180,3 +182,28 @@ def test_overview_and_application_link_to_trends():
     assert "href='/trends'" in webui.render_overview(overview_data())
     assert "href='/trends?bu=1'" in webui.render_overview(overview_data(), bu_filter="1")
     assert "href='/trends'" in webui.render_application(application_data())
+
+
+def test_working_make_it_a_patches_count_as_a():
+    rows = [dict(r, SourceCommit=f"c{r['AssessmentId']}") for r in history()]
+    patches = {1: [{"FinishedAt": datetime(2026, 4, 20), "SourceCommit": "c2"}],          # for billing's B scan
+               3: [{"FinishedAt": datetime(2026, 7, 1), "SourceCommit": "old"}],          # older code: no longer
+               2: [{"FinishedAt": datetime(2026, 9, 1), "SourceCommit": None}]}           # no commit: after the scan
+    plain = trends.compute(rows, NOW, None)
+    d = trends.compute(rows, NOW, None, patches)
+    ps = d["periods"]
+    i = next(k for k, (s, e) in enumerate(ps) if s <= datetime(2026, 5, 1) < e)
+    billing = next(a for a in d["apps"] if a["ApplicationId"] == 1)
+    assert billing["states"][i]["Rating"] == "A" and billing["states"][i]["Patched"] == "B"
+    assert d["patched"][i] == 1 and plain["patched"][i] == 0
+    assert d["dist"][i]["A"] == plain["dist"][i]["A"] + 1 and sum(d["dist"][i].values()) == sum(plain["dist"][i].values())
+    orphan = next(a for a in d["apps"] if a["ApplicationId"] == 3)
+    assert all(s is None or s["Rating"] == "D" for s in orphan["states"])
+    ledger = next(a for a in d["apps"] if a["ApplicationId"] == 2)
+    assert ledger["states"][-1]["Rating"] == "A" and ledger["states"][-1]["Patched"] == "E"
+    html = trends.render_trends(d, "all")
+    assert "With working Make it A patches" in html and "A only with a Make it A patch" in html
+    assert "cell rA patched" in html and "patches=1" in html
+    assert trends.render_trends(plain, "all").count("patches=1") == 1      # only the switch: other links keep the mode
+    assert html.count("patches=1") > 2
+    assert trends.patches_on({"patches": ["1"]}) and not trends.patches_on({})
