@@ -20,6 +20,17 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   about a whole file has no line. When that file was bigger than the prompt's budget, picking the part around the
   evidence lines failed. A finding without a line is now left out of that choice.
 - A failed LLM queue job writes its traceback to the queue's log (`journalctl -u containerizer-llm-queue`).
+- **Big questions of a scan go to the built-in LLM**: a scan run asked every question of its registered LLM.
+  A question bigger than that LLM's **Calls up to** (Admin → Source control & LLM) now goes to the appliance's
+  built-in LLM when it is on, uncut. So does a question its server refuses as bigger than the model's context
+  window, for example vLLM with `--max-model-len 32768` for want of memory. The LLM queue already routed by size:
+  give the built-in LLM a place in its order (LLM queue → Settings).
+- **A product's External ID** (Admin → Products → the product, administrators): every application with that ID
+  belongs to the product. The application's ID is its own, else the `applicationId` its repository's
+  `metadata.json` declares. Saving the product's ID maps them all at once. After that, every scan run, and setting
+  or linking an application's ID, maps the new ones. An application someone moves to another product by hand stays
+  there. Schema 56: `Product.ExternalId` (unique, audited) and `cz.MapProductExternalIds`, run by
+  `cz.AutoMapProjects` before the one-product-per-project mapping.
 
 ## 0.51.6 (2026-11-17)
 

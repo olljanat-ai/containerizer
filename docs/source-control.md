@@ -218,7 +218,10 @@ review is one call, so the limit is the job's size; a refactoring order makes on
 round), each of its own size, which may go to different LLMs. A job whose estimated size no LLM takes waits (the
 LLM queue page warns about it). On the appliance the built-in LLM can join the list too (LLM queue → Settings: its
 order and the biggest call it takes), with one request per server it runs. Scans that ask the LLM directly,
-outside the queue, use the first LLM in the order. Two LLMs on the same server need different hosts (one
+outside the queue, use the first LLM in the order. A question bigger than that LLM's **Calls up to**,
+or one its server refuses as bigger than the model's context window, goes to the built-in LLM when it is on
+(an LLM served with a short context, `--max-model-len 32768`, for want of memory). Without the built-in LLM,
+the question is cut down to fit: the middle of it is left out. Two LLMs on the same server need different hosts (one
 registration per server). See [how jobs and LLM requests are scheduled](#how-jobs-and-llm-requests-are-scheduled).
 
 | Example | Order | Jobs up to | At once |

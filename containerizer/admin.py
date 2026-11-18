@@ -688,8 +688,10 @@ class Admin:
                 return redirect("/admin/applications?" + urlencode({"msg": "Not saved: outside your products: "
                                                                      + ", ".join(refused[:10])}))
             cur = conn.cursor()
-            cur.execute(f"UPDATE cz.Application SET ProductId = %s WHERE ApplicationId IN ({', '.join(['%s'] * len(ids))})",
-                        (pid, *ids))
+            # a product a person chose is theirs: no longer automatic (cz.MapProductExternalIds keeps it)
+            cur.execute("UPDATE cz.Application SET ProductAutoAt = CASE WHEN %s IS NULL OR ProductId = %s THEN ProductAutoAt "
+                        f"ELSE NULL END, ProductId = %s WHERE ApplicationId IN ({', '.join(['%s'] * len(ids))})",
+                        (pid, pid, pid, *ids))
             n = cur.rowcount
             conn.commit()
         except Exception:
@@ -951,8 +953,9 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
                 conn.rollback()
                 return redirect(f"/admin/applications/{app_id}?" + urlencode({"msg": "Not saved: that is outside your products."}))
             cur = conn.cursor()
-            cur.execute("UPDATE cz.Application SET ProductId = %s, DisplayName = %s, Owner = %s, Description = %s, Retired = %s "
-                        "WHERE ApplicationId = %s", (pid, vals["DisplayName"], vals["Owner"],
+            cur.execute("UPDATE cz.Application SET ProductAutoAt = CASE WHEN %s IS NULL OR ProductId = %s THEN ProductAutoAt "
+                        "ELSE NULL END, ProductId = %s, DisplayName = %s, Owner = %s, Description = %s, Retired = %s "
+                        "WHERE ApplicationId = %s", (pid, pid, pid, vals["DisplayName"], vals["Owner"],
                                                       vals["Description"], form.get("Retired", [""])[0] == "1", app_id))
             conn.commit()
         except Exception:
@@ -1004,6 +1007,14 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
         info = ("<label for='InfoUrl'>Product page link <span class='muted'>(https link to the product in another tool, "
                 f"e.g. the CMDB or product catalogue)</span></label><input id='InfoUrl' name='InfoUrl' type='url' "
                 f"maxlength='400' placeholder='https://' value='{e(r.get('InfoUrl') or '')}'>") if table == "Product" else ""
+        if table == "Product" and a.admin:
+            info += ("<label for='ExternalId'>External ID <span class='muted'>(the product's ID in another system; every "
+                     "application with this ID, its own or the <code>applicationId</code> its repository's "
+                     "<code>metadata.json</code> declares, belongs to this product)</span></label>"
+                     f"<input id='ExternalId' name='ExternalId' maxlength='100' value='{e(r.get('ExternalId') or '')}'>")
+        elif table == "Product" and r.get("ExternalId"):
+            info += (f"<p class='muted small'>External ID <code>{e(r['ExternalId'])}</code>: its applications are mapped "
+                     "to it automatically (administrators change it)</p>")
         action = f"/admin/{kind}/{ident}" if ident else f"/admin/{kind}/new"
         return f"""<form method='post' action='{action}' class='edit'>{self._csrf(s)}
 <label for='Name'>Name</label><input id='Name' name='Name' required maxlength='200' value='{e(r.get('Name') or '')}'>
@@ -1043,7 +1054,9 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
         else:
             details = (f"<p class='note'>This is not one of your products, so you can only look at it.</p>"
                        f"<dl class='facts'><dt>Owner</dt><dd>{e(r.get('Owner') or '-')}</dd><dt>Product page</dt>"
-                       f"<dd>{info_link(r.get('InfoUrl')) or '-'}</dd><dt>Description</dt><dd>{e(r.get('Description') or '-')}</dd></dl>")
+                       f"<dd>{info_link(r.get('InfoUrl')) or '-'}</dd>"
+                       + (f"<dt>External ID</dt><dd><code>{e(r['ExternalId'])}</code></dd>" if r.get("ExternalId") else "")
+                       + f"<dt>Description</dt><dd>{e(r.get('Description') or '-')}</dd></dl>")
         body = (f"{details}<h2>{what}</h2><p>{members or '<span class=muted>None</span>'}</p>"
                 f"{delete}<h2>Changes</h2>{self._history(conn, table, ident)}")
         return Response(200, self._shell(s, a, r["Name"], kind, body, flash))
@@ -1056,11 +1069,18 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
         desc, err3 = self._text(form, "Description")
         errors = [x for x in (err1, err2, err3) if x]
         url = None
+        ext = None
         if table == "Product":
             url, err = self._text(form, "InfoUrl")
             if url and not URL_RE.fullmatch(url):
                 err = "The product page link must be a plain https:// address"
             errors += [err] if err else []
+            if a.admin and "ExternalId" in form:
+                from .appmeta import clean_id
+                raw = form.get("ExternalId", [""])[0].strip()
+                ext = clean_id(raw) if raw else None
+                if raw and not ext:
+                    errors.append("The external ID may have letters, digits and . _ : - only, at most 100")
         if errors:
             return redirect(back + "?" + urlencode({"msg": "; ".join(errors)}))
         cur = conn.cursor()
@@ -1070,6 +1090,9 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
             bu = self._id(form, "BusinessUnitId")
             cols += ["BusinessUnitId", "InfoUrl"]
             vals += [bu, url]
+            if a.admin and "ExternalId" in form:      # it moves applications between products: administrators only
+                cols.append("ExternalId")
+                vals.append(ext)
         key = "ProductId" if table == "Product" else "BusinessUnitId"
         denied = redirect(back + "?" + urlencode({"msg": "Not saved: that is outside your business units and products."}))
         try:
@@ -1091,9 +1114,13 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
                 cur.execute(f"INSERT cz.{table} ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))}); "
                             "SELECT CAST(SCOPE_IDENTITY() AS int)", tuple(vals))
                 ident = cur.fetchone()[0]
+            if ext:                                     # every application with the ID belongs to it, from now on
+                cur.execute("EXEC cz.MapProductExternalIds @ProductId = %s", (ident,))
             conn.commit()
         except Exception as ex:
             conn.rollback()
+            if _code(ex) in (2601, 2627) and ext and "ExternalId" in str(ex):
+                return redirect(back + "?" + urlencode({"msg": f"Another product already has the external ID {ext}."}))
             if _code(ex) in (2601, 2627):
                 return redirect(back + "?" + urlencode({"msg": f"There already is one named {name}."}))
             if _code(ex) == 547:

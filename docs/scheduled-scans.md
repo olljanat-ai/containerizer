@@ -203,6 +203,22 @@ application** for a repository no scan assessed (an application for the whole re
 scan assesses it). **Link proposals** links every repository that has one application without an ID. The change
 history records every ID set.
 
+**Products by external ID**: a product has an **External ID** too (Admin → Products → the product, administrators).
+Every application with that ID belongs to the product. The application's ID is its own External ID, or, when it has
+none, the `applicationId` its repository's `metadata.json` declares. One ID belongs to one product at most.
+
+- Saving the product's ID maps every application with it to the product at once, also ones mapped to another
+  product before.
+- After that, every scan run maps the new applications with that ID, and so does setting or linking an
+  application's ID.
+- An application someone then moves to another product by hand stays there. To take one out for good, clear or
+  change its own ID.
+
+The products' external IDs come before the automatic one-product-per-project mapping.
+
+![A product with the external ID PRD-1042 and its three applications](images/admin-product-external-id.png#only-light){ .cz-shot }
+![A product with the external ID PRD-1042 and its three applications](images/admin-product-external-id-dark.png#only-dark){ .cz-shot }
+
 ## Forget an application
 
 **Admin → Applications → the application → Forget application** (administrators; type the application's name to

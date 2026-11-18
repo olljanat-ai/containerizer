@@ -3243,3 +3243,86 @@ GRANT UPDATE ON [${schema}].OrgRepository (IgnoreDockerfiles) TO [${schema}_admi
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 55) INSERT [${schema}].SchemaVersion (Version) VALUES (55);
 GO
+
+-- 56: Product.ExternalId: the product's ID in another system (a CMDB, a portfolio tool). Every application with that ID
+-- (its own Application.ExternalId, else the applicationId its repository's metadata.json declares) belongs to the
+-- product: MapProductExternalIds maps them. Administrators set it (Admin -> Products -> the product).
+IF COL_LENGTH(N'[${schema}].Product', N'ExternalId') IS NULL
+ALTER TABLE [${schema}].Product ADD ExternalId nvarchar(100) NULL;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UX_Product_ExternalId' AND object_id = OBJECT_ID(N'[${schema}].Product'))
+CREATE UNIQUE INDEX UX_Product_ExternalId ON [${schema}].Product (ExternalId) WHERE ExternalId IS NOT NULL;
+GO
+-- (with ExternalId: 56)
+CREATE OR ALTER TRIGGER [${schema}].trProductAudit ON [${schema}].Product
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'Product', COALESCE(i.ProductId, d.ProductId), COALESCE(i.Name, d.Name),
+           CASE WHEN d.ProductId IS NULL THEN N'insert' WHEN i.ProductId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.ProductId IS NOT NULL THEN (SELECT d.Name, d.Description, d.Owner, d.InfoUrl, d.ExternalId,
+                (SELECT b.Name FROM [${schema}].BusinessUnit b WHERE b.BusinessUnitId = d.BusinessUnitId) AS BusinessUnit
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.ProductId IS NOT NULL THEN (SELECT i.Name, i.Description, i.Owner, i.InfoUrl, i.ExternalId,
+                (SELECT b.Name FROM [${schema}].BusinessUnit b WHERE b.BusinessUnitId = i.BusinessUnitId) AS BusinessUnit
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.ProductId = i.ProductId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.ProductId IS NULL OR i.ProductId IS NULL
+       OR EXISTS (SELECT i.Name, i.Description, i.Owner, i.InfoUrl, i.BusinessUnitId, i.ExternalId
+                  EXCEPT SELECT d.Name, d.Description, d.Owner, d.InfoUrl, d.BusinessUnitId, d.ExternalId);
+END;
+GO
+-- The applications whose ID (Application.ExternalId, else the one their repository declares) is a product's
+-- ExternalId get that product. @ProductId: an administrator just set that product's ID, so all of its applications
+-- move to it now. Without it (AutoMapProjects: after every scan run, and when an application's ID changes) only the
+-- applications nobody mapped, or mapped automatically, move: a mapping people made later is kept.
+CREATE OR ALTER PROCEDURE [${schema}].MapProductExternalIds @ProductId int = NULL AS
+BEGIN
+    SET NOCOUNT ON;
+    UPDATE a SET ProductId = x.ProductId, ProductAutoAt = SYSUTCDATETIME()
+    FROM [${schema}].Application a
+    CROSS APPLY (SELECT COALESCE(a.ExternalId, (SELECT TOP (1) r.ExternalAppId FROM [${schema}].OrgRepository r
+                                                WHERE r.RepositoryUrl = a.RepositoryUrl AND r.RemovedAt IS NULL
+                                                  AND r.ExternalAppId IS NOT NULL
+                                                ORDER BY r.LastSeenAt DESC, r.RepositoryId)) AS Id) e
+    JOIN [${schema}].Product x ON x.ExternalId = e.Id
+    WHERE a.Retired = 0 AND (a.ProductId IS NULL OR a.ProductId <> x.ProductId)
+      AND (x.ProductId = @ProductId OR (@ProductId IS NULL AND (a.ProductId IS NULL OR a.ProductAutoAt IS NOT NULL)));
+END;
+GO
+-- (with MapProductExternalIds: 56) the products' external IDs first: they are more specific than the project
+CREATE OR ALTER PROCEDURE [${schema}].AutoMapProjects AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    BEGIN TRANSACTION;
+    EXEC [${schema}].MapProductExternalIds;
+    DECLARE @todo TABLE (ProjectId int PRIMARY KEY, ProductName nvarchar(200) NOT NULL);
+    INSERT @todo (ProjectId, ProductName)
+    SELECT p.ProjectId, LEFT(REPLACE(p.Name, N'--', N'/'), 200)
+    FROM [${schema}].OrgProject p WITH (UPDLOCK, HOLDLOCK)
+    WHERE p.ProductMappedAt IS NULL AND p.RemovedAt IS NULL AND p.AdminState IS NULL AND p.Name <> N'_'
+      AND EXISTS (SELECT 1 FROM [${schema}].OrgRepository r
+                  JOIN [${schema}].Application a ON a.RepositoryUrl = r.RepositoryUrl
+                  WHERE r.ScanId = p.ScanId AND r.ProjectName = p.Name AND r.RemovedAt IS NULL AND a.Retired = 0);
+    INSERT [${schema}].Product (Name, Description)
+    SELECT DISTINCT t.ProductName, N'Made from the project ' + t.ProductName + N' by the organization scan'
+    FROM @todo t WHERE NOT EXISTS (SELECT 1 FROM [${schema}].Product x WITH (UPDLOCK, HOLDLOCK) WHERE x.Name = t.ProductName);
+    UPDATE p SET ProductId = x.ProductId, ProductMappedAt = SYSUTCDATETIME()
+    FROM [${schema}].OrgProject p JOIN @todo t ON t.ProjectId = p.ProjectId
+    JOIN [${schema}].Product x ON x.Name = t.ProductName;
+    UPDATE a SET ProductId = m.ProductId, ProductAutoAt = SYSUTCDATETIME()
+    FROM [${schema}].Application a
+    CROSS APPLY (SELECT TOP (1) p.ProductId FROM [${schema}].OrgRepository r
+                 JOIN [${schema}].OrgProject p ON p.ScanId = r.ScanId AND p.Name = r.ProjectName
+                 WHERE r.RepositoryUrl = a.RepositoryUrl AND r.RemovedAt IS NULL AND p.ProductId IS NOT NULL
+                 ORDER BY r.LastSeenAt DESC, r.RepositoryId) m
+    WHERE a.ProductId IS NULL AND a.ProductAutoAt IS NULL;
+    COMMIT;
+END;
+GO
+GRANT EXECUTE ON [${schema}].MapProductExternalIds TO [${schema}_admin];
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 56) INSERT [${schema}].SchemaVersion (Version) VALUES (56);

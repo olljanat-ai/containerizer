@@ -266,6 +266,36 @@ class configured:
         _OVERRIDE.update(self.saved)
 
 
+# A scan run's LLM for questions too big for its own (Admin -> Source control & LLM -> Calls up to): the built-in LLM.
+# (tokens, settings, model): a question estimated above `tokens` input tokens, or one the LLM refuses as bigger than its
+# context window, goes to `settings` (ai.configured) with `model`. The LLM queue routes by size itself (llmqueue.Slots).
+_OVERFLOW: contextvars.ContextVar = contextvars.ContextVar("containerizer_llm_overflow", default=None)
+CHARS_PER_TOKEN = 3.5                   # as llmqueue.CHARS_PER_TOKEN
+
+
+class overflow:
+    """`with overflow(28000, builtin_settings, model):` the LLM calls in it bigger than 28000 estimated input tokens
+    (0: only those the LLM refuses as too big for its context) go to the other LLM."""
+
+    def __init__(self, tokens: int, settings: dict | None, model: str | None = None):
+        self.route = (int(tokens or 0), settings, model) if settings else None
+
+    def __enter__(self):
+        self.token = _OVERFLOW.set(self.route)
+        return self
+
+    def __exit__(self, *exc):
+        _OVERFLOW.reset(self.token)
+
+
+def _overflow_for(chars: int) -> tuple | None:
+    """The overflow route when a question of `chars` characters is too big for this run's LLM; None when it is not."""
+    route = _OVERFLOW.get()
+    if route and route[0] and chars / CHARS_PER_TOKEN > route[0]:
+        return route
+    return None
+
+
 def _backend() -> str:
     b = _env("CONTAINERIZER_AI_BACKEND", "").strip().lower()
     if b:
@@ -371,7 +401,17 @@ def ask_json(prompt: str, schema: dict, model: str | None = None, effort: str = 
     unless its answer is in the cache."""
     slots = getattr(_THREAD, "slots", None)
     if slots is None:
-        return _ask_json(prompt, schema, model, effort, feature, system, max_tokens)
+        chars = len(system or SYSTEM) + len(prompt) + len(json.dumps(schema))
+        route = _overflow_for(chars)
+        if route is None:
+            try:
+                return _ask_json(prompt, schema, model, effort, feature, system, max_tokens)
+            except _ContextTooLong:              # refused as bigger than its context window: the other LLM takes it
+                route = _OVERFLOW.get()
+        print(f"[ai] a question of about {int(chars / CHARS_PER_TOKEN)} tokens: asking the LLM for big questions",
+              file=sys.stderr, flush=True)
+        with configured(route[1], local=True), overflow(0, None):
+            return _ask_json(prompt, schema, route[2] or model, effort, feature, system, max_tokens)
     import contextlib
     # the size of the question as the LLM queue estimates a job's (InputChars: system prompt, prompt and schema)
     chars = len(system or SYSTEM) + len(prompt) + len(json.dumps(schema))
@@ -712,6 +752,8 @@ def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False, sys
         return _ask_openai_once(prompt, schema, model, _retry, system, max_tokens)
     except _ContextTooLong as ex:
         base = _llm_base_url()
+        if _OVERFLOW.get() and not _fitted:
+            raise                                   # ask_json gives it to the LLM for big questions, uncut
         if _fitted:
             raise RuntimeError(f"LLM server {base}: the question does not fit the model's context window of {ex.limit} "
                                f"tokens even cut down; give the server a bigger context (vLLM --max-model-len, "

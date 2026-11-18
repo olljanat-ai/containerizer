@@ -188,7 +188,7 @@ class Api:
 
     SELECT = {
         "BusinessUnit": "SELECT b.BusinessUnitId AS Id, b.Name, b.Owner, b.Description, b.CreatedAt FROM cz.BusinessUnit b",
-        "Product": "SELECT p.ProductId AS Id, p.Name, p.Owner, p.Description, p.InfoUrl, p.BusinessUnitId, "
+        "Product": "SELECT p.ProductId AS Id, p.Name, p.Owner, p.Description, p.InfoUrl, p.ExternalId, p.BusinessUnitId, "
                    "b.Name AS BusinessUnitName, p.CreatedAt FROM cz.Product p "
                    "LEFT JOIN cz.BusinessUnit b ON b.BusinessUnitId = p.BusinessUnitId",
         "Application": "SELECT a.ApplicationId AS Id, a.Name, a.DisplayName, a.Owner, a.Description, a.ProductId, "

@@ -139,6 +139,7 @@ def link(conn, form: dict):
                     c.execute("UPDATE cz.Application SET ExternalId = %s WHERE ApplicationId = %s AND ExternalId IS NULL",
                               (r["ExternalAppId"], apps[0]["ApplicationId"]))
                     n += 1
+            c.execute("EXEC cz.MapProductExternalIds")
             conn.commit()
             return _back(f"Linked {n} application{'s' if n != 1 else ''}.")
         app = form.get("ApplicationId", [""])[0]
@@ -146,6 +147,7 @@ def link(conn, form: dict):
         if not re.fullmatch(r"\d{1,9}", app) or not ext:
             return _back("Not linked: not a valid ID.")
         c.execute("UPDATE cz.Application SET ExternalId = %s WHERE ApplicationId = %s", (ext, int(app)))
+        c.execute("EXEC cz.MapProductExternalIds")
         conn.commit()
     except Exception:
         conn.rollback()
@@ -166,6 +168,7 @@ def add(conn, form: dict):
             return _back("Not added: the repository declares no ID (any more).")
         cur.execute("EXEC cz.AddRepositoryApplication @RepositoryId = %s, @ExternalId = %s", (int(rid), row["ExternalAppId"]))
         got = cur.fetchone() or {}
+        cur.execute("EXEC cz.MapProductExternalIds")
         conn.commit()
     except Exception:
         conn.rollback()
@@ -185,7 +188,9 @@ def save_id(conn, app_id: int, form: dict):
         return redirect(f"/admin/applications/{app_id}?" + urlencode({"msg": "Not saved: letters, digits and . _ : - only, "
                                                                         "at most 100."}))
     try:
-        conn.cursor().execute("UPDATE cz.Application SET ExternalId = %s WHERE ApplicationId = %s", (ext, app_id))
+        c = conn.cursor()
+        c.execute("UPDATE cz.Application SET ExternalId = %s WHERE ApplicationId = %s", (ext, app_id))
+        c.execute("EXEC cz.MapProductExternalIds")     # a product with this ID: the application belongs to it
         conn.commit()
     except Exception:
         conn.rollback()
