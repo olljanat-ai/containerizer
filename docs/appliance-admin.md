@@ -741,3 +741,58 @@ use the host network again, for a proxy that listens only on `127.0.0.1`.
 | Status of the system agent | `/run/containerizer/system/status.json`, `journalctl -u containerizer-sysagent` |
 | Planned restart (Admin → System) | `/var/lib/containerizer/system/restart-plan.json`, `journalctl -u containerizer-restart` |
 | Locked out of SSH | the console of the VM: GRUB menu → recovery, or a previous snapshot |
+
+### Database tasks from the shell
+
+Some bulk tasks have no button yet. Run them on the appliance as root, against the results database in the
+`cz-mssql` container. With an [external database](#external-database), run the same SQL against your SQL Server.
+
+The tables are in the schema **`containerizer`**: `Schema=` in the connection string or
+`CONTAINERIZER_SQL_SCHEMA` changes it (the code names them `cz.<table>` and puts the configured schema in their
+place). To check it:
+
+```sh
+SA="$(cat /etc/containerizer/secrets/mssql-sa)"
+docker exec cz-mssql /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$SA" -d Containerizer \
+  -Q "SELECT SCHEMA_NAME(schema_id) FROM sys.tables WHERE name = 'LlmHeavyWindow'"
+```
+
+**End every LLM-heavy window.** The same as **End now** on each one under Admin → LLM queue → LLM-heavy now
+([LLM-heavy for a while](source-control.md#llm-heavy-for-a-while)): their jobs take their usual place in the
+queue again, their orders make no more LLM calls, and their chains stop. It prints how many windows it ended.
+
+```sh
+docker exec cz-mssql /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$SA" -d Containerizer \
+  -Q "UPDATE containerizer.LlmHeavyWindow SET EndsAt = SYSUTCDATETIME(), EndedAt = SYSUTCDATETIME(), EndedBy = N'root', EndedByName = N'Ended all from the shell' WHERE EndsAt > SYSUTCDATETIME()"
+```
+
+**Export the outcome of Make it A orders.** To find out where many [Make it A](refactoring.md#make-it-a) orders
+fail (the reason each one stopped, its passes and repair rounds, build and run logs, sandbox state, the findings
+left, the rating before and after), export them as one JSON file. First, how many orders there are by goal
+and status (Make it A is `rating-a`):
+
+```sh
+docker exec cz-mssql /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$SA" -d Containerizer -Q "
+SELECT JSON_VALUE(Payload, '$.goal') AS Goal, Status, COUNT(*) AS Orders
+FROM containerizer.LlmJob WHERE Kind = N'refactor' GROUP BY JSON_VALUE(Payload, '$.goal'), Status"
+```
+
+Then the export. `bcp` writes the long JSON whole (sqlcmd cuts long values); it writes into the container's
+`/var/opt/mssql`, which is `/var/lib/containerizer/mssql` on the host, so the file needs no copying out of the
+container. The patches themselves are left out:
+
+```sh
+install -d -m 0770 -o 10001 -g 0 /var/lib/containerizer/mssql/backup
+Q=$(cat <<'SQL'
+SET NOCOUNT ON; SELECT (SELECT j.JobId, j.App, j.Component, j.Status, j.Summary, j.Error, j.Note, j.Model, j.Endpoint, j.Attempts, j.QueuedAt, j.FinishedAt, j.Seconds, j.InputTokens, j.OutputTokens, JSON_VALUE(j.Payload, '$.heavy_round') AS HeavyRound, JSON_QUERY(JSON_MODIFY(JSON_MODIFY(JSON_MODIFY(j.Result, '$.patch', NULL), '$.patch_b64', NULL), '$.files', NULL)) AS Result FROM Containerizer.containerizer.LlmJob j WHERE j.Kind = N'refactor' AND JSON_VALUE(j.Payload, '$.goal') = N'rating-a' AND j.Status IN (N'answered', N'failed') ORDER BY j.JobId FOR JSON PATH)
+SQL
+)
+docker exec cz-mssql /opt/mssql-tools18/bin/bcp "$Q" queryout /var/opt/mssql/backup/make-it-a-export.json \
+  -c -u -S localhost -U sa -P "$SA"
+ls -lh /var/lib/containerizer/mssql/backup/make-it-a-export.json
+```
+
+To export only recent orders, add `AND j.QueuedAt > DATEADD(day, -3, SYSUTCDATETIME())` before `ORDER BY`. Logs
+and the findings left still quote lines of the applications' code, paths and host names: keep the file like
+the code, and delete it once copied off (`scp root@<appliance>:/var/lib/containerizer/mssql/backup/make-it-a-export.json .`).
+Do not use `docker cp` for files of a running container: it pauses the container while it copies.
