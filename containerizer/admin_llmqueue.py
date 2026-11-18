@@ -177,7 +177,9 @@ def lanes_html(ls: list[dict], calls: dict | None = None) -> str:
             return f"<a href='/admin/source-control#built-in-llm'>{e(ln['label'])}</a>"
         return e(ln["label"])
     trs = "".join(f"<tr><td class='num'>{int(ln['order'])}</td><td>{link(ln)}</td>"
-                  f"<td>{_size(ln['max_tokens'])}</td>"
+                  f"<td>{_size(ln['max_tokens'])}"
+                  + ("<div class='muted small'>only calls no other LLM takes</div>" if ln.get("overflow") else "")
+                  + "</td>"
                   f"<td class='num'>{int(ln['parallel'])}</td>"
                   f"<td class='num'>{int(calls.get(ln.get('label') or ln['name'], 0))}</td></tr>" for ln in ls)
     warn = ""
@@ -603,10 +605,10 @@ it is answered. Builds take CPU and memory, as does the built-in LLM. 0: automat
 one)</span></label><input id='JobsAtOnce' name='JobsAtOnce' type='number' min='0' max='{lq.JOBS_AT_ONCE_MAX}'
 value='{int(v.get('JobsAtOnce') or 0)}'>
 <label for='LocalOrder'>Built-in LLM beside the registered LLMs: its order <span class='muted'>(the appliance only;
-empty: only when no LLM is registered)</span></label><input id='LocalOrder' name='LocalOrder' type='number' min='0'
+empty: last, for the calls no registered LLM takes by size)</span></label><input id='LocalOrder' name='LocalOrder' type='number' min='0'
 max='1000' value='{"" if v.get('LocalOrder') is None else int(v['LocalOrder'])}'>
 <label for='LocalMaxTokens'>Built-in LLM: calls up to <span class='muted'>(estimated input tokens of one LLM call,
-when beside the registered LLMs; bigger calls go to the next LLM in the order; 0: any size)</span></label><input id='LocalMaxTokens'
+when it has a place in the order; bigger calls go to the next LLM in the order; 0: any size)</span></label><input id='LocalMaxTokens'
 name='LocalMaxTokens' type='number' min='0' max='10000000' value='{int(v.get('LocalMaxTokens') or 0)}'>
 <h3>Approval</h3>
 <p class='note'>{e(approval_text(v) + reject_text(v))}</p>
