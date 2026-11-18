@@ -614,6 +614,32 @@ a new cluster starts them empty, or restores the uploaded backups again, and cre
 With an [external database](#external-database) the results database is backed up with your SQL Server:
 skip its row and the `BACKUP DATABASE` step below. The files are still needed.
 
+### Scheduled backup
+
+**Admin → System → Scheduled backup** backs the appliance up on a schedule: tick **Back up on a schedule**, set the
+time of day (UTC) and the days of the week, and how many days to keep the archives, then **Save the schedule**.
+**Back up now** makes one at once. Each backup is one archive,
+`/var/lib/containerizer/backups/containerizer-<UTC time>.tgz` (the folder and the archives are readable by root
+only), with what the table above lists: a `BACKUP DATABASE` of the results database (`containerizer.bak`, not with
+an [external database](#external-database): your SQL Server backs that up), `/etc/containerizer` with its secrets,
+the dev database uploads, the appliance settings, the learned rules, Caddy's CA, and OpenBao and kubemg when they
+are there. Not the metrics, the built-in LLM's model file, nor what scans make again. Archives older than the days
+to keep are deleted after a backup that worked; the newest one always stays. The page shows the last backup (or
+why it failed), the next time and the archives.
+
+The system agent checks every 5 minutes whether a backup is due and runs it as the systemd unit
+`containerizer-backup`, at low CPU and disk priority (`journalctl -u containerizer-backup` has its log). A backup
+missed while the appliance was off runs when it is back, within a day of its time; a new schedule does not make up
+for times before it. The archives are on the same disk as everything else: copy them off the appliance too (for
+example `scp root@<appliance>:/var/lib/containerizer/backups/containerizer-*.tgz .` from your backup server), and
+keep them like secrets: they hold every secret of the appliance. To restore one, unpack it as below (it has the
+database backup at `var/lib/containerizer/mssql/backup/containerizer.bak`) and run the `RESTORE DATABASE` step.
+
+![Admin → System → Scheduled backup: the schedule, the last backup and the archives](images/admin-system-backup.png#only-light){ .cz-shot }
+![Admin → System → Scheduled backup: the schedule, the last backup and the archives](images/admin-system-backup-dark.png#only-dark){ .cz-shot }
+
+### By hand
+
 Back up the database (from the appliance):
 
 ```sh
