@@ -3326,3 +3326,27 @@ GO
 GRANT EXECUTE ON [${schema}].MapProductExternalIds TO [${schema}_admin];
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 56) INSERT [${schema}].SchemaVersion (Version) VALUES (56);
+GO
+
+-- 57: a repository the organization lists but whose content the scan's token may not read (its own permissions, or its
+-- project's: Azure DevOps TF401027) is an automatic skip, skipped-no-access, listed only under Hidden. Every scan
+-- tries again, so it comes back once the token may read it.
+CREATE OR ALTER VIEW [${schema}].vOrgRepository AS
+SELECT r.RepositoryId, r.ScanId, r.ProjectName, r.Name, r.ExternalId, r.CloneUrl, r.WebUrl, r.RepositoryUrl,
+       r.DefaultBranch, r.AppName, r.LastActivityAt, r.FirstSeenAt, r.FirstRunId, r.LastSeenAt, r.RemovedAt,
+       r.AdminState, r.AdminNote, r.SkipStatus, r.SkipReason, r.LastStatus, r.LastReason, r.LastCommit, r.LastCommitAt,
+       r.LastRating, r.LastScannedAt, r.LastRunId, r.LastSeconds, r.LastDetail, r.Enabled, r.SplitPath, r.SecretFilesPath, r.Hidden, r.IgnoreDockerfiles,
+       p.ProjectId, p.AdminState AS ProjectState, p.AdminNote AS ProjectNote,
+       COALESCE(r.LastCommitAt, r.LastActivityAt) AS LatestCommitAt,
+       CAST(CASE WHEN r.RemovedAt IS NULL AND r.Enabled = 1 AND p.AdminState IS NULL THEN 1 ELSE 0 END AS bit) AS Active,
+       -- listed only under Hidden: hidden by an administrator, or an automatic skip the provider's API shows (archived,
+       -- empty, fork, stale, filtered: org.META_SKIPS), or a clone the provider refused (no access), that no
+       -- administrator overrode
+       CAST(CASE WHEN r.Hidden = 1 OR (COALESCE(r.AdminState, N'') <> N'enabled' AND r.SkipStatus IN (N'skipped-archived',
+                 N'skipped-empty', N'skipped-fork', N'skipped-stale', N'skipped-filter', N'skipped-output',
+                 N'skipped-no-access'))
+                 THEN 1 ELSE 0 END AS bit) AS IsHidden
+FROM [${schema}].OrgRepository r
+LEFT JOIN [${schema}].OrgProject p ON p.ScanId = r.ScanId AND p.Name = r.ProjectName;
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 57) INSERT [${schema}].SchemaVersion (Version) VALUES (57);

@@ -32,7 +32,7 @@ SKIP_TEXT = {"skipped-dockerfile": "Has a Dockerfile", "skipped-no-code": "No ap
              "skipped-unsupported": "Language not supported", "skipped-no-app": "Nothing to deploy",
              "skipped-stale": "Not updated recently", "skipped-archived": "Archived", "skipped-empty": "Empty",
              "skipped-fork": "Fork", "skipped-filter": "Left out by the filter",
-             "skipped-output": "The scan's output repository"}
+             "skipped-output": "The scan's output repository", "skipped-no-access": "No access to its content"}
 LAST_TEXT = {"deployed": "Deployed to the sandbox", "no-a-components": "Assessed: no component rated A",
              "sandbox-off": "Assessed: its sandbox is turned off",
              "moved": "Assessed: its files are in its own output repository",
@@ -109,7 +109,8 @@ def repo_state(r: dict) -> tuple[str, str, str]:
     if r.get("Hidden"):
         return "Hidden", "administrator", "hidden by an administrator (disabled)" + note
     if r.get("IsHidden") and r.get("AdminState") != "enabled":
-        # an automatic skip the provider's API shows (archived, empty, fork, stale, filtered): listed under Hidden
+        # an automatic skip the provider's API shows (archived, empty, fork, stale, filtered), or a clone the
+        # provider refused (no access): listed under Hidden
         return "Hidden", "automatic", skip + (f"; {r['AdminNote']}" if r.get("AdminNote") else "")
     if r.get("AdminState") == "disabled":
         return "Disabled", "administrator", "disabled by an administrator" + note + (f"; automatic skip: {skip}" if skip else "")
@@ -824,7 +825,7 @@ def list_repos(adm, conn, s, a, q: dict, flash: str) -> Response:
             f"under <a href='/admin/repositories/projects'>Projects</a>. <b>Not scanned</b> lists the enabled ones no "
             f"run has processed yet: select them all and <b>Scan now</b>. <b>Discover</b> on the scan's page fills this "
             f"list with the latest commits without a full scan.</p>"
-            + (f"<p class='muted small'>{hidden} hidden repositor{'y' if hidden == 1 else 'ies'} (hidden by an administrator, archived, empty, forks, not updated recently or filtered out, or of disabled projects) not listed: "
+            + (f"<p class='muted small'>{hidden} hidden repositor{'y' if hidden == 1 else 'ies'} (hidden by an administrator, archived, empty, forks, not updated recently, filtered out or with no access to their content, or of disabled projects) not listed: "
                f"<a href='/admin/repositories?{e(urlencode({**base, 'show': 'hidden'}))}'>Hidden</a>.</p>" if hidden else "")
             + f"{search}"
             f"<nav class='chips'>{chips} {sort_link}</nav>"
