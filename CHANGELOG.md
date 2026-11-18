@@ -8,6 +8,15 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.8 (2026-11-18)
+
+- **The built-in LLM beside a registered LLM, by default**: with an LLM registered, the built-in LLM took no LLM
+  queue job unless an administrator gave it a place in the order, so jobs bigger than every registered LLM's
+  **Calls up to** waited for good. Now, when it is on and has no place in the order, it comes last with any size.
+  It takes only the jobs and calls no registered LLM takes by size. A small one still waits for its own LLM while
+  that is busy, rather than going to the slow built-in one. The LLM queue page marks it *only calls no other LLM
+  takes*. A place in the order (LLM queue → Settings) still puts it there, as before.
+
 ## 0.51.7 (2026-11-18)
 
 - **`LLM server ... answered HTTP 400: Input length (57989) exceeds model's maximum context length (32768)`**: a

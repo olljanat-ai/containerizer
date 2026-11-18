@@ -900,24 +900,30 @@ def plan_lanes(registered: list, builtin: list | None, settings: dict) -> list[d
     opened) with its biggest LLM call (LlmMaxTokens, estimated input tokens of one call; 0: any) and requests at once
     (LlmParallel); each server of the appliance's built-in LLM (local_llm.server_lanes: one per NUMA node) as an LLM
     of its own, one request at once (alone: Parallel shared out), beside them when it has a place in the order
-    (LocalOrder, LocalMaxTokens) or alone when none is registered; a server still loading its model takes no call yet;
+    (LocalOrder, LocalMaxTokens), else last for the calls no registered LLM takes by size (overflow), or alone when
+    none is registered; a server still loading its model takes no call yet;
     else the environment's LLM (settings None) with Parallel. Each LLM call of a job goes to the first lane with a
     free request that takes its size (Slots); a job starts when one with a spare request takes its estimate."""
     s = {**DEFAULTS, **(settings or {})}
     lanes = [{"name": f"llm-{c.id}", "label": c.label, "settings": c.ai_settings(), "max_tokens": int(c.llm_max_tokens or 0),
               "parallel": max(1, int(c.llm_parallel or 1)), "order": int(c.llm_order)} for c in registered]
     builtin = builtin or []
-    if builtin and (not lanes or s.get("LocalOrder") is not None):
+    if builtin:
         alone = not lanes
+        # beside the registered LLMs without a place of its own: last, for the calls none of them takes by size
+        last = not alone and s.get("LocalOrder") is None
         each = max(1, -(-int(s["Parallel"] or 1) // len(builtin))) if alone else 1
+        after = max([int(ln["order"]) for ln in lanes], default=0) + 1
         for sv in builtin:
             where = (f", server {int(sv['index'])}" + (f" (NUMA node {int(sv['node'])})" if sv.get("node") is not None else "")
                      if len(builtin) > 1 else "")
             lanes.append({"name": f"built-in-{int(sv['index'])}",
                           "label": f"built-in LLM ({sv['settings'].get('CONTAINERIZER_MODEL')}){where}"
                                    + ("" if sv.get("ready") else ", loading its model"),
-                          "settings": sv["settings"], "max_tokens": 0 if alone else int(s.get("LocalMaxTokens") or 0),
-                          "parallel": each if sv.get("ready") else 0, "order": 0 if alone else int(s["LocalOrder"])})
+                          "settings": sv["settings"],
+                          "max_tokens": 0 if alone or last else int(s.get("LocalMaxTokens") or 0),
+                          "parallel": each if sv.get("ready") else 0,
+                          "order": 0 if alone else after if last else int(s["LocalOrder"]), "overflow": last})
     if not lanes:
         lanes.append({"name": "environment", "label": "the worker's own LLM settings", "settings": None,
                       "max_tokens": 0, "parallel": max(1, int(s["Parallel"] or 1)), "order": 0})
@@ -961,9 +967,20 @@ class Slots:
             self.cond.notify_all()
 
     def candidates(self, tokens: int, lanes: list[dict] | None = None) -> list[dict]:
-        """The LLMs that take a call of `tokens`, in their order (those with a request at all)."""
-        ls = [ln for ln in (self.lanes if lanes is None else lanes) if int(ln["parallel"]) > 0]
-        fit = [ln for ln in ls if not ln["max_tokens"] or tokens <= int(ln["max_tokens"])]
+        """The LLMs that take a call of `tokens`, in their order (those with a request at all). An overflow LLM (the
+        built-in one last, plan_lanes) takes only the calls no other LLM takes by size: a small call waits for its
+        own LLM rather than going to the slow one while that is busy."""
+        def fits(ln):
+            return not ln["max_tokens"] or tokens <= int(ln["max_tokens"])
+        if any(ln.get("overflow") for ln in self.lanes):
+            regular = any(fits(ln) for ln in self.lanes if not ln.get("overflow") and int(ln["parallel"]) > 0)
+            ls = [ln for ln in (self.lanes if lanes is None else lanes)
+                  if int(ln["parallel"]) > 0 and bool(ln.get("overflow")) != regular]
+            if not regular:
+                return ls
+        else:
+            ls = [ln for ln in (self.lanes if lanes is None else lanes) if int(ln["parallel"]) > 0]
+        fit = [ln for ln in ls if fits(ln)]
         if fit or not ls:
             return fit
         top = max(int(ln["max_tokens"]) for ln in ls)
@@ -1606,10 +1623,15 @@ class Runner:
                 self.status = why
             while ok and not self.stopping.is_set() and busy < room:
                 free = [ln for ln in lanes if spare.get(ln["name"], 0) > 0]
-                # an LLM with a spare request takes the next job of a size it takes; none: only jobs without LLM work
-                limit = 0 if not free else None if any(not ln["max_tokens"] for ln in free) else \
-                    max(int(ln["max_tokens"]) for ln in free)
+                # an LLM with a spare request takes the next job of a size it takes; none: only jobs without LLM work.
+                # An overflow LLM (the built-in one last) only the jobs too big for every other LLM.
+                regular = [ln for ln in free if not ln.get("overflow")]
+                limit = 0 if not regular else None if any(not ln["max_tokens"] for ln in regular) else \
+                    max(int(ln["max_tokens"]) for ln in regular)
                 row = self.claim(conn, max_tokens=limit)
+                others = [ln for ln in lanes if not ln.get("overflow")]
+                if not row and len(regular) < len(free) and others and all(ln["max_tokens"] for ln in others):
+                    row = self.claim(conn, min_tokens=max(int(ln["max_tokens"]) for ln in others) + 1)
                 if not row:
                     break
                 est = int(row.get("EstInputTokens") or 0)

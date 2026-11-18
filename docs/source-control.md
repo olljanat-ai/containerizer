@@ -217,7 +217,9 @@ small, cheap servers first with a size limit and a big one last with any size. A
 review is one call, so the limit is the job's size; a refactoring order makes one call per file (and per repair
 round), each of its own size, which may go to different LLMs. A job whose estimated size no LLM takes waits (the
 LLM queue page warns about it). On the appliance the built-in LLM can join the list too (LLM queue → Settings: its
-order and the biggest call it takes), with one request per server it runs. Scans that ask the LLM directly,
+order and the biggest call it takes), with one request per server it runs. Without a place in the order it is
+last, with any size, for the calls no registered LLM takes by size: a small call waits for its LLM rather than going
+to the slow built-in one while that LLM is busy. Scans that ask the LLM directly,
 outside the queue, use the first LLM in the order. A question bigger than that LLM's **Calls up to**,
 or one its server refuses as bigger than the model's context window, goes to the built-in LLM when it is on
 (an LLM served with a short context, `--max-model-len 32768`, for want of memory). Without the built-in LLM,
@@ -237,7 +239,7 @@ registration per server). See [how jobs and LLM requests are scheduled](#how-job
 CPU: Qwen3-Coder 30B-A3B with llama.cpp, turned on under **Admin → Source control & LLM** (off by
 default; it needs a machine with at least 40 GB of memory, see
 [Running the appliance](appliance-admin.md#built-in-llm)). Scans with **Ask the LLM** use it when no LLM is
-set on that page; an LLM set there is used instead, unless the built-in LLM has a place in the LLM queue's order
+set on that page; an LLM set there is used instead, and the built-in LLM takes the calls too big for it
 (see *Several LLMs at once* above). Expect about 7 to 12 tokens per second and a few
 minutes per answer: fine for the components the rules are unsure of, too slow for LLM-heavy mode. Use the
 queued LLM mode for organization scans where it is offered, so the scans do not wait for each answer.

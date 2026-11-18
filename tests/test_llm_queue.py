@@ -818,8 +818,10 @@ def test_lanes_follow_the_order_sizes_and_requests_at_once():
         [("built-in-0", 4000, 1), ("built-in-1", 4000, 1), ("llm-2", 15000, 1), ("llm-1", 0, 4)]
     assert lanes[2]["settings"]["CONTAINERIZER_MODEL"] == "small"
     assert lanes[1]["settings"]["CONTAINERIZER_LLM_BASE_URL"] == "http://127.0.0.1:8091/v1"
-    # no place in the order: the built-in LLM is not used beside registered ones (as before)
-    assert [ln["name"] for ln in lq.plan_lanes([gpu], SERVERS, {})] == ["llm-1"]
+    # no place in the order: last, for the calls no registered LLM takes by size (any size, one request per server)
+    assert [(ln["name"], ln["max_tokens"], ln["parallel"], ln["order"], ln.get("overflow", False))
+            for ln in lq.plan_lanes([cpu], SERVERS, {})] == \
+        [("llm-2", 15000, 1, 20, False), ("built-in-0", 0, 1, 21, True), ("built-in-1", 0, 1, 21, True)]
     # alone, it takes every job, Parallel shared out between its servers
     assert [(ln["max_tokens"], ln["parallel"]) for ln in lq.plan_lanes([], SERVERS[:1], {"Parallel": 3})] == [(0, 3)]
     assert [ln["parallel"] for ln in lq.plan_lanes([], SERVERS, {"Parallel": 3})] == [2, 2]
@@ -839,9 +841,10 @@ def _fill_runner(monkeypatch, lanes, jobs, settings=None, conn=None):
     r.limits = []
 
     def claim(conn, max_tokens=None, min_tokens=None):
-        r.limits.append(max_tokens)
+        r.limits.append(max_tokens if min_tokens is None else f">={min_tokens}")
         for j in jobs:
-            if max_tokens is None or int(j.get("EstInputTokens") or 0) <= max_tokens:
+            n = int(j.get("EstInputTokens") or 0)
+            if (max_tokens is None or n <= max_tokens) and (min_tokens is None or n >= min_tokens):
                 jobs.remove(j)
                 return dict(j)
         return None
@@ -881,6 +884,28 @@ def test_fill_starts_jobs_in_order_while_an_llm_takes_them_and_job_slots_are_fre
             assert [x["JobId"] for x in submitted] == [8, 9]
         finally:
             ai.LISTENERS.remove(r2.metrics.llm)
+    finally:
+        ai.LISTENERS.remove(r.metrics.llm)
+
+
+def test_the_built_in_llm_last_takes_only_what_the_registered_llm_does_not(monkeypatch):
+    """vLLM with a 32k context (Calls up to 28,000) and the built-in LLM on, with no place in the order: the built-in
+    LLM is last and takes only the jobs and calls over 28,000; a small one waits for vLLM, however busy."""
+    vllm = _llm(1, 1, 28000, 1, "openai/gpt-oss-20b")
+    lanes = lq.plan_lanes([vllm], SERVERS[:1], {})
+    slots = lq.Slots()
+    slots.update(lanes)
+    assert [ln["name"] for ln in slots.candidates(1000)] == ["llm-1"]
+    assert [ln["name"] for ln in slots.candidates(60000)] == ["built-in-0"]
+    assert [ln["name"] for ln in slots.candidates(1000, [lanes[1]])] == []      # vLLM busy: not to the built-in one
+    jobs = [{"JobId": 1, "Kind": "review", "EstInputTokens": 1000}, {"JobId": 2, "Kind": "review", "EstInputTokens": 2000},
+            {"JobId": 3, "Kind": "review", "EstInputTokens": 58000}]
+    r = _fill_runner(monkeypatch, lanes, jobs)
+    try:
+        submitted = []
+        r.fill(SimpleNamespace(submit=lambda fn, row: submitted.append(row) or row))
+        assert [(x["JobId"], x["_lane"]) for x in submitted] == [(1, "llm-1"), (3, "built-in-0")]
+        assert [x["JobId"] for x in jobs] == [2]
     finally:
         ai.LISTENERS.remove(r.metrics.llm)
 
