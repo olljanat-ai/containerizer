@@ -1208,6 +1208,10 @@ class Runner:
                 self.release([row["JobId"]])    # stopped while waiting for an LLM: back in the queue, no attempt
                 return "released"
             else:
+                # where it failed, for the queue's log (journalctl -u containerizer-llm-queue): the page has the message
+                import traceback
+                print(f"job {row['JobId']} failed:\n" + REDACT("".join(traceback.format_exception(ex))[-4000:]),
+                      file=sys.stderr, flush=True)
                 result = self.failed(row, REDACT(f"{type(ex).__name__}: {ex}")[:1000])
         else:
             if row["JobId"] in self.cancelling:

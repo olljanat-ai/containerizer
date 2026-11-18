@@ -8,6 +8,19 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.7 (2026-11-18)
+
+- **`LLM server ... answered HTTP 400: Input length (57989) exceeds model's maximum context length (32768)`**: a
+  question bigger than a self-hosted model's context window failed. The JSON modes were also tried in turn, as if
+  the server lacked them. The server's error says how big the window is (vLLM, llama.cpp, OpenAI). The question is
+  now asked once more with the middle of the prompt (evidence, logs, file lists) cut out to fit, and the answer's
+  budget is a quarter of the window at most. When it still does not fit, the error says to give the server a bigger
+  context (vLLM `--max-model-len`, llama.cpp `--ctx-size`).
+- **Make it A failed: `TypeError: '<' not supported between instances of 'int' and 'NoneType'`**: a rule finding
+  about a whole file has no line. When that file was bigger than the prompt's budget, picking the part around the
+  evidence lines failed. A finding without a line is now left out of that choice.
+- A failed LLM queue job writes its traceback to the queue's log (`journalctl -u containerizer-llm-queue`).
+
 ## 0.51.6 (2026-11-17)
 
 - **`no valid JSON in answer (answer cut off at 4096 tokens ...)` from a reasoning model** (gpt-oss, DeepSeek-R1,

@@ -795,13 +795,15 @@ def referenced_packages(project_file: Path, limit: int = 40) -> list[str]:
     return sorted(out.values())[:limit]
 
 
-def window(text: str, lines: list[int], budget: int) -> tuple[str, int, int]:
+def window(text: str, lines: list[int | None], budget: int) -> tuple[str, int, int]:
     """The file, or the part around the evidence lines that fits `budget` characters:
     (text, first line, last line), 1-based."""
     all_lines = text.split("\n")
     if len(text) <= budget or not all_lines:
         return text, 1, len(all_lines)
-    hits = [n for n in lines if 0 < n <= len(all_lines)] or [1]
+    # an evidence line may be None (a finding about the whole file): "'<' not supported between 'int' and
+    # 'NoneType'" failed Make it A on a file bigger than the budget
+    hits = [n for n in lines if isinstance(n, int) and 0 < n <= len(all_lines)] or [1]
     for ctx in (80, 40, 20, 10, 5, 2, 1, 0):
         lo, hi = max(1, min(hits) - ctx), min(len(all_lines), max(hits) + ctx)
         part = "\n".join(all_lines[lo - 1:hi])

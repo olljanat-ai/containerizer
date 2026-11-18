@@ -285,3 +285,41 @@ def test_cancelled_run_kills_the_claude_cli(monkeypatch):
     assert time.monotonic() - t0 < 3
     p = ai._run_cancellable(["cat"], "hello", 10)
     assert p.returncode == 0 and p.stdout == "hello"
+
+
+def test_a_question_bigger_than_the_context_window_is_cut_to_fit(server):
+    """vLLM with --max-model-len 32768 answered HTTP 400 "Input length (57989) exceeds model's maximum context length
+    (32768)" (and the JSON modes were tried in turn as if it lacked them). Now: asked once more, the middle cut out."""
+    seen = []
+
+    def too_long(body):
+        seen.append(body)
+        n = sum(len(m["content"]) for m in body["messages"]) // 3
+        if n > 32768 - body["max_tokens"]:
+            return 400, {"error": {"message": f"Input length ({n}) exceeds model's maximum context length (32768).",
+                                   "type": "BadRequestError", "param": None, "code": 400}}
+        return 200, {"choices": [{"message": {"role": "assistant", "content": '{"verdict": "info", "confidence": 1}'},
+                                  "finish_reason": "stop"}], "usage": {"prompt_tokens": n, "completion_tokens": 9}}
+    server.replies += [(200, too_long), (200, too_long)]
+    prompt = "TASK: rate it.\n" + "log line\n" * 20000 + "END: answer now."
+    assert ai.ask_json(prompt, SCHEMA)["verdict"] == "info"
+    assert len(seen) == 2                                   # not retried in the other JSON modes
+    fitted = seen[1]["messages"][1]["content"]
+    assert fitted.startswith("TASK: rate it.") and "END: answer now." in fitted and "left out to fit" in fitted
+    assert seen[1]["max_tokens"] == 32768 // 4
+
+    # too big even cut down: a clear error that says what to change
+    server.replies += [(400, {"error": {"message": "Input length (40000) exceeds model's maximum context length "
+                                                   "(32768)."}})] * 2
+    with pytest.raises(RuntimeError, match="context window of 32768 tokens even cut down"):
+        ai.ask_json("p2 " + "x" * 100000, SCHEMA)
+
+
+def test_context_errors_of_other_servers_are_recognised():
+    e = ai._context_error("This model's maximum context length is 8192 tokens. However, you requested 9000 tokens "
+                          "(8000 in the messages, 1000 in the completion).")
+    assert (e.limit, e.used) == (8192, 8000)
+    e = ai._context_error('{"error":{"code":400,"message":"the request exceeds the available context size, try '
+                          'increasing it","type":"exceed_context_size_error","n_prompt_tokens":40000,"n_ctx":32768}}')
+    assert (e.limit, e.used) == (32768, 40000)
+    assert ai._context_error("response_format json_schema is not supported") is None

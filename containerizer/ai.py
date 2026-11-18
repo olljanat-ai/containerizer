@@ -663,9 +663,75 @@ def _post_json_retrying(url: str, body: dict, headers: dict, timeout: float) -> 
 JSON_MODES = ("json_schema", "json_object", "none")
 
 
+# The context window an OpenAI-compatible server reports when a question does not fit it: vLLM ("Input length (57989)
+# exceeds model's maximum context length (32768)", "maximum context length is 32768 tokens. However, you requested
+# 40000 tokens (36000 in the messages, 4000 in the completion)"), llama.cpp ("exceeds the available context size",
+# n_ctx), OpenAI ("maximum context length is 8192 tokens")
+CONTEXT_LIMIT_RE = re.compile(r"(?i)(?:maximum context length(?: is)?\s*\(?|context size\D{0,40}?|n_ctx\D{0,5})(\d{3,7})")
+CONTEXT_INPUT_RE = re.compile(r"(?i)(?:input length\s*\(|(\d{2,7}) in the messages|n_prompt_tokens\D{0,5})(\d{2,7})?")
+
+
+class _ContextTooLong(Exception):
+    def __init__(self, limit: int, used: int | None, detail: str):
+        super().__init__(detail)
+        self.limit, self.used, self.detail = limit, used, detail
+
+
+def _context_error(detail: str) -> _ContextTooLong | None:
+    if not re.search(r"(?i)context (length|size|window)|n_ctx", detail):
+        return None
+    m = CONTEXT_LIMIT_RE.search(detail)
+    if not m:
+        return None
+    used = None
+    for u in CONTEXT_INPUT_RE.finditer(detail):
+        n = u.group(1) or u.group(2)
+        if n:
+            used = int(n)
+            break
+    return _ContextTooLong(int(m.group(1)), used, detail)
+
+
+def fit_prompt(prompt: str, keep_chars: int) -> str:
+    """The prompt cut to `keep_chars` characters: its start and its end (the task and the instructions are at one or
+    the other), the middle (evidence, logs, file lists) left out with a marker."""
+    if len(prompt) <= keep_chars:
+        return prompt
+    marker = f"\n\n[... {len(prompt) - keep_chars} characters left out to fit the LLM's context window ...]\n\n"
+    head = max(0, (keep_chars - len(marker)) * 2 // 3)
+    tail = max(0, keep_chars - len(marker) - head)
+    return prompt[:head] + marker + (prompt[-tail:] if tail else "")
+
+
 def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False, system: str = SYSTEM,
-                max_tokens: int | None = None):
-    """A self-hosted LLM behind an OpenAI-compatible /chat/completions endpoint."""
+                max_tokens: int | None = None, _fitted: bool = False):
+    """A self-hosted LLM behind an OpenAI-compatible /chat/completions endpoint. A question bigger than the model's
+    context window (the server's HTTP 400 says how big that is) is asked once more with the middle of the prompt cut
+    out to fit, the answer's budget a quarter of the window at most."""
+    try:
+        return _ask_openai_once(prompt, schema, model, _retry, system, max_tokens)
+    except _ContextTooLong as ex:
+        base = _llm_base_url()
+        if _fitted:
+            raise RuntimeError(f"LLM server {base}: the question does not fit the model's context window of {ex.limit} "
+                               f"tokens even cut down; give the server a bigger context (vLLM --max-model-len, "
+                               f"llama.cpp --ctx-size) or register an LLM with one: {ex.detail[:300]}") from None
+        out = min(int(max_tokens or _env("CONTAINERIZER_LLM_MAX_TOKENS", "16000")), max(1024, ex.limit // 4))
+        fixed = len(system) + len(json.dumps(schema)) + 300       # the system prompt, the schema and its instructions
+        whole = fixed + len(prompt)
+        # characters per token of this question: from the server's count when it gave one, else about 3
+        per_token = whole / ex.used if ex.used else 3.0
+        room = int((ex.limit - out - 256) * per_token * 0.9) - fixed
+        if room < 2000:
+            raise RuntimeError(f"LLM server {base}: the model's context window of {ex.limit} tokens is too small for "
+                               f"this question: {ex.detail[:300]}") from None
+        print(f"[ai] the question does not fit the model's context window ({ex.limit} tokens): asking again with "
+              f"{room} of its {len(prompt)} characters", file=sys.stderr, flush=True)
+        return _ask_openai(fit_prompt(prompt, room), schema, model, _retry, system, out, _fitted=True)
+
+
+def _ask_openai_once(prompt: str, schema: dict, model: str, _retry: bool = False, system: str = SYSTEM,
+                     max_tokens: int | None = None):
     base = _llm_base_url()
     key = _env("CONTAINERIZER_LLM_API_KEY", "")
     host = urllib.parse.urlsplit(base).hostname or ""
@@ -695,7 +761,10 @@ def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False, sys
             resp = _post_json_retrying(base + "/chat/completions", b, headers, timeout)
             break
         except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", "replace")[:300]
+            detail = e.read().decode("utf-8", "replace")[:1000]
+            if e.code in (400, 413, 422) and (too_long := _context_error(detail)):
+                raise too_long from None     # not a structured output mode it lacks: the question is too big
+            detail = detail[:300]
             if e.code in (400, 422) and m != "none":
                 continue                 # server does not support this structured output mode
             raise RuntimeError(f"LLM server {base} answered HTTP {e.code}: {detail}") from None
@@ -717,9 +786,9 @@ def _ask_openai(prompt: str, schema: dict, model: str, _retry: bool = False, sys
         cap = int(_env("CONTAINERIZER_LLM_MAX_TOKENS", "16000"))
         if not _retry and cut and body["max_tokens"] < cap:
             # cut off: the same question with the whole budget (asking it again with the same cap ends the same way)
-            return _ask_openai(prompt, schema, model, _retry=True, system=system, max_tokens=cap)
+            return _ask_openai_once(prompt, schema, model, _retry=True, system=system, max_tokens=cap)
         if not _retry and not cut:
-            return _ask_openai(prompt + "\n\nYour previous answer did not match the schema (" + "; ".join(errs[:5])
+            return _ask_openai_once(prompt + "\n\nYour previous answer did not match the schema (" + "; ".join(errs[:5])
                                + "). Answer with the JSON object only.", schema, model, _retry=True,
                                system=system, max_tokens=max_tokens)
         hint = ""
