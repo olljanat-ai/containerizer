@@ -8,6 +8,17 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.9 (2026-11-18)
+
+- **Sandbox: "Too many pods"**: the sandbox node took Kubernetes' default of 110 pods, and k3s gives each node
+  only a /24 of its pod network, about 250 addresses. The appliance is one node, so it now takes the whole
+  `10.42.0.0/16`, with `maxPods: 65533`:
+  - The system agent writes the kubelet drop-in under `/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/`, which
+    persists, unlike the OS image's k3s config, so an app update can set it.
+  - Once, within 5 minutes of the update, it re-registers the node with `node-cidr-mask-size=16`. That means two k3s
+    restarts, and the sandbox pods are made again; their volumes stay.
+  - The pod bridge keeps its /24 until the appliance restarts, and the System page says to plan one.
+
 ## 0.51.8 (2026-11-18)
 
 - **The built-in LLM beside a registered LLM, by default**: with an LLM registered, the built-in LLM took no LLM

@@ -500,3 +500,55 @@ def test_an_app_update_drains_the_llm_runner_instead_of_restarting_it(agent, mon
     assert ["systemctl", "try-restart", sysagent.LLM_QUEUE] in r.calls and not p.drain.exists()
     # the drained runner waiting for its restart does not fail the update's check
     assert sysagent._up(sysagent.LLM_QUEUE, "activating") and not sysagent._up("containerizer-web.service", "activating")
+
+
+def test_the_sandbox_node_takes_the_whole_pod_network_once(tmp_path, monkeypatch):
+    """"Too many pods" at Kubernetes' default 110 on a big machine; the node's /24 has ~250 addresses. The system agent
+    sets maxPods 65533 (a kubelet drop-in under /var/lib/rancher, persistent) and, once, re-registers the node with
+    node-cidr-mask-size=16 so it gets the whole 10.42.0.0/16. The pod bridge keeps its /24 until a restart."""
+    import json
+    import yaml
+    monkeypatch.setattr(sysagent.P, "kubelet_dropins", tmp_path / "k3s" / "agent" / "etc" / "kubelet.conf.d")
+    monkeypatch.setattr(sysagent.P, "https_dir", tmp_path / "system")
+    monkeypatch.setattr(sysagent, "K3S_DROPINS", tmp_path / "etc-k3s" / "config.yaml.d")
+    monkeypatch.setattr(sysagent, "FLANNEL_ENV", tmp_path / "subnet.env")
+    (tmp_path / "system").mkdir()
+    (tmp_path / "subnet.env").write_text("FLANNEL_NETWORK=10.42.0.0/16\nFLANNEL_SUBNET=10.42.0.1/24\n")
+    node = {"name": "appliance", "cidr": "10.42.0.0/24", "exists": True}
+    calls = []
+
+    def run(cmd, timeout=3600, check=True, input=None):
+        calls.append(cmd[:3] if cmd[0] == "systemctl" else cmd[4:7])
+        if cmd[:2] == ["systemctl", "is-active"]:
+            return "active\n"
+        if cmd[:3] == ["systemctl", "restart", "k3s"] and not node["exists"]:
+            # the node registers again; the controller manager gives it the mask its drop-in says
+            mask = "16" if (sysagent.K3S_DROPINS / sysagent.K3S_MASK_DROPIN).is_file() else "24"
+            node.update(exists=True, cidr=f"10.42.0.0/{mask}")
+        if cmd[4:6] == ["get", "nodes"]:
+            items = [{"metadata": {"name": node["name"]}, "spec": {"podCIDR": node["cidr"]}}] if node["exists"] else []
+            return json.dumps({"items": items})
+        if cmd[4:6] == ["delete", "node"]:
+            node["exists"] = False
+        return ""
+    monkeypatch.setattr(sysagent, "run", run)
+    assert sysagent.pod_network_sync(sleep=lambda s: None) is None          # no k3s on this machine
+    (tmp_path / "k3s" / "agent" / "etc").mkdir(parents=True)
+    st = sysagent.pod_network_sync(sleep=lambda s: None)
+    doc = yaml.safe_load((sysagent.P.kubelet_dropins / "50-containerizer.conf").read_text())
+    assert doc == {"apiVersion": "kubelet.config.k8s.io/v1beta1", "kind": "KubeletConfiguration", "maxPods": 65533}
+    drop = yaml.safe_load((sysagent.K3S_DROPINS / sysagent.K3S_MASK_DROPIN).read_text())
+    assert drop == {"kube-controller-manager-arg+": ["node-cidr-mask-size=16"]}
+    assert ["delete", "node", "appliance"] in calls and node["cidr"] == "10.42.0.0/16"
+    assert st == {"pod_cidr": "10.42.0.0/16", "max_pods": 65533, "bridge": "10.42.0.0/24", "error": None,
+                  "restart_needed": True}
+    # done once: the next check changes nothing; after the restart flannel's bridge has the /16
+    calls.clear()
+    (tmp_path / "subnet.env").write_text("FLANNEL_NETWORK=10.42.0.0/16\nFLANNEL_SUBNET=10.42.0.1/16\n")
+    st = sysagent.pod_network_sync(sleep=lambda s: None)
+    assert st["restart_needed"] is False and not [c for c in calls if c[:2] == ["systemctl", "restart"]]
+    assert not [c for c in calls if c[:1] == ["delete"]]
+    # a node that did not get it is not re-registered again and again: the System page says why
+    node.update(cidr="10.42.0.0/24")
+    st = sysagent.pod_network_sync(sleep=lambda s: None)
+    assert not [c for c in calls if c[:1] == ["delete"]] and st["pod_cidr"] == "10.42.0.0/24"
