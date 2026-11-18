@@ -251,8 +251,10 @@ def after_order(job: dict, payload: dict, result: dict, work: Path, name: str, p
     verified, else why not. Never raises: the patch is the order's result either way."""
     from .orgsource import REDACT
     if not result.get("rating_reached"):
-        why = (f"the patched copy rates {result['rating_after']}, not A" if result.get("rating_after")
-               else "the patched copy was not assessed")
+        ra = result.get("rating_after")
+        why = ("the patched copy rates A by the rules, but it does not build or run" if ra == "A" else
+               f"the patched copy rates {ra}, not A" if ra else
+               "the patched copy was not assessed (the LLM's edits did not apply or changed nothing)")
         return {"status": "skipped", "reason": f"not deployed: {why}"}
     if result.get("status") != "verified":
         return {"status": "skipped", "reason": "not deployed: the patch is not verified (it must build and run)"}

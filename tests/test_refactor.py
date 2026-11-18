@@ -1521,3 +1521,51 @@ def test_developer_only_files_are_not_changed(tmp_path):
         ["Fn/local.settings.json", "Fn/Program.cs"], None)
     assert not err and [c["file"] for c in ch] == ["Fn/Program.cs"]
     assert "Trusted_Connection" in (tmp_path / "Fn/local.settings.json").read_text()
+
+
+def test_edits_match_with_other_indentation_or_escaped_line_breaks(tmp_path):
+    (tmp_path / "A.csproj").write_text('<Project>\n\t<ItemGroup>\n\t\t<PackageReference Include="A" Version="1" />\n'
+                                       '\t\t<None Update="x.db">\n\t\t\t<CopyToOutputDirectory>Always</CopyToOutputDirectory>\n'
+                                       '\t\t</None>\n\t</ItemGroup>\n</Project>\n')
+    shown = ["A.csproj"]
+    ch, err = rf.apply_answer(tmp_path, {"edits": [
+        {"file": "A.csproj", "search": '    <PackageReference Include="A" Version="1" />\n    <None Update="x.db">',
+         "replace": '    <PackageReference Include="A" Version="1" />\n    <PackageReference Include="B" Version="2" />\n'
+                    '    <None Update="x.db">'}]},
+        shown, None)
+    assert not err and ch[0]["detail"].startswith("indentation as in the file")
+    text = (tmp_path / "A.csproj").read_text()
+    assert '\t\t<PackageReference Include="B" Version="2" />\n' in text
+    ch, err = rf.apply_answer(tmp_path, {"edits": [
+        {"file": "A.csproj", "search": '<None Update="x.db">\\n  <CopyToOutputDirectory>Always</CopyToOutputDirectory>\\n</None>',
+         "replace": '<None Update="x.db" />'}]}, shown, None)
+    assert not err and "line breaks" in ch[0]["detail"]
+    assert '\t\t<None Update="x.db" />\n\t</ItemGroup>' in (tmp_path / "A.csproj").read_text()
+
+
+def test_packages_the_llm_invented_are_taken_back(tmp_path):
+    proj = tmp_path / "Web" / "Web.csproj"
+    proj.parent.mkdir()
+    proj.write_text('<Project Sdk="Microsoft.NET.Sdk.Web">\n  <ItemGroup>\n'
+                    '    <PackageReference Include="Aspose.Words" Version="24.1.0" />\n'
+                    '    <PackageReference Include="Serilog" Version="3.1.1" />\n  </ItemGroup>\n</Project>\n')
+    rf.git(["init", "--quiet"], cwd=tmp_path)
+    rf.git(["add", "-A"], cwd=tmp_path)
+    rf.git(["commit", "--quiet", "-m", "assessed"], cwd=tmp_path)
+    proj.write_text('<Project Sdk="Microsoft.NET.Sdk.Web">\n  <ItemGroup>\n'
+                    '    <PackageReference Include="Aspose.Words" Version="24.1.0" />\n'
+                    '    <PackageReference Include="Aspose.Words.CrossPlatform" Version="26.4.0" />\n'
+                    '    <PackageReference Include="Serilog" Version="9.9.9" />\n'
+                    '    <PackageReference Include="Polly" Version="99.0.0" />\n  </ItemGroup>\n</Project>\n')
+    log = ("/src/Web/Web.csproj : error NU1101: Unable to find package Aspose.Words.CrossPlatform. No packages exist with this id\n"
+           "/src/Web/Web.csproj : error NU1102: Unable to find package Serilog with version (>= 9.9.9)\n"
+           "/src/Web/Web.csproj : error NU1102: Unable to find package Polly with version (>= 99.0.0)\n"
+           "  - Found 80 version(s) in nuget.org [ Nearest version: 8.4.1 ]\n"
+           "/src/Web/Web.csproj : error NU1101: Unable to find package Aspose.Words. No packages exist with this id\n")
+    changes, notes, fixed = rf.fix_packages(tmp_path, log, log=lambda *_: None)
+    text = proj.read_text()
+    assert "CrossPlatform" not in text
+    assert 'Include="Serilog" Version="3.1.1"' in text
+    assert 'Include="Polly" Version="8.4.1"' in text
+    assert 'Include="Aspose.Words" Version="24.1.0"' in text          # the project's own: left to the repair
+    assert ("web/web.csproj", "aspose.words") not in {(f.lower(), p) for f, p in fixed}

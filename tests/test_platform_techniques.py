@@ -146,3 +146,33 @@ def test_https_443_in_code_stays_a_finding(tmp_path):
     web_app(tmp_path, '''
         class H { void C(IWebHostBuilder b) => b.UseUrls("https://*:443"); }''')
     assert not _found(tmp_path)["cfg-privileged-port"].resolved_by
+
+
+def test_integrated_security_in_appsettings_comes_from_the_secret(tmp_path):
+    from tests.test_engine import write
+    web_app(tmp_path)
+    write(tmp_path, "src/Web/appsettings.json", '''
+        {
+          "ConnectionStrings": {
+            "Main": "Server=sql01;Database=Shop;Integrated Security=true;TrustServerCertificate=True"
+          }
+        }''')
+    write(tmp_path, "src/Web/appsettings.AzureDev.json", '''
+        {
+          "ConnectionStrings": {
+            "Main": "Server=dev;Database=Shop;Trusted_Connection=True"
+          }
+        }''')
+    f = _found(tmp_path)["sql-integrated-security"]
+    assert f.resolved_by == "plan-connection-string-secret"
+    assert "generated configuration" in skip_reason(f.to_dict())
+
+
+def test_integrated_security_outside_connection_strings_stays(tmp_path):
+    from tests.test_engine import write
+    web_app(tmp_path)
+    write(tmp_path, "src/Web/appsettings.json", '''
+        {
+          "Db": { "Conn": "Server=sql01;Database=Shop;Integrated Security=SSPI" }
+        }''')
+    assert not _found(tmp_path)["sql-integrated-security"].resolved_by

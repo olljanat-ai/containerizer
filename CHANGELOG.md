@@ -8,6 +8,26 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.12 (2026-11-18)
+
+From an export of 205 Make it A orders of 66 real applications:
+
+- **Edits that did not apply because of how the LLM copied the file now apply**: a search text with other
+  indentation than the file (spaces for tabs, the first line without its indentation) or with line breaks and
+  quotes escaped twice (`\n`, `\t`, `\"` as two characters) matches when it does so exactly once; the replacement
+  takes the file's indentation. A quarter of the failed edits were these.
+- **Packages the LLM invented are taken back without the LLM**: NuGet's NU1101/NU1102 for a reference the LLM added or
+  changed (`Aspose.Words.CrossPlatform`, a version that does not exist) removes the package, puts the project's
+  version back, or takes NuGet's nearest version for a package the LLM added. A package name followed by a full
+  stop in NuGet's message ("Unable to find package X. No packages exist") was read with the stop, so the
+  ASP.NET Core framework package fix missed those too.
+- **Windows authentication in `appsettings.json` connection strings is handled by configuration**
+  (`plan-connection-string-secret`): every connection string comes from the secret `ConnectionStrings__<Name>`,
+  so `sql-integrated-security` is no longer sent to the LLM there, which rewrote connection strings that the
+  container never uses.
+- The sandbox step said "the patched copy rates A, not A" for a copy that rates A but does not build or run; it
+  says so now.
+
 ## 0.51.11 (2026-11-18)
 
 - **Port 80 fixed in code stays as it is**: containerd 2.x (AKS on Azure Linux, K3s) and Docker let a non-root
