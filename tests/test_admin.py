@@ -367,6 +367,32 @@ def test_admin_maps_and_audits(idp, tmp_path):
         app = re.search(r"name='app' value='(\d+)'", b.follow("/admin/applications")[2])[1]
         s, _, body = b.follow("/admin/applications/bulk", {"csrf": csrf, "app": [app], "ProductId": pid})
         assert "1 application(s) updated." in body
+
+        # a product's external ID: the applications with that ID belong to it
+        def product_of():
+            c = sqlstore.connect(as_("cz_a_admin"), "Test-Passw0rd!x")
+            try:
+                cur = c.cursor()
+                cur.execute("SELECT ProductId FROM cz.Application WHERE ApplicationId = %s", (int(app),))
+                return cur.fetchone()[0]
+            finally:
+                c.close()
+        assert b.go(f"/admin/applications/{app}/external-id", {"csrf": csrf, "ExternalId": "CMDB-7"})[0] == 303
+        s, _, body = b.follow("/admin/products/new", {"csrf": csrf, "Name": "Payments", "BusinessUnitId": bu, "InfoUrl": "",
+                                                      "Owner": "", "Description": "", "ExternalId": "CMDB-7"})
+        assert s == 200 and "Saved." in body and "value='CMDB-7'" in body
+        payments = int(re.search(r"action='/admin/products/(\d+)'", body)[1])
+        assert product_of() == payments                     # saving the product's ID moved it, though mapped by hand
+        s, _, body = b.follow("/admin/products/new", {"csrf": csrf, "Name": "Other", "BusinessUnitId": bu, "InfoUrl": "",
+                                                      "Owner": "", "Description": "", "ExternalId": "CMDB-7"})
+        assert "Another product already has the external ID CMDB-7." in body
+        # moved back by hand: the automatic mapping after a scan keeps a person's choice
+        s, _, body = b.follow("/admin/applications/bulk", {"csrf": csrf, "app": [app], "ProductId": pid})
+        c = sqlstore.connect(as_("cz_a_writer"), "Test-Passw0rd!x")
+        c.cursor().execute("EXEC cz.AutoMapProjects")
+        c.commit()
+        c.close()
+        assert product_of() == int(pid)
         # a browser posting from our own pages sends our Origin; anything else is refused even with the token
         assert b.go("/admin/business-units/new", {"csrf": csrf, "Name": "X", "Owner": "", "Description": ""},
                     {"Origin": base})[0] == 303

@@ -407,7 +407,7 @@ def _llm_route_inputs(prefix: str, r: dict | None = None) -> str:
             f"up)</span></label><input id='{prefix}LlmOrder' name='LlmOrder' type='number' min='0' max='1000' "
             f"value='{_order(r)}'>"
             f"<label for='{prefix}LlmMaxTokens'>Calls up to <span class='muted'>(estimated input tokens of one LLM call; bigger calls go to "
-            f"the next LLM in the order; 0: any size)</span></label><input id='{prefix}LlmMaxTokens' name='LlmMaxTokens' "
+            f"the next LLM in the order, a scan's to the built-in LLM when it is on; 0: any size)</span></label><input id='{prefix}LlmMaxTokens' name='LlmMaxTokens' "
             f"type='number' min='0' max='10000000' value='{int(r.get('LlmMaxTokens') or 0)}'>"
             f"<label for='{prefix}LlmParallel'>Requests at once <span class='muted'>(as many as the server answers "
             f"together, e.g. its slots; 1 for a CPU server)</span></label><input id='{prefix}LlmParallel' "

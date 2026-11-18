@@ -323,3 +323,29 @@ def test_context_errors_of_other_servers_are_recognised():
                           'increasing it","type":"exceed_context_size_error","n_prompt_tokens":40000,"n_ctx":32768}}')
     assert (e.limit, e.used) == (32768, 40000)
     assert ai._context_error("response_format json_schema is not supported") is None
+
+
+def test_a_scan_sends_questions_too_big_for_its_llm_to_the_built_in_one(server):
+    """vLLM with --max-model-len 32768 (no memory for more): the questions bigger than its "Calls up to", or refused as
+    bigger than its context window, go to the built-in LLM, uncut; the others stay with it."""
+    big = FakeServer()
+    try:
+        builtin = {"CONTAINERIZER_LLM_BASE_URL": big.url + "/", "CONTAINERIZER_MODEL": "built-in-model"}
+        ok = '{"verdict": "info", "confidence": 1}'
+        with ai.overflow(1000, builtin, "built-in-model"):
+            server.answer(ok)
+            ai.ask_json("small question", SCHEMA)
+            assert len(server.requests) == 1 and not big.requests
+            big.answer(ok)
+            ai.ask_json("big question " + "x" * 5000, SCHEMA)          # about 1,600 tokens: over 1000
+            assert len(server.requests) == 1 and big.requests[-1]["body"]["model"] == "built-in-model"
+            assert "x" * 5000 in big.requests[-1]["body"]["messages"][1]["content"]
+        with ai.overflow(0, builtin, "built-in-model"):                 # no limit set: only what it refuses
+            server.replies.append((400, {"error": {"message": "Input length (40000) exceeds model's maximum context "
+                                                              "length (32768)."}}))
+            big.answer(ok)
+            assert ai.ask_json("refused question", SCHEMA)["verdict"] == "info"
+            assert big.requests[-1]["body"]["messages"][1]["content"].startswith("refused question")
+            assert "left out to fit" not in big.requests[-1]["body"]["messages"][1]["content"]
+    finally:
+        big.httpd.shutdown()

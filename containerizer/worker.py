@@ -1023,7 +1023,13 @@ class Worker:
             choice = llm_for_run(llm) if scan["UseAi"] else None
             if choice and choice.model:
                 o.model = choice.model
-            with configured(choice.settings if choice else None, local=True), cancel_thread_when(hooks.should_stop):
+            # a question too big for the registered LLM (its "Calls up to", or refused as bigger than its context
+            # window) goes to the built-in LLM when that is on
+            from .ai import overflow
+            from .local_llm import worker_settings
+            big = worker_settings() if choice and choice.source == "registered" else None
+            with configured(choice.settings if choice else None, local=True), cancel_thread_when(hooks.should_stop), \
+                    overflow(int(getattr(llm, "llm_max_tokens", 0) or 0), big, (big or {}).get("CONTAINERIZER_MODEL")):
                 results = run_org(o, log=lambda msg: self.log(f"{name}: {msg}"))
             if write:
                 self._mark(write, "ok: pushed the generated files" if o.push else "ok")
