@@ -1487,3 +1487,14 @@ def test_make_it_a_moves_only_data_no_volume_can_hold():
     assert [c["name"] for c in rf.rating_a_components({"components": [placed, lost]})] == ["Idx"]
     assert rf.still_stateful({"components": [placed, lost]}) == [{"component": "Idx", "state": ["Local Lucene index"]}]
     assert [c["name"] for c in rf.stateful_components({"components": [placed, lost]})] == ["Web", "Idx"]  # goal stateless
+
+
+def test_window_skips_evidence_without_a_line():
+    """A finding about a whole file has evidence with line None: Make it A failed with "'<' not supported between
+    instances of 'int' and 'NoneType'" when that file was bigger than the prompt budget."""
+    from containerizer.refactor import window
+    text = "\n".join(f"line {i}" for i in range(1, 20001))
+    part, lo, hi = window(text, [None, 500], 2000)
+    assert lo <= 500 <= hi and len(part) <= 2000
+    part, lo, hi = window(text, [None], 2000)
+    assert lo == 1
