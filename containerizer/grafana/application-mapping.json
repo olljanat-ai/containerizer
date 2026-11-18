@@ -1,0 +1,565 @@
+{
+  "uid": "containerizer-application-mapping",
+  "title": "Containerizer: application mapping",
+  "tags": [
+    "containerizer",
+    "mapping"
+  ],
+  "description": "How the applications are mapped to products, at the end of every organization scan run (discovery or full scan): the application IDs repositories declare in metadata.json, and the products they map to (the results database: cz.vMappingHistory).",
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "timezone": "utc",
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-90d",
+    "to": "now"
+  },
+  "refresh": "",
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [],
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Repositories with metadata.json",
+      "id": 1,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "Repositories (not removed) whose metadata.json names an applicationId, as the latest run read it (discovery reads it through the provider's API, a full scan from the clone).",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT TOP (1) ReposDeclaring AS value FROM containerizer.vMappingHistory ORDER BY At DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Of all repositories",
+      "id": 2,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "The share of the repositories that declare an application ID in metadata.json.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT TOP (1) CAST(100.0 * ReposDeclaring / NULLIF(Repositories, 0) AS decimal(5, 1)) AS value FROM containerizer.vMappingHistory ORDER BY At DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Mapped by external ID",
+      "id": 3,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "Applications in the product whose External ID is the application's ID (its own External ID, else its repository's metadata.json).",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT TOP (1) AppsByExternalId AS value FROM containerizer.vMappingHistory ORDER BY At DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Without a product",
+      "id": 4,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "Applications (not retired) in no product.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT TOP (1) AppsNoProduct AS value FROM containerizer.vMappingHistory ORDER BY At DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "orange",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "IDs without an application",
+      "id": 5,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "Repositories that declare an ID but have no application yet (no scan assessed them): Admin → Applications → External IDs → Add application, or a full scan.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT TOP (1) ReposDeclaringNoApp AS value FROM containerizer.vMappingHistory ORDER BY At DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "orange",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "IDs no product has",
+      "id": 6,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "Distinct application IDs that no product has as its External ID: set it under Admin → Products → the product.",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT TOP (1) IdsWithoutProduct AS value FROM containerizer.vMappingHistory ORDER BY At DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "orange",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Applications by how they are mapped to a product",
+      "id": 7,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "At the end of every run (discovery or full scan). By external ID: the product whose External ID is the application's ID. By project: one product per project, made by the scan. By hand: a product a person chose.",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT At AS time, AppsByExternalId AS [By external ID], AppsByProject AS [By project], AppsByHand AS [By hand], AppsNoProduct AS [No product] FROM containerizer.vMappingHistory WHERE $__timeFilter(At) ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 60,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "lineWidth": 2,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "firstNotNull",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Repositories and application IDs",
+      "id": 8,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "Repositories the organization scans list, those whose metadata.json declares an application ID, those of them with no application yet, and the applications that have an ID (their own or their repository's).",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT At AS time, Repositories AS [Repositories], ReposDeclaring AS [Declare an ID], ReposDeclaringNoApp AS [Declare an ID, no application], AppsWithId AS [Applications with an ID], IdsWithoutProduct AS [IDs no product has] FROM containerizer.vMappingHistory WHERE $__timeFilter(At) ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 0,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "lineWidth": 2,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "firstNotNull",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "type": "table",
+      "title": "Per day (the last run of the day)",
+      "id": 9,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "The state at the end of each day's last run.",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT Day, Repositories, ReposDeclaring AS [Declare an ID], ReposDeclaringNoApp AS [ID, no application], Applications, AppsWithId AS [With an ID], AppsByExternalId AS [By external ID], AppsByProject AS [By project], AppsByHand AS [By hand], AppsNoProduct AS [No product], IdsWithoutProduct AS [IDs no product has] FROM containerizer.vMappingHistory WHERE $__timeFilter(At) AND At IN (SELECT MAX(At) FROM containerizer.vMappingHistory GROUP BY Day) ORDER BY Day DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      }
+    }
+  ]
+}

@@ -1095,7 +1095,7 @@ def test_the_llm_usage_dashboard_is_set_up_from_the_app_code(paths, monkeypatch)
     (paths.sql_secret.parent / "mssql-sa").write_text("sa-pw")
     (paths.sql_secret.parent / "grafana-admin").write_text("admin-pw")
     paths.plan.parent.mkdir(parents=True, exist_ok=True)
-    logins, grafana = [], {"ds": None, "dash": None, "calls": []}
+    logins, grafana = [], {"ds": None, "dash": None, "mapping": None, "calls": []}
     monkeypatch.setattr(sqlstore, "create_login", lambda conn, login, pw, role: logins.append((login, role, pw)))
 
     class Conn:
@@ -1136,13 +1136,17 @@ def test_the_llm_usage_dashboard_is_set_up_from_the_app_code(paths, monkeypatch)
             return Resp(200, {})
         if path == "/api/dashboards/uid/containerizer-llm-usage":
             return Resp(200, {}) if grafana["dash"] else err(404)
+        if path == "/api/dashboards/uid/containerizer-application-mapping":
+            return Resp(200, {}) if grafana["mapping"] else err(404)
         if path == "/api/folders":
             return Resp(200, [{"uid": "f1", "title": "containerizer"}])
         if path == "/api/dashboards/db":
-            grafana["dash"] = body
+            grafana["dash" if body["dashboard"]["uid"] == "containerizer-llm-usage" else "mapping"] = body
             return Resp(200, {})
         raise AssertionError(path)
-    assert sysagent.grafana_usage_sync(opener=opener, connect=lambda cs, pw: Conn()) == "login, data source, dashboard"
+    assert sysagent.grafana_usage_sync(opener=opener, connect=lambda cs, pw: Conn()) == \
+        "login, data source, dashboard, mapping dashboard"
+    assert grafana["mapping"]["dashboard"]["uid"] == "containerizer-application-mapping"
     pw = (paths.sql_secret.parent / "cz-grafana").read_text()
     assert logins == [("cz_grafana", "usage", pw)] and len(pw) >= 32
     assert grafana["ds"]["type"] == "mssql" and grafana["ds"]["user"] == "cz_grafana"
@@ -1156,6 +1160,8 @@ def test_the_llm_usage_dashboard_is_set_up_from_the_app_code(paths, monkeypatch)
     assert not [c for c in grafana["calls"] if c[0] != "GET"] and len(logins) == 1
     grafana["dash"] = None
     assert sysagent.grafana_usage_sync(opener=opener, connect=lambda cs, pw: Conn()) == "dashboard"
+    grafana["mapping"] = None
+    assert sysagent.grafana_usage_sync(opener=opener, connect=lambda cs, pw: Conn()) == "mapping dashboard"
 
 
 def test_builds_and_pods_never_reach_the_appliances_ssh(paths):

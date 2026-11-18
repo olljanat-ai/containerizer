@@ -99,6 +99,11 @@ def _form(**kw):
 
 def test_scan_form_validation():
     v, errors = admin_scans.validate_scan(_form())
+    assert v["DiscoveryDays"] == 0 and v["DiscoveryMinute"] == 60                      # no discovery schedule
+    v, errors = admin_scans.validate_scan(_form(dday=["0", "6", "9"], DiscoveryAt="23:45"))
+    assert errors == [] and v["DiscoveryDays"] == 1 | (1 << 6) and v["DiscoveryMinute"] == 23 * 60 + 45
+    assert "Discovery at" in "; ".join(admin_scans.validate_scan(_form(dday=["0"], DiscoveryAt="25:00"))[1])
+    v, errors = admin_scans.validate_scan(_form())
     assert errors == [] and v["ScheduleDays"] == (1 << 5) | (1 << 6) and v["ScheduleMinute"] == 150
     assert v["Enabled"] is True and v["Gate"] is False and v["OutputBranch"] == "main"
     for bad, msg in [({"ApiUrl": "javascript:alert(1)"}, "https"), ({"OutputRepo": "http://x.example/r"}, "https"),
@@ -351,10 +356,13 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
         # a new scan's form: build and run on, LLM reviews queued, no day (on demand), new repositories disabled
         form = b.follow("/admin/scans/new")[2]
         assert "name='Verify' value='1' checked" in form and "value='queued' selected" in form
-        assert "name='day' value='" in form and "name='day' value='5' checked" not in form and "' checked> Mon" not in form
+        assert "name='day' value='" in form and "name='day' value='5' checked" not in form and "name='day' value='0' checked" not in form
         assert "<option value='0' selected>Disabled by default" in form and "name='Enabled' value='1' checked" in form
-        s, h, body = b.follow("/admin/scans/new", {"csrf": csrf, **_form(Name="Acme GitHub", Gate="", day=["5"])})
-        assert s == 200 and "Saved." in body and "Sat at 02:30 UTC" in body
+        assert "name='dday' value='0' checked" in form and "name='DiscoveryAt' type='time' value='01:00'" in form
+        s, h, body = b.follow("/admin/scans/new", {"csrf": csrf, **_form(Name="Acme GitHub", Gate="", day=["5"],
+                                                                         dday=["0", "1", "2", "3", "4", "5", "6"],
+                                                                         DiscoveryAt="01:15")})
+        assert s == 200 and "Saved." in body and "Sat at 02:30 UTC" in body and "Discovery: every day at 01:15 UTC" in body
         assert "name='LlmHeavy' value='1'>" in body and "off on this appliance" in body    # off by default
         # no read-only token for the organization: the scan cannot run, and says why
         assert "no read-only token is registered for GitHub organization acme" in body and "/run'" not in body
@@ -456,6 +464,19 @@ def test_scheduled_org_scan_end_to_end(tmp_path, monkeypatch):
         cur.execute("SELECT NextRunAt FROM cz.OrgScan WHERE ScanId = %s", (scan_id,))
         nxt = cur.fetchone()["NextRunAt"]
         assert nxt.weekday() == 5 and (nxt.hour, nxt.minute) == (2, 30)
+        # the discovery schedule of its own (schema 59): due, so the worker queues a discovery run
+        cur.execute("SELECT NextDiscoveryAt FROM cz.OrgScan WHERE ScanId = %s", (scan_id,))
+        nd = cur.fetchone()["NextDiscoveryAt"]
+        assert (nd.hour, nd.minute) == (1, 15)
+        cur.execute("UPDATE cz.OrgScan SET NextDiscoveryAt = DATEADD(minute, -1, SYSUTCDATETIME()) WHERE ScanId = %s", (scan_id,))
+        c.commit()
+        w.queue_due()
+        cur.execute("SELECT Kind, TriggeredBy, Status FROM cz.OrgScanRun WHERE ScanId = %s", (scan_id,))
+        assert cur.fetchall() == [{"Kind": "discovery", "TriggeredBy": "schedule", "Status": "queued"}]
+        cur.execute("SELECT NextDiscoveryAt FROM cz.OrgScan WHERE ScanId = %s", (scan_id,))
+        assert cur.fetchone()["NextDiscoveryAt"] > datetime.now(timezone.utc).replace(tzinfo=None)
+        cur.execute("UPDATE cz.OrgScanRun SET Status = N'cancelled', FinishedAt = SYSUTCDATETIME() WHERE ScanId = %s", (scan_id,))
+        c.commit()
         c.close()
 
         # Run now (the same scan cannot be queued twice)

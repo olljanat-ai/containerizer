@@ -8,6 +8,19 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.16 (2026-11-19)
+
+- **Discovery schedule**: an organization scan has a discovery schedule of its own (days and time, UTC; new scans
+  every day at 01:00, earlier scans none until you choose days), for example nightly between weekly full scans. Every
+  discovery reads each repository's `metadata.json` through the provider's API and maps the applications to products
+  at its end, so a `metadata.json` added since the last full scan maps its application the next night, without a
+  clone.
+- **Grafana: Containerizer: application mapping**: the end of every scan run records how the applications are mapped
+  (schema 59, `vMappingHistory`), and the new dashboard shows it over time: repositories that declare an application
+  ID, applications by external ID, by project, by hand or in no product, and the IDs without an application or a
+  product. The system agent sets it up next to the LLM token usage dashboard. An app update: nothing in the OS image
+  changes.
+
 ## 0.51.15 (2026-11-18)
 
 - **Scheduled backups** (Admin → System → Scheduled backup): on a schedule (time of day in UTC and days of the week)

@@ -47,7 +47,7 @@ ORG_RE = re.compile(r"[\w .\-/]{1,200}")
 TIME_RE = re.compile(r"([01]\d|2[0-3]):([0-5]\d)")
 SCAN_COLS = ("Name", "Provider", "Organization", "ApiUrl", "Registry", "OutputRepo", "OutputBranch", "ImagePullSecret", "IncludeRegex", "ExcludeRegex", "SkipForks", "StaleDays", "Verify",
              "Gate", "PushImages", "UseAi", "LlmMode", "LlmHeavy", "ScheduleDays", "ScheduleMinute", "Enabled",
-             "NewReposEnabled")
+             "NewReposEnabled", "DiscoveryDays", "DiscoveryMinute")
 FLAGS = ("SkipForks", "Verify", "Gate", "PushImages", "UseAi", "LlmHeavy", "Enabled")
 LLM_MODES = {"inline": "Inline: ask during the scan",
              "queued": "Queued: later, in the LLM queue (rules only during the scan)"}
@@ -212,12 +212,24 @@ def _scans(conn) -> list[dict]:
     return cur.fetchall()
 
 
-def _next(scan: dict) -> str:
+def _next(scan: dict, kind: str = "full") -> str:
     from .worker import aware, next_run, utcnow
     if not scan["Enabled"]:
         return "paused"
-    n = aware(scan["NextRunAt"]) if scan.get("NextRunAt") else next_run(scan["ScheduleDays"], scan["ScheduleMinute"], utcnow())
+    col, days, minute = (("NextRunAt", "ScheduleDays", "ScheduleMinute") if kind == "full" else
+                         ("NextDiscoveryAt", "DiscoveryDays", "DiscoveryMinute"))
+    if not scan.get(days) and kind != "full":
+        return ""
+    n = aware(scan[col]) if scan.get(col) else next_run(scan.get(days) or 0, scan.get(minute) or 0, utcnow())
     return f"next {_d(n.replace(tzinfo=None))}" if n else ""
+
+
+def discovery_text(scan: dict) -> str:
+    """The discovery schedule (schema 59): empty when there is none."""
+    from .worker import schedule_text
+    if not scan.get("DiscoveryDays"):
+        return ""
+    return "Discovery: " + schedule_text(scan["DiscoveryDays"], scan.get("DiscoveryMinute") or 0).replace("Every day", "every day")
 
 
 def list_scans(adm, conn, s, a, flash: str) -> Response:
@@ -243,7 +255,9 @@ def list_scans(adm, conn, s, a, flash: str) -> Response:
             f"<tr><td><a href='/admin/scans/{int(r['ScanId'])}'>{e(r['Name'])}</a>{'' if r['Enabled'] else PAUSED}{missing}</td>"
             f"<td>{e(PROVIDERS.get(r['Provider'], r['Provider']))}: <b>{e(r['Organization'])}</b>"
             f"<div class='muted small'>{e(r['ApiUrl'] or '')}</div></td>"
-            f"<td>{e(schedule_text(r['ScheduleDays'], r['ScheduleMinute']))}<div class='muted small'>{e(_next(r))}</div></td>"
+            f"<td>{e(schedule_text(r['ScheduleDays'], r['ScheduleMinute']))}<div class='muted small'>{e(_next(r))}</div>"
+            + (f"<div class='small'>{e(discovery_text(r))}</div><div class='muted small'>{e(_next(r, 'discovery'))}</div>"
+               if r.get("DiscoveryDays") else "") + "</td>"
             f"<td>{last}</td>"
             f"<td class='num'><a href='/admin/repositories?scan={int(r['ScanId'])}&amp;show=enabled'>{int(r['ReposOn'])}</a> / "
             f"<a href='/admin/repositories?scan={int(r['ScanId'])}&amp;show=disabled'>{int(r['ReposOff'])}</a></td></tr>")
@@ -315,6 +329,9 @@ def _scan_form(adm, s, scan: dict, ident, repos: list[str] | None = None) -> str
     days = "".join(f"<label class='check day'><input type='checkbox' name='day' value='{i}'"
                    f"{' checked' if int(v['ScheduleDays'] or 0) & (1 << i) else ''}> {d}</label>" for i, d in enumerate(DAYS))
     minute = int(v["ScheduleMinute"] if v["ScheduleMinute"] != "" else 120)
+    ddays = "".join(f"<label class='check day'><input type='checkbox' name='dday' value='{i}'"
+                    f"{' checked' if int(v['DiscoveryDays'] or 0) & (1 << i) else ''}> {d}</label>" for i, d in enumerate(DAYS))
+    dminute = int(v["DiscoveryMinute"] if v["DiscoveryMinute"] != "" else 60)
     new_on = v.get("NewReposEnabled", True) not in (False, 0, "0")
     new_opts = "".join(f"<option value='{k}'{' selected' if (k == '1') == new_on else ''}>{t}</option>"
                        for k, t in (("1", "Enabled by default: the scan decides (automatic)"),
@@ -368,6 +385,14 @@ under <a href='/admin/repositories'>Repositories</a>.</p>
 <div class='days'>{days}</div>
 <label for='At'>At <span class='muted'>(UTC; no day selected: only on demand)</span></label>
 <input id='At' name='At' type='time' value='{minute // 60:02d}:{minute % 60:02d}'>
+<h3>Discovery schedule</h3>
+<p class='muted small'>A discovery only asks the provider's API: the new and removed repositories, each one's latest
+commit and the application ID in its <code>metadata.json</code>. Nothing is cloned or built. At the end the applications
+are mapped to products by those IDs, so a <code>metadata.json</code> added since the last full scan maps its
+application overnight. A discovery due while another run of the scan is on is skipped (a full scan reads the same).</p>
+<div class='days'>{ddays}</div>
+<label for='DiscoveryAt'>At <span class='muted'>(UTC; no day selected: no scheduled discovery)</span></label>
+<input id='DiscoveryAt' name='DiscoveryAt' type='time' value='{dminute // 60:02d}:{dminute % 60:02d}'>
 {chk('Enabled', 'Enabled (unchecked: paused, no runs)')}
 <div><button>{'Save' if ident else 'Add'}</button> <a href='/admin/scans'>Cancel</a></div></form>"""
 
@@ -379,7 +404,7 @@ def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
         # an administrator enables them
         scan = {"Provider": "github", "OutputBranch": "main", "Registry": LOCAL_REGISTRY, "SkipForks": True, "StaleDays": 183, "Verify": True,
                 "Gate": True, "PushImages": True, "UseAi": False, "LlmMode": "queued", "LlmHeavy": False, "ScheduleDays": 0, "ScheduleMinute": 120, "Enabled": True,
-                "NewReposEnabled": False}
+                "NewReposEnabled": False, "DiscoveryDays": 127, "DiscoveryMinute": 60}
         return Response(200, adm._shell(s, a, "New organization scan", "scans", _scan_form(adm, s, scan, None, _output_repos(conn)), flash))
     cur = conn.cursor(as_dict=True)
     cur.execute("SELECT * FROM cz.OrgScan WHERE ScanId = %s", (ident,))
@@ -448,7 +473,9 @@ def edit_scan(adm, conn, s, a, ident, flash: str, q: dict) -> Response:
               "<p class='muted small'>A scan that has run is kept with its history: pause it instead (uncheck Enabled).</p>")
     body = (f"{''.join(f'<p class=note>{e(n)}</p>' for n in notes)}"
             f"<div class='formrow'>{runbtn}<span>{e(schedule_text(scan['ScheduleDays'], scan['ScheduleMinute']))}"
-            f"{' · ' + e(_next(scan)) if _next(scan) else ''}</span> · <a href='/admin/repositories?scan={ident}'>Repositories</a> · "
+            f"{' · ' + e(_next(scan)) if _next(scan) else ''}"
+            f"{' · ' + e(discovery_text(scan)) if discovery_text(scan) else ''}"
+            f"{' · ' + e(_next(scan, 'discovery')) if _next(scan, 'discovery') else ''}</span> · <a href='/admin/repositories?scan={ident}'>Repositories</a> · "
             f"<a href='/admin/repositories/projects?scan={ident}'>Projects</a></div>"
             f"{scan_tokens(conn, scan)}"
             f"<h2>Runs</h2><table><thead><tr><th class='num'>#</th><th>Status</th><th>Started</th><th class='num'>Took</th>"
@@ -638,6 +665,11 @@ def validate_scan(form: dict, local_registry: str | None = None) -> tuple[dict, 
     if not m:
         errors.append("At: a time as HH:MM")
     v["ScheduleMinute"] = int(m[1]) * 60 + int(m[2]) if m else 120
+    v["DiscoveryDays"] = sum(1 << int(d) for d in set(form.get("dday", [])) if re.fullmatch(r"[0-6]", d))
+    m = TIME_RE.fullmatch(form.get("DiscoveryAt", ["01:00"])[0].strip() or "01:00")
+    if not m:
+        errors.append("Discovery at: a time as HH:MM")
+    v["DiscoveryMinute"] = int(m[1]) * 60 + int(m[2]) if m else 60
     return v, errors
 
 
@@ -649,8 +681,8 @@ def save_scan(conn, ident, form: dict, local_registry: str | None = None) -> Res
     cur = conn.cursor()
     try:
         if ident:
-            cur.execute("UPDATE cz.OrgScan SET " + ", ".join(f"{k} = %s" for k in SCAN_COLS) + ", NextRunAt = NULL "
-                        "WHERE ScanId = %s", (*(v[k] for k in SCAN_COLS), ident))
+            cur.execute("UPDATE cz.OrgScan SET " + ", ".join(f"{k} = %s" for k in SCAN_COLS) + ", NextRunAt = NULL, "
+                        "NextDiscoveryAt = NULL WHERE ScanId = %s", (*(v[k] for k in SCAN_COLS), ident))
             if cur.rowcount == 0:
                 conn.rollback()
                 return _nf()

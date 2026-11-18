@@ -183,8 +183,21 @@ scheduled run waits until no other run is going. The runs share the machine's re
 (below): a run that starts while the others use them all waits for a free one.
 
 Discovery can be run again at any time, for example before a scheduled run, to see the new projects and
-repositories first. Scheduled runs are always full scans; new repositories found by them are processed
-in that run unless their project is disabled.
+repositories first. The **Schedule** runs full scans; new repositories found by them are processed in that run
+unless their project is disabled.
+
+### Discovery schedule
+
+The scan's **Discovery schedule** (days and time, UTC) queues a discovery run on its own schedule, for example every
+night between weekly full scans. A new scan has one every day at 01:00; a scan made before 0.51.16 has none until
+you choose days. Each discovery lists the new and removed projects and repositories, reads every repository's
+latest commit and its [`metadata.json`](#external-application-ids-metadatajson) through the provider's API, and at
+its end maps the applications to products, so a `metadata.json` added or changed since the last full scan maps its
+application the next night, without a clone. A discovery that falls due while another run of the scan is queued or
+going is skipped, and the worker's log says so: a full scan reads the same.
+
+![The scan's schedule and its discovery schedule: full scans on Sundays, discovery every day](images/admin-scan-discovery-schedule.png#only-light){ .cz-shot }
+![The scan's schedule and its discovery schedule: full scans on Sundays, discovery every day](images/admin-scan-discovery-schedule-dark.png#only-dark){ .cz-shot }
 
 ## External application IDs (`metadata.json`)
 
@@ -199,7 +212,9 @@ A repository can name the application it belongs to in another system (a CMDB, a
 
 Discovery reads it through the provider's API, disabled repositories too, without a clone; the full scan reads it
 again after the clone (a GUID's braces are dropped; letters, digits and `. _ : -`, at most 100 characters). It is kept
-with the repository; a repository that no longer has the file loses it at its next discovery or scan.
+with the repository; a repository that no longer has the file loses it at its next discovery or scan. Every
+discovery reads every repository's file again, so a `metadata.json` added after the first discovery is found by the
+next one: give the scan a [discovery schedule](#discovery-schedule) to have that happen every night.
 Each application has an **External ID** (Admin → Applications → the application, administrators).
 **Admin → Applications → External IDs** lists the IDs repositories declare that no application has yet, with a proposal
 for each: **Link** it to the repository's application (one per application of a split repository), or **Add
@@ -219,6 +234,13 @@ none, the `applicationId` its repository's `metadata.json` declares. One ID belo
   change its own ID.
 
 The products' external IDs come before the automatic one-product-per-project mapping.
+
+The end of every run (discovery or full) also records how the applications are mapped then. The Grafana dashboard
+**Containerizer: application mapping** shows it over time: the repositories that declare an ID in `metadata.json`
+(and their share of all repositories), the applications by how they got their product (by external ID, by project,
+by hand, none), the declared IDs no application has yet (**Add application** or a full scan makes one) and the IDs
+no product has (set the product's External ID). It reads the view `vMappingHistory` with the same login as the
+[LLM token usage](appliance-admin.md#llm-token-usage) dashboard.
 
 ![A product with the external ID PRD-1042 and its three applications](images/admin-product-external-id.png#only-light){ .cz-shot }
 ![A product with the external ID PRD-1042 and its three applications](images/admin-product-external-id-dark.png#only-dark){ .cz-shot }

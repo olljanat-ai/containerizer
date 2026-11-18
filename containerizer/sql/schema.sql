@@ -3371,3 +3371,82 @@ WHERE a.Retired = 0
   AND NOT EXISTS (SELECT 1 FROM [${schema}].vDisabledRepositoryUrl h WHERE h.RepositoryUrl = a.RepositoryUrl);
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 58) INSERT [${schema}].SchemaVersion (Version) VALUES (58);
+
+-- 59: a discovery schedule of its own (the worker queues a discovery run at DiscoveryDays/DiscoveryMinute, as it queues
+-- full scans at ScheduleDays/ScheduleMinute): every discovery reads each repository's metadata.json through the
+-- provider's API, and the end of the run maps the applications to products (cz.AutoMapProjects). MappingSnapshot: how
+-- the applications were mapped at the end of every run (cz.RecordMappingSnapshot), for the Grafana dashboard
+-- "Containerizer: application mapping" (vMappingHistory, the usage role).
+IF COL_LENGTH(N'[${schema}].OrgScan', N'DiscoveryDays') IS NULL
+ALTER TABLE [${schema}].OrgScan ADD DiscoveryDays int NOT NULL CONSTRAINT DF_OrgScan_DiscoveryDays DEFAULT 0,
+    DiscoveryMinute int NOT NULL CONSTRAINT DF_OrgScan_DiscoveryMinute DEFAULT 60, NextDiscoveryAt datetime2(0) NULL;
+GO
+GRANT UPDATE ON [${schema}].OrgScan (NextDiscoveryAt) TO [${schema}_writer];
+GO
+IF OBJECT_ID(N'[${schema}].MappingSnapshot') IS NULL
+CREATE TABLE [${schema}].MappingSnapshot (
+    SnapshotId          int IDENTITY PRIMARY KEY,
+    At                  datetime2(0) NOT NULL CONSTRAINT DF_MappingSnapshot_At DEFAULT SYSUTCDATETIME(),
+    Repositories        int NOT NULL,       -- listed by an organization scan, not removed
+    ReposDeclaring      int NOT NULL,       -- of those, with an applicationId in metadata.json
+    ReposDeclaringNoApp int NOT NULL,       -- of those, with no application yet (no scan assessed it)
+    Applications        int NOT NULL,       -- not retired
+    AppsWithId          int NOT NULL,       -- with an external ID: their own, else their repository's metadata.json
+    AppsByExternalId    int NOT NULL,       -- in the product whose ExternalId is the application's ID
+    AppsByProject       int NOT NULL,       -- in a product chosen automatically otherwise (one per project)
+    AppsByHand          int NOT NULL,       -- in a product a person chose
+    AppsNoProduct       int NOT NULL,
+    IdsWithoutProduct   int NOT NULL        -- distinct application IDs no product has as its ExternalId
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_MappingSnapshot_At' AND object_id = OBJECT_ID(N'[${schema}].MappingSnapshot'))
+CREATE INDEX IX_MappingSnapshot_At ON [${schema}].MappingSnapshot (At);
+GO
+CREATE OR ALTER PROCEDURE [${schema}].RecordMappingSnapshot AS
+BEGIN
+    SET NOCOUNT ON;
+    WITH r AS (SELECT DISTINCT r.RepositoryUrl, x.ExternalAppId FROM [${schema}].OrgRepository r
+               OUTER APPLY (SELECT TOP (1) y.ExternalAppId FROM [${schema}].OrgRepository y
+                            WHERE y.RepositoryUrl = r.RepositoryUrl AND y.RemovedAt IS NULL AND y.ExternalAppId IS NOT NULL
+                            ORDER BY y.LastSeenAt DESC, y.RepositoryId) x
+               WHERE r.RemovedAt IS NULL AND r.RepositoryUrl IS NOT NULL),
+         a AS (SELECT a.ApplicationId, a.ProductId, a.ProductAutoAt, e.Id,
+                      CASE WHEN p.ExternalId IS NOT NULL AND p.ExternalId = e.Id THEN 1 ELSE 0 END AS ById
+               FROM [${schema}].Application a
+               CROSS APPLY (SELECT COALESCE(a.ExternalId, (SELECT TOP (1) y.ExternalAppId FROM [${schema}].OrgRepository y
+                                                           WHERE y.RepositoryUrl = a.RepositoryUrl AND y.RemovedAt IS NULL
+                                                             AND y.ExternalAppId IS NOT NULL
+                                                           ORDER BY y.LastSeenAt DESC, y.RepositoryId)) AS Id) e
+               LEFT JOIN [${schema}].Product p ON p.ProductId = a.ProductId
+               WHERE a.Retired = 0)
+    INSERT [${schema}].MappingSnapshot (Repositories, ReposDeclaring, ReposDeclaringNoApp, Applications, AppsWithId,
+        AppsByExternalId, AppsByProject, AppsByHand, AppsNoProduct, IdsWithoutProduct)
+    SELECT (SELECT COUNT(*) FROM r),
+           (SELECT COUNT(*) FROM r WHERE ExternalAppId IS NOT NULL),
+           (SELECT COUNT(*) FROM r WHERE ExternalAppId IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM [${schema}].Application x WHERE x.RepositoryUrl = r.RepositoryUrl AND x.Retired = 0)),
+           (SELECT COUNT(*) FROM a),
+           (SELECT COUNT(*) FROM a WHERE Id IS NOT NULL),
+           (SELECT COUNT(*) FROM a WHERE ById = 1),
+           (SELECT COUNT(*) FROM a WHERE ProductId IS NOT NULL AND ById = 0 AND ProductAutoAt IS NOT NULL),
+           (SELECT COUNT(*) FROM a WHERE ProductId IS NOT NULL AND ById = 0 AND ProductAutoAt IS NULL),
+           (SELECT COUNT(*) FROM a WHERE ProductId IS NULL),
+           (SELECT COUNT(DISTINCT Id) FROM a WHERE Id IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM [${schema}].Product p WHERE p.ExternalId = a.Id));
+END;
+GO
+CREATE OR ALTER VIEW [${schema}].vMappingHistory AS
+SELECT At, CAST(At AS date) AS Day, Repositories, ReposDeclaring, ReposDeclaringNoApp, Applications, AppsWithId,
+       AppsByExternalId, AppsByProject, AppsByHand, AppsNoProduct, IdsWithoutProduct
+FROM [${schema}].MappingSnapshot;
+GO
+GRANT EXECUTE ON [${schema}].RecordMappingSnapshot TO [${schema}_writer];
+GRANT EXECUTE ON [${schema}].RecordMappingSnapshot TO [${schema}_admin];
+GRANT SELECT ON [${schema}].vMappingHistory TO [${schema}_usage];
+GRANT SELECT ON [${schema}].vMappingHistory TO [${schema}_reader];
+GRANT SELECT ON [${schema}].vMappingHistory TO [${schema}_admin];
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].MappingSnapshot) EXEC [${schema}].RecordMappingSnapshot;
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 59) INSERT [${schema}].SchemaVersion (Version) VALUES (59);
+GO
