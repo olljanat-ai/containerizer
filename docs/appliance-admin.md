@@ -271,6 +271,20 @@ the appliance. Deleted tags free their space after a garbage collection:
 `docker exec cz-registry registry garbage-collect --delete-untagged /etc/distribution/config.yml`
 (stop the worker first).
 
+**Pods on the sandbox node**: up to 65,533, not Kubernetes' default of 110 ("Too many pods" on a big machine).
+The appliance is one node, so it takes the whole pod network `10.42.0.0/16`, not the /24 of it that k3s gives each
+node by default (about 250 addresses). The system agent sets `maxPods` in a kubelet drop-in,
+`/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/50-containerizer.conf`, which persists. A node still on a /24 is
+moved once:
+
+- k3s' controller manager gets `node-cidr-mask-size=16` (`/etc/rancher/k3s/config.yaml.d/`, until the next boot);
+- the node object is deleted and k3s restarted, and the node registers again with the /16, which it keeps;
+- its pods are made again by their Deployments, StatefulSets and Flux, and their volumes stay.
+
+The pod bridge keeps its /24 until the appliance restarts, and the System page says so: plan a restart there. What
+happened is in `journalctl -u containerizer-sysagent-status` and
+`/var/lib/containerizer/system/pod-network.json`.
+
 k3s also runs External Secrets Operator, and the generated configurations get every secret through it
 ([external-secrets.md](external-secrets.md#the-appliance-sandbox)). The values live in namespace
 `containerizer-secrets`, which runs no pods, and each namespace can read only its own keys.

@@ -139,6 +139,8 @@ class Paths:
     patch_mount: Path = Path("/run/containerizer/app-patch")            # the active one, read-only
     requirements_sha: Path = Path("/usr/lib/containerizer/requirements.sha256")
     learned: Path = Path("/var/lib/containerizer/learned")
+    # the sandbox's kubelet configuration drop-ins (k3s 1.30+: --config-dir); persistent, unlike /etc/rancher/k3s
+    kubelet_dropins: Path = Path("/var/lib/rancher/k3s/agent/etc/kubelet.conf.d")
 
     def https(self, ext: str) -> Path:
         return self.https_dir / f"sandbox-https{ext}"
@@ -281,7 +283,8 @@ def save_task(task: dict) -> None:
         log(f"could not keep the task state: {ex}")
 
 
-def publish(task: dict | None = None, egress_state: dict | None = None, https_state: dict | None = None) -> dict:
+def publish(task: dict | None = None, egress_state: dict | None = None, https_state: dict | None = None,
+            pod_network: dict | None = None) -> dict:
     """Write status.json (world-readable: it holds no secrets)."""
     old = {}
     try:
@@ -299,7 +302,8 @@ def publish(task: dict | None = None, egress_state: dict | None = None, https_st
           "hostname": socket.gethostname(), "snapshots": snapshots(), "updated": now(),
           "task": task if task is not None else last_task(), "restart": load_plan(), "llm_drain": load_drain(),
           "egress": egress_state if egress_state is not None else (old.get("egress") or egress_status()),
-          "sandbox_https": https_state if https_state is not None else (old.get("sandbox_https") or sandbox_https_status())}
+          "sandbox_https": https_state if https_state is not None else (old.get("sandbox_https") or sandbox_https_status()),
+          "pod_network": pod_network if pod_network is not None else old.get("pod_network")}
     atomic_write(P.run / "status.json", json.dumps(st, indent=1), 0o644)
     return st
 
@@ -1874,6 +1878,125 @@ def health() -> int:
     return 0
 
 
+# Pods on the sandbox node. Kubernetes' defaults (110 pods, and a /24 of k3s' 10.42.0.0/16 for each node's pods: about
+# 250 addresses) are too few on a big machine ("Too many pods"). The appliance is one node: it takes the whole /16
+# (node-cidr-mask-size=16), 65,536 addresses less the network, the broadcast and the bridge's (10.42.0.1).
+POD_NETWORK = "10.42.0.0/16"
+SANDBOX_MAX_PODS = 65533
+KUBELET_DROPIN = "50-containerizer.conf"
+K3S_DROPINS = Path("/etc/rancher/k3s/config.yaml.d")        # the OS image's config.yaml; read when k3s starts
+K3S_MASK_DROPIN = "50-containerizer-pod-network.yaml"
+FLANNEL_ENV = Path("/run/flannel/subnet.env")
+
+
+def kubelet_sync() -> bool:
+    """The sandbox kubelet's settings the OS image's k3s config.yaml does not have (maxPods), as a kubelet drop-in under
+    /var/lib/rancher (persistent: an app update can set it); k3s restarts once when it changes (its pods keep running).
+    True when it changed."""
+    if not P.kubelet_dropins.parent.is_dir():           # no k3s here (development, the recovery system)
+        return False
+    want = ("# written by containerizer's system agent (sysagent.kubelet_sync); changes are overwritten\n"
+            "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\n"
+            f"maxPods: {SANDBOX_MAX_PODS}\n")
+    f = P.kubelet_dropins / KUBELET_DROPIN
+    try:
+        if f.read_text() == want:
+            return False
+    except OSError:
+        pass
+    P.kubelet_dropins.mkdir(parents=True, exist_ok=True)
+    tmp = f.with_suffix(".tmp")
+    tmp.write_text(want)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, f)
+    if run(["systemctl", "is-active", "k3s"], timeout=30, check=False).strip() == "active":
+        log(f"sandbox: up to {SANDBOX_MAX_PODS} pods on the node: restarting k3s")
+        run(["systemctl", "restart", "k3s"], timeout=300)
+    return True
+
+
+def _node() -> dict | None:
+    """The sandbox node (name, podCIDR), or None while the API does not answer."""
+    out = _kubectl(["get", "nodes", "-o", "json"], check=False)
+    try:
+        items = json.loads(out or "{}").get("items") or []
+    except ValueError:
+        return None
+    if not items:
+        return None
+    n = items[0]
+    return {"name": n["metadata"]["name"], "cidr": (n.get("spec") or {}).get("podCIDR") or ""}
+
+
+def _wait_node(want_cidr: str | None = None, seconds: int = 300, sleep=time.sleep) -> dict | None:
+    """The node once the API answers (with `want_cidr`: once the node has that pod network)."""
+    for _ in range(max(1, seconds // 5)):
+        n = _node()
+        if n and (want_cidr is None or n["cidr"] == want_cidr):
+            return n
+        sleep(5)
+    return None
+
+
+def _bridge_cidr() -> str:
+    """The pod network flannel set up at k3s' start (FLANNEL_NETWORK is the cluster's, FLANNEL_SUBNET the node's)."""
+    try:
+        m = re.search(r"(?m)^FLANNEL_SUBNET=(\S+)", FLANNEL_ENV.read_text())
+    except OSError:
+        return ""
+    if not m:
+        return ""
+    try:
+        return str(ipaddress.ip_interface(m[1]).network)
+    except ValueError:
+        return ""
+
+
+def pod_network_sync(sleep=time.sleep) -> dict | None:
+    """The sandbox node with the whole pod network: once, when its node still has a /24, k3s' controller manager gets
+    node-cidr-mask-size=16 (a drop-in under /etc/rancher/k3s, which is not persistent: a node keeps the pod network
+    it registered with, so it is needed only now), the node object is deleted and k3s restarted, and the node
+    registers again with 10.42.0.0/16. Its pods are made again by their Deployments, StatefulSets and Flux (their
+    volumes stay). The bridge flannel made at k3s' start keeps its /24 until the appliance restarts: the System page
+    says so. Tried once (pod-network.json), not in a loop. The state for status.json, or None without k3s."""
+    if not P.kubelet_dropins.parent.is_dir():
+        return None
+    kubelet_sync()
+    n = _node()
+    if n is None:
+        return None
+    state_f = P.https_dir / "pod-network.json"
+    try:
+        state = json.loads(state_f.read_text())
+    except (OSError, ValueError):
+        state = {}
+    if n["cidr"] != POD_NETWORK and not state.get("tried"):
+        state = {"tried": now(), "from": n["cidr"]}
+        atomic_write(state_f, json.dumps(state), 0o644)
+        log(f"sandbox: the node's pod network {n['cidr']} -> {POD_NETWORK} (up to {SANDBOX_MAX_PODS} pods): "
+            "re-registering the node; its pods are made again")
+        K3S_DROPINS.mkdir(parents=True, exist_ok=True)
+        (K3S_DROPINS / K3S_MASK_DROPIN).write_text(
+            "# written by containerizer's system agent (sysagent.pod_network_sync): the node registers with the whole\n"
+            "# pod network; not needed once it has it\n"
+            "kube-controller-manager-arg+:\n  - \"node-cidr-mask-size=16\"\n")
+        run(["systemctl", "restart", "k3s"], timeout=300)
+        n = _wait_node(sleep=sleep)
+        if n is not None:
+            _kubectl(["delete", "node", n["name"], "--wait=true"], check=False)
+            run(["systemctl", "restart", "k3s"], timeout=300)
+            n = _wait_node(POD_NETWORK, sleep=sleep) or _node()
+        state.update(done=now(), to=(n or {}).get("cidr") or "")
+        if (n or {}).get("cidr") != POD_NETWORK:
+            state["error"] = f"the node registered with {(n or {}).get('cidr') or 'no pod network'}, not {POD_NETWORK}"
+            log(f"sandbox: {state['error']}")
+        atomic_write(state_f, json.dumps(state), 0o644)
+    cidr = (n or {}).get("cidr") or ""
+    bridge = _bridge_cidr()
+    return {"pod_cidr": cidr, "max_pods": SANDBOX_MAX_PODS, "bridge": bridge, "error": state.get("error"),
+            "restart_needed": cidr == POD_NETWORK and bool(bridge) and bridge != POD_NETWORK}
+
+
 def main(argv=None) -> int:
     from . import sqlstore
     sqlstore.APP_ROLE = "sysagent"            # its SQL Server sessions (sqlstore.app_name)
@@ -1893,6 +2016,12 @@ def main(argv=None) -> int:
             except Exception as ex:  # noqa: BLE001 - Grafana or the database not up yet: next time (every 5 minutes)
                 _log_once("grafana-usage", f"Grafana LLM usage not set up: {type(ex).__name__}: {str(ex)[:300]}")
             publish(egress_state=egress_status())
+            try:
+                pods = pod_network_sync()
+                if pods is not None:
+                    publish(pod_network=pods)
+            except (AgentError, OSError, subprocess.TimeoutExpired) as ex:
+                _log_once("pod-network", f"sandbox pod network not set: {ex}")
             try:
                 local_llm.reconcile()
             except (AgentError, LocalLlmError, OSError, subprocess.TimeoutExpired) as ex:

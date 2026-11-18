@@ -538,6 +538,14 @@ certificate and key from the appliance</label> <button{dis}>Turn off</button></f
                        f"restarts with {e(str(drain.get('version') or 'the new code'))}: {e(until)}. Its jobs go back "
                        f"to the queue and continue on the new code with the answers they already had. It starts no "
                        f"new job meanwhile.</p>")
+        pods = st.get("pod_network")
+        if isinstance(pods, dict) and pods.get("restart_needed"):
+            out.append(f"<p class='note'>The sandbox node has the whole pod network now ({e(str(pods.get('pod_cidr')))}, up "
+                       f"to {int(pods.get('max_pods') or 0):,} pods), but its pod bridge keeps "
+                       f"{e(str(pods.get('bridge')))} until the appliance restarts: plan a restart below. Until then new "
+                       f"pods still get addresses from {e(str(pods.get('bridge')))}.</p>")
+        elif isinstance(pods, dict) and pods.get("error"):
+            out.append(f"<p class='note'>Sandbox pod network: {e(str(pods['error']))}.</p>")
         plan = st.get("restart")
         if plan:
             out.append(self.render_plan(plan, s))
