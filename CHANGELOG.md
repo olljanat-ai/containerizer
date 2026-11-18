@@ -8,6 +8,15 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.15 (2026-11-18)
+
+- **Scheduled backups** (Admin → System → Scheduled backup): on a schedule (time of day in UTC and days of the week)
+  or with **Back up now**, the system agent backs up the results database and the folders a rebuilt appliance needs
+  into one archive in `/var/lib/containerizer/backups` (root only) on the persistent partition, as the transient
+  unit `containerizer-backup`. Archives older than the days to keep are deleted after a backup that worked; the
+  newest one always stays. The page shows the last backup, the next time and the archives. An app update: nothing
+  in the OS image changes.
+
 ## 0.51.14 (2026-11-18)
 
 - **Make it A: every B application, only the ones not tried yet**: applications whose earlier Make it A order did

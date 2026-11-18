@@ -41,6 +41,7 @@ Commands (also for an administrator on the console or over SSH):
 
     status                     publish status.json (and start or stop the built-in LLM as set)
     process                    handle the queued requests
+    backup run                 back up the appliance now (Admin -> System -> Scheduled backup; backup.py)
     upgrade vX.Y.Z [--full]    verify, install and restart (an app update for a patch release of the
                                running series, unless --full)
     app-patch select           mount the active app update when it fits the running OS (at start-up)
@@ -76,8 +77,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import apppatch, local_llm, restartplan
+from . import apppatch, backup, local_llm, restartplan
 from .apppatch import PatchError
+from .backup import BackupError
 from .local_llm import LocalLlmError
 
 VERSION_RE = re.compile(r"v\d{1,4}\.\d{1,4}\.\d{1,4}")
@@ -303,9 +305,39 @@ def publish(task: dict | None = None, egress_state: dict | None = None, https_st
           "task": task if task is not None else last_task(), "restart": load_plan(), "llm_drain": load_drain(),
           "egress": egress_state if egress_state is not None else (old.get("egress") or egress_status()),
           "sandbox_https": https_state if https_state is not None else (old.get("sandbox_https") or sandbox_https_status()),
-          "pod_network": pod_network if pod_network is not None else old.get("pod_network")}
+          "pod_network": pod_network if pod_network is not None else old.get("pod_network"),
+          "backup": backup_status()}
     atomic_write(P.run / "status.json", json.dumps(st, indent=1), 0o644)
     return st
+
+
+# =============================================================================== scheduled backup
+
+def backup_status() -> dict | None:
+    try:
+        return backup.status()
+    except (OSError, ValueError) as ex:
+        return {"error": str(ex)[:300]}
+
+
+def start_backup(user: str = "schedule", name: str = "") -> bool:
+    """Start `sysagent backup run` as the transient unit containerizer-backup (False: one runs already)."""
+    if subprocess.run(["systemctl", "is-active", "--quiet", backup.UNIT], timeout=30).returncode == 0:
+        return False
+    backup.mark_requested(user, name)
+    run(["systemctl", "reset-failed", backup.UNIT], timeout=30, check=False)
+    run(["systemd-run", f"--unit={backup.UNIT}", "--no-block", "--collect", "--property=Nice=10",
+         "--property=IOSchedulingClass=idle", "--description=containerizer appliance: backup",
+         sys.executable, "-m", "containerizer.sysagent", "backup", "run"], timeout=60)
+    return True
+
+
+def backup_check() -> str:
+    """Every 5 minutes (`status`): start the scheduled backup when it is due."""
+    settings = backup.load_settings()
+    if not backup.due(settings, backup._read(backup.STATE), datetime.now(timezone.utc)):
+        return "not due"
+    return "started" if start_backup() else "running"
 
 
 # =============================================================================== upgrade / rollback
@@ -1816,11 +1848,26 @@ def process() -> int:
             elif action == "sandbox-https":
                 save_sandbox_https(req, user, name)
                 publish(https_state=sandbox_https_status())
+            elif action == "backup-settings":   # Admin -> System -> Scheduled backup (backup.py checks it again)
+                backup.save_settings(req, user, name)
+                backup.clear_error()
+                publish()
+            elif action == "backup-now":
+                if not start_backup(user, name):
+                    log("backup: one is running already")
+                publish()
             else:
                 log(f"unknown action {action!r} ignored")
-        except (AgentError, RuleError, LocalLlmError, PatchError, OSError, subprocess.TimeoutExpired, ValueError) as ex:
+        except (AgentError, RuleError, LocalLlmError, PatchError, BackupError, OSError, subprocess.TimeoutExpired,
+                ValueError) as ex:
             rc = 1
             log(f"{action} failed: {ex}")
+            if action in ("backup-settings", "backup-now"):
+                st = backup._read(backup.STATE)
+                st["error"] = f"{now()}: {ex}"[:1000]
+                backup._write(backup.STATE, st)
+                publish()
+                continue
             if action in ("lab", "local-llm", "dbquery", "dbdelete", "labmail"):
                 continue                        # their pages show their own status (or wait for an answer)
             if action in ("plan", "plan-cancel"):
@@ -2026,7 +2073,16 @@ def main(argv=None) -> int:
                 local_llm.reconcile()
             except (AgentError, LocalLlmError, OSError, subprocess.TimeoutExpired) as ex:
                 log(f"built-in LLM: {ex}")
+            try:
+                if backup_check() == "started":
+                    log("backup: the scheduled backup started")
+            except (AgentError, BackupError, OSError, subprocess.SubprocessError) as ex:
+                log(f"backup: not started: {ex}")
             return 0
+        if cmd == "backup" and argv[1:] == ["run"]:
+            last = backup.run_backup(read_env(P.appliance_env), log=log)
+            publish()
+            return 0 if last.get("ok") else 1
         if cmd == "process":
             return process()
         if cmd == "upgrade" and len(argv) >= 2 and set(argv[2:]) <= {"--full", "--no-reboot"}:

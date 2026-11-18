@@ -206,6 +206,8 @@ class SystemPage:
                     return 303, "", back + urlencode({"msg": "No restart is planned."})
                 self.request("plan-cancel", s.user, s.name)
                 return 303, "", back + urlencode({"msg": "Planned restart cancelled. Scans and the LLM queue go on."})
+            if what in ("backup", "backup-now"):
+                return 303, "", back + urlencode({"msg": self.backup_post(s, what, form, st)}) + "#backup"
             if what == "app-patch-remove":
                 if not st.get("app_patch"):
                     return 303, "", back + urlencode({"msg": "No app update is installed."})
@@ -588,6 +590,7 @@ A roll back to a snapshot removes it too.</p>
 <form method='post' action='/admin/system/app-patch-remove'>{csrf}<button{dis}>Remove the app update</button>
 <label class='small'><input type='checkbox' name='confirm' value='yes' required> I understand that the services restart
 and scans in progress are cut off</label></form>""")
+        out.append(self.render_backup(st.get("backup"), s))
         snaps = st.get("snapshots") or []
         rows = []
         for x in snaps:
@@ -610,6 +613,77 @@ and scans in progress are cut off</label></form>""")
 {plan_fields("rollback")}<button{dis}>Roll back</button>
 {confirm}</form>""")
         return "".join(out)
+
+    # -- scheduled backup (backup.py; the system agent runs it) ---------------------------------
+
+    def backup_post(self, s, what: str, form: dict, st: dict) -> str:
+        from .backup import DAYS, MAX_KEEP
+        if what == "backup-now":
+            b = st.get("backup") or {}
+            if b.get("running") or any(p.get("action") == "backup-now" for p in self.pending()):
+                return "A backup is running already."
+            self.request("backup-now", s.user, s.name)
+            return "Backup started: it runs in the background; this page shows it when it is done."
+        t = form.get("time", [""])[0]
+        keep = form.get("keep_days", [""])[0]
+        days = [d for d in form.get("days", []) if d in DAYS]
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", t):
+            return "Not saved: the time is HH:MM (UTC)."
+        if not re.fullmatch(r"\d{1,3}", keep) or not 1 <= int(keep) <= MAX_KEEP:
+            return f"Not saved: keep the backups 1 to {MAX_KEEP} days."
+        if not days:
+            return "Not saved: pick at least one day of the week."
+        on = form.get("enabled", [""])[0] == "1"
+        self.request("backup-settings", s.user, s.name, enabled=on, time=t, days=days, keep_days=int(keep))
+        return (f"Scheduled backup saved: at {t} UTC on {_days_text(days)}, kept {int(keep)} day(s)." if on
+                else "Scheduled backups are off.")
+
+    @staticmethod
+    def render_backup(b: dict | None, s) -> str:
+        from .backup import DAYS, DEFAULTS, MAX_KEEP
+        b = b if isinstance(b, dict) else {}
+        cfg = {**DEFAULTS, **(b.get("settings") or {})}
+        csrf = f"<input type='hidden' name='csrf' value='{e(s.csrf)}'>"
+        last = b.get("last") or {}
+        if b.get("running"):
+            state = f"<p class='note'>A backup is running (started {e(_when(last.get('started')))}).</p>"
+        elif last.get("finished"):
+            ok = last.get("ok")
+            state = (f"<p>Last backup: <b class='{'good' if ok else 'bad'}'>{'done' if ok else 'failed'}</b> "
+                     f"{e(_when(last.get('finished')))}"
+                     + (f", <code>{e(str(last.get('file')))}</code> ({_size(last.get('bytes'))}, "
+                        f"{e(str(last.get('seconds')))} s; database: {e(str(last.get('database') or ''))})" if ok else "")
+                     + "</p>" + (f"<p class='note'>{e(str(last.get('message') or ''))}</p>" if not ok else ""))
+        else:
+            state = "<p class='muted'>No backup has run yet.</p>"
+        if b.get("error"):
+            state += f"<p class='note'>{e(str(b['error']))}</p>"
+        nxt = (f"Next: {e(_when(b.get('next')))}." if b.get("next") else
+               "Scheduled backups are off." if not cfg.get("enabled") else "")
+        days = "".join(f"<label class='check'><input type='checkbox' name='days' value='{d}'"
+                       f"{' checked' if d in cfg['days'] else ''}> {d.capitalize()}</label>" for d in DAYS)
+        rows = "".join(f"<tr><td><code>{e(a['name'])}</code></td><td class='nowrap'>{e(_when(a.get('at')))}</td>"
+                       f"<td class='num'>{_size(a.get('bytes'))}</td></tr>" for a in (b.get("archives") or [])[:60])
+        folder = e(str(b.get("folder") or "/var/lib/containerizer/backups"))
+        return f"""<h2 id='backup'>Scheduled backup</h2>
+<p class='muted small'>Backs up what a rebuilt appliance needs (the results database, <code>/etc/containerizer</code>
+with its secrets, the dev database uploads, the appliance settings, learned rules, the HTTPS CA, OpenBao and kubemg)
+into one archive in <code>{folder}</code> on the persistent partition, readable by root only. Archives older than the
+days to keep are deleted after a backup that worked; the newest one always stays. Copy them off the appliance too: a
+disk failure takes them with it. The archives hold every secret of the appliance.</p>
+{state}<p class='muted small'>{nxt}</p>
+<form method='post' action='/admin/system/backup'>{csrf}
+<div class='formrow'><label class='check'><input type='checkbox' name='enabled' value='1'{' checked' if cfg.get('enabled') else ''}>
+Back up on a schedule</label></div>
+<div class='formrow'><label for='backup-time'>At (UTC)</label><input type='time' id='backup-time' name='time'
+value='{e(cfg['time'])}' required><span class='muted small'>on</span>{days}</div>
+<div class='formrow'><label for='keep-days'>Keep for</label><input type='number' id='keep-days' name='keep_days'
+min='1' max='{MAX_KEEP}' value='{int(cfg['keep_days'])}' required><span>days</span></div>
+<button>Save the schedule</button></form>
+<form method='post' action='/admin/system/backup-now'>{csrf}<button class='secondary'
+{' disabled' if b.get('running') else ''}>Back up now</button></form>
+<table><thead><tr><th>Archive</th><th>Made</th><th class='num'>Size</th></tr></thead>
+<tbody>{rows or "<tr><td colspan=3 class='muted'>No archives yet.</td></tr>"}</tbody></table>"""
 
     @staticmethod
     def app_update(st: dict, version: str) -> bool:
@@ -684,6 +758,23 @@ def plan_time(form: dict) -> tuple[str | None, int | None]:
     if not w.isdigit() or int(w) not in rp.WAITS:
         raise ValueError("Pick how long to wait for the work in progress.")
     return at, int(w)
+
+
+def _size(n) -> str:
+    try:
+        n = float(n)
+    except (TypeError, ValueError):
+        return ""
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:,.0f} {unit}" if unit == "bytes" else f"{n:,.1f} {unit}"
+        n /= 1024
+    return ""
+
+
+def _days_text(days: list[str]) -> str:
+    from .backup import DAYS
+    return "every day" if list(days) == list(DAYS) else ", ".join(d.capitalize() for d in days)
 
 
 def _when(v) -> str:
