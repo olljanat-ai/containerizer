@@ -782,9 +782,6 @@ def manifests(ns: str, sv: Service, image: str, uid: int, domain: str = "", idp_
         if clients or notes:
             idp = {"idp": idp_sb.url, "project": sv.source, "clients": [x.to_dict() for x in clients],
                    "applications": [_idp.wso2_application(x) for x in clients], "notes": notes}
-    if port and port < 1024:
-        sv.notes.append(f"{sv.name}: listens on port {port}; without NET_BIND_SERVICE a non-root container cannot bind "
-                        "it. Make it listen on 8080 or above")
     return docs, idp
 
 

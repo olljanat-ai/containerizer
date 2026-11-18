@@ -185,6 +185,16 @@ def keep_target_frameworks(app_root: Path, before: dict[str, list[str]]) -> list
     return kept
 
 
+# Developer-only files: the container never reads them (a Functions host takes its settings from the environment, and
+# appsettings.Development.json is left out of the image), so changing them only breaks the developer's machine.
+DEV_ONLY_RE = re.compile(r"(?i)(^|/)(local\.settings\.json|launchSettings\.json|[^/]*\.Development\.[^/]+)$|"
+                         r"(^|/)\.(vscode|idea)/")
+
+
+def dev_only(rel: str) -> bool:
+    return bool(DEV_ONLY_RE.search(rel.replace("\\", "/")))
+
+
 def skip_reason(f: dict) -> str | None:
     """Why a finding is not sent to the LLM (None: it is)."""
     sev = f.get("severity")
@@ -239,6 +249,11 @@ def plan_tasks(components: list[dict], include_config: bool = False) -> tuple[li
                 continue
             ev = [parse_evidence(e) for e in f.get("evidence") or []]
             ev = [e for e in ev if e["file"] and not e["file"].startswith("/") and ".." not in Path(e["file"]).parts]
+            if ev and all(dev_only(e["file"]) for e in ev):
+                skipped.append({**ident, "reason": "only in developer-only files (local.settings.json, "
+                                "*.Development.*, launchSettings.json): the container does not read them"})
+                continue
+            ev = [e for e in ev if not dev_only(e["file"])]
             seen, uniq = set(), []
             for e in ev:
                 if (e["file"], e["line"], e["text"]) not in seen:
@@ -1350,6 +1365,8 @@ def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | 
         if rel not in allowed:
             errors.append(f"edit {i}: {rel} may not be edited (only the files shown: {', '.join(shown)})")
             continue
+        if dev_only(rel):
+            continue                # a developer-only file: left out, the container does not read it
         path = root / rel
         if path.is_symlink() or not path.resolve().is_relative_to(root) or not path.is_file():
             errors.append(f"edit {i}: {rel} is not a file of the application")

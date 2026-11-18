@@ -154,6 +154,20 @@ rules:
       - https://learn.microsoft.com/en-us/dotnet/api/system.environment.machinename
     when: {}
 
+  - id: plan-code-port
+    phase: plan
+    applies_to: [dotnet]
+    resolves: [cfg-privileged-port]
+    technique: code-port
+    why: >-
+      The application listens on port 80 fixed in code (UseUrls, Kestrel Listen, HttpListener prefixes) or in a
+      "urls" setting. The container listens on that port instead of 8080, so the code stays as it is: containerd
+      2.x (AKS, K3s) and Docker let a non-root process bind ports below 1024 (net.ipv4.ip_unprivileged_port_start=0
+      in the pod), and NET_BIND_SERVICE is added for older runtimes.
+    refs:
+      - https://github.com/containerd/containerd/blob/main/docs/cri/config.md
+    when: {}
+
   - id: plan-x509-user-store
     phase: plan
     applies_to: [dotnet]
